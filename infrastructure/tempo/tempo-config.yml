@@ -1,0 +1,40 @@
+# infrastructure/tempo/tempo-config.yml
+# Grafana Tempo — distributed tracing backend
+# Receives OTLP traces from the API and Engine via the OpenTelemetry Collector
+
+stream_over_http_enabled: true
+
+server:
+  http_listen_port: 3200
+
+distributor:
+  receivers:
+    otlp:
+      protocols:
+        http:
+          endpoint: 0.0.0.0:4318
+        grpc:
+          endpoint: 0.0.0.0:4317
+
+storage:
+  trace:
+    backend: local
+    local:
+      path: /var/tempo/traces
+    wal:
+      path: /var/tempo/wal
+
+compactor:
+  compaction:
+    block_retention: 720h # 30 days
+
+metrics_generator:
+  registry:
+    external_labels:
+      source: tempo
+      cluster: lunchlineup
+  storage:
+    path: /var/tempo/generator/wal
+
+overrides:
+  metrics_generator_processors: [service-graphs, span-metrics]

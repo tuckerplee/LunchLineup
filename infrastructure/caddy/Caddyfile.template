@@ -1,0 +1,29 @@
+{
+    email {{config.email}}
+}
+
+{{config.domain}} {
+    # Reverse proxy with header manipulation
+    reverse_proxy /api/* lunchlineup-api:3000 {
+        header_up X-Real-IP {remote_host}
+        header_up X-Forwarded-For {remote_host}
+    }
+    
+    reverse_proxy /* lunchlineup-web:3000
+
+    # Security Headers (Architecture Part VII-A.1)
+    header {
+        Strict-Transport-Security "max-age={{config.security.hstsMaxAge}}; includeSubDomains{{config.security.hstsPreload ? '; preload' : ''}}"
+        X-Content-Type-Options nosniff
+        X-Frame-Options {{config.security.allowIframeEmbedding ? 'SAMEORIGIN' : 'DENY'}}
+        Referrer-Policy strict-origin-when-cross-origin
+        Content-Security-Policy "{{config.security.csp}}"
+        X-Permitted-Cross-Domain-Policies none
+        X-XSS-Protection "1; mode=block"
+    }
+
+    log {
+        output file /var/log/caddy/access.log
+        format json
+    }
+}

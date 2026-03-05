@@ -1,0 +1,17 @@
+# infrastructure/postgres/postgresql.conf.template
+shared_buffers = {{postgres.sharedBuffers}}
+effective_cache_size = {{postgres.effectiveCache}}
+work_mem = {{postgres.workMem}}
+maintenance_work_mem = {{postgres.maintenanceMem}}
+max_parallel_workers = {{postgres.maxParallelWorkers}}
+random_page_cost = {{postgres.randomPageCost}}
+effective_io_concurrency = {{postgres.effectiveIoConcurrency}}
+log_min_duration_statement = {{observability.slowQueryThresholdMs}}
+listen_addresses = '*'
+max_connections = {{postgres.maxConnections}}
+
+# Write-Ahead Log (WAL) Configuration for PITR
+wal_level = replica
+archive_mode = on
+archive_command = 'test ! -f /var/lib/postgresql/data/wal_archive/%f && cp %p /var/lib/postgresql/data/wal_archive/%f'
+archive_timeout = 600

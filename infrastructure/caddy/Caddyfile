@@ -1,0 +1,17 @@
+localhost:80 {
+    # Route API requests to the NestJS backend
+    handle /api/v1/* {
+        uri strip_prefix /api
+        reverse_proxy api:3000
+    }
+
+    # Route WebSocket connections to the Engine (if needed)
+    handle /ws/* {
+        reverse_proxy engine:8000
+    }
+
+    # Route all other frontend traffic to Dockerized Next.js
+    handle {
+        reverse_proxy web:3000
+    }
+}

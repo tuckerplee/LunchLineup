@@ -1,0 +1,11 @@
+# infrastructure/rabbitmq/config/rabbitmq.conf
+listeners.tcp.default = 5672
+management.tcp.port = 15672
+
+# Hardening as per Architecture Part VII-A
+default_user = {{config.rabbitmq.user}}
+default_pass = {{config.rabbitmq.password}}
+
+# Memory and Disk Limits
+vm_memory_high_watermark.relative = 0.4
+disk_free_limit.relative = 2.0

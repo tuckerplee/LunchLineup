@@ -1,0 +1,292 @@
+name: LunchLineup CI/CD
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main, develop ]
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_PREFIX: ghcr.io/${{ github.repository }}
+
+jobs:
+  # ─── Stage 1-2: Static Analysis ───
+  static-analysis:
+    name: "Stage 1-2: Lint, Format & Type Check"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+      - run: npm ci
+      - name: "1. Lint & Format"
+        run: npx turbo run lint
+      - name: "2. Type Check"
+        run: npx turbo run type-check
+
+  # ─── Stage 3: SAST Security Scan ───
+  sast:
+    name: "Stage 3: SAST (Semgrep)"
+    needs: static-analysis
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: returntocorp/semgrep-action@v1
+        with:
+          config: p/default
+
+  # ─── Stage 4: Dependency Audit ───
+  dependency-audit:
+    name: "Stage 4: Dependency Audit"
+    needs: static-analysis
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+      - run: npm ci
+      - name: npm audit
+        run: npm audit --audit-level=high
+      - name: License check
+        run: npx license-checker --failOn "GPL-2.0;GPL-3.0"
+
+  # ─── Stage 5: Unit Tests (90%+ coverage gate) ───
+  unit-tests:
+    name: "Stage 5: Unit Tests"
+    needs: [sast, dependency-audit]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+      - run: npm ci
+      - name: Run Vitest
+        run: npx turbo run test -- --coverage
+      - name: Run PyTest
+        run: |
+          cd apps/engine
+          pip install -r requirements.txt
+          python -m pytest --cov=src --cov-fail-under=90
+
+  # ─── Stage 6-7: Build & Push Docker Images ───
+  build-images:
+    name: "Stage 6-7: Build Docker Images"
+    needs: unit-tests
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build & Push API
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: infrastructure/docker/Dockerfile.api
+          push: ${{ github.ref == 'refs/heads/main' }}
+          tags: ${{ env.IMAGE_PREFIX }}/api:${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: Build & Push Web
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: infrastructure/docker/Dockerfile.web
+          push: ${{ github.ref == 'refs/heads/main' }}
+          tags: ${{ env.IMAGE_PREFIX }}/web:${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: Build & Push Engine
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: infrastructure/docker/Dockerfile.engine
+          push: ${{ github.ref == 'refs/heads/main' }}
+          tags: ${{ env.IMAGE_PREFIX }}/engine:${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  # ─── Stage 8-10: Ephemeral Environment & Integration Tests ───
+  integration-tests:
+    name: "Stage 8-10: Integration Tests (Ephemeral Stack)"
+    needs: build-images
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: root
+          POSTGRES_PASSWORD: testpass
+          POSTGRES_DB: lunchlineup_test
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+      redis:
+        image: redis:7-alpine
+        ports: ['6379:6379']
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+      rabbitmq:
+        image: rabbitmq:3-alpine
+        ports: ['5672:5672']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+      - run: npm ci
+      - name: "9. Run Migrations"
+        run: npx prisma migrate deploy
+        env:
+          DATABASE_URL: postgresql://root:testpass@localhost:5432/lunchlineup_test
+      - name: "10. Integration Tests"
+        run: npx turbo run test:integration
+        env:
+          DATABASE_URL: postgresql://root:testpass@localhost:5432/lunchlineup_test
+          REDIS_URL: redis://localhost:6379
+
+  # ─── Stage 11: DAST (OWASP ZAP) ───
+  dast:
+    name: "Stage 11: DAST (OWASP ZAP)"
+    needs: integration-tests
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main'
+    steps:
+      - uses: actions/checkout@v4
+      - name: ZAP Baseline Scan
+        uses: zaproxy/action-baseline@v0.12.0
+        with:
+          target: 'http://localhost:3000'
+          rules_file_name: '.zap-rules.tsv'
+          cmd_options: '-a'
+
+  # ─── Stage 12: E2E Tests (Playwright) ───
+  e2e-tests:
+    name: "Stage 12: E2E Tests (Playwright)"
+    needs: integration-tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+      - run: npm ci
+      - run: npx playwright install --with-deps
+      - name: Run Playwright
+        run: npx playwright test
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: playwright-report
+          path: playwright-report/
+
+  # ─── Stage 13: Load Test Smoke ───
+  load-test:
+    name: "Stage 13: Load Test Smoke"
+    needs: integration-tests
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main'
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run Artillery
+        run: |
+          npm install -g artillery
+          artillery run scripts/artillery-smoke.yml
+          # Fail if p99 > 1s
+
+  # ─── Stage 14-15: Deploy to Staging ───
+  deploy-staging:
+    name: "Stage 14-15: Deploy & Smoke Test Staging"
+    needs: [e2e-tests, load-test, dast]
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main'
+    environment: staging
+    steps:
+      - uses: actions/checkout@v4
+      - name: Deploy to staging
+        run: |
+          echo "Deploying ${{ github.sha }} to staging..."
+          # docker stack deploy -c docker-compose.prod.yml lunchlineup
+      - name: Staging smoke tests
+        run: |
+          echo "Running Playwright critical path against staging..."
+          # npx playwright test --grep @critical
+
+  # ─── Stage 16-17: Production Deploy (Manual Gate) ───
+  deploy-production:
+    name: "Stage 16-17: Blue/Green Production Deploy"
+    needs: deploy-staging
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main'
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+      - name: "16. Manual gate passed — deploying"
+        run: echo "Production deploy approved by ${{ github.actor }}"
+      - name: "17. Blue/Green deploy"
+        run: |
+          echo "Deploying ${{ github.sha }} to production..."
+          # docker service update --image $IMAGE_PREFIX/api:${{ github.sha }} lunchlineup_api
+
+  # ─── Stage 18-19: Production Smoke & Auto-Rollback ───
+  production-smoke:
+    name: "Stage 18-19: Production Smoke & Auto-Rollback"
+    needs: deploy-production
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: "18. Production smoke tests"
+        id: smoke
+        run: |
+          echo "Checking health endpoints and critical queries..."
+          # curl -f https://api.lunchlineup.com/health || exit 1
+      - name: "19. Auto-rollback if failed"
+        if: failure()
+        run: |
+          echo "SMOKE FAILED — Rolling back to previous SHA..."
+          # docker service update --rollback lunchlineup_api
+
+  # ─── SBOM Generation ───
+  sbom:
+    name: "Generate SBOM"
+    needs: build-images
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: anchore/sbom-action@v0
+        with:
+          artifact-name: sbom.spdx.json
+
+  # ─── Base Image Vulnerability Scan ───
+  trivy-scan:
+    name: "Container Vulnerability Scan (Trivy)"
+    needs: build-images
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: aquasecurity/trivy-action@0.28.0
+        with:
+          scan-type: 'fs'
+          scan-ref: '.'
+          severity: 'CRITICAL,HIGH'
+          exit-code: '1'

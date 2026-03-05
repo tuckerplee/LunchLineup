@@ -1,0 +1,54 @@
+syntax = "proto3";
+
+package lunchlineup.solver;
+
+service SolverService {
+  rpc CalculateSchedule (ScheduleRequest) returns (ScheduleResponse) {}
+}
+
+message ScheduleRequest {
+  string tenant_id = 1;
+  string location_id = 2;
+  string start_date = 3;
+  string end_date = 4;
+  repeated StaffMember staff = 5;
+  repeated Constraint constraints = 6;
+}
+
+message StaffMember {
+  string id = 1;
+  string name = 2;
+  repeated string skills = 3;
+  repeated availability availability = 4;
+}
+
+message availability {
+  string day_of_week = 1;
+  string start_time = 2;
+  string end_time = 3;
+}
+
+message Constraint {
+  string type = 1;
+  string value = 2;
+}
+
+message ScheduleResponse {
+  string schedule_id = 1;
+  repeated Shift shifts = 2;
+  string status = 3;
+}
+
+message Shift {
+  string staff_id = 1;
+  string start_time = 2;
+  string end_time = 3;
+  string role = 4;
+  repeated Break breaks = 5;
+}
+
+message Break {
+  string start_time = 1;
+  string end_time = 2;
+  bool paid = 3;
+}
