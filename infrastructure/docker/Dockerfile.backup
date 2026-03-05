@@ -1,0 +1,8 @@
+# infrastructure/docker/Dockerfile.backup
+# Stage 1: Runtime
+FROM alpine:latest AS runner
+RUN apk add --no-cache postgresql-client rsync zstd gpg
+WORKDIR /app
+COPY scripts/backup.sh .
+RUN chmod +x backup.sh
+CMD ["./backup.sh"]

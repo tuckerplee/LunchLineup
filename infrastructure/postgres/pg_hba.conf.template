@@ -1,0 +1,22 @@
+# infrastructure/postgres/pg_hba.conf.template
+# PostgreSQL Client Authentication Configuration File
+# ---------------------------------------------------
+
+# TYPE  DATABASE        USER            ADDRESS                 METHOD
+
+# "local" is for Unix domain socket connections only
+local   all             postgres                                peer
+
+# IPv4 local connections:
+host    all             all             127.0.0.1/32            scram-sha-256
+
+# IPv6 local connections:
+host    all             all             ::1/128                 scram-sha-256
+
+# Allow connections from the internal Docker network
+# Assuming docker network subnet is passed as {{docker.subnet}} or explicitly 172.16.0.0/12
+host    all             all             {{network.internalCidr}}  scram-sha-256
+
+# Deny everything else explicitly
+host    all             all             0.0.0.0/0               reject
+host    all             all             ::/0                    reject

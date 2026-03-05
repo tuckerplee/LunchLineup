@@ -1,0 +1,301 @@
+version: '3.8'
+
+services:
+  # ─── Reverse Proxy & Load Balancer ───
+  proxy:
+    image: caddy:2-alpine
+    container_name: lunchlineup-proxy
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./infrastructure/caddy/Caddyfile:/etc/caddy/Caddyfile
+      - caddy_data:/data
+      - caddy_config:/config
+    networks:
+      - external
+      - app
+    healthcheck:
+      test: [ "CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:80" ]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+    restart: unless-stopped
+
+  # ─── Next.js Frontend ───
+  web:
+    build:
+      context: .
+      dockerfile: infrastructure/docker/Dockerfile.web
+    container_name: lunchlineup-web
+    networks:
+      - app
+    environment:
+      - NODE_ENV=development
+      - NEXT_PUBLIC_API_URL=http://api:3000/api/v1
+    healthcheck:
+      test: [ "CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:3000" ]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+    restart: unless-stopped
+
+  # ─── NestJS API Gateway ───
+  api:
+    build:
+      context: .
+      dockerfile: infrastructure/docker/Dockerfile.api
+    container_name: lunchlineup-api
+    ports:
+      - "3001:3000"
+    networks:
+      - app
+      - data
+    dns:
+      - 8.8.8.8
+      - 8.8.4.4
+    env_file: .env
+    healthcheck:
+      test: [ "CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:3000/health" ]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # ─── Python Scheduling Engine (gRPC + health HTTP) ───
+  engine:
+    build:
+      context: .
+      dockerfile: infrastructure/docker/Dockerfile.engine
+    container_name: lunchlineup-engine
+    networks:
+      - app
+      - data
+    healthcheck:
+      test: [ "CMD-SHELL", "curl -f http://localhost:8000/health || exit 1" ]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+    restart: unless-stopped
+
+  # ─── Background Worker ───
+  worker:
+    build:
+      context: .
+      dockerfile: infrastructure/docker/Dockerfile.worker
+    container_name: lunchlineup-worker
+    networks:
+      - app
+      - data
+    env_file: .env
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # ─── Database Connection Pooler ───
+  pgbouncer:
+    image: edoburu/pgbouncer
+    container_name: lunchlineup-pgbouncer
+    networks:
+      - data
+    environment:
+      - DATABASE_URL=postgres://${POSTGRES_USER:-root}:${POSTGRES_PASSWORD:-password}@postgres:5432/${POSTGRES_DB:-lunchlineup}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # ─── Primary Database ───
+  postgres:
+    image: postgres:16-alpine
+    container_name: lunchlineup-postgres
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./infrastructure/postgres/postgresql.conf:/etc/postgresql/postgresql.conf
+      - ./packages/db/prisma/migrations/init_rls.sql:/docker-entrypoint-initdb.d/01-init-rls.sql
+      - ./packages/db/prisma/migrations/audit_log.sql:/docker-entrypoint-initdb.d/02-audit-log.sql
+    networks:
+      - data
+    environment:
+      - POSTGRES_USER=${POSTGRES_USER:-root}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-password}
+      - POSTGRES_DB=${POSTGRES_DB:-lunchlineup}
+    command: [ "postgres", "-c", "config_file=/etc/postgresql/postgresql.conf" ]
+    healthcheck:
+      test: [ "CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-root} -d ${POSTGRES_DB:-lunchlineup}" ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  # ─── Cache & Session Store ───
+  redis:
+    image: redis:7-alpine
+    container_name: lunchlineup-redis
+    volumes:
+      - redis_data:/data
+      - ./infrastructure/redis/redis.conf.template:/usr/local/etc/redis/redis.conf
+    networks:
+      - data
+    command: [ "redis-server", "/usr/local/etc/redis/redis.conf" ]
+    healthcheck:
+      test: [ "CMD", "redis-cli", "ping" ]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+    restart: unless-stopped
+
+  # ─── Message Broker ───
+  rabbitmq:
+    image: rabbitmq:3-management-alpine
+    container_name: lunchlineup-rabbitmq
+    networks:
+      - data
+    environment:
+      - RABBITMQ_DEFAULT_USER=${RABBITMQ_USER:-guest}
+      - RABBITMQ_DEFAULT_PASS=${RABBITMQ_PASSWORD:-guest}
+    healthcheck:
+      test: [ "CMD", "rabbitmq-diagnostics", "-q", "ping" ]
+      interval: 15s
+      timeout: 10s
+      retries: 3
+    restart: unless-stopped
+
+  # ─── Control Plane (Out-of-band management) ───
+  control:
+    build:
+      context: .
+      dockerfile: infrastructure/docker/Dockerfile.control
+    container_name: lunchlineup-control
+    ports:
+      - "127.0.0.1:3001:3001" # Bind to localhost only — Architecture §8A.4
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    networks:
+      - management
+      - data
+    healthcheck:
+      test: [ "CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:3001/api/status" ]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+    restart: unless-stopped
+
+  # ─── Observability: Prometheus ───
+  prometheus:
+    image: prom/prometheus:v2.51.2
+    container_name: lunchlineup-prometheus
+    volumes:
+      - ./infrastructure/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    networks:
+      - management
+      - app
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--storage.tsdb.retention.time=30d'
+      - '--web.enable-lifecycle'
+    healthcheck:
+      test: [ "CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:9090/-/healthy" ]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+    restart: unless-stopped
+
+  # ─── Observability: Loki ───
+  loki:
+    image: grafana/loki:2.9.7
+    container_name: lunchlineup-loki
+    volumes:
+      - ./infrastructure/loki/loki-config.yml:/etc/loki/local-config.yaml:ro
+      - loki_data:/loki
+    networks:
+      - management
+    command: -config.file=/etc/loki/local-config.yaml
+    healthcheck:
+      test: [ "CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:3100/ready" ]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+    restart: unless-stopped
+
+  # ─── Observability: Tempo (Distributed Tracing) ───
+  tempo:
+    image: grafana/tempo:2.4.1
+    container_name: lunchlineup-tempo
+    volumes:
+      - ./infrastructure/tempo/tempo-config.yml:/etc/tempo/config.yml:ro
+      - tempo_data:/var/tempo
+    networks:
+      - management
+    command: -config.file=/etc/tempo/config.yml
+    healthcheck:
+      test: [ "CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:3200/ready" ]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+    restart: unless-stopped
+
+  # ─── Observability: Grafana ───
+  grafana:
+    image: grafana/grafana:10.4.2
+    container_name: lunchlineup-grafana
+    ports:
+      - "127.0.0.1:3002:3000"
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./infrastructure/grafana/datasources:/etc/grafana/provisioning/datasources:ro
+      - ./infrastructure/grafana/dashboards:/etc/grafana/provisioning/dashboards:ro
+    networks:
+      - management
+    environment:
+      - GF_SECURITY_ADMIN_USER=${GRAFANA_USER:-admin}
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_PASSWORD:-admin}
+      - GF_USERS_ALLOW_SIGN_UP=false
+      - GF_ANALYTICS_REPORTING_ENABLED=false
+      - GF_FEATURE_TOGGLES_ENABLE=traceToMetrics,tempoSearch,tempoServiceGraph
+    depends_on:
+      prometheus:
+        condition: service_healthy
+      loki:
+        condition: service_healthy
+      tempo:
+        condition: service_healthy
+    healthcheck:
+      test: [ "CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:3000/api/health" ]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+    restart: unless-stopped
+
+networks:
+  external:
+    driver: bridge
+  app:
+    driver: bridge
+    internal: true
+  data:
+    driver: bridge
+    internal: true
+  management:
+    driver: bridge
+    internal: true
+
+volumes:
+  caddy_data:
+  caddy_config:
+  postgres_data:
+  redis_data:
+  prometheus_data:
+  loki_data:
+  tempo_data:
+  grafana_data:

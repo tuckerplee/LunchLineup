@@ -1,0 +1,8 @@
+# infrastructure/docker/Dockerfile.migrations
+# Stage 1: Runtime
+FROM node:22-alpine AS runner
+WORKDIR /app
+COPY . .
+RUN npm ci
+COPY packages/db/prisma ./prisma
+CMD ["npx", "prisma", "migrate", "deploy"]

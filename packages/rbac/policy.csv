@@ -1,0 +1,9 @@
+p, role:admin, data, read
+p, role:admin, data, write
+p, role:manager, data, read
+p, role:manager, data, write
+p, role:staff, data, read
+
+g, alice, role:admin
+g, bob, role:manager
+g, charlie, role:staff

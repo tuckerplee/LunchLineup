@@ -1,0 +1,235 @@
+{
+    "__inputs": [],
+    "__requires": [
+        {
+            "type": "grafana",
+            "id": "grafana",
+            "name": "Grafana",
+            "version": "10.0.0"
+        },
+        {
+            "type": "datasource",
+            "id": "prometheus",
+            "name": "Prometheus",
+            "version": "1.0.0"
+        },
+        {
+            "type": "datasource",
+            "id": "loki",
+            "name": "Loki",
+            "version": "1.0.0"
+        }
+    ],
+    "annotations": {
+        "list": []
+    },
+    "editable": true,
+    "fiscalYearStartMonth": 0,
+    "graphTooltip": 1,
+    "id": null,
+    "links": [],
+    "panels": [
+        {
+            "id": 1,
+            "type": "stat",
+            "title": "API Request Rate (req/s)",
+            "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+            },
+            "targets": [
+                {
+                    "expr": "rate(http_requests_total{job=\"api\"}[1m])",
+                    "legendFormat": "{{method}} {{route}}"
+                }
+            ],
+            "gridPos": {
+                "h": 4,
+                "w": 6,
+                "x": 0,
+                "y": 0
+            }
+        },
+        {
+            "id": 2,
+            "type": "stat",
+            "title": "API p99 Latency (ms)",
+            "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+            },
+            "targets": [
+                {
+                    "expr": "histogram_quantile(0.99, rate(http_request_duration_ms_bucket{job=\"api\"}[5m])) * 1000",
+                    "legendFormat": "p99"
+                }
+            ],
+            "gridPos": {
+                "h": 4,
+                "w": 6,
+                "x": 6,
+                "y": 0
+            }
+        },
+        {
+            "id": 3,
+            "type": "stat",
+            "title": "Active Tenants",
+            "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+            },
+            "targets": [
+                {
+                    "expr": "lunchlineup_active_tenants_total",
+                    "legendFormat": "Tenants"
+                }
+            ],
+            "gridPos": {
+                "h": 4,
+                "w": 6,
+                "x": 12,
+                "y": 0
+            }
+        },
+        {
+            "id": 4,
+            "type": "stat",
+            "title": "Solve Queue Depth",
+            "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+            },
+            "targets": [
+                {
+                    "expr": "lunchlineup_solver_queue_depth",
+                    "legendFormat": "Queue"
+                }
+            ],
+            "gridPos": {
+                "h": 4,
+                "w": 6,
+                "x": 18,
+                "y": 0
+            }
+        },
+        {
+            "id": 5,
+            "type": "timeseries",
+            "title": "HTTP Request Rate by Route",
+            "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+            },
+            "targets": [
+                {
+                    "expr": "rate(http_requests_total{job=\"api\"}[1m])",
+                    "legendFormat": "{{method}} {{route}}"
+                }
+            ],
+            "gridPos": {
+                "h": 8,
+                "w": 12,
+                "x": 0,
+                "y": 4
+            }
+        },
+        {
+            "id": 6,
+            "type": "timeseries",
+            "title": "API Error Rate (5xx)",
+            "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+            },
+            "targets": [
+                {
+                    "expr": "rate(http_requests_total{job=\"api\",status=~\"5..\"}[1m])",
+                    "legendFormat": "5xx errors"
+                }
+            ],
+            "fieldConfig": {
+                "defaults": {
+                    "color": {
+                        "mode": "fixed",
+                        "fixedColor": "red"
+                    }
+                }
+            },
+            "gridPos": {
+                "h": 8,
+                "w": 12,
+                "x": 12,
+                "y": 4
+            }
+        },
+        {
+            "id": 7,
+            "type": "timeseries",
+            "title": "Solver Job Duration (seconds)",
+            "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+            },
+            "targets": [
+                {
+                    "expr": "histogram_quantile(0.95, rate(lunchlineup_solver_duration_seconds_bucket[5m]))",
+                    "legendFormat": "p95"
+                },
+                {
+                    "expr": "histogram_quantile(0.50, rate(lunchlineup_solver_duration_seconds_bucket[5m]))",
+                    "legendFormat": "p50"
+                }
+            ],
+            "gridPos": {
+                "h": 8,
+                "w": 12,
+                "x": 0,
+                "y": 12
+            }
+        },
+        {
+            "id": 8,
+            "type": "logs",
+            "title": "Application Logs",
+            "datasource": {
+                "type": "loki",
+                "uid": "loki"
+            },
+            "targets": [
+                {
+                    "expr": "{job=\"lunchlineup\"} |= ``",
+                    "legendFormat": ""
+                }
+            ],
+            "options": {
+                "dedupStrategy": "none",
+                "enableLogDetails": true,
+                "showLabels": true,
+                "showTime": true,
+                "wrapLogMessage": false
+            },
+            "gridPos": {
+                "h": 8,
+                "w": 12,
+                "x": 12,
+                "y": 12
+            }
+        }
+    ],
+    "refresh": "30s",
+    "schemaVersion": 38,
+    "tags": [
+        "lunchlineup",
+        "platform"
+    ],
+    "time": {
+        "from": "now-1h",
+        "to": "now"
+    },
+    "timepicker": {},
+    "timezone": "browser",
+    "title": "LunchLineup — Platform Overview",
+    "uid": "lunchlineup-platform",
+    "version": 1
+}

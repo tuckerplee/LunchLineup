@@ -1,0 +1,9 @@
+FROM python:3.11-slim
+WORKDIR /app
+COPY apps/worker/requirements.txt .
+RUN apt-get update && apt-get install -y --no-install-recommends build-essential && rm -rf /var/lib/apt/lists/*
+RUN pip install --no-cache-dir -r requirements.txt
+COPY apps/worker/ .
+COPY packages/shared-types/proto/solver.proto .
+RUN python -m grpc_tools.protoc -I. --python_out=. --grpc_python_out=. solver.proto
+CMD ["python", "main.py"]

@@ -1,0 +1,71 @@
+groups:
+  - name: lunchlineup.api
+    interval: 1m
+    rules:
+      # Alert when API error rate exceeds 5% for 2 minutes
+      - alert: HighApiErrorRate
+        expr: |
+          rate(http_requests_total{job="api",status=~"5.."}[2m]) /
+          rate(http_requests_total{job="api"}[2m]) > 0.05
+        for: 2m
+        labels:
+          severity: critical
+          team: engineering
+        annotations:
+          summary: "High API error rate on {{ $labels.route }}"
+          description: "{{ $labels.job }} is returning {{ $value | humanizePercentage }} 5xx errors."
+          runbook: "https://github.com/org/lunchlineup/blob/main/docs/runbooks/high-error-rate.md"
+
+      # Alert when p99 latency exceeds 2s
+      - alert: HighApiLatency
+        expr: |
+          histogram_quantile(0.99,
+            rate(http_request_duration_ms_bucket{job="api"}[5m])
+          ) > 2000
+        for: 5m
+        labels:
+          severity: warning
+          team: engineering
+        annotations:
+          summary: "High API p99 latency"
+          description: "p99 latency is {{ $value | humanizeDuration }}ms"
+
+  - name: lunchlineup.engine
+    interval: 1m
+    rules:
+      # Alert when solver queue gets backed up
+      - alert: SolverQueueBacklog
+        expr: lunchlineup_solver_queue_depth > 20
+        for: 5m
+        labels:
+          severity: warning
+          team: engineering
+        annotations:
+          summary: "Solver queue is building up"
+          description: "{{ $value }} solve jobs are pending."
+
+      # Alert on solver error spikes
+      - alert: SolverErrors
+        expr: rate(lunchlineup_solver_errors_total[5m]) > 0.1
+        for: 5m
+        labels:
+          severity: critical
+          team: engineering
+        annotations:
+          summary: "Solver returning errors"
+          description: "Solver is failing at {{ $value }} errors/s"
+          runbook: "https://github.com/org/lunchlineup/blob/main/docs/runbooks/high-error-rate.md"
+
+  - name: lunchlineup.infrastructure
+    interval: 1m
+    rules:
+      # Alert on disk space running low in containers
+      - alert: DiskSpaceLow
+        expr: (node_filesystem_avail_bytes / node_filesystem_size_bytes) < 0.15
+        for: 10m
+        labels:
+          severity: warning
+          team: ops
+        annotations:
+          summary: "Low disk space on {{ $labels.mountpoint }}"
+          description: "Only {{ $value | humanizePercentage }} disk space remaining."

@@ -1,0 +1,27 @@
+{
+    "extends": "../../tsconfig.base.json",
+    "compilerOptions": {
+        "outDir": "./dist",
+        "rootDir": "./src",
+        "baseUrl": ".",
+        "paths": {
+            "@lunchlineup/config": [
+                "../../packages/config"
+            ],
+            "@lunchlineup/db": [
+                "../../packages/db"
+            ],
+            "@lunchlineup/rbac": [
+                "../../packages/rbac"
+            ]
+        }
+    },
+    "include": [
+        "src/**/*.ts"
+    ],
+    "exclude": [
+        "node_modules",
+        "dist",
+        "test"
+    ]
+}

@@ -1,0 +1,336 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ─── Multi-Tenant Core ───
+
+model Tenant {
+  id                String            @id @default(uuid())
+  name              String
+  slug              String            @unique
+  planTier          PlanTier          @default(FREE)
+  stripeCustomerId  String?
+  stripeSubscriptionId String?
+  status            TenantStatus      @default(TRIAL)
+  trialEndsAt       DateTime?
+  gracePeriodEndsAt DateTime?
+  usageCredits      Int               @default(0) // Credits for beta customers
+  createdAt         DateTime          @default(now())
+  updatedAt         DateTime          @updatedAt
+  deletedAt         DateTime?
+
+  users             User[]
+  locations         Location[]
+  shifts            Shift[]
+  schedules         Schedule[]
+  tenantSettings    TenantSetting[]
+  billingEvents     BillingEvent[]
+  notifications     Notification[]
+  webhookEndpoints  WebhookEndpoint[]
+  creditTransactions CreditTransaction[]
+
+  @@index([slug])
+  @@index([stripeCustomerId])
+  @@index([status])
+}
+
+model CreditTransaction {
+  id          String   @id @default(uuid())
+  tenantId    String
+  amount      Int      // Positive for granted, negative for consumed
+  reason      String   // E.g. "Beta signup bonus", "Schedule Generation"
+  createdAt   DateTime @default(now())
+
+  tenant      Tenant   @relation(fields: [tenantId], references: [id])
+
+  @@index([tenantId])
+  @@index([createdAt])
+}
+
+enum PlanTier {
+  FREE
+  STARTER
+  GROWTH
+  ENTERPRISE
+}
+
+enum TenantStatus {
+  TRIAL
+  ACTIVE
+  PAST_DUE
+  SUSPENDED
+  CANCELLED
+  PURGED
+}
+
+// ─── Users & Auth ───
+
+model User {
+  id              String    @id @default(uuid())
+  tenantId        String
+  email           String
+  emailEncrypted  Bytes?    // AES-256-GCM encrypted PII
+  emailHash       String?   // For lookup without decryption
+  name            String
+  nameEncrypted   Bytes?
+  phone           String?
+  phoneEncrypted  Bytes?
+  phoneHash       String?
+  role            UserRole  @default(STAFF)
+  mfaEnabled      Boolean   @default(false)
+  mfaSecret       String?   // TOTP secret (encrypted)
+  mfaBackupCodes  String[]  // Hashed backup codes
+  passwordHash    String?
+  lastLoginAt     DateTime?
+  loginAttempts   Int       @default(0)
+  lockedUntil     DateTime?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+  deletedAt       DateTime?
+
+  tenant          Tenant    @relation(fields: [tenantId], references: [id])
+  sessions        Session[]
+  shifts          Shift[]
+  auditLogs       AuditLog[]
+  notifications   Notification[]
+
+  @@unique([tenantId, email])
+  @@index([tenantId])
+  @@index([emailHash])
+  @@index([deletedAt])
+}
+
+enum UserRole {
+  SUPER_ADMIN
+  ADMIN
+  MANAGER
+  STAFF
+}
+
+model Session {
+  id            String    @id @default(uuid())
+  userId        String
+  refreshToken  String    @unique
+  ipAddress     String
+  userAgent     String
+  expiresAt     DateTime
+  createdAt     DateTime  @default(now())
+  revokedAt     DateTime?
+
+  user          User      @relation(fields: [userId], references: [id])
+
+  @@index([userId])
+  @@index([refreshToken])
+  @@index([expiresAt])
+}
+
+// ─── Locations & Scheduling ───
+
+model Location {
+  id          String    @id @default(uuid())
+  tenantId    String
+  name        String
+  address     String?
+  timezone    String    @default("America/New_York")
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  deletedAt   DateTime?
+
+  tenant      Tenant    @relation(fields: [tenantId], references: [id])
+  shifts      Shift[]
+  schedules   Schedule[]
+
+  @@index([tenantId])
+  @@index([deletedAt])
+}
+
+model Schedule {
+  id          String         @id @default(uuid())
+  tenantId    String
+  locationId  String
+  startDate   DateTime
+  endDate     DateTime
+  status      ScheduleStatus @default(DRAFT)
+  publishedAt DateTime?
+  createdAt   DateTime       @default(now())
+  updatedAt   DateTime       @updatedAt
+
+  tenant      Tenant         @relation(fields: [tenantId], references: [id])
+  location    Location       @relation(fields: [locationId], references: [id])
+  shifts      Shift[]
+
+  @@index([tenantId])
+  @@index([locationId])
+  @@index([startDate, endDate])
+}
+
+enum ScheduleStatus {
+  DRAFT
+  PUBLISHED
+  ARCHIVED
+}
+
+model Shift {
+  id           String    @id @default(uuid())
+  tenantId     String
+  locationId   String
+  scheduleId   String?
+  userId       String?
+  startTime    DateTime
+  endTime      DateTime
+  role         String?
+  notes        String?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+  deletedAt    DateTime?
+
+  tenant       Tenant    @relation(fields: [tenantId], references: [id])
+  location     Location  @relation(fields: [locationId], references: [id])
+  schedule     Schedule? @relation(fields: [scheduleId], references: [id])
+  user         User?     @relation(fields: [userId], references: [id])
+  breaks       Break[]
+
+  @@index([tenantId])
+  @@index([locationId])
+  @@index([scheduleId])
+  @@index([userId])
+  @@index([startTime, endTime])
+  @@index([deletedAt])
+}
+
+model Break {
+  id         String   @id @default(uuid())
+  shiftId    String
+  startTime  DateTime
+  endTime    DateTime
+  paid       Boolean  @default(false)
+  createdAt  DateTime @default(now())
+
+  shift      Shift    @relation(fields: [shiftId], references: [id])
+
+  @@index([shiftId])
+}
+
+// ─── Platform Configuration (Part I-A) ───
+
+model PlatformConfig {
+  id        String   @id @default(uuid())
+  key       String   @unique
+  value     Json
+  updatedAt DateTime @updatedAt
+  updatedBy String?
+
+  @@index([key])
+}
+
+model TenantSetting {
+  id        String   @id @default(uuid())
+  tenantId  String
+  key       String
+  value     Json
+  updatedAt DateTime @updatedAt
+
+  tenant    Tenant   @relation(fields: [tenantId], references: [id])
+
+  @@unique([tenantId, key])
+  @@index([tenantId])
+}
+
+// ─── Billing (Part XII) ───
+
+model BillingEvent {
+  id               String   @id @default(uuid())
+  tenantId         String
+  type             String   // invoice.paid, subscription.created, etc.
+  stripeEventId    String?  @unique
+  amount           Int?     // cents
+  currency         String?  @default("usd")
+  metadata         Json?
+  createdAt        DateTime @default(now())
+
+  tenant           Tenant   @relation(fields: [tenantId], references: [id])
+
+  @@index([tenantId])
+  @@index([type])
+  @@index([createdAt])
+}
+
+// ─── Audit Log (Append-Only, Part VII) ───
+
+model AuditLog {
+  id         String   @id @default(uuid())
+  tenantId   String
+  userId     String?
+  action     String
+  resource   String
+  resourceId String?
+  oldValue   Json?
+  newValue   Json?
+  ipAddress  String?
+  userAgent  String?
+  createdAt  DateTime @default(now())
+
+  user       User?    @relation(fields: [userId], references: [id])
+
+  // BRIN index for time-series queries on this high-churn table
+  @@index([tenantId])
+  @@index([createdAt])
+  @@index([action])
+  @@index([resource, resourceId])
+}
+
+// ─── Notifications ───
+
+model Notification {
+  id         String           @id @default(uuid())
+  tenantId   String
+  userId     String
+  type       NotificationType
+  title      String
+  body       String
+  readAt     DateTime?
+  createdAt  DateTime         @default(now())
+
+  tenant     Tenant           @relation(fields: [tenantId], references: [id])
+  user       User             @relation(fields: [userId], references: [id])
+
+  @@index([userId, readAt])
+  @@index([tenantId])
+  @@index([createdAt])
+}
+
+enum NotificationType {
+  INFO
+  SUCCESS
+  WARNING
+  ERROR
+  SCHEDULE_PUBLISHED
+  SHIFT_ASSIGNED
+  SHIFT_CHANGED
+}
+
+// ─── Webhooks ───
+
+model WebhookEndpoint {
+  id          String   @id @default(uuid())
+  tenantId    String
+  url         String
+  secret      String   // HMAC signing secret
+  events      String[] // Which event types to deliver
+  active      Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  tenant      Tenant   @relation(fields: [tenantId], references: [id])
+
+  @@index([tenantId])
+  @@index([active])
+}
