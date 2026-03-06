@@ -3,14 +3,15 @@
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { useState } from 'react';
+import { Bell, CalendarDays, LayoutGrid, LogOut, MapPin, Settings, Store, Users, UtensilsCrossed } from 'lucide-react';
 
 const NAV_ITEMS = [
-  { href: '/dashboard', label: 'Overview', icon: '◈', exact: true },
-  { href: '/dashboard/scheduling', label: 'Scheduling', icon: '📅', exact: false },
-  { href: '/dashboard/lunch-breaks', label: 'Lunch/Breaks', icon: '🍱', exact: false },
-  { href: '/dashboard/staff', label: 'Staff', icon: '👥', exact: false },
-  { href: '/dashboard/locations', label: 'Locations', icon: '📍', exact: false },
-  { href: '/dashboard/settings', label: 'Settings', icon: '⚙', exact: false },
+  { href: '/dashboard', label: 'Overview', icon: LayoutGrid, exact: true },
+  { href: '/dashboard/scheduling', label: 'Scheduling', icon: CalendarDays, exact: false },
+  { href: '/dashboard/lunch-breaks', label: 'Lunch/Breaks', icon: UtensilsCrossed, exact: false },
+  { href: '/dashboard/staff', label: 'Staff', icon: Users, exact: false },
+  { href: '/dashboard/locations', label: 'Locations', icon: MapPin, exact: false },
+  { href: '/dashboard/settings', label: 'Settings', icon: Settings, exact: false },
 ];
 
 export default function DashboardLayout({ children }: { children: React.ReactNode }) {
@@ -39,7 +40,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
               background: 'linear-gradient(135deg, #5c7cfa, #748ffc)',
               display: 'flex', alignItems: 'center', justifyContent: 'center',
               fontSize: '0.875rem',
-            }}>🍱</div>
+            }}><UtensilsCrossed size={14} /></div>
             <span style={{ fontWeight: 800, fontSize: '0.9375rem', color: 'var(--text-primary)', letterSpacing: '-0.01em' }}>
               LunchLineup
             </span>
@@ -56,7 +57,8 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
             borderRadius: 8, cursor: 'pointer',
           }}>
             <span style={{ fontSize: '0.6875rem', color: 'var(--brand)', fontWeight: 700, letterSpacing: '0.04em', textTransform: 'uppercase' }}>
-              📍 Downtown Bistro
+              <Store size={12} style={{ display: 'inline-block', verticalAlign: 'middle', marginRight: 4 }} />
+              Downtown Bistro
             </span>
             <span style={{ marginLeft: 'auto', color: 'var(--text-muted)', fontSize: '0.75rem' }}>▾</span>
           </div>
@@ -65,6 +67,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
         {/* Nav */}
         <nav style={{ flex: 1, padding: '0.25rem 0.75rem', display: 'flex', flexDirection: 'column', gap: '2px' }}>
           {NAV_ITEMS.map((item) => {
+            const Icon = item.icon;
             const isActive = item.exact ? pathname === item.href : pathname.startsWith(item.href);
             return (
               <Link
@@ -82,7 +85,9 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
                   transition: 'all 150ms',
                 }}
               >
-                <span style={{ fontSize: '1rem', width: 20, textAlign: 'center' }}>{item.icon}</span>
+                <span style={{ width: 20, textAlign: 'center', display: 'inline-flex', justifyContent: 'center' }}>
+                  <Icon size={16} />
+                </span>
                 {item.label}
                 {isActive && (
                   <span style={{
@@ -108,7 +113,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
             fontSize: '0.875rem', color: 'var(--text-muted)',
             transition: 'all 150ms',
           }}>
-            <span>🚪</span> Sign out
+            <LogOut size={16} /> Sign out
           </Link>
         </div>
       </aside>
@@ -131,7 +136,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
             color: 'var(--text-muted)', fontSize: '1.125rem',
             transition: 'all 150ms',
           }}>
-            🔔
+            <Bell size={18} />
             {notifCount > 0 && (
               <span style={{
                 position: 'absolute', top: 2, right: 2,

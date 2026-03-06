@@ -577,6 +577,16 @@ export default function LunchBreaksPage() {
   }, [selectedDate]);
 
   const dirtyCount = dayRows.filter((row) => row.dirty).length;
+  const hasSharedRows = dayRows.length > 0;
+  const isGeneratingPrimary = hasSharedRows ? isGeneratingDay : isGeneratingManual;
+
+  const runPrimaryGeneration = useCallback(() => {
+    if (hasSharedRows) {
+      void generateForSelectedDay();
+      return;
+    }
+    void generateFromManualShifts();
+  }, [generateForSelectedDay, generateFromManualShifts, hasSharedRows]);
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem', maxWidth: 1600 }}>
@@ -606,27 +616,6 @@ export default function LunchBreaksPage() {
 
       {!isLoading && lunchBreakFeature?.enabled ? (
         <>
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '0.75rem' }}>
-            <div style={{ padding: '0.875rem', border: '1px solid var(--border)', borderRadius: 10, background: 'var(--bg-glass)' }}>
-              <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginBottom: 4 }}>Feature Source</div>
-              <div style={{ fontWeight: 700, color: 'var(--text-primary)', textTransform: 'capitalize' }}>{lunchBreakFeature.source}</div>
-            </div>
-            <div style={{ padding: '0.875rem', border: '1px solid var(--border)', borderRadius: 10, background: 'var(--bg-glass)' }}>
-              <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginBottom: 4 }}>Credit Cost (per run)</div>
-              <div style={{ fontWeight: 700, color: 'var(--text-primary)' }}>{lunchBreakFeature.creditCost ?? 0}</div>
-            </div>
-            <div style={{ padding: '0.875rem', border: '1px solid var(--border)', borderRadius: 10, background: 'var(--bg-glass)' }}>
-              <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginBottom: 4 }}>Usage Credits</div>
-              <div style={{ fontWeight: 700, color: 'var(--text-primary)' }}>{features?.usageCredits ?? 0}</div>
-            </div>
-            <div style={{ padding: '0.875rem', border: '1px solid var(--border)', borderRadius: 10, background: 'var(--bg-glass)' }}>
-              <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginBottom: 4 }}>Shared Scheduling Data</div>
-              <div style={{ fontWeight: 700, color: hasSharedScheduleData ? 'var(--emerald)' : 'var(--text-primary)' }}>
-                {hasSharedScheduleData ? `${dayRows.length} shifts loaded` : 'No shifts for this date'}
-              </div>
-            </div>
-          </div>
-
           <div style={{ border: '1px solid var(--border)', borderRadius: 12, background: 'var(--bg-glass)', padding: '0.9rem' }}>
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '0.75rem', flexWrap: 'wrap' }}>
               <div>
@@ -650,177 +639,130 @@ export default function LunchBreaksPage() {
                 />
                 <Button variant="outline" size="sm" onClick={() => setSelectedDate(toDateInputValue(new Date()))}>Today</Button>
                 <Button variant="outline" size="sm" onClick={() => setSelectedDate(shiftDate(selectedDate, 1))}>Next</Button>
-                <Button size="sm" onClick={generateForSelectedDay} disabled={isGeneratingDay || dayRows.length === 0}>
-                  {isGeneratingDay ? 'Generating...' : 'Generate Day'}
-                </Button>
-                <Button variant="outline" size="sm" onClick={generateFromManualShifts} disabled={isGeneratingManual}>
-                  {isGeneratingManual ? 'Generating...' : 'Generate Manual Day'}
-                </Button>
-                <Button variant="secondary" size="sm" onClick={saveAllDirtyRows} disabled={dirtyCount === 0}>
-                  Save {dirtyCount > 0 ? `${dirtyCount} Edited` : 'All'}
-                </Button>
               </div>
             </div>
           </div>
 
-          <div style={{ border: '1px solid var(--border)', borderRadius: 12, background: 'var(--bg-glass)', padding: '1rem' }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', gap: '0.75rem', alignItems: 'center', flexWrap: 'wrap' }}>
-              <h2 style={{ margin: 0, fontSize: '1rem', color: 'var(--text-primary)' }}>Advanced Policy</h2>
-              <Button variant="outline" size="sm" onClick={() => setShowAdvancedPolicy((prev) => !prev)}>
-                {showAdvancedPolicy ? 'Hide Advanced' : 'Show Advanced'}
-              </Button>
-            </div>
-            {!showAdvancedPolicy ? (
-              <div style={{ marginTop: '0.75rem', fontSize: '0.82rem', color: 'var(--text-muted)' }}>
-                Default policy is active. Open Advanced only if you need to adjust offsets, durations, or conflict step behavior.
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: '1rem' }}>
+            <div style={{ border: '1px solid var(--border)', borderRadius: 12, background: 'var(--bg-glass)', overflow: 'hidden' }}>
+              <div style={{ padding: '0.85rem 1rem', borderBottom: '1px solid var(--border)', display: 'flex', justifyContent: 'space-between', gap: '0.5rem' }}>
+                <div style={{ fontWeight: 700, color: 'var(--text-primary)' }}>Shift Inputs</div>
+                <Button variant="outline" size="sm" onClick={addManualShift}>Add Shift</Button>
               </div>
-            ) : (
-              <>
-                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: '0.75rem', marginTop: '0.85rem' }}>
-                  {policyFields.map((field) => (
-                    <label key={field.key} style={{ display: 'flex', flexDirection: 'column', gap: '0.35rem' }}>
-                      <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>{field.label}</span>
-                      <input
-                        type="number"
-                        value={policy[field.key]}
-                        min={1}
-                        onChange={(event) =>
-                          setPolicy((prev) => ({
-                            ...prev,
-                            [field.key]: Number(event.target.value),
-                          }))
-                        }
-                        style={{
-                          background: 'rgba(255,255,255,0.04)',
-                          border: '1px solid var(--border)',
-                          borderRadius: 8,
-                          color: 'var(--text-primary)',
-                          padding: '0.45rem 0.65rem',
-                        }}
-                      />
-                    </label>
-                  ))}
+              {hasSharedRows ? (
+                <div style={{ padding: '0.75rem 1rem', borderBottom: '1px solid var(--border)', color: 'var(--text-secondary)', fontSize: '0.82rem' }}>
+                  Using {dayRows.length} shifts from Scheduling for {selectedDateLabel}.
                 </div>
+              ) : (
+                <div style={{ padding: '0.75rem 1rem', borderBottom: '1px solid var(--border)', color: 'var(--text-secondary)', fontSize: '0.82rem' }}>
+                  No shared shifts found. Add employee shifts below and generate assignments.
+                </div>
+              )}
+              <div style={{ maxHeight: 520, overflowY: 'auto' }}>
+                <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 320 }}>
+                  <thead>
+                    <tr>
+                      {['Employee', 'Start', 'End', ''].map((label) => (
+                        <th
+                          key={label}
+                          style={{
+                            textAlign: 'left',
+                            fontSize: '0.74rem',
+                            color: 'var(--text-muted)',
+                            padding: '0.65rem',
+                            borderBottom: '1px solid var(--border)',
+                            fontWeight: 700,
+                            letterSpacing: '0.03em',
+                          }}
+                        >
+                          {label}
+                        </th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {manualShifts.map((row, idx) => (
+                      <tr key={row.id} style={{ background: idx % 2 === 0 ? 'rgba(255,255,255,0.01)' : 'transparent' }}>
+                        <td style={{ padding: '0.6rem', borderBottom: '1px solid var(--border)' }}>
+                          <input
+                            type="text"
+                            value={row.employeeName}
+                            onChange={(event) => updateManualShift(row.id, { employeeName: event.target.value })}
+                            style={{
+                              width: '100%',
+                              border: '1px solid var(--border)',
+                              borderRadius: 8,
+                              background: 'rgba(255,255,255,0.04)',
+                              color: 'var(--text-primary)',
+                              padding: '0.36rem 0.45rem',
+                              fontSize: '0.8rem',
+                            }}
+                          />
+                        </td>
+                        <td style={{ padding: '0.6rem', borderBottom: '1px solid var(--border)' }}>
+                          <input
+                            type="time"
+                            value={row.startTime}
+                            onChange={(event) => updateManualShift(row.id, { startTime: event.target.value })}
+                            style={{
+                              border: '1px solid var(--border)',
+                              borderRadius: 8,
+                              background: 'rgba(255,255,255,0.04)',
+                              color: 'var(--text-primary)',
+                              padding: '0.35rem 0.4rem',
+                              fontSize: '0.78rem',
+                            }}
+                          />
+                        </td>
+                        <td style={{ padding: '0.6rem', borderBottom: '1px solid var(--border)' }}>
+                          <input
+                            type="time"
+                            value={row.endTime}
+                            onChange={(event) => updateManualShift(row.id, { endTime: event.target.value })}
+                            style={{
+                              border: '1px solid var(--border)',
+                              borderRadius: 8,
+                              background: 'rgba(255,255,255,0.04)',
+                              color: 'var(--text-primary)',
+                              padding: '0.35rem 0.4rem',
+                              fontSize: '0.78rem',
+                            }}
+                          />
+                        </td>
+                        <td style={{ padding: '0.6rem', borderBottom: '1px solid var(--border)' }}>
+                          <Button variant="outline" size="sm" onClick={() => removeManualShift(row.id)} disabled={manualShifts.length <= 1}>
+                            Remove
+                          </Button>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
 
-                <div style={{ display: 'flex', gap: '0.65rem', marginTop: '1rem', flexWrap: 'wrap' }}>
-                  <Button variant="secondary" size="sm" onClick={handleSavePolicy} disabled={isSavingPolicy}>
-                    {isSavingPolicy ? 'Saving...' : 'Save Policy'}
-                  </Button>
-                  <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)', alignSelf: 'center' }}>
-                    Policy updates affect new generations and default durations for empty rows.
+            <div style={{ border: '1px solid var(--border)', borderRadius: 12, background: 'var(--bg-glass)', overflow: 'hidden' }}>
+              <div style={{ padding: '0.85rem 1rem', borderBottom: '1px solid var(--border)', display: 'flex', justifyContent: 'space-between', gap: '0.5rem', flexWrap: 'wrap' }}>
+                <div>
+                  <div style={{ fontWeight: 700, color: 'var(--text-primary)' }}>Break Assignments</div>
+                  <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>
+                    {isDayLoading ? 'Refreshing...' : `${dayRows.length} shift rows loaded`}
                   </div>
                 </div>
-              </>
-            )}
-          </div>
-
-          <div style={{ border: '1px solid var(--border)', borderRadius: 12, background: 'var(--bg-glass)', overflow: 'hidden' }}>
-            <div style={{ padding: '0.85rem 1rem', borderBottom: '1px solid var(--border)', display: 'flex', justifyContent: 'space-between', gap: '0.5rem', flexWrap: 'wrap' }}>
-              <div style={{ fontWeight: 700, color: 'var(--text-primary)' }}>Standalone Manual Shifts</div>
-              <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
-                <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>{manualShifts.length} rows</div>
-                <Button variant="outline" size="sm" onClick={addManualShift}>Add Employee</Button>
+                <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
+                  <Button size="sm" onClick={runPrimaryGeneration} disabled={isGeneratingPrimary}>
+                    {isGeneratingPrimary ? 'Generating...' : 'Generate Assignments'}
+                  </Button>
+                  <Button variant="secondary" size="sm" onClick={saveAllDirtyRows} disabled={dirtyCount === 0}>
+                    {dirtyCount > 0 ? `Save ${dirtyCount} Changes` : 'Save Changes'}
+                  </Button>
+                </div>
               </div>
-            </div>
-            <div style={{ overflowX: 'auto' }}>
-              <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 760 }}>
-                <thead>
-                  <tr>
-                    {['Employee', 'Shift Start', 'Shift End', 'Actions'].map((label) => (
-                      <th
-                        key={label}
-                        style={{
-                          textAlign: 'left',
-                          fontSize: '0.76rem',
-                          color: 'var(--text-muted)',
-                          padding: '0.7rem',
-                          borderBottom: '1px solid var(--border)',
-                          fontWeight: 700,
-                          letterSpacing: '0.03em',
-                        }}
-                      >
-                        {label}
-                      </th>
-                    ))}
-                  </tr>
-                </thead>
-                <tbody>
-                  {manualShifts.map((row, idx) => (
-                    <tr key={row.id} style={{ background: idx % 2 === 0 ? 'rgba(255,255,255,0.01)' : 'transparent' }}>
-                      <td style={{ padding: '0.7rem', borderBottom: '1px solid var(--border)' }}>
-                        <input
-                          type="text"
-                          value={row.employeeName}
-                          onChange={(event) => updateManualShift(row.id, { employeeName: event.target.value })}
-                          style={{
-                            width: '100%',
-                            border: '1px solid var(--border)',
-                            borderRadius: 8,
-                            background: 'rgba(255,255,255,0.04)',
-                            color: 'var(--text-primary)',
-                            padding: '0.42rem 0.5rem',
-                            fontSize: '0.82rem',
-                          }}
-                        />
-                      </td>
-                      <td style={{ padding: '0.7rem', borderBottom: '1px solid var(--border)' }}>
-                        <input
-                          type="time"
-                          value={row.startTime}
-                          onChange={(event) => updateManualShift(row.id, { startTime: event.target.value })}
-                          style={{
-                            border: '1px solid var(--border)',
-                            borderRadius: 8,
-                            background: 'rgba(255,255,255,0.04)',
-                            color: 'var(--text-primary)',
-                            padding: '0.35rem 0.45rem',
-                            fontSize: '0.8rem',
-                          }}
-                        />
-                      </td>
-                      <td style={{ padding: '0.7rem', borderBottom: '1px solid var(--border)' }}>
-                        <input
-                          type="time"
-                          value={row.endTime}
-                          onChange={(event) => updateManualShift(row.id, { endTime: event.target.value })}
-                          style={{
-                            border: '1px solid var(--border)',
-                            borderRadius: 8,
-                            background: 'rgba(255,255,255,0.04)',
-                            color: 'var(--text-primary)',
-                            padding: '0.35rem 0.45rem',
-                            fontSize: '0.8rem',
-                          }}
-                        />
-                      </td>
-                      <td style={{ padding: '0.7rem', borderBottom: '1px solid var(--border)' }}>
-                        <Button variant="outline" size="sm" onClick={() => removeManualShift(row.id)} disabled={manualShifts.length <= 1}>
-                          Remove
-                        </Button>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-            <div style={{ padding: '0.75rem 1rem', borderTop: '1px solid var(--border)', color: 'var(--text-muted)', fontSize: '0.8rem' }}>
-              Use this when Scheduling shifts are not set up yet. Click <strong>Generate Manual Day</strong> to produce lunch/break assignments instantly.
-            </div>
-          </div>
-
-          <div style={{ border: '1px solid var(--border)', borderRadius: 12, background: 'var(--bg-glass)', overflow: 'hidden' }}>
-            <div style={{ padding: '0.85rem 1rem', borderBottom: '1px solid var(--border)', display: 'flex', justifyContent: 'space-between', gap: '0.5rem', flexWrap: 'wrap' }}>
-              <div style={{ fontWeight: 700, color: 'var(--text-primary)' }}>Day Grid</div>
-              <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>
-                {isDayLoading ? 'Refreshing...' : `${dayRows.length} shifts`}
-              </div>
-            </div>
-
-            {dayRows.length === 0 ? (
-              <div style={{ padding: '1rem', color: 'var(--text-muted)', fontSize: '0.9rem' }}>
-                No shared shifts found for this date. You can still run standalone generation above.
-              </div>
-            ) : (
+              {dayRows.length === 0 ? (
+                <div style={{ padding: '1rem', color: 'var(--text-secondary)', fontSize: '0.88rem' }}>
+                  Generate assignments to populate the workspace.
+                </div>
+              ) : (
               <div style={{ overflowX: 'auto' }}>
                 <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 980 }}>
                   <thead>
@@ -929,8 +871,80 @@ export default function LunchBreaksPage() {
                   </tbody>
                 </table>
               </div>
-            )}
+              )}
+            </div>
           </div>
+
+          <details style={{ border: '1px solid var(--border)', borderRadius: 12, background: 'var(--bg-glass)', padding: '0.8rem 0.9rem' }}>
+            <summary style={{ cursor: 'pointer', color: 'var(--text-primary)', fontWeight: 700 }}>
+              System & Advanced Settings
+            </summary>
+            <div style={{ marginTop: '0.75rem', display: 'grid', gap: '0.9rem' }}>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: '0.75rem' }}>
+                <div style={{ padding: '0.75rem', border: '1px solid var(--border)', borderRadius: 10, background: 'rgba(255,255,255,0.02)' }}>
+                  <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>Access Source</div>
+                  <div style={{ fontWeight: 700, color: 'var(--text-primary)', textTransform: 'capitalize' }}>{lunchBreakFeature.source}</div>
+                </div>
+                <div style={{ padding: '0.75rem', border: '1px solid var(--border)', borderRadius: 10, background: 'rgba(255,255,255,0.02)' }}>
+                  <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>Usage Credits</div>
+                  <div style={{ fontWeight: 700, color: 'var(--text-primary)' }}>{features?.usageCredits ?? 0}</div>
+                </div>
+                <div style={{ padding: '0.75rem', border: '1px solid var(--border)', borderRadius: 10, background: 'rgba(255,255,255,0.02)' }}>
+                  <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>Credit Cost / Run</div>
+                  <div style={{ fontWeight: 700, color: 'var(--text-primary)' }}>{lunchBreakFeature.creditCost ?? 0}</div>
+                </div>
+                <div style={{ padding: '0.75rem', border: '1px solid var(--border)', borderRadius: 10, background: 'rgba(255,255,255,0.02)' }}>
+                  <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>Scheduling Link</div>
+                  <div style={{ fontWeight: 700, color: hasSharedScheduleData ? 'var(--emerald)' : 'var(--text-primary)' }}>
+                    {hasSharedScheduleData ? `${dayRows.length} shifts linked` : 'No linked shifts'}
+                  </div>
+                </div>
+              </div>
+
+              <div style={{ borderTop: '1px solid var(--border)', paddingTop: '0.75rem' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', gap: '0.75rem', alignItems: 'center', flexWrap: 'wrap' }}>
+                  <div style={{ fontSize: '0.85rem', fontWeight: 700, color: 'var(--text-primary)' }}>Policy</div>
+                  <Button variant="outline" size="sm" onClick={() => setShowAdvancedPolicy((prev) => !prev)}>
+                    {showAdvancedPolicy ? 'Hide Policy Fields' : 'Edit Policy'}
+                  </Button>
+                </div>
+                {showAdvancedPolicy ? (
+                  <>
+                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: '0.75rem', marginTop: '0.75rem' }}>
+                      {policyFields.map((field) => (
+                        <label key={field.key} style={{ display: 'flex', flexDirection: 'column', gap: '0.35rem' }}>
+                          <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>{field.label}</span>
+                          <input
+                            type="number"
+                            value={policy[field.key]}
+                            min={1}
+                            onChange={(event) =>
+                              setPolicy((prev) => ({
+                                ...prev,
+                                [field.key]: Number(event.target.value),
+                              }))
+                            }
+                            style={{
+                              background: 'rgba(255,255,255,0.04)',
+                              border: '1px solid var(--border)',
+                              borderRadius: 8,
+                              color: 'var(--text-primary)',
+                              padding: '0.45rem 0.65rem',
+                            }}
+                          />
+                        </label>
+                      ))}
+                    </div>
+                    <div style={{ marginTop: '0.75rem' }}>
+                      <Button variant="secondary" size="sm" onClick={handleSavePolicy} disabled={isSavingPolicy}>
+                        {isSavingPolicy ? 'Saving...' : 'Save Policy'}
+                      </Button>
+                    </div>
+                  </>
+                ) : null}
+              </div>
+            </div>
+          </details>
 
           {lastRun ? (
             <div style={{ border: '1px solid var(--border)', borderRadius: 10, padding: '0.75rem 0.9rem', color: 'var(--text-secondary)', fontSize: '0.82rem' }}>
@@ -952,4 +966,3 @@ export default function LunchBreaksPage() {
     </div>
   );
 }
-
