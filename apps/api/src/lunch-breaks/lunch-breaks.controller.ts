@@ -1,12 +1,9 @@
-import { Body, Controller, Get, Param, Post, Put, Query, Req, SetMetadata, UseGuards } from '@nestjs/common';
-import { JwtAuthGuard } from '../auth/jwt-auth.guard';
-import { RbacGuard } from '../auth/rbac.guard';
+import { Body, Controller, Get, Param, Post, Put, Query, Req, SetMetadata } from '@nestjs/common';
 import { GenerateLunchBreaksRequest, LunchBreakPolicy, LunchBreaksService, UpdateShiftLunchBreaksRequest } from './lunch-breaks.service';
 
 const Permission = (perm: string) => SetMetadata('permission', perm);
 
 @Controller({ path: 'lunch-breaks', version: '1' })
-@UseGuards(JwtAuthGuard, RbacGuard)
 export class LunchBreaksController {
     constructor(private readonly lunchBreaksService: LunchBreaksService) { }
 
@@ -61,4 +58,3 @@ export class LunchBreaksController {
         return this.lunchBreaksService.updateShiftBreaks(req.user.tenantId, shiftId, body ?? {});
     }
 }
-
