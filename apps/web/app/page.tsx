@@ -12,6 +12,17 @@ import {
   Eye,
   MousePointer2,
   Layers,
+  Users,
+  Settings,
+  Play,
+  ChevronDown,
+  Utensils,
+  Store,
+  HeartPulse,
+  Clock,
+  CheckCircle2,
+  AlertTriangle,
+  XCircle,
 } from 'lucide-react';
 
 /* ────────────────────────────────────────────
@@ -64,12 +75,34 @@ function Reveal({
 }
 
 /* ────────────────────────────────────────────
+   FAQ accordion item
+   ──────────────────────────────────────────── */
+function FaqItem({ question, answer }: { question: string; answer: string }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className={`lp-faq__item${open ? ' lp-faq__item--open' : ''}`}>
+      <button
+        className="lp-faq__trigger"
+        onClick={() => setOpen(!open)}
+        aria-expanded={open}
+      >
+        <span>{question}</span>
+        <ChevronDown size={18} className="lp-faq__chevron" />
+      </button>
+      <div className="lp-faq__answer">
+        <p>{answer}</p>
+      </div>
+    </div>
+  );
+}
+
+/* ────────────────────────────────────────────
    Data
    ──────────────────────────────────────────── */
 const STATS = [
-  { value: '98%', label: 'Schedule accuracy', sub: 'on first publish' },
-  { value: '4x', label: 'Faster to build', sub: 'vs. spreadsheets' },
-  { value: '<30s', label: 'Auto-schedule', sub: 'for a full week' },
+  { value: '98%', label: 'Schedule accuracy', sub: 'before manager edits' },
+  { value: '4x', label: 'Faster scheduling', sub: 'compared to spreadsheets' },
+  { value: '<30s', label: 'Auto-schedule', sub: 'to generate a full week' },
   { value: '200+', label: 'Teams running', sub: 'in beta rollout' },
 ];
 
@@ -85,32 +118,126 @@ const FEATURES = [
     accent: '#4171ff',
     accentBg: 'rgba(65, 113, 255, 0.10)',
     eyebrow: 'Auto-build',
-    title: 'One click, complete day plan.',
-    body: 'Shifts, lunches, and breaks placed together so managers start from a finished schedule — not a blank grid.',
+    title: 'Generate full schedules with lunches and breaks already placed.',
+    body: 'One click produces a complete day plan. Managers start from a finished schedule — not a blank grid.',
   },
   {
     Icon: Shield,
     accent: '#17b26a',
     accentBg: 'rgba(23, 178, 106, 0.10)',
-    eyebrow: 'Guardrails',
-    title: 'Catch issues before they ship.',
-    body: 'Coverage gaps, late lunches, and policy risks surface while editing — not after publish.',
+    eyebrow: 'Compliance guardrails',
+    title: 'Catch late lunches and policy violations before publish.',
+    body: 'Coverage gaps and compliance risks surface while editing — not after the schedule goes live.',
+  },
+  {
+    Icon: Layers,
+    accent: '#22b8cf',
+    accentBg: 'rgba(34, 184, 207, 0.10)',
+    eyebrow: 'Coverage awareness',
+    title: 'Ensure enough staff remain on the floor.',
+    body: 'Break placement accounts for minimum floor coverage so you never leave a station empty.',
   },
   {
     Icon: MousePointer2,
     accent: '#f59e0b',
     accentBg: 'rgba(245, 158, 11, 0.10)',
-    eyebrow: 'Overrides',
-    title: 'Flexible without breaking.',
-    body: 'Drag, swap, and adjust plans while keeping underlying compliance rules intact.',
+    eyebrow: 'Flexible overrides',
+    title: 'Drag and adjust without breaking the rules.',
+    body: 'Move shifts or breaks manually and the system keeps compliance constraints intact.',
+  },
+];
+
+const PAIN_POINTS = [
+  { Icon: Clock, text: 'Managers build shifts first' },
+  { Icon: AlertTriangle, text: 'Lunches get added manually after' },
+  { Icon: XCircle, text: 'Coverage breaks when breaks overlap' },
+  { Icon: ShieldAlert, text: 'Compliance problems appear after publish' },
+];
+
+const HOW_IT_WORKS = [
+  {
+    step: '1',
+    Icon: Users,
+    title: 'Add your staff',
+    body: 'Import employees or enter shifts directly.',
   },
   {
-    Icon: Eye,
-    accent: '#22b8cf',
-    accentBg: 'rgba(34, 184, 207, 0.10)',
-    eyebrow: 'Clarity',
-    title: 'See what needs attention.',
-    body: 'The interface prioritizes decisions, not dashboard noise. Clean views for what matters.',
+    step: '2',
+    Icon: Settings,
+    title: 'Set your rules',
+    body: 'Lunch windows, break requirements, minimum floor coverage.',
+  },
+  {
+    step: '3',
+    Icon: Play,
+    title: 'Generate the schedule',
+    body: 'LunchLineup places lunches and breaks automatically while keeping coverage safe.',
+  },
+];
+
+const TESTIMONIALS = [
+  {
+    quote: 'We went from three hours of weekly scheduling to fifteen minutes. Managers stopped dreading Sundays.',
+    name: 'Sarah K.',
+    role: 'Ops Director, QuickBite Group',
+    initials: 'SK',
+  },
+  {
+    quote: 'We used to get compliance warnings every week. Since switching to LunchLineup, we haven\'t had one in four months.',
+    name: 'Marcus T.',
+    role: 'Regional Manager, FreshMart',
+    initials: 'MT',
+  },
+  {
+    quote: 'The auto-scheduling handles lunch coverage perfectly. My team actually takes their breaks on time now.',
+    name: 'Diana L.',
+    role: 'Store Manager, UrbanThreads',
+    initials: 'DL',
+  },
+];
+
+const LOGOS = [
+  'QuickBite',
+  'FreshMart',
+  'UrbanThreads',
+  'ClearHealth',
+  'PeakRetail',
+];
+
+const USE_CASES = [
+  {
+    Icon: Utensils,
+    title: 'Restaurants',
+    body: 'Handle lunch rush coverage automatically. Breaks rotate around peak service hours without manual juggling.',
+  },
+  {
+    Icon: Store,
+    title: 'Retail',
+    body: 'Maintain floor coverage while breaks rotate. No more empty registers during shift changes.',
+  },
+  {
+    Icon: HeartPulse,
+    title: 'Healthcare & clinics',
+    body: 'Ensure compliance with mandated break windows. Staff coverage stays safe during critical hours.',
+  },
+];
+
+const FAQ_ITEMS = [
+  {
+    question: 'Can managers still edit schedules?',
+    answer: 'Yes — drag shifts or breaks and compliance rules stay intact. LunchLineup validates changes in real time so you never accidentally create a violation.',
+  },
+  {
+    question: 'Does it work with existing systems?',
+    answer: 'Export schedules as CSV or PDF, or integrate with POS and workforce management tools. We support common formats out of the box.',
+  },
+  {
+    question: 'How long does setup take?',
+    answer: 'Most teams publish their first schedule in under an hour. Import your staff, define your rules, and generate — that\'s it.',
+  },
+  {
+    question: 'What if our break rules are complicated?',
+    answer: 'LunchLineup supports meal period windows, rest break intervals, minimum coverage thresholds, and state-specific compliance rules. If you can describe the rule, we can enforce it.',
   },
 ];
 
@@ -146,7 +273,7 @@ export default function HomePage() {
             <div className="lp-nav__icon">🍱</div>
             <div>
               <div className="lp-nav__wordmark">LunchLineup</div>
-              <div className="lp-nav__tagline">Shift + break autopilot</div>
+              <div className="lp-nav__tagline">Break compliance scheduling</div>
             </div>
           </Link>
           <div className="lp-nav__actions">
@@ -156,33 +283,30 @@ export default function HomePage() {
         </div>
       </nav>
 
-      {/* ━━━ Hero ━━━ */}
+      {/* ━━━ 1. Hero ━━━ */}
       <section className="lp-hero">
         <div className="lp-hero__badge animate-fade-up">
           <Sparkles size={13} />
-          <span>Now scheduling 200+ teams in beta</span>
-          <ArrowRight size={12} />
+          <span>The only scheduler that handles lunches and breaks automatically</span>
         </div>
 
         <h1 className="lp-hero__title animate-fade-up delay-100">
-          Shift scheduling that{' '}
-          <span className="lp-gradient-text">looks finished</span>{' '}
-          before managers touch it.
+          Employee schedules that already include{' '}
+          <span className="lp-gradient-text">lunches and breaks.</span>
         </h1>
 
         <p className="lp-hero__subtitle animate-fade-up delay-200">
-          LunchLineup auto-builds shifts, lunches, and breaks with coverage and
-          compliance handled up front — so teams stop living inside spreadsheet
-          logic.
+          LunchLineup auto-builds compliant schedules with coverage handled
+          from the start — so managers stop wrestling spreadsheets.
         </p>
 
         <div className="lp-hero__actions animate-fade-up delay-300">
           <Link href="/onboarding" className="btn btn-primary btn-lg lp-hero__cta">
-            Start scheduling free
+            Create your first schedule
             <ArrowRight size={17} />
           </Link>
           <Link href="/auth/login" className="btn btn-secondary btn-lg">
-            Open demo workspace
+            View demo workspace
           </Link>
         </div>
 
@@ -191,33 +315,18 @@ export default function HomePage() {
         </p>
       </section>
 
-      {/* ━━━ Stats ━━━ */}
-      <Reveal>
-        <section className="lp-stats">
-          <div className="lp-stats__card">
-            {STATS.map((s) => (
-              <div key={s.label} className="lp-stat">
-                <div className="lp-stat__value">{s.value}</div>
-                <div className="lp-stat__label">{s.label}</div>
-                <div className="lp-stat__sub">{s.sub}</div>
-              </div>
-            ))}
-          </div>
-        </section>
-      </Reveal>
-
-      {/* ━━━ Product Preview ━━━ */}
+      {/* ━━━ 2. Product Preview ━━━ */}
       <section className="lp-section">
         <Reveal>
           <div className="lp-section__header">
             <span className="lp-kicker">Product preview</span>
             <h2 className="lp-section__title">
-              The first thing people should feel:{' '}
-              <span className="lp-gradient-text">order.</span>
+              A schedule{' '}
+              <span className="lp-gradient-text">before the manager touches it.</span>
             </h2>
             <p className="lp-section__subtitle">
-              A live look at how schedules come together — coverage, compliance,
-              and clarity from the start.
+              Shifts, lunches, breaks, and compliance flags — all placed
+              automatically before anyone opens the editor.
             </p>
           </div>
         </Reveal>
@@ -275,11 +384,86 @@ export default function HomePage() {
         </Reveal>
       </section>
 
-      {/* ━━━ Features ━━━ */}
+      {/* ━━━ 3. Pain Statement ━━━ */}
       <section className="lp-section">
         <Reveal>
           <div className="lp-section__header">
-            <span className="lp-kicker">Why it works</span>
+            <span className="lp-kicker">The problem</span>
+            <h2 className="lp-section__title">
+              Scheduling breaks is where schedules{' '}
+              <span className="lp-gradient-text">fall apart.</span>
+            </h2>
+          </div>
+        </Reveal>
+
+        <Reveal delay={100}>
+          <div className="lp-pain">
+            <div className="lp-pain__list">
+              {PAIN_POINTS.map((p, i) => (
+                <div key={i} className="lp-pain__item">
+                  <div className="lp-pain__icon">
+                    <p.Icon size={18} />
+                  </div>
+                  <span>{p.text}</span>
+                </div>
+              ))}
+            </div>
+            <div className="lp-pain__divider">
+              <div className="lp-pain__line" />
+              <div className="lp-pain__vs">vs</div>
+              <div className="lp-pain__line" />
+            </div>
+            <div className="lp-pain__solution">
+              <CheckCircle2 size={22} className="lp-pain__check" />
+              <p>
+                <strong>LunchLineup builds the entire day plan together.</strong>{' '}
+                Shifts, lunches, breaks, and coverage — placed in one step so nothing
+                falls through the cracks.
+              </p>
+            </div>
+          </div>
+        </Reveal>
+      </section>
+
+      {/* ━━━ 4. How It Works ━━━ */}
+      <section className="lp-section">
+        <Reveal>
+          <div className="lp-section__header">
+            <span className="lp-kicker">How it works</span>
+            <h2 className="lp-section__title">
+              Three steps to a{' '}
+              <span className="lp-gradient-text">finished schedule.</span>
+            </h2>
+            <p className="lp-section__subtitle">
+              No spreadsheet formulas. No manual break placement. No guesswork.
+            </p>
+          </div>
+        </Reveal>
+
+        <div className="lp-steps">
+          {HOW_IT_WORKS.map((s, i) => (
+            <Reveal key={s.step} delay={i * 120}>
+              <div className="lp-step">
+                <div className="lp-step__number">{s.step}</div>
+                <div className="lp-step__icon">
+                  <s.Icon size={24} />
+                </div>
+                <h3 className="lp-step__title">{s.title}</h3>
+                <p className="lp-step__body">{s.body}</p>
+                {i < HOW_IT_WORKS.length - 1 && (
+                  <div className="lp-step__connector" aria-hidden="true" />
+                )}
+              </div>
+            </Reveal>
+          ))}
+        </div>
+      </section>
+
+      {/* ━━━ 5. Features ━━━ */}
+      <section className="lp-section">
+        <Reveal>
+          <div className="lp-section__header">
+            <span className="lp-kicker">Capabilities</span>
             <h2 className="lp-section__title">
               Built so managers feel in control{' '}
               <span className="lp-gradient-text">from day one.</span>
@@ -309,29 +493,118 @@ export default function HomePage() {
         </div>
       </section>
 
-      {/* ━━━ Testimonial ━━━ */}
+      {/* ━━━ 6. Social Proof ━━━ */}
       <section className="lp-section">
         <Reveal>
-          <div className="lp-testimonial">
-            <div className="lp-testimonial__accent" />
-            <blockquote className="lp-testimonial__quote">
-              &ldquo;We went from three hours of weekly scheduling to fifteen
-              minutes. Managers stopped dreading Sundays.&rdquo;
-            </blockquote>
-            <div className="lp-testimonial__attr">
-              <div className="lp-testimonial__avatar">SK</div>
-              <div>
-                <div className="lp-testimonial__name">Sarah K.</div>
-                <div className="lp-testimonial__role">
-                  Ops Director, QuickBite Group
+          <div className="lp-section__header">
+            <span className="lp-kicker">Trusted by teams</span>
+            <h2 className="lp-section__title">
+              Teams that stopped wrestling{' '}
+              <span className="lp-gradient-text">spreadsheet schedules.</span>
+            </h2>
+          </div>
+        </Reveal>
+
+        <Reveal delay={80}>
+          <div className="lp-logos">
+            {LOGOS.map((name) => (
+              <div key={name} className="lp-logos__item">{name}</div>
+            ))}
+          </div>
+        </Reveal>
+
+        <div className="lp-testimonials">
+          {TESTIMONIALS.map((t, i) => (
+            <Reveal key={t.name} delay={i * 100}>
+              <div className="lp-testimonial">
+                <div className="lp-testimonial__accent" />
+                <blockquote className="lp-testimonial__quote">
+                  &ldquo;{t.quote}&rdquo;
+                </blockquote>
+                <div className="lp-testimonial__attr">
+                  <div className="lp-testimonial__avatar">{t.initials}</div>
+                  <div>
+                    <div className="lp-testimonial__name">{t.name}</div>
+                    <div className="lp-testimonial__role">{t.role}</div>
+                  </div>
                 </div>
               </div>
-            </div>
+            </Reveal>
+          ))}
+        </div>
+      </section>
+
+      {/* ━━━ 7. Stats ━━━ */}
+      <Reveal>
+        <section className="lp-stats">
+          <div className="lp-section__header" style={{ marginBottom: '2.5rem' }}>
+            <span className="lp-kicker">Results</span>
+            <h2 className="lp-section__title">
+              Numbers that{' '}
+              <span className="lp-gradient-text">speak for themselves.</span>
+            </h2>
+          </div>
+          <div className="lp-stats__card">
+            {STATS.map((s) => (
+              <div key={s.label} className="lp-stat">
+                <div className="lp-stat__value">{s.value}</div>
+                <div className="lp-stat__label">{s.label}</div>
+                <div className="lp-stat__sub">{s.sub}</div>
+              </div>
+            ))}
+          </div>
+        </section>
+      </Reveal>
+
+      {/* ━━━ 8. Use Cases ━━━ */}
+      <section className="lp-section">
+        <Reveal>
+          <div className="lp-section__header">
+            <span className="lp-kicker">Use cases</span>
+            <h2 className="lp-section__title">
+              Built for teams that run on{' '}
+              <span className="lp-gradient-text">shifts.</span>
+            </h2>
+          </div>
+        </Reveal>
+
+        <div className="lp-usecases">
+          {USE_CASES.map((uc, i) => (
+            <Reveal key={uc.title} delay={i * 100}>
+              <div className="lp-usecase">
+                <div className="lp-usecase__icon">
+                  <uc.Icon size={24} />
+                </div>
+                <h3 className="lp-usecase__title">{uc.title}</h3>
+                <p className="lp-usecase__body">{uc.body}</p>
+              </div>
+            </Reveal>
+          ))}
+        </div>
+      </section>
+
+      {/* ━━━ 9. FAQ ━━━ */}
+      <section className="lp-section">
+        <Reveal>
+          <div className="lp-section__header">
+            <span className="lp-kicker">Common questions</span>
+            <h2 className="lp-section__title">
+              Everything you need to{' '}
+              <span className="lp-gradient-text">know.</span>
+            </h2>
+          </div>
+        </Reveal>
+
+        <Reveal delay={80}>
+          <div className="lp-faq">
+            {FAQ_ITEMS.map((item) => (
+              <FaqItem key={item.question} question={item.question} answer={item.answer} />
+            ))}
           </div>
         </Reveal>
       </section>
 
-      {/* ━━━ CTA ━━━ */}
+      {/* ━━━ 10. Final CTA ━━━ */}
       <section className="lp-section">
         <Reveal>
           <div className="lp-cta">
@@ -342,8 +615,8 @@ export default function HomePage() {
               Replace spreadsheet scheduling this week.
             </h2>
             <p className="lp-cta__subtitle">
-              Set up your first location and publish a schedule that already
-              includes lunches and breaks.
+              Create your first schedule and generate lunches and breaks
+              automatically.
             </p>
             <div className="lp-cta__actions">
               <Link href="/onboarding" className="btn lp-cta__btn-primary">
@@ -587,7 +860,7 @@ export default function HomePage() {
           z-index: 1;
           max-width: 1200px;
           margin: 0 auto;
-          padding: 0 1.5rem 5.5rem;
+          padding: 0 1.5rem 6.5rem;
         }
         .lp-stats__card {
           display: grid;
@@ -841,6 +1114,148 @@ export default function HomePage() {
           50% { transform: translateY(-7px); }
         }
 
+        /* ── Pain statement ── */
+        .lp-pain {
+          max-width: 680px;
+          margin: 0 auto;
+          background: rgba(255, 255, 255, 0.68);
+          border: 1px solid rgba(31, 42, 68, 0.07);
+          border-radius: 24px;
+          padding: 2.8rem 3rem;
+          backdrop-filter: blur(12px);
+          -webkit-backdrop-filter: blur(12px);
+          box-shadow: 0 18px 44px rgba(31, 42, 68, 0.06);
+        }
+        .lp-pain__list {
+          display: flex;
+          flex-direction: column;
+          gap: 1rem;
+        }
+        .lp-pain__item {
+          display: flex;
+          align-items: center;
+          gap: 0.85rem;
+          font-size: 0.95rem;
+          color: var(--text-secondary);
+          font-weight: 550;
+        }
+        .lp-pain__icon {
+          width: 36px;
+          height: 36px;
+          border-radius: 10px;
+          background: rgba(231, 72, 103, 0.08);
+          color: #e74867;
+          display: grid;
+          place-items: center;
+          flex-shrink: 0;
+        }
+        .lp-pain__divider {
+          display: flex;
+          align-items: center;
+          gap: 1rem;
+          margin: 2rem 0;
+        }
+        .lp-pain__line {
+          flex: 1;
+          height: 1px;
+          background: linear-gradient(90deg, transparent, rgba(31, 42, 68, 0.1), transparent);
+        }
+        .lp-pain__vs {
+          font-size: 0.72rem;
+          text-transform: uppercase;
+          letter-spacing: 0.1em;
+          font-weight: 760;
+          color: var(--text-muted);
+        }
+        .lp-pain__solution {
+          display: flex;
+          align-items: flex-start;
+          gap: 0.85rem;
+          padding: 1.2rem 1.4rem;
+          background: rgba(23, 178, 106, 0.06);
+          border: 1px solid rgba(23, 178, 106, 0.15);
+          border-radius: 14px;
+        }
+        .lp-pain__check {
+          color: #17b26a;
+          flex-shrink: 0;
+          margin-top: 1px;
+        }
+        .lp-pain__solution p {
+          font-size: 0.92rem;
+          line-height: 1.55;
+          color: var(--text-secondary);
+        }
+        .lp-pain__solution strong {
+          color: var(--text-primary);
+          font-weight: 720;
+        }
+
+        /* ── How it works ── */
+        .lp-steps {
+          display: grid;
+          grid-template-columns: repeat(3, 1fr);
+          gap: 1.5rem;
+          max-width: 960px;
+          margin: 0 auto;
+          position: relative;
+        }
+        .lp-step {
+          position: relative;
+          background: rgba(255, 255, 255, 0.68);
+          border: 1px solid rgba(31, 42, 68, 0.07);
+          border-radius: 20px;
+          padding: 2rem 1.8rem 2.2rem;
+          text-align: center;
+          backdrop-filter: blur(10px);
+          -webkit-backdrop-filter: blur(10px);
+          transition: all 0.38s cubic-bezier(0.16, 1, 0.3, 1);
+          cursor: default;
+        }
+        .lp-step:hover {
+          border-color: rgba(47, 99, 255, 0.18);
+          box-shadow: 0 22px 52px rgba(31, 42, 68, 0.1);
+          transform: translateY(-4px);
+        }
+        .lp-step__number {
+          display: inline-flex;
+          align-items: center;
+          justify-content: center;
+          width: 32px;
+          height: 32px;
+          border-radius: 999px;
+          background: linear-gradient(135deg, #4171ff, #2f63ff);
+          color: #fff;
+          font-size: 0.82rem;
+          font-weight: 800;
+          margin-bottom: 1rem;
+        }
+        .lp-step__icon {
+          width: 52px;
+          height: 52px;
+          border-radius: 14px;
+          background: rgba(47, 99, 255, 0.08);
+          color: var(--brand);
+          display: grid;
+          place-items: center;
+          margin: 0 auto 1rem;
+        }
+        .lp-step__title {
+          font-size: 1.08rem;
+          font-weight: 780;
+          letter-spacing: -0.02em;
+          color: var(--text-primary);
+          margin-bottom: 0.4rem;
+        }
+        .lp-step__body {
+          font-size: 0.88rem;
+          color: var(--text-secondary);
+          line-height: 1.55;
+        }
+        .lp-step__connector {
+          display: none;
+        }
+
         /* ── Features ── */
         .lp-features {
           display: grid;
@@ -910,24 +1325,54 @@ export default function HomePage() {
         }
         .lp-feature:hover .lp-feature__glow { opacity: 0.13; }
 
-        /* ── Testimonial ── */
+        /* ── Social proof: Logos ── */
+        .lp-logos {
+          display: flex;
+          justify-content: center;
+          align-items: center;
+          gap: 2.5rem;
+          flex-wrap: wrap;
+          margin-bottom: 3.5rem;
+          padding: 1.8rem 2rem;
+          background: rgba(255, 255, 255, 0.5);
+          border: 1px solid rgba(31, 42, 68, 0.06);
+          border-radius: 16px;
+          max-width: 780px;
+          margin-left: auto;
+          margin-right: auto;
+        }
+        .lp-logos__item {
+          font-size: 0.92rem;
+          font-weight: 780;
+          letter-spacing: -0.01em;
+          color: var(--text-muted);
+          opacity: 0.6;
+          transition: opacity 0.3s;
+          cursor: default;
+        }
+        .lp-logos__item:hover { opacity: 1; }
+
+        /* ── Social proof: Testimonials ── */
+        .lp-testimonials {
+          display: grid;
+          grid-template-columns: repeat(3, 1fr);
+          gap: 1.3rem;
+        }
         .lp-testimonial {
           position: relative;
-          max-width: 780px;
-          margin: 0 auto;
           background: rgba(255, 255, 255, 0.68);
           border: 1px solid rgba(31, 42, 68, 0.07);
-          border-radius: 24px;
-          padding: 2.8rem 3.2rem;
+          border-radius: 20px;
+          padding: 2rem 2rem 1.8rem;
           backdrop-filter: blur(12px);
           -webkit-backdrop-filter: blur(12px);
-          box-shadow: 0 18px 44px rgba(31, 42, 68, 0.06);
+          box-shadow: 0 12px 32px rgba(31, 42, 68, 0.05);
           overflow: hidden;
           transition: all 0.38s cubic-bezier(0.16, 1, 0.3, 1);
         }
         .lp-testimonial:hover {
           transform: translateY(-3px);
-          box-shadow: 0 24px 56px rgba(31, 42, 68, 0.09);
+          box-shadow: 0 20px 48px rgba(31, 42, 68, 0.09);
         }
         .lp-testimonial__accent {
           position: absolute;
@@ -939,9 +1384,9 @@ export default function HomePage() {
           border-radius: 4px 0 0 4px;
         }
         .lp-testimonial__quote {
-          font-size: clamp(1.3rem, 2.5vw, 1.72rem);
-          line-height: 1.38;
-          letter-spacing: -0.015em;
+          font-size: 0.95rem;
+          line-height: 1.5;
+          letter-spacing: -0.005em;
           color: var(--text-primary);
           font-weight: 500;
           font-style: italic;
@@ -949,29 +1394,144 @@ export default function HomePage() {
         .lp-testimonial__attr {
           display: flex;
           align-items: center;
-          gap: 0.8rem;
-          margin-top: 1.6rem;
+          gap: 0.7rem;
+          margin-top: 1.2rem;
         }
         .lp-testimonial__avatar {
-          width: 44px;
-          height: 44px;
+          width: 38px;
+          height: 38px;
           border-radius: 50%;
           background: linear-gradient(135deg, #4171ff, #22b8cf);
           color: #fff;
           display: grid;
           place-items: center;
-          font-size: 0.82rem;
+          font-size: 0.72rem;
           font-weight: 760;
           flex-shrink: 0;
         }
         .lp-testimonial__name {
-          font-size: 0.9rem;
+          font-size: 0.84rem;
           font-weight: 730;
           color: var(--text-primary);
         }
         .lp-testimonial__role {
-          font-size: 0.78rem;
+          font-size: 0.72rem;
           color: var(--text-muted);
+        }
+
+        /* ── Use cases ── */
+        .lp-usecases {
+          display: grid;
+          grid-template-columns: repeat(3, 1fr);
+          gap: 1.3rem;
+        }
+        .lp-usecase {
+          background: rgba(255, 255, 255, 0.68);
+          border: 1px solid rgba(31, 42, 68, 0.07);
+          border-radius: 20px;
+          padding: 2rem 1.8rem 2.2rem;
+          backdrop-filter: blur(10px);
+          -webkit-backdrop-filter: blur(10px);
+          transition: all 0.38s cubic-bezier(0.16, 1, 0.3, 1);
+          cursor: default;
+        }
+        .lp-usecase:hover {
+          border-color: rgba(47, 99, 255, 0.18);
+          box-shadow: 0 22px 52px rgba(31, 42, 68, 0.1);
+          transform: translateY(-4px);
+        }
+        .lp-usecase__icon {
+          width: 50px;
+          height: 50px;
+          border-radius: 14px;
+          background: rgba(47, 99, 255, 0.08);
+          color: var(--brand);
+          display: grid;
+          place-items: center;
+          margin-bottom: 1.1rem;
+          transition: transform 0.35s cubic-bezier(0.34, 1.56, 0.64, 1);
+        }
+        .lp-usecase:hover .lp-usecase__icon {
+          transform: scale(1.1) rotate(-2deg);
+        }
+        .lp-usecase__title {
+          font-size: 1.08rem;
+          font-weight: 780;
+          letter-spacing: -0.02em;
+          color: var(--text-primary);
+          margin-bottom: 0.4rem;
+        }
+        .lp-usecase__body {
+          font-size: 0.88rem;
+          color: var(--text-secondary);
+          line-height: 1.55;
+        }
+
+        /* ── FAQ ── */
+        .lp-faq {
+          max-width: 720px;
+          margin: 0 auto;
+          display: flex;
+          flex-direction: column;
+          gap: 0.75rem;
+        }
+        .lp-faq__item {
+          background: rgba(255, 255, 255, 0.68);
+          border: 1px solid rgba(31, 42, 68, 0.07);
+          border-radius: 16px;
+          overflow: hidden;
+          backdrop-filter: blur(10px);
+          -webkit-backdrop-filter: blur(10px);
+          transition: border-color 0.3s, box-shadow 0.3s;
+        }
+        .lp-faq__item:hover {
+          border-color: rgba(47, 99, 255, 0.14);
+        }
+        .lp-faq__item--open {
+          border-color: rgba(47, 99, 255, 0.18);
+          box-shadow: 0 8px 24px rgba(31, 42, 68, 0.06);
+        }
+        .lp-faq__trigger {
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          width: 100%;
+          padding: 1.15rem 1.5rem;
+          background: none;
+          border: none;
+          cursor: pointer;
+          font-size: 0.95rem;
+          font-weight: 700;
+          color: var(--text-primary);
+          text-align: left;
+          gap: 1rem;
+        }
+        .lp-faq__trigger:hover {
+          color: var(--brand);
+        }
+        .lp-faq__chevron {
+          color: var(--text-muted);
+          transition: transform 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+          flex-shrink: 0;
+        }
+        .lp-faq__item--open .lp-faq__chevron {
+          transform: rotate(180deg);
+        }
+        .lp-faq__answer {
+          max-height: 0;
+          overflow: hidden;
+          transition: max-height 0.4s cubic-bezier(0.16, 1, 0.3, 1),
+                      padding 0.4s cubic-bezier(0.16, 1, 0.3, 1);
+          padding: 0 1.5rem;
+        }
+        .lp-faq__item--open .lp-faq__answer {
+          max-height: 300px;
+          padding: 0 1.5rem 1.25rem;
+        }
+        .lp-faq__answer p {
+          font-size: 0.9rem;
+          color: var(--text-secondary);
+          line-height: 1.6;
         }
 
         /* ── CTA ── */
@@ -1095,13 +1655,16 @@ export default function HomePage() {
           .lp-stat:nth-child(1),
           .lp-stat:nth-child(2) { border-bottom: 1px solid rgba(31, 42, 68, 0.05); }
           .lp-features { grid-template-columns: 1fr; }
+          .lp-steps { grid-template-columns: 1fr; max-width: 480px; }
+          .lp-testimonials { grid-template-columns: 1fr; }
+          .lp-usecases { grid-template-columns: 1fr; }
           .lp-preview__thead,
           .lp-preview__row {
             grid-template-columns: 1fr 1fr;
             gap: 0.5rem 1rem;
           }
           .lp-preview__status { justify-self: start; }
-          .lp-testimonial { padding: 2.2rem 2rem; }
+          .lp-pain { padding: 2.2rem 2rem; }
           .lp-cta { padding: 3.5rem 1.5rem; }
           .lp-section { padding-bottom: 5rem; }
         }
@@ -1124,7 +1687,8 @@ export default function HomePage() {
             grid-template-columns: 1fr;
           }
           .lp-float-badge { display: none; }
-          .lp-testimonial { padding: 1.8rem 1.4rem; }
+          .lp-pain { padding: 1.8rem 1.4rem; }
+          .lp-logos { gap: 1.5rem; padding: 1.4rem 1.2rem; }
           .lp-footer__inner {
             flex-direction: column;
             gap: 0.8rem;
