@@ -1,2 +1,0 @@
-Password reset requested.
-Use this token to reset your password: {{TOKEN}}
