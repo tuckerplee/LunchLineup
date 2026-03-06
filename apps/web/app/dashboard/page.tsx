@@ -191,6 +191,7 @@ export default function DashboardPage() {
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '1rem' }}>
         {[
           { label: 'Build new schedule', icon: '📅', href: '/dashboard/scheduling', desc: 'Open the drag-and-drop scheduler' },
+          { label: 'Plan lunches/breaks', icon: '🍱', href: '/dashboard/lunch-breaks', desc: 'Generate staggered lunch and break assignments' },
           { label: 'Add staff member', icon: '👤', href: '/dashboard/staff', desc: 'Invite or create a new employee' },
           { label: 'Add location', icon: '🏢', href: '/dashboard/locations', desc: 'Register a new restaurant location' },
         ].map((action, i) => (

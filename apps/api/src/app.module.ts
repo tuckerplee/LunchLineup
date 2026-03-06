@@ -24,6 +24,7 @@ import { RateLimitsGuard } from './common/guards/rate-limits.guard';
 import { WebhooksModule } from './webhooks/webhooks.module';
 import { BillingModule } from './billing/billing.module';
 import { NotificationsModule } from './notifications/notifications.module';
+import { LunchBreaksModule } from './lunch-breaks/lunch-breaks.module';
 import { MetricsService } from './common/metrics.service';
 import { CorrelationIdMiddleware } from './middleware/correlation-id.middleware';
 
@@ -39,6 +40,7 @@ import { CorrelationIdMiddleware } from './middleware/correlation-id.middleware'
         WebhooksModule,
         BillingModule,
         NotificationsModule,
+        LunchBreaksModule,
     ],
     controllers: [
         AppController,

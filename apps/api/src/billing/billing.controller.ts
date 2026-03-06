@@ -1,15 +1,22 @@
-import { Controller, Post, Body, Req, Headers, UseGuards, Param, HttpCode } from '@nestjs/common';
+import { Controller, Post, Body, Req, Headers, HttpCode, Get } from '@nestjs/common';
 import { StripeService } from './stripe.service';
 import { MeteringService } from './metering.service';
 import { Request } from 'express';
 import { RequirePermission } from '../auth/require-permission.decorator';
+import { FeatureAccessService } from './feature-access.service';
 
 @Controller('billing')
 export class BillingController {
     constructor(
         private readonly stripeService: StripeService,
-        private readonly meteringService: MeteringService
+        private readonly meteringService: MeteringService,
+        private readonly featureAccessService: FeatureAccessService,
     ) { }
+
+    @Get('features')
+    async features(@Req() req: any) {
+        return this.featureAccessService.getFeatureMatrix(req.user.tenantId);
+    }
 
     @Post('subscribe')
     @RequirePermission('billing:write')

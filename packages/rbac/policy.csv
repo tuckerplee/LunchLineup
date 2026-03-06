@@ -1,9 +1,19 @@
-p, role:admin, data, read
-p, role:admin, data, write
-p, role:manager, data, read
-p, role:manager, data, write
-p, role:staff, data, read
+p, SUPER_ADMIN, *, *
+p, ADMIN, *, *
 
-g, alice, role:admin
-g, bob, role:manager
-g, charlie, role:staff
+p, MANAGER, locations, read
+p, MANAGER, users, read
+p, MANAGER, schedules, read
+p, MANAGER, schedules, write
+p, MANAGER, shifts, read
+p, MANAGER, shifts, write
+p, MANAGER, lunch_breaks, read
+p, MANAGER, lunch_breaks, write
+p, MANAGER, billing, read
+
+p, STAFF, users, read
+p, STAFF, locations, read
+p, STAFF, schedules, read
+p, STAFF, shifts, read
+p, STAFF, lunch_breaks, read
+p, STAFF, billing, read

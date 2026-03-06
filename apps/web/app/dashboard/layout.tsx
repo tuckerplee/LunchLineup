@@ -7,6 +7,7 @@ import { useState } from 'react';
 const NAV_ITEMS = [
   { href: '/dashboard', label: 'Overview', icon: '◈', exact: true },
   { href: '/dashboard/scheduling', label: 'Scheduling', icon: '📅', exact: false },
+  { href: '/dashboard/lunch-breaks', label: 'Lunch/Breaks', icon: '🍱', exact: false },
   { href: '/dashboard/staff', label: 'Staff', icon: '👥', exact: false },
   { href: '/dashboard/locations', label: 'Locations', icon: '📍', exact: false },
   { href: '/dashboard/settings', label: 'Settings', icon: '⚙', exact: false },
@@ -100,7 +101,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
           borderTop: '1px solid var(--border)',
           display: 'flex', flexDirection: 'column', gap: '4px',
         }}>
-          <Link href="/api/v1/auth/logout" style={{
+          <Link href="/auth/logout" prefetch={false} style={{
             display: 'flex', alignItems: 'center', gap: '0.625rem',
             padding: '0.5625rem 0.75rem',
             borderRadius: 8, textDecoration: 'none',
