@@ -7,9 +7,7 @@ import {
   Shield,
   Zap,
   Sparkles,
-  ShieldCheck,
   ShieldAlert,
-  Eye,
   MousePointer2,
   Layers,
   Users,
@@ -104,12 +102,6 @@ const STATS = [
   { value: '4x', label: 'Faster scheduling', sub: 'compared to spreadsheets' },
   { value: '<30s', label: 'Auto-schedule', sub: 'to generate a full week' },
   { value: '200+', label: 'Teams running', sub: 'in beta rollout' },
-];
-
-const PREVIEW_ROWS = [
-  { name: 'Alex R.', role: 'Frontline staff', shift: '9:00 AM – 5:00 PM', lunch: '12:30 PM', brk: '3:15 PM', status: 'safe' as const, label: 'Coverage safe' },
-  { name: 'Jordan M.', role: 'Shift lead', shift: '10:00 AM – 6:00 PM', lunch: '1:15 PM', brk: '4:00 PM', status: 'compliant' as const, label: 'Compliant' },
-  { name: 'Casey P.', role: 'Frontline staff', shift: '11:00 AM – 7:00 PM', lunch: '2:00 PM', brk: '5:10 PM', status: 'warning' as const, label: 'Late lunch risk' },
 ];
 
 const FEATURES = [
@@ -335,49 +327,88 @@ export default function HomePage() {
           <div className="lp-preview-wrap">
             <div className="lp-preview-glow" />
             <div className="lp-preview">
-              {/* Chrome bar */}
               <div className="lp-preview__chrome">
                 <div className="lp-preview__dots">
                   <span style={{ background: '#ff8fa4' }} />
                   <span style={{ background: '#ffd480' }} />
                   <span style={{ background: '#8de8b8' }} />
                 </div>
-                <div className="lp-preview__tab">Friday lunch coverage</div>
+                <div className="lp-preview__tab">Friday lunchlineup editor</div>
               </div>
+              <div className="lp-ui">
+                <aside className="lp-ui__rail">
+                  <div className="lp-ui__pill lp-ui__pill--active">Timeline</div>
+                  <div className="lp-ui__pill">Coverage</div>
+                  <div className="lp-ui__pill">Compliance</div>
+                </aside>
 
-              {/* Table head */}
-              <div className="lp-preview__thead">
-                <span>Employee</span>
-                <span>Shift</span>
-                <span>Break plan</span>
-                <span style={{ textAlign: 'right' }}>Status</span>
-              </div>
+                <div className="lp-ui__main">
+                  <div className="lp-ui__toolbar">
+                    <div>
+                      <div className="lp-ui__title">Frontline lunch schedule</div>
+                      <div className="lp-ui__meta">Drag break cards to rebalance coverage</div>
+                    </div>
+                    <div className="lp-ui__coverage">
+                      <span>Coverage</span>
+                      <strong>84%</strong>
+                      <div className="lp-ui__coverage-bar">
+                        <div className="lp-ui__coverage-fill" />
+                      </div>
+                    </div>
+                  </div>
 
-              {/* Rows */}
-              {PREVIEW_ROWS.map((row) => (
-                <div key={row.name} className="lp-preview__row">
-                  <div>
-                    <div className="lp-preview__name">{row.name}</div>
-                    <div className="lp-preview__role">{row.role}</div>
+                  <div className="lp-timeline">
+                    <div className="lp-timeline__head">
+                      <span>10:00</span>
+                      <span>11:00</span>
+                      <span>12:00</span>
+                      <span>1:00</span>
+                      <span>2:00</span>
+                      <span>3:00</span>
+                    </div>
+
+                    <div className="lp-lane">
+                      <div className="lp-lane__name">Alex R.</div>
+                      <div className="lp-lane__grid">
+                        <div className="lp-shift-block">Shift</div>
+                        <div className="lp-break-block lp-break-block--drag">
+                          <MousePointer2 size={12} />
+                          Lunch 12:10
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="lp-lane">
+                      <div className="lp-lane__name">Jordan M.</div>
+                      <div className="lp-lane__grid">
+                        <div className="lp-shift-block">Shift</div>
+                        <div className="lp-break-block">Break 1:20</div>
+                      </div>
+                    </div>
+
+                    <div className="lp-lane">
+                      <div className="lp-lane__name">Casey P.</div>
+                      <div className="lp-lane__grid">
+                        <div className="lp-shift-block">Shift</div>
+                        <div className="lp-break-block lp-break-block--warn">
+                          <AlertTriangle size={12} />
+                          Lunch overdue
+                        </div>
+                      </div>
+                    </div>
                   </div>
-                  <div className="lp-preview__shift">{row.shift}</div>
-                  <div className="lp-preview__breaks">
-                    <span>Lunch {row.lunch}</span>
-                    <span>Break {row.brk}</span>
-                  </div>
-                  <div className={`lp-preview__status lp-preview__status--${row.status}`}>
-                    {row.status === 'warning' ? <ShieldAlert size={12} /> : <ShieldCheck size={12} />}
-                    {row.label}
+
+                  <div className="lp-ui__alerts">
+                    <div className="lp-alert lp-alert--warn">
+                      <ShieldAlert size={14} />
+                      Casey exceeds meal window in 14 min
+                    </div>
+                    <div className="lp-alert">
+                      <Layers size={14} />
+                      Floor coverage remains above 3 staff
+                    </div>
                   </div>
                 </div>
-              ))}
-
-              {/* Floating badges */}
-              <div className="lp-float-badge lp-float-badge--compliance">
-                <ShieldCheck size={13} /> Compliance: 100%
-              </div>
-              <div className="lp-float-badge lp-float-badge--coverage">
-                <Layers size={13} /> 3 staff on floor
               </div>
             </div>
           </div>
@@ -945,33 +976,31 @@ export default function HomePage() {
         /* ── Product preview ── */
         .lp-preview-wrap {
           position: relative;
-          max-width: 880px;
+          max-width: 1080px;
           margin: 0 auto;
         }
         .lp-preview-glow {
-          position: absolute;
-          inset: 50px -28px -28px -28px;
-          background: radial-gradient(ellipse at center, rgba(47, 99, 255, 0.11), transparent 68%);
-          border-radius: 34px;
-          filter: blur(44px);
+          position: absolute; inset: 40px -20px -20px -20px;
+          background: radial-gradient(ellipse at center, rgba(47, 99, 255, 0.12), transparent 70%);
+          border-radius: 28px; filter: blur(46px);
           z-index: -1;
         }
         .lp-preview {
           position: relative;
-          background: rgba(255, 255, 255, 0.82);
+          background: rgba(255, 255, 255, 0.88);
           border: 1px solid rgba(31, 42, 68, 0.09);
-          border-radius: 22px;
+          border-radius: 24px;
           backdrop-filter: blur(14px);
           -webkit-backdrop-filter: blur(14px);
-          box-shadow: 0 28px 64px rgba(31, 42, 68, 0.1),
+          box-shadow: 0 30px 74px rgba(31, 42, 68, 0.12),
                       0 1px 3px rgba(31, 42, 68, 0.05);
-          overflow: visible;
+          overflow: hidden;
           transition: transform 0.45s cubic-bezier(0.16, 1, 0.3, 1),
                       box-shadow 0.45s cubic-bezier(0.16, 1, 0.3, 1);
         }
         .lp-preview:hover {
           transform: translateY(-5px);
-          box-shadow: 0 36px 80px rgba(31, 42, 68, 0.14),
+          box-shadow: 0 40px 92px rgba(31, 42, 68, 0.16),
                       0 1px 3px rgba(31, 42, 68, 0.05);
         }
         .lp-preview__chrome {
@@ -1003,115 +1032,182 @@ export default function HomePage() {
           font-weight: 720;
           color: var(--text-muted);
         }
-        .lp-preview__thead {
+        .lp-ui {
           display: grid;
-          grid-template-columns: 1.2fr 1.1fr 1.1fr auto;
-          gap: 1rem;
-          padding: 0.75rem 1.4rem;
-          font-size: 0.68rem;
-          text-transform: uppercase;
-          letter-spacing: 0.08em;
-          font-weight: 720;
-          color: var(--text-muted);
-          border-bottom: 1px solid rgba(31, 42, 68, 0.05);
+          grid-template-columns: 160px 1fr;
+          min-height: 460px;
         }
-        .lp-preview__row {
-          display: grid;
-          grid-template-columns: 1.2fr 1.1fr 1.1fr auto;
-          gap: 1rem;
-          align-items: center;
-          padding: 1rem 1.4rem;
-          border-bottom: 1px solid rgba(31, 42, 68, 0.04);
-          transition: background 0.25s;
-        }
-        .lp-preview__row:last-child { border-bottom: none; }
-        .lp-preview__row:hover { background: rgba(47, 99, 255, 0.018); }
-        .lp-preview__name {
-          font-size: 0.88rem;
-          font-weight: 730;
-          color: var(--text-primary);
-        }
-        .lp-preview__role {
-          font-size: 0.72rem;
-          color: var(--text-muted);
-          margin-top: 1px;
-        }
-        .lp-preview__shift {
-          font-size: 0.82rem;
-          color: var(--text-secondary);
-        }
-        .lp-preview__breaks {
+        .lp-ui__rail {
+          border-right: 1px solid rgba(31, 42, 68, 0.08);
+          background: linear-gradient(180deg, rgba(248, 250, 255, 0.86), rgba(243, 246, 255, 0.48));
+          padding: 1.2rem 0.95rem;
           display: flex;
           flex-direction: column;
-          gap: 2px;
-          font-size: 0.78rem;
-          color: var(--text-secondary);
+          gap: 0.6rem;
         }
-        .lp-preview__status {
-          display: inline-flex;
-          align-items: center;
-          gap: 0.32rem;
-          padding: 0.3rem 0.65rem;
-          border-radius: 999px;
-          font-size: 0.7rem;
-          font-weight: 730;
-          white-space: nowrap;
-          justify-self: end;
-          transition: transform 0.25s cubic-bezier(0.34, 1.56, 0.64, 1);
+        .lp-ui__pill {
+          padding: 0.55rem 0.7rem;
+          border-radius: 10px;
+          font-size: 0.74rem;
+          font-weight: 700;
+          color: var(--text-muted);
+          border: 1px solid transparent;
         }
-        .lp-preview__row:hover .lp-preview__status {
-          transform: scale(1.04);
-        }
-        .lp-preview__status--safe {
+        .lp-ui__pill--active {
           background: #edf3ff;
+          border-color: #cddfff;
           color: #175cd3;
-          border: 1px solid #cddfff;
         }
-        .lp-preview__status--compliant {
-          background: #ecfdf3;
-          color: #107569;
-          border: 1px solid #b7ebcf;
+        .lp-ui__main { padding: 1.15rem 1.2rem 1.25rem; }
+        .lp-ui__toolbar {
+          display: flex;
+          align-items: flex-start;
+          justify-content: space-between;
+          gap: 1rem;
+          margin-bottom: 1rem;
         }
-        .lp-preview__status--warning {
-          background: #fff6ed;
-          color: #b54708;
-          border: 1px solid #fecdca;
+        .lp-ui__title {
+          font-size: 0.95rem;
+          font-weight: 760;
+          color: var(--text-primary);
         }
-
-        /* Floating badges */
-        .lp-float-badge {
-          position: absolute;
-          display: inline-flex;
-          align-items: center;
-          gap: 0.38rem;
-          padding: 0.48rem 0.9rem;
+        .lp-ui__meta {
+          font-size: 0.74rem;
+          color: var(--text-muted);
+          margin-top: 2px;
+        }
+        .lp-ui__coverage {
+          min-width: 160px;
+          font-size: 0.72rem;
+          color: var(--text-muted);
+        }
+        .lp-ui__coverage strong {
+          display: block;
+          margin-top: 0.15rem;
+          font-size: 1rem;
+          color: #0f8c52;
+          letter-spacing: -0.02em;
+        }
+        .lp-ui__coverage-bar {
+          margin-top: 0.35rem;
+          height: 8px;
           border-radius: 999px;
+          background: rgba(31, 42, 68, 0.08);
+          overflow: hidden;
+        }
+        .lp-ui__coverage-fill {
+          height: 100%;
+          width: 84%;
+          background: linear-gradient(90deg, #17b26a, #7ad99f);
+        }
+        .lp-timeline {
+          border: 1px solid rgba(31, 42, 68, 0.08);
+          border-radius: 14px;
+          overflow: hidden;
+          background: #fff;
+        }
+        .lp-timeline__head {
+          display: grid;
+          grid-template-columns: repeat(6, 1fr);
+          padding: 0.56rem 0.8rem 0.52rem 7rem;
+          font-size: 0.66rem;
+          letter-spacing: 0.08em;
+          text-transform: uppercase;
+          font-weight: 700;
+          color: var(--text-muted);
+          border-bottom: 1px solid rgba(31, 42, 68, 0.08);
+          background: rgba(249, 251, 255, 0.9);
+        }
+        .lp-lane {
+          display: grid;
+          grid-template-columns: 6.5rem 1fr;
+          border-bottom: 1px solid rgba(31, 42, 68, 0.06);
+        }
+        .lp-lane:last-child { border-bottom: none; }
+        .lp-lane__name {
+          padding: 0.85rem 0.8rem;
           font-size: 0.76rem;
           font-weight: 720;
-          backdrop-filter: blur(10px);
-          -webkit-backdrop-filter: blur(10px);
-          box-shadow: 0 10px 28px rgba(31, 42, 68, 0.14);
-          animation: lp-badge-bob 4.5s ease-in-out infinite;
-          z-index: 2;
+          color: var(--text-primary);
         }
-        .lp-float-badge--compliance {
-          top: -16px;
-          right: 28px;
-          background: rgba(236, 253, 243, 0.92);
-          color: #107569;
-          border: 1px solid #b7ebcf;
+        .lp-lane__grid {
+          position: relative;
+          min-height: 58px;
+          background-image: linear-gradient(to right, rgba(31, 42, 68, 0.06) 1px, transparent 1px);
+          background-size: calc(100% / 6) 100%;
+          padding: 0.6rem 0.8rem;
         }
-        .lp-float-badge--coverage {
-          bottom: 22px;
-          left: -20px;
-          background: rgba(237, 243, 255, 0.92);
-          color: #175cd3;
-          border: 1px solid #cddfff;
-          animation-delay: -2.2s;
+        .lp-shift-block {
+          position: absolute;
+          top: 0.9rem;
+          left: 0.9rem;
+          right: 0.9rem;
+          height: 22px;
+          border-radius: 8px;
+          background: linear-gradient(90deg, rgba(47, 99, 255, 0.16), rgba(47, 99, 255, 0.08));
+          color: #2452d1;
+          font-size: 0.66rem;
+          font-weight: 700;
+          display: flex;
+          align-items: center;
+          padding-left: 0.5rem;
         }
-        @keyframes lp-badge-bob {
-          0%, 100% { transform: translateY(0); }
-          50% { transform: translateY(-7px); }
+        .lp-break-block {
+          position: absolute;
+          top: 1.05rem;
+          left: 52%;
+          transform: translateX(-50%);
+          height: 24px;
+          border-radius: 8px;
+          border: 1px solid #cfdcff;
+          background: #eef3ff;
+          color: #1d49be;
+          font-size: 0.65rem;
+          font-weight: 760;
+          display: inline-flex;
+          align-items: center;
+          gap: 0.35rem;
+          padding: 0 0.52rem;
+          box-shadow: 0 5px 14px rgba(47, 99, 255, 0.18);
+        }
+        .lp-break-block--drag {
+          cursor: grab;
+          animation: drag-hint 2.6s ease-in-out infinite;
+        }
+        .lp-break-block--warn {
+          left: 68%;
+          border-color: #fecdca;
+          background: #fff6ed;
+          color: #b54708;
+          box-shadow: 0 5px 14px rgba(243, 124, 32, 0.18);
+          animation: none;
+        }
+        .lp-ui__alerts {
+          margin-top: 0.85rem;
+          display: grid;
+          grid-template-columns: 1fr 1fr;
+          gap: 0.55rem;
+        }
+        .lp-alert {
+          border-radius: 10px;
+          border: 1px solid rgba(31, 42, 68, 0.08);
+          background: rgba(248, 250, 255, 0.85);
+          padding: 0.55rem 0.65rem;
+          font-size: 0.72rem;
+          color: var(--text-secondary);
+          display: inline-flex;
+          align-items: center;
+          gap: 0.4rem;
+          font-weight: 680;
+        }
+        .lp-alert--warn {
+          border-color: #fecdca;
+          background: #fff6ed;
+          color: #b54708;
+        }
+        @keyframes drag-hint {
+          0%, 100% { transform: translateX(-50%); }
+          50% { transform: translateX(-40%); }
         }
 
         /* ── Pain statement ── */
@@ -1658,12 +1754,27 @@ export default function HomePage() {
           .lp-steps { grid-template-columns: 1fr; max-width: 480px; }
           .lp-testimonials { grid-template-columns: 1fr; }
           .lp-usecases { grid-template-columns: 1fr; }
-          .lp-preview__thead,
-          .lp-preview__row {
-            grid-template-columns: 1fr 1fr;
-            gap: 0.5rem 1rem;
+          .lp-ui {
+            grid-template-columns: 1fr;
           }
-          .lp-preview__status { justify-self: start; }
+          .lp-ui__rail {
+            border-right: none;
+            border-bottom: 1px solid rgba(31, 42, 68, 0.08);
+            flex-direction: row;
+            overflow-x: auto;
+          }
+          .lp-lane {
+            grid-template-columns: 1fr;
+          }
+          .lp-lane__name {
+            padding-bottom: 0.2rem;
+          }
+          .lp-timeline__head {
+            padding-left: 0.8rem;
+          }
+          .lp-ui__alerts {
+            grid-template-columns: 1fr;
+          }
           .lp-pain { padding: 2.2rem 2rem; }
           .lp-cta { padding: 3.5rem 1.5rem; }
           .lp-section { padding-bottom: 5rem; }
@@ -1682,11 +1793,9 @@ export default function HomePage() {
             width: 100%;
             justify-content: center;
           }
-          .lp-preview__thead,
-          .lp-preview__row {
-            grid-template-columns: 1fr;
+          .lp-ui__toolbar {
+            flex-direction: column;
           }
-          .lp-float-badge { display: none; }
           .lp-pain { padding: 1.8rem 1.4rem; }
           .lp-logos { gap: 1.5rem; padding: 1.4rem 1.2rem; }
           .lp-footer__inner {
