@@ -1,14 +1,38 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
+import { fetchJsonWithSession } from '@/lib/client-api';
 
 const TABS = ['General', 'Team', 'Billing', 'Security'] as const;
 type Tab = typeof TABS[number];
+
+type FeatureMatrixResponse = {
+    usageCredits?: number;
+};
 
 export default function SettingsPage() {
     // NOTE: requireRole is called server-side in middleware.ts for /dashboard/settings
     // This page is client-side for tab interactivity, but is only reachable by ADMIN+
     const [activeTab, setActiveTab] = useState<Tab>('General');
+    const [usageCredits, setUsageCredits] = useState<number | null>(null);
+
+    useEffect(() => {
+        let cancelled = false;
+        const loadCredits = async () => {
+            try {
+                const payload = await fetchJsonWithSession<FeatureMatrixResponse>('/billing/features');
+                if (cancelled) return;
+                setUsageCredits(typeof payload.usageCredits === 'number' ? payload.usageCredits : 0);
+            } catch {
+                if (!cancelled) setUsageCredits(0);
+            }
+        };
+
+        void loadCredits();
+        return () => {
+            cancelled = true;
+        };
+    }, []);
 
     return (
         <div style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem', maxWidth: 860 }}>
@@ -100,8 +124,10 @@ export default function SettingsPage() {
                             </div>
                             <div style={{ flex: 1, minWidth: 200, padding: '1.25rem', background: 'rgba(245,158,11,0.08)', border: '1px solid rgba(245,158,11,0.2)', borderRadius: 12 }}>
                                 <div style={{ fontSize: '0.6875rem', fontWeight: 700, letterSpacing: '0.06em', textTransform: 'uppercase', color: '#fbbf24', marginBottom: '0.5rem' }}>Usage Credits</div>
-                                <div style={{ fontSize: '1.5rem', fontWeight: 800, color: '#fbbf24', marginBottom: '0.25rem' }}>420</div>
-                                <div style={{ fontSize: '0.8125rem', color: 'var(--text-muted)' }}>~42 auto-schedules remaining</div>
+                                <div style={{ fontSize: '1.5rem', fontWeight: 800, color: '#fbbf24', marginBottom: '0.25rem' }}>
+                                    {usageCredits === null ? '...' : usageCredits.toLocaleString()}
+                                </div>
+                                <div style={{ fontSize: '0.8125rem', color: 'var(--text-muted)' }}>Live balance</div>
                             </div>
                         </div>
                         <button style={{ padding: '0.5625rem 1.125rem', width: 'fit-content', borderRadius: 8, background: 'rgba(255,255,255,0.04)', border: '1px solid var(--border)', color: 'var(--text-secondary)', fontWeight: 600, fontSize: '0.875rem', cursor: 'pointer', fontFamily: 'inherit' }}>

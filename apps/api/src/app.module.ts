@@ -15,6 +15,7 @@ import { ShiftsController } from './shifts/shifts.controller';
 import { SchedulesController } from './schedules/schedules.controller';
 import { UsersController } from './users/users.controller';
 import { MetricsController } from './common/metrics.controller';
+import { AdminController } from './admin/admin.controller';
 
 // Guards
 import { RateLimitsGuard } from './common/guards/rate-limits.guard';
@@ -46,6 +47,7 @@ import { CorrelationIdMiddleware } from './middleware/correlation-id.middleware'
         SchedulesController,
         UsersController,
         MetricsController,
+        AdminController,
     ],
     providers: [
         // Global guards (default deny)
