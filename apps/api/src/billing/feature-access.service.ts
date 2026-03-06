@@ -1,8 +1,10 @@
 import { ForbiddenException, Injectable, Optional } from '@nestjs/common';
-import { PrismaClient, PlanTier, TenantStatus } from '@prisma/client';
+import { PrismaClient } from '@prisma/client';
 import { MeteringService } from './metering.service';
 
 export type FeatureKey = 'scheduling' | 'lunch_breaks';
+type TenantPlanTier = 'FREE' | 'STARTER' | 'GROWTH' | 'ENTERPRISE';
+type TenantStatusValue = 'TRIAL' | 'ACTIVE' | 'PAST_DUE' | 'SUSPENDED' | 'CANCELLED' | 'PURGED';
 
 export type FeatureResolution = {
     enabled: boolean;
@@ -21,7 +23,7 @@ const FEATURE_COST: Record<FeatureKey, number> = {
     lunch_breaks: 1,
 };
 
-const PLAN_FEATURES: Record<PlanTier, FeatureKey[]> = {
+const PLAN_FEATURES: Record<TenantPlanTier, FeatureKey[]> = {
     FREE: [],
     STARTER: ['scheduling'],
     GROWTH: ['scheduling', 'lunch_breaks'],
@@ -91,12 +93,12 @@ export class FeatureAccessService {
     }
 
     private resolveFeature(
-        tenant: { planTier: PlanTier; status: TenantStatus; usageCredits: number; stripeSubscriptionId: string | null },
+        tenant: { planTier: TenantPlanTier; status: TenantStatusValue; usageCredits: number; stripeSubscriptionId: string | null },
         feature: FeatureKey,
     ): FeatureResolution {
         const creditCost = FEATURE_COST[feature];
         const includedByPlan = PLAN_FEATURES[tenant.planTier]?.includes(feature) ?? false;
-        const stripeActive = tenant.status === TenantStatus.ACTIVE && Boolean(tenant.stripeSubscriptionId);
+        const stripeActive = tenant.status === 'ACTIVE' && Boolean(tenant.stripeSubscriptionId);
         const hasCredits = tenant.usageCredits >= creditCost;
 
         if (includedByPlan) {
@@ -134,4 +136,3 @@ export class FeatureAccessService {
         };
     }
 }
-

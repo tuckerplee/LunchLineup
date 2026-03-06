@@ -1,7 +1,7 @@
 import { Controller, Get, Post, Put, Delete, Param, Body, Req, UseGuards, SetMetadata, Query, HttpCode, HttpStatus, NotFoundException, BadRequestException, ForbiddenException } from '@nestjs/common';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { RbacGuard } from '../auth/rbac.guard';
-import { PrismaClient } from '@prisma/client';
+import { Prisma, PrismaClient } from '@prisma/client';
 
 const Permission = (perm: string) => SetMetadata('permission', perm);
 
@@ -53,7 +53,7 @@ export class LocationsController {
             throw new ForbiddenException('Insufficient permissions for locations:write');
         }
 
-        const location = await this.prisma.$transaction(async (tx) => {
+        const location = await this.prisma.$transaction(async (tx: Prisma.TransactionClient) => {
             if (tenantName) {
                 await tx.tenant.update({
                     where: { id: tenantId },

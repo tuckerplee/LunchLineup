@@ -1,9 +1,13 @@
 import { Controller, Get, Post, Put, Param, Body, Req, UseGuards, SetMetadata, HttpCode, HttpStatus, NotFoundException } from '@nestjs/common';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { RbacGuard } from '../auth/rbac.guard';
-import { PrismaClient, ScheduleStatus } from '@prisma/client';
+import { PrismaClient } from '@prisma/client';
 
 const Permission = (perm: string) => SetMetadata('permission', perm);
+const SCHEDULE_STATUS = {
+    DRAFT: 'DRAFT',
+    PUBLISHED: 'PUBLISHED',
+} as const;
 
 @Controller({ path: 'schedules', version: '1' })
 @UseGuards(JwtAuthGuard, RbacGuard)
@@ -43,7 +47,7 @@ export class SchedulesController {
                 locationId: body.locationId,
                 startDate: new Date(body.startDate),
                 endDate: new Date(body.endDate),
-                status: ScheduleStatus.DRAFT,
+                status: SCHEDULE_STATUS.DRAFT,
             }
         });
         return schedule;
@@ -58,8 +62,8 @@ export class SchedulesController {
     async publish(@Param('id') id: string, @Req() req: any) {
         // 1. Update schedule status to PUBLISHED
         const schedule = await this.prisma.schedule.updateMany({
-            where: { id, tenantId: req.user.tenantId, status: ScheduleStatus.DRAFT },
-            data: { status: ScheduleStatus.PUBLISHED, publishedAt: new Date() }
+            where: { id, tenantId: req.user.tenantId, status: SCHEDULE_STATUS.DRAFT },
+            data: { status: SCHEDULE_STATUS.PUBLISHED, publishedAt: new Date() }
         });
 
         if (schedule.count === 0) {
@@ -69,7 +73,7 @@ export class SchedulesController {
         // 2. Send notifications to all assigned staff (Simulated)
         // 3. Emit WebSocket event for real-time sync (Simulated)
 
-        return { id, status: ScheduleStatus.PUBLISHED, publishedAt: new Date().toISOString() };
+        return { id, status: SCHEDULE_STATUS.PUBLISHED, publishedAt: new Date().toISOString() };
     }
 
     /**

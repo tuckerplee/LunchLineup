@@ -143,7 +143,7 @@ export class LunchBreaksService {
         });
 
         return {
-            data: shifts.map((shift) => this.mapShiftToGenerated(shift)),
+            data: shifts.map((shift: any) => this.mapShiftToGenerated(shift)),
         };
     }
 
@@ -205,7 +205,7 @@ export class LunchBreaksService {
             });
         }
 
-        await this.prisma.$transaction(async (tx) => {
+        await this.prisma.$transaction(async (tx: any) => {
             await tx.break.deleteMany({ where: { shiftId } });
             if (payload.length > 0) {
                 await tx.break.createMany({ data: payload });
@@ -251,7 +251,7 @@ export class LunchBreaksService {
 
         const source: 'shared_schedule' | 'standalone' = dbShifts.length > 0 ? 'shared_schedule' : 'standalone';
         const generationInput = dbShifts.length > 0
-            ? dbShifts.map((shift) => ({
+            ? dbShifts.map((shift: any) => ({
                 id: shift.id,
                 userId: shift.userId,
                 employeeName: shift.user?.name ?? null,
@@ -407,7 +407,7 @@ export class LunchBreaksService {
             })),
         );
 
-        await this.prisma.$transaction(async (tx) => {
+        await this.prisma.$transaction(async (tx: any) => {
             const shiftCount = await tx.shift.count({
                 where: { tenantId, deletedAt: null, id: { in: shiftIds } },
             });
@@ -478,4 +478,3 @@ export class LunchBreaksService {
         return Math.round(valueMs / stepMs) * stepMs;
     }
 }
-

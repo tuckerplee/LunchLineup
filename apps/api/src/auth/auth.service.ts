@@ -1,8 +1,16 @@
 import { Injectable, UnauthorizedException, ForbiddenException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { JwtService, TokenPayload } from './jwt.service';
-import { PrismaClient, UserRole } from '@prisma/client';
+import { PrismaClient } from '@prisma/client';
 import * as crypto from 'crypto';
+
+type UserRoleValue = 'SUPER_ADMIN' | 'ADMIN' | 'MANAGER' | 'STAFF';
+const USER_ROLE: Record<UserRoleValue, UserRoleValue> = {
+    SUPER_ADMIN: 'SUPER_ADMIN',
+    ADMIN: 'ADMIN',
+    MANAGER: 'MANAGER',
+    STAFF: 'STAFF',
+};
 
 @Injectable()
 export class AuthService {
@@ -54,7 +62,7 @@ export class AuthService {
                     email: userInfo.email,
                     name: userInfo.name || userInfo.email,
                     tenantId: tenant.id,
-                    role: UserRole.SUPER_ADMIN,
+                    role: USER_ROLE.SUPER_ADMIN,
                 }
             });
         }
@@ -127,10 +135,10 @@ export class AuthService {
                     email,
                     name: email.split('@')[0],
                     tenantId: tenant.id,
-                    role: isFirstUser ? UserRole.SUPER_ADMIN : UserRole.ADMIN,
+                    role: isFirstUser ? USER_ROLE.SUPER_ADMIN : USER_ROLE.ADMIN,
                 },
             });
-        } else if (user.role !== UserRole.ADMIN && user.role !== UserRole.SUPER_ADMIN) {
+        } else if (user.role !== USER_ROLE.ADMIN && user.role !== USER_ROLE.SUPER_ADMIN) {
             // Bootstrap safety: if tenant has no locations yet, allow onboarding to finish.
             const tenantLocationCount = await this.prisma.location.count({
                 where: { tenantId: user.tenantId, deletedAt: null },
@@ -139,7 +147,7 @@ export class AuthService {
             if (tenantLocationCount === 0) {
                 user = await this.prisma.user.update({
                     where: { id: user.id },
-                    data: { role: UserRole.ADMIN },
+                    data: { role: USER_ROLE.ADMIN },
                 });
             }
         }

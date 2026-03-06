@@ -1,10 +1,17 @@
 import { Controller, Get, Post, Put, Delete, Param, Body, Req, UseGuards, SetMetadata, Query, HttpCode, HttpStatus, NotFoundException } from '@nestjs/common';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { RbacGuard } from '../auth/rbac.guard';
-import { PrismaClient, UserRole } from '@prisma/client';
+import { PrismaClient } from '@prisma/client';
 import * as crypto from 'crypto';
 
 const Permission = (perm: string) => SetMetadata('permission', perm);
+type UserRoleValue = 'SUPER_ADMIN' | 'ADMIN' | 'MANAGER' | 'STAFF';
+const USER_ROLE: Record<UserRoleValue, UserRoleValue> = {
+    SUPER_ADMIN: 'SUPER_ADMIN',
+    ADMIN: 'ADMIN',
+    MANAGER: 'MANAGER',
+    STAFF: 'STAFF',
+};
 
 @Controller({ path: 'users', version: '1' })
 @UseGuards(JwtAuthGuard, RbacGuard)
@@ -33,13 +40,13 @@ export class UsersController {
 
     @Post('invite')
     @Permission('users:write')
-    async invite(@Body() body: { email: string; name: string; role: UserRole }, @Req() req: any) {
+    async invite(@Body() body: { email: string; name: string; role: UserRoleValue }, @Req() req: any) {
         const user = await this.prisma.user.create({
             data: {
                 tenantId: req.user.tenantId,
                 email: body.email,
                 name: body.name,
-                role: body.role || UserRole.STAFF,
+                role: body.role || USER_ROLE.STAFF,
             }
         });
 
@@ -60,7 +67,7 @@ export class UsersController {
 
     @Put(':id/role')
     @Permission('users:admin')
-    async updateRole(@Param('id') id: string, @Body() body: { role: UserRole }, @Req() req: any) {
+    async updateRole(@Param('id') id: string, @Body() body: { role: UserRoleValue }, @Req() req: any) {
         await this.prisma.user.updateMany({
             where: { id, tenantId: req.user.tenantId },
             data: { role: body.role }
