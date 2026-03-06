@@ -1,16 +1,27 @@
+import Link from 'next/link';
 import { requireRole, can, type UserRole } from '@/lib/server-auth';
 import { RoleGate } from '@/components/ui/RoleGate';
 
 const LOCATIONS = [
     {
-        id: 'loc-1', name: 'Downtown Bistro', address: '142 Main St, Portland, OR 97201',
-        timezone: 'America/Los_Angeles', headcount: 8, status: 'active',
-        shiftsThisWeek: 24, openShifts: 1,
+        id: 'loc-1',
+        name: 'Downtown Bistro',
+        address: '142 Main St, Portland, OR 97201',
+        timezone: 'America/Los_Angeles',
+        headcount: 8,
+        status: 'active',
+        shiftsThisWeek: 24,
+        openShifts: 1,
     },
     {
-        id: 'loc-2', name: 'Pearl District Café', address: '820 NW 23rd Ave, Portland, OR 97210',
-        timezone: 'America/Los_Angeles', headcount: 5, status: 'active',
-        shiftsThisWeek: 15, openShifts: 0,
+        id: 'loc-2',
+        name: 'Pearl District Cafe',
+        address: '820 NW 23rd Ave, Portland, OR 97210',
+        timezone: 'America/Los_Angeles',
+        headcount: 5,
+        status: 'active',
+        shiftsThisWeek: 15,
+        openShifts: 0,
     },
 ];
 
@@ -19,74 +30,85 @@ export default function LocationsPage() {
     const canAdd = can(user.role as UserRole, 'manage_locations');
 
     return (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem', maxWidth: 1200 }}>
-            {/* Header */}
-            <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', flexWrap: 'wrap', gap: '1rem' }}>
-                <div>
-                    <h1 style={{ fontSize: '1.5rem', fontWeight: 800, color: 'var(--text-primary)', letterSpacing: '-0.02em', marginBottom: '0.25rem' }}>Locations</h1>
-                    <p style={{ fontSize: '0.875rem', color: 'var(--text-muted)' }}>{LOCATIONS.length} active locations</p>
-                </div>
-                <RoleGate userRole={user.role as UserRole} allow={['ADMIN']}>
-                    <button style={{
-                        display: 'inline-flex', alignItems: 'center', gap: '0.5rem',
-                        padding: '0.5625rem 1.125rem',
-                        background: 'linear-gradient(135deg, #5c7cfa, #748ffc)',
-                        color: 'white', fontWeight: 600, fontSize: '0.875rem',
-                        borderRadius: 10, border: 'none', cursor: 'pointer',
-                        boxShadow: '0 4px 16px rgba(92,124,250,0.3)',
-                        fontFamily: 'var(--font-sans)',
-                    }}>
-                        + Add Location
-                    </button>
-                </RoleGate>
-            </div>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem', maxWidth: 1280 }}>
+            <section className="surface-card" style={{ padding: '1rem' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: '0.8rem', flexWrap: 'wrap' }}>
+                    <div>
+                        <div className="workspace-kicker">Location workspace</div>
+                        <h1 className="workspace-title" style={{ fontSize: '1.55rem', marginBottom: 2 }}>
+                            Locations
+                        </h1>
+                        <p className="workspace-subtitle">{LOCATIONS.length} active locations across your organization</p>
+                    </div>
 
-            {/* Location cards */}
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(360px, 1fr))', gap: '1rem' }}>
-                {LOCATIONS.map(loc => (
-                    <div key={loc.id} style={{ background: 'var(--bg-glass)', border: '1px solid var(--border)', borderRadius: 14, padding: '1.5rem', display: 'flex', flexDirection: 'column', gap: '1rem' }}>
-                        {/* Card header */}
-                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+                    {canAdd ? <button className="btn btn-primary">+ Add Location</button> : null}
+                </div>
+            </section>
+
+            <section style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: '0.8rem' }}>
+                {LOCATIONS.map((loc) => (
+                    <article key={loc.id} className="surface-card" style={{ padding: '1rem', display: 'grid', gap: '0.8rem' }}>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: '0.75rem' }}>
                             <div>
-                                <div style={{ fontWeight: 700, fontSize: '1rem', color: 'var(--text-primary)', marginBottom: '0.25rem' }}>{loc.name}</div>
-                                <div style={{ fontSize: '0.8125rem', color: 'var(--text-muted)' }}>{loc.address}</div>
+                                <h2 style={{ fontSize: '1rem', fontWeight: 750, color: 'var(--text-primary)', marginBottom: 3 }}>{loc.name}</h2>
+                                <p style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>{loc.address}</p>
                             </div>
-                            <span style={{
-                                fontSize: '0.625rem', fontWeight: 700, letterSpacing: '0.06em',
-                                textTransform: 'uppercase', padding: '3px 8px', borderRadius: 999,
-                                color: '#34d399', background: 'rgba(16,185,129,0.12)', border: '1px solid rgba(16,185,129,0.25)',
-                            }}>Active</span>
+                            <span
+                                className="badge"
+                                style={{
+                                    background: '#e9fbf1',
+                                    color: '#0f8c52',
+                                    borderColor: '#bdeed4',
+                                    fontSize: '0.64rem',
+                                    letterSpacing: '0.08em',
+                                    textTransform: 'uppercase',
+                                }}
+                            >
+                                {loc.status}
+                            </span>
                         </div>
 
-                        {/* Stats */}
-                        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '0.625rem' }}>
+                        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, minmax(0, 1fr))', gap: '0.55rem' }}>
                             {[
-                                { label: 'Staff', value: loc.headcount, icon: '👥' },
-                                { label: 'Shifts/wk', value: loc.shiftsThisWeek, icon: '📋' },
+                                { label: 'Staff', value: loc.headcount, icon: '👥', alert: false },
+                                { label: 'Shifts', value: loc.shiftsThisWeek, icon: '📋', alert: false },
                                 { label: 'Open', value: loc.openShifts, icon: '⚠️', alert: loc.openShifts > 0 },
-                            ].map((s, i) => (
-                                <div key={i} style={{ background: 'rgba(255,255,255,0.03)', borderRadius: 8, padding: '0.625rem', textAlign: 'center' }}>
-                                    <div style={{ fontSize: '0.875rem', marginBottom: '0.25rem' }}>{s.icon}</div>
-                                    <div style={{ fontSize: '1.125rem', fontWeight: 800, color: s.alert ? '#fb7185' : 'var(--text-primary)', letterSpacing: '-0.02em' }}>{s.value}</div>
-                                    <div style={{ fontSize: '0.625rem', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.04em', fontWeight: 600 }}>{s.label}</div>
+                            ].map((s) => (
+                                <div key={s.label} className="surface-muted" style={{ padding: '0.6rem', textAlign: 'center' }}>
+                                    <div style={{ fontSize: '0.95rem', marginBottom: 2 }}>{s.icon}</div>
+                                    <div
+                                        style={{
+                                            fontSize: '1.15rem',
+                                            fontWeight: 800,
+                                            color: s.alert ? '#cb3653' : 'var(--text-primary)',
+                                            letterSpacing: '-0.02em',
+                                        }}
+                                    >
+                                        {s.value}
+                                    </div>
+                                    <div style={{ fontSize: '0.62rem', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em', fontWeight: 700 }}>
+                                        {s.label}
+                                    </div>
                                 </div>
                             ))}
                         </div>
 
-                        {/* Actions */}
-                        <div style={{ display: 'flex', gap: '0.5rem', paddingTop: '0.25rem', borderTop: '1px solid var(--border)' }}>
-                            <a href={`/dashboard/scheduling?location=${loc.id}`} style={{ flex: 1, textAlign: 'center', padding: '0.5rem', borderRadius: 8, textDecoration: 'none', fontSize: '0.8125rem', fontWeight: 600, color: 'var(--brand)', background: 'rgba(92,124,250,0.08)', border: '1px solid rgba(92,124,250,0.2)' }}>
+                        <div style={{ fontSize: '0.76rem', color: 'var(--text-secondary)', display: 'flex', justifyContent: 'space-between', gap: '0.5rem' }}>
+                            <span>Timezone: {loc.timezone}</span>
+                            <span>Weekly health: {loc.openShifts > 0 ? 'Attention needed' : 'On track'}</span>
+                        </div>
+
+                        <div style={{ display: 'flex', gap: '0.5rem', paddingTop: '0.2rem' }}>
+                            <Link href={`/dashboard/scheduling?location=${loc.id}`} className="btn btn-secondary" style={{ flex: 1 }}>
                                 View Schedule
-                            </a>
+                            </Link>
                             <RoleGate userRole={user.role as UserRole} allow={['ADMIN']}>
-                                <button style={{ padding: '0.5rem 0.875rem', borderRadius: 8, background: 'rgba(255,255,255,0.04)', border: '1px solid var(--border)', fontSize: '0.8125rem', fontWeight: 500, color: 'var(--text-secondary)', cursor: 'pointer', fontFamily: 'inherit' }}>
-                                    Edit
-                                </button>
+                                <button className="btn btn-ghost">Edit</button>
                             </RoleGate>
                         </div>
-                    </div>
+                    </article>
                 ))}
-            </div>
+            </section>
         </div>
     );
 }

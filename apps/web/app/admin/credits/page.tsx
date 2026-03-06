@@ -2,14 +2,14 @@ import { requireRole } from '@/lib/server-auth';
 
 const TENANTS_WITH_CREDITS = [
     { name: 'Downtown Bistro', slug: 'downtown-bistro', credits: 420, plan: 'STARTER' },
-    { name: 'Harbor View Café', slug: 'harbor-view', credits: 1000, plan: 'FREE' },
+    { name: 'Harbor View Cafe', slug: 'harbor-view', credits: 1000, plan: 'FREE' },
     { name: 'Mesa Collective', slug: 'mesa-collective', credits: 9999, plan: 'ENTERPRISE' },
 ];
 
 const CREDIT_HISTORY = [
-    { tenant: 'Harbor View Café', amount: +1000, reason: 'Beta signup bonus', date: 'Mar 1, 2026', actor: 'system' },
+    { tenant: 'Harbor View Cafe', amount: +1000, reason: 'Beta signup bonus', date: 'Mar 1, 2026', actor: 'system' },
     { tenant: 'Downtown Bistro', amount: +500, reason: 'Early adopter grant', date: 'Feb 10, 2026', actor: 'system' },
-    { tenant: 'Downtown Bistro', amount: -80, reason: 'Schedule auto-generation × 8', date: 'Feb 28, 2026', actor: 'engine' },
+    { tenant: 'Downtown Bistro', amount: -80, reason: 'Schedule auto-generation x 8', date: 'Feb 28, 2026', actor: 'engine' },
     { tenant: 'Mesa Collective', amount: +9999, reason: 'Enterprise unlimited package', date: 'Jan 5, 2026', actor: 'system' },
 ];
 
@@ -17,98 +17,132 @@ export default function AdminCreditsPage() {
     requireRole(['SUPER_ADMIN']);
 
     return (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem', maxWidth: 1400 }}>
-            <div>
-                <h1 style={{ fontSize: '1.5rem', fontWeight: 800, color: '#f1f5f9', letterSpacing: '-0.02em', marginBottom: '0.25rem' }}>Credits</h1>
-                <p style={{ fontSize: '0.875rem', color: 'rgba(148,163,184,0.6)' }}>Grant and manage usage credits per tenant</p>
-            </div>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem', maxWidth: 1440 }}>
+            <section className="surface-card" style={{ padding: '1rem' }}>
+                <div className="workspace-kicker" style={{ color: '#cb3653' }}>
+                    Billing controls
+                </div>
+                <h1 className="workspace-title" style={{ fontSize: '1.6rem', marginBottom: 2 }}>
+                    Credits
+                </h1>
+                <p className="workspace-subtitle">Grant and review usage credits per tenant</p>
+            </section>
 
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 340px', gap: '1.25rem' }}>
-                {/* Tenant credit balances */}
-                <div>
-                    <h2 style={{ fontWeight: 700, fontSize: '0.9375rem', color: '#e2e8f0', marginBottom: '1rem' }}>Tenant Balances</h2>
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
-                        {TENANTS_WITH_CREDITS.map((t) => (
-                            <div key={t.slug} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '1rem 1.25rem', background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.07)', borderRadius: 12 }}>
-                                <div>
-                                    <div style={{ fontWeight: 600, fontSize: '0.9375rem', color: '#f1f5f9' }}>{t.name}</div>
-                                    <div style={{ fontSize: '0.6875rem', color: 'rgba(148,163,184,0.4)', fontFamily: 'monospace', marginTop: 2 }}>{t.slug} · {t.plan}</div>
-                                </div>
-                                <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
-                                    <div style={{ textAlign: 'right' }}>
-                                        <div style={{ fontSize: '1.5rem', fontWeight: 800, color: '#fbbf24', letterSpacing: '-0.02em' }}>{t.credits.toLocaleString()}</div>
-                                        <div style={{ fontSize: '0.6875rem', color: 'rgba(148,163,184,0.4)' }}>credits</div>
+            <section style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1.15fr) minmax(0, 0.85fr)', gap: '0.85rem' }}>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '0.85rem' }}>
+                    <article className="surface-card" style={{ padding: '0.95rem' }}>
+                        <h2 style={{ fontSize: '0.98rem', fontWeight: 760, color: 'var(--text-primary)', marginBottom: '0.75rem' }}>Tenant Balances</h2>
+                        <div style={{ display: 'grid', gap: '0.55rem' }}>
+                            {TENANTS_WITH_CREDITS.map((tenant) => (
+                                <div
+                                    key={tenant.slug}
+                                    className="surface-muted"
+                                    style={{
+                                        padding: '0.72rem 0.78rem',
+                                        display: 'flex',
+                                        justifyContent: 'space-between',
+                                        alignItems: 'center',
+                                        gap: '0.85rem',
+                                    }}
+                                >
+                                    <div style={{ minWidth: 0 }}>
+                                        <div style={{ fontWeight: 700, fontSize: '0.88rem', color: 'var(--text-primary)' }}>{tenant.name}</div>
+                                        <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)', fontFamily: 'var(--font-mono)', marginTop: 1 }}>
+                                            {tenant.slug} · {tenant.plan}
+                                        </div>
                                     </div>
-                                    <button style={{
-                                        padding: '6px 14px', borderRadius: 8,
-                                        background: 'rgba(245,158,11,0.12)', border: '1px solid rgba(245,158,11,0.3)',
-                                        fontSize: '0.8125rem', fontWeight: 600, color: '#fbbf24',
-                                        cursor: 'pointer', fontFamily: 'inherit',
-                                    }}>
-                                        + Grant
-                                    </button>
+                                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.65rem' }}>
+                                        <div style={{ textAlign: 'right' }}>
+                                            <div style={{ fontSize: '1.3rem', fontWeight: 800, color: '#cc7f06', letterSpacing: '-0.02em' }}>
+                                                {tenant.credits.toLocaleString()}
+                                            </div>
+                                            <div style={{ fontSize: '0.68rem', color: 'var(--text-muted)' }}>credits</div>
+                                        </div>
+                                        <button
+                                            className="btn btn-sm"
+                                            style={{ background: '#fff4e2', color: '#cc7f06', borderColor: '#ffe1a6' }}
+                                        >
+                                            + Grant
+                                        </button>
+                                    </div>
                                 </div>
-                            </div>
-                        ))}
-                    </div>
+                            ))}
+                        </div>
+                    </article>
 
-                    {/* Transaction history */}
-                    <h2 style={{ fontWeight: 700, fontSize: '0.9375rem', color: '#e2e8f0', margin: '1.5rem 0 1rem' }}>Transaction History</h2>
-                    <div style={{ background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.07)', borderRadius: 12, overflow: 'hidden' }}>
-                        <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+                    <article className="surface-card" style={{ overflowX: 'auto' }}>
+                        <div style={{ padding: '0.95rem 1rem 0.55rem' }}>
+                            <h2 style={{ fontSize: '0.98rem', fontWeight: 760, color: 'var(--text-primary)' }}>Transaction History</h2>
+                        </div>
+                        <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 720 }}>
                             <thead>
-                                <tr style={{ borderBottom: '1px solid rgba(255,255,255,0.07)' }}>
-                                    {['Tenant', 'Amount', 'Reason', 'Date', 'By'].map(h => (
-                                        <th key={h} style={{ textAlign: 'left', padding: '0.75rem 1rem', fontSize: '0.6875rem', fontWeight: 600, color: 'rgba(148,163,184,0.4)', letterSpacing: '0.06em', textTransform: 'uppercase' }}>{h}</th>
+                                <tr style={{ borderTop: '1px solid var(--border)', borderBottom: '1px solid var(--border)', background: '#f8faff' }}>
+                                    {['Tenant', 'Amount', 'Reason', 'Date', 'By'].map((h) => (
+                                        <th
+                                            key={h}
+                                            style={{
+                                                textAlign: 'left',
+                                                padding: '0.7rem 1rem',
+                                                fontSize: '0.66rem',
+                                                fontWeight: 700,
+                                                color: 'var(--text-muted)',
+                                                letterSpacing: '0.08em',
+                                                textTransform: 'uppercase',
+                                            }}
+                                        >
+                                            {h}
+                                        </th>
                                     ))}
                                 </tr>
                             </thead>
                             <tbody>
                                 {CREDIT_HISTORY.map((row, i) => (
-                                    <tr key={i} style={{ borderBottom: i < CREDIT_HISTORY.length - 1 ? '1px solid rgba(255,255,255,0.05)' : 'none' }}>
-                                        <td style={{ padding: '0.75rem 1rem', fontSize: '0.8125rem', color: '#e2e8f0' }}>{row.tenant}</td>
-                                        <td style={{ padding: '0.75rem 1rem', fontWeight: 700, fontSize: '0.875rem', color: row.amount > 0 ? '#34d399' : '#fb7185' }}>
-                                            {row.amount > 0 ? '+' : ''}{row.amount.toLocaleString()}
+                                    <tr key={`${row.tenant}-${row.date}-${i}`} style={{ borderBottom: i < CREDIT_HISTORY.length - 1 ? '1px solid var(--border)' : 'none' }}>
+                                        <td style={{ padding: '0.76rem 1rem', fontSize: '0.84rem', color: 'var(--text-primary)', fontWeight: 600 }}>{row.tenant}</td>
+                                        <td style={{ padding: '0.76rem 1rem', fontWeight: 800, fontSize: '0.85rem', color: row.amount > 0 ? '#0f8c52' : '#cb3653' }}>
+                                            {row.amount > 0 ? '+' : ''}
+                                            {row.amount.toLocaleString()}
                                         </td>
-                                        <td style={{ padding: '0.75rem 1rem', fontSize: '0.8125rem', color: 'rgba(148,163,184,0.7)' }}>{row.reason}</td>
-                                        <td style={{ padding: '0.75rem 1rem', fontSize: '0.8125rem', color: 'rgba(148,163,184,0.5)' }}>{row.date}</td>
-                                        <td style={{ padding: '0.75rem 1rem', fontSize: '0.75rem', fontFamily: 'monospace', color: 'rgba(148,163,184,0.4)' }}>{row.actor}</td>
+                                        <td style={{ padding: '0.76rem 1rem', fontSize: '0.82rem', color: 'var(--text-secondary)' }}>{row.reason}</td>
+                                        <td style={{ padding: '0.76rem 1rem', fontSize: '0.8rem', color: 'var(--text-muted)' }}>{row.date}</td>
+                                        <td style={{ padding: '0.76rem 1rem', fontSize: '0.74rem', color: 'var(--text-muted)', fontFamily: 'var(--font-mono)' }}>{row.actor}</td>
                                     </tr>
                                 ))}
                             </tbody>
                         </table>
-                    </div>
+                    </article>
                 </div>
 
-                {/* Quick grant form */}
-                <div style={{ background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.07)', borderRadius: 14, padding: '1.5rem', height: 'fit-content' }}>
-                    <h2 style={{ fontWeight: 700, fontSize: '0.9375rem', color: '#e2e8f0', marginBottom: '1.25rem' }}>Grant Credits</h2>
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
-                        <div>
-                            <label style={{ display: 'block', fontSize: '0.8125rem', fontWeight: 600, color: 'rgba(148,163,184,0.8)', marginBottom: '0.375rem' }}>Tenant</label>
-                            <select style={{ width: '100%', padding: '0.5625rem 0.875rem', background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.12)', borderRadius: 8, color: '#e2e8f0', fontSize: '0.875rem', fontFamily: 'inherit' }}>
-                                {TENANTS_WITH_CREDITS.map(t => <option key={t.slug} value={t.slug} style={{ background: '#1e1e2a' }}>{t.name}</option>)}
+                <article className="surface-card" style={{ padding: '1rem', height: 'fit-content' }}>
+                    <h2 style={{ fontSize: '0.98rem', fontWeight: 760, color: 'var(--text-primary)', marginBottom: '0.8rem' }}>Grant Credits</h2>
+                    <div style={{ display: 'grid', gap: '0.78rem' }}>
+                        <label className="form-group">
+                            <span className="form-label">Tenant</span>
+                            <select className="form-input">
+                                {TENANTS_WITH_CREDITS.map((tenant) => (
+                                    <option key={tenant.slug} value={tenant.slug}>
+                                        {tenant.name}
+                                    </option>
+                                ))}
                             </select>
-                        </div>
-                        <div>
-                            <label style={{ display: 'block', fontSize: '0.8125rem', fontWeight: 600, color: 'rgba(148,163,184,0.8)', marginBottom: '0.375rem' }}>Amount</label>
-                            <input type="number" defaultValue={500} style={{ width: '100%', padding: '0.5625rem 0.875rem', background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.12)', borderRadius: 8, color: '#e2e8f0', fontSize: '0.875rem', fontFamily: 'inherit', boxSizing: 'border-box' }} />
-                        </div>
-                        <div>
-                            <label style={{ display: 'block', fontSize: '0.8125rem', fontWeight: 600, color: 'rgba(148,163,184,0.8)', marginBottom: '0.375rem' }}>Reason</label>
-                            <input type="text" defaultValue="Beta program grant" style={{ width: '100%', padding: '0.5625rem 0.875rem', background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.12)', borderRadius: 8, color: '#e2e8f0', fontSize: '0.875rem', fontFamily: 'inherit', boxSizing: 'border-box' }} />
-                        </div>
-                        <button style={{
-                            padding: '0.625rem 1rem', borderRadius: 8,
-                            background: 'rgba(245,158,11,0.15)', border: '1px solid rgba(245,158,11,0.35)',
-                            fontSize: '0.875rem', fontWeight: 700, color: '#fbbf24',
-                            cursor: 'pointer', fontFamily: 'inherit',
-                        }}>
-                            💳 Grant Credits
+                        </label>
+
+                        <label className="form-group">
+                            <span className="form-label">Amount</span>
+                            <input type="number" defaultValue={500} className="form-input" />
+                        </label>
+
+                        <label className="form-group">
+                            <span className="form-label">Reason</span>
+                            <input type="text" defaultValue="Beta program grant" className="form-input" />
+                        </label>
+
+                        <button className="btn" style={{ background: '#ffeef2', color: '#cb3653', borderColor: '#ffd0da' }}>
+                            Grant Credits
                         </button>
                     </div>
-                </div>
-            </div>
+                </article>
+            </section>
         </div>
     );
 }

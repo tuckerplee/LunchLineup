@@ -1,5 +1,3 @@
-version: '3.8'
-
 services:
   # ─── Reverse Proxy & Load Balancer ───
   proxy:
@@ -31,8 +29,10 @@ services:
     networks:
       - app
     environment:
-      - NODE_ENV=development
-      - NEXT_PUBLIC_API_URL=http://api:3000/api/v1
+      - NODE_ENV=production
+      - NEXT_PUBLIC_API_URL=/api/v1
+      - INTERNAL_API_URL=http://api:3000/v1
+      - NEXT_PUBLIC_OIDC_ENABLED=false
     healthcheck:
       test: [ "CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:3000" ]
       interval: 15s
@@ -49,11 +49,11 @@ services:
     ports:
       - "3001:3000"
     networks:
+      - external
       - app
       - data
     dns:
-      - 8.8.8.8
-      - 8.8.4.4
+      - 10.10.10.1
     env_file: .env
     healthcheck:
       test: [ "CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://127.0.0.1:3000/health" ]
@@ -187,6 +187,20 @@ services:
       interval: 15s
       timeout: 5s
       retries: 3
+    restart: unless-stopped
+
+  # ─── Autoheal (restart unhealthy containers) ───
+  autoheal:
+    image: willfarrell/autoheal:latest
+    container_name: lunchlineup-autoheal
+    environment:
+      - AUTOHEAL_CONTAINER_LABEL=all
+      - AUTOHEAL_INTERVAL=30
+      - AUTOHEAL_START_PERIOD=120
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    networks:
+      - management
     restart: unless-stopped
 
   # ─── Observability: Prometheus ───

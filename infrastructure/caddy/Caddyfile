@@ -1,4 +1,4 @@
-localhost:80 {
+beta.lunchlineup.com, www.beta.lunchlineup.com, 10.10.10.141, 10.10.10.141:80, localhost:80 {
     # Route API requests to the NestJS backend
     handle /api/v1/* {
         uri strip_prefix /api

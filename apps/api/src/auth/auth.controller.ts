@@ -1,4 +1,4 @@
-import { Controller, Get, Post, Body, Req, UseGuards, SetMetadata, HttpCode, HttpStatus } from '@nestjs/common';
+import { Controller, Get, Post, Body, Req, UseGuards, SetMetadata, HttpCode, HttpStatus, NotFoundException, UnauthorizedException } from '@nestjs/common';
 import { AuthService } from './auth.service';
 import { OtpService } from './otp.service';
 import { EmailService } from './email.service';
@@ -16,12 +16,26 @@ export class AuthController {
         private emailService: EmailService,
     ) { }
 
+    private assertOidcEnabled() {
+        if ((process.env.OIDC_ENABLED ?? '').toLowerCase() !== 'true') {
+            throw new NotFoundException('OIDC login is disabled');
+        }
+    }
+
     /**
      * Initiate OIDC login — redirects to provider.
      */
     @Public()
     @Get('login')
-    async login(@Res() res: Response) {
+    async login(@Req() req: Request, @Res() res: Response) {
+        if ((process.env.OIDC_ENABLED || 'true').toLowerCase() === 'false') {
+            const nextPath = String((req.query as any)?.next || '');
+            const safeNext = nextPath.startsWith('/') ? nextPath : null;
+            const params = new URLSearchParams();
+            if (safeNext) params.set('next', safeNext);
+            const redirectTo = params.toString() ? `/auth/login?${params.toString()}` : '/auth/login';
+            return res.redirect(302, redirectTo);
+        }
         const issuerUrl = process.env.OIDC_ISSUER_URL;
         const clientId = process.env.OIDC_CLIENT_ID;
         const redirectUri = process.env.OIDC_REDIRECT_URI;
@@ -40,6 +54,9 @@ export class AuthController {
     @Public()
     @Get('callback')
     async callback(@Req() req: Request, @Res() res: Response) {
+        if ((process.env.OIDC_ENABLED || 'true').toLowerCase() === 'false') {
+            return res.redirect(302, '/auth/login');
+        }
         const { code, state } = req.query as { code: string; state: string };
         const result = await this.authService.handleOidcCallback(code, state);
 
@@ -87,27 +104,53 @@ export class AuthController {
     @HttpCode(HttpStatus.OK)
     async verifyOtp(
         @Body() body: { email: string; code: string },
+        @Req() req: Request,
         @Res() res: Response,
     ) {
-        await this.otpService.verifyOtp(body.email.toLowerCase(), body.code);
-        const result = await this.authService.loginWithEmail(body.email.toLowerCase());
+        const email = body.email.toLowerCase();
+        const redirectMode = String((req.query as any)?.redirect || '') === '1';
+        const nextPath = String((req.query as any)?.next || '');
+        const safeNext = nextPath.startsWith('/') ? nextPath : null;
 
-        const cookieOptions = {
-            httpOnly: true,
-            secure: process.env.NODE_ENV === 'production',
-            sameSite: 'strict' as const,
-            path: '/',
-        };
+        try {
+            await this.otpService.verifyOtp(email, body.code);
+            const result = await this.authService.loginWithEmail(email);
 
-        res.cookie('access_token', result.accessToken, { ...cookieOptions, maxAge: 15 * 60 * 1000 });
-        res.cookie('refresh_token', result.refreshToken, { ...cookieOptions, maxAge: 7 * 24 * 60 * 60 * 1000 });
-        res.cookie('csrf_token', result.csrfToken, {
-            httpOnly: false, secure: process.env.NODE_ENV === 'production',
-            sameSite: 'strict', path: '/',
-        });
+            const cookieOptions = {
+                httpOnly: true,
+                secure: process.env.NODE_ENV === 'production',
+                sameSite: 'strict' as const,
+                path: '/',
+            };
 
-        const redirectTo = result.user.role === 'SUPER_ADMIN' ? '/admin' : '/dashboard';
-        res.json({ success: true, redirectTo });
+            res.cookie('access_token', result.accessToken, { ...cookieOptions, maxAge: 15 * 60 * 1000 });
+            res.cookie('refresh_token', result.refreshToken, { ...cookieOptions, maxAge: 7 * 24 * 60 * 60 * 1000 });
+            res.cookie('csrf_token', result.csrfToken, {
+                httpOnly: false,
+                secure: process.env.NODE_ENV === 'production',
+                sameSite: 'strict',
+                path: '/',
+            });
+
+            const roleRedirect = result.user.role === 'SUPER_ADMIN' ? '/admin' : '/dashboard';
+            const redirectTo = safeNext ?? roleRedirect;
+
+            if (redirectMode) {
+                return res.redirect(302, redirectTo);
+            }
+            return res.json({ success: true, redirectTo });
+        } catch (err) {
+            if (redirectMode && err instanceof UnauthorizedException) {
+                const params = new URLSearchParams({
+                    step: 'otp',
+                    email,
+                    error: 'invalid',
+                });
+                if (safeNext) params.set('next', safeNext);
+                return res.redirect(302, `/auth/login?${params.toString()}`);
+            }
+            throw err;
+        }
     }
 
     /**

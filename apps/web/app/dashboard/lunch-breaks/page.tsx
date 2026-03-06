@@ -631,7 +631,7 @@ export default function LunchBreaksPage() {
                   style={{
                     border: '1px solid var(--border)',
                     borderRadius: 8,
-                    background: 'rgba(255,255,255,0.04)',
+                    background: '#ffffff',
                     color: 'var(--text-primary)',
                     padding: '0.4rem 0.55rem',
                     fontSize: '0.82rem',
@@ -701,7 +701,7 @@ export default function LunchBreaksPage() {
                   </thead>
                   <tbody>
                     {manualShifts.map((row, idx) => (
-                      <tr key={row.id} style={{ background: idx % 2 === 0 ? 'rgba(255,255,255,0.01)' : 'transparent' }}>
+                      <tr key={row.id} style={{ background: idx % 2 === 0 ? '#fbfcff' : 'transparent' }}>
                         <td style={{ padding: '0.6rem', borderBottom: '1px solid var(--border)' }}>
                           <input
                             type="text"
@@ -711,7 +711,7 @@ export default function LunchBreaksPage() {
                               width: '100%',
                               border: '1px solid var(--border)',
                               borderRadius: 8,
-                              background: 'rgba(255,255,255,0.04)',
+                              background: '#ffffff',
                               color: 'var(--text-primary)',
                               padding: '0.36rem 0.45rem',
                               fontSize: '0.8rem',
@@ -726,7 +726,7 @@ export default function LunchBreaksPage() {
                             style={{
                               border: '1px solid var(--border)',
                               borderRadius: 8,
-                              background: 'rgba(255,255,255,0.04)',
+                              background: '#ffffff',
                               color: 'var(--text-primary)',
                               padding: '0.35rem 0.4rem',
                               fontSize: '0.78rem',
@@ -741,7 +741,7 @@ export default function LunchBreaksPage() {
                             style={{
                               border: '1px solid var(--border)',
                               borderRadius: 8,
-                              background: 'rgba(255,255,255,0.04)',
+                              background: '#ffffff',
                               color: 'var(--text-primary)',
                               padding: '0.35rem 0.4rem',
                               fontSize: '0.78rem',
@@ -798,7 +798,7 @@ export default function LunchBreaksPage() {
                   </thead>
                   <tbody>
                     {dayRows.map((row, idx) => (
-                      <tr key={row.shiftId} style={{ background: idx % 2 === 0 ? 'rgba(255,255,255,0.01)' : 'transparent' }}>
+                      <tr key={row.shiftId} style={{ background: idx % 2 === 0 ? '#fbfcff' : 'transparent' }}>
                         <td style={{ padding: '0.7rem', borderBottom: '1px solid var(--border)' }}>
                           <div style={{ color: 'var(--text-primary)', fontWeight: 600 }}>{row.employeeName}</div>
                           <div style={{ color: 'var(--text-muted)', fontSize: '0.75rem' }}>{row.userId ? 'Assigned' : 'Open shift'}</div>
@@ -829,7 +829,7 @@ export default function LunchBreaksPage() {
                                   style={{
                                     border: '1px solid var(--border)',
                                     borderRadius: 8,
-                                    background: 'rgba(255,255,255,0.04)',
+                                    background: '#ffffff',
                                     color: 'var(--text-primary)',
                                     padding: '0.35rem 0.45rem',
                                     fontSize: '0.8rem',
@@ -848,7 +848,7 @@ export default function LunchBreaksPage() {
                                   style={{
                                     border: '1px solid var(--border)',
                                     borderRadius: 8,
-                                    background: 'rgba(255,255,255,0.04)',
+                                    background: '#ffffff',
                                     color: 'var(--text-primary)',
                                     padding: '0.35rem 0.45rem',
                                     fontSize: '0.8rem',
@@ -897,19 +897,19 @@ export default function LunchBreaksPage() {
             </summary>
             <div style={{ marginTop: '0.75rem', display: 'grid', gap: '0.9rem' }}>
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: '0.75rem' }}>
-                <div style={{ padding: '0.75rem', border: '1px solid var(--border)', borderRadius: 10, background: 'rgba(255,255,255,0.02)' }}>
+                <div style={{ padding: '0.75rem', border: '1px solid var(--border)', borderRadius: 10, background: '#f7f9ff' }}>
                   <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>Access Source</div>
                   <div style={{ fontWeight: 700, color: 'var(--text-primary)', textTransform: 'capitalize' }}>{lunchBreakFeature.source}</div>
                 </div>
-                <div style={{ padding: '0.75rem', border: '1px solid var(--border)', borderRadius: 10, background: 'rgba(255,255,255,0.02)' }}>
+                <div style={{ padding: '0.75rem', border: '1px solid var(--border)', borderRadius: 10, background: '#f7f9ff' }}>
                   <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>Usage Credits</div>
                   <div style={{ fontWeight: 700, color: 'var(--text-primary)' }}>{features?.usageCredits ?? 0}</div>
                 </div>
-                <div style={{ padding: '0.75rem', border: '1px solid var(--border)', borderRadius: 10, background: 'rgba(255,255,255,0.02)' }}>
+                <div style={{ padding: '0.75rem', border: '1px solid var(--border)', borderRadius: 10, background: '#f7f9ff' }}>
                   <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>Credit Cost / Run</div>
                   <div style={{ fontWeight: 700, color: 'var(--text-primary)' }}>{lunchBreakFeature.creditCost ?? 0}</div>
                 </div>
-                <div style={{ padding: '0.75rem', border: '1px solid var(--border)', borderRadius: 10, background: 'rgba(255,255,255,0.02)' }}>
+                <div style={{ padding: '0.75rem', border: '1px solid var(--border)', borderRadius: 10, background: '#f7f9ff' }}>
                   <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>Scheduling Link</div>
                   <div style={{ fontWeight: 700, color: hasSharedScheduleData ? 'var(--emerald)' : 'var(--text-primary)' }}>
                     {hasSharedScheduleData ? `${dayRows.length} shifts linked` : 'No linked shifts'}
@@ -941,7 +941,7 @@ export default function LunchBreaksPage() {
                               }))
                             }
                             style={{
-                              background: 'rgba(255,255,255,0.04)',
+                              background: '#ffffff',
                               border: '1px solid var(--border)',
                               borderRadius: 8,
                               color: 'var(--text-primary)',

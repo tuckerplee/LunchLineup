@@ -1,4 +1,4 @@
-import { Controller, Get, Post, Put, Delete, Param, Body, Req, UseGuards, SetMetadata, Query, HttpCode, HttpStatus, NotFoundException } from '@nestjs/common';
+import { Controller, Get, Post, Put, Delete, Param, Body, Req, UseGuards, SetMetadata, Query, HttpCode, HttpStatus, NotFoundException, BadRequestException, ForbiddenException } from '@nestjs/common';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { RbacGuard } from '../auth/rbac.guard';
 import { PrismaClient } from '@prisma/client';
@@ -31,11 +31,46 @@ export class LocationsController {
     }
 
     @Post()
-    @Permission('locations:write')
-    async create(@Body() body: { name: string; address?: string; timezone?: string }, @Req() req: any) {
-        const location = await this.prisma.location.create({
-            data: { ...body, tenantId: req.user.tenantId }
+    async create(
+        @Body() body: { name: string; address?: string; timezone?: string; tenantName?: string },
+        @Req() req: any,
+    ) {
+        const tenantId = req.user.tenantId;
+        const userRole = req.user.role;
+        const locationName = body.name?.trim();
+        const tenantName = body.tenantName?.trim();
+
+        if (!locationName) {
+            throw new BadRequestException('Location name is required');
+        }
+
+        const existingLocationCount = await this.prisma.location.count({
+            where: { tenantId, deletedAt: null },
         });
+        const isBootstrapCreate = existingLocationCount === 0;
+        const canWrite = ['SUPER_ADMIN', 'ADMIN'].includes(userRole) || isBootstrapCreate;
+        if (!canWrite) {
+            throw new ForbiddenException('Insufficient permissions for locations:write');
+        }
+
+        const location = await this.prisma.$transaction(async (tx) => {
+            if (tenantName) {
+                await tx.tenant.update({
+                    where: { id: tenantId },
+                    data: { name: tenantName },
+                });
+            }
+
+            return tx.location.create({
+                data: {
+                    name: locationName,
+                    address: body.address,
+                    timezone: body.timezone,
+                    tenantId,
+                },
+            });
+        });
+
         return location;
     }
 

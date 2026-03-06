@@ -1,117 +1,140 @@
 import Link from 'next/link';
-import { getServerUser, ROLE_META } from '@/lib/server-auth';
+import { getServerUser } from '@/lib/server-auth';
 import { redirect } from 'next/navigation';
 
 const ADMIN_NAV = [
-    { href: '/admin', label: 'Overview', icon: '◈', exact: true },
-    { href: '/admin/tenants', label: 'Tenants', icon: '🏢', exact: false },
-    { href: '/admin/users', label: 'Users', icon: '👥', exact: false },
-    { href: '/admin/credits', label: 'Credits', icon: '💳', exact: false },
+    { href: '/admin', label: 'Overview', icon: '◈' },
+    { href: '/admin/tenants', label: 'Tenants', icon: '🏢' },
+    { href: '/admin/users', label: 'Users', icon: '👥' },
+    { href: '/admin/credits', label: 'Credits', icon: '💳' },
 ];
 
 export default function AdminLayout({ children }: { children: React.ReactNode }) {
     const user = getServerUser();
     if (!user || user.role !== 'SUPER_ADMIN') redirect('/dashboard');
 
-    const roleMeta = ROLE_META['SUPER_ADMIN'];
-
     return (
-        <div style={{ display: 'flex', minHeight: '100vh', background: '#0a0a0f' }}>
-            {/* ── System Admin Sidebar ── */}
-            <aside style={{
-                width: 220, flexShrink: 0,
-                background: '#0f0a14',
-                borderRight: '1px solid rgba(244,63,94,0.2)',
-                display: 'flex', flexDirection: 'column',
-            }}>
-                {/* Logo + System Admin badge */}
-                <div style={{ padding: '1.25rem', borderBottom: '1px solid rgba(244,63,94,0.15)' }}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.5rem' }}>
-                        <div style={{
-                            width: 28, height: 28, borderRadius: 7, flexShrink: 0,
-                            background: 'linear-gradient(135deg, #f43f5e, #e11d48)',
-                            display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '0.875rem',
-                        }}>🍱</div>
-                        <span style={{ fontWeight: 800, fontSize: '0.9375rem', color: '#f1f5f9', letterSpacing: '-0.01em' }}>
-                            LunchLineup
+        <div className="workspace-shell" style={{ background: '#f7f9ff' }}>
+            <aside
+                className="workspace-sidebar"
+                aria-label="Admin sidebar"
+                style={{
+                    background:
+                        'radial-gradient(40rem 24rem at -10% -20%, rgba(231,72,103,0.16), transparent 58%), linear-gradient(180deg, #fef8fa, #f7f9ff 42%, #f9fbff)',
+                }}
+            >
+                <div className="workspace-sidebar-inner" style={{ borderColor: '#f0d5de' }}>
+                    <div style={{ padding: '1.05rem 1rem', borderBottom: '1px solid #f0d5de' }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '0.62rem', marginBottom: '0.55rem' }}>
+                            <div
+                                aria-hidden="true"
+                                style={{
+                                    width: 34,
+                                    height: 34,
+                                    borderRadius: 10,
+                                    display: 'grid',
+                                    placeItems: 'center',
+                                    color: '#ffffff',
+                                    background: 'linear-gradient(135deg, #f26f87, #e74867 65%, #cf2f54 120%)',
+                                }}
+                            >
+                                🍱
+                            </div>
+                            <div>
+                                <div style={{ fontWeight: 800, letterSpacing: '-0.02em', color: 'var(--text-primary)' }}>LunchLineup</div>
+                                <div className="workspace-kicker">Platform Admin</div>
+                            </div>
+                        </div>
+
+                        <span
+                            className="badge"
+                            style={{
+                                fontSize: '0.62rem',
+                                textTransform: 'uppercase',
+                                letterSpacing: '0.08em',
+                                background: '#ffeef2',
+                                color: '#cb3653',
+                                borderColor: '#ffcfda',
+                            }}
+                        >
+                            System Admin
                         </span>
                     </div>
-                    <div style={{
-                        display: 'inline-flex', alignItems: 'center', gap: '0.375rem',
-                        padding: '3px 10px', borderRadius: 999,
-                        background: 'rgba(244,63,94,0.15)',
-                        border: '1px solid rgba(244,63,94,0.35)',
-                        fontSize: '0.625rem', fontWeight: 700, letterSpacing: '0.08em',
-                        textTransform: 'uppercase', color: '#fb7185',
-                    }}>
-                        <span style={{ width: 5, height: 5, borderRadius: '50%', background: '#f43f5e', animation: 'pulse 2s infinite' }} />
-                        System Admin
-                    </div>
-                </div>
 
-                {/* Nav */}
-                <nav style={{ flex: 1, padding: '0.75rem', display: 'flex', flexDirection: 'column', gap: 2 }}>
-                    {ADMIN_NAV.map(item => (
-                        <Link key={item.href} href={item.href} style={{
-                            display: 'flex', alignItems: 'center', gap: '0.625rem',
-                            padding: '0.5625rem 0.75rem', borderRadius: 8,
-                            textDecoration: 'none', fontSize: '0.875rem', fontWeight: 500,
-                            color: 'rgba(241,245,249,0.7)',
-                            transition: 'all 150ms',
-                        }}>
-                            <span style={{ fontSize: '1rem', width: 20, textAlign: 'center' }}>{item.icon}</span>
-                            {item.label}
+                    <nav style={{ flex: 1, padding: '0.75rem', display: 'flex', flexDirection: 'column', gap: 4 }}>
+                        {ADMIN_NAV.map((item) => (
+                            <Link
+                                key={item.href}
+                                href={item.href}
+                                className="workspace-nav-link"
+                                style={{
+                                    color: 'var(--text-secondary)',
+                                }}
+                            >
+                                <span aria-hidden="true" style={{ width: 18, display: 'inline-grid', placeItems: 'center' }}>
+                                    {item.icon}
+                                </span>
+                                {item.label}
+                            </Link>
+                        ))}
+                    </nav>
+
+                    <div style={{ borderTop: '1px solid #f0d5de', padding: '0.8rem' }}>
+                        <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)', marginBottom: '0.45rem', paddingLeft: '0.2rem' }}>
+                            Signed in as System Admin
+                        </div>
+                        <Link
+                            href="/auth/logout"
+                            className="workspace-nav-link"
+                            style={{ color: '#cb3653', borderColor: '#ffd5df', background: '#fff6f8' }}
+                        >
+                            <span aria-hidden="true">↩</span>
+                            Sign out
                         </Link>
-                    ))}
-                </nav>
-
-                {/* Back to dashboard link (shows tenant dashboard route) */}
-                <div style={{ padding: '1rem 0.75rem', borderTop: '1px solid rgba(244,63,94,0.15)' }}>
-                    <div style={{ fontSize: '0.6875rem', color: 'rgba(148,163,184,0.5)', marginBottom: '0.375rem', paddingLeft: '0.75rem' }}>
-                        Signed in as System Admin
                     </div>
-                    <Link href="/api/v1/auth/logout" style={{
-                        display: 'flex', alignItems: 'center', gap: '0.625rem',
-                        padding: '0.5625rem 0.75rem', borderRadius: 8,
-                        textDecoration: 'none', fontSize: '0.875rem',
-                        color: 'rgba(148,163,184,0.7)', transition: 'all 150ms',
-                    }}>
-                        <span>🚪</span> Sign out
-                    </Link>
                 </div>
             </aside>
 
-            {/* ── Main ── */}
-            <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
-                {/* Top header */}
-                <header style={{
-                    height: 56, flexShrink: 0,
-                    borderBottom: '1px solid rgba(244,63,94,0.2)',
-                    background: '#0f0a14',
-                    display: 'flex', alignItems: 'center', padding: '0 1.5rem',
-                    justifyContent: 'space-between',
-                }}>
-                    <span style={{ fontSize: '0.75rem', color: 'rgba(148,163,184,0.5)' }}>
-                        Internal Platform Console · LunchLineup v0.1
-                    </span>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
-                        <div style={{
-                            width: 32, height: 32, borderRadius: '50%',
-                            background: 'linear-gradient(135deg, #f43f5e, #e11d48)',
-                            display: 'flex', alignItems: 'center', justifyContent: 'center',
-                            fontSize: '0.75rem', fontWeight: 800, color: 'white',
-                        }}>S</div>
+            <section className="workspace-main">
+                <header
+                    className="workspace-topbar"
+                    style={{
+                        borderBottomColor: '#f0d5de',
+                        background:
+                            'linear-gradient(180deg, rgba(255,250,252,0.94), rgba(247,249,255,0.92))',
+                    }}
+                >
+                    <div>
+                        <div className="workspace-kicker" style={{ color: '#cb3653' }}>
+                            Internal Console
+                        </div>
+                        <div style={{ fontSize: '1rem', fontWeight: 700, color: 'var(--text-primary)' }}>System Administration</div>
+                    </div>
+
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.7rem' }}>
+                        <span className="badge" style={{ background: '#ffeef2', borderColor: '#ffcfda', color: '#cb3653' }}>
+                            Production
+                        </span>
+                        <span
+                            style={{
+                                width: 32,
+                                height: 32,
+                                borderRadius: '50%',
+                                display: 'grid',
+                                placeItems: 'center',
+                                background: 'linear-gradient(135deg, #f26f87, #e74867)',
+                                color: '#ffffff',
+                                fontWeight: 800,
+                                fontSize: '0.73rem',
+                            }}
+                        >
+                            SA
+                        </span>
                     </div>
                 </header>
 
-                <main style={{ flex: 1, overflowY: 'auto', padding: '1.5rem', background: '#0a0a0f' }}>
-                    {children}
-                </main>
-            </div>
-
-            <style>{`
-                @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
-            `}</style>
+                <main className="workspace-content">{children}</main>
+            </section>
         </div>
     );
 }

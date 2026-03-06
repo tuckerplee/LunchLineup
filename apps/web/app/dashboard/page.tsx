@@ -1,222 +1,312 @@
 'use client';
 
 import Link from 'next/link';
+import { ArrowRight, CalendarDays, Clock3, MapPin, Sparkles, Users } from 'lucide-react';
 
 const STAT_CARDS = [
-  { label: 'Active Staff', value: '42', delta: '+12%', deltaColor: 'var(--emerald)', icon: '👥', iconBg: 'rgba(92, 124, 250, 0.12)', iconBorder: 'rgba(92, 124, 250, 0.2)' },
-  { label: 'Shifts This Week', value: '148', delta: 'scheduled', deltaColor: 'var(--text-muted)', icon: '📋', iconBg: 'rgba(16, 185, 129, 0.1)', iconBorder: 'rgba(16, 185, 129, 0.2)' },
-  { label: 'Open Shifts', value: '3', delta: 'Requires action', deltaColor: 'var(--rose)', icon: '⚠️', iconBg: 'rgba(244, 63, 94, 0.1)', iconBorder: 'rgba(244, 63, 94, 0.2)' },
-  { label: 'Locations', value: '2', delta: 'Active', deltaColor: 'var(--text-muted)', icon: '📍', iconBg: 'rgba(245, 158, 11, 0.1)', iconBorder: 'rgba(245, 158, 11, 0.2)' },
+  {
+    label: 'Active Staff',
+    value: '42',
+    delta: '+12% vs last week',
+    tone: '#2f63ff',
+    bg: 'linear-gradient(145deg, #edf3ff, #f7f9ff)',
+    icon: Users,
+  },
+  {
+    label: 'Shifts This Week',
+    value: '148',
+    delta: '92% covered',
+    tone: '#17b26a',
+    bg: 'linear-gradient(145deg, #e9fbf1, #f7fffb)',
+    icon: CalendarDays,
+  },
+  {
+    label: 'Open Shifts',
+    value: '3',
+    delta: 'Needs assignment',
+    tone: '#e74867',
+    bg: 'linear-gradient(145deg, #ffeef2, #fff8fa)',
+    icon: Clock3,
+  },
+  {
+    label: 'Locations',
+    value: '2',
+    delta: 'All online',
+    tone: '#22b8cf',
+    bg: 'linear-gradient(145deg, #e9fafe, #f6fdff)',
+    icon: MapPin,
+  },
 ];
 
 const ACTIVITY_ITEMS = [
-  { time: '2m ago', text: 'Alice J. accepted Monday shift', color: 'var(--emerald)' },
-  { time: '14m ago', text: 'Schedule "Week of Mar 10" published', color: 'var(--brand)' },
-  { time: '1h ago', text: 'Bob T. requested shift swap — Friday 9–5', color: 'var(--amber)' },
-  { time: '3h ago', text: 'Casey L. clocked out 17:02', color: 'var(--text-muted)' },
-  { time: 'Yesterday', text: 'Auto-schedule completed — 98% coverage', color: 'var(--emerald)' },
+  { time: '2m ago', text: 'Alice J. accepted Monday manager shift', tone: 'var(--emerald)' },
+  { time: '14m ago', text: 'Week of Mar 9 schedule was published', tone: 'var(--brand)' },
+  { time: '1h ago', text: 'Bob T. requested shift swap for Friday 9am-5pm', tone: 'var(--amber)' },
+  { time: '3h ago', text: 'Lunch stagger generated for dinner team', tone: 'var(--cyan)' },
+  { time: 'Yesterday', text: 'Auto-scheduler reached 98% coverage', tone: 'var(--emerald)' },
 ];
 
+const QUICK_ACTIONS = [
+  {
+    label: 'Build Weekly Schedule',
+    desc: 'Assign and optimize shifts in one workspace',
+    icon: '📅',
+    href: '/dashboard/scheduling',
+  },
+  {
+    label: 'Generate Lunch Plan',
+    desc: 'Auto-stagger breaks with policy controls',
+    icon: '🍱',
+    href: '/dashboard/lunch-breaks',
+  },
+  {
+    label: 'Invite a Team Member',
+    desc: 'Add staff and assign roles instantly',
+    icon: '👋',
+    href: '/dashboard/staff',
+  },
+  {
+    label: 'Add New Location',
+    desc: 'Extend scheduling to another storefront',
+    icon: '🏢',
+    href: '/dashboard/locations',
+  },
+];
+
+const FLOW_STEPS = ['Select location', 'Add shift data', 'Run schedule action', 'Review and publish'];
+
 export default function DashboardPage() {
+  const todayLabel = new Date().toLocaleDateString('en-US', {
+    weekday: 'long',
+    month: 'long',
+    day: 'numeric',
+    year: 'numeric',
+  });
+
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem', maxWidth: 1400 }}>
-      {/* Header row */}
-      <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', flexWrap: 'wrap', gap: '1rem' }}>
-        <div>
-          <h1 style={{ fontSize: '1.5rem', fontWeight: 800, color: 'var(--text-primary)', letterSpacing: '-0.02em', marginBottom: '0.25rem' }}>
-            Dashboard
-          </h1>
-          <p style={{ color: 'var(--text-muted)', fontSize: '0.9rem' }}>
-            Wednesday, March 4, 2026 · Downtown Bistro
-          </p>
+    <div style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem', maxWidth: 1420 }}>
+      <section
+        className="surface-card animate-fade-up"
+        style={{
+          padding: '1.6rem',
+          background:
+            'radial-gradient(35rem 18rem at 0% 0%, rgba(79,121,255,0.16), transparent 60%), radial-gradient(28rem 14rem at 100% 100%, rgba(34,184,207,0.14), transparent 60%), #ffffff',
+        }}
+      >
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: '1rem', flexWrap: 'wrap' }}>
+          <div style={{ maxWidth: 660 }}>
+            <div className="badge badge-brand" style={{ marginBottom: '0.8rem' }}>
+              <Sparkles size={13} /> Live workspace
+            </div>
+            <h1 className="workspace-title" style={{ marginBottom: '0.35rem' }}>
+              Welcome back, Alex
+            </h1>
+            <p className="workspace-subtitle">
+              {todayLabel} · Downtown Bistro. Your team has strong coverage today and just 3 open shifts.
+            </p>
+          </div>
+
+          <div style={{ display: 'flex', gap: '0.6rem', flexWrap: 'wrap' }}>
+            <Link href="/dashboard/scheduling" className="btn btn-primary">
+              New Schedule
+              <ArrowRight size={14} />
+            </Link>
+            <Link href="/dashboard/lunch-breaks" className="btn btn-secondary">
+              Plan Lunches
+            </Link>
+          </div>
         </div>
-        <Link href="/dashboard/scheduling" style={{
-          display: 'inline-flex', alignItems: 'center', gap: '0.5rem',
-          padding: '0.5625rem 1.125rem',
-          background: 'linear-gradient(135deg, #5c7cfa, #748ffc)',
-          color: 'white', fontWeight: 600, fontSize: '0.875rem',
-          borderRadius: 10, textDecoration: 'none',
-          boxShadow: 'var(--shadow-brand)',
-          transition: 'all 200ms',
-        }}>
-          + New Schedule
-        </Link>
-      </div>
 
-      {/* Stat cards */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '1rem' }}>
-        {STAT_CARDS.map((card, i) => (
-          <div key={i} style={{
-            background: 'var(--bg-glass)',
-            border: '1px solid var(--border)',
-            borderRadius: 14, padding: '1.25rem',
-            position: 'relative', overflow: 'hidden',
-            transition: 'all 200ms var(--ease-out)',
-            cursor: 'default',
-          }}>
-            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '1rem' }}>
-              <span style={{ fontSize: '0.8125rem', color: 'var(--text-muted)', fontWeight: 500 }}>{card.label}</span>
-              <div style={{
-                width: 36, height: 36, borderRadius: 8,
-                background: card.iconBg, border: `1px solid ${card.iconBorder}`,
-                display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '1rem',
-              }}>{card.icon}</div>
+        <div
+          style={{
+            marginTop: '1rem',
+            display: 'grid',
+            gridTemplateColumns: 'repeat(auto-fit, minmax(170px, 1fr))',
+            gap: '0.75rem',
+          }}
+        >
+          {FLOW_STEPS.map((step, i) => (
+            <div key={step} className="surface-muted" style={{ padding: '0.65rem 0.75rem', display: 'flex', gap: '0.55rem' }}>
+              <span
+                style={{
+                  width: 22,
+                  height: 22,
+                  borderRadius: 999,
+                  background: i === FLOW_STEPS.length - 1 ? 'var(--brand)' : '#d8e3ff',
+                  color: i === FLOW_STEPS.length - 1 ? '#ffffff' : '#2f63ff',
+                  fontSize: '0.76rem',
+                  fontWeight: 700,
+                  display: 'grid',
+                  placeItems: 'center',
+                  flexShrink: 0,
+                }}
+              >
+                {i + 1}
+              </span>
+              <span style={{ fontSize: '0.82rem', color: 'var(--text-secondary)', fontWeight: 600 }}>{step}</span>
             </div>
-            <div style={{ display: 'flex', alignItems: 'baseline', gap: '0.5rem' }}>
-              <span style={{ fontSize: '2rem', fontWeight: 800, color: 'var(--text-primary)', letterSpacing: '-0.03em' }}>{card.value}</span>
-              <span style={{ fontSize: '0.8125rem', fontWeight: 500, color: card.deltaColor }}>{card.delta}</span>
-            </div>
-          </div>
-        ))}
-      </div>
+          ))}
+        </div>
+      </section>
 
-      {/* Main content grid */}
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 320px', gap: '1.25rem' }}>
-        {/* Upcoming schedules */}
-        <div style={{
-          background: 'var(--bg-glass)', border: '1px solid var(--border)',
-          borderRadius: 14, padding: '1.5rem',
-        }}>
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '1.25rem' }}>
-            <h2 style={{ fontWeight: 700, fontSize: '1rem', color: 'var(--text-primary)' }}>
-              This Week at a Glance
-            </h2>
-            <Link href="/dashboard/scheduling" style={{
-              fontSize: '0.8125rem', color: 'var(--brand)', fontWeight: 600, textDecoration: 'none',
-            }}>View full schedule →</Link>
+      <section
+        style={{
+          display: 'grid',
+          gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))',
+          gap: '0.9rem',
+        }}
+      >
+        {STAT_CARDS.map((card) => {
+          const Icon = card.icon;
+          return (
+            <article key={card.label} className="surface-card animate-slide-up" style={{ padding: '1rem', background: card.bg }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '0.55rem' }}>
+                <span style={{ color: 'var(--text-secondary)', fontSize: '0.82rem', fontWeight: 600 }}>{card.label}</span>
+                <span
+                  style={{
+                    width: 34,
+                    height: 34,
+                    borderRadius: 12,
+                    display: 'grid',
+                    placeItems: 'center',
+                    color: card.tone,
+                    background: '#ffffff',
+                    border: '1px solid rgba(0,0,0,0.05)',
+                  }}
+                >
+                  <Icon size={16} />
+                </span>
+              </div>
+              <div style={{ fontSize: '1.85rem', fontWeight: 800, letterSpacing: '-0.03em', color: 'var(--text-primary)' }}>
+                {card.value}
+              </div>
+              <div style={{ fontSize: '0.78rem', color: card.tone, fontWeight: 700 }}>{card.delta}</div>
+            </article>
+          );
+        })}
+      </section>
+
+      <section
+        style={{
+          display: 'grid',
+          gridTemplateColumns: 'minmax(0, 1.2fr) minmax(0, 0.8fr)',
+          gap: '1rem',
+        }}
+      >
+        <article className="surface-card" style={{ padding: '1.2rem' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem' }}>
+            <h2 style={{ fontSize: '1rem', fontWeight: 750, color: 'var(--text-primary)' }}>Weekly Coverage Snapshot</h2>
+            <Link href="/dashboard/scheduling" className="text-sm text-brand" style={{ fontWeight: 700 }}>
+              Open scheduler
+            </Link>
           </div>
 
-          {/* Mini weekly bar chart */}
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(7, 1fr)', gap: '0.5rem' }}>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(7, minmax(0, 1fr))', gap: '0.5rem' }}>
             {[
-              { day: 'M', count: 8, max: 10 },
-              { day: 'T', count: 10, max: 10 },
-              { day: 'W', count: 7, max: 10 },
-              { day: 'T', count: 9, max: 10 },
-              { day: 'F', count: 10, max: 10 },
-              { day: 'Sa', count: 6, max: 10 },
-              { day: 'Su', count: 4, max: 10 },
-            ].map((d, i) => (
-              <div key={i} style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '0.375rem' }}>
-                <div style={{
-                  width: '100%', borderRadius: 6, overflow: 'hidden',
-                  height: 80, background: 'rgba(255,255,255,0.04)',
-                  display: 'flex', alignItems: 'flex-end',
-                }}>
-                  <div style={{
-                    width: '100%',
-                    height: `${(d.count / d.max) * 100}%`,
-                    background: d.count === d.max
-                      ? 'linear-gradient(180deg, #5c7cfa, #4263eb)'
-                      : d.count >= 8
-                        ? 'linear-gradient(180deg, #10b981, #059669)'
-                        : 'linear-gradient(180deg, #f59e0b, #d97706)',
-                    borderRadius: 6,
-                    transition: 'height 500ms var(--ease-out)',
-                  }} />
+              { day: 'Mon', value: 8, target: 10 },
+              { day: 'Tue', value: 10, target: 10 },
+              { day: 'Wed', value: 7, target: 10 },
+              { day: 'Thu', value: 9, target: 10 },
+              { day: 'Fri', value: 10, target: 10 },
+              { day: 'Sat', value: 6, target: 10 },
+              { day: 'Sun', value: 4, target: 10 },
+            ].map((d) => (
+              <div key={d.day} style={{ display: 'grid', gap: 6 }}>
+                <div
+                  style={{
+                    height: 120,
+                    borderRadius: 12,
+                    border: '1px solid var(--border)',
+                    background: '#f8faff',
+                    display: 'flex',
+                    alignItems: 'flex-end',
+                    overflow: 'hidden',
+                  }}
+                >
+                  <div
+                    style={{
+                      height: `${(d.value / d.target) * 100}%`,
+                      width: '100%',
+                      borderRadius: 10,
+                      background:
+                        d.value >= d.target
+                          ? 'linear-gradient(180deg, #2f63ff, #446fff)'
+                          : d.value >= 8
+                            ? 'linear-gradient(180deg, #17b26a, #16a366)'
+                            : 'linear-gradient(180deg, #f59e0b, #dc8b08)',
+                      transition: 'height 550ms var(--ease-out)',
+                    }}
+                  />
                 </div>
-                <span style={{ fontSize: '0.6875rem', color: 'var(--text-muted)', fontWeight: 500 }}>{d.day}</span>
-                <span style={{ fontSize: '0.6875rem', color: 'var(--text-secondary)', fontWeight: 600 }}>{d.count}</span>
+                <div style={{ textAlign: 'center' }}>
+                  <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)', fontWeight: 700 }}>{d.day}</div>
+                  <div style={{ fontSize: '0.74rem', color: 'var(--text-secondary)', fontWeight: 700 }}>{d.value} staff</div>
+                </div>
               </div>
             ))}
           </div>
 
-          {/* Coverage status bar */}
-          <div style={{ marginTop: '1.5rem' }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '0.375rem' }}>
-              <span style={{ fontSize: '0.8125rem', color: 'var(--text-muted)' }}>Coverage</span>
-              <span style={{ fontSize: '0.8125rem', fontWeight: 600, color: 'var(--emerald)' }}>87%</span>
+          <div style={{ marginTop: '1rem' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 6 }}>
+              <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>Coverage Rate</span>
+              <span style={{ fontSize: '0.8rem', color: 'var(--emerald)', fontWeight: 700 }}>87%</span>
             </div>
-            <div style={{ height: 6, background: 'rgba(255,255,255,0.06)', borderRadius: 6, overflow: 'hidden' }}>
-              <div style={{
-                height: '100%', width: '87%',
-                background: 'linear-gradient(90deg, #10b981, #5c7cfa)',
-                borderRadius: 6,
-              }} />
+            <div style={{ height: 10, borderRadius: 999, background: '#edf2ff', overflow: 'hidden' }}>
+              <div
+                style={{
+                  width: '87%',
+                  height: '100%',
+                  borderRadius: 999,
+                  background: 'linear-gradient(90deg, #17b26a 0%, #2f63ff 75%)',
+                }}
+              />
             </div>
           </div>
+        </article>
 
-          {/* Staff coverage table mini */}
-          <div style={{ marginTop: '1.25rem', display: 'flex', flexDirection: 'column', gap: 6 }}>
-            {[
-              { name: 'Alice J.', role: 'Manager', shifts: 5, color: '#5c7cfa' },
-              { name: 'Bob T.', role: 'Cashier', shifts: 4, color: '#10b981' },
-              { name: 'Casey L.', role: 'Floor', shifts: 3, color: '#f59e0b' },
-            ].map((s, i) => (
-              <div key={i} style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', padding: '0.5rem', borderRadius: 8, background: 'rgba(255,255,255,0.03)' }}>
-                <div style={{
-                  width: 28, height: 28, borderRadius: '50%', flexShrink: 0,
-                  background: `${s.color}22`, border: `1px solid ${s.color}44`,
-                  display: 'flex', alignItems: 'center', justifyContent: 'center',
-                  fontSize: '0.6875rem', fontWeight: 700, color: s.color,
-                }}>
-                  {s.name.split(' ').map(n => n[0]).join('')}
-                </div>
-                <div style={{ flex: 1 }}>
-                  <div style={{ fontSize: '0.8125rem', fontWeight: 600, color: 'var(--text-primary)' }}>{s.name}</div>
-                  <div style={{ fontSize: '0.6875rem', color: 'var(--text-muted)' }}>{s.role}</div>
-                </div>
-                <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>{s.shifts} shifts</span>
-              </div>
-            ))}
-          </div>
-        </div>
-
-        {/* Activity feed */}
-        <div style={{
-          background: 'var(--bg-glass)', border: '1px solid var(--border)',
-          borderRadius: 14, padding: '1.5rem',
-        }}>
-          <h2 style={{ fontWeight: 700, fontSize: '1rem', color: 'var(--text-primary)', marginBottom: '1.25rem' }}>
-            Activity
+        <article className="surface-card" style={{ padding: '1.2rem' }}>
+          <h2 style={{ fontSize: '1rem', fontWeight: 750, color: 'var(--text-primary)', marginBottom: '1rem' }}>
+            Team Activity
           </h2>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
-            {ACTIVITY_ITEMS.map((item, i) => (
-              <div key={i} style={{ display: 'flex', gap: '0.75rem', alignItems: 'flex-start' }}>
-                <div style={{
-                  width: 8, height: 8, borderRadius: '50%', flexShrink: 0,
-                  background: item.color, marginTop: 5,
-                }} />
-                <div style={{ flex: 1 }}>
-                  <p style={{ fontSize: '0.8125rem', color: 'var(--text-secondary)', lineHeight: 1.5 }}>{item.text}</p>
-                  <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>{item.time}</span>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '0.85rem' }}>
+            {ACTIVITY_ITEMS.map((item) => (
+              <div key={item.text} style={{ display: 'flex', gap: '0.6rem', alignItems: 'flex-start' }}>
+                <span className="status-dot" style={{ marginTop: 7, background: item.tone }} />
+                <div>
+                  <p style={{ fontSize: '0.83rem', color: 'var(--text-secondary)', lineHeight: 1.45 }}>{item.text}</p>
+                  <span style={{ fontSize: '0.74rem', color: 'var(--text-muted)' }}>{item.time}</span>
                 </div>
               </div>
             ))}
           </div>
-        </div>
-      </div>
+        </article>
+      </section>
 
-      {/* Quick actions row */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '1rem' }}>
-        {[
-          { label: 'Build new schedule', icon: '📅', href: '/dashboard/scheduling', desc: 'Open the drag-and-drop scheduler' },
-          { label: 'Plan lunches/breaks', icon: '🍱', href: '/dashboard/lunch-breaks', desc: 'Generate staggered lunch and break assignments' },
-          { label: 'Add staff member', icon: '👤', href: '/dashboard/staff', desc: 'Invite or create a new employee' },
-          { label: 'Add location', icon: '🏢', href: '/dashboard/locations', desc: 'Register a new restaurant location' },
-        ].map((action, i) => (
-          <Link key={i} href={action.href} style={{
-            display: 'flex', alignItems: 'center', gap: '0.875rem',
-            padding: '1rem 1.125rem',
-            background: 'rgba(255,255,255,0.03)',
-            border: '1px solid var(--border)',
-            borderRadius: 12, textDecoration: 'none',
-            transition: 'all 200ms var(--ease-out)',
-          }}>
-            <div style={{
-              width: 40, height: 40, borderRadius: 10,
-              background: 'rgba(92, 124, 250, 0.1)',
-              border: '1px solid rgba(92, 124, 250, 0.2)',
-              display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '1.25rem',
-              flexShrink: 0,
-            }}>{action.icon}</div>
+      <section style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '0.85rem' }}>
+        {QUICK_ACTIONS.map((action) => (
+          <Link key={action.label} href={action.href} className="surface-card" style={{ padding: '0.95rem', display: 'flex', gap: '0.75rem' }}>
+            <span
+              style={{
+                width: 42,
+                height: 42,
+                borderRadius: 12,
+                border: '1px solid #cfe0ff',
+                background: '#edf3ff',
+                display: 'grid',
+                placeItems: 'center',
+                fontSize: '1.15rem',
+                flexShrink: 0,
+              }}
+            >
+              {action.icon}
+            </span>
             <div>
-              <div style={{ fontWeight: 600, fontSize: '0.875rem', color: 'var(--text-primary)', marginBottom: '0.125rem' }}>{action.label}</div>
-              <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>{action.desc}</div>
+              <div style={{ fontSize: '0.9rem', fontWeight: 700, color: 'var(--text-primary)' }}>{action.label}</div>
+              <div style={{ fontSize: '0.78rem', color: 'var(--text-muted)' }}>{action.desc}</div>
             </div>
           </Link>
         ))}
-      </div>
+      </section>
     </div>
   );
 }

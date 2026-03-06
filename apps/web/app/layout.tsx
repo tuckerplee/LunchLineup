@@ -22,7 +22,6 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
             <body>
                 {children}
 
-                {/* Service Worker registration */}
                 <script
                     dangerouslySetInnerHTML={{
                         __html: `

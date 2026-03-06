@@ -1,7 +1,34 @@
 import { NextRequest, NextResponse } from 'next/server';
 
 const PUBLIC_PATHS = ['/auth', '/onboarding', '/_next', '/favicon.ico', '/vendor', '/sw.js'];
-const API_URL = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:3001';
+const API_URL = process.env.NEXT_PUBLIC_API_URL ?? '/api/v1';
+const INTERNAL_API_URL = process.env.INTERNAL_API_URL;
+
+function readCookie(request: NextRequest, name: string): string | undefined {
+    const parsed = request.cookies.get(name)?.value;
+    if (parsed) return parsed;
+
+    const raw = request.headers.get('cookie') ?? '';
+    if (!raw) return undefined;
+    const match = raw.match(new RegExp(`(?:^|;\\s*)${name}=([^;]+)`));
+    return match?.[1];
+}
+
+function apiEndpoint(request: NextRequest, path: string): string {
+    // Prefer internal service-to-service URL in production containers.
+    if (INTERNAL_API_URL && INTERNAL_API_URL.startsWith('http')) {
+        return `${INTERNAL_API_URL.replace(/\/$/, '')}${path}`;
+    }
+
+    // NEXT_PUBLIC_API_URL may be relative (e.g. "/api/v1").
+    const relativeBase = API_URL.startsWith('/') ? API_URL : `/${API_URL}`;
+    const base = API_URL.startsWith('http')
+        ? API_URL.replace(/\/$/, '')
+        : process.env.NODE_ENV === 'production'
+            ? `http://api:3000${relativeBase}`
+            : `${request.nextUrl.origin}${relativeBase}`;
+    return `${base}${path}`;
+}
 
 export async function middleware(request: NextRequest) {
     const { pathname } = request.nextUrl;
@@ -16,9 +43,9 @@ export async function middleware(request: NextRequest) {
         return NextResponse.next();
     }
 
-    const accessToken = request.cookies.get('access_token')?.value;
+    const accessToken = readCookie(request, 'access_token');
 
-    // No token → redirect to login
+    // No token -> redirect to login
     if (!accessToken) {
         const loginUrl = request.nextUrl.clone();
         loginUrl.pathname = '/auth/login';
@@ -29,7 +56,7 @@ export async function middleware(request: NextRequest) {
     // Validate token server-side via the API
     let user: { sub: string; role: string; tenantId: string; sessionId: string } | null = null;
     try {
-        const meResponse = await fetch(`${API_URL}/api/v1/auth/me`, {
+        const meResponse = await fetch(apiEndpoint(request, '/auth/me'), {
             headers: {
                 Cookie: `access_token=${accessToken}`,
                 'Content-Type': 'application/json',
@@ -42,9 +69,9 @@ export async function middleware(request: NextRequest) {
             user = data.user;
         } else if (meResponse.status === 401) {
             // Try to refresh using refresh_token cookie
-            const refreshToken = request.cookies.get('refresh_token')?.value;
+            const refreshToken = readCookie(request, 'refresh_token');
             if (refreshToken) {
-                const refreshResponse = await fetch(`${API_URL}/api/v1/auth/refresh`, {
+                const refreshResponse = await fetch(apiEndpoint(request, '/auth/refresh'), {
                     method: 'POST',
                     headers: { Cookie: `refresh_token=${refreshToken}` },
                     cache: 'no-store',
@@ -61,7 +88,7 @@ export async function middleware(request: NextRequest) {
                 }
             }
 
-            // Can't refresh — boot to login
+            // Can't refresh -> boot to login
             const loginUrl = request.nextUrl.clone();
             loginUrl.pathname = '/auth/login';
             loginUrl.searchParams.set('next', pathname);
@@ -71,13 +98,12 @@ export async function middleware(request: NextRequest) {
             return response;
         }
     } catch {
-        // API unreachable — allow through in dev, redirect to error in prod
+        // API unreachable -> allow through in dev, redirect to login in prod
         if (process.env.NODE_ENV === 'production') {
             const errorUrl = request.nextUrl.clone();
             errorUrl.pathname = '/auth/login';
             return NextResponse.redirect(errorUrl);
         }
-        // Dev: pass through so UI is still usable without API running
         return NextResponse.next();
     }
 
@@ -87,41 +113,32 @@ export async function middleware(request: NextRequest) {
         return NextResponse.redirect(loginUrl);
     }
 
-    // ── Route guards based on role ─────────────────────────────────────────────
-
     const isSuperAdmin = user.role === 'SUPER_ADMIN';
 
-    // SUPER_ADMIN trying to access tenant dashboard → send to admin panel
     if (isSuperAdmin && pathname.startsWith('/dashboard')) {
         const adminUrl = request.nextUrl.clone();
         adminUrl.pathname = '/admin';
         return NextResponse.redirect(adminUrl);
     }
 
-    // Non-SUPER_ADMIN trying to access admin panel → send to dashboard
     if (!isSuperAdmin && pathname.startsWith('/admin')) {
         const dashboardUrl = request.nextUrl.clone();
         dashboardUrl.pathname = '/dashboard';
         return NextResponse.redirect(dashboardUrl);
     }
 
-    // MANAGER/STAFF trying to access settings → redirect to dashboard
-    if (pathname.startsWith('/dashboard/settings') &&
-        !['SUPER_ADMIN', 'ADMIN'].includes(user.role)) {
+    if (pathname.startsWith('/dashboard/settings') && !['SUPER_ADMIN', 'ADMIN'].includes(user.role)) {
         const dashboardUrl = request.nextUrl.clone();
         dashboardUrl.pathname = '/dashboard';
         return NextResponse.redirect(dashboardUrl);
     }
 
-    // STAFF trying to access staff/locations management → redirect
-    if ((pathname.startsWith('/dashboard/staff') || pathname.startsWith('/dashboard/locations')) &&
-        user.role === 'STAFF') {
+    if ((pathname.startsWith('/dashboard/staff') || pathname.startsWith('/dashboard/locations')) && user.role === 'STAFF') {
         const dashboardUrl = request.nextUrl.clone();
         dashboardUrl.pathname = '/dashboard';
         return NextResponse.redirect(dashboardUrl);
     }
 
-    // ── Pass user context to Server Components via request headers ─────────────
     const response = NextResponse.next();
     response.headers.set('x-user-id', user.sub);
     response.headers.set('x-user-role', user.role);
@@ -131,12 +148,6 @@ export async function middleware(request: NextRequest) {
 
 export const config = {
     matcher: [
-        /*
-         * Match all request paths except:
-         * - api (API proxy routes)
-         * - _next/static, _next/image (Next.js internals)
-         * - favicon.ico, images, vendor scripts
-         */
         '/((?!api|_next/static|_next/image|favicon.ico|.*\\.(?:svg|png|jpg|jpeg|gif|webp|ico|woff2?|ttf|eot|js\\.map)$).*)',
     ],
 };

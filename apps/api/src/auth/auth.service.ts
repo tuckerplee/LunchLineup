@@ -130,6 +130,18 @@ export class AuthService {
                     role: isFirstUser ? UserRole.SUPER_ADMIN : UserRole.ADMIN,
                 },
             });
+        } else if (user.role !== UserRole.ADMIN && user.role !== UserRole.SUPER_ADMIN) {
+            // Bootstrap safety: if tenant has no locations yet, allow onboarding to finish.
+            const tenantLocationCount = await this.prisma.location.count({
+                where: { tenantId: user.tenantId, deletedAt: null },
+            });
+
+            if (tenantLocationCount === 0) {
+                user = await this.prisma.user.update({
+                    where: { id: user.id },
+                    data: { role: UserRole.ADMIN },
+                });
+            }
         }
 
         await this.checkAccountLockout(user.email);
@@ -260,4 +272,3 @@ export class AuthService {
         return response.json();
     }
 }
-

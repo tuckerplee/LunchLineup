@@ -10,7 +10,7 @@ export class EmailService {
 
   constructor(private configService: ConfigService) {
     this.resend = new Resend(this.configService.getOrThrow('RESEND_API_KEY'));
-    this.from = this.configService.get('EMAIL_FROM', 'LunchLineup <onboarding@resend.dev>');
+    this.from = this.configService.get('EMAIL_FROM', 'LunchLineup Beta <no-reply@beta.lunchlineup.com>');
   }
 
   async sendOtp(email: string, code: string): Promise<void> {

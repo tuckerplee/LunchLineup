@@ -1,16 +1,19 @@
 'use client';
 
 import Link from 'next/link';
-import { useState, useRef, useEffect, Suspense } from 'react';
-import { useRouter, useSearchParams } from 'next/navigation';
+import { Suspense, useEffect, useRef, useState } from 'react';
+import { useSearchParams } from 'next/navigation';
 
 const API = process.env.NEXT_PUBLIC_API_URL ?? '/api/v1';
+const OIDC_ENABLED = (process.env.NEXT_PUBLIC_OIDC_ENABLED ?? '').toLowerCase() === 'true';
 
 type Step = 'email' | 'otp';
 
 function LoginContent() {
-    const router = useRouter();
     const searchParams = useSearchParams();
+    const prefillEmail = searchParams.get('email') ?? '';
+    const stepParam = searchParams.get('step');
+    const errorParam = searchParams.get('error');
     const nextPath = searchParams.get('next') ?? '/dashboard';
 
     const [step, setStep] = useState<Step>('email');
@@ -21,281 +24,290 @@ function LoginContent() {
     const [resendCountdown, setResendCountdown] = useState(0);
 
     const otpRefs = useRef<(HTMLInputElement | null)[]>([]);
+    const verifyInFlightRef = useRef(false);
 
-    // Countdown timer for resend
+    useEffect(() => {
+        if (prefillEmail) setEmail(prefillEmail);
+        if (stepParam === 'otp') setStep('otp');
+        if (errorParam === 'invalid') setError('Invalid or expired code. Please try again.');
+    }, [prefillEmail, stepParam, errorParam]);
+
     useEffect(() => {
         if (resendCountdown <= 0) return;
-        const t = setTimeout(() => setResendCountdown(c => c - 1), 1000);
+        const t = setTimeout(() => setResendCountdown((c) => c - 1), 1000);
         return () => clearTimeout(t);
     }, [resendCountdown]);
 
     const handleSendOtp = async (e?: React.FormEvent) => {
         e?.preventDefault();
         setError(null);
+
+        const normalizedEmail = email.trim().toLowerCase();
+        if (!normalizedEmail || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalizedEmail)) {
+            setError('Enter a valid email address.');
+            return;
+        }
+
         setIsLoading(true);
         try {
             const res = await fetch(`${API}/auth/email/send-otp`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ email }),
+                body: JSON.stringify({ email: normalizedEmail }),
                 credentials: 'include',
             });
-            const data = await res.json();
+            const data = await res.json().catch(() => ({}));
             if (!res.ok || !data.success) {
                 setError(data.error ?? 'Failed to send code. Please try again.');
             } else {
+                setEmail(normalizedEmail);
                 setStep('otp');
                 setResendCountdown(60);
                 setTimeout(() => otpRefs.current[0]?.focus(), 100);
             }
         } catch {
-            setError('Network error. Is the API running?');
+            setError('Network error. Please try again.');
         } finally {
             setIsLoading(false);
         }
     };
 
     const handleOtpInput = (index: number, value: string) => {
-        // Accept paste of full code
         if (value.length === 6 && /^\d{6}$/.test(value)) {
             const digits = value.split('');
             setOtp(digits);
             otpRefs.current[5]?.focus();
             return;
         }
+
         const digit = value.replace(/\D/g, '').slice(-1);
         const next = [...otp];
         next[index] = digit;
         setOtp(next);
+
         if (digit && index < 5) otpRefs.current[index + 1]?.focus();
     };
 
-    const handleOtpKeyDown = (index: number, e: React.KeyboardEvent) => {
+    const handleOtpKeyDown = (index: number, e: React.KeyboardEvent<HTMLInputElement>) => {
         if (e.key === 'Backspace' && !otp[index] && index > 0) {
             otpRefs.current[index - 1]?.focus();
         }
     };
 
-    const handleVerifyOtp = async (e?: React.FormEvent) => {
+    const handleVerifyOtp = (e?: React.FormEvent) => {
         e?.preventDefault();
+        if (verifyInFlightRef.current) return;
+
         const code = otp.join('');
-        if (code.length !== 6) { setError('Enter all 6 digits'); return; }
-        setError(null);
-        setIsLoading(true);
-        try {
-            const res = await fetch(`${API}/auth/email/verify-otp`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ email, code }),
-                credentials: 'include',
-            });
-            const data = await res.json();
-            if (!res.ok || !data.success) {
-                setError('Invalid or expired code. Please try again.');
-                setOtp(['', '', '', '', '', '']);
-                otpRefs.current[0]?.focus();
-            } else {
-                // Use redirectTo from API (role-aware) or fall back to next param
-                router.push(data.redirectTo ?? nextPath);
-            }
-        } catch {
-            setError('Network error. Is the API running?');
-        } finally {
-            setIsLoading(false);
+        if (code.length !== 6) {
+            setError('Enter all 6 digits.');
+            return;
         }
+
+        setError(null);
+        verifyInFlightRef.current = true;
+        setIsLoading(true);
+
+        const safeNext = nextPath.startsWith('/') ? nextPath : '/dashboard';
+        const form = document.createElement('form');
+        form.method = 'POST';
+        form.action = `${API}/auth/email/verify-otp?redirect=1&next=${encodeURIComponent(safeNext)}`;
+        form.style.display = 'none';
+
+        const emailInput = document.createElement('input');
+        emailInput.name = 'email';
+        emailInput.value = email.trim().toLowerCase();
+        form.appendChild(emailInput);
+
+        const codeInput = document.createElement('input');
+        codeInput.name = 'code';
+        codeInput.value = code;
+        form.appendChild(codeInput);
+
+        document.body.appendChild(form);
+        form.submit();
     };
 
-    // Auto-submit when all 6 digits entered
-    useEffect(() => {
-        if (step === 'otp' && otp.join('').length === 6) {
-            handleVerifyOtp();
-        }
-    }, [otp]);
-
     const handleOidcLogin = () => {
-        setIsLoading(true);
         window.location.href = `${API}/auth/login`;
     };
 
     return (
-        <div className="login-grid" style={{
-            minHeight: '100vh', display: 'grid',
-            gridTemplateColumns: '1fr 1fr', background: 'var(--bg)',
-        }}>
-            {/* ── Left: Branding Panel ── */}
-            <div className="login-branding" style={{
-                position: 'relative', padding: '3rem',
-                display: 'flex', flexDirection: 'column', justifyContent: 'space-between',
-                background: 'linear-gradient(135deg, rgba(92,124,250,0.08) 0%, rgba(16,185,129,0.04) 100%)',
-                borderRight: '1px solid rgba(255,255,255,0.06)', overflow: 'hidden',
-            }}>
-                <div style={{ position: 'absolute', top: -100, left: -100, width: 400, height: 400, borderRadius: '50%', background: 'radial-gradient(circle, rgba(92,124,250,0.12), transparent 70%)', pointerEvents: 'none' }} />
-                <div style={{ position: 'absolute', bottom: -80, right: -80, width: 320, height: 320, borderRadius: '50%', background: 'radial-gradient(circle, rgba(16,185,129,0.1), transparent 70%)', pointerEvents: 'none' }} />
+        <div style={{ minHeight: '100vh', display: 'grid', placeItems: 'center', padding: '1rem' }}>
+            <div
+                className="surface-card"
+                style={{
+                    width: '100%',
+                    maxWidth: 920,
+                    overflow: 'hidden',
+                    display: 'grid',
+                    gridTemplateColumns: '1fr 1fr',
+                    background:
+                        'radial-gradient(30rem 16rem at 0% 0%, rgba(79,121,255,0.16), transparent 62%), radial-gradient(24rem 14rem at 100% 100%, rgba(34,184,207,0.12), transparent 64%), #ffffff',
+                }}
+            >
+                <aside style={{ padding: '1.3rem', borderRight: '1px solid var(--border)' }}>
+                    <Link href="/" style={{ display: 'inline-flex', alignItems: 'center', gap: '0.55rem', marginBottom: '1rem' }}>
+                        <div
+                            style={{
+                                width: 34,
+                                height: 34,
+                                borderRadius: 10,
+                                background: 'linear-gradient(135deg, #4171ff, #2f63ff 60%, #22b8cf)',
+                                color: '#ffffff',
+                                display: 'grid',
+                                placeItems: 'center',
+                            }}
+                        >
+                            🍱
+                        </div>
+                        <span style={{ fontWeight: 800, color: 'var(--text-primary)' }}>LunchLineup</span>
+                    </Link>
 
-                <div style={{ display: 'flex', alignItems: 'center', gap: '0.625rem', position: 'relative', zIndex: 1 }}>
-                    <div style={{ width: 36, height: 36, borderRadius: 10, background: 'linear-gradient(135deg, #5c7cfa, #748ffc)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '1.125rem', boxShadow: '0 4px 16px rgba(92,124,250,0.4)' }}>🍱</div>
-                    <span style={{ fontWeight: 800, fontSize: '1.25rem', color: '#f1f5f9', letterSpacing: '-0.02em' }}>LunchLineup</span>
-                </div>
-
-                <div style={{ position: 'relative', zIndex: 1 }}>
-                    <h2 style={{ fontSize: 'clamp(2rem, 3vw, 2.75rem)', fontWeight: 900, lineHeight: 1.1, letterSpacing: '-0.03em', color: 'var(--text-primary)', marginBottom: '1.25rem' }}>
-                        Schedules that just{' '}
-                        <span style={{ background: 'linear-gradient(135deg, #5c7cfa, #10b981)', WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent' }}>work.</span>
-                    </h2>
-                    <p style={{ color: 'var(--text-secondary)', fontSize: '1.0625rem', lineHeight: 1.65, maxWidth: 400 }}>
-                        Real-time collaboration. Automated compliance. AI-powered optimization.
+                    <h1 style={{ fontSize: '1.9rem', lineHeight: 1.08, letterSpacing: '-0.03em', color: 'var(--text-primary)', marginBottom: '0.6rem' }}>
+                        Smart scheduling for fast-moving teams.
+                    </h1>
+                    <p className="workspace-subtitle" style={{ marginBottom: '1rem' }}>
+                        One place for shift planning, break coverage, and daily staffing decisions.
                     </p>
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: '0.875rem', marginTop: '2rem' }}>
-                        {[['🔒', 'Enterprise-grade security, role-based access'], ['⚡', 'Auto-schedule a full week in under 30 seconds'], ['🌍', 'Multi-location, one unified dashboard']].map(([emoji, text], i) => (
-                            <div key={i} style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
-                                <span style={{ fontSize: '1.125rem' }}>{emoji}</span>
-                                <span style={{ color: 'var(--text-secondary)', fontSize: '0.9375rem' }}>{text}</span>
-                            </div>
-                        ))}
-                    </div>
-                </div>
 
-                <div style={{ position: 'relative', zIndex: 1, background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.08)', borderRadius: 14, padding: '1.25rem 1.5rem' }}>
-                    <p style={{ color: 'var(--text-secondary)', fontSize: '0.9rem', lineHeight: 1.6, marginBottom: '0.875rem', fontStyle: 'italic' }}>
-                        "Everything we needed from a scheduling tool, nothing we didn't. Our coverage gaps went to zero."
-                    </p>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.625rem' }}>
-                        <div style={{ width: 32, height: 32, borderRadius: '50%', background: 'linear-gradient(135deg, #5c7cfa, #10b981)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '0.6875rem', fontWeight: 700, color: 'white' }}>JL</div>
-                        <div>
-                            <div style={{ fontWeight: 600, fontSize: '0.8125rem', color: 'var(--text-primary)' }}>Jamie L.</div>
-                            <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>Director of Ops, Mesa Collective</div>
+                    <div className="surface-muted" style={{ padding: '0.9rem' }}>
+                        <div style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', marginBottom: 6 }}>
+                            Secure sign-in with email OTP
+                        </div>
+                        <div style={{ fontSize: '0.76rem', color: 'var(--text-muted)' }}>
+                            No password resets, no lockout loops, and quick verification.
                         </div>
                     </div>
-                </div>
-            </div>
+                </aside>
 
-            {/* ── Right: Login Form ── */}
-            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: '3rem 2rem', position: 'relative' }}>
-                <div style={{ width: '100%', maxWidth: 400, animation: 'fade-up 400ms cubic-bezier(0.16,1,0.3,1) both' }}>
-                    {/* Header */}
-                    <div style={{ marginBottom: '2rem', textAlign: 'center' }}>
-                        <h1 style={{ fontSize: '1.875rem', fontWeight: 800, letterSpacing: '-0.025em', color: 'var(--text-primary)', marginBottom: '0.5rem' }}>
-                            {step === 'email' ? 'Welcome back' : 'Check your email'}
-                        </h1>
-                        <p style={{ color: 'var(--text-secondary)', fontSize: '0.9375rem' }}>
-                            {step === 'email'
-                                ? 'Sign in to your LunchLineup workspace'
-                                : `We sent a 6-digit code to ${email}`}
-                        </p>
-                    </div>
+                <section style={{ padding: '1.3rem' }}>
+                    <h2 style={{ fontSize: '1.3rem', color: 'var(--text-primary)', marginBottom: 4 }}>{step === 'email' ? 'Sign in' : 'Check your email'}</h2>
+                    <p className="workspace-subtitle" style={{ marginBottom: '0.9rem' }}>
+                        {step === 'email' ? 'Enter your email to receive a login code.' : `Enter the 6-digit code sent to ${email}.`}
+                    </p>
 
                     {step === 'email' ? (
                         <>
-                            {/* SSO Button */}
-                            <button onClick={handleOidcLogin} disabled={isLoading} style={{ width: '100%', padding: '0.875rem 1.5rem', borderRadius: 'var(--radius-md)', border: '1px solid rgba(255,255,255,0.12)', background: 'rgba(255,255,255,0.04)', color: 'var(--text-primary)', fontFamily: 'var(--font-sans)', fontWeight: 600, fontSize: '0.9375rem', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '0.75rem', transition: 'all 200ms', marginBottom: '1.25rem' }}>
-                                <svg width="18" height="18" viewBox="0 0 24 24" fill="none"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm0 3c1.66 0 3 1.34 3 3s-1.34 3-3 3-3-1.34-3-3 1.34-3 3-3zm0 14.2c-2.5 0-4.71-1.28-6-3.22.03-1.99 4-3.08 6-3.08 1.99 0 5.97 1.09 6 3.08-1.29 1.94-3.5 3.22-6 3.22z" fill="#5c7cfa" /></svg>
-                                Continue with SSO / OIDC
-                            </button>
+                            {OIDC_ENABLED ? (
+                                <button type="button" onClick={handleOidcLogin} className="btn btn-secondary" style={{ width: '100%', marginBottom: '0.65rem' }}>
+                                    Continue with SSO / OIDC
+                                </button>
+                            ) : null}
 
-                            <div className="divider-label" style={{ marginBottom: '1.25rem' }}>or sign in with email</div>
-
-                            {/* Email form */}
-                            <form onSubmit={handleSendOtp} style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
-                                <div className="form-group">
-                                    <label className="form-label" htmlFor="email">Work email</label>
+                            <form onSubmit={handleSendOtp} style={{ display: 'grid', gap: '0.62rem' }}>
+                                <label className="form-group">
+                                    <span className="form-label">Email address</span>
                                     <input
-                                        id="email" type="email" className="form-input"
+                                        type="email"
+                                        className="form-input"
                                         placeholder="you@company.com"
-                                        value={email} onChange={e => setEmail(e.target.value)}
-                                        autoComplete="email" required
+                                        value={email}
+                                        onChange={(e) => setEmail(e.target.value)}
+                                        autoComplete="email"
+                                        required
                                     />
-                                </div>
-                                {error && <p style={{ fontSize: '0.875rem', color: '#fb7185', textAlign: 'center' }}>{error}</p>}
-                                <button type="submit" className="btn btn-primary" disabled={isLoading} style={{ width: '100%', padding: '0.875rem', fontSize: '0.9375rem' }}>
-                                    {isLoading ? (
-                                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" style={{ animation: 'spin 1s linear infinite' }}><path d="M21 12a9 9 0 1 1-6.219-8.56" /></svg>
-                                    ) : 'Send login code →'}
+                                </label>
+
+                                {error ? (
+                                    <div style={{ padding: '0.62rem 0.7rem', borderRadius: 10, border: '1px solid #ffd0da', background: '#fff1f4', color: '#cb3653', fontSize: '0.8rem', fontWeight: 600 }}>
+                                        {error}
+                                    </div>
+                                ) : null}
+
+                                <button type="submit" className="btn btn-primary" disabled={isLoading} style={{ width: '100%' }}>
+                                    {isLoading ? 'Sending...' : 'Continue'}
                                 </button>
                             </form>
                         </>
                     ) : (
-                        /* OTP Step */
-                        <form onSubmit={handleVerifyOtp} style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem' }}>
-                            {/* 6 OTP digit boxes */}
-                            <div style={{ display: 'flex', gap: '0.625rem', justifyContent: 'center' }}>
+                        <form onSubmit={handleVerifyOtp} style={{ display: 'grid', gap: '0.62rem' }}>
+                            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(6, minmax(0, 1fr))', gap: '0.35rem' }}>
                                 {otp.map((digit, i) => (
                                     <input
                                         key={i}
-                                        ref={el => { otpRefs.current[i] = el; }}
-                                        type="text" inputMode="numeric" maxLength={6}
+                                        ref={(el) => {
+                                            otpRefs.current[i] = el;
+                                        }}
+                                        type="text"
+                                        inputMode="numeric"
+                                        maxLength={6}
                                         value={digit}
-                                        onChange={e => handleOtpInput(i, e.target.value)}
-                                        onKeyDown={e => handleOtpKeyDown(i, e)}
-                                        onPaste={e => {
-                                            const text = e.clipboardData.getData('text');
-                                            if (/^\d{6}$/.test(text)) {
-                                                e.preventDefault();
-                                                handleOtpInput(0, text);
-                                            }
-                                        }}
-                                        style={{
-                                            width: 48, height: 56, textAlign: 'center',
-                                            fontSize: '1.5rem', fontWeight: 700, letterSpacing: 0,
-                                            background: 'rgba(255,255,255,0.04)',
-                                            border: digit ? '1px solid var(--brand)' : '1px solid rgba(255,255,255,0.12)',
-                                            borderRadius: 10, color: digit ? 'var(--brand-bright)' : 'var(--text-primary)',
-                                            outline: 'none', transition: 'all 150ms',
-                                            fontFamily: 'var(--font-sans)',
-                                            caretColor: 'transparent',
-                                        }}
+                                        onChange={(e) => handleOtpInput(i, e.target.value)}
+                                        onKeyDown={(e) => handleOtpKeyDown(i, e)}
+                                        aria-label={`Digit ${i + 1}`}
+                                        className="form-input"
+                                        style={{ textAlign: 'center', fontWeight: 700, fontSize: '1rem' }}
                                     />
                                 ))}
                             </div>
 
-                            {error && <p style={{ fontSize: '0.875rem', color: '#fb7185', textAlign: 'center', margin: 0 }}>{error}</p>}
+                            {error ? (
+                                <div style={{ padding: '0.62rem 0.7rem', borderRadius: 10, border: '1px solid #ffd0da', background: '#fff1f4', color: '#cb3653', fontSize: '0.8rem', fontWeight: 600 }}>
+                                    {error}
+                                </div>
+                            ) : null}
 
-                            <button type="submit" className="btn btn-primary" disabled={isLoading || otp.join('').length !== 6} style={{ width: '100%', padding: '0.875rem', fontSize: '0.9375rem' }}>
-                                {isLoading ? (
-                                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" style={{ animation: 'spin 1s linear infinite' }}><path d="M21 12a9 9 0 1 1-6.219-8.56" /></svg>
-                                ) : 'Verify code'}
+                            <button type="submit" className="btn btn-primary" disabled={isLoading || otp.join('').length !== 6} style={{ width: '100%' }}>
+                                {isLoading ? 'Verifying...' : 'Verify and continue'}
                             </button>
 
-                            <div style={{ textAlign: 'center' }}>
+                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '0.5rem', flexWrap: 'wrap' }}>
                                 {resendCountdown > 0 ? (
-                                    <span style={{ fontSize: '0.875rem', color: 'var(--text-muted)' }}>Resend in {resendCountdown}s</span>
+                                    <span className="text-sm text-muted">Resend in {resendCountdown}s</span>
                                 ) : (
-                                    <button type="button" onClick={() => handleSendOtp()} style={{ background: 'none', border: 'none', color: 'var(--brand)', fontSize: '0.875rem', fontWeight: 600, cursor: 'pointer', fontFamily: 'inherit' }}>
+                                    <button type="button" className="btn btn-ghost btn-sm" onClick={() => void handleSendOtp()}>
                                         Resend code
                                     </button>
                                 )}
-                                <span style={{ color: 'var(--text-muted)', fontSize: '0.875rem' }}> · </span>
-                                <button type="button" onClick={() => { setStep('email'); setOtp(['', '', '', '', '', '']); setError(null); }} style={{ background: 'none', border: 'none', color: 'var(--text-muted)', fontSize: '0.875rem', cursor: 'pointer', fontFamily: 'inherit' }}>
-                                    Change email
+
+                                <button
+                                    type="button"
+                                    className="btn btn-ghost btn-sm"
+                                    onClick={() => {
+                                        setStep('email');
+                                        setOtp(['', '', '', '', '', '']);
+                                        setError(null);
+                                        verifyInFlightRef.current = false;
+                                        setIsLoading(false);
+                                    }}
+                                >
+                                    Use different email
                                 </button>
                             </div>
                         </form>
                     )}
 
-                    <p style={{ marginTop: '1.75rem', textAlign: 'center', color: 'var(--text-muted)', fontSize: '0.875rem' }}>
-                        Don't have an account?{' '}
-                        <Link href="/onboarding" style={{ color: 'var(--brand)', fontWeight: 600, textDecoration: 'none' }}>Create one free</Link>
+                    <div className="divider" style={{ marginTop: '0.9rem', marginBottom: '0.75rem' }} />
+                    <p className="text-sm text-secondary" style={{ textAlign: 'center' }}>
+                        New here?{' '}
+                        <Link href="/onboarding" style={{ color: 'var(--brand)', fontWeight: 700 }}>
+                            Create an account
+                        </Link>
                     </p>
-
-                    <div style={{ display: 'flex', gap: '1rem', justifyContent: 'center', flexWrap: 'wrap', marginTop: '2.5rem', paddingTop: '1.5rem', borderTop: '1px solid rgba(255,255,255,0.05)' }}>
-                        {['🔒 SOC 2 Type II', '🌐 GDPR compliant', '⚡ 99.9% uptime'].map((t, i) => (
-                            <span key={i} style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>{t}</span>
-                        ))}
-                    </div>
-                </div>
+                </section>
             </div>
+
+            <style jsx>{`
+                @media (max-width: 900px) {
+                    div[style*='max-width: 920px'] {
+                        grid-template-columns: 1fr !important;
+                    }
+
+                    aside {
+                        border-right: none !important;
+                        border-bottom: 1px solid var(--border);
+                    }
+                }
+            `}</style>
         </div>
     );
 }
 
 export default function LoginPage() {
     return (
-        <Suspense fallback={
-            <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'var(--bg)' }}>
-                <div style={{ width: 40, height: 40, borderRadius: '50%', border: '3px solid rgba(92,124,250,0.3)', borderTopColor: '#748ffc', animation: 'spin 0.8s linear infinite' }} />
-            </div>
-        }>
+        <Suspense fallback={<div style={{ minHeight: '100vh' }} />}>
             <LoginContent />
         </Suspense>
     );
 }
-

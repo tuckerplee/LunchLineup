@@ -3,21 +3,21 @@ import { cva, type VariantProps } from 'class-variance-authority';
 import { cn } from '@/lib/utils';
 
 const buttonVariants = cva(
-    'inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-lg text-sm font-semibold transition-all duration-200 disabled:pointer-events-none disabled:opacity-50 outline-none focus-visible:ring-2 focus-visible:ring-[var(--brand)] focus-visible:ring-offset-2 ring-offset-[var(--bg)]',
+    'inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-xl text-sm font-semibold transition-all duration-200 disabled:pointer-events-none disabled:opacity-50 outline-none focus-visible:ring-2 focus-visible:ring-[#7b9cff] focus-visible:ring-offset-2 ring-offset-[#f4f7fd] active:scale-[0.98]',
     {
         variants: {
             variant: {
-                default: 'bg-[var(--brand)] text-white shadow-[var(--shadow-brand)] hover:-translate-y-0.5 hover:shadow-[0_8px_32px_rgba(92,124,250,0.5)]',
-                secondary: 'bg-[var(--bg-glass)] text-[var(--text-primary)] border border-[var(--border-bright)] hover:bg-[var(--bg-glass-hover)] hover:-translate-y-0.5',
-                ghost: 'bg-transparent text-[var(--text-secondary)] hover:bg-[var(--bg-glass)] hover:text-[var(--text-primary)]',
-                destructive: 'bg-[var(--rose)] text-white hover:opacity-90',
-                outline: 'border border-[var(--border)] bg-transparent text-[var(--text-secondary)] hover:border-[var(--brand)] hover:text-[var(--text-primary)]',
-                success: 'bg-[var(--emerald)] text-white shadow-[0_4px_16px_rgba(16,185,129,0.3)] hover:opacity-90',
+                default: 'bg-gradient-to-br from-[#4171ff] via-[#2f63ff] to-[#22b8cf] text-white shadow-[0_10px_28px_rgba(47,99,255,0.3)] hover:-translate-y-0.5 hover:shadow-[0_14px_32px_rgba(47,99,255,0.36)]',
+                secondary: 'bg-white text-[var(--text-primary)] border border-[var(--border)] shadow-[var(--shadow-sm)] hover:border-[var(--border-strong)] hover:bg-[#fbfcff] hover:-translate-y-0.5',
+                ghost: 'bg-transparent text-[var(--text-secondary)] hover:bg-[var(--bg-surface)] hover:text-[var(--text-primary)]',
+                destructive: 'bg-[var(--rose)] text-white shadow-[0_10px_24px_rgba(231,72,103,0.28)] hover:opacity-95',
+                outline: 'border border-[var(--border)] bg-white text-[var(--text-secondary)] hover:border-[#7b9cff] hover:text-[var(--text-primary)] hover:bg-[#f9fbff]',
+                success: 'bg-[var(--emerald)] text-white shadow-[0_10px_24px_rgba(23,178,106,0.28)] hover:opacity-95',
             },
             size: {
-                default: 'h-9 px-4 py-2',
-                sm: 'h-8 px-3 text-xs',
-                lg: 'h-11 px-6 text-base',
+                default: 'h-10 px-4 py-2',
+                sm: 'h-8 px-3 text-xs rounded-lg',
+                lg: 'h-11 px-6 text-base rounded-2xl',
                 icon: 'h-9 w-9',
             },
         },
