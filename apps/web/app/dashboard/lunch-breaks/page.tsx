@@ -643,7 +643,26 @@ export default function LunchBreaksPage() {
             </div>
           </div>
 
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: '1rem' }}>
+          <div style={{ border: '1px solid var(--border)', borderRadius: 12, background: 'var(--bg-glass)', padding: '1rem' }}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '0.75rem', flexWrap: 'wrap' }}>
+              <div>
+                <div style={{ fontSize: '0.78rem', color: 'var(--text-muted)' }}>Primary Action</div>
+                <div style={{ color: 'var(--text-primary)', fontWeight: 700 }}>
+                  {hasSharedRows ? 'Generate assignments from Scheduling shifts' : 'Generate assignments from manual shifts'}
+                </div>
+              </div>
+              <Button size="sm" onClick={runPrimaryGeneration} disabled={isGeneratingPrimary}>
+                {isGeneratingPrimary ? 'Generating...' : 'Generate Assignments'}
+              </Button>
+            </div>
+            <div style={{ marginTop: '0.55rem', fontSize: '0.82rem', color: 'var(--text-secondary)' }}>
+              {hasSharedRows
+                ? `${dayRows.length} shifts imported from Scheduling.`
+                : 'No shifts imported from Scheduling. Add shifts manually below.'}
+            </div>
+          </div>
+
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
             <div style={{ border: '1px solid var(--border)', borderRadius: 12, background: 'var(--bg-glass)', overflow: 'hidden' }}>
               <div style={{ padding: '0.85rem 1rem', borderBottom: '1px solid var(--border)', display: 'flex', justifyContent: 'space-between', gap: '0.5rem' }}>
                 <div style={{ fontWeight: 700, color: 'var(--text-primary)' }}>Shift Inputs</div>
@@ -749,18 +768,10 @@ export default function LunchBreaksPage() {
                     {isDayLoading ? 'Refreshing...' : `${dayRows.length} shift rows loaded`}
                   </div>
                 </div>
-                <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
-                  <Button size="sm" onClick={runPrimaryGeneration} disabled={isGeneratingPrimary}>
-                    {isGeneratingPrimary ? 'Generating...' : 'Generate Assignments'}
-                  </Button>
-                  <Button variant="secondary" size="sm" onClick={saveAllDirtyRows} disabled={dirtyCount === 0}>
-                    {dirtyCount > 0 ? `Save ${dirtyCount} Changes` : 'Save Changes'}
-                  </Button>
-                </div>
               </div>
               {dayRows.length === 0 ? (
                 <div style={{ padding: '1rem', color: 'var(--text-secondary)', fontSize: '0.88rem' }}>
-                  Generate assignments to populate the workspace.
+                  Generate assignments to populate this grid.
                 </div>
               ) : (
               <div style={{ overflowX: 'auto' }}>
@@ -872,12 +883,17 @@ export default function LunchBreaksPage() {
                 </table>
               </div>
               )}
+              <div style={{ padding: '0.75rem 1rem', borderTop: '1px solid var(--border)', display: 'flex', justifyContent: 'flex-end' }}>
+                <Button variant="secondary" size="sm" onClick={saveAllDirtyRows} disabled={dirtyCount === 0}>
+                  {dirtyCount > 0 ? `Save ${dirtyCount} Changes` : 'Save Changes'}
+                </Button>
+              </div>
             </div>
           </div>
 
           <details style={{ border: '1px solid var(--border)', borderRadius: 12, background: 'var(--bg-glass)', padding: '0.8rem 0.9rem' }}>
             <summary style={{ cursor: 'pointer', color: 'var(--text-primary)', fontWeight: 700 }}>
-              System & Advanced Settings
+              Advanced
             </summary>
             <div style={{ marginTop: '0.75rem', display: 'grid', gap: '0.9rem' }}>
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: '0.75rem' }}>
@@ -943,18 +959,17 @@ export default function LunchBreaksPage() {
                   </>
                 ) : null}
               </div>
+              {lastRun ? (
+                <div style={{ borderTop: '1px solid var(--border)', paddingTop: '0.75rem', color: 'var(--text-secondary)', fontSize: '0.82rem' }}>
+                  Last run: <strong>{lastRun.source}</strong>
+                  {' · '}
+                  Persisted: <strong>{lastRun.persisted ? 'yes' : 'no'}</strong>
+                  {' · '}
+                  Credits used: <strong>{lastRun.creditConsumption.consumedCredits}</strong>
+                </div>
+              ) : null}
             </div>
           </details>
-
-          {lastRun ? (
-            <div style={{ border: '1px solid var(--border)', borderRadius: 10, padding: '0.75rem 0.9rem', color: 'var(--text-secondary)', fontSize: '0.82rem' }}>
-              Last run: <strong>{lastRun.source}</strong>
-              {' · '}
-              Persisted: <strong>{lastRun.persisted ? 'yes' : 'no'}</strong>
-              {' · '}
-              Credits used: <strong>{lastRun.creditConsumption.consumedCredits}</strong>
-            </div>
-          ) : null}
         </>
       ) : null}
 
