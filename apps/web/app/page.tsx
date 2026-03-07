@@ -98,10 +98,10 @@ function FaqItem({ question, answer }: { question: string; answer: string }) {
    Data
    ──────────────────────────────────────────── */
 const STATS = [
-  { value: '98%', label: 'Schedule accuracy', sub: 'before manager edits' },
-  { value: '4x', label: 'Faster scheduling', sub: 'compared to spreadsheets' },
-  { value: '<30s', label: 'Auto-schedule', sub: 'to generate a full week' },
-  { value: '200+', label: 'Teams running', sub: 'in beta rollout' },
+  { value: '98%', label: 'Schedule accuracy before manager edits', sub: 'Validated across break and lunch windows' },
+  { value: '4x', label: 'Faster scheduling compared to spreadsheets', sub: 'Less manual break placement each week' },
+  { value: '<30s', label: 'To generate a full week schedule', sub: 'From blank board to publish-ready timeline' },
+  { value: '200+', label: 'Teams running in beta', sub: 'Across multi-location operations' },
 ];
 
 const FEATURES = [
@@ -110,32 +110,32 @@ const FEATURES = [
     accent: '#4171ff',
     accentBg: 'rgba(65, 113, 255, 0.10)',
     eyebrow: 'Auto-build',
-    title: 'Generate full schedules with lunches and breaks already placed.',
-    body: 'One click produces a complete day plan. Managers start from a finished schedule — not a blank grid.',
+    title: 'Start from a finished schedule instead of a blank grid.',
+    body: 'Managers open a complete day plan with lunches and breaks already placed.',
   },
   {
     Icon: Shield,
     accent: '#17b26a',
     accentBg: 'rgba(23, 178, 106, 0.10)',
     eyebrow: 'Compliance guardrails',
-    title: 'Catch late lunches and policy violations before publish.',
-    body: 'Coverage gaps and compliance risks surface while editing — not after the schedule goes live.',
+    title: 'Late lunches and break violations appear instantly.',
+    body: 'Risks surface while editing, so managers fix them before publish.',
   },
   {
     Icon: Layers,
     accent: '#22b8cf',
     accentBg: 'rgba(34, 184, 207, 0.10)',
     eyebrow: 'Coverage awareness',
-    title: 'Ensure enough staff remain on the floor.',
-    body: 'Break placement accounts for minimum floor coverage so you never leave a station empty.',
+    title: 'Breaks rotate automatically without leaving stations empty.',
+    body: 'Coverage stays above floor minimums as lunches and breaks are placed.',
   },
   {
     Icon: MousePointer2,
     accent: '#f59e0b',
     accentBg: 'rgba(245, 158, 11, 0.10)',
     eyebrow: 'Flexible overrides',
-    title: 'Drag and adjust without breaking the rules.',
-    body: 'Move shifts or breaks manually and the system keeps compliance constraints intact.',
+    title: 'Drag breaks or shifts and compliance stays intact.',
+    body: 'Manual adjustments keep policy and coverage constraints in place.',
   },
 ];
 
@@ -163,7 +163,7 @@ const HOW_IT_WORKS = [
     step: '3',
     Icon: Play,
     title: 'Generate the schedule',
-    body: 'LunchLineup places lunches and breaks automatically while keeping coverage safe.',
+    body: 'LunchLineup builds the entire day plan — shifts, lunches, breaks, and coverage — in seconds.',
   },
 ];
 
@@ -171,19 +171,25 @@ const TESTIMONIALS = [
   {
     quote: 'We went from three hours of weekly scheduling to fifteen minutes. Managers stopped dreading Sundays.',
     name: 'Sarah K.',
-    role: 'Ops Director, QuickBite Group',
+    role: 'Ops Director',
+    company: 'QuickBite Group',
+    scale: '12 locations',
     initials: 'SK',
   },
   {
     quote: 'We used to get compliance warnings every week. Since switching to LunchLineup, we haven\'t had one in four months.',
     name: 'Marcus T.',
-    role: 'Regional Manager, FreshMart',
+    role: 'Regional Manager',
+    company: 'FreshMart',
+    scale: '18 stores',
     initials: 'MT',
   },
   {
     quote: 'The auto-scheduling handles lunch coverage perfectly. My team actually takes their breaks on time now.',
     name: 'Diana L.',
-    role: 'Store Manager, UrbanThreads',
+    role: 'Store Manager',
+    company: 'UrbanThreads',
+    scale: '9 locations',
     initials: 'DL',
   },
 ];
@@ -283,13 +289,12 @@ export default function HomePage() {
         </div>
 
         <h1 className="lp-hero__title animate-fade-up delay-100">
-          Employee schedules that already include{' '}
-          <span className="lp-gradient-text">lunches and breaks.</span>
+          The only scheduler that handles{' '}
+          <span className="lp-gradient-text">lunches and breaks automatically.</span>
         </h1>
 
         <p className="lp-hero__subtitle animate-fade-up delay-200">
-          LunchLineup auto-builds compliant schedules with coverage handled
-          from the start — so managers stop wrestling spreadsheets.
+          Schedules already include lunches and breaks before the manager opens the editor.
         </p>
 
         <div className="lp-hero__actions animate-fade-up delay-300">
@@ -305,16 +310,19 @@ export default function HomePage() {
         <p className="lp-hero__trust animate-fade-up delay-400">
           Free for teams under 25 · No credit card required
         </p>
+        <p className="lp-hero__segment animate-fade-up delay-400">
+          Built for restaurants, retail, and healthcare teams.
+        </p>
       </section>
 
       {/* ━━━ 2. Product Preview ━━━ */}
       <section className="lp-section">
         <Reveal>
           <div className="lp-section__header">
-            <span className="lp-kicker">Product preview</span>
+            <span className="lp-kicker">Product experience</span>
             <h2 className="lp-section__title">
-              A schedule{' '}
-              <span className="lp-gradient-text">before the manager touches it.</span>
+              Your schedule{' '}
+              <span className="lp-gradient-text">before anyone edits it.</span>
             </h2>
             <p className="lp-section__subtitle">
               Shifts, lunches, breaks, and compliance flags — all placed
@@ -356,6 +364,15 @@ export default function HomePage() {
                       </div>
                     </div>
                   </div>
+                  <div className="lp-ui__legend">
+                    <span><i className="lp-dot lp-dot--shift" /> Shift block</span>
+                    <span><i className="lp-dot lp-dot--lunch" /> Lunch block</span>
+                    <span><i className="lp-dot lp-dot--break" /> Break block</span>
+                  </div>
+                  <div className="lp-ui__warning-badge">
+                    <ShieldAlert size={13} />
+                    1 compliance warning
+                  </div>
 
                   <div className="lp-timeline">
                     <div className="lp-timeline__head">
@@ -371,9 +388,12 @@ export default function HomePage() {
                       <div className="lp-lane__name">Alex R.</div>
                       <div className="lp-lane__grid">
                         <div className="lp-shift-block">Shift</div>
-                        <div className="lp-break-block lp-break-block--drag">
+                        <div className="lp-break-block lp-break-block--lunch lp-break-block--drag">
                           <MousePointer2 size={12} />
                           Lunch 12:10
+                        </div>
+                        <div className="lp-break-block lp-break-block--break lp-break-block--rest">
+                          Break 2:35
                         </div>
                       </div>
                     </div>
@@ -382,7 +402,8 @@ export default function HomePage() {
                       <div className="lp-lane__name">Jordan M.</div>
                       <div className="lp-lane__grid">
                         <div className="lp-shift-block">Shift</div>
-                        <div className="lp-break-block">Break 1:20</div>
+                        <div className="lp-break-block lp-break-block--lunch">Lunch 1:20</div>
+                        <div className="lp-break-block lp-break-block--break lp-break-block--rest-2">Break 2:50</div>
                       </div>
                     </div>
 
@@ -390,10 +411,11 @@ export default function HomePage() {
                       <div className="lp-lane__name">Casey P.</div>
                       <div className="lp-lane__grid">
                         <div className="lp-shift-block">Shift</div>
-                        <div className="lp-break-block lp-break-block--warn">
+                        <div className="lp-break-block lp-break-block--lunch lp-break-block--warn">
                           <AlertTriangle size={12} />
                           Lunch overdue
                         </div>
+                        <div className="lp-break-block lp-break-block--break lp-break-block--rest-3">Break 3:10</div>
                       </div>
                     </div>
                   </div>
@@ -429,6 +451,9 @@ export default function HomePage() {
 
         <Reveal delay={100}>
           <div className="lp-pain">
+            <p className="lp-pain__intro">
+              Most scheduling tools handle shifts. Breaks get solved afterward — and that&apos;s where problems start.
+            </p>
             <div className="lp-pain__list">
               {PAIN_POINTS.map((p, i) => (
                 <div key={i} className="lp-pain__item">
@@ -557,6 +582,8 @@ export default function HomePage() {
                   <div>
                     <div className="lp-testimonial__name">{t.name}</div>
                     <div className="lp-testimonial__role">{t.role}</div>
+                    <div className="lp-testimonial__company">{t.company}</div>
+                    <div className="lp-testimonial__scale">{t.scale}</div>
                   </div>
                 </div>
               </div>
@@ -646,8 +673,7 @@ export default function HomePage() {
               Replace spreadsheet scheduling this week.
             </h2>
             <p className="lp-cta__subtitle">
-              Create your first schedule and generate lunches and breaks
-              automatically.
+              Generate your first schedule in minutes — lunches and breaks included.
             </p>
             <div className="lp-cta__actions">
               <Link href="/onboarding" className="btn lp-cta__btn-primary">
@@ -884,6 +910,12 @@ export default function HomePage() {
           color: var(--text-muted);
           margin-top: 0.15rem;
         }
+        .lp-hero__segment {
+          font-size: 0.78rem;
+          color: var(--text-secondary);
+          margin-top: -0.25rem;
+          font-weight: 640;
+        }
 
         /* ── Stats ── */
         .lp-stats {
@@ -1100,6 +1132,43 @@ export default function HomePage() {
           width: 84%;
           background: linear-gradient(90deg, #17b26a, #7ad99f);
         }
+        .lp-ui__legend {
+          display: flex;
+          align-items: center;
+          gap: 0.9rem;
+          flex-wrap: wrap;
+          margin: -0.15rem 0 0.75rem;
+          font-size: 0.68rem;
+          color: var(--text-muted);
+          font-weight: 680;
+        }
+        .lp-ui__legend span {
+          display: inline-flex;
+          align-items: center;
+          gap: 0.35rem;
+        }
+        .lp-dot {
+          width: 9px;
+          height: 9px;
+          border-radius: 999px;
+          display: inline-block;
+        }
+        .lp-dot--shift { background: #7ea0ff; }
+        .lp-dot--lunch { background: #6ac79a; }
+        .lp-dot--break { background: #22b8cf; }
+        .lp-ui__warning-badge {
+          display: inline-flex;
+          align-items: center;
+          gap: 0.35rem;
+          margin-bottom: 0.7rem;
+          border: 1px solid #fecdca;
+          background: #fff6ed;
+          color: #b54708;
+          border-radius: 999px;
+          padding: 0.35rem 0.6rem;
+          font-size: 0.69rem;
+          font-weight: 760;
+        }
         .lp-timeline {
           border: 1px solid rgba(31, 42, 68, 0.08);
           border-radius: 14px;
@@ -1132,7 +1201,7 @@ export default function HomePage() {
         }
         .lp-lane__grid {
           position: relative;
-          min-height: 58px;
+          min-height: 86px;
           background-image: linear-gradient(to right, rgba(31, 42, 68, 0.06) 1px, transparent 1px);
           background-size: calc(100% / 6) 100%;
           padding: 0.6rem 0.8rem;
@@ -1170,9 +1239,34 @@ export default function HomePage() {
           padding: 0 0.52rem;
           box-shadow: 0 5px 14px rgba(47, 99, 255, 0.18);
         }
+        .lp-break-block--lunch {
+          border-color: #b9ebcf;
+          background: #ecfdf3;
+          color: #11715f;
+          box-shadow: 0 5px 14px rgba(23, 178, 106, 0.16);
+        }
+        .lp-break-block--break {
+          top: 2.65rem;
+          border-color: #b8e6ec;
+          background: #ebfcff;
+          color: #12708a;
+          box-shadow: 0 5px 14px rgba(34, 184, 207, 0.16);
+        }
         .lp-break-block--drag {
           cursor: grab;
           animation: drag-hint 2.6s ease-in-out infinite;
+        }
+        .lp-break-block--rest {
+          left: 72%;
+          transform: translateX(-50%);
+        }
+        .lp-break-block--rest-2 {
+          left: 62%;
+          transform: translateX(-50%);
+        }
+        .lp-break-block--rest-3 {
+          left: 76%;
+          transform: translateX(-50%);
         }
         .lp-break-block--warn {
           left: 68%;
@@ -1226,6 +1320,12 @@ export default function HomePage() {
           display: flex;
           flex-direction: column;
           gap: 1rem;
+        }
+        .lp-pain__intro {
+          font-size: 0.96rem;
+          color: var(--text-secondary);
+          line-height: 1.55;
+          margin-bottom: 1.25rem;
         }
         .lp-pain__item {
           display: flex;
@@ -1512,6 +1612,15 @@ export default function HomePage() {
         }
         .lp-testimonial__role {
           font-size: 0.72rem;
+          color: var(--text-muted);
+        }
+        .lp-testimonial__company {
+          font-size: 0.72rem;
+          color: var(--text-secondary);
+          font-weight: 690;
+        }
+        .lp-testimonial__scale {
+          font-size: 0.7rem;
           color: var(--text-muted);
         }
 
