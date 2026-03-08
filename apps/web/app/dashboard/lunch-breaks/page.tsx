@@ -349,6 +349,7 @@ export default function LunchBreaksPage() {
   const [showGuidedSetup, setShowGuidedSetup] = useState(false);
   const [guidedStep, setGuidedStep] = useState<1 | 2 | 3 | 4>(1);
   const [guidedSource, setGuidedSource] = useState<'import' | 'manual' | null>(null);
+  const [guidedDismissed, setGuidedDismissed] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const loadFeatures = useCallback(async (): Promise<FeatureMatrixResponse> => {
@@ -837,13 +838,15 @@ export default function LunchBreaksPage() {
 
   const markGuidedComplete = useCallback(() => {
     if (typeof window !== 'undefined') {
-      window.localStorage.setItem(`ll:break-guided:${selectedDate}`, '1');
+      window.localStorage.setItem('ll:break-guided:v1', '1');
     }
-  }, [selectedDate]);
+  }, []);
 
   const closeGuidedSetup = useCallback((persistComplete: boolean) => {
     if (persistComplete) {
       markGuidedComplete();
+    } else {
+      setGuidedDismissed(true);
     }
     setShowGuidedSetup(false);
     setGuidedStep(1);
@@ -853,19 +856,28 @@ export default function LunchBreaksPage() {
   useEffect(() => {
     if (typeof window === 'undefined') return;
     if (isLoading || !lunchBreakFeature?.enabled) return;
-    if (hasSharedRows || hasStandalonePreview) return;
+    if (guidedDismissed) return;
 
-    const isCompleteForDay = window.localStorage.getItem(`ll:break-guided:${selectedDate}`) === '1';
-    if (!isCompleteForDay) {
+    const isComplete = window.localStorage.getItem('ll:break-guided:v1') === '1';
+    if (!isComplete) {
       setShowGuidedSetup(true);
       setGuidedStep(1);
       setGuidedSource(null);
     }
-  }, [hasSharedRows, hasStandalonePreview, isLoading, lunchBreakFeature?.enabled, selectedDate]);
+  }, [guidedDismissed, isLoading, lunchBreakFeature?.enabled]);
+
+  const isGuidedOverlayActive = showGuidedSetup && !isLoading && Boolean(lunchBreakFeature?.enabled);
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem', minHeight: '100%' }}>
-      <section className="surface-card" style={{ padding: '1rem' }}>
+      <section
+        className="surface-card"
+        style={{
+          padding: '1rem',
+          opacity: isGuidedOverlayActive ? 0.22 : 1,
+          pointerEvents: isGuidedOverlayActive ? 'none' : 'auto',
+        }}
+      >
         <div
           style={{
             display: 'grid',
@@ -883,7 +895,7 @@ export default function LunchBreaksPage() {
             <div style={{ marginTop: 4, fontSize: '0.78rem', color: 'var(--text-muted)', fontWeight: 700 }}>
               {selectedDateLabel} break plan
             </div>
-            {!showGuidedSetup ? (
+            {!isGuidedOverlayActive ? (
               <button
                 type="button"
                 onClick={() => {
@@ -1025,15 +1037,34 @@ export default function LunchBreaksPage() {
         ) : null}
       </section>
 
-      {showGuidedSetup && !isLoading && lunchBreakFeature?.enabled ? (
-        <section
-          className="surface-card"
-          style={{
-            padding: '0.95rem',
-            borderColor: '#cfe0ff',
-            background: 'linear-gradient(180deg, #f7faff 0%, #f2f7ff 100%)',
-          }}
-        >
+      {isGuidedOverlayActive ? (
+        <>
+          <div
+            style={{
+              position: 'fixed',
+              inset: 0,
+              background: 'rgba(17, 25, 40, 0.46)',
+              backdropFilter: 'blur(2px)',
+              zIndex: 50,
+            }}
+          />
+          <section
+            className="surface-card"
+            style={{
+              position: 'fixed',
+              zIndex: 60,
+              top: '8%',
+              left: '50%',
+              transform: 'translateX(-50%)',
+              width: 'min(900px, calc(100vw - 2rem))',
+              maxHeight: '84vh',
+              overflowY: 'auto',
+              padding: '0.95rem',
+              borderColor: '#cfe0ff',
+              background: 'linear-gradient(180deg, #f7faff 0%, #f2f7ff 100%)',
+              boxShadow: '0 26px 60px rgba(16, 24, 40, 0.34)',
+            }}
+          >
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, flexWrap: 'wrap' }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
               {[1, 2, 3, 4].map((step) => (
@@ -1185,7 +1216,8 @@ export default function LunchBreaksPage() {
               </>
             ) : null}
           </div>
-        </section>
+          </section>
+        </>
       ) : null}
 
       {isLoading ? (
@@ -1216,6 +1248,8 @@ export default function LunchBreaksPage() {
             display: 'grid',
             gridTemplateColumns: 'minmax(0, 1fr) 340px',
             gap: '0.75rem',
+            opacity: isGuidedOverlayActive ? 0.22 : 1,
+            pointerEvents: isGuidedOverlayActive ? 'none' : 'auto',
           }}
         >
           <div className="surface-card" style={{ padding: '0.72rem', minWidth: 0, minHeight: 0, display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
@@ -1459,7 +1493,7 @@ export default function LunchBreaksPage() {
               </p>
             )}
 
-            {!showGuidedSetup ? (
+            {!isGuidedOverlayActive ? (
               <details style={{ borderTop: '1px solid var(--border)', paddingTop: '0.72rem' }}>
                 <summary style={{ cursor: 'pointer', fontSize: '0.84rem', fontWeight: 800, color: 'var(--text-primary)' }}>
                   Planning settings
