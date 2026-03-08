@@ -2,7 +2,7 @@
 
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
-import { useMemo } from 'react';
+import { useMemo, useState } from 'react';
 import {
   Bell,
   CalendarDays,
@@ -18,8 +18,8 @@ import {
 
 const NAV_ITEMS = [
   { href: '/dashboard', label: 'Overview', icon: LayoutGrid, exact: true },
-  { href: '/dashboard/scheduling', label: 'Scheduling', icon: CalendarDays, exact: false },
-  { href: '/dashboard/lunch-breaks', label: 'Lunch & Breaks', icon: UtensilsCrossed, exact: false },
+  { href: '/dashboard/scheduling', label: 'Scheduling', icon: CalendarDays, exact: false, priority: 'strong', badge: 3 },
+  { href: '/dashboard/lunch-breaks', label: 'Lunch & Breaks', icon: UtensilsCrossed, exact: false, badge: 1 },
   { href: '/dashboard/staff', label: 'Staff', icon: Users, exact: false },
   { href: '/dashboard/locations', label: 'Locations', icon: MapPin, exact: false },
   { href: '/dashboard/settings', label: 'Settings', icon: Settings, exact: false },
@@ -27,7 +27,12 @@ const NAV_ITEMS = [
 
 export default function DashboardLayout({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
-  const notifCount = 2;
+  const [notificationsOpen, setNotificationsOpen] = useState(false);
+  const notifications = [
+    { id: 'swap-1', text: 'Bob T. requested shift swap', tone: 'var(--amber)' },
+    { id: 'coverage-1', text: 'Friday dinner coverage below minimum', tone: 'var(--rose)' },
+  ];
+  const notifCount = notifications.length;
 
   const currentPage = useMemo(() => {
     const match = NAV_ITEMS.find((item) => (item.exact ? pathname === item.href : pathname.startsWith(item.href)));
@@ -93,11 +98,53 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
                   href={item.href}
                   className={`workspace-nav-link ${isActive ? 'active' : ''}`}
                   aria-current={isActive ? 'page' : undefined}
+                  style={
+                    item.priority === 'strong' && !isActive
+                      ? {
+                          borderColor: '#cfe0ff',
+                          background: '#f3f7ff',
+                          color: 'var(--text-primary)',
+                          fontWeight: 700,
+                        }
+                      : undefined
+                  }
                 >
-                  <span aria-hidden="true" style={{ width: 18, display: 'inline-grid', placeItems: 'center' }}>
+                  <span
+                    aria-hidden="true"
+                    style={
+                      item.priority === 'strong' && !isActive
+                        ? {
+                            width: 18,
+                            display: 'inline-grid',
+                            placeItems: 'center',
+                            color: '#2f63ff',
+                          }
+                        : { width: 18, display: 'inline-grid', placeItems: 'center' }
+                    }
+                  >
                     <Icon size={16} />
                   </span>
                   {item.label}
+                  {item.badge ? (
+                    <span
+                      style={{
+                        marginLeft: 'auto',
+                        minWidth: 18,
+                        height: 18,
+                        padding: '0 5px',
+                        borderRadius: 999,
+                        display: 'inline-grid',
+                        placeItems: 'center',
+                        fontSize: '0.64rem',
+                        fontWeight: 800,
+                        color: isActive ? '#ffffff' : '#2f63ff',
+                        background: isActive ? 'linear-gradient(180deg, #4171ff, #2f63ff)' : '#e3edff',
+                        border: '1px solid #c9d9ff',
+                      }}
+                    >
+                      {item.badge}
+                    </span>
+                  ) : null}
                   {isActive ? (
                     <span
                       className="status-dot"
@@ -127,47 +174,77 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
           </div>
 
           <div style={{ display: 'flex', alignItems: 'center', gap: '0.7rem' }}>
-            <button
-              id="notification-bell"
-              type="button"
-              aria-label="Notifications"
-              style={{
-                position: 'relative',
-                width: 38,
-                height: 38,
-                borderRadius: 12,
-                border: '1px solid var(--border)',
-                background: '#ffffff',
-                color: 'var(--text-secondary)',
-                display: 'grid',
-                placeItems: 'center',
-                cursor: 'pointer',
-              }}
-            >
-              <Bell size={17} />
-              {notifCount > 0 ? (
-                <span
+            <div style={{ position: 'relative' }}>
+              <button
+                id="notification-bell"
+                type="button"
+                aria-label="Notifications"
+                aria-expanded={notificationsOpen}
+                aria-haspopup="dialog"
+                onClick={() => setNotificationsOpen((open) => !open)}
+                style={{
+                  position: 'relative',
+                  width: 38,
+                  height: 38,
+                  borderRadius: 12,
+                  border: '1px solid var(--border)',
+                  background: '#ffffff',
+                  color: 'var(--text-secondary)',
+                  display: 'grid',
+                  placeItems: 'center',
+                  cursor: 'pointer',
+                }}
+              >
+                <Bell size={17} />
+                {notifCount > 0 ? (
+                  <span
+                    style={{
+                      position: 'absolute',
+                      top: -4,
+                      right: -4,
+                      minWidth: 19,
+                      height: 19,
+                      padding: '0 5px',
+                      borderRadius: 999,
+                      background: 'var(--rose)',
+                      color: 'white',
+                      fontWeight: 700,
+                      fontSize: '0.66rem',
+                      display: 'grid',
+                      placeItems: 'center',
+                      border: '2px solid #f4f7fd',
+                    }}
+                  >
+                    {notifCount}
+                  </span>
+                ) : null}
+              </button>
+              {notificationsOpen ? (
+                <div
+                  className="surface-card"
+                  role="dialog"
+                  aria-label="Notifications"
                   style={{
                     position: 'absolute',
-                    top: -4,
-                    right: -4,
-                    minWidth: 19,
-                    height: 19,
-                    padding: '0 5px',
-                    borderRadius: 999,
-                    background: 'var(--rose)',
-                    color: 'white',
-                    fontWeight: 700,
-                    fontSize: '0.66rem',
+                    top: '2.8rem',
+                    right: 0,
+                    width: 320,
+                    zIndex: 30,
+                    padding: '0.75rem',
                     display: 'grid',
-                    placeItems: 'center',
-                    border: '2px solid #f4f7fd',
+                    gap: '0.55rem',
                   }}
                 >
-                  {notifCount}
-                </span>
+                  <div style={{ fontSize: '0.86rem', fontWeight: 750, color: 'var(--text-primary)' }}>Notifications</div>
+                  {notifications.map((item) => (
+                    <div key={item.id} className="surface-muted" style={{ padding: '0.55rem', display: 'flex', gap: '0.45rem', alignItems: 'flex-start' }}>
+                      <span className="status-dot" style={{ marginTop: 6, background: item.tone }} />
+                      <span style={{ fontSize: '0.79rem', color: 'var(--text-secondary)', fontWeight: 600 }}>{item.text}</span>
+                    </div>
+                  ))}
+                </div>
               ) : null}
-            </button>
+            </div>
 
             <button
               type="button"
