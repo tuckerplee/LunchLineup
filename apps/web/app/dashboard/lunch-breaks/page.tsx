@@ -2,6 +2,7 @@
 
 import dynamic from 'next/dynamic';
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import { AnimatePresence, motion } from 'framer-motion';
 import { Button } from '@/components/ui/button';
 import type { StaffScheduleEvent } from '@/components/scheduling/StaffScheduler';
 import { fetchWithSession } from '@/lib/client-api';
@@ -347,7 +348,7 @@ export default function LunchBreaksPage() {
   const [isGeneratingManual, setIsGeneratingManual] = useState(false);
   const [manualShifts, setManualShifts] = useState<ManualShiftRow[]>(defaultManualShifts());
   const [plannerMode, setPlannerMode] = useState<'auto' | 'manual' | null>(null);
-  const [autoGuideStep, setAutoGuideStep] = useState<1 | 2>(1);
+  const [autoGuideStep, setAutoGuideStep] = useState<1 | 2 | 3 | 4>(1);
   const [error, setError] = useState<string | null>(null);
 
   const loadFeatures = useCallback(async (): Promise<FeatureMatrixResponse> => {
@@ -832,15 +833,15 @@ export default function LunchBreaksPage() {
 
   const choosePlannerMode = useCallback((mode: 'auto' | 'manual') => {
     setPlannerMode(mode);
-    setAutoGuideStep(mode === 'auto' ? 1 : 2);
+    setAutoGuideStep(mode === 'auto' ? 2 : 4);
   }, []);
 
-  const showEntryChooser = !isLoading && Boolean(lunchBreakFeature?.enabled) && plannerMode === null;
-  const showAutoIntro = isAutoMode && autoGuideStep === 1;
+  const showGuidedWindow =
+    !isLoading && Boolean(lunchBreakFeature?.enabled) && (plannerMode === null || (isAutoMode && autoGuideStep < 4));
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem', minHeight: '100%' }}>
-      {!showEntryChooser ? (
+      {!showGuidedWindow ? (
         <section
           className="surface-card"
           style={{ padding: '1rem' }}
@@ -903,8 +904,7 @@ export default function LunchBreaksPage() {
                   isGeneratingPrimary ||
                   isLoading ||
                   !lunchBreakFeature?.enabled ||
-                  plannerMode === null ||
-                  showAutoIntro
+                  plannerMode === null
                 }
                 style={{ minWidth: 250 }}
               >
@@ -1000,7 +1000,7 @@ export default function LunchBreaksPage() {
         </section>
       ) : null}
 
-      {showEntryChooser ? (
+      {showGuidedWindow ? (
         <section
           className="surface-card"
           style={{
@@ -1011,63 +1011,148 @@ export default function LunchBreaksPage() {
           }}
         >
           <div style={{ width: 'min(880px, 100%)', display: 'grid', gap: 14 }}>
-            <div style={{ textAlign: 'center', display: 'grid', gap: 6 }}>
-              <div className="workspace-kicker">Lunch & breaks</div>
-              <h2 className="workspace-title" style={{ margin: 0, fontSize: '1.45rem' }}>
-                Choose how to start today&apos;s plan
-              </h2>
-              <p className="workspace-subtitle" style={{ margin: 0 }}>
-                Select one workflow to continue.
-              </p>
-            </div>
-            <div
-              style={{
-                display: 'grid',
-                gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))',
-                gap: 12,
-              }}
-            >
-              <button
-                type="button"
-                onClick={() => choosePlannerMode('auto')}
-                style={{
-                  textAlign: 'left',
-                  border: '1px solid #cfe0ff',
-                  borderRadius: 14,
-                  background: 'linear-gradient(180deg, #f7faff 0%, #edf4ff 100%)',
-                  padding: '1rem',
-                  display: 'grid',
-                  gap: 8,
-                  cursor: 'pointer',
-                }}
-              >
-                <div style={{ fontSize: '1rem', fontWeight: 800, color: 'var(--text-primary)' }}>Auto Break</div>
-                <div style={{ fontSize: '0.83rem', color: 'var(--text-secondary)', lineHeight: 1.45 }}>
-                  Pull shifts from Scheduling and auto-build lunch and break assignments for {selectedDateLabel}.
-                </div>
-                <span style={{ color: '#234ed9', fontSize: '0.78rem', fontWeight: 800 }}>Use scheduling shifts</span>
-              </button>
-              <button
-                type="button"
-                onClick={() => choosePlannerMode('manual')}
-                style={{
-                  textAlign: 'left',
-                  border: '1px solid var(--border)',
-                  borderRadius: 14,
-                  background: '#ffffff',
-                  padding: '1rem',
-                  display: 'grid',
-                  gap: 8,
-                  cursor: 'pointer',
-                }}
-              >
-                <div style={{ fontSize: '1rem', fontWeight: 800, color: 'var(--text-primary)' }}>Manual Entry</div>
-                <div style={{ fontSize: '0.83rem', color: 'var(--text-secondary)', lineHeight: 1.45 }}>
-                  Enter today&apos;s shifts directly on this page, then generate a lunch and break plan from manual data.
-                </div>
-                <span style={{ color: '#234ed9', fontSize: '0.78rem', fontWeight: 800 }}>Build from manual shifts</span>
-              </button>
-            </div>
+            <AnimatePresence mode="wait">
+              {plannerMode === null ? (
+                <motion.div
+                  key="guide-step-1"
+                  initial={{ opacity: 0, y: 12 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={{ opacity: 0, y: -8 }}
+                  transition={{ duration: 0.22 }}
+                  style={{ display: 'grid', gap: 14 }}
+                >
+                  <div style={{ textAlign: 'center', display: 'grid', gap: 6 }}>
+                    <div className="workspace-kicker">Lunch & breaks</div>
+                    <h2 className="workspace-title" style={{ margin: 0, fontSize: '1.45rem' }}>
+                      Choose how to start today&apos;s plan
+                    </h2>
+                    <p className="workspace-subtitle" style={{ margin: 0 }}>
+                      Select one workflow to continue.
+                    </p>
+                  </div>
+                  <div
+                    style={{
+                      display: 'grid',
+                      gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))',
+                      gap: 12,
+                    }}
+                  >
+                    <button
+                      type="button"
+                      onClick={() => choosePlannerMode('auto')}
+                      style={{
+                        textAlign: 'left',
+                        border: '1px solid #cfe0ff',
+                        borderRadius: 14,
+                        background: 'linear-gradient(180deg, #f7faff 0%, #edf4ff 100%)',
+                        padding: '1rem',
+                        display: 'grid',
+                        gap: 8,
+                        cursor: 'pointer',
+                      }}
+                    >
+                      <div style={{ fontSize: '1rem', fontWeight: 800, color: 'var(--text-primary)' }}>Auto Break</div>
+                      <div style={{ fontSize: '0.83rem', color: 'var(--text-secondary)', lineHeight: 1.45 }}>
+                        Pull shifts from Scheduling and auto-build lunch and break assignments for {selectedDateLabel}.
+                      </div>
+                      <span style={{ color: '#234ed9', fontSize: '0.78rem', fontWeight: 800 }}>Use scheduling shifts</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => choosePlannerMode('manual')}
+                      style={{
+                        textAlign: 'left',
+                        border: '1px solid var(--border)',
+                        borderRadius: 14,
+                        background: '#ffffff',
+                        padding: '1rem',
+                        display: 'grid',
+                        gap: 8,
+                        cursor: 'pointer',
+                      }}
+                    >
+                      <div style={{ fontSize: '1rem', fontWeight: 800, color: 'var(--text-primary)' }}>Manual Entry</div>
+                      <div style={{ fontSize: '0.83rem', color: 'var(--text-secondary)', lineHeight: 1.45 }}>
+                        Enter today&apos;s shifts directly on this page, then generate a lunch and break plan from manual data.
+                      </div>
+                      <span style={{ color: '#234ed9', fontSize: '0.78rem', fontWeight: 800 }}>Build from manual shifts</span>
+                    </button>
+                  </div>
+                </motion.div>
+              ) : null}
+
+              {isAutoMode && autoGuideStep === 2 ? (
+                <motion.div
+                  key="guide-step-2"
+                  initial={{ opacity: 0, y: 12 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={{ opacity: 0, y: -8 }}
+                  transition={{ duration: 0.22 }}
+                  style={{
+                    width: 'min(640px, 100%)',
+                    marginInline: 'auto',
+                    border: '1px solid #cfe0ff',
+                    borderRadius: 14,
+                    background: 'linear-gradient(180deg, #f7faff 0%, #eef4ff 100%)',
+                    padding: '1rem',
+                    display: 'grid',
+                    gap: 12,
+                  }}
+                >
+                  <div className="workspace-kicker">Auto break setup</div>
+                  <h2 style={{ margin: 0, fontSize: '1.2rem', color: 'var(--text-primary)' }}>
+                    Confirm Schedule Date: {selectedDateLabel}
+                  </h2>
+                  <p style={{ margin: 0, fontSize: '0.84rem', color: 'var(--text-secondary)' }}>
+                    Confirm the day you are planning before we build lunch and break assignments.
+                  </p>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, alignItems: 'center' }}>
+                    <Button variant="outline" size="sm" onClick={() => { setPlannerMode(null); setAutoGuideStep(1); }}>
+                      Back
+                    </Button>
+                    <Button size="sm" onClick={() => setAutoGuideStep(3)}>
+                      Next
+                    </Button>
+                  </div>
+                </motion.div>
+              ) : null}
+
+              {isAutoMode && autoGuideStep === 3 ? (
+                <motion.div
+                  key="guide-step-3"
+                  initial={{ opacity: 0, y: 12 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={{ opacity: 0, y: -8 }}
+                  transition={{ duration: 0.22 }}
+                  style={{
+                    width: 'min(640px, 100%)',
+                    marginInline: 'auto',
+                    border: '1px solid #cfe0ff',
+                    borderRadius: 14,
+                    background: 'linear-gradient(180deg, #f7faff 0%, #eef4ff 100%)',
+                    padding: '1rem',
+                    display: 'grid',
+                    gap: 12,
+                  }}
+                >
+                  <div className="workspace-kicker">Auto break setup</div>
+                  <h2 style={{ margin: 0, fontSize: '1.2rem', color: 'var(--text-primary)' }}>
+                    Ready to create today&apos;s schedule
+                  </h2>
+                  <p style={{ margin: 0, fontSize: '0.84rem', color: 'var(--text-secondary)' }}>
+                    We&apos;ll load shifts for {selectedDateLabel} from Scheduling and guide break placement in the planner.
+                  </p>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, alignItems: 'center' }}>
+                    <Button variant="outline" size="sm" onClick={() => setAutoGuideStep(2)}>
+                      Back
+                    </Button>
+                    <Button size="sm" onClick={() => setAutoGuideStep(4)}>
+                      Next
+                    </Button>
+                  </div>
+                </motion.div>
+              ) : null}
+            </AnimatePresence>
           </div>
         </section>
       ) : null}
@@ -1092,7 +1177,7 @@ export default function LunchBreaksPage() {
         </section>
       ) : null}
 
-      {!isLoading && lunchBreakFeature?.enabled && !showEntryChooser ? (
+      {!isLoading && lunchBreakFeature?.enabled && !showGuidedWindow ? (
         <section
           style={{
             minHeight: 620,
@@ -1105,100 +1190,58 @@ export default function LunchBreaksPage() {
           <div className="surface-card" style={{ padding: '0.72rem', minWidth: 0, minHeight: 0, display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
             {isAutoMode ? (
               <>
-                {showAutoIntro ? (
-                  <div
-                    style={{
-                      minHeight: 0,
-                      flex: 1,
-                      display: 'grid',
-                      placeItems: 'center',
-                      padding: '0.5rem',
-                    }}
-                  >
-                    <div
-                      style={{
-                        width: 'min(640px, 100%)',
-                        border: '1px solid #cfe0ff',
-                        borderRadius: 14,
-                        background: 'linear-gradient(180deg, #f7faff 0%, #eef4ff 100%)',
-                        padding: '1rem',
-                        display: 'grid',
-                        gap: 12,
+                <div
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'space-between',
+                    gap: 8,
+                    flexWrap: 'wrap',
+                    padding: '0 0.35rem',
+                    fontSize: '0.8rem',
+                    color: 'var(--text-secondary)',
+                  }}
+                >
+                  <span>Using Scheduling shifts as source of truth for {selectedDateLabel}</span>
+                  <span style={{ fontWeight: 700 }}>{dirtyCount > 0 ? `${dirtyCount} unsaved edits` : 'All edits saved'}</span>
+                </div>
+                <div style={{ minHeight: 0, flex: 1 }}>
+                  {hasSharedRows ? (
+                    <StaffScheduler
+                      resources={timelineResources}
+                      events={timelineEvents}
+                      viewMode="day"
+                      initialDate={selectedDate}
+                      compactWindow
+                      onEventSelect={(event) => {
+                        if (event.extendedProps.kind) return;
+                        setSelectedShiftId(event.id);
                       }}
-                    >
-                      <div className="workspace-kicker">Auto break setup</div>
-                      <h2 style={{ margin: 0, fontSize: '1.2rem', color: 'var(--text-primary)' }}>
-                        Creating a schedule for {selectedDateLabel}
-                      </h2>
-                      <p style={{ margin: 0, fontSize: '0.84rem', color: 'var(--text-secondary)' }}>
-                        We&apos;ll use Scheduling as the source of truth, then generate lunch and break assignments.
-                      </p>
-                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 }}>
-                        <span style={{ fontSize: '0.76rem', color: 'var(--text-muted)', fontWeight: 700 }}>
-                          Step 1 of 2
-                        </span>
-                        <Button size="sm" onClick={() => setAutoGuideStep(2)}>
-                          Next
+                    />
+                  ) : (
+                    <div className="surface-muted" style={{ padding: '0.75rem' }}>
+                      <div style={{ fontWeight: 800, color: 'var(--text-primary)', marginBottom: 2 }}>
+                        No shifts loaded for {selectedDateLabel.split(',')[0]}
+                      </div>
+                      <div style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>
+                        Import shifts from Scheduling to generate lunches and breaks.
+                      </div>
+                      <div style={{ marginTop: 8 }}>
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() => {
+                            void loadDayRows(selectedDate, policyLoaded).catch((err) => {
+                              setError((err as Error).message);
+                            });
+                          }}
+                        >
+                          Import shifts from Scheduling
                         </Button>
                       </div>
                     </div>
-                  </div>
-                ) : (
-                  <>
-                    <div
-                      style={{
-                        display: 'flex',
-                        alignItems: 'center',
-                        justifyContent: 'space-between',
-                        gap: 8,
-                        flexWrap: 'wrap',
-                        padding: '0 0.35rem',
-                        fontSize: '0.8rem',
-                        color: 'var(--text-secondary)',
-                      }}
-                    >
-                      <span>Using Scheduling shifts as source of truth for {selectedDateLabel}</span>
-                      <span style={{ fontWeight: 700 }}>{dirtyCount > 0 ? `${dirtyCount} unsaved edits` : 'All edits saved'}</span>
-                    </div>
-                    <div style={{ minHeight: 0, flex: 1 }}>
-                      {hasSharedRows ? (
-                        <StaffScheduler
-                          resources={timelineResources}
-                          events={timelineEvents}
-                          viewMode="day"
-                          initialDate={selectedDate}
-                          compactWindow
-                          onEventSelect={(event) => {
-                            if (event.extendedProps.kind) return;
-                            setSelectedShiftId(event.id);
-                          }}
-                        />
-                      ) : (
-                        <div className="surface-muted" style={{ padding: '0.75rem' }}>
-                          <div style={{ fontWeight: 800, color: 'var(--text-primary)', marginBottom: 2 }}>
-                            No shifts loaded for {selectedDateLabel.split(',')[0]}
-                          </div>
-                          <div style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>
-                            Import shifts from Scheduling to generate lunches and breaks.
-                          </div>
-                          <div style={{ marginTop: 8 }}>
-                            <Button
-                              variant="outline"
-                              size="sm"
-                              onClick={() => {
-                                void loadDayRows(selectedDate, policyLoaded).catch((err) => {
-                                  setError((err as Error).message);
-                                });
-                              }}
-                            >
-                              Import shifts from Scheduling
-                            </Button>
-                          </div>
-                        </div>
-                      )}
-                    </div>
-                  </>
-                )}
+                  )}
+                </div>
               </>
             ) : (
               <div style={{ display: 'grid', gap: '0.72rem', minHeight: 0, overflowY: 'auto', padding: '0.1rem' }}>
