@@ -1,4 +1,4 @@
-import { Controller, Get, Post, Put, Delete, Param, Body, Req, UseGuards, SetMetadata, Query, HttpCode, HttpStatus, NotFoundException } from '@nestjs/common';
+import { Controller, Get, Post, Put, Delete, Param, Body, Req, UseGuards, SetMetadata, Query, HttpCode, HttpStatus, NotFoundException, BadRequestException } from '@nestjs/common';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { RbacGuard } from '../auth/rbac.guard';
 import { PrismaClient } from '@prisma/client';
@@ -17,6 +17,15 @@ const USER_ROLE: Record<UserRoleValue, UserRoleValue> = {
 @UseGuards(JwtAuthGuard, RbacGuard)
 export class UsersController {
     private prisma = new PrismaClient();
+    private static readonly SYSTEM_EMAIL_DOMAIN = 'staff.lunchlineup.local';
+
+    private isSystemGeneratedEmail(email: string): boolean {
+        return email.endsWith(`@${UsersController.SYSTEM_EMAIL_DOMAIN}`);
+    }
+
+    private sanitizeEmailForResponse(email: string): string {
+        return this.isSystemGeneratedEmail(email) ? '' : email;
+    }
 
     @Get()
     @Permission('users:read')
@@ -25,7 +34,15 @@ export class UsersController {
             where: { tenantId: req.user.tenantId, deletedAt: null }
         });
         // Remove secrets before returning
-        return { data: users.map((u: any) => ({ id: u.id, name: u.name, email: u.email, role: u.role })), tenantId: req.user.tenantId };
+        return {
+            data: users.map((u: any) => ({
+                id: u.id,
+                name: u.name,
+                email: this.sanitizeEmailForResponse(u.email),
+                role: u.role,
+            })),
+            tenantId: req.user.tenantId,
+        };
     }
 
     @Get(':id')
@@ -35,18 +52,42 @@ export class UsersController {
             where: { id, tenantId: req.user.tenantId, deletedAt: null }
         });
         if (!user) throw new NotFoundException('User not found');
-        return { id: user.id, name: user.name, email: user.email, role: user.role };
+        return {
+            id: user.id,
+            name: user.name,
+            email: this.sanitizeEmailForResponse(user.email),
+            role: user.role,
+        };
     }
 
     @Post('invite')
     @Permission('users:write')
-    async invite(@Body() body: { email: string; name: string; role: UserRoleValue }, @Req() req: any) {
+    async invite(@Body() body: { email?: string; name: string; role?: UserRoleValue }, @Req() req: any) {
+        const role = body.role || USER_ROLE.STAFF;
+        const normalizedName = (body.name || '').trim();
+        const normalizedEmail = (body.email || '').trim().toLowerCase();
+        const isManager = role === USER_ROLE.MANAGER;
+
+        if (!normalizedName) {
+            throw new BadRequestException('Name is required');
+        }
+
+        if (isManager && !normalizedEmail) {
+            throw new BadRequestException('Email is required for managers');
+        }
+
+        if (normalizedEmail && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalizedEmail)) {
+            throw new BadRequestException('Invalid email address');
+        }
+
+        const email = normalizedEmail || `${crypto.randomUUID()}@${UsersController.SYSTEM_EMAIL_DOMAIN}`;
+
         const user = await this.prisma.user.create({
             data: {
                 tenantId: req.user.tenantId,
-                email: body.email,
-                name: body.name,
-                role: body.role || USER_ROLE.STAFF,
+                email,
+                name: normalizedName,
+                role,
             }
         });
 
@@ -62,7 +103,13 @@ export class UsersController {
             }
         });
 
-        return { id: user.id, email: user.email, name: user.name, role: user.role, status: 'INVITED' };
+        return {
+            id: user.id,
+            email: this.sanitizeEmailForResponse(user.email),
+            name: user.name,
+            role: user.role,
+            status: 'INVITED',
+        };
     }
 
     @Put(':id/role')

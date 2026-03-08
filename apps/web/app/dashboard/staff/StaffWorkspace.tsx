@@ -88,8 +88,12 @@ export function StaffWorkspace({ canManage }: StaffWorkspaceProps) {
     }, [users]);
 
     const inviteUser = useCallback(async () => {
-        if (!inviteName.trim() || !inviteEmail.trim()) {
-            setError('Name and email are required.');
+        if (!inviteName.trim()) {
+            setError('Name is required.');
+            return;
+        }
+        if (inviteRole === 'MANAGER' && !inviteEmail.trim()) {
+            setError('Email is required for managers.');
             return;
         }
         setIsInviting(true);
@@ -97,7 +101,7 @@ export function StaffWorkspace({ canManage }: StaffWorkspaceProps) {
         try {
             const res = await fetchWithSession('/users/invite', jsonWriteInit('POST', {
                 name: inviteName.trim(),
-                email: inviteEmail.trim(),
+                email: inviteEmail.trim() || undefined,
                 role: inviteRole,
             }));
             if (!res.ok) throw new Error('Failed to create staff member.');
@@ -186,7 +190,7 @@ export function StaffWorkspace({ canManage }: StaffWorkspaceProps) {
                                 type="email"
                                 value={inviteEmail}
                                 onChange={(e) => setInviteEmail(e.target.value)}
-                                placeholder="name@company.com"
+                                placeholder={inviteRole === 'MANAGER' ? 'name@company.com (required for manager)' : 'name@company.com (optional for staff)'}
                                 style={{ border: '1px solid var(--border)', borderRadius: 8, padding: '0.42rem 0.5rem', background: '#fff', color: 'var(--text-primary)' }}
                             />
                             <select
@@ -251,7 +255,7 @@ export function StaffWorkspace({ canManage }: StaffWorkspaceProps) {
                                         <div style={{ fontWeight: 700, fontSize: '0.88rem', color: 'var(--text-primary)' }}>{u.name}</div>
                                     </div>
                                 </td>
-                                <td style={{ padding: '0.86rem 1rem', color: 'var(--text-secondary)', fontSize: '0.83rem' }}>{u.email}</td>
+                                <td style={{ padding: '0.86rem 1rem', color: 'var(--text-secondary)', fontSize: '0.83rem' }}>{u.email || '—'}</td>
                                 <td style={{ padding: '0.86rem 1rem' }}>
                                     {canManage ? (
                                         <select
