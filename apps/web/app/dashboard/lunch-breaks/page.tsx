@@ -346,10 +346,7 @@ export default function LunchBreaksPage() {
   const [isGeneratingDay, setIsGeneratingDay] = useState(false);
   const [isGeneratingManual, setIsGeneratingManual] = useState(false);
   const [manualShifts, setManualShifts] = useState<ManualShiftRow[]>(defaultManualShifts());
-  const [showGuidedSetup, setShowGuidedSetup] = useState(false);
-  const [guidedStep, setGuidedStep] = useState<1 | 2 | 3 | 4>(1);
-  const [guidedSource, setGuidedSource] = useState<'import' | 'manual' | null>(null);
-  const [guidedDismissed, setGuidedDismissed] = useState(false);
+  const [plannerMode, setPlannerMode] = useState<'auto' | 'manual' | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const loadFeatures = useCallback(async (): Promise<FeatureMatrixResponse> => {
@@ -658,7 +655,6 @@ export default function LunchBreaksPage() {
 
   const dirtyCount = dayRows.filter((row) => row.dirty).length;
   const hasSharedRows = dayRows.length > 0;
-  const isGeneratingPrimary = hasSharedRows ? isGeneratingDay : isGeneratingManual;
   const mealRiskCount = dayRows.filter((row) => row.lunch.skipped || !row.lunch.time).length;
   const breakRiskCount = dayRows.filter(
     (row) =>
@@ -680,20 +676,15 @@ export default function LunchBreaksPage() {
   ).length;
 
   const runPrimaryGeneration = useCallback(() => {
-    if (hasSharedRows) {
+    if (plannerMode === 'auto') {
       void generateForSelectedDay();
       return;
     }
-    void generateFromManualShifts();
-  }, [generateForSelectedDay, generateFromManualShifts, hasSharedRows]);
-
-  const runPrimaryGenerationAsync = useCallback(async () => {
-    if (hasSharedRows) {
-      await generateForSelectedDay();
+    if (plannerMode === 'manual') {
+      void generateFromManualShifts();
       return;
     }
-    await generateFromManualShifts();
-  }, [generateForSelectedDay, generateFromManualShifts, hasSharedRows]);
+  }, [generateForSelectedDay, generateFromManualShifts, plannerMode]);
 
   const timelineResources = useMemo<TimelineResource[]>(
     () =>
@@ -753,10 +744,9 @@ export default function LunchBreaksPage() {
     () => (lastRun?.source === 'standalone' ? lastRun.data : []),
     [lastRun],
   );
-  const hasStandalonePreview = standalonePreview.length > 0;
 
   const previewRows = useMemo<PlanPreviewRow[]>(() => {
-    if (hasSharedRows) {
+    if (plannerMode === 'auto') {
       return dayRows.map((row) => {
         const shiftStartMs = new Date(row.startTime).getTime();
         const shiftEndMs = new Date(row.endTime).getTime();
@@ -817,67 +807,41 @@ export default function LunchBreaksPage() {
         segments,
       };
     });
-  }, [dayRows, hasSharedRows, standalonePreview]);
+  }, [dayRows, plannerMode, standalonePreview]);
 
-  const statusShiftsCount = hasSharedRows ? dayRows.length : standalonePreview.length;
-  const statusMealsAssigned = hasSharedRows
+  const isAutoMode = plannerMode === 'auto';
+  const isManualMode = plannerMode === 'manual';
+  const isGeneratingPrimary = isAutoMode ? isGeneratingDay : isManualMode ? isGeneratingManual : false;
+  const statusShiftsCount = isAutoMode ? dayRows.length : standalonePreview.length;
+  const statusMealsAssigned = isAutoMode
     ? mealsAssignedCount
     : standalonePreview.reduce((count, row) => count + row.breaks.filter((entry) => entry.type === 'lunch').length, 0);
-  const statusBreaksAssigned = hasSharedRows
+  const statusBreaksAssigned = isAutoMode
     ? breaksAssignedCount
     : standalonePreview.reduce(
       (count, row) => count + row.breaks.filter((entry) => entry.type === 'break1' || entry.type === 'break2').length,
       0,
     );
-  const statusComplianceRisk = hasSharedRows
+  const statusComplianceRisk = isAutoMode
     ? complianceRiskCount
     : standalonePreview.reduce(
       (count, row) => (row.breaks.some((entry) => entry.type === 'lunch') ? count : count + 1),
       0,
     );
 
-  const markGuidedComplete = useCallback(() => {
-    if (typeof window !== 'undefined') {
-      window.localStorage.setItem('ll:break-guided:v1', '1');
-    }
+  const choosePlannerMode = useCallback((mode: 'auto' | 'manual') => {
+    setPlannerMode(mode);
   }, []);
 
-  const closeGuidedSetup = useCallback((persistComplete: boolean) => {
-    if (persistComplete) {
-      markGuidedComplete();
-    } else {
-      setGuidedDismissed(true);
-    }
-    setShowGuidedSetup(false);
-    setGuidedStep(1);
-    setGuidedSource(null);
-  }, [markGuidedComplete]);
-
-  useEffect(() => {
-    if (typeof window === 'undefined') return;
-    if (isLoading || !lunchBreakFeature?.enabled) return;
-    if (guidedDismissed) return;
-
-    const isComplete = window.localStorage.getItem('ll:break-guided:v1') === '1';
-    if (!isComplete) {
-      setShowGuidedSetup(true);
-      setGuidedStep(1);
-      setGuidedSource(null);
-    }
-  }, [guidedDismissed, isLoading, lunchBreakFeature?.enabled]);
-
-  const isGuidedOverlayActive = showGuidedSetup && !isLoading && Boolean(lunchBreakFeature?.enabled);
+  const showEntryChooser = !isLoading && Boolean(lunchBreakFeature?.enabled) && plannerMode === null;
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem', minHeight: '100%' }}>
-      <section
-        className="surface-card"
-        style={{
-          padding: '1rem',
-          opacity: isGuidedOverlayActive ? 0.22 : 1,
-          pointerEvents: isGuidedOverlayActive ? 'none' : 'auto',
-        }}
-      >
+      {!showEntryChooser ? (
+        <section
+          className="surface-card"
+          style={{ padding: '1rem' }}
+        >
         <div
           style={{
             display: 'grid',
@@ -895,28 +859,6 @@ export default function LunchBreaksPage() {
             <div style={{ marginTop: 4, fontSize: '0.78rem', color: 'var(--text-muted)', fontWeight: 700 }}>
               {selectedDateLabel} break plan
             </div>
-            {!isGuidedOverlayActive ? (
-              <button
-                type="button"
-                onClick={() => {
-                  setShowGuidedSetup(true);
-                  setGuidedStep(1);
-                  setGuidedSource(null);
-                }}
-                style={{
-                  marginTop: 8,
-                  border: 'none',
-                  background: 'transparent',
-                  color: '#234ed9',
-                  fontSize: '0.78rem',
-                  fontWeight: 700,
-                  cursor: 'pointer',
-                  padding: 0,
-                }}
-              >
-                Guide me through setup
-              </button>
-            ) : null}
           </div>
 
           <div style={{ display: 'flex', flexDirection: 'column', gap: 8, alignItems: 'flex-end' }}>
@@ -941,9 +883,17 @@ export default function LunchBreaksPage() {
             <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
               <Button
                 size="sm"
+                variant="outline"
+                onClick={() => setPlannerMode(null)}
+                disabled={!lunchBreakFeature?.enabled}
+              >
+                Switch mode
+              </Button>
+              <Button
+                size="sm"
                 variant="default"
                 onClick={runPrimaryGeneration}
-                disabled={isGeneratingPrimary || isLoading || !lunchBreakFeature?.enabled}
+                disabled={isGeneratingPrimary || isLoading || !lunchBreakFeature?.enabled || plannerMode === null}
                 style={{ minWidth: 250 }}
               >
                 {isGeneratingPrimary ? 'Generating plan...' : 'Generate Lunch & Break Plan'}
@@ -1035,189 +985,79 @@ export default function LunchBreaksPage() {
             ))}
           </div>
         ) : null}
-      </section>
+        </section>
+      ) : null}
 
-      {isGuidedOverlayActive ? (
-        <>
-          <div
-            style={{
-              position: 'fixed',
-              inset: 0,
-              background: 'rgba(17, 25, 40, 0.46)',
-              backdropFilter: 'blur(2px)',
-              zIndex: 50,
-            }}
-          />
-          <section
-            className="surface-card"
-            style={{
-              position: 'fixed',
-              zIndex: 60,
-              top: '8%',
-              left: '50%',
-              transform: 'translateX(-50%)',
-              width: 'min(900px, calc(100vw - 2rem))',
-              maxHeight: '84vh',
-              overflowY: 'auto',
-              padding: '0.95rem',
-              borderColor: '#cfe0ff',
-              background: 'linear-gradient(180deg, #f7faff 0%, #f2f7ff 100%)',
-              boxShadow: '0 26px 60px rgba(16, 24, 40, 0.34)',
-            }}
-          >
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, flexWrap: 'wrap' }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
-              {[1, 2, 3, 4].map((step) => (
-                <span
-                  key={step}
-                  style={{
-                    width: 24,
-                    height: 24,
-                    borderRadius: 999,
-                    display: 'inline-grid',
-                    placeItems: 'center',
-                    fontSize: '0.72rem',
-                    fontWeight: 800,
-                    border: guidedStep >= step ? '1px solid #83a8ff' : '1px solid #d4deef',
-                    background: guidedStep >= step ? '#e9f0ff' : '#ffffff',
-                    color: guidedStep >= step ? '#234ed9' : '#7b8da9',
-                  }}
-                >
-                  {step}
-                </span>
-              ))}
-              <span style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', fontWeight: 700 }}>
-                Step {guidedStep} of 4
-              </span>
+      {showEntryChooser ? (
+        <section
+          className="surface-card"
+          style={{
+            minHeight: 'calc(100vh - 250px)',
+            display: 'grid',
+            placeItems: 'center',
+            padding: '1.25rem',
+          }}
+        >
+          <div style={{ width: 'min(880px, 100%)', display: 'grid', gap: 14 }}>
+            <div style={{ textAlign: 'center', display: 'grid', gap: 6 }}>
+              <div className="workspace-kicker">Lunch & breaks</div>
+              <h2 className="workspace-title" style={{ margin: 0, fontSize: '1.45rem' }}>
+                Choose how to start today&apos;s plan
+              </h2>
+              <p className="workspace-subtitle" style={{ margin: 0 }}>
+                Select one workflow to continue.
+              </p>
             </div>
-            <button
-              type="button"
-              onClick={() => closeGuidedSetup(false)}
-              style={{ border: 'none', background: 'transparent', color: '#4c5f85', fontSize: '0.78rem', fontWeight: 700, cursor: 'pointer' }}
+            <div
+              style={{
+                display: 'grid',
+                gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))',
+                gap: 12,
+              }}
             >
-              Skip guided setup
-            </button>
+              <button
+                type="button"
+                onClick={() => choosePlannerMode('auto')}
+                style={{
+                  textAlign: 'left',
+                  border: '1px solid #cfe0ff',
+                  borderRadius: 14,
+                  background: 'linear-gradient(180deg, #f7faff 0%, #edf4ff 100%)',
+                  padding: '1rem',
+                  display: 'grid',
+                  gap: 8,
+                  cursor: 'pointer',
+                }}
+              >
+                <div style={{ fontSize: '1rem', fontWeight: 800, color: 'var(--text-primary)' }}>Auto Break</div>
+                <div style={{ fontSize: '0.83rem', color: 'var(--text-secondary)', lineHeight: 1.45 }}>
+                  Pull shifts from Scheduling and auto-build lunch and break assignments for {selectedDateLabel}.
+                </div>
+                <span style={{ color: '#234ed9', fontSize: '0.78rem', fontWeight: 800 }}>Use scheduling shifts</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => choosePlannerMode('manual')}
+                style={{
+                  textAlign: 'left',
+                  border: '1px solid var(--border)',
+                  borderRadius: 14,
+                  background: '#ffffff',
+                  padding: '1rem',
+                  display: 'grid',
+                  gap: 8,
+                  cursor: 'pointer',
+                }}
+              >
+                <div style={{ fontSize: '1rem', fontWeight: 800, color: 'var(--text-primary)' }}>Manual Entry</div>
+                <div style={{ fontSize: '0.83rem', color: 'var(--text-secondary)', lineHeight: 1.45 }}>
+                  Enter today&apos;s shifts directly on this page, then generate a lunch and break plan from manual data.
+                </div>
+                <span style={{ color: '#234ed9', fontSize: '0.78rem', fontWeight: 800 }}>Build from manual shifts</span>
+              </button>
+            </div>
           </div>
-
-          <div style={{ marginTop: 10, display: 'grid', gap: 8 }}>
-            {guidedStep === 1 ? (
-              <>
-                <div style={{ fontWeight: 800, color: 'var(--text-primary)' }}>Let’s build today’s break plan</div>
-                <div style={{ fontSize: '0.82rem', color: 'var(--text-secondary)' }}>
-                  Choose where {selectedDateLabel.split(',')[0]}'s shifts should come from.
-                </div>
-                <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-                  <Button
-                    size="sm"
-                    onClick={() => {
-                      setGuidedSource('import');
-                      setGuidedStep(2);
-                    }}
-                  >
-                    Import from Scheduling
-                  </Button>
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    onClick={() => {
-                      setGuidedSource('manual');
-                      setGuidedStep(2);
-                    }}
-                  >
-                    Enter shifts manually
-                  </Button>
-                </div>
-              </>
-            ) : null}
-
-            {guidedStep === 2 && guidedSource === 'import' ? (
-              <>
-                <div style={{ fontWeight: 800, color: 'var(--text-primary)' }}>Step 2: Import today’s shifts</div>
-                <div style={{ fontSize: '0.82rem', color: 'var(--text-secondary)' }}>
-                  Pull in shifts from Scheduling for {selectedDateLabel}.
-                </div>
-                <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-                  <Button
-                    size="sm"
-                    onClick={() => {
-                      void (async () => {
-                        const rows = await loadDayRows(selectedDate, policyLoaded);
-                        if (rows.length === 0) {
-                          setError(`No shifts loaded for ${selectedDateLabel}. Add shifts in Scheduling or switch to manual.`);
-                          return;
-                        }
-                        setGuidedStep(3);
-                      })();
-                    }}
-                    disabled={isDayLoading}
-                  >
-                    {isDayLoading ? 'Importing...' : 'Import shifts from Scheduling'}
-                  </Button>
-                  <Button size="sm" variant="outline" onClick={() => setGuidedStep(1)}>
-                    Choose different source
-                  </Button>
-                </div>
-              </>
-            ) : null}
-
-            {guidedStep === 2 && guidedSource === 'manual' ? (
-              <>
-                <div style={{ fontWeight: 800, color: 'var(--text-primary)' }}>Step 2: Confirm manual shifts</div>
-                <div style={{ fontSize: '0.82rem', color: 'var(--text-secondary)' }}>
-                  Add or review a few shift cards below, then continue.
-                </div>
-                <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-                  <Button size="sm" onClick={() => setGuidedStep(3)}>Continue to generation</Button>
-                  <Button size="sm" variant="outline" onClick={addManualShift}>Add another shift</Button>
-                </div>
-              </>
-            ) : null}
-
-            {guidedStep === 3 ? (
-              <>
-                <div style={{ fontWeight: 800, color: 'var(--text-primary)' }}>Step 3: Generate lunches and breaks</div>
-                <div style={{ fontSize: '0.82rem', color: 'var(--text-secondary)' }}>
-                  We’ll apply your current policy and stagger assignments for floor coverage.
-                </div>
-                <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-                  <Button
-                    size="sm"
-                    onClick={() => {
-                      void (async () => {
-                        if (guidedSource === 'import' && !hasSharedRows) {
-                          setError('Import shifts first, then generate the plan.');
-                          return;
-                        }
-                        await runPrimaryGenerationAsync();
-                        setGuidedStep(4);
-                      })();
-                    }}
-                    disabled={isGeneratingPrimary}
-                  >
-                    {isGeneratingPrimary ? 'Generating...' : 'Generate plan'}
-                  </Button>
-                  <Button size="sm" variant="outline" onClick={() => setGuidedStep(2)}>
-                    Back
-                  </Button>
-                </div>
-              </>
-            ) : null}
-
-            {guidedStep === 4 ? (
-              <>
-                <div style={{ fontWeight: 800, color: 'var(--text-primary)' }}>Step 4: Review and adjust</div>
-                <div style={{ fontSize: '0.82rem', color: 'var(--text-secondary)' }}>
-                  Plan generated — {statusMealsAssigned} meals assigned, {statusBreaksAssigned} breaks staggered, {statusComplianceRisk} compliance risks.
-                </div>
-                <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-                  <Button size="sm" onClick={() => closeGuidedSetup(true)}>Finish guided setup</Button>
-                  <Button size="sm" variant="outline" onClick={() => setGuidedStep(3)}>Regenerate</Button>
-                </div>
-              </>
-            ) : null}
-          </div>
-          </section>
-        </>
+        </section>
       ) : null}
 
       {isLoading ? (
@@ -1240,7 +1080,7 @@ export default function LunchBreaksPage() {
         </section>
       ) : null}
 
-      {!isLoading && lunchBreakFeature?.enabled ? (
+      {!isLoading && lunchBreakFeature?.enabled && !showEntryChooser ? (
         <section
           style={{
             minHeight: 620,
@@ -1248,12 +1088,10 @@ export default function LunchBreaksPage() {
             display: 'grid',
             gridTemplateColumns: 'minmax(0, 1fr) 340px',
             gap: '0.75rem',
-            opacity: isGuidedOverlayActive ? 0.22 : 1,
-            pointerEvents: isGuidedOverlayActive ? 'none' : 'auto',
           }}
         >
           <div className="surface-card" style={{ padding: '0.72rem', minWidth: 0, minHeight: 0, display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
-            {hasSharedRows ? (
+            {isAutoMode ? (
               <>
                 <div
                   style={{
@@ -1271,17 +1109,41 @@ export default function LunchBreaksPage() {
                   <span style={{ fontWeight: 700 }}>{dirtyCount > 0 ? `${dirtyCount} unsaved edits` : 'All edits saved'}</span>
                 </div>
                 <div style={{ minHeight: 0, flex: 1 }}>
-                  <StaffScheduler
-                    resources={timelineResources}
-                    events={timelineEvents}
-                    viewMode="day"
-                    initialDate={selectedDate}
-                    compactWindow
-                    onEventSelect={(event) => {
-                      if (event.extendedProps.kind) return;
-                      setSelectedShiftId(event.id);
-                    }}
-                  />
+                  {hasSharedRows ? (
+                    <StaffScheduler
+                      resources={timelineResources}
+                      events={timelineEvents}
+                      viewMode="day"
+                      initialDate={selectedDate}
+                      compactWindow
+                      onEventSelect={(event) => {
+                        if (event.extendedProps.kind) return;
+                        setSelectedShiftId(event.id);
+                      }}
+                    />
+                  ) : (
+                    <div className="surface-muted" style={{ padding: '0.75rem' }}>
+                      <div style={{ fontWeight: 800, color: 'var(--text-primary)', marginBottom: 2 }}>
+                        No shifts loaded for {selectedDateLabel.split(',')[0]}
+                      </div>
+                      <div style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>
+                        Import shifts from Scheduling to generate lunches and breaks.
+                      </div>
+                      <div style={{ marginTop: 8 }}>
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() => {
+                            void loadDayRows(selectedDate, policyLoaded).catch((err) => {
+                              setError((err as Error).message);
+                            });
+                          }}
+                        >
+                          Import shifts from Scheduling
+                        </Button>
+                      </div>
+                    </div>
+                  )}
                 </div>
               </>
             ) : (
@@ -1397,7 +1259,7 @@ export default function LunchBreaksPage() {
           <aside className="surface-card" style={{ padding: '0.85rem', display: 'flex', flexDirection: 'column', gap: '0.72rem', overflowY: 'auto' }}>
             <h3 style={{ margin: 0, fontSize: '0.92rem', fontWeight: 800 }}>Assignment inspector</h3>
 
-            {hasSharedRows ? (
+            {isAutoMode && hasSharedRows ? (
               selectedRow ? (
                 <>
                   <div className="surface-muted" style={{ padding: '0.72rem', display: 'grid', gap: 4 }}>
@@ -1493,51 +1355,49 @@ export default function LunchBreaksPage() {
               </p>
             )}
 
-            {!isGuidedOverlayActive ? (
-              <details style={{ borderTop: '1px solid var(--border)', paddingTop: '0.72rem' }}>
-                <summary style={{ cursor: 'pointer', fontSize: '0.84rem', fontWeight: 800, color: 'var(--text-primary)' }}>
-                  Planning settings
-                </summary>
-                <div style={{ marginTop: 8, display: 'grid', gap: 8 }}>
-                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6 }}>
-                    {POLICY_FIELDS.map((field) => (
-                      <label key={field.key} style={{ display: 'grid', gap: 4 }}>
-                        <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>{field.label}</span>
-                        <input
-                          type="number"
-                          value={policy[field.key]}
-                          min={1}
-                          onChange={(event) =>
-                            setPolicy((prev) => ({
-                              ...prev,
-                              [field.key]: Number(event.target.value),
-                            }))
-                          }
-                          style={{
-                            background: '#ffffff',
-                            border: '1px solid var(--border)',
-                            borderRadius: 8,
-                            color: 'var(--text-primary)',
-                            padding: '0.36rem 0.48rem',
-                            fontSize: '0.78rem',
-                          }}
-                        />
-                      </label>
-                    ))}
-                  </div>
-                  <Button variant="secondary" size="sm" onClick={handleSavePolicy} disabled={isSavingPolicy}>
-                    {isSavingPolicy ? 'Saving...' : 'Save policy'}
-                  </Button>
-
-                  <div style={{ borderTop: '1px solid var(--border)', paddingTop: 8, fontSize: '0.78rem', color: 'var(--text-secondary)' }}>
-                    <div>Access source: <strong style={{ textTransform: 'capitalize' }}>{lunchBreakFeature.source}</strong></div>
-                    <div>Usage credits: <strong>{features?.usageCredits ?? 0}</strong></div>
-                    <div>Credit cost/run: <strong>{lunchBreakFeature.creditCost ?? 0}</strong></div>
-                    <div>Scheduling link: <strong>{hasSharedScheduleData ? `${dayRows.length} linked shifts` : 'No linked shifts'}</strong></div>
-                  </div>
+            <details style={{ borderTop: '1px solid var(--border)', paddingTop: '0.72rem' }}>
+              <summary style={{ cursor: 'pointer', fontSize: '0.84rem', fontWeight: 800, color: 'var(--text-primary)' }}>
+                Planning settings
+              </summary>
+              <div style={{ marginTop: 8, display: 'grid', gap: 8 }}>
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6 }}>
+                  {POLICY_FIELDS.map((field) => (
+                    <label key={field.key} style={{ display: 'grid', gap: 4 }}>
+                      <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>{field.label}</span>
+                      <input
+                        type="number"
+                        value={policy[field.key]}
+                        min={1}
+                        onChange={(event) =>
+                          setPolicy((prev) => ({
+                            ...prev,
+                            [field.key]: Number(event.target.value),
+                          }))
+                        }
+                        style={{
+                          background: '#ffffff',
+                          border: '1px solid var(--border)',
+                          borderRadius: 8,
+                          color: 'var(--text-primary)',
+                          padding: '0.36rem 0.48rem',
+                          fontSize: '0.78rem',
+                        }}
+                      />
+                    </label>
+                  ))}
                 </div>
-              </details>
-            ) : null}
+                <Button variant="secondary" size="sm" onClick={handleSavePolicy} disabled={isSavingPolicy}>
+                  {isSavingPolicy ? 'Saving...' : 'Save policy'}
+                </Button>
+
+                <div style={{ borderTop: '1px solid var(--border)', paddingTop: 8, fontSize: '0.78rem', color: 'var(--text-secondary)' }}>
+                  <div>Access source: <strong style={{ textTransform: 'capitalize' }}>{lunchBreakFeature.source}</strong></div>
+                  <div>Usage credits: <strong>{features?.usageCredits ?? 0}</strong></div>
+                  <div>Credit cost/run: <strong>{lunchBreakFeature.creditCost ?? 0}</strong></div>
+                  <div>Scheduling link: <strong>{hasSharedScheduleData ? `${dayRows.length} linked shifts` : 'No linked shifts'}</strong></div>
+                </div>
+              </div>
+            </details>
           </aside>
         </section>
       ) : null}
