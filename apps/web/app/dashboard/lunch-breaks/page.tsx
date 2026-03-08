@@ -105,6 +105,21 @@ type TimelineResource = {
   hue: number;
 };
 
+type PlanPreviewSegment = {
+  id: string;
+  label: string;
+  tone: 'meal' | 'break';
+  leftPct: number;
+  widthPct: number;
+};
+
+type PlanPreviewRow = {
+  id: string;
+  employeeName: string;
+  shiftLabel: string;
+  segments: PlanPreviewSegment[];
+};
+
 const BREAK_KEYS: BreakEditorKey[] = ['break1', 'lunch', 'break2'];
 
 const BREAK_META: Record<BreakEditorKey, { label: string; minimumDuration: number }> = {
@@ -285,6 +300,10 @@ function hueForName(name: string): number {
   return Math.abs(hash) % 360;
 }
 
+function clamp(value: number, min: number, max: number): number {
+  return Math.max(min, Math.min(max, value));
+}
+
 function getCsrfTokenFromCookie(): string {
   if (typeof document === 'undefined') return '';
   const pair = document.cookie
@@ -326,7 +345,6 @@ export default function LunchBreaksPage() {
   const [isSavingPolicy, setIsSavingPolicy] = useState(false);
   const [isGeneratingDay, setIsGeneratingDay] = useState(false);
   const [isGeneratingManual, setIsGeneratingManual] = useState(false);
-  const [showAdvancedPolicy, setShowAdvancedPolicy] = useState(false);
   const [manualShifts, setManualShifts] = useState<ManualShiftRow[]>(defaultManualShifts());
   const [error, setError] = useState<string | null>(null);
 
@@ -642,6 +660,19 @@ export default function LunchBreaksPage() {
       (!row.break1.skipped && !row.break1.time) ||
       (!row.break2.skipped && !row.break2.time),
   ).length;
+  const mealsAssignedCount = dayRows.filter((row) => !row.lunch.skipped && Boolean(row.lunch.time)).length;
+  const breaksAssignedCount = dayRows.reduce((count, row) => {
+    const break1Assigned = !row.break1.skipped && Boolean(row.break1.time) ? 1 : 0;
+    const break2Assigned = !row.break2.skipped && Boolean(row.break2.time) ? 1 : 0;
+    return count + break1Assigned + break2Assigned;
+  }, 0);
+  const complianceRiskCount = dayRows.filter(
+    (row) =>
+      row.lunch.skipped ||
+      !row.lunch.time ||
+      (!row.break1.skipped && !row.break1.time) ||
+      (!row.break2.skipped && !row.break2.time),
+  ).length;
 
   const runPrimaryGeneration = useCallback(() => {
     if (hasSharedRows) {
@@ -710,6 +741,87 @@ export default function LunchBreaksPage() {
     [lastRun],
   );
 
+  const previewRows = useMemo<PlanPreviewRow[]>(() => {
+    if (hasSharedRows) {
+      return dayRows.map((row) => {
+        const shiftStartMs = new Date(row.startTime).getTime();
+        const shiftEndMs = new Date(row.endTime).getTime();
+        const shiftDurationMs = Math.max(1, shiftEndMs - shiftStartMs);
+
+        const segments: PlanPreviewSegment[] = BREAK_KEYS.flatMap((key) => {
+          const current = row[key];
+          if (current.skipped || !current.time) return [];
+          const startIso = resolveShiftIsoForTime(row.startTime, row.endTime, current.time);
+          if (!startIso) return [];
+          const startMs = new Date(startIso).getTime();
+          const endMs = startMs + Math.max(1, current.durationMinutes) * 60 * 1000;
+          const leftPct = ((startMs - shiftStartMs) / shiftDurationMs) * 100;
+          const widthPct = ((endMs - startMs) / shiftDurationMs) * 100;
+
+          return [{
+            id: `${row.shiftId}-${key}`,
+            label: BREAK_META[key].label,
+            tone: key === 'lunch' ? 'meal' : 'break',
+            leftPct: clamp(leftPct, 0, 96),
+            widthPct: clamp(widthPct, 4, 100),
+          }];
+        });
+
+        return {
+          id: row.shiftId,
+          employeeName: row.employeeName,
+          shiftLabel: toDisplayShift(row.startTime, row.endTime),
+          segments,
+        };
+      });
+    }
+
+    return standalonePreview.map((row, index) => {
+      const shiftStartMs = new Date(row.startTime).getTime();
+      const shiftEndMs = new Date(row.endTime).getTime();
+      const shiftDurationMs = Math.max(1, shiftEndMs - shiftStartMs);
+
+      const segments: PlanPreviewSegment[] = row.breaks.map((item, breakIndex) => {
+        const startMs = new Date(item.startTime).getTime();
+        const endMs = new Date(item.endTime).getTime();
+        const leftPct = ((startMs - shiftStartMs) / shiftDurationMs) * 100;
+        const widthPct = ((endMs - startMs) / shiftDurationMs) * 100;
+
+        return {
+          id: `${index}-${breakIndex}-${item.type}`,
+          label: item.type === 'lunch' ? 'Meal' : 'Break',
+          tone: item.type === 'lunch' ? 'meal' : 'break',
+          leftPct: clamp(leftPct, 0, 96),
+          widthPct: clamp(widthPct, 4, 100),
+        };
+      });
+
+      return {
+        id: row.shiftId ?? `preview-${index}`,
+        employeeName: row.employeeName ?? 'Unassigned',
+        shiftLabel: toDisplayShift(row.startTime, row.endTime),
+        segments,
+      };
+    });
+  }, [dayRows, hasSharedRows, standalonePreview]);
+
+  const statusShiftsCount = hasSharedRows ? dayRows.length : standalonePreview.length;
+  const statusMealsAssigned = hasSharedRows
+    ? mealsAssignedCount
+    : standalonePreview.reduce((count, row) => count + row.breaks.filter((entry) => entry.type === 'lunch').length, 0);
+  const statusBreaksAssigned = hasSharedRows
+    ? breaksAssignedCount
+    : standalonePreview.reduce(
+      (count, row) => count + row.breaks.filter((entry) => entry.type === 'break1' || entry.type === 'break2').length,
+      0,
+    );
+  const statusComplianceRisk = hasSharedRows
+    ? complianceRiskCount
+    : standalonePreview.reduce(
+      (count, row) => (row.breaks.some((entry) => entry.type === 'lunch') ? count : count + 1),
+      0,
+    );
+
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem', minHeight: '100%' }}>
       <section className="surface-card" style={{ padding: '1rem' }}>
@@ -724,9 +836,12 @@ export default function LunchBreaksPage() {
           <div>
             <div className="workspace-kicker">Lunch & breaks workspace</div>
             <h1 className="workspace-title" style={{ fontSize: '1.58rem', marginBottom: 2 }}>
-              Break Planner
+              Lunch & Break Planner
             </h1>
-            <p className="workspace-subtitle">Operational meal compliance and staggered break coverage for {selectedDateLabel}</p>
+            <p className="workspace-subtitle">Generate compliant lunches and staggered breaks for the selected day.</p>
+            <div style={{ marginTop: 4, fontSize: '0.78rem', color: 'var(--text-muted)', fontWeight: 700 }}>
+              {selectedDateLabel} break plan
+            </div>
           </div>
 
           <div style={{ display: 'flex', flexDirection: 'column', gap: 8, alignItems: 'flex-end' }}>
@@ -748,18 +863,39 @@ export default function LunchBreaksPage() {
               <Button variant="outline" size="sm" onClick={() => setSelectedDate(toDateInputValue(new Date()))}>Today</Button>
               <Button variant="outline" size="sm" onClick={() => setSelectedDate(shiftDate(selectedDate, 1))}>Next Day</Button>
             </div>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
-              <Button size="sm" variant="outline" onClick={runPrimaryGeneration} disabled={isGeneratingPrimary || isLoading || !lunchBreakFeature?.enabled}>
-                {isGeneratingPrimary ? 'Generating...' : hasSharedRows ? 'Generate from schedule' : 'Generate from manual shifts'}
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+              <Button
+                size="sm"
+                variant="default"
+                onClick={runPrimaryGeneration}
+                disabled={isGeneratingPrimary || isLoading || !lunchBreakFeature?.enabled}
+                style={{ minWidth: 250 }}
+              >
+                {isGeneratingPrimary ? 'Generating plan...' : 'Generate Lunch & Break Plan'}
               </Button>
-              <Button size="sm" variant="default" onClick={() => void saveAllDirtyRows()} disabled={dirtyCount === 0}>
+              <Button size="sm" variant="outline" onClick={() => void saveAllDirtyRows()} disabled={dirtyCount === 0}>
                 {dirtyCount > 0 ? `Save ${dirtyCount} changes` : 'Save changes'}
               </Button>
+            </div>
+            <div style={{ fontSize: '0.74rem', color: 'var(--text-muted)' }}>
+              Uses current shifts and policy to generate staggered lunches and breaks.
             </div>
           </div>
         </div>
 
         <div style={{ marginTop: '0.85rem', display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+          <div className="surface-muted" style={{ padding: '0.38rem 0.58rem', fontSize: '0.78rem', color: 'var(--text-secondary)' }}>
+            Shifts loaded: <strong style={{ color: 'var(--text-primary)' }}>{statusShiftsCount}</strong>
+          </div>
+          <div className="surface-muted" style={{ padding: '0.38rem 0.58rem', fontSize: '0.78rem', color: statusMealsAssigned > 0 ? '#166534' : '#b45309' }}>
+            Meals assigned: <strong>{statusMealsAssigned}</strong>
+          </div>
+          <div className="surface-muted" style={{ padding: '0.38rem 0.58rem', fontSize: '0.78rem', color: statusBreaksAssigned > 0 ? '#166534' : '#b45309' }}>
+            Breaks assigned: <strong>{statusBreaksAssigned}</strong>
+          </div>
+          <div className="surface-muted" style={{ padding: '0.38rem 0.58rem', fontSize: '0.78rem', color: statusComplianceRisk > 0 ? '#b45309' : '#166534' }}>
+            Compliance risks: <strong>{statusComplianceRisk}</strong>
+          </div>
           <div className="surface-muted" style={{ padding: '0.38rem 0.58rem', fontSize: '0.78rem', color: 'var(--text-secondary)' }}>
             {isDayLoading ? 'Refreshing shifts...' : `${dayRows.length} shifts in view`}
           </div>
@@ -768,9 +904,6 @@ export default function LunchBreaksPage() {
           </div>
           <div className="surface-muted" style={{ padding: '0.38rem 0.58rem', fontSize: '0.78rem', color: breakRiskCount > 0 ? '#b45309' : '#166534' }}>
             {breakRiskCount > 0 ? `${breakRiskCount} break timings unresolved` : 'Break timings healthy'}
-          </div>
-          <div className="surface-muted" style={{ padding: '0.38rem 0.58rem', fontSize: '0.78rem', color: 'var(--text-secondary)' }}>
-            Credit cost/run: {lunchBreakFeature?.creditCost ?? 0}
           </div>
         </div>
 
@@ -791,6 +924,40 @@ export default function LunchBreaksPage() {
             }}
           >
             Last run: {lastRun.source} · persisted {lastRun.persisted ? 'yes' : 'no'} · credits {lastRun.creditConsumption.consumedCredits}
+          </div>
+        ) : null}
+
+        {previewRows.length > 0 ? (
+          <div className="surface-muted" style={{ marginTop: '0.75rem', padding: '0.65rem', display: 'grid', gap: 6 }}>
+            <div style={{ fontWeight: 800, color: 'var(--text-primary)', fontSize: '0.8rem' }}>Plan preview</div>
+            {previewRows.slice(0, 4).map((row) => (
+              <div key={row.id} style={{ display: 'grid', gridTemplateColumns: '140px minmax(0, 1fr) auto', gap: 8, alignItems: 'center' }}>
+                <div style={{ minWidth: 0 }}>
+                  <div style={{ fontSize: '0.76rem', fontWeight: 700, color: 'var(--text-primary)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                    {row.employeeName}
+                  </div>
+                </div>
+                <div style={{ position: 'relative', height: 18, borderRadius: 999, background: '#eaf0fb', border: '1px solid #d6e0f3' }}>
+                  {row.segments.map((segment) => (
+                    <span
+                      key={segment.id}
+                      title={segment.label}
+                      style={{
+                        position: 'absolute',
+                        left: `${segment.leftPct}%`,
+                        width: `${segment.widthPct}%`,
+                        top: 2,
+                        bottom: 2,
+                        borderRadius: 999,
+                        background: segment.tone === 'meal' ? '#9fd6a8' : '#9ac9f4',
+                        border: segment.tone === 'meal' ? '1px solid #74b782' : '1px solid #6aa8de',
+                      }}
+                    />
+                  ))}
+                </div>
+                <div style={{ fontSize: '0.74rem', color: 'var(--text-secondary)', fontWeight: 700 }}>{row.shiftLabel}</div>
+              </div>
+            ))}
           </div>
         ) : null}
       </section>
@@ -860,15 +1027,31 @@ export default function LunchBreaksPage() {
             ) : (
               <div style={{ display: 'grid', gap: '0.72rem', minHeight: 0, overflowY: 'auto', padding: '0.1rem' }}>
                 <div className="surface-muted" style={{ padding: '0.75rem' }}>
-                  <div style={{ fontWeight: 800, color: 'var(--text-primary)', marginBottom: 2 }}>Manual shift scenario</div>
+                  <div style={{ fontWeight: 800, color: 'var(--text-primary)', marginBottom: 2 }}>No shifts loaded for {selectedDateLabel.split(',')[0]}</div>
                   <div style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>
-                    No linked shifts found for this day. Define a quick scenario and generate a lunch/break plan.
+                    Import shifts from Scheduling or add a quick scenario to generate a break plan.
+                  </div>
+                  <div style={{ marginTop: 8, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => {
+                        void loadDayRows(selectedDate, policyLoaded).catch((err) => {
+                          setError((err as Error).message);
+                        });
+                      }}
+                    >
+                      Import shifts from Scheduling
+                    </Button>
+                    <Button variant="outline" size="sm" onClick={addManualShift}>
+                      Add manual shifts
+                    </Button>
                   </div>
                 </div>
 
                 <div style={{ display: 'grid', gap: 8 }}>
                   {manualShifts.map((row) => (
-                    <div key={row.id} className="surface-muted" style={{ padding: '0.62rem', display: 'grid', gridTemplateColumns: '1fr auto auto auto', gap: 8, alignItems: 'center' }}>
+                    <div key={row.id} className="surface-muted" style={{ padding: '0.68rem', display: 'grid', gap: 8 }}>
                       <input
                         type="text"
                         value={row.employeeName}
@@ -883,45 +1066,53 @@ export default function LunchBreaksPage() {
                           fontSize: '0.82rem',
                         }}
                       />
-                      <input
-                        type="time"
-                        value={row.startTime}
-                        onChange={(event) => updateManualShift(row.id, { startTime: event.target.value })}
-                        style={{
-                          border: '1px solid var(--border)',
-                          borderRadius: 8,
-                          background: '#ffffff',
-                          color: 'var(--text-primary)',
-                          padding: '0.34rem 0.4rem',
-                          fontSize: '0.78rem',
-                        }}
-                      />
-                      <input
-                        type="time"
-                        value={row.endTime}
-                        onChange={(event) => updateManualShift(row.id, { endTime: event.target.value })}
-                        style={{
-                          border: '1px solid var(--border)',
-                          borderRadius: 8,
-                          background: '#ffffff',
-                          color: 'var(--text-primary)',
-                          padding: '0.34rem 0.4rem',
-                          fontSize: '0.78rem',
-                        }}
-                      />
-                      <Button variant="outline" size="sm" onClick={() => removeManualShift(row.id)} disabled={manualShifts.length <= 1}>
-                        Remove
-                      </Button>
+                      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr auto', gap: 8, alignItems: 'end' }}>
+                        <label style={{ display: 'grid', gap: 4 }}>
+                          <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>Start</span>
+                          <input
+                            type="time"
+                            value={row.startTime}
+                            onChange={(event) => updateManualShift(row.id, { startTime: event.target.value })}
+                            style={{
+                              border: '1px solid var(--border)',
+                              borderRadius: 8,
+                              background: '#ffffff',
+                              color: 'var(--text-primary)',
+                              padding: '0.34rem 0.4rem',
+                              fontSize: '0.78rem',
+                            }}
+                          />
+                        </label>
+                        <label style={{ display: 'grid', gap: 4 }}>
+                          <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>End</span>
+                          <input
+                            type="time"
+                            value={row.endTime}
+                            onChange={(event) => updateManualShift(row.id, { endTime: event.target.value })}
+                            style={{
+                              border: '1px solid var(--border)',
+                              borderRadius: 8,
+                              background: '#ffffff',
+                              color: 'var(--text-primary)',
+                              padding: '0.34rem 0.4rem',
+                              fontSize: '0.78rem',
+                            }}
+                          />
+                        </label>
+                        <Button variant="outline" size="sm" onClick={() => removeManualShift(row.id)} disabled={manualShifts.length <= 1}>
+                          Remove shift
+                        </Button>
+                      </div>
                     </div>
                   ))}
                 </div>
 
                 <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                  <Button size="sm" onClick={() => void generateFromManualShifts()} disabled={isGeneratingManual}>
+                    {isGeneratingManual ? 'Generating...' : 'Generate Lunch & Break Plan'}
+                  </Button>
                   <Button variant="outline" size="sm" onClick={addManualShift}>
                     Add shift
-                  </Button>
-                  <Button size="sm" onClick={() => void generateFromManualShifts()} disabled={isGeneratingManual}>
-                    {isGeneratingManual ? 'Generating...' : 'Generate preview'}
                   </Button>
                 </div>
 
@@ -1042,58 +1233,49 @@ export default function LunchBreaksPage() {
               </p>
             )}
 
-            <div style={{ borderTop: '1px solid var(--border)', paddingTop: '0.72rem', display: 'grid', gap: 8 }}>
-              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
-                <strong style={{ fontSize: '0.84rem' }}>Policy</strong>
-                <Button variant="outline" size="sm" onClick={() => setShowAdvancedPolicy((prev) => !prev)}>
-                  {showAdvancedPolicy ? 'Hide fields' : 'Edit policy'}
-                </Button>
-              </div>
-
-              {showAdvancedPolicy ? (
-                <>
-                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6 }}>
-                    {POLICY_FIELDS.map((field) => (
-                      <label key={field.key} style={{ display: 'grid', gap: 4 }}>
-                        <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>{field.label}</span>
-                        <input
-                          type="number"
-                          value={policy[field.key]}
-                          min={1}
-                          onChange={(event) =>
-                            setPolicy((prev) => ({
-                              ...prev,
-                              [field.key]: Number(event.target.value),
-                            }))
-                          }
-                          style={{
-                            background: '#ffffff',
-                            border: '1px solid var(--border)',
-                            borderRadius: 8,
-                            color: 'var(--text-primary)',
-                            padding: '0.36rem 0.48rem',
-                            fontSize: '0.78rem',
-                          }}
-                        />
-                      </label>
-                    ))}
-                  </div>
-                  <Button variant="secondary" size="sm" onClick={handleSavePolicy} disabled={isSavingPolicy}>
-                    {isSavingPolicy ? 'Saving...' : 'Save policy'}
-                  </Button>
-                </>
-              ) : (
-                <div style={{ fontSize: '0.78rem', color: 'var(--text-secondary)' }}>
-                  Lunch offset {policy.lunchOffsetMinutes}m · Lunch duration {policy.lunchDurationMinutes}m · Conflict step {policy.timeStepMinutes}m
+            <details style={{ borderTop: '1px solid var(--border)', paddingTop: '0.72rem' }}>
+              <summary style={{ cursor: 'pointer', fontSize: '0.84rem', fontWeight: 800, color: 'var(--text-primary)' }}>
+                Planning settings
+              </summary>
+              <div style={{ marginTop: 8, display: 'grid', gap: 8 }}>
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6 }}>
+                  {POLICY_FIELDS.map((field) => (
+                    <label key={field.key} style={{ display: 'grid', gap: 4 }}>
+                      <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>{field.label}</span>
+                      <input
+                        type="number"
+                        value={policy[field.key]}
+                        min={1}
+                        onChange={(event) =>
+                          setPolicy((prev) => ({
+                            ...prev,
+                            [field.key]: Number(event.target.value),
+                          }))
+                        }
+                        style={{
+                          background: '#ffffff',
+                          border: '1px solid var(--border)',
+                          borderRadius: 8,
+                          color: 'var(--text-primary)',
+                          padding: '0.36rem 0.48rem',
+                          fontSize: '0.78rem',
+                        }}
+                      />
+                    </label>
+                  ))}
                 </div>
-              )}
-            </div>
+                <Button variant="secondary" size="sm" onClick={handleSavePolicy} disabled={isSavingPolicy}>
+                  {isSavingPolicy ? 'Saving...' : 'Save policy'}
+                </Button>
 
-            <div style={{ borderTop: '1px solid var(--border)', paddingTop: '0.72rem', fontSize: '0.78rem', color: 'var(--text-secondary)' }}>
-              <div>Access source: <strong style={{ textTransform: 'capitalize' }}>{lunchBreakFeature.source}</strong></div>
-              <div>Usage credits: <strong>{features?.usageCredits ?? 0}</strong></div>
-              <div>Scheduling link: <strong>{hasSharedScheduleData ? `${dayRows.length} linked shifts` : 'No linked shifts'}</strong></div>
-            </div>
+                <div style={{ borderTop: '1px solid var(--border)', paddingTop: 8, fontSize: '0.78rem', color: 'var(--text-secondary)' }}>
+                  <div>Access source: <strong style={{ textTransform: 'capitalize' }}>{lunchBreakFeature.source}</strong></div>
+                  <div>Usage credits: <strong>{features?.usageCredits ?? 0}</strong></div>
+                  <div>Credit cost/run: <strong>{lunchBreakFeature.creditCost ?? 0}</strong></div>
+                  <div>Scheduling link: <strong>{hasSharedScheduleData ? `${dayRows.length} linked shifts` : 'No linked shifts'}</strong></div>
+                </div>
+              </div>
+            </details>
           </aside>
         </section>
       ) : null}
