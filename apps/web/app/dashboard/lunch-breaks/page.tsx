@@ -163,6 +163,28 @@ function shiftDate(dateValue: string, days: number): string {
   return toDateInputValue(date);
 }
 
+function startOfWeek(dateValue: string): string {
+  const [year, month, day] = dateValue.split('-').map((part) => Number(part));
+  const date = new Date(year, month - 1, day);
+  date.setDate(date.getDate() - date.getDay());
+  return toDateInputValue(date);
+}
+
+function weekRangeLabel(dateValue: string): string {
+  const startValue = startOfWeek(dateValue);
+  const endValue = shiftDate(startValue, 6);
+  const [sy, sm, sd] = startValue.split('-').map((part) => Number(part));
+  const [ey, em, ed] = endValue.split('-').map((part) => Number(part));
+  const startDate = new Date(sy, sm - 1, sd);
+  const endDate = new Date(ey, em - 1, ed);
+  const startMonth = startDate.toLocaleDateString([], { month: 'short' });
+  const endMonth = endDate.toLocaleDateString([], { month: 'short' });
+  if (startMonth === endMonth) {
+    return `Week of ${startMonth} ${startDate.getDate()}-${endDate.getDate()}`;
+  }
+  return `Week of ${startMonth} ${startDate.getDate()}-${endMonth} ${endDate.getDate()}`;
+}
+
 function dayWindow(dateValue: string): { startIso: string; endIso: string } {
   const [year, month, day] = dateValue.split('-').map((part) => Number(part));
   const start = new Date(year, month - 1, day, 0, 0, 0, 0);
@@ -349,6 +371,9 @@ export default function LunchBreaksPage() {
   const [manualShifts, setManualShifts] = useState<ManualShiftRow[]>(defaultManualShifts());
   const [plannerMode, setPlannerMode] = useState<'auto' | 'manual' | null>(null);
   const [autoGuideStep, setAutoGuideStep] = useState<1 | 2 | 3 | 4>(1);
+  const [showWeekPicker, setShowWeekPicker] = useState(false);
+  const [weekOffset, setWeekOffset] = useState(0);
+  const [isFindingNextScheduledDay, setIsFindingNextScheduledDay] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const loadFeatures = useCallback(async (): Promise<FeatureMatrixResponse> => {
@@ -831,9 +856,44 @@ export default function LunchBreaksPage() {
       0,
     );
 
+  const weeklyPickerDays = useMemo(() => {
+    const anchorWeekStart = shiftDate(startOfWeek(selectedDate), weekOffset * 7);
+    return Array.from({ length: 7 }, (_, index) => shiftDate(anchorWeekStart, index));
+  }, [selectedDate, weekOffset]);
+
+  const currentWeekLabel = useMemo(() => weekRangeLabel(selectedDate), [selectedDate]);
+
+  const findNextScheduledDay = useCallback(async () => {
+    setIsFindingNextScheduledDay(true);
+    try {
+      for (let offset = 1; offset <= 14; offset += 1) {
+        const candidateDate = shiftDate(selectedDate, offset);
+        const { startIso, endIso } = dayWindow(candidateDate);
+        const query = new URLSearchParams({
+          startDate: startIso,
+          endDate: endIso,
+        });
+        const res = await fetchWithSession(`/lunch-breaks?${query.toString()}`);
+        if (!res.ok) continue;
+        const payload = (await res.json()) as { data?: GeneratedShiftBreaks[] };
+        if (Array.isArray(payload.data) && payload.data.length > 0) {
+          setSelectedDate(candidateDate);
+          setShowWeekPicker(false);
+          return;
+        }
+      }
+      setSelectedDate(shiftDate(selectedDate, 1));
+      setShowWeekPicker(false);
+    } finally {
+      setIsFindingNextScheduledDay(false);
+    }
+  }, [selectedDate]);
+
   const choosePlannerMode = useCallback((mode: 'auto' | 'manual') => {
     setPlannerMode(mode);
     setAutoGuideStep(mode === 'auto' ? 2 : 4);
+    setShowWeekPicker(false);
+    setWeekOffset(0);
   }, []);
 
   const showGuidedWindow =
@@ -1106,6 +1166,101 @@ export default function LunchBreaksPage() {
                   <p style={{ margin: 0, fontSize: '0.84rem', color: 'var(--text-secondary)' }}>
                     Confirm the day you are planning before we build lunch and break assignments.
                   </p>
+                  <div className="surface-muted" style={{ borderRadius: 12, padding: '0.75rem', display: 'grid', gap: 10 }}>
+                    <div style={{ textAlign: 'center', fontSize: '0.73rem', fontWeight: 800, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.06em' }}>
+                      Plan date
+                    </div>
+                    <div style={{ display: 'grid', gridTemplateColumns: 'auto minmax(0, 1fr) auto', gap: 8, alignItems: 'center' }}>
+                      <Button variant="outline" size="sm" onClick={() => setSelectedDate(shiftDate(selectedDate, -1))}>
+                        ◀
+                      </Button>
+                      <AnimatePresence mode="wait">
+                        <motion.div
+                          key={`selected-date-${selectedDate}`}
+                          initial={{ opacity: 0, x: 10 }}
+                          animate={{ opacity: 1, x: 0 }}
+                          exit={{ opacity: 0, x: -10 }}
+                          transition={{ duration: 0.18 }}
+                          style={{ textAlign: 'center', fontWeight: 800, color: 'var(--text-primary)', fontSize: '1rem' }}
+                        >
+                          {selectedDateLabel}
+                        </motion.div>
+                      </AnimatePresence>
+                      <Button variant="outline" size="sm" onClick={() => setSelectedDate(shiftDate(selectedDate, 1))}>
+                        ▶
+                      </Button>
+                    </div>
+                    <div style={{ textAlign: 'center', fontSize: '0.76rem', color: 'var(--text-secondary)' }}>
+                      Downtown Bistro · {currentWeekLabel}
+                    </div>
+                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, justifyContent: 'center' }}>
+                      <Button variant="outline" size="sm" onClick={() => { setSelectedDate(toDateInputValue(new Date())); setShowWeekPicker(false); }}>
+                        Today
+                      </Button>
+                      <Button variant="outline" size="sm" onClick={() => { setSelectedDate(shiftDate(toDateInputValue(new Date()), 1)); setShowWeekPicker(false); }}>
+                        Tomorrow
+                      </Button>
+                      <Button variant="outline" size="sm" onClick={() => void findNextScheduledDay()} disabled={isFindingNextScheduledDay}>
+                        {isFindingNextScheduledDay ? 'Finding...' : 'Next scheduled day'}
+                      </Button>
+                      <Button variant="outline" size="sm" onClick={() => setShowWeekPicker((prev) => !prev)}>
+                        Pick from week
+                      </Button>
+                    </div>
+                    {showWeekPicker ? (
+                      <div style={{ borderTop: '1px solid var(--border)', paddingTop: 8, display: 'grid', gap: 8 }}>
+                        <div style={{ fontSize: '0.8rem', fontWeight: 700, color: 'var(--text-primary)' }}>Choose plan date</div>
+                        <div style={{ display: 'grid', gap: 6 }}>
+                          {weeklyPickerDays.map((dateValue) => {
+                            const [y, m, d] = dateValue.split('-').map((part) => Number(part));
+                            const display = new Date(y, m - 1, d).toLocaleDateString([], {
+                              weekday: 'short',
+                              month: 'short',
+                              day: 'numeric',
+                            });
+                            const isToday = dateValue === toDateInputValue(new Date());
+                            const isActive = dateValue === selectedDate;
+                            return (
+                              <button
+                                key={`weekly-pick-${dateValue}`}
+                                type="button"
+                                onClick={() => {
+                                  setSelectedDate(dateValue);
+                                  setShowWeekPicker(false);
+                                }}
+                                style={{
+                                  border: isActive ? '1px solid #83a8ff' : '1px solid var(--border)',
+                                  background: isActive ? '#edf3ff' : '#ffffff',
+                                  color: isActive ? '#234ed9' : 'var(--text-primary)',
+                                  borderRadius: 10,
+                                  padding: '0.48rem 0.58rem',
+                                  fontSize: '0.8rem',
+                                  display: 'flex',
+                                  justifyContent: 'space-between',
+                                  alignItems: 'center',
+                                  cursor: 'pointer',
+                                  fontWeight: isActive ? 700 : 600,
+                                }}
+                              >
+                                <span>{display}</span>
+                                <span style={{ fontSize: '0.72rem', color: isActive ? '#234ed9' : 'var(--text-muted)' }}>
+                                  {isToday ? 'Today' : ''}
+                                </span>
+                              </button>
+                            );
+                          })}
+                        </div>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8 }}>
+                          <Button variant="outline" size="sm" onClick={() => setWeekOffset((prev) => prev - 1)}>
+                            Previous week
+                          </Button>
+                          <Button variant="outline" size="sm" onClick={() => setWeekOffset((prev) => prev + 1)}>
+                            Jump to another week
+                          </Button>
+                        </div>
+                      </div>
+                    ) : null}
+                  </div>
                   <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, alignItems: 'center' }}>
                     <Button variant="outline" size="sm" onClick={() => { setPlannerMode(null); setAutoGuideStep(1); }}>
                       Back
