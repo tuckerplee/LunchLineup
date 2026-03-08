@@ -347,6 +347,7 @@ export default function LunchBreaksPage() {
   const [isGeneratingManual, setIsGeneratingManual] = useState(false);
   const [manualShifts, setManualShifts] = useState<ManualShiftRow[]>(defaultManualShifts());
   const [plannerMode, setPlannerMode] = useState<'auto' | 'manual' | null>(null);
+  const [autoGuideStep, setAutoGuideStep] = useState<1 | 2>(1);
   const [error, setError] = useState<string | null>(null);
 
   const loadFeatures = useCallback(async (): Promise<FeatureMatrixResponse> => {
@@ -831,9 +832,11 @@ export default function LunchBreaksPage() {
 
   const choosePlannerMode = useCallback((mode: 'auto' | 'manual') => {
     setPlannerMode(mode);
+    setAutoGuideStep(mode === 'auto' ? 1 : 2);
   }, []);
 
   const showEntryChooser = !isLoading && Boolean(lunchBreakFeature?.enabled) && plannerMode === null;
+  const showAutoIntro = isAutoMode && autoGuideStep === 1;
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem', minHeight: '100%' }}>
@@ -884,7 +887,10 @@ export default function LunchBreaksPage() {
               <Button
                 size="sm"
                 variant="outline"
-                onClick={() => setPlannerMode(null)}
+                onClick={() => {
+                  setPlannerMode(null);
+                  setAutoGuideStep(1);
+                }}
                 disabled={!lunchBreakFeature?.enabled}
               >
                 Switch mode
@@ -893,7 +899,13 @@ export default function LunchBreaksPage() {
                 size="sm"
                 variant="default"
                 onClick={runPrimaryGeneration}
-                disabled={isGeneratingPrimary || isLoading || !lunchBreakFeature?.enabled || plannerMode === null}
+                disabled={
+                  isGeneratingPrimary ||
+                  isLoading ||
+                  !lunchBreakFeature?.enabled ||
+                  plannerMode === null ||
+                  showAutoIntro
+                }
                 style={{ minWidth: 250 }}
               >
                 {isGeneratingPrimary ? 'Generating plan...' : 'Generate Lunch & Break Plan'}
@@ -1093,58 +1105,100 @@ export default function LunchBreaksPage() {
           <div className="surface-card" style={{ padding: '0.72rem', minWidth: 0, minHeight: 0, display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
             {isAutoMode ? (
               <>
-                <div
-                  style={{
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'space-between',
-                    gap: 8,
-                    flexWrap: 'wrap',
-                    padding: '0 0.35rem',
-                    fontSize: '0.8rem',
-                    color: 'var(--text-secondary)',
-                  }}
-                >
-                  <span>Using Scheduling shifts as source of truth for {selectedDateLabel}</span>
-                  <span style={{ fontWeight: 700 }}>{dirtyCount > 0 ? `${dirtyCount} unsaved edits` : 'All edits saved'}</span>
-                </div>
-                <div style={{ minHeight: 0, flex: 1 }}>
-                  {hasSharedRows ? (
-                    <StaffScheduler
-                      resources={timelineResources}
-                      events={timelineEvents}
-                      viewMode="day"
-                      initialDate={selectedDate}
-                      compactWindow
-                      onEventSelect={(event) => {
-                        if (event.extendedProps.kind) return;
-                        setSelectedShiftId(event.id);
+                {showAutoIntro ? (
+                  <div
+                    style={{
+                      minHeight: 0,
+                      flex: 1,
+                      display: 'grid',
+                      placeItems: 'center',
+                      padding: '0.5rem',
+                    }}
+                  >
+                    <div
+                      style={{
+                        width: 'min(640px, 100%)',
+                        border: '1px solid #cfe0ff',
+                        borderRadius: 14,
+                        background: 'linear-gradient(180deg, #f7faff 0%, #eef4ff 100%)',
+                        padding: '1rem',
+                        display: 'grid',
+                        gap: 12,
                       }}
-                    />
-                  ) : (
-                    <div className="surface-muted" style={{ padding: '0.75rem' }}>
-                      <div style={{ fontWeight: 800, color: 'var(--text-primary)', marginBottom: 2 }}>
-                        No shifts loaded for {selectedDateLabel.split(',')[0]}
-                      </div>
-                      <div style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>
-                        Import shifts from Scheduling to generate lunches and breaks.
-                      </div>
-                      <div style={{ marginTop: 8 }}>
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          onClick={() => {
-                            void loadDayRows(selectedDate, policyLoaded).catch((err) => {
-                              setError((err as Error).message);
-                            });
-                          }}
-                        >
-                          Import shifts from Scheduling
+                    >
+                      <div className="workspace-kicker">Auto break setup</div>
+                      <h2 style={{ margin: 0, fontSize: '1.2rem', color: 'var(--text-primary)' }}>
+                        Creating a schedule for {selectedDateLabel}
+                      </h2>
+                      <p style={{ margin: 0, fontSize: '0.84rem', color: 'var(--text-secondary)' }}>
+                        We&apos;ll use Scheduling as the source of truth, then generate lunch and break assignments.
+                      </p>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 }}>
+                        <span style={{ fontSize: '0.76rem', color: 'var(--text-muted)', fontWeight: 700 }}>
+                          Step 1 of 2
+                        </span>
+                        <Button size="sm" onClick={() => setAutoGuideStep(2)}>
+                          Next
                         </Button>
                       </div>
                     </div>
-                  )}
-                </div>
+                  </div>
+                ) : (
+                  <>
+                    <div
+                      style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'space-between',
+                        gap: 8,
+                        flexWrap: 'wrap',
+                        padding: '0 0.35rem',
+                        fontSize: '0.8rem',
+                        color: 'var(--text-secondary)',
+                      }}
+                    >
+                      <span>Using Scheduling shifts as source of truth for {selectedDateLabel}</span>
+                      <span style={{ fontWeight: 700 }}>{dirtyCount > 0 ? `${dirtyCount} unsaved edits` : 'All edits saved'}</span>
+                    </div>
+                    <div style={{ minHeight: 0, flex: 1 }}>
+                      {hasSharedRows ? (
+                        <StaffScheduler
+                          resources={timelineResources}
+                          events={timelineEvents}
+                          viewMode="day"
+                          initialDate={selectedDate}
+                          compactWindow
+                          onEventSelect={(event) => {
+                            if (event.extendedProps.kind) return;
+                            setSelectedShiftId(event.id);
+                          }}
+                        />
+                      ) : (
+                        <div className="surface-muted" style={{ padding: '0.75rem' }}>
+                          <div style={{ fontWeight: 800, color: 'var(--text-primary)', marginBottom: 2 }}>
+                            No shifts loaded for {selectedDateLabel.split(',')[0]}
+                          </div>
+                          <div style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>
+                            Import shifts from Scheduling to generate lunches and breaks.
+                          </div>
+                          <div style={{ marginTop: 8 }}>
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              onClick={() => {
+                                void loadDayRows(selectedDate, policyLoaded).catch((err) => {
+                                  setError((err as Error).message);
+                                });
+                              }}
+                            >
+                              Import shifts from Scheduling
+                            </Button>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  </>
+                )}
               </>
             ) : (
               <div style={{ display: 'grid', gap: '0.72rem', minHeight: 0, overflowY: 'auto', padding: '0.1rem' }}>
