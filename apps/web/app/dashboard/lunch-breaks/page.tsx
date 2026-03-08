@@ -121,6 +121,13 @@ type PlanPreviewRow = {
   segments: PlanPreviewSegment[];
 };
 
+type EmployeeCard = {
+  id: string;
+  name: string;
+  role?: string;
+  source: 'scheduled' | 'available';
+};
+
 const BREAK_KEYS: BreakEditorKey[] = ['break1', 'lunch', 'break2'];
 
 const BREAK_META: Record<BreakEditorKey, { label: string; minimumDuration: number }> = {
@@ -356,6 +363,8 @@ export default function LunchBreaksPage() {
   const [manualShifts, setManualShifts] = useState<ManualShiftRow[]>(defaultManualShifts());
   const [plannerMode, setPlannerMode] = useState<'auto' | 'manual' | null>(null);
   const [autoGuideStep, setAutoGuideStep] = useState<1 | 2 | 3 | 4>(1);
+  const [availableEmployees, setAvailableEmployees] = useState<EmployeeCard[]>([]);
+  const [isLoadingEmployees, setIsLoadingEmployees] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const initialSelectedDateRef = useRef(selectedDate);
 
@@ -844,6 +853,54 @@ export default function LunchBreaksPage() {
       0,
     );
 
+  const scheduledEmployees = useMemo<EmployeeCard[]>(() => {
+    const seen = new Set<string>();
+    const cards: EmployeeCard[] = [];
+    for (const row of dayRows) {
+      const key = row.userId ?? row.employeeName.trim().toLowerCase();
+      if (!key || seen.has(key)) continue;
+      seen.add(key);
+      cards.push({
+        id: row.userId ?? row.shiftId,
+        name: row.employeeName || 'Unassigned',
+        role: row.userId ? 'Scheduled' : 'Open shift',
+        source: 'scheduled',
+      });
+    }
+    return cards;
+  }, [dayRows]);
+
+  useEffect(() => {
+    if (!(isAutoMode && autoGuideStep === 3)) return;
+    if (scheduledEmployees.length > 0) return;
+    if (availableEmployees.length > 0) return;
+
+    let isActive = true;
+    setIsLoadingEmployees(true);
+    void fetchWithSession('/users')
+      .then(async (res) => {
+        if (!res.ok) return;
+        const payload = (await res.json()) as { data?: Array<{ id: string; name: string; role?: string }> };
+        if (!isActive) return;
+        const list = Array.isArray(payload.data)
+          ? payload.data.map((user) => ({
+              id: user.id,
+              name: user.name || 'Unnamed',
+              role: user.role,
+              source: 'available' as const,
+            }))
+          : [];
+        setAvailableEmployees(list);
+      })
+      .finally(() => {
+        if (isActive) setIsLoadingEmployees(false);
+      });
+
+    return () => {
+      isActive = false;
+    };
+  }, [autoGuideStep, availableEmployees.length, isAutoMode, scheduledEmployees.length]);
+
   const weeklyPickerDays = useMemo(() => {
     const weekStart = startOfWeek(selectedDate);
     return Array.from({ length: 7 }, (_, index) => shiftDate(weekStart, index));
@@ -1211,6 +1268,60 @@ export default function LunchBreaksPage() {
                       ? `We'll use schedule data when available for ${selectedDateLabel} and guide break placement in the planner.`
                       : `You'll continue with manual shift input for ${selectedDateLabel} and still get guided break planning.`}
                   </p>
+                  <div className="surface-muted" style={{ borderRadius: 12, padding: '0.75rem', display: 'grid', gap: 8 }}>
+                    <div style={{ fontSize: '0.8rem', fontWeight: 800, color: 'var(--text-primary)' }}>
+                      {scheduledEmployees.length > 0 ? 'Scheduled employees for this day' : 'Available employees at this store'}
+                    </div>
+                    {isLoadingEmployees ? (
+                      <div style={{ fontSize: '0.78rem', color: 'var(--text-secondary)' }}>Loading employees...</div>
+                    ) : (
+                      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(6, minmax(0, 1fr))', gap: 6 }}>
+                        {(scheduledEmployees.length > 0 ? scheduledEmployees : availableEmployees).slice(0, 24).map((employee) => (
+                          <div
+                            key={`step3-emp-${employee.id}`}
+                            style={{
+                              border: '1px solid var(--border)',
+                              borderRadius: 10,
+                              background: '#ffffff',
+                              padding: '0.4rem',
+                              display: 'grid',
+                              gap: 3,
+                              justifyItems: 'center',
+                              textAlign: 'center',
+                            }}
+                          >
+                            <div
+                              style={{
+                                width: 26,
+                                height: 26,
+                                borderRadius: 999,
+                                display: 'grid',
+                                placeItems: 'center',
+                                border: '1px solid #c9d6ef',
+                                background: '#eef4ff',
+                                color: '#244aa8',
+                                fontSize: '0.66rem',
+                                fontWeight: 800,
+                              }}
+                            >
+                              {getInitials(employee.name)}
+                            </div>
+                            <div style={{ fontSize: '0.68rem', fontWeight: 700, color: 'var(--text-primary)', lineHeight: 1.2 }}>
+                              {employee.name}
+                            </div>
+                            <div style={{ fontSize: '0.62rem', color: 'var(--text-muted)' }}>
+                              {employee.role ?? (employee.source === 'scheduled' ? 'Scheduled' : 'Available')}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                    {!isLoadingEmployees && scheduledEmployees.length === 0 && availableEmployees.length === 0 ? (
+                      <div style={{ fontSize: '0.78rem', color: '#b45309' }}>
+                        No employees found yet. You can still continue and add shifts manually.
+                      </div>
+                    ) : null}
+                  </div>
                   <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, alignItems: 'center' }}>
                     <Button variant="outline" size="sm" onClick={() => setAutoGuideStep(2)}>
                       Back
