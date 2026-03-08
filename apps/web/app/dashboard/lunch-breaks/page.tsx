@@ -883,12 +883,14 @@ export default function LunchBreaksPage() {
         const payload = (await res.json()) as { data?: Array<{ id: string; name: string; role?: string }> };
         if (!isActive) return;
         const list = Array.isArray(payload.data)
-          ? payload.data.map((user) => ({
-              id: user.id,
-              name: user.name || 'Unnamed',
-              role: user.role,
-              source: 'available' as const,
-            }))
+          ? payload.data
+              .filter((user) => user.role !== 'ADMIN' && user.role !== 'SUPER_ADMIN')
+              .map((user) => ({
+                id: user.id,
+                name: user.name || 'Unnamed',
+                role: user.role,
+                source: 'available' as const,
+              }))
           : [];
         setAvailableEmployees(list);
       })
@@ -1270,7 +1272,7 @@ export default function LunchBreaksPage() {
                   </p>
                   <div className="surface-muted" style={{ borderRadius: 12, padding: '0.75rem', display: 'grid', gap: 8 }}>
                     <div style={{ fontSize: '0.8rem', fontWeight: 800, color: 'var(--text-primary)' }}>
-                      {scheduledEmployees.length > 0 ? 'Scheduled employees for this day' : 'Available employees at this store'}
+                      {scheduledEmployees.length > 0 ? 'Scheduled employees for this day' : 'Available staff members at this store'}
                     </div>
                     {isLoadingEmployees ? (
                       <div style={{ fontSize: '0.78rem', color: 'var(--text-secondary)' }}>Loading employees...</div>
@@ -1318,7 +1320,7 @@ export default function LunchBreaksPage() {
                     )}
                     {!isLoadingEmployees && scheduledEmployees.length === 0 && availableEmployees.length === 0 ? (
                       <div style={{ fontSize: '0.78rem', color: '#b45309' }}>
-                        No employees found yet. You can still continue and add shifts manually.
+                        No staff members found yet. You can still continue and add shifts manually.
                       </div>
                     ) : null}
                   </div>
