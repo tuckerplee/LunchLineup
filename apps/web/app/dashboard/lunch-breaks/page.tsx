@@ -432,7 +432,8 @@ export default function LunchBreaksPage() {
 
   const lunchBreakFeature = features?.features.lunch_breaks;
   const schedulingFeature = features?.features.scheduling;
-  const hasSharedScheduleData = Boolean(schedulingFeature?.enabled && dayRows.length > 0);
+  const hasSchedulingEnabled = Boolean(schedulingFeature?.enabled);
+  const hasSharedScheduleData = Boolean(hasSchedulingEnabled && dayRows.length > 0);
 
   useEffect(() => {
     if (!lunchBreakFeature?.enabled) return;
@@ -555,7 +556,11 @@ export default function LunchBreaksPage() {
 
   const generateForSelectedDay = useCallback(async () => {
     if (dayRows.length === 0) {
-      setError('No shared schedule shifts found for selected day.');
+      setError(
+        hasSchedulingEnabled
+          ? 'No schedule shifts found for selected day. Import shifts or use manual entry.'
+          : 'No linked schedule source is available. Use manual entry for this day.',
+      );
       return;
     }
 
@@ -579,7 +584,7 @@ export default function LunchBreaksPage() {
     } finally {
       setIsGeneratingDay(false);
     }
-  }, [dayRows, loadDayRows, policy, policyLoaded, selectedDate]);
+  }, [dayRows, hasSchedulingEnabled, loadDayRows, policy, policyLoaded, selectedDate]);
 
   const addManualShift = useCallback(() => {
     const nextIndex = manualShifts.length + 1;
@@ -1066,9 +1071,13 @@ export default function LunchBreaksPage() {
                     >
                       <div style={{ fontSize: '1rem', fontWeight: 800, color: 'var(--text-primary)' }}>Auto Break</div>
                       <div style={{ fontSize: '0.83rem', color: 'var(--text-secondary)', lineHeight: 1.45 }}>
-                        Pull shifts from Scheduling and auto-build lunch and break assignments for {selectedDateLabel}.
+                        {hasSchedulingEnabled
+                          ? `Use schedule data when available and auto-build lunch and break assignments for ${selectedDateLabel}.`
+                          : `Auto-build lunch and break assignments for ${selectedDateLabel}, with manual shift input when needed.`}
                       </div>
-                      <span style={{ color: '#234ed9', fontSize: '0.78rem', fontWeight: 800 }}>Use scheduling shifts</span>
+                      <span style={{ color: '#234ed9', fontSize: '0.78rem', fontWeight: 800 }}>
+                        {hasSchedulingEnabled ? 'Use schedule data when available' : 'Works without scheduling'}
+                      </span>
                     </button>
                     <button
                       type="button"
@@ -1156,7 +1165,11 @@ export default function LunchBreaksPage() {
                       <div style={{ fontSize: '0.9rem', fontWeight: 800, color: 'var(--text-primary)' }}>{selectedDateLabel}</div>
                       <div style={{ fontSize: '0.78rem', color: 'var(--text-secondary)' }}>Downtown Bistro</div>
                       <div style={{ fontSize: '0.75rem', color: dayRows.length > 0 ? '#166534' : '#b45309' }}>
-                        {dayRows.length > 0 ? `${dayRows.length} shifts available from Scheduling` : 'No shifts found yet for this day'}
+                        {dayRows.length > 0
+                          ? `${dayRows.length} shifts available for this day`
+                          : hasSchedulingEnabled
+                            ? 'No schedule shifts found for this day yet'
+                            : 'No schedule source connected for this workspace'}
                       </div>
                     </div>
                   </div>
@@ -1194,7 +1207,9 @@ export default function LunchBreaksPage() {
                     Ready to create today&apos;s schedule
                   </h2>
                   <p style={{ margin: 0, fontSize: '0.84rem', color: 'var(--text-secondary)' }}>
-                    We&apos;ll load shifts for {selectedDateLabel} from Scheduling and guide break placement in the planner.
+                    {hasSchedulingEnabled
+                      ? `We'll use schedule data when available for ${selectedDateLabel} and guide break placement in the planner.`
+                      : `You'll continue with manual shift input for ${selectedDateLabel} and still get guided break planning.`}
                   </p>
                   <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, alignItems: 'center' }}>
                     <Button variant="outline" size="sm" onClick={() => setAutoGuideStep(2)}>
@@ -1256,7 +1271,11 @@ export default function LunchBreaksPage() {
                     color: 'var(--text-secondary)',
                   }}
                 >
-                  <span>Using Scheduling shifts as source of truth for {selectedDateLabel}</span>
+                  <span>
+                    {hasSchedulingEnabled
+                      ? `Using schedule data as source of truth for ${selectedDateLabel}`
+                      : `Running in manual-first mode for ${selectedDateLabel}`}
+                  </span>
                   <span style={{ fontWeight: 700 }}>{dirtyCount > 0 ? `${dirtyCount} unsaved edits` : 'All edits saved'}</span>
                 </div>
                 <div style={{ minHeight: 0, flex: 1 }}>
@@ -1278,19 +1297,33 @@ export default function LunchBreaksPage() {
                         No shifts loaded for {selectedDateLabel.split(',')[0]}
                       </div>
                       <div style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>
-                        Import shifts from Scheduling to generate lunches and breaks.
+                        {hasSchedulingEnabled
+                          ? 'Import shifts from Scheduling, or switch to manual entry.'
+                          : 'Switch to manual entry to add shifts and generate lunches and breaks.'}
                       </div>
-                      <div style={{ marginTop: 8 }}>
+                      <div style={{ marginTop: 8, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                        {hasSchedulingEnabled ? (
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            onClick={() => {
+                              void loadDayRows(selectedDate, policyLoaded).catch((err) => {
+                                setError((err as Error).message);
+                              });
+                            }}
+                          >
+                            Import schedule shifts
+                          </Button>
+                        ) : null}
                         <Button
                           variant="outline"
                           size="sm"
                           onClick={() => {
-                            void loadDayRows(selectedDate, policyLoaded).catch((err) => {
-                              setError((err as Error).message);
-                            });
+                            setPlannerMode('manual');
+                            setAutoGuideStep(4);
                           }}
                         >
-                          Import shifts from Scheduling
+                          Use manual entry
                         </Button>
                       </div>
                     </div>
@@ -1302,20 +1335,24 @@ export default function LunchBreaksPage() {
                 <div className="surface-muted" style={{ padding: '0.75rem' }}>
                   <div style={{ fontWeight: 800, color: 'var(--text-primary)', marginBottom: 2 }}>No shifts loaded for {selectedDateLabel.split(',')[0]}</div>
                   <div style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>
-                    Import shifts from Scheduling or add a quick scenario to generate a break plan.
+                    {hasSchedulingEnabled
+                      ? 'Import shifts from Scheduling or add a quick scenario to generate a break plan.'
+                      : 'Add a quick scenario to generate a break plan.'}
                   </div>
                   <div style={{ marginTop: 8, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      onClick={() => {
-                        void loadDayRows(selectedDate, policyLoaded).catch((err) => {
-                          setError((err as Error).message);
-                        });
-                      }}
-                    >
-                      Import shifts from Scheduling
-                    </Button>
+                    {hasSchedulingEnabled ? (
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => {
+                          void loadDayRows(selectedDate, policyLoaded).catch((err) => {
+                            setError((err as Error).message);
+                          });
+                        }}
+                      >
+                        Import schedule shifts
+                      </Button>
+                    ) : null}
                     <Button variant="outline" size="sm" onClick={addManualShift}>
                       Add manual shifts
                     </Button>
@@ -1502,7 +1539,9 @@ export default function LunchBreaksPage() {
               )
             ) : (
               <p style={{ margin: 0, fontSize: '0.8rem', color: 'var(--text-secondary)' }}>
-                Generate from manual shifts to preview assignments, or sync Scheduling shifts to unlock direct editing.
+                {hasSchedulingEnabled
+                  ? 'Generate from manual shifts to preview assignments, or load schedule shifts to unlock direct editing.'
+                  : 'Generate from manual shifts to preview assignments. Schedule integration is optional and currently not enabled.'}
               </p>
             )}
 
@@ -1545,7 +1584,16 @@ export default function LunchBreaksPage() {
                   <div>Access source: <strong style={{ textTransform: 'capitalize' }}>{lunchBreakFeature.source}</strong></div>
                   <div>Usage credits: <strong>{features?.usageCredits ?? 0}</strong></div>
                   <div>Credit cost/run: <strong>{lunchBreakFeature.creditCost ?? 0}</strong></div>
-                  <div>Scheduling link: <strong>{hasSharedScheduleData ? `${dayRows.length} linked shifts` : 'No linked shifts'}</strong></div>
+                  <div>
+                    Scheduling link:{' '}
+                    <strong>
+                      {hasSchedulingEnabled
+                        ? hasSharedScheduleData
+                          ? `${dayRows.length} linked shifts`
+                          : 'No linked shifts'
+                        : 'Scheduling not enabled'}
+                    </strong>
+                  </div>
                 </div>
               </div>
             </details>
