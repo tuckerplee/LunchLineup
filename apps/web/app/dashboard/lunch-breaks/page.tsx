@@ -1,7 +1,7 @@
 'use client';
 
 import dynamic from 'next/dynamic';
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
 import { Button } from '@/components/ui/button';
 import type { StaffScheduleEvent } from '@/components/scheduling/StaffScheduler';
@@ -357,6 +357,7 @@ export default function LunchBreaksPage() {
   const [plannerMode, setPlannerMode] = useState<'auto' | 'manual' | null>(null);
   const [autoGuideStep, setAutoGuideStep] = useState<1 | 2 | 3 | 4>(1);
   const [error, setError] = useState<string | null>(null);
+  const initialSelectedDateRef = useRef(selectedDate);
 
   const loadFeatures = useCallback(async (): Promise<FeatureMatrixResponse> => {
     const res = await fetchWithSession('/billing/features');
@@ -413,7 +414,7 @@ export default function LunchBreaksPage() {
       setPolicyLoaded(policyData);
 
       if (featureData.features.lunch_breaks.enabled) {
-        await loadDayRows(selectedDate, policyData);
+        await loadDayRows(initialSelectedDateRef.current, policyData);
       } else {
         setDayRows([]);
         setBaselines({});
@@ -423,7 +424,7 @@ export default function LunchBreaksPage() {
     } finally {
       setIsLoading(false);
     }
-  }, [loadFeatures, loadPolicy, loadDayRows, selectedDate]);
+  }, [loadFeatures, loadPolicy, loadDayRows]);
 
   useEffect(() => {
     void bootstrap();
