@@ -33,5 +33,8 @@ COPY --from=builder /app/apps/api/package.json /app/package.json
 # Copy workspace packages needed at runtime
 COPY --from=builder /app/packages /app/packages
 
+# Ensure runtime Prisma client artifacts are generated in the final image.
+RUN npx prisma generate --schema=/app/packages/db/prisma/schema.prisma
+
 EXPOSE 3001
 CMD ["node", "dist/main"]
