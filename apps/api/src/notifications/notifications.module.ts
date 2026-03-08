@@ -1,10 +1,11 @@
 import { Module } from '@nestjs/common';
 import { NotificationsService } from './notifications.service';
 import { PrismaClient } from '@lunchlineup/db';
+import { NOTIFICATIONS_PRISMA } from './notifications.constants';
 
 const prismaProvider = {
-    provide: PrismaClient,
-    useValue: new PrismaClient()
+    provide: NOTIFICATIONS_PRISMA,
+    useFactory: () => new PrismaClient()
 };
 
 @Module({

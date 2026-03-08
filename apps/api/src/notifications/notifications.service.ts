@@ -1,7 +1,8 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Inject, Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { PrismaClient } from '@lunchlineup/db';
 import Redis from 'ioredis';
+import { NOTIFICATIONS_PRISMA } from './notifications.constants';
 
 export enum NotificationType {
     INFO = 'INFO',
@@ -20,7 +21,7 @@ export class NotificationsService {
 
     constructor(
         private readonly configService: ConfigService,
-        private readonly prisma: PrismaClient
+        @Inject(NOTIFICATIONS_PRISMA) private readonly prisma: PrismaClient
     ) {
         const redisUrl = this.configService.get<string>('REDIS_URL') || 'redis://localhost:6379';
         this.redis = new Redis(redisUrl);
