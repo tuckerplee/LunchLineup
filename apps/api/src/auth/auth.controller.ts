@@ -7,6 +7,8 @@ import { Response, Request } from 'express';
 import { Res } from '@nestjs/common';
 
 const Public = () => SetMetadata('isPublic', true);
+const ACCESS_TOKEN_COOKIE_MAX_AGE_MS = 30 * 60 * 1000;
+const REFRESH_TOKEN_COOKIE_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
 
 @Controller({ path: 'auth', version: '1' })
 export class AuthController {
@@ -67,8 +69,8 @@ export class AuthController {
             path: '/',
         };
 
-        res.cookie('access_token', result.accessToken, { ...cookieOptions, maxAge: 15 * 60 * 1000 });
-        res.cookie('refresh_token', result.refreshToken, { ...cookieOptions, maxAge: 7 * 24 * 60 * 60 * 1000 });
+        res.cookie('access_token', result.accessToken, { ...cookieOptions, maxAge: ACCESS_TOKEN_COOKIE_MAX_AGE_MS });
+        res.cookie('refresh_token', result.refreshToken, { ...cookieOptions, maxAge: REFRESH_TOKEN_COOKIE_MAX_AGE_MS });
         res.cookie('csrf_token', result.csrfToken, {
             httpOnly: false, secure: process.env.NODE_ENV === 'production',
             sameSite: 'strict', path: '/',
@@ -123,8 +125,8 @@ export class AuthController {
                 path: '/',
             };
 
-            res.cookie('access_token', result.accessToken, { ...cookieOptions, maxAge: 15 * 60 * 1000 });
-            res.cookie('refresh_token', result.refreshToken, { ...cookieOptions, maxAge: 7 * 24 * 60 * 60 * 1000 });
+            res.cookie('access_token', result.accessToken, { ...cookieOptions, maxAge: ACCESS_TOKEN_COOKIE_MAX_AGE_MS });
+            res.cookie('refresh_token', result.refreshToken, { ...cookieOptions, maxAge: REFRESH_TOKEN_COOKIE_MAX_AGE_MS });
             res.cookie('csrf_token', result.csrfToken, {
                 httpOnly: false,
                 secure: process.env.NODE_ENV === 'production',
@@ -165,7 +167,7 @@ export class AuthController {
 
         res.cookie('access_token', result.accessToken, {
             httpOnly: true, secure: process.env.NODE_ENV === 'production',
-            sameSite: 'strict' as const, path: '/', maxAge: 15 * 60 * 1000,
+            sameSite: 'strict' as const, path: '/', maxAge: ACCESS_TOKEN_COOKIE_MAX_AGE_MS,
         });
 
         res.json({ success: true });

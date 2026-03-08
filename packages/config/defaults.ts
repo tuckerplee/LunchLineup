@@ -27,7 +27,7 @@ export function computeDefaults(env: SystemEnvironment): Partial<PlatformConfig>
             loginLockoutDurationMin: 15,
             sessionTimeoutMin: 30,
             csrfTokenLifetimeMin: 60,
-            jwtAccessTokenLifetimeMin: 15,
+            jwtAccessTokenLifetimeMin: 30,
             jwtRefreshTokenLifetimeDays: 7,
             keyRotationOverlapHours: 24,
             hstsMaxAge: 63072000,

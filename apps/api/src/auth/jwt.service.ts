@@ -13,6 +13,9 @@ export interface TokenPayload {
 
 @Injectable()
 export class JwtService {
+    private static readonly ACCESS_TOKEN_TTL_MINUTES = 30;
+    private static readonly REFRESH_TOKEN_TTL_DAYS = 7;
+
     private readonly accessSecret: string;
     private readonly refreshSecret: string;
     private readonly accessTtl: number;  // minutes
@@ -21,8 +24,8 @@ export class JwtService {
     constructor(private configService: ConfigService) {
         this.accessSecret = this.configService.getOrThrow<string>('JWT_SECRET');
         this.refreshSecret = this.configService.getOrThrow<string>('JWT_REFRESH_SECRET');
-        this.accessTtl = 15;  // 15 min — Architecture Part VII
-        this.refreshTtl = 7;  // 7 days
+        this.accessTtl = JwtService.ACCESS_TOKEN_TTL_MINUTES;
+        this.refreshTtl = JwtService.REFRESH_TOKEN_TTL_DAYS;
     }
 
     generateAccessToken(payload: TokenPayload): string {

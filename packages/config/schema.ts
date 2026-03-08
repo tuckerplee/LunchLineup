@@ -24,7 +24,7 @@ export const SecurityConfigSchema = z.object({
     loginLockoutDurationMin: z.number().int().default(15),
     sessionTimeoutMin: z.number().int().default(30),
     csrfTokenLifetimeMin: z.number().int().default(60),
-    jwtAccessTokenLifetimeMin: z.number().int().default(15),
+    jwtAccessTokenLifetimeMin: z.number().int().default(30),
     jwtRefreshTokenLifetimeDays: z.number().int().default(7),
     keyRotationOverlapHours: z.number().int().default(24),
     cspExtraScriptSrc: z.array(z.string()).default([]),

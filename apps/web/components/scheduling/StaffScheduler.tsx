@@ -142,16 +142,19 @@ export function StaffScheduler({ resources, events, viewMode, initialDate, compa
         });
     }, [dayStarts, events, maxHour, minHour]);
 
-    const positionedEvents = useMemo(() => {
+    const { positionedShifts, breakMarkersByShift } = useMemo(() => {
         const endOfRange = new Date(timelineStart);
         endOfRange.setHours(endOfRange.getHours() + totalHours);
 
-        return events
+        const visible = events
             .filter((event) => {
                 const start = new Date(event.start);
                 const end = new Date(event.end);
                 return end > timelineStart && start < endOfRange;
-            })
+            });
+
+        const shifts = visible
+            .filter((event) => !event.extendedProps.kind)
             .map((event) => {
                 const eventStart = new Date(event.start);
                 const eventEnd = new Date(event.end);
@@ -169,9 +172,39 @@ export function StaffScheduler({ resources, events, viewMode, initialDate, compa
                     ...event,
                     left,
                     width,
-                    isBreak: event.extendedProps.kind === 'break' || event.extendedProps.kind === 'lunch',
+                    shiftStart: eventStart,
+                    shiftEnd: eventEnd,
                 };
             });
+
+        const breaks = visible.filter((event) => event.extendedProps.kind === 'break' || event.extendedProps.kind === 'lunch');
+        const markers = new Map<string, Array<{ leftPct: number; widthPct: number; kind: 'lunch' | 'break'; conflict?: string }>>();
+
+        for (const breakEvent of breaks) {
+            const breakStart = new Date(breakEvent.start);
+            const breakEnd = new Date(breakEvent.end);
+            const owner = shifts.find(
+                (shift) =>
+                    shift.resourceId === breakEvent.resourceId &&
+                    breakStart >= shift.shiftStart &&
+                    breakEnd <= shift.shiftEnd
+            );
+            if (!owner) continue;
+
+            const shiftDurationMs = Math.max(1, owner.shiftEnd.getTime() - owner.shiftStart.getTime());
+            const leftPct = ((breakStart.getTime() - owner.shiftStart.getTime()) / shiftDurationMs) * 100;
+            const widthPct = Math.max(6, ((breakEnd.getTime() - breakStart.getTime()) / shiftDurationMs) * 100);
+            const existing = markers.get(owner.id) ?? [];
+            existing.push({
+                leftPct: clamp(leftPct, 0, 94),
+                widthPct: clamp(widthPct, 6, 100),
+                kind: breakEvent.extendedProps.kind as 'lunch' | 'break',
+                conflict: breakEvent.extendedProps.conflict,
+            });
+            markers.set(owner.id, existing);
+        }
+
+        return { positionedShifts: shifts, breakMarkersByShift: markers };
     }, [events, hourWidth, timelineStart, totalHours]);
 
     const dragHint = useMemo(() => {
@@ -274,7 +307,7 @@ export function StaffScheduler({ resources, events, viewMode, initialDate, compa
 
                         <div className="timeline-body">
                             {resources.map((resource) => {
-                                const resourceEvents = positionedEvents.filter((e) => e.resourceId === resource.id);
+                                const resourceEvents = positionedShifts.filter((e) => e.resourceId === resource.id);
                                 return (
                                     <div key={resource.id} className="timeline-row">
                                         <div
@@ -308,20 +341,27 @@ export function StaffScheduler({ resources, events, viewMode, initialDate, compa
                                                     style={{
                                                         left,
                                                         width: event.width,
-                                                        background: event.isBreak ? '#f7fbff' : colors.bg,
-                                                        borderLeftColor: event.isBreak ? '#8aa7e8' : colors.border,
-                                                        color: event.isBreak ? '#4f648b' : colors.text,
+                                                        background: colors.bg,
+                                                        borderLeftColor: colors.border,
+                                                        color: colors.text,
                                                         opacity: isDragged ? 0.8 : 1,
                                                     }}
                                                 >
-                                                    {event.isBreak ? (
-                                                        <span className="shift-mini">{event.extendedProps.kind === 'lunch' ? 'M' : 'B'}</span>
-                                                    ) : (
-                                                        <>
-                                                            <span className="shift-time">{`${start}-${end}`}</span>
-                                                            {viewMode !== 'week' ? <span className="shift-role">{event.extendedProps.role}</span> : null}
-                                                        </>
-                                                    )}
+                                                    <span className="shift-time">{`${start}-${end}`}</span>
+                                                    {viewMode !== 'week' ? <span className="shift-role">{event.extendedProps.role}</span> : null}
+                                                    {breakMarkersByShift.get(event.id)?.length ? (
+                                                        <div className="shift-markers" aria-hidden="true">
+                                                            {breakMarkersByShift.get(event.id)?.map((marker, i) => (
+                                                                <span
+                                                                    key={`${event.id}-marker-${i}`}
+                                                                    className={`shift-marker ${marker.kind === 'lunch' ? 'shift-marker-lunch' : 'shift-marker-break'} ${marker.conflict ? 'shift-marker-conflict' : ''}`}
+                                                                    style={{ left: `${marker.leftPct}%`, width: `${marker.widthPct}%` }}
+                                                                >
+                                                                    {marker.kind === 'lunch' ? 'M' : 'B'}
+                                                                </span>
+                                                            ))}
+                                                        </div>
+                                                    ) : null}
                                                 </button>
                                             );
                                         })}
@@ -561,9 +601,42 @@ export function StaffScheduler({ resources, events, viewMode, initialDate, compa
                     white-space: nowrap;
                 }
 
-                .shift-mini {
-                    font-size: 0.58rem;
+                .shift-markers {
+                    position: absolute;
+                    left: 4px;
+                    right: 4px;
+                    bottom: 2px;
+                    height: 8px;
+                    pointer-events: none;
+                }
+
+                .shift-marker {
+                    position: absolute;
+                    height: 8px;
+                    border-radius: 999px;
+                    font-size: 0.46rem;
                     font-weight: 800;
+                    line-height: 8px;
+                    text-align: center;
+                    color: #244362;
+                    background: #b9d5ff;
+                    border: 1px solid #86a9da;
+                }
+
+                .shift-marker-break {
+                    background: #cfeef9;
+                    border-color: #96d0e3;
+                }
+
+                .shift-marker-lunch {
+                    background: #e5f5d9;
+                    border-color: #b3d295;
+                }
+
+                .shift-marker-conflict {
+                    background: #ffe7ea;
+                    border-color: #ef8a98;
+                    color: #8f2e3b;
                 }
             `}</style>
         </div>
