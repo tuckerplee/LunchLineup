@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import Link from 'next/link';
+import { LunchLineupMark } from '@/components/branding/LunchLineupMark';
 import {
   ArrowRight,
   Shield,
@@ -91,23 +92,6 @@ function FaqItem({ question, answer }: { question: string; answer: string }) {
         <p>{answer}</p>
       </div>
     </div>
-  );
-}
-
-function LunchLineupMark({ size = 34 }: { size?: number }) {
-  return (
-    <svg width={size} height={size} viewBox="0 0 64 64" aria-hidden="true">
-      <defs>
-        <linearGradient id="lpLogoGradient" x1="0" y1="0" x2="1" y2="1">
-          <stop offset="0%" stopColor="#4f79ff" />
-          <stop offset="100%" stopColor="#22b8cf" />
-        </linearGradient>
-      </defs>
-      <rect width="64" height="64" rx="14" fill="url(#lpLogoGradient)" />
-      <path d="M18 22h28a4 4 0 0 1 4 4v18a4 4 0 0 1-4 4H18a4 4 0 0 1-4-4V26a4 4 0 0 1 4-4Z" fill="#fff" opacity=".95" />
-      <path d="M24 18a2 2 0 1 1 4 0v6h-4v-6Zm12 0a2 2 0 1 1 4 0v6h-4v-6Z" fill="#fff" />
-      <rect x="20" y="32" width="24" height="4" rx="2" fill="#4f79ff" />
-    </svg>
   );
 }
 

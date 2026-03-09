@@ -3,6 +3,7 @@
 import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { CalendarDays, Clock3, MapPin, Users } from 'lucide-react';
+import { LunchLineupMark } from '@/components/branding/LunchLineupMark';
 
 const STAT_CARDS = [
   {
@@ -88,7 +89,7 @@ const QUICK_ACTIONS = [
   {
     label: 'Generate Lunch Plan',
     desc: 'Auto-stagger breaks with policy controls',
-    icon: '🍱',
+    icon: <LunchLineupMark size={20} />,
     href: '/dashboard/lunch-breaks',
     tier: 'primary' as const,
   },

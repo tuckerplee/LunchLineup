@@ -3,6 +3,7 @@
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { useMemo, useState } from 'react';
+import { LunchLineupMark } from '@/components/branding/LunchLineupMark';
 import {
   Bell,
   CalendarDays,
@@ -49,15 +50,12 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
                 style={{
                   width: 34,
                   height: 34,
-                  borderRadius: 10,
-                  background: 'linear-gradient(135deg, #4f79ff, #2f63ff 60%, #22b8cf 120%)',
                   display: 'grid',
                   placeItems: 'center',
-                  color: 'white',
                 }}
                 aria-hidden="true"
               >
-                <UtensilsCrossed size={16} />
+                <LunchLineupMark size={34} />
               </div>
               <div>
                 <div style={{ fontWeight: 800, letterSpacing: '-0.02em', color: 'var(--text-primary)' }}>LunchLineup</div>

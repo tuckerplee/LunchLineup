@@ -3,6 +3,7 @@
 import Link from 'next/link';
 import { Suspense, useEffect, useRef, useState } from 'react';
 import { useSearchParams } from 'next/navigation';
+import { LunchLineupMark } from '@/components/branding/LunchLineupMark';
 
 const API = process.env.NEXT_PUBLIC_API_URL ?? '/api/v1';
 const OIDC_ENABLED = (process.env.NEXT_PUBLIC_OIDC_ENABLED ?? '').toLowerCase() === 'true';
@@ -152,7 +153,7 @@ function LoginContent() {
 
             <header className="login-header">
                 <Link href="/" className="login-brand">
-                    <div className="login-brand__icon">🍱</div>
+                    <div className="login-brand__icon"><LunchLineupMark size={34} /></div>
                     <div>
                         <div className="login-brand__wordmark">LunchLineup</div>
                     </div>
@@ -318,9 +319,6 @@ function LoginContent() {
                 .login-brand__icon {
                     width: 34px;
                     height: 34px;
-                    border-radius: 10px;
-                    background: linear-gradient(135deg, #4171ff, #2f63ff 60%, #22b8cf);
-                    color: #ffffff;
                     display: grid;
                     place-items: center;
                 }

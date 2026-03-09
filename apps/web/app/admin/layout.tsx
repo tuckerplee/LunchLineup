@@ -1,6 +1,7 @@
 import Link from 'next/link';
 import { getServerUser } from '@/lib/server-auth';
 import { redirect } from 'next/navigation';
+import { LunchLineupMark } from '@/components/branding/LunchLineupMark';
 
 const ADMIN_NAV = [
     { href: '/admin', label: 'Overview', icon: '◈' },
@@ -31,14 +32,11 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
                                 style={{
                                     width: 34,
                                     height: 34,
-                                    borderRadius: 10,
                                     display: 'grid',
                                     placeItems: 'center',
-                                    color: '#ffffff',
-                                    background: 'linear-gradient(135deg, #f26f87, #e74867 65%, #cf2f54 120%)',
                                 }}
                             >
-                                🍱
+                                <LunchLineupMark size={34} />
                             </div>
                             <div>
                                 <div style={{ fontWeight: 800, letterSpacing: '-0.02em', color: 'var(--text-primary)' }}>LunchLineup</div>
