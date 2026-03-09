@@ -3,6 +3,7 @@ import { NextRequest, NextResponse } from 'next/server';
 const PUBLIC_PATHS = ['/auth', '/onboarding', '/_next', '/favicon.ico', '/vendor', '/sw.js'];
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? '/api/v1';
 const INTERNAL_API_URL = process.env.INTERNAL_API_URL;
+const ACCESS_TOKEN_COOKIE_MAX_AGE_SEC = 30 * 60;
 
 function readCookie(request: NextRequest, name: string): string | undefined {
     const parsed = request.cookies.get(name)?.value;
@@ -78,13 +79,31 @@ export async function middleware(request: NextRequest) {
                 });
 
                 if (refreshResponse.ok) {
-                    // Set the new access_token cookie and retry
-                    const setCookieHeader = refreshResponse.headers.get('set-cookie');
-                    const nextResponse = NextResponse.redirect(request.url);
-                    if (setCookieHeader) {
-                        nextResponse.headers.set('set-cookie', setCookieHeader);
+                    const payload = await refreshResponse.json().catch(() => ({}));
+                    const refreshedAccessToken = typeof (payload as any)?.accessToken === 'string'
+                        ? (payload as any).accessToken
+                        : undefined;
+
+                    // Set a fresh access_token cookie and retry exactly once.
+                    if (refreshedAccessToken) {
+                        const nextResponse = NextResponse.redirect(request.url);
+                        nextResponse.cookies.set('access_token', refreshedAccessToken, {
+                            httpOnly: true,
+                            secure: process.env.NODE_ENV === 'production',
+                            sameSite: 'strict',
+                            path: '/',
+                            maxAge: ACCESS_TOKEN_COOKIE_MAX_AGE_SEC,
+                        });
+                        return nextResponse;
                     }
-                    return nextResponse;
+
+                    // Backward-compatible fallback if token is not in JSON payload.
+                    const setCookieHeader = refreshResponse.headers.get('set-cookie');
+                    if (setCookieHeader) {
+                        const nextResponse = NextResponse.redirect(request.url);
+                        nextResponse.headers.set('set-cookie', setCookieHeader);
+                        return nextResponse;
+                    }
                 }
             }
 

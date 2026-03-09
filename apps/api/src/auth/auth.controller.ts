@@ -170,7 +170,7 @@ export class AuthController {
             sameSite: 'strict' as const, path: '/', maxAge: ACCESS_TOKEN_COOKIE_MAX_AGE_MS,
         });
 
-        res.json({ success: true });
+        res.json({ success: true, accessToken: result.accessToken });
     }
 
     /**
