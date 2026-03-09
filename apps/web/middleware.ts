@@ -33,6 +33,19 @@ function apiEndpoint(request: NextRequest, path: string): string {
 
 export async function middleware(request: NextRequest) {
     const { pathname } = request.nextUrl;
+    let refreshedAccessToken: string | null = null;
+    const applyRefreshedCookie = (response: NextResponse): NextResponse => {
+        if (refreshedAccessToken) {
+            response.cookies.set('access_token', refreshedAccessToken, {
+                httpOnly: true,
+                secure: process.env.NODE_ENV === 'production',
+                sameSite: 'strict',
+                path: '/',
+                maxAge: ACCESS_TOKEN_COOKIE_MAX_AGE_SEC,
+            });
+        }
+        return response;
+    };
 
     // Always allow public paths through
     if (PUBLIC_PATHS.some(p => pathname.startsWith(p))) {
@@ -57,17 +70,22 @@ export async function middleware(request: NextRequest) {
     // Validate token server-side via the API
     let user: { sub: string; role: string; tenantId: string; sessionId: string } | null = null;
     try {
-        const meResponse = await fetch(apiEndpoint(request, '/auth/me'), {
-            headers: {
-                Cookie: `access_token=${accessToken}`,
-                'Content-Type': 'application/json',
-            },
-            cache: 'no-store',
-        });
+        const fetchUserByAccessToken = async (token: string) => {
+            const response = await fetch(apiEndpoint(request, '/auth/me'), {
+                headers: {
+                    Cookie: `access_token=${token}`,
+                    'Content-Type': 'application/json',
+                },
+                cache: 'no-store',
+            });
+            if (!response.ok) return { status: response.status, user: null as typeof user };
+            const data = await response.json();
+            return { status: response.status, user: data.user as typeof user };
+        };
 
-        if (meResponse.ok) {
-            const data = await meResponse.json();
-            user = data.user;
+        const meResponse = await fetchUserByAccessToken(accessToken);
+        if (meResponse.user) {
+            user = meResponse.user;
         } else if (meResponse.status === 401) {
             // Try to refresh using refresh_token cookie
             const refreshToken = readCookie(request, 'refresh_token');
@@ -80,41 +98,40 @@ export async function middleware(request: NextRequest) {
 
                 if (refreshResponse.ok) {
                     const payload = await refreshResponse.json().catch(() => ({}));
-                    const refreshedAccessToken = typeof (payload as any)?.accessToken === 'string'
+                    const newToken = typeof (payload as any)?.accessToken === 'string'
                         ? (payload as any).accessToken
-                        : undefined;
+                        : '';
 
-                    // Set a fresh access_token cookie and retry exactly once.
-                    if (refreshedAccessToken) {
-                        const nextResponse = NextResponse.redirect(request.url);
-                        nextResponse.cookies.set('access_token', refreshedAccessToken, {
-                            httpOnly: true,
-                            secure: process.env.NODE_ENV === 'production',
-                            sameSite: 'strict',
-                            path: '/',
-                            maxAge: ACCESS_TOKEN_COOKIE_MAX_AGE_SEC,
-                        });
-                        return nextResponse;
+                    if (newToken) {
+                        refreshedAccessToken = newToken;
+                        const retriedMe = await fetchUserByAccessToken(newToken);
+                        if (retriedMe.user) {
+                            user = retriedMe.user;
+                        }
                     }
 
                     // Backward-compatible fallback if token is not in JSON payload.
-                    const setCookieHeader = refreshResponse.headers.get('set-cookie');
-                    if (setCookieHeader) {
-                        const nextResponse = NextResponse.redirect(request.url);
-                        nextResponse.headers.set('set-cookie', setCookieHeader);
-                        return nextResponse;
+                    if (!user) {
+                        const setCookieHeader = refreshResponse.headers.get('set-cookie');
+                        if (setCookieHeader) {
+                            const nextResponse = NextResponse.redirect(request.url);
+                            nextResponse.headers.set('set-cookie', setCookieHeader);
+                            return nextResponse;
+                        }
                     }
                 }
             }
 
-            // Can't refresh -> boot to login
-            const loginUrl = request.nextUrl.clone();
-            loginUrl.pathname = '/auth/login';
-            loginUrl.searchParams.set('next', pathname);
-            const response = NextResponse.redirect(loginUrl);
-            response.cookies.delete('access_token');
-            response.cookies.delete('refresh_token');
-            return response;
+            if (!user) {
+                // Can't refresh -> boot to login
+                const loginUrl = request.nextUrl.clone();
+                loginUrl.pathname = '/auth/login';
+                loginUrl.searchParams.set('next', pathname);
+                const response = NextResponse.redirect(loginUrl);
+                response.cookies.delete('access_token');
+                response.cookies.delete('refresh_token');
+                return response;
+            }
         }
     } catch {
         // API unreachable -> allow through in dev, redirect to login in prod
@@ -129,7 +146,7 @@ export async function middleware(request: NextRequest) {
     if (!user) {
         const loginUrl = request.nextUrl.clone();
         loginUrl.pathname = '/auth/login';
-        return NextResponse.redirect(loginUrl);
+        return applyRefreshedCookie(NextResponse.redirect(loginUrl));
     }
 
     const isSuperAdmin = user.role === 'SUPER_ADMIN';
@@ -137,32 +154,32 @@ export async function middleware(request: NextRequest) {
     if (isSuperAdmin && pathname.startsWith('/dashboard')) {
         const adminUrl = request.nextUrl.clone();
         adminUrl.pathname = '/admin';
-        return NextResponse.redirect(adminUrl);
+        return applyRefreshedCookie(NextResponse.redirect(adminUrl));
     }
 
     if (!isSuperAdmin && pathname.startsWith('/admin')) {
         const dashboardUrl = request.nextUrl.clone();
         dashboardUrl.pathname = '/dashboard';
-        return NextResponse.redirect(dashboardUrl);
+        return applyRefreshedCookie(NextResponse.redirect(dashboardUrl));
     }
 
     if (pathname.startsWith('/dashboard/settings') && !['SUPER_ADMIN', 'ADMIN'].includes(user.role)) {
         const dashboardUrl = request.nextUrl.clone();
         dashboardUrl.pathname = '/dashboard';
-        return NextResponse.redirect(dashboardUrl);
+        return applyRefreshedCookie(NextResponse.redirect(dashboardUrl));
     }
 
     if ((pathname.startsWith('/dashboard/staff') || pathname.startsWith('/dashboard/locations')) && user.role === 'STAFF') {
         const dashboardUrl = request.nextUrl.clone();
         dashboardUrl.pathname = '/dashboard';
-        return NextResponse.redirect(dashboardUrl);
+        return applyRefreshedCookie(NextResponse.redirect(dashboardUrl));
     }
 
     const response = NextResponse.next();
     response.headers.set('x-user-id', user.sub);
     response.headers.set('x-user-role', user.role);
     response.headers.set('x-tenant-id', user.tenantId ?? '');
-    return response;
+    return applyRefreshedCookie(response);
 }
 
 export const config = {
