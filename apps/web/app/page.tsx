@@ -125,6 +125,16 @@ export default function HomePage() {
             <div className="hero-preview-wrap">
               <div className="hero-halo" aria-hidden="true" />
               <div className="hero-preview-card" role="img" aria-label="LunchLineup scheduler preview">
+                <div className="preview-chrome" aria-hidden="true">
+                  <div className="chrome-dots">
+                    <span />
+                    <span />
+                    <span />
+                  </div>
+                  <span className="chrome-tab">Coverage Planner</span>
+                  <span className="chrome-date">Fri 11:00-22:00</span>
+                </div>
+
                 <div className="preview-toolbar">
                   <div>
                     <strong>Friday Lunch Coverage</strong>
@@ -140,6 +150,12 @@ export default function HomePage() {
                 </div>
 
                 <div className="preview-timeline-body">
+                  <div className="timeline-scale" aria-hidden="true">
+                    <span>11:00</span>
+                    <span>14:00</span>
+                    <span>17:00</span>
+                    <span>20:00</span>
+                  </div>
                   <div className="preview-row">
                     <span>Alex R.</span>
                     <div className="preview-track">
@@ -360,14 +376,28 @@ export default function HomePage() {
         }
 
         .hero {
+          position: relative;
+          overflow: hidden;
           background:
-            radial-gradient(circle at 12% 18%, rgba(79, 70, 229, 0.14), transparent 32%),
-            radial-gradient(circle at 80% 20%, rgba(15, 118, 110, 0.1), transparent 30%),
+            radial-gradient(1200px 520px at 8% 8%, rgba(79, 70, 229, 0.12), transparent 70%),
+            radial-gradient(1050px 500px at 92% 8%, rgba(15, 118, 110, 0.09), transparent 72%),
             linear-gradient(180deg, #f8faff 0%, #f6f7fb 46%, #ffffff 100%);
           padding: 96px 0 72px;
         }
 
+        .hero::before {
+          content: '';
+          position: absolute;
+          inset: 0;
+          background:
+            linear-gradient(90deg, rgba(79, 70, 229, 0.04) 0%, rgba(79, 70, 229, 0) 34%),
+            linear-gradient(270deg, rgba(15, 118, 110, 0.04) 0%, rgba(15, 118, 110, 0) 36%);
+          pointer-events: none;
+        }
+
         .hero-inner {
+          position: relative;
+          z-index: 1;
           display: grid;
           grid-template-columns: minmax(0, 540px) minmax(420px, 520px);
           gap: 48px;
@@ -450,9 +480,50 @@ export default function HomePage() {
         .preview-toolbar,
         .preview-footer,
         .preview-metrics,
-        .preview-timeline-body {
+        .preview-timeline-body,
+        .preview-chrome {
           position: relative;
           z-index: 1;
+        }
+
+        .preview-chrome {
+          min-height: 28px;
+          display: grid;
+          grid-template-columns: auto 1fr auto;
+          align-items: center;
+          gap: 8px;
+          padding-bottom: 2px;
+        }
+
+        .chrome-dots {
+          display: inline-flex;
+          gap: 5px;
+        }
+
+        .chrome-dots span {
+          width: 7px;
+          height: 7px;
+          border-radius: 999px;
+          background: #cbd5e1;
+        }
+
+        .chrome-tab {
+          justify-self: center;
+          font-size: 11px;
+          font-weight: 700;
+          letter-spacing: 0.06em;
+          text-transform: uppercase;
+          color: #64748b;
+        }
+
+        .chrome-date {
+          justify-self: end;
+          font-size: 11px;
+          font-weight: 650;
+          color: #475569;
+          background: #eef2ff;
+          border-radius: 999px;
+          padding: 2px 8px;
         }
 
         .preview-toolbar {
@@ -518,6 +589,16 @@ export default function HomePage() {
           padding: 14px 0;
         }
 
+        .timeline-scale {
+          display: grid;
+          grid-template-columns: repeat(4, minmax(0, 1fr));
+          padding-left: 100px;
+          margin-bottom: 4px;
+          font-size: 11px;
+          font-weight: 650;
+          color: #94a3b8;
+        }
+
         .preview-row {
           display: grid;
           grid-template-columns: 88px 1fr;
@@ -533,7 +614,15 @@ export default function HomePage() {
           height: 44px;
           border: 1px solid #e2e8f0;
           border-radius: 12px;
-          background: #f8faff;
+          background:
+            repeating-linear-gradient(
+              to right,
+              rgba(148, 163, 184, 0.14) 0,
+              rgba(148, 163, 184, 0.14) 1px,
+              transparent 1px,
+              transparent 25%
+            ),
+            #f8faff;
         }
 
         .preview-track i {
