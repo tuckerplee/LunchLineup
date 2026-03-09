@@ -1,4 +1,4 @@
-import { Injectable, CanActivate, ExecutionContext, UnauthorizedException, ForbiddenException } from '@nestjs/common';
+import { Injectable, CanActivate, ExecutionContext, UnauthorizedException, ForbiddenException, Logger } from '@nestjs/common';
 import { Reflector } from '@nestjs/core';
 import { JwtService } from './jwt.service';
 
@@ -11,6 +11,8 @@ const ACCESS_TOKEN_COOKIE_MAX_AGE_MS = 30 * 60 * 1000;
  */
 @Injectable()
 export class JwtAuthGuard implements CanActivate {
+    private readonly logger = new Logger(JwtAuthGuard.name);
+
     constructor(
         private jwtService: JwtService,
         private reflector: Reflector,
@@ -31,7 +33,8 @@ export class JwtAuthGuard implements CanActivate {
             }
 
             try {
-                request.user = this.jwtService.verifyAccessToken(accessToken);
+                const verified = this.jwtService.verifyAccessToken(accessToken);
+                request.user = verified;
 
                 // Validate CSRF for cookie-based requests (Double-Submit pattern)
                 if (['POST', 'PUT', 'PATCH', 'DELETE'].includes(request.method)) {
@@ -43,13 +46,27 @@ export class JwtAuthGuard implements CanActivate {
                 }
 
                 const response = context.switchToHttp().getResponse();
-                response.cookie('access_token', this.jwtService.generateAccessToken(request.user), {
-                    httpOnly: true,
-                    secure: process.env.NODE_ENV === 'production',
-                    sameSite: 'strict',
-                    path: '/',
-                    maxAge: ACCESS_TOKEN_COOKIE_MAX_AGE_MS,
-                });
+                // Rotate cookie with canonical claims only (exclude exp/iat/iss/aud from decoded payload).
+                try {
+                    response.cookie('access_token', this.jwtService.generateAccessToken({
+                        sub: verified.sub,
+                        tenantId: verified.tenantId,
+                        role: verified.role,
+                        sessionId: verified.sessionId,
+                        mfaVerified: verified.mfaVerified,
+                    }), {
+                        httpOnly: true,
+                        secure: process.env.NODE_ENV === 'production',
+                        sameSite: 'strict',
+                        path: '/',
+                        maxAge: ACCESS_TOKEN_COOKIE_MAX_AGE_MS,
+                    });
+                } catch (rotationError) {
+                    // Auth should not fail if sliding rotation fails.
+                    this.logger.warn(
+                        `Access token rotation skipped: ${rotationError instanceof Error ? rotationError.message : 'unknown_error'}`,
+                    );
+                }
 
                 return true;
             } catch (err) {
