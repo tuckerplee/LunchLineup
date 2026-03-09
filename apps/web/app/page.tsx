@@ -53,6 +53,21 @@ const testimonials = [
   },
 ];
 
+const useCases = [
+  {
+    title: 'Restaurants',
+    body: 'Handle lunch rush coverage automatically while rotating breaks around peak service windows.',
+  },
+  {
+    title: 'Retail',
+    body: 'Maintain floor coverage during breaks so no critical zones or registers are left uncovered.',
+  },
+  {
+    title: 'Healthcare & clinics',
+    body: 'Keep mandated break windows visible and compliant across high-acuity shift patterns.',
+  },
+];
+
 export default function HomePage() {
   return (
     <>
@@ -170,6 +185,27 @@ export default function HomePage() {
                 <p>“{item.quote}”</p>
                 <strong>{item.person}</strong>
                 <small>{item.role}</small>
+              </article>
+            ))}
+          </div>
+        </section>
+
+        <section className="container section">
+          <header>
+            <span className="section-kicker">Use cases</span>
+            <h2>Built for teams that run on shifts.</h2>
+          </header>
+          <div className="use-cases-grid">
+            <article className="surface-card use-cases-lead">
+              <h3>One planner for service-heavy teams.</h3>
+              <p>
+                LunchLineup adapts to each operating model while keeping meal compliance and floor coverage visible in real time.
+              </p>
+            </article>
+            {useCases.map((item) => (
+              <article key={item.title} className="surface-card use-case-card">
+                <h3>{item.title}</h3>
+                <p>{item.body}</p>
               </article>
             ))}
           </div>
@@ -441,15 +477,56 @@ export default function HomePage() {
         }
 
         .features-grid,
-        .testimonial-grid {
+        .testimonial-grid,
+        .use-cases-grid {
           display: grid;
           grid-template-columns: repeat(3, minmax(0, 1fr));
           gap: 16px;
+          align-items: stretch;
         }
 
         .feature-card,
-        .testimonial-card {
+        .testimonial-card,
+        .use-case-card,
+        .use-cases-lead {
           padding: 24px;
+          border-radius: var(--r-lg);
+          height: 100%;
+        }
+
+        .use-cases-grid {
+          grid-template-columns: repeat(4, minmax(0, 1fr));
+          grid-auto-rows: 1fr;
+        }
+
+        .use-cases-lead {
+          grid-column: span 1;
+          background: linear-gradient(180deg, #fff, #f8faff);
+        }
+
+        .use-case-card {
+          display: flex;
+          flex-direction: column;
+          justify-content: flex-start;
+        }
+
+        .use-cases-lead h3,
+        .use-case-card h3 {
+          margin: 0;
+          font-size: 28px;
+          line-height: 1.2;
+          letter-spacing: -0.02em;
+        }
+
+        .use-case-card h3 {
+          font-size: 26px;
+        }
+
+        .use-cases-lead p,
+        .use-case-card p {
+          margin: 12px 0 0;
+          color: var(--text-muted);
+          font-size: 15px;
         }
 
         .feature-icon {
@@ -536,6 +613,10 @@ export default function HomePage() {
           .testimonial-grid {
             grid-template-columns: repeat(2, minmax(0, 1fr));
           }
+
+          .use-cases-grid {
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+          }
         }
 
         @media (max-width: 720px) {
@@ -550,7 +631,8 @@ export default function HomePage() {
 
           .metrics,
           .features-grid,
-          .testimonial-grid {
+          .testimonial-grid,
+          .use-cases-grid {
             grid-template-columns: 1fr;
           }
 
