@@ -94,14 +94,59 @@ function FaqItem({ question, answer }: { question: string; answer: string }) {
   );
 }
 
+function LunchLineupMark({ size = 34 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 64 64" aria-hidden="true">
+      <defs>
+        <linearGradient id="lpLogoGradient" x1="0" y1="0" x2="1" y2="1">
+          <stop offset="0%" stopColor="#4f79ff" />
+          <stop offset="100%" stopColor="#22b8cf" />
+        </linearGradient>
+      </defs>
+      <rect width="64" height="64" rx="14" fill="url(#lpLogoGradient)" />
+      <path d="M18 22h28a4 4 0 0 1 4 4v18a4 4 0 0 1-4 4H18a4 4 0 0 1-4-4V26a4 4 0 0 1 4-4Z" fill="#fff" opacity=".95" />
+      <path d="M24 18a2 2 0 1 1 4 0v6h-4v-6Zm12 0a2 2 0 1 1 4 0v6h-4v-6Z" fill="#fff" />
+      <rect x="20" y="32" width="24" height="4" rx="2" fill="#4f79ff" />
+    </svg>
+  );
+}
+
 /* ────────────────────────────────────────────
    Data
    ──────────────────────────────────────────── */
 const STATS = [
-  { value: '98%', label: 'Schedule accuracy before manager edits', sub: 'Validated across break and lunch windows' },
-  { value: '4x', label: 'Faster scheduling compared to spreadsheets', sub: 'Less manual break placement each week' },
-  { value: '<30s', label: 'To generate a full week schedule', sub: 'From blank board to publish-ready timeline' },
-  { value: '200+', label: 'Teams running in beta', sub: 'Across multi-location operations' },
+  {
+    Icon: Shield,
+    value: '98%',
+    label: 'Schedule accuracy before manager edits',
+    sub: 'Validated across break and lunch windows',
+    accent: '#2f63ff',
+    surface: 'linear-gradient(140deg, #edf3ff, #f7f9ff)',
+  },
+  {
+    Icon: Zap,
+    value: '4x',
+    label: 'Faster scheduling than spreadsheets',
+    sub: 'Less manual break placement each week',
+    accent: '#22b8cf',
+    surface: 'linear-gradient(140deg, #ebfcff, #f4feff)',
+  },
+  {
+    Icon: Clock,
+    value: '<30s',
+    label: 'To generate a full week schedule',
+    sub: 'From blank board to publish-ready timeline',
+    accent: '#f59e0b',
+    surface: 'linear-gradient(140deg, #fff5e8, #fffaf2)',
+  },
+  {
+    Icon: Users,
+    value: '200+',
+    label: 'Teams running in beta',
+    sub: 'Across multi-location operations',
+    accent: '#17b26a',
+    surface: 'linear-gradient(140deg, #ebfdf4, #f6fffb)',
+  },
 ];
 
 const FEATURES = [
@@ -268,7 +313,7 @@ export default function HomePage() {
       <nav className={`lp-nav${scrolled ? ' lp-nav--scrolled' : ''}`}>
         <div className="lp-nav__inner">
           <Link href="/" className="lp-nav__logo">
-            <div className="lp-nav__icon">🍱</div>
+            <div className="lp-nav__icon"><LunchLineupMark size={34} /></div>
             <div>
               <div className="lp-nav__wordmark">LunchLineup</div>
               <div className="lp-nav__tagline">Break compliance scheduling</div>
@@ -602,12 +647,21 @@ export default function HomePage() {
               <span className="lp-gradient-text">speak for themselves.</span>
             </h2>
           </div>
-          <div className="lp-stats__card">
+          <div className="lp-stats__grid">
             {STATS.map((s) => (
-              <div key={s.label} className="lp-stat">
-                <div className="lp-stat__value">{s.value}</div>
-                <div className="lp-stat__label">{s.label}</div>
-                <div className="lp-stat__sub">{s.sub}</div>
+              <div key={s.label} className="lp-stat-card" style={{ background: s.surface }}>
+                <div className="lp-stat-card__head">
+                  <div className="lp-stat-card__icon" style={{ color: s.accent }}>
+                    <s.Icon size={18} />
+                  </div>
+                  <div className="lp-stat-card__bar">
+                    <span style={{ width: '26%', background: s.accent }} />
+                    <span style={{ width: '22%', background: s.accent, opacity: 0.4 }} />
+                  </div>
+                </div>
+                <div className="lp-stat-card__value">{s.value}</div>
+                <div className="lp-stat-card__label">{s.label}</div>
+                <div className="lp-stat-card__sub">{s.sub}</div>
               </div>
             ))}
           </div>
@@ -626,18 +680,30 @@ export default function HomePage() {
           </div>
         </Reveal>
 
-        <div className="lp-usecases">
-          {USE_CASES.map((uc, i) => (
-            <Reveal key={uc.title} delay={i * 100}>
-              <div className="lp-usecase">
-                <div className="lp-usecase__icon">
-                  <uc.Icon size={24} />
+        <div className="lp-usecases-layout">
+          <Reveal delay={60}>
+            <div className="lp-usecases-copy">
+              <h3>One planner for service-heavy teams.</h3>
+              <p>
+                LunchLineup adapts to each operating model while keeping meal compliance
+                and floor coverage visible in real time.
+              </p>
+            </div>
+          </Reveal>
+
+          <div className="lp-usecases">
+            {USE_CASES.map((uc, i) => (
+              <Reveal key={uc.title} delay={i * 100}>
+                <div className="lp-usecase">
+                  <div className="lp-usecase__icon">
+                    <uc.Icon size={24} />
+                  </div>
+                  <h3 className="lp-usecase__title">{uc.title}</h3>
+                  <p className="lp-usecase__body">{uc.body}</p>
                 </div>
-                <h3 className="lp-usecase__title">{uc.title}</h3>
-                <p className="lp-usecase__body">{uc.body}</p>
-              </div>
-            </Reveal>
-          ))}
+              </Reveal>
+            ))}
+          </div>
         </div>
       </section>
 
@@ -692,7 +758,7 @@ export default function HomePage() {
       <footer className="lp-footer">
         <div className="lp-footer__inner">
           <div className="lp-footer__brand">
-            <div className="lp-nav__icon" style={{ width: 28, height: 28, fontSize: '0.85rem' }}>🍱</div>
+            <div className="lp-nav__icon" style={{ width: 28, height: 28 }}><LunchLineupMark size={28} /></div>
             <span className="lp-footer__name">LunchLineup</span>
           </div>
           <div className="lp-footer__copy">
@@ -798,13 +864,14 @@ export default function HomePage() {
         .lp-nav__icon {
           width: 34px;
           height: 34px;
-          border-radius: 10px;
-          background: linear-gradient(135deg, #4171ff, #2f63ff 60%, #22b8cf);
-          color: #fff;
           display: grid;
           place-items: center;
-          font-size: 1rem;
           flex-shrink: 0;
+        }
+        .lp-nav__icon svg {
+          width: 100%;
+          height: 100%;
+          filter: drop-shadow(0 6px 16px rgba(47, 99, 255, 0.35));
         }
         .lp-nav__wordmark {
           font-weight: 800;
@@ -925,27 +992,55 @@ export default function HomePage() {
           margin: 0 auto;
           padding: 0 1.5rem 6.5rem;
         }
-        .lp-stats__card {
+        .lp-stats__grid {
           display: grid;
-          grid-template-columns: repeat(4, 1fr);
-          background: rgba(255, 255, 255, 0.7);
-          border: 1px solid rgba(31, 42, 68, 0.07);
+          grid-template-columns: repeat(4, minmax(0, 1fr));
+          gap: 1rem;
+        }
+        .lp-stat-card {
+          position: relative;
+          border: 1px solid rgba(31, 42, 68, 0.08);
           border-radius: 20px;
-          backdrop-filter: blur(14px);
-          -webkit-backdrop-filter: blur(14px);
-          box-shadow: 0 12px 44px rgba(31, 42, 68, 0.06);
+          box-shadow: 0 16px 38px rgba(31, 42, 68, 0.08);
+          padding: 1.25rem 1.2rem 1.35rem;
           overflow: hidden;
+          transition: transform 0.35s cubic-bezier(0.16, 1, 0.3, 1), box-shadow 0.35s cubic-bezier(0.16, 1, 0.3, 1);
+          animation: stat-float 7s ease-in-out infinite;
         }
-        .lp-stat {
-          padding: 1.8rem 1.5rem;
-          text-align: center;
-          border-right: 1px solid rgba(31, 42, 68, 0.05);
-          transition: background 0.3s;
+        .lp-stat-card:nth-child(2) { animation-delay: 0.5s; }
+        .lp-stat-card:nth-child(3) { animation-delay: 1s; }
+        .lp-stat-card:nth-child(4) { animation-delay: 1.5s; }
+        .lp-stat-card:hover {
+          transform: translateY(-6px);
+          box-shadow: 0 24px 52px rgba(31, 42, 68, 0.13);
         }
-        .lp-stat:last-child { border-right: none; }
-        .lp-stat:hover { background: rgba(47, 99, 255, 0.025); }
-        .lp-stat__value {
-          font-size: 2.3rem;
+        .lp-stat-card__head {
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          margin-bottom: 0.85rem;
+        }
+        .lp-stat-card__icon {
+          width: 38px;
+          height: 38px;
+          border-radius: 12px;
+          background: rgba(255, 255, 255, 0.8);
+          border: 1px solid rgba(31, 42, 68, 0.08);
+          display: grid;
+          place-items: center;
+        }
+        .lp-stat-card__bar {
+          display: flex;
+          align-items: center;
+          gap: 0.3rem;
+        }
+        .lp-stat-card__bar span {
+          display: inline-block;
+          height: 5px;
+          border-radius: 999px;
+        }
+        .lp-stat-card__value {
+          font-size: 2.1rem;
           font-weight: 840;
           letter-spacing: -0.04em;
           line-height: 1;
@@ -954,16 +1049,16 @@ export default function HomePage() {
           -webkit-text-fill-color: transparent;
           background-clip: text;
         }
-        .lp-stat__label {
+        .lp-stat-card__label {
           font-size: 0.84rem;
           font-weight: 720;
           color: var(--text-secondary);
-          margin-top: 0.25rem;
+          margin-top: 0.2rem;
         }
-        .lp-stat__sub {
+        .lp-stat-card__sub {
           font-size: 0.72rem;
           color: var(--text-muted);
-          margin-top: 0.1rem;
+          margin-top: 0.2rem;
         }
 
         /* ── Section shell ── */
@@ -1625,6 +1720,31 @@ export default function HomePage() {
         }
 
         /* ── Use cases ── */
+        .lp-usecases-layout {
+          display: grid;
+          grid-template-columns: 0.9fr 1.1fr;
+          gap: 1.2rem;
+          align-items: start;
+        }
+        .lp-usecases-copy {
+          background: rgba(255, 255, 255, 0.65);
+          border: 1px solid rgba(31, 42, 68, 0.08);
+          border-radius: 20px;
+          padding: 1.6rem 1.5rem;
+          box-shadow: 0 14px 32px rgba(31, 42, 68, 0.06);
+        }
+        .lp-usecases-copy h3 {
+          font-size: 1.2rem;
+          font-weight: 790;
+          letter-spacing: -0.02em;
+          color: var(--text-primary);
+          margin-bottom: 0.45rem;
+        }
+        .lp-usecases-copy p {
+          font-size: 0.9rem;
+          color: var(--text-secondary);
+          line-height: 1.6;
+        }
         .lp-usecases {
           display: grid;
           grid-template-columns: repeat(3, 1fr);
@@ -1645,6 +1765,8 @@ export default function HomePage() {
           box-shadow: 0 22px 52px rgba(31, 42, 68, 0.1);
           transform: translateY(-4px);
         }
+        .lp-usecases > div:nth-child(2) .lp-usecase { transform: translateY(14px); }
+        .lp-usecases > div:nth-child(2) .lp-usecase:hover { transform: translateY(8px); }
         .lp-usecase__icon {
           width: 50px;
           height: 50px;
@@ -1655,6 +1777,10 @@ export default function HomePage() {
           place-items: center;
           margin-bottom: 1.1rem;
           transition: transform 0.35s cubic-bezier(0.34, 1.56, 0.64, 1);
+        }
+        @keyframes stat-float {
+          0%, 100% { transform: translateY(0); }
+          50% { transform: translateY(-3px); }
         }
         .lp-usecase:hover .lp-usecase__icon {
           transform: scale(1.1) rotate(-2deg);
@@ -1855,14 +1981,14 @@ export default function HomePage() {
         /* ━━━ Responsive ━━━ */
         @media (max-width: 960px) {
           .lp-hero { padding-top: 4rem; }
-          .lp-stats__card { grid-template-columns: repeat(2, 1fr); }
-          .lp-stat:nth-child(2) { border-right: none; }
-          .lp-stat:nth-child(1),
-          .lp-stat:nth-child(2) { border-bottom: 1px solid rgba(31, 42, 68, 0.05); }
+          .lp-stats__grid { grid-template-columns: repeat(2, 1fr); }
           .lp-features { grid-template-columns: 1fr; }
           .lp-steps { grid-template-columns: 1fr; max-width: 480px; }
           .lp-testimonials { grid-template-columns: 1fr; }
+          .lp-usecases-layout { grid-template-columns: 1fr; }
           .lp-usecases { grid-template-columns: 1fr; }
+          .lp-usecases > div:nth-child(2) .lp-usecase,
+          .lp-usecases > div:nth-child(2) .lp-usecase:hover { transform: none; }
           .lp-ui {
             grid-template-columns: 1fr;
           }
@@ -1893,7 +2019,7 @@ export default function HomePage() {
           .lp-hero__title {
             font-size: clamp(2.2rem, 10vw, 3.4rem);
           }
-          .lp-stats__card { grid-template-columns: 1fr 1fr; }
+          .lp-stats__grid { grid-template-columns: 1fr 1fr; }
           .lp-hero__actions {
             flex-direction: column;
             width: 100%;
@@ -1915,9 +2041,7 @@ export default function HomePage() {
         }
 
         @media (max-width: 420px) {
-          .lp-stats__card { grid-template-columns: 1fr; }
-          .lp-stat { border-right: none !important; border-bottom: 1px solid rgba(31, 42, 68, 0.05); }
-          .lp-stat:last-child { border-bottom: none; }
+          .lp-stats__grid { grid-template-columns: 1fr; }
         }
       `}</style>
     </div>
