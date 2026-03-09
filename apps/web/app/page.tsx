@@ -136,6 +136,25 @@ export default function HomePage() {
     return () => window.clearInterval(interval);
   }, []);
 
+  useEffect(() => {
+    const nodes = Array.from(document.querySelectorAll<HTMLElement>('[data-reveal]'));
+    if (!nodes.length) return;
+
+    const observer = new IntersectionObserver(
+      (entries) => {
+        for (const entry of entries) {
+          if (!entry.isIntersecting) continue;
+          entry.target.classList.add('is-visible');
+          observer.unobserve(entry.target);
+        }
+      },
+      { threshold: 0.14, rootMargin: '0px 0px -6% 0px' },
+    );
+
+    nodes.forEach((node) => observer.observe(node));
+    return () => observer.disconnect();
+  }, []);
+
   return (
     <>
       <main className="marketing-page">
@@ -157,9 +176,9 @@ export default function HomePage() {
           </div>
         </header>
 
-        <section className="hero">
+        <section className="hero" data-reveal>
           <div className="container hero-inner">
-            <div className="hero-copy">
+            <div className="hero-copy" data-reveal style={{ ['--reveal-delay' as string]: '60ms' }}>
               <span className="hero-eyebrow"><Sparkles size={14} /> Built for multi-location teams</span>
               <h1>Lunch schedules with breaks built in — not patched in later.</h1>
               <p>
@@ -174,7 +193,7 @@ export default function HomePage() {
               </div>
             </div>
 
-            <div className="hero-preview-wrap">
+            <div className="hero-preview-wrap" data-reveal style={{ ['--reveal-delay' as string]: '130ms' }}>
               <div className="hero-halo" aria-hidden="true" />
               <div className="hero-preview-card" role="img" aria-label="LunchLineup scheduler preview">
                 <div className="preview-chrome" aria-hidden="true">
@@ -252,23 +271,33 @@ export default function HomePage() {
           </div>
         </section>
 
-        <section className="container metrics">
+        <section className="container metrics" data-reveal>
           {metrics.map((item) => (
-            <article key={item.label} className="metric-card">
+            <article
+              key={item.label}
+              className="metric-card"
+              data-reveal
+              style={{ ['--reveal-delay' as string]: `${120 + metrics.indexOf(item) * 35}ms` }}
+            >
               <h2 className="metric-value">{item.value}</h2>
               <p className="metric-label">{item.label}</p>
             </article>
           ))}
         </section>
 
-        <section className="container workflow-section">
-          <header className="section-heading">
+        <section className="container workflow-section" data-reveal>
+          <header className="section-heading" data-reveal style={{ ['--reveal-delay' as string]: '40ms' }}>
             <span className="section-kicker">Workflow</span>
             <h2>From shifts to publish-ready break plans</h2>
           </header>
           <div className="workflow-grid">
             {workflow.map((step, index) => (
-              <article key={step.title} className="workflow-card surface-card">
+              <article
+                key={step.title}
+                className="workflow-card surface-card"
+                data-reveal
+                style={{ ['--reveal-delay' as string]: `${90 + index * 40}ms` }}
+              >
                 <div className="workflow-top">
                   <span className="workflow-number">{index + 1}</span>
                   <div className="workflow-icon"><step.icon size={18} /></div>
@@ -280,14 +309,19 @@ export default function HomePage() {
           </div>
         </section>
 
-        <section className="container testimonials-section">
-          <header className="section-heading">
+        <section className="container testimonials-section" data-reveal>
+          <header className="section-heading" data-reveal style={{ ['--reveal-delay' as string]: '40ms' }}>
             <span className="section-kicker">What changes after rollout</span>
             <h2>Outcomes teams feel in week one, not quarter four.</h2>
           </header>
           <div className="testimonial-grid">
-            {testimonials.map((item) => (
-              <article key={item.person} className="testimonial-card">
+            {testimonials.map((item, index) => (
+              <article
+                key={item.person}
+                className="testimonial-card"
+                data-reveal
+                style={{ ['--reveal-delay' as string]: `${90 + index * 40}ms` }}
+              >
                 <div className="testimonial-highlight">{item.highlight}</div>
                 <p>“{item.quote}”</p>
                 <strong>{item.person}</strong>
@@ -297,14 +331,19 @@ export default function HomePage() {
           </div>
         </section>
 
-        <section className="container use-cases-section">
-          <header className="section-heading">
+        <section className="container use-cases-section" data-reveal>
+          <header className="section-heading" data-reveal style={{ ['--reveal-delay' as string]: '40ms' }}>
             <span className="section-kicker">Built for shift-heavy teams</span>
             <h2>One planner for service-heavy operations.</h2>
           </header>
           <div className="use-cases-grid">
-            {useCases.map((item) => (
-              <article key={item.title} className={`use-case-card ${item.tone}`}>
+            {useCases.map((item, index) => (
+              <article
+                key={item.title}
+                className={`use-case-card ${item.tone}`}
+                data-reveal
+                style={{ ['--reveal-delay' as string]: `${90 + index * 40}ms` }}
+              >
                 <div className="use-case-icon"><item.icon size={18} /></div>
                 <h3>{item.title}</h3>
                 <p>{item.body}</p>
@@ -313,8 +352,8 @@ export default function HomePage() {
           </div>
         </section>
 
-        <section className="container cta-section">
-          <div className="final-cta">
+        <section className="container cta-section" data-reveal>
+          <div className="final-cta" data-reveal style={{ ['--reveal-delay' as string]: '60ms' }}>
             <h2>Ready to replace manual break planning?</h2>
             <p>Set shifts, click generate, and publish a schedule your team can trust.</p>
             <div className="hero-actions final-cta-actions">
@@ -327,8 +366,8 @@ export default function HomePage() {
           </div>
         </section>
 
-        <footer className="site-footer">
-          <div className="container site-footer-top">
+        <footer className="site-footer" data-reveal>
+          <div className="container site-footer-top" data-reveal style={{ ['--reveal-delay' as string]: '50ms' }}>
             <div className="footer-brand">
               <div className="brand-mark" aria-hidden="true">
                 <LunchLineupMark size={30} />
@@ -351,7 +390,7 @@ export default function HomePage() {
               </div>
             </div>
           </div>
-          <div className="container site-footer-bottom">
+          <div className="container site-footer-bottom" data-reveal style={{ ['--reveal-delay' as string]: '90ms' }}>
             Copyright {new Date().getFullYear()} LunchLineup. All rights reserved.
           </div>
         </footer>
@@ -366,6 +405,20 @@ export default function HomePage() {
         .marketing-page {
           min-height: 100vh;
           color: #0f172a;
+        }
+
+        [data-reveal] {
+          opacity: 0;
+          transform: translateY(12px);
+          transition:
+            opacity 320ms var(--ease-decelerate),
+            transform 320ms var(--ease-decelerate);
+          transition-delay: var(--reveal-delay, 0ms);
+        }
+
+        [data-reveal].is-visible {
+          opacity: 1;
+          transform: translateY(0);
         }
 
         .site-header {
@@ -802,6 +855,20 @@ export default function HomePage() {
           border-radius: 18px;
           padding: 20px;
           box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
+          transition:
+            transform 160ms var(--ease-standard),
+            box-shadow 160ms var(--ease-standard),
+            border-color 160ms var(--ease-standard);
+        }
+
+        .metric-card:hover {
+          transform: translateY(-2px);
+          border-color: #c7d2fe;
+          box-shadow: var(--e-2);
+        }
+
+        .metric-card:hover .metric-value {
+          transform: translateY(-1px);
         }
 
         .metric-value {
@@ -810,6 +877,7 @@ export default function HomePage() {
           font-weight: 700;
           line-height: 1;
           color: #0f172a;
+          transition: transform 160ms var(--ease-standard);
         }
 
         .metric-label {
@@ -928,6 +996,20 @@ export default function HomePage() {
           border-radius: 20px;
           padding: 24px;
           box-shadow: 0 6px 20px rgba(15, 23, 42, 0.05);
+          transition:
+            transform 160ms var(--ease-standard),
+            box-shadow 160ms var(--ease-standard),
+            border-color 160ms var(--ease-standard);
+        }
+
+        .testimonial-card:hover {
+          transform: translateY(-2px);
+          border-color: #cbd5e1;
+          box-shadow: 0 12px 26px rgba(15, 23, 42, 0.1);
+        }
+
+        .testimonial-card:hover .testimonial-highlight {
+          background: #e0e7ff;
         }
 
         .testimonial-highlight {
@@ -1042,6 +1124,14 @@ export default function HomePage() {
           padding: 48px;
           box-shadow: 0 20px 50px rgba(15, 23, 42, 0.08);
           text-align: center;
+          transition:
+            transform 220ms var(--ease-standard),
+            box-shadow 220ms var(--ease-standard);
+        }
+
+        .final-cta:hover {
+          transform: translateY(-2px);
+          box-shadow: 0 24px 54px rgba(15, 23, 42, 0.12);
         }
 
         .final-cta h2 {
@@ -1134,6 +1224,12 @@ export default function HomePage() {
         .footer-links a {
           font-size: 13px;
           color: #334155;
+          transition: color 120ms var(--ease-saas), transform 120ms var(--ease-saas);
+        }
+
+        .footer-links a:hover {
+          color: #0f172a;
+          transform: translateY(-1px);
         }
 
         .site-footer-bottom {
@@ -1223,6 +1319,12 @@ export default function HomePage() {
         }
 
         @media (prefers-reduced-motion: reduce) {
+          [data-reveal] {
+            opacity: 1 !important;
+            transform: none !important;
+            transition: none !important;
+          }
+
           .hero-preview-card,
           .metric-chip,
           .cta-primary::after {
