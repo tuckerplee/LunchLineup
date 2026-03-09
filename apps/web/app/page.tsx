@@ -90,9 +90,9 @@ const previewLanes = [
     shiftLeft: '2%',
     shiftWidth: '74%',
     lunchLeft: '38%',
-    lunchWidth: '14%',
+    lunchWidth: '18%',
     breakLeft: '60%',
-    breakWidth: '9%',
+    breakWidth: '14%',
     lunchTime: '14:10',
     breakTime: '16:35',
     note: 'Alex lunch moved 10m later to maintain cashier coverage.',
@@ -103,9 +103,9 @@ const previewLanes = [
     shiftLeft: '10%',
     shiftWidth: '72%',
     lunchLeft: '44%',
-    lunchWidth: '15%',
+    lunchWidth: '18%',
     breakLeft: '68%',
-    breakWidth: '8%',
+    breakWidth: '14%',
     lunchTime: '14:30',
     breakTime: '16:55',
     note: 'Jordan break shifted earlier to smooth dinner handoff.',
@@ -116,9 +116,9 @@ const previewLanes = [
     shiftLeft: '18%',
     shiftWidth: '70%',
     lunchLeft: '58%',
-    lunchWidth: '15%',
+    lunchWidth: '18%',
     breakLeft: '78%',
-    breakWidth: '8%',
+    breakWidth: '14%',
     lunchTime: '17:05',
     breakTime: '19:10',
     note: 'Casey flagged as watch window, still inside legal threshold.',
@@ -219,15 +219,13 @@ export default function HomePage() {
                     >
                       <span>{lane.name}</span>
                       <div className="preview-track">
-                        <span className="event-time lunch-time" style={{ left: `calc(${lane.lunchLeft} + ${lane.lunchWidth} / 2)` }}>
+                        <span className="track-block shift" style={{ left: lane.shiftLeft, width: lane.shiftWidth }} />
+                        <span className={`track-block lunch ${lane.warn ? 'warn' : ''}`} style={{ left: lane.lunchLeft, width: lane.lunchWidth }}>
                           Lunch {lane.lunchTime}
                         </span>
-                        <span className="event-time break-time" style={{ left: `calc(${lane.breakLeft} + ${lane.breakWidth} / 2)` }}>
+                        <span className="track-block break" style={{ left: lane.breakLeft, width: lane.breakWidth }}>
                           Break {lane.breakTime}
                         </span>
-                        <span className="track-block shift" style={{ left: lane.shiftLeft, width: lane.shiftWidth }} />
-                        <span className={`track-block lunch ${lane.warn ? 'warn' : ''}`} style={{ left: lane.lunchLeft, width: lane.lunchWidth }} />
-                        <span className="track-block break" style={{ left: lane.breakLeft, width: lane.breakWidth }} />
                       </div>
                     </button>
                   ))}
@@ -703,34 +701,6 @@ export default function HomePage() {
           transition: border-color 140ms var(--ease-saas), box-shadow 140ms var(--ease-saas), transform 140ms var(--ease-saas);
         }
 
-        .event-time {
-          position: absolute;
-          top: -17px;
-          transform: translateX(-50%);
-          font-size: 10px;
-          font-weight: 700;
-          line-height: 1;
-          padding: 2px 5px;
-          border-radius: 999px;
-          border: 1px solid;
-          pointer-events: none;
-          white-space: nowrap;
-          z-index: 2;
-          opacity: 0.95;
-        }
-
-        .lunch-time {
-          background: #ecfdf5;
-          color: #166534;
-          border-color: #86efac;
-        }
-
-        .break-time {
-          background: #ecfeff;
-          color: #155e75;
-          border-color: #67e8f9;
-        }
-
         .preview-row.is-active .preview-track {
           border-color: #a5b4fc;
           box-shadow: 0 0 0 3px rgba(79, 70, 229, 0.12);
@@ -746,6 +716,13 @@ export default function HomePage() {
           align-items: center;
           justify-content: center;
           overflow: hidden;
+          font-size: 10px;
+          font-weight: 700;
+          line-height: 1;
+          letter-spacing: 0.01em;
+          white-space: nowrap;
+          text-overflow: ellipsis;
+          padding: 0 6px;
         }
 
         .preview-track .shift {
