@@ -364,6 +364,7 @@ export default function LunchBreaksPage() {
   const [plannerMode, setPlannerMode] = useState<'auto' | 'manual' | null>(null);
   const [autoGuideStep, setAutoGuideStep] = useState<1 | 2 | 3 | 4>(1);
   const [availableEmployees, setAvailableEmployees] = useState<EmployeeCard[]>([]);
+  const [selectedAutoEmployeeIds, setSelectedAutoEmployeeIds] = useState<string[]>([]);
   const [isLoadingEmployees, setIsLoadingEmployees] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const initialSelectedDateRef = useRef(selectedDate);
@@ -573,12 +574,20 @@ export default function LunchBreaksPage() {
       return;
     }
 
+    const selectedIds = new Set(selectedAutoEmployeeIds);
+    const selectedRows = dayRows.filter((row) => selectedIds.has(row.userId ?? row.shiftId));
+
+    if (selectedRows.length === 0) {
+      setError('Select at least one scheduled employee in setup before generating a plan.');
+      return;
+    }
+
     setIsGeneratingDay(true);
     setError(null);
     try {
       const res = await fetchWithSession('/lunch-breaks/generate', {
         ...jsonWriteInit('POST', {
-          shiftIds: dayRows.map((row) => row.shiftId),
+          shiftIds: selectedRows.map((row) => row.shiftId),
           persist: true,
           policy,
         }),
@@ -593,7 +602,7 @@ export default function LunchBreaksPage() {
     } finally {
       setIsGeneratingDay(false);
     }
-  }, [dayRows, hasSchedulingEnabled, loadDayRows, policy, policyLoaded, selectedDate]);
+  }, [dayRows, hasSchedulingEnabled, loadDayRows, policy, policyLoaded, selectedAutoEmployeeIds, selectedDate]);
 
   const addManualShift = useCallback(() => {
     const nextIndex = manualShifts.length + 1;
@@ -869,6 +878,29 @@ export default function LunchBreaksPage() {
     }
     return cards;
   }, [dayRows]);
+
+  const step3EmployeePool = useMemo(
+    () => (scheduledEmployees.length > 0 ? scheduledEmployees : availableEmployees),
+    [availableEmployees, scheduledEmployees],
+  );
+
+  useEffect(() => {
+    if (!(isAutoMode && autoGuideStep === 3)) return;
+    if (step3EmployeePool.length === 0) return;
+
+    setSelectedAutoEmployeeIds((prev) => {
+      if (prev.length > 0) {
+        const filtered = prev.filter((id) => step3EmployeePool.some((employee) => employee.id === id));
+        if (filtered.length > 0) return filtered;
+      }
+      return step3EmployeePool.map((employee) => employee.id);
+    });
+  }, [autoGuideStep, isAutoMode, step3EmployeePool]);
+
+  const selectedAutoEmployees = useMemo(
+    () => step3EmployeePool.filter((employee) => selectedAutoEmployeeIds.includes(employee.id)),
+    [selectedAutoEmployeeIds, step3EmployeePool],
+  );
 
   useEffect(() => {
     if (!(isAutoMode && autoGuideStep === 3)) return;
@@ -1274,50 +1306,81 @@ export default function LunchBreaksPage() {
                     <div style={{ fontSize: '0.8rem', fontWeight: 800, color: 'var(--text-primary)' }}>
                       {scheduledEmployees.length > 0 ? 'Scheduled employees for this day' : 'Available staff members at this store'}
                     </div>
+                    <div style={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>
+                      Select who should be included in this lunch and break plan.
+                    </div>
                     {isLoadingEmployees ? (
                       <div style={{ fontSize: '0.78rem', color: 'var(--text-secondary)' }}>Loading employees...</div>
                     ) : (
                       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(6, minmax(0, 1fr))', gap: 6 }}>
-                        {(scheduledEmployees.length > 0 ? scheduledEmployees : availableEmployees).slice(0, 24).map((employee) => (
-                          <div
-                            key={`step3-emp-${employee.id}`}
-                            style={{
-                              border: '1px solid var(--border)',
-                              borderRadius: 10,
-                              background: '#ffffff',
-                              padding: '0.4rem',
-                              display: 'grid',
-                              gap: 3,
-                              justifyItems: 'center',
-                              textAlign: 'center',
-                            }}
-                          >
+                        {step3EmployeePool.slice(0, 24).map((employee) => {
+                          const isSelected = selectedAutoEmployeeIds.includes(employee.id);
+                          return (
                             <div
+                              key={`step3-emp-${employee.id}`}
+                              role="button"
+                              tabIndex={0}
+                              aria-pressed={isSelected}
+                              onClick={() => {
+                                setSelectedAutoEmployeeIds((prev) =>
+                                  prev.includes(employee.id) ? prev.filter((id) => id !== employee.id) : [...prev, employee.id],
+                                );
+                              }}
+                              onKeyDown={(event) => {
+                                if (event.key === 'Enter' || event.key === ' ') {
+                                  event.preventDefault();
+                                  setSelectedAutoEmployeeIds((prev) =>
+                                    prev.includes(employee.id) ? prev.filter((id) => id !== employee.id) : [...prev, employee.id],
+                                  );
+                                }
+                              }}
                               style={{
-                                width: 26,
-                                height: 26,
-                                borderRadius: 999,
+                                border: isSelected ? '1px solid #5b87f7' : '1px solid var(--border)',
+                                borderRadius: 10,
+                                background: isSelected ? '#edf3ff' : '#ffffff',
+                                padding: '0.4rem',
                                 display: 'grid',
-                                placeItems: 'center',
-                                border: '1px solid #c9d6ef',
-                                background: '#eef4ff',
-                                color: '#244aa8',
-                                fontSize: '0.66rem',
-                                fontWeight: 800,
+                                gap: 3,
+                                justifyItems: 'center',
+                                textAlign: 'center',
+                                cursor: 'pointer',
+                                boxShadow: isSelected ? '0 0 0 1px rgba(91,135,247,0.24)' : 'none',
                               }}
                             >
-                              {getInitials(employee.name)}
+                              <div
+                                style={{
+                                  width: 26,
+                                  height: 26,
+                                  borderRadius: 999,
+                                  display: 'grid',
+                                  placeItems: 'center',
+                                  border: '1px solid #c9d6ef',
+                                  background: '#eef4ff',
+                                  color: '#244aa8',
+                                  fontSize: '0.66rem',
+                                  fontWeight: 800,
+                                }}
+                              >
+                                {getInitials(employee.name)}
+                              </div>
+                              <div style={{ fontSize: '0.68rem', fontWeight: 700, color: 'var(--text-primary)', lineHeight: 1.2 }}>
+                                {employee.name}
+                              </div>
+                              <div style={{ fontSize: '0.62rem', color: 'var(--text-muted)' }}>
+                                {employee.role ?? (employee.source === 'scheduled' ? 'Scheduled' : 'Available')}
+                              </div>
                             </div>
-                            <div style={{ fontSize: '0.68rem', fontWeight: 700, color: 'var(--text-primary)', lineHeight: 1.2 }}>
-                              {employee.name}
-                            </div>
-                            <div style={{ fontSize: '0.62rem', color: 'var(--text-muted)' }}>
-                              {employee.role ?? (employee.source === 'scheduled' ? 'Scheduled' : 'Available')}
-                            </div>
-                          </div>
-                        ))}
+                          );
+                        })}
                       </div>
                     )}
+                    {!isLoadingEmployees ? (
+                      <div style={{ fontSize: '0.74rem', color: selectedAutoEmployeeIds.length > 0 ? '#166534' : '#b45309' }}>
+                        {selectedAutoEmployeeIds.length > 0
+                          ? `${selectedAutoEmployeeIds.length} selected`
+                          : 'Select at least one person to continue.'}
+                      </div>
+                    ) : null}
                     {!isLoadingEmployees && scheduledEmployees.length === 0 && availableEmployees.length === 0 ? (
                       <div style={{ fontSize: '0.78rem', color: '#b45309' }}>
                         No staff members found yet. You can still continue and add shifts manually.
@@ -1328,7 +1391,11 @@ export default function LunchBreaksPage() {
                     <Button variant="outline" size="sm" onClick={() => setAutoGuideStep(2)}>
                       Back
                     </Button>
-                    <Button size="sm" onClick={() => setAutoGuideStep(4)}>
+                    <Button
+                      size="sm"
+                      onClick={() => setAutoGuideStep(4)}
+                      disabled={step3EmployeePool.length > 0 && selectedAutoEmployeeIds.length === 0}
+                    >
                       Next
                     </Button>
                   </div>
@@ -1389,7 +1456,13 @@ export default function LunchBreaksPage() {
                       ? `Using schedule data as source of truth for ${selectedDateLabel}`
                       : `Running in manual-first mode for ${selectedDateLabel}`}
                   </span>
-                  <span style={{ fontWeight: 700 }}>{dirtyCount > 0 ? `${dirtyCount} unsaved edits` : 'All edits saved'}</span>
+                  <span style={{ fontWeight: 700 }}>
+                    {selectedAutoEmployees.length > 0
+                      ? `${selectedAutoEmployees.length} selected for plan`
+                      : dirtyCount > 0
+                        ? `${dirtyCount} unsaved edits`
+                        : 'All edits saved'}
+                  </span>
                 </div>
                 <div style={{ minHeight: 0, flex: 1 }}>
                   {hasSharedRows ? (
