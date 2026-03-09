@@ -221,10 +221,10 @@ export default function HomePage() {
                       <div className="preview-track">
                         <span className="track-block shift" style={{ left: lane.shiftLeft, width: lane.shiftWidth }} />
                         <span className={`track-block lunch ${lane.warn ? 'warn' : ''}`} style={{ left: lane.lunchLeft, width: lane.lunchWidth }}>
-                          Lunch {lane.lunchTime}
+                          {lane.lunchTime}
                         </span>
                         <span className="track-block break" style={{ left: lane.breakLeft, width: lane.breakWidth }}>
-                          Break {lane.breakTime}
+                          {lane.breakTime}
                         </span>
                       </div>
                     </button>
@@ -686,7 +686,7 @@ export default function HomePage() {
 
         .preview-track {
           position: relative;
-          height: 44px;
+          height: 50px;
           border: 1px solid #e2e8f0;
           border-radius: 12px;
           background:
@@ -710,19 +710,21 @@ export default function HomePage() {
         .track-block {
           position: absolute;
           top: 7px;
-          height: 28px;
+          height: 34px;
           border-radius: 10px;
           display: inline-flex;
           align-items: center;
           justify-content: center;
-          overflow: hidden;
-          font-size: 10px;
-          font-weight: 700;
+          overflow: visible;
+          min-width: 74px;
+          font-size: 12px;
+          font-weight: 800;
           line-height: 1;
           letter-spacing: 0.01em;
           white-space: nowrap;
-          text-overflow: ellipsis;
-          padding: 0 6px;
+          padding: 0 10px;
+          z-index: 3;
+          box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.92), 0 2px 6px rgba(15, 23, 42, 0.18);
         }
 
         .preview-track .shift {
@@ -736,21 +738,21 @@ export default function HomePage() {
         }
 
         .preview-track .lunch {
-          background: rgba(21, 128, 61, 0.22);
-          border: 1px solid rgba(21, 128, 61, 0.32);
-          color: #166534;
+          background: #059669;
+          border: 1px solid #047857;
+          color: #ffffff;
         }
 
         .preview-track .lunch.warn {
-          background: rgba(220, 38, 38, 0.18);
-          border: 1px solid rgba(220, 38, 38, 0.32);
-          color: #991b1b;
+          background: #dc2626;
+          border: 1px solid #b91c1c;
+          color: #ffffff;
         }
 
         .preview-track .break {
-          background: rgba(15, 118, 110, 0.2);
-          border: 1px solid rgba(15, 118, 110, 0.3);
-          color: #0f766e;
+          background: #0e7490;
+          border: 1px solid #155e75;
+          color: #ffffff;
         }
 
         .preview-footer {
