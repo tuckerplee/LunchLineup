@@ -1,5 +1,6 @@
 'use client';
 
+import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import type { LucideIcon } from 'lucide-react';
 import {
@@ -83,7 +84,58 @@ const useCases: Array<{ title: string; body: string; tone: string; icon: LucideI
   },
 ];
 
+const previewLanes = [
+  {
+    name: 'Alex R.',
+    shiftLeft: '2%',
+    shiftWidth: '74%',
+    lunchLeft: '38%',
+    lunchWidth: '14%',
+    breakLeft: '60%',
+    breakWidth: '9%',
+    lunchTime: '14:10',
+    breakTime: '16:35',
+    note: 'Alex lunch moved 10m later to maintain cashier coverage.',
+    warn: false,
+  },
+  {
+    name: 'Jordan M.',
+    shiftLeft: '10%',
+    shiftWidth: '72%',
+    lunchLeft: '44%',
+    lunchWidth: '15%',
+    breakLeft: '68%',
+    breakWidth: '8%',
+    lunchTime: '14:30',
+    breakTime: '16:55',
+    note: 'Jordan break shifted earlier to smooth dinner handoff.',
+    warn: false,
+  },
+  {
+    name: 'Casey P.',
+    shiftLeft: '18%',
+    shiftWidth: '70%',
+    lunchLeft: '58%',
+    lunchWidth: '15%',
+    breakLeft: '78%',
+    breakWidth: '8%',
+    lunchTime: '17:05',
+    breakTime: '19:10',
+    note: 'Casey flagged as watch window, still inside legal threshold.',
+    warn: true,
+  },
+];
+
 export default function HomePage() {
+  const [activeLane, setActiveLane] = useState(0);
+
+  useEffect(() => {
+    const interval = window.setInterval(() => {
+      setActiveLane((prev) => (prev + 1) % previewLanes.length);
+    }, 2800);
+    return () => window.clearInterval(interval);
+  }, []);
+
   return (
     <>
       <main className="marketing-page">
@@ -156,35 +208,46 @@ export default function HomePage() {
                     <span>17:00</span>
                     <span>20:00</span>
                   </div>
-                  <div className="preview-row">
-                    <span>Alex R.</span>
-                    <div className="preview-track">
-                      <i className="shift" style={{ left: '2%', width: '74%' }} />
-                      <i className="lunch" style={{ left: '38%', width: '14%' }} />
-                      <i className="break" style={{ left: '60%', width: '9%' }} />
-                    </div>
-                  </div>
-                  <div className="preview-row">
-                    <span>Jordan M.</span>
-                    <div className="preview-track">
-                      <i className="shift" style={{ left: '10%', width: '72%' }} />
-                      <i className="lunch" style={{ left: '44%', width: '15%' }} />
-                      <i className="break" style={{ left: '68%', width: '8%' }} />
-                    </div>
-                  </div>
-                  <div className="preview-row">
-                    <span>Casey P.</span>
-                    <div className="preview-track">
-                      <i className="shift" style={{ left: '18%', width: '70%' }} />
-                      <i className="lunch warn" style={{ left: '58%', width: '15%' }} />
-                      <i className="break" style={{ left: '78%', width: '8%' }} />
-                    </div>
-                  </div>
+                  {previewLanes.map((lane, index) => (
+                    <button
+                      type="button"
+                      key={lane.name}
+                      className={`preview-row ${activeLane === index ? 'is-active' : ''}`}
+                      onMouseEnter={() => setActiveLane(index)}
+                      onFocus={() => setActiveLane(index)}
+                      onClick={() => setActiveLane(index)}
+                    >
+                      <span>{lane.name}</span>
+                      <div className="preview-track">
+                        <span className="event-time lunch-time" style={{ left: `calc(${lane.lunchLeft} + ${lane.lunchWidth} / 2)` }}>
+                          Lunch {lane.lunchTime}
+                        </span>
+                        <span className="event-time break-time" style={{ left: `calc(${lane.breakLeft} + ${lane.breakWidth} / 2)` }}>
+                          Break {lane.breakTime}
+                        </span>
+                        <span className="track-block shift" style={{ left: lane.shiftLeft, width: lane.shiftWidth }} />
+                        <span className={`track-block lunch ${lane.warn ? 'warn' : ''}`} style={{ left: lane.lunchLeft, width: lane.lunchWidth }} />
+                        <span className="track-block break" style={{ left: lane.breakLeft, width: lane.breakWidth }} />
+                      </div>
+                    </button>
+                  ))}
                 </div>
 
                 <div className="preview-footer">
                   <Clock3 size={14} />
-                  <span>Coverage remains above floor minimum all day</span>
+                  <span>{previewLanes[activeLane].note}</span>
+                </div>
+
+                <div className="preview-controls" aria-label="Demo steps">
+                  {previewLanes.map((lane, index) => (
+                    <button
+                      type="button"
+                      key={`${lane.name}-control`}
+                      className={activeLane === index ? 'active' : ''}
+                      onClick={() => setActiveLane(index)}
+                      aria-label={`Show ${lane.name} adjustment`}
+                    />
+                  ))}
                 </div>
               </div>
             </div>
@@ -379,9 +442,10 @@ export default function HomePage() {
           position: relative;
           overflow: hidden;
           background:
-            radial-gradient(1200px 520px at 8% 8%, rgba(79, 70, 229, 0.12), transparent 70%),
-            radial-gradient(1050px 500px at 92% 8%, rgba(15, 118, 110, 0.09), transparent 72%),
-            linear-gradient(180deg, #f8faff 0%, #f6f7fb 46%, #ffffff 100%);
+            radial-gradient(1200px 560px at 2% -2%, rgba(79, 70, 229, 0.12), transparent 72%),
+            radial-gradient(1080px 560px at 98% -4%, rgba(15, 118, 110, 0.1), transparent 74%),
+            radial-gradient(1300px 440px at 50% 100%, rgba(148, 163, 184, 0.16), transparent 68%),
+            linear-gradient(180deg, #f9fbff 0%, #f4f7ff 58%, #eff3fb 100%);
           padding: 96px 0 72px;
         }
 
@@ -389,9 +453,7 @@ export default function HomePage() {
           content: '';
           position: absolute;
           inset: 0;
-          background:
-            linear-gradient(90deg, rgba(79, 70, 229, 0.04) 0%, rgba(79, 70, 229, 0) 34%),
-            linear-gradient(270deg, rgba(15, 118, 110, 0.04) 0%, rgba(15, 118, 110, 0) 36%);
+          background: linear-gradient(180deg, rgba(255, 255, 255, 0.24), rgba(255, 255, 255, 0.08) 42%, rgba(255, 255, 255, 0));
           pointer-events: none;
         }
 
@@ -492,7 +554,8 @@ export default function HomePage() {
           grid-template-columns: auto 1fr auto;
           align-items: center;
           gap: 8px;
-          padding-bottom: 2px;
+          padding-bottom: 8px;
+          border-bottom: 1px solid #e2e8f0;
         }
 
         .chrome-dots {
@@ -604,9 +667,23 @@ export default function HomePage() {
           grid-template-columns: 88px 1fr;
           align-items: center;
           gap: 12px;
+          width: 100%;
+          border: 0;
+          background: transparent;
+          padding: 0;
+          text-align: left;
+          cursor: pointer;
           font-size: 13px;
           font-weight: 650;
           color: #475569;
+        }
+
+        .preview-row > span:first-child {
+          transition: color 140ms var(--ease-saas);
+        }
+
+        .preview-row.is-active > span:first-child {
+          color: #1e293b;
         }
 
         .preview-track {
@@ -623,13 +700,57 @@ export default function HomePage() {
               transparent 25%
             ),
             #f8faff;
+          transition: border-color 140ms var(--ease-saas), box-shadow 140ms var(--ease-saas), transform 140ms var(--ease-saas);
         }
 
-        .preview-track i {
+        .event-time {
+          position: absolute;
+          top: -17px;
+          transform: translateX(-50%);
+          font-size: 10px;
+          font-weight: 700;
+          line-height: 1;
+          padding: 2px 5px;
+          border-radius: 999px;
+          border: 1px solid;
+          pointer-events: none;
+          white-space: nowrap;
+          z-index: 2;
+          opacity: 0.95;
+        }
+
+        .lunch-time {
+          background: #ecfdf5;
+          color: #166534;
+          border-color: #86efac;
+        }
+
+        .break-time {
+          background: #ecfeff;
+          color: #155e75;
+          border-color: #67e8f9;
+        }
+
+        .preview-row.is-active .preview-track {
+          border-color: #a5b4fc;
+          box-shadow: 0 0 0 3px rgba(79, 70, 229, 0.12);
+          transform: translateY(-1px);
+        }
+
+        .track-block {
           position: absolute;
           top: 7px;
           height: 28px;
           border-radius: 10px;
+          display: inline-flex;
+          align-items: center;
+          justify-content: center;
+          overflow: hidden;
+        }
+
+        .preview-track .shift {
+          font-size: 0;
+          padding: 0;
         }
 
         .preview-track .shift {
@@ -640,16 +761,19 @@ export default function HomePage() {
         .preview-track .lunch {
           background: rgba(21, 128, 61, 0.22);
           border: 1px solid rgba(21, 128, 61, 0.32);
+          color: #166534;
         }
 
         .preview-track .lunch.warn {
           background: rgba(220, 38, 38, 0.18);
           border: 1px solid rgba(220, 38, 38, 0.32);
+          color: #991b1b;
         }
 
         .preview-track .break {
           background: rgba(15, 118, 110, 0.2);
           border: 1px solid rgba(15, 118, 110, 0.3);
+          color: #0f766e;
         }
 
         .preview-footer {
@@ -661,8 +785,33 @@ export default function HomePage() {
           font-weight: 600;
         }
 
+        .preview-controls {
+          display: inline-flex;
+          align-items: center;
+          gap: 7px;
+          justify-content: center;
+        }
+
+        .preview-controls button {
+          width: 8px;
+          height: 8px;
+          border-radius: 999px;
+          border: 0;
+          background: #cbd5e1;
+          cursor: pointer;
+          transition: transform 140ms var(--ease-saas), background-color 140ms var(--ease-saas), width 140ms var(--ease-saas);
+        }
+
+        .preview-controls button.active {
+          width: 22px;
+          background: #4f46e5;
+        }
+
         .metrics {
-          padding-top: 18px;
+          margin-top: -20px;
+          position: relative;
+          z-index: 2;
+          padding-top: 0;
           display: grid;
           grid-template-columns: repeat(4, minmax(0, 1fr));
           gap: 16px;
@@ -1043,6 +1192,10 @@ export default function HomePage() {
             grid-template-columns: repeat(2, minmax(0, 1fr));
           }
 
+          .metrics {
+            margin-top: 8px;
+          }
+
           .site-footer-top {
             flex-direction: column;
           }
@@ -1074,6 +1227,10 @@ export default function HomePage() {
           .testimonial-grid,
           .use-cases-grid {
             grid-template-columns: 1fr;
+          }
+
+          .timeline-scale {
+            padding-left: 0;
           }
 
           .final-cta {
