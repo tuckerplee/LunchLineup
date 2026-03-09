@@ -80,7 +80,7 @@ export default function HomePage() {
               </span>
               <span>
                 <strong>LunchLineup</strong>
-                <small>Break compliance scheduling</small>
+                <small>Automatic lunch & break scheduling</small>
               </span>
             </Link>
             <div className="marketing-nav__actions">
