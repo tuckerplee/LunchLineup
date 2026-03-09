@@ -1,5 +1,6 @@
 'use client';
 
+import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { CalendarDays, Clock3, MapPin, Users } from 'lucide-react';
 
@@ -118,11 +119,17 @@ const COVERAGE_RISK_DAYS = [
 ];
 
 export default function DashboardPage() {
-  const todayLabel = new Date().toLocaleDateString('en-US', {
-    weekday: 'long',
-    month: 'long',
-    day: 'numeric',
-  });
+  const [todayLabel, setTodayLabel] = useState('Today');
+
+  useEffect(() => {
+    setTodayLabel(
+      new Date().toLocaleDateString('en-US', {
+        weekday: 'long',
+        month: 'long',
+        day: 'numeric',
+      }),
+    );
+  }, []);
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem', maxWidth: 1420 }}>
