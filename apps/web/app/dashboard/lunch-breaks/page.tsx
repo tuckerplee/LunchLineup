@@ -98,6 +98,16 @@ type ManualShiftRow = {
   endTime: string;
 };
 
+type SetupShiftRow = {
+  id: string;
+  shiftId: string | null;
+  employeeId: string;
+  employeeName: string;
+  role: string;
+  startTime: string;
+  endTime: string;
+};
+
 type TimelineResource = {
   id: string;
   title: string;
@@ -288,6 +298,19 @@ function toIsoForDateAndTime(dateValue: string, timeValue: string): string | nul
   return date.toISOString();
 }
 
+function toShiftRangeIso(dateValue: string, startTime: string, endTime: string): { startIso: string; endIso: string } | null {
+  const startIso = toIsoForDateAndTime(dateValue, startTime);
+  const endIso = toIsoForDateAndTime(dateValue, endTime);
+  if (!startIso || !endIso) return null;
+  const startMs = new Date(startIso).getTime();
+  let endMs = new Date(endIso).getTime();
+  if (endMs <= startMs) endMs += 24 * 60 * 60 * 1000;
+  return {
+    startIso: new Date(startMs).toISOString(),
+    endIso: new Date(endMs).toISOString(),
+  };
+}
+
 function defaultManualShifts(): ManualShiftRow[] {
   return [
     { id: 'manual-1', employeeName: 'Alex', startTime: '09:00', endTime: '17:00' },
@@ -362,9 +385,10 @@ export default function LunchBreaksPage() {
   const [isGeneratingManual, setIsGeneratingManual] = useState(false);
   const [manualShifts, setManualShifts] = useState<ManualShiftRow[]>(defaultManualShifts());
   const [plannerMode, setPlannerMode] = useState<'auto' | 'manual' | null>(null);
-  const [autoGuideStep, setAutoGuideStep] = useState<1 | 2 | 3 | 4>(1);
+  const [autoGuideStep, setAutoGuideStep] = useState<1 | 2 | 3 | 4 | 5>(1);
   const [availableEmployees, setAvailableEmployees] = useState<EmployeeCard[]>([]);
   const [selectedAutoEmployeeIds, setSelectedAutoEmployeeIds] = useState<string[]>([]);
+  const [setupShiftRows, setSetupShiftRows] = useState<SetupShiftRow[]>([]);
   const [isLoadingEmployees, setIsLoadingEmployees] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const initialSelectedDateRef = useRef(selectedDate);
@@ -902,6 +926,134 @@ export default function LunchBreaksPage() {
     [selectedAutoEmployeeIds, step3EmployeePool],
   );
 
+  const setupResources = useMemo<TimelineResource[]>(
+    () =>
+      selectedAutoEmployees.map((employee) => ({
+        id: employee.id,
+        title: employee.name,
+        role: employee.role ?? 'Staff',
+        avatarInitials: getInitials(employee.name),
+        hue: hueForName(employee.name),
+      })),
+    [selectedAutoEmployees],
+  );
+
+  const setupEvents = useMemo<StaffScheduleEvent[]>(
+    () =>
+      setupShiftRows.flatMap((row) => {
+        const range = toShiftRangeIso(selectedDate, row.startTime, row.endTime);
+        if (!range) return [];
+        return [{
+          id: row.id,
+          resourceId: row.employeeId,
+          title: row.employeeName,
+          start: range.startIso,
+          end: range.endIso,
+          extendedProps: {
+            role: row.role || 'DEFAULT',
+            kind: 'shift' as const,
+          },
+        }];
+      }),
+    [selectedDate, setupShiftRows],
+  );
+
+  useEffect(() => {
+    if (!(isAutoMode && autoGuideStep === 4)) return;
+
+    setSetupShiftRows((prev) => {
+      if (prev.length > 0) {
+        const validIds = new Set(selectedAutoEmployees.map((employee) => employee.id));
+        const filtered = prev.filter((row) => validIds.has(row.employeeId));
+        if (filtered.length > 0) return filtered;
+      }
+
+      const selectedIds = new Set(selectedAutoEmployeeIds);
+      const selectedRows = dayRows.filter((row) => selectedIds.has(row.userId ?? row.shiftId));
+      if (selectedRows.length > 0) {
+        return selectedRows.map((row) => ({
+          id: row.shiftId,
+          shiftId: row.shiftId,
+          employeeId: row.userId ?? row.shiftId,
+          employeeName: row.employeeName,
+          role: selectedAutoEmployees.find((employee) => employee.id === (row.userId ?? row.shiftId))?.role ?? 'Scheduled',
+          startTime: toTimeInputValue(row.startTime),
+          endTime: toTimeInputValue(row.endTime),
+        }));
+      }
+
+      return selectedAutoEmployees.map((employee, index) => ({
+        id: `setup-${employee.id}-${index + 1}`,
+        shiftId: null,
+        employeeId: employee.id,
+        employeeName: employee.name,
+        role: employee.role ?? 'Staff',
+        startTime: '09:00',
+        endTime: '17:00',
+      }));
+    });
+  }, [autoGuideStep, dayRows, isAutoMode, selectedAutoEmployeeIds, selectedAutoEmployees]);
+
+  const handleSetupEventChange = useCallback((eventId: string, newStart: string, newEnd: string, newResourceId: string) => {
+    setSetupShiftRows((prev) =>
+      prev.map((row) => {
+        if (row.id !== eventId) return row;
+        const matchedEmployee = selectedAutoEmployees.find((employee) => employee.id === newResourceId);
+        return {
+          ...row,
+          employeeId: newResourceId,
+          employeeName: matchedEmployee?.name ?? row.employeeName,
+          role: matchedEmployee?.role ?? row.role,
+          startTime: toTimeInputValue(newStart),
+          endTime: toTimeInputValue(newEnd),
+        };
+      }),
+    );
+  }, [selectedAutoEmployees]);
+
+  const applySetupShifts = useCallback(() => {
+    const setupRowsByShiftId = new Map(
+      setupShiftRows
+        .filter((row) => Boolean(row.shiftId))
+        .map((row) => [row.shiftId as string, row]),
+    );
+
+    if (setupRowsByShiftId.size > 0) {
+      setDayRows((prev) =>
+        prev.map((row) => {
+          const setupRow = setupRowsByShiftId.get(row.shiftId);
+          if (!setupRow) return row;
+          const range = toShiftRangeIso(selectedDate, setupRow.startTime, setupRow.endTime);
+          if (!range) return row;
+          return {
+            ...row,
+            userId: setupRow.employeeId,
+            employeeName: setupRow.employeeName,
+            startTime: range.startIso,
+            endTime: range.endIso,
+            dirty: true,
+          };
+        }),
+      );
+    }
+
+    const manualRows = setupShiftRows.filter((row) => !row.shiftId);
+    if (dayRows.length === 0 && manualRows.length > 0) {
+      setManualShifts(
+        manualRows.map((row, index) => ({
+          id: `manual-from-setup-${index + 1}`,
+          employeeName: row.employeeName,
+          startTime: row.startTime,
+          endTime: row.endTime,
+        })),
+      );
+      setPlannerMode('manual');
+      return;
+    }
+
+    setAutoGuideStep(5);
+  }, [dayRows.length, selectedDate, setupShiftRows]);
+
   useEffect(() => {
     if (!(isAutoMode && autoGuideStep === 3)) return;
     if (scheduledEmployees.length > 0) return;
@@ -942,11 +1094,11 @@ export default function LunchBreaksPage() {
 
   const choosePlannerMode = useCallback((mode: 'auto' | 'manual') => {
     setPlannerMode(mode);
-    setAutoGuideStep(mode === 'auto' ? 2 : 4);
+    setAutoGuideStep(mode === 'auto' ? 2 : 5);
   }, []);
 
   const showGuidedWindow =
-    !isLoading && Boolean(lunchBreakFeature?.enabled) && (plannerMode === null || (isAutoMode && autoGuideStep < 4));
+    !isLoading && Boolean(lunchBreakFeature?.enabled) && (plannerMode === null || (isAutoMode && autoGuideStep < 5));
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem', minHeight: '100%' }}>
@@ -1401,6 +1553,173 @@ export default function LunchBreaksPage() {
                   </div>
                 </motion.div>
               ) : null}
+
+              {isAutoMode && autoGuideStep === 4 ? (
+                <motion.div
+                  key="guide-step-4"
+                  initial={{ opacity: 0, y: 12 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={{ opacity: 0, y: -8 }}
+                  transition={{ duration: 0.22 }}
+                  style={{
+                    width: 'min(980px, 100%)',
+                    marginInline: 'auto',
+                    border: '1px solid #cfe0ff',
+                    borderRadius: 14,
+                    background: 'linear-gradient(180deg, #f7faff 0%, #eef4ff 100%)',
+                    padding: '1rem',
+                    display: 'grid',
+                    gap: 12,
+                  }}
+                >
+                  <div className="workspace-kicker">Auto break setup</div>
+                  <h2 style={{ margin: 0, fontSize: '1.2rem', color: 'var(--text-primary)' }}>
+                    Adjust who works when
+                  </h2>
+                  <p style={{ margin: 0, fontSize: '0.84rem', color: 'var(--text-secondary)' }}>
+                    Fine-tune shifts before planning breaks. Drag blocks to move times, or edit names and times manually.
+                  </p>
+
+                  {setupResources.length > 0 ? (
+                    <div className="surface-muted" style={{ borderRadius: 12, padding: '0.7rem', display: 'grid', gap: 8 }}>
+                      <div style={{ minHeight: 280, height: 340 }}>
+                        <StaffScheduler
+                          resources={setupResources}
+                          events={setupEvents}
+                          viewMode="day"
+                          initialDate={selectedDate}
+                          compactWindow
+                          onEventChange={handleSetupEventChange}
+                        />
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="surface-muted" style={{ borderRadius: 12, padding: '0.75rem', fontSize: '0.8rem', color: '#b45309' }}>
+                      Select at least one person in the previous step to configure shifts.
+                    </div>
+                  )}
+
+                  <div className="surface-muted" style={{ borderRadius: 12, padding: '0.75rem', display: 'grid', gap: 8 }}>
+                    <div style={{ fontSize: '0.8rem', fontWeight: 800, color: 'var(--text-primary)' }}>Manual shift editor</div>
+                    <div style={{ display: 'grid', gap: 8 }}>
+                      {setupShiftRows.map((row) => (
+                        <div key={row.id} style={{ display: 'grid', gridTemplateColumns: 'minmax(180px, 1fr) 120px 120px auto', gap: 8, alignItems: 'center' }}>
+                          <select
+                            value={row.employeeId}
+                            onChange={(event) => {
+                              const nextEmployee = selectedAutoEmployees.find((employee) => employee.id === event.target.value);
+                              setSetupShiftRows((prev) =>
+                                prev.map((candidate) =>
+                                  candidate.id === row.id
+                                    ? {
+                                        ...candidate,
+                                        employeeId: event.target.value,
+                                        employeeName: nextEmployee?.name ?? candidate.employeeName,
+                                        role: nextEmployee?.role ?? candidate.role,
+                                      }
+                                    : candidate,
+                                ),
+                              );
+                            }}
+                            style={{
+                              border: '1px solid var(--border)',
+                              borderRadius: 8,
+                              background: '#ffffff',
+                              color: 'var(--text-primary)',
+                              padding: '0.36rem 0.45rem',
+                              fontSize: '0.78rem',
+                            }}
+                          >
+                            {selectedAutoEmployees.map((employee) => (
+                              <option key={`setup-employee-${employee.id}`} value={employee.id}>
+                                {employee.name}
+                              </option>
+                            ))}
+                          </select>
+                          <input
+                            type="time"
+                            value={row.startTime}
+                            onChange={(event) =>
+                              setSetupShiftRows((prev) =>
+                                prev.map((candidate) => (candidate.id === row.id ? { ...candidate, startTime: event.target.value } : candidate)),
+                              )
+                            }
+                            style={{
+                              border: '1px solid var(--border)',
+                              borderRadius: 8,
+                              background: '#ffffff',
+                              color: 'var(--text-primary)',
+                              padding: '0.36rem 0.45rem',
+                              fontSize: '0.78rem',
+                            }}
+                          />
+                          <input
+                            type="time"
+                            value={row.endTime}
+                            onChange={(event) =>
+                              setSetupShiftRows((prev) =>
+                                prev.map((candidate) => (candidate.id === row.id ? { ...candidate, endTime: event.target.value } : candidate)),
+                              )
+                            }
+                            style={{
+                              border: '1px solid var(--border)',
+                              borderRadius: 8,
+                              background: '#ffffff',
+                              color: 'var(--text-primary)',
+                              padding: '0.36rem 0.45rem',
+                              fontSize: '0.78rem',
+                            }}
+                          />
+                          <Button
+                            type="button"
+                            variant="outline"
+                            size="sm"
+                            onClick={() => setSetupShiftRows((prev) => prev.filter((candidate) => candidate.id !== row.id))}
+                            disabled={setupShiftRows.length <= 1}
+                          >
+                            Remove
+                          </Button>
+                        </div>
+                      ))}
+                    </div>
+                    <div>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        onClick={() => {
+                          const firstEmployee = selectedAutoEmployees[0];
+                          if (!firstEmployee) return;
+                          setSetupShiftRows((prev) => [
+                            ...prev,
+                            {
+                              id: `setup-added-${Date.now()}-${prev.length + 1}`,
+                              shiftId: null,
+                              employeeId: firstEmployee.id,
+                              employeeName: firstEmployee.name,
+                              role: firstEmployee.role ?? 'Staff',
+                              startTime: '09:00',
+                              endTime: '17:00',
+                            },
+                          ]);
+                        }}
+                        disabled={selectedAutoEmployees.length === 0}
+                      >
+                        Add shift
+                      </Button>
+                    </div>
+                  </div>
+
+                  <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, alignItems: 'center' }}>
+                    <Button variant="outline" size="sm" onClick={() => setAutoGuideStep(3)}>
+                      Back
+                    </Button>
+                    <Button size="sm" onClick={applySetupShifts} disabled={setupShiftRows.length === 0}>
+                      Continue to planner
+                    </Button>
+                  </div>
+                </motion.div>
+              ) : null}
             </AnimatePresence>
           </div>
         </section>
@@ -1506,7 +1825,7 @@ export default function LunchBreaksPage() {
                           size="sm"
                           onClick={() => {
                             setPlannerMode('manual');
-                            setAutoGuideStep(4);
+                            setAutoGuideStep(5);
                           }}
                         >
                           Use manual entry
