@@ -106,7 +106,7 @@ function LoginContent() {
             setPin('');
             setStep('pin');
             if (data.pinResetRequired) {
-                setError('Your PIN was recently reset. Sign in with the temporary PIN from your admin.');
+                setError('Enter your PIN to continue.');
             }
         } catch {
             setError('Network error. Please try again.');
