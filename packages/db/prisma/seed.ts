@@ -16,15 +16,22 @@ async function main() {
     });
 
     // 2. Create Initial Super Admin
-    await prisma.user.upsert({
-        where: { email: 'admin@lunchlineup.com' },
-        update: {},
-        create: {
-            email: 'admin@lunchlineup.com',
-            name: 'System Admin',
+    const existingAdmin = await prisma.user.findFirst({
+        where: {
             tenantId: systemTenant.id,
+            email: 'admin@lunchlineup.com',
         },
     });
+
+    if (!existingAdmin) {
+        await prisma.user.create({
+            data: {
+                email: 'admin@lunchlineup.com',
+                name: 'System Admin',
+                tenantId: systemTenant.id,
+            },
+        });
+    }
 
     console.log('Seeding complete.');
 }

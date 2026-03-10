@@ -12,7 +12,10 @@ type ApiUser = {
     id: string;
     name: string;
     email: string;
+    username?: string;
     role: 'SUPER_ADMIN' | 'ADMIN' | 'MANAGER' | 'STAFF';
+    pinEnabled?: boolean;
+    pinResetRequired?: boolean;
 };
 
 type StaffUser = ApiUser & { status: 'active' | 'inactive' };
@@ -55,8 +58,12 @@ export function StaffWorkspace({ canManage }: StaffWorkspaceProps) {
 
     const [inviteName, setInviteName] = useState('');
     const [inviteEmail, setInviteEmail] = useState('');
+    const [inviteUsername, setInviteUsername] = useState('');
+    const [invitePin, setInvitePin] = useState('');
     const [inviteRole, setInviteRole] = useState<'MANAGER' | 'STAFF'>('STAFF');
+    const [inviteLoginType, setInviteLoginType] = useState<'email' | 'username'>('username');
     const [isInviting, setIsInviting] = useState(false);
+    const [lastTemporaryPin, setLastTemporaryPin] = useState<string | null>(null);
 
     const loadUsers = useCallback(async () => {
         setIsLoading(true);
@@ -92,8 +99,12 @@ export function StaffWorkspace({ canManage }: StaffWorkspaceProps) {
             setError('Name is required.');
             return;
         }
-        if (inviteRole === 'MANAGER' && !inviteEmail.trim()) {
-            setError('Email is required for managers.');
+        if (inviteLoginType === 'email' && !inviteEmail.trim()) {
+            setError('Email is required for email login.');
+            return;
+        }
+        if (inviteLoginType === 'username' && !inviteUsername.trim()) {
+            setError('Username is required for PIN login.');
             return;
         }
         setIsInviting(true);
@@ -101,20 +112,27 @@ export function StaffWorkspace({ canManage }: StaffWorkspaceProps) {
         try {
             const res = await fetchWithSession('/users/invite', jsonWriteInit('POST', {
                 name: inviteName.trim(),
-                email: inviteEmail.trim() || undefined,
+                email: inviteLoginType === 'email' ? inviteEmail.trim() || undefined : undefined,
+                username: inviteLoginType === 'username' ? inviteUsername.trim() || undefined : undefined,
+                pin: inviteLoginType === 'username' ? invitePin.trim() || undefined : undefined,
                 role: inviteRole,
             }));
             if (!res.ok) throw new Error('Failed to create staff member.');
+            const payload = (await res.json().catch(() => ({}))) as { temporaryPin?: string };
             setInviteName('');
             setInviteEmail('');
+            setInviteUsername('');
+            setInvitePin('');
             setInviteRole('STAFF');
+            setInviteLoginType('username');
+            setLastTemporaryPin(payload.temporaryPin ?? null);
             await loadUsers();
         } catch (err) {
             setError((err as Error).message);
         } finally {
             setIsInviting(false);
         }
-    }, [inviteEmail, inviteName, inviteRole, loadUsers]);
+    }, [inviteEmail, inviteName, inviteRole, inviteUsername, invitePin, inviteLoginType, loadUsers]);
 
     const updateRole = useCallback(async (id: string, role: 'MANAGER' | 'STAFF') => {
         setIsSaving(id);
@@ -123,6 +141,24 @@ export function StaffWorkspace({ canManage }: StaffWorkspaceProps) {
             const res = await fetchWithSession(`/users/${id}/role`, jsonWriteInit('PUT', { role }));
             if (!res.ok) throw new Error('Failed to update role.');
             setUsers((prev) => prev.map((u) => (u.id === id ? { ...u, role } : u)));
+        } catch (err) {
+            setError((err as Error).message);
+        } finally {
+            setIsSaving(null);
+        }
+    }, []);
+
+    const resetPin = useCallback(async (id: string) => {
+        setIsSaving(id);
+        setError(null);
+        try {
+            const res = await fetchWithSession(`/users/${id}/pin/reset`, jsonWriteInit('POST'));
+            if (!res.ok) throw new Error('Failed to reset PIN.');
+            const payload = (await res.json().catch(() => ({}))) as { temporaryPin?: string };
+            setUsers((prev) => prev.map((u) => (
+                u.id === id ? { ...u, pinEnabled: true, pinResetRequired: true } : u
+            )));
+            setLastTemporaryPin(payload.temporaryPin ?? null);
         } catch (err) {
             setError((err as Error).message);
         } finally {
@@ -176,9 +212,17 @@ export function StaffWorkspace({ canManage }: StaffWorkspaceProps) {
                 </div>
 
                 {canManage ? (
-                    <div className="surface-muted" style={{ padding: '0.8rem', display: 'grid', gap: '0.6rem' }}>
-                        <div style={{ fontSize: '0.82rem', fontWeight: 700, color: 'var(--text-primary)' }}>Create staff member</div>
-                        <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) minmax(0, 1fr) 120px auto', gap: '0.5rem' }}>
+                        <div className="surface-muted" style={{ padding: '0.8rem', display: 'grid', gap: '0.6rem' }}>
+                            <div style={{ fontSize: '0.82rem', fontWeight: 700, color: 'var(--text-primary)' }}>Create staff member</div>
+                        <div style={{ display: 'grid', gridTemplateColumns: '150px minmax(0, 1fr) minmax(0, 1fr) 120px auto', gap: '0.5rem' }}>
+                            <select
+                                value={inviteLoginType}
+                                onChange={(e) => setInviteLoginType(e.target.value as 'email' | 'username')}
+                                style={{ border: '1px solid var(--border)', borderRadius: 8, padding: '0.42rem 0.5rem', background: '#fff', color: 'var(--text-primary)' }}
+                            >
+                                <option value="username">Username + PIN</option>
+                                <option value="email">Email + OTP</option>
+                            </select>
                             <input
                                 type="text"
                                 value={inviteName}
@@ -186,13 +230,34 @@ export function StaffWorkspace({ canManage }: StaffWorkspaceProps) {
                                 placeholder="Full name"
                                 style={{ border: '1px solid var(--border)', borderRadius: 8, padding: '0.42rem 0.5rem', background: '#fff', color: 'var(--text-primary)' }}
                             />
-                            <input
-                                type="email"
-                                value={inviteEmail}
-                                onChange={(e) => setInviteEmail(e.target.value)}
-                                placeholder={inviteRole === 'MANAGER' ? 'name@company.com (required for manager)' : 'name@company.com (optional for staff)'}
-                                style={{ border: '1px solid var(--border)', borderRadius: 8, padding: '0.42rem 0.5rem', background: '#fff', color: 'var(--text-primary)' }}
-                            />
+                            {inviteLoginType === 'email' ? (
+                                <input
+                                    type="email"
+                                    value={inviteEmail}
+                                    onChange={(e) => setInviteEmail(e.target.value)}
+                                    placeholder="name@company.com"
+                                    style={{ border: '1px solid var(--border)', borderRadius: 8, padding: '0.42rem 0.5rem', background: '#fff', color: 'var(--text-primary)' }}
+                                />
+                            ) : (
+                                <input
+                                    type="text"
+                                    value={inviteUsername}
+                                    onChange={(e) => setInviteUsername(e.target.value)}
+                                    placeholder="username (lowercase)"
+                                    style={{ border: '1px solid var(--border)', borderRadius: 8, padding: '0.42rem 0.5rem', background: '#fff', color: 'var(--text-primary)' }}
+                                />
+                            )}
+                            {inviteLoginType === 'username' ? (
+                                <input
+                                    type="text"
+                                    value={invitePin}
+                                    onChange={(e) => setInvitePin(e.target.value.replace(/\D/g, '').slice(0, 8))}
+                                    placeholder="PIN (optional)"
+                                    style={{ border: '1px solid var(--border)', borderRadius: 8, padding: '0.42rem 0.5rem', background: '#fff', color: 'var(--text-primary)' }}
+                                />
+                            ) : (
+                                <div />
+                            )}
                             <select
                                 value={inviteRole}
                                 onChange={(e) => setInviteRole(e.target.value as 'MANAGER' | 'STAFF')}
@@ -205,15 +270,20 @@ export function StaffWorkspace({ canManage }: StaffWorkspaceProps) {
                                 {isInviting ? 'Creating...' : 'Create'}
                             </Button>
                         </div>
+                        {lastTemporaryPin ? (
+                            <div style={{ fontSize: '0.78rem', color: '#7a2e14' }}>
+                                Temporary PIN: <strong>{lastTemporaryPin}</strong> (share securely; user should reset after first login)
+                            </div>
+                        ) : null}
                     </div>
                 ) : null}
             </section>
 
             <section className="surface-card" style={{ overflowX: 'auto' }}>
-                <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 760 }}>
+                <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 900 }}>
                     <thead>
                         <tr style={{ background: '#f8faff', borderBottom: '1px solid var(--border)' }}>
-                            {['Member', 'Email', 'Role', ...(canManage ? ['Actions'] : [])].map((h) => (
+                            {['Member', 'Login', 'Role', ...(canManage ? ['Actions'] : [])].map((h) => (
                                 <th
                                     key={h}
                                     style={{
@@ -255,7 +325,18 @@ export function StaffWorkspace({ canManage }: StaffWorkspaceProps) {
                                         <div style={{ fontWeight: 700, fontSize: '0.88rem', color: 'var(--text-primary)' }}>{u.name}</div>
                                     </div>
                                 </td>
-                                <td style={{ padding: '0.86rem 1rem', color: 'var(--text-secondary)', fontSize: '0.83rem' }}>{u.email || '—'}</td>
+                                <td style={{ padding: '0.86rem 1rem', color: 'var(--text-secondary)', fontSize: '0.83rem' }}>
+                                    {u.email ? (
+                                        <span>{u.email}</span>
+                                    ) : (
+                                        <div style={{ display: 'grid', gap: '0.15rem' }}>
+                                            <span style={{ fontFamily: 'var(--font-mono)' }}>{u.username || '—'}</span>
+                                            <span style={{ fontSize: '0.72rem', color: u.pinResetRequired ? '#cb3653' : 'var(--text-muted)' }}>
+                                                {u.pinEnabled ? (u.pinResetRequired ? 'PIN reset required' : 'PIN active') : 'PIN not set'}
+                                            </span>
+                                        </div>
+                                    )}
+                                </td>
                                 <td style={{ padding: '0.86rem 1rem' }}>
                                     {canManage ? (
                                         <select
@@ -273,14 +354,26 @@ export function StaffWorkspace({ canManage }: StaffWorkspaceProps) {
                                 </td>
                                 {canManage ? (
                                     <td style={{ padding: '0.86rem 1rem' }}>
-                                        <Button
-                                            size="sm"
-                                            variant="outline"
-                                            onClick={() => void deactivate(u.id)}
-                                            disabled={isSaving === u.id}
-                                        >
-                                            {isSaving === u.id ? 'Removing...' : 'Remove'}
-                                        </Button>
+                                        <div style={{ display: 'flex', gap: '0.4rem', flexWrap: 'wrap' }}>
+                                            {!u.email ? (
+                                                <Button
+                                                    size="sm"
+                                                    variant="outline"
+                                                    onClick={() => void resetPin(u.id)}
+                                                    disabled={isSaving === u.id}
+                                                >
+                                                    {isSaving === u.id ? 'Resetting...' : 'Reset PIN'}
+                                                </Button>
+                                            ) : null}
+                                            <Button
+                                                size="sm"
+                                                variant="outline"
+                                                onClick={() => void deactivate(u.id)}
+                                                disabled={isSaving === u.id}
+                                            >
+                                                {isSaving === u.id ? 'Removing...' : 'Remove'}
+                                            </Button>
+                                        </div>
                                     </td>
                                 ) : null}
                             </tr>

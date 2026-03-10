@@ -1,4 +1,4 @@
-import { Controller, Get, Post, Body, Req, UseGuards, SetMetadata, HttpCode, HttpStatus, NotFoundException, UnauthorizedException, Logger } from '@nestjs/common';
+import { Controller, Get, Post, Body, Req, UseGuards, SetMetadata, HttpCode, HttpStatus, UnauthorizedException, Logger } from '@nestjs/common';
 import { AuthService } from './auth.service';
 import { OtpService } from './otp.service';
 import { EmailService } from './email.service';
@@ -36,10 +36,35 @@ export class AuthController {
         this.logger.log(`[auth-debug] ${JSON.stringify({ scope: 'api.auth', event, ...details })}`);
     }
 
-    private assertOidcEnabled() {
-        if ((process.env.OIDC_ENABLED ?? '').toLowerCase() !== 'true') {
-            throw new NotFoundException('OIDC login is disabled');
-        }
+    private setSessionCookies(res: Response, accessToken: string, refreshToken: string, csrfToken: string) {
+        const cookieOptions = {
+            httpOnly: true,
+            secure: process.env.NODE_ENV === 'production',
+            sameSite: 'strict' as const,
+            path: '/',
+        };
+
+        res.cookie('access_token', accessToken, { ...cookieOptions, maxAge: ACCESS_TOKEN_COOKIE_MAX_AGE_MS });
+        res.cookie('refresh_token', refreshToken, { ...cookieOptions, maxAge: REFRESH_TOKEN_COOKIE_MAX_AGE_MS });
+        res.cookie('csrf_token', csrfToken, {
+            httpOnly: false,
+            secure: process.env.NODE_ENV === 'production',
+            sameSite: 'strict',
+            path: '/',
+        });
+    }
+
+    @Public()
+    @Post('login/resolve')
+    @HttpCode(HttpStatus.OK)
+    async resolveLoginFlow(@Body() body: { identifier: string }) {
+        const result = await this.authService.resolveLoginMethod(body.identifier);
+        return {
+            success: true,
+            flow: result.flow,
+            identifier: result.normalizedIdentifier,
+            pinResetRequired: result.flow === 'USERNAME_PIN' ? result.pinResetRequired : false,
+        };
     }
 
     /**
@@ -79,20 +104,7 @@ export class AuthController {
         }
         const { code, state } = req.query as { code: string; state: string };
         const result = await this.authService.handleOidcCallback(code, state);
-
-        const cookieOptions = {
-            httpOnly: true,
-            secure: process.env.NODE_ENV === 'production',
-            sameSite: 'strict' as const,
-            path: '/',
-        };
-
-        res.cookie('access_token', result.accessToken, { ...cookieOptions, maxAge: ACCESS_TOKEN_COOKIE_MAX_AGE_MS });
-        res.cookie('refresh_token', result.refreshToken, { ...cookieOptions, maxAge: REFRESH_TOKEN_COOKIE_MAX_AGE_MS });
-        res.cookie('csrf_token', result.csrfToken, {
-            httpOnly: false, secure: process.env.NODE_ENV === 'production',
-            sameSite: 'strict', path: '/',
-        });
+        this.setSessionCookies(res, result.accessToken, result.refreshToken, result.csrfToken);
 
         if (result.requiresMfa) {
             res.redirect('/mfa');
@@ -144,22 +156,7 @@ export class AuthController {
         try {
             await this.otpService.verifyOtp(email, body.code);
             const result = await this.authService.loginWithEmail(email);
-
-            const cookieOptions = {
-                httpOnly: true,
-                secure: process.env.NODE_ENV === 'production',
-                sameSite: 'strict' as const,
-                path: '/',
-            };
-
-            res.cookie('access_token', result.accessToken, { ...cookieOptions, maxAge: ACCESS_TOKEN_COOKIE_MAX_AGE_MS });
-            res.cookie('refresh_token', result.refreshToken, { ...cookieOptions, maxAge: REFRESH_TOKEN_COOKIE_MAX_AGE_MS });
-            res.cookie('csrf_token', result.csrfToken, {
-                httpOnly: false,
-                secure: process.env.NODE_ENV === 'production',
-                sameSite: 'strict',
-                path: '/',
-            });
+            this.setSessionCookies(res, result.accessToken, result.refreshToken, result.csrfToken);
 
             const roleRedirect = result.user.role === 'SUPER_ADMIN' ? '/admin' : '/dashboard';
             const redirectTo = safeNext ?? roleRedirect;
@@ -184,6 +181,45 @@ export class AuthController {
                 const params = new URLSearchParams({
                     step: 'otp',
                     email,
+                    error: 'invalid',
+                });
+                if (safeNext) params.set('next', safeNext);
+                return res.redirect(302, `/auth/login?${params.toString()}`);
+            }
+            throw err;
+        }
+    }
+
+    /**
+     * Username/PIN — Verify PIN and issue session cookies.
+     */
+    @Public()
+    @Post('pin/verify')
+    @HttpCode(HttpStatus.OK)
+    async verifyPin(
+        @Body() body: { identifier: string; pin: string },
+        @Req() req: Request,
+        @Res() res: Response,
+    ) {
+        const identifier = body.identifier.toLowerCase().trim();
+        const redirectMode = String((req.query as any)?.redirect || '') === '1';
+        const nextPath = String((req.query as any)?.next || '');
+        const safeNext = nextPath.startsWith('/') ? nextPath : null;
+
+        try {
+            const result = await this.authService.loginWithUsernamePin(identifier, body.pin);
+            this.setSessionCookies(res, result.accessToken, result.refreshToken, result.csrfToken);
+
+            const redirectTo = safeNext ?? '/dashboard';
+            if (redirectMode) {
+                return res.redirect(302, redirectTo);
+            }
+            return res.json({ success: true, redirectTo, pinResetRequired: false });
+        } catch (err) {
+            if (redirectMode && err instanceof UnauthorizedException) {
+                const params = new URLSearchParams({
+                    step: 'pin',
+                    identifier,
                     error: 'invalid',
                 });
                 if (safeNext) params.set('next', safeNext);

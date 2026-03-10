@@ -76,7 +76,8 @@ enum TenantStatus {
 model User {
   id              String    @id @default(uuid())
   tenantId        String
-  email           String
+  email           String?
+  username        String?
   emailEncrypted  Bytes?    // AES-256-GCM encrypted PII
   emailHash       String?   // For lookup without decryption
   name            String
@@ -89,6 +90,11 @@ model User {
   mfaSecret       String?   // TOTP secret (encrypted)
   mfaBackupCodes  String[]  // Hashed backup codes
   passwordHash    String?
+  pinHash         String?
+  pinSetAt        DateTime?
+  pinResetRequired Boolean  @default(false)
+  pinLoginAttempts Int      @default(0)
+  pinLockedUntil  DateTime?
   lastLoginAt     DateTime?
   loginAttempts   Int       @default(0)
   lockedUntil     DateTime?
@@ -103,7 +109,9 @@ model User {
   notifications   Notification[]
 
   @@unique([tenantId, email])
+  @@unique([tenantId, username])
   @@index([tenantId])
+  @@index([username])
   @@index([emailHash])
   @@index([deletedAt])
 }
