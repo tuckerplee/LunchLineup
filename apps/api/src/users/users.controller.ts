@@ -19,11 +19,12 @@ export class UsersController {
     private prisma = new PrismaClient();
     private static readonly USERNAME_REGEX = /^[a-z0-9._-]{3,32}$/;
     private static readonly PIN_REGEX = /^\d{4,8}$/;
+    private static readonly SYSTEM_EMAIL_DOMAIN = 'staff.lunchlineup.local';
 
     constructor(private readonly authService: AuthService) { }
 
     private isSystemGeneratedEmail(email: string): boolean {
-        return email.endsWith('@staff.lunchlineup.local');
+        return email.endsWith(`@${UsersController.SYSTEM_EMAIL_DOMAIN}`);
     }
 
     private sanitizeEmailForResponse(email: string | null): string {
@@ -34,6 +35,30 @@ export class UsersController {
     private normalizeUsername(username?: string): string | null {
         const normalized = (username ?? '').trim().toLowerCase();
         return normalized || null;
+    }
+
+    private usernameFromName(name: string): string {
+        const base = name
+            .toLowerCase()
+            .replace(/[^a-z0-9]+/g, '.')
+            .replace(/^\.+|\.+$/g, '')
+            .slice(0, 28);
+        if (!base) return 'staff.user';
+        return base.length < 3 ? `${base}.usr` : base;
+    }
+
+    private async generateUniqueUsername(tenantId: string, name: string): Promise<string> {
+        const seed = this.usernameFromName(name);
+        let candidate = seed;
+        for (let i = 0; i < 20; i += 1) {
+            const taken = await this.prisma.user.findFirst({
+                where: { tenantId, username: candidate, deletedAt: null },
+                select: { id: true },
+            });
+            if (!taken) return candidate;
+            candidate = `${seed.slice(0, 24)}.${Math.floor(1000 + Math.random() * 9000)}`;
+        }
+        return `${seed.slice(0, 20)}.${Date.now().toString().slice(-6)}`;
     }
 
     private createTemporaryPin(): string {
@@ -175,10 +200,23 @@ export class UsersController {
     async resetUserPin(@Param('id') id: string, @Body() body: { pin?: string }, @Req() req: any) {
         const user = await this.prisma.user.findFirst({
             where: { id, tenantId: req.user.tenantId, deletedAt: null },
-            select: { id: true, username: true, role: true },
+            select: { id: true, username: true, role: true, name: true, email: true },
         });
         if (!user) throw new NotFoundException('User not found');
-        if (!user.username) throw new BadRequestException('PIN reset is only available for username accounts');
+
+        let username = user.username;
+        if (!username) {
+            const canBootstrapUsername = !user.email || this.isSystemGeneratedEmail(user.email);
+            if (!canBootstrapUsername) {
+                throw new BadRequestException('PIN reset is only available for username accounts');
+            }
+
+            username = await this.generateUniqueUsername(req.user.tenantId, user.name);
+            await this.prisma.user.update({
+                where: { id: user.id },
+                data: { username },
+            });
+        }
 
         const newPin = (body.pin || '').trim() || this.createTemporaryPin();
         await this.authService.setUserPin(user.id, newPin, true);
@@ -193,7 +231,7 @@ export class UsersController {
             },
         });
 
-        return { id: user.id, username: user.username, temporaryPin: newPin, pinResetRequired: true };
+        return { id: user.id, username, temporaryPin: newPin, pinResetRequired: true };
     }
 
     @Put('me/pin')
