@@ -108,6 +108,14 @@ type SetupShiftRow = {
   endTime: string;
 };
 
+type SetupDragState = {
+  rowId: string;
+  startX: number;
+  trackWidth: number;
+  originalStartMinutes: number;
+  durationMinutes: number;
+};
+
 type TimelineResource = {
   id: string;
   title: string;
@@ -311,6 +319,19 @@ function toShiftRangeIso(dateValue: string, startTime: string, endTime: string):
   };
 }
 
+function timeValueToMinutes(timeValue: string): number {
+  const match = /^(\d{2}):(\d{2})$/.exec(timeValue);
+  if (!match) return 0;
+  return Number(match[1]) * 60 + Number(match[2]);
+}
+
+function minutesToTimeValue(totalMinutes: number): string {
+  const bounded = Math.max(0, Math.min(24 * 60 - 1, Math.round(totalMinutes)));
+  const hh = String(Math.floor(bounded / 60)).padStart(2, '0');
+  const mm = String(bounded % 60).padStart(2, '0');
+  return `${hh}:${mm}`;
+}
+
 function defaultManualShifts(): ManualShiftRow[] {
   return [
     { id: 'manual-1', employeeName: 'Alex', startTime: '09:00', endTime: '17:00' },
@@ -389,6 +410,7 @@ export default function LunchBreaksPage() {
   const [availableEmployees, setAvailableEmployees] = useState<EmployeeCard[]>([]);
   const [selectedAutoEmployeeIds, setSelectedAutoEmployeeIds] = useState<string[]>([]);
   const [setupShiftRows, setSetupShiftRows] = useState<SetupShiftRow[]>([]);
+  const [setupDrag, setSetupDrag] = useState<SetupDragState | null>(null);
   const [isLoadingEmployees, setIsLoadingEmployees] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const initialSelectedDateRef = useRef(selectedDate);
@@ -926,38 +948,6 @@ export default function LunchBreaksPage() {
     [selectedAutoEmployeeIds, step3EmployeePool],
   );
 
-  const setupResources = useMemo<TimelineResource[]>(
-    () =>
-      selectedAutoEmployees.map((employee) => ({
-        id: employee.id,
-        title: employee.name,
-        role: employee.role ?? 'Staff',
-        avatarInitials: getInitials(employee.name),
-        hue: hueForName(employee.name),
-      })),
-    [selectedAutoEmployees],
-  );
-
-  const setupEvents = useMemo<StaffScheduleEvent[]>(
-    () =>
-      setupShiftRows.flatMap((row) => {
-        const range = toShiftRangeIso(selectedDate, row.startTime, row.endTime);
-        if (!range) return [];
-        return [{
-          id: row.id,
-          resourceId: row.employeeId,
-          title: row.employeeName,
-          start: range.startIso,
-          end: range.endIso,
-          extendedProps: {
-            role: row.role || 'DEFAULT',
-            kind: 'shift' as const,
-          },
-        }];
-      }),
-    [selectedDate, setupShiftRows],
-  );
-
   useEffect(() => {
     if (!(isAutoMode && autoGuideStep === 4)) return;
 
@@ -993,23 +983,6 @@ export default function LunchBreaksPage() {
       }));
     });
   }, [autoGuideStep, dayRows, isAutoMode, selectedAutoEmployeeIds, selectedAutoEmployees]);
-
-  const handleSetupEventChange = useCallback((eventId: string, newStart: string, newEnd: string, newResourceId: string) => {
-    setSetupShiftRows((prev) =>
-      prev.map((row) => {
-        if (row.id !== eventId) return row;
-        const matchedEmployee = selectedAutoEmployees.find((employee) => employee.id === newResourceId);
-        return {
-          ...row,
-          employeeId: newResourceId,
-          employeeName: matchedEmployee?.name ?? row.employeeName,
-          role: matchedEmployee?.role ?? row.role,
-          startTime: toTimeInputValue(newStart),
-          endTime: toTimeInputValue(newEnd),
-        };
-      }),
-    );
-  }, [selectedAutoEmployees]);
 
   const applySetupShifts = useCallback(() => {
     const setupRowsByShiftId = new Map(
@@ -1053,6 +1026,54 @@ export default function LunchBreaksPage() {
 
     setAutoGuideStep(5);
   }, [dayRows.length, selectedDate, setupShiftRows]);
+
+  const setupTimelineStart = 9 * 60;
+  const setupTimelineEnd = 22 * 60;
+  const setupTimelineWindow = setupTimelineEnd - setupTimelineStart;
+
+  const startSetupDrag = useCallback((event: { clientX: number; currentTarget: EventTarget & HTMLSpanElement }, row: SetupShiftRow) => {
+    const trackEl = (event.currentTarget.parentElement as HTMLElement | null);
+    if (!trackEl) return;
+    const trackBounds = trackEl.getBoundingClientRect();
+    const startMinutes = timeValueToMinutes(row.startTime);
+    const endMinutes = timeValueToMinutes(row.endTime);
+    const durationMinutes = Math.max(30, endMinutes - startMinutes);
+    setSetupDrag({
+      rowId: row.id,
+      startX: event.clientX,
+      trackWidth: Math.max(1, trackBounds.width),
+      originalStartMinutes: startMinutes,
+      durationMinutes,
+    });
+  }, []);
+
+  const onSetupDragMove = useCallback((event: { clientX: number }) => {
+    if (!setupDrag) return;
+    const deltaPx = event.clientX - setupDrag.startX;
+    const deltaMinutesRaw = (deltaPx / setupDrag.trackWidth) * setupTimelineWindow;
+    const deltaMinutes = Math.round(deltaMinutesRaw / 15) * 15;
+    const earliestStart = setupTimelineStart;
+    const latestStart = setupTimelineEnd - setupDrag.durationMinutes;
+    const nextStartMinutes = clamp(setupDrag.originalStartMinutes + deltaMinutes, earliestStart, latestStart);
+    const nextEndMinutes = nextStartMinutes + setupDrag.durationMinutes;
+
+    setSetupShiftRows((prev) =>
+      prev.map((row) =>
+        row.id === setupDrag.rowId
+          ? {
+              ...row,
+              startTime: minutesToTimeValue(nextStartMinutes),
+              endTime: minutesToTimeValue(nextEndMinutes),
+            }
+          : row,
+      ),
+    );
+  }, [setupDrag, setupTimelineWindow]);
+
+  const endSetupDrag = useCallback(() => {
+    if (!setupDrag) return;
+    setSetupDrag(null);
+  }, [setupDrag]);
 
   useEffect(() => {
     if (!(isAutoMode && autoGuideStep === 3)) return;
@@ -1580,68 +1601,114 @@ export default function LunchBreaksPage() {
                     Fine-tune shifts before planning breaks. Drag blocks to move times, or edit names and times manually.
                   </p>
 
-                  {setupResources.length > 0 ? (
-                    <div className="surface-muted" style={{ borderRadius: 12, padding: '0.7rem', display: 'grid', gap: 8 }}>
-                      <div style={{ minHeight: 280, height: 340 }}>
-                        <StaffScheduler
-                          resources={setupResources}
-                          events={setupEvents}
-                          viewMode="day"
-                          initialDate={selectedDate}
-                          compactWindow
-                          onEventChange={handleSetupEventChange}
-                        />
+                  <div
+                    className="surface-muted"
+                    onMouseMove={onSetupDragMove}
+                    onMouseUp={endSetupDrag}
+                    onMouseLeave={endSetupDrag}
+                    style={{ borderRadius: 12, padding: '0.75rem', display: 'grid', gap: 8 }}
+                  >
+                    <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, alignItems: 'center' }}>
+                      <div style={{ fontSize: '0.8rem', fontWeight: 800, color: 'var(--text-primary)' }}>Shift preview</div>
+                      <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>Drag blocks to adjust start/end windows</div>
+                    </div>
+
+                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr 1fr', fontSize: '0.66rem', color: 'var(--text-muted)', fontWeight: 700 }}>
+                      <span>9:00</span>
+                      <span style={{ textAlign: 'center' }}>13:00</span>
+                      <span style={{ textAlign: 'center' }}>17:00</span>
+                      <span style={{ textAlign: 'right' }}>22:00</span>
+                    </div>
+
+                    {setupShiftRows.length > 0 ? (
+                      <div style={{ display: 'grid', gap: 8 }}>
+                        {setupShiftRows.map((row) => {
+                          const rawStart = timeValueToMinutes(row.startTime);
+                          const rawEnd = timeValueToMinutes(row.endTime);
+                          const clampedStart = clamp(rawStart, setupTimelineStart, setupTimelineEnd - 30);
+                          const clampedEnd = clamp(Math.max(rawEnd, clampedStart + 30), clampedStart + 30, setupTimelineEnd);
+                          const duration = clampedEnd - clampedStart;
+                          const leftPct = ((clampedStart - setupTimelineStart) / setupTimelineWindow) * 100;
+                          const widthPct = (duration / setupTimelineWindow) * 100;
+                          return (
+                            <div key={row.id} style={{ display: 'grid', gridTemplateColumns: '180px minmax(0, 1fr)', gap: 8, alignItems: 'center' }}>
+                              <div style={{ minWidth: 0 }}>
+                                <div style={{ fontSize: '0.75rem', fontWeight: 700, color: 'var(--text-primary)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                                  {row.employeeName}
+                                </div>
+                                <div style={{ fontSize: '0.66rem', color: 'var(--text-muted)' }}>{row.role}</div>
+                              </div>
+                              <div style={{ position: 'relative', height: 32, borderRadius: 10, border: '1px solid #d6e0f3', background: '#ffffff' }}>
+                                <span
+                                  role="button"
+                                  tabIndex={0}
+                                  aria-label={`Shift for ${row.employeeName}`}
+                                  onMouseDown={(event) => startSetupDrag(event, row)}
+                                  onKeyDown={(event) => {
+                                    if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return;
+                                    event.preventDefault();
+                                    const delta = event.key === 'ArrowRight' ? 15 : -15;
+                                    const nextStart = clamp(clampedStart + delta, setupTimelineStart, setupTimelineEnd - duration);
+                                    const nextEnd = nextStart + duration;
+                                    setSetupShiftRows((prev) =>
+                                      prev.map((candidate) =>
+                                        candidate.id === row.id
+                                          ? { ...candidate, startTime: minutesToTimeValue(nextStart), endTime: minutesToTimeValue(nextEnd) }
+                                          : candidate,
+                                      ),
+                                    );
+                                  }}
+                                  style={{
+                                    position: 'absolute',
+                                    left: `${leftPct}%`,
+                                    width: `${Math.max(widthPct, 8)}%`,
+                                    top: 4,
+                                    bottom: 4,
+                                    borderRadius: 8,
+                                    background: '#dce9ff',
+                                    border: '1px solid #8fb0ef',
+                                    color: '#23458c',
+                                    display: 'grid',
+                                    placeItems: 'center',
+                                    cursor: 'grab',
+                                    fontSize: '0.66rem',
+                                    fontWeight: 700,
+                                    userSelect: 'none',
+                                  }}
+                                >
+                                  {minutesToTimeValue(clampedStart)}-{minutesToTimeValue(clampedEnd)}
+                                </span>
+                              </div>
+                            </div>
+                          );
+                        })}
                       </div>
-                    </div>
-                  ) : (
-                    <div className="surface-muted" style={{ borderRadius: 12, padding: '0.75rem', fontSize: '0.8rem', color: '#b45309' }}>
-                      Select at least one person in the previous step to configure shifts.
-                    </div>
-                  )}
+                    ) : (
+                      <div style={{ fontSize: '0.78rem', color: '#b45309' }}>
+                        Select at least one person in the previous step to configure shifts.
+                      </div>
+                    )}
+                  </div>
 
                   <div className="surface-muted" style={{ borderRadius: 12, padding: '0.75rem', display: 'grid', gap: 8 }}>
-                    <div style={{ fontSize: '0.8rem', fontWeight: 800, color: 'var(--text-primary)' }}>Manual shift editor</div>
+                    <div style={{ fontSize: '0.8rem', fontWeight: 800, color: 'var(--text-primary)' }}>Manual edit</div>
                     <div style={{ display: 'grid', gap: 8 }}>
                       {setupShiftRows.map((row) => (
-                        <div key={row.id} style={{ display: 'grid', gridTemplateColumns: 'minmax(180px, 1fr) 120px 120px auto', gap: 8, alignItems: 'center' }}>
-                          <select
-                            value={row.employeeId}
-                            onChange={(event) => {
-                              const nextEmployee = selectedAutoEmployees.find((employee) => employee.id === event.target.value);
-                              setSetupShiftRows((prev) =>
-                                prev.map((candidate) =>
-                                  candidate.id === row.id
-                                    ? {
-                                        ...candidate,
-                                        employeeId: event.target.value,
-                                        employeeName: nextEmployee?.name ?? candidate.employeeName,
-                                        role: nextEmployee?.role ?? candidate.role,
-                                      }
-                                    : candidate,
-                                ),
-                              );
-                            }}
-                            style={{
-                              border: '1px solid var(--border)',
-                              borderRadius: 8,
-                              background: '#ffffff',
-                              color: 'var(--text-primary)',
-                              padding: '0.36rem 0.45rem',
-                              fontSize: '0.78rem',
-                            }}
-                          >
-                            {selectedAutoEmployees.map((employee) => (
-                              <option key={`setup-employee-${employee.id}`} value={employee.id}>
-                                {employee.name}
-                              </option>
-                            ))}
-                          </select>
+                        <div key={`manual-${row.id}`} style={{ display: 'grid', gridTemplateColumns: 'minmax(180px, 1fr) 130px 130px', gap: 8, alignItems: 'center' }}>
+                          <div style={{ fontSize: '0.76rem', fontWeight: 700, color: 'var(--text-primary)' }}>{row.employeeName}</div>
                           <input
                             type="time"
                             value={row.startTime}
                             onChange={(event) =>
                               setSetupShiftRows((prev) =>
-                                prev.map((candidate) => (candidate.id === row.id ? { ...candidate, startTime: event.target.value } : candidate)),
+                                prev.map((candidate) => {
+                                  if (candidate.id !== row.id) return candidate;
+                                  const nextStart = event.target.value;
+                                  const nextStartMin = timeValueToMinutes(nextStart);
+                                  const currentEndMin = timeValueToMinutes(candidate.endTime);
+                                  const nextEnd = currentEndMin <= nextStartMin ? minutesToTimeValue(nextStartMin + 30) : candidate.endTime;
+                                  return { ...candidate, startTime: nextStart, endTime: nextEnd };
+                                }),
                               )
                             }
                             style={{
@@ -1658,7 +1725,16 @@ export default function LunchBreaksPage() {
                             value={row.endTime}
                             onChange={(event) =>
                               setSetupShiftRows((prev) =>
-                                prev.map((candidate) => (candidate.id === row.id ? { ...candidate, endTime: event.target.value } : candidate)),
+                                prev.map((candidate) => {
+                                  if (candidate.id !== row.id) return candidate;
+                                  const nextEnd = event.target.value;
+                                  const startMin = timeValueToMinutes(candidate.startTime);
+                                  const endMin = timeValueToMinutes(nextEnd);
+                                  return {
+                                    ...candidate,
+                                    endTime: endMin <= startMin ? minutesToTimeValue(startMin + 30) : nextEnd,
+                                  };
+                                }),
                               )
                             }
                             style={{
@@ -1670,43 +1746,8 @@ export default function LunchBreaksPage() {
                               fontSize: '0.78rem',
                             }}
                           />
-                          <Button
-                            type="button"
-                            variant="outline"
-                            size="sm"
-                            onClick={() => setSetupShiftRows((prev) => prev.filter((candidate) => candidate.id !== row.id))}
-                            disabled={setupShiftRows.length <= 1}
-                          >
-                            Remove
-                          </Button>
                         </div>
                       ))}
-                    </div>
-                    <div>
-                      <Button
-                        type="button"
-                        variant="outline"
-                        size="sm"
-                        onClick={() => {
-                          const firstEmployee = selectedAutoEmployees[0];
-                          if (!firstEmployee) return;
-                          setSetupShiftRows((prev) => [
-                            ...prev,
-                            {
-                              id: `setup-added-${Date.now()}-${prev.length + 1}`,
-                              shiftId: null,
-                              employeeId: firstEmployee.id,
-                              employeeName: firstEmployee.name,
-                              role: firstEmployee.role ?? 'Staff',
-                              startTime: '09:00',
-                              endTime: '17:00',
-                            },
-                          ]);
-                        }}
-                        disabled={selectedAutoEmployees.length === 0}
-                      >
-                        Add shift
-                      </Button>
                     </div>
                   </div>
 
