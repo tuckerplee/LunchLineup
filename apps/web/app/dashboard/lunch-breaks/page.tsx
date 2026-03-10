@@ -177,30 +177,43 @@ const DEFAULT_POLICY: LunchBreakPolicy = {
 };
 
 function toDateInputValue(date: Date): string {
+  if (!Number.isFinite(date.getTime())) {
+    const now = new Date();
+    return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+  }
   const y = date.getFullYear();
   const m = String(date.getMonth() + 1).padStart(2, '0');
   const d = String(date.getDate()).padStart(2, '0');
   return `${y}-${m}-${d}`;
 }
 
-function shiftDate(dateValue: string, days: number): string {
-  const [year, month, day] = dateValue.split('-').map((part) => Number(part));
+function parseDateInputValue(dateValue: string): Date | null {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(dateValue);
+  if (!match) return null;
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
   const date = new Date(year, month - 1, day);
+  if (!Number.isFinite(date.getTime())) return null;
+  return date;
+}
+
+function shiftDate(dateValue: string, days: number): string {
+  const date = parseDateInputValue(dateValue) ?? new Date();
   date.setDate(date.getDate() + days);
   return toDateInputValue(date);
 }
 
 function startOfWeek(dateValue: string): string {
-  const [year, month, day] = dateValue.split('-').map((part) => Number(part));
-  const date = new Date(year, month - 1, day);
+  const date = parseDateInputValue(dateValue) ?? new Date();
   date.setDate(date.getDate() - date.getDay());
   return toDateInputValue(date);
 }
 
 function dayWindow(dateValue: string): { startIso: string; endIso: string } {
-  const [year, month, day] = dateValue.split('-').map((part) => Number(part));
-  const start = new Date(year, month - 1, day, 0, 0, 0, 0);
-  const end = new Date(year, month - 1, day + 1, 0, 0, 0, 0);
+  const base = parseDateInputValue(dateValue) ?? new Date();
+  const start = new Date(base.getFullYear(), base.getMonth(), base.getDate(), 0, 0, 0, 0);
+  const end = new Date(base.getFullYear(), base.getMonth(), base.getDate() + 1, 0, 0, 0, 0);
   return {
     startIso: start.toISOString(),
     endIso: end.toISOString(),
@@ -302,8 +315,9 @@ function resolveShiftIsoForTime(startIso: string, endIso: string, timeValue: str
 function toIsoForDateAndTime(dateValue: string, timeValue: string): string | null {
   const match = /^(\d{2}):(\d{2})$/.exec(timeValue);
   if (!match) return null;
-  const [year, month, day] = dateValue.split('-').map((part) => Number(part));
-  const date = new Date(year, month - 1, day, Number(match[1]), Number(match[2]), 0, 0);
+  const base = parseDateInputValue(dateValue);
+  if (!base) return null;
+  const date = new Date(base.getFullYear(), base.getMonth(), base.getDate(), Number(match[1]), Number(match[2]), 0, 0);
   if (!Number.isFinite(date.getTime())) return null;
   return date.toISOString();
 }
@@ -773,8 +787,8 @@ export default function LunchBreaksPage() {
   }, [dayRows, selectedDate]);
 
   const selectedDateLabel = useMemo(() => {
-    const [year, month, day] = selectedDate.split('-').map((part) => Number(part));
-    return new Date(year, month - 1, day).toLocaleDateString([], {
+    const base = parseDateInputValue(selectedDate) ?? new Date();
+    return base.toLocaleDateString([], {
       weekday: 'long',
       month: 'short',
       day: 'numeric',
@@ -816,8 +830,8 @@ export default function LunchBreaksPage() {
   }, [generateForSelectedDay, generateFromManualShifts, plannerMode]);
 
   const autoCalendarRows = useMemo<AutoCalendarRow[]>(() => {
-    const [year, month, day] = selectedDate.split('-').map((part) => Number(part));
-    const dayStartMs = new Date(year, month - 1, day, 0, 0, 0, 0).getTime();
+    const base = parseDateInputValue(selectedDate) ?? new Date();
+    const dayStartMs = new Date(base.getFullYear(), base.getMonth(), base.getDate(), 0, 0, 0, 0).getTime();
     const windowStartMinutes = 9 * 60;
     const windowEndMinutes = 22 * 60;
     const windowMinutes = windowEndMinutes - windowStartMinutes;
