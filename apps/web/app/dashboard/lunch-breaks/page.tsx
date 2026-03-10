@@ -1,24 +1,9 @@
 'use client';
 
-import dynamic from 'next/dynamic';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
 import { Button } from '@/components/ui/button';
-import type { StaffScheduleEvent } from '@/components/scheduling/StaffScheduler';
 import { fetchWithSession } from '@/lib/client-api';
-
-const StaffScheduler = dynamic(
-  () => import('@/components/scheduling/StaffScheduler').then((m) => m.StaffScheduler),
-  {
-    ssr: false,
-    loading: () => (
-      <div className="surface-card" style={{ minHeight: 520, padding: '1rem' }}>
-        <div className="skeleton" style={{ height: 24, width: 220, marginBottom: '1rem' }} />
-        <div className="skeleton" style={{ height: 420, width: '100%' }} />
-      </div>
-    ),
-  },
-);
 
 type FeatureResolution = {
   enabled: boolean;
@@ -116,14 +101,6 @@ type SetupDragState = {
   durationMinutes: number;
 };
 
-type TimelineResource = {
-  id: string;
-  title: string;
-  role: string;
-  avatarInitials: string;
-  hue: number;
-};
-
 type PlanPreviewSegment = {
   id: string;
   label: string;
@@ -137,6 +114,23 @@ type PlanPreviewRow = {
   employeeName: string;
   shiftLabel: string;
   segments: PlanPreviewSegment[];
+};
+
+type AutoCalendarSegment = {
+  id: string;
+  label: string;
+  tone: 'meal' | 'break';
+  leftPct: number;
+  widthPct: number;
+};
+
+type AutoCalendarRow = {
+  id: string;
+  employeeName: string;
+  shiftLabel: string;
+  shiftLeftPct: number;
+  shiftWidthPct: number;
+  segments: AutoCalendarSegment[];
 };
 
 type EmployeeCard = {
@@ -765,54 +759,58 @@ export default function LunchBreaksPage() {
     }
   }, [generateForSelectedDay, generateFromManualShifts, plannerMode]);
 
-  const timelineResources = useMemo<TimelineResource[]>(
-    () =>
-      dayRows.map((row) => ({
-        id: row.shiftId,
-        title: row.employeeName,
-        role: row.userId ? 'Assigned' : 'Open shift',
-        avatarInitials: getInitials(row.employeeName),
-        hue: hueForName(row.employeeName),
-      })),
-    [dayRows],
-  );
+  const autoCalendarRows = useMemo<AutoCalendarRow[]>(() => {
+    const [year, month, day] = selectedDate.split('-').map((part) => Number(part));
+    const dayStartMs = new Date(year, month - 1, day, 0, 0, 0, 0).getTime();
+    const windowStartMinutes = 9 * 60;
+    const windowEndMinutes = 22 * 60;
+    const windowMinutes = windowEndMinutes - windowStartMinutes;
 
-  const timelineEvents = useMemo<StaffScheduleEvent[]>(() => {
-    return dayRows.flatMap((row) => {
-      const events: StaffScheduleEvent[] = [
-        {
-          id: row.shiftId,
-          resourceId: row.shiftId,
-          title: row.userId ? 'Assigned shift' : 'Open shift',
-          start: row.startTime,
-          end: row.endTime,
-          extendedProps: { role: row.userId ? 'MANAGER' : 'DEFAULT' },
-        },
-      ];
+    const toMinutesFromDayStart = (iso: string): number => {
+      const ms = new Date(iso).getTime();
+      return (ms - dayStartMs) / 60000;
+    };
 
-      for (const key of BREAK_KEYS) {
+    return dayRows.map((row) => {
+      const rawShiftStartMinutes = toMinutesFromDayStart(row.startTime);
+      const rawShiftEndMinutes = toMinutesFromDayStart(row.endTime);
+      const shiftStartMinutes = clamp(rawShiftStartMinutes, windowStartMinutes, windowEndMinutes - 15);
+      const shiftEndMinutes = clamp(Math.max(rawShiftEndMinutes, shiftStartMinutes + 15), shiftStartMinutes + 15, windowEndMinutes);
+      const shiftLeftPct = ((shiftStartMinutes - windowStartMinutes) / windowMinutes) * 100;
+      const shiftWidthPct = ((shiftEndMinutes - shiftStartMinutes) / windowMinutes) * 100;
+
+      const segments: AutoCalendarSegment[] = BREAK_KEYS.flatMap((key) => {
         const current = row[key];
-        if (current.skipped || !current.time) continue;
-        const resolvedStart = resolveShiftIsoForTime(row.startTime, row.endTime, current.time);
-        if (!resolvedStart) continue;
-        const end = new Date(resolvedStart);
-        end.setMinutes(end.getMinutes() + Math.max(1, current.durationMinutes || 0));
-        events.push({
+        if (current.skipped || !current.time) return [];
+        const startIso = resolveShiftIsoForTime(row.startTime, row.endTime, current.time);
+        if (!startIso) return [];
+        const startMinutes = toMinutesFromDayStart(startIso);
+        const endMinutes = startMinutes + Math.max(1, current.durationMinutes || 0);
+        const clampedStart = clamp(startMinutes, windowStartMinutes, windowEndMinutes - 1);
+        const clampedEnd = clamp(Math.max(endMinutes, clampedStart + 1), clampedStart + 1, windowEndMinutes);
+        return [{
           id: `${row.shiftId}-${key}`,
-          resourceId: row.shiftId,
-          title: BREAK_META[key].label,
-          start: resolvedStart,
-          end: end.toISOString(),
-          extendedProps: {
-            role: row.userId ? 'MANAGER' : 'DEFAULT',
-            kind: key === 'lunch' ? 'lunch' : 'break',
-          },
-        });
-      }
+          label: key === 'lunch' ? 'Lunch' : 'Break',
+          tone: key === 'lunch' ? 'meal' : 'break',
+          leftPct: ((clampedStart - windowStartMinutes) / windowMinutes) * 100,
+          widthPct: ((clampedEnd - clampedStart) / windowMinutes) * 100,
+        }];
+      });
 
-      return events;
+      return {
+        id: row.shiftId,
+        employeeName: row.employeeName,
+        shiftLabel: toDisplayShift(row.startTime, row.endTime),
+        shiftLeftPct: clamp(shiftLeftPct, 0, 96),
+        shiftWidthPct: clamp(shiftWidthPct, 4, 100),
+        segments: segments.map((segment) => ({
+          ...segment,
+          leftPct: clamp(segment.leftPct, 0, 96),
+          widthPct: clamp(segment.widthPct, 2.5, 100),
+        })),
+      };
     });
-  }, [dayRows]);
+  }, [dayRows, selectedDate]);
 
   const selectedRow = useMemo(() => {
     if (!selectedShiftId) return null;
@@ -1826,17 +1824,83 @@ export default function LunchBreaksPage() {
                 </div>
                 <div style={{ minHeight: 0, flex: 1 }}>
                   {hasSharedRows ? (
-                    <StaffScheduler
-                      resources={timelineResources}
-                      events={timelineEvents}
-                      viewMode="day"
-                      initialDate={selectedDate}
-                      compactWindow
-                      onEventSelect={(event) => {
-                        if (event.extendedProps.kind) return;
-                        setSelectedShiftId(event.id);
-                      }}
-                    />
+                    <div className="surface-muted" style={{ padding: '0.7rem', display: 'grid', gap: 8, minHeight: '100%' }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, alignItems: 'center' }}>
+                        <div style={{ fontSize: '0.82rem', fontWeight: 800, color: 'var(--text-primary)' }}>
+                          Calendar schedule for {selectedDateLabel}
+                        </div>
+                        <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>
+                          Shift + lunch/break placement
+                        </div>
+                      </div>
+
+                      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr 1fr', fontSize: '0.66rem', color: 'var(--text-muted)', fontWeight: 700 }}>
+                        <span>9:00</span>
+                        <span style={{ textAlign: 'center' }}>13:00</span>
+                        <span style={{ textAlign: 'center' }}>17:00</span>
+                        <span style={{ textAlign: 'right' }}>22:00</span>
+                      </div>
+
+                      <div style={{ display: 'grid', gap: 8, minHeight: 0, overflowY: 'auto', paddingRight: 2 }}>
+                        {autoCalendarRows.map((row) => (
+                          <button
+                            key={`planner-calendar-${row.id}`}
+                            type="button"
+                            onClick={() => setSelectedShiftId(row.id)}
+                            style={{
+                              border: selectedShiftId === row.id ? '1px solid #83a8ff' : '1px solid #d6e0f3',
+                              borderRadius: 10,
+                              background: selectedShiftId === row.id ? '#edf3ff' : '#ffffff',
+                              padding: '0.55rem',
+                              display: 'grid',
+                              gridTemplateColumns: '180px minmax(0, 1fr)',
+                              gap: 8,
+                              alignItems: 'center',
+                              textAlign: 'left',
+                              cursor: 'pointer',
+                            }}
+                          >
+                            <div style={{ minWidth: 0 }}>
+                              <div style={{ fontSize: '0.76rem', fontWeight: 800, color: 'var(--text-primary)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                                {row.employeeName}
+                              </div>
+                              <div style={{ fontSize: '0.66rem', color: 'var(--text-muted)' }}>{row.shiftLabel}</div>
+                            </div>
+
+                            <div style={{ position: 'relative', height: 30, borderRadius: 999, border: '1px solid #d6e0f3', background: '#f6f9ff' }}>
+                              <span
+                                style={{
+                                  position: 'absolute',
+                                  left: `${row.shiftLeftPct}%`,
+                                  width: `${row.shiftWidthPct}%`,
+                                  top: 3,
+                                  bottom: 3,
+                                  borderRadius: 999,
+                                  background: '#d9e8ff',
+                                  border: '1px solid #9ebdf0',
+                                }}
+                              />
+                              {row.segments.map((segment) => (
+                                <span
+                                  key={segment.id}
+                                  title={segment.label}
+                                  style={{
+                                    position: 'absolute',
+                                    left: `${segment.leftPct}%`,
+                                    width: `${segment.widthPct}%`,
+                                    top: 7,
+                                    bottom: 7,
+                                    borderRadius: 999,
+                                    background: segment.tone === 'meal' ? '#b7e3be' : '#b8d8f7',
+                                    border: segment.tone === 'meal' ? '1px solid #74b782' : '1px solid #6aa8de',
+                                  }}
+                                />
+                              ))}
+                            </div>
+                          </button>
+                        ))}
+                      </div>
+                    </div>
                   ) : (
                     <div className="surface-muted" style={{ padding: '0.75rem' }}>
                       <div style={{ fontWeight: 800, color: 'var(--text-primary)', marginBottom: 2 }}>
