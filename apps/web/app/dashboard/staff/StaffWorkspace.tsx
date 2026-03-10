@@ -154,9 +154,9 @@ export function StaffWorkspace({ canManage }: StaffWorkspaceProps) {
         try {
             const res = await fetchWithSession(`/users/${id}/pin/reset`, jsonWriteInit('POST'));
             if (!res.ok) throw new Error('Failed to reset PIN.');
-            const payload = (await res.json().catch(() => ({}))) as { temporaryPin?: string };
+            const payload = (await res.json().catch(() => ({}))) as { temporaryPin?: string; username?: string };
             setUsers((prev) => prev.map((u) => (
-                u.id === id ? { ...u, pinEnabled: true, pinResetRequired: true } : u
+                u.id === id ? { ...u, username: payload.username ?? u.username, pinEnabled: true, pinResetRequired: true } : u
             )));
             setLastTemporaryPin(payload.temporaryPin ?? null);
         } catch (err) {
@@ -330,7 +330,7 @@ export function StaffWorkspace({ canManage }: StaffWorkspaceProps) {
                                         <span>{u.email}</span>
                                     ) : (
                                         <div style={{ display: 'grid', gap: '0.15rem' }}>
-                                            <span style={{ fontFamily: 'var(--font-mono)' }}>{u.username || '—'}</span>
+                                            <span style={{ fontFamily: 'var(--font-mono)' }}>{u.username || 'No username yet'}</span>
                                             <span style={{ fontSize: '0.72rem', color: u.pinResetRequired ? '#cb3653' : 'var(--text-muted)' }}>
                                                 {u.pinEnabled ? (u.pinResetRequired ? 'PIN reset required' : 'PIN active') : 'PIN not set'}
                                             </span>
