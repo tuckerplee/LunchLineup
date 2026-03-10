@@ -133,6 +133,14 @@ type AutoCalendarRow = {
   segments: AutoCalendarSegment[];
 };
 
+type LunchBreakDaySession = {
+  mode: 'auto' | 'manual';
+  autoSetupComplete: boolean;
+  lastShiftId: string | null;
+};
+
+const LUNCH_BREAKS_SESSION_KEY = 'lunch-breaks/day-session/v1';
+
 type EmployeeCard = {
   id: string;
   name: string;
@@ -378,6 +386,23 @@ function jsonWriteInit(method: 'POST' | 'PUT', payload: unknown): RequestInit {
   };
 }
 
+function readLunchBreakSession(): Record<string, LunchBreakDaySession> {
+  if (typeof window === 'undefined') return {};
+  try {
+    const raw = window.localStorage.getItem(LUNCH_BREAKS_SESSION_KEY);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw) as Record<string, LunchBreakDaySession>;
+    return parsed && typeof parsed === 'object' ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+function writeLunchBreakSession(next: Record<string, LunchBreakDaySession>): void {
+  if (typeof window === 'undefined') return;
+  window.localStorage.setItem(LUNCH_BREAKS_SESSION_KEY, JSON.stringify(next));
+}
+
 function breakStatusLabel(current: EditableBreak): string {
   if (current.skipped) return 'Skipped';
   if (!current.time) return 'Missing time';
@@ -408,6 +433,19 @@ export default function LunchBreaksPage() {
   const [isLoadingEmployees, setIsLoadingEmployees] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const initialSelectedDateRef = useRef(selectedDate);
+  const hasRestoredSessionRef = useRef<string | null>(null);
+
+  const updateDaySession = useCallback((changes: Partial<LunchBreakDaySession>) => {
+    const currentMap = readLunchBreakSession();
+    const current = currentMap[selectedDate] ?? {
+      mode: 'auto',
+      autoSetupComplete: false,
+      lastShiftId: null,
+    };
+    const next: LunchBreakDaySession = { ...current, ...changes };
+    currentMap[selectedDate] = next;
+    writeLunchBreakSession(currentMap);
+  }, [selectedDate]);
 
   const loadFeatures = useCallback(async (): Promise<FeatureMatrixResponse> => {
     const res = await fetchWithSession('/billing/features');
@@ -493,6 +531,21 @@ export default function LunchBreaksPage() {
       setError((err as Error).message);
     });
   }, [isLoading, loadDayRows, lunchBreakFeature?.enabled, policyLoaded, selectedDate]);
+
+  useEffect(() => {
+    if (isLoading) return;
+    if (!lunchBreakFeature?.enabled) return;
+    if (hasRestoredSessionRef.current === selectedDate) return;
+
+    hasRestoredSessionRef.current = selectedDate;
+    const daySession = readLunchBreakSession()[selectedDate];
+    if (!daySession) return;
+
+    setPlannerMode(daySession.mode);
+    if (daySession.mode === 'auto' && daySession.autoSetupComplete) {
+      setAutoGuideStep(5);
+    }
+  }, [isLoading, lunchBreakFeature?.enabled, selectedDate]);
 
   const updateBreak = useCallback((shiftId: string, key: BreakEditorKey, next: Partial<EditableBreak>) => {
     setDayRows((prev) =>
@@ -636,13 +689,14 @@ export default function LunchBreaksPage() {
 
       const payload = (await res.json()) as GenerateResponse;
       setLastRun(payload);
+      updateDaySession({ mode: 'auto', autoSetupComplete: true, lastShiftId: selectedShiftId ?? null });
       await loadDayRows(selectedDate, policyLoaded);
     } catch (err) {
       setError((err as Error).message);
     } finally {
       setIsGeneratingDay(false);
     }
-  }, [dayRows, hasSchedulingEnabled, loadDayRows, policy, policyLoaded, selectedAutoEmployeeIds, selectedDate]);
+  }, [dayRows, hasSchedulingEnabled, loadDayRows, policy, policyLoaded, selectedAutoEmployeeIds, selectedDate, selectedShiftId, updateDaySession]);
 
   const addManualShift = useCallback(() => {
     const nextIndex = manualShifts.length + 1;
@@ -712,9 +766,11 @@ export default function LunchBreaksPage() {
     setSelectedShiftId((current) => {
       if (dayRows.length === 0) return null;
       if (current && dayRows.some((row) => row.shiftId === current)) return current;
+      const remembered = readLunchBreakSession()[selectedDate]?.lastShiftId;
+      if (remembered && dayRows.some((row) => row.shiftId === remembered)) return remembered;
       return dayRows[0].shiftId;
     });
-  }, [dayRows]);
+  }, [dayRows, selectedDate]);
 
   const selectedDateLabel = useMemo(() => {
     const [year, month, day] = selectedDate.split('-').map((part) => Number(part));
@@ -816,6 +872,52 @@ export default function LunchBreaksPage() {
     if (!selectedShiftId) return null;
     return dayRows.find((row) => row.shiftId === selectedShiftId) ?? null;
   }, [dayRows, selectedShiftId]);
+
+  useEffect(() => {
+    if (!(plannerMode === 'auto' && autoGuideStep >= 5)) return;
+    if (!selectedRow || !selectedRow.dirty || selectedRow.saving) return;
+
+    const timeout = window.setTimeout(() => {
+      void saveRow(selectedRow.shiftId);
+    }, 650);
+
+    return () => window.clearTimeout(timeout);
+  }, [autoGuideStep, plannerMode, saveRow, selectedRow]);
+
+  useEffect(() => {
+    if (!plannerMode) return;
+    updateDaySession({ mode: plannerMode });
+  }, [plannerMode, updateDaySession]);
+
+  useEffect(() => {
+    if (!(plannerMode === 'auto' && autoGuideStep >= 5)) return;
+    updateDaySession({ lastShiftId: selectedShiftId ?? null });
+  }, [autoGuideStep, plannerMode, selectedShiftId, updateDaySession]);
+
+  useEffect(() => {
+    if (!(plannerMode === 'auto' && autoGuideStep >= 5)) return;
+    if (!lunchBreakFeature?.enabled) return;
+    if (isDayLoading || isGeneratingDay) return;
+    if (dayRows.some((row) => row.dirty || row.saving)) return;
+
+    const interval = window.setInterval(() => {
+      void loadDayRows(selectedDate, policyLoaded).catch(() => {
+        // keep polling silent; explicit errors are surfaced on direct user actions
+      });
+    }, 8000);
+
+    return () => window.clearInterval(interval);
+  }, [
+    autoGuideStep,
+    dayRows,
+    isDayLoading,
+    isGeneratingDay,
+    loadDayRows,
+    lunchBreakFeature?.enabled,
+    plannerMode,
+    policyLoaded,
+    selectedDate,
+  ]);
 
   const standalonePreview = useMemo(
     () => (lastRun?.source === 'standalone' ? lastRun.data : []),
@@ -983,6 +1085,11 @@ export default function LunchBreaksPage() {
   }, [autoGuideStep, dayRows, isAutoMode, selectedAutoEmployeeIds, selectedAutoEmployees]);
 
   const applySetupShifts = useCallback(() => {
+    const persistedUserIds = new Set<string>([
+      ...availableEmployees.map((employee) => employee.id),
+      ...dayRows.map((row) => row.userId).filter((value): value is string => Boolean(value)),
+    ]);
+
     const setupRowsByShiftId = new Map(
       setupShiftRows
         .filter((row) => Boolean(row.shiftId))
@@ -990,22 +1097,33 @@ export default function LunchBreaksPage() {
     );
 
     if (setupRowsByShiftId.size > 0) {
-      setDayRows((prev) =>
-        prev.map((row) => {
-          const setupRow = setupRowsByShiftId.get(row.shiftId);
-          if (!setupRow) return row;
+      void Promise.all(
+        Array.from(setupRowsByShiftId.values()).map(async (setupRow) => {
           const range = toShiftRangeIso(selectedDate, setupRow.startTime, setupRow.endTime);
-          if (!range) return row;
-          return {
-            ...row,
-            userId: setupRow.employeeId,
-            employeeName: setupRow.employeeName,
+          if (!range || !setupRow.shiftId) return;
+
+          const body: Record<string, string> = {
             startTime: range.startIso,
             endTime: range.endIso,
-            dirty: true,
           };
+          if (persistedUserIds.has(setupRow.employeeId)) {
+            body.userId = setupRow.employeeId;
+          }
+
+          const res = await fetchWithSession(`/shifts/${setupRow.shiftId}`, {
+            ...jsonWriteInit('PUT', body),
+          });
+          if (!res.ok) {
+            throw new Error(`Failed to persist shift update for ${setupRow.employeeName}.`);
+          }
         }),
-      );
+      )
+        .then(async () => {
+          await loadDayRows(selectedDate, policyLoaded);
+        })
+        .catch((err) => {
+          setError((err as Error).message);
+        });
     }
 
     const manualRows = setupShiftRows.filter((row) => !row.shiftId);
@@ -1019,11 +1137,22 @@ export default function LunchBreaksPage() {
         })),
       );
       setPlannerMode('manual');
+      updateDaySession({ mode: 'manual', autoSetupComplete: true });
       return;
     }
 
+    updateDaySession({ mode: 'auto', autoSetupComplete: true, lastShiftId: selectedShiftId ?? null });
     setAutoGuideStep(5);
-  }, [dayRows.length, selectedDate, setupShiftRows]);
+  }, [
+    availableEmployees,
+    dayRows,
+    loadDayRows,
+    policyLoaded,
+    selectedDate,
+    selectedShiftId,
+    setupShiftRows,
+    updateDaySession,
+  ]);
 
   const setupTimelineStart = 9 * 60;
   const setupTimelineEnd = 22 * 60;
