@@ -148,6 +148,10 @@ type EmployeeCard = {
   source: 'scheduled' | 'available';
 };
 
+type LocationRecord = {
+  id: string;
+};
+
 const BREAK_KEYS: BreakEditorKey[] = ['break1', 'lunch', 'break2'];
 
 const BREAK_META: Record<BreakEditorKey, { label: string; minimumDuration: number }> = {
@@ -448,6 +452,7 @@ export default function LunchBreaksPage() {
   const [setupShiftRows, setSetupShiftRows] = useState<SetupShiftRow[]>([]);
   const [setupDrag, setSetupDrag] = useState<SetupDragState | null>(null);
   const [isLoadingEmployees, setIsLoadingEmployees] = useState(false);
+  const [primaryLocationId, setPrimaryLocationId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const initialSelectedDateRef = useRef(selectedDate);
   const hasRestoredSessionRef = useRef<string | null>(null);
@@ -486,6 +491,18 @@ export default function LunchBreaksPage() {
     const payload = (await res.json()) as Partial<LunchBreakPolicy>;
     return { ...DEFAULT_POLICY, ...payload };
   }, []);
+
+  const ensurePrimaryLocationId = useCallback(async (): Promise<string | null> => {
+    if (primaryLocationId) return primaryLocationId;
+    const res = await fetchWithSession('/locations');
+    if (!res.ok) return null;
+    const payload = (await res.json()) as { data?: LocationRecord[] };
+    const id = Array.isArray(payload.data) && payload.data.length > 0 ? payload.data[0]?.id ?? null : null;
+    if (id) {
+      setPrimaryLocationId(id);
+    }
+    return id;
+  }, [primaryLocationId]);
 
   const loadDayRows = useCallback(async (dateValue: string, policyValue: LunchBreakPolicy): Promise<DayShiftRow[]> => {
     const { startIso, endIso } = dayWindow(dateValue);
@@ -1136,7 +1153,7 @@ export default function LunchBreaksPage() {
     });
   }, [autoGuideStep, dayRows, isAutoMode, selectedAutoEmployeeIds, selectedAutoEmployees]);
 
-  const applySetupShifts = useCallback(() => {
+  const applySetupShifts = useCallback(async () => {
     const persistedUserIds = new Set<string>([
       ...availableEmployees.map((employee) => employee.id),
       ...dayRows.map((row) => row.userId).filter((value): value is string => Boolean(value)),
@@ -1148,56 +1165,75 @@ export default function LunchBreaksPage() {
         .map((row) => [row.shiftId as string, row]),
     );
 
-    if (setupRowsByShiftId.size > 0) {
-      void Promise.all(
-        Array.from(setupRowsByShiftId.values()).map(async (setupRow) => {
-          const range = toShiftRangeIso(selectedDate, setupRow.startTime, setupRow.endTime);
-          if (!range || !setupRow.shiftId) return;
+    try {
+      setError(null);
 
-          const body: Record<string, string> = {
-            startTime: range.startIso,
-            endTime: range.endIso,
-          };
-          if (persistedUserIds.has(setupRow.employeeId)) {
-            body.userId = setupRow.employeeId;
-          }
+      if (setupRowsByShiftId.size > 0) {
+        await Promise.all(
+          Array.from(setupRowsByShiftId.values()).map(async (setupRow) => {
+            const range = toShiftRangeIso(selectedDate, setupRow.startTime, setupRow.endTime);
+            if (!range || !setupRow.shiftId) return;
 
-          const res = await fetchWithSession(`/shifts/${setupRow.shiftId}`, {
-            ...jsonWriteInit('PUT', body),
-          });
-          if (!res.ok) {
-            throw new Error(`Failed to persist shift update for ${setupRow.employeeName}.`);
-          }
-        }),
-      )
-        .then(async () => {
-          await loadDayRows(selectedDate, policyLoaded);
-        })
-        .catch((err) => {
-          setError((err as Error).message);
-        });
+            const body: Record<string, string> = {
+              startTime: range.startIso,
+              endTime: range.endIso,
+            };
+            if (persistedUserIds.has(setupRow.employeeId)) {
+              body.userId = setupRow.employeeId;
+            }
+
+            const res = await fetchWithSession(`/shifts/${setupRow.shiftId}`, {
+              ...jsonWriteInit('PUT', body),
+            });
+            if (!res.ok) {
+              throw new Error(`Failed to persist shift update for ${setupRow.employeeName}.`);
+            }
+          }),
+        );
+      }
+
+      const newRows = setupShiftRows.filter((row) => !row.shiftId);
+      if (newRows.length > 0) {
+        const locationId = await ensurePrimaryLocationId();
+        if (!locationId) {
+          throw new Error('Cannot persist shifts because no location is configured for this workspace.');
+        }
+
+        await Promise.all(
+          newRows.map(async (setupRow) => {
+            const range = toShiftRangeIso(selectedDate, setupRow.startTime, setupRow.endTime);
+            if (!range) return;
+
+            const body: Record<string, string> = {
+              locationId,
+              startTime: range.startIso,
+              endTime: range.endIso,
+            };
+            if (persistedUserIds.has(setupRow.employeeId)) {
+              body.userId = setupRow.employeeId;
+            }
+
+            const res = await fetchWithSession('/shifts', {
+              ...jsonWriteInit('POST', body),
+            });
+            if (!res.ok) {
+              throw new Error(`Failed to create shift for ${setupRow.employeeName}.`);
+            }
+          }),
+        );
+      }
+
+      await loadDayRows(selectedDate, policyLoaded);
+      setPlannerMode('auto');
+      updateDaySession({ mode: 'auto', autoSetupComplete: true, lastShiftId: selectedShiftId ?? null });
+      setAutoGuideStep(5);
+    } catch (err) {
+      setError((err as Error).message);
     }
-
-    const manualRows = setupShiftRows.filter((row) => !row.shiftId);
-    if (dayRows.length === 0 && manualRows.length > 0) {
-      setManualShifts(
-        manualRows.map((row, index) => ({
-          id: `manual-from-setup-${index + 1}`,
-          employeeName: row.employeeName,
-          startTime: row.startTime,
-          endTime: row.endTime,
-        })),
-      );
-      setPlannerMode('manual');
-      updateDaySession({ mode: 'manual', autoSetupComplete: true });
-      return;
-    }
-
-    updateDaySession({ mode: 'auto', autoSetupComplete: true, lastShiftId: selectedShiftId ?? null });
-    setAutoGuideStep(5);
   }, [
     availableEmployees,
     dayRows,
+    ensurePrimaryLocationId,
     loadDayRows,
     policyLoaded,
     selectedDate,
