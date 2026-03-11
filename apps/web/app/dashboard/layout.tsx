@@ -2,8 +2,9 @@
 
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { LunchLineupMark } from '@/components/branding/LunchLineupMark';
+import { fetchJsonWithSession } from '@/lib/client-api';
 import {
   Bell,
   CalendarDays,
@@ -17,6 +18,8 @@ import {
   UtensilsCrossed,
 } from 'lucide-react';
 
+type DashboardRole = 'SUPER_ADMIN' | 'ADMIN' | 'MANAGER' | 'STAFF';
+
 const NAV_ITEMS = [
   { href: '/dashboard', label: 'Overview', icon: LayoutGrid, exact: true },
   { href: '/dashboard/scheduling', label: 'Scheduling', icon: CalendarDays, exact: false, priority: 'strong', badge: 3 },
@@ -28,6 +31,7 @@ const NAV_ITEMS = [
 
 export default function DashboardLayout({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
+  const [role, setRole] = useState<DashboardRole | null>(null);
   const [notificationsOpen, setNotificationsOpen] = useState(false);
   const notifications = [
     { id: 'swap-1', text: 'Bob T. requested shift swap', tone: 'var(--amber)' },
@@ -35,10 +39,40 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
   ];
   const notifCount = notifications.length;
 
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadRole() {
+      try {
+        const response = await fetchJsonWithSession<{ user?: { role?: DashboardRole } }>('/auth/me');
+        if (!cancelled) {
+          setRole(response.user?.role ?? null);
+        }
+      } catch {
+        if (!cancelled) {
+          setRole(null);
+        }
+      }
+    }
+
+    void loadRole();
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const visibleNavItems = useMemo(() => {
+    if (role === 'STAFF' || role === null) {
+      return NAV_ITEMS.filter((item) => !['/dashboard/staff', '/dashboard/locations', '/dashboard/settings'].includes(item.href));
+    }
+    return NAV_ITEMS;
+  }, [role]);
+
   const currentPage = useMemo(() => {
-    const match = NAV_ITEMS.find((item) => (item.exact ? pathname === item.href : pathname.startsWith(item.href)));
+    const match = visibleNavItems.find((item) => (item.exact ? pathname === item.href : pathname.startsWith(item.href)));
     return match?.label ?? 'Workspace';
-  }, [pathname]);
+  }, [pathname, visibleNavItems]);
 
   return (
     <div className="workspace-shell">
@@ -87,7 +121,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
           </div>
 
           <nav style={{ padding: '0.5rem 0.75rem', display: 'flex', flexDirection: 'column', gap: 4, flex: 1 }}>
-            {NAV_ITEMS.map((item) => {
+            {visibleNavItems.map((item) => {
               const Icon = item.icon;
               const isActive = item.exact ? pathname === item.href : pathname.startsWith(item.href);
               return (
