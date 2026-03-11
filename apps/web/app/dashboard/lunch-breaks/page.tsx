@@ -1968,15 +1968,83 @@ export default function LunchBreaksPage() {
             height: 'calc(100vh - 250px)',
             display: 'grid',
             gridTemplateColumns: 'minmax(0, 1fr) clamp(290px, 24vw, 340px)',
-            gap: '0.75rem',
+            gap: '0.85rem',
           }}
         >
-          <div className="surface-card" style={{ padding: '0.85rem', minWidth: 0, minHeight: 0, display: 'flex', flexDirection: 'column', gap: '0.65rem' }}>
+          <div
+            className="surface-card"
+            style={{
+              padding: '0.9rem',
+              minWidth: 0,
+              minHeight: 0,
+              display: 'flex',
+              flexDirection: 'column',
+              gap: '0.75rem',
+              background:
+                'radial-gradient(34rem 16rem at 2% 0%, rgba(47, 99, 255, 0.12), transparent 68%), radial-gradient(30rem 14rem at 100% 100%, rgba(34, 184, 207, 0.1), transparent 70%), #ffffff',
+            }}
+          >
+            <div
+              className="surface-muted"
+              style={{
+                borderRadius: 12,
+                padding: '0.72rem 0.8rem',
+                display: 'grid',
+                gap: 8,
+                border: '1px solid #d8e4ff',
+                background: 'linear-gradient(145deg, #f8fbff 0%, #edf4ff 100%)',
+              }}
+            >
+              <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, alignItems: 'baseline', flexWrap: 'wrap' }}>
+                <div style={{ display: 'grid', gap: 2 }}>
+                  <span style={{ fontSize: '0.68rem', fontWeight: 800, letterSpacing: '0.06em', textTransform: 'uppercase', color: '#355fbf' }}>
+                    Planner flow
+                  </span>
+                  <strong style={{ fontSize: '0.95rem', color: 'var(--text-primary)' }}>Lunch & break canvas for {selectedDateLabel}</strong>
+                </div>
+                <span style={{ fontSize: '0.76rem', color: '#294f9e', fontWeight: 700 }}>
+                  {isAutoMode ? 'Auto mode' : 'Manual mode'}
+                </span>
+              </div>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, minmax(0, 1fr))', gap: 6 }}>
+                {[
+                  { label: '1. Load shifts', active: isAutoMode ? hasSharedRows : manualCalendarRows.length > 0 },
+                  { label: '2. Review calendar', active: isAutoMode ? hasSharedRows : manualCalendarRows.length > 0 },
+                  { label: '3. Assign breaks', active: isAutoMode ? Boolean(selectedRow) || dirtyCount > 0 : standalonePreview.length > 0 },
+                ].map((step) => (
+                  <span
+                    key={step.label}
+                    style={{
+                      borderRadius: 999,
+                      border: step.active ? '1px solid #8aaef7' : '1px solid #d7deee',
+                      background: step.active ? '#eaf1ff' : '#ffffff',
+                      color: step.active ? '#214aa8' : 'var(--text-muted)',
+                      fontSize: '0.72rem',
+                      fontWeight: 700,
+                      padding: '0.3rem 0.5rem',
+                      textAlign: 'center',
+                    }}
+                  >
+                    {step.label}
+                  </span>
+                ))}
+              </div>
+            </div>
             {isAutoMode ? (
               <>
                 <div style={{ minHeight: 0, flex: 1, width: 'min(1180px, 100%)', margin: '0 auto', display: 'grid' }}>
                   {hasSharedRows ? (
-                    <div className="surface-muted" style={{ padding: '0.95rem', display: 'grid', gap: 10, minHeight: '100%' }}>
+                    <div
+                      className="surface-muted"
+                      style={{
+                        padding: '0.95rem',
+                        display: 'grid',
+                        gap: 10,
+                        minHeight: '100%',
+                        border: '1px solid #d9e5ff',
+                        background: 'linear-gradient(180deg, #ffffff 0%, #f8fbff 100%)',
+                      }}
+                    >
                       <div style={{ display: 'grid', justifyItems: 'center', gap: 3, textAlign: 'center' }}>
                         <div style={{ fontSize: '1rem', fontWeight: 900, color: 'var(--text-primary)' }}>
                           Calendar schedule for {selectedDateLabel}
@@ -1997,10 +2065,12 @@ export default function LunchBreaksPage() {
 
                       <div style={{ display: 'grid', gap: 8, minHeight: 0, overflowY: 'auto', paddingRight: 2 }}>
                         {autoCalendarRows.map((row) => (
-                          <button
+                          <motion.button
                             key={`planner-calendar-${row.id}`}
                             type="button"
                             onClick={() => setSelectedShiftId(row.id)}
+                            whileHover={{ y: -1, boxShadow: '0 10px 18px rgba(35, 78, 217, 0.09)' }}
+                            transition={{ duration: 0.16 }}
                             style={{
                               border: selectedShiftId === row.id ? '1px solid #83a8ff' : '1px solid #d6e0f3',
                               borderRadius: 10,
@@ -2012,6 +2082,7 @@ export default function LunchBreaksPage() {
                               alignItems: 'center',
                               textAlign: 'left',
                               cursor: 'pointer',
+                              transition: 'border-color 120ms ease, background-color 120ms ease, box-shadow 120ms ease, transform 120ms ease',
                             }}
                           >
                             <div style={{ minWidth: 0 }}>
@@ -2051,7 +2122,7 @@ export default function LunchBreaksPage() {
                                 />
                               ))}
                             </div>
-                          </button>
+                          </motion.button>
                         ))}
                       </div>
                     </div>
@@ -2097,7 +2168,17 @@ export default function LunchBreaksPage() {
             ) : (
               <div style={{ display: 'grid', gap: '0.72rem', minHeight: 0, overflowY: 'auto', padding: '0.1rem', width: 'min(1180px, 100%)', margin: '0 auto' }}>
                 {manualCalendarRows.length > 0 ? (
-                  <div className="surface-muted" style={{ padding: '1rem', display: 'grid', gap: 10, minHeight: '100%' }}>
+                  <div
+                    className="surface-muted"
+                    style={{
+                      padding: '1rem',
+                      display: 'grid',
+                      gap: 10,
+                      minHeight: '100%',
+                      border: '1px solid #d9e5ff',
+                      background: 'linear-gradient(180deg, #ffffff 0%, #f8fbff 100%)',
+                    }}
+                  >
                     <div style={{ display: 'grid', justifyItems: 'center', gap: 3, textAlign: 'center' }}>
                       <div style={{ fontSize: '1rem', fontWeight: 900, color: 'var(--text-primary)' }}>
                         Calendar draft for {selectedDateLabel}
@@ -2116,8 +2197,10 @@ export default function LunchBreaksPage() {
 
                     <div style={{ display: 'grid', gap: 8, alignContent: 'start' }}>
                       {manualCalendarRows.map((row) => (
-                        <div
+                        <motion.div
                           key={`manual-calendar-${row.id}`}
+                          whileHover={{ y: -1, boxShadow: '0 10px 18px rgba(35, 78, 217, 0.09)' }}
+                          transition={{ duration: 0.16 }}
                           style={{
                             border: '1px solid #d6e0f3',
                             borderRadius: 10,
@@ -2127,6 +2210,7 @@ export default function LunchBreaksPage() {
                             gridTemplateColumns: '180px minmax(0, 1fr)',
                             gap: 8,
                             alignItems: 'center',
+                            transition: 'border-color 120ms ease, box-shadow 120ms ease, transform 120ms ease',
                           }}
                         >
                           <div style={{ minWidth: 0 }}>
@@ -2149,7 +2233,7 @@ export default function LunchBreaksPage() {
                               }}
                             />
                           </div>
-                        </div>
+                        </motion.div>
                       ))}
                     </div>
                   </div>
@@ -2169,8 +2253,19 @@ export default function LunchBreaksPage() {
             )}
           </div>
 
-          <aside className="surface-card" style={{ padding: '0.85rem', display: 'flex', flexDirection: 'column', gap: '0.72rem', overflowY: 'auto' }}>
-            <h3 style={{ margin: 0, fontSize: '0.92rem', fontWeight: 800 }}>Action pane</h3>
+          <aside
+            className="surface-card"
+            style={{
+              padding: '0.85rem',
+              display: 'flex',
+              flexDirection: 'column',
+              gap: '0.72rem',
+              overflowY: 'auto',
+              border: '1px solid #d7e3ff',
+              background: 'linear-gradient(180deg, #ffffff 0%, #f7faff 100%)',
+            }}
+          >
+            <h3 style={{ margin: 0, fontSize: '0.92rem', fontWeight: 800, color: '#1d3f91' }}>Action pane</h3>
 
             {isAutoMode && hasSharedRows ? (
               selectedRow ? (
