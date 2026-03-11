@@ -450,7 +450,6 @@ export default function LunchBreaksPage() {
   const [isLoadingEmployees, setIsLoadingEmployees] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const initialSelectedDateRef = useRef(selectedDate);
-  const hasRestoredSessionRef = useRef<string | null>(null);
 
   const updateDaySession = useCallback((changes: Partial<LunchBreakDaySession>) => {
     const currentMap = readLunchBreakSession();
@@ -564,17 +563,6 @@ export default function LunchBreaksPage() {
       setError((err as Error).message);
     });
   }, [isLoading, loadDayRows, lunchBreakFeature?.enabled, policyLoaded, selectedDate]);
-
-  useEffect(() => {
-    if (isLoading) return;
-    if (!lunchBreakFeature?.enabled) return;
-    if (hasRestoredSessionRef.current === selectedDate) return;
-
-    hasRestoredSessionRef.current = selectedDate;
-    // Always start on mode picker when opening a day so users can choose auto/manual explicitly.
-    setPlannerMode(null);
-    setAutoGuideStep(1);
-  }, [isLoading, lunchBreakFeature?.enabled, selectedDate]);
 
   const updateBreak = useCallback((shiftId: string, key: BreakEditorKey, next: Partial<EditableBreak>) => {
     setDayRows((prev) =>
