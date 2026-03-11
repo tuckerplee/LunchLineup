@@ -1,12 +1,9 @@
-import { Body, Controller, Get, Post, Query, Req, SetMetadata, UseGuards } from '@nestjs/common';
-import { JwtAuthGuard } from '../auth/jwt-auth.guard';
-import { RbacGuard } from '../auth/rbac.guard';
+import { Body, Controller, Get, Post, Query, Req, SetMetadata } from '@nestjs/common';
 import { NotificationsService } from './notifications.service';
 
 const Permission = (perm: string) => SetMetadata('permission', perm);
 
 @Controller({ path: 'notifications', version: '1' })
-@UseGuards(JwtAuthGuard, RbacGuard)
 export class NotificationsController {
     constructor(private readonly notificationsService: NotificationsService) { }
 
