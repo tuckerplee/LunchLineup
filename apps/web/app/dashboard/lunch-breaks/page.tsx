@@ -148,10 +148,6 @@ type EmployeeCard = {
   source: 'scheduled' | 'available';
 };
 
-type LocationRecord = {
-  id: string;
-};
-
 const BREAK_KEYS: BreakEditorKey[] = ['break1', 'lunch', 'break2'];
 
 const BREAK_META: Record<BreakEditorKey, { label: string; minimumDuration: number }> = {
@@ -452,7 +448,6 @@ export default function LunchBreaksPage() {
   const [setupShiftRows, setSetupShiftRows] = useState<SetupShiftRow[]>([]);
   const [setupDrag, setSetupDrag] = useState<SetupDragState | null>(null);
   const [isLoadingEmployees, setIsLoadingEmployees] = useState(false);
-  const [primaryLocationId, setPrimaryLocationId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const initialSelectedDateRef = useRef(selectedDate);
   const hasRestoredSessionRef = useRef<string | null>(null);
@@ -491,18 +486,6 @@ export default function LunchBreaksPage() {
     const payload = (await res.json()) as Partial<LunchBreakPolicy>;
     return { ...DEFAULT_POLICY, ...payload };
   }, []);
-
-  const ensurePrimaryLocationId = useCallback(async (): Promise<string | null> => {
-    if (primaryLocationId) return primaryLocationId;
-    const res = await fetchWithSession('/locations');
-    if (!res.ok) return null;
-    const payload = (await res.json()) as { data?: LocationRecord[] };
-    const id = Array.isArray(payload.data) && payload.data.length > 0 ? payload.data[0]?.id ?? null : null;
-    if (id) {
-      setPrimaryLocationId(id);
-    }
-    return id;
-  }, [primaryLocationId]);
 
   const loadDayRows = useCallback(async (dateValue: string, policyValue: LunchBreakPolicy): Promise<DayShiftRow[]> => {
     const { startIso, endIso } = dayWindow(dateValue);
@@ -1159,68 +1142,28 @@ export default function LunchBreaksPage() {
       ...dayRows.map((row) => row.userId).filter((value): value is string => Boolean(value)),
     ]);
 
-    const setupRowsByShiftId = new Map(
-      setupShiftRows
-        .filter((row) => Boolean(row.shiftId))
-        .map((row) => [row.shiftId as string, row]),
-    );
-
     try {
       setError(null);
-
-      if (setupRowsByShiftId.size > 0) {
-        await Promise.all(
-          Array.from(setupRowsByShiftId.values()).map(async (setupRow) => {
-            const range = toShiftRangeIso(selectedDate, setupRow.startTime, setupRow.endTime);
-            if (!range || !setupRow.shiftId) return;
-
-            const body: Record<string, string> = {
-              startTime: range.startIso,
-              endTime: range.endIso,
-            };
-            if (persistedUserIds.has(setupRow.employeeId)) {
-              body.userId = setupRow.employeeId;
-            }
-
-            const res = await fetchWithSession(`/shifts/${setupRow.shiftId}`, {
-              ...jsonWriteInit('PUT', body),
-            });
-            if (!res.ok) {
-              throw new Error(`Failed to persist shift update for ${setupRow.employeeName}.`);
-            }
-          }),
-        );
-      }
-
-      const newRows = setupShiftRows.filter((row) => !row.shiftId);
-      if (newRows.length > 0) {
-        const locationId = await ensurePrimaryLocationId();
-        if (!locationId) {
-          throw new Error('Cannot persist shifts because no location is configured for this workspace.');
+      const rows = setupShiftRows.map((setupRow) => {
+        const range = toShiftRangeIso(selectedDate, setupRow.startTime, setupRow.endTime);
+        if (!range) {
+          throw new Error(`Invalid shift time for ${setupRow.employeeName}.`);
         }
+        return {
+          shiftId: setupRow.shiftId,
+          startTime: range.startIso,
+          endTime: range.endIso,
+          ...(persistedUserIds.has(setupRow.employeeId) ? { userId: setupRow.employeeId } : {}),
+        };
+      });
 
-        await Promise.all(
-          newRows.map(async (setupRow) => {
-            const range = toShiftRangeIso(selectedDate, setupRow.startTime, setupRow.endTime);
-            if (!range) return;
-
-            const body: Record<string, string> = {
-              locationId,
-              startTime: range.startIso,
-              endTime: range.endIso,
-            };
-            if (persistedUserIds.has(setupRow.employeeId)) {
-              body.userId = setupRow.employeeId;
-            }
-
-            const res = await fetchWithSession('/shifts', {
-              ...jsonWriteInit('POST', body),
-            });
-            if (!res.ok) {
-              throw new Error(`Failed to create shift for ${setupRow.employeeName}.`);
-            }
-          }),
-        );
+      if (rows.length > 0) {
+        const res = await fetchWithSession('/lunch-breaks/setup-shifts', {
+          ...jsonWriteInit('POST', { rows }),
+        });
+        if (!res.ok) {
+          throw new Error('Failed to persist setup shifts for this day.');
+        }
       }
 
       await loadDayRows(selectedDate, policyLoaded);
@@ -1233,7 +1176,6 @@ export default function LunchBreaksPage() {
   }, [
     availableEmployees,
     dayRows,
-    ensurePrimaryLocationId,
     loadDayRows,
     policyLoaded,
     selectedDate,

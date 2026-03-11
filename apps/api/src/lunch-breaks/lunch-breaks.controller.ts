@@ -1,5 +1,11 @@
 import { Body, Controller, Get, Param, Post, Put, Query, Req, SetMetadata } from '@nestjs/common';
-import { GenerateLunchBreaksRequest, LunchBreakPolicy, LunchBreaksService, UpdateShiftLunchBreaksRequest } from './lunch-breaks.service';
+import {
+    GenerateLunchBreaksRequest,
+    LunchBreakPolicy,
+    LunchBreaksService,
+    PersistSetupShiftsRequest,
+    UpdateShiftLunchBreaksRequest,
+} from './lunch-breaks.service';
 
 const Permission = (perm: string) => SetMetadata('permission', perm);
 
@@ -46,6 +52,12 @@ export class LunchBreaksController {
     @Permission('lunch_breaks:write')
     async generate(@Req() req: any, @Body() body: GenerateLunchBreaksRequest) {
         return this.lunchBreaksService.generateLunchBreaks(req.user.tenantId, body ?? {});
+    }
+
+    @Post('setup-shifts')
+    @Permission('lunch_breaks:write')
+    async persistSetupShifts(@Req() req: any, @Body() body: PersistSetupShiftsRequest) {
+        return this.lunchBreaksService.persistSetupShifts(req.user.tenantId, body ?? {});
     }
 
     @Put('shift/:shiftId')

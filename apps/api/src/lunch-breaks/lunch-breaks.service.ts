@@ -60,6 +60,18 @@ export interface UpdateShiftLunchBreaksRequest {
     breaks?: UpdateShiftBreakInput[];
 }
 
+export interface PersistSetupShiftInput {
+    shiftId?: string | null;
+    userId?: string | null;
+    employeeName?: string | null;
+    startTime: string;
+    endTime: string;
+}
+
+export interface PersistSetupShiftsRequest {
+    rows?: PersistSetupShiftInput[];
+}
+
 const TENANT_POLICY_SETTINGS_KEY = 'lunch_break_policy';
 
 const DEFAULT_POLICY: LunchBreakPolicy = {
@@ -221,6 +233,82 @@ export class LunchBreaksService {
         });
         if (!updated) throw new NotFoundException('Shift not found for this tenant.');
         return this.mapShiftToGenerated(updated);
+    }
+
+    async persistSetupShifts(
+        tenantId: string,
+        input: PersistSetupShiftsRequest,
+    ): Promise<{ shiftIds: string[] }> {
+        await this.featureAccessService.assertFeatureEnabled(tenantId, 'lunch_breaks');
+        const rows = Array.isArray(input.rows) ? input.rows : [];
+        if (rows.length === 0) return { shiftIds: [] };
+
+        const explicitShiftIds = rows.map((row) => row.shiftId).filter((id): id is string => Boolean(id));
+        const existingShifts = explicitShiftIds.length > 0
+            ? await this.prisma.shift.findMany({
+                where: { tenantId, deletedAt: null, id: { in: explicitShiftIds } },
+                select: { id: true, locationId: true },
+            })
+            : [];
+        const existingById = new Map(existingShifts.map((shift) => [shift.id, shift]));
+
+        if (existingById.size !== explicitShiftIds.length) {
+            throw new BadRequestException('One or more setup shifts were not found for this tenant.');
+        }
+
+        let fallbackLocationId: string | null = existingShifts[0]?.locationId ?? null;
+        if (!fallbackLocationId) {
+            const location = await this.prisma.location.findFirst({
+                where: { tenantId, deletedAt: null },
+                orderBy: { createdAt: 'asc' },
+                select: { id: true },
+            });
+            fallbackLocationId = location?.id ?? null;
+        }
+        if (!fallbackLocationId) {
+            throw new BadRequestException('No location is configured for this workspace.');
+        }
+
+        const shiftIds = await this.prisma.$transaction(async (tx: any) => {
+            const ids: string[] = [];
+            for (const row of rows) {
+                const startTime = this.toDateOrThrow(row.startTime, 'Invalid setup shift startTime.');
+                const endTime = this.toDateOrThrow(row.endTime, 'Invalid setup shift endTime.');
+                const userId = row.userId ?? null;
+
+                if (row.shiftId) {
+                    const updated = await tx.shift.updateMany({
+                        where: { id: row.shiftId, tenantId, deletedAt: null },
+                        data: {
+                            startTime,
+                            endTime,
+                            ...(Object.prototype.hasOwnProperty.call(row, 'userId') ? { userId } : {}),
+                        },
+                    });
+                    if (updated.count === 0) {
+                        throw new BadRequestException('Unable to persist one or more setup shifts.');
+                    }
+                    ids.push(row.shiftId);
+                    continue;
+                }
+
+                const created = await tx.shift.create({
+                    data: {
+                        tenantId,
+                        locationId: fallbackLocationId as string,
+                        userId,
+                        startTime,
+                        endTime,
+                        role: null,
+                    },
+                    select: { id: true },
+                });
+                ids.push(created.id);
+            }
+            return ids;
+        });
+
+        return { shiftIds };
     }
 
     async generateLunchBreaks(
