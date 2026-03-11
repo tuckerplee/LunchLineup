@@ -36,5 +36,6 @@ p, STAFF, locations, read
 p, STAFF, schedules, read
 p, STAFF, shifts, read
 p, STAFF, lunch_breaks, read
+p, STAFF, lunch_breaks, write
 p, STAFF, notifications, read
 p, STAFF, notifications, write
