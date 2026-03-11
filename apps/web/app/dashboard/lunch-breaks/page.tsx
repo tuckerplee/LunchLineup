@@ -187,6 +187,14 @@ function toDateInputValue(date: Date): string {
   return `${y}-${m}-${d}`;
 }
 
+function toUtcDateInputValue(date: Date): string {
+  if (!Number.isFinite(date.getTime())) return toDateInputValue(new Date());
+  const y = date.getUTCFullYear();
+  const m = String(date.getUTCMonth() + 1).padStart(2, '0');
+  const d = String(date.getUTCDate()).padStart(2, '0');
+  return `${y}-${m}-${d}`;
+}
+
 function parseDateInputValue(dateValue: string): Date | null {
   const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(dateValue);
   if (!match) return null;
@@ -201,12 +209,6 @@ function parseDateInputValue(dateValue: string): Date | null {
 function shiftDate(dateValue: string, days: number): string {
   const date = parseDateInputValue(dateValue) ?? new Date();
   date.setDate(date.getDate() + days);
-  return toDateInputValue(date);
-}
-
-function startOfWeek(dateValue: string): string {
-  const date = parseDateInputValue(dateValue) ?? new Date();
-  date.setDate(date.getDate() - date.getDay());
   return toDateInputValue(date);
 }
 
@@ -427,6 +429,7 @@ export default function LunchBreaksPage() {
   const [features, setFeatures] = useState<FeatureMatrixResponse | null>(null);
   const [policy, setPolicy] = useState<LunchBreakPolicy>(DEFAULT_POLICY);
   const [policyLoaded, setPolicyLoaded] = useState<LunchBreakPolicy>(DEFAULT_POLICY);
+  const [serverToday, setServerToday] = useState<string>(toDateInputValue(new Date()));
   const [selectedDate, setSelectedDate] = useState<string>(toDateInputValue(new Date()));
   const [dayRows, setDayRows] = useState<DayShiftRow[]>([]);
   const [baselines, setBaselines] = useState<Record<string, DayShiftRow>>({});
@@ -465,6 +468,16 @@ export default function LunchBreaksPage() {
     const res = await fetchWithSession('/billing/features');
     if (!res.ok) throw new Error('Unable to load feature status.');
     return (await res.json()) as FeatureMatrixResponse;
+  }, []);
+
+  const loadServerToday = useCallback(async (): Promise<string | null> => {
+    const res = await fetchWithSession('/health');
+    if (!res.ok) return null;
+    const headerDate = res.headers.get('date');
+    if (!headerDate) return null;
+    const parsed = new Date(headerDate);
+    if (!Number.isFinite(parsed.getTime())) return null;
+    return toUtcDateInputValue(parsed);
   }, []);
 
   const loadPolicy = useCallback(async (): Promise<LunchBreakPolicy> => {
@@ -510,7 +523,13 @@ export default function LunchBreaksPage() {
     setIsLoading(true);
     setError(null);
     try {
-      const [featureData, policyData] = await Promise.all([loadFeatures(), loadPolicy()]);
+      const [serverTodayValue, featureData, policyData] = await Promise.all([loadServerToday(), loadFeatures(), loadPolicy()]);
+      if (serverTodayValue) {
+        setServerToday(serverTodayValue);
+        setSelectedDate(serverTodayValue);
+        initialSelectedDateRef.current = serverTodayValue;
+      }
+
       setFeatures(featureData);
       setPolicy(policyData);
       setPolicyLoaded(policyData);
@@ -526,7 +545,7 @@ export default function LunchBreaksPage() {
     } finally {
       setIsLoading(false);
     }
-  }, [loadFeatures, loadPolicy, loadDayRows]);
+  }, [loadFeatures, loadPolicy, loadDayRows, loadServerToday]);
 
   useEffect(() => {
     void bootstrap();
@@ -1245,10 +1264,10 @@ export default function LunchBreaksPage() {
     };
   }, [autoGuideStep, availableEmployees.length, isAutoMode, scheduledEmployees.length]);
 
-  const weeklyPickerDays = useMemo(() => {
-    const weekStart = startOfWeek(selectedDate);
-    return Array.from({ length: 7 }, (_, index) => shiftDate(weekStart, index));
-  }, [selectedDate]);
+  const weeklyPickerDays = useMemo(
+    () => Array.from({ length: 7 }, (_, index) => shiftDate(serverToday, index - 1)),
+    [serverToday],
+  );
 
   const choosePlannerMode = useCallback((mode: 'auto' | 'manual') => {
     setPlannerMode(mode);
