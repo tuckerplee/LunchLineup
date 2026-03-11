@@ -1967,47 +1967,24 @@ export default function LunchBreaksPage() {
             minHeight: 620,
             height: 'calc(100vh - 250px)',
             display: 'grid',
-            gridTemplateColumns: 'minmax(0, 1fr) 340px',
+            gridTemplateColumns: 'minmax(0, 1fr) clamp(290px, 24vw, 340px)',
             gap: '0.75rem',
           }}
         >
-          <div className="surface-card" style={{ padding: '0.72rem', minWidth: 0, minHeight: 0, display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
+          <div className="surface-card" style={{ padding: '0.85rem', minWidth: 0, minHeight: 0, display: 'flex', flexDirection: 'column', gap: '0.65rem' }}>
             {isAutoMode ? (
               <>
-                <div
-                  style={{
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'space-between',
-                    gap: 8,
-                    flexWrap: 'wrap',
-                    padding: '0 0.35rem',
-                    fontSize: '0.8rem',
-                    color: 'var(--text-secondary)',
-                  }}
-                >
-                  <span>
-                    {hasSchedulingEnabled
-                      ? `Using schedule data as source of truth for ${selectedDateLabel}`
-                      : `Running in manual-first mode for ${selectedDateLabel}`}
-                  </span>
-                  <span style={{ fontWeight: 700 }}>
-                    {selectedAutoEmployees.length > 0
-                      ? `${selectedAutoEmployees.length} selected for plan`
-                      : dirtyCount > 0
-                        ? `${dirtyCount} unsaved edits`
-                        : 'All edits saved'}
-                  </span>
-                </div>
-                <div style={{ minHeight: 0, flex: 1 }}>
+                <div style={{ minHeight: 0, flex: 1, width: 'min(1180px, 100%)', margin: '0 auto', display: 'grid' }}>
                   {hasSharedRows ? (
-                    <div className="surface-muted" style={{ padding: '0.7rem', display: 'grid', gap: 8, minHeight: '100%' }}>
-                      <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, alignItems: 'center' }}>
-                        <div style={{ fontSize: '0.82rem', fontWeight: 800, color: 'var(--text-primary)' }}>
+                    <div className="surface-muted" style={{ padding: '0.95rem', display: 'grid', gap: 10, minHeight: '100%' }}>
+                      <div style={{ display: 'grid', justifyItems: 'center', gap: 3, textAlign: 'center' }}>
+                        <div style={{ fontSize: '1rem', fontWeight: 900, color: 'var(--text-primary)' }}>
                           Calendar schedule for {selectedDateLabel}
                         </div>
-                        <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>
-                          Shift + lunch/break placement
+                        <div style={{ fontSize: '0.76rem', color: 'var(--text-muted)' }}>
+                          {hasSchedulingEnabled
+                            ? `Using schedule data as source of truth`
+                            : `Running in manual-first mode`}
                         </div>
                       </div>
 
@@ -2079,7 +2056,7 @@ export default function LunchBreaksPage() {
                       </div>
                     </div>
                   ) : (
-                    <div className="surface-muted" style={{ padding: '0.75rem' }}>
+                    <div className="surface-muted" style={{ padding: '0.85rem' }}>
                       <div style={{ fontWeight: 800, color: 'var(--text-primary)', marginBottom: 2 }}>
                         No shifts loaded for {selectedDateLabel.split(',')[0]}
                       </div>
@@ -2118,14 +2095,14 @@ export default function LunchBreaksPage() {
                 </div>
               </>
             ) : (
-              <div style={{ display: 'grid', gap: '0.72rem', minHeight: 0, overflowY: 'auto', padding: '0.1rem' }}>
+              <div style={{ display: 'grid', gap: '0.72rem', minHeight: 0, overflowY: 'auto', padding: '0.1rem', width: 'min(1180px, 100%)', margin: '0 auto' }}>
                 {manualCalendarRows.length > 0 ? (
-                  <div className="surface-muted" style={{ padding: '0.7rem', display: 'grid', gap: 8 }}>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, alignItems: 'center' }}>
-                      <div style={{ fontSize: '0.82rem', fontWeight: 800, color: 'var(--text-primary)' }}>
+                  <div className="surface-muted" style={{ padding: '1rem', display: 'grid', gap: 10, minHeight: '100%' }}>
+                    <div style={{ display: 'grid', justifyItems: 'center', gap: 3, textAlign: 'center' }}>
+                      <div style={{ fontSize: '1rem', fontWeight: 900, color: 'var(--text-primary)' }}>
                         Calendar draft for {selectedDateLabel}
                       </div>
-                      <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>
+                      <div style={{ fontSize: '0.76rem', color: 'var(--text-muted)' }}>
                         Walkthrough-defined shift times
                       </div>
                     </div>
@@ -2137,7 +2114,7 @@ export default function LunchBreaksPage() {
                       <span style={{ textAlign: 'right' }}>22:00</span>
                     </div>
 
-                    <div style={{ display: 'grid', gap: 8 }}>
+                    <div style={{ display: 'grid', gap: 8, alignContent: 'start' }}>
                       {manualCalendarRows.map((row) => (
                         <div
                           key={`manual-calendar-${row.id}`}
@@ -2178,112 +2155,14 @@ export default function LunchBreaksPage() {
                   </div>
                 ) : null}
 
-                <div className="surface-muted" style={{ padding: '0.75rem' }}>
-                  <div style={{ fontWeight: 800, color: 'var(--text-primary)', marginBottom: 2 }}>No shifts loaded for {selectedDateLabel.split(',')[0]}</div>
-                  <div style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>
-                    {hasSchedulingEnabled
-                      ? 'Import shifts from Scheduling or add a quick scenario to generate a break plan.'
-                      : 'Add a quick scenario to generate a break plan.'}
-                  </div>
-                  <div style={{ marginTop: 8, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-                    {hasSchedulingEnabled ? (
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        onClick={() => {
-                          void loadDayRows(selectedDate, policyLoaded).catch((err) => {
-                            setError((err as Error).message);
-                          });
-                        }}
-                      >
-                        Import schedule shifts
-                      </Button>
-                    ) : null}
-                    <Button variant="outline" size="sm" onClick={addManualShift}>
-                      Add manual shifts
-                    </Button>
-                  </div>
-                </div>
-
-                <div style={{ display: 'grid', gap: 8 }}>
-                  {manualShifts.map((row) => (
-                    <div key={row.id} className="surface-muted" style={{ padding: '0.68rem', display: 'grid', gap: 8 }}>
-                      <input
-                        type="text"
-                        value={row.employeeName}
-                        onChange={(event) => updateManualShift(row.id, { employeeName: event.target.value })}
-                        style={{
-                          width: '100%',
-                          border: '1px solid var(--border)',
-                          borderRadius: 8,
-                          background: '#ffffff',
-                          color: 'var(--text-primary)',
-                          padding: '0.36rem 0.45rem',
-                          fontSize: '0.82rem',
-                        }}
-                      />
-                      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr auto', gap: 8, alignItems: 'end' }}>
-                        <label style={{ display: 'grid', gap: 4 }}>
-                          <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>Start</span>
-                          <input
-                            type="time"
-                            value={row.startTime}
-                            onChange={(event) => updateManualShift(row.id, { startTime: event.target.value })}
-                            style={{
-                              border: '1px solid var(--border)',
-                              borderRadius: 8,
-                              background: '#ffffff',
-                              color: 'var(--text-primary)',
-                              padding: '0.34rem 0.4rem',
-                              fontSize: '0.78rem',
-                            }}
-                          />
-                        </label>
-                        <label style={{ display: 'grid', gap: 4 }}>
-                          <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>End</span>
-                          <input
-                            type="time"
-                            value={row.endTime}
-                            onChange={(event) => updateManualShift(row.id, { endTime: event.target.value })}
-                            style={{
-                              border: '1px solid var(--border)',
-                              borderRadius: 8,
-                              background: '#ffffff',
-                              color: 'var(--text-primary)',
-                              padding: '0.34rem 0.4rem',
-                              fontSize: '0.78rem',
-                            }}
-                          />
-                        </label>
-                        <Button variant="outline" size="sm" onClick={() => removeManualShift(row.id)} disabled={manualShifts.length <= 1}>
-                          Remove shift
-                        </Button>
-                      </div>
+                {manualCalendarRows.length === 0 ? (
+                  <div className="surface-muted" style={{ padding: '0.85rem' }}>
+                    <div style={{ fontWeight: 800, color: 'var(--text-primary)', marginBottom: 2 }}>No shifts loaded for {selectedDateLabel.split(',')[0]}</div>
+                    <div style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>
+                      {hasSchedulingEnabled
+                        ? 'Import shifts from Scheduling to populate the calendar, or configure shifts from the Action pane.'
+                        : 'Configure shifts from the Action pane to populate this calendar.'}
                     </div>
-                  ))}
-                </div>
-
-                <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-                  <Button size="sm" onClick={() => void generateFromManualShifts()} disabled={isGeneratingManual}>
-                    {isGeneratingManual ? 'Generating...' : 'Generate Lunch & Break Plan'}
-                  </Button>
-                  <Button variant="outline" size="sm" onClick={addManualShift}>
-                    Add shift
-                  </Button>
-                </div>
-
-                {standalonePreview.length > 0 ? (
-                  <div className="surface-muted" style={{ padding: '0.75rem', display: 'grid', gap: 6 }}>
-                    <div style={{ fontWeight: 800, fontSize: '0.84rem', color: 'var(--text-primary)' }}>Standalone preview</div>
-                    {standalonePreview.map((row, idx) => (
-                      <div key={`preview-${row.employeeName ?? 'shift'}-${idx}`} style={{ fontSize: '0.78rem', color: 'var(--text-secondary)' }}>
-                        <strong style={{ color: 'var(--text-primary)' }}>{row.employeeName ?? 'Unassigned'}</strong>
-                        {' · '}
-                        {toDisplayShift(row.startTime, row.endTime)}
-                        {' · '}
-                        {row.breaks.length} planned break(s)
-                      </div>
-                    ))}
                   </div>
                 ) : null}
               </div>
@@ -2291,7 +2170,7 @@ export default function LunchBreaksPage() {
           </div>
 
           <aside className="surface-card" style={{ padding: '0.85rem', display: 'flex', flexDirection: 'column', gap: '0.72rem', overflowY: 'auto' }}>
-            <h3 style={{ margin: 0, fontSize: '0.92rem', fontWeight: 800 }}>Assignment inspector</h3>
+            <h3 style={{ margin: 0, fontSize: '0.92rem', fontWeight: 800 }}>Action pane</h3>
 
             {isAutoMode && hasSharedRows ? (
               selectedRow ? (
@@ -2384,11 +2263,113 @@ export default function LunchBreaksPage() {
                 </p>
               )
             ) : (
-              <p style={{ margin: 0, fontSize: '0.8rem', color: 'var(--text-secondary)' }}>
-                {hasSchedulingEnabled
-                  ? 'Generate from manual shifts to preview assignments, or load schedule shifts to unlock direct editing.'
-                  : 'Generate from manual shifts to preview assignments. Schedule integration is optional and currently not enabled.'}
-              </p>
+              <div style={{ display: 'grid', gap: 8 }}>
+                <p style={{ margin: 0, fontSize: '0.8rem', color: 'var(--text-secondary)' }}>
+                  {hasSchedulingEnabled
+                    ? 'Use actions below to import schedule shifts, edit employees/shifts, and generate the plan.'
+                    : 'Use actions below to edit employees/shifts and generate the plan.'}
+                </p>
+
+                {hasSchedulingEnabled ? (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => {
+                      void loadDayRows(selectedDate, policyLoaded).catch((err) => {
+                        setError((err as Error).message);
+                      });
+                    }}
+                  >
+                    Import schedule shifts
+                  </Button>
+                ) : null}
+
+                {!isAutoMode ? (
+                  <>
+                    <div style={{ display: 'grid', gap: 8 }}>
+                      {manualShifts.map((row) => (
+                        <div key={row.id} className="surface-muted" style={{ padding: '0.68rem', display: 'grid', gap: 8 }}>
+                          <input
+                            type="text"
+                            value={row.employeeName}
+                            onChange={(event) => updateManualShift(row.id, { employeeName: event.target.value })}
+                            style={{
+                              width: '100%',
+                              border: '1px solid var(--border)',
+                              borderRadius: 8,
+                              background: '#ffffff',
+                              color: 'var(--text-primary)',
+                              padding: '0.36rem 0.45rem',
+                              fontSize: '0.82rem',
+                            }}
+                          />
+                          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr auto', gap: 8, alignItems: 'end' }}>
+                            <label style={{ display: 'grid', gap: 4 }}>
+                              <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>Start</span>
+                              <input
+                                type="time"
+                                value={row.startTime}
+                                onChange={(event) => updateManualShift(row.id, { startTime: event.target.value })}
+                                style={{
+                                  border: '1px solid var(--border)',
+                                  borderRadius: 8,
+                                  background: '#ffffff',
+                                  color: 'var(--text-primary)',
+                                  padding: '0.34rem 0.4rem',
+                                  fontSize: '0.78rem',
+                                }}
+                              />
+                            </label>
+                            <label style={{ display: 'grid', gap: 4 }}>
+                              <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>End</span>
+                              <input
+                                type="time"
+                                value={row.endTime}
+                                onChange={(event) => updateManualShift(row.id, { endTime: event.target.value })}
+                                style={{
+                                  border: '1px solid var(--border)',
+                                  borderRadius: 8,
+                                  background: '#ffffff',
+                                  color: 'var(--text-primary)',
+                                  padding: '0.34rem 0.4rem',
+                                  fontSize: '0.78rem',
+                                }}
+                              />
+                            </label>
+                            <Button variant="outline" size="sm" onClick={() => removeManualShift(row.id)} disabled={manualShifts.length <= 1}>
+                              Remove
+                            </Button>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+
+                    <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                      <Button size="sm" onClick={() => void generateFromManualShifts()} disabled={isGeneratingManual}>
+                        {isGeneratingManual ? 'Generating...' : 'Generate Lunch & Break Plan'}
+                      </Button>
+                      <Button variant="outline" size="sm" onClick={addManualShift}>
+                        Add shift
+                      </Button>
+                    </div>
+
+                    {standalonePreview.length > 0 ? (
+                      <div className="surface-muted" style={{ padding: '0.75rem', display: 'grid', gap: 6 }}>
+                        <div style={{ fontWeight: 800, fontSize: '0.84rem', color: 'var(--text-primary)' }}>Standalone preview</div>
+                        {standalonePreview.map((row, idx) => (
+                          <div key={`preview-${row.employeeName ?? 'shift'}-${idx}`} style={{ fontSize: '0.78rem', color: 'var(--text-secondary)' }}>
+                            <strong style={{ color: 'var(--text-primary)' }}>{row.employeeName ?? 'Unassigned'}</strong>
+                            {' · '}
+                            {toDisplayShift(row.startTime, row.endTime)}
+                            {' · '}
+                            {row.breaks.length} planned break(s)
+                          </div>
+                        ))}
+                      </div>
+                    ) : null}
+                  </>
+                ) : null}
+              </div>
             )}
 
             <details style={{ borderTop: '1px solid var(--border)', paddingTop: '0.72rem' }}>
