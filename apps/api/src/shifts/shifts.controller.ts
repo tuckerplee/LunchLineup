@@ -2,6 +2,7 @@ import { Controller, Get, Post, Put, Delete, Param, Body, Req, UseGuards, SetMet
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { RbacGuard } from '../auth/rbac.guard';
 import { PrismaClient } from '@prisma/client';
+import { NotificationType, NotificationsService } from '../notifications/notifications.service';
 
 const Permission = (perm: string) => SetMetadata('permission', perm);
 
@@ -9,6 +10,13 @@ const Permission = (perm: string) => SetMetadata('permission', perm);
 @UseGuards(JwtAuthGuard, RbacGuard)
 export class ShiftsController {
     private prisma = new PrismaClient();
+    constructor(private readonly notificationsService: NotificationsService) { }
+
+    private formatShiftWindow(startTime: Date, endTime: Date): string {
+        const start = startTime.toISOString().replace('T', ' ').slice(0, 16);
+        const end = endTime.toISOString().replace('T', ' ').slice(0, 16);
+        return `${start} - ${end} UTC`;
+    }
 
     @Get()
     @Permission('shifts:read')
@@ -64,14 +72,37 @@ export class ShiftsController {
                 role: body.role,
             }
         });
+
+        if (shift.userId) {
+            await this.notificationsService.send(
+                req.user.tenantId,
+                shift.userId,
+                NotificationType.SHIFT_ASSIGNED,
+                'New shift assigned',
+                `You were assigned a shift (${this.formatShiftWindow(shift.startTime, shift.endTime)}).`,
+            );
+        }
+
         return shift;
     }
 
     @Put(':id')
     @Permission('shifts:write')
     async update(@Param('id') id: string, @Body() body: any, @Req() req: any) {
+        const existingShift = await this.prisma.shift.findFirst({
+            where: { id, tenantId: req.user.tenantId, deletedAt: null },
+            select: {
+                id: true,
+                userId: true,
+                startTime: true,
+                endTime: true,
+                role: true,
+            },
+        });
+        if (!existingShift) throw new NotFoundException('Shift not found');
+
         const data: any = {};
-        if (body.userId) data.userId = body.userId;
+        if (Object.prototype.hasOwnProperty.call(body, 'userId')) data.userId = body.userId ?? null;
         if (body.startTime) data.startTime = new Date(body.startTime);
         if (body.endTime) data.endTime = new Date(body.endTime);
         if (body.role) data.role = body.role;
@@ -82,7 +113,32 @@ export class ShiftsController {
         });
 
         if (updateResult.count === 0) throw new NotFoundException('Shift not found');
-        return this.findOne(id, req);
+        const updatedShift = await this.findOne(id, req);
+        const assignmentChanged = existingShift.userId !== updatedShift.userId;
+        const detailsChanged =
+            existingShift.startTime.getTime() !== updatedShift.startTime.getTime() ||
+            existingShift.endTime.getTime() !== updatedShift.endTime.getTime() ||
+            existingShift.role !== updatedShift.role;
+
+        if (updatedShift.userId && assignmentChanged) {
+            await this.notificationsService.send(
+                req.user.tenantId,
+                updatedShift.userId,
+                NotificationType.SHIFT_ASSIGNED,
+                'New shift assigned',
+                `You were assigned a shift (${this.formatShiftWindow(updatedShift.startTime, updatedShift.endTime)}).`,
+            );
+        } else if (updatedShift.userId && detailsChanged) {
+            await this.notificationsService.send(
+                req.user.tenantId,
+                updatedShift.userId,
+                NotificationType.SHIFT_CHANGED,
+                'Shift updated',
+                `Your shift was updated (${this.formatShiftWindow(updatedShift.startTime, updatedShift.endTime)}).`,
+            );
+        }
+
+        return updatedShift;
     }
 
     @Delete(':id')
@@ -111,6 +167,33 @@ export class ShiftsController {
         );
 
         await this.prisma.$transaction(updates);
+
+        const assignedShifts = await this.prisma.shift.findMany({
+            where: {
+                tenantId: req.user.tenantId,
+                id: { in: body.assignments.map((assignment) => assignment.shiftId) },
+                deletedAt: null,
+            },
+            select: {
+                id: true,
+                userId: true,
+                startTime: true,
+                endTime: true,
+            },
+        });
+
+        await this.notificationsService.sendMany(
+            assignedShifts
+                .filter((shift) => Boolean(shift.userId))
+                .map((shift) => ({
+                    tenantId: req.user.tenantId,
+                    userId: shift.userId as string,
+                    type: NotificationType.SHIFT_ASSIGNED,
+                    title: 'New shift assigned',
+                    body: `You were assigned a shift (${this.formatShiftWindow(shift.startTime, shift.endTime)}).`,
+                })),
+        );
+
         return { updated: updates.length };
     }
 }

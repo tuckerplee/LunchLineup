@@ -17,14 +17,20 @@ export enum NotificationType {
 @Injectable()
 export class NotificationsService {
     private readonly logger = new Logger(NotificationsService.name);
-    private redis: Redis;
+    private readonly redis: Redis | null;
 
     constructor(
         private readonly configService: ConfigService,
         @Inject(NOTIFICATIONS_PRISMA) private readonly prisma: PrismaClient
     ) {
-        const redisUrl = this.configService.get<string>('REDIS_URL') || 'redis://localhost:6379';
-        this.redis = new Redis(redisUrl);
+        const redisUrl = this.configService.get<string>('REDIS_URL');
+        this.redis = redisUrl
+            ? new Redis(redisUrl, {
+                lazyConnect: true,
+                maxRetriesPerRequest: 1,
+                enableReadyCheck: false,
+            })
+            : null;
     }
 
     /**
@@ -49,37 +55,95 @@ export class NotificationsService {
         const channel = `notifications:user:${userId}`;
         const payload = JSON.stringify(notification);
 
-        await this.redis.publish(channel, payload);
+        if (!this.redis) return notification;
+
+        try {
+            await this.redis.publish(channel, payload);
+        } catch (error) {
+            this.logger.warn(`Redis publish skipped for ${channel}: ${error instanceof Error ? error.message : 'unknown_error'}`);
+        }
+
+        return notification;
+    }
+
+    async sendMany(entries: Array<{ tenantId: string; userId: string; type: NotificationType; title: string; body: string }>) {
+        if (entries.length === 0) return [];
+        return Promise.all(entries.map((entry) => this.send(entry.tenantId, entry.userId, entry.type, entry.title, entry.body)));
     }
 
     /**
-     * Retrieves recent unread notifications for a given user.
+     * Retrieves notifications for a user, newest first.
      */
-    async getRecent(userId: string) {
+    async getRecent(tenantId: string, userId: string, options?: { unreadOnly?: boolean; limit?: number }) {
+        const unreadOnly = Boolean(options?.unreadOnly);
+        const take = Math.min(Math.max(options?.limit ?? 20, 1), 100);
+
         return this.prisma.notification.findMany({
             where: {
+                tenantId,
                 userId,
-                readAt: null
+                ...(unreadOnly ? { readAt: null } : {}),
             },
             orderBy: {
                 createdAt: 'desc'
             },
-            take: 20
+            take,
+        });
+    }
+
+    async getUnreadCount(tenantId: string, userId: string) {
+        return this.prisma.notification.count({
+            where: {
+                tenantId,
+                userId,
+                readAt: null,
+            },
         });
     }
 
     /**
      * Marks notifications as read.
      */
-    async markAsRead(notificationIds: string[], userId: string) {
-        await this.prisma.notification.updateMany({
+    async markAsRead(notificationIds: string[], tenantId: string, userId: string) {
+        if (notificationIds.length === 0) return { updated: 0 };
+
+        const result = await this.prisma.notification.updateMany({
             where: {
                 id: { in: notificationIds },
-                userId
+                tenantId,
+                userId,
+                readAt: null,
             },
             data: {
                 readAt: new Date()
             }
         });
+
+        return { updated: result.count };
+    }
+
+    async markAllAsRead(tenantId: string, userId: string) {
+        await this.prisma.notification.updateMany({
+            where: {
+                tenantId,
+                userId,
+                readAt: null,
+            },
+            data: {
+                readAt: new Date()
+            }
+        });
+    }
+
+    async getFeed(tenantId: string, userId: string, options?: { unreadOnly?: boolean; limit?: number }) {
+        const [notifications, unreadCount] = await Promise.all([
+            this.getRecent(tenantId, userId, options),
+            this.getUnreadCount(tenantId, userId),
+        ]);
+
+        return {
+            notifications,
+            unreadCount,
+        };
     }
 }

@@ -279,6 +279,7 @@ export class AuthController {
     @UseGuards(JwtAuthGuard)
     @Get('me')
     async me(@Req() req: any) {
-        return { user: req.user };
+        const user = await this.authService.getSessionUserContext(req.user.sub, req.user.tenantId, req.user);
+        return { user };
     }
 }

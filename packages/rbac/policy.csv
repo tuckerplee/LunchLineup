@@ -14,6 +14,8 @@ p, ADMIN, schedules, publish
 p, ADMIN, lunch_breaks, read
 p, ADMIN, lunch_breaks, write
 p, ADMIN, lunch_breaks, delete
+p, ADMIN, notifications, read
+p, ADMIN, notifications, write
 p, ADMIN, billing, read
 p, ADMIN, billing, write
 
@@ -27,8 +29,12 @@ p, MANAGER, shifts, read
 p, MANAGER, shifts, write
 p, MANAGER, lunch_breaks, read
 p, MANAGER, lunch_breaks, write
+p, MANAGER, notifications, read
+p, MANAGER, notifications, write
 
 p, STAFF, locations, read
 p, STAFF, schedules, read
 p, STAFF, shifts, read
 p, STAFF, lunch_breaks, read
+p, STAFF, notifications, read
+p, STAFF, notifications, write

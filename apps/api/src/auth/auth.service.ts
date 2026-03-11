@@ -357,6 +357,44 @@ export class AuthService {
         };
     }
 
+    async getSessionUserContext(userId: string, tenantId: string, sessionClaims: { role: string; sessionId: string }) {
+        const user = await this.prisma.user.findFirst({
+            where: {
+                id: userId,
+                tenantId,
+                deletedAt: null,
+            },
+            select: {
+                id: true,
+                tenantId: true,
+                role: true,
+                email: true,
+                username: true,
+                name: true,
+                tenant: {
+                    select: {
+                        name: true,
+                    },
+                },
+            },
+        });
+
+        if (!user) {
+            throw new UnauthorizedException('User not found');
+        }
+
+        return {
+            sub: user.id,
+            tenantId: user.tenantId,
+            sessionId: sessionClaims.sessionId,
+            role: user.role ?? sessionClaims.role,
+            email: user.email,
+            username: user.username,
+            name: user.name,
+            tenantName: user.tenant?.name ?? '',
+        };
+    }
+
     async validateMfa(userId: string, code: string) {
         const user = await this.prisma.user.findUnique({ where: { id: userId } });
         if (!user || (!user.mfaEnabled)) {
