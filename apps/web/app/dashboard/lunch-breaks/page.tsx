@@ -813,6 +813,9 @@ export default function LunchBreaksPage() {
 
   const dirtyCount = dayRows.filter((row) => row.dirty).length;
   const hasSharedRows = dayRows.length > 0;
+  const setupTimelineStart = 5 * 60;
+  const setupTimelineEnd = 22 * 60;
+  const setupTimelineWindow = setupTimelineEnd - setupTimelineStart;
   const mealRiskCount = dayRows.filter((row) => row.lunch.skipped || !row.lunch.time).length;
   const breakRiskCount = dayRows.filter(
     (row) =>
@@ -847,8 +850,8 @@ export default function LunchBreaksPage() {
   const autoCalendarRows = useMemo<AutoCalendarRow[]>(() => {
     const base = parseDateInputValue(selectedDate) ?? new Date();
     const dayStartMs = new Date(base.getFullYear(), base.getMonth(), base.getDate(), 0, 0, 0, 0).getTime();
-    const windowStartMinutes = 9 * 60;
-    const windowEndMinutes = 22 * 60;
+    const windowStartMinutes = setupTimelineStart;
+    const windowEndMinutes = setupTimelineEnd;
     const windowMinutes = windowEndMinutes - windowStartMinutes;
 
     const toMinutesFromDayStart = (iso: string): number => {
@@ -895,7 +898,7 @@ export default function LunchBreaksPage() {
         })),
       };
     });
-  }, [dayRows, selectedDate]);
+  }, [dayRows, selectedDate, setupTimelineEnd, setupTimelineStart]);
 
   const selectedRow = useMemo(() => {
     if (!selectedShiftId) return null;
@@ -1054,6 +1057,26 @@ export default function LunchBreaksPage() {
     return cards;
   }, [dayRows]);
 
+  const manualCalendarRows = useMemo(
+    () =>
+      manualShifts.map((row) => {
+        const rawStart = timeValueToMinutes(row.startTime);
+        const rawEnd = timeValueToMinutes(row.endTime);
+        const clampedStart = clamp(rawStart, setupTimelineStart, setupTimelineEnd - 30);
+        const clampedEnd = clamp(Math.max(rawEnd, clampedStart + 30), clampedStart + 30, setupTimelineEnd);
+        const leftPct = ((clampedStart - setupTimelineStart) / setupTimelineWindow) * 100;
+        const widthPct = ((clampedEnd - clampedStart) / setupTimelineWindow) * 100;
+        return {
+          id: row.id,
+          employeeName: row.employeeName || 'Unassigned',
+          shiftLabel: `${row.startTime} - ${row.endTime}`,
+          shiftLeftPct: leftPct,
+          shiftWidthPct: widthPct,
+        };
+      }),
+    [manualShifts, setupTimelineEnd, setupTimelineStart, setupTimelineWindow],
+  );
+
   const step3EmployeePool = useMemo(
     () => (scheduledEmployees.length > 0 ? scheduledEmployees : availableEmployees),
     [availableEmployees, scheduledEmployees],
@@ -1182,10 +1205,6 @@ export default function LunchBreaksPage() {
     setupShiftRows,
     updateDaySession,
   ]);
-
-  const setupTimelineStart = 5 * 60;
-  const setupTimelineEnd = 22 * 60;
-  const setupTimelineWindow = setupTimelineEnd - setupTimelineStart;
 
   const startSetupDrag = useCallback((event: { clientX: number; currentTarget: EventTarget & HTMLSpanElement }, row: SetupShiftRow) => {
     const trackEl = (event.currentTarget.parentElement as HTMLElement | null);
@@ -2100,6 +2119,65 @@ export default function LunchBreaksPage() {
               </>
             ) : (
               <div style={{ display: 'grid', gap: '0.72rem', minHeight: 0, overflowY: 'auto', padding: '0.1rem' }}>
+                {manualCalendarRows.length > 0 ? (
+                  <div className="surface-muted" style={{ padding: '0.7rem', display: 'grid', gap: 8 }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, alignItems: 'center' }}>
+                      <div style={{ fontSize: '0.82rem', fontWeight: 800, color: 'var(--text-primary)' }}>
+                        Calendar draft for {selectedDateLabel}
+                      </div>
+                      <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>
+                        Walkthrough-defined shift times
+                      </div>
+                    </div>
+
+                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr 1fr', fontSize: '0.66rem', color: 'var(--text-muted)', fontWeight: 700 }}>
+                      <span>5:00</span>
+                      <span style={{ textAlign: 'center' }}>11:00</span>
+                      <span style={{ textAlign: 'center' }}>16:00</span>
+                      <span style={{ textAlign: 'right' }}>22:00</span>
+                    </div>
+
+                    <div style={{ display: 'grid', gap: 8 }}>
+                      {manualCalendarRows.map((row) => (
+                        <div
+                          key={`manual-calendar-${row.id}`}
+                          style={{
+                            border: '1px solid #d6e0f3',
+                            borderRadius: 10,
+                            background: '#ffffff',
+                            padding: '0.55rem',
+                            display: 'grid',
+                            gridTemplateColumns: '180px minmax(0, 1fr)',
+                            gap: 8,
+                            alignItems: 'center',
+                          }}
+                        >
+                          <div style={{ minWidth: 0 }}>
+                            <div style={{ fontSize: '0.76rem', fontWeight: 800, color: 'var(--text-primary)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                              {row.employeeName}
+                            </div>
+                            <div style={{ fontSize: '0.66rem', color: 'var(--text-muted)' }}>{row.shiftLabel}</div>
+                          </div>
+                          <div style={{ position: 'relative', height: 30, borderRadius: 999, border: '1px solid #d6e0f3', background: '#f6f9ff' }}>
+                            <span
+                              style={{
+                                position: 'absolute',
+                                left: `${row.shiftLeftPct}%`,
+                                width: `${row.shiftWidthPct}%`,
+                                top: 3,
+                                bottom: 3,
+                                borderRadius: 999,
+                                background: '#d9e8ff',
+                                border: '1px solid #9ebdf0',
+                              }}
+                            />
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                ) : null}
+
                 <div className="surface-muted" style={{ padding: '0.75rem' }}>
                   <div style={{ fontWeight: 800, color: 'var(--text-primary)', marginBottom: 2 }}>No shifts loaded for {selectedDateLabel.split(',')[0]}</div>
                   <div style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>
