@@ -1223,7 +1223,7 @@ export default function LunchBreaksPage() {
 
     let isActive = true;
     setIsLoadingEmployees(true);
-    void fetchWithSession('/users')
+    void fetchWithSession('/shifts/staff-roster')
       .then(async (res) => {
         if (!res.ok) return;
         const payload = (await res.json()) as { data?: Array<{ id: string; name: string; role?: string }> };

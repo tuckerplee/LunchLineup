@@ -40,6 +40,36 @@ export class ShiftsController {
         return { data: shifts, tenantId };
     }
 
+    /**
+     * Lightweight staff roster for schedule/lunch planners.
+     * Uses shifts:read permission so STAFF can access names needed for planning views.
+     */
+    @Get('staff-roster')
+    @Permission('shifts:read')
+    async staffRoster(@Req() req: any) {
+        const users = await this.prisma.user.findMany({
+            where: {
+                tenantId: req.user.tenantId,
+                deletedAt: null,
+                role: { in: ['MANAGER', 'STAFF'] },
+            },
+            orderBy: { name: 'asc' },
+            select: {
+                id: true,
+                name: true,
+                role: true,
+            },
+        });
+
+        return {
+            data: users.map((user) => ({
+                id: user.id,
+                name: user.name || 'Unnamed',
+                role: user.role,
+            })),
+        };
+    }
+
     @Get(':id')
     @Permission('shifts:read')
     async findOne(@Param('id') id: string, @Req() req: any) {

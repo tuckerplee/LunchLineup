@@ -14,6 +14,9 @@ describe('ShiftsController notifications', () => {
         };
         controller = new ShiftsController(notificationsService);
         prisma = {
+            user: {
+                findMany: vi.fn(),
+            },
             shift: {
                 create: vi.fn(),
                 findFirst: vi.fn(),
@@ -85,5 +88,34 @@ describe('ShiftsController notifications', () => {
             'Shift updated',
             'Your shift was updated (2026-03-10 18:00 - 2026-03-10 22:00 UTC).',
         );
+    });
+
+    it('returns manager/staff roster for planner consumers', async () => {
+        prisma.user.findMany.mockResolvedValue([
+            { id: 'u1', name: 'Test Manager', role: 'MANAGER' },
+            { id: 'u2', name: 'Test Staff', role: 'STAFF' },
+        ]);
+
+        const result = await controller.staffRoster({ user: { tenantId: 'tenant-1' } });
+
+        expect(prisma.user.findMany).toHaveBeenCalledWith({
+            where: {
+                tenantId: 'tenant-1',
+                deletedAt: null,
+                role: { in: ['MANAGER', 'STAFF'] },
+            },
+            orderBy: { name: 'asc' },
+            select: {
+                id: true,
+                name: true,
+                role: true,
+            },
+        });
+        expect(result).toEqual({
+            data: [
+                { id: 'u1', name: 'Test Manager', role: 'MANAGER' },
+                { id: 'u2', name: 'Test Staff', role: 'STAFF' },
+            ],
+        });
     });
 });
