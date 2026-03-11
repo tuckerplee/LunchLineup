@@ -352,7 +352,7 @@ function minutesToTimeValue(totalMinutes: number): string {
 
 function defaultManualShifts(): ManualShiftRow[] {
   return [
-    { id: 'manual-1', employeeName: 'Alex', startTime: '09:00', endTime: '17:00' },
+    { id: 'manual-1', employeeName: 'Alex', startTime: '05:00', endTime: '13:00' },
     { id: 'manual-2', employeeName: 'Blair', startTime: '10:00', endTime: '18:00' },
     { id: 'manual-3', employeeName: 'Casey', startTime: '11:00', endTime: '19:00' },
   ];
@@ -734,8 +734,8 @@ export default function LunchBreaksPage() {
       {
         id: `manual-${Date.now()}-${nextIndex}`,
         employeeName: `Employee ${nextIndex}`,
-        startTime: '09:00',
-        endTime: '17:00',
+        startTime: '05:00',
+        endTime: '13:00',
       },
     ]);
   }, [manualShifts.length]);
@@ -1107,8 +1107,8 @@ export default function LunchBreaksPage() {
         employeeId: employee.id,
         employeeName: employee.name,
         role: employee.role ?? 'Staff',
-        startTime: '09:00',
-        endTime: '17:00',
+        startTime: '05:00',
+        endTime: '13:00',
       }));
     });
   }, [autoGuideStep, dayRows, isAutoMode, selectedAutoEmployeeIds, selectedAutoEmployees]);
@@ -1183,7 +1183,7 @@ export default function LunchBreaksPage() {
     updateDaySession,
   ]);
 
-  const setupTimelineStart = 9 * 60;
+  const setupTimelineStart = 5 * 60;
   const setupTimelineEnd = 22 * 60;
   const setupTimelineWindow = setupTimelineEnd - setupTimelineStart;
 
@@ -1770,9 +1770,9 @@ export default function LunchBreaksPage() {
                     </div>
 
                     <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr 1fr', fontSize: '0.66rem', color: 'var(--text-muted)', fontWeight: 700 }}>
-                      <span>9:00</span>
-                      <span style={{ textAlign: 'center' }}>13:00</span>
-                      <span style={{ textAlign: 'center' }}>17:00</span>
+                      <span>5:00</span>
+                      <span style={{ textAlign: 'center' }}>11:00</span>
+                      <span style={{ textAlign: 'center' }}>16:00</span>
                       <span style={{ textAlign: 'right' }}>22:00</span>
                     </div>
 
@@ -1993,9 +1993,9 @@ export default function LunchBreaksPage() {
                       </div>
 
                       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr 1fr', fontSize: '0.66rem', color: 'var(--text-muted)', fontWeight: 700 }}>
-                        <span>9:00</span>
-                        <span style={{ textAlign: 'center' }}>13:00</span>
-                        <span style={{ textAlign: 'center' }}>17:00</span>
+                        <span>5:00</span>
+                        <span style={{ textAlign: 'center' }}>11:00</span>
+                        <span style={{ textAlign: 'center' }}>16:00</span>
                         <span style={{ textAlign: 'right' }}>22:00</span>
                       </div>
 
