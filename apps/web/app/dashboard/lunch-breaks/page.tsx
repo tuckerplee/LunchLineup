@@ -556,9 +556,11 @@ export default function LunchBreaksPage() {
     if (!daySession) return;
 
     setPlannerMode(daySession.mode);
-    if (daySession.mode === 'auto' && daySession.autoSetupComplete) {
-      setAutoGuideStep(5);
+    if (daySession.mode === 'auto') {
+      setAutoGuideStep(daySession.autoSetupComplete ? 5 : 2);
+      return;
     }
+    setAutoGuideStep(5);
   }, [isLoading, lunchBreakFeature?.enabled, selectedDate]);
 
   const updateBreak = useCallback((shiftId: string, key: BreakEditorKey, next: Partial<EditableBreak>) => {
