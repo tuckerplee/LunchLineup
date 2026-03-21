@@ -135,7 +135,7 @@ function getCsrfHeaders(): Record<string, string> {
     return csrfToken ? { 'x-csrf-token': csrfToken } : {};
 }
 
-function jsonWriteInit(method: 'POST' | 'PUT', payload?: unknown): RequestInit {
+function jsonWriteInit(method: 'POST' | 'PUT' | 'DELETE', payload?: unknown): RequestInit {
     return {
         method,
         credentials: 'include',
@@ -147,7 +147,7 @@ function jsonWriteInit(method: 'POST' | 'PUT', payload?: unknown): RequestInit {
     };
 }
 
-async function writeJson<T>(path: string, method: 'POST' | 'PUT', payload?: unknown): Promise<T> {
+async function writeJson<T>(path: string, method: 'POST' | 'PUT' | 'DELETE', payload?: unknown): Promise<T> {
     const response = await fetchWithSession(path, jsonWriteInit(method, payload));
     const responsePayload = await response.json().catch(() => ({} as Record<string, unknown>));
     if (!response.ok) {
@@ -349,6 +349,30 @@ export function TenantsClient() {
         }
     }
 
+    async function deleteTenant(tenant: TenantRecord) {
+        if (!tenant.deletedAt) {
+            setError('Tenant must be archived before permanent deletion.');
+            return;
+        }
+        if (typeof window !== 'undefined') {
+            const confirmed = window.confirm(`Permanently delete ${tenant.name}? This cannot be undone.`);
+            if (!confirmed) return;
+        }
+
+        setError(null);
+        setNotice(null);
+        setSaving(`delete:${tenant.id}`);
+        try {
+            await writeJson<{ id: string; deleted: boolean }>(`/admin/tenants/${tenant.id}`, 'DELETE');
+            setNotice(`${tenant.name} permanently deleted.`);
+            await refresh();
+        } catch (err) {
+            setError(err instanceof Error ? err.message : 'Failed to delete tenant');
+        } finally {
+            setSaving((current) => (current === `delete:${tenant.id}` ? null : current));
+        }
+    }
+
     const tenantToEdit = selectedTenant;
 
     return (
@@ -537,15 +561,26 @@ export function TenantsClient() {
                                                     Edit
                                                 </button>
                                                 {isArchived ? (
-                                                    <button
-                                                        className="btn btn-sm"
-                                                        style={actionButtonStyle('neutral')}
-                                                        type="button"
-                                                        disabled={saving === `restore:${tenant.id}`}
-                                                        onClick={() => void runStatusAction(tenant, 'restore')}
-                                                    >
-                                                        {saving === `restore:${tenant.id}` ? 'Restoring...' : 'Restore'}
-                                                    </button>
+                                                    <>
+                                                        <button
+                                                            className="btn btn-sm"
+                                                            style={actionButtonStyle('neutral')}
+                                                            type="button"
+                                                            disabled={saving === `restore:${tenant.id}`}
+                                                            onClick={() => void runStatusAction(tenant, 'restore')}
+                                                        >
+                                                            {saving === `restore:${tenant.id}` ? 'Restoring...' : 'Restore'}
+                                                        </button>
+                                                        <button
+                                                            className="btn btn-sm"
+                                                            style={actionButtonStyle('danger')}
+                                                            type="button"
+                                                            disabled={saving === `delete:${tenant.id}`}
+                                                            onClick={() => void deleteTenant(tenant)}
+                                                        >
+                                                            {saving === `delete:${tenant.id}` ? 'Deleting...' : 'Remove'}
+                                                        </button>
+                                                    </>
                                                 ) : tenant.status === 'SUSPENDED' ? (
                                                     <button
                                                         className="btn btn-sm"
@@ -800,15 +835,26 @@ export function TenantsClient() {
 
                                 <div style={{ display: 'flex', gap: '0.35rem', flexWrap: 'wrap' }}>
                                     {tenantToEdit.deletedAt ? (
-                                        <button
-                                            className="btn btn-sm"
-                                            style={actionButtonStyle('neutral')}
-                                            type="button"
-                                            disabled={saving === `restore:${tenantToEdit.id}`}
-                                            onClick={() => void runStatusAction(tenantToEdit, 'restore')}
-                                        >
-                                            {saving === `restore:${tenantToEdit.id}` ? 'Restoring...' : 'Restore'}
-                                        </button>
+                                        <>
+                                            <button
+                                                className="btn btn-sm"
+                                                style={actionButtonStyle('neutral')}
+                                                type="button"
+                                                disabled={saving === `restore:${tenantToEdit.id}`}
+                                                onClick={() => void runStatusAction(tenantToEdit, 'restore')}
+                                            >
+                                                {saving === `restore:${tenantToEdit.id}` ? 'Restoring...' : 'Restore'}
+                                            </button>
+                                            <button
+                                                className="btn btn-sm"
+                                                style={actionButtonStyle('danger')}
+                                                type="button"
+                                                disabled={saving === `delete:${tenantToEdit.id}`}
+                                                onClick={() => void deleteTenant(tenantToEdit)}
+                                            >
+                                                {saving === `delete:${tenantToEdit.id}` ? 'Deleting...' : 'Remove'}
+                                            </button>
+                                        </>
                                     ) : tenantToEdit.status === 'SUSPENDED' ? (
                                         <button
                                             className="btn btn-sm"

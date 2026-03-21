@@ -1,4 +1,4 @@
-import { BadRequestException, Body, Controller, ForbiddenException, Get, HttpCode, HttpStatus, Param, Post, Put, Query, Req, UseGuards } from '@nestjs/common';
+import { BadRequestException, Body, Controller, Delete, ForbiddenException, Get, HttpCode, HttpStatus, Param, Post, Put, Query, Req, UseGuards } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { PlanTier, Prisma, PrismaClient, TenantStatus, UserRole } from '@prisma/client';
@@ -292,6 +292,86 @@ export class AdminController {
             data: { tenantId: id, userId: req.user.sub, action: 'TENANT_RESTORED', resource: 'Tenant', resourceId: id },
         });
         return { id, restored: true };
+    }
+
+    @Delete('tenants/:id')
+    async deleteTenant(@Req() req: any, @Param('id') id: string) {
+        this.assertSuperAdmin(req);
+
+        if (req?.user?.tenantId === id) {
+            throw new BadRequestException('You cannot permanently delete your own tenant.');
+        }
+
+        const tenant = await this.prisma.tenant.findUnique({
+            where: { id },
+            select: { id: true, deletedAt: true },
+        });
+
+        if (!tenant) {
+            throw new BadRequestException('Tenant not found');
+        }
+
+        if (!tenant.deletedAt) {
+            throw new BadRequestException('Archive tenant before permanent deletion.');
+        }
+
+        await this.prisma.$transaction(async (tx: Prisma.TransactionClient) => {
+            await tx.session.deleteMany({
+                where: { user: { tenantId: id } },
+            });
+            await tx.notification.deleteMany({
+                where: { tenantId: id },
+            });
+            await tx.break.deleteMany({
+                where: { shift: { tenantId: id } },
+            });
+            await tx.shift.deleteMany({
+                where: { tenantId: id },
+            });
+            await tx.schedule.deleteMany({
+                where: { tenantId: id },
+            });
+            await tx.location.deleteMany({
+                where: { tenantId: id },
+            });
+            await tx.tenantSetting.deleteMany({
+                where: { tenantId: id },
+            });
+            await tx.billingEvent.deleteMany({
+                where: { tenantId: id },
+            });
+            await tx.webhookEndpoint.deleteMany({
+                where: { tenantId: id },
+            });
+            await tx.creditTransaction.deleteMany({
+                where: { tenantId: id },
+            });
+            await tx.auditLog.deleteMany({
+                where: {
+                    OR: [
+                        { tenantId: id },
+                        { user: { is: { tenantId: id } } },
+                    ],
+                },
+            });
+            await tx.user.deleteMany({
+                where: { tenantId: id },
+            });
+            await tx.tenant.delete({
+                where: { id },
+            });
+            await tx.auditLog.create({
+                data: {
+                    tenantId: id,
+                    userId: req.user.sub,
+                    action: 'TENANT_DELETED',
+                    resource: 'Tenant',
+                    resourceId: id,
+                },
+            });
+        });
+
+        return { id, deleted: true };
     }
 
     @Get('users')
