@@ -1,7 +1,7 @@
-import { Controller, ForbiddenException, Get, Query, Req, UseGuards } from '@nestjs/common';
+import { BadRequestException, Body, Controller, ForbiddenException, Get, HttpCode, HttpStatus, Param, Post, Put, Query, Req, UseGuards } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
-import { PrismaClient } from '@prisma/client';
+import { PlanTier, Prisma, PrismaClient, TenantStatus, UserRole } from '@prisma/client';
 import Redis from 'ioredis';
 import { MetricsService } from '../common/metrics.service';
 
@@ -9,6 +9,7 @@ import { MetricsService } from '../common/metrics.service';
 @UseGuards(JwtAuthGuard)
 export class AdminController {
     private prisma = new PrismaClient();
+    private static readonly USERNAME_REGEX = /^[a-z0-9._-]{3,32}$/;
 
     constructor(
         private readonly configService: ConfigService,
@@ -19,6 +20,45 @@ export class AdminController {
         if (req?.user?.role !== 'SUPER_ADMIN') {
             throw new ForbiddenException('SUPER_ADMIN role required.');
         }
+    }
+
+    private toSlug(value: string): string {
+        return value
+            .toLowerCase()
+            .replace(/[^a-z0-9]+/g, '-')
+            .replace(/^-+|-+$/g, '')
+            .slice(0, 64);
+    }
+
+    private isPlanTier(value: string): value is PlanTier {
+        return Object.values(PlanTier).includes(value as PlanTier);
+    }
+
+    private isTenantStatus(value: string): value is TenantStatus {
+        return Object.values(TenantStatus).includes(value as TenantStatus);
+    }
+
+    private isUserRole(value: string): value is UserRole {
+        return Object.values(UserRole).includes(value as UserRole);
+    }
+
+    private parseOptionalIsoDate(raw?: string | null): Date | null | undefined {
+        if (raw === undefined) return undefined;
+        if (raw === null || raw.trim() === '') return null;
+        const parsed = new Date(raw);
+        if (Number.isNaN(parsed.getTime())) {
+            throw new BadRequestException(`Invalid date: ${raw}`);
+        }
+        return parsed;
+    }
+
+    private mapUserStatus(user: { deletedAt: Date | null; lockedUntil: Date | null; pinLockedUntil: Date | null }): 'ACTIVE' | 'LOCKED' | 'SUSPENDED' {
+        if (user.deletedAt) return 'SUSPENDED';
+        const now = new Date();
+        if ((user.lockedUntil && user.lockedUntil > now) || (user.pinLockedUntil && user.pinLockedUntil > now)) {
+            return 'LOCKED';
+        }
+        return 'ACTIVE';
     }
 
     @Get('stats')
@@ -50,7 +90,6 @@ export class AdminController {
         this.assertSuperAdmin(req);
 
         const data = await this.prisma.tenant.findMany({
-            where: { deletedAt: null },
             orderBy: { createdAt: 'desc' },
             include: {
                 _count: {
@@ -75,10 +114,184 @@ export class AdminController {
                 status: tenant.status,
                 usageCredits: tenant.usageCredits,
                 createdAt: tenant.createdAt,
+                trialEndsAt: tenant.trialEndsAt,
+                gracePeriodEndsAt: tenant.gracePeriodEndsAt,
+                deletedAt: tenant.deletedAt,
                 usersCount: tenant._count?.users ?? 0,
                 locationsCount: tenant._count?.locations ?? 0,
             })),
         };
+    }
+
+    @Post('tenants')
+    @HttpCode(HttpStatus.CREATED)
+    async createTenant(
+        @Req() req: any,
+        @Body() body: {
+            name: string;
+            slug?: string;
+            planTier?: string;
+            status?: string;
+            usageCredits?: number;
+        },
+    ) {
+        this.assertSuperAdmin(req);
+        const name = (body.name || '').trim();
+        if (!name) throw new BadRequestException('Tenant name is required');
+        const slug = this.toSlug((body.slug || name).trim());
+        if (!slug) throw new BadRequestException('Tenant slug is required');
+        const planTier = body.planTier?.trim() || PlanTier.FREE;
+        const status = body.status?.trim() || TenantStatus.TRIAL;
+        if (!this.isPlanTier(planTier)) throw new BadRequestException(`Invalid planTier: ${planTier}`);
+        if (!this.isTenantStatus(status)) throw new BadRequestException(`Invalid status: ${status}`);
+        const usageCredits = Number.isFinite(body.usageCredits as number) ? Number(body.usageCredits) : 0;
+        if (!Number.isInteger(usageCredits)) throw new BadRequestException('usageCredits must be an integer');
+
+        const tenant = await this.prisma.tenant.create({
+            data: {
+                name,
+                slug,
+                planTier,
+                status,
+                usageCredits,
+            },
+        });
+
+        await this.prisma.auditLog.create({
+            data: {
+                tenantId: tenant.id,
+                userId: req.user.sub,
+                action: 'TENANT_CREATED',
+                resource: 'Tenant',
+                resourceId: tenant.id,
+            },
+        });
+
+        return { id: tenant.id };
+    }
+
+    @Put('tenants/:id')
+    async updateTenant(
+        @Req() req: any,
+        @Param('id') id: string,
+        @Body() body: {
+            name?: string;
+            slug?: string;
+            planTier?: string;
+            status?: string;
+            usageCredits?: number;
+            trialEndsAt?: string | null;
+            gracePeriodEndsAt?: string | null;
+        },
+    ) {
+        this.assertSuperAdmin(req);
+        const patch: any = {};
+        if (body.name !== undefined) {
+            const name = body.name.trim();
+            if (!name) throw new BadRequestException('name cannot be empty');
+            patch.name = name;
+        }
+        if (body.slug !== undefined) {
+            const slug = this.toSlug(body.slug.trim());
+            if (!slug) throw new BadRequestException('slug cannot be empty');
+            patch.slug = slug;
+        }
+        if (body.planTier !== undefined) {
+            if (!this.isPlanTier(body.planTier)) throw new BadRequestException(`Invalid planTier: ${body.planTier}`);
+            patch.planTier = body.planTier;
+        }
+        if (body.status !== undefined) {
+            if (!this.isTenantStatus(body.status)) throw new BadRequestException(`Invalid status: ${body.status}`);
+            patch.status = body.status;
+        }
+        if (body.usageCredits !== undefined) {
+            if (!Number.isInteger(body.usageCredits)) throw new BadRequestException('usageCredits must be an integer');
+            patch.usageCredits = body.usageCredits;
+        }
+        if (body.trialEndsAt !== undefined) patch.trialEndsAt = this.parseOptionalIsoDate(body.trialEndsAt);
+        if (body.gracePeriodEndsAt !== undefined) patch.gracePeriodEndsAt = this.parseOptionalIsoDate(body.gracePeriodEndsAt);
+        if (Object.keys(patch).length === 0) throw new BadRequestException('No valid fields to update');
+
+        await this.prisma.tenant.update({
+            where: { id },
+            data: patch,
+        });
+
+        await this.prisma.auditLog.create({
+            data: {
+                tenantId: id,
+                userId: req.user.sub,
+                action: 'TENANT_UPDATED',
+                resource: 'Tenant',
+                resourceId: id,
+            },
+        });
+
+        return { id, updated: true };
+    }
+
+    @Post('tenants/:id/suspend')
+    async suspendTenant(@Req() req: any, @Param('id') id: string) {
+        this.assertSuperAdmin(req);
+        await this.prisma.$transaction(async (tx: Prisma.TransactionClient) => {
+            await tx.tenant.update({
+                where: { id },
+                data: { status: TenantStatus.SUSPENDED },
+            });
+            await tx.session.updateMany({
+                where: { user: { tenantId: id }, revokedAt: null },
+                data: { revokedAt: new Date() },
+            });
+        });
+        await this.prisma.auditLog.create({
+            data: { tenantId: id, userId: req.user.sub, action: 'TENANT_SUSPENDED', resource: 'Tenant', resourceId: id },
+        });
+        return { id, status: TenantStatus.SUSPENDED };
+    }
+
+    @Post('tenants/:id/activate')
+    async activateTenant(@Req() req: any, @Param('id') id: string) {
+        this.assertSuperAdmin(req);
+        await this.prisma.tenant.update({
+            where: { id },
+            data: { status: TenantStatus.ACTIVE, deletedAt: null },
+        });
+        await this.prisma.auditLog.create({
+            data: { tenantId: id, userId: req.user.sub, action: 'TENANT_ACTIVATED', resource: 'Tenant', resourceId: id },
+        });
+        return { id, status: TenantStatus.ACTIVE };
+    }
+
+    @Post('tenants/:id/archive')
+    async archiveTenant(@Req() req: any, @Param('id') id: string) {
+        this.assertSuperAdmin(req);
+        await this.prisma.$transaction(async (tx: Prisma.TransactionClient) => {
+            await tx.tenant.update({
+                where: { id },
+                data: { deletedAt: new Date(), status: TenantStatus.CANCELLED },
+            });
+            await tx.session.updateMany({
+                where: { user: { tenantId: id }, revokedAt: null },
+                data: { revokedAt: new Date() },
+            });
+        });
+        await this.prisma.auditLog.create({
+            data: { tenantId: id, userId: req.user.sub, action: 'TENANT_ARCHIVED', resource: 'Tenant', resourceId: id },
+        });
+        return { id, archived: true };
+    }
+
+    @Post('tenants/:id/restore')
+    async restoreTenant(@Req() req: any, @Param('id') id: string) {
+        this.assertSuperAdmin(req);
+        await this.prisma.tenant.update({
+            where: { id },
+            data: { deletedAt: null, status: TenantStatus.ACTIVE },
+        });
+        await this.prisma.auditLog.create({
+            data: { tenantId: id, userId: req.user.sub, action: 'TENANT_RESTORED', resource: 'Tenant', resourceId: id },
+        });
+        return { id, restored: true };
     }
 
     @Get('users')
@@ -86,13 +299,14 @@ export class AdminController {
         this.assertSuperAdmin(req);
 
         const search = q?.trim();
-        const where: any = { deletedAt: null };
+        const where: any = {};
         if (search) {
             where.OR = [
                 { name: { contains: search, mode: 'insensitive' } },
                 { email: { contains: search, mode: 'insensitive' } },
-                { tenant: { name: { contains: search, mode: 'insensitive' } } },
-                { tenant: { slug: { contains: search, mode: 'insensitive' } } },
+                { username: { contains: search, mode: 'insensitive' } },
+                { tenant: { is: { name: { contains: search, mode: 'insensitive' } } } },
+                { tenant: { is: { slug: { contains: search, mode: 'insensitive' } } } },
             ];
         }
 
@@ -116,13 +330,158 @@ export class AdminController {
                 id: user.id,
                 name: user.name,
                 email: user.email,
+                username: user.username,
                 role: user.role,
                 createdAt: user.createdAt,
                 lastLoginAt: user.lastLoginAt,
                 lockedUntil: user.lockedUntil,
+                pinLockedUntil: user.pinLockedUntil,
+                deletedAt: user.deletedAt,
+                status: this.mapUserStatus(user),
                 tenant: user.tenant,
             })),
         };
+    }
+
+    @Put('users/:id')
+    async updateUser(
+        @Req() req: any,
+        @Param('id') id: string,
+        @Body() body: {
+            name?: string;
+            email?: string | null;
+            username?: string | null;
+            role?: string;
+            tenantId?: string;
+            pinResetRequired?: boolean;
+        },
+    ) {
+        this.assertSuperAdmin(req);
+        const patch: any = {};
+        if (body.name !== undefined) {
+            const name = body.name.trim();
+            if (!name) throw new BadRequestException('name cannot be empty');
+            patch.name = name;
+        }
+        if (body.email !== undefined) {
+            const email = (body.email ?? '').trim().toLowerCase();
+            if (!email) patch.email = null;
+            else {
+                if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) throw new BadRequestException('Invalid email');
+                patch.email = email;
+            }
+        }
+        if (body.username !== undefined) {
+            const username = (body.username ?? '').trim().toLowerCase();
+            if (!username) {
+                patch.username = null;
+            } else {
+                if (!AdminController.USERNAME_REGEX.test(username)) {
+                    throw new BadRequestException('Invalid username format');
+                }
+                patch.username = username;
+            }
+        }
+        if (body.role !== undefined) {
+            if (!this.isUserRole(body.role)) throw new BadRequestException(`Invalid role: ${body.role}`);
+            patch.role = body.role;
+        }
+        if (body.tenantId !== undefined) {
+            patch.tenantId = body.tenantId;
+        }
+        if (body.pinResetRequired !== undefined) {
+            patch.pinResetRequired = Boolean(body.pinResetRequired);
+        }
+        if (Object.keys(patch).length === 0) throw new BadRequestException('No valid fields to update');
+
+        const updated = await this.prisma.user.update({
+            where: { id },
+            data: patch,
+            include: { tenant: { select: { id: true, name: true, slug: true } } },
+        });
+
+        await this.prisma.auditLog.create({
+            data: {
+                tenantId: updated.tenantId,
+                userId: req.user.sub,
+                action: 'USER_UPDATED',
+                resource: 'User',
+                resourceId: id,
+            },
+        });
+
+        return {
+            id: updated.id,
+            name: updated.name,
+            email: updated.email,
+            username: updated.username,
+            role: updated.role,
+            status: this.mapUserStatus(updated),
+            tenant: updated.tenant,
+        };
+    }
+
+    @Post('users/:id/lock')
+    async lockUser(@Req() req: any, @Param('id') id: string, @Body() body: { minutes?: number }) {
+        this.assertSuperAdmin(req);
+        const minutes = Number.isFinite(body?.minutes as number) ? Math.max(1, Math.min(60 * 24 * 30, Number(body.minutes))) : 60;
+        const lockedUntil = new Date(Date.now() + minutes * 60 * 1000);
+        const user = await this.prisma.user.update({
+            where: { id },
+            data: { lockedUntil, pinLockedUntil: lockedUntil },
+        });
+        await this.prisma.session.updateMany({
+            where: { userId: id, revokedAt: null },
+            data: { revokedAt: new Date() },
+        });
+        await this.prisma.auditLog.create({
+            data: { tenantId: user.tenantId, userId: req.user.sub, action: 'USER_LOCKED', resource: 'User', resourceId: id },
+        });
+        return { id, lockedUntil };
+    }
+
+    @Post('users/:id/unlock')
+    async unlockUser(@Req() req: any, @Param('id') id: string) {
+        this.assertSuperAdmin(req);
+        const user = await this.prisma.user.update({
+            where: { id },
+            data: { lockedUntil: null, pinLockedUntil: null, loginAttempts: 0, pinLoginAttempts: 0 },
+        });
+        await this.prisma.auditLog.create({
+            data: { tenantId: user.tenantId, userId: req.user.sub, action: 'USER_UNLOCKED', resource: 'User', resourceId: id },
+        });
+        return { id, unlocked: true };
+    }
+
+    @Post('users/:id/suspend')
+    async suspendUser(@Req() req: any, @Param('id') id: string) {
+        this.assertSuperAdmin(req);
+        const now = new Date();
+        const user = await this.prisma.user.update({
+            where: { id },
+            data: { deletedAt: now, lockedUntil: now, pinLockedUntil: now },
+        });
+        await this.prisma.session.updateMany({
+            where: { userId: id, revokedAt: null },
+            data: { revokedAt: now },
+        });
+        await this.prisma.auditLog.create({
+            data: { tenantId: user.tenantId, userId: req.user.sub, action: 'USER_SUSPENDED', resource: 'User', resourceId: id },
+        });
+        return { id, suspended: true };
+    }
+
+    @Post('users/:id/activate')
+    async activateUser(@Req() req: any, @Param('id') id: string) {
+        this.assertSuperAdmin(req);
+        const user = await this.prisma.user.update({
+            where: { id },
+            data: { deletedAt: null, lockedUntil: null, pinLockedUntil: null, loginAttempts: 0, pinLoginAttempts: 0 },
+        });
+        await this.prisma.auditLog.create({
+            data: { tenantId: user.tenantId, userId: req.user.sub, action: 'USER_ACTIVATED', resource: 'User', resourceId: id },
+        });
+        return { id, activated: true };
     }
 
     @Get('audit')
