@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { fetchJsonWithSession } from '@/lib/client-api';
+import { fetchJsonWithSession, fetchWithSession } from '@/lib/client-api';
 
 const TABS = ['General', 'Team', 'Billing', 'Security'] as const;
 type Tab = typeof TABS[number];
@@ -13,6 +13,18 @@ type FeatureMatrixResponse = {
 export default function SettingsPage() {
     const [activeTab, setActiveTab] = useState<Tab>('General');
     const [usageCredits, setUsageCredits] = useState<number | null>(null);
+    const [currentPin, setCurrentPin] = useState('');
+    const [newPin, setNewPin] = useState('');
+    const [confirmPin, setConfirmPin] = useState('');
+    const [pinMessage, setPinMessage] = useState<string | null>(null);
+    const [isUpdatingPin, setIsUpdatingPin] = useState(false);
+
+    const csrfHeader = () => {
+        if (typeof document === 'undefined') return {};
+        const pair = document.cookie.split('; ').find((entry) => entry.startsWith('csrf_token='));
+        const csrfToken = pair ? decodeURIComponent(pair.split('=')[1] ?? '') : '';
+        return csrfToken ? { 'x-csrf-token': csrfToken } : {};
+    };
 
     useEffect(() => {
         let cancelled = false;
@@ -32,6 +44,49 @@ export default function SettingsPage() {
             cancelled = true;
         };
     }, []);
+
+    const updatePin = async () => {
+        const normalizedCurrentPin = currentPin.replace(/\D/g, '');
+        const normalizedNewPin = newPin.replace(/\D/g, '');
+        const normalizedConfirmPin = confirmPin.replace(/\D/g, '');
+        if (!/^\d{4,8}$/.test(normalizedCurrentPin) || !/^\d{4,8}$/.test(normalizedNewPin)) {
+            setPinMessage('PIN must be 4 to 8 digits.');
+            return;
+        }
+        if (normalizedNewPin !== normalizedConfirmPin) {
+            setPinMessage('New PIN and confirmation do not match.');
+            return;
+        }
+
+        setIsUpdatingPin(true);
+        setPinMessage(null);
+        try {
+            const response = await fetchWithSession('/users/me/pin', {
+                method: 'PUT',
+                headers: {
+                    'Content-Type': 'application/json',
+                    ...csrfHeader(),
+                },
+                body: JSON.stringify({
+                    currentPin: normalizedCurrentPin,
+                    newPin: normalizedNewPin,
+                }),
+            });
+            if (!response.ok) {
+                const payload = await response.json().catch(() => ({}));
+                const message = typeof (payload as any)?.message === 'string' ? (payload as any).message : 'Unable to update PIN.';
+                throw new Error(message);
+            }
+            setCurrentPin('');
+            setNewPin('');
+            setConfirmPin('');
+            setPinMessage('PIN updated successfully.');
+        } catch (error) {
+            setPinMessage((error as Error).message);
+        } finally {
+            setIsUpdatingPin(false);
+        }
+    };
 
     return (
         <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem', maxWidth: 980 }}>
@@ -218,6 +273,47 @@ export default function SettingsPage() {
                                 <span className="form-label">OIDC Issuer URL</span>
                                 <input readOnly defaultValue="https://accounts.google.com" className="form-input" style={{ fontFamily: 'var(--font-mono)', color: 'var(--text-muted)' }} />
                             </label>
+
+                            <div className="surface-muted" style={{ padding: '0.85rem', display: 'grid', gap: '0.55rem' }}>
+                                <div style={{ fontSize: '0.9rem', fontWeight: 700, color: 'var(--text-primary)' }}>Change my PIN</div>
+                                <div style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>
+                                    Username-based accounts can rotate their own PIN here.
+                                </div>
+                                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, minmax(0, 1fr)) auto', gap: '0.5rem' }}>
+                                    <input
+                                        className="form-input"
+                                        type="password"
+                                        inputMode="numeric"
+                                        placeholder="Current PIN"
+                                        value={currentPin}
+                                        onChange={(event) => setCurrentPin(event.target.value.replace(/\D/g, '').slice(0, 8))}
+                                    />
+                                    <input
+                                        className="form-input"
+                                        type="password"
+                                        inputMode="numeric"
+                                        placeholder="New PIN"
+                                        value={newPin}
+                                        onChange={(event) => setNewPin(event.target.value.replace(/\D/g, '').slice(0, 8))}
+                                    />
+                                    <input
+                                        className="form-input"
+                                        type="password"
+                                        inputMode="numeric"
+                                        placeholder="Confirm PIN"
+                                        value={confirmPin}
+                                        onChange={(event) => setConfirmPin(event.target.value.replace(/\D/g, '').slice(0, 8))}
+                                    />
+                                    <button className="btn btn-secondary" onClick={() => void updatePin()} disabled={isUpdatingPin}>
+                                        {isUpdatingPin ? 'Saving...' : 'Update PIN'}
+                                    </button>
+                                </div>
+                                {pinMessage ? (
+                                    <div style={{ fontSize: '0.8rem', color: pinMessage.includes('success') ? '#0f8c52' : '#cb3653' }}>
+                                        {pinMessage}
+                                    </div>
+                                ) : null}
+                            </div>
                         </div>
                     )}
                 </div>

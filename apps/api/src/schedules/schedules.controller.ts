@@ -2,6 +2,7 @@ import { Controller, Get, Post, Put, Param, Body, Req, UseGuards, SetMetadata, H
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { RbacGuard } from '../auth/rbac.guard';
 import { PrismaClient } from '@prisma/client';
+import { NotificationType, NotificationsService } from '../notifications/notifications.service';
 
 const Permission = (perm: string) => SetMetadata('permission', perm);
 const SCHEDULE_STATUS = {
@@ -13,6 +14,7 @@ const SCHEDULE_STATUS = {
 @UseGuards(JwtAuthGuard, RbacGuard)
 export class SchedulesController {
     private prisma = new PrismaClient();
+    constructor(private readonly notificationsService: NotificationsService) { }
 
     @Get()
     @Permission('schedules:read')
@@ -60,20 +62,52 @@ export class SchedulesController {
     @Permission('schedules:publish')
     @HttpCode(HttpStatus.OK)
     async publish(@Param('id') id: string, @Req() req: any) {
+        const now = new Date();
+
         // 1. Update schedule status to PUBLISHED
         const schedule = await this.prisma.schedule.updateMany({
             where: { id, tenantId: req.user.tenantId, status: SCHEDULE_STATUS.DRAFT },
-            data: { status: SCHEDULE_STATUS.PUBLISHED, publishedAt: new Date() }
+            data: { status: SCHEDULE_STATUS.PUBLISHED, publishedAt: now }
         });
 
         if (schedule.count === 0) {
             throw new NotFoundException('Draft schedule not found or already published');
         }
 
-        // 2. Send notifications to all assigned staff (Simulated)
-        // 3. Emit WebSocket event for real-time sync (Simulated)
+        const publishedSchedule = await this.prisma.schedule.findFirst({
+            where: { id, tenantId: req.user.tenantId },
+            include: {
+                location: { select: { name: true } },
+            },
+        });
+        if (!publishedSchedule) {
+            throw new NotFoundException('Published schedule not found');
+        }
 
-        return { id, status: SCHEDULE_STATUS.PUBLISHED, publishedAt: new Date().toISOString() };
+        const assignedUsers = await this.prisma.shift.findMany({
+            where: {
+                tenantId: req.user.tenantId,
+                scheduleId: id,
+                deletedAt: null,
+                userId: { not: null },
+            },
+            select: { userId: true },
+            distinct: ['userId'],
+        });
+
+        await this.notificationsService.sendMany(
+            assignedUsers
+                .filter((entry) => Boolean(entry.userId))
+                .map((entry) => ({
+                    tenantId: req.user.tenantId,
+                    userId: entry.userId as string,
+                    type: NotificationType.SCHEDULE_PUBLISHED,
+                    title: 'Schedule published',
+                    body: `${publishedSchedule.location.name}: ${publishedSchedule.startDate.toISOString().slice(0, 10)} to ${publishedSchedule.endDate.toISOString().slice(0, 10)}`,
+                })),
+        );
+
+        return { id, status: SCHEDULE_STATUS.PUBLISHED, publishedAt: now.toISOString() };
     }
 
     /**

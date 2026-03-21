@@ -3,6 +3,7 @@
 import React, { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
+import { LunchLineupMark } from '@/components/branding/LunchLineupMark';
 
 const API = '/api/v1';
 
@@ -158,7 +159,7 @@ export default function OnboardingPage() {
 
             <header className="onb-header">
                 <Link href="/" className="onb-brand">
-                    <div className="onb-brand__icon">🍱</div>
+                    <div className="onb-brand__icon"><LunchLineupMark size={40} /></div>
                     <div className="onb-brand__wordmark">LunchLineup</div>
                 </Link>
             </header>
@@ -377,9 +378,6 @@ export default function OnboardingPage() {
                 .onb-brand__icon {
                     width: 40px;
                     height: 40px;
-                    border-radius: 11px;
-                    background: linear-gradient(135deg, #4171ff, #2f63ff 60%, #22b8cf);
-                    color: #ffffff;
                     display: grid;
                     place-items: center;
                 }

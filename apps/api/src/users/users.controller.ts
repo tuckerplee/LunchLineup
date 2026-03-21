@@ -1,8 +1,8 @@
-import { Controller, Get, Post, Put, Delete, Param, Body, Req, UseGuards, SetMetadata, Query, HttpCode, HttpStatus, NotFoundException } from '@nestjs/common';
+import { Controller, Get, Post, Put, Delete, Param, Body, Req, UseGuards, SetMetadata, Query, HttpCode, HttpStatus, NotFoundException, BadRequestException } from '@nestjs/common';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { RbacGuard } from '../auth/rbac.guard';
 import { PrismaClient } from '@prisma/client';
-import * as crypto from 'crypto';
+import { AuthService } from '../auth/auth.service';
 
 const Permission = (perm: string) => SetMetadata('permission', perm);
 type UserRoleValue = 'SUPER_ADMIN' | 'ADMIN' | 'MANAGER' | 'STAFF';
@@ -17,6 +17,53 @@ const USER_ROLE: Record<UserRoleValue, UserRoleValue> = {
 @UseGuards(JwtAuthGuard, RbacGuard)
 export class UsersController {
     private prisma = new PrismaClient();
+    private static readonly USERNAME_REGEX = /^[a-z0-9._-]{3,32}$/;
+    private static readonly PIN_REGEX = /^\d{4,8}$/;
+    private static readonly SYSTEM_EMAIL_DOMAIN = 'staff.lunchlineup.local';
+
+    constructor(private readonly authService: AuthService) { }
+
+    private isSystemGeneratedEmail(email: string): boolean {
+        return email.endsWith(`@${UsersController.SYSTEM_EMAIL_DOMAIN}`);
+    }
+
+    private sanitizeEmailForResponse(email: string | null): string {
+        if (!email) return '';
+        return this.isSystemGeneratedEmail(email) ? '' : email;
+    }
+
+    private normalizeUsername(username?: string): string | null {
+        const normalized = (username ?? '').trim().toLowerCase();
+        return normalized || null;
+    }
+
+    private usernameFromName(name: string): string {
+        const base = name
+            .toLowerCase()
+            .replace(/[^a-z0-9]+/g, '.')
+            .replace(/^\.+|\.+$/g, '')
+            .slice(0, 28);
+        if (!base) return 'staff.user';
+        return base.length < 3 ? `${base}.usr` : base;
+    }
+
+    private async generateUniqueUsername(tenantId: string, name: string): Promise<string> {
+        const seed = this.usernameFromName(name);
+        let candidate = seed;
+        for (let i = 0; i < 20; i += 1) {
+            const taken = await this.prisma.user.findFirst({
+                where: { tenantId, username: candidate, deletedAt: null },
+                select: { id: true },
+            });
+            if (!taken) return candidate;
+            candidate = `${seed.slice(0, 24)}.${Math.floor(1000 + Math.random() * 9000)}`;
+        }
+        return `${seed.slice(0, 20)}.${Date.now().toString().slice(-6)}`;
+    }
+
+    private createTemporaryPin(): string {
+        return Math.floor(100000 + Math.random() * 900000).toString();
+    }
 
     @Get()
     @Permission('users:read')
@@ -25,7 +72,18 @@ export class UsersController {
             where: { tenantId: req.user.tenantId, deletedAt: null }
         });
         // Remove secrets before returning
-        return { data: users.map((u: any) => ({ id: u.id, name: u.name, email: u.email, role: u.role })), tenantId: req.user.tenantId };
+        return {
+            data: users.map((u: any) => ({
+                id: u.id,
+                name: u.name,
+                email: this.sanitizeEmailForResponse(u.email),
+                username: u.username ?? '',
+                role: u.role,
+                pinEnabled: Boolean(u.pinHash),
+                pinResetRequired: Boolean(u.pinResetRequired),
+            })),
+            tenantId: req.user.tenantId,
+        };
     }
 
     @Get(':id')
@@ -35,20 +93,72 @@ export class UsersController {
             where: { id, tenantId: req.user.tenantId, deletedAt: null }
         });
         if (!user) throw new NotFoundException('User not found');
-        return { id: user.id, name: user.name, email: user.email, role: user.role };
+        return {
+            id: user.id,
+            name: user.name,
+            email: this.sanitizeEmailForResponse(user.email),
+            username: user.username ?? '',
+            role: user.role,
+            pinEnabled: Boolean(user.pinHash),
+            pinResetRequired: Boolean(user.pinResetRequired),
+        };
     }
 
     @Post('invite')
     @Permission('users:write')
-    async invite(@Body() body: { email: string; name: string; role: UserRoleValue }, @Req() req: any) {
+    async invite(@Body() body: { email?: string; username?: string; pin?: string; name: string; role?: UserRoleValue }, @Req() req: any) {
+        const role = body.role || USER_ROLE.STAFF;
+        const normalizedName = (body.name || '').trim();
+        const normalizedEmail = (body.email || '').trim().toLowerCase();
+        const normalizedUsername = this.normalizeUsername(body.username);
+        const normalizedPin = (body.pin || '').trim();
+        const requiresEmail = role === USER_ROLE.ADMIN || role === USER_ROLE.SUPER_ADMIN;
+        const hasEmail = Boolean(normalizedEmail);
+        const hasUsername = Boolean(normalizedUsername);
+
+        if (!normalizedName) {
+            throw new BadRequestException('Name is required');
+        }
+
+        if (!hasEmail && !hasUsername) {
+            throw new BadRequestException('Provide either email or username');
+        }
+
+        if (requiresEmail && !hasEmail) {
+            throw new BadRequestException('Email is required for admin accounts');
+        }
+
+        if (normalizedEmail && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalizedEmail)) {
+            throw new BadRequestException('Invalid email address');
+        }
+
+        if (normalizedUsername && !UsersController.USERNAME_REGEX.test(normalizedUsername)) {
+            throw new BadRequestException('Username must be 3-32 chars using lowercase letters, numbers, ., _, -');
+        }
+
+        if (normalizedPin && !UsersController.PIN_REGEX.test(normalizedPin)) {
+            throw new BadRequestException('PIN must be 4-8 numeric digits');
+        }
+
+        if (normalizedEmail && normalizedUsername) {
+            throw new BadRequestException('Choose email login or username login, not both');
+        }
+
         const user = await this.prisma.user.create({
             data: {
                 tenantId: req.user.tenantId,
-                email: body.email,
-                name: body.name,
-                role: body.role || USER_ROLE.STAFF,
+                email: normalizedEmail || null,
+                username: normalizedUsername,
+                name: normalizedName,
+                role,
             }
         });
+
+        let temporaryPin: string | null = null;
+        if (normalizedUsername) {
+            temporaryPin = normalizedPin || this.createTemporaryPin();
+            await this.authService.setUserPin(user.id, temporaryPin, !normalizedPin);
+        }
 
         // 2. Send invitation email handled via events/queues in real implementation
         // 3. Log to audit log
@@ -62,7 +172,17 @@ export class UsersController {
             }
         });
 
-        return { id: user.id, email: user.email, name: user.name, role: user.role, status: 'INVITED' };
+        return {
+            id: user.id,
+            email: this.sanitizeEmailForResponse(user.email),
+            username: user.username ?? '',
+            name: user.name,
+            role: user.role,
+            pinEnabled: Boolean(user.pinHash) || Boolean(normalizedUsername),
+            pinResetRequired: Boolean(normalizedUsername) && !normalizedPin,
+            temporaryPin,
+            status: 'INVITED',
+        };
     }
 
     @Put(':id/role')
@@ -73,6 +193,51 @@ export class UsersController {
             data: { role: body.role }
         });
         return { id, role: body.role };
+    }
+
+    @Post(':id/pin/reset')
+    @Permission('users:admin')
+    async resetUserPin(@Param('id') id: string, @Body() body: { pin?: string }, @Req() req: any) {
+        const user = await this.prisma.user.findFirst({
+            where: { id, tenantId: req.user.tenantId, deletedAt: null },
+            select: { id: true, username: true, role: true, name: true, email: true },
+        });
+        if (!user) throw new NotFoundException('User not found');
+
+        let username = user.username;
+        if (!username) {
+            const canBootstrapUsername = !user.email || this.isSystemGeneratedEmail(user.email);
+            if (!canBootstrapUsername) {
+                throw new BadRequestException('PIN reset is only available for username accounts');
+            }
+
+            username = await this.generateUniqueUsername(req.user.tenantId, user.name);
+            await this.prisma.user.update({
+                where: { id: user.id },
+                data: { username },
+            });
+        }
+
+        const newPin = (body.pin || '').trim() || this.createTemporaryPin();
+        await this.authService.setUserPin(user.id, newPin, true);
+
+        await this.prisma.auditLog.create({
+            data: {
+                tenantId: req.user.tenantId,
+                userId: req.user.sub,
+                action: 'USER_PIN_RESET',
+                resource: 'User',
+                resourceId: user.id,
+            },
+        });
+
+        return { id: user.id, username, temporaryPin: newPin, pinResetRequired: true };
+    }
+
+    @Put('me/pin')
+    async rotateOwnPin(@Req() req: any, @Body() body: { currentPin: string; newPin: string }) {
+        await this.authService.rotateOwnPin(req.user.sub, body.currentPin, body.newPin);
+        return { success: true };
     }
 
     @Delete(':id')

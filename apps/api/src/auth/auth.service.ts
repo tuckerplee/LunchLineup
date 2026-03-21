@@ -1,4 +1,4 @@
-import { Injectable, UnauthorizedException, ForbiddenException } from '@nestjs/common';
+import { Injectable, UnauthorizedException, ForbiddenException, BadRequestException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { JwtService, TokenPayload } from './jwt.service';
 import { PrismaClient } from '@prisma/client';
@@ -12,6 +12,10 @@ const USER_ROLE: Record<UserRoleValue, UserRoleValue> = {
     STAFF: 'STAFF',
 };
 
+export type LoginResolveResult =
+    | { flow: 'EMAIL_OTP'; normalizedIdentifier: string }
+    | { flow: 'USERNAME_PIN'; normalizedIdentifier: string; pinResetRequired: boolean };
+
 @Injectable()
 export class AuthService {
     private prisma = new PrismaClient();
@@ -20,6 +24,105 @@ export class AuthService {
         private configService: ConfigService,
         private jwtService: JwtService,
     ) { }
+
+    private isEmailIdentifier(identifier: string): boolean {
+        return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(identifier);
+    }
+
+    private normalizeIdentifier(identifier: string): string {
+        return identifier.trim().toLowerCase();
+    }
+
+    private isPin(pin: string): boolean {
+        return /^\d{4,8}$/.test(pin);
+    }
+
+    private hashPin(pin: string): string {
+        const salt = crypto.randomBytes(16).toString('hex');
+        const hash = crypto.scryptSync(pin, salt, 64).toString('hex');
+        return `${salt}:${hash}`;
+    }
+
+    private verifyPin(pin: string, storedHash: string): boolean {
+        const [salt, hash] = storedHash.split(':');
+        if (!salt || !hash) return false;
+        const computed = crypto.scryptSync(pin, salt, 64).toString('hex');
+        return crypto.timingSafeEqual(Buffer.from(hash, 'hex'), Buffer.from(computed, 'hex'));
+    }
+
+    private async createSessionTokens(user: { id: string; tenantId: string; role: string; email: string | null; username: string | null }, source: string) {
+        const session = await this.prisma.session.create({
+            data: {
+                userId: user.id,
+                refreshToken: crypto.randomBytes(32).toString('hex'),
+                ipAddress: source,
+                userAgent: source,
+                expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
+            },
+        });
+
+        const payload: TokenPayload = {
+            sub: user.id,
+            tenantId: user.tenantId,
+            role: user.role,
+            sessionId: session.id,
+            mfaVerified: true,
+        };
+
+        await this.prisma.user.update({
+            where: { id: user.id },
+            data: {
+                lastLoginAt: new Date(),
+                loginAttempts: 0,
+                lockedUntil: null,
+            },
+        });
+
+        return {
+            accessToken: this.jwtService.generateAccessToken(payload),
+            refreshToken: session.refreshToken,
+            csrfToken: this.jwtService.generateCsrfToken(),
+            user: {
+                id: user.id,
+                email: user.email,
+                username: user.username,
+                role: user.role,
+            },
+        };
+    }
+
+    async resolveLoginMethod(identifierRaw: string): Promise<LoginResolveResult> {
+        const identifier = this.normalizeIdentifier(identifierRaw);
+        if (!identifier) {
+            throw new BadRequestException('Email or username is required');
+        }
+
+        if (this.isEmailIdentifier(identifier)) {
+            return { flow: 'EMAIL_OTP', normalizedIdentifier: identifier };
+        }
+
+        const user = await this.prisma.user.findFirst({
+            where: {
+                username: identifier,
+                deletedAt: null,
+            },
+            select: {
+                role: true,
+                pinResetRequired: true,
+            },
+        });
+
+        // Keep admin users on email auth only.
+        if (user && (user.role === USER_ROLE.ADMIN || user.role === USER_ROLE.SUPER_ADMIN)) {
+            throw new ForbiddenException('Admin users must sign in with work email.');
+        }
+
+        return {
+            flow: 'USERNAME_PIN',
+            normalizedIdentifier: identifier,
+            pinResetRequired: user?.pinResetRequired ?? false,
+        };
+    }
 
     async handleOidcCallback(code: string, state: string) {
         const issuerUrl = this.configService.getOrThrow('OIDC_ISSUER_URL');
@@ -42,14 +145,11 @@ export class AuthService {
             throw new UnauthorizedException('OIDC provider did not return an email address');
         }
 
-        // 3. Find or create user in our database
-        // Look up by email. For now, assume a multi-tenant default or lookup
         let user = await this.prisma.user.findFirst({
             where: { email: userInfo.email, deletedAt: null },
         });
 
         if (!user) {
-            // Self-signup: create a new tenant and user
             const tenant = await this.prisma.tenant.create({
                 data: {
                     name: `${userInfo.name || userInfo.email}'s Team`,
@@ -67,45 +167,19 @@ export class AuthService {
             });
         }
 
-        await this.checkAccountLockout(user.email);
+        await this.checkAccountLockout(user.email ?? undefined);
 
-        // 4. Create a server-side session
-        const session = await this.prisma.session.create({
-            data: {
-                userId: user.id,
-                refreshToken: crypto.randomBytes(32).toString('hex'),
-                ipAddress: 'OIDC', // In a real flow, pass Req IP
-                userAgent: 'OIDC',
-                expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000), // 7 days
-            }
-        });
-
-        // 5. Generate tokens
-        const payload: TokenPayload = {
-            sub: user.id,
+        const result = await this.createSessionTokens({
+            id: user.id,
+            email: user.email,
+            username: user.username,
             tenantId: user.tenantId,
             role: user.role,
-            sessionId: session.id,
-            mfaVerified: !user.mfaEnabled,
-        };
-
-        const accessToken = this.jwtService.generateAccessToken(payload);
-        const csrfToken = this.jwtService.generateCsrfToken();
-
-        // Successful login, clear failed attempts
-        if (user.loginAttempts > 0) {
-            await this.prisma.user.update({
-                where: { id: user.id },
-                data: { loginAttempts: 0, lockedUntil: null }
-            });
-        }
+        }, 'OIDC');
 
         return {
-            accessToken,
-            refreshToken: session.refreshToken,
-            csrfToken,
+            ...result,
             requiresMfa: user.mfaEnabled,
-            user: { id: user.id, email: user.email, role: user.role },
         };
     }
 
@@ -113,14 +187,13 @@ export class AuthService {
      * Email OTP login — find or create user by email, issue session.
      * Used by the verify-otp endpoint after OTP is confirmed.
      */
-    async loginWithEmail(email: string) {
+    async loginWithEmail(emailRaw: string) {
+        const email = this.normalizeIdentifier(emailRaw);
         let user = await this.prisma.user.findFirst({
             where: { email, deletedAt: null },
         });
 
         if (!user) {
-            // First user ever → create a tenant + SUPER_ADMIN
-            // Subsequent users → created as ADMIN for their organization
             const isFirstUser = (await this.prisma.user.count()) === 0;
 
             const tenant = await this.prisma.tenant.create({
@@ -139,7 +212,6 @@ export class AuthService {
                 },
             });
         } else if (user.role !== USER_ROLE.ADMIN && user.role !== USER_ROLE.SUPER_ADMIN) {
-            // Bootstrap safety: if tenant has no locations yet, allow onboarding to finish.
             const tenantLocationCount = await this.prisma.location.count({
                 where: { tenantId: user.tenantId, deletedAt: null },
             });
@@ -152,42 +224,111 @@ export class AuthService {
             }
         }
 
-        await this.checkAccountLockout(user.email);
-
-        const session = await this.prisma.session.create({
-            data: {
-                userId: user.id,
-                refreshToken: crypto.randomBytes(32).toString('hex'),
-                ipAddress: 'email-otp',
-                userAgent: 'email-otp',
-                expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
-            },
-        });
-
-        const payload: TokenPayload = {
-            sub: user.id,
+        await this.checkAccountLockout(user.email ?? undefined);
+        return this.createSessionTokens({
+            id: user.id,
+            email: user.email,
+            username: user.username,
             tenantId: user.tenantId,
             role: user.role,
-            sessionId: session.id,
-            mfaVerified: true, // OTP is the second factor
-        };
+        }, 'email-otp');
+    }
 
-        return {
-            accessToken: this.jwtService.generateAccessToken(payload),
-            refreshToken: session.refreshToken,
-            csrfToken: this.jwtService.generateCsrfToken(),
-            user: { id: user.id, email: user.email, role: user.role },
-        };
+    async loginWithUsernamePin(identifierRaw: string, pin: string) {
+        const username = this.normalizeIdentifier(identifierRaw);
+        if (!username || !this.isPin(pin)) {
+            throw new UnauthorizedException('Invalid username or PIN');
+        }
+
+        const user = await this.prisma.user.findFirst({
+            where: { username, deletedAt: null },
+        });
+
+        if (!user || user.role === USER_ROLE.ADMIN || user.role === USER_ROLE.SUPER_ADMIN || !user.pinHash) {
+            throw new UnauthorizedException('Invalid username or PIN');
+        }
+
+        if (user.pinLockedUntil && user.pinLockedUntil > new Date()) {
+            throw new ForbiddenException('PIN login temporarily locked due to too many attempts');
+        }
+
+        const valid = this.verifyPin(pin, user.pinHash);
+        if (!valid) {
+            const attempts = user.pinLoginAttempts + 1;
+            const lock = attempts >= 5 ? new Date(Date.now() + 15 * 60 * 1000) : null;
+            await this.prisma.user.update({
+                where: { id: user.id },
+                data: {
+                    pinLoginAttempts: attempts,
+                    pinLockedUntil: lock,
+                },
+            });
+            throw new UnauthorizedException('Invalid username or PIN');
+        }
+
+        if (user.pinLoginAttempts > 0 || user.pinLockedUntil) {
+            await this.prisma.user.update({
+                where: { id: user.id },
+                data: {
+                    pinLoginAttempts: 0,
+                    pinLockedUntil: null,
+                },
+            });
+        }
+
+        return this.createSessionTokens({
+            id: user.id,
+            email: user.email,
+            username: user.username,
+            tenantId: user.tenantId,
+            role: user.role,
+        }, 'username-pin');
+    }
+
+    async setUserPin(userId: string, pin: string, pinResetRequired = false): Promise<void> {
+        if (!this.isPin(pin)) {
+            throw new BadRequestException('PIN must be 4-8 numeric digits');
+        }
+
+        await this.prisma.user.update({
+            where: { id: userId },
+            data: {
+                pinHash: this.hashPin(pin),
+                pinSetAt: new Date(),
+                pinResetRequired,
+                pinLoginAttempts: 0,
+                pinLockedUntil: null,
+            },
+        });
+    }
+
+    async rotateOwnPin(userId: string, currentPin: string, newPin: string): Promise<void> {
+        if (!this.isPin(currentPin) || !this.isPin(newPin)) {
+            throw new BadRequestException('PIN must be 4-8 numeric digits');
+        }
+
+        const user = await this.prisma.user.findUnique({
+            where: { id: userId },
+            select: { id: true, username: true, pinHash: true },
+        });
+
+        if (!user || !user.username || !user.pinHash) {
+            throw new ForbiddenException('PIN change is only available for username accounts');
+        }
+
+        const validCurrentPin = this.verifyPin(currentPin, user.pinHash);
+        if (!validCurrentPin) {
+            throw new UnauthorizedException('Current PIN is invalid');
+        }
+
+        await this.setUserPin(user.id, newPin, false);
     }
 
     async refreshAccessToken(refreshToken: string) {
-        let decodedSessionId: string | undefined;
-
         try {
-            const decoded = this.jwtService.verifyRefreshToken(refreshToken);
-            decodedSessionId = decoded.sessionId;
+            this.jwtService.verifyRefreshToken(refreshToken);
         } catch {
-            // Using DB-only refresh token approach as fallback
+            // Using DB-only refresh token approach as fallback.
         }
 
         const session = await this.prisma.session.findUnique({
@@ -216,6 +357,44 @@ export class AuthService {
         };
     }
 
+    async getSessionUserContext(userId: string, tenantId: string, sessionClaims: { role: string; sessionId: string }) {
+        const user = await this.prisma.user.findFirst({
+            where: {
+                id: userId,
+                tenantId,
+                deletedAt: null,
+            },
+            select: {
+                id: true,
+                tenantId: true,
+                role: true,
+                email: true,
+                username: true,
+                name: true,
+                tenant: {
+                    select: {
+                        name: true,
+                    },
+                },
+            },
+        });
+
+        if (!user) {
+            throw new UnauthorizedException('User not found');
+        }
+
+        return {
+            sub: user.id,
+            tenantId: user.tenantId,
+            sessionId: sessionClaims.sessionId,
+            role: user.role ?? sessionClaims.role,
+            email: user.email,
+            username: user.username,
+            name: user.name,
+            tenantName: user.tenant?.name ?? '',
+        };
+    }
+
     async validateMfa(userId: string, code: string) {
         const user = await this.prisma.user.findUnique({ where: { id: userId } });
         if (!user || (!user.mfaEnabled)) {
@@ -227,12 +406,11 @@ export class AuthService {
             throw new ForbiddenException('Invalid MFA code');
         }
 
-        // Ideally verify against user.mfaSecret and user.mfaBackupCodes using otplib
-
         return { success: true, mfaVerified: true };
     }
 
-    async checkAccountLockout(email: string): Promise<void> {
+    async checkAccountLockout(email?: string): Promise<void> {
+        if (!email) return;
         const user = await this.prisma.user.findFirst({ where: { email } });
         if (user?.lockedUntil && user.lockedUntil > new Date()) {
             throw new ForbiddenException('Account locked due to too many failed attempts');

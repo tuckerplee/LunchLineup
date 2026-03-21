@@ -7,6 +7,12 @@ import { headers } from 'next/headers';
 import { redirect } from 'next/navigation';
 
 export type UserRole = 'SUPER_ADMIN' | 'ADMIN' | 'MANAGER' | 'STAFF';
+const AUTH_DEBUG_ENABLED = ['1', 'true', 'yes', 'on'].includes((process.env.AUTH_DEBUG ?? '').toLowerCase());
+
+function authDebug(event: string, details: Record<string, unknown> = {}) {
+    if (!AUTH_DEBUG_ENABLED) return;
+    console.info(`[auth-debug] ${JSON.stringify({ scope: 'web.server-auth', event, ...details })}`);
+}
 
 export interface ServerUser {
     id: string;
@@ -23,9 +29,18 @@ export function getServerUser(): ServerUser | null {
     const id = headerStore.get('x-user-id');
     const role = headerStore.get('x-user-role') as UserRole | null;
     const tenantId = headerStore.get('x-tenant-id');
+    const matchedPath = headerStore.get('x-matched-path') ?? headerStore.get('x-invoke-path') ?? '';
 
-    if (!id || !role) return null;
+    if (!id || !role) {
+        authDebug('get_server_user_missing_headers', {
+            hasUserId: Boolean(id),
+            hasUserRole: Boolean(role),
+            matchedPath,
+        });
+        return null;
+    }
 
+    authDebug('get_server_user_ok', { role, tenantId: tenantId ?? '', matchedPath });
     return { id, role, tenantId: tenantId ?? '' };
 }
 
@@ -34,7 +49,10 @@ export function getServerUser(): ServerUser | null {
  */
 export function requireAuth(): ServerUser {
     const user = getServerUser();
-    if (!user) redirect('/auth/login');
+    if (!user) {
+        authDebug('require_auth_redirect_login');
+        redirect('/auth/login');
+    }
     return user;
 }
 
@@ -44,8 +62,10 @@ export function requireAuth(): ServerUser {
 export function requireRole(allowed: UserRole[]): ServerUser {
     const user = requireAuth();
     if (!allowed.includes(user.role)) {
+        authDebug('require_role_redirect_dashboard', { role: user.role, allowed });
         redirect('/dashboard');
     }
+    authDebug('require_role_ok', { role: user.role, allowed });
     return user;
 }
 

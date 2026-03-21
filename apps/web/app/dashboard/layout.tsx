@@ -2,7 +2,9 @@
 
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
+import { LunchLineupMark } from '@/components/branding/LunchLineupMark';
+import { fetchJsonWithSession, fetchWithSession } from '@/lib/client-api';
 import {
   Bell,
   CalendarDays,
@@ -16,6 +18,27 @@ import {
   UtensilsCrossed,
 } from 'lucide-react';
 
+type DashboardRole = 'SUPER_ADMIN' | 'ADMIN' | 'MANAGER' | 'STAFF';
+type NotificationType = 'INFO' | 'SUCCESS' | 'WARNING' | 'ERROR' | 'SCHEDULE_PUBLISHED' | 'SHIFT_ASSIGNED' | 'SHIFT_CHANGED';
+type DashboardUser = {
+  sub: string;
+  role: DashboardRole;
+  tenantId: string;
+  sessionId: string;
+  email?: string | null;
+  username?: string | null;
+  name?: string | null;
+  tenantName?: string | null;
+};
+type DashboardNotification = {
+  id: string;
+  type: NotificationType;
+  title: string;
+  body: string;
+  readAt: string | null;
+  createdAt: string;
+};
+
 const NAV_ITEMS = [
   { href: '/dashboard', label: 'Overview', icon: LayoutGrid, exact: true },
   { href: '/dashboard/scheduling', label: 'Scheduling', icon: CalendarDays, exact: false, priority: 'strong', badge: 3 },
@@ -27,17 +50,140 @@ const NAV_ITEMS = [
 
 export default function DashboardLayout({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
+  const [role, setRole] = useState<DashboardRole | null>(null);
+  const [user, setUser] = useState<DashboardUser | null>(null);
   const [notificationsOpen, setNotificationsOpen] = useState(false);
-  const notifications = [
-    { id: 'swap-1', text: 'Bob T. requested shift swap', tone: 'var(--amber)' },
-    { id: 'coverage-1', text: 'Friday dinner coverage below minimum', tone: 'var(--rose)' },
-  ];
-  const notifCount = notifications.length;
+  const [notifications, setNotifications] = useState<DashboardNotification[]>([]);
+  const [unreadCount, setUnreadCount] = useState(0);
+
+  const toneByType: Record<NotificationType, string> = {
+    INFO: 'var(--text-muted)',
+    SUCCESS: 'var(--teal)',
+    WARNING: 'var(--amber)',
+    ERROR: 'var(--rose)',
+    SCHEDULE_PUBLISHED: '#2f63ff',
+    SHIFT_ASSIGNED: '#2f63ff',
+    SHIFT_CHANGED: 'var(--amber)',
+  };
+
+  function getCsrfToken(): string {
+    if (typeof document === 'undefined') return '';
+    const pair = document.cookie.split('; ').find((entry) => entry.startsWith('csrf_token='));
+    return pair ? decodeURIComponent(pair.split('=')[1] ?? '') : '';
+  }
+
+  function formatRelative(timestamp: string): string {
+    const ms = Date.now() - new Date(timestamp).getTime();
+    const minutes = Math.max(1, Math.floor(ms / 60000));
+    if (minutes < 60) return `${minutes}m ago`;
+    const hours = Math.floor(minutes / 60);
+    if (hours < 24) return `${hours}h ago`;
+    const days = Math.floor(hours / 24);
+    return `${days}d ago`;
+  }
+
+  function initialsForUser(profile: DashboardUser | null): string {
+    const source = (profile?.name || profile?.username || profile?.email || 'User').trim();
+    const parts = source.split(/\s+/).filter(Boolean);
+    if (parts.length >= 2) {
+      return `${parts[0][0] ?? ''}${parts[1][0] ?? ''}`.toUpperCase();
+    }
+    return source.slice(0, 2).toUpperCase();
+  }
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadHeaderData() {
+      try {
+        const [me, feed] = await Promise.all([
+          fetchJsonWithSession<{ user?: DashboardUser }>('/auth/me'),
+          fetchJsonWithSession<{ data: DashboardNotification[]; unreadCount: number }>('/notifications?status=all&limit=20'),
+        ]);
+
+        if (cancelled) return;
+
+        setRole(me.user?.role ?? null);
+        setUser(me.user ?? null);
+        setNotifications(feed.data ?? []);
+        setUnreadCount(feed.unreadCount ?? 0);
+      } catch {
+        if (!cancelled) {
+          setRole(null);
+          setUser(null);
+          setNotifications([]);
+          setUnreadCount(0);
+        }
+      }
+    }
+
+    async function refreshFeed() {
+      try {
+        const feed = await fetchJsonWithSession<{ data: DashboardNotification[]; unreadCount: number }>('/notifications?status=all&limit=20');
+        if (!cancelled) {
+          setNotifications(feed.data ?? []);
+          setUnreadCount(feed.unreadCount ?? 0);
+        }
+      } catch {
+        if (!cancelled) {
+          setNotifications([]);
+          setUnreadCount(0);
+        }
+      }
+    }
+
+    void loadHeaderData();
+    const interval = window.setInterval(() => {
+      void refreshFeed();
+    }, 45000);
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(interval);
+    };
+  }, []);
+
+  async function markOneAsRead(notificationId: string) {
+    const csrf = getCsrfToken();
+    const response = await fetchWithSession('/notifications/read', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(csrf ? { 'x-csrf-token': csrf } : {}),
+      },
+      body: JSON.stringify({ ids: [notificationId] }),
+    });
+    if (!response.ok) return;
+
+    setNotifications((current) => current.map((item) => (item.id === notificationId ? { ...item, readAt: new Date().toISOString() } : item)));
+    setUnreadCount((count) => Math.max(0, count - 1));
+  }
+
+  async function markAllAsRead() {
+    const csrf = getCsrfToken();
+    const response = await fetchWithSession('/notifications/read-all', {
+      method: 'POST',
+      headers: {
+        ...(csrf ? { 'x-csrf-token': csrf } : {}),
+      },
+    });
+    if (!response.ok) return;
+
+    setNotifications((current) => current.map((item) => (item.readAt ? item : { ...item, readAt: new Date().toISOString() })));
+    setUnreadCount(0);
+  }
+
+  const visibleNavItems = useMemo(() => {
+    if (role === 'STAFF' || role === null) {
+      return NAV_ITEMS.filter((item) => !['/dashboard/staff', '/dashboard/locations', '/dashboard/settings'].includes(item.href));
+    }
+    return NAV_ITEMS;
+  }, [role]);
 
   const currentPage = useMemo(() => {
-    const match = NAV_ITEMS.find((item) => (item.exact ? pathname === item.href : pathname.startsWith(item.href)));
+    const match = visibleNavItems.find((item) => (item.exact ? pathname === item.href : pathname.startsWith(item.href)));
     return match?.label ?? 'Workspace';
-  }, [pathname]);
+  }, [pathname, visibleNavItems]);
 
   return (
     <div className="workspace-shell">
@@ -49,15 +195,12 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
                 style={{
                   width: 34,
                   height: 34,
-                  borderRadius: 10,
-                  background: 'linear-gradient(135deg, #4f79ff, #2f63ff 60%, #22b8cf 120%)',
                   display: 'grid',
                   placeItems: 'center',
-                  color: 'white',
                 }}
                 aria-hidden="true"
               >
-                <UtensilsCrossed size={16} />
+                <LunchLineupMark size={34} />
               </div>
               <div>
                 <div style={{ fontWeight: 800, letterSpacing: '-0.02em', color: 'var(--text-primary)' }}>LunchLineup</div>
@@ -83,13 +226,13 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
               }}
             >
               <Store size={14} />
-              Downtown Bistro
+              {user?.tenantName || 'Team Workspace'}
               <ChevronDown size={13} style={{ marginLeft: 'auto', color: 'var(--text-muted)' }} />
             </button>
           </div>
 
           <nav style={{ padding: '0.5rem 0.75rem', display: 'flex', flexDirection: 'column', gap: 4, flex: 1 }}>
-            {NAV_ITEMS.map((item) => {
+            {visibleNavItems.map((item) => {
               const Icon = item.icon;
               const isActive = item.exact ? pathname === item.href : pathname.startsWith(item.href);
               return (
@@ -196,7 +339,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
                 }}
               >
                 <Bell size={17} />
-                {notifCount > 0 ? (
+                {unreadCount > 0 ? (
                   <span
                     style={{
                       position: 'absolute',
@@ -215,7 +358,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
                       border: '2px solid #f4f7fd',
                     }}
                   >
-                    {notifCount}
+                    {unreadCount}
                   </span>
                 ) : null}
               </button>
@@ -235,13 +378,54 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
                     gap: '0.55rem',
                   }}
                 >
-                  <div style={{ fontSize: '0.86rem', fontWeight: 750, color: 'var(--text-primary)' }}>Notifications</div>
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '0.6rem' }}>
+                    <div style={{ fontSize: '0.86rem', fontWeight: 750, color: 'var(--text-primary)' }}>Notifications</div>
+                    <button
+                      type="button"
+                      onClick={() => void markAllAsRead()}
+                      disabled={unreadCount === 0}
+                      style={{
+                        border: 'none',
+                        background: 'transparent',
+                        color: unreadCount === 0 ? 'var(--text-muted)' : '#2f63ff',
+                        fontWeight: 700,
+                        fontSize: '0.72rem',
+                        cursor: unreadCount === 0 ? 'default' : 'pointer',
+                      }}
+                    >
+                      Mark all read
+                    </button>
+                  </div>
                   {notifications.map((item) => (
-                    <div key={item.id} className="surface-muted" style={{ padding: '0.55rem', display: 'flex', gap: '0.45rem', alignItems: 'flex-start' }}>
-                      <span className="status-dot" style={{ marginTop: 6, background: item.tone }} />
-                      <span style={{ fontSize: '0.79rem', color: 'var(--text-secondary)', fontWeight: 600 }}>{item.text}</span>
-                    </div>
+                    <button
+                      key={item.id}
+                      type="button"
+                      onClick={() => void markOneAsRead(item.id)}
+                      className="surface-muted"
+                      style={{
+                        padding: '0.55rem',
+                        display: 'flex',
+                        gap: '0.45rem',
+                        alignItems: 'flex-start',
+                        border: '1px solid var(--border)',
+                        textAlign: 'left',
+                        background: item.readAt ? '#ffffff' : '#f8fbff',
+                        cursor: item.readAt ? 'default' : 'pointer',
+                      }}
+                    >
+                      <span className="status-dot" style={{ marginTop: 6, background: toneByType[item.type] ?? 'var(--text-muted)' }} />
+                      <span style={{ display: 'grid', gap: 3 }}>
+                        <span style={{ fontSize: '0.76rem', color: 'var(--text-primary)', fontWeight: 750 }}>{item.title}</span>
+                        <span style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', fontWeight: 600 }}>{item.body}</span>
+                        <span style={{ fontSize: '0.68rem', color: 'var(--text-muted)', fontWeight: 700 }}>{formatRelative(item.createdAt)}</span>
+                      </span>
+                    </button>
                   ))}
+                  {notifications.length === 0 ? (
+                    <div className="surface-muted" style={{ padding: '0.65rem', fontSize: '0.75rem', color: 'var(--text-muted)', fontWeight: 600 }}>
+                      No notifications yet.
+                    </div>
+                  ) : null}
                 </div>
               ) : null}
             </div>
@@ -273,8 +457,9 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
                   placeItems: 'center',
                 }}
               >
-                AJ
+                {initialsForUser(user)}
               </span>
+              <span style={{ fontSize: '0.76rem', fontWeight: 700, color: 'var(--text-primary)' }}>{user?.name || user?.username || 'Account'}</span>
               <ChevronDown size={14} style={{ color: 'var(--text-muted)' }} />
             </button>
           </div>

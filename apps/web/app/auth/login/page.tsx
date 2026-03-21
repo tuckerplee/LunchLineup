@@ -3,22 +3,26 @@
 import Link from 'next/link';
 import { Suspense, useEffect, useRef, useState } from 'react';
 import { useSearchParams } from 'next/navigation';
+import { LunchLineupMark } from '@/components/branding/LunchLineupMark';
 
 const API = process.env.NEXT_PUBLIC_API_URL ?? '/api/v1';
 const OIDC_ENABLED = (process.env.NEXT_PUBLIC_OIDC_ENABLED ?? '').toLowerCase() === 'true';
 
-type Step = 'email' | 'otp';
+type Step = 'identifier' | 'otp' | 'pin';
 
 function LoginContent() {
     const searchParams = useSearchParams();
-    const prefillEmail = searchParams.get('email') ?? '';
+    const prefillIdentifier = searchParams.get('identifier') ?? searchParams.get('email') ?? '';
     const stepParam = searchParams.get('step');
     const errorParam = searchParams.get('error');
     const nextPath = searchParams.get('next') ?? '/dashboard';
 
-    const [step, setStep] = useState<Step>('email');
+    const [step, setStep] = useState<Step>('identifier');
+    const [identifier, setIdentifier] = useState('');
     const [email, setEmail] = useState('');
+    const [username, setUsername] = useState('');
     const [otp, setOtp] = useState(['', '', '', '', '', '']);
+    const [pin, setPin] = useState('');
     const [isLoading, setIsLoading] = useState(false);
     const [error, setError] = useState<string | null>(null);
     const [resendCountdown, setResendCountdown] = useState(0);
@@ -27,10 +31,24 @@ function LoginContent() {
     const verifyInFlightRef = useRef(false);
 
     useEffect(() => {
-        if (prefillEmail) setEmail(prefillEmail);
-        if (stepParam === 'otp') setStep('otp');
-        if (errorParam === 'invalid') setError('Invalid or expired code. Please try again.');
-    }, [prefillEmail, stepParam, errorParam]);
+        if (prefillIdentifier) {
+            const normalized = prefillIdentifier.trim().toLowerCase();
+            setIdentifier(normalized);
+            if (normalized.includes('@')) {
+                setEmail(normalized);
+            } else {
+                setUsername(normalized);
+            }
+        }
+        if (stepParam === 'otp' || stepParam === 'pin') setStep(stepParam);
+        if (errorParam === 'invalid') {
+            if (stepParam === 'pin') {
+                setError('Invalid username or PIN. Please try again.');
+            } else {
+                setError('Invalid or expired code. Please try again.');
+            }
+        }
+    }, [prefillIdentifier, stepParam, errorParam]);
 
     useEffect(() => {
         if (resendCountdown <= 0) return;
@@ -38,35 +56,78 @@ function LoginContent() {
         return () => clearTimeout(t);
     }, [resendCountdown]);
 
-    const handleSendOtp = async (e?: React.FormEvent) => {
+    const sendOtpForEmail = async (normalizedEmail: string) => {
+        const res = await fetch(`${API}/auth/email/send-otp`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ email: normalizedEmail }),
+            credentials: 'include',
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok || !data.success) {
+            throw new Error(data.error ?? 'Failed to send code. Please try again.');
+        }
+    };
+
+    const handleContinue = async (e?: React.FormEvent) => {
         e?.preventDefault();
         setError(null);
 
-        const normalizedEmail = email.trim().toLowerCase();
-        if (!normalizedEmail || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalizedEmail)) {
-            setError('Enter a valid email address.');
+        const normalizedIdentifier = identifier.trim().toLowerCase();
+        if (!normalizedIdentifier) {
+            setError('Enter your work email or username.');
             return;
         }
 
         setIsLoading(true);
         try {
-            const res = await fetch(`${API}/auth/email/send-otp`, {
+            const res = await fetch(`${API}/auth/login/resolve`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ email: normalizedEmail }),
+                body: JSON.stringify({ identifier: normalizedIdentifier }),
                 credentials: 'include',
             });
             const data = await res.json().catch(() => ({}));
             if (!res.ok || !data.success) {
-                setError(data.error ?? 'Failed to send code. Please try again.');
-            } else {
-                setEmail(normalizedEmail);
+                setError(data.message ?? data.error ?? 'Unable to continue login.');
+                return;
+            }
+
+            if (data.flow === 'EMAIL_OTP') {
+                await sendOtpForEmail(data.identifier);
+                setEmail(data.identifier);
                 setStep('otp');
                 setResendCountdown(60);
                 setTimeout(() => otpRefs.current[0]?.focus(), 100);
+                return;
+            }
+
+            setUsername(data.identifier);
+            setPin('');
+            setStep('pin');
+            if (data.pinResetRequired) {
+                setError('Enter your PIN to continue.');
             }
         } catch {
             setError('Network error. Please try again.');
+        } finally {
+            setIsLoading(false);
+        }
+    };
+
+    const handleSendOtp = async () => {
+        setError(null);
+        const normalizedEmail = email.trim().toLowerCase();
+        if (!normalizedEmail || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalizedEmail)) {
+            setError('Enter a valid email address.');
+            return;
+        }
+        setIsLoading(true);
+        try {
+            await sendOtpForEmail(normalizedEmail);
+            setResendCountdown(60);
+        } catch (err) {
+            setError((err as Error).message);
         } finally {
             setIsLoading(false);
         }
@@ -133,6 +194,37 @@ function LoginContent() {
         form.submit();
     };
 
+    const handleVerifyPin = (e?: React.FormEvent) => {
+        e?.preventDefault();
+        const normalizedPin = pin.replace(/\D/g, '');
+        if (normalizedPin.length < 4 || normalizedPin.length > 8) {
+            setError('PIN must be 4 to 8 digits.');
+            return;
+        }
+
+        setError(null);
+        setIsLoading(true);
+
+        const safeNext = nextPath.startsWith('/') ? nextPath : '/dashboard';
+        const form = document.createElement('form');
+        form.method = 'POST';
+        form.action = `${API}/auth/pin/verify?redirect=1&next=${encodeURIComponent(safeNext)}`;
+        form.style.display = 'none';
+
+        const identifierInput = document.createElement('input');
+        identifierInput.name = 'identifier';
+        identifierInput.value = username.trim().toLowerCase();
+        form.appendChild(identifierInput);
+
+        const pinInput = document.createElement('input');
+        pinInput.name = 'pin';
+        pinInput.value = normalizedPin;
+        form.appendChild(pinInput);
+
+        document.body.appendChild(form);
+        form.submit();
+    };
+
     useEffect(() => {
         if (step !== 'otp' || isLoading || verifyInFlightRef.current) return;
         const code = otp.join('');
@@ -152,7 +244,7 @@ function LoginContent() {
 
             <header className="login-header">
                 <Link href="/" className="login-brand">
-                    <div className="login-brand__icon">🍱</div>
+                    <div className="login-brand__icon"><LunchLineupMark size={34} /></div>
                     <div>
                         <div className="login-brand__wordmark">LunchLineup</div>
                     </div>
@@ -176,12 +268,18 @@ function LoginContent() {
 
                 <section className="login-auth">
                     <div className="surface-card login-card">
-                        <h2 className="login-card__title">{step === 'email' ? 'Sign in to LunchLineup' : 'Check your email'}</h2>
+                        <h2 className="login-card__title">
+                            {step === 'identifier' ? 'Sign in to LunchLineup' : step === 'otp' ? 'Check your email' : 'Enter your PIN'}
+                        </h2>
                         <p className="login-card__subtitle">
-                            {step === 'email' ? 'Enter your email and we’ll send a login code.' : `Enter the 6-digit code sent to ${email}.`}
+                            {step === 'identifier'
+                                ? 'Use your work email (admins) or username (supervisors/staff).'
+                                : step === 'otp'
+                                    ? `Enter the 6-digit code sent to ${email}.`
+                                    : `Sign in as ${username}.`}
                         </p>
 
-                        {step === 'email' ? (
+                        {step === 'identifier' ? (
                             <>
                                 {OIDC_ENABLED ? (
                                     <button type="button" onClick={handleOidcLogin} className="btn btn-secondary" style={{ width: '100%', marginBottom: '0.65rem' }}>
@@ -189,22 +287,16 @@ function LoginContent() {
                                     </button>
                                 ) : null}
 
-                                <form onSubmit={handleSendOtp} style={{ display: 'grid', gap: '0.62rem' }}>
+                                <form onSubmit={handleContinue} style={{ display: 'grid', gap: '0.62rem' }}>
                                     <label className="form-group">
-                                        <span className="form-label">Work email</span>
+                                        <span className="form-label">Work email or username</span>
                                         <input
-                                            type="email"
+                                            type="text"
                                             className="form-input"
-                                            placeholder="name@company.com"
-                                            value={email}
-                                            onChange={(e) => setEmail(e.target.value)}
-                                            onKeyDown={(e) => {
-                                                if (e.key === 'Enter') {
-                                                    e.preventDefault();
-                                                    void handleSendOtp();
-                                                }
-                                            }}
-                                            autoComplete="email"
+                                            placeholder="name@company.com or username"
+                                            value={identifier}
+                                            onChange={(e) => setIdentifier(e.target.value)}
+                                            autoComplete="username"
                                             required
                                         />
                                     </label>
@@ -216,13 +308,15 @@ function LoginContent() {
                                     ) : null}
 
                                     <button type="submit" className="btn btn-primary" disabled={isLoading} style={{ width: '100%' }}>
-                                        {isLoading ? 'Sending...' : 'Email login code'}
+                                        {isLoading ? 'Continuing...' : 'Continue'}
                                     </button>
 
-                                    <p className="login-card__trust">Secure sign-in · No passwords stored</p>
+                                    <p className="login-card__trust">Secure sign-in · Admins use email OTP · Staff can use PIN</p>
                                 </form>
                             </>
-                        ) : (
+                        ) : null}
+
+                        {step === 'otp' ? (
                             <form onSubmit={handleVerifyOtp} style={{ display: 'grid', gap: '0.62rem' }}>
                                 <div style={{ display: 'grid', gridTemplateColumns: 'repeat(6, minmax(0, 1fr))', gap: '0.35rem' }}>
                                     {otp.map((digit, i) => (
@@ -269,18 +363,61 @@ function LoginContent() {
                                         type="button"
                                         className="btn btn-ghost btn-sm"
                                         onClick={() => {
-                                            setStep('email');
+                                            setStep('identifier');
                                             setOtp(['', '', '', '', '', '']);
                                             setError(null);
                                             verifyInFlightRef.current = false;
                                             setIsLoading(false);
                                         }}
                                     >
-                                        Use different email
+                                        Use different login
                                     </button>
                                 </div>
                             </form>
-                        )}
+                        ) : null}
+
+                        {step === 'pin' ? (
+                            <form onSubmit={handleVerifyPin} style={{ display: 'grid', gap: '0.62rem' }}>
+                                <label className="form-group">
+                                    <span className="form-label">PIN</span>
+                                    <input
+                                        type="password"
+                                        inputMode="numeric"
+                                        className="form-input"
+                                        placeholder="Enter 4-8 digit PIN"
+                                        value={pin}
+                                        onChange={(e) => setPin(e.target.value.replace(/\D/g, '').slice(0, 8))}
+                                        autoComplete="current-password"
+                                        required
+                                    />
+                                </label>
+
+                                {error ? (
+                                    <div className="login-card__error">
+                                        {error}
+                                    </div>
+                                ) : null}
+
+                                <button type="submit" className="btn btn-primary" disabled={isLoading || pin.length < 4} style={{ width: '100%' }}>
+                                    {isLoading ? 'Signing in...' : 'Sign in with PIN'}
+                                </button>
+
+                                <p className="login-card__trust">Need PIN help? Contact your admin for a reset.</p>
+
+                                <button
+                                    type="button"
+                                    className="btn btn-ghost btn-sm"
+                                    onClick={() => {
+                                        setStep('identifier');
+                                        setPin('');
+                                        setError(null);
+                                        setIsLoading(false);
+                                    }}
+                                >
+                                    Use different login
+                                </button>
+                            </form>
+                        ) : null}
 
                         <div className="divider" style={{ marginTop: '0.9rem', marginBottom: '0.75rem' }} />
                         <div className="login-secondary-cta">
@@ -318,9 +455,6 @@ function LoginContent() {
                 .login-brand__icon {
                     width: 34px;
                     height: 34px;
-                    border-radius: 10px;
-                    background: linear-gradient(135deg, #4171ff, #2f63ff 60%, #22b8cf);
-                    color: #ffffff;
                     display: grid;
                     place-items: center;
                 }

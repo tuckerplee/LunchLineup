@@ -1,7 +1,9 @@
 'use client';
 
+import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { CalendarDays, Clock3, MapPin, Users } from 'lucide-react';
+import { LunchLineupMark } from '@/components/branding/LunchLineupMark';
 
 const STAT_CARDS = [
   {
@@ -87,7 +89,7 @@ const QUICK_ACTIONS = [
   {
     label: 'Generate Lunch Plan',
     desc: 'Auto-stagger breaks with policy controls',
-    icon: '🍱',
+    icon: <LunchLineupMark size={20} />,
     href: '/dashboard/lunch-breaks',
     tier: 'primary' as const,
   },
@@ -118,11 +120,17 @@ const COVERAGE_RISK_DAYS = [
 ];
 
 export default function DashboardPage() {
-  const todayLabel = new Date().toLocaleDateString('en-US', {
-    weekday: 'long',
-    month: 'long',
-    day: 'numeric',
-  });
+  const [todayLabel, setTodayLabel] = useState('Today');
+
+  useEffect(() => {
+    setTodayLabel(
+      new Date().toLocaleDateString('en-US', {
+        weekday: 'long',
+        month: 'long',
+        day: 'numeric',
+      }),
+    );
+  }, []);
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem', maxWidth: 1420 }}>
