@@ -44,6 +44,15 @@ services=(
 echo "Deploying services: ${services[*]}"
 docker compose --env-file "$SECRET_ENV_PATH" up -d --build "${services[@]}"
 
+# Apply plan-definition schema migration after containers are up.
+# This migration is idempotent and prevents admin /plans 500s on fresh databases.
+PLAN_MIGRATION_PATH="/app/packages/db/prisma/migrations/20260321_plan_definitions.sql"
+if docker exec lunchlineup-api sh -lc "[ -f \"$PLAN_MIGRATION_PATH\" ]"; then
+  echo "Applying plan migration: 20260321_plan_definitions.sql"
+  docker exec lunchlineup-api sh -lc \
+    "npx prisma db execute --schema=/app/packages/db/prisma/schema.prisma --file=$PLAN_MIGRATION_PATH"
+fi
+
 start_time=$(date +%s)
 while true; do
   code=$(curl -s -o /dev/null -w "%{http_code}" "$HEALTH_URL" || true)
