@@ -4,6 +4,7 @@ import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { PlanTier, Prisma, PrismaClient, TenantStatus, UserRole } from '@prisma/client';
 import Redis from 'ioredis';
 import { MetricsService } from '../common/metrics.service';
+import { MeteringService } from '../billing/metering.service';
 import { isTenantPlanCode, listPlanDefinitions, normalizePlanCode, planDefinitionToResponse, resolveFallbackPlanDefinition } from '../billing/plan-definitions';
 
 @Controller({ path: 'admin', version: '1' })
@@ -15,6 +16,7 @@ export class AdminController {
     constructor(
         private readonly configService: ConfigService,
         private readonly metricsService: MetricsService,
+        private readonly meteringService: MeteringService,
     ) { }
 
     private assertSuperAdmin(req: any) {
@@ -658,6 +660,32 @@ export class AdminController {
                     }
                     : null,
             })),
+        };
+    }
+
+    @Post('credits/grant')
+    @HttpCode(HttpStatus.CREATED)
+    async grantCredits(
+        @Req() req: any,
+        @Body() body: { tenantId: string; amount: number; reason: string },
+    ) {
+        this.assertSuperAdmin(req);
+
+        const tenantId = (body.tenantId ?? '').trim();
+        const reason = (body.reason ?? '').trim();
+        const amount = Number(body.amount);
+
+        if (!tenantId) throw new BadRequestException('tenantId is required');
+        if (!reason) throw new BadRequestException('reason is required');
+        if (!Number.isInteger(amount) || amount <= 0) {
+            throw new BadRequestException('amount must be a positive integer');
+        }
+
+        const newBalance = await this.meteringService.grantCredits(tenantId, amount, reason);
+
+        return {
+            success: true,
+            newBalance,
         };
     }
 
