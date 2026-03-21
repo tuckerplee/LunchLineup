@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { UnauthorizedException } from '@nestjs/common';
+import { ForbiddenException, UnauthorizedException } from '@nestjs/common';
 import { AuthService } from './auth.service';
 
 // Minimal mock factories
@@ -27,6 +27,12 @@ const mockPrisma = {
     user: {
         findFirst: vi.fn(),
         create: vi.fn(),
+        update: vi.fn(),
+        count: vi.fn(),
+        findUnique: vi.fn(),
+    },
+    location: {
+        count: vi.fn(),
     },
     tenant: {
         create: vi.fn(),
@@ -60,8 +66,9 @@ describe('AuthService – handleOidcCallback', () => {
 
         mockPrisma.user.findFirst.mockResolvedValue(null);
         mockPrisma.tenant.create.mockResolvedValue({ id: 'tenant-new' });
-        mockPrisma.user.create.mockResolvedValue({ id: 'user-new', email: 'new@example.com', tenantId: 'tenant-new', role: 'ADMIN' });
-        mockPrisma.session.create.mockResolvedValue({});
+        mockPrisma.user.create.mockResolvedValue({ id: 'user-new', email: 'new@example.com', username: null, tenantId: 'tenant-new', role: 'ADMIN', mfaEnabled: false });
+        mockPrisma.session.create.mockResolvedValue({ id: 'session-1', refreshToken: 'refresh-1' });
+        mockPrisma.user.update.mockResolvedValue({});
 
         const result = await service.handleOidcCallback('code', 'state');
 
@@ -74,12 +81,114 @@ describe('AuthService – handleOidcCallback', () => {
         vi.spyOn(service as any, 'exchangeCode').mockResolvedValue({ access_token: 'tok' });
         vi.spyOn(service as any, 'fetchUserInfo').mockResolvedValue({ sub: '123', email: 'existing@example.com', name: 'Existing User' });
 
-        mockPrisma.user.findFirst.mockResolvedValue({ id: 'user-existing', tenantId: 'tenant-existing', role: 'ADMIN' });
-        mockPrisma.session.create.mockResolvedValue({});
+        mockPrisma.user.findFirst.mockResolvedValue({ id: 'user-existing', email: 'existing@example.com', username: null, tenantId: 'tenant-existing', role: 'ADMIN', mfaEnabled: false });
+        mockPrisma.session.create.mockResolvedValue({ id: 'session-2', refreshToken: 'refresh-2' });
+        mockPrisma.user.update.mockResolvedValue({});
 
         const result = await service.handleOidcCallback('code', 'state');
 
         expect(mockPrisma.tenant.create).not.toHaveBeenCalled();
         expect(result).toHaveProperty('accessToken');
+    });
+});
+
+describe('AuthService – mixed auth flow', () => {
+    let service: AuthService;
+
+    beforeEach(() => {
+        vi.clearAllMocks();
+        service = new AuthService(mockConfigService as any, mockJwtService as any);
+        (service as any).prisma = mockPrisma;
+    });
+
+    it('resolves email identifiers to EMAIL_OTP', async () => {
+        const result = await service.resolveLoginMethod('ADMIN@Example.com');
+        expect(result).toEqual({
+            flow: 'EMAIL_OTP',
+            normalizedIdentifier: 'admin@example.com',
+        });
+    });
+
+    it('blocks admin username accounts from PIN flow', async () => {
+        mockPrisma.user.findFirst.mockResolvedValue({
+            role: 'ADMIN',
+            pinResetRequired: false,
+        });
+
+        await expect(service.resolveLoginMethod('boss.admin')).rejects.toBeInstanceOf(ForbiddenException);
+    });
+
+    it('resolves username identifiers to USERNAME_PIN', async () => {
+        mockPrisma.user.findFirst.mockResolvedValue({
+            role: 'MANAGER',
+            pinResetRequired: true,
+        });
+
+        const result = await service.resolveLoginMethod('ShiftLead');
+        expect(result).toEqual({
+            flow: 'USERNAME_PIN',
+            normalizedIdentifier: 'shiftlead',
+            pinResetRequired: true,
+        });
+    });
+
+    it('logs in a username+PIN user with valid PIN', async () => {
+        const pinHash = (service as any).hashPin('123456');
+        mockPrisma.user.findFirst.mockResolvedValue({
+            id: 'u-1',
+            tenantId: 't-1',
+            role: 'STAFF',
+            email: null,
+            username: 'shiftlead',
+            mfaEnabled: false,
+            pinHash,
+            pinLoginAttempts: 0,
+            pinLockedUntil: null,
+        });
+        mockPrisma.session.create.mockResolvedValue({ id: 's-1', refreshToken: 'r-1' });
+        mockPrisma.user.update.mockResolvedValue({});
+
+        const result = await service.loginWithUsernamePin('shiftlead', '123456');
+        expect(result).toHaveProperty('accessToken');
+        expect(result.user.username).toBe('shiftlead');
+        expect(mockPrisma.session.create).toHaveBeenCalledOnce();
+    });
+
+    it('records failed PIN attempt on invalid PIN', async () => {
+        const pinHash = (service as any).hashPin('123456');
+        mockPrisma.user.findFirst.mockResolvedValue({
+            id: 'u-2',
+            tenantId: 't-1',
+            role: 'STAFF',
+            email: null,
+            username: 'teammember',
+            mfaEnabled: false,
+            pinHash,
+            pinLoginAttempts: 2,
+            pinLockedUntil: null,
+        });
+        mockPrisma.user.update.mockResolvedValue({});
+
+        await expect(service.loginWithUsernamePin('teammember', '0000')).rejects.toBeInstanceOf(UnauthorizedException);
+        expect(mockPrisma.user.update).toHaveBeenCalledWith({
+            where: { id: 'u-2' },
+            data: {
+                pinLoginAttempts: 3,
+                pinLockedUntil: null,
+            },
+        });
+    });
+
+    it('rotates own PIN when current PIN is valid', async () => {
+        const pinHash = (service as any).hashPin('1111');
+        mockPrisma.user.findUnique.mockResolvedValue({
+            id: 'u-3',
+            username: 'nightlead',
+            pinHash,
+        });
+        mockPrisma.user.update.mockResolvedValue({});
+
+        await expect(service.rotateOwnPin('u-3', '1111', '2222')).resolves.toBeUndefined();
+        expect(mockPrisma.user.update).toHaveBeenCalled();
     });
 });
