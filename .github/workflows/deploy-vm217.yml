@@ -1,0 +1,53 @@
+name: Deploy VM217
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-vm217
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure SSH
+        shell: bash
+        run: |
+          set -euo pipefail
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "${{ secrets.VM217_SSH_KEY }}" > ~/.ssh/vm217_key
+          chmod 600 ~/.ssh/vm217_key
+          ssh-keyscan -H "${{ secrets.VM217_HOST }}" >> ~/.ssh/known_hosts
+
+      - name: Sync repository to VM217
+        shell: bash
+        run: |
+          set -euo pipefail
+          rsync -az --delete \
+            --exclude '.git' \
+            --exclude '.git/***' \
+            --exclude '.env' \
+            --exclude 'node_modules/' \
+            --exclude '.next/' \
+            --exclude 'dist/' \
+            --exclude 'coverage/' \
+            --exclude 'playwright-report/' \
+            --exclude 'test-results/' \
+            --exclude 'backups/' \
+            --exclude 'backup/' \
+            -e "ssh -i ~/.ssh/vm217_key -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes" \
+            ./ "${{ secrets.VM217_USER }}@${{ secrets.VM217_HOST }}:/opt/lunchlineup/"
+
+      - name: Run remote deploy script
+        shell: bash
+        run: |
+          set -euo pipefail
+          ssh -i ~/.ssh/vm217_key -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes \
+            "${{ secrets.VM217_USER }}@${{ secrets.VM217_HOST }}" \
+            'APP_DIR=/opt/lunchlineup /opt/lunchlineup/scripts/deploy-vm217-remote.sh'
