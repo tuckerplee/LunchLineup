@@ -3,6 +3,7 @@ import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { RbacGuard } from '../auth/rbac.guard';
 import { PrismaClient } from '@prisma/client';
 import { NotificationType, NotificationsService } from '../notifications/notifications.service';
+import { FeatureAccessService } from '../billing/feature-access.service';
 
 const Permission = (perm: string) => SetMetadata('permission', perm);
 const SCHEDULE_STATUS = {
@@ -14,7 +15,10 @@ const SCHEDULE_STATUS = {
 @UseGuards(JwtAuthGuard, RbacGuard)
 export class SchedulesController {
     private prisma = new PrismaClient();
-    constructor(private readonly notificationsService: NotificationsService) { }
+    constructor(
+        private readonly notificationsService: NotificationsService,
+        private readonly featureAccessService: FeatureAccessService,
+    ) { }
 
     @Get()
     @Permission('schedules:read')
@@ -118,12 +122,17 @@ export class SchedulesController {
     @HttpCode(HttpStatus.ACCEPTED)
     async autoSchedule(@Param('id') id: string, @Req() req: any) {
         // Verify schedule exists
-        const schedule = await this.findOne(id, req);
+        await this.findOne(id, req);
+        const creditConsumption = await this.featureAccessService.consumeCreditsForFeature(
+            req.user.tenantId,
+            'scheduling',
+            'Schedule generation',
+        );
 
         // 1. Queue job to RabbitMQ
         // 2. Engine picks it up via gRPC
         // 3. Results streamed back
 
-        return { jobId: `job-${id}-${Date.now()}`, status: 'PROCESSING' };
+        return { jobId: `job-${id}-${Date.now()}`, status: 'PROCESSING', creditConsumption };
     }
 }

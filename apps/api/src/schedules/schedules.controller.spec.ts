@@ -6,12 +6,16 @@ describe('SchedulesController', () => {
     let controller: SchedulesController;
     let prisma: any;
     let notificationsService: any;
+    let featureAccessService: any;
 
     beforeEach(() => {
         notificationsService = {
             sendMany: vi.fn().mockResolvedValue([]),
         };
-        controller = new SchedulesController(notificationsService);
+        featureAccessService = {
+            consumeCreditsForFeature: vi.fn().mockResolvedValue({ consumedCredits: 1, newBalance: 0 }),
+        };
+        controller = new SchedulesController(notificationsService, featureAccessService);
         prisma = {
             schedule: {
                 updateMany: vi.fn(),

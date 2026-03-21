@@ -100,6 +100,11 @@ export class FeatureAccessService {
             return { consumedCredits: cost, newBalance };
         }
 
+        if ((resolution.source === 'plan' || resolution.source === 'stripe') && cost > 0) {
+            const newBalance = await this.meteringService.trackIncludedUsage(tenantId, cost, reason);
+            return { consumedCredits: cost, newBalance };
+        }
+
         return { consumedCredits: 0, newBalance: matrix.usageCredits };
     }
 
@@ -139,6 +144,9 @@ export class FeatureAccessService {
         const stripeActive = tenant.status === 'ACTIVE' && Boolean(tenant.stripeSubscriptionId);
         const hasCredits = tenant.usageCredits >= creditCost;
         const override = featureConfig?.features?.[feature];
+        const planCode = (plan?.code ?? tenant.planTier).toUpperCase();
+        const isFreePlan = planCode === 'FREE';
+        const includedByActivePlan = includedByPlan && (isFreePlan || stripeActive);
 
         if (override?.source === 'disabled' || override?.enabled === false) {
             return {
@@ -194,7 +202,7 @@ export class FeatureAccessService {
             };
         }
 
-        if (includedByPlan) {
+        if (includedByActivePlan) {
             return {
                 enabled: true,
                 source: 'plan',

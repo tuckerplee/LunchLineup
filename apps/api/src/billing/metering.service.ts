@@ -57,6 +57,28 @@ export class MeteringService {
         });
     }
 
+    /**
+     * Records included usage for paid monthly plans without decrementing wallet credits.
+     * Keeps credit-balance semantics intact while preserving usage telemetry.
+     */
+    async trackIncludedUsage(tenantId: string, amount: number, reason: string) {
+        if (amount <= 0) throw new BadRequestException('Amount must be strictly positive');
+
+        return this.prisma.$transaction(async (tx: any) => {
+            const tenant = await tx.tenant.findUniqueOrThrow({ where: { id: tenantId } });
+
+            await tx.creditTransaction.create({
+                data: {
+                    tenantId,
+                    amount: 0,
+                    reason: `Included usage (${amount} credit): ${reason}`,
+                },
+            });
+
+            return tenant.usageCredits;
+        });
+    }
+
     async checkLimits(tenantId: string, tier: string) {
         const locationCount = await this.prisma.location.count({ where: { tenantId } });
         const userCount = await this.prisma.user.count({ where: { tenantId } });
