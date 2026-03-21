@@ -237,6 +237,11 @@ export function TenantsClient() {
         ];
     }, [tenants]);
 
+    const archivedTenants = useMemo(
+        () => tenants.filter((tenant) => Boolean(tenant.deletedAt) || tenant.status === 'CANCELLED' || tenant.status === 'PURGED'),
+        [tenants],
+    );
+
     async function refresh(preferredSelectedId?: string) {
         await loadTenants(preferredSelectedId);
     }
@@ -373,6 +378,45 @@ export function TenantsClient() {
         }
     }
 
+    async function deleteArchivedTenantsBulk() {
+        if (archivedTenants.length === 0) {
+            setNotice('No archived tenants to remove.');
+            return;
+        }
+
+        if (typeof window !== 'undefined') {
+            const confirmed = window.confirm(
+                `Permanently delete ${archivedTenants.length} archived tenant${archivedTenants.length === 1 ? '' : 's'}? This cannot be undone.`,
+            );
+            if (!confirmed) return;
+        }
+
+        setError(null);
+        setNotice(null);
+        setSaving('bulk-delete');
+
+        let successCount = 0;
+        const failedNames: string[] = [];
+
+        for (const tenant of archivedTenants) {
+            try {
+                await writeJson<{ id: string; deleted: boolean }>(`/admin/tenants/${tenant.id}`, 'DELETE');
+                successCount += 1;
+            } catch {
+                failedNames.push(tenant.name);
+            }
+        }
+
+        if (failedNames.length > 0) {
+            setError(`Deleted ${successCount}/${archivedTenants.length}. Failed: ${failedNames.join(', ')}`);
+        } else {
+            setNotice(`Deleted ${successCount} archived tenant${successCount === 1 ? '' : 's'}.`);
+        }
+
+        await refresh();
+        setSaving((current) => (current === 'bulk-delete' ? null : current));
+    }
+
     const tenantToEdit = selectedTenant;
 
     return (
@@ -472,14 +516,25 @@ export function TenantsClient() {
                             <div style={{ fontSize: '0.76rem', color: 'var(--text-muted)', marginTop: 2 }}>Click Edit to load a tenant into the management panel.</div>
                         </div>
 
-                        <button
-                            className="btn btn-sm btn-secondary"
-                            onClick={() => void refresh(selectedTenantId ?? undefined)}
-                            disabled={saving === 'load'}
-                            type="button"
-                        >
-                            {saving === 'load' ? 'Refreshing...' : 'Refresh'}
-                        </button>
+                        <div style={{ display: 'flex', gap: '0.4rem', flexWrap: 'wrap' }}>
+                            <button
+                                className="btn btn-sm btn-secondary"
+                                onClick={() => void refresh(selectedTenantId ?? undefined)}
+                                disabled={saving === 'load' || saving === 'bulk-delete'}
+                                type="button"
+                            >
+                                {saving === 'load' ? 'Refreshing...' : 'Refresh'}
+                            </button>
+                            <button
+                                className="btn btn-sm"
+                                style={actionButtonStyle('danger')}
+                                onClick={() => void deleteArchivedTenantsBulk()}
+                                disabled={saving === 'bulk-delete' || archivedTenants.length === 0}
+                                type="button"
+                            >
+                                {saving === 'bulk-delete' ? 'Removing...' : `Remove Archived (${archivedTenants.length})`}
+                            </button>
+                        </div>
                     </div>
 
                     <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 1060 }}>
