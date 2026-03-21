@@ -65,7 +65,7 @@ function LoginContent() {
         });
         const data = await res.json().catch(() => ({}));
         if (!res.ok || !data.success) {
-            throw new Error(data.error ?? 'Failed to send code. Please try again.');
+            throw new Error(data.error ?? data.message ?? 'Failed to send code. Please try again.');
         }
     };
 
@@ -108,8 +108,8 @@ function LoginContent() {
             if (data.pinResetRequired) {
                 setError('Enter your PIN to continue.');
             }
-        } catch {
-            setError('Network error. Please try again.');
+        } catch (err) {
+            setError(err instanceof Error ? err.message : 'Network error. Please try again.');
         } finally {
             setIsLoading(false);
         }

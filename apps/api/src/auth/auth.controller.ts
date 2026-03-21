@@ -1,4 +1,4 @@
-import { Controller, Get, Post, Body, Req, UseGuards, SetMetadata, HttpCode, HttpStatus, UnauthorizedException, Logger } from '@nestjs/common';
+import { Controller, Get, Post, Body, Req, UseGuards, SetMetadata, HttpCode, HttpStatus, UnauthorizedException, Logger, ServiceUnavailableException } from '@nestjs/common';
 import { AuthService } from './auth.service';
 import { OtpService } from './otp.service';
 import { EmailService } from './email.service';
@@ -126,8 +126,17 @@ export class AuthController {
         }
         const normalizedEmail = body.email.toLowerCase();
         this.authDebug('send_otp_start', { email: this.maskEmail(normalizedEmail) });
-        const code = await this.otpService.generateOtp(normalizedEmail);
-        await this.emailService.sendOtp(normalizedEmail, code);
+        try {
+            const code = await this.otpService.generateOtp(normalizedEmail);
+            await this.emailService.sendOtp(normalizedEmail, code);
+        } catch (err) {
+            this.logger.error(
+                `Failed OTP delivery for ${this.maskEmail(normalizedEmail)}: ${
+                    err instanceof Error ? err.message : 'unknown_error'
+                }`,
+            );
+            throw new ServiceUnavailableException('Unable to send login code right now. Please try again shortly.');
+        }
         this.authDebug('send_otp_success', { email: this.maskEmail(normalizedEmail) });
         return { success: true };
     }
