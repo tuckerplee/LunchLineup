@@ -1,9 +1,10 @@
-import { BadRequestException, Body, Controller, Delete, ForbiddenException, Get, HttpCode, HttpStatus, Param, Post, Put, Query, Req, UseGuards } from '@nestjs/common';
+import { BadRequestException, Body, ConflictException, Controller, Delete, ForbiddenException, Get, HttpCode, HttpStatus, NotFoundException, Param, Post, Put, Query, Req, UseGuards } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { PlanTier, Prisma, PrismaClient, TenantStatus, UserRole } from '@prisma/client';
 import Redis from 'ioredis';
 import { MetricsService } from '../common/metrics.service';
+import { isTenantPlanCode, listPlanDefinitions, normalizePlanCode, planDefinitionToResponse, resolveFallbackPlanDefinition } from '../billing/plan-definitions';
 
 @Controller({ path: 'admin', version: '1' })
 @UseGuards(JwtAuthGuard)
@@ -660,6 +661,225 @@ export class AdminController {
         };
     }
 
+    @Get('plans')
+    async plans(@Req() req: any) {
+        this.assertSuperAdmin(req);
+
+        const rows = await listPlanDefinitions(this.prisma);
+
+        return {
+            data: rows.map((plan: any) => planDefinitionToResponse(plan)),
+        };
+    }
+
+    @Post('plans')
+    @HttpCode(HttpStatus.CREATED)
+    async createPlan(
+        @Req() req: any,
+        @Body() body: {
+            code?: string;
+            key?: string;
+            name?: string;
+            monthlyPriceCents?: number | null;
+            priceMonthly?: number | null;
+            locationLimit?: number | null;
+            storeLimit?: number | null;
+            maxLocations?: number | null;
+            userLimit?: number | null;
+            maxUsers?: number | null;
+            creditQuotaLimit?: number | null;
+            creditsLimit?: number | null;
+            active?: boolean;
+            status?: 'ACTIVE' | 'INACTIVE' | string;
+            metadata?: Prisma.InputJsonValue | null;
+        },
+    ) {
+        this.assertSuperAdmin(req);
+
+        const code = normalizePlanCode((body.code ?? body.key ?? '').trim());
+        if (!code) throw new BadRequestException('code is required');
+        if (!isTenantPlanCode(code) && !/^[A-Z0-9][A-Z0-9_-]{1,63}$/.test(code)) {
+            throw new BadRequestException('code must contain only uppercase letters, numbers, underscores, or hyphens.');
+        }
+
+        const existing = await this.prisma.planDefinition.findUnique({ where: { code } });
+        if (existing) {
+            throw new ConflictException(`Plan ${code} already exists.`);
+        }
+
+        const name = (body.name ?? '').trim();
+        if (!name) throw new BadRequestException('name is required');
+
+        const monthlyPriceCents = this.parseMonthlyPriceCents(body.monthlyPriceCents, body.priceMonthly);
+        const locationLimit = this.parseRequiredInteger(body.locationLimit ?? body.storeLimit ?? body.maxLocations, 'locationLimit');
+        const userLimit = this.parseRequiredInteger(body.userLimit ?? body.maxUsers, 'userLimit');
+        const creditQuotaLimit = this.parseOptionalIntegerOrNull(body.creditQuotaLimit ?? body.creditsLimit, 'creditQuotaLimit');
+        const active = this.parsePlanActive(body.active, body.status) ?? true;
+        const metadata = body.metadata === undefined
+            ? { features: this.defaultPlanFeaturesFor(code) }
+            : body.metadata === null
+                ? Prisma.DbNull
+                : body.metadata;
+
+        const plan = await this.prisma.planDefinition.create({
+            data: {
+                code,
+                name,
+                monthlyPriceCents,
+                locationLimit,
+                userLimit,
+                creditQuotaLimit,
+                active,
+                metadata,
+            },
+        });
+
+        await this.prisma.auditLog.create({
+            data: {
+                tenantId: req.user.tenantId,
+                userId: req.user.sub,
+                action: 'PLAN_CREATED',
+                resource: 'PlanDefinition',
+                resourceId: plan.code,
+                newValue: planDefinitionToResponse(plan) as any,
+            },
+        });
+
+        return planDefinitionToResponse(plan);
+    }
+
+    @Put('plans/:codeOrId')
+    async updatePlan(
+        @Req() req: any,
+        @Param('codeOrId') codeOrId: string,
+        @Body() body: {
+            code?: string;
+            key?: string;
+            name?: string;
+            monthlyPriceCents?: number | null;
+            priceMonthly?: number | null;
+            locationLimit?: number | null;
+            storeLimit?: number | null;
+            maxLocations?: number | null;
+            userLimit?: number | null;
+            maxUsers?: number | null;
+            creditQuotaLimit?: number | null;
+            creditsLimit?: number | null;
+            active?: boolean;
+            status?: 'ACTIVE' | 'INACTIVE' | string;
+            metadata?: Prisma.InputJsonValue | null;
+        },
+    ) {
+        this.assertSuperAdmin(req);
+
+        const existing = await this.findPlanByCodeOrId(codeOrId);
+        const code = existing?.code ?? normalizePlanCode(codeOrId);
+        const requestedCode = body.code ?? body.key;
+        if (requestedCode !== undefined && normalizePlanCode(requestedCode) !== code) {
+            throw new BadRequestException('Plan code is immutable. Update the record using the path parameter.');
+        }
+
+        const fallbackPlan = existing ?? resolveFallbackPlanDefinition(code);
+        if (!fallbackPlan) {
+            throw new NotFoundException(`Plan ${code} not found.`);
+        }
+
+        const patch: any = {};
+        if (body.name !== undefined) {
+            const name = body.name.trim();
+            if (!name) throw new BadRequestException('name cannot be empty');
+            patch.name = name;
+        }
+        if (body.monthlyPriceCents !== undefined || body.priceMonthly !== undefined) {
+            patch.monthlyPriceCents = this.parseMonthlyPriceCents(body.monthlyPriceCents, body.priceMonthly);
+        }
+        if (body.locationLimit !== undefined || body.storeLimit !== undefined || body.maxLocations !== undefined) {
+            patch.locationLimit = this.parseRequiredInteger(body.locationLimit ?? body.storeLimit ?? body.maxLocations, 'locationLimit');
+        }
+        if (body.userLimit !== undefined || body.maxUsers !== undefined) {
+            patch.userLimit = this.parseRequiredInteger(body.userLimit ?? body.maxUsers, 'userLimit');
+        }
+        if (body.creditQuotaLimit !== undefined || body.creditsLimit !== undefined) {
+            patch.creditQuotaLimit = this.parseOptionalIntegerOrNull(body.creditQuotaLimit ?? body.creditsLimit, 'creditQuotaLimit');
+        }
+        const activePatch = this.parsePlanActive(body.active, body.status);
+        if (activePatch !== undefined) {
+            patch.active = activePatch;
+        }
+        if (body.metadata !== undefined) {
+            patch.metadata = body.metadata === null ? Prisma.DbNull : body.metadata;
+        }
+
+        if (Object.keys(patch).length === 0) {
+            throw new BadRequestException('No valid fields to update');
+        }
+
+        const plan = existing
+            ? await this.prisma.planDefinition.update({
+                where: { code },
+                data: patch,
+            })
+            : await this.prisma.planDefinition.create({
+                data: {
+                    code,
+                    name: body.name?.trim() || fallbackPlan.name,
+                    monthlyPriceCents: body.monthlyPriceCents !== undefined || body.priceMonthly !== undefined
+                        ? this.parseMonthlyPriceCents(body.monthlyPriceCents, body.priceMonthly)
+                        : fallbackPlan.monthlyPriceCents,
+                    locationLimit: body.locationLimit !== undefined || body.storeLimit !== undefined || body.maxLocations !== undefined
+                        ? this.parseRequiredInteger(body.locationLimit ?? body.storeLimit ?? body.maxLocations, 'locationLimit')
+                        : fallbackPlan.locationLimit,
+                    userLimit: body.userLimit !== undefined || body.maxUsers !== undefined
+                        ? this.parseRequiredInteger(body.userLimit ?? body.maxUsers, 'userLimit')
+                        : fallbackPlan.userLimit,
+                    creditQuotaLimit: body.creditQuotaLimit !== undefined || body.creditsLimit !== undefined
+                        ? this.parseOptionalIntegerOrNull(body.creditQuotaLimit ?? body.creditsLimit, 'creditQuotaLimit')
+                        : fallbackPlan.creditQuotaLimit,
+                    active: this.parsePlanActive(body.active, body.status) ?? fallbackPlan.active,
+                    metadata: body.metadata !== undefined
+                        ? (body.metadata === null ? Prisma.DbNull : body.metadata)
+                        : fallbackPlan.metadata ?? { features: this.defaultPlanFeaturesFor(code) },
+                },
+            });
+
+        await this.prisma.auditLog.create({
+            data: {
+                tenantId: req.user.tenantId,
+                userId: req.user.sub,
+                action: 'PLAN_UPDATED',
+                resource: 'PlanDefinition',
+                resourceId: plan.code,
+                newValue: planDefinitionToResponse(plan) as any,
+            },
+        });
+
+        return planDefinitionToResponse(plan);
+    }
+
+    @Delete('plans/:codeOrId')
+    async deletePlan(@Req() req: any, @Param('codeOrId') codeOrId: string) {
+        this.assertSuperAdmin(req);
+
+        const plan = await this.findPlanByCodeOrId(codeOrId);
+        if (!plan) {
+            throw new NotFoundException(`Plan ${normalizePlanCode(codeOrId)} not found.`);
+        }
+
+        await this.prisma.planDefinition.delete({ where: { code: plan.code } });
+        await this.prisma.auditLog.create({
+            data: {
+                tenantId: req.user.tenantId,
+                userId: req.user.sub,
+                action: 'PLAN_DELETED',
+                resource: 'PlanDefinition',
+                resourceId: plan.code,
+                oldValue: planDefinitionToResponse(plan) as any,
+            },
+        });
+
+        return { code: plan.code, deleted: true };
+    }
+
     @Get('health')
     async health(@Req() req: any) {
         this.assertSuperAdmin(req);
@@ -747,6 +967,101 @@ export class AdminController {
             return { ok: true as const, latencyMs: Date.now() - start, error: null as string | null };
         } catch (error) {
             return { ok: false as const, latencyMs: Date.now() - start, error: this.stringifyError(error) };
+        }
+    }
+
+    private parseRequiredInteger(value: unknown, field: string): number {
+        const parsed = this.parseOptionalInteger(value, field);
+        if (parsed === null) {
+            throw new BadRequestException(`${field} is required`);
+        }
+        return parsed;
+    }
+
+    private parseOptionalInteger(value: unknown, field: string): number | null {
+        if (value === undefined || value === null || value === '') {
+            return null;
+        }
+        const parsed = Number(value);
+        if (!Number.isInteger(parsed) || parsed < 0) {
+            throw new BadRequestException(`${field} must be a non-negative integer`);
+        }
+        return parsed;
+    }
+
+    private parseOptionalIntegerOrNull(value: unknown, field: string): number | null {
+        if (value === undefined) {
+            return null;
+        }
+        return this.parseOptionalInteger(value, field);
+    }
+
+    private parseMonthlyPriceCents(monthlyPriceCents: unknown, priceMonthly: unknown): number | null {
+        if (monthlyPriceCents !== undefined) {
+            return this.parseOptionalInteger(monthlyPriceCents, 'monthlyPriceCents');
+        }
+
+        if (priceMonthly === undefined || priceMonthly === null || priceMonthly === '') {
+            return null;
+        }
+
+        const parsed = Number(priceMonthly);
+        if (!Number.isFinite(parsed) || parsed < 0) {
+            throw new BadRequestException('priceMonthly must be a non-negative number');
+        }
+        return Math.round(parsed * 100);
+    }
+
+    private parsePlanActive(active: unknown, status: unknown): boolean | undefined {
+        if (active !== undefined) {
+            if (typeof active === 'boolean') {
+                return active;
+            }
+            if (typeof active === 'string') {
+                const normalizedActive = active.trim().toLowerCase();
+                if (normalizedActive === 'true') return true;
+                if (normalizedActive === 'false') return false;
+            }
+            throw new BadRequestException('active must be true or false');
+        }
+
+        if (status === undefined || status === null) {
+            return undefined;
+        }
+
+        const normalized = String(status).trim().toUpperCase();
+        if (normalized === 'ACTIVE') {
+            return true;
+        }
+        if (normalized === 'INACTIVE') {
+            return false;
+        }
+        throw new BadRequestException('status must be ACTIVE or INACTIVE');
+    }
+
+    private async findPlanByCodeOrId(codeOrId: string) {
+        const byCode = await this.prisma.planDefinition.findUnique({
+            where: { code: normalizePlanCode(codeOrId) },
+        });
+        if (byCode) {
+            return byCode;
+        }
+        return this.prisma.planDefinition.findUnique({
+            where: { id: codeOrId },
+        });
+    }
+
+    private defaultPlanFeaturesFor(code: string) {
+        switch (normalizePlanCode(code)) {
+            case 'FREE':
+                return [];
+            case 'STARTER':
+                return ['scheduling'];
+            case 'GROWTH':
+            case 'ENTERPRISE':
+                return ['scheduling', 'lunch_breaks'];
+            default:
+                return [];
         }
     }
 

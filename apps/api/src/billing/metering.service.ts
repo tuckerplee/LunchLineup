@@ -1,6 +1,7 @@
 import { Injectable, BadRequestException, Optional } from '@nestjs/common';
 import { PrismaClient } from '@lunchlineup/db';
 import { PlanTier, PLAN_CONFIG } from './plans.config';
+import { isTenantPlanCode, resolveTenantPlanDefinition } from './plan-definitions';
 
 @Injectable()
 export class MeteringService {
@@ -56,12 +57,33 @@ export class MeteringService {
         });
     }
 
-    async checkLimits(tenantId: string, tier: PlanTier) {
-        const limits = PLAN_CONFIG[tier];
-
+    async checkLimits(tenantId: string, tier: string) {
         const locationCount = await this.prisma.location.count({ where: { tenantId } });
-        if (locationCount >= limits.maxLocations) {
-            throw new Error(`Location limit reached for ${tier} plan.`);
+        const userCount = await this.prisma.user.count({ where: { tenantId } });
+
+        if (isLegacyPlanTier(tier)) {
+            const limits = PLAN_CONFIG[tier];
+            if (locationCount >= limits.maxLocations) {
+                throw new Error(`Location limit reached for ${tier} plan.`);
+            }
+            if (userCount >= limits.maxStaffPerLocation) {
+                throw new Error(`User limit reached for ${tier} plan.`);
+            }
+
+            return true;
+        }
+
+        const plan = await resolveTenantPlanDefinition(this.prisma, tier);
+        if (!plan) {
+            return true;
+        }
+
+        if (plan.locationLimit !== null && locationCount >= plan.locationLimit) {
+            throw new Error(`Location limit reached for ${plan.code} plan.`);
+        }
+
+        if (plan.userLimit !== null && userCount >= plan.userLimit) {
+            throw new Error(`User limit reached for ${plan.code} plan.`);
         }
 
         return true;
@@ -73,4 +95,8 @@ export class MeteringService {
         // Update Stripe usage record...
         console.log(`Reported ${staffCount} staff members for tenant ${tenantId}`);
     }
+}
+
+function isLegacyPlanTier(value: string): value is PlanTier {
+    return value in PLAN_CONFIG;
 }
