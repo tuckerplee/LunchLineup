@@ -1,4 +1,4 @@
-import { Controller, Get, Post, Body, Req, UseGuards, SetMetadata, HttpCode, HttpStatus, UnauthorizedException, Logger, ServiceUnavailableException } from '@nestjs/common';
+import { Controller, Get, Post, Body, Req, UseGuards, SetMetadata, HttpCode, HttpStatus, UnauthorizedException, Logger, ServiceUnavailableException, BadRequestException, HttpException } from '@nestjs/common';
 import { AuthService } from './auth.service';
 import { OtpService } from './otp.service';
 import { EmailService } from './email.service';
@@ -130,6 +130,9 @@ export class AuthController {
             const code = await this.otpService.generateOtp(normalizedEmail);
             await this.emailService.sendOtp(normalizedEmail, code);
         } catch (err) {
+            if (err instanceof BadRequestException) {
+                throw new HttpException('Please wait before requesting another code', HttpStatus.TOO_MANY_REQUESTS);
+            }
             this.logger.error(
                 `Failed OTP delivery for ${this.maskEmail(normalizedEmail)}: ${
                     err instanceof Error ? err.message : 'unknown_error'
