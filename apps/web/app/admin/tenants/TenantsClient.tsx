@@ -2,7 +2,7 @@
 
 import type { FormEvent } from 'react';
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { fetchJsonWithSession } from '@/lib/client-api';
+import { fetchJsonWithSession, fetchWithSession } from '@/lib/client-api';
 
 type PlanTier = 'FREE' | 'STARTER' | 'GROWTH' | 'ENTERPRISE';
 type TenantStatus = 'TRIAL' | 'ACTIVE' | 'PAST_DUE' | 'SUSPENDED' | 'CANCELLED' | 'PURGED';
@@ -126,6 +126,39 @@ function actionButtonStyle(kind: 'neutral' | 'positive' | 'warn' | 'danger') {
     return { background: '#edf3ff', color: '#2f63ff', borderColor: '#c9d9ff' };
 }
 
+function getCsrfHeaders(): Record<string, string> {
+    if (typeof document === 'undefined') return {};
+    const pair = document.cookie
+        .split('; ')
+        .find((entry) => entry.startsWith('csrf_token='));
+    const csrfToken = pair ? decodeURIComponent(pair.split('=')[1] ?? '') : '';
+    return csrfToken ? { 'x-csrf-token': csrfToken } : {};
+}
+
+function jsonWriteInit(method: 'POST' | 'PUT', payload?: unknown): RequestInit {
+    return {
+        method,
+        credentials: 'include',
+        headers: {
+            'Content-Type': 'application/json',
+            ...getCsrfHeaders(),
+        },
+        ...(payload === undefined ? {} : { body: JSON.stringify(payload) }),
+    };
+}
+
+async function writeJson<T>(path: string, method: 'POST' | 'PUT', payload?: unknown): Promise<T> {
+    const response = await fetchWithSession(path, jsonWriteInit(method, payload));
+    const responsePayload = await response.json().catch(() => ({} as Record<string, unknown>));
+    if (!response.ok) {
+        const message = typeof (responsePayload as { message?: unknown }).message === 'string'
+            ? String((responsePayload as { message: string }).message)
+            : `Request failed (${response.status})`;
+        throw new Error(message);
+    }
+    return responsePayload as T;
+}
+
 export function TenantsClient() {
     const [tenants, setTenants] = useState<TenantRecord[]>([]);
     const [loading, setLoading] = useState(true);
@@ -235,11 +268,7 @@ export function TenantsClient() {
 
         setSaving('create');
         try {
-            const result = await fetchJsonWithSession<{ id: string }>('/admin/tenants', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(payload),
-            });
+            const result = await writeJson<{ id: string }>('/admin/tenants', 'POST', payload);
             setCreateForm(normalizeForm(null));
             setNotice('Tenant created.');
             await refresh(result.id);
@@ -270,16 +299,12 @@ export function TenantsClient() {
 
         setSaving(`update:${selectedTenant.id}`);
         try {
-            await fetchJsonWithSession<{ id: string; updated: boolean }>(`/admin/tenants/${selectedTenant.id}`, {
-                method: 'PUT',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    name,
-                    slug: editForm.slug.trim(),
-                    planTier: editForm.planTier,
-                    status: editForm.status,
-                    usageCredits: credits,
-                }),
+            await writeJson<{ id: string; updated: boolean }>(`/admin/tenants/${selectedTenant.id}`, 'PUT', {
+                name,
+                slug: editForm.slug.trim(),
+                planTier: editForm.planTier,
+                status: editForm.status,
+                usageCredits: credits,
             });
             setNotice(`${selectedTenant.name} updated.`);
             await refresh(selectedTenant.id);
@@ -314,9 +339,7 @@ export function TenantsClient() {
         setNotice(null);
         setSaving(`${action}:${tenant.id}`);
         try {
-            await fetchJsonWithSession(`/admin/tenants/${tenant.id}/${action}`, {
-                method: 'POST',
-            });
+            await writeJson(`/admin/tenants/${tenant.id}/${action}`, 'POST');
             setNotice(`${tenant.name} ${pastTenseMap[action]}.`);
             await refresh(tenant.id);
         } catch (err) {
