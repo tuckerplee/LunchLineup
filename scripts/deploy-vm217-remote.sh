@@ -5,6 +5,8 @@ APP_DIR="${APP_DIR:-/opt/lunchlineup}"
 LOCK_FILE="${LOCK_FILE:-/tmp/lunchlineup-deploy.lock}"
 HEALTH_URL="${HEALTH_URL:-http://127.0.0.1/api/health}"
 HEALTH_TIMEOUT_SECONDS="${HEALTH_TIMEOUT_SECONDS:-180}"
+SECRETS_DIR="${SECRETS_DIR:-/opt/lunchlineup-secrets}"
+SECRET_ENV_PATH="${SECRET_ENV_PATH:-$SECRETS_DIR/runtime.env}"
 
 exec 9>"$LOCK_FILE"
 if ! flock -n 9; then
@@ -14,10 +16,19 @@ fi
 
 cd "$APP_DIR"
 
-if [[ ! -f .env ]]; then
-  echo "Missing $APP_DIR/.env" >&2
-  exit 1
+# Keep runtime secrets outside the rsynced tree and force .env to point there.
+mkdir -p "$SECRETS_DIR"
+if [[ ! -f "$SECRET_ENV_PATH" ]]; then
+  if [[ -f .env && ! -L .env ]]; then
+    cp .env "$SECRET_ENV_PATH"
+    chmod 600 "$SECRET_ENV_PATH"
+    echo "Bootstrapped $SECRET_ENV_PATH from existing $APP_DIR/.env"
+  else
+    echo "Missing secret env file: $SECRET_ENV_PATH" >&2
+    exit 1
+  fi
 fi
+ln -sfn "$SECRET_ENV_PATH" .env
 
 # Worktree syncs can copy a .git file pointer from a local machine. Keep server deploys git-agnostic.
 if [[ -f .git && ! -d .git ]]; then
@@ -31,7 +42,7 @@ services=(
 )
 
 echo "Deploying services: ${services[*]}"
-docker compose up -d --build "${services[@]}"
+docker compose --env-file "$SECRET_ENV_PATH" up -d --build "${services[@]}"
 
 start_time=$(date +%s)
 while true; do

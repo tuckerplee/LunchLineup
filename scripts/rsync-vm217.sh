@@ -34,6 +34,8 @@ fi
 chmod 600 "$RESOLVED_SSH_KEY"
 
 rsync -az --delete \
+  --filter='P .env' \
+  --filter='P .env.*' \
   --exclude '.git' \
   --exclude '.git/***' \
   --exclude 'node_modules' \
