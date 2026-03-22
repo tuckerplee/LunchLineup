@@ -17,6 +17,9 @@ describe('UsersController', () => {
             tenant: {
                 findUnique: vi.fn().mockResolvedValue({ planTier: 'FREE' }),
             },
+            tenantSetting: {
+                findUnique: vi.fn().mockResolvedValue(null),
+            },
             user: {
                 create: vi.fn(),
                 findFirst: vi.fn(),
@@ -76,6 +79,140 @@ describe('UsersController', () => {
         expect(mockAuthService.setUserPin).not.toHaveBeenCalled();
         expect(result.email).toBe('manager@company.com');
         expect(result.temporaryPin).toBe(null);
+    });
+
+    it('uses the configured team default invite role when role is omitted', async () => {
+        prisma.tenantSetting.findUnique.mockResolvedValue({
+            value: {
+                team: {
+                    defaultInviteRole: 'MANAGER',
+                },
+            },
+        });
+        prisma.user.create.mockResolvedValue({
+            id: 'user-3',
+            email: 'invitee@company.com',
+            username: null,
+            name: 'Invitee',
+            role: 'MANAGER',
+            pinHash: null,
+        });
+        prisma.auditLog.create.mockResolvedValue({});
+
+        const result = await controller.invite(
+            { name: 'Invitee', email: 'invitee@company.com' },
+            { user: { tenantId: 'tenant-1', sub: 'admin-1' } },
+        );
+
+        expect(prisma.tenantSetting.findUnique).toHaveBeenCalledWith({
+            where: {
+                tenantId_key: {
+                    tenantId: 'tenant-1',
+                    key: 'workspace_settings',
+                },
+            },
+            select: { value: true },
+        });
+        expect(prisma.user.create).toHaveBeenCalledWith({
+            data: {
+                tenantId: 'tenant-1',
+                email: 'invitee@company.com',
+                username: null,
+                name: 'Invitee',
+                role: 'MANAGER',
+            },
+        });
+        expect(result.role).toBe('MANAGER');
+    });
+
+    it('keeps an explicit invite role even when a team default is configured', async () => {
+        prisma.tenantSetting.findUnique.mockResolvedValue({
+            value: {
+                team: {
+                    defaultInviteRole: 'MANAGER',
+                },
+            },
+        });
+        prisma.user.create.mockResolvedValue({
+            id: 'user-4',
+            email: 'staff@company.com',
+            username: null,
+            name: 'Staff',
+            role: 'STAFF',
+            pinHash: null,
+        });
+        prisma.auditLog.create.mockResolvedValue({});
+
+        const result = await controller.invite(
+            { name: 'Staff', email: 'staff@company.com', role: 'STAFF' },
+            { user: { tenantId: 'tenant-1', sub: 'admin-1' } },
+        );
+
+        expect(prisma.tenantSetting.findUnique).not.toHaveBeenCalled();
+        expect(prisma.user.create).toHaveBeenCalledWith({
+            data: {
+                tenantId: 'tenant-1',
+                email: 'staff@company.com',
+                username: null,
+                name: 'Staff',
+                role: 'STAFF',
+            },
+        });
+        expect(result.role).toBe('STAFF');
+    });
+
+    it('falls back to STAFF when the team default invite role is missing or invalid', async () => {
+        prisma.user.create.mockResolvedValue({
+            id: 'user-5',
+            email: 'fallback@company.com',
+            username: null,
+            name: 'Fallback',
+            role: 'STAFF',
+            pinHash: null,
+        });
+        prisma.auditLog.create.mockResolvedValue({});
+
+        prisma.tenantSetting.findUnique
+            .mockResolvedValueOnce(null)
+            .mockResolvedValueOnce({
+                value: {
+                    team: {
+                        defaultInviteRole: 'LEAD',
+                    },
+                },
+            });
+
+        const missingConfigResult = await controller.invite(
+            { name: 'Fallback', email: 'fallback@company.com' },
+            { user: { tenantId: 'tenant-1', sub: 'admin-1' } },
+        );
+
+        expect(missingConfigResult.role).toBe('STAFF');
+
+        prisma.user.create.mockResolvedValueOnce({
+            id: 'user-6',
+            email: 'fallback-2@company.com',
+            username: null,
+            name: 'Fallback Two',
+            role: 'STAFF',
+            pinHash: null,
+        });
+
+        const invalidConfigResult = await controller.invite(
+            { name: 'Fallback Two', email: 'fallback-2@company.com' },
+            { user: { tenantId: 'tenant-1', sub: 'admin-1' } },
+        );
+
+        expect(invalidConfigResult.role).toBe('STAFF');
+        expect(prisma.user.create).toHaveBeenLastCalledWith({
+            data: {
+                tenantId: 'tenant-1',
+                email: 'fallback-2@company.com',
+                username: null,
+                name: 'Fallback Two',
+                role: 'STAFF',
+            },
+        });
     });
 
     it('rejects invites when the tenant is already at the active user limit', async () => {

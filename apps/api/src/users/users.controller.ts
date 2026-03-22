@@ -21,6 +21,7 @@ export class UsersController {
     private static readonly USERNAME_REGEX = /^[a-z0-9._-]{3,32}$/;
     private static readonly PIN_REGEX = /^\d{4,8}$/;
     private static readonly SYSTEM_EMAIL_DOMAIN = 'staff.lunchlineup.local';
+    private static readonly WORKSPACE_SETTINGS_KEY = 'workspace_settings';
 
     constructor(private readonly authService: AuthService) { }
 
@@ -66,6 +67,34 @@ export class UsersController {
         return Math.floor(100000 + Math.random() * 900000).toString();
     }
 
+    private async resolveInviteRole(tenantId: string, requestedRole?: UserRoleValue): Promise<UserRoleValue> {
+        if (requestedRole) {
+            return requestedRole;
+        }
+
+        const workspaceSettings = await this.prisma.tenantSetting.findUnique({
+            where: {
+                tenantId_key: {
+                    tenantId,
+                    key: UsersController.WORKSPACE_SETTINGS_KEY,
+                },
+            },
+            select: { value: true },
+        });
+
+        const defaultInviteRole = workspaceSettings?.value && typeof workspaceSettings.value === 'object' && !Array.isArray(workspaceSettings.value)
+            ? (workspaceSettings.value as { team?: { defaultInviteRole?: unknown } }).team?.defaultInviteRole
+            : undefined;
+
+        if (defaultInviteRole === USER_ROLE.MANAGER) {
+            return USER_ROLE.MANAGER;
+        }
+        if (defaultInviteRole === USER_ROLE.STAFF) {
+            return USER_ROLE.STAFF;
+        }
+        return USER_ROLE.STAFF;
+    }
+
     @Get()
     @Permission('users:read')
     async findAll(@Req() req: any, @Query('locationId') locationId?: string) {
@@ -108,7 +137,7 @@ export class UsersController {
     @Post('invite')
     @Permission('users:write')
     async invite(@Body() body: { email?: string; username?: string; pin?: string; name: string; role?: UserRoleValue }, @Req() req: any) {
-        const role = body.role || USER_ROLE.STAFF;
+        const role = await this.resolveInviteRole(req.user.tenantId, body.role);
         const normalizedName = (body.name || '').trim();
         const normalizedEmail = (body.email || '').trim().toLowerCase();
         const normalizedUsername = this.normalizeUsername(body.username);

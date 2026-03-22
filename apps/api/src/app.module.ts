@@ -16,6 +16,7 @@ import { SchedulesController } from './schedules/schedules.controller';
 import { UsersController } from './users/users.controller';
 import { MetricsController } from './common/metrics.controller';
 import { AdminController } from './admin/admin.controller';
+import { SettingsController } from './settings/settings.controller';
 
 // Guards
 import { RateLimitsGuard } from './common/guards/rate-limits.guard';
@@ -50,6 +51,7 @@ import { CorrelationIdMiddleware } from './middleware/correlation-id.middleware'
         UsersController,
         MetricsController,
         AdminController,
+        SettingsController,
     ],
     providers: [
         // Global guards (default deny)
