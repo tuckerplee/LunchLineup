@@ -29,12 +29,6 @@ type SecurityFormState = {
     ssoOnly: boolean;
 };
 
-type BillingSnapshot = {
-    planName: string;
-    planCode: string;
-    usageCredits: number | null;
-};
-
 const TIMEZONE_OPTIONS = [
     { value: 'America/Los_Angeles', label: 'Pacific Time (US & Canada)' },
     { value: 'America/Chicago', label: 'Central Time (US & Canada)' },
@@ -160,11 +154,6 @@ function toNumberString(value: number | null): string {
     return value === null ? '' : String(value);
 }
 
-function formatUsageCredits(value: number | null): string {
-    if (value === null) return '—';
-    return new Intl.NumberFormat('en-US').format(value);
-}
-
 function extractBannerMessage(payload: unknown, fallback: string): string {
     if (typeof payload === 'string' && payload.trim()) return payload;
     const record = asRecord(payload);
@@ -203,12 +192,6 @@ export function SettingsWorkspace() {
         sessionTimeoutMinutes: '30',
         ssoOnly: false,
     });
-    const [billing, setBilling] = useState<BillingSnapshot>({
-        planName: '',
-        planCode: '',
-        usageCredits: null,
-    });
-
     const [generalNotice, setGeneralNotice] = useState<Banner>(null);
     const [teamNotice, setTeamNotice] = useState<Banner>(null);
     const [securityNotice, setSecurityNotice] = useState<Banner>(null);
@@ -231,7 +214,6 @@ export function SettingsWorkspace() {
             const general = firstRecord([root], ['general', 'workspace', 'organization', 'profile', 'tenant']);
             const team = firstRecord([root], ['team', 'defaults', 'inviteDefaults', 'workflows']);
             const security = firstRecord([root], ['security', 'auth', 'access', 'session']);
-            const billingSource = firstRecord([root], ['billing', 'plan', 'subscription', 'usage']);
 
             setGeneralForm({
                 organizationName: readString([general, root], ['organizationName', 'name', 'workspaceName', 'companyName'], 'Workspace'),
@@ -245,15 +227,9 @@ export function SettingsWorkspace() {
             });
 
             setSecurityForm({
-                requireMfa: readBoolean([security, root], ['requireMfa', 'mfaRequired', 'enforceMfa']),
-                sessionTimeoutMinutes: toNumberString(readOptionalNumber([security, root], ['sessionTimeoutMinutes', 'sessionTimeout', 'idleTimeoutMinutes']) ?? 30),
-                ssoOnly: readBoolean([security, root], ['ssoOnly', 'ssoRequired', 'oidcOnly']),
-            });
-
-            setBilling({
-                planName: readString([billingSource, root], ['planName', 'planLabel', 'currentPlan'], ''),
-                planCode: readString([billingSource, root], ['planCode', 'code', 'tier'], ''),
-                usageCredits: readOptionalNumber([billingSource, root], ['usageCredits', 'usageCreditsBalance', 'creditsBalance', 'credits']),
+                requireMfa: readBoolean([security, root], ['requireMfaForAll', 'requireMfa', 'mfaRequired', 'enforceMfa']),
+                sessionTimeoutMinutes: toNumberString(readOptionalNumber([security, root], ['sessionTimeoutMinutes', 'sessionTimeout', 'idleTimeoutMinutes']) ?? 480),
+                ssoOnly: readBoolean([security, root], ['ssoOidcOnly', 'ssoOnly', 'ssoRequired', 'oidcOnly']),
             });
         } catch (error) {
             setLoadError(error instanceof Error ? error.message : 'Unable to load settings.');
@@ -329,10 +305,9 @@ export function SettingsWorkspace() {
         setSecurityNotice(null);
         try {
             await writeJson('/settings/security', {
-                requireMfa: securityForm.requireMfa,
-                mfaRequired: securityForm.requireMfa,
+                requireMfaForAll: securityForm.requireMfa,
                 sessionTimeoutMinutes: timeout,
-                ssoOnly: securityForm.ssoOnly,
+                ssoOidcOnly: securityForm.ssoOnly,
             });
             setSecurityNotice({ tone: 'success', text: 'Security settings saved.' });
         } catch (error) {
@@ -385,11 +360,6 @@ export function SettingsWorkspace() {
             setPinSaving(false);
         }
     }, [confirmPin, currentPin, newPin]);
-
-    const billingLabel = useMemo(() => {
-        if (!billing.planName && !billing.planCode) return 'No billing data';
-        return billing.planName || billing.planCode;
-    }, [billing.planCode, billing.planName]);
 
     return (
         <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem', maxWidth: 980 }}>
@@ -558,32 +528,10 @@ export function SettingsWorkspace() {
                     {activeTab === 'Billing' && (
                         <div style={{ display: 'grid', gap: '1rem' }}>
                             <div style={{ display: 'grid', gap: '0.2rem' }}>
-                                <h2 style={{ fontWeight: 750, fontSize: '1.02rem', color: 'var(--text-primary)' }}>Billing and Usage</h2>
-                                <p style={{ color: 'var(--text-muted)', fontSize: '0.82rem' }}>Read-only billing snapshot. Plan management is not available here yet.</p>
-                            </div>
-
-                            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '0.7rem' }}>
-                                <div className="surface-muted" style={{ padding: '0.9rem', background: '#edf3ff', borderColor: '#cfe0ff' }}>
-                                    <div className="workspace-kicker" style={{ color: '#2f63ff' }}>
-                                        Current plan
-                                    </div>
-                                    <div style={{ fontSize: '1.6rem', fontWeight: 800, color: 'var(--text-primary)', marginBottom: 2 }}>
-                                        {billingLabel}
-                                    </div>
-                                    <div style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>
-                                        {billing.planCode ? `Plan code: ${billing.planCode}` : 'Loaded from live settings'}
-                                    </div>
-                                </div>
-
-                                <div className="surface-muted" style={{ padding: '0.9rem', background: '#fff7e7', borderColor: '#ffe4ab' }}>
-                                    <div className="workspace-kicker" style={{ color: '#cc7f06' }}>
-                                        Usage credits
-                                    </div>
-                                    <div style={{ fontSize: '1.6rem', fontWeight: 800, color: '#cc7f06', marginBottom: 2 }}>
-                                        {formatUsageCredits(billing.usageCredits)}
-                                    </div>
-                                    <div style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>Live balance from settings</div>
-                                </div>
+                                <h2 style={{ fontWeight: 750, fontSize: '1.02rem', color: 'var(--text-primary)' }}>Billing</h2>
+                                <p style={{ color: 'var(--text-muted)', fontSize: '0.82rem' }}>
+                                    Billing management will be available here soon.
+                                </p>
                             </div>
 
                             <div className="surface-muted" style={{ padding: '1rem', borderStyle: 'dashed', background: '#fafbff' }}>
@@ -591,7 +539,7 @@ export function SettingsWorkspace() {
                                     Billing coming soon
                                 </div>
                                 <p style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', margin: 0 }}>
-                                    Billing controls will be added here later. For now, this tab only surfaces live plan usage.
+                                    Plan changes, payment methods, and invoices are not available in this panel yet.
                                 </p>
                             </div>
                         </div>
