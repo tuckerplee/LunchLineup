@@ -3,6 +3,7 @@ import { ConfigService } from '@nestjs/config';
 import { JwtService, TokenPayload } from './jwt.service';
 import { PrismaClient } from '@prisma/client';
 import * as crypto from 'crypto';
+import { assertTenantCanAddActiveUser } from '../billing/user-capacity';
 
 type UserRoleValue = 'SUPER_ADMIN' | 'ADMIN' | 'MANAGER' | 'STAFF';
 const USER_ROLE: Record<UserRoleValue, UserRoleValue> = {
@@ -157,6 +158,8 @@ export class AuthService {
                 }
             });
 
+            await assertTenantCanAddActiveUser(this.prisma, tenant.id);
+
             user = await this.prisma.user.create({
                 data: {
                     email: userInfo.email,
@@ -202,6 +205,8 @@ export class AuthService {
                     slug: crypto.randomBytes(6).toString('hex'),
                 },
             });
+
+            await assertTenantCanAddActiveUser(this.prisma, tenant.id);
 
             user = await this.prisma.user.create({
                 data: {

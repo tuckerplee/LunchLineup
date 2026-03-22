@@ -36,6 +36,7 @@ const mockPrisma = {
     },
     tenant: {
         create: vi.fn(),
+        findUnique: vi.fn().mockResolvedValue({ planTier: 'FREE' }),
     },
     session: {
         create: vi.fn(),
@@ -67,6 +68,7 @@ describe('AuthService – handleOidcCallback', () => {
         mockPrisma.user.findFirst.mockResolvedValue(null);
         mockPrisma.tenant.create.mockResolvedValue({ id: 'tenant-new' });
         mockPrisma.user.create.mockResolvedValue({ id: 'user-new', email: 'new@example.com', username: null, tenantId: 'tenant-new', role: 'ADMIN', mfaEnabled: false });
+        mockPrisma.user.count.mockResolvedValue(0);
         mockPrisma.session.create.mockResolvedValue({ id: 'session-1', refreshToken: 'refresh-1' });
         mockPrisma.user.update.mockResolvedValue({});
 
@@ -89,6 +91,18 @@ describe('AuthService – handleOidcCallback', () => {
 
         expect(mockPrisma.tenant.create).not.toHaveBeenCalled();
         expect(result).toHaveProperty('accessToken');
+    });
+
+    it('should reject auto-provisioning when the tenant is already at the active user limit', async () => {
+        vi.spyOn(service as any, 'exchangeCode').mockResolvedValue({ access_token: 'tok' });
+        vi.spyOn(service as any, 'fetchUserInfo').mockResolvedValue({ sub: '123', email: 'limit@example.com', name: 'Limit User' });
+
+        mockPrisma.user.findFirst.mockResolvedValue(null);
+        mockPrisma.tenant.create.mockResolvedValue({ id: 'tenant-limit' });
+        mockPrisma.user.count.mockResolvedValue(10);
+
+        await expect(service.handleOidcCallback('code', 'state')).rejects.toThrow(/User limit reached/i);
+        expect(mockPrisma.user.create).not.toHaveBeenCalled();
     });
 });
 

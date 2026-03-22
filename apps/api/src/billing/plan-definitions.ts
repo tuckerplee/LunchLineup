@@ -172,11 +172,15 @@ export function resolveFallbackPlanDefinition(code: string): PlanDefinitionRecor
 
 export async function resolveTenantPlanDefinition(prisma: PrismaLike, code: string): Promise<PlanDefinitionRecord | null> {
     const normalized = normalizePlanCode(code);
-    const fallback = resolveFallbackPlanDefinition(normalized);
-    if (!fallback) {
-        return null;
+    const exactMatch = await prisma.planDefinition?.findUnique?.({
+        where: { code: normalized },
+    });
+
+    if (exactMatch) {
+        return exactMatch;
     }
 
+    const fallback = resolveFallbackPlanDefinition(normalized) ?? DEFAULT_PLAN_DEFINITIONS[0];
     const record = await prisma.planDefinition?.findUnique?.({
         where: { code: fallback.code },
     });

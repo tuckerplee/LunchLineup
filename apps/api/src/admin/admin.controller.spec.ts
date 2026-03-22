@@ -118,3 +118,67 @@ describe('AdminController credits', () => {
         });
     });
 });
+
+describe('AdminController user limits', () => {
+    let controller: AdminController;
+    let prisma: any;
+    let meteringService: { grantCredits: ReturnType<typeof vi.fn> };
+
+    beforeEach(() => {
+        prisma = {
+            tenant: {
+                findMany: vi.fn(),
+                findUnique: vi.fn().mockResolvedValue({ planTier: 'FREE' }),
+            },
+            creditTransaction: {
+                findMany: vi.fn(),
+            },
+            user: {
+                findUnique: vi.fn(),
+                count: vi.fn().mockResolvedValue(0),
+                update: vi.fn(),
+            },
+        };
+
+        meteringService = {
+            grantCredits: vi.fn(),
+        };
+
+        controller = new AdminController(
+            { get: vi.fn().mockReturnValue(null) } as any,
+            { solverQueueDepth: { get: vi.fn().mockResolvedValue({ values: [] }) } } as any,
+            meteringService as any,
+        );
+
+        (controller as any).prisma = prisma;
+    });
+
+    it('rejects reactivating a user when the tenant is already at the active user limit', async () => {
+        prisma.user.findUnique.mockResolvedValue({
+            tenantId: 'tenant-1',
+            deletedAt: new Date('2026-03-21T10:00:00.000Z'),
+        });
+        prisma.user.count.mockResolvedValue(10);
+
+        await expect(controller.activateUser({ user: { role: 'SUPER_ADMIN' } }, 'user-1')).rejects.toThrow(/User limit reached/i);
+        expect(prisma.user.update).not.toHaveBeenCalled();
+    });
+
+    it('rejects moving an active user into a tenant that is already full', async () => {
+        prisma.user.findUnique.mockResolvedValue({
+            tenantId: 'tenant-source',
+            deletedAt: null,
+        });
+        prisma.user.count.mockResolvedValue(10);
+
+        await expect(
+            controller.updateUser(
+                { user: { role: 'SUPER_ADMIN' } },
+                'user-1',
+                { tenantId: 'tenant-target' },
+            ),
+        ).rejects.toThrow(/User limit reached/i);
+
+        expect(prisma.user.update).not.toHaveBeenCalled();
+    });
+});

@@ -3,6 +3,7 @@ import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { RbacGuard } from '../auth/rbac.guard';
 import { PrismaClient } from '@prisma/client';
 import { AuthService } from '../auth/auth.service';
+import { assertTenantCanAddActiveUser } from '../billing/user-capacity';
 
 const Permission = (perm: string) => SetMetadata('permission', perm);
 type UserRoleValue = 'SUPER_ADMIN' | 'ADMIN' | 'MANAGER' | 'STAFF';
@@ -144,6 +145,8 @@ export class UsersController {
             throw new BadRequestException('Choose email login or username login, not both');
         }
 
+        await assertTenantCanAddActiveUser(this.prisma, req.user.tenantId);
+
         const user = await this.prisma.user.create({
             data: {
                 tenantId: req.user.tenantId,
@@ -151,7 +154,7 @@ export class UsersController {
                 username: normalizedUsername,
                 name: normalizedName,
                 role,
-            }
+            },
         });
 
         let temporaryPin: string | null = null;

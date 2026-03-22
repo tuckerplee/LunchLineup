@@ -6,6 +6,7 @@ import Redis from 'ioredis';
 import { MetricsService } from '../common/metrics.service';
 import { MeteringService } from '../billing/metering.service';
 import { isTenantPlanCode, listPlanDefinitions, normalizePlanCode, planDefinitionToResponse, resolveFallbackPlanDefinition } from '../billing/plan-definitions';
+import { assertTenantCanAddActiveUser } from '../billing/user-capacity';
 
 @Controller({ path: 'admin', version: '1' })
 @UseGuards(JwtAuthGuard)
@@ -188,6 +189,17 @@ export class AdminController {
         },
     ) {
         this.assertSuperAdmin(req);
+        const existingUser = await this.prisma.user.findUnique({
+            where: { id },
+            select: {
+                tenantId: true,
+                deletedAt: true,
+            },
+        });
+        if (!existingUser) {
+            throw new BadRequestException('User not found');
+        }
+
         const patch: any = {};
         if (body.name !== undefined) {
             const name = body.name.trim();
@@ -440,6 +452,17 @@ export class AdminController {
         },
     ) {
         this.assertSuperAdmin(req);
+        const existingUser = await this.prisma.user.findUnique({
+            where: { id },
+            select: {
+                tenantId: true,
+                deletedAt: true,
+            },
+        });
+        if (!existingUser) {
+            throw new BadRequestException('User not found');
+        }
+
         const patch: any = {};
         if (body.name !== undefined) {
             const name = body.name.trim();
@@ -470,6 +493,9 @@ export class AdminController {
             patch.role = body.role;
         }
         if (body.tenantId !== undefined) {
+            if (!existingUser.deletedAt && body.tenantId !== existingUser.tenantId) {
+                await assertTenantCanAddActiveUser(this.prisma, body.tenantId);
+            }
             patch.tenantId = body.tenantId;
         }
         if (body.pinResetRequired !== undefined) {
@@ -557,6 +583,21 @@ export class AdminController {
     @Post('users/:id/activate')
     async activateUser(@Req() req: any, @Param('id') id: string) {
         this.assertSuperAdmin(req);
+        const existingUser = await this.prisma.user.findUnique({
+            where: { id },
+            select: {
+                tenantId: true,
+                deletedAt: true,
+            },
+        });
+        if (!existingUser) {
+            throw new BadRequestException('User not found');
+        }
+
+        if (existingUser.deletedAt) {
+            await assertTenantCanAddActiveUser(this.prisma, existingUser.tenantId);
+        }
+
         const user = await this.prisma.user.update({
             where: { id },
             data: { deletedAt: null, lockedUntil: null, pinLockedUntil: null, loginAttempts: 0, pinLoginAttempts: 0 },

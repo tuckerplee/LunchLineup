@@ -14,9 +14,13 @@ describe('UsersController', () => {
         vi.clearAllMocks();
         controller = new UsersController(mockAuthService as any);
         prisma = {
+            tenant: {
+                findUnique: vi.fn().mockResolvedValue({ planTier: 'FREE' }),
+            },
             user: {
                 create: vi.fn(),
                 findFirst: vi.fn(),
+                count: vi.fn().mockResolvedValue(0),
             },
             auditLog: {
                 create: vi.fn(),
@@ -72,6 +76,20 @@ describe('UsersController', () => {
         expect(mockAuthService.setUserPin).not.toHaveBeenCalled();
         expect(result.email).toBe('manager@company.com');
         expect(result.temporaryPin).toBe(null);
+    });
+
+    it('rejects invites when the tenant is already at the active user limit', async () => {
+        prisma.user.count.mockResolvedValueOnce(10);
+
+        await expect(
+            controller.invite(
+                { name: 'Overflow User', email: 'overflow@example.com', role: 'STAFF' },
+                { user: { tenantId: 'tenant-1', sub: 'admin-1' } },
+            ),
+        ).rejects.toThrow(/User limit reached/i);
+
+        expect(prisma.user.create).not.toHaveBeenCalled();
+        expect(mockAuthService.setUserPin).not.toHaveBeenCalled();
     });
 
     it('resets PIN for username account and returns temporary PIN', async () => {

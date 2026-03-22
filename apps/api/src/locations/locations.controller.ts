@@ -2,6 +2,7 @@ import { Controller, Get, Post, Put, Delete, Param, Body, Req, UseGuards, SetMet
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { RbacGuard } from '../auth/rbac.guard';
 import { Prisma, PrismaClient } from '@prisma/client';
+import { resolveTenantPlanDefinition } from '../billing/plan-definitions';
 
 const Permission = (perm: string) => SetMetadata('permission', perm);
 
@@ -54,6 +55,8 @@ export class LocationsController {
         }
 
         const location = await this.prisma.$transaction(async (tx: Prisma.TransactionClient) => {
+            await this.assertLocationLimit(tx, tenantId);
+
             if (tenantName) {
                 await tx.tenant.update({
                     where: { id: tenantId },
@@ -93,5 +96,27 @@ export class LocationsController {
             where: { id, tenantId: req.user.tenantId },
             data: { deletedAt: new Date() }
         });
+    }
+
+    private async assertLocationLimit(tx: Prisma.TransactionClient, tenantId: string) {
+        const tenant = await tx.tenant.findUniqueOrThrow({
+            where: { id: tenantId },
+            select: { planTier: true },
+        });
+
+        const plan = await resolveTenantPlanDefinition(tx as any, tenant.planTier);
+        const limit = plan?.locationLimit;
+        if (limit === null || limit === undefined) {
+            return;
+        }
+
+        const locationCount = await tx.location.count({
+            where: { tenantId, deletedAt: null },
+        });
+
+        if (locationCount >= limit) {
+            const planLabel = plan?.name ?? tenant.planTier;
+            throw new ForbiddenException(`Location limit reached for ${planLabel} plan.`);
+        }
     }
 }

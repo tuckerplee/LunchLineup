@@ -12,6 +12,9 @@ function buildPrismaMock(overrides: Record<string, any> = {}) {
             findUniqueOrThrow: vi.fn(),
             update: vi.fn(),
         },
+        planDefinition: {
+            findUnique: vi.fn(),
+        },
         creditTransaction: {
             create: vi.fn(),
         },
@@ -125,5 +128,28 @@ describe('MeteringService – checkLimits', () => {
         });
         const service = new MeteringService(prisma as any);
         await expect(service.checkLimits('tenant-1', PlanTier.BASIC)).resolves.toBe(true);
+    });
+
+    it('falls back to the free plan when the tenant plan code is unknown', async () => {
+        const planDefinitionFindUnique = vi.fn()
+            .mockResolvedValueOnce(null)
+            .mockResolvedValueOnce(null);
+
+        const prisma = buildPrismaMock({
+            planDefinition: {
+                findUnique: planDefinitionFindUnique,
+            },
+            location: { count: vi.fn().mockResolvedValue(1) },
+            user: { count: vi.fn().mockResolvedValue(0) },
+        });
+        const service = new MeteringService(prisma as any);
+
+        await expect(service.checkLimits('tenant-1', 'mystery-tier')).rejects.toThrow(/FREE plan/i);
+        expect(planDefinitionFindUnique).toHaveBeenNthCalledWith(1, {
+            where: { code: 'MYSTERY-TIER' },
+        });
+        expect(planDefinitionFindUnique).toHaveBeenNthCalledWith(2, {
+            where: { code: 'FREE' },
+        });
     });
 });
