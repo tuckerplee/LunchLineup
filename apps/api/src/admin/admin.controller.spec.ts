@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { AdminController } from './admin.controller';
+import { BadRequestException } from '@nestjs/common';
 
 describe('AdminController credits', () => {
     let controller: AdminController;
@@ -180,5 +181,65 @@ describe('AdminController user limits', () => {
         ).rejects.toThrow(/User limit reached/i);
 
         expect(prisma.user.update).not.toHaveBeenCalled();
+    });
+});
+
+describe('AdminController tenant updates', () => {
+    let controller: AdminController;
+    let prisma: any;
+
+    beforeEach(() => {
+        prisma = {
+            tenant: {
+                findUnique: vi.fn(),
+                update: vi.fn(),
+            },
+            auditLog: {
+                create: vi.fn(),
+            },
+        };
+
+        controller = new AdminController(
+            { get: vi.fn().mockReturnValue(null) } as any,
+            { solverQueueDepth: { get: vi.fn().mockResolvedValue({ values: [] }) } } as any,
+            { grantCredits: vi.fn() } as any,
+        );
+        (controller as any).prisma = prisma;
+    });
+
+    it('updates an existing tenant plan tier', async () => {
+        prisma.tenant.findUnique.mockResolvedValue({ id: 'tenant-1', deletedAt: null });
+
+        const result = await controller.updateTenant(
+            { user: { role: 'SUPER_ADMIN', sub: 'admin-1' } },
+            'tenant-1',
+            { planTier: 'STARTER' },
+        );
+
+        expect(prisma.tenant.findUnique).toHaveBeenCalledWith({
+            where: { id: 'tenant-1' },
+            select: {
+                id: true,
+                deletedAt: true,
+            },
+        });
+        expect(prisma.tenant.update).toHaveBeenCalledWith({
+            where: { id: 'tenant-1' },
+            data: { planTier: 'STARTER' },
+        });
+        expect(result).toEqual({ id: 'tenant-1', updated: true });
+    });
+
+    it('returns Tenant not found when tenant id does not exist', async () => {
+        prisma.tenant.findUnique.mockResolvedValue(null);
+
+        await expect(
+            controller.updateTenant(
+                { user: { role: 'SUPER_ADMIN', sub: 'admin-1' } },
+                'missing-tenant',
+                { planTier: 'STARTER' },
+            ),
+        ).rejects.toThrow(new BadRequestException('Tenant not found'));
+        expect(prisma.tenant.update).not.toHaveBeenCalled();
     });
 });

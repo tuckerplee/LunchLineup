@@ -189,15 +189,15 @@ export class AdminController {
         },
     ) {
         this.assertSuperAdmin(req);
-        const existingUser = await this.prisma.user.findUnique({
+        const existingTenant = await this.prisma.tenant.findUnique({
             where: { id },
             select: {
-                tenantId: true,
+                id: true,
                 deletedAt: true,
             },
         });
-        if (!existingUser) {
-            throw new BadRequestException('User not found');
+        if (!existingTenant) {
+            throw new BadRequestException('Tenant not found');
         }
 
         const patch: any = {};
