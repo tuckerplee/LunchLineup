@@ -23,6 +23,11 @@ const mockJwtService = {
     verifyRefreshToken: vi.fn(),
 };
 
+const mockRbacService = {
+    getEffectiveAccess: vi.fn(),
+    assignLegacySystemRole: vi.fn(),
+};
+
 const mockPrisma = {
     user: {
         findFirst: vi.fn(),
@@ -48,7 +53,13 @@ describe('AuthService – handleOidcCallback', () => {
 
     beforeEach(() => {
         vi.clearAllMocks();
-        service = new AuthService(mockConfigService as any, mockJwtService as any);
+        mockRbacService.getEffectiveAccess.mockResolvedValue({
+            primaryRole: 'ADMIN',
+            roles: [],
+            permissions: ['auth:login_email', 'auth:login_pin', 'dashboard:access', 'admin_portal:access'],
+        });
+        mockRbacService.assignLegacySystemRole.mockResolvedValue(undefined);
+        service = new AuthService(mockConfigService as any, mockJwtService as any, mockRbacService as any);
         // Inject the mock prisma
         (service as any).prisma = mockPrisma;
     });
@@ -111,7 +122,13 @@ describe('AuthService – mixed auth flow', () => {
 
     beforeEach(() => {
         vi.clearAllMocks();
-        service = new AuthService(mockConfigService as any, mockJwtService as any);
+        mockRbacService.getEffectiveAccess.mockResolvedValue({
+            primaryRole: 'STAFF',
+            roles: [],
+            permissions: ['auth:login_pin', 'dashboard:access'],
+        });
+        mockRbacService.assignLegacySystemRole.mockResolvedValue(undefined);
+        service = new AuthService(mockConfigService as any, mockJwtService as any, mockRbacService as any);
         (service as any).prisma = mockPrisma;
     });
 
@@ -123,10 +140,17 @@ describe('AuthService – mixed auth flow', () => {
         });
     });
 
-    it('blocks admin username accounts from PIN flow', async () => {
+    it('blocks username login when the account lacks PIN permission', async () => {
         mockPrisma.user.findFirst.mockResolvedValue({
+            id: 'user-admin',
+            tenantId: 'tenant-1',
             role: 'ADMIN',
             pinResetRequired: false,
+        });
+        mockRbacService.getEffectiveAccess.mockResolvedValue({
+            primaryRole: 'ADMIN',
+            roles: [],
+            permissions: ['auth:login_email'],
         });
 
         await expect(service.resolveLoginMethod('boss.admin')).rejects.toBeInstanceOf(ForbiddenException);
@@ -134,8 +158,15 @@ describe('AuthService – mixed auth flow', () => {
 
     it('resolves username identifiers to USERNAME_PIN', async () => {
         mockPrisma.user.findFirst.mockResolvedValue({
+            id: 'user-manager',
+            tenantId: 'tenant-1',
             role: 'MANAGER',
             pinResetRequired: true,
+        });
+        mockRbacService.getEffectiveAccess.mockResolvedValue({
+            primaryRole: 'MANAGER',
+            roles: [],
+            permissions: ['auth:login_pin'],
         });
 
         const result = await service.resolveLoginMethod('ShiftLead');

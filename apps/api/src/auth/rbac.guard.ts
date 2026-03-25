@@ -1,6 +1,6 @@
 import { Injectable, CanActivate, ExecutionContext, ForbiddenException } from '@nestjs/common';
 import { Reflector } from '@nestjs/core';
-import { newEnforcer, Enforcer, MODEL_PATH, POLICY_PATH } from '@lunchlineup/rbac';
+import { RbacService } from './rbac.service';
 
 /**
  * RBAC Guard using Casbin.
@@ -9,16 +9,10 @@ import { newEnforcer, Enforcer, MODEL_PATH, POLICY_PATH } from '@lunchlineup/rba
  */
 @Injectable()
 export class RbacGuard implements CanActivate {
-    private enforcer: Enforcer | null = null;
-
-    constructor(private reflector: Reflector) { }
-
-    private async getEnforcer(): Promise<Enforcer> {
-        if (!this.enforcer) {
-            this.enforcer = await newEnforcer(MODEL_PATH, POLICY_PATH);
-        }
-        return this.enforcer;
-    }
+    constructor(
+        private reflector: Reflector,
+        private rbacService: RbacService,
+    ) { }
 
     async canActivate(context: ExecutionContext): Promise<boolean> {
         const requiredPermission = this.reflector.get<string>('permission', context.getHandler());
@@ -31,14 +25,14 @@ export class RbacGuard implements CanActivate {
             throw new ForbiddenException('No user context — authentication required');
         }
 
-        const enforcer = await this.getEnforcer();
-        const [resource, action] = requiredPermission.split(':');
+        const permissions = Array.isArray(user.permissions)
+            ? user.permissions
+            : (await this.rbacService.getEffectiveAccess(user.sub, user.tenantId)).permissions;
 
-        const allowed = await enforcer.enforce(user.role, resource, action);
+        const allowed = permissions.includes(requiredPermission);
         if (!allowed) {
-            // Log RBAC denial for security dashboarding
-            console.warn(`RBAC DENY: user=${user.sub} role=${user.role} resource=${resource} action=${action}`);
-            throw new ForbiddenException(`Insufficient permissions for ${resource}:${action}`);
+            console.warn(`RBAC DENY: user=${user.sub} role=${user.role} permission=${requiredPermission}`);
+            throw new ForbiddenException(`Insufficient permissions for ${requiredPermission}`);
         }
 
         return true;

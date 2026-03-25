@@ -1,8 +1,8 @@
-import { requireRole } from '@/lib/server-auth';
+import { requirePermission } from '@/lib/server-auth';
 import { AdminPlansWorkspace } from './PlansClient';
 
 export default function AdminPlansPage() {
-    requireRole(['SUPER_ADMIN']);
+    requirePermission('admin_portal:access');
 
     return <AdminPlansWorkspace />;
 }

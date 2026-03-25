@@ -1,9 +1,10 @@
 import { Injectable, UnauthorizedException, ForbiddenException, BadRequestException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { JwtService, TokenPayload } from './jwt.service';
-import { PrismaClient } from '@prisma/client';
+import { PrismaClient, UserRole } from '@prisma/client';
 import * as crypto from 'crypto';
 import { assertTenantCanAddActiveUser } from '../billing/user-capacity';
+import { RbacService } from './rbac.service';
 
 type UserRoleValue = 'SUPER_ADMIN' | 'ADMIN' | 'MANAGER' | 'STAFF';
 const USER_ROLE: Record<UserRoleValue, UserRoleValue> = {
@@ -24,6 +25,7 @@ export class AuthService {
     constructor(
         private configService: ConfigService,
         private jwtService: JwtService,
+        private rbacService: RbacService,
     ) { }
 
     private isEmailIdentifier(identifier: string): boolean {
@@ -52,6 +54,7 @@ export class AuthService {
     }
 
     private async createSessionTokens(user: { id: string; tenantId: string; role: string; email: string | null; username: string | null }, source: string) {
+        const access = await this.rbacService.getEffectiveAccess(user.id, user.tenantId);
         const session = await this.prisma.session.create({
             data: {
                 userId: user.id,
@@ -65,7 +68,8 @@ export class AuthService {
         const payload: TokenPayload = {
             sub: user.id,
             tenantId: user.tenantId,
-            role: user.role,
+            role: access.primaryRole,
+            legacyRole: user.role,
             sessionId: session.id,
             mfaVerified: true,
         };
@@ -87,7 +91,9 @@ export class AuthService {
                 id: user.id,
                 email: user.email,
                 username: user.username,
-                role: user.role,
+                role: access.primaryRole,
+                roles: access.roles,
+                permissions: access.permissions,
             },
         };
     }
@@ -108,14 +114,18 @@ export class AuthService {
                 deletedAt: null,
             },
             select: {
+                id: true,
+                tenantId: true,
                 role: true,
                 pinResetRequired: true,
             },
         });
 
-        // Keep admin users on email auth only.
-        if (user && (user.role === USER_ROLE.ADMIN || user.role === USER_ROLE.SUPER_ADMIN)) {
-            throw new ForbiddenException('Admin users must sign in with work email.');
+        if (user) {
+            const access = await this.rbacService.getEffectiveAccess(user.id, user.tenantId);
+            if (!access.permissions.includes('auth:login_pin')) {
+                throw new ForbiddenException('This account does not allow username and PIN login.');
+            }
         }
 
         return {
@@ -168,6 +178,7 @@ export class AuthService {
                     role: USER_ROLE.SUPER_ADMIN,
                 }
             });
+            await this.rbacService.assignLegacySystemRole(user.id, user.tenantId, user.role as UserRole);
         }
 
         await this.checkAccountLockout(user.email ?? undefined);
@@ -216,16 +227,12 @@ export class AuthService {
                     role: isFirstUser ? USER_ROLE.SUPER_ADMIN : USER_ROLE.ADMIN,
                 },
             });
-        } else if (user.role !== USER_ROLE.ADMIN && user.role !== USER_ROLE.SUPER_ADMIN) {
-            const tenantLocationCount = await this.prisma.location.count({
-                where: { tenantId: user.tenantId, deletedAt: null },
-            });
-
-            if (tenantLocationCount === 0) {
-                user = await this.prisma.user.update({
-                    where: { id: user.id },
-                    data: { role: USER_ROLE.ADMIN },
-                });
+            await this.rbacService.assignLegacySystemRole(user.id, user.tenantId, user.role as UserRole);
+        }
+        if (user) {
+            const access = await this.rbacService.getEffectiveAccess(user.id, user.tenantId);
+            if (!access.permissions.includes('auth:login_email')) {
+                throw new ForbiddenException('This account does not allow email login.');
             }
         }
 
@@ -249,7 +256,12 @@ export class AuthService {
             where: { username, deletedAt: null },
         });
 
-        if (!user || user.role === USER_ROLE.ADMIN || user.role === USER_ROLE.SUPER_ADMIN || !user.pinHash) {
+        if (!user || !user.pinHash) {
+            throw new UnauthorizedException('Invalid username or PIN');
+        }
+
+        const access = await this.rbacService.getEffectiveAccess(user.id, user.tenantId);
+        if (!access.permissions.includes('auth:login_pin')) {
             throw new UnauthorizedException('Invalid username or PIN');
         }
 
@@ -352,7 +364,10 @@ export class AuthService {
         const payload: TokenPayload = {
             sub: session.user.id,
             tenantId: session.user.tenantId,
-            role: session.user.role,
+            role: (
+                await this.rbacService.getEffectiveAccess(session.user.id, session.user.tenantId)
+            ).primaryRole,
+            legacyRole: session.user.role,
             sessionId: session.id,
             mfaVerified: !session.user.mfaEnabled,
         };
@@ -388,11 +403,16 @@ export class AuthService {
             throw new UnauthorizedException('User not found');
         }
 
+        const access = await this.rbacService.getEffectiveAccess(user.id, user.tenantId);
+
         return {
             sub: user.id,
             tenantId: user.tenantId,
             sessionId: sessionClaims.sessionId,
-            role: user.role ?? sessionClaims.role,
+            role: access.primaryRole,
+            legacyRole: user.role ?? null,
+            roles: access.roles,
+            permissions: access.permissions,
             email: user.email,
             username: user.username,
             name: user.name,

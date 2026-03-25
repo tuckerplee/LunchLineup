@@ -32,6 +32,7 @@ model Tenant {
   shifts            Shift[]
   schedules         Schedule[]
   tenantSettings    TenantSetting[]
+  roles             Role[]
   billingEvents     BillingEvent[]
   notifications     Notification[]
   webhookEndpoints  WebhookEndpoint[]
@@ -123,6 +124,7 @@ model User {
   shifts          Shift[]
   auditLogs       AuditLog[]
   notifications   Notification[]
+  roleAssignments RoleAssignment[]
 
   @@unique([tenantId, email])
   @@unique([tenantId, username])
@@ -132,11 +134,86 @@ model User {
   @@index([deletedAt])
 }
 
+model Permission {
+  id          String           @id @default(uuid())
+  key         String           @unique
+  label       String
+  description String?
+  category    PermissionCategory
+  createdAt   DateTime         @default(now())
+  updatedAt   DateTime         @updatedAt
+
+  rolePermissions RolePermission[]
+
+  @@index([category])
+}
+
+model Role {
+  id          String    @id @default(uuid())
+  tenantId     String
+  name         String
+  slug         String
+  description  String?
+  isSystem     Boolean   @default(false)
+  isDefault    Boolean   @default(false)
+  legacyRole   UserRole?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+  deletedAt    DateTime?
+
+  tenant           Tenant            @relation(fields: [tenantId], references: [id])
+  rolePermissions  RolePermission[]
+  assignments      RoleAssignment[]
+
+  @@unique([tenantId, slug])
+  @@unique([tenantId, name])
+  @@index([tenantId])
+  @@index([legacyRole])
+  @@index([deletedAt])
+}
+
+model RolePermission {
+  roleId       String
+  permissionId String
+  createdAt    DateTime @default(now())
+
+  role         Role       @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  permission   Permission @relation(fields: [permissionId], references: [id], onDelete: Cascade)
+
+  @@id([roleId, permissionId])
+  @@index([permissionId])
+}
+
+model RoleAssignment {
+  userId      String
+  roleId      String
+  createdAt   DateTime @default(now())
+
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  role        Role     @relation(fields: [roleId], references: [id], onDelete: Cascade)
+
+  @@id([userId, roleId])
+  @@index([roleId])
+}
+
 enum UserRole {
   SUPER_ADMIN
   ADMIN
   MANAGER
   STAFF
+}
+
+enum PermissionCategory {
+  AUTH
+  ADMIN
+  USERS
+  LOCATIONS
+  SHIFTS
+  SCHEDULES
+  LUNCH_BREAKS
+  NOTIFICATIONS
+  BILLING
+  SETTINGS
 }
 
 model Session {

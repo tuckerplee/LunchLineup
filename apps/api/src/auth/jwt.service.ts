@@ -7,6 +7,7 @@ export interface TokenPayload {
     sub: string;       // userId
     tenantId: string;
     role: string;
+    legacyRole?: string;
     sessionId: string;
     mfaVerified: boolean;
 }

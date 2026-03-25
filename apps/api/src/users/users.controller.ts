@@ -1,9 +1,10 @@
-import { Controller, Get, Post, Put, Delete, Param, Body, Req, UseGuards, SetMetadata, Query, HttpCode, HttpStatus, NotFoundException, BadRequestException } from '@nestjs/common';
+import { Controller, Get, Post, Put, Delete, Param, Body, Req, UseGuards, SetMetadata, Query, HttpCode, HttpStatus, NotFoundException, BadRequestException, ConflictException } from '@nestjs/common';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { RbacGuard } from '../auth/rbac.guard';
 import { PrismaClient } from '@prisma/client';
 import { AuthService } from '../auth/auth.service';
 import { assertTenantCanAddActiveUser } from '../billing/user-capacity';
+import { RbacService } from '../auth/rbac.service';
 
 const Permission = (perm: string) => SetMetadata('permission', perm);
 type UserRoleValue = 'SUPER_ADMIN' | 'ADMIN' | 'MANAGER' | 'STAFF';
@@ -23,7 +24,10 @@ export class UsersController {
     private static readonly SYSTEM_EMAIL_DOMAIN = 'staff.lunchlineup.local';
     private static readonly WORKSPACE_SETTINGS_KEY = 'workspace_settings';
 
-    constructor(private readonly authService: AuthService) { }
+    constructor(
+        private readonly authService: AuthService,
+        private readonly rbacService: RbacService,
+    ) { }
 
     private isSystemGeneratedEmail(email: string): boolean {
         return email.endsWith(`@${UsersController.SYSTEM_EMAIL_DOMAIN}`);
@@ -98,12 +102,18 @@ export class UsersController {
     @Get()
     @Permission('users:read')
     async findAll(@Req() req: any, @Query('locationId') locationId?: string) {
+        await this.rbacService.ensureTenantRoles(req.user.tenantId);
         const users = await this.prisma.user.findMany({
-            where: { tenantId: req.user.tenantId, deletedAt: null }
+            where: { tenantId: req.user.tenantId, deletedAt: null },
+            orderBy: { createdAt: 'asc' },
         });
-        // Remove secrets before returning
+
+        const roleAssignments = await Promise.all(
+            users.map((user) => this.rbacService.getUserRoleAssignments(user.id, req.user.tenantId)),
+        );
+
         return {
-            data: users.map((u: any) => ({
+            data: users.map((u: any, index: number) => ({
                 id: u.id,
                 name: u.name,
                 email: this.sanitizeEmailForResponse(u.email),
@@ -111,6 +121,7 @@ export class UsersController {
                 role: u.role,
                 pinEnabled: Boolean(u.pinHash),
                 pinResetRequired: Boolean(u.pinResetRequired),
+                assignedRoles: roleAssignments[index] ?? [],
             })),
             tenantId: req.user.tenantId,
         };
@@ -123,6 +134,7 @@ export class UsersController {
             where: { id, tenantId: req.user.tenantId, deletedAt: null }
         });
         if (!user) throw new NotFoundException('User not found');
+        const assignedRoles = await this.rbacService.getUserRoleAssignments(user.id, req.user.tenantId);
         return {
             id: user.id,
             name: user.name,
@@ -131,18 +143,17 @@ export class UsersController {
             role: user.role,
             pinEnabled: Boolean(user.pinHash),
             pinResetRequired: Boolean(user.pinResetRequired),
+            assignedRoles,
         };
     }
 
     @Post('invite')
     @Permission('users:write')
-    async invite(@Body() body: { email?: string; username?: string; pin?: string; name: string; role?: UserRoleValue }, @Req() req: any) {
-        const role = await this.resolveInviteRole(req.user.tenantId, body.role);
+    async invite(@Body() body: { email?: string; username?: string; pin?: string; name: string; role?: UserRoleValue; roleId?: string }, @Req() req: any) {
         const normalizedName = (body.name || '').trim();
         const normalizedEmail = (body.email || '').trim().toLowerCase();
         const normalizedUsername = this.normalizeUsername(body.username);
         const normalizedPin = (body.pin || '').trim();
-        const requiresEmail = role === USER_ROLE.ADMIN || role === USER_ROLE.SUPER_ADMIN;
         const hasEmail = Boolean(normalizedEmail);
         const hasUsername = Boolean(normalizedUsername);
 
@@ -152,10 +163,6 @@ export class UsersController {
 
         if (!hasEmail && !hasUsername) {
             throw new BadRequestException('Provide either email or username');
-        }
-
-        if (requiresEmail && !hasEmail) {
-            throw new BadRequestException('Email is required for admin accounts');
         }
 
         if (normalizedEmail && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalizedEmail)) {
@@ -176,18 +183,42 @@ export class UsersController {
 
         await assertTenantCanAddActiveUser(this.prisma, req.user.tenantId);
 
+        const requestedLegacyRole = await this.resolveInviteRole(req.user.tenantId, body.role);
+        const requestedRoleId = (body.roleId || '').trim();
+        const availableRoles = await this.rbacService.listRolesForTenant(req.user.tenantId);
+        const selectedRole = requestedRoleId
+            ? availableRoles.find((role) => role.id === requestedRoleId)
+            : availableRoles.find((role) => role.legacyRole === requestedLegacyRole);
+
+        if (!selectedRole) {
+            throw new BadRequestException('Selected role is invalid for this tenant');
+        }
+
+        const selectedPermissions = selectedRole.rolePermissions.map((item) => item.permission.key);
+        const requiresEmail = selectedPermissions.includes('auth:login_email');
+        const allowsPin = selectedPermissions.includes('auth:login_pin');
+
+        if (requiresEmail && !hasEmail) {
+            throw new BadRequestException('Email is required for the selected role');
+        }
+        if (!allowsPin && hasUsername) {
+            throw new BadRequestException('Username and PIN login is not enabled for the selected role');
+        }
+
         const user = await this.prisma.user.create({
             data: {
                 tenantId: req.user.tenantId,
                 email: normalizedEmail || null,
                 username: normalizedUsername,
                 name: normalizedName,
-                role,
+                role: requestedLegacyRole,
             },
         });
 
+        await this.rbacService.assignRolesToUser(user.id, req.user.tenantId, [selectedRole.id]);
+
         let temporaryPin: string | null = null;
-        if (normalizedUsername) {
+        if (normalizedUsername && allowsPin) {
             temporaryPin = normalizedPin || this.createTemporaryPin();
             await this.authService.setUserPin(user.id, temporaryPin, !normalizedPin);
         }
@@ -213,6 +244,7 @@ export class UsersController {
             pinEnabled: Boolean(user.pinHash) || Boolean(normalizedUsername),
             pinResetRequired: Boolean(normalizedUsername) && !normalizedPin,
             temporaryPin,
+            assignedRoles: await this.rbacService.getUserRoleAssignments(user.id, req.user.tenantId),
             status: 'INVITED',
         };
     }
@@ -220,11 +252,23 @@ export class UsersController {
     @Put(':id/role')
     @Permission('users:admin')
     async updateRole(@Param('id') id: string, @Body() body: { role: UserRoleValue }, @Req() req: any) {
-        await this.prisma.user.updateMany({
+        const updated = await this.prisma.user.updateMany({
             where: { id, tenantId: req.user.tenantId },
             data: { role: body.role }
         });
-        return { id, role: body.role };
+        if (updated.count === 0) throw new NotFoundException('User not found');
+        await this.rbacService.assignRolesToUser(
+            id,
+            req.user.tenantId,
+            (
+                await this.rbacService.listRolesForTenant(req.user.tenantId)
+            ).filter((role) => role.legacyRole === body.role).map((role) => role.id).slice(0, 1),
+        );
+        return {
+            id,
+            role: body.role,
+            assignedRoles: await this.rbacService.getUserRoleAssignments(id, req.user.tenantId),
+        };
     }
 
     @Post(':id/pin/reset')
@@ -286,5 +330,109 @@ export class UsersController {
             where: { userId: id },
             data: { revokedAt: new Date() }
         });
+    }
+
+    @Get('access/catalog')
+    @Permission('roles:read')
+    async accessCatalog(@Req() req: any) {
+        const [permissions, roles] = await Promise.all([
+            this.rbacService.listPermissions(),
+            this.rbacService.listRolesForTenant(req.user.tenantId),
+        ]);
+
+        return {
+            permissions: permissions.map((permission) => ({
+                key: permission.key,
+                label: permission.label,
+                description: permission.description,
+                category: permission.category,
+            })),
+            roles: roles.map((role) => ({
+                id: role.id,
+                name: role.name,
+                slug: role.slug,
+                description: role.description,
+                isSystem: role.isSystem,
+                isDefault: role.isDefault,
+                legacyRole: role.legacyRole,
+                userCount: role._count.assignments,
+                permissions: role.rolePermissions.map((item) => item.permission.key).sort(),
+            })),
+        };
+    }
+
+    @Get(':id/access')
+    @Permission('roles:read')
+    async userAccess(@Param('id') id: string, @Req() req: any) {
+        const user = await this.prisma.user.findFirst({
+            where: { id, tenantId: req.user.tenantId, deletedAt: null },
+            select: { id: true, role: true, tenantId: true },
+        });
+        if (!user) throw new NotFoundException('User not found');
+
+        const access = await this.rbacService.getEffectiveAccess(user.id, user.tenantId);
+        return access;
+    }
+
+    @Put(':id/access')
+    @Permission('roles:assign')
+    async updateUserAccess(@Param('id') id: string, @Body() body: { roleIds: string[] }, @Req() req: any) {
+        const user = await this.prisma.user.findFirst({
+            where: { id, tenantId: req.user.tenantId, deletedAt: null },
+            select: { id: true },
+        });
+        if (!user) throw new NotFoundException('User not found');
+
+        const assignedRoles = await this.rbacService.assignRolesToUser(id, req.user.tenantId, Array.isArray(body.roleIds) ? body.roleIds : []);
+        return { id, assignedRoles };
+    }
+
+    @Post('roles')
+    @Permission('roles:write')
+    async createAccessRole(
+        @Body() body: { name: string; description?: string; permissionKeys: string[] },
+        @Req() req: any,
+    ) {
+        try {
+            const role = await this.rbacService.createRole(req.user.tenantId, body);
+            return {
+                id: role.id,
+                name: role.name,
+                description: role.description,
+                isSystem: role.isSystem,
+                permissions: role.rolePermissions.map((item) => item.permission.key).sort(),
+            };
+        } catch (error) {
+            throw new ConflictException(error instanceof Error ? error.message : 'Unable to create role');
+        }
+    }
+
+    @Put('roles/:roleId')
+    @Permission('roles:write')
+    async updateAccessRole(
+        @Param('roleId') roleId: string,
+        @Body() body: { name: string; description?: string; permissionKeys: string[] },
+        @Req() req: any,
+    ) {
+        const role = await this.rbacService.updateRole(req.user.tenantId, roleId, body);
+        if (!role) throw new NotFoundException('Role not found');
+        return {
+            id: role.id,
+            name: role.name,
+            description: role.description,
+            isSystem: role.isSystem,
+            userCount: role._count.assignments,
+            permissions: role.rolePermissions.map((item) => item.permission.key).sort(),
+        };
+    }
+
+    @Delete('roles/:roleId')
+    @Permission('roles:write')
+    @HttpCode(HttpStatus.NO_CONTENT)
+    async deleteAccessRole(@Param('roleId') roleId: string, @Req() req: any) {
+        const deleted = await this.rbacService.deleteRole(req.user.tenantId, roleId);
+        if (!deleted) {
+            throw new NotFoundException('Role not found or cannot be deleted');
+        }
     }
 }

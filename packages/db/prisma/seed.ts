@@ -2,8 +2,51 @@ import { PrismaClient } from '@lunchlineup/db';
 
 const prisma = new PrismaClient();
 
+const PERMISSIONS = [
+    ['dashboard:access', 'Access dashboard', 'AUTH'],
+    ['admin_portal:access', 'Access admin portal', 'ADMIN'],
+    ['auth:login_email', 'Email login', 'AUTH'],
+    ['auth:login_pin', 'PIN login', 'AUTH'],
+    ['users:read', 'View staff', 'USERS'],
+    ['users:write', 'Create staff', 'USERS'],
+    ['users:admin', 'Administer staff', 'USERS'],
+    ['roles:read', 'View access roles', 'USERS'],
+    ['roles:write', 'Manage access roles', 'USERS'],
+    ['roles:assign', 'Assign access roles', 'USERS'],
+    ['locations:read', 'View locations', 'LOCATIONS'],
+    ['locations:write', 'Manage locations', 'LOCATIONS'],
+    ['locations:delete', 'Delete locations', 'LOCATIONS'],
+    ['shifts:read', 'View shifts', 'SHIFTS'],
+    ['shifts:write', 'Manage shifts', 'SHIFTS'],
+    ['shifts:delete', 'Delete shifts', 'SHIFTS'],
+    ['schedules:read', 'View schedules', 'SCHEDULES'],
+    ['schedules:write', 'Manage schedules', 'SCHEDULES'],
+    ['schedules:publish', 'Publish schedules', 'SCHEDULES'],
+    ['lunch_breaks:read', 'View breaks', 'LUNCH_BREAKS'],
+    ['lunch_breaks:write', 'Manage breaks', 'LUNCH_BREAKS'],
+    ['lunch_breaks:delete', 'Delete breaks', 'LUNCH_BREAKS'],
+    ['notifications:read', 'View notifications', 'NOTIFICATIONS'],
+    ['notifications:write', 'Manage notifications', 'NOTIFICATIONS'],
+    ['billing:read', 'View billing', 'BILLING'],
+    ['billing:write', 'Manage billing', 'BILLING'],
+    ['settings:read', 'View settings', 'SETTINGS'],
+    ['settings:write', 'Manage settings', 'SETTINGS'],
+] as const;
+
 async function main() {
     console.log('Seeding initial permissions and roles...');
+
+    for (const [key, label, category] of PERMISSIONS) {
+        await prisma.permission.upsert({
+            where: { key },
+            update: { label, category: category as any },
+            create: {
+                key,
+                label,
+                category: category as any,
+            },
+        });
+    }
 
     const planDefinitions = [
         {
@@ -88,6 +131,7 @@ async function main() {
                 email: 'admin@lunchlineup.com',
                 name: 'System Admin',
                 tenantId: systemTenant.id,
+                role: 'SUPER_ADMIN',
             },
         });
     }

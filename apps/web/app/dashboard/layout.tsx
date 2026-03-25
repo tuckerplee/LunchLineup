@@ -23,6 +23,7 @@ type NotificationType = 'INFO' | 'SUCCESS' | 'WARNING' | 'ERROR' | 'SCHEDULE_PUB
 type DashboardUser = {
   sub: string;
   role: DashboardRole;
+  permissions?: string[];
   tenantId: string;
   sessionId: string;
   email?: string | null;
@@ -174,11 +175,14 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
   }
 
   const visibleNavItems = useMemo(() => {
-    if (role === 'STAFF' || role === null) {
-      return NAV_ITEMS.filter((item) => !['/dashboard/staff', '/dashboard/locations', '/dashboard/settings'].includes(item.href));
-    }
-    return NAV_ITEMS;
-  }, [role]);
+    const permissions = user?.permissions ?? [];
+    return NAV_ITEMS.filter((item) => {
+      if (item.href === '/dashboard/staff') return permissions.includes('users:read');
+      if (item.href === '/dashboard/locations') return permissions.includes('locations:read');
+      if (item.href === '/dashboard/settings') return permissions.includes('settings:read');
+      return true;
+    });
+  }, [user]);
 
   const currentPage = useMemo(() => {
     const match = visibleNavItems.find((item) => (item.exact ? pathname === item.href : pathname.startsWith(item.href)));

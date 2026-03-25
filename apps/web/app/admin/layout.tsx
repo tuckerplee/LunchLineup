@@ -13,7 +13,7 @@ const ADMIN_NAV = [
 
 export default function AdminLayout({ children }: { children: React.ReactNode }) {
     const user = getServerUser();
-    if (!user || user.role !== 'SUPER_ADMIN') redirect('/dashboard');
+    if (!user || !user.permissions.includes('admin_portal:access')) redirect('/dashboard');
 
     return (
         <div className="workspace-shell" style={{ background: '#f7f9ff' }}>

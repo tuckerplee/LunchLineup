@@ -37,7 +37,6 @@ export class LocationsController {
         @Req() req: any,
     ) {
         const tenantId = req.user.tenantId;
-        const userRole = req.user.role;
         const locationName = body.name?.trim();
         const tenantName = body.tenantName?.trim();
 
@@ -49,7 +48,7 @@ export class LocationsController {
             where: { tenantId, deletedAt: null },
         });
         const isBootstrapCreate = existingLocationCount === 0;
-        const canWrite = ['SUPER_ADMIN', 'ADMIN'].includes(userRole) || isBootstrapCreate;
+        const canWrite = Array.isArray(req.user?.permissions) && req.user.permissions.includes('locations:write');
         if (!canWrite) {
             throw new ForbiddenException('Insufficient permissions for locations:write');
         }

@@ -1,8 +1,8 @@
-import { requireRole } from '@/lib/server-auth';
+import { requirePermission } from '@/lib/server-auth';
 import { CreditsClient } from './CreditsClient';
 
 export default function AdminCreditsPage() {
-    requireRole(['SUPER_ADMIN']);
+    requirePermission('admin_portal:access');
 
     return <CreditsClient />;
 }

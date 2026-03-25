@@ -425,6 +425,11 @@ function breakStatusLabel(current: EditableBreak): string {
   return `${current.time} · ${current.durationMinutes}m`;
 }
 
+function minutesToPercent(minutes: number, startMinutes: number, endMinutes: number): number {
+  const span = Math.max(1, endMinutes - startMinutes);
+  return ((minutes - startMinutes) / span) * 100;
+}
+
 export default function LunchBreaksPage() {
   const [features, setFeatures] = useState<FeatureMatrixResponse | null>(null);
   const [policy, setPolicy] = useState<LunchBreakPolicy>(DEFAULT_POLICY);
@@ -448,6 +453,7 @@ export default function LunchBreaksPage() {
   const [setupShiftRows, setSetupShiftRows] = useState<SetupShiftRow[]>([]);
   const [setupDrag, setSetupDrag] = useState<SetupDragState | null>(null);
   const [isLoadingEmployees, setIsLoadingEmployees] = useState(false);
+  const [hasTriedScheduleImport, setHasTriedScheduleImport] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const initialSelectedDateRef = useRef(selectedDate);
 
@@ -563,6 +569,10 @@ export default function LunchBreaksPage() {
       setError((err as Error).message);
     });
   }, [isLoading, loadDayRows, lunchBreakFeature?.enabled, policyLoaded, selectedDate]);
+
+  useEffect(() => {
+    setHasTriedScheduleImport(false);
+  }, [selectedDate]);
 
   const updateBreak = useCallback((shiftId: string, key: BreakEditorKey, next: Partial<EditableBreak>) => {
     setDayRows((prev) =>
@@ -1249,8 +1259,9 @@ export default function LunchBreaksPage() {
     };
   }, [autoGuideStep, availableEmployees.length, isAutoMode, scheduledEmployees.length]);
 
-  const weeklyPickerDays = useMemo(
-    () => Array.from({ length: 7 }, (_, index) => shiftDate(serverToday, index - 1)),
+  const previousPickerDate = useMemo(() => shiftDate(serverToday, -1), [serverToday]);
+  const futurePickerDays = useMemo(
+    () => Array.from({ length: 5 }, (_, index) => shiftDate(serverToday, index + 1)),
     [serverToday],
   );
 
@@ -1258,6 +1269,36 @@ export default function LunchBreaksPage() {
     setPlannerMode(mode);
     setAutoGuideStep(mode === 'auto' ? 2 : 5);
   }, []);
+
+  const importScheduleShifts = useCallback(async (): Promise<DayShiftRow[]> => {
+    setError(null);
+    setHasTriedScheduleImport(true);
+    try {
+      return await loadDayRows(selectedDate, policyLoaded);
+    } catch (err) {
+      setError((err as Error).message);
+      return [];
+    }
+  }, [loadDayRows, policyLoaded, selectedDate]);
+
+  const autoPrimaryTitle = useMemo(() => {
+    if (!hasSchedulingEnabled) return 'Setup Breaks';
+    if (dayRows.length > 0) return 'Auto Break';
+    if (hasTriedScheduleImport) return 'Setup Breaks';
+    return 'Import from Scheduling System';
+  }, [dayRows.length, hasSchedulingEnabled, hasTriedScheduleImport]);
+
+  const handleAutoPrimaryAction = useCallback(async () => {
+    if (hasSchedulingEnabled && dayRows.length === 0 && !hasTriedScheduleImport) {
+      const importedRows = await importScheduleShifts();
+      if (importedRows.length > 0) {
+        choosePlannerMode('auto');
+      }
+      return;
+    }
+
+    choosePlannerMode('auto');
+  }, [choosePlannerMode, dayRows.length, hasSchedulingEnabled, hasTriedScheduleImport, importScheduleShifts]);
 
   const showGuidedWindow =
     !isLoading && Boolean(lunchBreakFeature?.enabled) && (plannerMode === null || (isAutoMode && autoGuideStep < 5));
@@ -1453,17 +1494,14 @@ export default function LunchBreaksPage() {
                       Select one workflow to continue.
                     </p>
                   </div>
-                  <div
-                    style={{
-                      display: 'grid',
-                      gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))',
-                      gap: 12,
-                    }}
-                  >
+                  <div style={{ position: 'relative' }}>
                     <button
                       type="button"
-                      onClick={() => choosePlannerMode('auto')}
+                      onClick={() => {
+                        void handleAutoPrimaryAction();
+                      }}
                       style={{
+                        width: '100%',
                         textAlign: 'left',
                         border: '1px solid #cfe0ff',
                         borderRadius: 14,
@@ -1472,37 +1510,29 @@ export default function LunchBreaksPage() {
                         display: 'grid',
                         gap: 8,
                         cursor: 'pointer',
+                        boxShadow: '0 12px 24px rgba(35, 78, 217, 0.08)',
                       }}
                     >
-                      <div style={{ fontSize: '1rem', fontWeight: 800, color: 'var(--text-primary)' }}>Auto Break</div>
+                      <div style={{ fontSize: '1rem', fontWeight: 800, color: 'var(--text-primary)' }}>{autoPrimaryTitle}</div>
                       <div style={{ fontSize: '0.83rem', color: 'var(--text-secondary)', lineHeight: 1.45 }}>
-                        {hasSchedulingEnabled
-                          ? `Use schedule data when available and auto-build lunch and break assignments for ${selectedDateLabel}.`
-                          : `Auto-build lunch and break assignments for ${selectedDateLabel}, with manual shift input when needed.`}
+                        {hasSchedulingEnabled && dayRows.length === 0 && !hasTriedScheduleImport
+                          ? `Pull shifts from the scheduling system for ${selectedDateLabel} before break setup.`
+                          : hasSchedulingEnabled && dayRows.length === 0
+                            ? `No schedule shifts were found for ${selectedDateLabel}. Continue to setup breaks for available staff.`
+                            : `Auto-build lunch and break assignments for ${selectedDateLabel}.`}
                       </div>
-                      <span style={{ color: '#234ed9', fontSize: '0.78rem', fontWeight: 800 }}>
-                        {hasSchedulingEnabled ? 'Use schedule data when available' : 'Works without scheduling'}
-                      </span>
                     </button>
                     <button
                       type="button"
                       onClick={() => choosePlannerMode('manual')}
+                      className="manual-fallback-link"
                       style={{
-                        textAlign: 'left',
-                        border: '1px solid var(--border)',
-                        borderRadius: 14,
-                        background: '#ffffff',
-                        padding: '1rem',
-                        display: 'grid',
-                        gap: 8,
-                        cursor: 'pointer',
+                        position: 'absolute',
+                        right: 12,
+                        bottom: 10,
                       }}
                     >
-                      <div style={{ fontSize: '1rem', fontWeight: 800, color: 'var(--text-primary)' }}>Manual Entry</div>
-                      <div style={{ fontSize: '0.83rem', color: 'var(--text-secondary)', lineHeight: 1.45 }}>
-                        Enter today&apos;s shifts directly on this page, then generate a lunch and break plan from manual data.
-                      </div>
-                      <span style={{ color: '#234ed9', fontSize: '0.78rem', fontWeight: 800 }}>Build from manual shifts</span>
+                      Manual fallback
                     </button>
                   </div>
                 </motion.div>
@@ -1528,44 +1558,133 @@ export default function LunchBreaksPage() {
                 >
                   <div className="workspace-kicker">Auto break setup</div>
                   <h2 style={{ margin: 0, fontSize: '1.2rem', color: 'var(--text-primary)' }}>
-                    Choose the day you&apos;re planning.
+                    Start with today&apos;s plan.
                   </h2>
                   <p style={{ margin: 0, fontSize: '0.84rem', color: 'var(--text-secondary)' }}>
-                    Select one day from this week to continue.
+                    Today stays front and center. Yesterday is secondary, and future dates sit together below.
                   </p>
-                  <div className="surface-muted" style={{ borderRadius: 12, padding: '0.75rem', display: 'grid', gap: 10 }}>
-                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(7, minmax(0, 1fr))', gap: 6 }}>
-                      {weeklyPickerDays.map((dateValue) => {
-                        const [y, m, d] = dateValue.split('-').map((part) => Number(part));
-                        const date = new Date(y, m - 1, d);
-                        const weekday = date.toLocaleDateString([], { weekday: 'short' });
-                        const dayOfMonth = date.getDate();
-                        const isActive = dateValue === selectedDate;
-                        return (
-                          <button
-                            key={`weekly-pick-${dateValue}`}
-                            type="button"
-                            onClick={() => setSelectedDate(dateValue)}
-                            style={{
-                              border: isActive ? '1px solid #83a8ff' : '1px solid var(--border)',
-                              background: isActive ? '#edf3ff' : '#ffffff',
-                              color: isActive ? '#234ed9' : 'var(--text-primary)',
-                              borderRadius: 10,
-                              padding: '0.5rem 0.35rem',
-                              fontSize: '0.8rem',
-                              display: 'grid',
-                              gap: 2,
-                              placeItems: 'center',
-                              cursor: 'pointer',
-                              fontWeight: isActive ? 800 : 600,
-                            }}
-                          >
-                            <span style={{ fontSize: '0.7rem', textTransform: 'uppercase', letterSpacing: '0.04em' }}>{weekday}</span>
-                            <span>{dayOfMonth}</span>
-                          </button>
-                        );
-                      })}
+                  <div className="surface-muted" style={{ borderRadius: 12, padding: '0.85rem', display: 'grid', gap: 12 }}>
+                    <button
+                      type="button"
+                      onClick={() => setSelectedDate(serverToday)}
+                      style={{
+                        display: 'grid',
+                        gridTemplateColumns: 'minmax(0, 1fr) auto',
+                        gap: 12,
+                        alignItems: 'center',
+                        width: '100%',
+                        textAlign: 'left',
+                        border: selectedDate === serverToday ? '1px solid #83a8ff' : '1px solid #bfd1ec',
+                        background: selectedDate === serverToday ? 'linear-gradient(180deg, #eef4ff 0%, #e1ebff 100%)' : '#ffffff',
+                        borderRadius: 16,
+                        padding: '0.95rem 1rem',
+                        cursor: 'pointer',
+                        boxShadow: selectedDate === serverToday ? '0 14px 26px rgba(35, 78, 217, 0.12)' : 'none',
+                      }}
+                    >
+                      <div style={{ minWidth: 0, display: 'grid', gap: 4 }}>
+                        <div style={{ fontSize: '0.7rem', fontWeight: 800, textTransform: 'uppercase', letterSpacing: '0.08em', color: '#355fbf' }}>
+                          Today
+                        </div>
+                        <div style={{ fontSize: '1.02rem', fontWeight: 900, color: 'var(--text-primary)' }}>
+                          {selectedDate === serverToday ? selectedDateLabel : parseDateInputValue(serverToday)?.toLocaleDateString([], {
+                            weekday: 'long',
+                            month: 'short',
+                            day: 'numeric',
+                            year: 'numeric',
+                          })}
+                        </div>
+                        <div style={{ fontSize: '0.78rem', color: 'var(--text-secondary)' }}>
+                          Primary path for today&apos;s lunch and break plan.
+                        </div>
+                      </div>
+                      <div
+                        style={{
+                          minWidth: 88,
+                          padding: '0.42rem 0.6rem',
+                          borderRadius: 999,
+                          background: '#dfeaff',
+                          color: '#234ed9',
+                          fontSize: '0.75rem',
+                          fontWeight: 800,
+                          textAlign: 'center',
+                        }}
+                      >
+                        {dayRows.length > 0 ? `${dayRows.length} shifts` : 'No shifts yet'}
+                      </div>
+                    </button>
+
+                    <div style={{ display: 'grid', gap: 6 }}>
+                      <div style={{ fontSize: '0.7rem', fontWeight: 800, textTransform: 'uppercase', letterSpacing: '0.08em', color: 'var(--text-muted)' }}>
+                        Previous day
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => setSelectedDate(previousPickerDate)}
+                        style={{
+                          width: '100%',
+                          textAlign: 'left',
+                          border: selectedDate === previousPickerDate ? '1px solid #c7d8f4' : '1px solid var(--border)',
+                          background: selectedDate === previousPickerDate ? '#f3f7ff' : '#ffffff',
+                          borderRadius: 12,
+                          padding: '0.6rem 0.75rem',
+                          display: 'grid',
+                          gap: 2,
+                          cursor: 'pointer',
+                          opacity: 0.9,
+                        }}
+                      >
+                        <div style={{ fontSize: '0.78rem', fontWeight: 700, color: 'var(--text-primary)' }}>
+                          {parseDateInputValue(previousPickerDate)?.toLocaleDateString([], { weekday: 'short', month: 'short', day: 'numeric' })}
+                        </div>
+                        <div style={{ fontSize: '0.72rem', color: 'var(--text-secondary)' }}>
+                          Secondary fallback if you need to look back.
+                        </div>
+                      </button>
                     </div>
+
+                    <div style={{ display: 'grid', gap: 6 }}>
+                      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, flexWrap: 'wrap' }}>
+                        <div style={{ fontSize: '0.7rem', fontWeight: 800, textTransform: 'uppercase', letterSpacing: '0.08em', color: 'var(--text-muted)' }}>
+                          Future dates
+                        </div>
+                        <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>
+                          Available without interrupting the current flow.
+                        </div>
+                      </div>
+                      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(92px, 1fr))', gap: 6 }}>
+                        {futurePickerDays.map((dateValue) => {
+                          const date = parseDateInputValue(dateValue);
+                          const weekday = date?.toLocaleDateString([], { weekday: 'short' }) ?? '';
+                          const dayOfMonth = date?.getDate() ?? '';
+                          const isActive = dateValue === selectedDate;
+                          return (
+                            <button
+                              key={`future-pick-${dateValue}`}
+                              type="button"
+                              onClick={() => setSelectedDate(dateValue)}
+                              style={{
+                                border: isActive ? '1px solid #83a8ff' : '1px solid var(--border)',
+                                background: isActive ? '#edf3ff' : '#ffffff',
+                                color: isActive ? '#234ed9' : 'var(--text-primary)',
+                                borderRadius: 10,
+                                padding: '0.55rem 0.35rem',
+                                fontSize: '0.8rem',
+                                display: 'grid',
+                                gap: 2,
+                                placeItems: 'center',
+                                cursor: 'pointer',
+                                fontWeight: isActive ? 800 : 600,
+                              }}
+                            >
+                              <span style={{ fontSize: '0.68rem', textTransform: 'uppercase', letterSpacing: '0.04em' }}>{weekday}</span>
+                              <span>{dayOfMonth}</span>
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+
                     <div style={{ textAlign: 'center', display: 'grid', gap: 3 }}>
                       <div style={{ fontSize: '0.9rem', fontWeight: 800, color: 'var(--text-primary)' }}>{selectedDateLabel}</div>
                       <div style={{ fontSize: '0.78rem', color: 'var(--text-secondary)' }}>Downtown Bistro</div>
@@ -1929,294 +2048,336 @@ export default function LunchBreaksPage() {
 
       {!isLoading && lunchBreakFeature?.enabled && !showGuidedWindow ? (
         <section
+          className="planner-shell"
           style={{
             minHeight: 620,
             height: 'calc(100vh - 250px)',
             display: 'grid',
-            gridTemplateColumns: 'minmax(0, 1fr) clamp(290px, 24vw, 340px)',
+            gridTemplateColumns: 'minmax(0, 1fr) clamp(320px, 26vw, 360px)',
             gap: '0.85rem',
+            padding: '1rem',
           }}
         >
-          <div
-            className="surface-card"
-            style={{
-              padding: '0.9rem',
-              minWidth: 0,
-              minHeight: 0,
-              display: 'flex',
-              flexDirection: 'column',
-              gap: '0.75rem',
-              background:
-                'radial-gradient(34rem 16rem at 2% 0%, rgba(47, 99, 255, 0.12), transparent 68%), radial-gradient(30rem 14rem at 100% 100%, rgba(34, 184, 207, 0.1), transparent 70%), #ffffff',
-            }}
-          >
-            <div
-              className="surface-muted"
-              style={{
-                borderRadius: 12,
-                padding: '0.72rem 0.8rem',
-                display: 'grid',
-                gap: 8,
-                border: '1px solid #d8e4ff',
-                background: 'linear-gradient(145deg, #f8fbff 0%, #edf4ff 100%)',
-              }}
-            >
-              <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, alignItems: 'baseline', flexWrap: 'wrap' }}>
-                <div style={{ display: 'grid', gap: 2 }}>
-                  <span style={{ fontSize: '0.68rem', fontWeight: 800, letterSpacing: '0.06em', textTransform: 'uppercase', color: '#355fbf' }}>
-                    Planner flow
-                  </span>
-                  <strong style={{ fontSize: '0.95rem', color: 'var(--text-primary)' }}>Lunch & break canvas for {selectedDateLabel}</strong>
-                </div>
-                <span style={{ fontSize: '0.76rem', color: '#294f9e', fontWeight: 700 }}>
+          <div style={{ minWidth: 0, minHeight: 0, display: 'grid', gap: '0.85rem' }}>
+            <div className="planner-header" style={{ padding: '0 0.1rem' }}>
+              <div style={{ minWidth: 0, display: 'grid', gap: 6 }}>
+                <div className="workspace-kicker">Planner flow</div>
+                <h1 className="workspace-title" style={{ fontSize: '1.55rem', margin: 0 }}>
+                  Lunch & break canvas for {selectedDateLabel}
+                </h1>
+                <p className="workspace-subtitle" style={{ margin: 0 }}>
+                  {isAutoMode ? 'Auto mode uses schedule data as the source of truth.' : 'Manual mode turns the canvas into a draft scheduler.'}
+                </p>
+              </div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+                <span
+                  style={{
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    minHeight: 32,
+                    padding: '0 10px',
+                    borderRadius: 999,
+                    border: '1px solid #d5def0',
+                    background: '#f8fbff',
+                    color: '#23458c',
+                    fontSize: 12,
+                    fontWeight: 800,
+                  }}
+                >
                   {isAutoMode ? 'Auto mode' : 'Manual mode'}
                 </span>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setPlannerMode(null);
+                    setAutoGuideStep(1);
+                  }}
+                  disabled={!lunchBreakFeature?.enabled}
+                  className="manual-fallback-link"
+                >
+                  Manual fallback
+                </button>
               </div>
-              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, minmax(0, 1fr))', gap: 6 }}>
+            </div>
+
+            <div className="planner-toolbar" style={{ padding: '0 0.1rem' }}>
+              <div className="planner-flow-rail">
                 {[
-                  { label: '1. Load shifts', active: isAutoMode ? hasSharedRows : manualCalendarRows.length > 0 },
-                  { label: '2. Review calendar', active: isAutoMode ? hasSharedRows : manualCalendarRows.length > 0 },
-                  { label: '3. Assign breaks', active: isAutoMode ? Boolean(selectedRow) || dirtyCount > 0 : standalonePreview.length > 0 },
+                  { label: 'Load shifts', state: hasSharedRows || manualCalendarRows.length > 0 ? 'complete' : 'pending' },
+                  { label: 'Review calendar', state: hasSharedRows || manualCalendarRows.length > 0 ? 'active' : 'pending' },
+                  { label: 'Assign breaks', state: isAutoMode ? Boolean(selectedRow) || dirtyCount > 0 : standalonePreview.length > 0 ? 'active' : 'pending' },
                 ].map((step) => (
                   <span
                     key={step.label}
-                    style={{
-                      borderRadius: 999,
-                      border: step.active ? '1px solid #8aaef7' : '1px solid #d7deee',
-                      background: step.active ? '#eaf1ff' : '#ffffff',
-                      color: step.active ? '#214aa8' : 'var(--text-muted)',
-                      fontSize: '0.72rem',
-                      fontWeight: 700,
-                      padding: '0.3rem 0.5rem',
-                      textAlign: 'center',
-                    }}
+                    className={`planner-step is-${step.state}`}
                   >
                     {step.label}
                   </span>
                 ))}
               </div>
+
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, justifyContent: 'flex-end' }}>
+                <div className="surface-muted" style={{ padding: '0.36rem 0.55rem', fontSize: '0.75rem', color: 'var(--text-secondary)' }}>
+                  {isDayLoading ? 'Refreshing shifts...' : `${dayRows.length} shifts in view`}
+                </div>
+                <div className="surface-muted" style={{ padding: '0.36rem 0.55rem', fontSize: '0.75rem', color: statusComplianceRisk > 0 ? '#b45309' : '#166534' }}>
+                  Compliance risks: <strong>{statusComplianceRisk}</strong>
+                </div>
+              </div>
             </div>
-            {isAutoMode ? (
-              <>
-                <div style={{ minHeight: 0, flex: 1, width: 'min(1180px, 100%)', margin: '0 auto', display: 'grid' }}>
-                  {hasSharedRows ? (
-                    <div
-                      className="surface-muted"
-                      style={{
-                        padding: '0.95rem',
-                        display: 'grid',
-                        gap: 10,
-                        minHeight: '100%',
-                        border: '1px solid #d9e5ff',
-                        background: 'linear-gradient(180deg, #ffffff 0%, #f8fbff 100%)',
-                      }}
+
+            {lastRun ? (
+              <div
+                style={{
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  gap: 8,
+                  padding: '0.4rem 0.62rem',
+                  borderRadius: 10,
+                  border: '1px solid #cfe0ff',
+                  background: '#edf3ff',
+                  color: '#234ed9',
+                  fontSize: '0.78rem',
+                  fontWeight: 700,
+                  width: 'fit-content',
+                }}
+              >
+                Last run: {lastRun.source} · persisted {lastRun.persisted ? 'yes' : 'no'} · credits {lastRun.creditConsumption.consumedCredits}
+              </div>
+            ) : null}
+
+            <div className="schedule-panel" style={{ minWidth: 0, minHeight: 0 }}>
+              <div className="schedule-header">
+                <div style={{ minWidth: 0, display: 'grid', gap: 2 }}>
+                  <h2 className="schedule-title">Day schedule</h2>
+                  <p className="schedule-subtitle">
+                    {hasSchedulingEnabled ? 'Using schedule data as source of truth' : 'Running in manual-first mode'}
+                  </p>
+                </div>
+                <div className="schedule-toggle-group">
+                  {['Timeline', 'Staff', 'Conflicts'].map((label, index) => (
+                    <button
+                      key={label}
+                      type="button"
+                      className={`schedule-toggle ${index === 0 ? 'is-active' : ''}`}
                     >
-                      <div style={{ display: 'grid', justifyItems: 'center', gap: 3, textAlign: 'center' }}>
-                        <div style={{ fontSize: '1rem', fontWeight: 900, color: 'var(--text-primary)' }}>
-                          Calendar schedule for {selectedDateLabel}
-                        </div>
-                        <div style={{ fontSize: '0.76rem', color: 'var(--text-muted)' }}>
-                          {hasSchedulingEnabled
-                            ? `Using schedule data as source of truth`
-                            : `Running in manual-first mode`}
-                        </div>
-                      </div>
+                      {label}
+                    </button>
+                  ))}
+                </div>
+              </div>
 
-                      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr 1fr', fontSize: '0.66rem', color: 'var(--text-muted)', fontWeight: 700 }}>
-                        <span>5:00</span>
-                        <span style={{ textAlign: 'center' }}>11:00</span>
-                        <span style={{ textAlign: 'center' }}>16:00</span>
-                        <span style={{ textAlign: 'right' }}>22:00</span>
-                      </div>
+              <div className="time-ruler">
+                <div className="time-ruler-gutter" />
+                <div className="time-ruler-track">
+                  <div className="time-grid-lines">
+                    {[setupTimelineStart, setupTimelineStart + 120, setupTimelineStart + 240, setupTimelineStart + 360, setupTimelineStart + 480, setupTimelineStart + 600, setupTimelineStart + 720, setupTimelineStart + 840, setupTimelineEnd].map((minute) => (
+                      <span
+                        key={`guide-${minute}`}
+                        className="time-grid-line"
+                        style={{ left: `${minutesToPercent(minute, setupTimelineStart, setupTimelineEnd)}%` }}
+                      />
+                    ))}
+                  </div>
+                  {[
+                    { minute: setupTimelineStart, label: '5:00 AM' },
+                    { minute: 11 * 60, label: '11:00 AM' },
+                    { minute: 16 * 60, label: '4:00 PM' },
+                    { minute: setupTimelineEnd, label: '10:00 PM', end: true },
+                  ].map((tick) => (
+                    <span
+                      key={tick.label}
+                      className={`time-tick ${tick.end ? 'is-end' : ''}`}
+                      style={{ left: `${minutesToPercent(tick.minute, setupTimelineStart, setupTimelineEnd)}%` }}
+                    >
+                      {tick.label}
+                    </span>
+                  ))}
+                </div>
+              </div>
 
-                      <div style={{ display: 'grid', gap: 8, minHeight: 0, overflowY: 'auto', paddingRight: 2 }}>
-                        {autoCalendarRows.map((row) => (
-                          <motion.button
+              <div className="schedule-body">
+                {isAutoMode ? (
+                  hasSharedRows ? (
+                    <div className="schedule-lanes">
+                      {autoCalendarRows.map((row) => {
+                        const isSelected = selectedShiftId === row.id;
+                        return (
+                          <button
                             key={`planner-calendar-${row.id}`}
                             type="button"
+                            className={`schedule-row ${isSelected ? 'is-selected' : ''}`}
                             onClick={() => setSelectedShiftId(row.id)}
-                            whileHover={{ y: -1, boxShadow: '0 10px 18px rgba(35, 78, 217, 0.09)' }}
-                            transition={{ duration: 0.16 }}
-                            style={{
-                              border: selectedShiftId === row.id ? '1px solid #83a8ff' : '1px solid #d6e0f3',
-                              borderRadius: 10,
-                              background: selectedShiftId === row.id ? '#edf3ff' : '#ffffff',
-                              padding: '0.55rem',
-                              display: 'grid',
-                              gridTemplateColumns: '180px minmax(0, 1fr)',
-                              gap: 8,
-                              alignItems: 'center',
-                              textAlign: 'left',
-                              cursor: 'pointer',
-                              transition: 'border-color 120ms ease, background-color 120ms ease, box-shadow 120ms ease, transform 120ms ease',
-                            }}
                           >
-                            <div style={{ minWidth: 0 }}>
-                              <div style={{ fontSize: '0.76rem', fontWeight: 800, color: 'var(--text-primary)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                                {row.employeeName}
+                            <div className="row-meta">
+                              <div className="row-avatar">{getInitials(row.employeeName)}</div>
+                              <div className="row-info">
+                                <div className="row-name">{row.employeeName}</div>
+                                <div className="row-time">{row.shiftLabel}</div>
+                                <div className={`row-status ${row.segments.length > 0 ? 'is-healthy' : 'is-risk'}`}>
+                                  {row.segments.length > 0 ? `${row.segments.length} planned event${row.segments.length === 1 ? '' : 's'}` : 'Needs review'}
+                                </div>
                               </div>
-                              <div style={{ fontSize: '0.66rem', color: 'var(--text-muted)' }}>{row.shiftLabel}</div>
                             </div>
 
-                            <div style={{ position: 'relative', height: 30, borderRadius: 999, border: '1px solid #d6e0f3', background: '#f6f9ff' }}>
+                            <div className="row-track">
+                              <div className="track-base" />
+                              <div className="track-center-line" />
+                              <div className="schedule-grid-lines">
+                                {[setupTimelineStart, setupTimelineStart + 120, setupTimelineStart + 240, setupTimelineStart + 360, setupTimelineStart + 480, setupTimelineStart + 600, setupTimelineStart + 720, setupTimelineStart + 840, setupTimelineEnd].map((minute) => (
+                                  <span
+                                    key={`row-guide-${row.id}-${minute}`}
+                                    className="schedule-grid-line"
+                                    style={{ left: `${minutesToPercent(minute, setupTimelineStart, setupTimelineEnd)}%` }}
+                                  />
+                                ))}
+                              </div>
                               <span
+                                className={`policy-window ${isSelected ? 'is-selected' : ''}`}
                                 style={{
-                                  position: 'absolute',
-                                  left: `${row.shiftLeftPct}%`,
-                                  width: `${row.shiftWidthPct}%`,
-                                  top: 3,
-                                  bottom: 3,
-                                  borderRadius: 999,
-                                  background: '#d9e8ff',
-                                  border: '1px solid #9ebdf0',
+                                  left: `${clamp(row.shiftLeftPct + 8, 0, 90)}%`,
+                                  width: `${clamp(Math.max(14, row.shiftWidthPct * 0.5), 12, 32)}%`,
                                 }}
                               />
+                              <span
+                                className={`shift-event ${isSelected ? 'is-selected' : ''}`}
+                                style={{
+                                  left: `${row.shiftLeftPct}%`,
+                                  width: `${row.shiftWidthPct}%`,
+                                }}
+                              >
+                                <span className="shift-event-label">
+                                  <span>Shift</span>
+                                  <span>{row.shiftLabel}</span>
+                                </span>
+                              </span>
                               {row.segments.map((segment) => (
                                 <span
                                   key={segment.id}
                                   title={segment.label}
+                                  className={segment.tone === 'meal' ? 'meal-event' : 'break-event'}
                                   style={{
-                                    position: 'absolute',
                                     left: `${segment.leftPct}%`,
                                     width: `${segment.widthPct}%`,
-                                    top: 7,
-                                    bottom: 7,
-                                    borderRadius: 999,
-                                    background: segment.tone === 'meal' ? '#b7e3be' : '#b8d8f7',
-                                    border: segment.tone === 'meal' ? '1px solid #74b782' : '1px solid #6aa8de',
                                   }}
+                                >
+                                  {segment.label}
+                                </span>
+                              ))}
+                              {row.segments.map((segment) => (
+                                <span
+                                  key={`${segment.id}-marker`}
+                                  title={segment.label}
+                                  className={`event-marker ${segment.tone === 'meal' ? 'is-meal' : 'is-break'}`}
+                                  style={{ left: `${segment.leftPct}%` }}
                                 />
                               ))}
                             </div>
-                          </motion.button>
-                        ))}
-                      </div>
+                          </button>
+                        );
+                      })}
                     </div>
                   ) : (
-                    <div className="surface-muted" style={{ padding: '0.85rem' }}>
-                      <div style={{ fontWeight: 800, color: 'var(--text-primary)', marginBottom: 2 }}>
+                    <div className="surface-muted" style={{ padding: '0.95rem', display: 'grid', gap: 8, position: 'relative', paddingBottom: 28 }}>
+                      <div style={{ fontWeight: 800, color: 'var(--text-primary)' }}>
                         No shifts loaded for {selectedDateLabel.split(',')[0]}
                       </div>
                       <div style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>
                         {hasSchedulingEnabled
-                          ? 'Import shifts from Scheduling, or switch to manual entry.'
-                          : 'Switch to manual entry to add shifts and generate lunches and breaks.'}
+                          ? 'Import shifts from Scheduling, or use the manual fallback.'
+                          : 'Use the manual fallback to add shifts and generate lunches and breaks.'}
                       </div>
-                      <div style={{ marginTop: 8, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
                         {hasSchedulingEnabled ? (
                           <Button
                             variant="outline"
                             size="sm"
                             onClick={() => {
-                              void loadDayRows(selectedDate, policyLoaded).catch((err) => {
-                                setError((err as Error).message);
-                              });
+                              void importScheduleShifts();
                             }}
                           >
                             Import schedule shifts
                           </Button>
                         ) : null}
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          onClick={() => {
-                            setPlannerMode('manual');
-                            setAutoGuideStep(5);
-                          }}
-                        >
-                          Use manual entry
-                        </Button>
                       </div>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setPlannerMode('manual');
+                          setAutoGuideStep(5);
+                        }}
+                        className="manual-fallback-link"
+                        style={{ position: 'absolute', right: 12, bottom: 10 }}
+                      >
+                        Manual fallback
+                      </button>
                     </div>
-                  )}
-                </div>
-              </>
-            ) : (
-              <div style={{ display: 'grid', gap: '0.72rem', minHeight: 0, overflowY: 'auto', padding: '0.1rem', width: 'min(1180px, 100%)', margin: '0 auto' }}>
-                {manualCalendarRows.length > 0 ? (
-                  <div
-                    className="surface-muted"
-                    style={{
-                      padding: '1rem',
-                      display: 'grid',
-                      gap: 10,
-                      minHeight: '100%',
-                      border: '1px solid #d9e5ff',
-                      background: 'linear-gradient(180deg, #ffffff 0%, #f8fbff 100%)',
-                    }}
-                  >
-                    <div style={{ display: 'grid', justifyItems: 'center', gap: 3, textAlign: 'center' }}>
-                      <div style={{ fontSize: '1rem', fontWeight: 900, color: 'var(--text-primary)' }}>
-                        Calendar draft for {selectedDateLabel}
-                      </div>
-                      <div style={{ fontSize: '0.76rem', color: 'var(--text-muted)' }}>
-                        Walkthrough-defined shift times
-                      </div>
-                    </div>
-
-                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr 1fr', fontSize: '0.66rem', color: 'var(--text-muted)', fontWeight: 700 }}>
-                      <span>5:00</span>
-                      <span style={{ textAlign: 'center' }}>11:00</span>
-                      <span style={{ textAlign: 'center' }}>16:00</span>
-                      <span style={{ textAlign: 'right' }}>22:00</span>
-                    </div>
-
-                    <div style={{ display: 'grid', gap: 8, alignContent: 'start' }}>
-                      {manualCalendarRows.map((row) => (
-                        <motion.div
-                          key={`manual-calendar-${row.id}`}
-                          whileHover={{ y: -1, boxShadow: '0 10px 18px rgba(35, 78, 217, 0.09)' }}
-                          transition={{ duration: 0.16 }}
-                          style={{
-                            border: '1px solid #d6e0f3',
-                            borderRadius: 10,
-                            background: '#ffffff',
-                            padding: '0.55rem',
-                            display: 'grid',
-                            gridTemplateColumns: '180px minmax(0, 1fr)',
-                            gap: 8,
-                            alignItems: 'center',
-                            transition: 'border-color 120ms ease, box-shadow 120ms ease, transform 120ms ease',
-                          }}
-                        >
-                          <div style={{ minWidth: 0 }}>
-                            <div style={{ fontSize: '0.76rem', fontWeight: 800, color: 'var(--text-primary)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                              {row.employeeName}
-                            </div>
-                            <div style={{ fontSize: '0.66rem', color: 'var(--text-muted)' }}>{row.shiftLabel}</div>
+                  )
+                ) : manualCalendarRows.length > 0 ? (
+                  <div className="schedule-lanes">
+                    {manualCalendarRows.map((row) => (
+                      <div key={`manual-calendar-${row.id}`} className="schedule-row">
+                        <div className="row-meta">
+                          <div className="row-avatar">{getInitials(row.employeeName)}</div>
+                          <div className="row-info">
+                            <div className="row-name">{row.employeeName}</div>
+                            <div className="row-time">{row.shiftLabel}</div>
+                            <div className="row-status is-healthy">Draft shift</div>
                           </div>
-                          <div style={{ position: 'relative', height: 30, borderRadius: 999, border: '1px solid #d6e0f3', background: '#f6f9ff' }}>
-                            <span
-                              style={{
-                                position: 'absolute',
-                                left: `${row.shiftLeftPct}%`,
-                                width: `${row.shiftWidthPct}%`,
-                                top: 3,
-                                bottom: 3,
-                                borderRadius: 999,
-                                background: '#d9e8ff',
-                                border: '1px solid #9ebdf0',
-                              }}
-                            />
+                        </div>
+                        <div className="row-track">
+                          <div className="track-base" />
+                          <div className="track-center-line" />
+                          <div className="schedule-grid-lines">
+                            {[setupTimelineStart, setupTimelineStart + 120, setupTimelineStart + 240, setupTimelineStart + 360, setupTimelineStart + 480, setupTimelineStart + 600, setupTimelineStart + 720, setupTimelineStart + 840, setupTimelineEnd].map((minute) => (
+                              <span
+                                key={`manual-guide-${row.id}-${minute}`}
+                                className="schedule-grid-line"
+                                style={{ left: `${minutesToPercent(minute, setupTimelineStart, setupTimelineEnd)}%` }}
+                              />
+                            ))}
                           </div>
-                        </motion.div>
-                      ))}
-                    </div>
+                          <span
+                            className="shift-event"
+                            style={{
+                              left: `${row.shiftLeftPct}%`,
+                              width: `${row.shiftWidthPct}%`,
+                            }}
+                          >
+                            <span className="shift-event-label">
+                              <span>Shift</span>
+                              <span>{row.shiftLabel}</span>
+                            </span>
+                          </span>
+                        </div>
+                      </div>
+                    ))}
                   </div>
-                ) : null}
-
-                {manualCalendarRows.length === 0 ? (
-                  <div className="surface-muted" style={{ padding: '0.85rem' }}>
-                    <div style={{ fontWeight: 800, color: 'var(--text-primary)', marginBottom: 2 }}>No shifts loaded for {selectedDateLabel.split(',')[0]}</div>
+                ) : (
+                  <div className="surface-muted" style={{ padding: '0.95rem', position: 'relative', paddingBottom: 28 }}>
+                    <div style={{ fontWeight: 800, color: 'var(--text-primary)', marginBottom: 2 }}>
+                      No shifts loaded for {selectedDateLabel.split(',')[0]}
+                    </div>
                     <div style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>
                       {hasSchedulingEnabled
-                        ? 'Import shifts from Scheduling to populate the calendar, or configure shifts from the Action pane.'
-                        : 'Configure shifts from the Action pane to populate this calendar.'}
+                        ? 'Import shifts from Scheduling to populate the calendar, or use the manual fallback.'
+                        : 'Use the manual fallback to populate this calendar.'}
                     </div>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setPlannerMode('manual');
+                        setAutoGuideStep(5);
+                      }}
+                      className="manual-fallback-link"
+                      style={{ position: 'absolute', right: 12, bottom: 10 }}
+                    >
+                      Manual fallback
+                    </button>
                   </div>
-                ) : null}
+                )}
               </div>
-            )}
+            </div>
           </div>
 
           <aside
@@ -2336,9 +2497,7 @@ export default function LunchBreaksPage() {
                     variant="outline"
                     size="sm"
                     onClick={() => {
-                      void loadDayRows(selectedDate, policyLoaded).catch((err) => {
-                        setError((err as Error).message);
-                      });
+                      void importScheduleShifts();
                     }}
                   >
                     Import schedule shifts

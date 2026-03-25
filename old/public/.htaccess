@@ -1,0 +1,3 @@
+<FilesMatch "^(data\.csv|data\.csv\.hash|queue\.txt|config\.php)$">
+    Require all denied
+</FilesMatch>

@@ -1,0 +1,138 @@
+<testsuites id="" name="" tests="1" failures="1" skipped="0" errors="0" time="19.367483999999997">
+<testsuite name="credits-page.spec.ts" timestamp="2026-03-21T22:59:26.673Z" hostname="chromium" tests="1" failures="1" skipped="0" time="16.828" errors="0">
+<testcase name="admin credits page › renders live credits data instead of placeholder rows" classname="credits-page.spec.ts" time="16.828">
+<failure message="credits-page.spec.ts:37:9 renders live credits data instead of placeholder rows" type="FAILURE">
+<![CDATA[  [chromium] › credits-page.spec.ts:37:9 › admin credits page › renders live credits data instead of placeholder rows 
+
+    Error: expect(locator).toBeVisible() failed
+
+    Locator: getByText('North Star Deli')
+    Expected: visible
+    Timeout: 5000ms
+    Error: element(s) not found
+
+    Call log:
+      - Expect "toBeVisible" with timeout 5000ms
+      - waiting for getByText('North Star Deli')
+
+
+      67 |         await page.goto('/admin/credits');
+      68 |
+    > 69 |         await expect(page.getByText('North Star Deli')).toBeVisible();
+         |                                                         ^
+      70 |         await expect(page.getByText('Riverfront Grill')).toBeVisible();
+      71 |         await expect(page.getByText('Beta signup bonus')).toBeVisible();
+      72 |         await expect(page.getByText('Downtown Bistro')).toHaveCount(0);
+        at /Users/tuckerlee/Desktop/Projects/lunchlineup/apps/web/tests/e2e/credits-page.spec.ts:69:57
+
+    attachment #1: screenshot (image/png) ──────────────────────────────────────────────────────────
+    ../../test-results/credits-page-admin-credits-e60e4-instead-of-placeholder-rows-chromium/test-failed-1.png
+    ────────────────────────────────────────────────────────────────────────────────────────────────
+
+    attachment #2: video (video/webm) ──────────────────────────────────────────────────────────────
+    ../../test-results/credits-page-admin-credits-e60e4-instead-of-placeholder-rows-chromium/video.webm
+    ────────────────────────────────────────────────────────────────────────────────────────────────
+
+    Error Context: ../../test-results/credits-page-admin-credits-e60e4-instead-of-placeholder-rows-chromium/error-context.md
+
+    Retry #1 ───────────────────────────────────────────────────────────────────────────────────────
+
+    Error: expect(locator).toBeVisible() failed
+
+    Locator: getByText('North Star Deli')
+    Expected: visible
+    Timeout: 5000ms
+    Error: element(s) not found
+
+    Call log:
+      - Expect "toBeVisible" with timeout 5000ms
+      - waiting for getByText('North Star Deli')
+
+
+      67 |         await page.goto('/admin/credits');
+      68 |
+    > 69 |         await expect(page.getByText('North Star Deli')).toBeVisible();
+         |                                                         ^
+      70 |         await expect(page.getByText('Riverfront Grill')).toBeVisible();
+      71 |         await expect(page.getByText('Beta signup bonus')).toBeVisible();
+      72 |         await expect(page.getByText('Downtown Bistro')).toHaveCount(0);
+        at /Users/tuckerlee/Desktop/Projects/lunchlineup/apps/web/tests/e2e/credits-page.spec.ts:69:57
+
+    attachment #1: screenshot (image/png) ──────────────────────────────────────────────────────────
+    ../../test-results/credits-page-admin-credits-e60e4-instead-of-placeholder-rows-chromium-retry1/test-failed-1.png
+    ────────────────────────────────────────────────────────────────────────────────────────────────
+
+    attachment #2: video (video/webm) ──────────────────────────────────────────────────────────────
+    ../../test-results/credits-page-admin-credits-e60e4-instead-of-placeholder-rows-chromium-retry1/video.webm
+    ────────────────────────────────────────────────────────────────────────────────────────────────
+
+    Error Context: ../../test-results/credits-page-admin-credits-e60e4-instead-of-placeholder-rows-chromium-retry1/error-context.md
+
+    attachment #4: trace (application/zip) ─────────────────────────────────────────────────────────
+    ../../test-results/credits-page-admin-credits-e60e4-instead-of-placeholder-rows-chromium-retry1/trace.zip
+    Usage:
+
+        npx playwright show-trace ../../test-results/credits-page-admin-credits-e60e4-instead-of-placeholder-rows-chromium-retry1/trace.zip
+
+    ────────────────────────────────────────────────────────────────────────────────────────────────
+
+    Retry #2 ───────────────────────────────────────────────────────────────────────────────────────
+
+    Error: expect(locator).toBeVisible() failed
+
+    Locator: getByText('North Star Deli')
+    Expected: visible
+    Timeout: 5000ms
+    Error: element(s) not found
+
+    Call log:
+      - Expect "toBeVisible" with timeout 5000ms
+      - waiting for getByText('North Star Deli')
+
+
+      67 |         await page.goto('/admin/credits');
+      68 |
+    > 69 |         await expect(page.getByText('North Star Deli')).toBeVisible();
+         |                                                         ^
+      70 |         await expect(page.getByText('Riverfront Grill')).toBeVisible();
+      71 |         await expect(page.getByText('Beta signup bonus')).toBeVisible();
+      72 |         await expect(page.getByText('Downtown Bistro')).toHaveCount(0);
+        at /Users/tuckerlee/Desktop/Projects/lunchlineup/apps/web/tests/e2e/credits-page.spec.ts:69:57
+
+    attachment #1: screenshot (image/png) ──────────────────────────────────────────────────────────
+    ../../test-results/credits-page-admin-credits-e60e4-instead-of-placeholder-rows-chromium-retry2/test-failed-1.png
+    ────────────────────────────────────────────────────────────────────────────────────────────────
+
+    attachment #2: video (video/webm) ──────────────────────────────────────────────────────────────
+    ../../test-results/credits-page-admin-credits-e60e4-instead-of-placeholder-rows-chromium-retry2/video.webm
+    ────────────────────────────────────────────────────────────────────────────────────────────────
+
+    Error Context: ../../test-results/credits-page-admin-credits-e60e4-instead-of-placeholder-rows-chromium-retry2/error-context.md
+]]>
+</failure>
+<system-out>
+<![CDATA[
+[[ATTACHMENT|credits-page-admin-credits-e60e4-instead-of-placeholder-rows-chromium/test-failed-1.png]]
+
+[[ATTACHMENT|credits-page-admin-credits-e60e4-instead-of-placeholder-rows-chromium/video.webm]]
+
+[[ATTACHMENT|credits-page-admin-credits-e60e4-instead-of-placeholder-rows-chromium/error-context.md]]
+
+[[ATTACHMENT|credits-page-admin-credits-e60e4-instead-of-placeholder-rows-chromium-retry1/test-failed-1.png]]
+
+[[ATTACHMENT|credits-page-admin-credits-e60e4-instead-of-placeholder-rows-chromium-retry1/video.webm]]
+
+[[ATTACHMENT|credits-page-admin-credits-e60e4-instead-of-placeholder-rows-chromium-retry1/error-context.md]]
+
+[[ATTACHMENT|credits-page-admin-credits-e60e4-instead-of-placeholder-rows-chromium-retry1/trace.zip]]
+
+[[ATTACHMENT|credits-page-admin-credits-e60e4-instead-of-placeholder-rows-chromium-retry2/test-failed-1.png]]
+
+[[ATTACHMENT|credits-page-admin-credits-e60e4-instead-of-placeholder-rows-chromium-retry2/video.webm]]
+
+[[ATTACHMENT|credits-page-admin-credits-e60e4-instead-of-placeholder-rows-chromium-retry2/error-context.md]]
+]]>
+</system-out>
+</testcase>
+</testsuite>
+</testsuites>

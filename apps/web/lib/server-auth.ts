@@ -16,8 +16,10 @@ function authDebug(event: string, details: Record<string, unknown> = {}) {
 
 export interface ServerUser {
     id: string;
-    role: UserRole;
+    role: string;
     tenantId: string;
+    permissions: string[];
+    roles: Array<{ id: string; name: string }>;
 }
 
 /**
@@ -29,6 +31,8 @@ export function getServerUser(): ServerUser | null {
     const id = headerStore.get('x-user-id');
     const role = headerStore.get('x-user-role') as UserRole | null;
     const tenantId = headerStore.get('x-tenant-id');
+    const permissionsHeader = headerStore.get('x-user-permissions') ?? '';
+    const rolesHeader = headerStore.get('x-user-roles') ?? '';
     const matchedPath = headerStore.get('x-matched-path') ?? headerStore.get('x-invoke-path') ?? '';
 
     if (!id || !role) {
@@ -41,7 +45,13 @@ export function getServerUser(): ServerUser | null {
     }
 
     authDebug('get_server_user_ok', { role, tenantId: tenantId ?? '', matchedPath });
-    return { id, role, tenantId: tenantId ?? '' };
+    return {
+        id,
+        role,
+        tenantId: tenantId ?? '',
+        permissions: permissionsHeader ? permissionsHeader.split(',').filter(Boolean) : [],
+        roles: rolesHeader ? rolesHeader.split(',').filter(Boolean).map((entry) => ({ id: entry, name: entry })) : [],
+    };
 }
 
 /**
@@ -61,11 +71,20 @@ export function requireAuth(): ServerUser {
  */
 export function requireRole(allowed: UserRole[]): ServerUser {
     const user = requireAuth();
-    if (!allowed.includes(user.role)) {
+    if (!allowed.includes(user.role as UserRole)) {
         authDebug('require_role_redirect_dashboard', { role: user.role, allowed });
         redirect('/dashboard');
     }
     authDebug('require_role_ok', { role: user.role, allowed });
+    return user;
+}
+
+export function requirePermission(permission: string): ServerUser {
+    const user = requireAuth();
+    if (!user.permissions.includes(permission)) {
+        authDebug('require_permission_redirect_dashboard', { permission, role: user.role });
+        redirect('/dashboard');
+    }
     return user;
 }
 
@@ -85,6 +104,10 @@ export function can(role: UserRole, action: string): boolean {
         'impersonate': ['SUPER_ADMIN'],
     };
     return permissions[action]?.includes(role) ?? false;
+}
+
+export function canPermission(user: Pick<ServerUser, 'permissions'>, permission: string): boolean {
+    return user.permissions.includes(permission);
 }
 
 /**

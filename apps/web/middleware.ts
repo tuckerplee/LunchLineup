@@ -111,7 +111,7 @@ export async function middleware(request: NextRequest) {
     }
 
     // Validate token server-side via the API
-    let user: { sub: string; role: string; tenantId: string; sessionId: string } | null = null;
+    let user: { sub: string; role: string; tenantId: string; sessionId: string; permissions?: string[]; roles?: Array<{ id: string; name: string }> } | null = null;
     try {
         const fetchUserByAccessToken = async (token: string) => {
             const response = await fetch(apiEndpoint(request, '/auth/me'), {
@@ -207,7 +207,9 @@ export async function middleware(request: NextRequest) {
         return applyRefreshedCookie(NextResponse.redirect(loginUrl));
     }
 
-    const isSuperAdmin = user.role === 'SUPER_ADMIN';
+    const permissions = Array.isArray(user.permissions) ? user.permissions : [];
+    const hasPermission = (permission: string) => permissions.includes(permission);
+    const isSuperAdmin = hasPermission('admin_portal:access');
 
     if (isSuperAdmin && pathname.startsWith('/dashboard')) {
         const adminUrl = request.nextUrl.clone();
@@ -223,17 +225,24 @@ export async function middleware(request: NextRequest) {
         return applyRefreshedCookie(NextResponse.redirect(dashboardUrl));
     }
 
-    if (pathname.startsWith('/dashboard/settings') && !['SUPER_ADMIN', 'ADMIN'].includes(user.role)) {
+    if (pathname.startsWith('/dashboard/settings') && !hasPermission('settings:read')) {
         const dashboardUrl = request.nextUrl.clone();
         dashboardUrl.pathname = '/dashboard';
         authDebug('redirect_settings_forbidden', { role: user.role });
         return applyRefreshedCookie(NextResponse.redirect(dashboardUrl));
     }
 
-    if ((pathname.startsWith('/dashboard/staff') || pathname.startsWith('/dashboard/locations')) && user.role === 'STAFF') {
+    if (pathname.startsWith('/dashboard/staff') && !hasPermission('users:read')) {
         const dashboardUrl = request.nextUrl.clone();
         dashboardUrl.pathname = '/dashboard';
         authDebug('redirect_staff_restricted_area', { role: user.role, path: pathname });
+        return applyRefreshedCookie(NextResponse.redirect(dashboardUrl));
+    }
+
+    if (pathname.startsWith('/dashboard/locations') && !hasPermission('locations:read')) {
+        const dashboardUrl = request.nextUrl.clone();
+        dashboardUrl.pathname = '/dashboard';
+        authDebug('redirect_locations_forbidden', { role: user.role, path: pathname });
         return applyRefreshedCookie(NextResponse.redirect(dashboardUrl));
     }
 
@@ -241,6 +250,8 @@ export async function middleware(request: NextRequest) {
     response.headers.set('x-user-id', user.sub);
     response.headers.set('x-user-role', user.role);
     response.headers.set('x-tenant-id', user.tenantId ?? '');
+    response.headers.set('x-user-permissions', permissions.join(','));
+    response.headers.set('x-user-roles', Array.isArray(user.roles) ? user.roles.map((role) => role.name).join(',') : '');
     authDebug('allow_authenticated', { role: user.role, refreshedToken: Boolean(refreshedAccessToken) });
     return applyRefreshedCookie(response);
 }

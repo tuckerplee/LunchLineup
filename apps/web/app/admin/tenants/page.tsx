@@ -1,8 +1,8 @@
-import { requireRole } from '@/lib/server-auth';
+import { requirePermission } from '@/lib/server-auth';
 import { TenantsClient } from './TenantsClient';
 
 export default function AdminTenantsPage() {
-    requireRole(['SUPER_ADMIN']);
+    requirePermission('admin_portal:access');
 
     return <TenantsClient />;
 }

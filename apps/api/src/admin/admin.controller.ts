@@ -21,8 +21,8 @@ export class AdminController {
     ) { }
 
     private assertSuperAdmin(req: any) {
-        if (req?.user?.role !== 'SUPER_ADMIN') {
-            throw new ForbiddenException('SUPER_ADMIN role required.');
+        if (!Array.isArray(req?.user?.permissions) || !req.user.permissions.includes('admin_portal:access')) {
+            throw new ForbiddenException('admin_portal:access permission required.');
         }
     }
 

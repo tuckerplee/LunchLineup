@@ -87,18 +87,18 @@ type SecurityUpdateBody = {
 export class SettingsController {
     private prisma = new PrismaClient();
 
-    private assertCanReadSettings(role: unknown): void {
-        if (role === USER_ROLE.SUPER_ADMIN || role === USER_ROLE.ADMIN || role === USER_ROLE.MANAGER) {
+    private assertCanReadSettings(permissions: unknown): void {
+        if (Array.isArray(permissions) && permissions.includes('settings:read')) {
             return;
         }
-        throw new ForbiddenException('Settings are only available to managers and admins.');
+        throw new ForbiddenException('Settings are only available to authorized users.');
     }
 
-    private assertCanWriteSettings(role: unknown): void {
-        if (role === USER_ROLE.SUPER_ADMIN || role === USER_ROLE.ADMIN) {
+    private assertCanWriteSettings(permissions: unknown): void {
+        if (Array.isArray(permissions) && permissions.includes('settings:write')) {
             return;
         }
-        throw new ForbiddenException('Settings can only be modified by admins.');
+        throw new ForbiddenException('Settings can only be modified by authorized users.');
     }
 
     private parseRequiredString(value: unknown, field: string): string {
@@ -301,13 +301,13 @@ export class SettingsController {
 
     @Get()
     async getSettings(@Req() req: any): Promise<NormalizedSettings> {
-        this.assertCanReadSettings(req.user?.role);
+        this.assertCanReadSettings(req.user?.permissions);
         return this.readNormalizedSettings(this.prisma, req.user.tenantId);
     }
 
     @Put('general')
     async updateGeneral(@Body() body: GeneralUpdateBody, @Req() req: any): Promise<NormalizedSettings> {
-        this.assertCanWriteSettings(req.user?.role);
+        this.assertCanWriteSettings(req.user?.permissions);
 
         const name = this.parseOptionalString(body?.name, 'name');
         const slug = this.parseOptionalString(body?.slug, 'slug');
@@ -353,7 +353,7 @@ export class SettingsController {
 
     @Put('team')
     async updateTeam(@Body() body: TeamUpdateBody, @Req() req: any): Promise<NormalizedSettings> {
-        this.assertCanWriteSettings(req.user?.role);
+        this.assertCanWriteSettings(req.user?.permissions);
 
         const defaultInviteRole = body?.defaultInviteRole === undefined
             ? undefined
@@ -380,7 +380,7 @@ export class SettingsController {
 
     @Put('security')
     async updateSecurity(@Body() body: SecurityUpdateBody, @Req() req: any): Promise<NormalizedSettings> {
-        this.assertCanWriteSettings(req.user?.role);
+        this.assertCanWriteSettings(req.user?.permissions);
 
         const requireMfaForAll = this.parseOptionalBoolean(body?.requireMfaForAll, 'requireMfaForAll');
         const sessionTimeoutMinutes = this.parseOptionalPositiveInt(body?.sessionTimeoutMinutes, 'sessionTimeoutMinutes');

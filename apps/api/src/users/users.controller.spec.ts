@@ -6,13 +6,44 @@ const mockAuthService = {
     rotateOwnPin: vi.fn(),
 };
 
+const mockRbacService = {
+    listRolesForTenant: vi.fn(),
+    assignRolesToUser: vi.fn(),
+    getUserRoleAssignments: vi.fn(),
+};
+
 describe('UsersController', () => {
     let controller: UsersController;
     let prisma: any;
 
     beforeEach(() => {
         vi.clearAllMocks();
-        controller = new UsersController(mockAuthService as any);
+        mockRbacService.listRolesForTenant.mockResolvedValue([
+            {
+                id: 'role-staff',
+                name: 'Staff',
+                rolePermissions: [
+                    { permission: { key: 'dashboard:access' } },
+                    { permission: { key: 'auth:login_pin' } },
+                ],
+                legacyRole: 'STAFF',
+                isDefault: true,
+            },
+            {
+                id: 'role-manager',
+                name: 'Manager',
+                rolePermissions: [
+                    { permission: { key: 'dashboard:access' } },
+                    { permission: { key: 'auth:login_email' } },
+                    { permission: { key: 'auth:login_pin' } },
+                ],
+                legacyRole: 'MANAGER',
+                isDefault: false,
+            },
+        ]);
+        mockRbacService.assignRolesToUser.mockResolvedValue([{ id: 'role-staff', name: 'Staff', permissions: ['auth:login_pin'] }]);
+        mockRbacService.getUserRoleAssignments.mockResolvedValue([{ id: 'role-staff', name: 'Staff', permissions: ['auth:login_pin'] }]);
+        controller = new UsersController(mockAuthService as any, mockRbacService as any);
         prisma = {
             tenant: {
                 findUnique: vi.fn().mockResolvedValue({ planTier: 'FREE' }),
@@ -58,6 +89,7 @@ describe('UsersController', () => {
         expect(result.username).toBe('shiftlead');
         expect(result.temporaryPin).toBe('100000');
         expect(result.pinResetRequired).toBe(true);
+        expect(mockRbacService.assignRolesToUser).toHaveBeenCalled();
     });
 
     it('invites email-based manager without PIN provisioning', async () => {

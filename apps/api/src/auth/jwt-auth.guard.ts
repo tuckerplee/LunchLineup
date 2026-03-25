@@ -1,6 +1,7 @@
 import { Injectable, CanActivate, ExecutionContext, UnauthorizedException, ForbiddenException, Logger } from '@nestjs/common';
 import { Reflector } from '@nestjs/core';
 import { JwtService } from './jwt.service';
+import { RbacService } from './rbac.service';
 
 const ACCESS_TOKEN_COOKIE_MAX_AGE_MS = 30 * 60 * 1000;
 
@@ -15,10 +16,11 @@ export class JwtAuthGuard implements CanActivate {
 
     constructor(
         private jwtService: JwtService,
+        private rbacService: RbacService,
         private reflector: Reflector,
     ) { }
 
-    canActivate(context: ExecutionContext): boolean {
+    async canActivate(context: ExecutionContext): Promise<boolean> {
         const isPublic = this.reflector.get<boolean>('isPublic', context.getHandler());
         if (isPublic) return true;
 
@@ -34,7 +36,14 @@ export class JwtAuthGuard implements CanActivate {
 
             try {
                 const verified = this.jwtService.verifyAccessToken(accessToken);
-                request.user = verified;
+                const access = await this.rbacService.getEffectiveAccess(verified.sub, verified.tenantId);
+                request.user = {
+                    ...verified,
+                    legacyRole: verified.legacyRole,
+                    permissions: access.permissions,
+                    roles: access.roles,
+                    role: access.primaryRole,
+                };
 
                 // Validate CSRF for cookie-based requests (Double-Submit pattern)
                 if (['POST', 'PUT', 'PATCH', 'DELETE'].includes(request.method)) {
@@ -49,11 +58,12 @@ export class JwtAuthGuard implements CanActivate {
                 // Rotate cookie with canonical claims only (exclude exp/iat/iss/aud from decoded payload).
                 try {
                     response.cookie('access_token', this.jwtService.generateAccessToken({
-                        sub: verified.sub,
-                        tenantId: verified.tenantId,
-                        role: verified.role,
-                        sessionId: verified.sessionId,
-                        mfaVerified: verified.mfaVerified,
+                        sub: request.user.sub,
+                        tenantId: request.user.tenantId,
+                        role: request.user.role,
+                        legacyRole: request.user.legacyRole,
+                        sessionId: request.user.sessionId,
+                        mfaVerified: request.user.mfaVerified,
                     }), {
                         httpOnly: true,
                         secure: process.env.NODE_ENV === 'production',
@@ -78,7 +88,15 @@ export class JwtAuthGuard implements CanActivate {
         // Bearer token auth (inherently CSRF-immune)
         const token = authHeader.split(' ')[1];
         try {
-            request.user = this.jwtService.verifyAccessToken(token);
+            const verified = this.jwtService.verifyAccessToken(token);
+            const access = await this.rbacService.getEffectiveAccess(verified.sub, verified.tenantId);
+            request.user = {
+                ...verified,
+                legacyRole: verified.legacyRole,
+                permissions: access.permissions,
+                roles: access.roles,
+                role: access.primaryRole,
+            };
             return true;
         } catch {
             throw new UnauthorizedException('Invalid access token');

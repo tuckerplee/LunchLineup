@@ -1,0 +1,7 @@
+Hello,
+
+You have been invited to join our store. Your role is {{role}}.
+Visit the scheduler to accept the invitation.
+
+Thanks,
+Scheduler Team

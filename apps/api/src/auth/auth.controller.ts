@@ -109,7 +109,7 @@ export class AuthController {
         if (result.requiresMfa) {
             res.redirect('/mfa');
         } else {
-            res.redirect(result.user?.role === 'SUPER_ADMIN' ? '/admin' : '/dashboard');
+            res.redirect(result.user?.permissions?.includes('admin_portal:access') ? '/admin' : '/dashboard');
         }
     }
 
@@ -170,7 +170,7 @@ export class AuthController {
             const result = await this.authService.loginWithEmail(email);
             this.setSessionCookies(res, result.accessToken, result.refreshToken, result.csrfToken);
 
-            const roleRedirect = result.user.role === 'SUPER_ADMIN' ? '/admin' : '/dashboard';
+            const roleRedirect = result.user.permissions?.includes('admin_portal:access') ? '/admin' : '/dashboard';
             const redirectTo = safeNext ?? roleRedirect;
             this.authDebug('verify_otp_success', {
                 email: this.maskEmail(email),

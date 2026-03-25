@@ -36,7 +36,7 @@ export class BillingController {
     }
 
     @Post('credits/grant')
-    @RequirePermission('admin:write') // Only system admins should grant credits ad-hoc
+    @RequirePermission('admin_portal:access')
     async grantCredits(
         @Body() body: { tenantId: string, amount: number, reason: string }
     ) {
