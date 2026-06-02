@@ -25,7 +25,9 @@ jobs:
       - name: "1. Lint & Format"
         run: npx turbo run lint
       - name: "2. Type Check"
-        run: npx turbo run type-check
+        run: npm run typecheck
+      - name: "2b. Migration SaaS and hygiene tests"
+        run: npm run test:migration
 
   # ─── Stage 3: SAST Security Scan ───
   sast:

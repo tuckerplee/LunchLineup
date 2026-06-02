@@ -11,6 +11,9 @@
     "dev": "turbo run dev",
     "lint": "turbo run lint",
     "test": "turbo run test",
+    "test:migration": "node --test tests/**/*.test.mjs",
+    "typecheck": "npm run typecheck --workspaces --if-present",
+    "type-check": "npm run typecheck",
     "clean": "turbo run clean"
   },
   "devDependencies": {
