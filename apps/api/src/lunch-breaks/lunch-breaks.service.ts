@@ -519,12 +519,13 @@ export class LunchBreaksService {
             break2: paid[1] ?? ordered[ordered.length - 1] ?? null,
         };
 
-        const usedIds = new Set<string>();
+        const usedBreaks = new Set<any>();
         const typed: GeneratedBreak[] = [];
         for (const type of ['break1', 'lunch', 'break2'] as BreakType[]) {
             const candidate = byType[type];
-            if (!candidate || usedIds.has(candidate.id)) continue;
-            usedIds.add(candidate.id);
+            const identity = candidate.id ?? candidate;
+            if (!candidate || usedBreaks.has(identity)) continue;
+            usedBreaks.add(identity);
             typed.push({
                 type,
                 startTime: candidate.startTime.toISOString(),

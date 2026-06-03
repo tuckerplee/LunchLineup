@@ -2,6 +2,8 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { AdminController } from './admin.controller';
 import { BadRequestException } from '@nestjs/common';
 
+const superAdminReq = { user: { role: 'SUPER_ADMIN', permissions: ['admin_portal:access'], sub: 'admin-1' } };
+
 describe('AdminController credits', () => {
     let controller: AdminController;
     let prisma: any;
@@ -54,7 +56,7 @@ describe('AdminController credits', () => {
             },
         ]);
 
-        const result = await controller.credits({ user: { role: 'SUPER_ADMIN' } }, '25');
+        const result = await controller.credits(superAdminReq, '25');
 
         expect(prisma.tenant.findMany).toHaveBeenCalledWith({
             where: { deletedAt: null },
@@ -108,7 +110,7 @@ describe('AdminController credits', () => {
         meteringService.grantCredits.mockResolvedValue(175);
 
         const result = await controller.grantCredits(
-            { user: { role: 'SUPER_ADMIN' } },
+            superAdminReq,
             { tenantId: 'tenant-1', amount: 50, reason: 'Correction grant' },
         );
 
@@ -161,7 +163,7 @@ describe('AdminController user limits', () => {
         });
         prisma.user.count.mockResolvedValue(10);
 
-        await expect(controller.activateUser({ user: { role: 'SUPER_ADMIN' } }, 'user-1')).rejects.toThrow(/User limit reached/i);
+        await expect(controller.activateUser(superAdminReq, 'user-1')).rejects.toThrow(/User limit reached/i);
         expect(prisma.user.update).not.toHaveBeenCalled();
     });
 
@@ -174,7 +176,7 @@ describe('AdminController user limits', () => {
 
         await expect(
             controller.updateUser(
-                { user: { role: 'SUPER_ADMIN' } },
+                superAdminReq,
                 'user-1',
                 { tenantId: 'tenant-target' },
             ),
@@ -211,7 +213,7 @@ describe('AdminController tenant updates', () => {
         prisma.tenant.findUnique.mockResolvedValue({ id: 'tenant-1', deletedAt: null });
 
         const result = await controller.updateTenant(
-            { user: { role: 'SUPER_ADMIN', sub: 'admin-1' } },
+            superAdminReq,
             'tenant-1',
             { planTier: 'STARTER' },
         );
@@ -235,7 +237,7 @@ describe('AdminController tenant updates', () => {
 
         await expect(
             controller.updateTenant(
-                { user: { role: 'SUPER_ADMIN', sub: 'admin-1' } },
+                superAdminReq,
                 'missing-tenant',
                 { planTier: 'STARTER' },
             ),

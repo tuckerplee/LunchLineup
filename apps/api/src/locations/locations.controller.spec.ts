@@ -4,6 +4,7 @@ import { LocationsController } from './locations.controller';
 
 describe('LocationsController', () => {
     let controller: LocationsController;
+    const writeReq = { user: { tenantId: 'tenant-1', role: 'STAFF', permissions: ['locations:write'] } };
 
     beforeEach(() => {
         controller = new LocationsController();
@@ -32,9 +33,8 @@ describe('LocationsController', () => {
             $transaction: transaction,
         };
 
-        const req = { user: { tenantId: 'tenant-1', role: 'STAFF' } };
         const body = { name: 'Downtown Bistro', tenantName: 'Acme Dining' };
-        const result = await controller.create(body, req);
+        const result = await controller.create(body, writeReq);
 
         expect(transaction).toHaveBeenCalledOnce();
         expect(tenantFindUniqueOrThrow).toHaveBeenCalledWith({
@@ -98,7 +98,7 @@ describe('LocationsController', () => {
             $transaction: transaction,
         };
 
-        await expect(controller.create({ name: 'Downtown Bistro', tenantName: 'Acme Dining' }, { user: { tenantId: 'tenant-1', role: 'STAFF' } }))
+        await expect(controller.create({ name: 'Downtown Bistro', tenantName: 'Acme Dining' }, writeReq))
             .rejects
             .toBeInstanceOf(ForbiddenException);
 

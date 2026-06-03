@@ -2,6 +2,9 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { BadRequestException, ForbiddenException } from '@nestjs/common';
 import { SettingsController } from './settings.controller';
 
+const settingsReadReq = { user: { tenantId: 'tenant-1', role: 'MANAGER', permissions: ['settings:read'] } };
+const settingsWriteReq = { user: { tenantId: 'tenant-1', role: 'ADMIN', permissions: ['settings:read', 'settings:write'] } };
+
 describe('SettingsController', () => {
     let controller: SettingsController;
     let prisma: any;
@@ -46,12 +49,7 @@ describe('SettingsController', () => {
             },
         });
 
-        const result = await controller.getSettings({
-            user: {
-                tenantId: 'tenant-1',
-                role: 'MANAGER',
-            },
-        });
+        const result = await controller.getSettings(settingsReadReq);
 
         expect(prisma.tenant.findUniqueOrThrow).toHaveBeenCalledWith({
             where: { id: 'tenant-1' },
@@ -99,7 +97,7 @@ describe('SettingsController', () => {
 
         const result = await controller.updateGeneral(
             { name: 'Acme HQ', slug: 'acme-hq', timezone: 'America/Los_Angeles' },
-            { user: { tenantId: 'tenant-1', role: 'ADMIN' } },
+            settingsWriteReq,
         );
 
         expect(prisma.tenant.update).toHaveBeenCalledWith({
@@ -187,7 +185,7 @@ describe('SettingsController', () => {
 
         const result = await controller.updateTeam(
             { defaultInviteRole: 'MANAGER', shiftApprovalPolicy: 'ADMIN_APPROVAL' },
-            { user: { tenantId: 'tenant-1', role: 'SUPER_ADMIN' } },
+            settingsWriteReq,
         );
 
         expect(prisma.tenantSetting.upsert).toHaveBeenCalledWith({
@@ -268,7 +266,7 @@ describe('SettingsController', () => {
                 ssoOidcOnly: true,
                 oidcIssuerUrl: 'https://auth.example.com',
             },
-            { user: { tenantId: 'tenant-1', role: 'ADMIN' } },
+            settingsWriteReq,
         );
 
         expect(prisma.tenantSetting.upsert).toHaveBeenCalledWith(expect.objectContaining({
@@ -302,7 +300,7 @@ describe('SettingsController', () => {
         await expect(
             controller.updateTeam(
                 { defaultInviteRole: 'LEAD' },
-                { user: { tenantId: 'tenant-1', role: 'ADMIN' } },
+                settingsWriteReq,
             ),
         ).rejects.toBeInstanceOf(BadRequestException);
 
@@ -311,7 +309,7 @@ describe('SettingsController', () => {
                 {
                     sessionTimeoutMinutes: 0,
                 },
-                { user: { tenantId: 'tenant-1', role: 'ADMIN' } },
+                settingsWriteReq,
             ),
         ).rejects.toBeInstanceOf(BadRequestException);
 
@@ -320,7 +318,7 @@ describe('SettingsController', () => {
                 {
                     oidcIssuerUrl: 'ftp://issuer.example.com',
                 },
-                { user: { tenantId: 'tenant-1', role: 'ADMIN' } },
+                settingsWriteReq,
             ),
         ).rejects.toBeInstanceOf(BadRequestException);
     });

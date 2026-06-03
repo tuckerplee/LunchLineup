@@ -10,6 +10,7 @@
     "build": "turbo run build",
     "dev": "turbo run dev",
     "lint": "turbo run lint",
+    "postinstall": "npm run generate --workspace @lunchlineup/db",
     "test": "turbo run test",
     "test:migration": "node --test tests/**/*.test.mjs",
     "typecheck": "npm run typecheck --workspaces --if-present",
@@ -22,6 +23,7 @@
     "@typescript-eslint/eslint-plugin": "^8.60.1",
     "@typescript-eslint/parser": "^8.60.1",
     "@vitest/browser": "^4.1.8",
+    "@vitest/coverage-v8": "^4.1.8",
     "ajv": "^8.18.0",
     "eslint": "^10.4.1",
     "file-type": "^21.3.1",
@@ -29,5 +31,9 @@
     "qs": "^6.14.2",
     "turbo": "latest",
     "vitest": "^4.1.8"
+  },
+  "optionalDependencies": {
+    "@next/swc-linux-x64-gnu": "^16.2.7",
+    "@next/swc-linux-x64-musl": "^16.2.7"
   }
 }

@@ -20,6 +20,14 @@ Run the full workspace test suite:
 npm test
 ```
 
+Run the CI unit gate with coverage:
+
+```bash
+npx turbo run test -- --coverage
+```
+
+The API coverage thresholds are a ratcheted baseline for the current rebuild state: 40% lines, 39% statements, 38% functions, and 34% branches. Raise these thresholds as migration coverage expands. The web Storybook tests run through Vitest browser mode, so CI installs the Playwright Chromium browser before the unit gate.
+
 Run browser smoke tests from the web app when the stack is available:
 
 ```bash
