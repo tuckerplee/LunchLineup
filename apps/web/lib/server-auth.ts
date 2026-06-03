@@ -26,8 +26,8 @@ export interface ServerUser {
  * Read the current user from middleware-injected request headers.
  * Returns null if the headers aren't set (e.g., unauthenticated paths).
  */
-export function getServerUser(): ServerUser | null {
-    const headerStore = headers();
+export async function getServerUser(): Promise<ServerUser | null> {
+    const headerStore = await headers();
     const id = headerStore.get('x-user-id');
     const role = headerStore.get('x-user-role') as UserRole | null;
     const tenantId = headerStore.get('x-tenant-id');
@@ -57,8 +57,8 @@ export function getServerUser(): ServerUser | null {
 /**
  * Get current user or redirect to login if not authenticated.
  */
-export function requireAuth(): ServerUser {
-    const user = getServerUser();
+export async function requireAuth(): Promise<ServerUser> {
+    const user = await getServerUser();
     if (!user) {
         authDebug('require_auth_redirect_login');
         redirect('/auth/login');
@@ -69,8 +69,8 @@ export function requireAuth(): ServerUser {
 /**
  * Require one of the specified roles or redirect to /dashboard.
  */
-export function requireRole(allowed: UserRole[]): ServerUser {
-    const user = requireAuth();
+export async function requireRole(allowed: UserRole[]): Promise<ServerUser> {
+    const user = await requireAuth();
     if (!allowed.includes(user.role as UserRole)) {
         authDebug('require_role_redirect_dashboard', { role: user.role, allowed });
         redirect('/dashboard');
@@ -79,8 +79,8 @@ export function requireRole(allowed: UserRole[]): ServerUser {
     return user;
 }
 
-export function requirePermission(permission: string): ServerUser {
-    const user = requireAuth();
+export async function requirePermission(permission: string): Promise<ServerUser> {
+    const user = await requireAuth();
     if (!user.permissions.includes(permission)) {
         authDebug('require_permission_redirect_dashboard', { permission, role: user.role });
         redirect('/dashboard');

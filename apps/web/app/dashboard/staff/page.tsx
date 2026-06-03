@@ -1,8 +1,8 @@
 import { requirePermission, canPermission } from '@/lib/server-auth';
 import { StaffWorkspace } from './StaffWorkspace';
 
-export default function StaffPage() {
-    const user = requirePermission('users:read');
+export default async function StaffPage() {
+    const user = await requirePermission('users:read');
     return (
         <StaffWorkspace
             canManage={canPermission(user, 'users:write')}

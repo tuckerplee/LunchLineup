@@ -11,8 +11,8 @@ const ADMIN_NAV = [
     { href: '/admin/plans', label: 'Plans', icon: '📦' },
 ];
 
-export default function AdminLayout({ children }: { children: React.ReactNode }) {
-    const user = getServerUser();
+export default async function AdminLayout({ children }: { children: React.ReactNode }) {
+    const user = await getServerUser();
     if (!user || !user.permissions.includes('admin_portal:access')) redirect('/dashboard');
 
     return (
