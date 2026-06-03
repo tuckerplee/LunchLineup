@@ -13,10 +13,12 @@ import {
   LogOut,
   MapPin,
   Settings,
+  Shield,
   Store,
   Users,
   UtensilsCrossed,
 } from 'lucide-react';
+import type { LucideIcon } from 'lucide-react';
 
 type DashboardRole = 'SUPER_ADMIN' | 'ADMIN' | 'MANAGER' | 'STAFF';
 type NotificationType = 'INFO' | 'SUCCESS' | 'WARNING' | 'ERROR' | 'SCHEDULE_PUBLISHED' | 'SHIFT_ASSIGNED' | 'SHIFT_CHANGED';
@@ -39,8 +41,16 @@ type DashboardNotification = {
   readAt: string | null;
   createdAt: string;
 };
+type DashboardNavItem = {
+  href: string;
+  label: string;
+  icon: LucideIcon;
+  exact: boolean;
+  priority?: 'strong';
+  badge?: number;
+};
 
-const NAV_ITEMS = [
+const NAV_ITEMS: DashboardNavItem[] = [
   { href: '/dashboard', label: 'Overview', icon: LayoutGrid, exact: true },
   { href: '/dashboard/scheduling', label: 'Scheduling', icon: CalendarDays, exact: false, priority: 'strong', badge: 3 },
   { href: '/dashboard/lunch-breaks', label: 'Lunch & Breaks', icon: UtensilsCrossed, exact: false, badge: 1 },
@@ -48,6 +58,8 @@ const NAV_ITEMS = [
   { href: '/dashboard/locations', label: 'Locations', icon: MapPin, exact: false },
   { href: '/dashboard/settings', label: 'Settings', icon: Settings, exact: false },
 ];
+
+const ADMIN_NAV_ITEM: DashboardNavItem = { href: '/admin', label: 'Admin Console', icon: Shield, exact: false };
 
 export default function DashboardLayout({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
@@ -176,12 +188,13 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
 
   const visibleNavItems = useMemo(() => {
     const permissions = user?.permissions ?? [];
-    return NAV_ITEMS.filter((item) => {
+    const navItems = NAV_ITEMS.filter((item) => {
       if (item.href === '/dashboard/staff') return permissions.includes('users:read');
       if (item.href === '/dashboard/locations') return permissions.includes('locations:read');
       if (item.href === '/dashboard/settings') return permissions.includes('settings:read');
       return true;
     });
+    return permissions.includes('admin_portal:access') ? [...navItems, ADMIN_NAV_ITEM] : navItems;
   }, [user]);
 
   const currentPage = useMemo(() => {

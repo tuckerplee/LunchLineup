@@ -211,13 +211,6 @@ export async function middleware(request: NextRequest) {
     const hasPermission = (permission: string) => permissions.includes(permission);
     const isSuperAdmin = hasPermission('admin_portal:access');
 
-    if (isSuperAdmin && pathname.startsWith('/dashboard')) {
-        const adminUrl = request.nextUrl.clone();
-        adminUrl.pathname = '/admin';
-        authDebug('redirect_super_admin_to_admin', { to: adminUrl.pathname });
-        return applyRefreshedCookie(NextResponse.redirect(adminUrl));
-    }
-
     if (!isSuperAdmin && pathname.startsWith('/admin')) {
         const dashboardUrl = request.nextUrl.clone();
         dashboardUrl.pathname = '/dashboard';

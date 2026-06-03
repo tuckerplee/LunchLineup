@@ -4,6 +4,7 @@ import { redirect } from 'next/navigation';
 import { LunchLineupMark } from '@/components/branding/LunchLineupMark';
 
 const ADMIN_NAV = [
+    { href: '/dashboard', label: 'Team Workspace', icon: '<' },
     { href: '/admin', label: 'Overview', icon: '◈' },
     { href: '/admin/tenants', label: 'Tenants', icon: '🏢' },
     { href: '/admin/users', label: 'Users', icon: '👥' },
