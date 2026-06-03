@@ -161,7 +161,7 @@ jobs:
           cache: 'npm'
       - run: npm ci
       - name: "9. Run Migrations"
-        run: npx prisma migrate deploy
+        run: npx prisma migrate deploy --schema packages/db/prisma/schema.prisma
         env:
           DATABASE_URL: postgresql://root:testpass@localhost:5432/lunchlineup_test
       - name: "10. Integration Tests"
