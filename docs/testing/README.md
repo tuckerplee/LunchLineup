@@ -87,3 +87,7 @@ The script must confirm:
 - the current commit exists on the upstream GitHub branch
 - the target server reports the same `DEPLOYED_GIT_SHA` or the operator explicitly records the first deploy
 - the deploy artifact comes from Git, not direct server edits
+
+## Disposable Dev Restore
+
+VM107 restore work uses `docs/runbooks/disposable-dev-server.md` and `scripts/bootstrap-vm107-dev.sh`. The disposable path must preserve the same deploy discipline: bootstrap from the GitHub branch, restore only already-available data, write `DEPLOYED_GIT_SHA`, and validate direct plus private proxy health before declaring access restored.

@@ -4,6 +4,7 @@
 
 - `README.md`: this scripts folder guide.
 - `backup.sh`: backup script for platform operations.
+- `bootstrap-vm107-dev.sh`: disposable VM107 dev bootstrap and optional Postgres restore helper.
 - `chaos-experiment.sh`: destructive or resilience experiment helper.
 - `deploy-vm217-remote.sh`: legacy VM217 deploy helper.
 - `download-assets.sh`: asset download helper.
@@ -34,3 +35,7 @@ node scripts/import-legacy-users.mjs /tmp/legacy-users-20260603.json --report /t
 ## Deploy Rule
 
 Run `verify-deploy-source.ps1` or `verify-deploy-source.sh` before server rollout. A server deploy must match a clean GitHub-pushed SHA and should leave or verify `DEPLOYED_GIT_SHA`.
+
+## Disposable VM107 Dev Restore
+
+`bootstrap-vm107-dev.sh` runs on a fresh private Debian dev VM. It installs Docker, clones the GitHub branch, creates or reuses `/opt/lunchlineup-secrets/runtime.env`, starts the Docker Compose stack, optionally restores a `.sql`, `.sql.zst`, or `.sql.zst.gpg` Postgres dump, writes `DEPLOYED_GIT_SHA`, and validates direct plus `dev.lunchlineup.com` host-header health. It is for disposable development recovery only, not production VM106.

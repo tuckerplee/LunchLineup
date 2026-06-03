@@ -17,6 +17,7 @@ function exists(path) {
 test('deploy-source verification scripts exist for Windows and Linux operators', () => {
   assert.equal(exists('scripts/verify-deploy-source.ps1'), true);
   assert.equal(exists('scripts/verify-deploy-source.sh'), true);
+  assert.equal(exists('scripts/bootstrap-vm107-dev.sh'), true);
 });
 
 test('deploy-source scripts require clean Git state and upstream push proof', () => {
@@ -36,4 +37,21 @@ test('deployment docs keep GitHub and server artifact discipline explicit', () =
   assert.match(doc, /server deploy/i);
   assert.match(doc, /GitHub/i);
   assert.match(doc, /DEPLOYED_GIT_SHA/);
+});
+
+test('disposable VM107 restore is documented and tied to GitHub deploy proof', () => {
+  const script = read('scripts/bootstrap-vm107-dev.sh');
+  const runbook = read('docs/runbooks/disposable-dev-server.md');
+  const runbooksReadme = read('docs/runbooks/README.md');
+  const scriptsReadme = read('scripts/README.md');
+
+  assert.match(script, /migration-testing-baseline/);
+  assert.match(script, /DEPLOYED_GIT_SHA/);
+  assert.match(script, /BACKUP_FILE/);
+  assert.match(script, /dev\.lunchlineup\.com/);
+  assert.match(runbook, /15 minutes/i);
+  assert.match(runbook, /GitHub/i);
+  assert.match(runbook, /DEPLOYED_GIT_SHA/);
+  assert.match(runbooksReadme, /disposable-dev-server\.md/);
+  assert.match(scriptsReadme, /bootstrap-vm107-dev\.sh/);
 });
