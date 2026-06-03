@@ -11,7 +11,7 @@ function Fail($Message) {
 }
 
 $currentSha = (git rev-parse HEAD).Trim()
-$status = (git status --porcelain).Trim()
+$status = ((git status --porcelain) -join "`n").Trim()
 if ($status.Length -gt 0) {
     Fail "Working tree is dirty; commit and push before deploying."
 }
