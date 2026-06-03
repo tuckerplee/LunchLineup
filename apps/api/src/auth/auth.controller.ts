@@ -36,10 +36,19 @@ export class AuthController {
         this.logger.log(`[auth-debug] ${JSON.stringify({ scope: 'api.auth', event, ...details })}`);
     }
 
+    private useSecureCookies(): boolean {
+        const configured = process.env.COOKIE_SECURE;
+        if (configured !== undefined) {
+            return ['1', 'true', 'yes', 'on'].includes(configured.toLowerCase());
+        }
+        return process.env.NODE_ENV === 'production';
+    }
+
     private setSessionCookies(res: Response, accessToken: string, refreshToken: string, csrfToken: string) {
+        const secure = this.useSecureCookies();
         const cookieOptions = {
             httpOnly: true,
-            secure: process.env.NODE_ENV === 'production',
+            secure,
             sameSite: 'strict' as const,
             path: '/',
         };
@@ -48,7 +57,7 @@ export class AuthController {
         res.cookie('refresh_token', refreshToken, { ...cookieOptions, maxAge: REFRESH_TOKEN_COOKIE_MAX_AGE_MS });
         res.cookie('csrf_token', csrfToken, {
             httpOnly: false,
-            secure: process.env.NODE_ENV === 'production',
+            secure,
             sameSite: 'strict',
             path: '/',
         });
@@ -254,7 +263,7 @@ export class AuthController {
         this.authDebug('refresh_success', { hasAccessToken: Boolean(result?.accessToken) });
 
         res.cookie('access_token', result.accessToken, {
-            httpOnly: true, secure: process.env.NODE_ENV === 'production',
+            httpOnly: true, secure: this.useSecureCookies(),
             sameSite: 'strict' as const, path: '/', maxAge: ACCESS_TOKEN_COOKIE_MAX_AGE_MS,
         });
 

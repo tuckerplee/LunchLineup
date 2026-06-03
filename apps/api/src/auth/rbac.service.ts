@@ -67,6 +67,7 @@ const DEFAULT_ROLE_DEFINITIONS: DefaultRoleDefinition[] = [
         permissions: [
             'dashboard:access',
             'auth:login_email',
+            'auth:login_pin',
             'users:read',
             'users:write',
             'users:admin',

@@ -152,7 +152,7 @@ FROM "Role" r
 JOIN "Permission" p ON
   (r."slug" = 'super-admin')
   OR (r."slug" = 'admin' AND p."key" IN (
-    'dashboard:access','auth:login_email','users:read','users:write','users:admin','roles:read','roles:write','roles:assign',
+    'dashboard:access','auth:login_email','auth:login_pin','users:read','users:write','users:admin','roles:read','roles:write','roles:assign',
     'locations:read','locations:write','locations:delete','shifts:read','shifts:write','shifts:delete','schedules:read',
     'schedules:write','schedules:publish','lunch_breaks:read','lunch_breaks:write','lunch_breaks:delete','notifications:read',
     'notifications:write','billing:read','billing:write','settings:read','settings:write'

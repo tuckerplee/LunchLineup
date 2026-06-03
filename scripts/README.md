@@ -10,6 +10,7 @@
 - `dr-drill.sh`: disaster recovery drill helper.
 - `final-migration.sh`: final migration helper.
 - `generate-sbom.sh`: software bill of materials generation helper.
+- `import-legacy-users.mjs`: imports legacy PHP `users` and `staff` export JSON into the Prisma tenant/user/RBAC schema and writes temporary PINs to a private CSV report.
 - `load-test.sh`: load test helper.
 - `production-tuning.sh`: production tuning helper.
 - `pull-vm217-logs.sh`: VM217 log pull helper.
@@ -19,6 +20,16 @@
 - `setup-vm217.sh`: legacy VM217 setup helper.
 - `verify-deploy-source.ps1`: Windows deploy-source verification script.
 - `verify-deploy-source.sh`: Linux deploy-source verification script.
+
+## Legacy User Import
+
+`import-legacy-users.mjs` reads the VM106 legacy user export JSON, creates tenants, locations, users, PIN hashes, and RBAC assignments in the Prisma/Postgres schema, and writes the temporary PIN report outside the repo by default. Run it only against an isolated dev/staging database unless production cutover has been explicitly approved.
+
+Example:
+
+```bash
+node scripts/import-legacy-users.mjs /tmp/legacy-users-20260603.json --report /tmp/imported-user-pins-20260603.csv
+```
 
 ## Deploy Rule
 
