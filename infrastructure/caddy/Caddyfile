@@ -1,4 +1,4 @@
-dev.lunchlineup.com, lunchlineup-dev.proxmox1.lan, lunchlineup-dev-vm.proxmox1.lan, 10.231.10.108, 10.231.10.108:80, localhost:80 {
+http://dev.lunchlineup.com, http://lunchlineup-dev.proxmox1.lan, http://lunchlineup-dev-vm.proxmox1.lan, http://10.231.10.108, http://10.231.10.108:80, http://localhost:80 {
     # Route API requests to the NestJS backend
     handle /api/v1/* {
         uri strip_prefix /api

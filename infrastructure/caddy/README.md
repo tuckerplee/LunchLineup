@@ -8,7 +8,7 @@
 
 ## Dev Route
 
-`Caddyfile` is configured for VM107 private development routes:
+`Caddyfile` is configured for HTTP-only VM107 private development routes:
 
 - `dev.lunchlineup.com`
 - `lunchlineup-dev.proxmox1.lan`
