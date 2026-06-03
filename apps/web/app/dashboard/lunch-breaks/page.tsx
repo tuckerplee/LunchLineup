@@ -351,11 +351,7 @@ function minutesToTimeValue(totalMinutes: number): string {
 }
 
 function defaultManualShifts(): ManualShiftRow[] {
-  return [
-    { id: 'manual-1', employeeName: 'Alex', startTime: '05:00', endTime: '13:00' },
-    { id: 'manual-2', employeeName: 'Blair', startTime: '10:00', endTime: '18:00' },
-    { id: 'manual-3', employeeName: 'Casey', startTime: '11:00', endTime: '19:00' },
-  ];
+  return [];
 }
 
 function getInitials(name: string): string {

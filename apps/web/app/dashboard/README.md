@@ -7,8 +7,8 @@ Team workspace routes for schedules, staff, locations, lunch breaks, settings, a
 - `layout.tsx` - Authenticated dashboard shell, navigation, notifications, and role-aware links.
 - `page.tsx` - Dashboard overview route.
 - `DashboardWorkspace.tsx` - Client dashboard overview with schedule and usage summaries.
-- `scheduling/` - Schedule calendar and schedule editing flow.
-- `lunch-breaks/` - Lunch and break tracking flow with usage credit display.
+- `scheduling/` - Tenant-scoped calendar and schedule editing flow; see `scheduling/README.md`.
+- `lunch-breaks/` - Lunch and break tracking flow with usage credit display; see `lunch-breaks/README.md`.
 - `staff/` - Staff management workspace.
 - `locations/` - Location and store management workspace.
 - `settings/` - Tenant settings workspace.

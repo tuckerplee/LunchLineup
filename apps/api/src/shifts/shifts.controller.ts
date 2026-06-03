@@ -1,4 +1,4 @@
-import { Controller, Get, Post, Put, Delete, Param, Body, Req, UseGuards, SetMetadata, Query, HttpCode, HttpStatus, NotFoundException } from '@nestjs/common';
+import { Controller, Get, Post, Put, Delete, Param, Body, Req, UseGuards, SetMetadata, Query, HttpCode, HttpStatus, NotFoundException, BadRequestException } from '@nestjs/common';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { RbacGuard } from '../auth/rbac.guard';
 import { PrismaClient } from '@prisma/client';
@@ -31,12 +31,21 @@ export class ShiftsController {
         const where: any = { tenantId, deletedAt: null };
         if (locationId) where.locationId = locationId;
         if (scheduleId) where.scheduleId = scheduleId;
-        if (startDate && endDate) {
-            where.startTime = { gte: new Date(startDate) };
-            where.endTime = { lte: new Date(endDate) };
+        if (startDate || endDate) {
+            const and: any[] = [];
+            if (startDate) and.push({ endTime: { gt: new Date(startDate) } });
+            if (endDate) and.push({ startTime: { lt: new Date(endDate) } });
+            where.AND = and;
         }
 
-        const shifts = await this.prisma.shift.findMany({ where });
+        const shifts = await this.prisma.shift.findMany({
+            where,
+            orderBy: { startTime: 'asc' },
+            include: {
+                user: { select: { id: true, name: true, role: true } },
+                breaks: { orderBy: { startTime: 'asc' } },
+            },
+        });
         return { data: shifts, tenantId };
     }
 
@@ -51,7 +60,7 @@ export class ShiftsController {
             where: {
                 tenantId: req.user.tenantId,
                 deletedAt: null,
-                role: { in: ['MANAGER', 'STAFF'] },
+                role: { in: ['ADMIN', 'MANAGER', 'STAFF'] },
             },
             orderBy: { name: 'asc' },
             select: {
@@ -91,6 +100,11 @@ export class ShiftsController {
         endTime: string;
         role?: string;
     }, @Req() req: any) {
+        await this.assertLocationInTenant(body.locationId, req.user.tenantId);
+        if (body.userId) {
+            await this.assertUserInTenant(body.userId, req.user.tenantId);
+        }
+
         const shift = await this.prisma.shift.create({
             data: {
                 tenantId: req.user.tenantId,
@@ -132,7 +146,12 @@ export class ShiftsController {
         if (!existingShift) throw new NotFoundException('Shift not found');
 
         const data: any = {};
-        if (Object.prototype.hasOwnProperty.call(body, 'userId')) data.userId = body.userId ?? null;
+        if (Object.prototype.hasOwnProperty.call(body, 'userId')) {
+            if (body.userId) {
+                await this.assertUserInTenant(body.userId, req.user.tenantId);
+            }
+            data.userId = body.userId ?? null;
+        }
         if (body.startTime) data.startTime = new Date(body.startTime);
         if (body.endTime) data.endTime = new Date(body.endTime);
         if (body.role) data.role = body.role;
@@ -225,5 +244,22 @@ export class ShiftsController {
         );
 
         return { updated: updates.length };
+    }
+
+    private async assertLocationInTenant(locationId: string | undefined, tenantId: string) {
+        if (!locationId) throw new BadRequestException('locationId is required');
+        const location = await this.prisma.location.findFirst({
+            where: { id: locationId, tenantId, deletedAt: null },
+            select: { id: true },
+        });
+        if (!location) throw new BadRequestException('Location is not available for this tenant.');
+    }
+
+    private async assertUserInTenant(userId: string, tenantId: string) {
+        const user = await this.prisma.user.findFirst({
+            where: { id: userId, tenantId, deletedAt: null },
+            select: { id: true },
+        });
+        if (!user) throw new BadRequestException('User is not available for this tenant.');
     }
 }

@@ -100,8 +100,11 @@ interface SchedulingGridProps {
 
 const DAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
 
-export function SchedulingGrid({ initialShifts, staffRows = ['Alice J.', 'Bob T.', 'Casey L.', 'Riley P.', 'Jordan M.'] }: SchedulingGridProps) {
+export function SchedulingGrid({ initialShifts, staffRows = [] }: SchedulingGridProps) {
     const [shifts, setShifts] = useState<Shift[]>(initialShifts);
+    const resolvedStaffRows = staffRows.length > 0
+        ? staffRows
+        : Array.from(new Set(initialShifts.map((shift) => shift.userName).filter((name): name is string => Boolean(name))));
 
     const sensors = useSensors(
         useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
@@ -169,12 +172,16 @@ export function SchedulingGrid({ initialShifts, staffRows = ['Alice J.', 'Bob T.
                 </div>
 
                 {/* Staff rows */}
-                {staffRows.map((staffName, rowIdx) => (
+                {resolvedStaffRows.length === 0 ? (
+                    <div style={{ padding: '18px 12px', color: 'var(--text-muted)', fontSize: '0.8125rem' }}>
+                        No staff loaded.
+                    </div>
+                ) : resolvedStaffRows.map((staffName, rowIdx) => (
                     <div key={staffName} style={{
                         display: 'grid',
                         gridTemplateColumns: `100px repeat(7, 1fr)`,
                         background: rowIdx % 2 === 0 ? 'transparent' : 'rgba(255,255,255,0.01)',
-                        borderBottom: rowIdx < staffRows.length - 1 ? '1px solid rgba(255,255,255,0.04)' : 'none',
+                        borderBottom: rowIdx < resolvedStaffRows.length - 1 ? '1px solid rgba(255,255,255,0.04)' : 'none',
                     }}>
                         {/* Staff name cell */}
                         <div style={{

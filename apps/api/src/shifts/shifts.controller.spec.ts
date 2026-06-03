@@ -15,7 +15,11 @@ describe('ShiftsController notifications', () => {
         controller = new ShiftsController(notificationsService);
         prisma = {
             user: {
+                findFirst: vi.fn(),
                 findMany: vi.fn(),
+            },
+            location: {
+                findFirst: vi.fn(),
             },
             shift: {
                 create: vi.fn(),
@@ -26,6 +30,8 @@ describe('ShiftsController notifications', () => {
             $transaction: vi.fn().mockResolvedValue(undefined),
         };
         (controller as any).prisma = prisma;
+        prisma.location.findFirst.mockResolvedValue({ id: 'loc-1' });
+        prisma.user.findFirst.mockResolvedValue({ id: 'user-1' });
     });
 
     it('sends SHIFT_ASSIGNED when creating an assigned shift', async () => {
@@ -92,8 +98,9 @@ describe('ShiftsController notifications', () => {
 
     it('returns manager/staff roster for planner consumers', async () => {
         prisma.user.findMany.mockResolvedValue([
-            { id: 'u1', name: 'Test Manager', role: 'MANAGER' },
-            { id: 'u2', name: 'Test Staff', role: 'STAFF' },
+            { id: 'u1', name: 'Test Admin', role: 'ADMIN' },
+            { id: 'u2', name: 'Test Manager', role: 'MANAGER' },
+            { id: 'u3', name: 'Test Staff', role: 'STAFF' },
         ]);
 
         const result = await controller.staffRoster({ user: { tenantId: 'tenant-1' } });
@@ -102,7 +109,7 @@ describe('ShiftsController notifications', () => {
             where: {
                 tenantId: 'tenant-1',
                 deletedAt: null,
-                role: { in: ['MANAGER', 'STAFF'] },
+                role: { in: ['ADMIN', 'MANAGER', 'STAFF'] },
             },
             orderBy: { name: 'asc' },
             select: {
@@ -113,8 +120,9 @@ describe('ShiftsController notifications', () => {
         });
         expect(result).toEqual({
             data: [
-                { id: 'u1', name: 'Test Manager', role: 'MANAGER' },
-                { id: 'u2', name: 'Test Staff', role: 'STAFF' },
+                { id: 'u1', name: 'Test Admin', role: 'ADMIN' },
+                { id: 'u2', name: 'Test Manager', role: 'MANAGER' },
+                { id: 'u3', name: 'Test Staff', role: 'STAFF' },
             ],
         });
     });

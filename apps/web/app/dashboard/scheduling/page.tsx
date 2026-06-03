@@ -1,17 +1,10 @@
 'use client';
 
-import { useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import dynamic from 'next/dynamic';
 import { Button } from '@/components/ui/button';
-import {
-  CalendarDays,
-  Download,
-  Plus,
-  Settings2,
-  Sparkles,
-  Upload,
-  WandSparkles,
-} from 'lucide-react';
+import { CalendarDays, Download, Plus, RefreshCw, Settings2, Sparkles, Upload, WandSparkles } from 'lucide-react';
+import { fetchJsonWithSession, fetchWithSession } from '@/lib/client-api';
 import type { SchedulerViewMode, StaffScheduleEvent } from '@/components/scheduling/StaffScheduler';
 
 const StaffScheduler = dynamic(
@@ -27,38 +20,20 @@ const StaffScheduler = dynamic(
   },
 );
 
-const TODAY = new Date();
-const WEEK_START = new Date(TODAY);
-WEEK_START.setDate(TODAY.getDate() - ((TODAY.getDay() + 6) % 7));
-
-const RESOURCES = [
-  { id: 'r1', title: 'Alice J.', role: 'MANAGER', avatarInitials: 'AJ', hue: 220 },
-  { id: 'r2', title: 'Bob T.', role: 'CASHIER', avatarInitials: 'BT', hue: 160 },
-  { id: 'r3', title: 'Casey L.', role: 'FLOOR', avatarInitials: 'CL', hue: 40 },
-  { id: 'r4', title: 'Riley P.', role: 'SERVER', avatarInitials: 'RP', hue: 270 },
-  { id: 'r5', title: 'Jordan M.', role: 'KITCHEN', avatarInitials: 'JM', hue: 340 },
-];
-
-const wd = (offsetDays: number, h: number, m = 0) => {
-  const d = new Date(WEEK_START);
-  d.setDate(d.getDate() + offsetDays);
-  d.setHours(h, m, 0, 0);
-  return d.toISOString();
+type StaffRole = 'SUPER_ADMIN' | 'ADMIN' | 'MANAGER' | 'STAFF';
+type StaffRosterItem = { id: string; name: string; role: StaffRole };
+type LocationItem = { id: string; name: string };
+type BreakItem = { startTime: string; endTime: string; paid: boolean };
+type ShiftRecord = {
+  id: string;
+  userId: string | null;
+  locationId: string;
+  startTime: string;
+  endTime: string;
+  role: string | null;
+  user?: { id: string; name: string; role: StaffRole } | null;
+  breaks?: BreakItem[];
 };
-
-const EVENTS: StaffScheduleEvent[] = [
-  { id: 'e1', resourceId: 'r1', title: 'Manager', start: wd(0, 9), end: wd(0, 17), extendedProps: { role: 'MANAGER' } },
-  { id: 'e2', resourceId: 'r1', title: 'Manager', start: wd(1, 9), end: wd(1, 17), extendedProps: { role: 'MANAGER' } },
-  { id: 'e3', resourceId: 'r2', title: 'Cashier', start: wd(0, 10), end: wd(0, 18), extendedProps: { role: 'CASHIER' } },
-  { id: 'e4', resourceId: 'r2', title: 'Cashier', start: wd(2, 10), end: wd(2, 18), extendedProps: { role: 'CASHIER' } },
-  { id: 'e5', resourceId: 'r3', title: 'Floor', start: wd(0, 12), end: wd(0, 20), extendedProps: { role: 'FLOOR' } },
-  { id: 'e6', resourceId: 'r3', title: 'Floor', start: wd(1, 12), end: wd(1, 20), extendedProps: { role: 'FLOOR' } },
-  { id: 'e7', resourceId: 'r4', title: 'Server', start: wd(2, 9), end: wd(2, 17), extendedProps: { role: 'SERVER' } },
-  { id: 'e8', resourceId: 'r4', title: 'Server', start: wd(4, 9), end: wd(4, 17), extendedProps: { role: 'SERVER' } },
-  { id: 'e9', resourceId: 'r5', title: 'Kitchen', start: wd(0, 14), end: wd(0, 22), extendedProps: { role: 'KITCHEN' } },
-  { id: 'e10', resourceId: 'r5', title: 'Kitchen', start: wd(2, 14), end: wd(2, 22), extendedProps: { role: 'KITCHEN' } },
-];
-
 type GeneratedAssignment = {
   shiftId: string;
   staffName: string;
@@ -67,6 +42,28 @@ type GeneratedAssignment = {
   breaks: string[];
   risk: 'healthy' | 'watch';
 };
+
+const UNASSIGNED_RESOURCE_ID = 'unassigned';
+const TODAY = new Date();
+
+function getCsrfTokenFromCookie(): string {
+  if (typeof document === 'undefined') return '';
+  const pair = document.cookie.split('; ').find((entry) => entry.startsWith('csrf_token='));
+  return pair ? decodeURIComponent(pair.split('=')[1] ?? '') : '';
+}
+
+function jsonWriteInit(method: 'POST' | 'PUT', payload: unknown): RequestInit {
+  const csrfToken = getCsrfTokenFromCookie();
+  return {
+    method,
+    credentials: 'include',
+    headers: {
+      'Content-Type': 'application/json',
+      ...(csrfToken ? { 'x-csrf-token': csrfToken } : {}),
+    },
+    body: JSON.stringify(payload),
+  };
+}
 
 function fmtTime(dateIso: string) {
   return new Date(dateIso).toLocaleTimeString('en-US', {
@@ -83,70 +80,234 @@ function toDateInputValue(date: Date): string {
   return `${y}-${m}-${d}`;
 }
 
-function generateAssignments(events: StaffScheduleEvent[]): GeneratedAssignment[] {
-  return events
-    .filter((event) => !event.extendedProps.kind)
-    .map((event) => {
-      const start = new Date(event.start);
-      const end = new Date(event.end);
-      const durationMins = Math.max(60, Math.floor((end.getTime() - start.getTime()) / 60000));
+function dayRange(dateValue: string) {
+  const start = new Date(`${dateValue}T00:00:00`);
+  const end = new Date(start);
+  end.setDate(start.getDate() + 1);
+  return { start: start.toISOString(), end: end.toISOString() };
+}
 
-      const lunchStart = new Date(start.getTime() + Math.floor(durationMins * 0.5) * 60000);
-      const breakOne = new Date(start.getTime() + Math.floor(durationMins * 0.3) * 60000);
-      const breakTwo = new Date(start.getTime() + Math.floor(durationMins * 0.74) * 60000);
+function shiftRange(dateValue: string, startHour: number, endHour: number) {
+  const start = new Date(`${dateValue}T00:00:00`);
+  start.setHours(startHour, 0, 0, 0);
+  const end = new Date(`${dateValue}T00:00:00`);
+  end.setHours(endHour, 0, 0, 0);
+  return { startTime: start.toISOString(), endTime: end.toISOString() };
+}
 
-      const staff = RESOURCES.find((resource) => resource.id === event.resourceId);
-      const risk = durationMins > 480 && lunchStart.getHours() >= 16 ? 'watch' : 'healthy';
+function getInitials(name: string): string {
+  const parts = name.trim().split(/\s+/).filter(Boolean).slice(0, 2);
+  if (parts.length === 0) return 'LL';
+  return parts.map((part) => part[0]?.toUpperCase() ?? '').join('');
+}
 
-      return {
-        shiftId: event.id,
-        staffName: staff?.title ?? 'Unknown',
-        role: event.extendedProps.role,
-        lunch: `${fmtTime(lunchStart.toISOString())}-${fmtTime(new Date(lunchStart.getTime() + 30 * 60000).toISOString())}`,
-        breaks: [
-          `${fmtTime(breakOne.toISOString())}-${fmtTime(new Date(breakOne.getTime() + 15 * 60000).toISOString())}`,
-          `${fmtTime(breakTwo.toISOString())}-${fmtTime(new Date(breakTwo.getTime() + 15 * 60000).toISOString())}`,
-        ],
-        risk,
-      };
-    });
+function hueForName(name: string): number {
+  let hash = 0;
+  for (let i = 0; i < name.length; i += 1) {
+    hash = (hash << 5) - hash + name.charCodeAt(i);
+    hash |= 0;
+  }
+  return Math.abs(hash) % 360;
+}
+
+function normalizeRole(role: string | null | undefined): string {
+  if (!role) return 'STAFF';
+  return role.toUpperCase();
+}
+
+function shiftToEvent(shift: ShiftRecord): StaffScheduleEvent {
+  return {
+    id: shift.id,
+    resourceId: shift.userId ?? UNASSIGNED_RESOURCE_ID,
+    title: normalizeRole(shift.role ?? shift.user?.role),
+    start: shift.startTime,
+    end: shift.endTime,
+    extendedProps: { role: normalizeRole(shift.role ?? shift.user?.role) },
+  };
+}
+
+function breakToEvents(shift: ShiftRecord): StaffScheduleEvent[] {
+  return (shift.breaks ?? []).map((item, index) => ({
+    id: `${shift.id}-break-${index}`,
+    resourceId: shift.userId ?? UNASSIGNED_RESOURCE_ID,
+    title: item.paid ? 'Break' : 'Lunch',
+    start: item.startTime,
+    end: item.endTime,
+    extendedProps: {
+      role: item.paid ? 'BREAK' : 'LUNCH',
+      kind: item.paid ? 'break' : 'lunch',
+    },
+  }));
+}
+
+function shiftsToEvents(shifts: ShiftRecord[]): StaffScheduleEvent[] {
+  return shifts.flatMap((shift) => [shiftToEvent(shift), ...breakToEvents(shift)]);
+}
+
+function assignmentFromShift(shift: ShiftRecord): GeneratedAssignment {
+  const paid = (shift.breaks ?? []).filter((item) => item.paid);
+  const unpaid = (shift.breaks ?? []).filter((item) => !item.paid);
+  const durationMins = Math.max(60, Math.floor((new Date(shift.endTime).getTime() - new Date(shift.startTime).getTime()) / 60000));
+  const lunch = unpaid[0];
+  return {
+    shiftId: shift.id,
+    staffName: shift.user?.name ?? 'Open shift',
+    role: normalizeRole(shift.role ?? shift.user?.role),
+    lunch: lunch ? `${fmtTime(lunch.startTime)}-${fmtTime(lunch.endTime)}` : 'Unassigned',
+    breaks: paid.map((item) => `${fmtTime(item.startTime)}-${fmtTime(item.endTime)}`),
+    risk: durationMins > 480 && (!lunch || new Date(lunch.startTime).getHours() >= 16) ? 'watch' : 'healthy',
+  };
 }
 
 export default function SchedulingPage() {
+  const [isLoading, setIsLoading] = useState(true);
   const [isGenerating, setIsGenerating] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [isSaved, setIsSaved] = useState(false);
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [viewMode, setViewMode] = useState<SchedulerViewMode>('threeDay');
   const [selectedDate, setSelectedDate] = useState(toDateInputValue(TODAY));
-  const [scheduleEvents, setScheduleEvents] = useState<StaffScheduleEvent[]>(EVENTS);
+  const [staff, setStaff] = useState<StaffRosterItem[]>([]);
+  const [locations, setLocations] = useState<LocationItem[]>([]);
+  const [shifts, setShifts] = useState<ShiftRecord[]>([]);
   const [generated, setGenerated] = useState<GeneratedAssignment[]>([]);
+  const [error, setError] = useState<string | null>(null);
+
+  const loadSchedule = useCallback(async (dateValue: string) => {
+    setIsLoading(true);
+    setError(null);
+    try {
+      const range = dayRange(dateValue);
+      const [staffPayload, locationsPayload, shiftsPayload] = await Promise.all([
+        fetchJsonWithSession<{ data: StaffRosterItem[] }>('/shifts/staff-roster'),
+        fetchJsonWithSession<{ data: LocationItem[] }>('/locations'),
+        fetchJsonWithSession<{ data: ShiftRecord[] }>(`/shifts?startDate=${encodeURIComponent(range.start)}&endDate=${encodeURIComponent(range.end)}`),
+      ]);
+      setStaff(staffPayload.data ?? []);
+      setLocations(locationsPayload.data ?? []);
+      setShifts(shiftsPayload.data ?? []);
+      setGenerated((shiftsPayload.data ?? []).filter((shift) => (shift.breaks ?? []).length > 0).map(assignmentFromShift));
+    } catch (err) {
+      setError((err as Error).message);
+      setStaff([]);
+      setLocations([]);
+      setShifts([]);
+      setGenerated([]);
+    } finally {
+      setIsLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    void loadSchedule(selectedDate);
+  }, [loadSchedule, selectedDate]);
+
+  const resources = useMemo(() => {
+    const staffResources = staff.map((person) => ({
+      id: person.id,
+      title: person.name || 'Unnamed',
+      role: person.role,
+      avatarInitials: getInitials(person.name),
+      hue: hueForName(person.id || person.name),
+    }));
+    return [
+      ...staffResources,
+      { id: UNASSIGNED_RESOURCE_ID, title: 'Open Shifts', role: 'UNASSIGNED', avatarInitials: 'OS', hue: 210 },
+    ];
+  }, [staff]);
+
+  const scheduleEvents = useMemo(() => shiftsToEvents(shifts), [shifts]);
 
   const dateLabel = useMemo(
     () => new Date(`${selectedDate}T00:00:00`).toLocaleDateString('en-US', { weekday: 'long', month: 'short', day: 'numeric' }),
     [selectedDate],
   );
 
-  const shiftsForDate = useMemo(() => {
-    return scheduleEvents.filter((event) => {
-      const day = new Date(event.start).toISOString().slice(0, 10);
-      return day === selectedDate && !event.extendedProps.kind;
-    });
-  }, [scheduleEvents, selectedDate]);
+  const addShift = async () => {
+    setIsSaved(false);
+    setError(null);
+    const locationId = locations[0]?.id;
+    if (!locationId) {
+      setError('Add a location before creating schedule shifts.');
+      return;
+    }
+
+    const firstStaff = staff[0];
+    const range = shiftRange(selectedDate, 9, 17);
+    try {
+      const created = await fetchJsonWithSession<ShiftRecord>('/shifts', {
+        ...jsonWriteInit('POST', {
+          locationId,
+          userId: firstStaff?.id,
+          role: firstStaff?.role ?? 'STAFF',
+          ...range,
+        }),
+      });
+      setShifts((current) => [...current, created]);
+    } catch (err) {
+      setError((err as Error).message);
+    }
+  };
 
   const runGenerate = async () => {
     setIsSaved(false);
     setIsGenerating(true);
-    await new Promise((resolve) => setTimeout(resolve, 700));
-    setGenerated(generateAssignments(shiftsForDate));
-    setIsGenerating(false);
+    setError(null);
+    try {
+      const shiftIds = shifts.map((shift) => shift.id);
+      if (shiftIds.length === 0) {
+        setGenerated([]);
+        return;
+      }
+      await fetchJsonWithSession('/lunch-breaks/generate', {
+        ...jsonWriteInit('POST', { shiftIds, persist: true }),
+      });
+      const range = dayRange(selectedDate);
+      const refreshed = await fetchJsonWithSession<{ data: ShiftRecord[] }>(
+        `/shifts?startDate=${encodeURIComponent(range.start)}&endDate=${encodeURIComponent(range.end)}`,
+      );
+      setShifts(refreshed.data ?? []);
+      setGenerated((refreshed.data ?? []).map(assignmentFromShift));
+      setIsSaved(true);
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setIsGenerating(false);
+    }
   };
 
   const handleSave = async () => {
     setIsSaving(true);
-    await new Promise((resolve) => setTimeout(resolve, 650));
-    setIsSaving(false);
-    setIsSaved(true);
+    setError(null);
+    try {
+      await loadSchedule(selectedDate);
+      setIsSaved(true);
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  const updateShift = async (id: string, start: string, end: string, userId: string) => {
+    setIsSaved(false);
+    setShifts((previous) =>
+      previous.map((shift) => (shift.id === id ? { ...shift, startTime: start, endTime: end, userId: userId === UNASSIGNED_RESOURCE_ID ? null : userId } : shift)),
+    );
+    try {
+      const updated = await fetchJsonWithSession<ShiftRecord>(`/shifts/${id}`, {
+        ...jsonWriteInit('PUT', {
+          startTime: start,
+          endTime: end,
+          userId: userId === UNASSIGNED_RESOURCE_ID ? null : userId,
+        }),
+      });
+      setShifts((previous) => previous.map((shift) => (shift.id === id ? updated : shift)));
+      setIsSaved(true);
+    } catch (err) {
+      setError((err as Error).message);
+      void loadSchedule(selectedDate);
+    }
   };
 
   return (
@@ -155,8 +316,8 @@ export default function SchedulingPage() {
         <section className="scheduler-topbar surface-card">
           <div className="scheduler-topbar__left">
             <span className="workspace-kicker">Schedule workspace</span>
-            <h1 className="workspace-title">Scheduler</h1>
-            <p className="workspace-subtitle">{dateLabel}</p>
+            <h1 className="workspace-title">Calendar</h1>
+            <p className="workspace-subtitle">{isLoading ? 'Loading real tenant schedule...' : dateLabel}</p>
           </div>
 
           <div className="scheduler-topbar__controls">
@@ -178,7 +339,7 @@ export default function SchedulingPage() {
               ))}
             </div>
 
-            <Button onClick={runGenerate} disabled={isGenerating}>
+            <Button onClick={runGenerate} disabled={isGenerating || shifts.length === 0}>
               {isGenerating ? (
                 <>
                   <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" style={{ animation: 'spin 1s linear infinite' }}>
@@ -194,8 +355,8 @@ export default function SchedulingPage() {
               )}
             </Button>
 
-            <Button variant="secondary" onClick={handleSave} disabled={isSaving || generated.length === 0}>
-              {isSaving ? 'Saving...' : isSaved ? 'Saved' : 'Save changes'}
+            <Button variant="secondary" onClick={handleSave} disabled={isSaving}>
+              {isSaving ? 'Refreshing...' : isSaved ? 'Synced' : 'Refresh'}
             </Button>
 
             <Button variant="ghost" size="icon" aria-label="Advanced settings" onClick={() => setShowAdvanced((value) => !value)}>
@@ -204,12 +365,15 @@ export default function SchedulingPage() {
           </div>
         </section>
 
+        {error ? <div className="scheduler-error">{error}</div> : null}
+
         {showAdvanced ? (
           <section className="scheduler-advanced surface-card" aria-label="Advanced settings panel">
-            <p><strong>Advanced</strong> settings are hidden by default to keep the main workflow focused.</p>
+            <p><strong>Advanced</strong> actions use tenant-scoped schedule data and do not cross company boundaries.</p>
             <div className="scheduler-advanced__actions">
-              <Button variant="outline" size="sm"><Upload size={14} /> Import template</Button>
-              <Button variant="outline" size="sm"><Download size={14} /> Export policy</Button>
+              <Button variant="outline" size="sm" onClick={() => void loadSchedule(selectedDate)}><RefreshCw size={14} /> Reload</Button>
+              <Button variant="outline" size="sm" disabled><Upload size={14} /> Import shifts</Button>
+              <Button variant="outline" size="sm" disabled><Download size={14} /> Export policy</Button>
             </div>
           </section>
         ) : null}
@@ -218,15 +382,14 @@ export default function SchedulingPage() {
           <article className="surface-card scheduler-panel">
             <header>
               <h2>Shift inputs</h2>
-              <p>Add, import, or edit shifts before generation.</p>
+              <p>{staff.length} staff and {locations.length} location{locations.length === 1 ? '' : 's'} available for this tenant.</p>
             </header>
-            {shiftsForDate.length === 0 ? (
+            {shifts.length === 0 ? (
               <div className="scheduler-empty">
                 <h3>No shifts yet</h3>
                 <p>Add shifts for this day, then generate lunch and break coverage.</p>
                 <div>
-                  <Button size="sm"><Plus size={14} /> Add shift</Button>
-                  <Button size="sm" variant="outline"><Upload size={14} /> Import shifts</Button>
+                  <Button size="sm" onClick={addShift}><Plus size={14} /> Add shift</Button>
                 </div>
               </div>
             ) : (
@@ -240,26 +403,26 @@ export default function SchedulingPage() {
                     </tr>
                   </thead>
                   <tbody>
-                    {shiftsForDate.map((shift) => {
-                      const resource = RESOURCES.find((item) => item.id === shift.resourceId);
-                      return (
-                        <tr key={shift.id}>
-                          <td>{resource?.title ?? 'Unknown'}</td>
-                          <td>{shift.extendedProps.role}</td>
-                          <td>{fmtTime(shift.start)} - {fmtTime(shift.end)}</td>
-                        </tr>
-                      );
-                    })}
+                    {shifts.map((shift) => (
+                      <tr key={shift.id}>
+                        <td>{shift.user?.name ?? 'Open shift'}</td>
+                        <td>{normalizeRole(shift.role ?? shift.user?.role)}</td>
+                        <td>{fmtTime(shift.startTime)} - {fmtTime(shift.endTime)}</td>
+                      </tr>
+                    ))}
                   </tbody>
                 </table>
+                <div style={{ marginTop: 12 }}>
+                  <Button size="sm" onClick={addShift}><Plus size={14} /> Add shift</Button>
+                </div>
               </div>
             )}
           </article>
 
           <article className="surface-card scheduler-panel">
             <header>
-              <h2>Generated break assignments</h2>
-              <p>Review before saving.</p>
+              <h2>Lunch and break assignments</h2>
+              <p>Generated records are saved to the shared lunch/break system.</p>
             </header>
 
             {isGenerating ? (
@@ -271,9 +434,9 @@ export default function SchedulingPage() {
             ) : generated.length === 0 ? (
               <div className="scheduler-empty">
                 <h3>Ready to build breaks</h3>
-                <p>Generate assignments to populate the break grid.</p>
+                <p>Generate assignments to populate the break grid and lunch/break workspace.</p>
                 <div>
-                  <Button size="sm" onClick={runGenerate}><Sparkles size={14} /> Generate breaks</Button>
+                  <Button size="sm" onClick={runGenerate} disabled={shifts.length === 0}><Sparkles size={14} /> Generate breaks</Button>
                 </div>
               </div>
             ) : (
@@ -286,8 +449,9 @@ export default function SchedulingPage() {
                     </div>
                     <div className="assignment-chips">
                       <span className="badge badge-info">Lunch {assignment.lunch}</span>
-                      <span className="badge badge-info">Break {assignment.breaks[0]}</span>
-                      <span className="badge badge-info">Break {assignment.breaks[1]}</span>
+                      {assignment.breaks.map((item, breakIndex) => (
+                        <span key={`${assignment.shiftId}-${breakIndex}`} className="badge badge-info">Break {item}</span>
+                      ))}
                       <span className={assignment.risk === 'watch' ? 'badge badge-warn' : 'badge badge-success'}>
                         {assignment.risk === 'watch' ? 'Watch window' : 'Healthy'}
                       </span>
@@ -302,19 +466,15 @@ export default function SchedulingPage() {
         <section className="surface-card scheduler-timeline-panel">
           <header>
             <h2>Timeline review</h2>
-            <p>Drag shifts between staff and days. Generated assignments remain suggestions until you save.</p>
+            <p>Drag shifts to adjust times. Changes save immediately to the tenant schedule.</p>
           </header>
           <div className="scheduler-timeline-shell">
             <StaffScheduler
-              resources={RESOURCES}
+              resources={resources}
               events={scheduleEvents}
               viewMode={viewMode}
               initialDate={selectedDate}
-              onEventChange={(id, start, end, resourceId) => {
-                setScheduleEvents((previous) =>
-                  previous.map((event) => (event.id === id ? { ...event, start, end, resourceId } : event)),
-                );
-              }}
+              onEventChange={(id, start, end, resourceId) => void updateShift(id, start, end, resourceId)}
             />
           </div>
         </section>
@@ -325,6 +485,16 @@ export default function SchedulingPage() {
           min-height: 100%;
           display: grid;
           gap: 16px;
+        }
+
+        .scheduler-error {
+          padding: 0.8rem 0.95rem;
+          border-radius: 12px;
+          border: 1px solid #ffd0da;
+          background: #fff1f4;
+          color: #cb3653;
+          font-weight: 650;
+          font-size: 0.86rem;
         }
 
         .scheduler-topbar {
@@ -480,6 +650,7 @@ export default function SchedulingPage() {
           overflow: auto;
           border: 1px solid var(--border);
           border-radius: var(--r-md);
+          padding: 0 0 12px;
         }
 
         .scheduler-table {
