@@ -1,5 +1,6 @@
 'use client';
 
+import Link from 'next/link';
 import { useEffect, useMemo, useState } from 'react';
 import { fetchJsonWithSession } from '@/lib/client-api';
 
@@ -63,6 +64,13 @@ function statusColor(status: HealthItem['status']) {
     return '#6f80a4';
 }
 
+const WORKSPACE_ACTIONS = [
+    { href: '/dashboard/scheduling', label: 'Open Calendar' },
+    { href: '/dashboard/lunch-breaks', label: 'Lunch & Breaks' },
+    { href: '/dashboard/staff', label: 'Staff' },
+    { href: '/dashboard/locations', label: 'Locations' },
+];
+
 export default function AdminOverviewPage() {
     const [stats, setStats] = useState<AdminStats | null>(null);
     const [audit, setAudit] = useState<AuditItem[]>([]);
@@ -113,6 +121,18 @@ export default function AdminOverviewPage() {
                     System Overview
                 </h1>
                 <p className="workspace-subtitle">{loading ? 'Loading diagnostics...' : 'Live platform status and operations telemetry.'}</p>
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.55rem', marginTop: '0.95rem' }}>
+                    {WORKSPACE_ACTIONS.map((action) => (
+                        <Link
+                            key={action.href}
+                            href={action.href}
+                            className={action.href === '/dashboard/scheduling' ? 'btn btn-primary' : 'btn btn-secondary'}
+                            style={{ minHeight: 40 }}
+                        >
+                            {action.label}
+                        </Link>
+                    ))}
+                </div>
             </section>
 
             {error ? (

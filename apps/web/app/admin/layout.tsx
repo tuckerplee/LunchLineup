@@ -4,12 +4,16 @@ import { redirect } from 'next/navigation';
 import { LunchLineupMark } from '@/components/branding/LunchLineupMark';
 
 const ADMIN_NAV = [
-    { href: '/dashboard', label: 'Team Workspace', icon: '<' },
-    { href: '/admin', label: 'Overview', icon: '◈' },
-    { href: '/admin/tenants', label: 'Tenants', icon: '🏢' },
-    { href: '/admin/users', label: 'Users', icon: '👥' },
-    { href: '/admin/credits', label: 'Credits', icon: '💳' },
-    { href: '/admin/plans', label: 'Plans', icon: '📦' },
+    { href: '/dashboard/scheduling', label: 'Calendar', icon: 'Cal' },
+    { href: '/dashboard', label: 'Team Dashboard', icon: 'Dash' },
+    { href: '/dashboard/lunch-breaks', label: 'Lunch & Breaks', icon: 'LB' },
+    { href: '/dashboard/staff', label: 'Staff', icon: 'St' },
+    { href: '/dashboard/locations', label: 'Locations', icon: 'Loc' },
+    { href: '/admin', label: 'Admin Overview', icon: 'Adm' },
+    { href: '/admin/tenants', label: 'Tenants', icon: 'Ten' },
+    { href: '/admin/users', label: 'Users', icon: 'Usr' },
+    { href: '/admin/credits', label: 'Credits', icon: 'Cr' },
+    { href: '/admin/plans', label: 'Plans', icon: 'Pln' },
 ];
 
 export default async function AdminLayout({ children }: { children: React.ReactNode }) {

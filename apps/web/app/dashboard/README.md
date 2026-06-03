@@ -15,4 +15,4 @@ Team workspace routes for schedules, staff, locations, lunch breaks, settings, a
 
 ## Access behavior
 
-The dashboard is available to normal workspace users and super admins. Users with `admin_portal:access` keep calendar, scheduling, and usage access here and see an Admin Console navigation item for `/admin`.
+The dashboard is available to normal workspace users and super admins. Users with `admin_portal:access` keep calendar, scheduling, and usage access here. The calendar navigation label points to `/dashboard/scheduling`, and super admins also see an Admin Console navigation item for `/admin`.

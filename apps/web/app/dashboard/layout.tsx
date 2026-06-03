@@ -52,7 +52,7 @@ type DashboardNavItem = {
 
 const NAV_ITEMS: DashboardNavItem[] = [
   { href: '/dashboard', label: 'Overview', icon: LayoutGrid, exact: true },
-  { href: '/dashboard/scheduling', label: 'Scheduling', icon: CalendarDays, exact: false, priority: 'strong', badge: 3 },
+  { href: '/dashboard/scheduling', label: 'Calendar', icon: CalendarDays, exact: false, priority: 'strong', badge: 3 },
   { href: '/dashboard/lunch-breaks', label: 'Lunch & Breaks', icon: UtensilsCrossed, exact: false, badge: 1 },
   { href: '/dashboard/staff', label: 'Staff', icon: Users, exact: false },
   { href: '/dashboard/locations', label: 'Locations', icon: MapPin, exact: false },
