@@ -39,6 +39,7 @@ type ShiftDraft = {
   userId: string;
   locationId: string;
   role: string;
+  shiftDate: string;
   startTime: string;
   endTime: string;
 };
@@ -53,14 +54,15 @@ type GeneratedAssignment = {
 
 const UNASSIGNED_RESOURCE_ID = 'unassigned';
 const OPEN_SHIFT_VALUE = '__open_shift__';
+const TODAY = new Date();
 const DEFAULT_SHIFT_DRAFT: ShiftDraft = {
   userId: '',
   locationId: '',
   role: 'STAFF',
+  shiftDate: toDateInputValue(TODAY),
   startTime: '09:00',
   endTime: '17:00',
 };
-const TODAY = new Date();
 
 function getCsrfTokenFromCookie(): string {
   if (typeof document === 'undefined') return '';
@@ -96,11 +98,36 @@ function toDateInputValue(date: Date): string {
   return `${y}-${m}-${d}`;
 }
 
-function dayRange(dateValue: string) {
+function dayCountForView(mode: SchedulerViewMode): number {
+  return mode === 'day' ? 1 : mode === 'threeDay' ? 3 : 7;
+}
+
+function viewRange(dateValue: string, mode: SchedulerViewMode) {
   const start = new Date(`${dateValue}T00:00:00`);
   const end = new Date(start);
-  end.setDate(start.getDate() + 1);
+  end.setDate(start.getDate() + dayCountForView(mode));
   return { start: start.toISOString(), end: end.toISOString() };
+}
+
+function visibleDateValues(dateValue: string, mode: SchedulerViewMode): string[] {
+  const start = new Date(`${dateValue}T00:00:00`);
+  return Array.from({ length: dayCountForView(mode) }, (_, index) => {
+    const date = new Date(start);
+    date.setDate(start.getDate() + index);
+    return toDateInputValue(date);
+  });
+}
+
+function shortDateLabel(dateValue: string): string {
+  return new Date(`${dateValue}T00:00:00`).toLocaleDateString('en-US', {
+    weekday: 'short',
+    month: 'short',
+    day: 'numeric',
+  });
+}
+
+function shiftDateKey(shift: ShiftRecord): string {
+  return toDateInputValue(new Date(shift.startTime));
 }
 
 function timeOnDate(dateValue: string, timeValue: string): string {
@@ -220,14 +247,14 @@ function SchedulingContent() {
   const [shifts, setShifts] = useState<ShiftRecord[]>([]);
   const [generated, setGenerated] = useState<GeneratedAssignment[]>([]);
   const [showShiftForm, setShowShiftForm] = useState(false);
-  const [shiftDraft, setShiftDraft] = useState<ShiftDraft>(DEFAULT_SHIFT_DRAFT);
+  const [shiftDraft, setShiftDraft] = useState<ShiftDraft>({ ...DEFAULT_SHIFT_DRAFT, shiftDate: initialDateValue });
   const [error, setError] = useState<string | null>(null);
 
-  const loadSchedule = useCallback(async (dateValue: string) => {
+  const loadSchedule = useCallback(async (dateValue: string, mode: SchedulerViewMode) => {
     setIsLoading(true);
     setError(null);
     try {
-      const range = dayRange(dateValue);
+      const range = viewRange(dateValue, mode);
       const [staffPayload, locationsPayload, shiftsPayload] = await Promise.all([
         fetchJsonWithSession<{ data: StaffRosterItem[] }>('/shifts/staff-roster'),
         fetchJsonWithSession<{ data: LocationItem[] }>('/locations'),
@@ -249,8 +276,16 @@ function SchedulingContent() {
   }, []);
 
   useEffect(() => {
-    void loadSchedule(selectedDate);
-  }, [loadSchedule, selectedDate]);
+    void loadSchedule(selectedDate, viewMode);
+  }, [loadSchedule, selectedDate, viewMode]);
+
+  useEffect(() => {
+    setShiftDraft((current) => {
+      const visibleDates = visibleDateValues(selectedDate, viewMode);
+      if (visibleDates.includes(current.shiftDate)) return current;
+      return { ...current, shiftDate: selectedDate };
+    });
+  }, [selectedDate, viewMode]);
 
   useEffect(() => {
     setShiftDraft((current) => {
@@ -283,10 +318,15 @@ function SchedulingContent() {
 
   const scheduleEvents = useMemo(() => shiftsToEvents(visibleShifts), [visibleShifts]);
   const locationNameById = useMemo(() => new Map(locations.map((location) => [location.id, location.name])), [locations]);
+  const builderDates = useMemo(() => visibleDateValues(selectedDate, viewMode), [selectedDate, viewMode]);
 
   const dateLabel = useMemo(
-    () => new Date(`${selectedDate}T00:00:00`).toLocaleDateString('en-US', { weekday: 'long', month: 'short', day: 'numeric' }),
-    [selectedDate],
+    () => {
+      const dates = visibleDateValues(selectedDate, viewMode);
+      if (dates.length === 1) return shortDateLabel(dates[0]);
+      return `${shortDateLabel(dates[0])} - ${shortDateLabel(dates[dates.length - 1])}`;
+    },
+    [selectedDate, viewMode],
   );
 
   const handleDraftStaffChange = (value: string) => {
@@ -307,7 +347,7 @@ function SchedulingContent() {
       setError('Add a location before creating schedule shifts.');
       return;
     }
-    if (!isValidShiftWindow(selectedDate, shiftDraft.startTime, shiftDraft.endTime)) {
+    if (!isValidShiftWindow(shiftDraft.shiftDate, shiftDraft.startTime, shiftDraft.endTime)) {
       setError('Shift end time must be after start time.');
       return;
     }
@@ -317,7 +357,7 @@ function SchedulingContent() {
       setError('Select a staff member before creating a shift.');
       return;
     }
-    const range = shiftRange(selectedDate, shiftDraft.startTime, shiftDraft.endTime);
+    const range = shiftRange(shiftDraft.shiftDate, shiftDraft.startTime, shiftDraft.endTime);
     try {
       const created = await fetchJsonWithSession<ShiftRecord>('/shifts', {
         ...jsonWriteInit('POST', {
@@ -338,6 +378,22 @@ function SchedulingContent() {
       setError((err as Error).message);
     }
   };
+
+  const prepareShiftForStaff = (person: StaffRosterItem, shiftDate: string, startTime = '09:00', endTime = '17:00') => {
+    setError(null);
+    setShiftDraft((current) => ({
+      ...current,
+      userId: person.id,
+      role: person.role,
+      shiftDate,
+      startTime,
+      endTime,
+    }));
+    setShowShiftForm(true);
+  };
+
+  const shiftsForStaffDate = (personId: string, dateValue: string) =>
+    shifts.filter((shift) => shift.userId === personId && shiftDateKey(shift) === dateValue);
 
   const assignShift = async (id: string, userId: string) => {
     const currentShift = shifts.find((shift) => shift.id === id);
@@ -360,7 +416,7 @@ function SchedulingContent() {
       setIsSaved(true);
     } catch (err) {
       setError((err as Error).message);
-      void loadSchedule(selectedDate);
+      void loadSchedule(selectedDate, viewMode);
     }
   };
 
@@ -377,7 +433,7 @@ function SchedulingContent() {
       await fetchJsonWithSession('/lunch-breaks/generate', {
         ...jsonWriteInit('POST', { shiftIds, persist: true }),
       });
-      const range = dayRange(selectedDate);
+      const range = viewRange(selectedDate, viewMode);
       const refreshed = await fetchJsonWithSession<{ data: ShiftRecord[] }>(
         `/shifts?startDate=${encodeURIComponent(range.start)}&endDate=${encodeURIComponent(range.end)}`,
       );
@@ -395,7 +451,7 @@ function SchedulingContent() {
     setIsSaving(true);
     setError(null);
     try {
-      await loadSchedule(selectedDate);
+      await loadSchedule(selectedDate, viewMode);
       setIsSaved(true);
     } catch (err) {
       setError((err as Error).message);
@@ -428,7 +484,7 @@ function SchedulingContent() {
       setIsSaved(true);
     } catch (err) {
       setError((err as Error).message);
-      void loadSchedule(selectedDate);
+      void loadSchedule(selectedDate, viewMode);
     }
   };
 
@@ -508,7 +564,7 @@ function SchedulingContent() {
           <section className="scheduler-advanced surface-card" aria-label="Advanced settings panel">
             <p><strong>Advanced</strong> actions use tenant-scoped schedule data and do not cross company boundaries.</p>
             <div className="scheduler-advanced__actions">
-              <Button variant="outline" size="sm" onClick={() => void loadSchedule(selectedDate)}><RefreshCw size={14} /> Reload</Button>
+              <Button variant="outline" size="sm" onClick={() => void loadSchedule(selectedDate, viewMode)}><RefreshCw size={14} /> Reload</Button>
               <Button variant="outline" size="sm" disabled><Upload size={14} /> Import shifts</Button>
               <Button variant="outline" size="sm" disabled><Download size={14} /> Export policy</Button>
             </div>
@@ -516,7 +572,7 @@ function SchedulingContent() {
         ) : null}
 
         <section className="scheduler-panels">
-          <article className="surface-card scheduler-panel">
+          <article className="surface-card scheduler-panel scheduler-panel--builder">
             <header>
               <div>
                 <h2>Shift inputs</h2>
@@ -560,6 +616,14 @@ function SchedulingContent() {
                   </select>
                 </label>
                 <label>
+                  <span>Date</span>
+                  <input
+                    type="date"
+                    value={shiftDraft.shiftDate}
+                    onChange={(event) => setShiftDraft((current) => ({ ...current, shiftDate: event.target.value }))}
+                  />
+                </label>
+                <label>
                   <span>Start</span>
                   <input
                     type="time"
@@ -579,7 +643,7 @@ function SchedulingContent() {
                   <Button
                     size="sm"
                     type="submit"
-                    disabled={!locations.length || !shiftDraft.userId || !isValidShiftWindow(selectedDate, shiftDraft.startTime, shiftDraft.endTime)}
+                    disabled={!locations.length || !shiftDraft.userId || !isValidShiftWindow(shiftDraft.shiftDate, shiftDraft.startTime, shiftDraft.endTime)}
                   >
                     Create shift
                   </Button>
@@ -590,10 +654,60 @@ function SchedulingContent() {
               </form>
             ) : null}
 
+            {!openFocus ? (
+              <div className="schedule-builder" aria-label="Schedule builder grid">
+                <div className="schedule-builder__grid" style={{ gridTemplateColumns: `minmax(150px, 0.9fr) repeat(${builderDates.length}, minmax(150px, 1fr))` }}>
+                  <div className="schedule-builder__corner">Staff</div>
+                  {builderDates.map((dateValue) => (
+                    <div key={dateValue} className="schedule-builder__day">{shortDateLabel(dateValue)}</div>
+                  ))}
+                  {staff.map((person) => (
+                    <div key={person.id} className="schedule-builder__row">
+                      <div className="schedule-builder__staff">
+                        <strong>{person.name}</strong>
+                        <span>{person.role}</span>
+                      </div>
+                      {builderDates.map((dateValue) => {
+                        const cellShifts = shiftsForStaffDate(person.id, dateValue);
+                        return (
+                          <div key={`${person.id}-${dateValue}`} className="schedule-builder__cell">
+                            {cellShifts.length > 0 ? (
+                              <div className="schedule-builder__shifts">
+                                {cellShifts.map((shift) => (
+                                  <button
+                                    key={shift.id}
+                                    type="button"
+                                    className="schedule-builder__shift"
+                                    onClick={() => prepareShiftForStaff(person, dateValue, timeValueFromIso(shift.startTime), timeValueFromIso(shift.endTime))}
+                                    title="Use these times for a new shift"
+                                  >
+                                    <span>{timeValueFromIso(shift.startTime)}-{timeValueFromIso(shift.endTime)}</span>
+                                    <small>{normalizeRole(shift.role ?? person.role)}</small>
+                                  </button>
+                                ))}
+                              </div>
+                            ) : null}
+                            <button
+                              type="button"
+                              className="schedule-builder__add"
+                              onClick={() => prepareShiftForStaff(person, dateValue)}
+                            >
+                              <Plus size={13} />
+                              Add
+                            </button>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ) : null}
+
             {visibleShifts.length === 0 ? (
               <div className="scheduler-empty">
                 <h3>{openFocus ? 'No open shifts' : 'No shifts yet'}</h3>
-                <p>{openFocus ? 'All loaded shifts are assigned for this date.' : 'Create an open shift or assign it to a specific staff member.'}</p>
+                <p>{openFocus ? 'All loaded shifts are assigned for this date.' : 'Use the staff grid above to add shifts by person and date.'}</p>
                 <div>
                   {!openFocus ? <Button size="sm" onClick={() => setShowShiftForm(true)}><Plus size={14} /> Add shift</Button> : null}
                 </div>
@@ -838,6 +952,10 @@ function SchedulingContent() {
           min-height: 360px;
         }
 
+        .scheduler-panel--builder {
+          grid-column: 1 / -1;
+        }
+
         .scheduler-panel header {
           display: flex;
           align-items: flex-start;
@@ -866,7 +984,7 @@ function SchedulingContent() {
           border-radius: var(--r-md);
           background: var(--surface-soft);
           display: grid;
-          grid-template-columns: minmax(160px, 1.2fr) minmax(160px, 1fr) minmax(130px, 0.8fr) repeat(2, minmax(96px, 0.55fr));
+          grid-template-columns: minmax(160px, 1.2fr) minmax(160px, 1fr) minmax(130px, 0.8fr) repeat(3, minmax(96px, 0.55fr));
           gap: 10px;
           align-items: end;
         }
@@ -903,6 +1021,111 @@ function SchedulingContent() {
           display: flex;
           gap: 8px;
           justify-content: flex-end;
+        }
+
+        .schedule-builder {
+          margin-top: 16px;
+          overflow: auto;
+          border: 1px solid var(--border);
+          border-radius: var(--r-md);
+          background: var(--surface);
+        }
+
+        .schedule-builder__grid {
+          display: grid;
+          min-width: 680px;
+        }
+
+        .schedule-builder__row {
+          display: contents;
+        }
+
+        .schedule-builder__corner,
+        .schedule-builder__day,
+        .schedule-builder__staff,
+        .schedule-builder__cell {
+          border-bottom: 1px solid var(--border);
+          border-right: 1px solid var(--border);
+        }
+
+        .schedule-builder__corner,
+        .schedule-builder__day {
+          min-height: 42px;
+          padding: 10px;
+          background: var(--surface-soft);
+          color: var(--text-muted);
+          font-size: 12px;
+          font-weight: 800;
+          text-transform: uppercase;
+          letter-spacing: 0.04em;
+          display: flex;
+          align-items: center;
+        }
+
+        .schedule-builder__staff {
+          min-height: 94px;
+          padding: 12px;
+          display: grid;
+          align-content: start;
+          gap: 4px;
+          background: #fbfdff;
+        }
+
+        .schedule-builder__staff strong {
+          font-size: 13px;
+          line-height: 1.25;
+        }
+
+        .schedule-builder__staff span {
+          color: var(--text-muted);
+          font-size: 12px;
+        }
+
+        .schedule-builder__cell {
+          min-height: 94px;
+          padding: 8px;
+          display: grid;
+          align-content: space-between;
+          gap: 8px;
+        }
+
+        .schedule-builder__shifts {
+          display: grid;
+          gap: 6px;
+        }
+
+        .schedule-builder__shift,
+        .schedule-builder__add {
+          border: 1px solid var(--border);
+          border-radius: var(--r-sm);
+          background: var(--surface-soft);
+          color: var(--text);
+          min-height: 34px;
+          padding: 6px 8px;
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          gap: 6px;
+          cursor: pointer;
+          font-size: 12px;
+        }
+
+        .schedule-builder__shift:hover,
+        .schedule-builder__add:hover {
+          border-color: var(--brand-600);
+          background: #eef4ff;
+        }
+
+        .schedule-builder__shift small {
+          color: var(--text-muted);
+          font-size: 10px;
+          font-weight: 800;
+        }
+
+        .schedule-builder__add {
+          justify-content: center;
+          color: var(--brand-800);
+          font-weight: 800;
         }
 
         .scheduler-empty,
