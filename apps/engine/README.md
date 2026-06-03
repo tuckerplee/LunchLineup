@@ -19,4 +19,4 @@ The Stage 5 unit job uses Python 3.12, installs `requirements.txt`, and runs:
 python -m pytest --cov=src --cov-fail-under=90
 ```
 
-`ortools` is required for `ConstraintSolver`; keep it pinned in `requirements.txt` so solver tests are reproducible in CI.
+`ortools` is required for `ConstraintSolver`; keep it pinned with compatible `grpcio-tools` and `protobuf` versions in `requirements.txt` so solver tests are reproducible in CI.
