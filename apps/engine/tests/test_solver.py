@@ -104,7 +104,7 @@ class TestConstraintSolver:
             staff_ids=["alice"],
             start_date="2026-03-10",
             end_date="2026-03-17",
-            constraints={"min_floor_coverage": 1, "shift_duration_hours": 8},
+            constraints={"min_floor_coverage": 1, "shift_duration_hours": 8, "max_hours_per_week": 56},
         )
         assert result["feasible"] is True
         assert len(result["assignments"]) == 7, "One employee covering 7 days"
