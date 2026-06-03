@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import dynamic from 'next/dynamic';
 import { Button } from '@/components/ui/button';
-import { CalendarDays, Download, Plus, RefreshCw, Settings2, Sparkles, Upload, WandSparkles } from 'lucide-react';
+import { CalendarDays, Download, Plus, Printer, RefreshCw, Settings2, Sparkles, Upload, WandSparkles } from 'lucide-react';
 import { fetchJsonWithSession, fetchWithSession } from '@/lib/client-api';
 import type { SchedulerViewMode, StaffScheduleEvent } from '@/components/scheduling/StaffScheduler';
 
@@ -289,6 +289,11 @@ export default function SchedulingPage() {
     }
   };
 
+  const openPrintSchedule = () => {
+    const params = new URLSearchParams({ date: selectedDate, autoprint: '1' });
+    window.open(`/dashboard/scheduling/print?${params.toString()}`, '_blank', 'noopener,noreferrer');
+  };
+
   const updateShift = async (id: string, start: string, end: string, userId: string) => {
     setIsSaved(false);
     setShifts((previous) =>
@@ -357,6 +362,11 @@ export default function SchedulingPage() {
 
             <Button variant="secondary" onClick={handleSave} disabled={isSaving}>
               {isSaving ? 'Refreshing...' : isSaved ? 'Synced' : 'Refresh'}
+            </Button>
+
+            <Button variant="outline" onClick={openPrintSchedule} disabled={isLoading || shifts.length === 0}>
+              <Printer size={15} />
+              Print schedule
             </Button>
 
             <Button variant="ghost" size="icon" aria-label="Advanced settings" onClick={() => setShowAdvanced((value) => !value)}>
