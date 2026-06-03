@@ -2,24 +2,13 @@ import Link from 'next/link';
 import { getServerUser } from '@/lib/server-auth';
 import { redirect } from 'next/navigation';
 import { LunchLineupMark } from '@/components/branding/LunchLineupMark';
-import { CalendarDays, CreditCard, LayoutDashboard, MapPin, Package, Shield, Users, UtensilsCrossed } from 'lucide-react';
-
-const ADMIN_NAV = [
-    { href: '/dashboard/scheduling', label: 'Calendar', icon: CalendarDays },
-    { href: '/dashboard', label: 'Team Dashboard', icon: LayoutDashboard },
-    { href: '/dashboard/lunch-breaks', label: 'Lunch & Breaks', icon: UtensilsCrossed },
-    { href: '/dashboard/staff', label: 'Staff', icon: Users },
-    { href: '/dashboard/locations', label: 'Locations', icon: MapPin },
-    { href: '/admin', label: 'Admin Overview', icon: Shield },
-    { href: '/admin/tenants', label: 'Tenants', icon: LayoutDashboard },
-    { href: '/admin/users', label: 'Users', icon: Users },
-    { href: '/admin/credits', label: 'Credits', icon: CreditCard },
-    { href: '/admin/plans', label: 'Plans', icon: Package },
-];
+import { AdminNav } from './AdminNav';
 
 export default async function AdminLayout({ children }: { children: React.ReactNode }) {
     const user = await getServerUser();
     if (!user || !user.permissions.includes('admin_portal:access')) redirect('/dashboard');
+    const environment = process.env.NEXT_PUBLIC_APP_ENV ?? process.env.NODE_ENV ?? 'development';
+    const roleLabel = user.role.replaceAll('_', ' ');
 
     return (
         <div className="workspace-shell" style={{ background: '#f7f9ff' }}>
@@ -62,32 +51,15 @@ export default async function AdminLayout({ children }: { children: React.ReactN
                                 borderColor: '#ffcfda',
                             }}
                         >
-                            System Admin
+                            {roleLabel}
                         </span>
                     </div>
 
-                    <nav style={{ flex: 1, padding: '0.75rem', display: 'flex', flexDirection: 'column', gap: 4 }}>
-                        {ADMIN_NAV.map((item) => {
-                            const Icon = item.icon;
-                            return (
-                                <Link
-                                    key={item.href}
-                                    href={item.href}
-                                    className="workspace-nav-link"
-                                    style={{
-                                        color: 'var(--text-secondary)',
-                                    }}
-                                >
-                                    <Icon aria-hidden="true" size={16} />
-                                    {item.label}
-                                </Link>
-                            );
-                        })}
-                    </nav>
+                    <AdminNav />
 
                     <div style={{ borderTop: '1px solid #f0d5de', padding: '0.8rem' }}>
                         <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)', marginBottom: '0.45rem', paddingLeft: '0.2rem' }}>
-                            Signed in as System Admin
+                            Signed in as {roleLabel.toLowerCase()}
                         </div>
                         <Link
                             href="/auth/logout"
@@ -119,7 +91,7 @@ export default async function AdminLayout({ children }: { children: React.ReactN
 
                     <div style={{ display: 'flex', alignItems: 'center', gap: '0.7rem' }}>
                         <span className="badge" style={{ background: '#ffeef2', borderColor: '#ffcfda', color: '#cb3653' }}>
-                            Production
+                            {environment}
                         </span>
                         <span
                             style={{

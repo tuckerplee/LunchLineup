@@ -1,10 +1,11 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { Suspense, useCallback, useEffect, useMemo, useState, type FormEvent } from 'react';
 import dynamic from 'next/dynamic';
+import { useSearchParams } from 'next/navigation';
 import { Button } from '@/components/ui/button';
 import { CalendarDays, Download, Plus, Printer, RefreshCw, Settings2, Sparkles, Upload, WandSparkles } from 'lucide-react';
-import { fetchJsonWithSession, fetchWithSession } from '@/lib/client-api';
+import { fetchJsonWithSession } from '@/lib/client-api';
 import type { SchedulerViewMode, StaffScheduleEvent } from '@/components/scheduling/StaffScheduler';
 
 const StaffScheduler = dynamic(
@@ -34,6 +35,13 @@ type ShiftRecord = {
   user?: { id: string; name: string; role: StaffRole } | null;
   breaks?: BreakItem[];
 };
+type ShiftDraft = {
+  userId: string;
+  locationId: string;
+  role: string;
+  startTime: string;
+  endTime: string;
+};
 type GeneratedAssignment = {
   shiftId: string;
   staffName: string;
@@ -44,6 +52,14 @@ type GeneratedAssignment = {
 };
 
 const UNASSIGNED_RESOURCE_ID = 'unassigned';
+const OPEN_SHIFT_VALUE = '__open_shift__';
+const DEFAULT_SHIFT_DRAFT: ShiftDraft = {
+  userId: '',
+  locationId: '',
+  role: 'STAFF',
+  startTime: '09:00',
+  endTime: '17:00',
+};
 const TODAY = new Date();
 
 function getCsrfTokenFromCookie(): string {
@@ -87,12 +103,40 @@ function dayRange(dateValue: string) {
   return { start: start.toISOString(), end: end.toISOString() };
 }
 
-function shiftRange(dateValue: string, startHour: number, endHour: number) {
-  const start = new Date(`${dateValue}T00:00:00`);
-  start.setHours(startHour, 0, 0, 0);
-  const end = new Date(`${dateValue}T00:00:00`);
-  end.setHours(endHour, 0, 0, 0);
-  return { startTime: start.toISOString(), endTime: end.toISOString() };
+function timeOnDate(dateValue: string, timeValue: string): string {
+  const [hours = 0, minutes = 0] = timeValue.split(':').map((part) => Number.parseInt(part, 10));
+  const date = new Date(`${dateValue}T00:00:00`);
+  date.setHours(hours, minutes, 0, 0);
+  return date.toISOString();
+}
+
+function shiftRange(dateValue: string, startTime: string, endTime: string) {
+  return {
+    startTime: timeOnDate(dateValue, startTime),
+    endTime: timeOnDate(dateValue, endTime),
+  };
+}
+
+function isValidShiftWindow(dateValue: string, startTime: string, endTime: string): boolean {
+  const start = new Date(timeOnDate(dateValue, startTime)).getTime();
+  const end = new Date(timeOnDate(dateValue, endTime)).getTime();
+  return Number.isFinite(start) && Number.isFinite(end) && end > start;
+}
+
+function timeValueFromIso(dateIso: string): string {
+  return new Date(dateIso).toLocaleTimeString('en-US', {
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  });
+}
+
+function applyStaffToShift(shift: ShiftRecord, person: StaffRosterItem | null): ShiftRecord {
+  return {
+    ...shift,
+    userId: person?.id ?? null,
+    user: person ? { id: person.id, name: person.name, role: person.role } : null,
+  };
 }
 
 function getInitials(name: string): string {
@@ -159,18 +203,24 @@ function assignmentFromShift(shift: ShiftRecord): GeneratedAssignment {
   };
 }
 
-export default function SchedulingPage() {
+function SchedulingContent() {
+  const searchParams = useSearchParams();
+  const initialDate = searchParams.get('date');
+  const initialDateValue = initialDate && /^\d{4}-\d{2}-\d{2}$/.test(initialDate) ? initialDate : toDateInputValue(TODAY);
+  const openFocus = searchParams.get('focus') === 'open';
   const [isLoading, setIsLoading] = useState(true);
   const [isGenerating, setIsGenerating] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [isSaved, setIsSaved] = useState(false);
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [viewMode, setViewMode] = useState<SchedulerViewMode>('threeDay');
-  const [selectedDate, setSelectedDate] = useState(toDateInputValue(TODAY));
+  const [selectedDate, setSelectedDate] = useState(initialDateValue);
   const [staff, setStaff] = useState<StaffRosterItem[]>([]);
   const [locations, setLocations] = useState<LocationItem[]>([]);
   const [shifts, setShifts] = useState<ShiftRecord[]>([]);
   const [generated, setGenerated] = useState<GeneratedAssignment[]>([]);
+  const [showShiftForm, setShowShiftForm] = useState(false);
+  const [shiftDraft, setShiftDraft] = useState<ShiftDraft>(DEFAULT_SHIFT_DRAFT);
   const [error, setError] = useState<string | null>(null);
 
   const loadSchedule = useCallback(async (dateValue: string) => {
@@ -202,6 +252,14 @@ export default function SchedulingPage() {
     void loadSchedule(selectedDate);
   }, [loadSchedule, selectedDate]);
 
+  useEffect(() => {
+    setShiftDraft((current) => {
+      if (!locations[0]?.id) return current.locationId ? { ...current, locationId: '' } : current;
+      if (locations.some((location) => location.id === current.locationId)) return current;
+      return { ...current, locationId: locations[0].id };
+    });
+  }, [locations]);
+
   const resources = useMemo(() => {
     const staffResources = staff.map((person) => ({
       id: person.id,
@@ -216,36 +274,93 @@ export default function SchedulingPage() {
     ];
   }, [staff]);
 
-  const scheduleEvents = useMemo(() => shiftsToEvents(shifts), [shifts]);
+  const openShifts = useMemo(() => shifts.filter((shift) => !shift.userId), [shifts]);
+  const visibleShifts = openFocus ? openShifts : shifts;
+  const visibleResources = useMemo(() => {
+    if (!openFocus) return resources;
+    return resources.filter((resource) => resource.id === UNASSIGNED_RESOURCE_ID);
+  }, [openFocus, resources]);
+
+  const scheduleEvents = useMemo(() => shiftsToEvents(visibleShifts), [visibleShifts]);
+  const locationNameById = useMemo(() => new Map(locations.map((location) => [location.id, location.name])), [locations]);
 
   const dateLabel = useMemo(
     () => new Date(`${selectedDate}T00:00:00`).toLocaleDateString('en-US', { weekday: 'long', month: 'short', day: 'numeric' }),
     [selectedDate],
   );
 
-  const addShift = async () => {
+  const handleDraftStaffChange = (value: string) => {
+    const selectedStaff = staff.find((person) => person.id === value);
+    setShiftDraft((current) => ({
+      ...current,
+      userId: value,
+      role: selectedStaff?.role ?? current.role,
+    }));
+  };
+
+  const addShift = async (event?: FormEvent<HTMLFormElement>) => {
+    event?.preventDefault();
     setIsSaved(false);
     setError(null);
-    const locationId = locations[0]?.id;
+    const locationId = shiftDraft.locationId || locations[0]?.id;
     if (!locationId) {
       setError('Add a location before creating schedule shifts.');
       return;
     }
+    if (!isValidShiftWindow(selectedDate, shiftDraft.startTime, shiftDraft.endTime)) {
+      setError('Shift end time must be after start time.');
+      return;
+    }
 
-    const firstStaff = staff[0];
-    const range = shiftRange(selectedDate, 9, 17);
+    const selectedStaff = staff.find((person) => person.id === shiftDraft.userId);
+    if (!selectedStaff) {
+      setError('Select a staff member before creating a shift.');
+      return;
+    }
+    const range = shiftRange(selectedDate, shiftDraft.startTime, shiftDraft.endTime);
     try {
       const created = await fetchJsonWithSession<ShiftRecord>('/shifts', {
         ...jsonWriteInit('POST', {
           locationId,
-          userId: firstStaff?.id,
-          role: firstStaff?.role ?? 'STAFF',
+          userId: selectedStaff.id,
+          role: normalizeRole(shiftDraft.role || selectedStaff.role),
           ...range,
         }),
       });
       setShifts((current) => [...current, created]);
+      setShowShiftForm(false);
+      setShiftDraft((current) => ({
+        ...current,
+        userId: '',
+        role: 'STAFF',
+      }));
     } catch (err) {
       setError((err as Error).message);
+    }
+  };
+
+  const assignShift = async (id: string, userId: string) => {
+    const currentShift = shifts.find((shift) => shift.id === id);
+    if (!currentShift) return;
+
+    setIsSaved(false);
+    setError(null);
+    const nextUserId = userId === OPEN_SHIFT_VALUE ? null : userId;
+    const selectedStaff = nextUserId ? staff.find((person) => person.id === nextUserId) ?? null : null;
+    setShifts((previous) => previous.map((shift) => (shift.id === id ? applyStaffToShift(shift, selectedStaff) : shift)));
+    try {
+      const updated = await fetchJsonWithSession<ShiftRecord>(`/shifts/${id}`, {
+        ...jsonWriteInit('PUT', {
+          startTime: currentShift.startTime,
+          endTime: currentShift.endTime,
+          userId: nextUserId,
+        }),
+      });
+      setShifts((previous) => previous.map((shift) => (shift.id === id ? updated : shift)));
+      setIsSaved(true);
+    } catch (err) {
+      setError((err as Error).message);
+      void loadSchedule(selectedDate);
     }
   };
 
@@ -296,15 +411,17 @@ export default function SchedulingPage() {
 
   const updateShift = async (id: string, start: string, end: string, userId: string) => {
     setIsSaved(false);
+    const nextUserId = userId === UNASSIGNED_RESOURCE_ID ? null : userId;
+    const selectedStaff = nextUserId ? staff.find((person) => person.id === nextUserId) ?? null : null;
     setShifts((previous) =>
-      previous.map((shift) => (shift.id === id ? { ...shift, startTime: start, endTime: end, userId: userId === UNASSIGNED_RESOURCE_ID ? null : userId } : shift)),
+      previous.map((shift) => (shift.id === id ? applyStaffToShift({ ...shift, startTime: start, endTime: end }, selectedStaff) : shift)),
     );
     try {
       const updated = await fetchJsonWithSession<ShiftRecord>(`/shifts/${id}`, {
         ...jsonWriteInit('PUT', {
           startTime: start,
           endTime: end,
-          userId: userId === UNASSIGNED_RESOURCE_ID ? null : userId,
+          userId: nextUserId,
         }),
       });
       setShifts((previous) => previous.map((shift) => (shift.id === id ? updated : shift)));
@@ -377,6 +494,16 @@ export default function SchedulingPage() {
 
         {error ? <div className="scheduler-error">{error}</div> : null}
 
+        {openFocus ? (
+          <section className="scheduler-focus-banner" aria-label="Open shift focus">
+            <div>
+              <strong>Open shifts focus</strong>
+              <span>{openShifts.length} open shift{openShifts.length === 1 ? '' : 's'} shown. Assigned shifts are hidden in this view.</span>
+            </div>
+            <a className="btn btn-secondary btn-sm" href="/dashboard/scheduling">Show all shifts</a>
+          </section>
+        ) : null}
+
         {showAdvanced ? (
           <section className="scheduler-advanced surface-card" aria-label="Advanced settings panel">
             <p><strong>Advanced</strong> actions use tenant-scoped schedule data and do not cross company boundaries.</p>
@@ -391,15 +518,84 @@ export default function SchedulingPage() {
         <section className="scheduler-panels">
           <article className="surface-card scheduler-panel">
             <header>
-              <h2>Shift inputs</h2>
-              <p>{staff.length} staff and {locations.length} location{locations.length === 1 ? '' : 's'} available for this tenant.</p>
+              <div>
+                <h2>Shift inputs</h2>
+                <p>{staff.length} staff and {locations.length} location{locations.length === 1 ? '' : 's'} available for this tenant.</p>
+              </div>
+              {!openFocus ? (
+                <Button size="sm" onClick={() => setShowShiftForm((value) => !value)}>
+                  <Plus size={14} />
+                  {showShiftForm ? 'Close' : 'Add shift'}
+                </Button>
+              ) : null}
             </header>
-            {shifts.length === 0 ? (
+
+            {showShiftForm && !openFocus ? (
+              <form className="shift-form" onSubmit={addShift}>
+                <label>
+                  <span>Staff</span>
+                  <select value={shiftDraft.userId} onChange={(event) => handleDraftStaffChange(event.target.value)}>
+                    <option value="">Select staff</option>
+                    {staff.map((person) => (
+                      <option key={person.id} value={person.id}>{person.name}</option>
+                    ))}
+                  </select>
+                </label>
+                <label>
+                  <span>Location</span>
+                  <select value={shiftDraft.locationId} onChange={(event) => setShiftDraft((current) => ({ ...current, locationId: event.target.value }))}>
+                    <option value="">Select location</option>
+                    {locations.map((location) => (
+                      <option key={location.id} value={location.id}>{location.name}</option>
+                    ))}
+                  </select>
+                </label>
+                <label>
+                  <span>Role</span>
+                  <select value={shiftDraft.role} onChange={(event) => setShiftDraft((current) => ({ ...current, role: event.target.value }))}>
+                    <option value="STAFF">Staff</option>
+                    <option value="MANAGER">Manager</option>
+                    <option value="ADMIN">Admin</option>
+                    <option value="SUPER_ADMIN">Super admin</option>
+                  </select>
+                </label>
+                <label>
+                  <span>Start</span>
+                  <input
+                    type="time"
+                    value={shiftDraft.startTime}
+                    onChange={(event) => setShiftDraft((current) => ({ ...current, startTime: event.target.value }))}
+                  />
+                </label>
+                <label>
+                  <span>End</span>
+                  <input
+                    type="time"
+                    value={shiftDraft.endTime}
+                    onChange={(event) => setShiftDraft((current) => ({ ...current, endTime: event.target.value }))}
+                  />
+                </label>
+                <div className="shift-form__actions">
+                  <Button
+                    size="sm"
+                    type="submit"
+                    disabled={!locations.length || !shiftDraft.userId || !isValidShiftWindow(selectedDate, shiftDraft.startTime, shiftDraft.endTime)}
+                  >
+                    Create shift
+                  </Button>
+                  <Button size="sm" type="button" variant="ghost" onClick={() => setShowShiftForm(false)}>
+                    Cancel
+                  </Button>
+                </div>
+              </form>
+            ) : null}
+
+            {visibleShifts.length === 0 ? (
               <div className="scheduler-empty">
-                <h3>No shifts yet</h3>
-                <p>Add shifts for this day, then generate lunch and break coverage.</p>
+                <h3>{openFocus ? 'No open shifts' : 'No shifts yet'}</h3>
+                <p>{openFocus ? 'All loaded shifts are assigned for this date.' : 'Create an open shift or assign it to a specific staff member.'}</p>
                 <div>
-                  <Button size="sm" onClick={addShift}><Plus size={14} /> Add shift</Button>
+                  {!openFocus ? <Button size="sm" onClick={() => setShowShiftForm(true)}><Plus size={14} /> Add shift</Button> : null}
                 </div>
               </div>
             ) : (
@@ -407,23 +603,37 @@ export default function SchedulingPage() {
                 <table className="scheduler-table">
                   <thead>
                     <tr>
-                      <th>Employee</th>
+                      <th>Assignee</th>
+                      <th>Location</th>
                       <th>Role</th>
                       <th>Shift</th>
                     </tr>
                   </thead>
                   <tbody>
-                    {shifts.map((shift) => (
-                      <tr key={shift.id}>
-                        <td>{shift.user?.name ?? 'Open shift'}</td>
+                    {visibleShifts.map((shift) => (
+                      <tr key={shift.id} className={!shift.userId ? 'is-open-shift' : undefined}>
+                        <td>
+                          <select
+                            className="scheduler-inline-select"
+                            value={shift.userId ?? OPEN_SHIFT_VALUE}
+                            onChange={(event) => void assignShift(shift.id, event.target.value)}
+                            aria-label={`Assign ${fmtTime(shift.startTime)} shift`}
+                          >
+                            <option value={OPEN_SHIFT_VALUE}>Open shift</option>
+                            {staff.map((person) => (
+                              <option key={person.id} value={person.id}>{person.name}</option>
+                            ))}
+                          </select>
+                        </td>
+                        <td>{locationNameById.get(shift.locationId) ?? 'Unknown'}</td>
                         <td>{normalizeRole(shift.role ?? shift.user?.role)}</td>
-                        <td>{fmtTime(shift.startTime)} - {fmtTime(shift.endTime)}</td>
+                        <td>{timeValueFromIso(shift.startTime)} - {timeValueFromIso(shift.endTime)}</td>
                       </tr>
                     ))}
                   </tbody>
                 </table>
-                <div style={{ marginTop: 12 }}>
-                  <Button size="sm" onClick={addShift}><Plus size={14} /> Add shift</Button>
+                <div className="scheduler-table-actions">
+                  {!openFocus ? <Button size="sm" onClick={() => setShowShiftForm(true)}><Plus size={14} /> Add shift</Button> : null}
                 </div>
               </div>
             )}
@@ -480,7 +690,7 @@ export default function SchedulingPage() {
           </header>
           <div className="scheduler-timeline-shell">
             <StaffScheduler
-              resources={resources}
+              resources={visibleResources}
               events={scheduleEvents}
               viewMode={viewMode}
               initialDate={selectedDate}
@@ -505,6 +715,33 @@ export default function SchedulingPage() {
           color: #cb3653;
           font-weight: 650;
           font-size: 0.86rem;
+        }
+
+        .scheduler-focus-banner {
+          padding: 0.8rem 0.95rem;
+          border: 1px solid #bfdbfe;
+          border-radius: var(--r-md);
+          background: #eff6ff;
+          color: var(--text);
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          gap: 0.75rem;
+          flex-wrap: wrap;
+        }
+
+        .scheduler-focus-banner div {
+          display: grid;
+          gap: 2px;
+        }
+
+        .scheduler-focus-banner strong {
+          font-size: 0.86rem;
+        }
+
+        .scheduler-focus-banner span {
+          color: var(--text-muted);
+          font-size: 0.8rem;
         }
 
         .scheduler-topbar {
@@ -601,6 +838,13 @@ export default function SchedulingPage() {
           min-height: 360px;
         }
 
+        .scheduler-panel header {
+          display: flex;
+          align-items: flex-start;
+          justify-content: space-between;
+          gap: 12px;
+        }
+
         .scheduler-panel header h2,
         .scheduler-timeline-panel header h2 {
           margin: 0;
@@ -613,6 +857,52 @@ export default function SchedulingPage() {
           margin: 6px 0 0;
           font-size: 14px;
           color: var(--text-muted);
+        }
+
+        .shift-form {
+          margin-top: 16px;
+          padding: 12px;
+          border: 1px solid var(--border);
+          border-radius: var(--r-md);
+          background: var(--surface-soft);
+          display: grid;
+          grid-template-columns: minmax(160px, 1.2fr) minmax(160px, 1fr) minmax(130px, 0.8fr) repeat(2, minmax(96px, 0.55fr));
+          gap: 10px;
+          align-items: end;
+        }
+
+        .shift-form label {
+          display: grid;
+          gap: 5px;
+          min-width: 0;
+        }
+
+        .shift-form span {
+          font-size: 12px;
+          font-weight: 800;
+          color: var(--text-muted);
+          text-transform: uppercase;
+          letter-spacing: 0.04em;
+        }
+
+        .shift-form select,
+        .shift-form input,
+        .scheduler-inline-select {
+          width: 100%;
+          height: 36px;
+          border: 1px solid var(--border);
+          border-radius: var(--r-sm);
+          background: var(--surface);
+          color: var(--text);
+          font-size: 13px;
+          padding: 0 10px;
+        }
+
+        .shift-form__actions {
+          grid-column: 1 / -1;
+          display: flex;
+          gap: 8px;
+          justify-content: flex-end;
         }
 
         .scheduler-empty,
@@ -691,6 +981,15 @@ export default function SchedulingPage() {
           background: rgba(79, 70, 229, 0.06);
         }
 
+        .scheduler-table tbody tr.is-open-shift {
+          background: #fff7ed;
+        }
+
+        .scheduler-table-actions {
+          margin-top: 12px;
+          padding: 0 12px;
+        }
+
         .assignment-list {
           margin-top: 16px;
           list-style: none;
@@ -746,6 +1045,10 @@ export default function SchedulingPage() {
           .scheduler-panels {
             grid-template-columns: 1fr;
           }
+
+          .shift-form {
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+          }
         }
 
         @media (max-width: 768px) {
@@ -763,6 +1066,19 @@ export default function SchedulingPage() {
             width: 100%;
             justify-content: flex-start;
           }
+
+          .scheduler-panel header {
+            flex-direction: column;
+          }
+
+          .shift-form {
+            grid-template-columns: 1fr;
+          }
+
+          .shift-form__actions {
+            justify-content: flex-start;
+            flex-wrap: wrap;
+          }
         }
 
         @media (prefers-reduced-motion: reduce) {
@@ -774,5 +1090,13 @@ export default function SchedulingPage() {
         }
       `}</style>
     </>
+  );
+}
+
+export default function SchedulingPage() {
+  return (
+    <Suspense fallback={<div className="surface-card" style={{ minHeight: 520, padding: '1rem' }} />}>
+      <SchedulingContent />
+    </Suspense>
   );
 }

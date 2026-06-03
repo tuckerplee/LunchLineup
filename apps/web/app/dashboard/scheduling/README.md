@@ -8,4 +8,6 @@
 
 ## Notes
 
-The calendar uses `/shifts/staff-roster`, `/locations`, `/shifts`, and `/lunch-breaks/generate` through session-authenticated API calls. Add-shift, drag-time edits, refresh, print, and break generation operate on server-side tenant-scoped records rather than local dummy staff.
+The calendar uses `/shifts/staff-roster`, `/locations`, `/shifts`, and `/lunch-breaks/generate` through session-authenticated API calls. Shift creation requires a selected staff member, location, role, and start/end time from the route form so Add Shift cannot silently create repeated open shifts. Table assignee controls and timeline drag edits update the same server-side tenant-scoped shift records rather than local dummy staff.
+
+`?focus=open` filters the shift table and timeline to unassigned shifts, matching the dashboard "Assign open shifts" links. `?date=YYYY-MM-DD` seeds the initial calendar date when provided.

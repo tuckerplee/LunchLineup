@@ -10,12 +10,18 @@ const OIDC_ENABLED = (process.env.NEXT_PUBLIC_OIDC_ENABLED ?? '').toLowerCase() 
 
 type Step = 'identifier' | 'otp' | 'pin' | 'password';
 
+function safeInternalPath(value: string | null): string {
+    if (!value) return '/dashboard';
+    if (!value.startsWith('/') || value.startsWith('//') || value.includes('\\')) return '/dashboard';
+    return value;
+}
+
 function LoginContent() {
     const searchParams = useSearchParams();
     const prefillIdentifier = searchParams.get('identifier') ?? searchParams.get('email') ?? '';
     const stepParam = searchParams.get('step');
     const errorParam = searchParams.get('error');
-    const nextPath = searchParams.get('next') ?? '/dashboard';
+    const nextPath = safeInternalPath(searchParams.get('next'));
 
     const [step, setStep] = useState<Step>('identifier');
     const [identifier, setIdentifier] = useState('');
@@ -184,7 +190,7 @@ function LoginContent() {
         verifyInFlightRef.current = true;
         setIsLoading(true);
 
-        const safeNext = nextPath.startsWith('/') ? nextPath : '/dashboard';
+        const safeNext = safeInternalPath(nextPath);
         const form = document.createElement('form');
         form.method = 'POST';
         form.action = `${API}/auth/email/verify-otp?redirect=1&next=${encodeURIComponent(safeNext)}`;
@@ -215,7 +221,7 @@ function LoginContent() {
         setError(null);
         setIsLoading(true);
 
-        const safeNext = nextPath.startsWith('/') ? nextPath : '/dashboard';
+        const safeNext = safeInternalPath(nextPath);
         const form = document.createElement('form');
         form.method = 'POST';
         form.action = `${API}/auth/pin/verify?redirect=1&next=${encodeURIComponent(safeNext)}`;
@@ -245,7 +251,7 @@ function LoginContent() {
         setError(null);
         setIsLoading(true);
 
-        const safeNext = nextPath.startsWith('/') ? nextPath : '/dashboard';
+        const safeNext = safeInternalPath(nextPath);
         const form = document.createElement('form');
         form.method = 'POST';
         form.action = `${API}/auth/password/verify?redirect=1&next=${encodeURIComponent(safeNext)}`;

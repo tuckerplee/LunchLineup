@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
-import { CalendarDays, Clock3, MapPin, Users } from 'lucide-react';
+import { CalendarDays, Clock3, MapPin, Plus, Users, UserPlus } from 'lucide-react';
 import { LunchLineupMark } from '@/components/branding/LunchLineupMark';
 import { fetchWithSession } from '@/lib/client-api';
 
@@ -94,28 +94,28 @@ const QUICK_ACTIONS = [
     {
         label: 'Build Weekly Schedule',
         desc: 'Assign and optimize shifts in one workspace',
-        icon: '📅',
+        icon: CalendarDays,
         href: '/dashboard/scheduling',
         tier: 'primary' as const,
     },
     {
         label: 'Generate Lunch Plan',
         desc: 'Auto-stagger breaks with policy controls',
-        icon: <LunchLineupMark size={20} />,
+        icon: LunchLineupMark,
         href: '/dashboard/lunch-breaks',
         tier: 'primary' as const,
     },
     {
         label: 'Invite a Team Member',
         desc: 'Add staff and assign roles instantly',
-        icon: '👋',
+        icon: UserPlus,
         href: '/dashboard/staff',
         tier: 'secondary' as const,
     },
     {
         label: 'Add New Location',
         desc: 'Extend scheduling to another storefront',
-        icon: '🏢',
+        icon: Plus,
         href: '/dashboard/locations',
         tier: 'secondary' as const,
     },
@@ -415,7 +415,7 @@ export function DashboardWorkspace() {
                             Welcome back, {firstName(overview?.profile?.name)}
                         </h1>
                         <p className="workspace-subtitle">
-                            {todayLabel} · {overview?.profile?.tenantName ?? 'Live dashboard'}
+                            {todayLabel} - {overview?.profile?.tenantName ?? 'Live dashboard'}
                         </p>
                         <p style={{ color: 'var(--text-primary)', fontSize: '0.95rem', fontWeight: 650 }}>
                             {isLoading
@@ -595,7 +595,9 @@ export function DashboardWorkspace() {
 
             <section style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '0.85rem' }}>
                 <div style={{ gridColumn: '1 / -1', display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: '0.85rem' }}>
-                    {QUICK_ACTIONS.filter((action) => action.tier === 'primary').map((action) => (
+                    {QUICK_ACTIONS.filter((action) => action.tier === 'primary').map((action) => {
+                        const Icon = action.icon;
+                        return (
                         <Link
                             key={action.label}
                             href={action.href}
@@ -621,18 +623,21 @@ export function DashboardWorkspace() {
                                     flexShrink: 0,
                                 }}
                             >
-                                {action.icon}
+                                <Icon size={20} />
                             </span>
                             <div>
                                 <div style={{ fontSize: '0.98rem', fontWeight: 750, color: 'var(--text-primary)' }}>{action.label}</div>
                                 <div style={{ fontSize: '0.82rem', color: 'var(--text-secondary)' }}>{action.desc}</div>
                             </div>
                         </Link>
-                    ))}
+                        );
+                    })}
                 </div>
 
                 <div style={{ gridColumn: '1 / -1', display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '0.75rem' }}>
-                    {QUICK_ACTIONS.filter((action) => action.tier === 'secondary').map((action) => (
+                    {QUICK_ACTIONS.filter((action) => action.tier === 'secondary').map((action) => {
+                        const Icon = action.icon;
+                        return (
                         <Link key={action.label} href={action.href} className="surface-card" style={{ padding: '0.85rem', display: 'flex', gap: '0.68rem' }}>
                             <span
                                 style={{
@@ -647,14 +652,15 @@ export function DashboardWorkspace() {
                                     flexShrink: 0,
                                 }}
                             >
-                                {action.icon}
+                                <Icon size={20} />
                             </span>
                             <div>
                                 <div style={{ fontSize: '0.86rem', fontWeight: 700, color: 'var(--text-primary)' }}>{action.label}</div>
                                 <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>{action.desc}</div>
                             </div>
                         </Link>
-                    ))}
+                        );
+                    })}
                 </div>
             </section>
 

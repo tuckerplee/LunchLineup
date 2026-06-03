@@ -44,6 +44,11 @@ export class AuthController {
         return process.env.NODE_ENV === 'production';
     }
 
+    private safeInternalPath(value: string): string | null {
+        if (!value.startsWith('/') || value.startsWith('//') || value.includes('\\')) return null;
+        return value;
+    }
+
     private setSessionCookies(res: Response, accessToken: string, refreshToken: string, csrfToken: string) {
         const secure = this.useSecureCookies();
         const cookieOptions = {
@@ -90,7 +95,7 @@ export class AuthController {
         const identifier = body.identifier.toLowerCase().trim();
         const redirectMode = String((req.query as any)?.redirect || '') === '1';
         const nextPath = String((req.query as any)?.next || '');
-        const safeNext = nextPath.startsWith('/') ? nextPath : null;
+        const safeNext = this.safeInternalPath(nextPath);
 
         try {
             const result = await this.authService.loginWithUsernamePassword(identifier, body.password);
@@ -123,7 +128,7 @@ export class AuthController {
     async login(@Req() req: Request, @Res() res: Response) {
         if ((process.env.OIDC_ENABLED || 'true').toLowerCase() === 'false') {
             const nextPath = String((req.query as any)?.next || '');
-            const safeNext = nextPath.startsWith('/') ? nextPath : null;
+            const safeNext = this.safeInternalPath(nextPath);
             const params = new URLSearchParams();
             if (safeNext) params.set('next', safeNext);
             const redirectTo = params.toString() ? `/auth/login?${params.toString()}` : '/auth/login';
@@ -206,7 +211,7 @@ export class AuthController {
         const email = body.email.toLowerCase();
         const redirectMode = String((req.query as any)?.redirect || '') === '1';
         const nextPath = String((req.query as any)?.next || '');
-        const safeNext = nextPath.startsWith('/') ? nextPath : null;
+        const safeNext = this.safeInternalPath(nextPath);
         this.authDebug('verify_otp_start', {
             email: this.maskEmail(email),
             redirectMode,
@@ -264,7 +269,7 @@ export class AuthController {
         const identifier = body.identifier.toLowerCase().trim();
         const redirectMode = String((req.query as any)?.redirect || '') === '1';
         const nextPath = String((req.query as any)?.next || '');
-        const safeNext = nextPath.startsWith('/') ? nextPath : null;
+        const safeNext = this.safeInternalPath(nextPath);
 
         try {
             const result = await this.authService.loginWithUsernamePin(identifier, body.pin);

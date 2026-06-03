@@ -90,9 +90,9 @@ function badgeStyle(color: string, bg: string, border: string) {
 }
 
 function formatDateTime(value: string | null | undefined) {
-    if (!value) return '—';
+    if (!value) return '-';
     const date = new Date(value);
-    if (Number.isNaN(date.getTime())) return '—';
+    if (Number.isNaN(date.getTime())) return '-';
     return new Intl.DateTimeFormat('en-US', {
         month: 'short',
         day: 'numeric',
@@ -131,7 +131,7 @@ export function CreditsClient() {
     const [error, setError] = useState<string | null>(null);
     const [notice, setNotice] = useState<string | null>(null);
     const [query, setQuery] = useState('');
-    const [form, setForm] = useState<CreditGrantForm>({ tenantId: '', amount: '500', reason: 'Admin grant' });
+    const [form, setForm] = useState<CreditGrantForm>({ tenantId: '', amount: '', reason: '' });
 
     const loadCredits = useCallback(async () => {
         setLoading(true);
@@ -196,11 +196,11 @@ export function CreditsClient() {
         const maxBalance = tenants.length > 0 ? Math.max(...tenants.map((tenant) => tenant.usageCredits)) : 0;
 
         return [
-            { value: tenants.length, subtitle: 'tenant balances', icon: '🏢', color: '#2f63ff', bg: '#edf3ff' },
-            { value: formatCredits(totalCredits), subtitle: 'total credits', icon: '💳', color: '#0f8c52', bg: '#e9fbf1' },
-            { value: historyCount, subtitle: 'ledger entries', icon: '🧾', color: '#cb3653', bg: '#ffeef2' },
-            { value: formatCredits(maxBalance), subtitle: 'largest balance', icon: '📈', color: '#cc7f06', bg: '#fff4e2' },
-            { value: positiveCount, subtitle: 'grant rows', icon: '➕', color: '#0f8c52', bg: '#e9fbf1' },
+            { value: tenants.length, subtitle: 'tenant balances', icon: 'T', color: '#2f63ff', bg: '#edf3ff' },
+            { value: formatCredits(totalCredits), subtitle: 'total credits', icon: 'C', color: '#0f8c52', bg: '#e9fbf1' },
+            { value: historyCount, subtitle: 'ledger entries', icon: 'L', color: '#cb3653', bg: '#ffeef2' },
+            { value: formatCredits(maxBalance), subtitle: 'largest balance', icon: 'M', color: '#cc7f06', bg: '#fff4e2' },
+            { value: positiveCount, subtitle: 'grant rows', icon: '+', color: '#0f8c52', bg: '#e9fbf1' },
         ];
     }, [history, tenants]);
 
@@ -208,6 +208,10 @@ export function CreditsClient() {
         () => tenants.find((tenant) => tenant.id === form.tenantId) ?? null,
         [form.tenantId, tenants],
     );
+    const parsedAmount = parseAmount(form.amount);
+    const projectedBalance = selectedTenant && Number.isInteger(parsedAmount) && parsedAmount > 0
+        ? selectedTenant.usageCredits + parsedAmount
+        : null;
 
     async function grantCredits(event: FormEvent<HTMLFormElement>) {
         event.preventDefault();
@@ -230,6 +234,17 @@ export function CreditsClient() {
             setError('Reason is required.');
             return;
         }
+
+        const selected = tenants.find((tenant) => tenant.id === form.tenantId) ?? null;
+        if (!selected) {
+            setError('Select a valid tenant before granting credits.');
+            return;
+        }
+
+        const confirmed = window.confirm(
+            `Grant ${formatCredits(amount)} credits to ${selected.name}? New balance: ${formatCredits(selected.usageCredits + amount)} credits.`,
+        );
+        if (!confirmed) return;
 
         setSaving('grant');
         try {
@@ -266,7 +281,7 @@ export function CreditsClient() {
                             Credits
                         </h1>
                         <p className="workspace-subtitle">
-                            Live tenant balances and credit ledger data from the admin API · {loading ? 'Loading...' : `${tenants.length} tenant${tenants.length === 1 ? '' : 's'} synced`}
+                            Live tenant balances and credit ledger data from the admin API - {loading ? 'Loading...' : `${tenants.length} tenant${tenants.length === 1 ? '' : 's'} synced`}
                         </p>
                     </div>
 
@@ -441,7 +456,7 @@ export function CreditsClient() {
                             </div>
                         </div>
                         <span className="badge" style={badgeStyle('#2f63ff', '#edf3ff', '#c9d9ff')}>
-                            POST /billing/credits/grant
+                            POST /admin/credits/grant
                         </span>
                     </div>
 
@@ -456,7 +471,7 @@ export function CreditsClient() {
                             >
                                 {tenants.map((tenant) => (
                                     <option key={tenant.id} value={tenant.id}>
-                                        {tenant.name} · {tenant.slug}
+                                        {tenant.name} - {tenant.slug}
                                     </option>
                                 ))}
                             </select>
@@ -500,7 +515,10 @@ export function CreditsClient() {
                                 Selected tenant: <strong style={{ color: 'var(--text-primary)' }}>{selectedTenant?.name ?? 'None'}</strong>
                             </div>
                             <div>
-                                Current balance: <strong style={{ color: 'var(--text-primary)' }}>{selectedTenant ? formatCredits(selectedTenant.usageCredits) : '—'}</strong>
+                                Current balance: <strong style={{ color: 'var(--text-primary)' }}>{selectedTenant ? formatCredits(selectedTenant.usageCredits) : '-'}</strong>
+                            </div>
+                            <div>
+                                Projected balance: <strong style={{ color: 'var(--text-primary)' }}>{projectedBalance === null ? '-' : formatCredits(projectedBalance)}</strong>
                             </div>
                         </div>
 

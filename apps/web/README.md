@@ -4,13 +4,16 @@ Next.js frontend for the LunchLineup platform. The web app is deployed as the `w
 
 ## Folder map
 
-- `app/` - App Router pages, route layouts, and workspace surfaces.
+- `.storybook/` - Storybook configuration for web UI review.
+- `app/` - App Router pages, route layouts, and workspace surfaces; see `app/README.md`.
 - `components/` - Shared React UI and branding components used across app routes.
 - `hooks/` - Reusable client-side React hooks.
 - `lib/` - Web-side helpers for auth, API calls, session state, and formatting.
+- `playwright-report/` - Generated Playwright HTML report artifacts when retained locally.
 - `public/` - Static files served by Next.js; see `public/README.md`.
 - `stories/` - Storybook stories for web components.
 - `styles/` - Global styles and CSS tokens.
+- `test-results/` - Generated Playwright test artifacts when retained locally.
 - `tests/` - Playwright and frontend behavior tests.
 - `middleware.ts` - Route guard for auth, role access, and dashboard/admin redirects.
 - `next-env.d.ts` - Generated Next.js TypeScript ambient declarations.

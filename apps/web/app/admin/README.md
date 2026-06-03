@@ -4,9 +4,10 @@ System administration routes for super admins and users with `admin_portal:acces
 
 ## File map
 
-- `layout.tsx` - Admin shell, admin navigation, and permission gate.
+- `layout.tsx` - Admin shell, environment/user labeling, and permission gate.
+- `AdminNav.tsx` - Client route-aware admin navigation grouped by team operations and platform admin routes.
 - `page.tsx` - Admin overview route.
-- `credits/` - Tenant usage credit administration.
+- `credits/` - Tenant usage credit administration; see `credits/README.md`.
 - `plans/` - Plan and subscription configuration.
 - `tenants/` - Tenant/company administration.
 - `users/` - Platform user administration.

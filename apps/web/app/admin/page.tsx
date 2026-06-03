@@ -96,10 +96,10 @@ export default function AdminOverviewPage() {
 
     const platformStats = useMemo(
         () => [
-            { label: 'Total Tenants', value: stats?.totalTenants ?? '-', delta: 'live orgs', icon: '🏢', color: '#2f63ff', bg: '#edf3ff' },
-            { label: 'Total Users', value: stats?.totalUsers ?? '-', delta: 'all accounts', icon: '👥', color: '#17b26a', bg: '#e9fbf1' },
-            { label: 'Active Sessions', value: stats?.activeSessions ?? '-', delta: 'right now', icon: '🔗', color: '#f59e0b', bg: '#fff4e2' },
-            { label: 'Solver Queue', value: stats?.solverQueue ?? '-', delta: 'pending jobs', icon: '⚙️', color: '#22b8cf', bg: '#e9fafe' },
+            { label: 'Total Tenants', value: stats?.totalTenants ?? '-', delta: 'live orgs', icon: 'T', color: '#2f63ff', bg: '#edf3ff' },
+            { label: 'Total Users', value: stats?.totalUsers ?? '-', delta: 'all accounts', icon: 'U', color: '#17b26a', bg: '#e9fbf1' },
+            { label: 'Active Sessions', value: stats?.activeSessions ?? '-', delta: 'right now', icon: 'S', color: '#f59e0b', bg: '#fff4e2' },
+            { label: 'Solver Queue', value: stats?.solverQueue ?? '-', delta: 'pending jobs', icon: 'Q', color: '#22b8cf', bg: '#e9fafe' },
         ],
         [stats],
     );
