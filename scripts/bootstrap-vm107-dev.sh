@@ -112,7 +112,12 @@ prepare_runtime_env() {
 
 start_stack() {
   cd "$APP_DIR"
-  docker compose --env-file "$SECRET_ENV_PATH" up -d --build "${services[@]}"
+  if ! docker compose --env-file "$SECRET_ENV_PATH" up -d --build "${services[@]}"; then
+    echo "Initial Compose startup failed; waiting for dependency health and retrying once." >&2
+    docker compose ps >&2 || true
+    sleep 30
+    docker compose --env-file "$SECRET_ENV_PATH" up -d --build "${services[@]}"
+  fi
   docker exec lunchlineup-api npx prisma db push --schema /app/packages/db/prisma/schema.prisma
 }
 
@@ -128,10 +133,10 @@ restore_backup_if_requested() {
   echo "Restoring Postgres data from $BACKUP_FILE"
   case "$BACKUP_FILE" in
     *.sql)
-      docker exec -i lunchlineup-postgres psql -U root -d lunchlineup < "$BACKUP_FILE"
+      docker exec -i lunchlineup-postgres psql -v ON_ERROR_STOP=1 -U root -d lunchlineup < "$BACKUP_FILE"
       ;;
     *.sql.zst)
-      zstd -d -c "$BACKUP_FILE" | docker exec -i lunchlineup-postgres psql -U root -d lunchlineup
+      zstd -d -c "$BACKUP_FILE" | docker exec -i lunchlineup-postgres psql -v ON_ERROR_STOP=1 -U root -d lunchlineup
       ;;
     *.sql.zst.gpg)
       if [[ -z "${BACKUP_ENCRYPTION_KEY:-}" ]]; then
@@ -140,7 +145,7 @@ restore_backup_if_requested() {
       fi
       gpg --decrypt --batch --passphrase "$BACKUP_ENCRYPTION_KEY" "$BACKUP_FILE" \
         | zstd -d -c \
-        | docker exec -i lunchlineup-postgres psql -U root -d lunchlineup
+        | docker exec -i lunchlineup-postgres psql -v ON_ERROR_STOP=1 -U root -d lunchlineup
       ;;
     *)
       echo "Unsupported BACKUP_FILE format. Use .sql, .sql.zst, or .sql.zst.gpg." >&2
