@@ -1,5 +1,6 @@
-import { Injectable, ExecutionContext, HttpException, HttpStatus } from '@nestjs/common';
-import { ThrottlerGuard, ThrottlerException } from '@nestjs/throttler';
+import { Injectable } from '@nestjs/common';
+import { ThrottlerGuard } from '@nestjs/throttler';
+import type { ThrottlerRequest } from '@nestjs/throttler/dist/throttler.guard.interface';
 
 /**
  * Custom Rate Limits Guard.
@@ -17,13 +18,9 @@ export class RateLimitsGuard extends ThrottlerGuard {
         ENTERPRISE: { ttl: 60000, limit: 5000 } // 5000 req/min (or effectively uncapped at edge)
     };
 
-    protected async handleRequest(
-        context: ExecutionContext,
-        limit: number,
-        ttl: number,
-        throttler: any
-    ): Promise<boolean> {
-        const req = context.switchToHttp().getRequest();
+    protected async handleRequest(requestProps: ThrottlerRequest): Promise<boolean> {
+        const { context, throttler, blockDuration, getTracker, generateKey } = requestProps;
+        const { req, res } = this.getRequestResponse(context);
         const user = req.user;
 
         // Default to FREE tier limits if not authenticated
@@ -44,12 +41,37 @@ export class RateLimitsGuard extends ThrottlerGuard {
         }
 
         // Generate a cache key based on tenantId (or IP if unauthenticated)
-        const key = this.generateKey(context, user ? user.tenantId : req.ip, throttler.name);
+        const throttlerName = throttler.name ?? 'default';
+        const tracker = user?.tenantId ?? (await getTracker(req, context));
+        const key = generateKey(context, tracker, throttlerName);
 
-        const { totalHits } = await this.storageService.increment(key, appliedTtl);
+        const { totalHits, timeToExpire, isBlocked, timeToBlockExpire } =
+            await this.storageService.increment(
+                key,
+                appliedTtl,
+                appliedLimit,
+                blockDuration,
+                throttlerName
+            );
 
-        if (totalHits > appliedLimit) {
-            throw new ThrottlerException('Rate Limit Exceeded. Please upgrade your plan.');
+        const suffix = throttlerName === 'default' ? '' : `-${throttlerName}`;
+
+        res.header(`${this.headerPrefix}-Limit${suffix}`, appliedLimit);
+        res.header(`${this.headerPrefix}-Remaining${suffix}`, Math.max(0, appliedLimit - totalHits));
+        res.header(`${this.headerPrefix}-Reset${suffix}`, timeToExpire);
+
+        if (isBlocked) {
+            res.header(`Retry-After${suffix}`, timeToBlockExpire);
+            await this.throwThrottlingException(context, {
+                limit: appliedLimit,
+                ttl: appliedTtl,
+                key,
+                tracker,
+                totalHits,
+                timeToExpire,
+                isBlocked,
+                timeToBlockExpire,
+            });
         }
 
         return true;
