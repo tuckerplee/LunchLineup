@@ -68,6 +68,9 @@ jobs:
         with:
           node-version: '22'
           cache: 'npm'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
       - run: npm ci
       - name: Install Playwright browser for Vitest browser tests
         run: npx playwright install --with-deps chromium
