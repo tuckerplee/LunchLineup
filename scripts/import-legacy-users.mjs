@@ -199,7 +199,7 @@ async function main() {
   const reportPath = reportFlagIndex >= 0 ? args[reportFlagIndex + 1] : path.resolve(process.cwd(), '..', '..', 'exports', `imported-user-credentials-${new Date().toISOString().slice(0, 10).replace(/-/g, '')}.csv`);
   if (!reportPath) usage();
 
-  const source = JSON.parse(fs.readFileSync(exportPath, 'utf8'));
+  const source = JSON.parse(fs.readFileSync(exportPath, 'utf8').replace(/^\uFEFF/, ''));
   const reservedUsernames = new Set();
   const tenantByLegacyCompany = new Map();
   const locationByLegacyStore = new Map();
