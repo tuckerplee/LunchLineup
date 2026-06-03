@@ -1,5 +1,5 @@
 import { BadRequestException, Injectable, NotFoundException, Optional } from '@nestjs/common';
-import { PrismaClient } from '@prisma/client';
+import { PrismaClient, UserRole } from '@prisma/client';
 import { FeatureAccessService } from '../billing/feature-access.service';
 
 type BreakType = 'break1' | 'lunch' | 'break2';
@@ -73,6 +73,13 @@ export interface PersistSetupShiftsRequest {
 }
 
 const TENANT_POLICY_SETTINGS_KEY = 'lunch_break_policy';
+const SCHEDULABLE_USER_ROLES = [UserRole.MANAGER, UserRole.STAFF];
+const SCHEDULABLE_SHIFT_USER_FILTER = {
+    OR: [
+        { userId: null },
+        { user: { is: { role: { in: SCHEDULABLE_USER_ROLES }, deletedAt: null } } },
+    ],
+};
 
 const DEFAULT_POLICY: LunchBreakPolicy = {
     break1OffsetMinutes: 120,
@@ -136,20 +143,20 @@ export class LunchBreaksService {
     ): Promise<{ data: GeneratedShiftBreaks[] }> {
         await this.featureAccessService.assertFeatureEnabled(tenantId, 'lunch_breaks');
         const where: any = { tenantId, deletedAt: null };
+        const and: any[] = [SCHEDULABLE_SHIFT_USER_FILTER];
         if (filters.scheduleId) where.scheduleId = filters.scheduleId;
         if (filters.locationId) where.locationId = filters.locationId;
         if (filters.shiftIds?.length) where.id = { in: filters.shiftIds };
 
-        const and: any[] = [];
         if (filters.startDate) and.push({ endTime: { gt: this.toDateOrThrow(filters.startDate, 'Invalid startDate') } });
         if (filters.endDate) and.push({ startTime: { lt: this.toDateOrThrow(filters.endDate, 'Invalid endDate') } });
-        if (and.length > 0) where.AND = and;
+        where.AND = and;
 
         const shifts = await this.prisma.shift.findMany({
             where,
             orderBy: { startTime: 'asc' },
             include: {
-                user: { select: { id: true, name: true } },
+                user: { select: { id: true, name: true, role: true } },
                 breaks: { orderBy: { startTime: 'asc' } },
             },
         });
@@ -168,9 +175,9 @@ export class LunchBreaksService {
         const policy = await this.fetchPolicy(tenantId);
 
         const shift = await this.prisma.shift.findFirst({
-            where: { id: shiftId, tenantId, deletedAt: null },
+            where: { id: shiftId, tenantId, deletedAt: null, AND: [SCHEDULABLE_SHIFT_USER_FILTER] },
             include: {
-                user: { select: { id: true, name: true } },
+                user: { select: { id: true, name: true, role: true } },
                 breaks: { orderBy: { startTime: 'asc' } },
             },
         });
@@ -225,9 +232,9 @@ export class LunchBreaksService {
         });
 
         const updated = await this.prisma.shift.findFirst({
-            where: { id: shiftId, tenantId, deletedAt: null },
+            where: { id: shiftId, tenantId, deletedAt: null, AND: [SCHEDULABLE_SHIFT_USER_FILTER] },
             include: {
-                user: { select: { id: true, name: true } },
+                user: { select: { id: true, name: true, role: true } },
                 breaks: { orderBy: { startTime: 'asc' } },
             },
         });
@@ -246,7 +253,7 @@ export class LunchBreaksService {
         const explicitShiftIds = rows.map((row) => row.shiftId).filter((id): id is string => Boolean(id));
         const existingShifts = explicitShiftIds.length > 0
             ? await this.prisma.shift.findMany({
-                where: { tenantId, deletedAt: null, id: { in: explicitShiftIds } },
+                where: { tenantId, deletedAt: null, id: { in: explicitShiftIds }, AND: [SCHEDULABLE_SHIFT_USER_FILTER] },
                 select: { id: true, locationId: true },
             })
             : [];
@@ -275,6 +282,9 @@ export class LunchBreaksService {
                 const startTime = this.toDateOrThrow(row.startTime, 'Invalid setup shift startTime.');
                 const endTime = this.toDateOrThrow(row.endTime, 'Invalid setup shift endTime.');
                 const userId = row.userId ?? null;
+                if (userId) {
+                    await this.assertSchedulableUser(tenantId, userId);
+                }
 
                 if (row.shiftId) {
                     const updated = await tx.shift.updateMany({
@@ -410,14 +420,16 @@ export class LunchBreaksService {
 
     private async findSharedShifts(tenantId: string, input: GenerateLunchBreaksRequest) {
         const where: any = { tenantId, deletedAt: null };
+        const and: any[] = [SCHEDULABLE_SHIFT_USER_FILTER];
         if (input.scheduleId) where.scheduleId = input.scheduleId;
         if (input.locationId) where.locationId = input.locationId;
         if (input.shiftIds?.length) where.id = { in: input.shiftIds };
+        where.AND = and;
         return this.prisma.shift.findMany({
             where,
             orderBy: { startTime: 'asc' },
             include: {
-                user: { select: { id: true, name: true } },
+                user: { select: { id: true, name: true, role: true } },
             },
         });
     }
@@ -497,7 +509,7 @@ export class LunchBreaksService {
 
         await this.prisma.$transaction(async (tx: any) => {
             const shiftCount = await tx.shift.count({
-                where: { tenantId, deletedAt: null, id: { in: shiftIds } },
+                where: { tenantId, deletedAt: null, id: { in: shiftIds }, AND: [SCHEDULABLE_SHIFT_USER_FILTER] },
             });
             if (shiftCount !== shiftIds.length) {
                 throw new BadRequestException('One or more shifts were not found for this tenant.');
@@ -543,6 +555,16 @@ export class LunchBreaksService {
             endTime: shift.endTime.toISOString(),
             breaks: typed,
         };
+    }
+
+    private async assertSchedulableUser(tenantId: string, userId: string): Promise<void> {
+        const user = await this.prisma.user.findFirst({
+            where: { id: userId, tenantId, deletedAt: null, role: { in: SCHEDULABLE_USER_ROLES } },
+            select: { id: true },
+        });
+        if (!user) {
+            throw new BadRequestException('User is not available for lunch/break scheduling in this tenant.');
+        }
     }
 
     private toDateOrThrow(value: string, message: string): Date {

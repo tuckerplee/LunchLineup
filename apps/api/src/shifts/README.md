@@ -8,4 +8,4 @@
 
 ## Notes
 
-Shift reads include linked staff and break records for calendar consumers. Create and update paths validate location/user ownership against `req.user.tenantId` so calendar actions cannot cross tenant boundaries.
+Shift reads include linked staff and break records for calendar consumers. Scheduler-facing reads and rosters only include open shifts, managers, and staff; admins and super admins are excluded from planner/lunch-break assignment surfaces. Create, update, and bulk assignment paths validate location/user ownership against `req.user.tenantId` so calendar actions cannot cross tenant boundaries.

@@ -1,10 +1,17 @@
 import { Controller, Get, Post, Put, Delete, Param, Body, Req, UseGuards, SetMetadata, Query, HttpCode, HttpStatus, NotFoundException, BadRequestException } from '@nestjs/common';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { RbacGuard } from '../auth/rbac.guard';
-import { PrismaClient } from '@prisma/client';
+import { PrismaClient, UserRole } from '@prisma/client';
 import { NotificationType, NotificationsService } from '../notifications/notifications.service';
 
 const Permission = (perm: string) => SetMetadata('permission', perm);
+const SCHEDULABLE_USER_ROLES = [UserRole.MANAGER, UserRole.STAFF];
+const schedulableShiftUserFilter = {
+    OR: [
+        { userId: null },
+        { user: { is: { role: { in: SCHEDULABLE_USER_ROLES }, deletedAt: null } } },
+    ],
+};
 
 @Controller({ path: 'shifts', version: '1' })
 @UseGuards(JwtAuthGuard, RbacGuard)
@@ -29,14 +36,14 @@ export class ShiftsController {
     ) {
         const tenantId = req.user.tenantId;
         const where: any = { tenantId, deletedAt: null };
+        const and: any[] = [schedulableShiftUserFilter];
         if (locationId) where.locationId = locationId;
         if (scheduleId) where.scheduleId = scheduleId;
         if (startDate || endDate) {
-            const and: any[] = [];
             if (startDate) and.push({ endTime: { gt: new Date(startDate) } });
             if (endDate) and.push({ startTime: { lt: new Date(endDate) } });
-            where.AND = and;
         }
+        where.AND = and;
 
         const shifts = await this.prisma.shift.findMany({
             where,
@@ -60,7 +67,7 @@ export class ShiftsController {
             where: {
                 tenantId: req.user.tenantId,
                 deletedAt: null,
-                role: { in: ['ADMIN', 'MANAGER', 'STAFF'] },
+                role: { in: SCHEDULABLE_USER_ROLES },
             },
             orderBy: { name: 'asc' },
             select: {
@@ -207,6 +214,11 @@ export class ShiftsController {
     @Post('bulk-assign')
     @Permission('shifts:write')
     async bulkAssign(@Body() body: { assignments: Array<{ shiftId: string; userId: string }> }, @Req() req: any) {
+        const userIds = Array.from(new Set(body.assignments.map((assignment) => assignment.userId).filter(Boolean)));
+        for (const userId of userIds) {
+            await this.assertUserInTenant(userId, req.user.tenantId);
+        }
+
         // Process in transaction
         const updates = body.assignments.map(a =>
             this.prisma.shift.updateMany({
@@ -257,9 +269,9 @@ export class ShiftsController {
 
     private async assertUserInTenant(userId: string, tenantId: string) {
         const user = await this.prisma.user.findFirst({
-            where: { id: userId, tenantId, deletedAt: null },
+            where: { id: userId, tenantId, deletedAt: null, role: { in: SCHEDULABLE_USER_ROLES } },
             select: { id: true },
         });
-        if (!user) throw new BadRequestException('User is not available for this tenant.');
+        if (!user) throw new BadRequestException('User is not available for scheduling in this tenant.');
     }
 }

@@ -96,9 +96,8 @@ describe('ShiftsController notifications', () => {
         );
     });
 
-    it('returns manager/staff roster for planner consumers', async () => {
+    it('returns only manager/staff roster for planner consumers', async () => {
         prisma.user.findMany.mockResolvedValue([
-            { id: 'u1', name: 'Test Admin', role: 'ADMIN' },
             { id: 'u2', name: 'Test Manager', role: 'MANAGER' },
             { id: 'u3', name: 'Test Staff', role: 'STAFF' },
         ]);
@@ -109,7 +108,7 @@ describe('ShiftsController notifications', () => {
             where: {
                 tenantId: 'tenant-1',
                 deletedAt: null,
-                role: { in: ['ADMIN', 'MANAGER', 'STAFF'] },
+                role: { in: ['MANAGER', 'STAFF'] },
             },
             orderBy: { name: 'asc' },
             select: {
@@ -120,7 +119,6 @@ describe('ShiftsController notifications', () => {
         });
         expect(result).toEqual({
             data: [
-                { id: 'u1', name: 'Test Admin', role: 'ADMIN' },
                 { id: 'u2', name: 'Test Manager', role: 'MANAGER' },
                 { id: 'u3', name: 'Test Staff', role: 'STAFF' },
             ],

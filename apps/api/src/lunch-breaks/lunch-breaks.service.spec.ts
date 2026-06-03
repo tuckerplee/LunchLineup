@@ -21,6 +21,9 @@ function buildPrismaMock(overrides: Record<string, any> = {}) {
             findFirst: vi.fn().mockResolvedValue(null),
             findMany: vi.fn().mockResolvedValue([]),
         },
+        user: {
+            findFirst: vi.fn().mockResolvedValue({ id: 'user-1' }),
+        },
         $transaction: vi.fn(async (fn: any) => fn(tx)),
         tx,
         ...overrides,
@@ -100,6 +103,18 @@ describe('LunchBreaksService', () => {
         expect(result.persisted).toBe(true);
         expect(prisma.tx.break.deleteMany).toHaveBeenCalled();
         expect(prisma.tx.break.createMany).toHaveBeenCalled();
+        expect(prisma.shift.findMany).toHaveBeenCalledWith(expect.objectContaining({
+            where: expect.objectContaining({
+                AND: expect.arrayContaining([
+                    {
+                        OR: [
+                            { userId: null },
+                            { user: { is: { role: { in: ['MANAGER', 'STAFF'] }, deletedAt: null } } },
+                        ],
+                    },
+                ]),
+            }),
+        }));
     });
 
     it('maps persisted break records by paid/unpaid semantics', async () => {
@@ -133,6 +148,18 @@ describe('LunchBreaksService', () => {
         const result = await service.listLunchBreaks('tenant-1', {});
         expect(result.data).toHaveLength(1);
         expect(result.data[0].breaks.map((entry) => entry.type)).toEqual(['break1', 'lunch', 'break2']);
+        expect(prisma.shift.findMany).toHaveBeenCalledWith(expect.objectContaining({
+            where: expect.objectContaining({
+                AND: expect.arrayContaining([
+                    {
+                        OR: [
+                            { userId: null },
+                            { user: { is: { role: { in: ['MANAGER', 'STAFF'] }, deletedAt: null } } },
+                        ],
+                    },
+                ]),
+            }),
+        }));
     });
 
     it('updates a shift with manual break edits', async () => {
