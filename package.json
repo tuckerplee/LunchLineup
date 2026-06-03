@@ -17,6 +17,9 @@
     "clean": "turbo run clean"
   },
   "devDependencies": {
+    "@typescript-eslint/eslint-plugin": "^8.60.1",
+    "@typescript-eslint/parser": "^8.60.1",
+    "eslint": "^10.4.1",
     "turbo": "latest"
   }
 }
