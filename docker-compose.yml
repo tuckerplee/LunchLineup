@@ -30,6 +30,7 @@ services:
       - app
     environment:
       - NODE_ENV=production
+      - COOKIE_SECURE=false
       - NEXT_PUBLIC_API_URL=/api/v1
       - INTERNAL_API_URL=http://api:3000/v1
       - NEXT_PUBLIC_OIDC_ENABLED=false
@@ -55,6 +56,8 @@ services:
     dns:
       - 10.10.10.1
     env_file: .env
+    environment:
+      - COOKIE_SECURE=false
     healthcheck:
       test: [ "CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://127.0.0.1:3000/health" ]
       interval: 15s

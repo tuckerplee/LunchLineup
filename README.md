@@ -101,6 +101,8 @@ cp .env.example .env
 
 *Note: Never commit `.env` or `.env.local` to version control.*
 
+For HTTP-only dev deployments, set `COOKIE_SECURE=false` so browsers accept login cookies on private `http://` routes. Production HTTPS deployments should set `COOKIE_SECURE=true` or omit it when `NODE_ENV=production`.
+
 ### 3. Start the Stack
 
 The **only** supported way to run the application locally is via Docker Compose:

@@ -6,6 +6,14 @@ const INTERNAL_API_URL = process.env.INTERNAL_API_URL;
 const ACCESS_TOKEN_COOKIE_MAX_AGE_SEC = 30 * 60;
 const AUTH_DEBUG_ENABLED = ['1', 'true', 'yes', 'on'].includes((process.env.AUTH_DEBUG ?? '').toLowerCase());
 
+function useSecureCookies(): boolean {
+    const configured = process.env.COOKIE_SECURE;
+    if (configured !== undefined) {
+        return ['1', 'true', 'yes', 'on'].includes(configured.toLowerCase());
+    }
+    return process.env.NODE_ENV === 'production';
+}
+
 function readCookie(request: NextRequest, name: string): string | undefined {
     const parsed = request.cookies.get(name)?.value;
     if (parsed) return parsed;
@@ -75,7 +83,7 @@ export async function middleware(request: NextRequest) {
         if (refreshedAccessToken) {
             response.cookies.set('access_token', refreshedAccessToken, {
                 httpOnly: true,
-                secure: process.env.NODE_ENV === 'production',
+                secure: useSecureCookies(),
                 sameSite: 'strict',
                 path: '/',
                 maxAge: ACCESS_TOKEN_COOKIE_MAX_AGE_SEC,

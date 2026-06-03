@@ -13,4 +13,4 @@ System administration routes for super admins and users with `admin_portal:acces
 
 ## Access behavior
 
-The admin console remains restricted to users with `admin_portal:access`. The admin shell and overview expose direct workspace links for Calendar (`/dashboard/scheduling`), Team Dashboard, Lunch & Breaks, Staff, and Locations so super admins can move between admin operations and usable calendar/usage workflows without guessing where the workspace lives.
+The admin console remains restricted to users with `admin_portal:access`. The admin shell and overview expose direct workspace links for Calendar (`/dashboard/scheduling`), Team Dashboard, Lunch & Breaks, Staff, and Locations so super admins can move between admin operations and usable calendar/usage workflows without guessing where the workspace lives. Sidebar links use icon components, not text prefixes.

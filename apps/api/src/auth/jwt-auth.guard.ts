@@ -5,6 +5,14 @@ import { RbacService } from './rbac.service';
 
 const ACCESS_TOKEN_COOKIE_MAX_AGE_MS = 30 * 60 * 1000;
 
+function useSecureCookies(): boolean {
+    const configured = process.env.COOKIE_SECURE;
+    if (configured !== undefined) {
+        return ['1', 'true', 'yes', 'on'].includes(configured.toLowerCase());
+    }
+    return process.env.NODE_ENV === 'production';
+}
+
 /**
  * JWT Authentication Guard.
  * Validates the access token and attaches the user context to the request.
@@ -66,7 +74,7 @@ export class JwtAuthGuard implements CanActivate {
                         mfaVerified: request.user.mfaVerified,
                     }), {
                         httpOnly: true,
-                        secure: process.env.NODE_ENV === 'production',
+                        secure: useSecureCookies(),
                         sameSite: 'strict',
                         path: '/',
                         maxAge: ACCESS_TOKEN_COOKIE_MAX_AGE_MS,

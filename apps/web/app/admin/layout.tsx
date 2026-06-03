@@ -2,18 +2,19 @@ import Link from 'next/link';
 import { getServerUser } from '@/lib/server-auth';
 import { redirect } from 'next/navigation';
 import { LunchLineupMark } from '@/components/branding/LunchLineupMark';
+import { CalendarDays, CreditCard, LayoutDashboard, MapPin, Package, Shield, Users, UtensilsCrossed } from 'lucide-react';
 
 const ADMIN_NAV = [
-    { href: '/dashboard/scheduling', label: 'Calendar', icon: 'Cal' },
-    { href: '/dashboard', label: 'Team Dashboard', icon: 'Dash' },
-    { href: '/dashboard/lunch-breaks', label: 'Lunch & Breaks', icon: 'LB' },
-    { href: '/dashboard/staff', label: 'Staff', icon: 'St' },
-    { href: '/dashboard/locations', label: 'Locations', icon: 'Loc' },
-    { href: '/admin', label: 'Admin Overview', icon: 'Adm' },
-    { href: '/admin/tenants', label: 'Tenants', icon: 'Ten' },
-    { href: '/admin/users', label: 'Users', icon: 'Usr' },
-    { href: '/admin/credits', label: 'Credits', icon: 'Cr' },
-    { href: '/admin/plans', label: 'Plans', icon: 'Pln' },
+    { href: '/dashboard/scheduling', label: 'Calendar', icon: CalendarDays },
+    { href: '/dashboard', label: 'Team Dashboard', icon: LayoutDashboard },
+    { href: '/dashboard/lunch-breaks', label: 'Lunch & Breaks', icon: UtensilsCrossed },
+    { href: '/dashboard/staff', label: 'Staff', icon: Users },
+    { href: '/dashboard/locations', label: 'Locations', icon: MapPin },
+    { href: '/admin', label: 'Admin Overview', icon: Shield },
+    { href: '/admin/tenants', label: 'Tenants', icon: LayoutDashboard },
+    { href: '/admin/users', label: 'Users', icon: Users },
+    { href: '/admin/credits', label: 'Credits', icon: CreditCard },
+    { href: '/admin/plans', label: 'Plans', icon: Package },
 ];
 
 export default async function AdminLayout({ children }: { children: React.ReactNode }) {
@@ -66,21 +67,22 @@ export default async function AdminLayout({ children }: { children: React.ReactN
                     </div>
 
                     <nav style={{ flex: 1, padding: '0.75rem', display: 'flex', flexDirection: 'column', gap: 4 }}>
-                        {ADMIN_NAV.map((item) => (
-                            <Link
-                                key={item.href}
-                                href={item.href}
-                                className="workspace-nav-link"
-                                style={{
-                                    color: 'var(--text-secondary)',
-                                }}
-                            >
-                                <span aria-hidden="true" style={{ width: 18, display: 'inline-grid', placeItems: 'center' }}>
-                                    {item.icon}
-                                </span>
-                                {item.label}
-                            </Link>
-                        ))}
+                        {ADMIN_NAV.map((item) => {
+                            const Icon = item.icon;
+                            return (
+                                <Link
+                                    key={item.href}
+                                    href={item.href}
+                                    className="workspace-nav-link"
+                                    style={{
+                                        color: 'var(--text-secondary)',
+                                    }}
+                                >
+                                    <Icon aria-hidden="true" size={16} />
+                                    {item.label}
+                                </Link>
+                            );
+                        })}
                     </nav>
 
                     <div style={{ borderTop: '1px solid #f0d5de', padding: '0.8rem' }}>

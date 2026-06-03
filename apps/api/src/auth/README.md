@@ -20,3 +20,5 @@
 ## Notes
 
 Migrated legacy users authenticate with `username` plus preserved PHP `password_hash` values. PIN login remains available for accounts without a migrated password hash.
+
+Session cookie writers honor `COOKIE_SECURE`. The private HTTP dev deployment sets `COOKIE_SECURE=false` so browsers accept `access_token`, `refresh_token`, and `csrf_token`; HTTPS production should keep secure cookies enabled.

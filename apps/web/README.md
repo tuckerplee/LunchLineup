@@ -27,3 +27,5 @@ Next.js frontend for the LunchLineup platform. The web app is deployed as the `w
 ## Access behavior
 
 `middleware.ts` allows users with `admin_portal:access` to access both the admin console and the team dashboard workspace. Super admins are not redirected away from `/dashboard`; the dashboard shell provides an Admin Console link when that permission is present.
+
+`middleware.ts` also honors `COOKIE_SECURE`. The private HTTP dev server sets `COOKIE_SECURE=false` so refreshed `access_token` cookies are accepted by browsers; HTTPS production should keep secure cookies enabled.

@@ -1,6 +1,14 @@
 import { Request, Response, NextFunction } from 'express';
 import crypto from 'crypto';
 
+function useSecureCookies(): boolean {
+    const configured = process.env.COOKIE_SECURE;
+    if (configured !== undefined) {
+        return ['1', 'true', 'yes', 'on'].includes(configured.toLowerCase());
+    }
+    return process.env.NODE_ENV === 'production';
+}
+
 /**
  * Double-Submit CSRF Protection Middleware
  * As per Architecture Part VII-A.2
@@ -27,7 +35,7 @@ export function setCsrfToken(req: Request, res: Response) {
     const token = crypto.randomBytes(32).toString('hex');
     res.cookie('XSRF-TOKEN', token, {
         httpOnly: false, // Must be readable by client JS to send back as header
-        secure: process.env.NODE_ENV === 'production',
+        secure: useSecureCookies(),
         sameSite: 'strict',
         path: '/'
     });
