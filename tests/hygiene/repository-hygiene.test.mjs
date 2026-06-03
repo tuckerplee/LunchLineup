@@ -70,6 +70,7 @@ test('folder-level documentation covers the migration test files', () => {
     'hygiene/repository-hygiene.test.mjs',
     'migration/legacy-parity-inventory.test.mjs',
     'deploy/deploy-source.test.mjs',
+    'integration/ephemeral-stack.test.mjs',
   ]) {
     assert.match(readme, new RegExp(expected.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
   }

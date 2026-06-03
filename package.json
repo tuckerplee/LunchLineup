@@ -12,7 +12,8 @@
     "lint": "turbo run lint",
     "postinstall": "npm run generate --workspace @lunchlineup/db",
     "test": "turbo run test",
-    "test:migration": "node --test tests/**/*.test.mjs",
+    "test:migration": "node --test tests/deploy/*.test.mjs tests/hygiene/*.test.mjs tests/migration/*.test.mjs",
+    "test:integration": "node --test tests/integration/*.test.mjs",
     "typecheck": "npm run typecheck --workspaces --if-present",
     "type-check": "npm run typecheck",
     "clean": "turbo run clean"
