@@ -5,6 +5,7 @@
 secrets/
 *.pem
 *.key
+DEPLOYED_GIT_SHA
 
 # ── Node ────────────────────────────────────────────────────────────────────
 node_modules/
