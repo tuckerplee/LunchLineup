@@ -18,3 +18,5 @@ The Stage 5 unit job uses Python 3.12, installs `requirements.txt`, and runs:
 ```bash
 python -m pytest --cov=src --cov-fail-under=90
 ```
+
+`ortools` is required for `ConstraintSolver`; keep it pinned in `requirements.txt` so solver tests are reproducible in CI.
