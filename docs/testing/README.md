@@ -34,6 +34,8 @@ Run browser smoke tests from the web app when the stack is available:
 npm --workspace @lunchlineup/web run test:e2e
 ```
 
+In CI, the web E2E gate builds `@lunchlineup/web`, runs Playwright from the web workspace so only `apps/web/tests/e2e` is discovered, and uploads `apps/web/playwright-report/`. Set `BASE_URL` to target an already running environment; otherwise Playwright starts the local web app.
+
 ## Required Parity Workflows
 
 The migration is not ready for staging until these legacy workflows are covered by tests or captured parity evidence:

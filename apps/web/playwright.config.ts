@@ -2,7 +2,7 @@ import { defineConfig, devices } from '@playwright/test';
 
 /**
  * Playwright configuration for LunchLineup E2E tests.
- * Targets a locally running instance of the web app.
+ * Targets BASE_URL when provided, otherwise starts the local web app.
  */
 export default defineConfig({
     testDir: './tests/e2e',
@@ -37,12 +37,13 @@ export default defineConfig({
             use: { ...devices['Pixel 5'] },
         },
     ],
-    webServer: process.env.CI
+    webServer: process.env.BASE_URL
         ? undefined
         : {
-            command: 'npm run dev',
+            command: process.env.CI ? 'npm run start' : 'npm run dev',
             url: 'http://localhost:3000',
-            reuseExistingServer: true,
+            reuseExistingServer: !process.env.CI,
             cwd: '.',
+            timeout: 120000,
         },
 });
