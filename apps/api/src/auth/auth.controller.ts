@@ -77,6 +77,45 @@ export class AuthController {
     }
 
     /**
+     * Username/password — Verify migrated legacy password hash and issue session cookies.
+     */
+    @Public()
+    @Post('password/verify')
+    @HttpCode(HttpStatus.OK)
+    async verifyPassword(
+        @Body() body: { identifier: string; password: string },
+        @Req() req: Request,
+        @Res() res: Response,
+    ) {
+        const identifier = body.identifier.toLowerCase().trim();
+        const redirectMode = String((req.query as any)?.redirect || '') === '1';
+        const nextPath = String((req.query as any)?.next || '');
+        const safeNext = nextPath.startsWith('/') ? nextPath : null;
+
+        try {
+            const result = await this.authService.loginWithUsernamePassword(identifier, body.password);
+            this.setSessionCookies(res, result.accessToken, result.refreshToken, result.csrfToken);
+
+            const redirectTo = safeNext ?? '/dashboard';
+            if (redirectMode) {
+                return res.redirect(302, redirectTo);
+            }
+            return res.json({ success: true, redirectTo });
+        } catch (err) {
+            if (redirectMode && err instanceof UnauthorizedException) {
+                const params = new URLSearchParams({
+                    step: 'password',
+                    identifier,
+                    error: 'invalid',
+                });
+                if (safeNext) params.set('next', safeNext);
+                return res.redirect(302, `/auth/login?${params.toString()}`);
+            }
+            throw err;
+        }
+    }
+
+    /**
      * Initiate OIDC login — redirects to provider.
      */
     @Public()

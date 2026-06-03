@@ -8,7 +8,7 @@ import { LunchLineupMark } from '@/components/branding/LunchLineupMark';
 const API = process.env.NEXT_PUBLIC_API_URL ?? '/api/v1';
 const OIDC_ENABLED = (process.env.NEXT_PUBLIC_OIDC_ENABLED ?? '').toLowerCase() === 'true';
 
-type Step = 'identifier' | 'otp' | 'pin';
+type Step = 'identifier' | 'otp' | 'pin' | 'password';
 
 function LoginContent() {
     const searchParams = useSearchParams();
@@ -23,6 +23,7 @@ function LoginContent() {
     const [username, setUsername] = useState('');
     const [otp, setOtp] = useState(['', '', '', '', '', '']);
     const [pin, setPin] = useState('');
+    const [password, setPassword] = useState('');
     const [isLoading, setIsLoading] = useState(false);
     const [error, setError] = useState<string | null>(null);
     const [resendCountdown, setResendCountdown] = useState(0);
@@ -40,10 +41,12 @@ function LoginContent() {
                 setUsername(normalized);
             }
         }
-        if (stepParam === 'otp' || stepParam === 'pin') setStep(stepParam);
+        if (stepParam === 'otp' || stepParam === 'pin' || stepParam === 'password') setStep(stepParam);
         if (errorParam === 'invalid') {
             if (stepParam === 'pin') {
                 setError('Invalid username or PIN. Please try again.');
+            } else if (stepParam === 'password') {
+                setError('Invalid username or password. Please try again.');
             } else {
                 setError('Invalid or expired code. Please try again.');
             }
@@ -99,6 +102,13 @@ function LoginContent() {
                 setStep('otp');
                 setResendCountdown(60);
                 setTimeout(() => otpRefs.current[0]?.focus(), 100);
+                return;
+            }
+
+            if (data.flow === 'USERNAME_PASSWORD') {
+                setUsername(data.identifier);
+                setPassword('');
+                setStep('password');
                 return;
             }
 
@@ -225,6 +235,36 @@ function LoginContent() {
         form.submit();
     };
 
+    const handleVerifyPassword = (e?: React.FormEvent) => {
+        e?.preventDefault();
+        if (!password) {
+            setError('Enter your password.');
+            return;
+        }
+
+        setError(null);
+        setIsLoading(true);
+
+        const safeNext = nextPath.startsWith('/') ? nextPath : '/dashboard';
+        const form = document.createElement('form');
+        form.method = 'POST';
+        form.action = `${API}/auth/password/verify?redirect=1&next=${encodeURIComponent(safeNext)}`;
+        form.style.display = 'none';
+
+        const identifierInput = document.createElement('input');
+        identifierInput.name = 'identifier';
+        identifierInput.value = username.trim().toLowerCase();
+        form.appendChild(identifierInput);
+
+        const passwordInput = document.createElement('input');
+        passwordInput.name = 'password';
+        passwordInput.value = password;
+        form.appendChild(passwordInput);
+
+        document.body.appendChild(form);
+        form.submit();
+    };
+
     useEffect(() => {
         if (step !== 'otp' || isLoading || verifyInFlightRef.current) return;
         const code = otp.join('');
@@ -269,7 +309,7 @@ function LoginContent() {
                 <section className="login-auth">
                     <div className="surface-card login-card">
                         <h2 className="login-card__title">
-                            {step === 'identifier' ? 'Sign in to LunchLineup' : step === 'otp' ? 'Check your email' : 'Enter your PIN'}
+                            {step === 'identifier' ? 'Sign in to LunchLineup' : step === 'otp' ? 'Check your email' : step === 'password' ? 'Enter your password' : 'Enter your PIN'}
                         </h2>
                         <p className="login-card__subtitle">
                             {step === 'identifier'
@@ -311,7 +351,7 @@ function LoginContent() {
                                         {isLoading ? 'Continuing...' : 'Continue'}
                                     </button>
 
-                                    <p className="login-card__trust">Secure sign-in · Admins use email OTP · Staff can use PIN</p>
+                                    <p className="login-card__trust">Secure sign-in · Email OTP, migrated password, or PIN</p>
                                 </form>
                             </>
                         ) : null}
@@ -348,7 +388,7 @@ function LoginContent() {
                                     {isLoading ? 'Verifying...' : 'Verify and continue'}
                                 </button>
 
-                                <p className="login-card__trust">Secure sign-in · No passwords stored</p>
+                                <p className="login-card__trust">Secure sign-in · One-time code expires quickly</p>
 
                                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '0.5rem', flexWrap: 'wrap' }}>
                                     {resendCountdown > 0 ? (
@@ -410,6 +450,48 @@ function LoginContent() {
                                     onClick={() => {
                                         setStep('identifier');
                                         setPin('');
+                                        setError(null);
+                                        setIsLoading(false);
+                                    }}
+                                >
+                                    Use different login
+                                </button>
+                            </form>
+                        ) : null}
+
+                        {step === 'password' ? (
+                            <form onSubmit={handleVerifyPassword} style={{ display: 'grid', gap: '0.62rem' }}>
+                                <label className="form-group">
+                                    <span className="form-label">Password</span>
+                                    <input
+                                        type="password"
+                                        className="form-input"
+                                        placeholder="Enter password"
+                                        value={password}
+                                        onChange={(e) => setPassword(e.target.value)}
+                                        autoComplete="current-password"
+                                        required
+                                    />
+                                </label>
+
+                                {error ? (
+                                    <div className="login-card__error">
+                                        {error}
+                                    </div>
+                                ) : null}
+
+                                <button type="submit" className="btn btn-primary" disabled={isLoading || !password} style={{ width: '100%' }}>
+                                    {isLoading ? 'Signing in...' : 'Sign in with password'}
+                                </button>
+
+                                <p className="login-card__trust">Uses the migrated LunchLineup password hash.</p>
+
+                                <button
+                                    type="button"
+                                    className="btn btn-ghost btn-sm"
+                                    onClick={() => {
+                                        setStep('identifier');
+                                        setPassword('');
                                         setError(null);
                                         setIsLoading(false);
                                     }}

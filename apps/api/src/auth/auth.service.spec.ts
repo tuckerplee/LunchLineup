@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { ForbiddenException, UnauthorizedException } from '@nestjs/common';
 import { AuthService } from './auth.service';
+import * as bcrypt from 'bcryptjs';
 
 // Minimal mock factories
 const mockConfigService = {
@@ -146,6 +147,7 @@ describe('AuthService – mixed auth flow', () => {
             tenantId: 'tenant-1',
             role: 'ADMIN',
             pinResetRequired: false,
+            passwordHash: null,
         });
         mockRbacService.getEffectiveAccess.mockResolvedValue({
             primaryRole: 'ADMIN',
@@ -162,6 +164,7 @@ describe('AuthService – mixed auth flow', () => {
             tenantId: 'tenant-1',
             role: 'MANAGER',
             pinResetRequired: true,
+            passwordHash: null,
         });
         mockRbacService.getEffectiveAccess.mockResolvedValue({
             primaryRole: 'MANAGER',
@@ -197,6 +200,83 @@ describe('AuthService – mixed auth flow', () => {
         expect(result).toHaveProperty('accessToken');
         expect(result.user.username).toBe('shiftlead');
         expect(mockPrisma.session.create).toHaveBeenCalledOnce();
+    });
+
+    it('resolves migrated username identifiers to USERNAME_PASSWORD', async () => {
+        mockPrisma.user.findFirst.mockResolvedValue({
+            id: 'user-legacy',
+            tenantId: 'tenant-1',
+            role: 'STAFF',
+            pinResetRequired: false,
+            passwordHash: '$2y$10$legacyhashplaceholder',
+        });
+        mockRbacService.getEffectiveAccess.mockResolvedValue({
+            primaryRole: 'STAFF',
+            roles: [],
+            permissions: ['auth:login_password'],
+        });
+
+        const result = await service.resolveLoginMethod('LegacyUser');
+        expect(result).toEqual({
+            flow: 'USERNAME_PASSWORD',
+            normalizedIdentifier: 'legacyuser',
+        });
+    });
+
+    it('logs in a username+password user with a migrated bcrypt hash', async () => {
+        const passwordHash = bcrypt.hashSync('correct-horse', 10).replace(/^\$2a\$/, '$2y$');
+        mockPrisma.user.findFirst.mockResolvedValue({
+            id: 'u-legacy',
+            tenantId: 't-1',
+            role: 'STAFF',
+            email: null,
+            username: 'legacyuser',
+            mfaEnabled: false,
+            passwordHash,
+            loginAttempts: 0,
+            lockedUntil: null,
+        });
+        mockRbacService.getEffectiveAccess.mockResolvedValue({
+            primaryRole: 'STAFF',
+            roles: [],
+            permissions: ['auth:login_password'],
+        });
+        mockPrisma.session.create.mockResolvedValue({ id: 's-password', refreshToken: 'r-password' });
+        mockPrisma.user.update.mockResolvedValue({});
+
+        const result = await service.loginWithUsernamePassword('LegacyUser', 'correct-horse');
+        expect(result).toHaveProperty('accessToken');
+        expect(result.user.username).toBe('legacyuser');
+    });
+
+    it('records failed password attempt on invalid migrated password', async () => {
+        const passwordHash = bcrypt.hashSync('right-password', 10);
+        mockPrisma.user.findFirst.mockResolvedValue({
+            id: 'u-bad-password',
+            tenantId: 't-1',
+            role: 'STAFF',
+            email: null,
+            username: 'legacyuser',
+            mfaEnabled: false,
+            passwordHash,
+            loginAttempts: 4,
+            lockedUntil: null,
+        });
+        mockRbacService.getEffectiveAccess.mockResolvedValue({
+            primaryRole: 'STAFF',
+            roles: [],
+            permissions: ['auth:login_password'],
+        });
+        mockPrisma.user.update.mockResolvedValue({});
+
+        await expect(service.loginWithUsernamePassword('legacyuser', 'wrong-password')).rejects.toBeInstanceOf(UnauthorizedException);
+        expect(mockPrisma.user.update).toHaveBeenCalledWith({
+            where: { id: 'u-bad-password' },
+            data: {
+                loginAttempts: 5,
+                lockedUntil: expect.any(Date),
+            },
+        });
     });
 
     it('records failed PIN attempt on invalid PIN', async () => {

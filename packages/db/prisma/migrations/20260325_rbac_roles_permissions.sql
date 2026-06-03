@@ -82,6 +82,7 @@ VALUES
   (gen_random_uuid()::text, 'admin_portal:access', 'Access admin portal', 'Access the system administration portal.', 'ADMIN', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
   (gen_random_uuid()::text, 'auth:login_email', 'Email login', 'Authenticate with work email and one-time passcode.', 'AUTH', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
   (gen_random_uuid()::text, 'auth:login_pin', 'PIN login', 'Authenticate with username and PIN.', 'AUTH', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+  (gen_random_uuid()::text, 'auth:login_password', 'Password login', 'Authenticate with migrated username and password.', 'AUTH', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
   (gen_random_uuid()::text, 'users:read', 'View staff', 'Read staff directory and user details.', 'USERS', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
   (gen_random_uuid()::text, 'users:write', 'Create staff', 'Invite staff and update basic account details.', 'USERS', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
   (gen_random_uuid()::text, 'users:admin', 'Administer staff', 'Reset login credentials and deactivate users.', 'USERS', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
@@ -152,18 +153,18 @@ FROM "Role" r
 JOIN "Permission" p ON
   (r."slug" = 'super-admin')
   OR (r."slug" = 'admin' AND p."key" IN (
-    'dashboard:access','auth:login_email','auth:login_pin','users:read','users:write','users:admin','roles:read','roles:write','roles:assign',
+    'dashboard:access','auth:login_email','auth:login_pin','auth:login_password','users:read','users:write','users:admin','roles:read','roles:write','roles:assign',
     'locations:read','locations:write','locations:delete','shifts:read','shifts:write','shifts:delete','schedules:read',
     'schedules:write','schedules:publish','lunch_breaks:read','lunch_breaks:write','lunch_breaks:delete','notifications:read',
     'notifications:write','billing:read','billing:write','settings:read','settings:write'
   ))
   OR (r."slug" = 'manager' AND p."key" IN (
-    'dashboard:access','auth:login_email','auth:login_pin','users:read','users:write','roles:read','locations:read',
+    'dashboard:access','auth:login_email','auth:login_pin','auth:login_password','users:read','users:write','roles:read','locations:read',
     'shifts:read','shifts:write','schedules:read','schedules:write','schedules:publish','lunch_breaks:read','lunch_breaks:write',
     'notifications:read','notifications:write'
   ))
   OR (r."slug" = 'staff' AND p."key" IN (
-    'dashboard:access','auth:login_pin','locations:read','shifts:read','schedules:read','lunch_breaks:read','lunch_breaks:write',
+    'dashboard:access','auth:login_pin','auth:login_password','locations:read','shifts:read','schedules:read','lunch_breaks:read','lunch_breaks:write',
     'notifications:read','notifications:write'
   ))
 ON CONFLICT ("roleId", "permissionId") DO NOTHING;

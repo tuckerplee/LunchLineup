@@ -21,6 +21,7 @@ describe('AuthController', () => {
         authService = {
             resolveLoginMethod: vi.fn(),
             loginWithUsernamePin: vi.fn(),
+            loginWithUsernamePassword: vi.fn(),
             loginWithEmail: vi.fn(),
             handleOidcCallback: vi.fn(),
             refreshAccessToken: vi.fn(),
@@ -99,6 +100,37 @@ describe('AuthController', () => {
         await controller.verifyPin({ identifier: 'ShiftLead', pin: '0000' }, req, res);
 
         const expected = '/auth/login?step=pin&identifier=shiftlead&error=invalid&next=%2Fdashboard%2Fstaff';
+        expect(res.redirect).toHaveBeenCalledWith(302, expected);
+    });
+
+    it('verifies password and returns JSON payload when redirect mode is off', async () => {
+        const res = createResponseMock();
+        const req = { query: {} } as any;
+        authService.loginWithUsernamePassword.mockResolvedValue({
+            accessToken: 'a',
+            refreshToken: 'r',
+            csrfToken: 'c',
+            user: { id: 'u1', role: 'STAFF' },
+        });
+
+        await controller.verifyPassword({ identifier: 'ShiftLead', password: 'secret' }, req, res);
+
+        expect(authService.loginWithUsernamePassword).toHaveBeenCalledWith('shiftlead', 'secret');
+        expect(res.cookie).toHaveBeenCalledTimes(3);
+        expect(res.json).toHaveBeenCalledWith({
+            success: true,
+            redirectTo: '/dashboard',
+        });
+    });
+
+    it('redirects to login with error on invalid password in redirect mode', async () => {
+        const res = createResponseMock();
+        const req = { query: { redirect: '1', next: '/dashboard/staff' } } as any;
+        authService.loginWithUsernamePassword.mockRejectedValue(new UnauthorizedException('Invalid username or password'));
+
+        await controller.verifyPassword({ identifier: 'ShiftLead', password: 'bad' }, req, res);
+
+        const expected = '/auth/login?step=password&identifier=shiftlead&error=invalid&next=%2Fdashboard%2Fstaff';
         expect(res.redirect).toHaveBeenCalledWith(302, expected);
     });
 });

@@ -5,6 +5,7 @@ import { PrismaClient, UserRole } from '@prisma/client';
 import * as crypto from 'crypto';
 import { assertTenantCanAddActiveUser } from '../billing/user-capacity';
 import { RbacService } from './rbac.service';
+import * as bcrypt from 'bcryptjs';
 
 type UserRoleValue = 'SUPER_ADMIN' | 'ADMIN' | 'MANAGER' | 'STAFF';
 const USER_ROLE: Record<UserRoleValue, UserRoleValue> = {
@@ -16,7 +17,8 @@ const USER_ROLE: Record<UserRoleValue, UserRoleValue> = {
 
 export type LoginResolveResult =
     | { flow: 'EMAIL_OTP'; normalizedIdentifier: string }
-    | { flow: 'USERNAME_PIN'; normalizedIdentifier: string; pinResetRequired: boolean };
+    | { flow: 'USERNAME_PIN'; normalizedIdentifier: string; pinResetRequired: boolean }
+    | { flow: 'USERNAME_PASSWORD'; normalizedIdentifier: string };
 
 @Injectable()
 export class AuthService {
@@ -51,6 +53,11 @@ export class AuthService {
         if (!salt || !hash) return false;
         const computed = crypto.scryptSync(pin, salt, 64).toString('hex');
         return crypto.timingSafeEqual(Buffer.from(hash, 'hex'), Buffer.from(computed, 'hex'));
+    }
+
+    private verifyLegacyPassword(password: string, storedHash: string): boolean {
+        const normalizedHash = storedHash.replace(/^\$2y\$/, '$2a$');
+        return bcrypt.compareSync(password, normalizedHash);
     }
 
     private async createSessionTokens(user: { id: string; tenantId: string; role: string; email: string | null; username: string | null }, source: string) {
@@ -118,13 +125,23 @@ export class AuthService {
                 tenantId: true,
                 role: true,
                 pinResetRequired: true,
+                passwordHash: true,
             },
         });
 
         if (user) {
             const access = await this.rbacService.getEffectiveAccess(user.id, user.tenantId);
+            if (user.passwordHash) {
+                if (!access.permissions.includes('auth:login_password')) {
+                    throw new ForbiddenException('This account does not allow username and password login.');
+                }
+                return {
+                    flow: 'USERNAME_PASSWORD',
+                    normalizedIdentifier: identifier,
+                };
+            }
             if (!access.permissions.includes('auth:login_pin')) {
-                throw new ForbiddenException('This account does not allow username and PIN login.');
+                throw new ForbiddenException('This account does not allow username login.');
             }
         }
 
@@ -133,6 +150,52 @@ export class AuthService {
             normalizedIdentifier: identifier,
             pinResetRequired: user?.pinResetRequired ?? false,
         };
+    }
+
+    async loginWithUsernamePassword(identifierRaw: string, password: string) {
+        const username = this.normalizeIdentifier(identifierRaw);
+        if (!username || !password) {
+            throw new UnauthorizedException('Invalid username or password');
+        }
+
+        const user = await this.prisma.user.findFirst({
+            where: { username, deletedAt: null },
+        });
+
+        if (!user || !user.passwordHash) {
+            throw new UnauthorizedException('Invalid username or password');
+        }
+
+        const access = await this.rbacService.getEffectiveAccess(user.id, user.tenantId);
+        if (!access.permissions.includes('auth:login_password')) {
+            throw new UnauthorizedException('Invalid username or password');
+        }
+
+        if (user.lockedUntil && user.lockedUntil > new Date()) {
+            throw new ForbiddenException('Account locked due to too many failed attempts');
+        }
+
+        const valid = this.verifyLegacyPassword(password, user.passwordHash);
+        if (!valid) {
+            const attempts = user.loginAttempts + 1;
+            const lockedUntil = attempts >= 5 ? new Date(Date.now() + 15 * 60 * 1000) : null;
+            await this.prisma.user.update({
+                where: { id: user.id },
+                data: {
+                    loginAttempts: attempts,
+                    lockedUntil,
+                },
+            });
+            throw new UnauthorizedException('Invalid username or password');
+        }
+
+        return this.createSessionTokens({
+            id: user.id,
+            email: user.email,
+            username: user.username,
+            tenantId: user.tenantId,
+            role: user.role,
+        }, 'username-password');
     }
 
     async handleOidcCallback(code: string, state: string) {

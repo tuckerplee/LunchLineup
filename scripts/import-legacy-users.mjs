@@ -1,5 +1,4 @@
 #!/usr/bin/env node
-import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import process from 'node:process';
@@ -12,6 +11,7 @@ const PERMISSIONS = [
   ['admin_portal:access', 'Access admin portal', 'Access the system administration portal.', PermissionCategory.ADMIN],
   ['auth:login_email', 'Email login', 'Authenticate with work email and one-time passcode.', PermissionCategory.AUTH],
   ['auth:login_pin', 'PIN login', 'Authenticate with username and PIN.', PermissionCategory.AUTH],
+  ['auth:login_password', 'Password login', 'Authenticate with migrated username and password.', PermissionCategory.AUTH],
   ['users:read', 'View staff', 'Read staff directory and user details.', PermissionCategory.USERS],
   ['users:write', 'Create staff', 'Invite staff and update basic account details.', PermissionCategory.USERS],
   ['users:admin', 'Administer staff', 'Reset login credentials and deactivate users.', PermissionCategory.USERS],
@@ -56,6 +56,7 @@ const ROLE_DEFINITIONS = [
       'dashboard:access',
       'auth:login_email',
       'auth:login_pin',
+      'auth:login_password',
       'users:read',
       'users:write',
       'roles:read',
@@ -78,6 +79,7 @@ const ROLE_DEFINITIONS = [
     permissions: [
       'dashboard:access',
       'auth:login_pin',
+      'auth:login_password',
       'locations:read',
       'shifts:read',
       'schedules:read',
@@ -90,7 +92,7 @@ const ROLE_DEFINITIONS = [
 ];
 
 function usage() {
-  console.error('Usage: node scripts/import-legacy-users.mjs <legacy-export.json> [--report <pins.csv>]');
+  console.error('Usage: node scripts/import-legacy-users.mjs <legacy-export.json> [--report <credentials.csv>]');
   process.exit(2);
 }
 
@@ -110,16 +112,6 @@ function normalizeUsername(value, fallback) {
 
 function isEmail(value) {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(value ?? ''));
-}
-
-function randomPin() {
-  return String(crypto.randomInt(100000, 1000000));
-}
-
-function hashPin(pin) {
-  const salt = crypto.randomBytes(16).toString('hex');
-  const hash = crypto.scryptSync(pin, salt, 64).toString('hex');
-  return `${salt}:${hash}`;
 }
 
 async function uniqueUsername(tenantId, base, reserved) {
@@ -204,14 +196,14 @@ async function main() {
   const exportPath = args[0];
   if (!exportPath) usage();
   const reportFlagIndex = args.indexOf('--report');
-  const reportPath = reportFlagIndex >= 0 ? args[reportFlagIndex + 1] : path.resolve(process.cwd(), '..', '..', 'exports', `imported-user-pins-${new Date().toISOString().slice(0, 10).replace(/-/g, '')}.csv`);
+  const reportPath = reportFlagIndex >= 0 ? args[reportFlagIndex + 1] : path.resolve(process.cwd(), '..', '..', 'exports', `imported-user-credentials-${new Date().toISOString().slice(0, 10).replace(/-/g, '')}.csv`);
   if (!reportPath) usage();
 
   const source = JSON.parse(fs.readFileSync(exportPath, 'utf8'));
   const reservedUsernames = new Set();
   const tenantByLegacyCompany = new Map();
   const locationByLegacyStore = new Map();
-  const reportRows = [['source_type', 'legacy_id', 'name', 'username', 'role', 'temporary_pin', 'pin_reset_required']];
+  const reportRows = [['source_type', 'legacy_id', 'name', 'username', 'role', 'login_method', 'has_password_hash']];
 
   for (const company of source.companies ?? []) {
     const tenant = await prisma.tenant.upsert({
@@ -261,37 +253,39 @@ async function main() {
     if (!tenant) continue;
     const role = userRoleForLegacy(legacyUser, source.user_company_roles ?? [], source.user_store_roles ?? []);
     const roleByLegacy = await ensureRoles(tenant.id);
-    const username = await uniqueUsername(tenant.id, normalizeUsername(legacyUser.username, `legacy.user.${legacyUser.id}`), reservedUsernames);
-    const pin = randomPin();
+    const sourceUsername = legacyUser.username_plain ?? legacyUser.username ?? `legacy.user.${legacyUser.id}`;
+    const username = await uniqueUsername(tenant.id, normalizeUsername(sourceUsername, `legacy.user.${legacyUser.id}`), reservedUsernames);
+    const name = legacyUser.name_plain ?? legacyUser.name ?? sourceUsername ?? `Legacy User ${legacyUser.id}`;
+    const passwordHash = legacyUser.password_hash ?? legacyUser.passwordHash ?? null;
     const user = await prisma.user.upsert({
       where: { tenantId_username: { tenantId: tenant.id, username } },
       update: {
-        email: isEmail(legacyUser.username) ? legacyUser.username.toLowerCase() : null,
-        name: legacyUser.username || `Legacy User ${legacyUser.id}`,
+        email: isEmail(sourceUsername) ? sourceUsername.toLowerCase() : null,
+        name,
         role,
-        pinHash: hashPin(pin),
-        pinSetAt: new Date(),
-        pinResetRequired: true,
+        passwordHash,
+        pinHash: null,
+        pinSetAt: null,
+        pinResetRequired: false,
         pinLoginAttempts: 0,
         pinLockedUntil: null,
         deletedAt: null,
       },
       create: {
         tenantId: tenant.id,
-        email: isEmail(legacyUser.username) ? legacyUser.username.toLowerCase() : null,
+        email: isEmail(sourceUsername) ? sourceUsername.toLowerCase() : null,
         username,
-        name: legacyUser.username || `Legacy User ${legacyUser.id}`,
+        name,
         role,
-        pinHash: hashPin(pin),
-        pinSetAt: new Date(),
-        pinResetRequired: true,
+        passwordHash,
+        pinResetRequired: false,
       },
     });
     const roleRow = roleByLegacy.get(role);
     if (roleRow) {
       await prisma.roleAssignment.createMany({ data: [{ userId: user.id, roleId: roleRow.id }], skipDuplicates: true });
     }
-    reportRows.push(['user', legacyUser.id, user.name, username, role, pin, 'true']);
+    reportRows.push(['user', legacyUser.id, user.name, username, role, passwordHash ? 'legacy-password' : 'none', passwordHash ? 'true' : 'false']);
   }
 
   for (const staff of source.staff ?? []) {
@@ -299,16 +293,17 @@ async function main() {
     if (!tenant) continue;
     const role = staffRole(staff);
     const roleByLegacy = await ensureRoles(tenant.id);
-    const username = await uniqueUsername(tenant.id, normalizeUsername(staff.name, `staff.${staff.id}`), reservedUsernames);
-    const pin = randomPin();
+    const staffName = staff.name_plain ?? staff.name ?? `Staff ${staff.id}`;
+    const username = await uniqueUsername(tenant.id, normalizeUsername(staffName, `staff.${staff.id}`), reservedUsernames);
     const user = await prisma.user.upsert({
       where: { tenantId_username: { tenantId: tenant.id, username } },
       update: {
-        name: staff.name || `Staff ${staff.id}`,
+        name: staffName,
         role,
-        pinHash: hashPin(pin),
-        pinSetAt: new Date(),
-        pinResetRequired: true,
+        passwordHash: null,
+        pinHash: null,
+        pinSetAt: null,
+        pinResetRequired: false,
         pinLoginAttempts: 0,
         pinLockedUntil: null,
         deletedAt: null,
@@ -316,18 +311,16 @@ async function main() {
       create: {
         tenantId: tenant.id,
         username,
-        name: staff.name || `Staff ${staff.id}`,
+        name: staffName,
         role,
-        pinHash: hashPin(pin),
-        pinSetAt: new Date(),
-        pinResetRequired: true,
+        pinResetRequired: false,
       },
     });
     const roleRow = roleByLegacy.get(role);
     if (roleRow) {
       await prisma.roleAssignment.createMany({ data: [{ userId: user.id, roleId: roleRow.id }], skipDuplicates: true });
     }
-    reportRows.push(['staff', staff.id, user.name, username, role, pin, 'true']);
+    reportRows.push(['staff', staff.id, user.name, username, role, 'none', 'false']);
   }
 
   fs.mkdirSync(path.dirname(reportPath), { recursive: true });
