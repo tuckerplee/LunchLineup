@@ -15,4 +15,4 @@
 - `lunchlineup-dev-vm.proxmox1.lan`
 - `10.231.10.108`
 
-The proxy forwards `/api/v1/*` to the API service, `/ws/*` to the engine service, and all other paths to the Next.js web service.
+The proxy forwards `/health`, `/api/health`, and `/api/v1/*` to the API service, `/ws/*` to the engine service, and all other paths to the Next.js web service.
