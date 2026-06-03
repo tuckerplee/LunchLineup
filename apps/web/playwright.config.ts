@@ -1,5 +1,8 @@
 import { defineConfig, devices } from '@playwright/test';
 
+const e2ePort = process.env.PLAYWRIGHT_PORT ?? '3100';
+const localBaseUrl = `http://localhost:${e2ePort}`;
+
 /**
  * Playwright configuration for LunchLineup E2E tests.
  * Targets BASE_URL when provided, otherwise starts the local web app.
@@ -15,7 +18,7 @@ export default defineConfig({
         ['junit', { outputFile: 'test-results/junit.xml' }],
     ],
     use: {
-        baseURL: process.env.BASE_URL || 'http://localhost:3000',
+        baseURL: process.env.BASE_URL || localBaseUrl,
         trace: 'on-first-retry',
         screenshot: 'only-on-failure',
         video: 'retain-on-failure',
@@ -40,9 +43,9 @@ export default defineConfig({
     webServer: process.env.BASE_URL
         ? undefined
         : {
-            command: process.env.CI ? 'npm run start' : 'npm run dev',
-            url: 'http://localhost:3000',
-            reuseExistingServer: !process.env.CI,
+            command: process.env.CI ? `npm run start -- -p ${e2ePort}` : `npm run dev -- -p ${e2ePort}`,
+            url: localBaseUrl,
+            reuseExistingServer: false,
             cwd: '.',
             timeout: 120000,
         },
