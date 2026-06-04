@@ -272,10 +272,11 @@ export function StaffScheduler({ resources, events, viewMode, initialDate, compa
         }
         const rowRect = e.currentTarget.closest('.timeline-row')?.getBoundingClientRect();
         const buttonRect = e.currentTarget.getBoundingClientRect();
+        const rowWidth = rowRect?.width ?? timelineWidth;
         setShiftAction({
             event,
-            left: buttonRect.left - (rowRect?.left ?? 0) + Math.min(buttonRect.width, 160),
-            top: Math.max(6, buttonRect.top - (rowRect?.top ?? 0) - 8),
+            left: clamp(buttonRect.left - (rowRect?.left ?? 0), 8, Math.max(8, rowWidth - 190)),
+            top: buttonRect.bottom - (rowRect?.top ?? 0) + 6,
         });
     };
 
@@ -660,7 +661,6 @@ export function StaffScheduler({ resources, events, viewMode, initialDate, compa
                     padding: 8px;
                     display: grid;
                     gap: 6px;
-                    transform: translate(-100%, -100%);
                     cursor: default;
                 }
 
