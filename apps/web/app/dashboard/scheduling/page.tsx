@@ -4,7 +4,7 @@ import { Suspense, useCallback, useEffect, useMemo, useState, type FormEvent } f
 import dynamic from 'next/dynamic';
 import { useSearchParams } from 'next/navigation';
 import { Button } from '@/components/ui/button';
-import { CalendarDays, Download, Plus, Printer, RefreshCw, Settings2, Sparkles, Upload, WandSparkles } from 'lucide-react';
+import { CalendarDays, CheckCircle2, Clock3, Download, MapPin, Plus, Printer, RefreshCw, Settings2, Sparkles, Upload, Users, WandSparkles } from 'lucide-react';
 import { fetchJsonWithSession } from '@/lib/client-api';
 import type { SchedulerViewMode, StaffScheduleEvent } from '@/components/scheduling/StaffScheduler';
 
@@ -51,6 +51,26 @@ type GeneratedAssignment = {
   breaks: string[];
   risk: 'healthy' | 'watch';
 };
+type BuilderSettings = {
+  locationId: string;
+  role: string;
+  startTime: string;
+  endTime: string;
+  coverageCount: number;
+  assignMode: 'balanced' | 'open';
+  fillGapsOnly: boolean;
+  generateBreaks: boolean;
+};
+type PlanShift = {
+  dateValue: string;
+  locationId: string;
+  locationName: string;
+  userId: string;
+  staffName: string;
+  role: string;
+  startTime: string;
+  endTime: string;
+};
 
 const UNASSIGNED_RESOURCE_ID = 'unassigned';
 const OPEN_SHIFT_VALUE = '__open_shift__';
@@ -62,6 +82,16 @@ const DEFAULT_SHIFT_DRAFT: ShiftDraft = {
   shiftDate: toDateInputValue(TODAY),
   startTime: '09:00',
   endTime: '17:00',
+};
+const DEFAULT_BUILDER_SETTINGS: BuilderSettings = {
+  locationId: '',
+  role: 'STAFF',
+  startTime: '09:00',
+  endTime: '17:00',
+  coverageCount: 3,
+  assignMode: 'balanced',
+  fillGapsOnly: true,
+  generateBreaks: true,
 };
 
 function getCsrfTokenFromCookie(): string {
@@ -230,6 +260,16 @@ function assignmentFromShift(shift: ShiftRecord): GeneratedAssignment {
   };
 }
 
+function minutesBetween(startTime: string, endTime: string): number {
+  const [startHour = 0, startMinute = 0] = startTime.split(':').map((part) => Number.parseInt(part, 10));
+  const [endHour = 0, endMinute = 0] = endTime.split(':').map((part) => Number.parseInt(part, 10));
+  return Math.max(0, (endHour * 60 + endMinute) - (startHour * 60 + startMinute));
+}
+
+function shiftsForDate(shifts: ShiftRecord[], dateValue: string): ShiftRecord[] {
+  return shifts.filter((shift) => shiftDateKey(shift) === dateValue);
+}
+
 function SchedulingContent() {
   const searchParams = useSearchParams();
   const initialDate = searchParams.get('date');
@@ -248,6 +288,8 @@ function SchedulingContent() {
   const [generated, setGenerated] = useState<GeneratedAssignment[]>([]);
   const [showShiftForm, setShowShiftForm] = useState(false);
   const [shiftDraft, setShiftDraft] = useState<ShiftDraft>({ ...DEFAULT_SHIFT_DRAFT, shiftDate: initialDateValue });
+  const [builderSettings, setBuilderSettings] = useState<BuilderSettings>(DEFAULT_BUILDER_SETTINGS);
+  const [isBuildingSchedule, setIsBuildingSchedule] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const loadSchedule = useCallback(async (dateValue: string, mode: SchedulerViewMode) => {
@@ -293,6 +335,11 @@ function SchedulingContent() {
       if (locations.some((location) => location.id === current.locationId)) return current;
       return { ...current, locationId: locations[0].id };
     });
+    setBuilderSettings((current) => {
+      if (!locations[0]?.id) return current.locationId ? { ...current, locationId: '' } : current;
+      if (locations.some((location) => location.id === current.locationId)) return current;
+      return { ...current, locationId: locations[0].id };
+    });
   }, [locations]);
 
   const resources = useMemo(() => {
@@ -319,6 +366,38 @@ function SchedulingContent() {
   const scheduleEvents = useMemo(() => shiftsToEvents(visibleShifts), [visibleShifts]);
   const locationNameById = useMemo(() => new Map(locations.map((location) => [location.id, location.name])), [locations]);
   const builderDates = useMemo(() => visibleDateValues(selectedDate, viewMode), [selectedDate, viewMode]);
+  const builderPlan = useMemo<PlanShift[]>(() => {
+    const location = locations.find((item) => item.id === builderSettings.locationId) ?? locations[0];
+    if (!location || !isValidShiftWindow(selectedDate, builderSettings.startTime, builderSettings.endTime)) return [];
+    const schedulableStaff = staff.filter((person) => normalizeRole(person.role) === builderSettings.role || builderSettings.role === 'STAFF');
+    const staffPool = schedulableStaff.length > 0 ? schedulableStaff : staff;
+    let staffCursor = 0;
+
+    return builderDates.flatMap((dateValue) => {
+      const existingCount = builderSettings.fillGapsOnly
+        ? shiftsForDate(shifts, dateValue).filter((shift) => (
+          shift.locationId === location.id &&
+          normalizeRole(shift.role ?? shift.user?.role) === builderSettings.role
+        )).length
+        : 0;
+      const neededCount = Math.max(0, builderSettings.coverageCount - existingCount);
+      return Array.from({ length: neededCount }, () => {
+        const person = builderSettings.assignMode === 'balanced' && staffPool.length > 0 ? staffPool[staffCursor % staffPool.length] : null;
+        staffCursor += 1;
+        return {
+          dateValue,
+          locationId: location.id,
+          locationName: location.name,
+          userId: person?.id ?? '',
+          staffName: person?.name ?? 'Open shift',
+          role: builderSettings.role,
+          startTime: builderSettings.startTime,
+          endTime: builderSettings.endTime,
+        };
+      });
+    });
+  }, [builderDates, builderSettings, locations, selectedDate, shifts, staff]);
+  const plannedHours = useMemo(() => (builderPlan.length * minutesBetween(builderSettings.startTime, builderSettings.endTime)) / 60, [builderPlan.length, builderSettings.endTime, builderSettings.startTime]);
 
   const dateLabel = useMemo(
     () => {
@@ -444,6 +523,56 @@ function SchedulingContent() {
       setError((err as Error).message);
     } finally {
       setIsGenerating(false);
+    }
+  };
+
+  const buildGuidedSchedule = async () => {
+    setIsSaved(false);
+    setIsBuildingSchedule(true);
+    setError(null);
+    try {
+      if (!builderSettings.locationId) {
+        setError('Add a location before building a schedule.');
+        return;
+      }
+      if (!isValidShiftWindow(selectedDate, builderSettings.startTime, builderSettings.endTime)) {
+        setError('Schedule end time must be after start time.');
+        return;
+      }
+      if (builderPlan.length === 0) {
+        setIsSaved(true);
+        return;
+      }
+
+      const created = await Promise.all(builderPlan.map((plan) => {
+        const range = shiftRange(plan.dateValue, plan.startTime, plan.endTime);
+        return fetchJsonWithSession<ShiftRecord>('/shifts', {
+          ...jsonWriteInit('POST', {
+            locationId: plan.locationId,
+            userId: plan.userId || undefined,
+            role: normalizeRole(plan.role),
+            ...range,
+          }),
+        });
+      }));
+
+      if (builderSettings.generateBreaks && created.length > 0) {
+        await fetchJsonWithSession('/lunch-breaks/generate', {
+          ...jsonWriteInit('POST', { shiftIds: created.map((shift) => shift.id), persist: true }),
+        });
+      }
+
+      const range = viewRange(selectedDate, viewMode);
+      const refreshed = await fetchJsonWithSession<{ data: ShiftRecord[] }>(
+        `/shifts?startDate=${encodeURIComponent(range.start)}&endDate=${encodeURIComponent(range.end)}`,
+      );
+      setShifts(refreshed.data ?? []);
+      setGenerated((refreshed.data ?? []).filter((shift) => (shift.breaks ?? []).length > 0).map(assignmentFromShift));
+      setIsSaved(true);
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setIsBuildingSchedule(false);
     }
   };
 
@@ -575,16 +704,164 @@ function SchedulingContent() {
           <article className="surface-card scheduler-panel scheduler-panel--builder">
             <header>
               <div>
-                <h2>Shift inputs</h2>
-                <p>{staff.length} staff and {locations.length} location{locations.length === 1 ? '' : 's'} available for this tenant.</p>
+                <h2>Build schedule</h2>
+                <p>{staff.length} staff and {locations.length} location{locations.length === 1 ? '' : 's'} available. Set the coverage target, review the plan, then generate.</p>
               </div>
               {!openFocus ? (
-                <Button size="sm" onClick={() => setShowShiftForm((value) => !value)}>
+                <Button size="sm" variant="secondary" onClick={() => setShowShiftForm((value) => !value)}>
                   <Plus size={14} />
-                  {showShiftForm ? 'Close' : 'Add shift'}
+                  {showShiftForm ? 'Hide manual' : 'Manual shift'}
                 </Button>
               ) : null}
             </header>
+
+            {!openFocus ? (
+              <div className="guided-builder" aria-label="Guided schedule builder">
+                <div className="guided-builder__steps" aria-label="Schedule builder steps">
+                  {[
+                    ['Scope', `${dateLabel} at ${locations.find((location) => location.id === builderSettings.locationId)?.name ?? 'first location'}`],
+                    ['Coverage', `${builderSettings.coverageCount} ${builderSettings.role.toLowerCase()} shift${builderSettings.coverageCount === 1 ? '' : 's'} per day`],
+                    ['Assign', builderSettings.assignMode === 'balanced' ? 'Balanced staff rotation' : 'Create open shifts'],
+                    ['Review', `${builderPlan.length} shift${builderPlan.length === 1 ? '' : 's'} ready`],
+                  ].map(([label, detail], index) => (
+                    <div key={label} className="guided-step">
+                      <span>{index + 1}</span>
+                      <strong>{label}</strong>
+                      <small>{detail}</small>
+                    </div>
+                  ))}
+                </div>
+
+                <div className="guided-builder__controls">
+                  <label>
+                    <span>Location</span>
+                    <select value={builderSettings.locationId} onChange={(event) => setBuilderSettings((current) => ({ ...current, locationId: event.target.value }))}>
+                      {locations.map((location) => (
+                        <option key={location.id} value={location.id}>{location.name}</option>
+                      ))}
+                    </select>
+                  </label>
+                  <label>
+                    <span>Role</span>
+                    <select value={builderSettings.role} onChange={(event) => setBuilderSettings((current) => ({ ...current, role: event.target.value }))}>
+                      <option value="STAFF">Staff</option>
+                      <option value="MANAGER">Manager</option>
+                    </select>
+                  </label>
+                  <label>
+                    <span>Coverage/day</span>
+                    <input
+                      type="number"
+                      min="1"
+                      max={Math.max(1, staff.length)}
+                      value={builderSettings.coverageCount}
+                      onChange={(event) => setBuilderSettings((current) => ({ ...current, coverageCount: Math.max(1, Number.parseInt(event.target.value, 10) || 1) }))}
+                    />
+                  </label>
+                  <label>
+                    <span>Start</span>
+                    <input
+                      type="time"
+                      value={builderSettings.startTime}
+                      onChange={(event) => setBuilderSettings((current) => ({ ...current, startTime: event.target.value }))}
+                    />
+                  </label>
+                  <label>
+                    <span>End</span>
+                    <input
+                      type="time"
+                      value={builderSettings.endTime}
+                      onChange={(event) => setBuilderSettings((current) => ({ ...current, endTime: event.target.value }))}
+                    />
+                  </label>
+                </div>
+
+                <div className="guided-builder__choices">
+                  <button
+                    type="button"
+                    className={builderSettings.assignMode === 'balanced' ? 'is-selected' : ''}
+                    onClick={() => setBuilderSettings((current) => ({ ...current, assignMode: 'balanced' }))}
+                  >
+                    <Users size={16} />
+                    <span>Auto-assign staff</span>
+                  </button>
+                  <button
+                    type="button"
+                    className={builderSettings.assignMode === 'open' ? 'is-selected' : ''}
+                    onClick={() => setBuilderSettings((current) => ({ ...current, assignMode: 'open' }))}
+                  >
+                    <MapPin size={16} />
+                    <span>Build open shifts</span>
+                  </button>
+                  <label className="guided-check">
+                    <input
+                      type="checkbox"
+                      checked={builderSettings.fillGapsOnly}
+                      onChange={(event) => setBuilderSettings((current) => ({ ...current, fillGapsOnly: event.target.checked }))}
+                    />
+                    Fill gaps only
+                  </label>
+                  <label className="guided-check">
+                    <input
+                      type="checkbox"
+                      checked={builderSettings.generateBreaks}
+                      onChange={(event) => setBuilderSettings((current) => ({ ...current, generateBreaks: event.target.checked }))}
+                    />
+                    Generate breaks
+                  </label>
+                </div>
+
+                <div className="guided-review" aria-label="Schedule review">
+                  <div className="guided-metric">
+                    <Clock3 size={18} />
+                    <strong>{builderPlan.length}</strong>
+                    <span>new shifts</span>
+                  </div>
+                  <div className="guided-metric">
+                    <Users size={18} />
+                    <strong>{Math.round(plannedHours)}</strong>
+                    <span>planned hours</span>
+                  </div>
+                  <div className="guided-metric">
+                    <CheckCircle2 size={18} />
+                    <strong>{builderSettings.fillGapsOnly ? 'Gaps' : 'Full'}</strong>
+                    <span>build mode</span>
+                  </div>
+                  <div className="guided-action">
+                    <Button
+                      onClick={buildGuidedSchedule}
+                      disabled={isBuildingSchedule || isLoading || builderPlan.length === 0 || !locations.length || !staff.length}
+                    >
+                      {isBuildingSchedule ? (
+                        <>
+                          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" style={{ animation: 'spin 1s linear infinite' }}>
+                            <path d="M21 12a9 9 0 1 1-6.219-8.56" />
+                          </svg>
+                          Building...
+                        </>
+                      ) : (
+                        <>
+                          <WandSparkles size={15} />
+                          Build schedule
+                        </>
+                      )}
+                    </Button>
+                  </div>
+                </div>
+
+                <div className="guided-plan">
+                  {builderPlan.slice(0, 8).map((plan, index) => (
+                    <div key={`${plan.dateValue}-${index}`} className="guided-plan__item">
+                      <strong>{shortDateLabel(plan.dateValue)}</strong>
+                      <span>{plan.staffName}</span>
+                      <small>{plan.startTime}-{plan.endTime} at {plan.locationName}</small>
+                    </div>
+                  ))}
+                  {builderPlan.length > 8 ? <div className="guided-plan__more">+{builderPlan.length - 8} more</div> : null}
+                  {builderPlan.length === 0 ? <div className="guided-plan__more">Current coverage already meets the target for this view.</div> : null}
+                </div>
+              </div>
+            ) : null}
 
             {showShiftForm && !openFocus ? (
               <form className="shift-form" onSubmit={addShift}>
@@ -654,8 +931,8 @@ function SchedulingContent() {
               </form>
             ) : null}
 
-            {!openFocus ? (
-              <div className="schedule-builder" aria-label="Schedule builder grid">
+            {showShiftForm && !openFocus ? (
+              <div className="schedule-builder" aria-label="Manual schedule grid">
                 <div className="schedule-builder__grid" style={{ gridTemplateColumns: `minmax(150px, 0.9fr) repeat(${builderDates.length}, minmax(150px, 1fr))` }}>
                   <div className="schedule-builder__corner">Staff</div>
                   {builderDates.map((dateValue) => (
@@ -1023,6 +1300,192 @@ function SchedulingContent() {
           justify-content: flex-end;
         }
 
+        .guided-builder {
+          margin-top: 16px;
+          display: grid;
+          gap: 14px;
+        }
+
+        .guided-builder__steps {
+          display: grid;
+          grid-template-columns: repeat(4, minmax(0, 1fr));
+          gap: 10px;
+        }
+
+        .guided-step {
+          min-height: 86px;
+          border: 1px solid var(--border);
+          border-radius: var(--r-md);
+          background: var(--surface-soft);
+          padding: 12px;
+          display: grid;
+          grid-template-columns: 28px 1fr;
+          grid-template-rows: auto 1fr;
+          gap: 4px 8px;
+          align-items: start;
+        }
+
+        .guided-step span {
+          width: 28px;
+          height: 28px;
+          border-radius: 999px;
+          background: #dcfce7;
+          color: #166534;
+          display: grid;
+          place-items: center;
+          font-weight: 900;
+          font-size: 12px;
+          grid-row: 1 / span 2;
+        }
+
+        .guided-step strong {
+          font-size: 13px;
+        }
+
+        .guided-step small {
+          color: var(--text-muted);
+          font-size: 12px;
+          line-height: 1.35;
+        }
+
+        .guided-builder__controls {
+          display: grid;
+          grid-template-columns: minmax(180px, 1.4fr) minmax(130px, 0.8fr) minmax(120px, 0.7fr) repeat(2, minmax(110px, 0.6fr));
+          gap: 10px;
+          align-items: end;
+        }
+
+        .guided-builder__controls label {
+          display: grid;
+          gap: 5px;
+          min-width: 0;
+        }
+
+        .guided-builder__controls span {
+          color: var(--text-muted);
+          font-size: 12px;
+          font-weight: 800;
+          text-transform: uppercase;
+          letter-spacing: 0.04em;
+        }
+
+        .guided-builder__controls select,
+        .guided-builder__controls input {
+          width: 100%;
+          height: 38px;
+          border: 1px solid var(--border);
+          border-radius: var(--r-sm);
+          background: var(--surface);
+          color: var(--text);
+          font-size: 13px;
+          padding: 0 10px;
+        }
+
+        .guided-builder__choices {
+          display: flex;
+          align-items: center;
+          gap: 10px;
+          flex-wrap: wrap;
+        }
+
+        .guided-builder__choices button,
+        .guided-check {
+          min-height: 38px;
+          border: 1px solid var(--border);
+          border-radius: var(--r-md);
+          background: var(--surface);
+          color: var(--text);
+          padding: 0 12px;
+          display: inline-flex;
+          align-items: center;
+          gap: 8px;
+          font-weight: 750;
+          font-size: 13px;
+        }
+
+        .guided-builder__choices button {
+          cursor: pointer;
+        }
+
+        .guided-builder__choices button.is-selected {
+          border-color: #16a34a;
+          background: #f0fdf4;
+          color: #166534;
+        }
+
+        .guided-check input {
+          margin: 0;
+        }
+
+        .guided-review {
+          display: grid;
+          grid-template-columns: repeat(3, minmax(0, 1fr)) minmax(190px, auto);
+          gap: 10px;
+          align-items: stretch;
+        }
+
+        .guided-metric,
+        .guided-action {
+          min-height: 74px;
+          border: 1px solid var(--border);
+          border-radius: var(--r-md);
+          background: #fbfdff;
+          padding: 12px;
+          display: grid;
+          align-content: center;
+          gap: 2px;
+        }
+
+        .guided-metric svg {
+          color: var(--brand-700);
+        }
+
+        .guided-metric strong {
+          font-size: 20px;
+          line-height: 1.1;
+        }
+
+        .guided-metric span {
+          color: var(--text-muted);
+          font-size: 12px;
+          font-weight: 750;
+        }
+
+        .guided-action {
+          align-items: center;
+        }
+
+        .guided-plan {
+          display: grid;
+          grid-template-columns: repeat(4, minmax(0, 1fr));
+          gap: 8px;
+        }
+
+        .guided-plan__item,
+        .guided-plan__more {
+          min-height: 68px;
+          border: 1px solid var(--border);
+          border-radius: var(--r-sm);
+          background: var(--surface-soft);
+          padding: 10px;
+          display: grid;
+          align-content: center;
+          gap: 2px;
+        }
+
+        .guided-plan__item strong,
+        .guided-plan__item span {
+          font-size: 12px;
+          line-height: 1.25;
+        }
+
+        .guided-plan__item small,
+        .guided-plan__more {
+          color: var(--text-muted);
+          font-size: 11px;
+          line-height: 1.35;
+        }
+
         .schedule-builder {
           margin-top: 16px;
           overflow: auto;
@@ -1269,6 +1732,16 @@ function SchedulingContent() {
             grid-template-columns: 1fr;
           }
 
+          .guided-builder__steps,
+          .guided-plan {
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+          }
+
+          .guided-builder__controls,
+          .guided-review {
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+          }
+
           .shift-form {
             grid-template-columns: repeat(2, minmax(0, 1fr));
           }
@@ -1292,6 +1765,19 @@ function SchedulingContent() {
 
           .scheduler-panel header {
             flex-direction: column;
+          }
+
+          .guided-builder__steps,
+          .guided-builder__controls,
+          .guided-review,
+          .guided-plan {
+            grid-template-columns: 1fr;
+          }
+
+          .guided-builder__choices button,
+          .guided-check {
+            width: 100%;
+            justify-content: center;
           }
 
           .shift-form {
