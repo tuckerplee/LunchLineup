@@ -280,6 +280,10 @@ function SchedulingContent() {
   const [isSaving, setIsSaving] = useState(false);
   const [isSaved, setIsSaved] = useState(false);
   const [showAdvanced, setShowAdvanced] = useState(false);
+  const [showBuildOptions, setShowBuildOptions] = useState(false);
+  const [showScheduleDetails, setShowScheduleDetails] = useState(false);
+  const [showBreakDetails, setShowBreakDetails] = useState(false);
+  const [showTimeline, setShowTimeline] = useState(false);
   const [viewMode, setViewMode] = useState<SchedulerViewMode>('threeDay');
   const [selectedDate, setSelectedDate] = useState(initialDateValue);
   const [staff, setStaff] = useState<StaffRosterItem[]>([]);
@@ -646,29 +650,8 @@ function SchedulingContent() {
               ))}
             </div>
 
-            <Button onClick={runGenerate} disabled={isGenerating || shifts.length === 0}>
-              {isGenerating ? (
-                <>
-                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" style={{ animation: 'spin 1s linear infinite' }}>
-                    <path d="M21 12a9 9 0 1 1-6.219-8.56" />
-                  </svg>
-                  Generating...
-                </>
-              ) : (
-                <>
-                  <WandSparkles size={15} />
-                  Generate breaks
-                </>
-              )}
-            </Button>
-
             <Button variant="secondary" onClick={handleSave} disabled={isSaving}>
               {isSaving ? 'Refreshing...' : isSaved ? 'Synced' : 'Refresh'}
-            </Button>
-
-            <Button variant="outline" onClick={openPrintSchedule} disabled={isLoading || shifts.length === 0}>
-              <Printer size={15} />
-              Print schedule
             </Button>
 
             <Button variant="ghost" size="icon" aria-label="Advanced settings" onClick={() => setShowAdvanced((value) => !value)}>
@@ -694,6 +677,8 @@ function SchedulingContent() {
             <p><strong>Advanced</strong> actions use tenant-scoped schedule data and do not cross company boundaries.</p>
             <div className="scheduler-advanced__actions">
               <Button variant="outline" size="sm" onClick={() => void loadSchedule(selectedDate, viewMode)}><RefreshCw size={14} /> Reload</Button>
+              <Button variant="outline" size="sm" onClick={runGenerate} disabled={isGenerating || shifts.length === 0}><WandSparkles size={14} /> Generate breaks</Button>
+              <Button variant="outline" size="sm" onClick={openPrintSchedule} disabled={isLoading || shifts.length === 0}><Printer size={14} /> Print</Button>
               <Button variant="outline" size="sm" disabled><Upload size={14} /> Import shifts</Button>
               <Button variant="outline" size="sm" disabled><Download size={14} /> Export policy</Button>
             </div>
@@ -705,47 +690,30 @@ function SchedulingContent() {
             <header>
               <div>
                 <h2>Build schedule</h2>
-                <p>{staff.length} staff and {locations.length} location{locations.length === 1 ? '' : 's'} available. Set the coverage target, review the plan, then generate.</p>
+                <p>{builderPlan.length} new shift{builderPlan.length === 1 ? '' : 's'} planned for {dateLabel}.</p>
               </div>
               {!openFocus ? (
-                <Button size="sm" variant="secondary" onClick={() => setShowShiftForm((value) => !value)}>
-                  <Plus size={14} />
-                  {showShiftForm ? 'Hide manual' : 'Manual shift'}
-                </Button>
+                <div className="scheduler-header-actions">
+                  <Button size="sm" variant="secondary" onClick={() => setShowBuildOptions((value) => !value)}>
+                    {showBuildOptions ? 'Hide options' : 'Options'}
+                  </Button>
+                  <Button size="sm" variant="secondary" onClick={() => setShowShiftForm((value) => !value)}>
+                    <Plus size={14} />
+                    {showShiftForm ? 'Hide manual' : 'Manual shift'}
+                  </Button>
+                </div>
               ) : null}
             </header>
 
             {!openFocus ? (
               <div className="guided-builder" aria-label="Guided schedule builder">
-                <div className="guided-builder__steps" aria-label="Schedule builder steps">
-                  {[
-                    ['Scope', `${dateLabel} at ${locations.find((location) => location.id === builderSettings.locationId)?.name ?? 'first location'}`],
-                    ['Coverage', `${builderSettings.coverageCount} ${builderSettings.role.toLowerCase()} shift${builderSettings.coverageCount === 1 ? '' : 's'} per day`],
-                    ['Assign', builderSettings.assignMode === 'balanced' ? 'Balanced staff rotation' : 'Create open shifts'],
-                    ['Review', `${builderPlan.length} shift${builderPlan.length === 1 ? '' : 's'} ready`],
-                  ].map(([label, detail], index) => (
-                    <div key={label} className="guided-step">
-                      <span>{index + 1}</span>
-                      <strong>{label}</strong>
-                      <small>{detail}</small>
-                    </div>
-                  ))}
-                </div>
-
-                <div className="guided-builder__controls">
+                <div className="guided-builder__controls guided-builder__controls--compact">
                   <label>
                     <span>Location</span>
                     <select value={builderSettings.locationId} onChange={(event) => setBuilderSettings((current) => ({ ...current, locationId: event.target.value }))}>
                       {locations.map((location) => (
                         <option key={location.id} value={location.id}>{location.name}</option>
                       ))}
-                    </select>
-                  </label>
-                  <label>
-                    <span>Role</span>
-                    <select value={builderSettings.role} onChange={(event) => setBuilderSettings((current) => ({ ...current, role: event.target.value }))}>
-                      <option value="STAFF">Staff</option>
-                      <option value="MANAGER">Manager</option>
                     </select>
                   </label>
                   <label>
@@ -774,59 +742,6 @@ function SchedulingContent() {
                       onChange={(event) => setBuilderSettings((current) => ({ ...current, endTime: event.target.value }))}
                     />
                   </label>
-                </div>
-
-                <div className="guided-builder__choices">
-                  <button
-                    type="button"
-                    className={builderSettings.assignMode === 'balanced' ? 'is-selected' : ''}
-                    onClick={() => setBuilderSettings((current) => ({ ...current, assignMode: 'balanced' }))}
-                  >
-                    <Users size={16} />
-                    <span>Auto-assign staff</span>
-                  </button>
-                  <button
-                    type="button"
-                    className={builderSettings.assignMode === 'open' ? 'is-selected' : ''}
-                    onClick={() => setBuilderSettings((current) => ({ ...current, assignMode: 'open' }))}
-                  >
-                    <MapPin size={16} />
-                    <span>Build open shifts</span>
-                  </button>
-                  <label className="guided-check">
-                    <input
-                      type="checkbox"
-                      checked={builderSettings.fillGapsOnly}
-                      onChange={(event) => setBuilderSettings((current) => ({ ...current, fillGapsOnly: event.target.checked }))}
-                    />
-                    Fill gaps only
-                  </label>
-                  <label className="guided-check">
-                    <input
-                      type="checkbox"
-                      checked={builderSettings.generateBreaks}
-                      onChange={(event) => setBuilderSettings((current) => ({ ...current, generateBreaks: event.target.checked }))}
-                    />
-                    Generate breaks
-                  </label>
-                </div>
-
-                <div className="guided-review" aria-label="Schedule review">
-                  <div className="guided-metric">
-                    <Clock3 size={18} />
-                    <strong>{builderPlan.length}</strong>
-                    <span>new shifts</span>
-                  </div>
-                  <div className="guided-metric">
-                    <Users size={18} />
-                    <strong>{Math.round(plannedHours)}</strong>
-                    <span>planned hours</span>
-                  </div>
-                  <div className="guided-metric">
-                    <CheckCircle2 size={18} />
-                    <strong>{builderSettings.fillGapsOnly ? 'Gaps' : 'Full'}</strong>
-                    <span>build mode</span>
-                  </div>
                   <div className="guided-action">
                     <Button
                       onClick={buildGuidedSchedule}
@@ -849,17 +764,81 @@ function SchedulingContent() {
                   </div>
                 </div>
 
-                <div className="guided-plan">
-                  {builderPlan.slice(0, 8).map((plan, index) => (
-                    <div key={`${plan.dateValue}-${index}`} className="guided-plan__item">
-                      <strong>{shortDateLabel(plan.dateValue)}</strong>
-                      <span>{plan.staffName}</span>
-                      <small>{plan.startTime}-{plan.endTime} at {plan.locationName}</small>
+                {showBuildOptions ? (
+                  <>
+                    <div className="guided-builder__choices">
+                      <label>
+                        <span>Role</span>
+                        <select value={builderSettings.role} onChange={(event) => setBuilderSettings((current) => ({ ...current, role: event.target.value }))}>
+                          <option value="STAFF">Staff</option>
+                          <option value="MANAGER">Manager</option>
+                        </select>
+                      </label>
+                      <button
+                        type="button"
+                        className={builderSettings.assignMode === 'balanced' ? 'is-selected' : ''}
+                        onClick={() => setBuilderSettings((current) => ({ ...current, assignMode: 'balanced' }))}
+                      >
+                        <Users size={16} />
+                        <span>Auto-assign</span>
+                      </button>
+                      <button
+                        type="button"
+                        className={builderSettings.assignMode === 'open' ? 'is-selected' : ''}
+                        onClick={() => setBuilderSettings((current) => ({ ...current, assignMode: 'open' }))}
+                      >
+                        <MapPin size={16} />
+                        <span>Open shifts</span>
+                      </button>
+                      <label className="guided-check">
+                        <input
+                          type="checkbox"
+                          checked={builderSettings.fillGapsOnly}
+                          onChange={(event) => setBuilderSettings((current) => ({ ...current, fillGapsOnly: event.target.checked }))}
+                        />
+                        Fill gaps
+                      </label>
+                      <label className="guided-check">
+                        <input
+                          type="checkbox"
+                          checked={builderSettings.generateBreaks}
+                          onChange={(event) => setBuilderSettings((current) => ({ ...current, generateBreaks: event.target.checked }))}
+                        />
+                        Breaks
+                      </label>
                     </div>
-                  ))}
-                  {builderPlan.length > 8 ? <div className="guided-plan__more">+{builderPlan.length - 8} more</div> : null}
-                  {builderPlan.length === 0 ? <div className="guided-plan__more">Current coverage already meets the target for this view.</div> : null}
-                </div>
+
+                    <div className="guided-review" aria-label="Schedule review">
+                      <div className="guided-metric">
+                        <Clock3 size={18} />
+                        <strong>{builderPlan.length}</strong>
+                        <span>new shifts</span>
+                      </div>
+                      <div className="guided-metric">
+                        <Users size={18} />
+                        <strong>{Math.round(plannedHours)}</strong>
+                        <span>planned hours</span>
+                      </div>
+                      <div className="guided-metric">
+                        <CheckCircle2 size={18} />
+                        <strong>{builderSettings.fillGapsOnly ? 'Gaps' : 'Full'}</strong>
+                        <span>build mode</span>
+                      </div>
+                    </div>
+
+                    <div className="guided-plan">
+                      {builderPlan.slice(0, 6).map((plan, index) => (
+                        <div key={`${plan.dateValue}-${index}`} className="guided-plan__item">
+                          <strong>{shortDateLabel(plan.dateValue)}</strong>
+                          <span>{plan.staffName}</span>
+                          <small>{plan.startTime}-{plan.endTime} at {plan.locationName}</small>
+                        </div>
+                      ))}
+                      {builderPlan.length > 6 ? <div className="guided-plan__more">+{builderPlan.length - 6} more</div> : null}
+                      {builderPlan.length === 0 ? <div className="guided-plan__more">Current coverage meets this target.</div> : null}
+                    </div>
+                  </>
+                ) : null}
               </div>
             ) : null}
 
@@ -981,15 +960,23 @@ function SchedulingContent() {
               </div>
             ) : null}
 
-            {visibleShifts.length === 0 ? (
+            <div className="schedule-detail-toggle">
+              <Button size="sm" variant="ghost" onClick={() => setShowScheduleDetails((value) => !value)}>
+                {showScheduleDetails ? 'Hide current shifts' : `Show current shifts (${visibleShifts.length})`}
+              </Button>
+            </div>
+
+            {showScheduleDetails && visibleShifts.length === 0 ? (
               <div className="scheduler-empty">
                 <h3>{openFocus ? 'No open shifts' : 'No shifts yet'}</h3>
-                <p>{openFocus ? 'All loaded shifts are assigned for this date.' : 'Use the staff grid above to add shifts by person and date.'}</p>
+                <p>{openFocus ? 'All loaded shifts are assigned for this date.' : 'Build a schedule above or use manual shift for exceptions.'}</p>
                 <div>
                   {!openFocus ? <Button size="sm" onClick={() => setShowShiftForm(true)}><Plus size={14} /> Add shift</Button> : null}
                 </div>
               </div>
-            ) : (
+            ) : null}
+
+            {showScheduleDetails && visibleShifts.length > 0 ? (
               <div className="scheduler-table-wrap">
                 <table className="scheduler-table">
                   <thead>
@@ -1027,16 +1014,29 @@ function SchedulingContent() {
                   {!openFocus ? <Button size="sm" onClick={() => setShowShiftForm(true)}><Plus size={14} /> Add shift</Button> : null}
                 </div>
               </div>
-            )}
+            ) : null}
           </article>
 
           <article className="surface-card scheduler-panel">
             <header>
-              <h2>Lunch and break assignments</h2>
-              <p>Generated records are saved to the shared lunch/break system.</p>
+              <div>
+                <h2>Breaks</h2>
+                <p>{generated.length} assignment{generated.length === 1 ? '' : 's'} ready.</p>
+              </div>
+              <Button size="sm" variant="secondary" onClick={() => setShowBreakDetails((value) => !value)}>
+                {showBreakDetails ? 'Hide details' : 'Show details'}
+              </Button>
             </header>
 
-            {isGenerating ? (
+            {!showBreakDetails ? (
+              <div className="break-summary">
+                <Sparkles size={18} />
+                <strong>{generated.length > 0 ? 'Break plan ready' : 'No break plan yet'}</strong>
+                <Button size="sm" onClick={runGenerate} disabled={isGenerating || shifts.length === 0}>
+                  {isGenerating ? 'Generating...' : 'Generate'}
+                </Button>
+              </div>
+            ) : isGenerating ? (
               <div className="scheduler-loading" aria-label="Loading generated assignments">
                 <div className="skeleton" style={{ height: 48 }} />
                 <div className="skeleton" style={{ height: 48 }} />
@@ -1076,18 +1076,31 @@ function SchedulingContent() {
 
         <section className="surface-card scheduler-timeline-panel">
           <header>
-            <h2>Timeline review</h2>
-            <p>Drag shifts to adjust times. Changes save immediately to the tenant schedule.</p>
+            <div>
+              <h2>Timeline</h2>
+              <p>{scheduleEvents.length} event{scheduleEvents.length === 1 ? '' : 's'} loaded for {dateLabel}.</p>
+            </div>
+            <Button size="sm" variant="secondary" onClick={() => setShowTimeline((value) => !value)}>
+              {showTimeline ? 'Hide timeline' : 'Show timeline'}
+            </Button>
           </header>
-          <div className="scheduler-timeline-shell">
-            <StaffScheduler
-              resources={visibleResources}
-              events={scheduleEvents}
-              viewMode={viewMode}
-              initialDate={selectedDate}
-              onEventChange={(id, start, end, resourceId) => void updateShift(id, start, end, resourceId)}
-            />
-          </div>
+          {showTimeline ? (
+            <div className="scheduler-timeline-shell">
+              <StaffScheduler
+                resources={visibleResources}
+                events={scheduleEvents}
+                viewMode={viewMode}
+                initialDate={selectedDate}
+                onEventChange={(id, start, end, resourceId) => void updateShift(id, start, end, resourceId)}
+              />
+            </div>
+          ) : (
+            <div className="timeline-summary">
+              <CalendarDays size={18} />
+              <strong>{dateLabel}</strong>
+              <span>{visibleShifts.length} shift{visibleShifts.length === 1 ? '' : 's'} ready for review.</span>
+            </div>
+          )}
         </section>
       </div>
 
@@ -1240,6 +1253,14 @@ function SchedulingContent() {
           gap: 12px;
         }
 
+        .scheduler-header-actions {
+          display: flex;
+          align-items: center;
+          gap: 8px;
+          flex-wrap: wrap;
+          justify-content: flex-end;
+        }
+
         .scheduler-panel header h2,
         .scheduler-timeline-panel header h2 {
           margin: 0;
@@ -1355,6 +1376,14 @@ function SchedulingContent() {
           align-items: end;
         }
 
+        .guided-builder__controls--compact {
+          grid-template-columns: minmax(180px, 1.3fr) minmax(120px, 0.65fr) repeat(2, minmax(110px, 0.55fr)) minmax(170px, auto);
+          padding: 12px;
+          border: 1px solid var(--border);
+          border-radius: var(--r-md);
+          background: var(--surface-soft);
+        }
+
         .guided-builder__controls label {
           display: grid;
           gap: 5px;
@@ -1386,6 +1415,31 @@ function SchedulingContent() {
           align-items: center;
           gap: 10px;
           flex-wrap: wrap;
+        }
+
+        .guided-builder__choices > label:not(.guided-check) {
+          display: grid;
+          gap: 5px;
+          min-width: 130px;
+        }
+
+        .guided-builder__choices > label:not(.guided-check) span {
+          color: var(--text-muted);
+          font-size: 12px;
+          font-weight: 800;
+          text-transform: uppercase;
+          letter-spacing: 0.04em;
+        }
+
+        .guided-builder__choices > label:not(.guided-check) select {
+          width: 100%;
+          height: 38px;
+          border: 1px solid var(--border);
+          border-radius: var(--r-sm);
+          background: var(--surface);
+          color: var(--text);
+          font-size: 13px;
+          padding: 0 10px;
         }
 
         .guided-builder__choices button,
@@ -1455,6 +1509,10 @@ function SchedulingContent() {
           align-items: center;
         }
 
+        .guided-action :global(button) {
+          width: 100%;
+        }
+
         .guided-plan {
           display: grid;
           grid-template-columns: repeat(4, minmax(0, 1fr));
@@ -1484,6 +1542,62 @@ function SchedulingContent() {
           color: var(--text-muted);
           font-size: 11px;
           line-height: 1.35;
+        }
+
+        .schedule-detail-toggle {
+          margin-top: 12px;
+          display: flex;
+          justify-content: flex-end;
+        }
+
+        .break-summary {
+          margin-top: 16px;
+          min-height: 72px;
+          border: 1px solid var(--border);
+          border-radius: var(--r-md);
+          background: var(--surface-soft);
+          padding: 12px;
+          display: flex;
+          align-items: center;
+          gap: 12px;
+          justify-content: space-between;
+          flex-wrap: wrap;
+        }
+
+        .break-summary svg {
+          color: var(--brand-700);
+        }
+
+        .break-summary strong {
+          flex: 1;
+          min-width: 160px;
+          font-size: 14px;
+        }
+
+        .timeline-summary {
+          margin-top: 16px;
+          min-height: 72px;
+          border: 1px solid var(--border);
+          border-radius: var(--r-md);
+          background: var(--surface-soft);
+          padding: 12px;
+          display: flex;
+          align-items: center;
+          gap: 12px;
+          flex-wrap: wrap;
+        }
+
+        .timeline-summary svg {
+          color: var(--brand-700);
+        }
+
+        .timeline-summary strong {
+          font-size: 14px;
+        }
+
+        .timeline-summary span {
+          color: var(--text-muted);
+          font-size: 13px;
         }
 
         .schedule-builder {
@@ -1738,6 +1852,7 @@ function SchedulingContent() {
           }
 
           .guided-builder__controls,
+          .guided-builder__controls--compact,
           .guided-review {
             grid-template-columns: repeat(2, minmax(0, 1fr));
           }
@@ -1769,6 +1884,7 @@ function SchedulingContent() {
 
           .guided-builder__steps,
           .guided-builder__controls,
+          .guided-builder__controls--compact,
           .guided-review,
           .guided-plan {
             grid-template-columns: 1fr;
