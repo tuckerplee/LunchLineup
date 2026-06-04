@@ -29,6 +29,7 @@ Recovery objective:
 
 - Restore HTTP access to `dev.lunchlineup.com` and `lunchlineup-dev.proxmox1.lan` within 15 minutes after VM availability and data availability.
 - Leave `/opt/lunchlineup/DEPLOYED_GIT_SHA` matching the GitHub branch used for bootstrap.
+- Leave the guest hostname set to `lunchlineup-dev` unless `VM_HOSTNAME` is intentionally overridden.
 
 ## Fresh VM Steps
 
@@ -49,6 +50,7 @@ On the VM:
 ```bash
 cd /opt/lunchlineup
 cat DEPLOYED_GIT_SHA
+hostname
 docker compose ps
 curl -fsS http://127.0.0.1/health
 curl -fsS -H 'Host: dev.lunchlineup.com' http://127.0.0.1/health

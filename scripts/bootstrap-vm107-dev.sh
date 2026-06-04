@@ -12,6 +12,7 @@ SECRETS_DIR="${SECRETS_DIR:-/opt/lunchlineup-secrets}"
 SECRET_ENV_PATH="${SECRET_ENV_PATH:-$SECRETS_DIR/runtime.env}"
 HEALTH_URL="${HEALTH_URL:-http://127.0.0.1/health}"
 HOST_HEADER="${HOST_HEADER:-dev.lunchlineup.com}"
+VM_HOSTNAME="${VM_HOSTNAME:-lunchlineup-dev}"
 HEALTH_TIMEOUT_SECONDS="${HEALTH_TIMEOUT_SECONDS:-180}"
 BACKUP_FILE="${BACKUP_FILE:-}"
 
@@ -29,6 +30,13 @@ require_root() {
 }
 
 install_host_dependencies() {
+  hostnamectl set-hostname "$VM_HOSTNAME"
+  if grep -qE '^127\.0\.1\.1\s+' /etc/hosts; then
+    sed -i "s/^127\.0\.1\.1\s\+.*/127.0.1.1 ${VM_HOSTNAME}/" /etc/hosts
+  else
+    printf "127.0.1.1 %s\n" "$VM_HOSTNAME" >> /etc/hosts
+  fi
+
   apt-get update
   apt-get install -y ca-certificates curl git gnupg openssl zstd
 
@@ -191,7 +199,7 @@ main() {
   write_deploy_proof
   wait_for_health
   docker compose ps
-  echo "disposable_dev_restore_ok sha=$(cat "$APP_DIR/DEPLOYED_GIT_SHA") app_dir=$APP_DIR host=$HOST_HEADER"
+  echo "disposable_dev_restore_ok sha=$(cat "$APP_DIR/DEPLOYED_GIT_SHA") app_dir=$APP_DIR host=$HOST_HEADER hostname=$(hostname)"
 }
 
 main "$@"

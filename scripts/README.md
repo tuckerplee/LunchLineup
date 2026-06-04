@@ -38,4 +38,4 @@ Run `verify-deploy-source.ps1` or `verify-deploy-source.sh` before server rollou
 
 ## Disposable VM107 Dev Restore
 
-`bootstrap-vm107-dev.sh` runs on a fresh private Debian dev VM. It installs Docker, clones the GitHub branch, creates or reuses `/opt/lunchlineup-secrets/runtime.env`, starts the Docker Compose stack, optionally restores a `.sql`, `.sql.zst`, or `.sql.zst.gpg` Postgres dump, writes `DEPLOYED_GIT_SHA`, and validates direct plus `dev.lunchlineup.com` host-header health. It is for disposable development recovery only, not production VM106.
+`bootstrap-vm107-dev.sh` runs on a fresh private Debian dev VM. It sets the guest hostname to `lunchlineup-dev` by default, installs Docker, clones the GitHub branch, creates or reuses `/opt/lunchlineup-secrets/runtime.env`, starts the Docker Compose stack, optionally restores a `.sql`, `.sql.zst`, or `.sql.zst.gpg` Postgres dump, writes `DEPLOYED_GIT_SHA`, and validates direct plus `dev.lunchlineup.com` host-header health. It is for disposable development recovery only, not production VM106.
