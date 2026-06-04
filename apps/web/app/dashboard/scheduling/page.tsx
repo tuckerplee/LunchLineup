@@ -13,7 +13,7 @@ const StaffScheduler = dynamic(
   {
     ssr: false,
     loading: () => (
-      <div className="surface-card" style={{ minHeight: 520, padding: '1rem' }}>
+      <div style={{ minHeight: 520, padding: '1rem', border: '1px solid var(--border)', borderRadius: 'var(--r-md)', background: 'var(--surface-soft)' }}>
         <div className="skeleton" style={{ height: 24, width: 180, marginBottom: '1rem' }} />
         <div className="skeleton" style={{ height: 420, width: '100%' }} />
       </div>
@@ -283,7 +283,7 @@ function SchedulingContent() {
   const [showBuildOptions, setShowBuildOptions] = useState(false);
   const [showScheduleDetails, setShowScheduleDetails] = useState(false);
   const [showBreakDetails, setShowBreakDetails] = useState(false);
-  const [showTimeline, setShowTimeline] = useState(false);
+  const [showTimeline, setShowTimeline] = useState(true);
   const [viewMode, setViewMode] = useState<SchedulerViewMode>('threeDay');
   const [selectedDate, setSelectedDate] = useState(initialDateValue);
   const [staff, setStaff] = useState<StaffRosterItem[]>([]);
@@ -686,6 +686,35 @@ function SchedulingContent() {
           </section>
         ) : null}
 
+        <section className="scheduler-calendar-panel" aria-label="Schedule calendar board">
+          <header>
+            <div>
+              <h2>Schedule board</h2>
+              <p>{scheduleEvents.length} event{scheduleEvents.length === 1 ? '' : 's'} across {dateLabel}. Drag shifts on the board to adjust coverage.</p>
+            </div>
+            <Button size="sm" variant="secondary" onClick={() => setShowTimeline((value) => !value)}>
+              {showTimeline ? 'Hide board' : 'Show board'}
+            </Button>
+          </header>
+          {showTimeline ? (
+            <div className="scheduler-calendar-shell">
+              <StaffScheduler
+                resources={visibleResources}
+                events={scheduleEvents}
+                viewMode={viewMode}
+                initialDate={selectedDate}
+                onEventChange={(id, start, end, resourceId) => void updateShift(id, start, end, resourceId)}
+              />
+            </div>
+          ) : (
+            <div className="timeline-summary">
+              <CalendarDays size={18} />
+              <strong>{dateLabel}</strong>
+              <span>{visibleShifts.length} shift{visibleShifts.length === 1 ? '' : 's'} ready for review.</span>
+            </div>
+          )}
+        </section>
+
         <section className="scheduler-panels">
           <article className="scheduler-panel scheduler-panel--builder">
             <header>
@@ -696,9 +725,9 @@ function SchedulingContent() {
               {!openFocus ? (
                 <div className="scheduler-header-actions">
                   <Button size="sm" variant="secondary" onClick={() => setShowBuildOptions((value) => !value)}>
-                    {showBuildOptions ? 'Hide options' : 'Options'}
+                    {showBuildOptions ? 'Hide rules' : 'Scheduling rules'}
                   </Button>
-                  <Button size="sm" variant="secondary" onClick={() => setShowShiftForm((value) => !value)}>
+                  <Button size="sm" variant="ghost" onClick={() => setShowShiftForm((value) => !value)}>
                     <Plus size={14} />
                     {showShiftForm ? 'Hide manual' : 'Manual shift'}
                   </Button>
@@ -1075,34 +1104,6 @@ function SchedulingContent() {
           </article>
         </section>
 
-        <section className="scheduler-timeline-panel">
-          <header>
-            <div>
-              <h2>Timeline</h2>
-              <p>{scheduleEvents.length} event{scheduleEvents.length === 1 ? '' : 's'} loaded for {dateLabel}.</p>
-            </div>
-            <Button size="sm" variant="secondary" onClick={() => setShowTimeline((value) => !value)}>
-              {showTimeline ? 'Hide timeline' : 'Show timeline'}
-            </Button>
-          </header>
-          {showTimeline ? (
-            <div className="scheduler-timeline-shell">
-              <StaffScheduler
-                resources={visibleResources}
-                events={scheduleEvents}
-                viewMode={viewMode}
-                initialDate={selectedDate}
-                onEventChange={(id, start, end, resourceId) => void updateShift(id, start, end, resourceId)}
-              />
-            </div>
-          ) : (
-            <div className="timeline-summary">
-              <CalendarDays size={18} />
-              <strong>{dateLabel}</strong>
-              <span>{visibleShifts.length} shift{visibleShifts.length === 1 ? '' : 's'} ready for review.</span>
-            </div>
-          )}
-        </section>
         </section>
       </div>
 
@@ -1156,9 +1157,9 @@ function SchedulingContent() {
         }
 
         .scheduler-topbar {
-          padding: 18px 20px;
+          padding: 16px 20px;
           display: flex;
-          align-items: flex-start;
+          align-items: center;
           justify-content: space-between;
           gap: 16px;
           flex-wrap: wrap;
@@ -1241,18 +1242,52 @@ function SchedulingContent() {
           gap: 8px;
         }
 
+        .scheduler-calendar-panel {
+          padding: 18px 20px 20px;
+          border-bottom: 1px solid var(--border);
+          background: #fbfdff;
+        }
+
+        .scheduler-calendar-panel header {
+          display: flex;
+          align-items: flex-start;
+          justify-content: space-between;
+          gap: 12px;
+          flex-wrap: wrap;
+        }
+
+        .scheduler-calendar-panel header h2 {
+          margin: 0;
+          font-size: 22px;
+          line-height: 1.25;
+        }
+
+        .scheduler-calendar-panel header p {
+          margin: 6px 0 0;
+          color: var(--text-muted);
+          font-size: 14px;
+        }
+
+        .scheduler-calendar-shell {
+          margin-top: 14px;
+          height: clamp(480px, 58vh, 650px);
+          min-height: 480px;
+        }
+
         .scheduler-panels {
           display: grid;
-          grid-template-columns: 1fr;
+          grid-template-columns: minmax(0, 1.35fr) minmax(320px, 0.65fr);
         }
 
         .scheduler-panel {
           padding: 18px 20px;
           border-bottom: 1px solid var(--border);
+          min-width: 0;
         }
 
         .scheduler-panel--builder {
-          grid-column: 1 / -1;
+          border-right: 1px solid var(--border);
+          background: linear-gradient(90deg, rgba(37, 99, 235, 0.05), transparent 42%);
         }
 
         .scheduler-panel header {
@@ -1855,6 +1890,10 @@ function SchedulingContent() {
             grid-template-columns: 1fr;
           }
 
+          .scheduler-panel--builder {
+            border-right: 0;
+          }
+
           .guided-builder__steps,
           .guided-plan {
             grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -1873,9 +1912,14 @@ function SchedulingContent() {
 
         @media (max-width: 768px) {
           .scheduler-panel,
+          .scheduler-calendar-panel,
           .scheduler-timeline-panel,
           .scheduler-topbar {
             padding: 16px;
+          }
+
+          .scheduler-calendar-shell {
+            height: 480px;
           }
 
           .scheduler-day-picker {
