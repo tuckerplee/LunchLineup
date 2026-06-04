@@ -427,7 +427,15 @@ export function StaffScheduler({ resources, events, viewMode, initialDate, compa
                                                     <strong>{shiftAction.event.title}</strong>
                                                     <span>{formatActionTime(shiftAction.event.start)} - {formatActionTime(shiftAction.event.end)}</span>
                                                 </div>
-                                                <button type="button" onClick={() => onEventSelect?.(shiftAction.event)}>Edit shift</button>
+                                                <button
+                                                    type="button"
+                                                    onClick={() => {
+                                                        onEventSelect?.(shiftAction.event);
+                                                        setShiftAction(null);
+                                                    }}
+                                                >
+                                                    Edit shift
+                                                </button>
                                                 <button type="button" onClick={() => setShiftAction(null)}>Close</button>
                                             </div>
                                         ) : null}
