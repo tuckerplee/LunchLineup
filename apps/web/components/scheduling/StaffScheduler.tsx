@@ -92,6 +92,7 @@ export function StaffScheduler({ resources, events, viewMode, initialDate, compa
     const [dragDeltaHours, setDragDeltaHours] = useState(0);
     const [shiftAction, setShiftAction] = useState<ShiftActionState | null>(null);
     const timelineScrollRef = useRef<HTMLDivElement | null>(null);
+    const resourceListRef = useRef<HTMLDivElement | null>(null);
     const suppressShiftClickRef = useRef(false);
     const [viewportWidth, setViewportWidth] = useState(0);
 
@@ -280,6 +281,11 @@ export function StaffScheduler({ resources, events, viewMode, initialDate, compa
         });
     };
 
+    const handleTimelineScroll = () => {
+        if (!timelineScrollRef.current || !resourceListRef.current) return;
+        resourceListRef.current.scrollTop = timelineScrollRef.current.scrollTop;
+    };
+
     const handleSlotClick = (e: React.MouseEvent<HTMLDivElement>, resourceId: string) => {
         if (!onSlotSelect || drag || e.defaultPrevented) return;
         const rect = e.currentTarget.getBoundingClientRect();
@@ -325,22 +331,25 @@ export function StaffScheduler({ resources, events, viewMode, initialDate, compa
             <div className="timeline-workspace">
                 <div className="resource-column">
                     <div className="resource-column-header">Team</div>
-                    {resources.map((r) => (
-                        <div key={r.id} className="resource-row-name">
-                            <div className="avatar" style={{ background: `hsl(${r.hue}, 92%, 96%)`, borderColor: `hsl(${r.hue}, 72%, 78%)`, color: `hsl(${r.hue}, 76%, 34%)` }}>
-                                {r.avatarInitials}
+                    <div className="resource-list" ref={resourceListRef}>
+                        {resources.map((r) => (
+                            <div key={r.id} className="resource-row-name">
+                                <div className="avatar" style={{ background: `hsl(${r.hue}, 92%, 96%)`, borderColor: `hsl(${r.hue}, 72%, 78%)`, color: `hsl(${r.hue}, 76%, 34%)` }}>
+                                    {r.avatarInitials}
+                                </div>
+                                <div>
+                                    <div className="resource-name">{r.title}</div>
+                                    <div className="resource-role">{r.role}</div>
+                                </div>
                             </div>
-                            <div>
-                                <div className="resource-name">{r.title}</div>
-                                <div className="resource-role">{r.role}</div>
-                            </div>
-                        </div>
-                    ))}
+                        ))}
+                    </div>
                 </div>
 
                 <div
                     className="timeline-scroll"
                     ref={timelineScrollRef}
+                    onScroll={handleTimelineScroll}
                     style={{ overflowX: viewMode === 'week' ? 'auto' : 'hidden' }}
                 >
                     <div className="timeline-canvas" style={{ width: timelineWidth }}>
@@ -514,6 +523,9 @@ export function StaffScheduler({ resources, events, viewMode, initialDate, compa
                 }
 
                 .resource-column {
+                    min-height: 0;
+                    display: flex;
+                    flex-direction: column;
                     border-right: 1px solid #dce4f1;
                     background: #f7f9ff;
                 }
@@ -533,6 +545,12 @@ export function StaffScheduler({ resources, events, viewMode, initialDate, compa
                     color: #647595;
                     border-bottom: 1px solid #dce4f1;
                     background: #f7f9ff;
+                }
+
+                .resource-list {
+                    flex: 1;
+                    min-height: 0;
+                    overflow: hidden;
                 }
 
                 .resource-row-name {
@@ -572,8 +590,10 @@ export function StaffScheduler({ resources, events, viewMode, initialDate, compa
 
                 .timeline-scroll {
                     overflow: auto;
+                    height: 100%;
                     min-width: 0;
                     min-height: 0;
+                    overscroll-behavior: contain;
                 }
 
                 .timeline-canvas {
