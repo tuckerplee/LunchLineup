@@ -624,7 +624,8 @@ function SchedulingContent() {
   return (
     <>
       <div className="scheduler-page">
-        <section className="scheduler-topbar surface-card">
+        <section className="surface-card scheduler-workspace">
+        <section className="scheduler-topbar">
           <div className="scheduler-topbar__left">
             <span className="workspace-kicker">Schedule workspace</span>
             <h1 className="workspace-title">Calendar</h1>
@@ -673,7 +674,7 @@ function SchedulingContent() {
         ) : null}
 
         {showAdvanced ? (
-          <section className="scheduler-advanced surface-card" aria-label="Advanced settings panel">
+          <section className="scheduler-advanced" aria-label="Advanced settings panel">
             <p><strong>Advanced</strong> actions use tenant-scoped schedule data and do not cross company boundaries.</p>
             <div className="scheduler-advanced__actions">
               <Button variant="outline" size="sm" onClick={() => void loadSchedule(selectedDate, viewMode)}><RefreshCw size={14} /> Reload</Button>
@@ -686,7 +687,7 @@ function SchedulingContent() {
         ) : null}
 
         <section className="scheduler-panels">
-          <article className="surface-card scheduler-panel scheduler-panel--builder">
+          <article className="scheduler-panel scheduler-panel--builder">
             <header>
               <div>
                 <h2>Build schedule</h2>
@@ -1017,7 +1018,7 @@ function SchedulingContent() {
             ) : null}
           </article>
 
-          <article className="surface-card scheduler-panel">
+          <article className="scheduler-panel">
             <header>
               <div>
                 <h2>Breaks</h2>
@@ -1074,7 +1075,7 @@ function SchedulingContent() {
           </article>
         </section>
 
-        <section className="surface-card scheduler-timeline-panel">
+        <section className="scheduler-timeline-panel">
           <header>
             <div>
               <h2>Timeline</h2>
@@ -1102,6 +1103,7 @@ function SchedulingContent() {
             </div>
           )}
         </section>
+        </section>
       </div>
 
       <style jsx>{`
@@ -1109,6 +1111,11 @@ function SchedulingContent() {
           min-height: 100%;
           display: grid;
           gap: 16px;
+        }
+
+        .scheduler-workspace {
+          overflow: hidden;
+          display: grid;
         }
 
         .scheduler-error {
@@ -1149,12 +1156,13 @@ function SchedulingContent() {
         }
 
         .scheduler-topbar {
-          padding: 20px 24px;
+          padding: 18px 20px;
           display: flex;
           align-items: flex-start;
           justify-content: space-between;
           gap: 16px;
           flex-wrap: wrap;
+          border-bottom: 1px solid var(--border);
         }
 
         .scheduler-topbar__left p {
@@ -1212,12 +1220,14 @@ function SchedulingContent() {
         }
 
         .scheduler-advanced {
-          padding: 16px;
+          padding: 14px 20px;
           display: flex;
           align-items: center;
           justify-content: space-between;
           gap: 10px;
           flex-wrap: wrap;
+          border-bottom: 1px solid var(--border);
+          background: var(--surface-soft);
         }
 
         .scheduler-advanced p {
@@ -1233,13 +1243,12 @@ function SchedulingContent() {
 
         .scheduler-panels {
           display: grid;
-          grid-template-columns: repeat(2, minmax(0, 1fr));
-          gap: 16px;
+          grid-template-columns: 1fr;
         }
 
         .scheduler-panel {
-          padding: 24px;
-          min-height: 360px;
+          padding: 18px 20px;
+          border-bottom: 1px solid var(--border);
         }
 
         .scheduler-panel--builder {
@@ -1380,7 +1389,7 @@ function SchedulingContent() {
           grid-template-columns: minmax(180px, 1.3fr) minmax(120px, 0.65fr) repeat(2, minmax(110px, 0.55fr)) minmax(170px, auto);
           padding: 12px;
           border: 1px solid var(--border);
-          border-radius: var(--r-md);
+          border-radius: var(--r-sm);
           background: var(--surface-soft);
         }
 
@@ -1480,11 +1489,11 @@ function SchedulingContent() {
 
         .guided-metric,
         .guided-action {
-          min-height: 74px;
+          min-height: 58px;
           border: 1px solid var(--border);
-          border-radius: var(--r-md);
+          border-radius: var(--r-sm);
           background: #fbfdff;
-          padding: 12px;
+          padding: 10px 12px;
           display: grid;
           align-content: center;
           gap: 2px;
@@ -1521,7 +1530,7 @@ function SchedulingContent() {
 
         .guided-plan__item,
         .guided-plan__more {
-          min-height: 68px;
+          min-height: 58px;
           border: 1px solid var(--border);
           border-radius: var(--r-sm);
           background: var(--surface-soft);
@@ -1552,11 +1561,11 @@ function SchedulingContent() {
 
         .break-summary {
           margin-top: 16px;
-          min-height: 72px;
+          min-height: 58px;
           border: 1px solid var(--border);
-          border-radius: var(--r-md);
+          border-radius: var(--r-sm);
           background: var(--surface-soft);
-          padding: 12px;
+          padding: 10px 12px;
           display: flex;
           align-items: center;
           gap: 12px;
@@ -1576,11 +1585,11 @@ function SchedulingContent() {
 
         .timeline-summary {
           margin-top: 16px;
-          min-height: 72px;
+          min-height: 58px;
           border: 1px solid var(--border);
-          border-radius: var(--r-md);
+          border-radius: var(--r-sm);
           background: var(--surface-soft);
-          padding: 12px;
+          padding: 10px 12px;
           display: flex;
           align-items: center;
           gap: 12px;
@@ -1828,7 +1837,7 @@ function SchedulingContent() {
         }
 
         .scheduler-timeline-panel {
-          padding: 24px;
+          padding: 18px 20px;
         }
 
         .scheduler-timeline-shell {
