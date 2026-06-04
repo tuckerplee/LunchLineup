@@ -30,6 +30,18 @@ type DragState = {
     originalEnd: Date;
 };
 
+type ShiftActionState = {
+    event: StaffScheduleEvent;
+    left: number;
+    top: number;
+};
+
+export type StaffScheduleSlotSelection = {
+    resourceId: string;
+    start: string;
+    end: string;
+};
+
 interface StaffSchedulerProps {
     resources: StaffResource[];
     events: StaffScheduleEvent[];
@@ -38,6 +50,7 @@ interface StaffSchedulerProps {
     compactWindow?: boolean;
     onEventChange?: (eventId: string, newStart: string, newEnd: string, newResourceId: string) => void;
     onEventSelect?: (event: StaffScheduleEvent) => void;
+    onSlotSelect?: (slot: StaffScheduleSlotSelection) => void;
 }
 
 const ROLE_PALETTE: Record<string, { bg: string; border: string; text: string }> = {
@@ -74,10 +87,12 @@ function clamp(n: number, min: number, max: number): number {
     return Math.max(min, Math.min(max, n));
 }
 
-export function StaffScheduler({ resources, events, viewMode, initialDate, compactWindow = true, onEventChange, onEventSelect }: StaffSchedulerProps) {
+export function StaffScheduler({ resources, events, viewMode, initialDate, compactWindow = true, onEventChange, onEventSelect, onSlotSelect }: StaffSchedulerProps) {
     const [drag, setDrag] = useState<DragState | null>(null);
     const [dragDeltaHours, setDragDeltaHours] = useState(0);
+    const [shiftAction, setShiftAction] = useState<ShiftActionState | null>(null);
     const timelineScrollRef = useRef<HTMLDivElement | null>(null);
+    const suppressShiftClickRef = useRef(false);
     const [viewportWidth, setViewportWidth] = useState(0);
 
     const dayCount = viewMode === 'day' ? 1 : viewMode === 'threeDay' ? 3 : 7;
@@ -217,6 +232,8 @@ export function StaffScheduler({ resources, events, viewMode, initialDate, compa
         if (event.extendedProps.kind) return;
         const originalStart = new Date(event.start);
         const originalEnd = new Date(event.end);
+        setShiftAction(null);
+        suppressShiftClickRef.current = false;
         setDrag({ eventId: event.id, startX: e.clientX, originalStart, originalEnd });
         setDragDeltaHours(0);
     };
@@ -225,6 +242,7 @@ export function StaffScheduler({ resources, events, viewMode, initialDate, compa
         if (!drag) return;
         const deltaPx = e.clientX - drag.startX;
         const deltaHours = Math.round(deltaPx / hourWidth);
+        if (deltaHours !== 0) suppressShiftClickRef.current = true;
         setDragDeltaHours(deltaHours);
     };
 
@@ -245,6 +263,43 @@ export function StaffScheduler({ resources, events, viewMode, initialDate, compa
         setDrag(null);
         setDragDeltaHours(0);
     };
+
+    const handleShiftClick = (e: React.MouseEvent, event: StaffScheduleEvent) => {
+        e.stopPropagation();
+        if (dragDeltaHours !== 0 || suppressShiftClickRef.current) {
+            suppressShiftClickRef.current = false;
+            return;
+        }
+        const rowRect = e.currentTarget.closest('.timeline-row')?.getBoundingClientRect();
+        const buttonRect = e.currentTarget.getBoundingClientRect();
+        setShiftAction({
+            event,
+            left: buttonRect.left - (rowRect?.left ?? 0) + Math.min(buttonRect.width, 160),
+            top: Math.max(6, buttonRect.top - (rowRect?.top ?? 0) - 8),
+        });
+    };
+
+    const handleSlotClick = (e: React.MouseEvent<HTMLDivElement>, resourceId: string) => {
+        if (!onSlotSelect || drag || e.defaultPrevented) return;
+        const rect = e.currentTarget.getBoundingClientRect();
+        const relativeX = clamp(e.clientX - rect.left, 0, timelineWidth - 1);
+        const hourOffset = Math.floor(relativeX / hourWidth);
+        const start = new Date(timelineStart);
+        start.setHours(start.getHours() + hourOffset, 0, 0, 0);
+        const dayStart = new Date(start);
+        dayStart.setHours(minHour, 0, 0, 0);
+        const dayEnd = new Date(dayStart);
+        dayEnd.setHours(maxHour, 0, 0, 0);
+        const end = new Date(start);
+        end.setHours(end.getHours() + 8);
+        if (end > dayEnd) end.setTime(dayEnd.getTime());
+        if (end <= start) end.setHours(start.getHours() + 1);
+        setShiftAction(null);
+        onSlotSelect({ resourceId, start: start.toISOString(), end: end.toISOString() });
+    };
+
+    const formatActionTime = (dateIso: string) =>
+        new Date(dateIso).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
 
     return (
         <div className="scheduler-root" onMouseMove={handleMouseMove} onMouseUp={handleMouseUp} onMouseLeave={handleMouseUp}>
@@ -309,7 +364,7 @@ export function StaffScheduler({ resources, events, viewMode, initialDate, compa
                             {resources.map((resource) => {
                                 const resourceEvents = positionedShifts.filter((e) => e.resourceId === resource.id);
                                 return (
-                                    <div key={resource.id} className="timeline-row">
+                                    <div key={resource.id} className="timeline-row" onClick={(ev) => handleSlotClick(ev, resource.id)}>
                                         <div
                                             className="timeline-grid"
                                             style={{
@@ -336,7 +391,7 @@ export function StaffScheduler({ resources, events, viewMode, initialDate, compa
                                                     key={event.id}
                                                     type="button"
                                                     onMouseDown={(ev) => handleDragStart(ev, event)}
-                                                    onClick={() => onEventSelect?.(event)}
+                                                    onClick={(ev) => handleShiftClick(ev, event)}
                                                     className="shift-block"
                                                     style={{
                                                         left,
@@ -365,6 +420,16 @@ export function StaffScheduler({ resources, events, viewMode, initialDate, compa
                                                 </button>
                                             );
                                         })}
+                                        {shiftAction && shiftAction.event.resourceId === resource.id ? (
+                                            <div className="shift-action-popover" style={{ left: shiftAction.left, top: shiftAction.top }} onClick={(ev) => ev.stopPropagation()}>
+                                                <div>
+                                                    <strong>{shiftAction.event.title}</strong>
+                                                    <span>{formatActionTime(shiftAction.event.start)} - {formatActionTime(shiftAction.event.end)}</span>
+                                                </div>
+                                                <button type="button" onClick={() => onEventSelect?.(shiftAction.event)}>Edit shift</button>
+                                                <button type="button" onClick={() => setShiftAction(null)}>Close</button>
+                                            </div>
+                                        ) : null}
                                     </div>
                                 );
                             })}
@@ -550,6 +615,7 @@ export function StaffScheduler({ resources, events, viewMode, initialDate, compa
                     height: 42px;
                     border-bottom: 1px solid #e6ecf7;
                     background: #fff;
+                    cursor: crosshair;
                 }
 
                 .timeline-grid {
@@ -581,6 +647,56 @@ export function StaffScheduler({ resources, events, viewMode, initialDate, compa
                     text-align: left;
                     cursor: grab;
                     overflow: hidden;
+                }
+
+                .shift-action-popover {
+                    position: absolute;
+                    z-index: 8;
+                    width: 180px;
+                    border: 1px solid #cfd9ec;
+                    border-radius: 8px;
+                    background: #fff;
+                    box-shadow: 0 14px 34px rgba(31, 45, 73, 0.16);
+                    padding: 8px;
+                    display: grid;
+                    gap: 6px;
+                    transform: translate(-100%, -100%);
+                    cursor: default;
+                }
+
+                .shift-action-popover div {
+                    display: grid;
+                    gap: 2px;
+                    padding: 2px 2px 4px;
+                }
+
+                .shift-action-popover strong {
+                    font-size: 0.76rem;
+                    line-height: 1.2;
+                    color: #1f2d49;
+                }
+
+                .shift-action-popover span {
+                    font-size: 0.68rem;
+                    color: #647595;
+                    font-weight: 700;
+                }
+
+                .shift-action-popover button {
+                    height: 30px;
+                    border: 1px solid #dce4f1;
+                    border-radius: 6px;
+                    background: #f9fbff;
+                    color: #1f2d49;
+                    font-size: 0.72rem;
+                    font-weight: 800;
+                    cursor: pointer;
+                }
+
+                .shift-action-popover button:first-of-type {
+                    background: #eef4ff;
+                    border-color: #b8c9ff;
+                    color: #234ed9;
                 }
 
                 .shift-block:active {

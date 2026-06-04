@@ -6,7 +6,7 @@ import { useSearchParams } from 'next/navigation';
 import { Button } from '@/components/ui/button';
 import { CalendarDays, CheckCircle2, Clock3, Download, MapPin, Plus, Printer, RefreshCw, Settings2, Sparkles, Upload, Users, WandSparkles } from 'lucide-react';
 import { fetchJsonWithSession } from '@/lib/client-api';
-import type { SchedulerViewMode, StaffScheduleEvent } from '@/components/scheduling/StaffScheduler';
+import type { SchedulerViewMode, StaffScheduleEvent, StaffScheduleSlotSelection } from '@/components/scheduling/StaffScheduler';
 
 const StaffScheduler = dynamic(
   () => import('@/components/scheduling/StaffScheduler').then((m) => m.StaffScheduler),
@@ -291,6 +291,7 @@ function SchedulingContent() {
   const [shifts, setShifts] = useState<ShiftRecord[]>([]);
   const [generated, setGenerated] = useState<GeneratedAssignment[]>([]);
   const [showShiftForm, setShowShiftForm] = useState(false);
+  const [editingShiftId, setEditingShiftId] = useState<string | null>(null);
   const [shiftDraft, setShiftDraft] = useState<ShiftDraft>({ ...DEFAULT_SHIFT_DRAFT, shiftDate: initialDateValue });
   const [builderSettings, setBuilderSettings] = useState<BuilderSettings>(DEFAULT_BUILDER_SETTINGS);
   const [isBuildingSchedule, setIsBuildingSchedule] = useState(false);
@@ -442,16 +443,28 @@ function SchedulingContent() {
     }
     const range = shiftRange(shiftDraft.shiftDate, shiftDraft.startTime, shiftDraft.endTime);
     try {
-      const created = await fetchJsonWithSession<ShiftRecord>('/shifts', {
-        ...jsonWriteInit('POST', {
-          locationId,
-          userId: selectedStaff.id,
-          role: normalizeRole(shiftDraft.role || selectedStaff.role),
-          ...range,
-        }),
-      });
-      setShifts((current) => [...current, created]);
+      if (editingShiftId) {
+        const updated = await fetchJsonWithSession<ShiftRecord>(`/shifts/${editingShiftId}`, {
+          ...jsonWriteInit('PUT', {
+            startTime: range.startTime,
+            endTime: range.endTime,
+            userId: selectedStaff.id,
+          }),
+        });
+        setShifts((current) => current.map((shift) => (shift.id === editingShiftId ? updated : shift)));
+      } else {
+        const created = await fetchJsonWithSession<ShiftRecord>('/shifts', {
+          ...jsonWriteInit('POST', {
+            locationId,
+            userId: selectedStaff.id,
+            role: normalizeRole(shiftDraft.role || selectedStaff.role),
+            ...range,
+          }),
+        });
+        setShifts((current) => [...current, created]);
+      }
       setShowShiftForm(false);
+      setEditingShiftId(null);
       setShiftDraft((current) => ({
         ...current,
         userId: '',
@@ -464,14 +477,39 @@ function SchedulingContent() {
 
   const prepareShiftForStaff = (person: StaffRosterItem, shiftDate: string, startTime = '09:00', endTime = '17:00') => {
     setError(null);
+    setEditingShiftId(null);
     setShiftDraft((current) => ({
       ...current,
       userId: person.id,
+      locationId: current.locationId || builderSettings.locationId || locations[0]?.id || '',
       role: person.role,
       shiftDate,
       startTime,
       endTime,
     }));
+    setShowShiftForm(true);
+  };
+
+  const prepareShiftFromBoardSlot = (slot: StaffScheduleSlotSelection) => {
+    const person = staff.find((item) => item.id === slot.resourceId);
+    if (!person) return;
+    prepareShiftForStaff(person, toDateInputValue(new Date(slot.start)), timeValueFromIso(slot.start), timeValueFromIso(slot.end));
+  };
+
+  const editShiftFromBoard = (event: StaffScheduleEvent) => {
+    const shift = shifts.find((item) => item.id === event.id);
+    if (!shift) return;
+    const person = shift.userId ? staff.find((item) => item.id === shift.userId) : null;
+    setError(null);
+    setEditingShiftId(shift.id);
+    setShiftDraft({
+      userId: person?.id ?? '',
+      locationId: shift.locationId,
+      role: normalizeRole(shift.role ?? person?.role),
+      shiftDate: toDateInputValue(new Date(shift.startTime)),
+      startTime: timeValueFromIso(shift.startTime),
+      endTime: timeValueFromIso(shift.endTime),
+    });
     setShowShiftForm(true);
   };
 
@@ -704,6 +742,8 @@ function SchedulingContent() {
                 viewMode={viewMode}
                 initialDate={selectedDate}
                 onEventChange={(id, start, end, resourceId) => void updateShift(id, start, end, resourceId)}
+                onEventSelect={editShiftFromBoard}
+                onSlotSelect={prepareShiftFromBoardSlot}
               />
             </div>
           ) : (
@@ -931,9 +971,9 @@ function SchedulingContent() {
                     type="submit"
                     disabled={!locations.length || !shiftDraft.userId || !isValidShiftWindow(shiftDraft.shiftDate, shiftDraft.startTime, shiftDraft.endTime)}
                   >
-                    Create shift
+                    {editingShiftId ? 'Save shift' : 'Create shift'}
                   </Button>
-                  <Button size="sm" type="button" variant="ghost" onClick={() => setShowShiftForm(false)}>
+                  <Button size="sm" type="button" variant="ghost" onClick={() => { setShowShiftForm(false); setEditingShiftId(null); }}>
                     Cancel
                   </Button>
                 </div>
