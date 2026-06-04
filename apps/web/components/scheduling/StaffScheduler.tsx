@@ -92,6 +92,7 @@ export function StaffScheduler({ resources, events, viewMode, initialDate, compa
     const [drag, setDrag] = useState<DragState | null>(null);
     const [dragDeltaHours, setDragDeltaHours] = useState(0);
     const [shiftAction, setShiftAction] = useState<ShiftActionState | null>(null);
+    const [pendingDeleteEventId, setPendingDeleteEventId] = useState<string | null>(null);
     const timelineScrollRef = useRef<HTMLDivElement | null>(null);
     const resourceListRef = useRef<HTMLDivElement | null>(null);
     const suppressShiftClickRef = useRef(false);
@@ -235,6 +236,7 @@ export function StaffScheduler({ resources, events, viewMode, initialDate, compa
         const originalStart = new Date(event.start);
         const originalEnd = new Date(event.end);
         setShiftAction(null);
+        setPendingDeleteEventId(null);
         suppressShiftClickRef.current = false;
         setDrag({ eventId: event.id, startX: e.clientX, originalStart, originalEnd });
         setDragDeltaHours(0);
@@ -275,6 +277,7 @@ export function StaffScheduler({ resources, events, viewMode, initialDate, compa
         const rowRect = e.currentTarget.closest('.timeline-row')?.getBoundingClientRect();
         const buttonRect = e.currentTarget.getBoundingClientRect();
         const rowWidth = rowRect?.width ?? timelineWidth;
+        setPendingDeleteEventId(null);
         setShiftAction({
             event,
             left: clamp(buttonRect.left - (rowRect?.left ?? 0), 8, Math.max(8, rowWidth - 190)),
@@ -303,6 +306,7 @@ export function StaffScheduler({ resources, events, viewMode, initialDate, compa
         if (end > dayEnd) end.setTime(dayEnd.getTime());
         if (end <= start) end.setHours(start.getHours() + 1);
         setShiftAction(null);
+        setPendingDeleteEventId(null);
         onSlotSelect({ resourceId, start: start.toISOString(), end: end.toISOString() });
     };
 
@@ -442,6 +446,7 @@ export function StaffScheduler({ resources, events, viewMode, initialDate, compa
                                                     onClick={() => {
                                                         onEventSelect?.(shiftAction.event);
                                                         setShiftAction(null);
+                                                        setPendingDeleteEventId(null);
                                                     }}
                                                 >
                                                     Edit shift
@@ -451,14 +456,30 @@ export function StaffScheduler({ resources, events, viewMode, initialDate, compa
                                                         type="button"
                                                         className="shift-action-delete"
                                                         onClick={() => {
-                                                            onEventDelete(shiftAction.event);
-                                                            setShiftAction(null);
+                                                            if (pendingDeleteEventId === shiftAction.event.id) {
+                                                                onEventDelete(shiftAction.event);
+                                                                setShiftAction(null);
+                                                                setPendingDeleteEventId(null);
+                                                                return;
+                                                            }
+                                                            setPendingDeleteEventId(shiftAction.event.id);
+                                                        }}
+                                                        onBlur={() => {
+                                                            window.setTimeout(() => setPendingDeleteEventId((current) => (current === shiftAction.event.id ? null : current)), 120);
                                                         }}
                                                     >
-                                                        Delete
+                                                        {pendingDeleteEventId === shiftAction.event.id ? 'Confirm delete' : 'Delete'}
                                                     </button>
                                                 ) : null}
-                                                <button type="button" onClick={() => setShiftAction(null)}>Close</button>
+                                                <button
+                                                    type="button"
+                                                    onClick={() => {
+                                                        setShiftAction(null);
+                                                        setPendingDeleteEventId(null);
+                                                    }}
+                                                >
+                                                    Close
+                                                </button>
                                             </div>
                                         ) : null}
                                     </div>

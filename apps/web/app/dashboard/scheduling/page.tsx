@@ -222,6 +222,7 @@ function SchedulingContent() {
   const [shifts, setShifts] = useState<ShiftRecord[]>([]);
   const [showShiftForm, setShowShiftForm] = useState(false);
   const [editingShiftId, setEditingShiftId] = useState<string | null>(null);
+  const [confirmDeleteShiftId, setConfirmDeleteShiftId] = useState<string | null>(null);
   const [shiftDraft, setShiftDraft] = useState<ShiftDraft>({ ...DEFAULT_SHIFT_DRAFT, shiftDate: initialDateValue });
   const [error, setError] = useState<string | null>(null);
 
@@ -352,6 +353,7 @@ function SchedulingContent() {
       }
       setShowShiftForm(false);
       setEditingShiftId(null);
+      setConfirmDeleteShiftId(null);
       setShiftDraft((current) => ({
         ...current,
         userId: '',
@@ -365,6 +367,7 @@ function SchedulingContent() {
   const prepareShiftForStaff = (person: StaffRosterItem, shiftDate: string, startTime = '09:00', endTime = '17:00') => {
     setError(null);
     setEditingShiftId(null);
+    setConfirmDeleteShiftId(null);
     setShiftDraft((current) => ({
       ...current,
       userId: person.id,
@@ -389,6 +392,7 @@ function SchedulingContent() {
     const person = shift.userId ? staff.find((item) => item.id === shift.userId) : null;
     setError(null);
     setEditingShiftId(shift.id);
+    setConfirmDeleteShiftId(null);
     setShiftDraft({
       userId: person?.id ?? '',
       locationId: shift.locationId,
@@ -469,9 +473,6 @@ function SchedulingContent() {
   const deleteShift = async (id: string) => {
     const shift = shifts.find((item) => item.id === id);
     if (!shift) return;
-    const staffName = shift.userId ? staff.find((person) => person.id === shift.userId)?.name : 'Open shift';
-    if (!window.confirm(`Delete ${staffName ?? 'this shift'} from the schedule?`)) return;
-
     setIsSaved(false);
     setError(null);
     try {
@@ -486,6 +487,7 @@ function SchedulingContent() {
         setShowShiftForm(false);
         setEditingShiftId(null);
       }
+      setConfirmDeleteShiftId(null);
       setIsSaved(true);
     } catch (err) {
       setError((err as Error).message);
@@ -646,8 +648,22 @@ function SchedulingContent() {
               </label>
               <div className="shift-form__actions">
                 {editingShiftId ? (
-                  <Button size="sm" type="button" variant="destructive" onClick={() => void deleteShift(editingShiftId)}>
-                    Delete shift
+                  <Button
+                    size="sm"
+                    type="button"
+                    variant="destructive"
+                    onClick={() => {
+                      if (confirmDeleteShiftId === editingShiftId) {
+                        void deleteShift(editingShiftId);
+                        return;
+                      }
+                      setConfirmDeleteShiftId(editingShiftId);
+                    }}
+                    onBlur={() => {
+                      window.setTimeout(() => setConfirmDeleteShiftId((current) => (current === editingShiftId ? null : current)), 120);
+                    }}
+                  >
+                    {confirmDeleteShiftId === editingShiftId ? 'Confirm delete' : 'Delete shift'}
                   </Button>
                 ) : null}
                 <Button
@@ -657,7 +673,7 @@ function SchedulingContent() {
                 >
                   {editingShiftId ? 'Save shift' : 'Create shift'}
                 </Button>
-                <Button size="sm" type="button" variant="ghost" onClick={() => { setShowShiftForm(false); setEditingShiftId(null); }}>
+                <Button size="sm" type="button" variant="ghost" onClick={() => { setShowShiftForm(false); setEditingShiftId(null); setConfirmDeleteShiftId(null); }}>
                   Cancel
                 </Button>
               </div>
