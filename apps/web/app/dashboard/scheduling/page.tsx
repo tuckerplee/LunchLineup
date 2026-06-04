@@ -5,7 +5,7 @@ import dynamic from 'next/dynamic';
 import { useSearchParams } from 'next/navigation';
 import { Button } from '@/components/ui/button';
 import { CalendarDays, Download, Printer, RefreshCw, Settings2, Upload, WandSparkles } from 'lucide-react';
-import { fetchJsonWithSession } from '@/lib/client-api';
+import { fetchJsonWithSession, fetchWithSession } from '@/lib/client-api';
 import type { SchedulerViewMode, StaffScheduleEvent, StaffScheduleSlotSelection } from '@/components/scheduling/StaffScheduler';
 
 const StaffScheduler = dynamic(
@@ -70,6 +70,17 @@ function jsonWriteInit(method: 'POST' | 'PUT', payload: unknown): RequestInit {
       ...(csrfToken ? { 'x-csrf-token': csrfToken } : {}),
     },
     body: JSON.stringify(payload),
+  };
+}
+
+function deleteWriteInit(): RequestInit {
+  const csrfToken = getCsrfTokenFromCookie();
+  return {
+    method: 'DELETE',
+    credentials: 'include',
+    headers: {
+      ...(csrfToken ? { 'x-csrf-token': csrfToken } : {}),
+    },
   };
 }
 
@@ -455,6 +466,33 @@ function SchedulingContent() {
     }
   };
 
+  const deleteShift = async (id: string) => {
+    const shift = shifts.find((item) => item.id === id);
+    if (!shift) return;
+    const staffName = shift.userId ? staff.find((person) => person.id === shift.userId)?.name : 'Open shift';
+    if (!window.confirm(`Delete ${staffName ?? 'this shift'} from the schedule?`)) return;
+
+    setIsSaved(false);
+    setError(null);
+    try {
+      const response = await fetchWithSession(`/shifts/${id}`, deleteWriteInit());
+      if (!response.ok) {
+        const payload = await response.json().catch(() => ({}));
+        const message = (payload as any)?.message;
+        throw new Error(typeof message === 'string' ? message : `Request failed (${response.status})`);
+      }
+      setShifts((previous) => previous.filter((item) => item.id !== id));
+      if (editingShiftId === id) {
+        setShowShiftForm(false);
+        setEditingShiftId(null);
+      }
+      setIsSaved(true);
+    } catch (err) {
+      setError((err as Error).message);
+      void loadSchedule(selectedDate, viewMode);
+    }
+  };
+
   return (
     <>
       <div className="scheduler-page">
@@ -539,6 +577,7 @@ function SchedulingContent() {
                 initialDate={selectedDate}
                 onEventChange={(id, start, end, resourceId) => void updateShift(id, start, end, resourceId)}
                 onEventSelect={editShiftFromBoard}
+                onEventDelete={(event) => void deleteShift(event.id)}
                 onSlotSelect={prepareShiftFromBoardSlot}
               />
             </div>
@@ -606,6 +645,11 @@ function SchedulingContent() {
                 />
               </label>
               <div className="shift-form__actions">
+                {editingShiftId ? (
+                  <Button size="sm" type="button" variant="destructive" onClick={() => void deleteShift(editingShiftId)}>
+                    Delete shift
+                  </Button>
+                ) : null}
                 <Button
                   size="sm"
                   type="submit"

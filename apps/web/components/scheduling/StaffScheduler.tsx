@@ -50,6 +50,7 @@ interface StaffSchedulerProps {
     compactWindow?: boolean;
     onEventChange?: (eventId: string, newStart: string, newEnd: string, newResourceId: string) => void;
     onEventSelect?: (event: StaffScheduleEvent) => void;
+    onEventDelete?: (event: StaffScheduleEvent) => void;
     onSlotSelect?: (slot: StaffScheduleSlotSelection) => void;
 }
 
@@ -87,7 +88,7 @@ function clamp(n: number, min: number, max: number): number {
     return Math.max(min, Math.min(max, n));
 }
 
-export function StaffScheduler({ resources, events, viewMode, initialDate, compactWindow = true, onEventChange, onEventSelect, onSlotSelect }: StaffSchedulerProps) {
+export function StaffScheduler({ resources, events, viewMode, initialDate, compactWindow = true, onEventChange, onEventSelect, onEventDelete, onSlotSelect }: StaffSchedulerProps) {
     const [drag, setDrag] = useState<DragState | null>(null);
     const [dragDeltaHours, setDragDeltaHours] = useState(0);
     const [shiftAction, setShiftAction] = useState<ShiftActionState | null>(null);
@@ -445,6 +446,18 @@ export function StaffScheduler({ resources, events, viewMode, initialDate, compa
                                                 >
                                                     Edit shift
                                                 </button>
+                                                {onEventDelete ? (
+                                                    <button
+                                                        type="button"
+                                                        className="shift-action-delete"
+                                                        onClick={() => {
+                                                            onEventDelete(shiftAction.event);
+                                                            setShiftAction(null);
+                                                        }}
+                                                    >
+                                                        Delete
+                                                    </button>
+                                                ) : null}
                                                 <button type="button" onClick={() => setShiftAction(null)}>Close</button>
                                             </div>
                                         ) : null}
@@ -725,6 +738,17 @@ export function StaffScheduler({ resources, events, viewMode, initialDate, compa
                     background: #eef4ff;
                     border-color: #b8c9ff;
                     color: #234ed9;
+                }
+
+                .shift-action-popover .shift-action-delete {
+                    border-color: #fecdd3;
+                    background: #fff1f2;
+                    color: #be123c;
+                }
+
+                .shift-action-popover .shift-action-delete:hover {
+                    background: #ffe4e6;
+                    border-color: #fda4af;
                 }
 
                 .shift-block:active {
