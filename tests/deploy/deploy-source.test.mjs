@@ -59,10 +59,15 @@ function createGitFixture() {
 }
 
 function runScript(runner, repo, env = {}) {
+  const childEnv = { ...process.env };
+  for (const name of ['GITHUB_ACTIONS', 'GITHUB_EVENT_NAME', 'GITHUB_REF', 'GITHUB_REF_NAME', 'GITHUB_SHA']) {
+    delete childEnv[name];
+  }
+
   return spawnSync(runner.command, runner.args, {
     cwd: repo,
     encoding: 'utf8',
-    env: { ...process.env, ...env },
+    env: { ...childEnv, ...env },
   });
 }
 
@@ -178,6 +183,25 @@ for (const runner of runners) {
       assert.equal(result.status, 0, result.stderr || result.stdout);
       assert.match(result.stdout, /deploy_source_ok/);
       assert.match(result.stdout, /upstream=refs\/heads\/main/);
+    } finally {
+      rmSync(scratch, { recursive: true, force: true });
+    }
+  });
+
+  test(`${runner.name} deploy-source script rejects non-push GitHub Actions events`, () => {
+    const { scratch, repo } = createGitFixture();
+    try {
+      const currentSha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: repo, encoding: 'utf8' }).trim();
+      const result = runScript(runner, repo, {
+        GITHUB_ACTIONS: 'true',
+        GITHUB_EVENT_NAME: 'workflow_dispatch',
+        GITHUB_REF: 'refs/heads/main',
+        GITHUB_REF_NAME: 'main',
+        GITHUB_SHA: currentSha,
+      });
+
+      assert.notEqual(result.status, 0);
+      assert.match(`${result.stdout}\n${result.stderr}`, /requires a push event/i);
     } finally {
       rmSync(scratch, { recursive: true, force: true });
     }
