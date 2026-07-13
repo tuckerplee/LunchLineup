@@ -1,0 +1,43 @@
+# Web unit tests
+
+## Files
+
+- `README.md`: this unit test folder guide.
+- `account-lifecycle-panel.test.ts`: source-contract coverage for requester-visible export recovery, uncapped active polling, retry cleanup, and server-expiring downloads.
+- `admin-mfa-recovery-contract.test.ts`: source contract for target-bound, reason-required, self-safe platform MFA recovery.
+- `auto-schedule-recovery.test.ts`: tab-session attempt/job identity persistence, replacement, terminal cleanup, and expiry coverage.
+- `billing-settings-contract.test.ts`: safe billing portal, capacity-checked plan-change wiring, explicit paused-versus-delinquent recovery, hosted resumption-payment redirect, cancelled resubscription, and Stripe URL contract coverage.
+- `client-api.test.ts`: unit coverage for CSRF header attachment, session refresh, off-origin rejection, canonical attempt-key reuse, and idempotency preservation across refreshed request replay.
+- `dashboard-navigation.test.ts`: unit coverage for dashboard shell navigation filtering, lunch/location prerequisite alignment, current-page matching, and account initials.
+- `demand-window-contract.test.ts`: exact timezone serialization, overnight handling, fallback ambiguity rejection for shift and demand windows, and no-arbitrary-time validation.
+- `location-timezone.test.ts`: DST boundary and UTC-persistence coverage for scheduling timezone helpers.
+- `lunch-break-location-contract.test.ts`: explicit location scoping for planner reads and writes plus deterministic delayed-response rejection after rapid location changes.
+- `logout-route.test.ts`: same-origin logout proxy coverage for refresh-cookie forwarding, authoritative cookie clearing, ambiguous failure preservation, and cross-origin rejection.
+- `lunch-break-time.test.ts`: location-scoped lunch/break day, wall-clock, DST, and overnight-shift conversion coverage.
+- `manual-shift-schedule.test.ts`: containing weekly-draft selection, too-short draft rejection, and DST-aware overnight fallback-window coverage.
+- `latest-request.test.ts`: deterministic request-generation coverage proving superseded and explicitly invalidated completions are rejected.
+- `mfa-page.test.ts`: MFA CSRF, accessible dynamic-error announcements, support-backed privileged-account recovery, plus mandatory-enrollment recovery-code normalization, in-memory handling, copy/print, acknowledgment, and redirect-gating coverage.
+- `mfa-enrollment-panel.test.ts`: unit coverage for MFA enrollment/status/setup/recovery-code client contract normalization.
+- `onboarding-challenge.test.ts`: unit coverage for the production closed-beta legal gate, non-production signup modes, Turnstile enablement, and OTP payload shaping.
+- `onboarding-first-location-recovery.test.ts`: stable first-location idempotency-key persistence and legacy recovery-record rejection coverage.
+- `pin-reset-page.test.ts`: static contract coverage that temporary PIN rotation hands off through logout instead of refreshing a revoked session.
+- `playwright-config-contract.test.ts`: source contract keeping default mock Playwright on a serialized Next development server while preserving external and full-stack targeting.
+- `staff-permission-contract.test.ts`: static server-to-client capability coverage keeping manager scheduling-profile/invitation access separate from admin-only PIN reset and staff removal controls.
+- `permissions.test.ts`: unit coverage for the shared read/write capability matrix, including the lunch/location read prerequisite.
+- `proxy.test.ts`: unit coverage for auth proxy login redirects, hard-navigation session recovery, complete CSRF-protected cookie rotation, definitive invalid-session cleanup, transient auth-service cookie preservation with bounded `503` responses, debug redaction, and shared permission redirects.
+- `print-schedule-scope.test.ts`: printable schedule date/location scope matching coverage.
+- `role-deletion-confirmation.test.ts`: exact-name custom-role deletion and affected-assignment blocking coverage.
+- `scheduling-publish-result.test.ts`: publish status coverage for partial, failed, delivered, and no-notification outcomes.
+- `scheduling-route-access.test.tsx`: server scheduling-route coverage for the complete schedule, shift, and location read contract without admin-portal bypass.
+- `scheduling-location-scope.test.ts`: tenant-visible linked-location resolution, multi-location shift query, stale loaded-scope invalidation, response filtering, and break-generation context isolation coverage.
+- `scheduler-projection.test.ts`: compact multi-day positioning, late-week visibility, overnight clipping, and timeline offset conversion coverage.
+- `staff-action-confirmation.test.ts`: destructive staff PIN-reset and removal confirmation copy coverage.
+- `stale-request-wiring-contract.test.ts`: static wiring coverage for immediate time-card invalidation and current-scope-only schedule printing.
+- `status-health.test.ts`: unit coverage for public status health endpoint URL resolution.
+- `tenant-edit-contract.test.ts`: generic tenant edit payload allowlist and dedicated billing/lifecycle guidance coverage.
+- `tenant-lifecycle-confirmation.test.ts`: unit coverage for typed tenant lifecycle destructive-action confirmations.
+- `tenant-provisioning-contract.test.ts`: FREE active and paid bounded-trial admin provisioning UI contract coverage.
+- `time-card-format.test.ts`: unit coverage for timecard duration formatting.
+- `time-card-permission-contract.test.ts`: static permission-parity coverage for optional time-card staff and location catalogs.
+- `time-card-request.test.ts`: selected-employee active-card ownership coverage.
+- `workspace-slug.test.ts`: unit coverage for canonical generated-workspace slug persistence and login fallback reads.

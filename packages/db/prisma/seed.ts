@@ -1,12 +1,22 @@
-import { PrismaClient } from '@lunchlineup/db';
+import { execFileSync } from 'node:child_process';
+import { resolve } from 'node:path';
 
+const guardPath = resolve(__dirname, '../../../scripts/data-target-guard.mjs');
+execFileSync(process.execPath, [guardPath, 'development-seed'], {
+    env: process.env,
+    stdio: 'inherit',
+});
+const { PrismaClient } = require('@lunchlineup/db') as typeof import('@lunchlineup/db');
 const prisma = new PrismaClient();
 
 const PERMISSIONS = [
     ['dashboard:access', 'Access dashboard', 'AUTH'],
     ['admin_portal:access', 'Access admin portal', 'ADMIN'],
+    ['tenant_account:lifecycle', 'Manage tenant lifecycle', 'ADMIN'],
+    ['account:data_export', 'Export tenant data', 'ADMIN'],
     ['auth:login_email', 'Email login', 'AUTH'],
     ['auth:login_pin', 'PIN login', 'AUTH'],
+    ['auth:login_password', 'Password login', 'AUTH'],
     ['users:read', 'View staff', 'USERS'],
     ['users:write', 'Create staff', 'USERS'],
     ['users:admin', 'Administer staff', 'USERS'],
@@ -25,6 +35,8 @@ const PERMISSIONS = [
     ['lunch_breaks:read', 'View breaks', 'LUNCH_BREAKS'],
     ['lunch_breaks:write', 'Manage breaks', 'LUNCH_BREAKS'],
     ['lunch_breaks:delete', 'Delete breaks', 'LUNCH_BREAKS'],
+    ['time_cards:read', 'View time cards', 'TIME_CARDS'],
+    ['time_cards:write', 'Manage time cards', 'TIME_CARDS'],
     ['notifications:read', 'View notifications', 'NOTIFICATIONS'],
     ['notifications:write', 'Manage notifications', 'NOTIFICATIONS'],
     ['billing:read', 'View billing', 'BILLING'],
@@ -32,6 +44,16 @@ const PERMISSIONS = [
     ['settings:read', 'View settings', 'SETTINGS'],
     ['settings:write', 'Manage settings', 'SETTINGS'],
 ] as const;
+
+const ALL_PERMISSION_KEYS = PERMISSIONS.map(([key]) => key);
+
+const SYSTEM_ADMIN_ROLE = {
+    slug: 'super-admin',
+    name: 'System Admin',
+    description: 'Full platform access.',
+    legacyRole: 'SUPER_ADMIN',
+    permissions: ALL_PERMISSION_KEYS,
+} as const;
 
 async function main() {
     console.log('Seeding initial permissions and roles...');
@@ -77,7 +99,7 @@ async function main() {
             userLimit: 250,
             creditQuotaLimit: null,
             active: true,
-            metadata: { features: ['scheduling', 'lunch_breaks'] },
+            metadata: { features: ['scheduling', 'lunch_breaks', 'time_cards', 'webhooks'] },
         },
         {
             code: 'ENTERPRISE',
@@ -87,7 +109,7 @@ async function main() {
             userLimit: null,
             creditQuotaLimit: null,
             active: true,
-            metadata: { features: ['scheduling', 'lunch_breaks'] },
+            metadata: { features: ['scheduling', 'lunch_breaks', 'time_cards', 'webhooks'] },
         },
     ] as const;
 
@@ -117,7 +139,44 @@ async function main() {
         },
     });
 
-    // 2. Create Initial Super Admin
+    const permissions = await prisma.permission.findMany({
+        where: { key: { in: SYSTEM_ADMIN_ROLE.permissions } },
+        select: { id: true, key: true },
+    });
+    const permissionIdByKey = new Map(permissions.map((permission) => [permission.key, permission.id]));
+    const systemAdminRole = await prisma.role.upsert({
+        where: {
+            tenantId_slug: {
+                tenantId: systemTenant.id,
+                slug: SYSTEM_ADMIN_ROLE.slug,
+            },
+        },
+        update: {
+            name: SYSTEM_ADMIN_ROLE.name,
+            description: SYSTEM_ADMIN_ROLE.description,
+            isSystem: true,
+            legacyRole: SYSTEM_ADMIN_ROLE.legacyRole,
+            deletedAt: null,
+        },
+        create: {
+            tenantId: systemTenant.id,
+            slug: SYSTEM_ADMIN_ROLE.slug,
+            name: SYSTEM_ADMIN_ROLE.name,
+            description: SYSTEM_ADMIN_ROLE.description,
+            isSystem: true,
+            legacyRole: SYSTEM_ADMIN_ROLE.legacyRole,
+        },
+    });
+    await prisma.rolePermission.deleteMany({ where: { roleId: systemAdminRole.id } });
+    await prisma.rolePermission.createMany({
+        data: SYSTEM_ADMIN_ROLE.permissions
+            .map((key) => permissionIdByKey.get(key))
+            .filter((permissionId): permissionId is string => Boolean(permissionId))
+            .map((permissionId) => ({ roleId: systemAdminRole.id, permissionId })),
+        skipDuplicates: true,
+    });
+
+    // 2. Create or repair Initial Super Admin
     const existingAdmin = await prisma.user.findFirst({
         where: {
             tenantId: systemTenant.id,
@@ -125,8 +184,16 @@ async function main() {
         },
     });
 
-    if (!existingAdmin) {
-        await prisma.user.create({
+    const admin = existingAdmin
+        ? await prisma.user.update({
+            where: { id: existingAdmin.id },
+            data: {
+                name: 'System Admin',
+                role: 'SUPER_ADMIN',
+                deletedAt: null,
+            },
+        })
+        : await prisma.user.create({
             data: {
                 email: 'admin@lunchlineup.com',
                 name: 'System Admin',
@@ -134,7 +201,11 @@ async function main() {
                 role: 'SUPER_ADMIN',
             },
         });
-    }
+
+    await prisma.roleAssignment.createMany({
+        data: [{ tenantId: systemTenant.id, userId: admin.id, roleId: systemAdminRole.id }],
+        skipDuplicates: true,
+    });
 
     console.log('Seeding complete.');
 }

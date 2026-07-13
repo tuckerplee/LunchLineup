@@ -5,9 +5,11 @@ import { OtpService } from './otp.service';
 import { EmailService } from './email.service';
 import { JwtService } from './jwt.service';
 import { RbacService } from './rbac.service';
+import { TenantPrismaService } from '../database/tenant-prisma.service';
 
+import { OnboardingSignupService } from './onboarding-signup.service';
 @Module({
-    providers: [AuthService, JwtService, OtpService, EmailService, RbacService],
+    providers: [AuthService, JwtService, OtpService, EmailService, RbacService, TenantPrismaService, OnboardingSignupService],
     controllers: [AuthController],
     exports: [AuthService, JwtService, RbacService],
 })

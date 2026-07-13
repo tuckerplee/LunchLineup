@@ -67,7 +67,7 @@ test('TypeScript platform exposes health, auth, tenant-scoped schedule, admin, a
   assert.deepEqual(required.filter((path) => !exists(path)), []);
 
   assert.match(read('apps/api/src/app.controller.ts'), /@Get\('health'\)/);
-  assert.match(read('apps/api/src/schedules/schedules.controller.ts'), /tenantId:\s*req\.user\.tenantId/);
+  assert.match(read('apps/api/src/schedules/schedules.controller.ts'), /const tenantId = req\.user\.tenantId/);
   assert.match(read('apps/api/src/auth/rbac.guard.ts'), /requiredPermission/);
   assert.match(read('apps/api/src/auth/jwt-auth.guard.ts'), /CSRF validation failed/);
 });
@@ -82,6 +82,8 @@ test('database schema contains SaaS tenant, role, audit, schedule, and billing f
     'model AuditLog',
     'model Schedule',
     'model Shift',
+    'model Break',
+    'enum BreakType',
     'model BillingEvent',
     'tenantId',
   ]) {
@@ -104,4 +106,15 @@ test('migration parity documentation captures workflows that must be proven befo
   ]) {
     assert.match(doc, new RegExp(workflow, 'i'));
   }
+});
+
+test('legacy import does not promote customer export users to platform admin', () => {
+  const importer = read('scripts/import-legacy-users.mjs');
+  const scriptsReadme = read('scripts/README.md');
+
+  assert.match(importer, /roles\.includes\('super_admin'\)\) return UserRole\.ADMIN/);
+  assert.doesNotMatch(importer, /roles\.includes\('super_admin'\)\) return UserRole\.SUPER_ADMIN/);
+  assert.match(importer, /legacy_super_admin_downgraded_to_tenant_admin/);
+  assert.match(scriptsReadme, /Legacy `super_admin` rows import as tenant `ADMIN`/);
+  assert.match(scriptsReadme, /create platform admins only through `bootstrap-production-admin\.mjs`/);
 });

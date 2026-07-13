@@ -1,29 +1,51 @@
 {
-    email {{config.email}}
+	email {$ADMIN_EMAIL:admin@example.com}
 }
 
-{{config.domain}} {
-    # Reverse proxy with header manipulation
-    reverse_proxy /api/* lunchlineup-api:3000 {
-        header_up X-Real-IP {remote_host}
-        header_up X-Forwarded-For {remote_host}
-    }
-    
-    reverse_proxy /* lunchlineup-web:3000
+{$CADDY_SITE_ADDRESSES:https://lunchlineup.example.com} {
+	encode zstd gzip
+	request_body {
+		max_size 10MB
+	}
 
-    # Security Headers (Architecture Part VII-A.1)
-    header {
-        Strict-Transport-Security "max-age={{config.security.hstsMaxAge}}; includeSubDomains{{config.security.hstsPreload ? '; preload' : ''}}"
-        X-Content-Type-Options nosniff
-        X-Frame-Options {{config.security.allowIframeEmbedding ? 'SAMEORIGIN' : 'DENY'}}
-        Referrer-Policy strict-origin-when-cross-origin
-        Content-Security-Policy "{{config.security.csp}}"
-        X-Permitted-Cross-Domain-Policies none
-        X-XSS-Protection "1; mode=block"
-    }
+	header {
+		X-LunchLineup-Release "{$DEPLOY_RELEASE_SHA:local}"
+		Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
+		Content-Security-Policy "default-src 'self'; base-uri 'self'; object-src 'none'; frame-ancestors 'none'; frame-src 'self' https://challenges.cloudflare.com; form-action 'self'; script-src 'self' https://challenges.cloudflare.com 'unsafe-inline'; script-src-attr 'none'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self' https://challenges.cloudflare.com ws: wss:; upgrade-insecure-requests"
+		Cross-Origin-Opener-Policy "same-origin"
+		Cross-Origin-Resource-Policy "same-origin"
+		Origin-Agent-Cluster "?1"
+		X-Content-Type-Options "nosniff"
+		X-DNS-Prefetch-Control "off"
+		X-Download-Options "noopen"
+		X-Frame-Options "DENY"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		Permissions-Policy "camera=(), microphone=(), geolocation=(), payment=()"
+		X-Permitted-Cross-Domain-Policies "none"
+		-Server
+	}
 
-    log {
-        output file /var/log/caddy/access.log
-        format json
-    }
+	header /api/* Cache-Control "no-store"
+
+	handle /health {
+		reverse_proxy api:3000
+	}
+
+	handle /api/health {
+		uri strip_prefix /api
+		reverse_proxy api:3000
+	}
+
+	handle /api/v1/* {
+		uri strip_prefix /api
+		reverse_proxy api:3000
+	}
+
+	handle /ws/* {
+		reverse_proxy engine:8000
+	}
+
+	handle {
+		reverse_proxy web:3000
+	}
 }

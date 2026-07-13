@@ -7,18 +7,16 @@ import { LunchLineupMark } from '@/components/branding/LunchLineupMark';
 import { fetchJsonWithSession, fetchWithSession } from '@/lib/client-api';
 import {
   Bell,
-  CalendarDays,
-  ChevronDown,
-  LayoutGrid,
   LogOut,
-  MapPin,
   Settings,
-  Shield,
   Store,
-  Users,
-  UtensilsCrossed,
 } from 'lucide-react';
-import type { LucideIcon } from 'lucide-react';
+import {
+  canOpenDashboardAccountSettings,
+  getDashboardCurrentPage,
+  getDashboardUserInitials,
+  getVisibleDashboardNavItems,
+} from './dashboard-navigation';
 
 type DashboardRole = 'SUPER_ADMIN' | 'ADMIN' | 'MANAGER' | 'STAFF';
 type NotificationType = 'INFO' | 'SUCCESS' | 'WARNING' | 'ERROR' | 'SCHEDULE_PUBLISHED' | 'SHIFT_ASSIGNED' | 'SHIFT_CHANGED';
@@ -41,29 +39,9 @@ type DashboardNotification = {
   readAt: string | null;
   createdAt: string;
 };
-type DashboardNavItem = {
-  href: string;
-  label: string;
-  icon: LucideIcon;
-  exact: boolean;
-  priority?: 'strong';
-  badge?: number;
-};
-
-const NAV_ITEMS: DashboardNavItem[] = [
-  { href: '/dashboard', label: 'Overview', icon: LayoutGrid, exact: true },
-  { href: '/dashboard/scheduling', label: 'Calendar', icon: CalendarDays, exact: false, priority: 'strong', badge: 3 },
-  { href: '/dashboard/lunch-breaks', label: 'Lunch & Breaks', icon: UtensilsCrossed, exact: false, badge: 1 },
-  { href: '/dashboard/staff', label: 'Staff', icon: Users, exact: false },
-  { href: '/dashboard/locations', label: 'Locations', icon: MapPin, exact: false },
-  { href: '/dashboard/settings', label: 'Settings', icon: Settings, exact: false },
-];
-
-const ADMIN_NAV_ITEM: DashboardNavItem = { href: '/admin', label: 'Admin Console', icon: Shield, exact: false };
 
 export default function DashboardLayout({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
-  const [role, setRole] = useState<DashboardRole | null>(null);
   const [user, setUser] = useState<DashboardUser | null>(null);
   const [notificationsOpen, setNotificationsOpen] = useState(false);
   const [notifications, setNotifications] = useState<DashboardNotification[]>([]);
@@ -95,35 +73,26 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
     return `${days}d ago`;
   }
 
-  function initialsForUser(profile: DashboardUser | null): string {
-    const source = (profile?.name || profile?.username || profile?.email || 'User').trim();
-    const parts = source.split(/\s+/).filter(Boolean);
-    if (parts.length >= 2) {
-      return `${parts[0][0] ?? ''}${parts[1][0] ?? ''}`.toUpperCase();
-    }
-    return source.slice(0, 2).toUpperCase();
-  }
-
   useEffect(() => {
     let cancelled = false;
 
     async function loadHeaderData() {
       try {
-        const [me, feed] = await Promise.all([
-          fetchJsonWithSession<{ user?: DashboardUser }>('/auth/me'),
-          fetchJsonWithSession<{ data: DashboardNotification[]; unreadCount: number }>('/notifications?status=all&limit=20'),
-        ]);
-
+        const me = await fetchJsonWithSession<{ user?: DashboardUser }>('/auth/me');
         if (cancelled) return;
-
-        setRole(me.user?.role ?? null);
         setUser(me.user ?? null);
+      } catch {
+        if (!cancelled) setUser(null);
+        return;
+      }
+
+      try {
+        const feed = await fetchJsonWithSession<{ data: DashboardNotification[]; unreadCount: number }>('/notifications?status=all&limit=20');
+        if (cancelled) return;
         setNotifications(feed.data ?? []);
         setUnreadCount(feed.unreadCount ?? 0);
       } catch {
         if (!cancelled) {
-          setRole(null);
-          setUser(null);
           setNotifications([]);
           setUnreadCount(0);
         }
@@ -186,20 +155,11 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
     setUnreadCount(0);
   }
 
-  const visibleNavItems = useMemo(() => {
-    const permissions = user?.permissions ?? [];
-    const navItems = NAV_ITEMS.filter((item) => {
-      if (item.href === '/dashboard/staff') return permissions.includes('users:read');
-      if (item.href === '/dashboard/locations') return permissions.includes('locations:read');
-      if (item.href === '/dashboard/settings') return permissions.includes('settings:read');
-      return true;
-    });
-    return permissions.includes('admin_portal:access') ? [...navItems, ADMIN_NAV_ITEM] : navItems;
-  }, [user]);
+  const visibleNavItems = useMemo(() => getVisibleDashboardNavItems(user?.permissions), [user?.permissions]);
+  const canOpenAccountSettings = useMemo(() => canOpenDashboardAccountSettings(user?.permissions), [user?.permissions]);
 
   const currentPage = useMemo(() => {
-    const match = visibleNavItems.find((item) => (item.exact ? pathname === item.href : pathname.startsWith(item.href)));
-    return match?.label ?? 'Workspace';
+    return getDashboardCurrentPage(pathname, visibleNavItems);
   }, [pathname, visibleNavItems]);
 
   return (
@@ -227,8 +187,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
           </div>
 
           <div style={{ padding: '0.8rem 0.8rem 0.6rem' }}>
-            <button
-              type="button"
+            <div
               className="surface-muted"
               style={{
                 width: '100%',
@@ -239,13 +198,11 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
                 color: 'var(--text-primary)',
                 fontSize: '0.84rem',
                 fontWeight: 650,
-                cursor: 'pointer',
               }}
             >
               <Store size={14} />
               {user?.tenantName || 'Team Workspace'}
-              <ChevronDown size={13} style={{ marginLeft: 'auto', color: 'var(--text-muted)' }} />
-            </button>
+            </div>
           </div>
 
           <nav style={{ padding: '0.5rem 0.75rem', display: 'flex', flexDirection: 'column', gap: 4, flex: 1 }}>
@@ -334,6 +291,15 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
           </div>
 
           <div style={{ display: 'flex', alignItems: 'center', gap: '0.7rem' }}>
+            <Link
+              href="/auth/logout"
+              prefetch={false}
+              className="workspace-mobile-signout btn btn-secondary btn-sm"
+              aria-label="Sign out"
+            >
+              <LogOut size={16} />
+              Sign out
+            </Link>
             <div style={{ position: 'relative' }}>
               <button
                 id="notification-bell"
@@ -447,38 +413,70 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
               ) : null}
             </div>
 
-            <button
-              type="button"
-              aria-label="Account menu"
-              style={{
-                border: '1px solid var(--border)',
-                background: '#ffffff',
-                borderRadius: 999,
-                padding: '0.2rem 0.35rem 0.2rem 0.2rem',
-                display: 'flex',
-                alignItems: 'center',
-                gap: '0.45rem',
-                cursor: 'pointer',
-              }}
-            >
-              <span
+            {canOpenAccountSettings ? (
+              <Link
+                href="/dashboard/settings"
+                aria-label="Account settings"
+                title="Account settings"
                 style={{
-                  width: 30,
-                  height: 30,
-                  borderRadius: '50%',
-                  background: 'linear-gradient(135deg, #4171ff, #2f63ff 60%, #22b8cf)',
-                  color: 'white',
-                  fontSize: '0.72rem',
-                  fontWeight: 700,
-                  display: 'grid',
-                  placeItems: 'center',
+                  border: '1px solid var(--border)',
+                  background: '#ffffff',
+                  borderRadius: 999,
+                  padding: '0.2rem 0.35rem 0.2rem 0.2rem',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '0.45rem',
                 }}
               >
-                {initialsForUser(user)}
-              </span>
-              <span style={{ fontSize: '0.76rem', fontWeight: 700, color: 'var(--text-primary)' }}>{user?.name || user?.username || 'Account'}</span>
-              <ChevronDown size={14} style={{ color: 'var(--text-muted)' }} />
-            </button>
+                <span
+                  style={{
+                    width: 30,
+                    height: 30,
+                    borderRadius: '50%',
+                    background: 'linear-gradient(135deg, #4171ff, #2f63ff 60%, #22b8cf)',
+                    color: 'white',
+                    fontSize: '0.72rem',
+                    fontWeight: 700,
+                    display: 'grid',
+                    placeItems: 'center',
+                  }}
+                >
+                  {getDashboardUserInitials(user)}
+                </span>
+                <span style={{ fontSize: '0.76rem', fontWeight: 700, color: 'var(--text-primary)' }}>{user?.name || user?.username || 'Account'}</span>
+                <Settings size={14} style={{ color: 'var(--text-muted)' }} />
+              </Link>
+            ) : (
+              <div
+                aria-label="Account"
+                style={{
+                  border: '1px solid var(--border)',
+                  background: '#ffffff',
+                  borderRadius: 999,
+                  padding: '0.2rem 0.35rem 0.2rem 0.2rem',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '0.45rem',
+                }}
+              >
+                <span
+                  style={{
+                    width: 30,
+                    height: 30,
+                    borderRadius: '50%',
+                    background: 'linear-gradient(135deg, #4171ff, #2f63ff 60%, #22b8cf)',
+                    color: 'white',
+                    fontSize: '0.72rem',
+                    fontWeight: 700,
+                    display: 'grid',
+                    placeItems: 'center',
+                  }}
+                >
+                  {getDashboardUserInitials(user)}
+                </span>
+                <span style={{ fontSize: '0.76rem', fontWeight: 700, color: 'var(--text-primary)' }}>{user?.name || user?.username || 'Account'}</span>
+              </div>
+            )}
           </div>
         </header>
 

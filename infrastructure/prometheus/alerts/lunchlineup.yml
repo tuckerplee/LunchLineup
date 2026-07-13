@@ -1,12 +1,53 @@
 groups:
+  - name: lunchlineup.service
+    interval: 1m
+    rules:
+      - alert: ServiceDown
+        expr: up{job=~"api|engine|worker|webhook-replay|control|node"} == 0
+        for: 2m
+        labels:
+          severity: critical
+          team: ops
+        annotations:
+          summary: "{{ $labels.job }} metrics scrape is down"
+          description: "Prometheus cannot scrape {{ $labels.job }} at {{ $labels.instance }}."
+          runbook: "docs/runbooks/production-readiness.md"
+
+      - alert: PublicWebUnavailable
+        expr: lunchlineup_public_web_probe_success{job="node"} == 0
+        for: 2m
+        labels:
+          severity: critical
+          team: ops
+        annotations:
+          summary: "LunchLineup public web edge is unavailable"
+          description: "The bounded external HTTPS probe is failing; DNS, TLS, Caddy, or the Next.js root page is unavailable or serving the wrong release."
+          runbook: "docs/runbooks/public-web-unavailable.md"
+
+      - alert: PublicWebProbeStale
+        expr: |
+          time() - lunchlineup_public_web_probe_last_attempt_timestamp_seconds{job="node"} > 180
+          or absent(lunchlineup_public_web_probe_last_attempt_timestamp_seconds{job="node"})
+        for: 2m
+        labels:
+          severity: critical
+          team: ops
+        annotations:
+          summary: "LunchLineup public web probe telemetry is stale"
+          description: "The host probe has not published a current public edge result, so availability cannot be confirmed."
+          runbook: "docs/runbooks/public-web-unavailable.md"
+
   - name: lunchlineup.api
     interval: 1m
     rules:
       # Alert when API error rate exceeds 5% for 2 minutes
       - alert: HighApiErrorRate
         expr: |
-          rate(http_requests_total{job="api",status=~"5.."}[2m]) /
-          rate(http_requests_total{job="api"}[2m]) > 0.05
+          (
+            sum by (job, route) (rate(http_requests_total{job="api",status=~"5.."}[5m]))
+            /
+            clamp_min(sum by (job, route) (rate(http_requests_total{job="api"}[5m])), 0.001)
+          ) > 0.05
         for: 2m
         labels:
           severity: critical
@@ -14,13 +55,13 @@ groups:
         annotations:
           summary: "High API error rate on {{ $labels.route }}"
           description: "{{ $labels.job }} is returning {{ $value | humanizePercentage }} 5xx errors."
-          runbook: "https://github.com/org/lunchlineup/blob/main/docs/runbooks/high-error-rate.md"
+          runbook: "docs/runbooks/high-error-rate.md"
 
       # Alert when p99 latency exceeds 2s
       - alert: HighApiLatency
         expr: |
           histogram_quantile(0.99,
-            rate(http_request_duration_ms_bucket{job="api"}[5m])
+            sum by (le, job, route) (rate(http_request_duration_ms_bucket{job="api"}[5m]))
           ) > 2000
         for: 5m
         labels:
@@ -28,7 +69,57 @@ groups:
           team: engineering
         annotations:
           summary: "High API p99 latency"
-          description: "p99 latency is {{ $value | humanizeDuration }}ms"
+          description: "p99 latency is {{ $value | humanize }}ms"
+          runbook: "docs/runbooks/high-error-rate.md"
+
+      - alert: RabbitMQDependencyUnavailable
+        expr: |
+          lunchlineup_dependency_up{job="api",dependency="rabbitmq"} == 0
+          or absent(lunchlineup_dependency_up{job="api",dependency="rabbitmq"})
+        for: 1m
+        labels:
+          severity: critical
+          team: ops
+        annotations:
+          summary: "RabbitMQ dependency health check is failing"
+          description: "The API cannot complete its bounded RabbitMQ connection check, or the dependency metric is missing."
+          runbook: "docs/runbooks/production-readiness.md"
+
+  - name: lunchlineup.worker
+    interval: 1m
+    rules:
+      - alert: WorkerJobFailures
+        expr: sum by (type) (rate(lunchlineup_worker_jobs_total{status=~"failed|non_retryable"}[5m])) > 0.05
+        for: 5m
+        labels:
+          severity: critical
+          team: engineering
+        annotations:
+          summary: "Worker job failures for {{ $labels.type }}"
+          description: "Worker jobs of type {{ $labels.type }} are failing at {{ $value }} jobs/s."
+          runbook: "docs/runbooks/high-error-rate.md"
+
+      - alert: WebhookReplayNotReady
+        expr: lunchlineup_webhook_replay_ready{job="webhook-replay"} == 0
+        for: 2m
+        labels:
+          severity: critical
+          team: engineering
+        annotations:
+          summary: "Webhook replay worker is not ready"
+          description: "The webhook replay worker metrics endpoint is reachable, but the worker is not consuming retry messages."
+          runbook: "docs/runbooks/production-readiness.md"
+
+      - alert: WebhookReplayFailures
+        expr: sum by (status) (rate(lunchlineup_webhook_replay_messages_total{job="webhook-replay",status=~"failed|dead_lettered|malformed"}[5m])) > 0.05
+        for: 5m
+        labels:
+          severity: critical
+          team: engineering
+        annotations:
+          summary: "Webhook replay failures for {{ $labels.status }}"
+          description: "Webhook replay outcomes with status {{ $labels.status }} are occurring at {{ $value }} messages/s."
+          runbook: "docs/runbooks/high-error-rate.md"
 
   - name: lunchlineup.engine
     interval: 1m
@@ -43,6 +134,7 @@ groups:
         annotations:
           summary: "Solver queue is building up"
           description: "{{ $value }} solve jobs are pending."
+          runbook: "docs/runbooks/high-cpu.md"
 
       # Alert on solver error spikes
       - alert: SolverErrors
@@ -54,14 +146,19 @@ groups:
         annotations:
           summary: "Solver returning errors"
           description: "Solver is failing at {{ $value }} errors/s"
-          runbook: "https://github.com/org/lunchlineup/blob/main/docs/runbooks/high-error-rate.md"
+          runbook: "docs/runbooks/high-error-rate.md"
 
   - name: lunchlineup.infrastructure
     interval: 1m
     rules:
       # Alert on disk space running low in containers
       - alert: DiskSpaceLow
-        expr: (node_filesystem_avail_bytes / node_filesystem_size_bytes) < 0.15
+        expr: |
+          (
+            node_filesystem_avail_bytes{job="node",fstype!~"tmpfs|overlay|squashfs|aufs"}
+            /
+            node_filesystem_size_bytes{job="node",fstype!~"tmpfs|overlay|squashfs|aufs"}
+          ) < 0.15
         for: 10m
         labels:
           severity: warning
@@ -69,3 +166,130 @@ groups:
         annotations:
           summary: "Low disk space on {{ $labels.mountpoint }}"
           description: "Only {{ $value | humanizePercentage }} disk space remaining."
+          runbook: "docs/runbooks/database-failover.md"
+
+      - alert: HostFilesystemTelemetryMissing
+        expr: absent(node_filesystem_size_bytes{job="node"})
+        for: 15m
+        labels:
+          severity: warning
+          team: ops
+        annotations:
+          summary: "Host filesystem telemetry is missing"
+          description: "Prometheus has no node filesystem metrics, so disk exhaustion alerts cannot fire."
+          runbook: "docs/runbooks/production-readiness.md"
+
+      - alert: BackupMissingTelemetry
+        expr: absent(lunchlineup_backup_last_success_timestamp_seconds)
+        for: 30m
+        labels:
+          severity: critical
+          team: ops
+        annotations:
+          summary: "Backup success telemetry is missing"
+          description: "Prometheus cannot confirm the last successful LunchLineup backup."
+          runbook: "docs/runbooks/database-failover.md"
+
+      - alert: BackupStale
+        expr: time() - lunchlineup_backup_last_success_timestamp_seconds > 86400
+        for: 15m
+        labels:
+          severity: critical
+          team: ops
+        annotations:
+          summary: "Latest backup is older than 24 hours"
+          description: "The last successful LunchLineup backup is {{ $value | humanizeDuration }} old."
+          runbook: "docs/runbooks/database-failover.md"
+
+      - alert: PitrBaseBackupTelemetryMissing
+        expr: absent(lunchlineup_pitr_base_backup_last_success_timestamp_seconds)
+        for: 30m
+        labels:
+          severity: critical
+          team: ops
+        annotations:
+          summary: "PITR base-backup telemetry is missing"
+          description: "Prometheus cannot confirm a remotely committed PostgreSQL PITR base backup."
+          runbook: "docs/runbooks/postgres-pitr-recovery.md"
+
+      - alert: PitrBaseBackupStale
+        expr: time() - lunchlineup_pitr_base_backup_last_success_timestamp_seconds > 129600
+        for: 15m
+        labels:
+          severity: critical
+          team: ops
+        annotations:
+          summary: "Latest PITR base backup is older than 36 hours"
+          description: "The last verified remote PITR base backup is {{ $value | humanizeDuration }} old."
+          runbook: "docs/runbooks/postgres-pitr-recovery.md"
+
+      - alert: PitrWalArchiveFailure
+        expr: lunchlineup_pitr_wal_archive_last_failure_timestamp_seconds > lunchlineup_pitr_wal_archive_last_success_timestamp_seconds
+        for: 2m
+        labels:
+          severity: critical
+          team: ops
+        annotations:
+          summary: "PostgreSQL WAL archiving is failing"
+          description: "The latest WAL archive attempt failed after the last remotely verified success."
+          runbook: "docs/runbooks/postgres-pitr-recovery.md"
+
+      - alert: PitrWalArchiveStale
+        expr: |
+          time() - lunchlineup_pitr_wal_archive_last_success_timestamp_seconds > 300
+          or absent(lunchlineup_pitr_wal_archive_last_success_timestamp_seconds)
+        for: 5m
+        labels:
+          severity: critical
+          team: ops
+        annotations:
+          summary: "PostgreSQL WAL archive success is stale"
+          description: "No remotely verified WAL archive success has been recorded within five minutes."
+          runbook: "docs/runbooks/postgres-pitr-recovery.md"
+
+  - name: lunchlineup.retention
+    interval: 1m
+    rules:
+      - alert: RetentionPurgeTelemetryMissing
+        expr: absent(lunchlineup_retention_purge_last_attempt_timestamp_seconds{mode="dry_run"})
+        for: 30m
+        labels:
+          severity: critical
+          team: ops
+        annotations:
+          summary: "Retained-record purge telemetry is missing"
+          description: "Prometheus cannot confirm the scheduled retained-record purge dry-run."
+          runbook: "docs/runbooks/data-retention-delete-export.md"
+
+      - alert: RetentionPurgeStale
+        expr: time() - lunchlineup_retention_purge_last_attempt_timestamp_seconds{mode="dry_run"} > 93600
+        for: 15m
+        labels:
+          severity: critical
+          team: ops
+        annotations:
+          summary: "Retained-record purge dry-run is stale"
+          description: "The last retained-record purge dry-run is {{ $value | humanizeDuration }} old."
+          runbook: "docs/runbooks/data-retention-delete-export.md"
+
+      - alert: RetentionPurgeFailed
+        expr: lunchlineup_retention_purge_last_success == 0
+        for: 15m
+        labels:
+          severity: critical
+          team: ops
+        annotations:
+          summary: "Retained-record purge invocation failed"
+          description: "The last retained-record purge invocation in {{ $labels.mode }} mode failed."
+          runbook: "docs/runbooks/data-retention-delete-export.md"
+
+      - alert: RetentionPurgeCandidatesReady
+        expr: lunchlineup_retention_purge_last_candidate_tenants{mode="dry_run"} > 0
+        for: 15m
+        labels:
+          severity: warning
+          team: ops
+        annotations:
+          summary: "Retained-record purge candidates need review"
+          description: "{{ $value }} tenant(s) reached retained database-record purge eligibility in the latest dry-run."
+          runbook: "docs/runbooks/data-retention-delete-export.md"

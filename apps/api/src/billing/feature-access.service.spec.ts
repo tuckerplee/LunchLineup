@@ -1,9 +1,12 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { PlanTier, TenantStatus } from '@lunchlineup/db';
+import { TenantPrismaService } from '../database/tenant-prisma.service';
 import { FeatureAccessService, TenantFeatureConfig } from './feature-access.service';
 
 function buildPrismaMock(overrides: Record<string, any> = {}) {
-    return {
+    const prisma = {
+        $queryRaw: vi.fn().mockResolvedValue([{ set_current_tenant: null }]),
+        $transaction: vi.fn(),
         tenant: {
             findUniqueOrThrow: vi.fn(),
         },
@@ -13,6 +16,8 @@ function buildPrismaMock(overrides: Record<string, any> = {}) {
         },
         ...overrides,
     };
+    prisma.$transaction = vi.fn(async (operation: (tx: any) => Promise<unknown>) => operation(prisma));
+    return prisma;
 }
 
 describe('FeatureAccessService', () => {
@@ -27,10 +32,25 @@ describe('FeatureAccessService', () => {
             trackIncludedUsage: vi.fn().mockResolvedValue(50),
         };
 
-        service = new FeatureAccessService(metering as any, prisma as any);
+        service = new FeatureAccessService(metering as any, new TenantPrismaService(prisma as any));
     });
 
-    it('enables scheduling by active paid plan when Stripe subscription is active', async () => {
+    it('requires active paid plan entitlement for scheduling', async () => {
+        prisma.tenant.findUniqueOrThrow.mockResolvedValue({
+            id: 'tenant-1',
+            planTier: PlanTier.STARTER,
+            status: TenantStatus.ACTIVE,
+            usageCredits: 5,
+            stripeSubscriptionId: 'sub_123',
+        });
+
+        const matrix = await service.resolveTenantFeatures('tenant-1');
+
+        expect(matrix.features.scheduling.enabled).toBe(true);
+        expect(matrix.features.scheduling.source).toBe('credits');
+    });
+
+    it('does not unlock features outside the purchased active plan just because Stripe is active', async () => {
         prisma.tenant.findUniqueOrThrow.mockResolvedValue({
             id: 'tenant-1',
             planTier: PlanTier.STARTER,
@@ -41,15 +61,34 @@ describe('FeatureAccessService', () => {
 
         const matrix = await service.resolveTenantFeatures('tenant-1');
 
-        expect(matrix.features.scheduling.enabled).toBe(true);
-        expect(matrix.features.scheduling.source).toBe('plan');
+        expect(matrix.features.time_cards.enabled).toBe(false);
+        expect(matrix.features.time_cards.source).toBe('disabled');
     });
 
-    it('falls back to wallet credits when paid plan is not active', async () => {
+    it('recognizes an unexpired trial as subscription entitlement without conflating wallet balance', async () => {
         prisma.tenant.findUniqueOrThrow.mockResolvedValue({
             id: 'tenant-1',
             planTier: PlanTier.STARTER,
             status: TenantStatus.TRIAL,
+            trialEndsAt: new Date(Date.now() + 24 * 60 * 60 * 1000),
+            usageCredits: 0,
+            stripeSubscriptionId: null,
+        });
+
+        const matrix = await service.resolveTenantFeatures('tenant-1');
+
+        expect(matrix.trialEndsAt).toEqual(expect.any(Date));
+        expect(matrix.features.scheduling.enabled).toBe(true);
+        expect(matrix.features.scheduling.source).toBe('credits');
+        expect(matrix.features.scheduling.reason).toMatch(/unexpired trial/i);
+    });
+
+    it('does not enable paid plan features after the trial expires', async () => {
+        prisma.tenant.findUniqueOrThrow.mockResolvedValue({
+            id: 'tenant-1',
+            planTier: PlanTier.STARTER,
+            status: TenantStatus.TRIAL,
+            trialEndsAt: new Date(Date.now() - 1),
             usageCredits: 0,
             stripeSubscriptionId: null,
         });
@@ -60,7 +99,36 @@ describe('FeatureAccessService', () => {
         expect(matrix.features.scheduling.source).toBe('disabled');
     });
 
-    it('enables lunch_breaks from credits for FREE plan tenant', async () => {
+    it.each([
+        TenantStatus.PAST_DUE,
+        TenantStatus.SUSPENDED,
+        TenantStatus.CANCELLED,
+        TenantStatus.PURGED,
+    ])('blocks new feature starts while tenant status is %s', async (status) => {
+        prisma.tenant.findUniqueOrThrow.mockResolvedValue({
+            id: 'tenant-1',
+            planTier: PlanTier.GROWTH,
+            status,
+            trialEndsAt: new Date(Date.now() + 24 * 60 * 60 * 1000),
+            usageCredits: 50,
+            stripeSubscriptionId: 'sub_123',
+        });
+
+        const matrix = await service.resolveTenantFeatures('tenant-1');
+
+        expect(matrix.features.scheduling).toMatchObject({
+            enabled: false,
+            source: 'disabled',
+        });
+        await expect(service.assertFeatureEnabledInTransaction(
+            prisma as any,
+            'tenant-1',
+            'scheduling',
+        )).rejects.toThrow('trial or active tenant');
+        expect(metering.consumeCredits).not.toHaveBeenCalled();
+    });
+
+    it('does not unlock lunch breaks with credits alone', async () => {
         prisma.tenant.findUniqueOrThrow.mockResolvedValue({
             id: 'tenant-1',
             planTier: PlanTier.FREE,
@@ -71,8 +139,8 @@ describe('FeatureAccessService', () => {
 
         const matrix = await service.resolveTenantFeatures('tenant-1');
 
-        expect(matrix.features.lunch_breaks.enabled).toBe(true);
-        expect(matrix.features.lunch_breaks.source).toBe('credits');
+        expect(matrix.features.lunch_breaks.enabled).toBe(false);
+        expect(matrix.features.lunch_breaks.source).toBe('disabled');
     });
 
     it('respects tenant override that requires stripe subscription', async () => {
@@ -96,16 +164,16 @@ describe('FeatureAccessService', () => {
         const matrix = await service.resolveTenantFeatures('tenant-1');
 
         expect(matrix.features.lunch_breaks.enabled).toBe(false);
-        expect(matrix.features.lunch_breaks.reason).toMatch(/requires an active Stripe subscription/i);
+        expect(matrix.features.lunch_breaks.reason).toMatch(/active subscription/i);
     });
 
     it('consumes credits for credit-backed feature actions', async () => {
         prisma.tenant.findUniqueOrThrow.mockResolvedValue({
             id: 'tenant-1',
-            planTier: PlanTier.FREE,
-            status: TenantStatus.TRIAL,
+            planTier: PlanTier.GROWTH,
+            status: TenantStatus.ACTIVE,
             usageCredits: 50,
-            stripeSubscriptionId: null,
+            stripeSubscriptionId: 'sub_123',
         });
 
         const result = await service.consumeCreditsForFeature('tenant-1', 'lunch_breaks', 'Lunch run');
@@ -114,7 +182,38 @@ describe('FeatureAccessService', () => {
         expect(metering.consumeCredits).toHaveBeenCalledWith('tenant-1', result.consumedCredits, 'Lunch run');
     });
 
-    it('tracks usage without decrementing wallet for active paid plans', async () => {
+    it('debits credits for active paid plans', async () => {
+        prisma.tenant.findUniqueOrThrow.mockResolvedValue({
+            id: 'tenant-1',
+            planTier: PlanTier.GROWTH,
+            status: TenantStatus.ACTIVE,
+            usageCredits: 50,
+            stripeSubscriptionId: 'sub_123',
+        });
+
+        const result = await service.consumeCreditsForFeature('tenant-1', 'lunch_breaks', 'Lunch run');
+
+        expect(result.consumedCredits).toBe(1);
+        expect(metering.consumeCredits).toHaveBeenCalledWith('tenant-1', 1, 'Lunch run');
+        expect(metering.trackIncludedUsage).not.toHaveBeenCalled();
+    });
+
+    it('requires credits for time cards on active growth plans', async () => {
+        prisma.tenant.findUniqueOrThrow.mockResolvedValue({
+            id: 'tenant-1',
+            planTier: PlanTier.GROWTH,
+            status: TenantStatus.ACTIVE,
+            usageCredits: 5,
+            stripeSubscriptionId: 'sub_123',
+        });
+
+        const matrix = await service.resolveTenantFeatures('tenant-1');
+
+        expect(matrix.features.time_cards.enabled).toBe(true);
+        expect(matrix.features.time_cards.source).toBe('credits');
+    });
+
+    it('keeps an entitled feature enabled at zero credits so paid completion actions are not stranded', async () => {
         prisma.tenant.findUniqueOrThrow.mockResolvedValue({
             id: 'tenant-1',
             planTier: PlanTier.GROWTH,
@@ -123,10 +222,45 @@ describe('FeatureAccessService', () => {
             stripeSubscriptionId: 'sub_123',
         });
 
-        const result = await service.consumeCreditsForFeature('tenant-1', 'lunch_breaks', 'Lunch run');
+        const matrix = await service.resolveTenantFeatures('tenant-1');
 
-        expect(result.consumedCredits).toBe(1);
-        expect(metering.trackIncludedUsage).toHaveBeenCalledWith('tenant-1', 1, 'Lunch run');
-        expect(metering.consumeCredits).not.toHaveBeenCalled();
+        expect(matrix.features.time_cards).toMatchObject({
+            enabled: true,
+            source: 'credits',
+            creditCost: 1,
+        });
+    });
+
+    it('honors time cards when present in stored plan metadata', async () => {
+        prisma = buildPrismaMock({
+            planDefinition: {
+                findUnique: vi.fn().mockResolvedValue({
+                    id: 'plan-1',
+                    code: 'STARTER',
+                    name: 'Starter',
+                    monthlyPriceCents: 3900,
+                    locationLimit: 5,
+                    userLimit: 50,
+                    creditQuotaLimit: null,
+                    active: true,
+                    metadata: { features: ['time_cards'] },
+                    createdAt: new Date(),
+                    updatedAt: new Date(),
+                }),
+            },
+        });
+        prisma.tenant.findUniqueOrThrow.mockResolvedValue({
+            id: 'tenant-1',
+            planTier: PlanTier.STARTER,
+            status: TenantStatus.ACTIVE,
+            usageCredits: 5,
+            stripeSubscriptionId: 'sub_123',
+        });
+        service = new FeatureAccessService(metering as any, new TenantPrismaService(prisma as any));
+
+        const matrix = await service.resolveTenantFeatures('tenant-1');
+
+        expect(matrix.features.time_cards.enabled).toBe(true);
+        expect(matrix.features.time_cards.source).toBe('credits');
     });
 });

@@ -3,22 +3,60 @@
 ## Files
 
 - `README.md`: this auth folder guide.
-- `auth.controller.spec.ts`: controller tests for login flow resolution, PIN login, password login, redirects, and cookie setting.
-- `auth.controller.ts`: NestJS auth routes for OIDC, email OTP, username/PIN, migrated username/password, refresh, MFA, logout, and session context.
+- `auth.controller.spec.ts`: controller tests for login flow resolution, pre-auth throttle buckets, durable onboarding challenges, PIN/password login, password reset, redirects, rotated session cookies, and CSRF-protected refresh-cookie logout.
+- `auth.controller.ts`: NestJS auth routes for OIDC, rate-limited email OTP, username/PIN, migrated username/password, password reset, refresh, MFA, refresh-cookie logout, and session context.
 - `auth.module.ts`: NestJS auth module wiring.
-- `auth.service.spec.ts`: service tests for OIDC, email OTP, PIN, migrated password, lockout, and PIN rotation behavior.
-- `auth.service.ts`: auth business logic, session token creation, login method resolution, legacy password verification, PIN verification, lockout, and session context.
-- `email.service.ts`: outbound OTP email delivery.
-- `jwt-auth.guard.ts`: JWT request guard.
-- `jwt.service.ts`: access token, refresh token, and CSRF token helper.
-- `otp.service.ts`: one-time passcode generation and verification.
+- `auth.service.spec.ts`: service tests for production closed-beta self-service gating, retryable onboarding owner claims, tenant-scoped OIDC, email OTP, concurrent PIN/password lockout, password reset consumption, refresh-token rotation and logout revocation, reset-only sessions, MFA, and PIN rotation behavior.
+- `auth.service.ts`: auth business logic, production closed-beta self-service gating, session token creation, rotation, and refresh-token revocation, login method resolution, serialized legacy password/PIN verification, reset-only session state, lockout, and session context.
+- `email.service.spec.ts`: email delivery startup, OTP, and password reset tests for local dev and production provider configuration.
+- `email.service.ts`: outbound OTP and password reset email delivery.
+- `jwt-auth.guard.spec.ts`: guard tests for retained-record purge service-token scoping, MFA gating, and temporary-PIN session restrictions.
+- `jwt-auth.guard.ts`: JWT request guard with live session, temporary-PIN rotation, MFA, and CSRF boundaries.
+- `onboarding-signup.service.ts`: platform-scoped durable challenge storage and serializable OTP verification/tenant-owner claim logic used to recover onboarding after session issuance failures without duplicate tenants.
+- `jwt.service.ts`: access token, refresh token, reset-state claim, and CSRF token helper.
+- `otp.service.spec.ts`: OTP scope, atomic issuance, failed-attempt persistence, lock expiry, and distributed-request regression tests.
+- `otp.service.ts`: account/challenge-scoped one-time passcode generation, atomic failed-attempt limiting, lockout, and verification.
+- `password-reset-outbox.service.spec.ts`: public-origin fallback, fail-closed configuration, and decryptable worker-envelope tests.
+- `password-reset-outbox.service.ts`: validated public-origin reset-link construction and AES-256-GCM delivery-envelope encryption for durable worker dispatch.
 - `rbac-policy.spec.ts`: Casbin policy matrix tests.
-- `rbac.guard.ts`: permission guard for protected routes.
-- `rbac.service.ts`: permission catalog, tenant role creation, role assignment, and effective access resolution.
-- `require-permission.decorator.ts`: route metadata decorator for required permissions.
+- `rbac.guard.spec.ts`: guard tests for public routes, authenticated-only routes, default-deny behavior, and single or all-of permission checks.
+- `rbac.guard.ts`: permission guard for protected routes, including all-of checks when a route requires multiple permissions.
+- `rbac.service.spec.ts`: service tests for permission catalog resolution, guarded role deletion, transaction-aware role assignment, and effective access responses.
+- `rbac.service.ts`: permission catalog, tenant role creation, assignment-guarded custom-role deletion, transaction-aware role assignment, and effective access resolution.
+- `require-permission.decorator.ts`: route metadata decorators for required permissions and authenticated-only routes.
 
 ## Notes
 
-Migrated legacy users authenticate with `username` plus preserved PHP `password_hash` values. PIN login remains available for accounts without a migrated password hash.
+Migrated legacy users authenticate with `username` plus preserved PHP `password_hash` values. PIN login remains available for accounts without a migrated password hash. Password reset requests return a generic response and atomically store a SHA-256 token hash plus an encrypted delivery outbox row. The worker leases due rows, sends with provider idempotency, retries transient failures to a fixed bound, and exposes dead-letter metrics/log alerts without logging recipients or reset tokens. Confirmation validates the token, account, tenant, and expiry before asynchronously hashing the new password; transactional compare-and-set consumption keeps each token one-time and revokes existing sessions.
 
 Session cookie writers honor `COOKIE_SECURE`. The private HTTP dev deployment sets `COOKIE_SECURE=false` so browsers accept `access_token`, `refresh_token`, and `csrf_token`; HTTPS production should keep secure cookies enabled.
+
+Cancelled workspaces without a deletion marker may authenticate so an administrator can reach billing settings and resubscribe. Suspended, purged, and deleted workspaces remain blocked. Billing entitlement resolution forces cancelled and delinquent workspaces to free-tier features and capacity until a new verified Stripe subscription becomes active.
+
+Cookie-authenticated refresh requests require a matching `x-csrf-token` header when the browser-readable `csrf_token` cookie is present. Refresh uses an independent five-attempt SHA-256 credential bucket plus a 100-attempt source-IP ceiling per 15 minutes, so users behind one office NAT do not share the login-attempt budget and raw refresh credentials never enter throttler keys. Production public auth POSTs, including login flow resolution, require a same-origin `Origin` or `Referer` header before account-state lookups or cookie issuance. MFA enrollment, confirmation, disable, and verification routes are in the auth-attempt throttling bucket. Sessions with privileged permissions (`admin_portal:access`, user/role administration, `billing:write`, `settings:write`, or `tenant_account:lifecycle`) require MFA by policy, and unverified sessions may only read or complete MFA enrollment, verify MFA, refresh, logout, or reach `/auth/me`.
+
+An admin-issued temporary PIN creates a reset-only session. Until `PUT /api/v1/users/me/pin` replaces that PIN, the JWT guard permits only self PIN rotation, refresh, logout, and `/auth/me`; it denies application and MFA enrollment routes. The reset revokes older sessions. After rotation, refresh re-evaluates live MFA state, so an already-enrolled account must still verify its existing authenticator or recovery code before application access.
+
+`RbacGuard` fails closed for authenticated routes. Routes must be `@Public()`, `@RequirePermission(...)`, or explicitly `@AllowAuthenticated()` when only a valid session is required. Multiple permissions in route metadata use all-of semantics. Guarded requests replace JWT legacy-role claims with the current `User.role` value loaded during session validation, so role demotions take effect without waiting for token expiry. Custom role writes also re-read the actor's effective assignments in the mutation transaction and reject permissions outside that live set; only a live system Admin assignment bypasses the subset rule.
+
+Custom roles can be deleted only when their tenant-scoped assignment count is zero. The transaction rejects assigned-role deletion with a conflict and leaves both the role and assignments unchanged.
+
+OIDC login requires `email_verified: true`, a valid provider subject, and an existing user in the selected workspace. The first successful login atomically binds the configured issuer and provider subject to that user; later issuer/subject or email mismatches are rejected instead of rematching by email. Issuer/subject uniqueness is tenant-scoped, allowing one provider identity to use separately invited accounts in multiple workspaces without permitting duplicate bindings inside one workspace. Each OIDC state is also bound to the initiating browser by a separate host-only HttpOnly `SameSite=Lax` correlation cookie. Redis stores only the nonce hash, and the callback clears the cookie before accepting or rejecting the state.
+
+Pre-auth login resolution, password, PIN, email OTP, and password-reset routes use separate per-endpoint layered buckets. The five-attempt bucket combines the trusted Express client IP with a normalized, SHA-256-hashed tenant/identifier (or reset token), so one source cannot spend another NAT user's budget and traffic from another IP cannot exhaust a victim's account bucket. An independent thirty-attempt source-IP ceiling limits identifier spraying. Both layers use only `req.ip`, which follows the configured trusted-proxy contract, and canonicalize IPv4, IPv4-mapped IPv6, and IPv6 forms. Migrated password and PIN verification serialize account-state decisions with a database row lock so parallel failures cannot overwrite the threshold lock.
+
+`POST /api/v1/admin/retention/purge-expired` may authenticate with `RETENTION_PURGE_SERVICE_TOKEN` or `RETENTION_PURGE_SERVICE_TOKEN_FILE`. That service token is accepted only on the retained-record purge route and receives only `admin_portal:access` for that request, so the scheduler does not need a long-lived human admin session.
+
+Production email OTP requires `RESEND_API_KEY` and `EMAIL_FROM`. Local development can omit `RESEND_API_KEY`; OTPs are logged instead of sent. Public onboarding OTPs are scoped to the submitted organization name before tenant provisioning. Verification allows at most five failed attempts per workspace/onboarding challenge and email before invalidating and locking it for ten minutes, independent of source IP. Failed-attempt counters survive code reissuance, active locks suppress generation with the same generic response as the send throttle, and a fresh code is available only after the lock and counter TTLs expire. Successful verification clears the challenge protection state. Production provider failure logs mask recipient email addresses and omit OTP values.
+
+Tenant email OTP requests dispatch only for an active, non-deleted user whose effective permissions include `auth:login_email` and whose workspace permits email login. Unknown, deleted, blocked, and otherwise ineligible recipients receive the same generic success response without OTP generation or an email-provider call.
+
+New sessions issue one opaque versioned cookie containing a stable selector and rotating validator. The database stores only independent SHA-256 hashes in `Session.selectorHash` and `Session.refreshToken`; refresh rotates only the validator, while logout revokes by the stable selector so concurrent rotation cannot preserve the session. Existing single-part plaintext or hashed refresh rows remain accepted and are upgraded to selector-based credentials on refresh.
+
+Production MFA enrollment requires the exact 32-byte hex/base64 `MFA_SECRET_ENCRYPTION_KEY_CURRENT`; new TOTP secrets are stored as AES-GCM `enc:v2` payloads containing a non-secret key reference. `MFA_SECRET_ENCRYPTION_KEY_PREVIOUS` supplies bounded managed-key overlap, while deprecated `MFA_SECRET_ENCRYPTION_KEY` reads legacy `enc:v1` rows until transactional rotation finishes. Plaintext rows remain readable only for migration compatibility. Malformed envelopes, missing referenced keys, duplicate managed keys, and bad key lengths fail closed. One-time backup codes remain scrypt-hashed. Backup-code verification locks the tenant user row and validates and removes the matching hash in the same database transaction. Successful TOTP challenges atomically create a tenant-scoped `MfaTotpClaim` for the accepted user/time-step; the unique database constraint permits only one session to claim that step, and storage errors fail closed. Only the session whose transaction consumes the code is marked MFA-verified, so concurrent sessions cannot reuse one recovery code. Follow `docs/runbooks/mfa-encryption-key-rotation.md` before removing an overlap key.
+
+Password reset delivery uses a durable encrypted outbox. `APP_ORIGIN` must be the browser-visible public HTTPS origin in production; API startup and Compose fail closed when it is blank or omitted, and runtime fallback values are accepted only after the same public-origin validation. `PASSWORD_RESET_OUTBOX_ENCRYPTION_KEY` must be a dedicated 32-byte hex or base64 secret shared by the API and worker; production launch validation and Compose fail closed when it is absent.
+
+Public workspace provisioning is controlled by `PUBLIC_SIGNUP_MODE`. Missing production config fails closed as `closed_beta`; set `open` only when public self-serve tenant creation is intentionally enabled, or `invite_only` with `PUBLIC_SIGNUP_INVITE_CODES` for gated onboarding. A newly provisioned workspace receives a 14-day Starter trial so the core scheduling workflow is usable before checkout. Production `open` signup requires Cloudflare Turnstile: set `TURNSTILE_SECRET_KEY` for the API and `NEXT_PUBLIC_TURNSTILE_SITE_KEY` for the web client, and submit the token as `turnstileToken` with onboarding OTP requests. The web signup UI also reads `NEXT_PUBLIC_SIGNUP_MODE`; keep it aligned with the server mode.
+
+Public provisioning requires separate Terms and Privacy assent flags. The tenant, owner, `PUBLIC_SIGNUP_LEGAL_ASSENT` audit evidence, default RBAC roles, and owner role assignment are created in one platform-admin transaction; an RBAC failure rolls back the workspace instead of leaving an orphan. The evidence records server-owned legal versions, timestamp, owner user/email, IP, and User-Agent. The verify response returns the generated workspace slug so the client can retain it without persisting the OTP.

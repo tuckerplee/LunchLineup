@@ -12,8 +12,10 @@
     "lint": "turbo run lint",
     "postinstall": "npm run generate --workspace @lunchlineup/db",
     "test": "turbo run test",
-    "test:migration": "node --test tests/deploy/*.test.mjs tests/hygiene/*.test.mjs tests/migration/*.test.mjs",
+    "test:migration": "node --test tests/deploy/*.test.mjs tests/hygiene/*.test.mjs tests/migration/*.test.mjs infrastructure/terraform/production/*.test.mjs",
     "test:integration": "node --test tests/integration/*.test.mjs",
+    "audit:prod": "node scripts/audit-prod.mjs",
+    "seed:e2e": "node scripts/seed-e2e.mjs",
     "typecheck": "npm run typecheck --workspaces --if-present",
     "type-check": "npm run typecheck",
     "clean": "turbo run clean"
@@ -29,7 +31,7 @@
     "eslint": "^10.4.1",
     "file-type": "^21.3.1",
     "postcss": "^8.5.15",
-    "qs": "^6.14.2",
+    "qs": "^6.15.3",
     "turbo": "latest",
     "vitest": "^4.1.8"
   },

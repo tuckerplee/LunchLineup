@@ -11,10 +11,28 @@ if [[ -n "$status" ]]; then
   exit 1
 fi
 
-upstream="$(git rev-parse --abbrev-ref --symbolic-full-name '@{u}')"
-upstream_sha="$(git rev-parse '@{u}')"
-if [[ "$current_sha" != "$upstream_sha" ]]; then
-  echo "HEAD $current_sha does not match upstream $upstream at $upstream_sha." >&2
+if [[ "${GITHUB_ACTIONS:-}" == "true" ]]; then
+  if [[ "${GITHUB_EVENT_NAME:-}" != "push" ]]; then
+    echo "GitHub Actions deploy-source verification requires a push event." >&2
+    exit 1
+  fi
+  if [[ "${GITHUB_REF:-}" != refs/heads/* ]]; then
+    echo "GitHub Actions deploy-source verification requires a branch ref." >&2
+    exit 1
+  fi
+  if [[ "${GITHUB_SHA:-}" != "$current_sha" ]]; then
+    echo "GitHub Actions SHA ${GITHUB_SHA:-unset} does not match HEAD $current_sha." >&2
+    exit 1
+  fi
+  upstream="${GITHUB_REF}"
+  upstream_sha="$(git ls-remote origin "$GITHUB_REF" | awk '{print $1}')"
+else
+  upstream="$(git rev-parse --abbrev-ref --symbolic-full-name '@{u}')"
+  upstream_sha="$(git rev-parse '@{u}')"
+fi
+
+if [[ -z "$upstream_sha" || "$current_sha" != "$upstream_sha" ]]; then
+  echo "HEAD $current_sha does not match upstream $upstream at ${upstream_sha:-missing}." >&2
   exit 1
 fi
 

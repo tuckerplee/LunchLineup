@@ -1,0 +1,117 @@
+{
+  "version": 1,
+  "sourceSha": "<40-character-pushed-git-sha>",
+  "generatedAt": "<iso-8601-generation-timestamp>",
+  "evidence": {
+    "runtimeEnv": {
+      "status": "passed",
+      "sourceSha": "<same-40-character-pushed-git-sha>",
+      "uri": "https://github.com/tuckerplee/lunchlineup/actions/runs/<run-id>/artifacts/<artifact-id>",
+      "checkedAt": "<iso-8601-check-timestamp>",
+      "summary": "validate-production-launch.mjs passed against the production runtime env.",
+      "command": "node scripts/validate-production-launch.mjs <temporary-runtime-env-path>",
+      "exitCode": 0,
+      "artifactSha256": "<64-character-sha256-of-retained-artifact>",
+      "artifactBytes": 1
+    },
+    "stripeMeter": {
+      "status": "passed",
+      "sourceSha": "<same-40-character-pushed-git-sha>",
+      "meterId": "<stripe-meter-id>",
+      "eventName": "ll.active_staff",
+      "aggregation": "last",
+      "livemode": true,
+      "meterStatus": "active",
+      "customerPayloadKey": "stripe_customer_id",
+      "valuePayloadKey": "value",
+      "webhookEndpointId": "<stripe-webhook-endpoint-id>",
+      "webhookUrl": "https://lunchlineup.com/api/v1/billing/webhook",
+      "webhookEvents": [
+        "checkout.session.completed",
+        "customer.subscription.created",
+        "customer.subscription.updated",
+        "customer.subscription.deleted",
+        "customer.subscription.paused",
+        "customer.subscription.resumed",
+        "invoice.paid",
+        "invoice.payment_failed",
+        "invoice.finalization_failed"
+      ],
+      "meterErrorEventDestinationId": "<stripe-live-meter-error-event-destination-id>",
+      "meterErrorWebhookUrl": "https://lunchlineup.com/api/v1/billing/meter-errors/webhook",
+      "meterErrorEvents": [
+        "v1.billing.meter.error_report_triggered",
+        "v1.billing.meter.no_meter_found"
+      ],
+      "priceIds": [
+        "<stripe-enterprise-price-id>",
+        "<stripe-growth-price-id>",
+        "<stripe-starter-price-id>"
+      ]
+    },
+    "dast": {
+      "status": "passed",
+      "sourceSha": "<same-40-character-pushed-git-sha>",
+      "uri": "https://github.com/tuckerplee/lunchlineup/actions/runs/<run-id>/artifacts/<artifact-id>",
+      "checkedAt": "<iso-8601-check-timestamp>",
+      "summary": "OWASP ZAP baseline completed against the release image stack with no launch blockers.",
+      "command": "scripts/run-dast.sh https://lunchlineup.com",
+      "exitCode": 0,
+      "artifactSha256": "<64-character-sha256-of-retained-artifact>",
+      "artifactBytes": 1
+    },
+    "load": {
+      "status": "passed",
+      "sourceSha": "<same-40-character-pushed-git-sha>",
+      "uri": "https://github.com/tuckerplee/lunchlineup/actions/runs/<run-id>/artifacts/<artifact-id>",
+      "checkedAt": "<iso-8601-check-timestamp>",
+      "summary": "Artillery smoke load completed against the release image stack with expected response budgets.",
+      "command": "scripts/load-test.sh https://lunchlineup.com",
+      "exitCode": 0,
+      "artifactSha256": "<64-character-sha256-of-retained-artifact>",
+      "artifactBytes": 1
+    },
+    "drDrill": {
+      "status": "passed",
+      "sourceSha": "<same-40-character-pushed-git-sha>",
+      "uri": "s3://lunchlineup-prod/launch-proof/dr-drill-YYYYMMDDHHMMSS.json",
+      "checkedAt": "<iso-8601-check-timestamp>",
+      "summary": "Off-host encrypted backup restored into the disposable DR drill database.",
+      "command": "BACKUP_FILE=<downloaded-backup> DR_OFFHOST_SOURCE_URI=<exact-offhost-uri> ./scripts/dr-drill.sh",
+      "exitCode": 0,
+      "artifactSha256": "<64-character-sha256-of-retained-artifact>",
+      "artifactBytes": 1,
+      "backupSha256": "<64-character-sha256-of-restored-backup>",
+      "restoredTableCount": 1,
+      "sourceUri": "s3://lunchlineup-prod/db-backups/lunchlineup-YYYYMMDDHHMMSS.sql.zst.gpg"
+    },
+    "pitrDrill": {
+      "status": "passed",
+      "sourceSha": "<same-40-character-pushed-git-sha>",
+      "uri": "s3://lunchlineup-prod/launch-proof/pitr-drill-YYYYMMDDHHMMSS.json",
+      "checkedAt": "<iso-8601-check-timestamp>",
+      "summary": "Named COMPLETE base backup and archived WAL restored to the requested target with invariants passing.",
+      "command": "<exact-isolated-pitr-drill-and-invariant-command>",
+      "exitCode": 0,
+      "artifactSha256": "<64-character-sha256-of-retained-artifact>",
+      "artifactBytes": 1,
+      "baseBackupId": "<explicit-base-backup-id>",
+      "baseBackupUri": "s3://lunchlineup-prod/postgres/basebackups/<explicit-base-backup-id>/COMPLETE",
+      "archivedWalSegment": "<24-hex-wal-segment>",
+      "archivedWalUri": "s3://lunchlineup-prod/postgres/wal/<24-hex-wal-segment>",
+      "recoveryTargetTime": "<iso-8601-recovery-target-timestamp>",
+      "sourceTimestamp": "<iso-8601-base-backup-completion-timestamp>"
+    },
+    "alertRoute": {
+      "status": "passed",
+      "sourceSha": "<same-40-character-pushed-git-sha>",
+      "uri": "https://immutable-evidence.example.invalid/alert-route-<incident-id>.json",
+      "checkedAt": "<iso-8601-check-timestamp>",
+      "summary": "Production critical alert route delivered to the paging target and linked the operator runbook.",
+      "command": "<exact-alert-route-test-command-or-provider-check>",
+      "exitCode": 0,
+      "artifactSha256": "<64-character-sha256-of-retained-artifact>",
+      "artifactBytes": 1
+    }
+  }
+}

@@ -6,7 +6,14 @@ VM_USER="${VM_USER:-lunchlineup}"
 SSH_KEY="${SSH_KEY:-$PWD/secrets/vm217/lunchlineup-vm217}"
 APP_DIR="${APP_DIR:-/opt/lunchlineup}"
 REPO_URL="${REPO_URL:-https://github.com/tuckerplee/LunchLineup.git}"
-BRANCH="${BRANCH:-master}"
+BRANCH="${BRANCH:-main}"
+VM217_DEPLOY_SCOPE="${VM217_DEPLOY_SCOPE:-}"
+
+if [[ "$VM217_DEPLOY_SCOPE" != "development" ]]; then
+  echo "Refusing VM217 setup outside development. Production VM217 deploys must use release-manifest artifacts, RELEASE_SOURCE_SHA, post-deploy health, and launch-proof gates." >&2
+  echo "Set VM217_DEPLOY_SCOPE=development only for disposable/dev VM217 bootstrap." >&2
+  exit 1
+fi
 
 if [[ ! -f "$SSH_KEY" ]]; then
   echo "SSH key not found at: $SSH_KEY" >&2
@@ -76,6 +83,10 @@ if [[ ! -f .env ]]; then
   JWT_REFRESH_SECRET=$(openssl rand -hex 64)
   SESSION_SECRET=$(openssl rand -hex 64)
   CSRF_SECRET=$(openssl rand -hex 32)
+  POSTGRES_PASSWORD=$(openssl rand -hex 24)
+  RABBITMQ_PASSWORD=$(openssl rand -hex 24)
+  GRAFANA_PASSWORD=$(openssl rand -hex 24)
+  CONTROL_PLANE_PASSWORD=$(openssl rand -hex 24)
   sed -i "s|^NODE_ENV=.*|NODE_ENV=production|" .env
   sed -i "s|^DOMAIN=.*|DOMAIN=beta.lunchlineup.com|" .env
   sed -i "s|^ADMIN_EMAIL=.*|ADMIN_EMAIL=admin@lunchlineup.com|" .env
@@ -83,6 +94,10 @@ if [[ ! -f .env ]]; then
   sed -i "s|^JWT_REFRESH_SECRET=.*|JWT_REFRESH_SECRET=${JWT_REFRESH_SECRET}|" .env
   sed -i "s|^SESSION_SECRET=.*|SESSION_SECRET=${SESSION_SECRET}|" .env
   sed -i "s|^CSRF_SECRET=.*|CSRF_SECRET=${CSRF_SECRET}|" .env
+  sed -i "s|^POSTGRES_PASSWORD=.*|POSTGRES_PASSWORD=${POSTGRES_PASSWORD}|" .env
+  sed -i "s|^RABBITMQ_PASSWORD=.*|RABBITMQ_PASSWORD=${RABBITMQ_PASSWORD}|" .env
+  sed -i "s|^GRAFANA_PASSWORD=.*|GRAFANA_PASSWORD=${GRAFANA_PASSWORD}|" .env
+  sed -i "s|^CONTROL_PLANE_PASSWORD=.*|CONTROL_PLANE_PASSWORD=${CONTROL_PLANE_PASSWORD}|" .env
 fi
 
 # Force container-to-container endpoints for Compose networking.
@@ -90,14 +105,47 @@ fi
 DB_USER=$(grep -E '^POSTGRES_USER=' .env | cut -d= -f2- || true)
 DB_PASS=$(grep -E '^POSTGRES_PASSWORD=' .env | cut -d= -f2- || true)
 DB_NAME=$(grep -E '^POSTGRES_DB=' .env | cut -d= -f2- || true)
-DB_USER=${DB_USER:-root}
-DB_PASS=${DB_PASS:-password}
+RABBIT_USER=$(grep -E '^RABBITMQ_USER=' .env | cut -d= -f2- || true)
+RABBIT_PASS=$(grep -E '^RABBITMQ_PASSWORD=' .env | cut -d= -f2- || true)
+GRAFANA_PASS=$(grep -E '^GRAFANA_PASSWORD=' .env | cut -d= -f2- || true)
+CONTROL_PASS=$(grep -E '^CONTROL_PLANE_PASSWORD=' .env | cut -d= -f2- || true)
+DB_USER=${DB_USER:-lunchlineup}
+if [[ -z "$DB_PASS" || "$DB_PASS" == change_me* || "$DB_PASS" == "password" ]]; then
+  DB_PASS=$(openssl rand -hex 24)
+  sed -i "s|^POSTGRES_PASSWORD=.*|POSTGRES_PASSWORD=${DB_PASS}|" .env
+fi
 DB_NAME=${DB_NAME:-lunchlineup}
+RABBIT_USER=${RABBIT_USER:-lunchlineup}
+if [[ -z "$RABBIT_PASS" || "$RABBIT_PASS" == change_me* || "$RABBIT_PASS" == "guest" ]]; then
+  RABBIT_PASS=$(openssl rand -hex 24)
+  sed -i "s|^RABBITMQ_PASSWORD=.*|RABBITMQ_PASSWORD=${RABBIT_PASS}|" .env
+fi
+if [[ -z "$GRAFANA_PASS" || "$GRAFANA_PASS" == change_me* ]]; then
+  GRAFANA_PASS=$(openssl rand -hex 24)
+  if grep -q "^GRAFANA_PASSWORD=" .env; then
+    sed -i "s|^GRAFANA_PASSWORD=.*|GRAFANA_PASSWORD=${GRAFANA_PASS}|" .env
+  else
+    printf "GRAFANA_PASSWORD=%s\n" "$GRAFANA_PASS" >> .env
+  fi
+fi
+if [[ -z "$CONTROL_PASS" || "$CONTROL_PASS" == change_me* ]]; then
+  CONTROL_PASS=$(openssl rand -hex 24)
+  if grep -q "^CONTROL_PLANE_PASSWORD=" .env; then
+    sed -i "s|^CONTROL_PLANE_PASSWORD=.*|CONTROL_PLANE_PASSWORD=${CONTROL_PASS}|" .env
+  else
+    printf "CONTROL_PLANE_PASSWORD=%s\n" "$CONTROL_PASS" >> .env
+  fi
+fi
 sed -i "s|^DATABASE_URL=.*|DATABASE_URL=postgresql://${DB_USER}:${DB_PASS}@postgres:5432/${DB_NAME}|" .env
 sed -i "s|^REDIS_URL=.*|REDIS_URL=redis://redis:6379|" .env
-sed -i "s|^RABBITMQ_URL=.*|RABBITMQ_URL=amqp://guest:guest@rabbitmq:5672|" .env
+sed -i "s|^RABBITMQ_URL=.*|RABBITMQ_URL=amqp://${RABBIT_USER}:${RABBIT_PASS}@rabbitmq:5672|" .env
 sed -i "s|^NEXT_PUBLIC_API_URL=.*|NEXT_PUBLIC_API_URL=/api/v1|" .env
 sed -i "s|^OIDC_REDIRECT_URI=.*|OIDC_REDIRECT_URI=https://beta.lunchlineup.com/api/v1/auth/callback|" .env
+if grep -q "^CADDY_SITE_ADDRESSES=" .env; then
+  sed -i "s|^CADDY_SITE_ADDRESSES=.*|CADDY_SITE_ADDRESSES=https://beta.lunchlineup.com, https://www.beta.lunchlineup.com, http://10.10.10.141:80, http://localhost:80, http://127.0.0.1:80, http://proxy:80|" .env
+else
+  printf "CADDY_SITE_ADDRESSES=https://beta.lunchlineup.com, https://www.beta.lunchlineup.com, http://10.10.10.141:80, http://localhost:80, http://127.0.0.1:80, http://proxy:80\n" >> .env
+fi
 if grep -q "^OIDC_ENABLED=" .env; then
   sed -i "s|^OIDC_ENABLED=.*|OIDC_ENABLED=false|" .env
 else
@@ -116,7 +164,8 @@ fi
 
 # Email provider wiring:
 # - If RESEND_API_KEY is provided to this script, apply it.
-# - Otherwise preserve any existing key and only fall back to placeholder when unset.
+# - Otherwise preserve any existing key and leave the value empty so production
+#   startup fails closed until a real provider key is supplied.
 if [[ -n "${RESEND_API_KEY:-}" ]]; then
   if grep -q "^RESEND_API_KEY=" .env; then
     sed -i "s|^RESEND_API_KEY=.*|RESEND_API_KEY=${RESEND_API_KEY}|" .env
@@ -124,7 +173,8 @@ if [[ -n "${RESEND_API_KEY:-}" ]]; then
     printf "\nRESEND_API_KEY=%s\n" "${RESEND_API_KEY}" >> .env
   fi
 elif ! grep -q "^RESEND_API_KEY=" .env; then
-  printf "\nRESEND_API_KEY=placeholder_resend_key\n" >> .env
+  printf "\nRESEND_API_KEY=\n" >> .env
+  echo "RESEND_API_KEY is required for production email OTP delivery." >&2
 fi
 
 # Default sender for beta if not already configured.
@@ -139,10 +189,8 @@ elif ! grep -q "^EMAIL_FROM=" .env; then
 fi
 
 docker compose pull || true
-# Skip control service for now because docker-compose.yml maps host port 3001 in two services.
-docker compose up -d --build proxy web api engine worker pgbouncer postgres redis rabbitmq prometheus loki tempo grafana autoheal
-# Ensure DB schema exists before first login attempts.
-docker exec lunchlineup-api npx prisma db push --schema /app/packages/db/prisma/schema.prisma
+docker compose up -d --build proxy web api engine worker migrate pgbouncer postgres redis rabbitmq prometheus loki promtail otel-collector tempo grafana autoheal
+git rev-parse HEAD > DEPLOYED_GIT_SHA
 REMOTE
 
 echo "Deployment command completed." 

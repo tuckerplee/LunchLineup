@@ -1,0 +1,40 @@
+# API admin
+
+## Files
+
+- `README.md`: this admin folder guide.
+- `admin-user-mfa-recovery.service.spec.ts`: focused tests for target confirmation, row locking, factor and TOTP-claim clearing, session revocation, and attributed audit rollback boundaries.
+- `admin-user-mfa-recovery.service.ts`: platform-admin-only lost-factor recovery transaction that clears the MFA secret, backup codes, and TOTP replay claims, revokes all target sessions, and records a redacted attributed audit event.
+- `admin.controller.spec.ts`: controller tests for requester-scoped tenant export recovery plus platform credit, tenant, user MFA recovery, cross-tenant audit attribution, retained-record expiry, and user-limit operations.
+- `admin.controller.ts`: tenant self-service export/lifecycle routes plus platform-admin tenant, retained-record expiry, user and MFA recovery, credit, plan, audit, and health operations.
+- `tenant-account-lifecycle.service.spec.ts`: focused tests for tenant cancellation plus the two-phase deletion barrier, scheduler reconciliation, retry, failure, original-request timestamp preservation, and exactly-once paid-work refund behavior.
+- `tenant-account-lifecycle.service.ts`: tenant account lifecycle facade for cancellation, deletion, and retained-record purge orchestration.
+- `tenant-deletion-billing.service.ts`: two-phase deletion barrier owner for access shutdown, paid-work settlement, Stripe cleanup, bounded scheduler reconciliation, and finalization.
+- `tenant-account-lifecycle.spec.ts`: focused tests for fail-closed purge-time audit actor redaction capability ordering.
+- `tenant-account-lifecycle.ts`: lifecycle confirmation, retention schedule, export redaction, and retained-record purge helpers.
+- `tenant-export.service.spec.ts`: durable queue, replica handoff, requester-scoped recent-job recovery, authorization, expiry, bounded paging, background rejection containment, redaction, and Prisma model-coverage proofs.
+- `tenant-export.service.ts`: process-safe database-leased NDJSON export jobs with persisted authorization/progress, bounded requester-scoped recovery, shared artifacts, bounded cursor pages, and scheduled expiry.
+- `tenant-provisioning.service.spec.ts`: focused proof that platform tenant, owner, default RBAC assignment, and attributed audit creation share one transaction.
+- `tenant-provisioning.service.ts`: platform-admin transaction coordinator for tenant, owner, default RBAC role, assignment, and attributed audit provisioning.
+
+## Notes
+
+Platform-admin routes use `TenantPrismaService.withPlatformAdmin` for tenant-owned tables so forced RLS stays enabled for normal app traffic while cross-tenant operations remain explicit and transaction-local. Cross-tenant audit rows retain target-tenant `tenantId`/`userId` semantics while immutable non-relational actor IDs and request IP/user-agent identify the platform administrator.
+
+Lost-factor recovery rejects self-reset, requires exact `reset-mfa:<user-id>` confirmation and a trimmed 10-to-500-character support reason, and locks the active target row before mutation. MFA factor removal, TOTP replay-claim deletion, revocation of every unrevoked target session, and attributed audit creation share one platform-admin transaction, so an audit failure rolls back the recovery.
+
+Platform tenant creation requires an owner name and email. FREE workspaces default to `ACTIVE` with free-tier entitlements. Any `TRIAL` receives a concrete future `trialEndsAt`, bounded by `ADMIN_TENANT_TRIAL_DAYS` (14 by default, maximum 90). Paid plans cannot be created `ACTIVE` because this endpoint has no verified Stripe subscription or tenant-level manual entitlement proof. Tenant creation, owner creation, default RBAC role provisioning, Admin assignment, and audit logging share one platform-admin transaction so any failure rolls back the entire workspace.
+
+Platform tenant archive schedules any stored Stripe subscription for period-end cancellation before access is disabled. Restore and platform activation share the same paid-plan eligibility check: the stored Stripe subscription must be active or trialing, owned by the tenant, and not scheduled for period-end cancellation. Tenants without Stripe can be restored or activated only when explicitly assigned the `FREE` plan.
+
+Generic platform tenant edit accepts profile, credit, and bounded date fields only. It rejects `planTier` and `status` before database access so billing entitlements cannot bypass Stripe coordination and lifecycle state cannot bypass the dedicated suspend, activate, archive, restore, and delete routes.
+
+Tenant-admin account lifecycle routes override the platform-admin permission with `account:data_export` for full export, `settings:write` for status, and `tenant_account:lifecycle` for cancellation/deletion, scoped only to the caller tenant through `TenantPrismaService.withTenant`. The protected export and lifecycle permissions are granted to the default system Admin role but remain reserved from tenant-created role grants.
+
+Customer-initiated cancellation schedules the stored Stripe subscription for `cancel_at_period_end` and keeps local access active through the paid period. Deletion is a durable two-phase saga. Phase 1 acquires the tenant billing lock, locks the tenant row, writes the fail-closed `SUSPENDED` barrier, revokes sessions, deactivates outbound webhooks, dead-letters queued or running schedule solves, and refunds their wallet debits exactly once before committing. Stripe Checkout expiration and verified subscription cancellation then run outside the database transaction and are safe to retry. Phase 2 requires the barrier and records `PURGED`, `deletedAt`, retained-record timing, and the billing cleanup audit in one transaction. The scheduled `application_data` retention run discovers bounded `SUSPENDED` barriers, retries Stripe cleanup, and finalizes them with the original barrier timestamp and customer audit attribution; failures join the scheduler failure count and alert path. A direct customer retry remains safe, and verified webhooks cannot restore entitlement while the barrier is active. Billing support handles any off-cycle refund decisions.
+
+Tenant deletion is two-stage. The scheduler service token may execute only the separately confirmed `application_data` stage after 30 days using API server time; billing, Stripe usage, credit, audit, backup, and security records and the tenant tombstone remain. Only a platform admin can execute the distinct seven-year `retained_records` stage or hard-delete route.
+
+Retention candidate reads use stable `deletedAt,id` keyset pages of at most 25 candidates. Each tenant gets a separate 60-second platform-admin transaction guarded by a PostgreSQL advisory transaction lock and an eligibility re-check. Responses expose processed, skipped, and failed counts plus `nextContinuation`; the scheduler wrapper scans bounded continuation pages and fails the overall run after isolated attempts if any tenant failed.
+
+Tenant exports are durable asynchronous NDJSON jobs. PostgreSQL persists requesting tenant/user authorization, queue state, lease, expiry, progress/error, row counts, and an opaque artifact key. `GET /admin/account/exports` returns at most five unexpired jobs matching both the caller tenant and requesting user, ordered newest first, so active or ready work can be recovered without exposing another requester's job. Replicas claim jobs with `FOR UPDATE SKIP LOCKED`; expired leases survive API restarts. Fire-and-forget drain failures are logged and leave unclaimed jobs queued for the next poll. Heartbeat renewal failures are logged without escaping as unhandled rejections; the current claim is verified again before finalization, and an unavailable database leaves the lease reclaimable after expiry. Production requires an explicit absolute shared artifact directory and `TENANT_EXPORT_SHARED_STORAGE=true`; Compose mounts one named volume into every API replica. The worker creates the directory as `0700`, artifacts as `0600`, derives paths only from validated opaque keys, and runs expiry independently of status/download requests.

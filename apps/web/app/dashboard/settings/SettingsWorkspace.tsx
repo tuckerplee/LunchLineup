@@ -1,10 +1,18 @@
 'use client';
 
 import type { CSSProperties } from 'react';
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { fetchJsonWithSession, fetchWithSession } from '@/lib/client-api';
+import {
+    BillingSettingsPanel,
+    type BillingPriceOption,
+    type BillingState,
+} from './BillingSettingsPanel';
+import { AccountLifecyclePanel } from './AccountLifecyclePanel';
+import { normalizeBillingFeatureMatrix, readBillingRedirectUrl } from './billing-settings-contract';
+import { MfaEnrollmentPanel } from './MfaEnrollmentPanel';
 
-const TABS = ['General', 'Team', 'Billing', 'Security'] as const;
+const TABS = ['General', 'Team', 'Billing', 'Security', 'Account'] as const;
 type Tab = (typeof TABS)[number];
 
 type Banner = {
@@ -29,6 +37,14 @@ type SecurityFormState = {
     ssoOnly: boolean;
 };
 
+type SettingsWorkspaceProps = {
+    canWriteSettings: boolean;
+    canReadBilling: boolean;
+    canManageBilling: boolean;
+    canExportAccount: boolean;
+    canManageAccountLifecycle: boolean;
+};
+
 const TIMEZONE_OPTIONS = [
     { value: 'America/Los_Angeles', label: 'Pacific Time (US & Canada)' },
     { value: 'America/Chicago', label: 'Central Time (US & Canada)' },
@@ -46,7 +62,7 @@ function getCsrfHeaders(): Record<string, string> {
     return csrfToken ? { 'x-csrf-token': csrfToken } : {};
 }
 
-function jsonWriteInit(method: 'PUT', payload: unknown): RequestInit {
+function jsonWriteInit(method: 'POST' | 'PUT', payload: unknown): RequestInit {
     return {
         method,
         credentials: 'include',
@@ -161,6 +177,21 @@ function extractBannerMessage(payload: unknown, fallback: string): string {
     return fallback;
 }
 
+function unwrapDataArray(payload: unknown): Record<string, unknown>[] {
+    const root = asRecord(payload);
+    const raw = Array.isArray(payload) ? payload : Array.isArray(root?.data) ? root.data : [];
+    return raw.map(asRecord).filter((value): value is Record<string, unknown> => Boolean(value));
+}
+
+function normalizePriceOptions(payload: unknown): BillingPriceOption[] {
+    return unwrapDataArray(payload).map((option) => ({
+        code: readString([option], ['code'], 'UNKNOWN'),
+        label: readString([option], ['label'], readString([option], ['code'], 'Plan')),
+        priceId: readString([option], ['priceId'], '') || null,
+        configured: readBoolean([option], ['configured']),
+    }));
+}
+
 function noticeStyle(tone: 'success' | 'error'): CSSProperties {
     return {
         padding: '0.8rem 0.95rem',
@@ -173,9 +204,16 @@ function noticeStyle(tone: 'success' | 'error'): CSSProperties {
     };
 }
 
-export function SettingsWorkspace() {
+export function SettingsWorkspace({
+    canWriteSettings,
+    canReadBilling,
+    canManageBilling,
+    canExportAccount,
+    canManageAccountLifecycle,
+}: SettingsWorkspaceProps) {
     const [activeTab, setActiveTab] = useState<Tab>('General');
     const [isLoading, setIsLoading] = useState(true);
+    const [isSettingsHydrated, setIsSettingsHydrated] = useState(false);
     const [loadError, setLoadError] = useState<string | null>(null);
 
     const [generalForm, setGeneralForm] = useState<GeneralFormState>({
@@ -192,24 +230,36 @@ export function SettingsWorkspace() {
         sessionTimeoutMinutes: '30',
         ssoOnly: false,
     });
+    const [billingState, setBillingState] = useState<BillingState>({
+        loading: false,
+        error: null,
+        matrix: null,
+        priceOptions: [],
+    });
     const [generalNotice, setGeneralNotice] = useState<Banner>(null);
     const [teamNotice, setTeamNotice] = useState<Banner>(null);
+    const [billingNotice, setBillingNotice] = useState<Banner>(null);
     const [securityNotice, setSecurityNotice] = useState<Banner>(null);
     const [pinNotice, setPinNotice] = useState<Banner>(null);
     const [generalSaving, setGeneralSaving] = useState(false);
     const [teamSaving, setTeamSaving] = useState(false);
+    const [subscriptionSaving, setSubscriptionSaving] = useState<string | null>(null);
     const [securitySaving, setSecuritySaving] = useState(false);
     const [pinSaving, setPinSaving] = useState(false);
 
     const [currentPin, setCurrentPin] = useState('');
     const [newPin, setNewPin] = useState('');
     const [confirmPin, setConfirmPin] = useState('');
+    const settingsLoadRequestRef = useRef(0);
 
     const loadSettings = useCallback(async () => {
+        const requestId = ++settingsLoadRequestRef.current;
         setIsLoading(true);
+        setIsSettingsHydrated(false);
         setLoadError(null);
         try {
             const payload = await fetchJsonWithSession<unknown>('/settings');
+            if (requestId !== settingsLoadRequestRef.current) return;
             const root = unwrapSettings(payload);
             const general = firstRecord([root], ['general', 'workspace', 'organization', 'profile', 'tenant']);
             const team = firstRecord([root], ['team', 'defaults', 'inviteDefaults', 'workflows']);
@@ -231,24 +281,90 @@ export function SettingsWorkspace() {
                 sessionTimeoutMinutes: toNumberString(readOptionalNumber([security, root], ['sessionTimeoutMinutes', 'sessionTimeout', 'idleTimeoutMinutes']) ?? 480),
                 ssoOnly: readBoolean([security, root], ['ssoOidcOnly', 'ssoOnly', 'ssoRequired', 'oidcOnly']),
             });
+            setIsSettingsHydrated(true);
         } catch (error) {
+            if (requestId !== settingsLoadRequestRef.current) return;
             setLoadError(error instanceof Error ? error.message : 'Unable to load settings.');
         } finally {
-            setIsLoading(false);
+            if (requestId === settingsLoadRequestRef.current) setIsLoading(false);
         }
     }, []);
+
+    const loadBilling = useCallback(async () => {
+        if (!canReadBilling) {
+            setBillingState({
+                loading: false,
+                error: null,
+                matrix: null,
+                priceOptions: [],
+            });
+            return;
+        }
+        setBillingState((current) => ({ ...current, loading: true, error: null }));
+        try {
+            const [featurePayload, pricePayload] = await Promise.all([
+                fetchJsonWithSession<unknown>('/billing/features'),
+                fetchJsonWithSession<unknown>('/billing/price-options'),
+            ]);
+
+            setBillingState({
+                loading: false,
+                error: null,
+                matrix: normalizeBillingFeatureMatrix(featurePayload),
+                priceOptions: normalizePriceOptions(pricePayload),
+            });
+        } catch (error) {
+            setBillingState((current) => ({
+                ...current,
+                loading: false,
+                error: error instanceof Error ? error.message : 'Unable to load billing.',
+            }));
+        }
+    }, [canReadBilling]);
+
+    const visibleTabs = useMemo<Tab[]>(
+        () => TABS.filter((tab) => {
+            if (tab === 'Billing') return canReadBilling;
+            if (tab === 'Account') return canWriteSettings;
+            return true;
+        }),
+        [canReadBilling, canWriteSettings],
+    );
 
     useEffect(() => {
         void loadSettings();
     }, [loadSettings]);
+
+    useEffect(() => {
+        if (!visibleTabs.includes(activeTab)) {
+            setActiveTab(visibleTabs[0] ?? 'General');
+            return;
+        }
+        if (activeTab === 'Billing') {
+            void loadBilling();
+        }
+    }, [activeTab, loadBilling, visibleTabs]);
 
     const workspaceName = generalForm.organizationName || 'Workspace settings';
     const subtitle = useMemo(() => {
         if (isLoading) return 'Loading live settings...';
         return `${workspaceName} · Configure organization defaults, team behavior, billing, and security`;
     }, [isLoading, workspaceName]);
+    const billingFeatures = useMemo(
+        () => Object.entries(billingState.matrix?.features ?? {}).sort(([left], [right]) => left.localeCompare(right)),
+        [billingState.matrix],
+    );
+    const configuredPriceOptions = useMemo(
+        () => billingState.priceOptions.filter((option) => option.configured && option.priceId),
+        [billingState.priceOptions],
+    );
+    const canMutateSettings = canWriteSettings && isSettingsHydrated && !isLoading;
 
     const saveGeneral = useCallback(async () => {
+        if (!canMutateSettings) {
+            setGeneralNotice({ tone: 'error', text: isSettingsHydrated ? 'You have read-only settings access.' : 'Reload settings before saving.' });
+            return;
+        }
         const organizationName = generalForm.organizationName.trim();
         const slug = generalForm.slug.trim().toLowerCase();
         if (!organizationName) {
@@ -275,9 +391,13 @@ export function SettingsWorkspace() {
         } finally {
             setGeneralSaving(false);
         }
-    }, [generalForm.organizationName, generalForm.slug, generalForm.timezone]);
+    }, [canMutateSettings, generalForm.organizationName, generalForm.slug, generalForm.timezone, isSettingsHydrated]);
 
     const saveTeam = useCallback(async () => {
+        if (!canMutateSettings) {
+            setTeamNotice({ tone: 'error', text: isSettingsHydrated ? 'You have read-only settings access.' : 'Reload settings before saving.' });
+            return;
+        }
         setTeamSaving(true);
         setTeamNotice(null);
         try {
@@ -292,9 +412,128 @@ export function SettingsWorkspace() {
         } finally {
             setTeamSaving(false);
         }
-    }, [teamForm.defaultRole, teamForm.shiftApprovalPolicy]);
+    }, [canMutateSettings, isSettingsHydrated, teamForm.defaultRole, teamForm.shiftApprovalPolicy]);
+
+    const startSubscription = useCallback(async (option: BillingPriceOption) => {
+        if (!canManageBilling) {
+            setBillingNotice({ tone: 'error', text: 'You need billing write access to start subscription setup.' });
+            return;
+        }
+        if (!option.priceId) {
+            setBillingNotice({ tone: 'error', text: `${option.label} subscription setup is not configured.` });
+            return;
+        }
+
+        setSubscriptionSaving(option.code);
+        setBillingNotice(null);
+        try {
+            const response = await fetchWithSession('/billing/subscribe', jsonWriteInit('POST', { priceId: option.priceId }));
+            const payload = await response.json().catch(() => ({}));
+            if (!response.ok) {
+                throw new Error(extractBannerMessage(payload, `Subscription failed (${response.status}).`));
+            }
+            const checkoutUrl = readBillingRedirectUrl(payload, 'checkoutUrl');
+            if (!checkoutUrl) {
+                throw new Error('Stripe Checkout did not return a redirect URL.');
+            }
+            setBillingNotice({
+                tone: 'success',
+                text: 'Redirecting to Stripe Checkout...',
+            });
+            window.location.assign(checkoutUrl);
+        } catch (error) {
+            setBillingNotice({ tone: 'error', text: error instanceof Error ? error.message : 'Unable to start subscription.' });
+            setSubscriptionSaving(null);
+        }
+    }, [canManageBilling]);
+
+    const openBillingPortal = useCallback(async () => {
+        if (!canManageBilling) {
+            setBillingNotice({ tone: 'error', text: 'You need billing write access to manage the subscription.' });
+            return;
+        }
+
+        setSubscriptionSaving('portal');
+        setBillingNotice(null);
+        try {
+            const response = await fetchWithSession('/billing/portal', jsonWriteInit('POST', {}));
+            const payload = await response.json().catch(() => ({}));
+            if (!response.ok) {
+                throw new Error(extractBannerMessage(payload, `Billing portal failed (${response.status}).`));
+            }
+            const portalUrl = readBillingRedirectUrl(payload, 'portalUrl');
+            if (!portalUrl) {
+                throw new Error('Stripe billing portal did not return a redirect URL.');
+            }
+            setBillingNotice({ tone: 'success', text: 'Redirecting to Stripe billing...' });
+            window.location.assign(portalUrl);
+        } catch (error) {
+            setBillingNotice({ tone: 'error', text: error instanceof Error ? error.message : 'Unable to open billing portal.' });
+            setSubscriptionSaving(null);
+        }
+    }, [canManageBilling]);
+
+    const changeSubscription = useCallback(async (option: BillingPriceOption) => {
+        if (!canManageBilling) {
+            setBillingNotice({ tone: 'error', text: 'You need billing write access to change plans.' });
+            return;
+        }
+        if (!option.priceId) {
+            setBillingNotice({ tone: 'error', text: `${option.label} is not configured.` });
+            return;
+        }
+
+        setSubscriptionSaving(`change:${option.code}`);
+        setBillingNotice(null);
+        try {
+            const response = await fetchWithSession('/billing/change-plan', jsonWriteInit('POST', { priceId: option.priceId }));
+            const payload = await response.json().catch(() => ({}));
+            if (!response.ok) {
+                throw new Error(extractBannerMessage(payload, `Plan change failed (${response.status}).`));
+            }
+            setBillingNotice({ tone: 'success', text: `Plan change to ${option.label} submitted.` });
+            await loadBilling();
+        } catch (error) {
+            setBillingNotice({ tone: 'error', text: error instanceof Error ? error.message : 'Unable to change plans.' });
+        } finally {
+            setSubscriptionSaving(null);
+        }
+    }, [canManageBilling, loadBilling]);
+
+    const resumeSubscription = useCallback(async () => {
+        if (!canManageBilling) {
+            setBillingNotice({ tone: 'error', text: 'You need billing write access to resume subscriptions.' });
+            return;
+        }
+
+        setSubscriptionSaving('resume');
+        setBillingNotice(null);
+        try {
+            const response = await fetchWithSession('/billing/resume', jsonWriteInit('POST', {}));
+            const payload = await response.json().catch(() => ({}));
+            if (!response.ok) {
+                throw new Error(extractBannerMessage(payload, `Subscription resume failed (${response.status}).`));
+            }
+            const paymentUrl = readBillingRedirectUrl(payload, 'paymentUrl');
+            if (paymentUrl) {
+                setBillingNotice({ tone: 'success', text: 'Redirecting to Stripe payment recovery...' });
+                window.location.assign(paymentUrl);
+                return;
+            }
+            setBillingNotice({ tone: 'success', text: 'Subscription resume submitted.' });
+            await loadBilling();
+        } catch (error) {
+            setBillingNotice({ tone: 'error', text: error instanceof Error ? error.message : 'Unable to resume the subscription.' });
+        } finally {
+            setSubscriptionSaving(null);
+        }
+    }, [canManageBilling, loadBilling]);
 
     const saveSecurity = useCallback(async () => {
+        if (!canMutateSettings) {
+            setSecurityNotice({ tone: 'error', text: isSettingsHydrated ? 'You have read-only settings access.' : 'Reload settings before saving.' });
+            return;
+        }
         const timeout = Number(securityForm.sessionTimeoutMinutes);
         if (!Number.isFinite(timeout) || timeout <= 0) {
             setSecurityNotice({ tone: 'error', text: 'Session timeout must be a valid number of minutes.' });
@@ -315,7 +554,7 @@ export function SettingsWorkspace() {
         } finally {
             setSecuritySaving(false);
         }
-    }, [securityForm.requireMfa, securityForm.sessionTimeoutMinutes, securityForm.ssoOnly]);
+    }, [canMutateSettings, isSettingsHydrated, securityForm.requireMfa, securityForm.sessionTimeoutMinutes, securityForm.ssoOnly]);
 
     const updatePin = useCallback(async () => {
         const normalizedCurrentPin = currentPin.replace(/\D/g, '');
@@ -372,8 +611,17 @@ export function SettingsWorkspace() {
             </section>
 
             {loadError ? (
-                <div style={noticeStyle('error')} role="status">
-                    {loadError}
+                <div style={{ ...noticeStyle('error'), display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '0.75rem', flexWrap: 'wrap' }} role="alert">
+                    <span>{loadError} Settings changes are disabled until the current values load.</span>
+                    <button type="button" className="btn btn-secondary btn-sm" onClick={() => void loadSettings()} disabled={isLoading}>
+                        {isLoading ? 'Retrying...' : 'Retry settings load'}
+                    </button>
+                </div>
+            ) : null}
+
+            {!canWriteSettings ? (
+                <div style={noticeStyle('success')} role="status">
+                    Read-only settings access. Tenant setting changes are hidden for this role.
                 </div>
             ) : null}
 
@@ -390,7 +638,7 @@ export function SettingsWorkspace() {
                     role="tablist"
                     aria-label="Settings sections"
                 >
-                    {TABS.map((tab) => (
+                    {visibleTabs.map((tab) => (
                         <button
                             key={tab}
                             type="button"
@@ -434,6 +682,7 @@ export function SettingsWorkspace() {
                                     value={generalForm.organizationName}
                                     onChange={(event) => setGeneralForm((current) => ({ ...current, organizationName: event.target.value }))}
                                     className="form-input"
+                                    disabled={!canMutateSettings}
                                 />
                             </label>
 
@@ -443,6 +692,7 @@ export function SettingsWorkspace() {
                                     value={generalForm.slug}
                                     onChange={(event) => setGeneralForm((current) => ({ ...current, slug: event.target.value }))}
                                     className="form-input"
+                                    disabled={!canMutateSettings}
                                 />
                             </label>
 
@@ -452,6 +702,7 @@ export function SettingsWorkspace() {
                                     className="form-input"
                                     value={generalForm.timezone}
                                     onChange={(event) => setGeneralForm((current) => ({ ...current, timezone: event.target.value }))}
+                                    disabled={!canMutateSettings}
                                 >
                                     {TIMEZONE_OPTIONS.map((option) => (
                                         <option key={option.value} value={option.value}>
@@ -461,11 +712,13 @@ export function SettingsWorkspace() {
                                 </select>
                             </label>
 
-                            <div>
-                                <button className="btn btn-primary" onClick={() => void saveGeneral()} disabled={generalSaving || isLoading}>
-                                    {generalSaving ? 'Saving...' : 'Save Changes'}
-                                </button>
-                            </div>
+                            {canWriteSettings ? (
+                                <div>
+                                    <button className="btn btn-primary" onClick={() => void saveGeneral()} disabled={generalSaving || !canMutateSettings}>
+                                        {generalSaving ? 'Saving...' : 'Save Changes'}
+                                    </button>
+                                </div>
+                            ) : null}
                         </div>
                     )}
 
@@ -490,6 +743,7 @@ export function SettingsWorkspace() {
                                     onChange={(event) =>
                                         setTeamForm((current) => ({ ...current, defaultRole: event.target.value as TeamFormState['defaultRole'] }))
                                     }
+                                    disabled={!canMutateSettings}
                                 >
                                     <option value="STAFF">Staff</option>
                                     <option value="MANAGER">Manager</option>
@@ -505,51 +759,59 @@ export function SettingsWorkspace() {
                                     { value: 'MANAGER_APPROVAL', label: 'Require manager approval' },
                                     { value: 'ADMIN_APPROVAL', label: 'Require admin approval' },
                                 ].map((option) => (
-                                    <label key={option.value} style={{ display: 'flex', gap: '0.6rem', marginBottom: '0.45rem', alignItems: 'center', cursor: 'pointer' }}>
+                                    <label key={option.value} style={{ display: 'flex', gap: '0.6rem', marginBottom: '0.45rem', alignItems: 'center', cursor: canWriteSettings ? 'pointer' : 'default' }}>
                                         <input
                                             type="radio"
                                             name="approval"
                                             checked={teamForm.shiftApprovalPolicy === option.value}
                                             onChange={() => setTeamForm((current) => ({ ...current, shiftApprovalPolicy: option.value as TeamFormState['shiftApprovalPolicy'] }))}
+                                            disabled={!canMutateSettings}
                                         />
                                         <span style={{ fontSize: '0.86rem', color: 'var(--text-secondary)' }}>{option.label}</span>
                                     </label>
                                 ))}
                             </div>
 
-                            <div>
-                                <button className="btn btn-primary" onClick={() => void saveTeam()} disabled={teamSaving || isLoading}>
-                                    {teamSaving ? 'Saving...' : 'Save Changes'}
-                                </button>
-                            </div>
+                            {canWriteSettings ? (
+                                <div>
+                                    <button className="btn btn-primary" onClick={() => void saveTeam()} disabled={teamSaving || !canMutateSettings}>
+                                        {teamSaving ? 'Saving...' : 'Save Changes'}
+                                    </button>
+                                </div>
+                            ) : null}
                         </div>
                     )}
 
                     {activeTab === 'Billing' && (
-                        <div style={{ display: 'grid', gap: '1rem' }}>
-                            <div style={{ display: 'grid', gap: '0.2rem' }}>
-                                <h2 style={{ fontWeight: 750, fontSize: '1.02rem', color: 'var(--text-primary)' }}>Billing</h2>
-                                <p style={{ color: 'var(--text-muted)', fontSize: '0.82rem' }}>
-                                    Billing management will be available here soon.
-                                </p>
-                            </div>
+                        <BillingSettingsPanel
+                            billingState={billingState}
+                            billingNotice={billingNotice}
+                            billingFeatures={billingFeatures}
+                            configuredPriceOptions={configuredPriceOptions}
+                            canManageBilling={canManageBilling}
+                            subscriptionSaving={subscriptionSaving}
+                            noticeStyle={noticeStyle}
+                            onStartSubscription={startSubscription}
+                            onChangeSubscription={changeSubscription}
+                            onOpenBillingPortal={openBillingPortal}
+                            onResumeSubscription={resumeSubscription}
+                            onRefreshBilling={loadBilling}
+                        />
+                    )}
 
-                            <div className="surface-muted" style={{ padding: '1rem', borderStyle: 'dashed', background: '#fafbff' }}>
-                                <div style={{ fontSize: '1rem', fontWeight: 800, color: 'var(--text-primary)', marginBottom: 4 }}>
-                                    Billing coming soon
-                                </div>
-                                <p style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', margin: 0 }}>
-                                    Plan changes, payment methods, and invoices are not available in this panel yet.
-                                </p>
-                            </div>
-                        </div>
+                    {activeTab === 'Account' && (
+                        <AccountLifecyclePanel
+                            canExportAccount={canExportAccount}
+                            canManageAccountLifecycle={canManageAccountLifecycle}
+                            noticeStyle={noticeStyle}
+                        />
                     )}
 
                     {activeTab === 'Security' && (
                         <div style={{ display: 'grid', gap: '1rem' }}>
                             <div style={{ display: 'grid', gap: '0.2rem' }}>
                                 <h2 style={{ fontWeight: 750, fontSize: '1.02rem', color: 'var(--text-primary)' }}>Security Controls</h2>
-                                <p style={{ color: 'var(--text-muted)', fontSize: '0.82rem' }}>Adjust account protection settings and rotate your PIN independently.</p>
+                                <p style={{ color: 'var(--text-muted)', fontSize: '0.82rem' }}>Adjust account protection settings, MFA enrollment, and PIN rotation.</p>
                             </div>
 
                             {securityNotice ? (
@@ -557,6 +819,8 @@ export function SettingsWorkspace() {
                                     {securityNotice.text}
                                 </div>
                             ) : null}
+
+                            <MfaEnrollmentPanel tenantMfaRequired={securityForm.requireMfa} />
 
                             <div style={{ display: 'grid', gap: '0.6rem' }}>
                                 {(
@@ -574,7 +838,7 @@ export function SettingsWorkspace() {
                                             justifyContent: 'space-between',
                                             alignItems: 'center',
                                             gap: '0.8rem',
-                                            cursor: 'pointer',
+                                            cursor: canWriteSettings ? 'pointer' : 'default',
                                         }}
                                     >
                                         <div style={{ display: 'grid', gap: 2 }}>
@@ -591,6 +855,7 @@ export function SettingsWorkspace() {
                                             onChange={(event) =>
                                                 setSecurityForm((current) => ({ ...current, [setting.key]: event.target.checked } as SecurityFormState))
                                             }
+                                            disabled={!canMutateSettings}
                                             style={{ position: 'absolute', opacity: 0, pointerEvents: 'none' }}
                                         />
                                         <div
@@ -630,6 +895,7 @@ export function SettingsWorkspace() {
                                     onChange={(event) =>
                                         setSecurityForm((current) => ({ ...current, sessionTimeoutMinutes: event.target.value }))
                                     }
+                                    disabled={!canMutateSettings}
                                 >
                                     {SESSION_TIMEOUT_OPTIONS.map((minutes) => (
                                         <option key={minutes} value={minutes}>
@@ -639,11 +905,13 @@ export function SettingsWorkspace() {
                                 </select>
                             </label>
 
-                            <div>
-                                <button className="btn btn-primary" onClick={() => void saveSecurity()} disabled={securitySaving || isLoading}>
-                                    {securitySaving ? 'Saving...' : 'Save Changes'}
-                                </button>
-                            </div>
+                            {canWriteSettings ? (
+                                <div>
+                                    <button className="btn btn-primary" onClick={() => void saveSecurity()} disabled={securitySaving || !canMutateSettings}>
+                                        {securitySaving ? 'Saving...' : 'Save Changes'}
+                                    </button>
+                                </div>
+                            ) : null}
 
                             <div className="surface-muted" style={{ padding: '0.85rem', display: 'grid', gap: '0.55rem' }}>
                                 <div style={{ fontSize: '0.9rem', fontWeight: 700, color: 'var(--text-primary)' }}>Change my PIN</div>

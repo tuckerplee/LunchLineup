@@ -1,6 +1,12 @@
 'use client';
 
 import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { formatTimeInTimeZone, instantToWallClockDate, wallClockDateToIso } from '@/lib/location-timezone';
+import {
+    dateForTimelineOffset,
+    projectIntervalIntoDailyWindows,
+    timelineOffsetForDate,
+} from './scheduler-projection';
 
 interface StaffResource {
     id: string;
@@ -26,6 +32,8 @@ type CoverageTone = 'healthy' | 'risk' | 'critical';
 type DragState = {
     eventId: string;
     startX: number;
+    startY: number;
+    currentY: number;
     originalStart: Date;
     originalEnd: Date;
 };
@@ -47,6 +55,7 @@ interface StaffSchedulerProps {
     events: StaffScheduleEvent[];
     viewMode: SchedulerViewMode;
     initialDate?: string;
+    timeZone: string;
     compactWindow?: boolean;
     onEventChange?: (eventId: string, newStart: string, newEnd: string, newResourceId: string) => void;
     onEventSelect?: (event: StaffScheduleEvent) => void;
@@ -73,12 +82,12 @@ function isCoverageShift(event: StaffScheduleEvent): boolean {
     return !event.extendedProps.kind || event.extendedProps.kind === 'shift';
 }
 
-function countCoverageAt(date: Date, events: StaffScheduleEvent[]): number {
+function countCoverageAt(date: Date, events: StaffScheduleEvent[], timeZone: string): number {
     let count = 0;
     for (const event of events) {
         if (!isCoverageShift(event)) continue;
-        const start = new Date(event.start);
-        const end = new Date(event.end);
+        const start = instantToWallClockDate(event.start, timeZone);
+        const end = instantToWallClockDate(event.end, timeZone);
         if (date >= start && date < end) count += 1;
     }
     return count;
@@ -88,7 +97,7 @@ function clamp(n: number, min: number, max: number): number {
     return Math.max(min, Math.min(max, n));
 }
 
-export function StaffScheduler({ resources, events, viewMode, initialDate, compactWindow = true, onEventChange, onEventSelect, onEventDelete, onSlotSelect }: StaffSchedulerProps) {
+export function StaffScheduler({ resources, events, viewMode, initialDate, timeZone, compactWindow = true, onEventChange, onEventSelect, onEventDelete, onSlotSelect }: StaffSchedulerProps) {
     const [drag, setDrag] = useState<DragState | null>(null);
     const [dragDeltaHours, setDragDeltaHours] = useState(0);
     const [shiftAction, setShiftAction] = useState<ShiftActionState | null>(null);
@@ -116,12 +125,6 @@ export function StaffScheduler({ resources, events, viewMode, initialDate, compa
             return d;
         });
     }, [dayCount, rangeStart]);
-
-    const timelineStart = useMemo(() => {
-        const d = new Date(rangeStart);
-        d.setHours(minHour, 0, 0, 0);
-        return d;
-    }, [minHour, rangeStart]);
 
     const totalHours = dayCount * hoursPerDay;
     const fitViewport = viewMode !== 'week' && viewportWidth > 0;
@@ -151,116 +154,126 @@ export function StaffScheduler({ resources, events, viewMode, initialDate, compa
             for (let hour = minHour; hour < maxHour; hour += 1) {
                 const t = new Date(day);
                 t.setHours(hour, 0, 0, 0);
-                bins.push(toneForCoverage(countCoverageAt(t, events)));
+                bins.push(toneForCoverage(countCoverageAt(t, events, timeZone)));
             }
             return {
                 label: day.toLocaleDateString('en-US', { weekday: 'short' }),
                 bins,
             };
         });
-    }, [dayStarts, events, maxHour, minHour]);
+    }, [dayStarts, events, maxHour, minHour, timeZone]);
 
     const { positionedShifts, breakMarkersByShift } = useMemo(() => {
-        const endOfRange = new Date(timelineStart);
-        endOfRange.setHours(endOfRange.getHours() + totalHours);
-
-        const visible = events
-            .filter((event) => {
-                const start = new Date(event.start);
-                const end = new Date(event.end);
-                return end > timelineStart && start < endOfRange;
-            });
-
-        const shifts = visible
+        const shifts = events
             .filter((event) => !event.extendedProps.kind)
-            .map((event) => {
-                const eventStart = new Date(event.start);
-                const eventEnd = new Date(event.end);
-
-                const clampedStart = eventStart < timelineStart ? timelineStart : eventStart;
-                const clampedEnd = eventEnd > endOfRange ? endOfRange : eventEnd;
-
-                const hoursFromStart = (clampedStart.getTime() - timelineStart.getTime()) / 3600000;
-                const durationHours = Math.max(0.25, (clampedEnd.getTime() - clampedStart.getTime()) / 3600000);
-
-                const left = hoursFromStart * hourWidth;
-                const width = Math.max(26, durationHours * hourWidth - 2);
-
-                return {
-                    ...event,
-                    left,
-                    width,
-                    shiftStart: eventStart,
-                    shiftEnd: eventEnd,
-                };
+            .flatMap((event) => {
+                const eventStart = instantToWallClockDate(event.start, timeZone);
+                const eventEnd = instantToWallClockDate(event.end, timeZone);
+                return projectIntervalIntoDailyWindows(eventStart, eventEnd, dayStarts, minHour, maxHour)
+                    .map((segment) => ({
+                        ...event,
+                        segmentKey: `${event.id}:${segment.dayIndex}`,
+                        left: segment.leftHours * hourWidth,
+                        width: Math.max(26, Math.max(0.25, segment.durationHours) * hourWidth - 2),
+                        shiftStart: eventStart,
+                        shiftEnd: eventEnd,
+                        segmentStart: segment.segmentStart,
+                        segmentEnd: segment.segmentEnd,
+                    }));
             });
 
-        const breaks = visible.filter((event) => event.extendedProps.kind === 'break' || event.extendedProps.kind === 'lunch');
+        const breaks = events.filter((event) => event.extendedProps.kind === 'break' || event.extendedProps.kind === 'lunch');
         const markers = new Map<string, Array<{ leftPct: number; widthPct: number; kind: 'lunch' | 'break'; conflict?: string }>>();
 
         for (const breakEvent of breaks) {
-            const breakStart = new Date(breakEvent.start);
-            const breakEnd = new Date(breakEvent.end);
-            const owner = shifts.find(
+            const breakStart = instantToWallClockDate(breakEvent.start, timeZone);
+            const breakEnd = instantToWallClockDate(breakEvent.end, timeZone);
+            const owners = shifts.filter(
                 (shift) =>
                     shift.resourceId === breakEvent.resourceId &&
                     breakStart >= shift.shiftStart &&
-                    breakEnd <= shift.shiftEnd
+                    breakEnd <= shift.shiftEnd &&
+                    breakEnd > shift.segmentStart &&
+                    breakStart < shift.segmentEnd
             );
-            if (!owner) continue;
-
-            const shiftDurationMs = Math.max(1, owner.shiftEnd.getTime() - owner.shiftStart.getTime());
-            const leftPct = ((breakStart.getTime() - owner.shiftStart.getTime()) / shiftDurationMs) * 100;
-            const widthPct = Math.max(6, ((breakEnd.getTime() - breakStart.getTime()) / shiftDurationMs) * 100);
-            const existing = markers.get(owner.id) ?? [];
-            existing.push({
-                leftPct: clamp(leftPct, 0, 94),
-                widthPct: clamp(widthPct, 6, 100),
-                kind: breakEvent.extendedProps.kind as 'lunch' | 'break',
-                conflict: breakEvent.extendedProps.conflict,
-            });
-            markers.set(owner.id, existing);
+            for (const owner of owners) {
+                const markerStart = breakStart > owner.segmentStart ? breakStart : owner.segmentStart;
+                const markerEnd = breakEnd < owner.segmentEnd ? breakEnd : owner.segmentEnd;
+                const segmentDurationMs = Math.max(1, owner.segmentEnd.getTime() - owner.segmentStart.getTime());
+                const leftPct = ((markerStart.getTime() - owner.segmentStart.getTime()) / segmentDurationMs) * 100;
+                const widthPct = Math.max(6, ((markerEnd.getTime() - markerStart.getTime()) / segmentDurationMs) * 100);
+                const existing = markers.get(owner.segmentKey) ?? [];
+                existing.push({
+                    leftPct: clamp(leftPct, 0, 94),
+                    widthPct: clamp(widthPct, 6, 100),
+                    kind: breakEvent.extendedProps.kind as 'lunch' | 'break',
+                    conflict: breakEvent.extendedProps.conflict,
+                });
+                markers.set(owner.segmentKey, existing);
+            }
         }
 
         return { positionedShifts: shifts, breakMarkersByShift: markers };
-    }, [events, hourWidth, timelineStart, totalHours]);
-
+    }, [dayStarts, events, hourWidth, maxHour, minHour, timeZone]);
     const dragHint = useMemo(() => {
-        if (!drag) return 'Drag shifts to reassign. Live risk feedback updates while dragging.';
-        if (dragDeltaHours === 0) return 'Shift anchored';
-        return dragDeltaHours > 0 ? 'Moving later may improve dinner coverage' : 'Moving earlier may improve lunch coverage';
+        if (!drag) return 'Drag horizontally to change time, drag vertically to reassign, or click a shift for actions.';
+        if (dragDeltaHours === 0) return 'Release on a staff row to reassign without changing time.';
+        const hours = Math.abs(dragDeltaHours);
+        return `Release to save ${hours} hour${hours === 1 ? '' : 's'} ${dragDeltaHours > 0 ? 'later' : 'earlier'}.`;
     }, [drag, dragDeltaHours]);
 
     const handleDragStart = (e: React.MouseEvent, event: StaffScheduleEvent) => {
         if (event.extendedProps.kind) return;
-        const originalStart = new Date(event.start);
-        const originalEnd = new Date(event.end);
+        const originalStart = instantToWallClockDate(event.start, timeZone);
+        const originalEnd = instantToWallClockDate(event.end, timeZone);
         setShiftAction(null);
         setPendingDeleteEventId(null);
         suppressShiftClickRef.current = false;
-        setDrag({ eventId: event.id, startX: e.clientX, originalStart, originalEnd });
+        setDrag({ eventId: event.id, startX: e.clientX, startY: e.clientY, currentY: e.clientY, originalStart, originalEnd });
         setDragDeltaHours(0);
     };
 
     const handleMouseMove = (e: React.MouseEvent) => {
         if (!drag) return;
         const deltaPx = e.clientX - drag.startX;
+        const deltaY = e.clientY - drag.startY;
         const deltaHours = Math.round(deltaPx / hourWidth);
-        if (deltaHours !== 0) suppressShiftClickRef.current = true;
+        if (deltaHours !== 0 || Math.abs(deltaY) > 4) suppressShiftClickRef.current = true;
+        setDrag((current) => (current ? { ...current, currentY: e.clientY } : current));
         setDragDeltaHours(deltaHours);
     };
 
-    const handleMouseUp = () => {
+    const findResourceIdAtPoint = (clientX: number, clientY: number): string | null => {
+        const rows = Array.from(document.querySelectorAll<HTMLElement>('[data-resource-id]'));
+        const row = rows.find((candidate) => {
+            const rect = candidate.getBoundingClientRect();
+            return clientY >= rect.top && clientY <= rect.bottom && clientX >= rect.left && clientX <= rect.right;
+        });
+        return row?.dataset.resourceId ?? null;
+    };
+
+    const handleMouseUp = (e?: React.MouseEvent) => {
         if (!drag) return;
 
+        let newResourceId: string | null = null;
+        if (e) {
+            newResourceId = findResourceIdAtPoint(e.clientX, e.clientY);
+        }
+
         if (dragDeltaHours !== 0) {
-            const newStart = new Date(drag.originalStart);
-            const newEnd = new Date(drag.originalEnd);
-            newStart.setHours(newStart.getHours() + dragDeltaHours);
-            newEnd.setHours(newEnd.getHours() + dragDeltaHours);
-            const event = events.find((ev) => ev.id === drag.eventId);
+            const originalOffset = timelineOffsetForDate(drag.originalStart, dayStarts, minHour, maxHour);
+            const newStart = originalOffset === null
+                ? new Date(drag.originalStart.getTime() + dragDeltaHours * 3600000)
+                : dateForTimelineOffset(originalOffset + dragDeltaHours, dayStarts, minHour, maxHour);
+            const deltaMs = newStart.getTime() - drag.originalStart.getTime();
+            const newEnd = new Date(drag.originalEnd.getTime() + deltaMs);            const event = events.find((ev) => ev.id === drag.eventId);
             if (event) {
-                onEventChange?.(event.id, newStart.toISOString(), newEnd.toISOString(), event.resourceId);
+                onEventChange?.(event.id, wallClockDateToIso(newStart, timeZone), wallClockDateToIso(newEnd, timeZone), newResourceId ?? event.resourceId);
+            }
+        } else if (newResourceId) {
+            const event = events.find((ev) => ev.id === drag.eventId);
+            if (event && newResourceId !== event.resourceId) {
+                onEventChange?.(event.id, event.start, event.end, newResourceId);
             }
         }
 
@@ -295,11 +308,10 @@ export function StaffScheduler({ resources, events, viewMode, initialDate, compa
         const rect = e.currentTarget.getBoundingClientRect();
         const relativeX = clamp(e.clientX - rect.left, 0, timelineWidth - 1);
         const hourOffset = Math.floor(relativeX / hourWidth);
-        const start = new Date(timelineStart);
-        start.setHours(start.getHours() + hourOffset, 0, 0, 0);
-        const dayStart = new Date(start);
-        dayStart.setHours(minHour, 0, 0, 0);
-        const dayEnd = new Date(dayStart);
+        const start = dateForTimelineOffset(hourOffset, dayStarts, minHour, maxHour);
+        const dayIndex = Math.min(dayStarts.length - 1, Math.floor(hourOffset / hoursPerDay));
+        const dayStart = new Date(dayStarts[dayIndex]);
+        dayStart.setHours(minHour, 0, 0, 0);        const dayEnd = new Date(dayStart);
         dayEnd.setHours(maxHour, 0, 0, 0);
         const end = new Date(start);
         end.setHours(end.getHours() + 8);
@@ -307,11 +319,11 @@ export function StaffScheduler({ resources, events, viewMode, initialDate, compa
         if (end <= start) end.setHours(start.getHours() + 1);
         setShiftAction(null);
         setPendingDeleteEventId(null);
-        onSlotSelect({ resourceId, start: start.toISOString(), end: end.toISOString() });
+        onSlotSelect({ resourceId, start: wallClockDateToIso(start, timeZone), end: wallClockDateToIso(end, timeZone) });
     };
 
     const formatActionTime = (dateIso: string) =>
-        new Date(dateIso).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
+        formatTimeInTimeZone(dateIso, timeZone);
 
     return (
         <div className="scheduler-root" onMouseMove={handleMouseMove} onMouseUp={handleMouseUp} onMouseLeave={handleMouseUp}>
@@ -379,7 +391,14 @@ export function StaffScheduler({ resources, events, viewMode, initialDate, compa
                             {resources.map((resource) => {
                                 const resourceEvents = positionedShifts.filter((e) => e.resourceId === resource.id);
                                 return (
-                                    <div key={resource.id} className="timeline-row" onClick={(ev) => handleSlotClick(ev, resource.id)}>
+                                    <div
+                                        key={resource.id}
+                                        className="timeline-row"
+                                        data-resource-id={resource.id}
+                                        data-resource-title={resource.title}
+                                        aria-label={`${resource.title} timeline row`}
+                                        onClick={(ev) => handleSlotClick(ev, resource.id)}
+                                    >
                                         <div
                                             className="timeline-grid"
                                             style={{
@@ -395,15 +414,16 @@ export function StaffScheduler({ resources, events, viewMode, initialDate, compa
 
                                         {resourceEvents.map((event) => {
                                             const colors = ROLE_PALETTE[event.extendedProps.role] ?? ROLE_PALETTE.DEFAULT;
-                                            const start = new Date(event.start).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false });
-                                            const end = new Date(event.end).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false });
+                                            const start = formatTimeInTimeZone(event.start, timeZone, false);
+                                            const end = formatTimeInTimeZone(event.end, timeZone, false);
                                             const isDragged = drag?.eventId === event.id;
                                             const offsetPx = isDragged ? dragDeltaHours * hourWidth : 0;
+                                            const offsetY = isDragged ? drag.currentY - drag.startY : 0;
                                             const left = clamp(event.left + offsetPx, 0, Math.max(0, timelineWidth - event.width));
 
                                             return (
                                                 <button
-                                                    key={event.id}
+                                                    key={event.segmentKey}
                                                     type="button"
                                                     onMouseDown={(ev) => handleDragStart(ev, event)}
                                                     onClick={(ev) => handleShiftClick(ev, event)}
@@ -415,15 +435,17 @@ export function StaffScheduler({ resources, events, viewMode, initialDate, compa
                                                         borderLeftColor: colors.border,
                                                         color: colors.text,
                                                         opacity: isDragged ? 0.8 : 1,
+                                                        transform: isDragged ? `translateY(${offsetY}px)` : undefined,
+                                                        zIndex: isDragged ? 7 : undefined,
                                                     }}
                                                 >
                                                     <span className="shift-time">{`${start}-${end}`}</span>
                                                     {viewMode !== 'week' ? <span className="shift-role">{event.extendedProps.role}</span> : null}
-                                                    {breakMarkersByShift.get(event.id)?.length ? (
+                                                    {breakMarkersByShift.get(event.segmentKey)?.length ? (
                                                         <div className="shift-markers" aria-hidden="true">
-                                                            {breakMarkersByShift.get(event.id)?.map((marker, i) => (
+                                                            {breakMarkersByShift.get(event.segmentKey)?.map((marker, i) => (
                                                                 <span
-                                                                    key={`${event.id}-marker-${i}`}
+                                                                    key={`${event.segmentKey}-marker-${i}`}
                                                                     className={`shift-marker ${marker.kind === 'lunch' ? 'shift-marker-lunch' : 'shift-marker-break'} ${marker.conflict ? 'shift-marker-conflict' : ''}`}
                                                                     style={{ left: `${marker.leftPct}%`, width: `${marker.widthPct}%` }}
                                                                 >

@@ -1,30 +1,61 @@
 import * as dns from 'dns/promises';
+import * as http from 'http';
+import * as https from 'https';
 import * as net from 'net';
 
 /**
  * Secure HTTP Client for outbound requests.
- * Wraps fetch with SSRF protection: DNS pinning and private IP blocking.
+ * Uses a validated DNS result for the socket connection, then blocks private,
+ * link-local, metadata, IPv6, unsupported-protocol, timeout, and redirect risks.
  * Architecture Part VII-A.4
  *
  * ALL outbound HTTP requests (webhooks, PDF import, OAuth) MUST use this client.
  * Direct fetch() calls to external URLs are banned by linting rules.
  */
 
-const PRIVATE_IP_RANGES = [
-    /^127\./,              // Loopback
-    /^10\./,               // Private Class A
-    /^172\.(1[6-9]|2\d|3[01])\./,  // Private Class B
-    /^192\.168\./,         // Private Class C
-    /^169\.254\./,         // Link-local
-    /^0\./,                // Current network
-    /^100\.(6[4-9]|[7-9]\d|1[0-2]\d)\./, // CGNAT
-];
+const DEFAULT_TIMEOUT_MS = 10000;
+const MAX_TIMEOUT_MS = 30000;
+const DEFAULT_MAX_RESPONSE_BYTES = 256 * 1024;
+const MAX_RESPONSE_BYTES = 1024 * 1024;
+const METADATA_HOSTNAMES = new Set([
+    '169.254.169.254',
+    'metadata.google.internal',
+]);
+
+type AllowedProtocol = 'http:' | 'https:';
+type RedirectMode = 'error' | 'manual';
+
+type ResolvedAddress = {
+    address: string;
+    family: number;
+};
 
 function isPrivateIP(ip: string): boolean {
     if (net.isIPv6(ip)) {
-        return ip === '::1' || ip.startsWith('fe80:') || ip.startsWith('fc00:') || ip.startsWith('fd');
+        return true;
     }
-    return PRIVATE_IP_RANGES.some(range => range.test(ip));
+
+    const parts = ip.split('.').map((part) => Number.parseInt(part, 10));
+    if (parts.length !== 4 || parts.some((part) => !Number.isInteger(part) || part < 0 || part > 255)) {
+        return true;
+    }
+
+    const [a, b, c] = parts;
+    return (
+        a === 0 ||
+        a === 10 ||
+        a === 127 ||
+        (a === 100 && b >= 64 && b <= 127) ||
+        (a === 169 && b === 254) ||
+        (a === 172 && b >= 16 && b <= 31) ||
+        (a === 192 && b === 168) ||
+        (a === 192 && b === 0 && c === 0) ||
+        (a === 192 && b === 0 && c === 2) ||
+        (a === 198 && (b === 18 || b === 19)) ||
+        (a === 198 && b === 51 && c === 100) ||
+        (a === 203 && b === 0 && c === 113) ||
+        a >= 224
+    );
 }
 
 export interface SecureRequestOptions {
@@ -32,45 +63,200 @@ export interface SecureRequestOptions {
     headers?: Record<string, string>;
     body?: string;
     timeoutMs?: number;
+    maxResponseBytes?: number;
+    allowedProtocols?: AllowedProtocol[];
+    redirect?: RedirectMode;
 }
 
 export async function secureHttpRequest(url: string, options: SecureRequestOptions = {}): Promise<Response> {
     const parsed = new URL(url);
+    const allowedProtocols = options.allowedProtocols ?? defaultAllowedProtocols();
+    if (!allowedProtocols.includes(parsed.protocol as AllowedProtocol)) {
+        throw new Error(`Unsupported outbound protocol: ${parsed.protocol}`);
+    }
 
-    // 1. Resolve DNS and validate IP is not private
-    const resolved = await dns.resolve4(parsed.hostname).catch(() => []);
+    if (parsed.username || parsed.password) {
+        throw new Error('Outbound URLs with embedded credentials are not allowed');
+    }
+
+    const hostname = normalizeHostname(parsed.hostname);
+    if (!hostname) {
+        throw new Error('Outbound URL must include a hostname');
+    }
+
+    if (METADATA_HOSTNAMES.has(hostname)) {
+        throw new Error('SSRF blocked: cloud metadata endpoint');
+    }
+
+    const resolved = await resolveHostname(hostname);
     if (resolved.length === 0) {
         throw new Error(`DNS resolution failed for ${parsed.hostname}`);
     }
 
-    for (const ip of resolved) {
-        if (isPrivateIP(ip)) {
-            throw new Error(`SSRF blocked: ${parsed.hostname} resolves to private IP ${ip}`);
+    for (const entry of resolved) {
+        if (entry.family === 6 || net.isIPv6(entry.address)) {
+            throw new Error(`SSRF blocked: IPv6 destination ${entry.address}`);
+        }
+        if (isPrivateIP(entry.address)) {
+            throw new Error(`SSRF blocked: ${parsed.hostname} resolves to private IP ${entry.address}`);
         }
     }
 
-    // 2. Block cloud metadata endpoints
-    if (parsed.hostname === '169.254.169.254' || parsed.hostname === 'metadata.google.internal') {
-        throw new Error('SSRF blocked: cloud metadata endpoint');
-    }
-
-    // 3. Only allow HTTPS in production
     if (process.env.NODE_ENV === 'production' && parsed.protocol !== 'https:') {
         throw new Error('Only HTTPS is allowed for outbound requests in production');
     }
 
-    // 4. Hard timeout (default 10s)
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), options.timeoutMs || 10000);
+    return requestPinnedAddress(parsed, hostname, resolved[0].address, options);
+}
+
+function defaultAllowedProtocols(): AllowedProtocol[] {
+    return process.env.NODE_ENV === 'production' ? ['https:'] : ['http:', 'https:'];
+}
+
+function normalizeHostname(hostname: string): string {
+    return hostname
+        .trim()
+        .toLowerCase()
+        .replace(/^\[(.*)]$/, '$1')
+        .replace(/\.$/, '');
+}
+
+async function resolveHostname(hostname: string): Promise<ResolvedAddress[]> {
+    const literalFamily = net.isIP(hostname);
+    if (literalFamily) {
+        return [{ address: hostname, family: literalFamily }];
+    }
 
     try {
-        return await fetch(url, {
-            method: options.method || 'GET',
-            headers: options.headers,
-            body: options.body,
-            signal: controller.signal,
-        });
-    } finally {
-        clearTimeout(timeout);
+        const addresses = await dns.lookup(hostname, { all: true, verbatim: true });
+        return addresses.map((entry) => ({ address: entry.address, family: entry.family }));
+    } catch {
+        return [];
     }
+}
+
+function requestPinnedAddress(
+    parsed: URL,
+    normalizedHostname: string,
+    address: string,
+    options: SecureRequestOptions,
+): Promise<Response> {
+    const timeoutMs = normalizeTimeout(options.timeoutMs);
+    const maxResponseBytes = normalizeMaxResponseBytes(options.maxResponseBytes);
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), timeoutMs);
+    const transport = parsed.protocol === 'https:' ? https : http;
+    const requestOptions: http.RequestOptions & https.RequestOptions = {
+        protocol: parsed.protocol,
+        hostname: address,
+        port: parsed.port ? Number(parsed.port) : parsed.protocol === 'https:' ? 443 : 80,
+        path: `${parsed.pathname}${parsed.search}`,
+        method: options.method || 'GET',
+        headers: requestHeaders(options.headers, parsed, options.body),
+        signal: controller.signal,
+    };
+
+    if (parsed.protocol === 'https:' && !net.isIP(normalizedHostname)) {
+        requestOptions.servername = normalizedHostname;
+    }
+
+    return new Promise<Response>((resolve, reject) => {
+        const req = transport.request(requestOptions, (res) => {
+            const status = res.statusCode ?? 0;
+            const redirectMode = options.redirect ?? 'error';
+            if (redirectMode === 'error' && status >= 300 && status < 400) {
+                res.resume();
+                reject(new Error('Outbound redirects are disabled'));
+                return;
+            }
+
+            const chunks: Buffer[] = [];
+            let receivedBytes = 0;
+            res.on('data', (chunk) => {
+                const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+                receivedBytes += buffer.length;
+                if (receivedBytes > maxResponseBytes) {
+                    req.destroy(new Error('Outbound response exceeded size limit'));
+                    return;
+                }
+                chunks.push(buffer);
+            });
+            res.on('end', () => {
+                clearTimeout(timeout);
+                const body = Buffer.concat(chunks);
+                resolve(new Response(canHaveResponseBody(status) && body.length > 0 ? body : null, {
+                    status,
+                    statusText: res.statusMessage,
+                    headers: responseHeaders(res.headers),
+                }));
+            });
+            res.on('error', (error) => {
+                clearTimeout(timeout);
+                reject(error);
+            });
+        });
+
+        req.on('error', (error) => {
+            clearTimeout(timeout);
+            reject(error);
+        });
+
+        if (options.body) {
+            req.write(options.body);
+        }
+        req.end();
+    }).finally(() => clearTimeout(timeout));
+}
+
+function requestHeaders(headers: Record<string, string> | undefined, parsed: URL, body: string | undefined): Record<string, string> {
+    const requestHeaderMap: Record<string, string> = {};
+    for (const [key, value] of Object.entries(headers ?? {})) {
+        if (key.toLowerCase() !== 'host') {
+            requestHeaderMap[key] = value;
+        }
+    }
+
+    requestHeaderMap.Host = parsed.host;
+    if (body && !hasHeader(requestHeaderMap, 'content-length')) {
+        requestHeaderMap['Content-Length'] = Buffer.byteLength(body).toString();
+    }
+
+    return requestHeaderMap;
+}
+
+function hasHeader(headers: Record<string, string>, name: string): boolean {
+    return Object.keys(headers).some((key) => key.toLowerCase() === name.toLowerCase());
+}
+
+function responseHeaders(headers: http.IncomingHttpHeaders): Record<string, string> {
+    const responseHeaderMap: Record<string, string> = {};
+    for (const [key, value] of Object.entries(headers)) {
+        if (Array.isArray(value)) {
+            responseHeaderMap[key] = value.join(', ');
+        } else if (value !== undefined) {
+            responseHeaderMap[key] = String(value);
+        }
+    }
+
+    return responseHeaderMap;
+}
+
+function canHaveResponseBody(status: number): boolean {
+    return status !== 204 && status !== 304;
+}
+
+function normalizeTimeout(timeoutMs?: number): number {
+    if (!Number.isFinite(timeoutMs) || !timeoutMs || timeoutMs <= 0) {
+        return DEFAULT_TIMEOUT_MS;
+    }
+
+    return Math.min(Math.floor(timeoutMs), MAX_TIMEOUT_MS);
+}
+
+function normalizeMaxResponseBytes(maxResponseBytes?: number): number {
+    if (!Number.isFinite(maxResponseBytes) || !maxResponseBytes || maxResponseBytes <= 0) {
+        return DEFAULT_MAX_RESPONSE_BYTES;
+    }
+
+    return Math.min(Math.floor(maxResponseBytes), MAX_RESPONSE_BYTES);
 }

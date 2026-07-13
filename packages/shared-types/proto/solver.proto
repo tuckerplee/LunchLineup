@@ -13,6 +13,23 @@ message ScheduleRequest {
   string end_date = 4;
   repeated StaffMember staff = 5;
   repeated Constraint constraints = 6;
+  string schedule_id = 7;
+  repeated ExistingWeeklyMinutes existing_weekly_minutes = 8;
+  repeated ExistingShift existing_shifts = 9;
+}
+
+message ExistingWeeklyMinutes {
+  string staff_id = 1;
+  string week_start_date = 2;
+  int32 minutes = 3;
+}
+
+message ExistingShift {
+  string id = 1;
+  string staff_id = 2;
+  string location_id = 3;
+  string start_time = 4;
+  string end_time = 5;
 }
 
 message StaffMember {
@@ -20,6 +37,7 @@ message StaffMember {
   string name = 2;
   repeated string skills = 3;
   repeated availability availability = 4;
+  bool availability_configured = 5;
 }
 
 message availability {
@@ -37,6 +55,17 @@ message ScheduleResponse {
   string schedule_id = 1;
   repeated Shift shifts = 2;
   string status = 3;
+  string reason = 4;
+  repeated InfeasibleDetail infeasible_details = 5;
+}
+
+message InfeasibleDetail {
+  string code = 1;
+  string message = 2;
+  string date = 3;
+  string skill = 4;
+  int32 required = 5;
+  int32 available = 6;
 }
 
 message Shift {
@@ -51,4 +80,5 @@ message Break {
   string start_time = 1;
   string end_time = 2;
   bool paid = 3;
+  string type = 4;
 }

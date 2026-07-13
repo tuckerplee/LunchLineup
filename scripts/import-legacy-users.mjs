@@ -1,14 +1,31 @@
 #!/usr/bin/env node
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import process from 'node:process';
-import { PrismaClient, PermissionCategory, PlanTier, TenantStatus, UserRole } from '@prisma/client';
+import { assertLegacyImportTarget } from './data-target-guard.mjs';
 
+const args = process.argv.slice(2);
+const exportPath = args[0];
+if (!exportPath) usage();
+const reportFlagIndex = args.indexOf('--report');
+const reportPath = reportFlagIndex >= 0
+  ? args[reportFlagIndex + 1]
+  : path.resolve(process.cwd(), '..', '..', 'exports', `imported-user-credentials-${new Date().toISOString().slice(0, 10).replace(/-/g, '')}.csv`);
+if (!reportPath) usage();
+
+const sourceBuffer = fs.readFileSync(exportPath);
+const sourceSha256 = crypto.createHash('sha256').update(sourceBuffer).digest('hex');
+assertLegacyImportTarget({ env: process.env, actualSourceSha256: sourceSha256 });
+const sourcePayload = sourceBuffer.toString('utf8').replace(/^\uFEFF/, '');
+const source = JSON.parse(sourcePayload);
+const { PrismaClient, PermissionCategory, PlanTier, TenantStatus, UserRole } = await import('@prisma/client');
 const prisma = new PrismaClient();
 
 const PERMISSIONS = [
   ['dashboard:access', 'Access dashboard', 'Sign in to the tenant dashboard.', PermissionCategory.AUTH],
   ['admin_portal:access', 'Access admin portal', 'Access the system administration portal.', PermissionCategory.ADMIN],
+  ['tenant_account:lifecycle', 'Manage tenant lifecycle', 'Cancel or request deletion for a tenant account.', PermissionCategory.ADMIN],
   ['auth:login_email', 'Email login', 'Authenticate with work email and one-time passcode.', PermissionCategory.AUTH],
   ['auth:login_pin', 'PIN login', 'Authenticate with username and PIN.', PermissionCategory.AUTH],
   ['auth:login_password', 'Password login', 'Authenticate with migrated username and password.', PermissionCategory.AUTH],
@@ -39,6 +56,7 @@ const PERMISSIONS = [
 ];
 
 const ALL_PERMISSION_KEYS = PERMISSIONS.map(([key]) => key);
+const CUSTOMER_ADMIN_EXCLUDED_PERMISSION_KEYS = new Set(['admin_portal:access']);
 const ROLE_DEFINITIONS = [
   { slug: 'super-admin', name: 'System Admin', legacyRole: UserRole.SUPER_ADMIN, permissions: ALL_PERMISSION_KEYS },
   {
@@ -46,7 +64,7 @@ const ROLE_DEFINITIONS = [
     name: 'Admin',
     legacyRole: UserRole.ADMIN,
     isDefault: true,
-    permissions: ALL_PERMISSION_KEYS.filter((key) => key !== 'admin_portal:access'),
+    permissions: ALL_PERMISSION_KEYS.filter((key) => !CUSTOMER_ADMIN_EXCLUDED_PERMISSION_KEYS.has(key)),
   },
   {
     slug: 'manager',
@@ -92,7 +110,7 @@ const ROLE_DEFINITIONS = [
 ];
 
 function usage() {
-  console.error('Usage: node scripts/import-legacy-users.mjs <legacy-export.json> [--report <credentials.csv>]');
+  console.error('Usage: DATA_TARGET_ENV=<test|disposable|development|staging|production-cutover> node scripts/import-legacy-users.mjs <legacy-export.json> [--report <credentials.csv>]');
   process.exit(2);
 }
 
@@ -112,6 +130,13 @@ function normalizeUsername(value, fallback) {
 
 function isEmail(value) {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(value ?? ''));
+}
+
+function legacyRolesForUser(user, companyRoles, storeRoles) {
+  return [
+    ...companyRoles.filter((role) => Number(role.user_id) === Number(user.id)).map((role) => role.role),
+    ...storeRoles.filter((role) => Number(role.user_id) === Number(user.id)).map((role) => role.role),
+  ];
 }
 
 async function uniqueUsername(tenantId, base, reserved) {
@@ -171,14 +196,15 @@ async function ensureRoles(tenantId) {
 }
 
 function userRoleForLegacy(user, companyRoles, storeRoles) {
-  const roles = [
-    ...companyRoles.filter((role) => Number(role.user_id) === Number(user.id)).map((role) => role.role),
-    ...storeRoles.filter((role) => Number(role.user_id) === Number(user.id)).map((role) => role.role),
-  ];
-  if (roles.includes('super_admin')) return UserRole.SUPER_ADMIN;
+  const roles = legacyRolesForUser(user, companyRoles, storeRoles);
+  if (roles.includes('super_admin')) return UserRole.ADMIN;
   if (roles.includes('company_admin')) return UserRole.ADMIN;
   if (roles.includes('store') || roles.includes('schedule')) return UserRole.MANAGER;
   return UserRole.STAFF;
+}
+
+function importNoteForLegacyRoles(roles) {
+  return roles.includes('super_admin') ? 'legacy_super_admin_downgraded_to_tenant_admin' : '';
 }
 
 function staffRole(staff) {
@@ -192,18 +218,10 @@ function csvEscape(value) {
 }
 
 async function main() {
-  const args = process.argv.slice(2);
-  const exportPath = args[0];
-  if (!exportPath) usage();
-  const reportFlagIndex = args.indexOf('--report');
-  const reportPath = reportFlagIndex >= 0 ? args[reportFlagIndex + 1] : path.resolve(process.cwd(), '..', '..', 'exports', `imported-user-credentials-${new Date().toISOString().slice(0, 10).replace(/-/g, '')}.csv`);
-  if (!reportPath) usage();
-
-  const source = JSON.parse(fs.readFileSync(exportPath, 'utf8').replace(/^\uFEFF/, ''));
   const reservedUsernames = new Set();
   const tenantByLegacyCompany = new Map();
   const locationByLegacyStore = new Map();
-  const reportRows = [['source_type', 'legacy_id', 'name', 'username', 'role', 'login_method', 'has_password_hash']];
+  const reportRows = [['source_type', 'legacy_id', 'name', 'username', 'role', 'login_method', 'has_password_hash', 'import_note']];
 
   for (const company of source.companies ?? []) {
     const tenant = await prisma.tenant.upsert({
@@ -251,6 +269,7 @@ async function main() {
   for (const legacyUser of source.users ?? []) {
     const tenant = tenantByLegacyCompany.get(Number(legacyUser.company_id));
     if (!tenant) continue;
+    const legacyRoles = legacyRolesForUser(legacyUser, source.user_company_roles ?? [], source.user_store_roles ?? []);
     const role = userRoleForLegacy(legacyUser, source.user_company_roles ?? [], source.user_store_roles ?? []);
     const roleByLegacy = await ensureRoles(tenant.id);
     const sourceUsername = legacyUser.username_plain ?? legacyUser.username ?? `legacy.user.${legacyUser.id}`;
@@ -283,9 +302,9 @@ async function main() {
     });
     const roleRow = roleByLegacy.get(role);
     if (roleRow) {
-      await prisma.roleAssignment.createMany({ data: [{ userId: user.id, roleId: roleRow.id }], skipDuplicates: true });
+      await prisma.roleAssignment.createMany({ data: [{ tenantId: tenant.id, userId: user.id, roleId: roleRow.id }], skipDuplicates: true });
     }
-    reportRows.push(['user', legacyUser.id, user.name, username, role, passwordHash ? 'legacy-password' : 'none', passwordHash ? 'true' : 'false']);
+    reportRows.push(['user', legacyUser.id, user.name, username, role, passwordHash ? 'legacy-password' : 'none', passwordHash ? 'true' : 'false', importNoteForLegacyRoles(legacyRoles)]);
   }
 
   for (const staff of source.staff ?? []) {
@@ -318,9 +337,9 @@ async function main() {
     });
     const roleRow = roleByLegacy.get(role);
     if (roleRow) {
-      await prisma.roleAssignment.createMany({ data: [{ userId: user.id, roleId: roleRow.id }], skipDuplicates: true });
+      await prisma.roleAssignment.createMany({ data: [{ tenantId: tenant.id, userId: user.id, roleId: roleRow.id }], skipDuplicates: true });
     }
-    reportRows.push(['staff', staff.id, user.name, username, role, 'none', 'false']);
+    reportRows.push(['staff', staff.id, user.name, username, role, 'none', 'false', '']);
   }
 
   fs.mkdirSync(path.dirname(reportPath), { recursive: true });

@@ -24,7 +24,7 @@ cd "$REMOTE_PATH"
 docker ps --format 'table {{.Names}}\t{{.Status}}'
 echo
 echo "===== ${svc} logs (tail=${TAIL}) ====="
-docker logs "lunchlineup-${svc}" --tail "${TAIL}" 2>&1
+docker compose logs --tail "${TAIL}" "$svc" 2>&1
 EOF
 }
 
@@ -40,7 +40,7 @@ if [[ -n "$MATCH" ]]; then
   CMD+=$'\n\n'
   CMD+="echo \"===== filtered (${MATCH}) =====\""
   CMD+=$'\n'
-  CMD+="(docker logs lunchlineup-web --tail \"${TAIL}\" 2>&1; docker logs lunchlineup-api --tail \"${TAIL}\" 2>&1) | grep -E \"${MATCH}\" || true"
+  CMD+="(docker compose logs --tail \"${TAIL}\" web 2>&1; docker compose logs --tail \"${TAIL}\" api 2>&1) | grep -E \"${MATCH}\" || true"
 fi
 
 ssh -i "$SSH_KEY" -o StrictHostKeyChecking=no "$REMOTE_USER@$REMOTE_HOST" "$CMD"

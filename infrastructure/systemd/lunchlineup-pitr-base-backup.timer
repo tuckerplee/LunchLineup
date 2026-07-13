@@ -1,0 +1,11 @@
+[Unit]
+Description=Daily LunchLineup verified PostgreSQL PITR base backup
+
+[Timer]
+OnCalendar=*-*-* 03:17:00
+RandomizedDelaySec=20m
+Persistent=true
+Unit=lunchlineup-pitr-base-backup.service
+
+[Install]
+WantedBy=timers.target

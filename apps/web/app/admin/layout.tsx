@@ -2,6 +2,7 @@ import Link from 'next/link';
 import { getServerUser } from '@/lib/server-auth';
 import { redirect } from 'next/navigation';
 import { LunchLineupMark } from '@/components/branding/LunchLineupMark';
+import { LogOut } from 'lucide-react';
 import { AdminNav } from './AdminNav';
 
 export default async function AdminLayout({ children }: { children: React.ReactNode }) {
@@ -90,6 +91,15 @@ export default async function AdminLayout({ children }: { children: React.ReactN
                     </div>
 
                     <div style={{ display: 'flex', alignItems: 'center', gap: '0.7rem' }}>
+                        <Link
+                            href="/auth/logout"
+                            prefetch={false}
+                            className="workspace-mobile-signout btn btn-secondary btn-sm"
+                            aria-label="Sign out"
+                        >
+                            <LogOut aria-hidden="true" size={16} />
+                            <span className="workspace-mobile-signout-label">Sign out</span>
+                        </Link>
                         <span className="badge" style={{ background: '#ffeef2', borderColor: '#ffcfda', color: '#cb3653' }}>
                             {environment}
                         </span>

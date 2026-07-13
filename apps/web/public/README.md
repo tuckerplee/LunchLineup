@@ -7,4 +7,4 @@ This folder is served by Next.js and Storybook as the web app public asset root.
 - `README.md`: this folder guide.
 - `favicon.ico`: browser fallback favicon.
 - `favicon.svg`: primary LunchLineup favicon used by `app/layout.tsx`.
-- `sw.js`: service worker registered by `app/layout.tsx`.
+- `sw.js`: recovery service worker retained for old clients; the current root layout does not register it.

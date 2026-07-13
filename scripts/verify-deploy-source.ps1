@@ -16,8 +16,24 @@ if ($status.Length -gt 0) {
     Fail "Working tree is dirty; commit and push before deploying."
 }
 
-$upstream = (git rev-parse --abbrev-ref --symbolic-full-name "@{u}").Trim()
-$upstreamSha = (git rev-parse "@{u}").Trim()
+$upstream = ""
+$upstreamSha = ""
+if ($env:GITHUB_ACTIONS -eq "true") {
+    if ($env:GITHUB_EVENT_NAME -ne "push") {
+        Fail "GitHub Actions deploy-source verification requires a push event."
+    }
+    if (-not $env:GITHUB_REF -or -not $env:GITHUB_REF.StartsWith("refs/heads/")) {
+        Fail "GitHub Actions deploy-source verification requires a branch ref."
+    }
+    if ($env:GITHUB_SHA -ne $currentSha) {
+        Fail "GitHub Actions SHA $env:GITHUB_SHA does not match HEAD $currentSha."
+    }
+    $upstream = $env:GITHUB_REF
+    $upstreamSha = ((git ls-remote origin $env:GITHUB_REF) -split "\s+")[0].Trim()
+} else {
+    $upstream = (git rev-parse --abbrev-ref --symbolic-full-name "@{u}").Trim()
+    $upstreamSha = (git rev-parse "@{u}").Trim()
+}
 if ($currentSha -ne $upstreamSha) {
     Fail "HEAD $currentSha does not match upstream $upstream at $upstreamSha."
 }

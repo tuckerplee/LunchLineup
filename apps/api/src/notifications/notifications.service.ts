@@ -1,8 +1,7 @@
-import { Inject, Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, Optional } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { PrismaClient } from '@lunchlineup/db';
 import Redis from 'ioredis';
-import { NOTIFICATIONS_PRISMA } from './notifications.constants';
+import { TenantPrismaService } from '../database/tenant-prisma.service';
 
 export enum NotificationType {
     INFO = 'INFO',
@@ -18,11 +17,13 @@ export enum NotificationType {
 export class NotificationsService {
     private readonly logger = new Logger(NotificationsService.name);
     private readonly redis: Redis | null;
+    private readonly tenantDb: TenantPrismaService;
 
     constructor(
         private readonly configService: ConfigService,
-        @Inject(NOTIFICATIONS_PRISMA) private readonly prisma: PrismaClient
+        @Optional() tenantDb?: TenantPrismaService,
     ) {
+        this.tenantDb = tenantDb ?? new TenantPrismaService();
         const redisUrl = this.configService.get<string>('REDIS_URL');
         this.redis = redisUrl
             ? new Redis(redisUrl, {
@@ -40,7 +41,7 @@ export class NotificationsService {
         this.logger.log(`Handling ${type} notification to user ${userId}: ${title}`);
 
         // 1. Save to DB
-        const notification = await this.prisma.notification.create({
+        const notification = await this.tenantDb.withTenant(tenantId, (tx) => tx.notification.create({
             data: {
                 tenantId,
                 userId,
@@ -48,7 +49,7 @@ export class NotificationsService {
                 title,
                 body
             }
-        });
+        }));
 
         // 2. Push via WebSocket using Redis Pub/Sub
         // We broadcast to a dedicated user channel. Websocket gateways will listen to this.
@@ -78,7 +79,7 @@ export class NotificationsService {
         const unreadOnly = Boolean(options?.unreadOnly);
         const take = Math.min(Math.max(options?.limit ?? 20, 1), 100);
 
-        return this.prisma.notification.findMany({
+        return this.tenantDb.withTenant(tenantId, (tx) => tx.notification.findMany({
             where: {
                 tenantId,
                 userId,
@@ -88,17 +89,17 @@ export class NotificationsService {
                 createdAt: 'desc'
             },
             take,
-        });
+        }));
     }
 
     async getUnreadCount(tenantId: string, userId: string) {
-        return this.prisma.notification.count({
+        return this.tenantDb.withTenant(tenantId, (tx) => tx.notification.count({
             where: {
                 tenantId,
                 userId,
                 readAt: null,
             },
-        });
+        }));
     }
 
     /**
@@ -107,7 +108,7 @@ export class NotificationsService {
     async markAsRead(notificationIds: string[], tenantId: string, userId: string) {
         if (notificationIds.length === 0) return { updated: 0 };
 
-        const result = await this.prisma.notification.updateMany({
+        const result = await this.tenantDb.withTenant(tenantId, (tx) => tx.notification.updateMany({
             where: {
                 id: { in: notificationIds },
                 tenantId,
@@ -117,13 +118,13 @@ export class NotificationsService {
             data: {
                 readAt: new Date()
             }
-        });
+        }));
 
         return { updated: result.count };
     }
 
     async markAllAsRead(tenantId: string, userId: string) {
-        await this.prisma.notification.updateMany({
+        await this.tenantDb.withTenant(tenantId, (tx) => tx.notification.updateMany({
             where: {
                 tenantId,
                 userId,
@@ -132,7 +133,7 @@ export class NotificationsService {
             data: {
                 readAt: new Date()
             }
-        });
+        }));
     }
 
     async getFeed(tenantId: string, userId: string, options?: { unreadOnly?: boolean; limit?: number }) {

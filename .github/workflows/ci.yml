@@ -5,19 +5,42 @@ on:
     branches: [ main, develop ]
   pull_request:
     branches: [ main, develop ]
+  workflow_dispatch:
+    inputs:
+      bootstrap_release_registry:
+        description: Populate an empty registry from the independently retained current-live release
+        required: true
+        type: boolean
+        default: false
+      bootstrap_live_source_sha:
+        description: Exact 40-character source SHA currently served by production
+        required: false
+        type: string
+      bootstrap_live_release_bundle_uri:
+        description: Independent https:// or s3:// URI for the retained current-live v2 release bundle
+        required: false
+        type: string
+      bootstrap_confirmation:
+        description: Exact bootstrap-current-live-release:<live SHA> confirmation
+        required: false
+        type: string
 
 env:
   REGISTRY: ghcr.io
   IMAGE_PREFIX: ghcr.io/tuckerplee/lunchlineup
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
-  # ─── Stage 1-2: Static Analysis ───
+  # --- Stage 1-2: Static Analysis ---
   static-analysis:
     name: "Stage 1-2: Lint, Format & Type Check"
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: '22'
           cache: 'npm'
@@ -29,46 +52,60 @@ jobs:
       - name: "2b. Migration SaaS and hygiene tests"
         run: npm run test:migration
 
-  # ─── Stage 3: SAST Security Scan ───
+  terraform-validation:
+    name: "Terraform: Format, Validate & Test"
+    needs: static-analysis
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd # v3.1.2
+        with:
+          terraform_version: '1.13.5'
+          terraform_wrapper: false
+      - run: terraform fmt -check -recursive infrastructure/terraform
+      - run: terraform -chdir=infrastructure/terraform/production init -backend=false -input=false
+      - run: terraform -chdir=infrastructure/terraform/production validate
+      - run: terraform -chdir=infrastructure/terraform/production test
+  # --- Stage 3: SAST Security Scan ---
   sast:
     name: "Stage 3: SAST (Semgrep)"
     needs: static-analysis
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: returntocorp/semgrep-action@v1
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: returntocorp/semgrep-action@713efdd345f3035192eaa63f56867b88e63e4e5d # v1
         with:
           config: p/default
 
-  # ─── Stage 4: Dependency Audit ───
+  # --- Stage 4: Dependency Audit ---
   dependency-audit:
-    name: "Stage 4: Dependency Audit"
+    # --- Stage 4: Dependency Audit ---
     needs: static-analysis
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: '22'
           cache: 'npm'
       - run: npm ci
       - name: npm audit
-        run: npm audit --audit-level=high
+        run: npm run audit:prod
       - name: License check
-        run: npx license-checker --failOn "GPL-2.0;GPL-3.0"
+        run: npx --yes license-checker@25.0.1 --failOn "GPL-2.0;GPL-3.0"
 
-  # ─── Stage 5: Unit Tests (90%+ coverage gate) ───
+  # --- Stage 5: Unit Tests (90%+ coverage gate) ---
   unit-tests:
     name: "Stage 5: Unit Tests"
     needs: [sast, dependency-audit]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: '22'
           cache: 'npm'
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: '3.12'
       - run: npm ci
@@ -81,8 +118,12 @@ jobs:
           cd apps/engine
           pip install -r requirements.txt
           python -m pytest --cov=src --cov-fail-under=90
+      - name: Run worker unit tests
+        run: |
+          pip install -r apps/worker/requirements.txt
+          python -m unittest discover -s apps/worker/tests
 
-  # ─── Stage 6-7: Build & Push Docker Images ───
+  # --- Stage 6-7: Build & Push Docker Images ---
   build-images:
     name: "Stage 6-7: Build Docker Images"
     needs: unit-tests
@@ -90,50 +131,264 @@ jobs:
     permissions:
       contents: read
       packages: write
+    outputs:
+      api_ref: ${{ steps.release_manifest.outputs.api_ref }}
+      web_ref: ${{ steps.release_manifest.outputs.web_ref }}
+      engine_ref: ${{ steps.release_manifest.outputs.engine_ref }}
+      worker_ref: ${{ steps.release_manifest.outputs.worker_ref }}
+      migrate_ref: ${{ steps.release_manifest.outputs.migrate_ref }}
+      control_ref: ${{ steps.release_manifest.outputs.control_ref }}
+      backup_ref: ${{ steps.release_manifest.outputs.backup_ref }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: docker/setup-buildx-action@v3
-      - uses: docker/login-action@v3
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
       - name: Build & Push API
-        uses: docker/build-push-action@v5
+        id: build_api
+        uses: docker/build-push-action@ca052bb54ab0790a636c9b5f226502c73d547a25 # v5
         with:
           context: .
           file: infrastructure/docker/Dockerfile.api
-          push: ${{ github.ref == 'refs/heads/main' }}
+          push: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
           tags: ${{ env.IMAGE_PREFIX }}/api:${{ github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+      - name: Verify web public build config
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        env:
+          NEXT_PUBLIC_API_URL: ${{ vars.NEXT_PUBLIC_API_URL }}
+          NEXT_PUBLIC_WS_URL: ${{ vars.NEXT_PUBLIC_WS_URL }}
+          NEXT_PUBLIC_OIDC_ENABLED: ${{ vars.NEXT_PUBLIC_OIDC_ENABLED }}
+          NEXT_PUBLIC_SIGNUP_MODE: ${{ vars.NEXT_PUBLIC_SIGNUP_MODE }}
+          NEXT_PUBLIC_TURNSTILE_SITE_KEY: ${{ vars.NEXT_PUBLIC_TURNSTILE_SITE_KEY }}
+          NEXT_PUBLIC_PRIVACY_CONTACT_EMAIL: ${{ vars.NEXT_PUBLIC_PRIVACY_CONTACT_EMAIL }}
+          NEXT_PUBLIC_SUPPORT_CONTACT_EMAIL: ${{ vars.NEXT_PUBLIC_SUPPORT_CONTACT_EMAIL }}
+          NEXT_PUBLIC_DPA_CONTACT_EMAIL: ${{ vars.NEXT_PUBLIC_DPA_CONTACT_EMAIL }}
+          NEXT_PUBLIC_APP_ORIGIN: ${{ vars.NEXT_PUBLIC_APP_ORIGIN }}
+          NEXT_PUBLIC_APP_URL: ${{ vars.NEXT_PUBLIC_APP_URL }}
+          NEXT_PUBLIC_APP_ENV: ${{ vars.NEXT_PUBLIC_APP_ENV }}
+        run: |
+          set -euo pipefail
+          for name in \
+            NEXT_PUBLIC_API_URL \
+            NEXT_PUBLIC_WS_URL \
+            NEXT_PUBLIC_OIDC_ENABLED \
+            NEXT_PUBLIC_SIGNUP_MODE \
+            NEXT_PUBLIC_PRIVACY_CONTACT_EMAIL \
+            NEXT_PUBLIC_SUPPORT_CONTACT_EMAIL \
+            NEXT_PUBLIC_DPA_CONTACT_EMAIL \
+            NEXT_PUBLIC_APP_ORIGIN \
+            NEXT_PUBLIC_APP_URL \
+            NEXT_PUBLIC_APP_ENV
+          do
+            if [ -z "${!name:-}" ]; then
+              echo "$name is required for main-branch web image builds." >&2
+              exit 1
+            fi
+          done
+          case "$NEXT_PUBLIC_API_URL" in
+            https://*|/api/*) ;;
+            *) echo "NEXT_PUBLIC_API_URL must be https or a same-origin /api path." >&2; exit 1 ;;
+          esac
+          case "$NEXT_PUBLIC_WS_URL" in
+            wss://*) ;;
+            *) echo "NEXT_PUBLIC_WS_URL must use wss for main-branch web image builds." >&2; exit 1 ;;
+          esac
+          case "$NEXT_PUBLIC_WS_URL" in
+            *localhost*|*127.0.0.1*) echo "NEXT_PUBLIC_WS_URL must not point at localhost in release images." >&2; exit 1 ;;
+          esac
+          if [ "$NEXT_PUBLIC_SIGNUP_MODE" = "open" ] && [ -z "${NEXT_PUBLIC_TURNSTILE_SITE_KEY:-}" ]; then
+            echo "NEXT_PUBLIC_TURNSTILE_SITE_KEY is required when NEXT_PUBLIC_SIGNUP_MODE=open." >&2
+            exit 1
+          fi
       - name: Build & Push Web
-        uses: docker/build-push-action@v5
+        id: build_web
+        uses: docker/build-push-action@ca052bb54ab0790a636c9b5f226502c73d547a25 # v5
         with:
           context: .
           file: infrastructure/docker/Dockerfile.web
-          push: ${{ github.ref == 'refs/heads/main' }}
+          push: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
           tags: ${{ env.IMAGE_PREFIX }}/web:${{ github.sha }}
+          build-args: |
+            NEXT_PUBLIC_API_URL=${{ vars.NEXT_PUBLIC_API_URL || '/api/v1' }}
+            NEXT_PUBLIC_WS_URL=${{ vars.NEXT_PUBLIC_WS_URL || 'ws://localhost:3001' }}
+            NEXT_PUBLIC_OIDC_ENABLED=${{ vars.NEXT_PUBLIC_OIDC_ENABLED || 'false' }}
+            NEXT_PUBLIC_SIGNUP_MODE=${{ vars.NEXT_PUBLIC_SIGNUP_MODE || 'closed_beta' }}
+            NEXT_PUBLIC_TURNSTILE_SITE_KEY=${{ vars.NEXT_PUBLIC_TURNSTILE_SITE_KEY || '' }}
+            NEXT_PUBLIC_PRIVACY_CONTACT_EMAIL=${{ vars.NEXT_PUBLIC_PRIVACY_CONTACT_EMAIL || 'privacy@lunchlineup.example' }}
+            NEXT_PUBLIC_SUPPORT_CONTACT_EMAIL=${{ vars.NEXT_PUBLIC_SUPPORT_CONTACT_EMAIL || 'support@lunchlineup.example' }}
+            NEXT_PUBLIC_DPA_CONTACT_EMAIL=${{ vars.NEXT_PUBLIC_DPA_CONTACT_EMAIL || 'privacy@lunchlineup.example' }}
+            NEXT_PUBLIC_APP_ORIGIN=${{ vars.NEXT_PUBLIC_APP_ORIGIN || 'http://localhost:3000' }}
+            NEXT_PUBLIC_APP_URL=${{ vars.NEXT_PUBLIC_APP_URL || 'http://localhost:3000' }}
+            NEXT_PUBLIC_APP_ENV=${{ vars.NEXT_PUBLIC_APP_ENV || 'production' }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
       - name: Build & Push Engine
-        uses: docker/build-push-action@v5
+        id: build_engine
+        uses: docker/build-push-action@ca052bb54ab0790a636c9b5f226502c73d547a25 # v5
         with:
           context: .
           file: infrastructure/docker/Dockerfile.engine
-          push: ${{ github.ref == 'refs/heads/main' }}
+          push: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
           tags: ${{ env.IMAGE_PREFIX }}/engine:${{ github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+      - name: Build & Push Worker
+        id: build_worker
+        uses: docker/build-push-action@ca052bb54ab0790a636c9b5f226502c73d547a25 # v5
+        with:
+          context: .
+          file: infrastructure/docker/Dockerfile.worker
+          push: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+          tags: ${{ env.IMAGE_PREFIX }}/worker:${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: Build & Push Migrations
+        id: build_migrate
+        uses: docker/build-push-action@ca052bb54ab0790a636c9b5f226502c73d547a25 # v5
+        with:
+          context: .
+          file: infrastructure/docker/Dockerfile.migrations
+          push: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+          tags: ${{ env.IMAGE_PREFIX }}/migrate:${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: Build & Push Control Plane
+        id: build_control
+        uses: docker/build-push-action@ca052bb54ab0790a636c9b5f226502c73d547a25 # v5
+        with:
+          context: .
+          file: infrastructure/docker/Dockerfile.control
+          push: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+          tags: ${{ env.IMAGE_PREFIX }}/control:${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: Build & Push Backup
+        id: build_backup
+        uses: docker/build-push-action@ca052bb54ab0790a636c9b5f226502c73d547a25 # v5
+        with:
+          context: .
+          file: infrastructure/docker/Dockerfile.backup
+          push: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+          tags: ${{ env.IMAGE_PREFIX }}/backup:${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: Write immutable release manifest
+        id: release_manifest
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        env:
+          API_DIGEST: ${{ steps.build_api.outputs.digest }}
+          WEB_DIGEST: ${{ steps.build_web.outputs.digest }}
+          ENGINE_DIGEST: ${{ steps.build_engine.outputs.digest }}
+          WORKER_DIGEST: ${{ steps.build_worker.outputs.digest }}
+          MIGRATE_DIGEST: ${{ steps.build_migrate.outputs.digest }}
+          CONTROL_DIGEST: ${{ steps.build_control.outputs.digest }}
+          BACKUP_DIGEST: ${{ steps.build_backup.outputs.digest }}
+          DOMAIN: ${{ vars.DOMAIN }}
+          PRODUCTION_API_HEALTH_URL: ${{ vars.PRODUCTION_API_HEALTH_URL }}
+          NEXT_PUBLIC_API_URL: ${{ vars.NEXT_PUBLIC_API_URL }}
+          NEXT_PUBLIC_WS_URL: ${{ vars.NEXT_PUBLIC_WS_URL }}
+          NEXT_PUBLIC_OIDC_ENABLED: ${{ vars.NEXT_PUBLIC_OIDC_ENABLED }}
+          NEXT_PUBLIC_SIGNUP_MODE: ${{ vars.NEXT_PUBLIC_SIGNUP_MODE }}
+          NEXT_PUBLIC_TURNSTILE_SITE_KEY: ${{ vars.NEXT_PUBLIC_TURNSTILE_SITE_KEY }}
+          NEXT_PUBLIC_PRIVACY_CONTACT_EMAIL: ${{ vars.NEXT_PUBLIC_PRIVACY_CONTACT_EMAIL }}
+          NEXT_PUBLIC_SUPPORT_CONTACT_EMAIL: ${{ vars.NEXT_PUBLIC_SUPPORT_CONTACT_EMAIL }}
+          NEXT_PUBLIC_DPA_CONTACT_EMAIL: ${{ vars.NEXT_PUBLIC_DPA_CONTACT_EMAIL }}
+          NEXT_PUBLIC_APP_ORIGIN: ${{ vars.NEXT_PUBLIC_APP_ORIGIN }}
+          NEXT_PUBLIC_APP_URL: ${{ vars.NEXT_PUBLIC_APP_URL }}
+          NEXT_PUBLIC_APP_ENV: ${{ vars.NEXT_PUBLIC_APP_ENV }}
+        run: |
+          set -euo pipefail
+          mkdir -p .release
+          public_build_config="$(node <<'NODE'
+          const crypto = require('node:crypto');
+          const keys = [
+            'NEXT_PUBLIC_API_URL',
+            'NEXT_PUBLIC_WS_URL',
+            'NEXT_PUBLIC_OIDC_ENABLED',
+            'NEXT_PUBLIC_SIGNUP_MODE',
+            'NEXT_PUBLIC_TURNSTILE_SITE_KEY',
+            'NEXT_PUBLIC_PRIVACY_CONTACT_EMAIL',
+            'NEXT_PUBLIC_SUPPORT_CONTACT_EMAIL',
+            'NEXT_PUBLIC_DPA_CONTACT_EMAIL',
+            'NEXT_PUBLIC_APP_ORIGIN',
+            'NEXT_PUBLIC_APP_URL',
+            'NEXT_PUBLIC_APP_ENV',
+          ];
+          const values = Object.fromEntries(keys.map((key) => [key, process.env[key] || '']));
+          const canonical = JSON.stringify({ keys, values });
+          process.stdout.write(JSON.stringify({
+            sha256: crypto.createHash('sha256').update(canonical).digest('hex'),
+            keys,
+            values,
+          }));
+          NODE
+          )"
+          production_health_proof="$(node <<'NODE'
+          const domain = process.env.DOMAIN || '';
+          const url = process.env.PRODUCTION_API_HEALTH_URL || '';
+          process.stdout.write(JSON.stringify({ domain, url }));
+          NODE
+          )"
+          deployment_contract="$(node scripts/write-deployment-contract.mjs --bundle-output .release/deployment-contract.bundle.json)"
+          API_REF="${IMAGE_PREFIX}/api:${GITHUB_SHA}@${API_DIGEST}"
+          WEB_REF="${IMAGE_PREFIX}/web:${GITHUB_SHA}@${WEB_DIGEST}"
+          ENGINE_REF="${IMAGE_PREFIX}/engine:${GITHUB_SHA}@${ENGINE_DIGEST}"
+          WORKER_REF="${IMAGE_PREFIX}/worker:${GITHUB_SHA}@${WORKER_DIGEST}"
+          MIGRATE_REF="${IMAGE_PREFIX}/migrate:${GITHUB_SHA}@${MIGRATE_DIGEST}"
+          CONTROL_REF="${IMAGE_PREFIX}/control:${GITHUB_SHA}@${CONTROL_DIGEST}"
+          BACKUP_REF="${IMAGE_PREFIX}/backup:${GITHUB_SHA}@${BACKUP_DIGEST}"
+          cat > .release/release-manifest.json <<JSON
+          {
+            "version": 1,
+            "sourceSha": "${GITHUB_SHA}",
+            "imagePrefix": "${IMAGE_PREFIX}",
+            "workflowRun": "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}",
+            "publicBuildConfig": ${public_build_config},
+            "productionHealthProof": ${production_health_proof},
+            "deploymentContract": ${deployment_contract},
+            "images": {
+              "api": { "ref": "${API_REF}", "digest": "${API_DIGEST}", "dockerfile": "infrastructure/docker/Dockerfile.api" },
+              "web": { "ref": "${WEB_REF}", "digest": "${WEB_DIGEST}", "dockerfile": "infrastructure/docker/Dockerfile.web" },
+              "engine": { "ref": "${ENGINE_REF}", "digest": "${ENGINE_DIGEST}", "dockerfile": "infrastructure/docker/Dockerfile.engine" },
+              "worker": { "ref": "${WORKER_REF}", "digest": "${WORKER_DIGEST}", "dockerfile": "infrastructure/docker/Dockerfile.worker" },
+              "migrate": { "ref": "${MIGRATE_REF}", "digest": "${MIGRATE_DIGEST}", "dockerfile": "infrastructure/docker/Dockerfile.migrations" },
+              "control": { "ref": "${CONTROL_REF}", "digest": "${CONTROL_DIGEST}", "dockerfile": "infrastructure/docker/Dockerfile.control" },
+              "backup": { "ref": "${BACKUP_REF}", "digest": "${BACKUP_DIGEST}", "dockerfile": "infrastructure/docker/Dockerfile.backup" }
+            }
+          }
+          JSON
+          {
+            echo "api_ref=${API_REF}"
+            echo "web_ref=${WEB_REF}"
+            echo "engine_ref=${ENGINE_REF}"
+            echo "worker_ref=${WORKER_REF}"
+            echo "migrate_ref=${MIGRATE_REF}"
+            echo "control_ref=${CONTROL_REF}"
+            echo "backup_ref=${BACKUP_REF}"
+          } >> "$GITHUB_OUTPUT"
+          node scripts/verify-release-artifacts.mjs .release/release-manifest.json --source-sha "$GITHUB_SHA"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        with:
+          name: release-manifest
+          path: |
+            .release/release-manifest.json
+            .release/deployment-contract.bundle.json
+          if-no-files-found: error
 
-  # ─── Stage 8-10: Ephemeral Environment & Integration Tests ───
+  # --- Stage 8-10: Ephemeral Environment & Integration Tests ---
   integration-tests:
     name: "Stage 8-10: Integration Tests (Ephemeral Stack)"
     needs: build-images
     runs-on: ubuntu-latest
     services:
       postgres:
-        image: postgres:16-alpine
+        image: postgres:16-alpine@sha256:57c72fd2a128e416c7fcc499958864df5301e940bca0a56f58fddf30ffc07777
         env:
           POSTGRES_USER: root
           POSTGRES_PASSWORD: testpass
@@ -145,157 +400,874 @@ jobs:
           --health-timeout 5s
           --health-retries 5
       redis:
-        image: redis:7-alpine
+        image: redis:7-alpine@sha256:6ab0b6e7381779332f97b8ca76193e45b0756f38d4c0dcda72dbb3c32061ab99
         ports: ['6379:6379']
         options: >-
           --health-cmd "redis-cli ping"
           --health-interval 10s
       rabbitmq:
-        image: rabbitmq:3-alpine
+        image: rabbitmq:3-alpine@sha256:d7af1c87c5f1eda13fcfca06db452bf3aeab6619fc3358b68535c0c02c4e52bc
         ports: ['5672:5672']
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: '22'
           cache: 'npm'
       - run: npm ci
       - name: "9. Run Migrations"
-        run: npx prisma migrate deploy --schema packages/db/prisma/schema.prisma
+        run: node scripts/apply-db-migrations.mjs
         env:
-          DATABASE_URL: postgresql://root:testpass@localhost:5432/lunchlineup_test
+          DATABASE_URL: postgresql://lunchlineup_app:app-testpass@localhost:5432/lunchlineup_test
+          MIGRATION_DATABASE_URL: postgresql://root:testpass@localhost:5432/lunchlineup_test
+          APP_DB_USER: lunchlineup_app
+          APP_DB_PASSWORD: app-testpass
+          PLATFORM_ADMIN_DB_CONTEXT_SECRET: ci-platform-admin-capability-secret-1234567890
+          POSTGRES_USER: root
+          POSTGRES_PASSWORD: testpass
+          DATA_TARGET_ENV: test
+          WEBHOOK_DELIVERY_ENCRYPTION_KEY_CURRENT: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
       - name: "10. Integration Tests"
         run: npm run test:integration
         env:
-          DATABASE_URL: postgresql://root:testpass@localhost:5432/lunchlineup_test
+          DATABASE_URL: postgresql://lunchlineup_app:app-testpass@localhost:5432/lunchlineup_test
+          MIGRATION_DATABASE_URL: postgresql://root:testpass@localhost:5432/lunchlineup_test
           REDIS_URL: redis://localhost:6379
 
-  # ─── Stage 11: DAST (OWASP ZAP) ───
+  # --- Stage 11: DAST (OWASP ZAP) ---
   dast:
-    name: "Stage 11: DAST (OWASP ZAP)"
-    needs: integration-tests
+    # --- Stage 11: DAST (OWASP ZAP) ---
+    needs: [integration-tests, build-images]
     runs-on: ubuntu-latest
-    if: github.ref == 'refs/heads/main'
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    env:
+      COMPOSE_PROJECT_NAME: lunchlineup-ci-dast
+      SMOKE_TARGET_URL: http://localhost:8080
+      IMAGE_TAG: ${{ github.sha }}
     steps:
-      - uses: actions/checkout@v4
-      - name: ZAP Baseline Scan
-        uses: zaproxy/action-baseline@v0.12.0
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
-          target: 'http://localhost:3000'
+          node-version: '22'
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: release-manifest
+          path: .release
+      - name: Prepare smoke stack environment
+        run: node scripts/write-smoke-env.mjs .env.smoke
+      - name: Verify release manifest
+        run: node scripts/verify-release-artifacts.mjs .release/release-manifest.json --source-sha "$GITHUB_SHA"
+      - name: Pull smoke stack images by digest
+        env:
+          API_IMAGE_REF: ${{ needs.build-images.outputs.api_ref }}
+          WEB_IMAGE_REF: ${{ needs.build-images.outputs.web_ref }}
+          ENGINE_IMAGE_REF: ${{ needs.build-images.outputs.engine_ref }}
+          WORKER_IMAGE_REF: ${{ needs.build-images.outputs.worker_ref }}
+          MIGRATE_IMAGE_REF: ${{ needs.build-images.outputs.migrate_ref }}
+          CONTROL_IMAGE_REF: ${{ needs.build-images.outputs.control_ref }}
+          BACKUP_IMAGE_REF: ${{ needs.build-images.outputs.backup_ref }}
+        run: |
+          set -euo pipefail
+          for ref in "$API_IMAGE_REF" "$WEB_IMAGE_REF" "$ENGINE_IMAGE_REF" "$WORKER_IMAGE_REF" "$MIGRATE_IMAGE_REF" "$CONTROL_IMAGE_REF" "$BACKUP_IMAGE_REF"; do
+            docker pull "$ref"
+          done
+          for service in api web engine worker migrate control backup; do
+            docker image inspect "${IMAGE_PREFIX}/${service}:${IMAGE_TAG}" > /dev/null
+          done
+          docker compose --env-file .env.smoke pull proxy pgbouncer postgres redis rabbitmq pitr-tools
+      - name: Start smoke stack
+        run: docker compose --env-file .env.smoke up -d --no-build --pull never migrate proxy web api engine worker pgbouncer postgres redis rabbitmq
+      - name: Wait for smoke target
+        run: |
+          for attempt in {1..60}; do
+            if curl -fsS "$SMOKE_TARGET_URL/health"; then
+              exit 0
+            fi
+            docker compose ps
+            sleep 5
+          done
+          docker compose logs --tail=150
+          exit 1
+      - name: ZAP Baseline Scan
+        uses: zaproxy/action-baseline@906a3c93ffde4864839d31a93daadcbd2737b4da # v0.12.0
+        with:
+          target: ${{ env.SMOKE_TARGET_URL }}
           rules_file_name: '.zap-rules.tsv'
           cmd_options: '-a'
+          fail_action: true
+          allow_issue_writing: false
+      - name: Stop smoke stack
+        if: always()
+        run: |
+          docker compose --env-file .env.smoke down -v
+          rm -f .env.smoke secrets/metrics_token
 
-  # ─── Stage 12: E2E Tests (Playwright) ───
+  # --- Stage 12: E2E Tests (Playwright) ---
   e2e-tests:
-    name: "Stage 12: E2E Tests (Playwright)"
+    # --- Stage 12: E2E Tests (Playwright) ---
     needs: integration-tests
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: '22'
           cache: 'npm'
       - run: npm ci
       - run: npx playwright install --with-deps
-      - name: Build web app
-        run: npm run build --workspace @lunchlineup/web
       - name: Run Playwright
         run: npm run test:e2e --workspace @lunchlineup/web
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: always()
         with:
           name: playwright-report
           path: apps/web/playwright-report/
 
-  # ─── Stage 13: Load Test Smoke ───
-  load-test:
-    name: "Stage 13: Load Test Smoke"
-    needs: integration-tests
+  fullstack-e2e:
+    name: "Stage 12b: Full-Stack E2E (Release Images)"
+    needs: [integration-tests, build-images]
     runs-on: ubuntu-latest
-    if: github.ref == 'refs/heads/main'
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    env:
+      COMPOSE_PROJECT_NAME: lunchlineup-ci-fullstack-e2e
+      IMAGE_TAG: ${{ github.sha }}
+      BASE_URL: http://localhost:8080
+      E2E_FULL_STACK: '1'
+      E2E_MOCK_API: '0'
+      E2E_SEED_COMMAND: >-
+        docker compose --env-file .env.smoke run --rm -e DATA_TARGET_ENV=disposable migrate sh -lc 'DATABASE_URL="$MIGRATION_DATABASE_URL" node scripts/seed-e2e.mjs'
     steps:
-      - uses: actions/checkout@v4
-      - name: Run Artillery
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+      - run: npm ci
+      - run: npx playwright install --with-deps chromium
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: release-manifest
+          path: .release
+      - name: Prepare full-stack environment
+        run: node scripts/write-smoke-env.mjs .env.smoke
+      - name: Verify release manifest
+        run: node scripts/verify-release-artifacts.mjs .release/release-manifest.json --source-sha "$GITHUB_SHA"
+      - name: Pull release stack by digest
+        env:
+          API_IMAGE_REF: ${{ needs.build-images.outputs.api_ref }}
+          WEB_IMAGE_REF: ${{ needs.build-images.outputs.web_ref }}
+          ENGINE_IMAGE_REF: ${{ needs.build-images.outputs.engine_ref }}
+          WORKER_IMAGE_REF: ${{ needs.build-images.outputs.worker_ref }}
+          MIGRATE_IMAGE_REF: ${{ needs.build-images.outputs.migrate_ref }}
+          CONTROL_IMAGE_REF: ${{ needs.build-images.outputs.control_ref }}
+          BACKUP_IMAGE_REF: ${{ needs.build-images.outputs.backup_ref }}
         run: |
-          npm install -g artillery
-          artillery run scripts/artillery-smoke.yml
-          # Fail if p99 > 1s
+          set -euo pipefail
+          for ref in "$API_IMAGE_REF" "$WEB_IMAGE_REF" "$ENGINE_IMAGE_REF" "$WORKER_IMAGE_REF" "$MIGRATE_IMAGE_REF" "$CONTROL_IMAGE_REF" "$BACKUP_IMAGE_REF"; do
+            docker pull "$ref"
+          done
+          docker compose --env-file .env.smoke pull proxy pgbouncer postgres redis rabbitmq pitr-tools
+      - name: Start full-stack release images
+        run: docker compose --env-file .env.smoke up -d --no-build --pull never migrate proxy web api engine worker pgbouncer postgres redis rabbitmq
+      - name: Wait for full-stack target
+        run: |
+          for attempt in {1..60}; do
+            if curl -fsS "$BASE_URL/health"; then exit 0; fi
+            docker compose ps
+            sleep 5
+          done
+          docker compose logs --tail=150
+          exit 1
+      - name: Run DB-backed Playwright workflows
+        working-directory: apps/web
+        run: >-
+          npx playwright test --project=chromium --workers=1
+          tests/e2e/operations-workflows.spec.ts
+          tests/e2e/month-volume-workflows.spec.ts
+          tests/e2e/stress-workflows.spec.ts
+          tests/e2e/tenant-admin-workflows.spec.ts
+      - name: Stop full-stack release images
+        if: always()
+        run: |
+          docker compose --env-file .env.smoke down -v
+          rm -f .env.smoke secrets/metrics_token
 
-  # ─── Stage 14-15: Deploy to Staging ───
+  # --- Stage 13: Load Test Smoke ---
+  load-test:
+    # --- Stage 13: Load Test Smoke ---
+    needs: [integration-tests, build-images]
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    env:
+      COMPOSE_PROJECT_NAME: lunchlineup-ci-load
+      TARGET_URL: http://localhost:8080
+      IMAGE_TAG: ${{ github.sha }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '22'
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: release-manifest
+          path: .release
+      - name: Prepare smoke stack environment
+        run: node scripts/write-smoke-env.mjs .env.smoke
+      - name: Verify release manifest
+        run: node scripts/verify-release-artifacts.mjs .release/release-manifest.json --source-sha "$GITHUB_SHA"
+      - name: Pull smoke stack images by digest
+        env:
+          API_IMAGE_REF: ${{ needs.build-images.outputs.api_ref }}
+          WEB_IMAGE_REF: ${{ needs.build-images.outputs.web_ref }}
+          ENGINE_IMAGE_REF: ${{ needs.build-images.outputs.engine_ref }}
+          WORKER_IMAGE_REF: ${{ needs.build-images.outputs.worker_ref }}
+          MIGRATE_IMAGE_REF: ${{ needs.build-images.outputs.migrate_ref }}
+          CONTROL_IMAGE_REF: ${{ needs.build-images.outputs.control_ref }}
+          BACKUP_IMAGE_REF: ${{ needs.build-images.outputs.backup_ref }}
+        run: |
+          set -euo pipefail
+          for ref in "$API_IMAGE_REF" "$WEB_IMAGE_REF" "$ENGINE_IMAGE_REF" "$WORKER_IMAGE_REF" "$MIGRATE_IMAGE_REF" "$CONTROL_IMAGE_REF" "$BACKUP_IMAGE_REF"; do
+            docker pull "$ref"
+          done
+          for service in api web engine worker migrate control backup; do
+            docker image inspect "${IMAGE_PREFIX}/${service}:${IMAGE_TAG}" > /dev/null
+          done
+          docker compose --env-file .env.smoke pull proxy pgbouncer postgres redis rabbitmq pitr-tools
+      - name: Start smoke stack
+        run: docker compose --env-file .env.smoke up -d --no-build --pull never migrate proxy web api engine worker pgbouncer postgres redis rabbitmq
+      - name: Wait for smoke target
+        run: |
+          for attempt in {1..60}; do
+            if curl -fsS "$TARGET_URL/health"; then
+              exit 0
+            fi
+            docker compose ps
+            sleep 5
+          done
+          docker compose logs --tail=150
+          exit 1
+      - name: Run Artillery
+        run: npx --yes artillery@2 run scripts/artillery-smoke.yml
+      - name: Stop smoke stack
+        if: always()
+        run: |
+          docker compose --env-file .env.smoke down -v
+          rm -f .env.smoke secrets/metrics_token
+
+  bootstrap-release-registry:
+    name: "Bootstrap Production Release Registry"
+    if: github.event_name == 'workflow_dispatch' && inputs.bootstrap_release_registry == true
+    runs-on: ubuntu-latest
+    environment: production
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - name: Bootstrap registry from verified current-live retained bundle
+        env:
+          PRODUCTION_RELEASE_REGISTRY_URI: ${{ vars.PRODUCTION_RELEASE_REGISTRY_URI }}
+          BOOTSTRAP_LIVE_SOURCE_SHA: ${{ inputs.bootstrap_live_source_sha }}
+          BOOTSTRAP_LIVE_RELEASE_BUNDLE_URI: ${{ inputs.bootstrap_live_release_bundle_uri }}
+          BOOTSTRAP_CONFIRMATION: ${{ inputs.bootstrap_confirmation }}
+          PRODUCTION_API_HEALTH_URL: ${{ vars.PRODUCTION_API_HEALTH_URL }}
+          PRODUCTION_WEB_URL: ${{ vars.PRODUCTION_WEB_URL }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.RELEASE_REGISTRY_AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.RELEASE_REGISTRY_AWS_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: ${{ vars.RELEASE_REGISTRY_AWS_REGION }}
+        run: |
+          set -euo pipefail
+          umask 077
+          [[ "$BOOTSTRAP_LIVE_SOURCE_SHA" =~ ^[a-f0-9]{40}$ ]]
+          test "$BOOTSTRAP_CONFIRMATION" = "bootstrap-current-live-release:$BOOTSTRAP_LIVE_SOURCE_SHA"
+          retained_bundle="$RUNNER_TEMP/lunchlineup-retained-live-release.json"
+          api_proof="$RUNNER_TEMP/lunchlineup-retained-live-api-proof.json"
+          web_proof="$RUNNER_TEMP/lunchlineup-retained-live-web-proof.json"
+          rm -f "$retained_bundle" "$retained_bundle.index" "$api_proof" "$web_proof"
+          node scripts/verify-external-health-release.mjs "$PRODUCTION_API_HEALTH_URL" "$BOOTSTRAP_LIVE_SOURCE_SHA" --output "$api_proof"
+          node scripts/verify-external-health-release.mjs "$PRODUCTION_WEB_URL" "$BOOTSTRAP_LIVE_SOURCE_SHA" --output "$web_proof"
+          node scripts/release-bundle-registry.mjs bootstrap-retained \
+            --registry-uri "$PRODUCTION_RELEASE_REGISTRY_URI" \
+            --retained-bundle-uri "$BOOTSTRAP_LIVE_RELEASE_BUNDLE_URI" \
+            --state-file "$retained_bundle" \
+            --verified-source-sha "$BOOTSTRAP_LIVE_SOURCE_SHA" \
+            --confirm "$BOOTSTRAP_CONFIRMATION" \
+            --max-live-proof-age-seconds 300 \
+            --live-identity-proof "$api_proof" \
+            --live-identity-proof "$web_proof"
+          rm -f "$retained_bundle" "$retained_bundle.index" "$api_proof" "$web_proof"
+  validate-release-gates:
+    name: "Release Gate Configuration"
+    needs: [e2e-tests, fullstack-e2e, load-test, dast, trivy-scan, sbom, build-images, terraform-validation]
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          fetch-depth: 0
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: release-manifest
+          path: .release
+      - name: Require pushed GitHub source proof
+        run: |
+          set -euo pipefail
+          test "$GITHUB_EVENT_NAME" = "push"
+          test "$GITHUB_REF" = "refs/heads/main"
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          remote_sha="$(git ls-remote origin refs/heads/main | cut -f1)"
+          test "$remote_sha" = "$GITHUB_SHA"
+      - name: Require staging and production deploy configuration
+        env:
+          STAGING_DEPLOY_COMMAND: ${{ vars.STAGING_DEPLOY_COMMAND }}
+          STAGING_API_HEALTH_URL: ${{ vars.STAGING_API_HEALTH_URL }}
+          STAGING_WEB_URL: ${{ vars.STAGING_WEB_URL }}
+          PRODUCTION_DEPLOY_COMMAND: ${{ vars.PRODUCTION_DEPLOY_COMMAND }}
+          PRODUCTION_HEALTH_URL: ${{ vars.PRODUCTION_HEALTH_URL }}
+          PRODUCTION_API_HEALTH_URL: ${{ vars.PRODUCTION_API_HEALTH_URL }}
+          PRODUCTION_WEB_URL: ${{ vars.PRODUCTION_WEB_URL }}
+          PRODUCTION_POST_DEPLOY_PROOF_COMMAND: ${{ vars.PRODUCTION_POST_DEPLOY_PROOF_COMMAND }}
+          PRODUCTION_ROLLBACK_COMMAND: ${{ vars.PRODUCTION_ROLLBACK_COMMAND }}
+          PRODUCTION_RELEASE_REGISTRY_URI: ${{ vars.PRODUCTION_RELEASE_REGISTRY_URI }}
+          OLD_RELEASE_COMPATIBILITY_COMMAND: ${{ vars.OLD_RELEASE_COMPATIBILITY_COMMAND }}
+          DOMAIN: ${{ vars.DOMAIN }}
+        run: |
+          test -n "$DOMAIN"
+          test -n "$STAGING_DEPLOY_COMMAND"
+          test -n "$STAGING_API_HEALTH_URL"
+          test -n "$STAGING_WEB_URL"
+          test -n "$PRODUCTION_DEPLOY_COMMAND"
+          test -n "$PRODUCTION_HEALTH_URL"
+          test -n "$PRODUCTION_API_HEALTH_URL"
+          test -n "$PRODUCTION_WEB_URL"
+          test -n "$PRODUCTION_POST_DEPLOY_PROOF_COMMAND"
+          test -n "$PRODUCTION_ROLLBACK_COMMAND"
+          test -n "$PRODUCTION_RELEASE_REGISTRY_URI"
+          test -n "$OLD_RELEASE_COMPATIBILITY_COMMAND"
+      - name: Verify immutable release and deploy command contract
+        env:
+          STAGING_DEPLOY_COMMAND: ${{ vars.STAGING_DEPLOY_COMMAND }}
+          PRODUCTION_DEPLOY_COMMAND: ${{ vars.PRODUCTION_DEPLOY_COMMAND }}
+          PRODUCTION_POST_DEPLOY_PROOF_COMMAND: ${{ vars.PRODUCTION_POST_DEPLOY_PROOF_COMMAND }}
+          PRODUCTION_ROLLBACK_COMMAND: ${{ vars.PRODUCTION_ROLLBACK_COMMAND }}
+          PRODUCTION_API_HEALTH_URL: ${{ vars.PRODUCTION_API_HEALTH_URL }}
+        run: |
+          node scripts/verify-release-artifacts.mjs .release/release-manifest.json \
+            --source-sha "$GITHUB_SHA" \
+            --command-env STAGING_DEPLOY_COMMAND \
+            --command-env PRODUCTION_DEPLOY_COMMAND \
+            --post-deploy-proof-command-env PRODUCTION_POST_DEPLOY_PROOF_COMMAND \
+            --rollback-command-env PRODUCTION_ROLLBACK_COMMAND \
+            --production-api-health-url-env PRODUCTION_API_HEALTH_URL
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          pattern: trivy-release-*
+          path: .release/trivy
+          merge-multiple: true
+      - name: Verify digest-pinned Trivy release reports
+        run: node scripts/verify-trivy-release-reports.mjs .release/release-manifest.json .release/trivy
+
+  # --- Stage 14-15: Deploy to Staging ---
   deploy-staging:
     name: "Stage 14-15: Deploy & Smoke Test Staging"
-    needs: [e2e-tests, load-test, dast]
+    needs: validate-release-gates
     runs-on: ubuntu-latest
-    if: github.ref == 'refs/heads/main'
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     environment: staging
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: release-manifest
+          path: .release
+      - name: Verify staging release artifact contract
+        env:
+          STAGING_DEPLOY_COMMAND: ${{ vars.STAGING_DEPLOY_COMMAND }}
+        run: |
+          node scripts/verify-release-artifacts.mjs .release/release-manifest.json \
+            --source-sha "$GITHUB_SHA" \
+            --command-env STAGING_DEPLOY_COMMAND
       - name: Deploy to staging
+        env:
+          STAGING_DEPLOY_COMMAND: ${{ vars.STAGING_DEPLOY_COMMAND }}
+          RELEASE_MANIFEST_PATH: .release/release-manifest.json
+          RELEASE_SOURCE_SHA: ${{ github.sha }}
         run: |
-          echo "Deploying ${{ github.sha }} to staging..."
-          # docker stack deploy -c docker-compose.prod.yml lunchlineup
+          printf '%s\n' "$STAGING_DEPLOY_COMMAND" > /tmp/lunchlineup-deploy-staging.sh
+          bash /tmp/lunchlineup-deploy-staging.sh
       - name: Staging smoke tests
+        env:
+          STAGING_API_HEALTH_URL: ${{ vars.STAGING_API_HEALTH_URL }}
+          STAGING_WEB_URL: ${{ vars.STAGING_WEB_URL }}
+          RELEASE_SOURCE_SHA: ${{ github.sha }}
         run: |
-          echo "Running Playwright critical path against staging..."
-          # npx playwright test --grep @critical
+          set -euo pipefail
+          test -n "$STAGING_API_HEALTH_URL"
+          test -n "$STAGING_WEB_URL"
+          node scripts/verify-external-health-release.mjs "$STAGING_API_HEALTH_URL" "$RELEASE_SOURCE_SHA"
+          node scripts/verify-external-health-release.mjs "$STAGING_WEB_URL" "$RELEASE_SOURCE_SHA"
 
-  # ─── Stage 16-17: Production Deploy (Manual Gate) ───
+  # --- Stage 16-17: Production Deploy (Manual Gate) ---
   deploy-production:
     name: "Stage 16-17: Blue/Green Production Deploy"
     needs: deploy-staging
     runs-on: ubuntu-latest
-    if: github.ref == 'refs/heads/main'
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     environment: production
+    outputs:
+      launch_proof_sha256: ${{ steps.launch_proof.outputs.sha256 }}
+      deployed_inputs_artifact_digest: ${{ steps.upload_deployed_inputs.outputs.artifact-digest }}
+      production_rollback_armed: ${{ steps.arm_production_rollback.outputs.armed }}
     steps:
-      - uses: actions/checkout@v4
-      - name: "16. Manual gate passed — deploying"
-        run: echo "Production deploy approved by ${{ github.actor }}"
-      - name: "17. Blue/Green deploy"
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: release-manifest
+          path: .release
+      - name: Resolve and materialize previous successful release bundle
+        env:
+          PRODUCTION_RELEASE_REGISTRY_URI: ${{ vars.PRODUCTION_RELEASE_REGISTRY_URI }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.RELEASE_REGISTRY_AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.RELEASE_REGISTRY_AWS_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: ${{ vars.RELEASE_REGISTRY_AWS_REGION }}
         run: |
-          echo "Deploying ${{ github.sha }} to production..."
-          # docker service update --image $IMAGE_PREFIX/api:${{ github.sha }} lunchlineup_api
+          set -euo pipefail
+          rollback_dir="$RUNNER_TEMP/lunchlineup-rollback-state"
+          rm -rf "$rollback_dir"
+          rollback_state="$RUNNER_TEMP/lunchlineup-previous-release.json"
+          rm -f "$rollback_state"
+          node scripts/release-bundle-registry.mjs resolve --registry-uri "$PRODUCTION_RELEASE_REGISTRY_URI" --output "$rollback_state"
+          node scripts/materialize-rollback-state.mjs --state-file "$rollback_state" --output-dir "$rollback_dir" --github-env "$GITHUB_ENV"
+          echo "REGISTRY_BASELINE_AVAILABLE=true" >> "$GITHUB_ENV"
+      - name: Verify previous rollback release inputs
+        run: |
+          set -euo pipefail
+          node "$PREVIOUS_DEPLOYMENT_APP_DIR/scripts/verify-release-artifacts.mjs" "$PREVIOUS_RELEASE_MANIFEST_PATH" \
+            --source-sha "$PREVIOUS_RELEASE_SOURCE_SHA" \
+            --deployment-root "$PREVIOUS_DEPLOYMENT_APP_DIR" \
+            --launch-proof-file "$PREVIOUS_LAUNCH_PROOF_PATH" \
+            --launch-proof-mode rollback \
+            --max-proof-age-seconds "$PREVIOUS_LAUNCH_PROOF_MAX_AGE_SECONDS"
+      - name: Retain validated secret-free rollback baseline
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: production-rollback-baseline-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/lunchlineup-previous-release.json
+          if-no-files-found: error
+          retention-days: 1
+          compression-level: 0
+      - name: Rehydrate and verify production runtime secret
+        env:
+          PRODUCTION_RUNTIME_SECRET_REFERENCE: ${{ vars.PRODUCTION_RUNTIME_SECRET_REFERENCE }}
+          PRODUCTION_RUNTIME_SECRET_VERSION: ${{ vars.PRODUCTION_RUNTIME_SECRET_VERSION }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.RUNTIME_SECRET_AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.RUNTIME_SECRET_AWS_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: ${{ vars.RUNTIME_SECRET_AWS_REGION }}
+        run: |
+          set -euo pipefail
+          umask 077
+          release_inputs="$RUNNER_TEMP/lunchlineup-deployed-inputs"
+          runtime_env="$RUNNER_TEMP/lunchlineup-runtime.env"
+          rm -rf "$release_inputs"
+          rm -f "$runtime_env"
+          mkdir -p "$release_inputs"
+          node scripts/rehydrate-runtime-secret.mjs --provider aws-secretsmanager --reference "$PRODUCTION_RUNTIME_SECRET_REFERENCE" --secret-version "$PRODUCTION_RUNTIME_SECRET_VERSION" --output "$runtime_env" --descriptor-output "$release_inputs/runtime-secret.json" --github-env "$GITHUB_ENV"
+          node scripts/validate-production-launch.mjs "$runtime_env"
+      - name: Prove previous release against candidate schema clone
+        env:
+          OLD_RELEASE_COMPATIBILITY_COMMAND: ${{ vars.OLD_RELEASE_COMPATIBILITY_COMMAND }}
+        run: |
+          set -euo pipefail
+          proof="$RUNNER_TEMP/old-release-candidate-schema-compatibility.json"
+          rm -f "$proof"
+          printf '%s\n' "$OLD_RELEASE_COMPATIBILITY_COMMAND" > /tmp/lunchlineup-old-release-compatibility.sh
+          OLD_RELEASE_COMPATIBILITY_PROOF_PATH="$proof" \
+            PREVIOUS_RELEASE_SOURCE_SHA="$PREVIOUS_RELEASE_SOURCE_SHA" \
+            CANDIDATE_RELEASE_SOURCE_SHA="$GITHUB_SHA" \
+            PREVIOUS_DEPLOYMENT_APP_DIR="$PREVIOUS_DEPLOYMENT_APP_DIR" \
+            PRODUCTION_RUNTIME_ENV_PATH="$PRODUCTION_RUNTIME_ENV_PATH" \
+            bash /tmp/lunchlineup-old-release-compatibility.sh
+          node scripts/verify-old-release-compatibility.mjs "$proof" "$PREVIOUS_RELEASE_SOURCE_SHA" "$GITHUB_SHA"
+          echo "OLD_RELEASE_COMPATIBILITY_PROOF_PATH=$proof" >> "$GITHUB_ENV"
+          node scripts/verify-raw-migration-rollback.mjs \
+            --rollback-manifest "$PREVIOUS_RELEASE_MANIFEST_PATH" \
+            --candidate-manifest .release/release-manifest.json \
+            --candidate-root "$GITHUB_WORKSPACE" \
+            --old-release-compatibility-proof "$proof"
+      - name: Verify production launch proof artifact
+        id: launch_proof
+        env:
+          PRODUCTION_LAUNCH_PROOF_B64: ${{ secrets.PRODUCTION_LAUNCH_PROOF_B64 }}
+          LAUNCH_PROOF_HTTP_BEARER_TOKEN: ${{ secrets.LAUNCH_PROOF_HTTP_BEARER_TOKEN }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.LAUNCH_PROOF_AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.LAUNCH_PROOF_AWS_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: ${{ vars.LAUNCH_PROOF_AWS_REGION }}
+          PRODUCTION_DEPLOY_COMMAND: ${{ vars.PRODUCTION_DEPLOY_COMMAND }}
+          LAUNCH_PROOF_MAX_AGE_SECONDS: '86400'
+        run: |
+          set -euo pipefail
+          if [ -z "$PRODUCTION_LAUNCH_PROOF_B64" ]; then
+            echo "PRODUCTION_LAUNCH_PROOF_B64 must contain the base64-encoded .release/launch-proof.json." >&2
+            exit 1
+          fi
+          launch_proof="$RUNNER_TEMP/lunchlineup-deployed-inputs/launch-proof.json"
+          printf '%s' "$PRODUCTION_LAUNCH_PROOF_B64" | base64 -d > "$launch_proof"
+          echo "Verify live Stripe meter configuration"
+          node scripts/verify-stripe-meter-config.mjs "$PRODUCTION_RUNTIME_ENV_PATH" "$launch_proof" --source-sha "$GITHUB_SHA"
+          node scripts/verify-production-launch-proof.mjs .release/release-manifest.json "$launch_proof" \
+            --fetch-evidence \
+            --source-sha "$GITHUB_SHA" \
+            --max-proof-age-seconds "$LAUNCH_PROOF_MAX_AGE_SECONDS" \
+            --command-env PRODUCTION_DEPLOY_COMMAND
+          launch_proof_sha256="$(sha256sum "$launch_proof" | awk '{print $1}')"
+          {
+            echo "LAUNCH_PROOF_ARTIFACT_SHA256=$launch_proof_sha256"
+            echo "LAUNCH_PROOF_MAX_AGE_SECONDS=$LAUNCH_PROOF_MAX_AGE_SECONDS"
+          } >> "$GITHUB_ENV"
+          echo "sha256=$launch_proof_sha256" >> "$GITHUB_OUTPUT"
+      - name: Verify production release artifact contract
+        env:
+          PRODUCTION_DEPLOY_COMMAND: ${{ vars.PRODUCTION_DEPLOY_COMMAND }}
+          PRODUCTION_RUNTIME_ENV_PATH: ${{ env.PRODUCTION_RUNTIME_ENV_PATH }}
+          COMPOSE_SERVICE_ENV_FILE: ${{ env.COMPOSE_SERVICE_ENV_FILE }}
+          PRODUCTION_RUNTIME_ENV_SHA256: ${{ env.PRODUCTION_RUNTIME_ENV_SHA256 }}
+          LAUNCH_PROOF_ARTIFACT_SHA256: ${{ env.LAUNCH_PROOF_ARTIFACT_SHA256 }}
+          LAUNCH_PROOF_MAX_AGE_SECONDS: ${{ env.LAUNCH_PROOF_MAX_AGE_SECONDS }}
+          PRODUCTION_API_HEALTH_URL: ${{ vars.PRODUCTION_API_HEALTH_URL }}
+        run: |
+          node scripts/verify-release-artifacts.mjs .release/release-manifest.json \
+            --source-sha "$GITHUB_SHA" \
+            --command-env PRODUCTION_DEPLOY_COMMAND \
+            --production-api-health-url-env PRODUCTION_API_HEALTH_URL
+      - name: Bind exact production deployment inputs
+        env:
+          LAUNCH_PROOF_MANIFEST_URI: ${{ secrets.LAUNCH_PROOF_MANIFEST_URI }}
+          LAUNCH_PROOF_MAX_AGE_SECONDS: ${{ env.LAUNCH_PROOF_MAX_AGE_SECONDS }}
+        run: |
+          set -euo pipefail
+          release_inputs="$RUNNER_TEMP/lunchlineup-deployed-inputs"
+          cp .release/release-manifest.json "$release_inputs/release-manifest.json"
+          cp .release/deployment-contract.bundle.json "$release_inputs/deployment-contract.bundle.json"
+          node scripts/deployed-release-inputs.mjs create \
+            --manifest "$release_inputs/release-manifest.json" \
+            --deployment-bundle "$release_inputs/deployment-contract.bundle.json" \
+            --runtime-secret "$release_inputs/runtime-secret.json" \
+            --launch-proof "$release_inputs/launch-proof.json" \
+            --launch-proof-uri "$LAUNCH_PROOF_MANIFEST_URI" \
+            --max-proof-age-seconds "$LAUNCH_PROOF_MAX_AGE_SECONDS" \
+            --output "$release_inputs/binding.json"
+      - name: Verify production deployment inputs
+        env:
+          PRODUCTION_DEPLOY_COMMAND: ${{ vars.PRODUCTION_DEPLOY_COMMAND }}
+          RELEASE_MANIFEST_PATH: .release/release-manifest.json
+          RELEASE_SOURCE_SHA: ${{ github.sha }}
+          PRODUCTION_RUNTIME_ENV_PATH: ${{ env.PRODUCTION_RUNTIME_ENV_PATH }}
+          COMPOSE_SERVICE_ENV_FILE: ${{ env.COMPOSE_SERVICE_ENV_FILE }}
+          PRODUCTION_RUNTIME_ENV_SHA256: ${{ env.PRODUCTION_RUNTIME_ENV_SHA256 }}
+          LAUNCH_PROOF_ARTIFACT_SHA256: ${{ env.LAUNCH_PROOF_ARTIFACT_SHA256 }}
+          LAUNCH_PROOF_MAX_AGE_SECONDS: ${{ env.LAUNCH_PROOF_MAX_AGE_SECONDS }}
+          PRODUCTION_API_HEALTH_URL: ${{ vars.PRODUCTION_API_HEALTH_URL }}
+          PRODUCTION_WEB_URL: ${{ vars.PRODUCTION_WEB_URL }}
+          LAUNCH_PROOF_MANIFEST_URI: ${{ secrets.LAUNCH_PROOF_MANIFEST_URI }}
+        run: |
+          test -n "$PRODUCTION_RUNTIME_ENV_PATH"
+          test -f "$PRODUCTION_RUNTIME_ENV_PATH"
+          test -n "$PRODUCTION_RUNTIME_ENV_SHA256"
+          test -n "$LAUNCH_PROOF_ARTIFACT_SHA256"
+          test -n "$LAUNCH_PROOF_MAX_AGE_SECONDS"
+          test -n "$PRODUCTION_API_HEALTH_URL"
+          test -n "$PRODUCTION_WEB_URL"
+          test -n "$LAUNCH_PROOF_MANIFEST_URI"
+          test "$(sha256sum "$PRODUCTION_RUNTIME_ENV_PATH" | awk '{print $1}')" = "$PRODUCTION_RUNTIME_ENV_SHA256"
+          export COMPOSE_SERVICE_ENV_FILE="${COMPOSE_SERVICE_ENV_FILE:-$PRODUCTION_RUNTIME_ENV_PATH}"
+          test "$COMPOSE_SERVICE_ENV_FILE" = "$PRODUCTION_RUNTIME_ENV_PATH"
+          node scripts/deployed-release-inputs.mjs verify \
+            --binding "$RUNNER_TEMP/lunchlineup-deployed-inputs/binding.json"
+          printf '%s\n' "$PRODUCTION_DEPLOY_COMMAND" > /tmp/lunchlineup-deploy-production.sh
+      - name: Arm production rollback
+        id: arm_production_rollback
+        run: echo "armed=true" >> "$GITHUB_OUTPUT"
+      - name: "17. Blue/Green deploy"
+        id: production_deploy
+        env:
+          RELEASE_MANIFEST_PATH: .release/release-manifest.json
+          RELEASE_SOURCE_SHA: ${{ github.sha }}
+          PRODUCTION_RUNTIME_ENV_PATH: ${{ env.PRODUCTION_RUNTIME_ENV_PATH }}
+          COMPOSE_SERVICE_ENV_FILE: ${{ env.COMPOSE_SERVICE_ENV_FILE }}
+          PRODUCTION_RUNTIME_ENV_SHA256: ${{ env.PRODUCTION_RUNTIME_ENV_SHA256 }}
+          LAUNCH_PROOF_ARTIFACT_SHA256: ${{ env.LAUNCH_PROOF_ARTIFACT_SHA256 }}
+          LAUNCH_PROOF_MAX_AGE_SECONDS: ${{ env.LAUNCH_PROOF_MAX_AGE_SECONDS }}
+          PRODUCTION_API_HEALTH_URL: ${{ vars.PRODUCTION_API_HEALTH_URL }}
+          PRODUCTION_WEB_URL: ${{ vars.PRODUCTION_WEB_URL }}
+          LAUNCH_PROOF_MANIFEST_URI: ${{ secrets.LAUNCH_PROOF_MANIFEST_URI }}
+        run: |
+          env \
+              PRODUCTION_API_HEALTH_URL="$PRODUCTION_API_HEALTH_URL" \
+              PRODUCTION_WEB_URL="$PRODUCTION_WEB_URL" \
+              LAUNCH_PROOF_MANIFEST_URI="$LAUNCH_PROOF_MANIFEST_URI" \
+              bash /tmp/lunchlineup-deploy-production.sh
+      - name: Verify deployed release inputs remain exact
+        if: steps.production_deploy.outcome == 'success'
+        run: node scripts/deployed-release-inputs.mjs verify --binding "$RUNNER_TEMP/lunchlineup-deployed-inputs/binding.json"
+      - name: Upload exact deployed release inputs
+        id: upload_deployed_inputs
+        if: steps.production_deploy.outcome == 'success'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: production-deployed-inputs-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/lunchlineup-deployed-inputs
+          if-no-files-found: error
+          retention-days: 1
+          compression-level: 0
+      - name: Cleanup production runtime environment and rollback secrets
+        if: always()
+        run: |
+          rm -f /tmp/lunchlineup-deploy-production.sh
+          rm -rf "$RUNNER_TEMP/lunchlineup-deployed-inputs"
+          rm -f "$RUNNER_TEMP/lunchlineup-runtime.env" "$RUNNER_TEMP/lunchlineup-previous-runtime.env"
+          if [ -n "${PREVIOUS_RELEASE_MANIFEST_PATH:-}" ]; then
+            rm -rf "$(dirname "$PREVIOUS_RELEASE_MANIFEST_PATH")"
+          fi
 
-  # ─── Stage 18-19: Production Smoke & Auto-Rollback ───
+  # Stage 18-19: Production Smoke and centralized rollback
   production-smoke:
-    name: "Stage 18-19: Production Smoke & Auto-Rollback"
+    name: "Stage 18-19: Production Smoke"
     needs: deploy-production
     runs-on: ubuntu-latest
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    environment: production
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - name: Download exact deployed release inputs
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: production-deployed-inputs-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/lunchlineup-deployed-inputs
+      - name: Verify exact deployed release inputs
+        env:
+          EXPECTED_ARTIFACT_DIGEST: ${{ needs.deploy-production.outputs.deployed_inputs_artifact_digest }}
+          LAUNCH_PROOF_ARTIFACT_SHA256: ${{ needs.deploy-production.outputs.launch_proof_sha256 }}
+        run: |
+          set -euo pipefail
+          test -n "$EXPECTED_ARTIFACT_DIGEST"
+          test -n "$LAUNCH_PROOF_ARTIFACT_SHA256"
+          node scripts/deployed-release-inputs.mjs verify \
+            --binding "$RUNNER_TEMP/lunchlineup-deployed-inputs/binding.json" \
+            --expected-launch-proof-sha256 "$LAUNCH_PROOF_ARTIFACT_SHA256" \
+            --github-env "$GITHUB_ENV"
       - name: "18. Production smoke tests"
         id: smoke
+        env:
+          PRODUCTION_HEALTH_URL: ${{ vars.PRODUCTION_HEALTH_URL }}
+          PRODUCTION_API_HEALTH_URL: ${{ vars.PRODUCTION_API_HEALTH_URL }}
+          PRODUCTION_WEB_URL: ${{ vars.PRODUCTION_WEB_URL }}
+          LAUNCH_PROOF_MANIFEST_URI: ${{ env.DEPLOYED_LAUNCH_PROOF_MANIFEST_URI }}
+          PRODUCTION_POST_DEPLOY_PROOF_COMMAND: ${{ vars.PRODUCTION_POST_DEPLOY_PROOF_COMMAND }}
+          RELEASE_SOURCE_SHA: ${{ github.sha }}
+          LAUNCH_PROOF_ARTIFACT_SHA256: ${{ env.DEPLOYED_LAUNCH_PROOF_SHA256 }}
+          LAUNCH_PROOF_MAX_AGE_SECONDS: ${{ env.DEPLOYED_LAUNCH_PROOF_MAX_AGE_SECONDS }}
         run: |
-          echo "Checking health endpoints and critical queries..."
-          # curl -f https://api.lunchlineup.com/health || exit 1
-      - name: "19. Auto-rollback if failed"
-        if: failure()
+          set -euo pipefail
+          test -n "$PRODUCTION_HEALTH_URL"
+          test -n "$PRODUCTION_API_HEALTH_URL"
+          test -n "$PRODUCTION_WEB_URL"
+          test -n "$LAUNCH_PROOF_MANIFEST_URI"
+          test -n "$PRODUCTION_POST_DEPLOY_PROOF_COMMAND"
+          test -n "$LAUNCH_PROOF_ARTIFACT_SHA256"
+          test -n "$LAUNCH_PROOF_MAX_AGE_SECONDS"
+          curl -fsS "$PRODUCTION_HEALTH_URL"
+          node scripts/verify-external-health-release.mjs "$PRODUCTION_API_HEALTH_URL" "$RELEASE_SOURCE_SHA"
+          printf '%s\n' "$PRODUCTION_POST_DEPLOY_PROOF_COMMAND" > /tmp/lunchlineup-post-deploy-proof.sh
+          bash /tmp/lunchlineup-post-deploy-proof.sh
+      - name: Publish immutable successful release bundle
+        id: publish_release
+        env:
+          PRODUCTION_RELEASE_REGISTRY_URI: ${{ vars.PRODUCTION_RELEASE_REGISTRY_URI }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.RELEASE_REGISTRY_AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.RELEASE_REGISTRY_AWS_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: ${{ vars.RELEASE_REGISTRY_AWS_REGION }}
         run: |
-          echo "SMOKE FAILED — Rolling back to previous SHA..."
-          # docker service update --rollback lunchlineup_api
+          set -euo pipefail
+          umask 077
+          release_bundle="$RUNNER_TEMP/lunchlineup-release-$GITHUB_SHA.json"
+          node scripts/build-release-bundle.mjs \
+            --deployed-input-binding "$DEPLOYED_RELEASE_INPUT_BINDING" \
+            --expected-source-sha "$GITHUB_SHA" \
+            --output "$release_bundle"
+          node scripts/release-bundle-registry.mjs publish --registry-uri "$PRODUCTION_RELEASE_REGISTRY_URI" --state-file "$release_bundle"
+          rm -f "$release_bundle" "$release_bundle.index"
+      - name: Cleanup production smoke proof
+        if: always()
+        run: rm -f /tmp/lunchlineup-post-deploy-proof.sh
 
-  # ─── SBOM Generation ───
+  production-rollback:
+    name: "Production rollback after any post-mutation failure"
+    needs: [deploy-production, production-smoke]
+    runs-on: ubuntu-latest
+    if: >-
+      always() &&
+      github.ref == 'refs/heads/main' &&
+      needs.deploy-production.outputs.production_rollback_armed == 'true' &&
+      (needs.deploy-production.result != 'success' || needs.production-smoke.result != 'success')
+    environment: production
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - name: Download retained validated rollback baseline
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: production-rollback-baseline-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/lunchlineup-rollback-baseline
+      - name: Materialize and verify retained rollback baseline
+        run: |
+          set -euo pipefail
+          rollback_state="$RUNNER_TEMP/lunchlineup-rollback-baseline/lunchlineup-previous-release.json"
+          rollback_dir="$RUNNER_TEMP/lunchlineup-rollback-state"
+          test -f "$rollback_state"
+          node scripts/materialize-rollback-state.mjs \
+            --state-file "$rollback_state" \
+            --output-dir "$rollback_dir" \
+            --github-env "$GITHUB_ENV"
+          node "$rollback_dir/app/scripts/verify-release-artifacts.mjs" "$rollback_dir/app/.release/release-manifest.json" \
+            --source-sha "$PREVIOUS_RELEASE_SOURCE_SHA" \
+            --deployment-root "$rollback_dir/app" \
+            --launch-proof-file "$rollback_dir/launch-proof.json" \
+            --launch-proof-mode rollback \
+            --max-proof-age-seconds "$PREVIOUS_LAUNCH_PROOF_MAX_AGE_SECONDS"
+      - name: Roll back to retained validated baseline
+        env:
+          PRODUCTION_ROLLBACK_COMMAND: ${{ vars.PRODUCTION_ROLLBACK_COMMAND }}
+          PRODUCTION_API_HEALTH_URL: ${{ vars.PRODUCTION_API_HEALTH_URL }}
+          PRODUCTION_WEB_URL: ${{ vars.PRODUCTION_WEB_URL }}
+          PREVIOUS_RUNTIME_SECRET_DESCRIPTOR: ${{ env.PREVIOUS_RUNTIME_SECRET_DESCRIPTOR }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.RUNTIME_SECRET_AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.RUNTIME_SECRET_AWS_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: ${{ vars.RUNTIME_SECRET_AWS_REGION }}
+        run: |
+          set -euo pipefail
+          test -n "$PRODUCTION_ROLLBACK_COMMAND"
+          previous_runtime="$RUNNER_TEMP/lunchlineup-previous-runtime.env"
+          node scripts/rehydrate-runtime-secret.mjs \
+            --descriptor "$PREVIOUS_RUNTIME_SECRET_DESCRIPTOR" \
+            --output "$previous_runtime"
+          test "$(sha256sum "$previous_runtime" | awk '{print $1}')" = "$PREVIOUS_PRODUCTION_RUNTIME_ENV_SHA256"
+          printf '%s\n' "$PRODUCTION_ROLLBACK_COMMAND" > /tmp/lunchlineup-rollback-production.sh
+          (
+            cd "$PREVIOUS_DEPLOYMENT_APP_DIR"
+            env \
+              ROLLBACK_DEPLOYMENT_APP_DIR="$PREVIOUS_DEPLOYMENT_APP_DIR" \
+              RELEASE_MANIFEST_PATH="$PREVIOUS_RELEASE_MANIFEST_PATH" \
+              RELEASE_SOURCE_SHA="$PREVIOUS_RELEASE_SOURCE_SHA" \
+              PRODUCTION_RUNTIME_ENV_PATH="$previous_runtime" \
+              COMPOSE_SERVICE_ENV_FILE="$previous_runtime" \
+              PRODUCTION_RUNTIME_ENV_SHA256="$PREVIOUS_PRODUCTION_RUNTIME_ENV_SHA256" \
+              LAUNCH_PROOF_PATH="$PREVIOUS_LAUNCH_PROOF_PATH" \
+              LAUNCH_PROOF_ARTIFACT_SHA256="$PREVIOUS_LAUNCH_PROOF_ARTIFACT_SHA256" \
+              LAUNCH_PROOF_MAX_AGE_SECONDS="$PREVIOUS_LAUNCH_PROOF_MAX_AGE_SECONDS" \
+              LAUNCH_PROOF_MANIFEST_URI="$PREVIOUS_LAUNCH_PROOF_MANIFEST_URI" \
+              PRODUCTION_API_HEALTH_URL="$PRODUCTION_API_HEALTH_URL" \
+              PRODUCTION_WEB_URL="$PRODUCTION_WEB_URL" \
+              bash /tmp/lunchlineup-rollback-production.sh
+          )
+      - name: Cleanup rollback material
+        if: always()
+        run: |
+          rm -f /tmp/lunchlineup-rollback-production.sh "$RUNNER_TEMP/lunchlineup-previous-runtime.env"
+          rm -rf "$RUNNER_TEMP/lunchlineup-rollback-baseline" "$RUNNER_TEMP/lunchlineup-rollback-state"
+  # --- SBOM Generation ---
   sbom:
     name: "Generate SBOM"
     needs: build-images
     runs-on: ubuntu-latest
-    if: github.ref == 'refs/heads/main'
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     steps:
-      - uses: actions/checkout@v4
-      - uses: anchore/sbom-action@v0
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0
         with:
           artifact-name: sbom.spdx.json
 
-  # ─── Base Image Vulnerability Scan ───
+  # --- Base Image Vulnerability Scan ---
   trivy-scan:
     name: "Container Vulnerability Scan (Trivy)"
     needs: build-images
     runs-on: ubuntu-latest
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    permissions:
+      contents: read
+      packages: read
+    strategy:
+      fail-fast: false
+      matrix:
+        service: [api, web, engine, worker, migrate, control, backup]
     steps:
-      - uses: actions/checkout@v4
-      - uses: aquasecurity/trivy-action@0.35.0
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
-          scan-type: 'fs'
-          scan-ref: '.'
+          name: release-manifest
+          path: .release
+      - name: Verify and resolve digest-pinned release image
+        id: release_image
+        env:
+          SERVICE: ${{ matrix.service }}
+        run: |
+          set -euo pipefail
+          node scripts/verify-release-artifacts.mjs .release/release-manifest.json --source-sha "$GITHUB_SHA"
+          node <<'NODE' >> "$GITHUB_OUTPUT"
+          const fs = require('node:fs');
+          const manifest = JSON.parse(fs.readFileSync('.release/release-manifest.json', 'utf8'));
+          const image = manifest.images[process.env.SERVICE];
+          if (!image?.ref || !image?.digest || !image.ref.endsWith(`@${image.digest}`)) process.exit(1);
+          process.stdout.write(`ref=${image.ref}\ndigest=${image.digest}\n`);
+          NODE
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Prepare Trivy report directory
+        run: mkdir -p .release/trivy
+      - uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1 # 0.35.0
+        id: trivy
+        with:
+          scan-type: 'image'
+          image-ref: ${{ steps.release_image.outputs.ref }}
+          format: 'json'
+          output: .release/trivy/${{ matrix.service }}.trivy.json
+          scanners: 'vuln'
           severity: 'CRITICAL,HIGH'
-          exit-code: '1'
+          exit-code: '0'
+      - name: Bind Trivy report to release manifest
+        env:
+          SERVICE: ${{ matrix.service }}
+        run: |
+          node <<'NODE'
+          const crypto = require('node:crypto');
+          const fs = require('node:fs');
+          const service = process.env.SERVICE;
+          const manifestPath = '.release/release-manifest.json';
+          const reportPath = `.release/trivy/${service}.trivy.json`;
+          const manifestBytes = fs.readFileSync(manifestPath);
+          const reportBytes = fs.readFileSync(reportPath);
+          const manifest = JSON.parse(manifestBytes);
+          const image = manifest.images[service];
+          const sha256 = (bytes) => crypto.createHash('sha256').update(bytes).digest('hex');
+          const evidence = {
+            version: 1,
+            scanner: 'trivy',
+            sourceSha: manifest.sourceSha,
+            service,
+            imageRef: image.ref,
+            imageDigest: image.digest,
+            releaseManifestSha256: sha256(manifestBytes),
+            reportFile: `${service}.trivy.json`,
+            reportSha256: sha256(reportBytes),
+            severityGate: ['HIGH', 'CRITICAL'],
+          };
+          fs.writeFileSync(`.release/trivy/${service}.trivy-evidence.json`, `${JSON.stringify(evidence, null, 2)}\n`);
+          NODE
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always()
+        with:
+          name: trivy-release-${{ matrix.service }}
+          path: .release/trivy/${{ matrix.service }}.trivy*.json
+          if-no-files-found: error
+      - name: Enforce HIGH and CRITICAL release image gate
+        run: node scripts/verify-trivy-release-reports.mjs .release/release-manifest.json .release/trivy --service "${{ matrix.service }}"

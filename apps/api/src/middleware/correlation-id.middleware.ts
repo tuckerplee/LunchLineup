@@ -1,9 +1,10 @@
 import { Injectable, NestMiddleware, Logger } from '@nestjs/common';
 import { Request, Response, NextFunction } from 'express';
 import { randomUUID } from 'crypto';
+import { redactUrlForLog } from '../common/sensitive-redaction';
 
 /**
- * Correlation ID Middleware — Architecture Part X
+ * Correlation ID Middleware - Architecture Part X
  *
  * Attaches a unique trace/correlation ID to every incoming HTTP request.
  * The ID is:
@@ -20,33 +21,26 @@ export class CorrelationIdMiddleware implements NestMiddleware {
     private readonly logger = new Logger('HTTP');
 
     use(req: Request, res: Response, next: NextFunction): void {
-        // Accept an upstream-provided ID or generate a fresh one
         const correlationId =
             (req.headers['x-correlation-id'] as string) ||
             (req.headers['x-request-id'] as string) ||
             randomUUID();
 
-        // Attach to request object for services to read
         (req as any).correlationId = correlationId;
-
-        // Echo back in the response
         res.setHeader('X-Correlation-ID', correlationId);
 
         const { method, originalUrl, ip } = req;
+        const safeUrl = redactUrlForLog(originalUrl ?? req.url ?? '');
         const startMs = Date.now();
 
-        this.logger.log(
-            `→ [${correlationId}] ${method} ${originalUrl} from ${ip}`
-        );
+        this.logger.log(`-> [${correlationId}] ${method} ${safeUrl} from ${ip}`);
 
         res.on('finish', () => {
             const { statusCode } = res;
             const durationMs = Date.now() - startMs;
             const level = statusCode >= 500 ? 'error' : statusCode >= 400 ? 'warn' : 'log';
 
-            this.logger[level](
-                `← [${correlationId}] ${method} ${originalUrl} ${statusCode} — ${durationMs}ms`
-            );
+            this.logger[level](`<- [${correlationId}] ${method} ${safeUrl} ${statusCode} - ${durationMs}ms`);
         });
 
         next();

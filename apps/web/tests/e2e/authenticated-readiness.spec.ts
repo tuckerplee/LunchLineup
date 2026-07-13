@@ -1,0 +1,576 @@
+import { expect, test, type Page } from '@playwright/test';
+
+import { csrfHeaders, loginAsSeedAdmin, loginWithPin, runFullStack } from './support';
+
+const runMockReadiness = process.env.E2E_MOCK_API !== '0' && !runFullStack && !process.env.BASE_URL;
+const publicOnlyOverride = process.env.E2E_PUBLIC_SMOKE_ONLY === '1';
+
+async function saveDemandWindow(page: Page, date: string) {
+  const editor = page.getByLabel('Schedule demand setup').first();
+  await expect(editor).toBeVisible();
+  await editor.getByRole('button', { name: 'Add window' }).click();
+  const row = editor.locator('.demand-editor__row').last();
+  await row.getByLabel('Date').fill(date);
+  await row.getByLabel('Start').fill('10:00');
+  await row.getByLabel('End').fill('18:00');
+  await row.getByLabel('Staff').fill('1');
+  await editor.getByRole('button', { name: 'Save demand' }).click();
+  await expect(editor.getByText('1 demand window saved.')).toBeVisible();
+}
+
+test('E2E configuration includes an authenticated readiness layer', () => {
+  expect(
+    runFullStack || runMockReadiness || publicOnlyOverride,
+    'Default E2E must not pass with only unauthenticated public smoke. Use the mock readiness server, E2E_FULL_STACK=1, or explicit E2E_PUBLIC_SMOKE_ONLY=1.',
+  ).toBeTruthy();
+});
+
+test.describe('Authenticated scheduling SaaS readiness', () => {
+  test.skip(runFullStack, 'DB-backed authenticated specs cover this path when E2E_FULL_STACK=1.');
+  test.skip(!runMockReadiness, 'Mock API readiness runs only when Playwright starts the local web app.');
+  test.skip(({ browserName, isMobile }) => browserName !== 'chromium' || isMobile, 'Authenticated readiness mutates shared mock state and runs once on desktop Chromium.');
+
+  test.beforeEach(async ({ page }) => {
+    const response = await page.request.post('/api/v1/__e2e/reset');
+    expect(response.ok(), `mock API reset returned ${response.status()}`).toBeTruthy();
+  });
+
+  test('logs in and proves scheduler, break generation, and time-card writes', async ({ page }) => {
+    await loginAsSeedAdmin(page, '/dashboard/scheduling');
+
+    await expect(page.getByRole('heading', { name: 'Calendar' })).toBeVisible();
+    await expect(page.getByText('E2E Operations Diner')).toBeVisible();
+    await expect(page.getByRole('link', { name: /Lunch & Breaks/ })).toBeVisible();
+    await expect(page.getByRole('link', { name: /Time Cards/ })).toBeVisible();
+    await expect(page.getByText(/No saved shifts in this range/)).toBeVisible();
+
+    const missingBreakAttemptKey = await page.request.post('/api/v1/lunch-breaks/generate', {
+      headers: await csrfHeaders(page),
+      data: { shiftIds: [], persist: true },
+    });
+    expect(missingBreakAttemptKey.status()).toBe(400);
+    expect(await missingBreakAttemptKey.json()).toMatchObject({
+      message: expect.stringContaining('Idempotency-Key header is required'),
+    });
+
+    await page.getByRole('button', { name: /Add shift/ }).click();
+    const shiftForm = page.locator('form.shift-form');
+    await expect(shiftForm).toBeVisible();
+    await shiftForm.locator('select').first().selectOption({ label: 'Mock Staff' });
+    await shiftForm.locator('input[type="time"]').first().fill('10:00');
+    await shiftForm.locator('input[type="time"]').nth(1).fill('18:00');
+    const demandDate = await shiftForm.locator('input[type="date"]').inputValue();
+    await shiftForm.getByRole('button', { name: 'Create shift' }).click();
+
+    await expect(page.getByText(/Shift created and saved/)).toBeVisible();
+    await expect(page.locator('.timeline-row[data-resource-title="Mock Staff"]').filter({ hasText: '10:00-18:00' })).toBeVisible();
+    await expect(page.getByRole('heading', { name: 'Publish review' })).toBeVisible();
+    await saveDemandWindow(page, demandDate);
+
+    await page.getByRole('button', { name: /Auto-schedule/ }).click();
+    await expect(page.getByText(/will replace every shift/i)).toBeVisible();
+    await page.getByRole('button', { name: 'Confirm replace' }).click();
+    await expect(page.getByText(/Auto-schedule solved/)).toBeVisible({ timeout: 10000 });
+
+    await page.getByRole('button', { name: 'Advanced settings' }).click();
+    await page.getByRole('button', { name: /Generate breaks/ }).click();
+    await expect(page.getByText(/Breaks generated and saved for 1 shift/)).toBeVisible();
+    await expect(page.locator('.shift-marker-lunch')).toBeVisible();
+    await expect(page.locator('.shift-marker-break').first()).toBeVisible();
+
+    await page.getByRole('button', { name: 'Publish' }).click();
+    await expect(page.getByText(/Review complete/)).toBeVisible();
+    await page.getByRole('button', { name: 'Confirm publish' }).click();
+    await expect(page.getByText(/Schedule published/)).toBeVisible();
+
+    await page.getByRole('link', { name: /Time Cards/ }).click();
+    await expect(page.getByRole('heading', { name: 'Time Cards' })).toBeVisible();
+    await page.getByLabel('Employee').selectOption({ label: 'Mock Staff' });
+    await page.getByRole('button', { name: 'Clock in' }).click();
+    await expect(page.getByText('Clocked in.')).toBeVisible();
+    await expect(page.getByText(/Clocked in at/)).toBeVisible();
+    await page.getByLabel('Break minutes').fill('0');
+    await page.getByRole('button', { name: 'Clock out' }).click();
+    await expect(page.getByText('Clocked out.')).toBeVisible();
+    await expect(page.getByText('CLOSED').first()).toBeVisible();
+  });
+
+  test('creates and edits an overnight shift inside the containing weekly draft', async ({ page }) => {
+    await loginAsSeedAdmin(page, '/dashboard/scheduling?date=2026-07-11');
+    await expect(page.getByRole('heading', { name: 'Calendar' })).toBeVisible();
+
+    const createScheduleResponsePromise = page.waitForResponse((response) =>
+      response.request().method() === 'POST' && new URL(response.url()).pathname.endsWith('/api/v1/schedules'));
+    await page.getByRole('button', { name: 'Create schedule' }).click();
+    const weeklySchedule = await (await createScheduleResponsePromise).json() as { id: string };
+    await expect(page.getByText(/Draft schedule created/)).toBeVisible();
+
+    await page.getByRole('button', { name: /Add shift/ }).click();
+    const shiftForm = page.locator('form.shift-form');
+    await shiftForm.locator('select').first().selectOption({ label: 'Mock Staff' });
+    await shiftForm.getByLabel('Date').fill('2026-07-11');
+    await shiftForm.getByLabel('Start').fill('22:00');
+    await shiftForm.getByLabel('End').fill('02:00');
+
+    const createRequestPromise = page.waitForRequest((request) =>
+      request.method() === 'POST' && new URL(request.url()).pathname.endsWith('/api/v1/shifts'));
+    await shiftForm.getByRole('button', { name: 'Create shift' }).click();
+    const createPayload = (await createRequestPromise).postDataJSON() as { scheduleId: string; startTime: string; endTime: string };
+    expect(createPayload).toMatchObject({
+      scheduleId: weeklySchedule.id,
+      startTime: '2026-07-12T02:00:00.000Z',
+      endTime: '2026-07-12T06:00:00.000Z',
+    });
+    await expect(page.getByText(/Shift created and saved/)).toBeVisible();
+
+    const overnightShift = page.locator('.shift-block').filter({ hasText: '22:00-02:00' }).first();
+    await expect(overnightShift).toBeVisible();
+    await overnightShift.click();
+    await page.getByRole('button', { name: 'Edit shift' }).click();
+    await expect(shiftForm.getByLabel('Date')).toHaveValue('2026-07-11');
+    await expect(shiftForm.getByLabel('Start')).toHaveValue('22:00');
+    await expect(shiftForm.getByLabel('End')).toHaveValue('02:00');
+
+    await shiftForm.getByLabel('End').fill('01:30');
+    const editRequestPromise = page.waitForRequest((request) =>
+      request.method() === 'PUT' && /\/api\/v1\/shifts\/[^/]+$/.test(new URL(request.url()).pathname));
+    await shiftForm.getByRole('button', { name: 'Save shift' }).click();
+    const editPayload = (await editRequestPromise).postDataJSON() as { startTime: string; endTime: string };
+    expect(editPayload).toMatchObject({
+      startTime: '2026-07-12T02:00:00.000Z',
+      endTime: '2026-07-12T05:30:00.000Z',
+    });
+    await expect(page.getByText(/Shift changes saved/)).toBeVisible();
+
+    const editor = page.getByLabel('Schedule demand setup').first();
+    await editor.getByRole('button', { name: 'Add window' }).click();
+    const demandRow = editor.locator('.demand-editor__row').last();
+    await demandRow.getByLabel('Date').fill('2026-07-11');
+    await demandRow.getByLabel('Start').fill('23:00');
+    await demandRow.getByLabel('End').fill('01:00');
+    await demandRow.getByLabel('Staff').fill('2');
+
+    const demandRequestPromise = page.waitForRequest((request) =>
+      request.method() === 'PUT' && new URL(request.url()).pathname.endsWith('/demand-windows'));
+    await editor.getByRole('button', { name: 'Save demand' }).click();
+    const demandPayload = (await demandRequestPromise).postDataJSON() as {
+      windows: Array<{ startTime: string; endTime: string; requiredStaff: number }>;
+    };
+    expect(demandPayload.windows).toEqual([expect.objectContaining({
+      startTime: '2026-07-12T03:00:00.000Z',
+      endTime: '2026-07-12T05:00:00.000Z',
+      requiredStaff: 2,
+    })]);
+    await expect(editor.getByText('1 demand window saved.')).toBeVisible();
+    await expect(demandRow.getByLabel('Date')).toHaveValue('2026-07-11');
+    await expect(demandRow.getByLabel('Start')).toHaveValue('23:00');
+    await expect(demandRow.getByLabel('End')).toHaveValue('01:00');
+  });
+
+  test('retains the active location through break generation and refresh', async ({ page }) => {
+    const locations = [
+      { id: 'loc-downtown', name: 'Downtown Diner', timezone: 'America/Los_Angeles' },
+      { id: 'loc-uptown', name: 'Uptown Diner', timezone: 'America/Los_Angeles' },
+    ];
+    const shifts = [
+      {
+        id: 'shift-downtown',
+        locationId: 'loc-downtown',
+        scheduleId: 'schedule-downtown',
+        userId: 'user-mock-staff',
+        role: 'STAFF',
+        startTime: '2026-07-09T17:00:00.000Z',
+        endTime: '2026-07-10T01:00:00.000Z',
+        breaks: [],
+        user: { id: 'user-mock-staff', name: 'Mock Staff', role: 'STAFF' },
+      },
+      {
+        id: 'shift-uptown',
+        locationId: 'loc-uptown',
+        scheduleId: 'schedule-uptown',
+        userId: 'user-mock-manager',
+        role: 'MANAGER',
+        startTime: '2026-07-09T18:00:00.000Z',
+        endTime: '2026-07-10T02:00:00.000Z',
+        breaks: [],
+        user: { id: 'user-mock-manager', name: 'Mock Manager', role: 'MANAGER' },
+      },
+    ];
+    const requestedLocationIds: Array<string | null> = [];
+    let generatedShiftIds: string[] = [];
+    let generatedLocationId = '';
+    let releaseDowntownLoad: (() => void) | undefined;
+    const downtownLoadGate = new Promise<void>((resolve) => {
+      releaseDowntownLoad = resolve;
+    });
+
+    await page.route('**/api/v1/locations', async (route) => {
+      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ data: locations }) });
+    });
+    await page.route('**/api/v1/shifts?*', async (route) => {
+      const locationId = new URL(route.request().url()).searchParams.get('locationId');
+      requestedLocationIds.push(locationId);
+      if (locationId === 'loc-downtown') await downtownLoadGate;
+      const data = locationId ? shifts.filter((shift) => shift.locationId === locationId) : shifts;
+      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ data }) });
+    });
+    await page.route('**/api/v1/lunch-breaks/generate', async (route) => {
+      const payload = route.request().postDataJSON() as { locationId?: string; shiftIds?: string[] };
+      generatedLocationId = payload.locationId ?? '';
+      generatedShiftIds = payload.shiftIds ?? [];
+      await route.fulfill({
+        status: 201,
+        contentType: 'application/json',
+        body: JSON.stringify({ persisted: true, data: [] }),
+      });
+    });
+
+    await loginAsSeedAdmin(page, '/dashboard/scheduling?date=2026-07-09&location=loc-uptown');
+    await expect(page.getByRole('heading', { name: 'Calendar' })).toBeVisible();
+    await expect.poll(() => requestedLocationIds.at(-1)).toBe('loc-uptown');
+
+    await page.getByRole('button', { name: /Add shift/ }).click();
+    const locationSelect = page.locator('form.shift-form').getByLabel('Location');
+    await expect(locationSelect).toHaveValue('loc-uptown');
+    const requestsBeforeSwitch = requestedLocationIds.length;
+    await locationSelect.selectOption('loc-downtown');
+    await page.getByRole('button', { name: 'Advanced settings' }).click();
+    const generateButton = page.getByRole('button', { name: /Generate breaks/ });
+    await expect(generateButton).toBeDisabled();
+    expect(generatedShiftIds).toEqual([]);
+    releaseDowntownLoad?.();
+    await expect.poll(() => requestedLocationIds.at(-1)).toBe('loc-downtown');
+    await expect(generateButton).toBeEnabled();
+    await generateButton.click();
+
+    await expect(page.getByText(/Breaks generated and saved for 1 shift/)).toBeVisible();
+    await expect(locationSelect).toHaveValue('loc-downtown');
+    expect(generatedLocationId).toBe('loc-downtown');
+    expect(generatedShiftIds).toEqual(['shift-downtown']);
+    expect(requestedLocationIds.slice(requestsBeforeSwitch)).toEqual(
+      expect.arrayContaining(['loc-downtown']),
+    );
+    expect(requestedLocationIds.slice(requestsBeforeSwitch).every((locationId) => locationId === 'loc-downtown')).toBe(true);
+  });
+
+  test('keeps the selected calendar scope when an older auto-schedule job completes', async ({ page }) => {
+    const shiftLoadStarts: string[] = [];
+    let releaseSolvePoll: (() => void) | undefined;
+    let markSolvePollStarted: (() => void) | undefined;
+    let completedSolvePolls = 0;
+    const solvePollGate = new Promise<void>((resolve) => {
+      releaseSolvePoll = resolve;
+    });
+    const solvePollStarted = new Promise<void>((resolve) => {
+      markSolvePollStarted = resolve;
+    });
+
+    await page.route('**/api/v1/shifts?*', async (route) => {
+      const url = new URL(route.request().url());
+      if (url.searchParams.has('startDate')) shiftLoadStarts.push(url.searchParams.get('startDate') ?? '');
+      await route.fallback();
+    });
+    await page.route('**/api/v1/schedules/*/auto-schedule/jobs/*', async (route) => {
+      markSolvePollStarted?.();
+      await solvePollGate;
+      completedSolvePolls += 1;
+      const pathParts = new URL(route.request().url()).pathname.split('/');
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          jobId: pathParts.at(-1),
+          status: 'SUCCEEDED',
+          statusReason: null,
+          retryCount: 0,
+          resultShiftCount: 1,
+        }),
+      });
+    });
+
+    await loginAsSeedAdmin(page, '/dashboard/scheduling?date=2026-07-09');
+    await page.getByRole('button', { name: /Add shift/ }).click();
+    const shiftForm = page.locator('form.shift-form');
+    await shiftForm.locator('select').first().selectOption({ label: 'Mock Staff' });
+    const demandDate = await shiftForm.locator('input[type="date"]').inputValue();
+    await shiftForm.getByRole('button', { name: 'Create shift' }).click();
+    await expect(page.getByText(/Shift created and saved/)).toBeVisible();
+    await saveDemandWindow(page, demandDate);
+
+    await page.getByRole('button', { name: /Auto-schedule/ }).click();
+    await page.getByRole('button', { name: 'Confirm replace' }).click();
+    await solvePollStarted;
+
+    const dateInput = page.locator('input[type="date"]:not([disabled])').first();
+    await dateInput.fill('2026-08-01');
+    await expect(page.getByText(/No saved shifts in this range/)).toBeVisible();
+    const loadCountAfterScopeChange = shiftLoadStarts.length;
+
+    releaseSolvePoll?.();
+    await expect.poll(() => completedSolvePolls).toBe(1);
+    await page.waitForTimeout(250);
+
+    await expect(dateInput).toHaveValue('2026-08-01');
+    await expect(page.getByText(/No saved shifts in this range/)).toBeVisible();
+    await expect(page.getByText(/Auto-schedule solved/)).toHaveCount(0);
+    expect(shiftLoadStarts).toHaveLength(loadCountAfterScopeChange);
+  });
+
+  test('reload resumes the same auto-schedule job without a duplicate paid request', async ({ page }) => {
+    let queueRequests = 0;
+    let solvePolls = 0;
+    const attemptKeys: string[] = [];
+    await page.route('**/api/v1/schedules/*/auto-schedule', async (route) => {
+      queueRequests += 1;
+      attemptKeys.push(route.request().headers()['idempotency-key'] ?? '');
+      await route.fulfill({
+        status: 202,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          jobId: 'job-reload-recovery',
+          status: 'QUEUED',
+          statusUrl: '/v1/schedules/schedule-seed/auto-schedule/jobs/job-reload-recovery',
+        }),
+      });
+    });
+    await page.route('**/api/v1/schedules/*/auto-schedule/jobs/job-reload-recovery', async (route) => {
+      solvePolls += 1;
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          jobId: 'job-reload-recovery',
+          status: solvePolls === 1 ? 'RUNNING' : 'SUCCEEDED',
+          statusReason: null,
+          retryCount: 0,
+          resultShiftCount: 1,
+        }),
+      });
+    });
+
+    await loginAsSeedAdmin(page, '/dashboard/scheduling?date=2026-07-09');
+    await page.getByRole('button', { name: /Add shift/ }).click();
+    const shiftForm = page.locator('form.shift-form');
+    await shiftForm.locator('select').first().selectOption({ label: 'Mock Staff' });
+    const demandDate = await shiftForm.locator('input[type="date"]').inputValue();
+    await shiftForm.getByRole('button', { name: 'Create shift' }).click();
+    await saveDemandWindow(page, demandDate);
+    await page.getByRole('button', { name: /Auto-schedule/ }).click();
+    await page.getByRole('button', { name: 'Confirm replace' }).click();
+    await expect.poll(() => solvePolls).toBe(1);
+
+    await page.reload();
+
+    await expect(page.getByText(/Auto-schedule solved/)).toBeVisible();
+    expect(queueRequests).toBe(1);
+    expect(attemptKeys[0]).toBeTruthy();
+    expect(solvePolls).toBeGreaterThanOrEqual(2);
+    await expect.poll(() => page.evaluate(() => window.sessionStorage.getItem('lunchlineup:auto-schedule-recovery:v1'))).toBeNull();
+  });
+
+  test('renders paused resume and delinquent portal recovery from normalized billing state', async ({ page }) => {
+    let recoveryAction: 'resume' | 'portal' = 'resume';
+
+    await page.route('**/api/v1/billing/features', async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          planTier: 'GROWTH',
+          effectivePlanTier: 'FREE',
+          status: 'PAST_DUE',
+          stripeSubscriptionActive: false,
+          stripeSubscriptionPresent: true,
+          subscriptionRecoveryAction: recoveryAction,
+          usageCredits: 0,
+          features: {},
+        }),
+      });
+    });
+
+    await loginAsSeedAdmin(page, '/dashboard/settings');
+    await expect(page.getByLabel('Organization Name')).toHaveValue('E2E Operations Diner');
+    const billingTab = page.getByRole('tab', { name: 'Billing' });
+    await billingTab.click();
+    await expect(billingTab).toHaveAttribute('aria-selected', 'true');
+
+    await expect(page.getByRole('button', { name: 'Resume paused subscription' })).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Payment & invoices' })).toBeVisible();
+
+    recoveryAction = 'portal';
+    await page.getByRole('button', { name: 'Refresh billing' }).click();
+
+    await expect(page.getByRole('button', { name: 'Resolve payment issue' })).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Resume paused subscription' })).toHaveCount(0);
+  });
+
+  test('keeps settings writes disabled after a transient read failure until retry hydrates them', async ({ page }) => {
+    let settingsReads = 0;
+    let settingsWrites = 0;
+    await page.route('**/api/v1/settings', async (route) => {
+      settingsReads += 1;
+      if (settingsReads === 1) {
+        await route.fulfill({ status: 503, contentType: 'application/json', body: JSON.stringify({ message: 'Settings temporarily unavailable.' }) });
+        return;
+      }
+      await route.continue();
+    });
+    await page.route('**/api/v1/settings/**', async (route) => {
+      if (route.request().method() === 'PUT') settingsWrites += 1;
+      await route.continue();
+    });
+
+    await loginAsSeedAdmin(page, '/dashboard/settings');
+
+    await expect(page.getByText('Settings changes are disabled until the current values load.')).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Save Changes' })).toBeDisabled();
+    await expect(page.getByLabel('Organization Name')).toBeDisabled();
+    expect(settingsWrites).toBe(0);
+
+    await page.getByRole('button', { name: 'Retry settings load' }).click();
+    await expect(page.getByLabel('Organization Name')).toHaveValue('E2E Operations Diner');
+    await expect(page.getByLabel('Organization Name')).toBeEnabled();
+    await expect(page.getByRole('button', { name: 'Save Changes' })).toBeEnabled();
+    expect(settingsReads).toBe(2);
+    expect(settingsWrites).toBe(0);
+  });
+
+  test('keeps demand writes disabled after a transient read failure until retry hydrates them', async ({ page }) => {
+    let demandReads = 0;
+    let demandWrites = 0;
+    let demandAvailable = false;
+    await page.route('**/api/v1/schedules/*/demand-windows', async (route) => {
+      if (route.request().method() === 'PUT') {
+        demandWrites += 1;
+        await route.continue();
+        return;
+      }
+      demandReads += 1;
+      if (!demandAvailable) {
+        await route.fulfill({ status: 503, contentType: 'application/json', body: JSON.stringify({ message: 'Demand temporarily unavailable.' }) });
+        return;
+      }
+      await route.continue();
+    });
+
+    await loginAsSeedAdmin(page, '/dashboard/scheduling');
+    await page.getByRole('button', { name: 'Create schedule' }).click();
+
+    const editor = page.getByLabel('Schedule demand setup').first();
+    await expect(editor.getByText('Existing demand has not been replaced.')).toBeVisible();
+    await expect(editor.getByRole('button', { name: 'Add window' })).toBeDisabled();
+    await expect(editor.getByRole('button', { name: 'Save demand' })).toBeDisabled();
+    expect(demandWrites).toBe(0);
+
+    demandAvailable = true;
+    await editor.getByRole('button', { name: 'Retry demand load' }).click();
+    await expect(editor.getByRole('button', { name: 'Add window' })).toBeEnabled();
+    await expect(editor.getByRole('button', { name: 'Save demand' })).toBeEnabled();
+    expect(demandReads).toBeGreaterThanOrEqual(2);
+    expect(demandWrites).toBe(0);
+  });
+
+  test('enrolls and disables MFA from account security settings', async ({ page }) => {
+    await loginAsSeedAdmin(page, '/dashboard/settings');
+
+    await expect(page.getByRole('heading', { name: 'Settings' })).toBeVisible();
+    await page.getByRole('tab', { name: 'Security' }).click();
+    await expect(page.getByRole('heading', { name: 'Multi-factor authentication' })).toBeVisible();
+    await expect(page.getByText('Not enrolled')).toBeVisible();
+
+    await page.getByRole('button', { name: /Start MFA setup/ }).click();
+    await expect(page.getByLabel('Manual setup key')).toHaveValue('JBSWY3DPEHPK3PXP');
+    await page.getByLabel('Authenticator code').fill('123456');
+    await page.getByRole('button', { name: /Verify and enable/ }).click();
+
+    await expect(page.getByText('MFA is enabled.')).toBeVisible();
+    await expect(page.getByText('Enabled', { exact: true })).toBeVisible();
+    await expect(page.getByText('LL-4F8K-92HD')).toBeVisible();
+
+    await page.getByLabel('Authenticator or backup code').fill('123456');
+    await page.getByRole('button', { name: /Disable MFA/ }).click();
+
+    await expect(page.getByText('MFA is disabled.')).toBeVisible();
+    await expect(page.getByText('Not enrolled')).toBeVisible();
+  });
+
+  test('exposes account export, cancellation, and deletion request controls', async ({ page }) => {
+    await loginAsSeedAdmin(page, '/dashboard/settings');
+
+    await expect(page.getByRole('heading', { name: 'Settings' })).toBeVisible();
+    await page.getByRole('tab', { name: 'Account' }).click();
+    await expect(page.getByRole('heading', { name: 'Account' })).toBeVisible();
+    await expect(page.getByText('Open')).toBeVisible();
+
+    const download = page.waitForEvent('download');
+    await page.getByRole('button', { name: 'Download export' }).click();
+    expect((await download).suggestedFilename()).toBe('e2e-operations-account-export-2026-07-11.ndjson');
+    await expect(page.getByText('Account export download started.')).toBeVisible();
+
+    await page.getByLabel('Confirm workspace slug').first().fill('e2e-operations');
+    await page.getByLabel('Reason').fill('readiness test');
+    await page.getByRole('button', { name: 'Cancel renewal' }).click();
+    await expect(page.getByText(/Subscription renewal cancelled/)).toBeVisible();
+    await expect(page.locator('.surface-muted').filter({ hasText: 'Lifecycle' }).getByText('Open')).toBeVisible();
+
+    await page.getByLabel('Confirm workspace slug').nth(1).fill('e2e-operations');
+    await page.getByRole('button', { name: 'Request deletion' }).click();
+    await expect(page.getByText('Account deletion request recorded.')).toBeVisible();
+    await expect(page.getByText('Retention schedule')).toBeVisible();
+    await expect(page.locator('.surface-muted').filter({ hasText: 'Lifecycle' }).getByText('Deletion Requested')).toBeVisible();
+  });
+
+  test('redirects unverified enrolled MFA sessions to the MFA gate and continues after verification', async ({ page }) => {
+    await loginWithPin(page, {
+      username: 'e2e.mfa',
+      pin: '135790',
+      next: '/dashboard/scheduling?date=2026-07-09',
+      expectedPath: '/mfa',
+    });
+
+    const gateUrl = new URL(page.url());
+    expect(gateUrl.pathname).toBe('/mfa');
+    expect(gateUrl.searchParams.get('next')).toBe('/dashboard/scheduling?date=2026-07-09');
+
+    await expect(page.getByRole('heading', { name: 'Verify your sign-in' })).toBeVisible();
+    await expect(page.getByRole('link', { name: 'Contact LunchLineup support' })).toHaveAttribute('href', 'mailto:support@lunchlineup.test');
+    await page.getByLabel('Authentication code').fill('000000');
+    await page.getByRole('button', { name: 'Verify and continue' }).click();
+    await expect(page.locator('.mfa-error[role="alert"]')).toHaveText('Invalid MFA code.');
+    await page.getByLabel('Authentication code').fill('123456');
+    await page.getByRole('button', { name: 'Verify and continue' }).click();
+
+    await expect(page).toHaveURL(/\/dashboard\/scheduling\?date=2026-07-09/);
+    await expect(page.getByRole('heading', { name: 'Calendar' })).toBeVisible();
+  });
+
+  test('offers enrollment for required MFA sessions that are not enrolled', async ({ page }) => {
+    await loginWithPin(page, {
+      username: 'e2e.unenrolled',
+      pin: '975310',
+      next: '/dashboard',
+      expectedPath: '/mfa',
+    });
+
+    const gateUrl = new URL(page.url());
+    expect(gateUrl.pathname).toBe('/mfa');
+    expect(gateUrl.searchParams.get('next')).toBe('/dashboard');
+
+    await expect(page.getByRole('heading', { name: 'Set up multi-factor authentication' })).toBeVisible();
+    await expect(page.getByLabel('Manual setup key')).toHaveValue('JBSWY3DPEHPK3PXP');
+    await page.getByLabel('Authenticator code').fill('123456');
+    await page.getByRole('button', { name: 'Enable MFA and continue' }).click();
+
+    await expect(page).toHaveURL(/\/mfa/);
+    await expect(page.getByRole('heading', { name: 'Save your recovery codes' })).toBeVisible();
+    await expect(page.getByText('LL-4F8K-92HD')).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Copy codes' })).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Print codes' })).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Continue to LunchLineup' })).toBeDisabled();
+    await page.getByLabel('I saved these recovery codes in a secure place.').check();
+    await page.getByRole('button', { name: 'Continue to LunchLineup' }).click();
+
+    await expect(page).toHaveURL(/\/dashboard$/);
+    await expect(page.getByText('E2E Operations Diner', { exact: true })).toBeVisible();
+  });
+});

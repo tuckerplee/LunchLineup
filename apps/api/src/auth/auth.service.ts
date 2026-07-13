@@ -1,18 +1,182 @@
-import { Injectable, UnauthorizedException, ForbiddenException, BadRequestException } from '@nestjs/common';
+import { Injectable, UnauthorizedException, ForbiddenException, BadRequestException, Logger, Optional, ServiceUnavailableException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { JwtService, TokenPayload } from './jwt.service';
-import { PrismaClient, UserRole } from '@prisma/client';
+import { PrismaClient, TenantStatus } from '@prisma/client';
 import * as crypto from 'crypto';
-import { assertTenantCanAddActiveUser } from '../billing/user-capacity';
 import { RbacService } from './rbac.service';
 import * as bcrypt from 'bcryptjs';
+import Redis from 'ioredis';
+import { TenantPrismaService, TenantPrismaTransaction } from '../database/tenant-prisma.service';
+import { PasswordResetOutboxService } from './password-reset-outbox.service';
+import { OnboardingSignupService } from './onboarding-signup.service';
 
-type UserRoleValue = 'SUPER_ADMIN' | 'ADMIN' | 'MANAGER' | 'STAFF';
-const USER_ROLE: Record<UserRoleValue, UserRoleValue> = {
-    SUPER_ADMIN: 'SUPER_ADMIN',
-    ADMIN: 'ADMIN',
-    MANAGER: 'MANAGER',
-    STAFF: 'STAFF',
+const WORKSPACE_SETTINGS_KEY = 'workspace_settings';
+const DEFAULT_SESSION_TIMEOUT_MINUTES = 480;
+const MIN_SESSION_TIMEOUT_MINUTES = 5;
+const MAX_SESSION_TIMEOUT_MINUTES = 1440;
+const ACCESS_TOKEN_MAX_AGE_MS = 30 * 60 * 1000;
+const OIDC_STATE_TTL_SECONDS = 10 * 60;
+const KEY_OIDC_STATE = (state: string) => `oidc_state:${state}`;
+const KEY_SESSION_MFA = (sessionId: string) => `session_mfa:${sessionId}`;
+const MFA_ENROLLMENT_TTL_SECONDS = 10 * 60;
+const KEY_PENDING_MFA_ENROLLMENT = (sessionId: string, userId: string) => `mfa_enrollment:${sessionId}:${userId}`;
+const DEFAULT_MFA_ISSUER = 'LunchLineup';
+const MFA_BACKUP_CODE_COUNT = 10;
+const MAX_PROVISIONED_TENANT_NAME_LENGTH = 80;
+export const PUBLIC_SIGNUP_TERMS_VERSION = '2026-07-09';
+export const PUBLIC_SIGNUP_PRIVACY_VERSION = '2026-07-09';
+const TURNSTILE_VERIFY_URL = 'https://challenges.cloudflare.com/turnstile/v0/siteverify';
+const MAX_TURNSTILE_TOKEN_LENGTH = 2048;
+const HASHED_REFRESH_TOKEN_PREFIX = 'sha256:';
+const HASHED_SESSION_SELECTOR_PREFIX = 'selector-sha256:';
+const SELECTED_REFRESH_TOKEN_VERSION = 'v2';
+const PASSWORD_RESET_TOKEN_TTL_MINUTES = 60;
+const MIN_RESET_PASSWORD_LENGTH = 8;
+const MAX_BCRYPT_PASSWORD_BYTES = 72;
+const ENCRYPTED_MFA_SECRET_PREFIX = 'enc:v1:';
+const CURRENT_ENCRYPTED_MFA_SECRET_PREFIX = 'enc:v2:';
+const MFA_ENCRYPTION_CURRENT_KEY_ENV = 'MFA_SECRET_ENCRYPTION_KEY_CURRENT';
+const MFA_ENCRYPTION_PREVIOUS_KEY_ENV = 'MFA_SECRET_ENCRYPTION_KEY_PREVIOUS';
+const MFA_ENCRYPTION_LEGACY_KEY_ENV = 'MFA_SECRET_ENCRYPTION_KEY';
+const AUTH_BLOCKED_TENANT_STATUSES = new Set<string>([
+    TenantStatus.SUSPENDED,
+    TenantStatus.PURGED,
+]);
+const PUBLIC_SIGNUP_MODES = new Set(['closed_beta', 'invite_only', 'open']);
+
+type TenantSecuritySettings = {
+    requireMfaForAll: boolean;
+    sessionTimeoutMinutes: number;
+    ssoOidcOnly: boolean;
+};
+
+type AuthenticatedUser = {
+    id: string;
+    tenantId: string;
+    role: string;
+    email: string | null;
+    username: string | null;
+    mfaEnabled?: boolean | null;
+    pinResetRequired?: boolean | null;
+};
+
+type SessionRecord = {
+    id: string;
+    userId: string;
+    expiresAt: Date;
+    createdAt: Date;
+    revokedAt: Date | null;
+};
+
+type MfaPolicyAccess = {
+    primaryRole?: string | null;
+    permissions?: string[];
+};
+
+type LoginMethod = 'OIDC' | 'EMAIL_OTP' | 'USERNAME_PIN' | 'USERNAME_PASSWORD';
+
+type MfaManagedKey = {
+    ref: string;
+    value: Buffer;
+    legacy: boolean;
+};
+
+export type SessionRequestAudit = {
+    ipAddress?: string | null;
+    userAgent?: string | null;
+};
+
+type SessionTokenAudit = SessionRequestAudit & {
+    loginMethod: LoginMethod | string;
+};
+
+type SelectedRefreshCredential = {
+    kind: 'selected';
+    selector: string;
+    selectorHash: string;
+    validatorHash: string;
+};
+
+type LegacyRefreshCredential = {
+    kind: 'legacy';
+    candidates: string[];
+};
+
+type RefreshCredential = SelectedRefreshCredential | LegacyRefreshCredential;
+
+type NormalizedSessionTokenAudit = {
+    loginMethod: LoginMethod | string;
+    ipAddress: string;
+    userAgent: string;
+};
+
+const PRIVILEGED_MFA_PERMISSIONS = new Set([
+    'admin_portal:access',
+    'users:write',
+    'users:admin',
+    'roles:write',
+    'roles:assign',
+    'billing:write',
+    'settings:write',
+    'tenant_account:lifecycle',
+    'account:data_export',
+]);
+
+type MfaSessionUser = {
+    id: string;
+    tenantId: string;
+    role: string;
+    email: string | null;
+    username: string | null;
+    pinResetRequired: boolean;
+    mfaEnabled: boolean | null;
+    mfaSecret: string | null;
+    mfaBackupCodes: string[];
+};
+
+type MfaSessionContext = {
+    user: MfaSessionUser;
+    session: SessionRecord;
+    settings: TenantSecuritySettings;
+    effectiveExpiresAt: Date;
+};
+
+type OidcStatePayload = {
+    nextPath: string | null;
+    tenantSlug?: string | null;
+    createdAt: number;
+    correlationHash: string;
+};
+
+type OidcUserInfo = {
+    sub?: unknown;
+    email?: unknown;
+    email_verified?: unknown;
+};
+
+type LoginTenantContext = {
+    tenantId: string;
+    tenantSlug: string;
+};
+
+type EmailLoginOptions = {
+    tenantSlug?: string;
+    allowProvision?: boolean;
+    provisionTenantName?: string;
+    signupCode?: string;
+    onboardingChallengeToken?: string;
+    onboardingOtpCode?: string;
+    signupChallengeToken?: string;
+    signupChallengeRemoteIp?: string;
+    termsAccepted?: boolean;
+    privacyAccepted?: boolean;
+};
+
+type TenantAuthState = {
+    id: string;
+    slug?: string | null;
+    status: TenantStatus | string;
+    deletedAt: Date | null;
 };
 
 export type LoginResolveResult =
@@ -22,13 +186,315 @@ export type LoginResolveResult =
 
 @Injectable()
 export class AuthService {
+    private readonly logger = new Logger(AuthService.name);
     private prisma = new PrismaClient();
+    private redis?: Redis;
 
     constructor(
         private configService: ConfigService,
         private jwtService: JwtService,
         private rbacService: RbacService,
-    ) { }
+        @Optional() private tenantDb?: TenantPrismaService,
+        @Optional() private onboardingSignup?: OnboardingSignupService,
+    ) {
+        if (tenantDb) {
+            this.prisma = tenantDb.client;
+        }
+    }
+
+    private getRedis(): Redis {
+        if (!this.redis) {
+            this.redis = new Redis(
+                this.configService.get<string>('REDIS_URL', 'redis://localhost:6379'),
+            );
+            this.redis.on('error', (err) => this.logger.error(`Redis error: ${err instanceof Error ? err.message : 'unknown_error'}`));
+        }
+        return this.redis;
+    }
+
+    private getTenantDb(): TenantPrismaService {
+        if (!this.tenantDb) {
+            this.tenantDb = new TenantPrismaService(this.prisma);
+        }
+        return this.tenantDb;
+    }
+    private getOnboardingSignup(): OnboardingSignupService {
+        if (!this.onboardingSignup) {
+            this.onboardingSignup = new OnboardingSignupService(this.getTenantDb(), this.rbacService);
+        }
+        return this.onboardingSignup;
+    }
+
+
+    private normalizeSessionTimeoutMinutes(value: unknown): number {
+        return typeof value === 'number'
+            && Number.isInteger(value)
+            && value >= MIN_SESSION_TIMEOUT_MINUTES
+            && value <= MAX_SESSION_TIMEOUT_MINUTES
+            ? value
+            : DEFAULT_SESSION_TIMEOUT_MINUTES;
+    }
+
+    private normalizeTenantSlug(value?: string | null): string {
+        return (value ?? '').trim().toLowerCase();
+    }
+
+    private normalizeProvisionedTenantName(value?: string | null): string {
+        const tenantName = (value ?? '').trim().replace(/\s+/g, ' ');
+        if (!tenantName) {
+            throw new BadRequestException('Organization name is required');
+        }
+        if (tenantName.length > MAX_PROVISIONED_TENANT_NAME_LENGTH) {
+            throw new BadRequestException(`Organization name must be ${MAX_PROVISIONED_TENANT_NAME_LENGTH} characters or less`);
+        }
+        return tenantName;
+    }
+
+    private assertTenantCanAuthenticate(tenant: TenantAuthState | null): asserts tenant is TenantAuthState {
+        if (!tenant || tenant.deletedAt || AUTH_BLOCKED_TENANT_STATUSES.has(String(tenant.status))) {
+            throw new UnauthorizedException('Invalid workspace or login');
+        }
+        // PAST_DUE and CANCELLED tenants can authenticate; billing entitlement gates remove paid access.
+    }
+
+    private async assertTenantIdCanAuthenticate(tenantId: string): Promise<void> {
+        const tenant = await this.getTenantDb().withPlatformAdmin((tx) => tx.tenant.findUnique({
+            where: { id: tenantId },
+            select: { id: true, status: true, deletedAt: true },
+        }));
+        this.assertTenantCanAuthenticate(tenant);
+    }
+
+    private getPublicSignupMode(): 'closed_beta' | 'invite_only' | 'open' {
+        // Production self-service is code-locked until counsel approves versioned Terms.
+        if (process.env.NODE_ENV === 'production') {
+            return 'closed_beta';
+        }
+        const configured = this.configService.get<string>('PUBLIC_SIGNUP_MODE')?.trim().toLowerCase();
+        if (!configured) {
+            return 'open';
+        }
+        if (PUBLIC_SIGNUP_MODES.has(configured)) {
+            return configured as 'closed_beta' | 'invite_only' | 'open';
+        }
+        this.logger.error('Invalid PUBLIC_SIGNUP_MODE; public signup is disabled.');
+        return 'closed_beta';
+    }
+
+    private isValidPublicSignupInviteCode(signupCode?: string | null): boolean {
+        const normalized = (signupCode ?? '').trim();
+        if (!normalized) return false;
+        const configuredCodes = (this.configService.get<string>('PUBLIC_SIGNUP_INVITE_CODES') ?? '')
+            .split(',')
+            .map((code) => code.trim())
+            .filter(Boolean);
+        return configuredCodes.some((code) => this.safeEqual(code, normalized));
+    }
+
+    private assertPublicSignupAllowed(signupCode?: string | null): void {
+        const mode = this.getPublicSignupMode();
+        if (mode === 'open') return;
+        if (mode === 'invite_only' && this.isValidPublicSignupInviteCode(signupCode)) return;
+        throw new ForbiddenException('Public workspace signup is not available.');
+    }
+
+    private assertPublicSignupLegalAssent(options: EmailLoginOptions): void {
+        if (options.termsAccepted !== true || options.privacyAccepted !== true) {
+            throw new BadRequestException('Terms and Privacy assent is required to create a workspace');
+        }
+    }
+
+    private async assertPublicSignupOtpRequestAllowed(options: EmailLoginOptions): Promise<void> {
+        const mode = this.getPublicSignupMode();
+        this.assertPublicSignupAllowed(options.signupCode);
+        if (mode !== 'open') return;
+
+        await this.verifyPublicSignupChallenge(options.signupChallengeToken, options.signupChallengeRemoteIp);
+    }
+
+    private async verifyPublicSignupChallenge(tokenRaw?: string | null, remoteIp?: string | null): Promise<void> {
+        const secret = this.configService.get<string>('TURNSTILE_SECRET_KEY')?.trim();
+        if (!secret) {
+            if (process.env.NODE_ENV === 'production') {
+                this.logger.error('Open public signup is enabled without TURNSTILE_SECRET_KEY.');
+                throw new ServiceUnavailableException('Signup verification is not configured.');
+            }
+            return;
+        }
+
+        const token = (tokenRaw ?? '').trim();
+        if (!token || token.length > MAX_TURNSTILE_TOKEN_LENGTH) {
+            throw new ForbiddenException('Signup verification is required.');
+        }
+
+        const body = new URLSearchParams({
+            secret,
+            response: token,
+        });
+        const normalizedRemoteIp = (remoteIp ?? '').trim();
+        if (normalizedRemoteIp) {
+            body.set('remoteip', normalizedRemoteIp);
+        }
+
+        try {
+            const response = await fetch(TURNSTILE_VERIFY_URL, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                body: body.toString(),
+            });
+            if (!response.ok) {
+                throw new ServiceUnavailableException('Signup verification is unavailable.');
+            }
+            const result = await response.json() as { success?: boolean };
+            if (result.success !== true) {
+                throw new ForbiddenException('Signup verification failed.');
+            }
+        } catch (err) {
+            if (err instanceof ForbiddenException || err instanceof ServiceUnavailableException) {
+                throw err;
+            }
+            this.logger.error('Public signup challenge verification failed: verification_unavailable');
+            throw new ServiceUnavailableException('Signup verification is unavailable.');
+        }
+    }
+
+    private async resolveLoginTenantContext(tenantSlugRaw?: string | null): Promise<LoginTenantContext> {
+        const tenantSlug = this.normalizeTenantSlug(tenantSlugRaw);
+        if (!tenantSlug) {
+            throw new BadRequestException('Workspace is required');
+        }
+
+        const tenant = await this.getTenantDb().withPlatformAdmin((tx) => tx.tenant.findUnique({
+            where: { slug: tenantSlug },
+            select: { id: true, slug: true, deletedAt: true, status: true },
+        }));
+
+        this.assertTenantCanAuthenticate(tenant);
+
+        return { tenantId: tenant.id, tenantSlug: tenant.slug ?? tenantSlug };
+    }
+
+    private async getTenantSecuritySettings(tenantId: string): Promise<TenantSecuritySettings> {
+        const setting = await this.getTenantDb().withTenant(tenantId, (tx) => tx.tenantSetting.findUnique({
+            where: {
+                tenantId_key: {
+                    tenantId,
+                    key: WORKSPACE_SETTINGS_KEY,
+                },
+            },
+            select: {
+                value: true,
+            },
+        }));
+        const raw = setting?.value && typeof setting.value === 'object' && !Array.isArray(setting.value)
+            ? setting.value as { security?: Record<string, unknown> }
+            : {};
+        const security = raw.security ?? {};
+
+        return {
+            requireMfaForAll: security.requireMfaForAll === true,
+            ssoOidcOnly: security.ssoOidcOnly === true,
+            sessionTimeoutMinutes: this.normalizeSessionTimeoutMinutes(security.sessionTimeoutMinutes),
+        };
+    }
+
+    private isPrivilegedMfaRequiredForAccess(access?: MfaPolicyAccess): boolean {
+        return Array.isArray(access?.permissions)
+            && access.permissions.some((permission) => PRIVILEGED_MFA_PERMISSIONS.has(permission));
+    }
+
+    private isMfaRequired(
+        user: { mfaEnabled?: boolean | null },
+        settings: TenantSecuritySettings,
+        access?: MfaPolicyAccess,
+    ): boolean {
+        return user.mfaEnabled === true || settings.requireMfaForAll || this.isPrivilegedMfaRequiredForAccess(access);
+    }
+
+    private mfaIssuer(): string {
+        const configured = this.configService.get<string>('MFA_ISSUER', DEFAULT_MFA_ISSUER);
+        const issuer = typeof configured === 'string' ? configured.trim() : '';
+        return issuer || DEFAULT_MFA_ISSUER;
+    }
+
+    private mfaAccountLabel(user: { email?: string | null; username?: string | null; id: string }): string {
+        return (user.email ?? user.username ?? user.id).trim() || user.id;
+    }
+
+    private generateBase32Secret(byteLength = 20): string {
+        const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
+        let bits = 0;
+        let value = 0;
+        let output = '';
+
+        for (const byte of crypto.randomBytes(byteLength)) {
+            value = (value << 8) | byte;
+            bits += 8;
+            while (bits >= 5) {
+                output += alphabet[(value >>> (bits - 5)) & 31];
+                bits -= 5;
+            }
+        }
+
+        if (bits > 0) {
+            output += alphabet[(value << (5 - bits)) & 31];
+        }
+
+        return output;
+    }
+
+    private buildOtpAuthUrl(secret: string, user: { email?: string | null; username?: string | null; id: string }): string {
+        const issuer = this.mfaIssuer();
+        const label = `${issuer}:${this.mfaAccountLabel(user)}`;
+        const params = new URLSearchParams({
+            secret,
+            issuer,
+            algorithm: 'SHA1',
+            digits: '6',
+            period: '30',
+        });
+        return `otpauth://totp/${encodeURIComponent(label)}?${params.toString()}`;
+    }
+
+    private generateBackupCodes(): string[] {
+        return Array.from({ length: MFA_BACKUP_CODE_COUNT }, () => {
+            const token = crypto.randomBytes(9).toString('base64url').toUpperCase().replace(/[^A-Z0-9]/g, '').padEnd(12, '0').slice(0, 12);
+            return `${token.slice(0, 4)}-${token.slice(4, 8)}-${token.slice(8, 12)}`;
+        });
+    }
+
+    private hashBackupCode(code: string): string {
+        return this.hashPin(code);
+    }
+
+    private getEffectiveSessionExpiresAt(session: SessionRecord, settings: TenantSecuritySettings): Date {
+        const policyExpiresAt = new Date(session.createdAt.getTime() + settings.sessionTimeoutMinutes * 60 * 1000);
+        return policyExpiresAt < session.expiresAt ? policyExpiresAt : session.expiresAt;
+    }
+
+    private assertSessionActive(session: SessionRecord, settings: TenantSecuritySettings): Date {
+        const effectiveExpiresAt = this.getEffectiveSessionExpiresAt(session, settings);
+        if (session.revokedAt || effectiveExpiresAt <= new Date()) {
+            throw new UnauthorizedException('Invalid or expired session');
+        }
+        return effectiveExpiresAt;
+    }
+
+    private getAccessTokenMaxAgeMs(expiresAt: Date): number {
+        const remainingMs = expiresAt.getTime() - Date.now();
+        return Math.max(0, Math.min(ACCESS_TOKEN_MAX_AGE_MS, remainingMs));
+    }
+
+    private async assertTenantAllowsLoginMethod(
+        tenantId: string,
+        method: 'OIDC' | 'EMAIL_OTP' | 'USERNAME_PIN' | 'USERNAME_PASSWORD',
+    ): Promise<TenantSecuritySettings> {
+        const settings = await this.getTenantSecuritySettings(tenantId);
+        if (settings.ssoOidcOnly && method !== 'OIDC') {
+            throw new ForbiddenException('This tenant requires SSO login.');
+        }
+        return settings;
+    }
 
     private isEmailIdentifier(identifier: string): boolean {
         return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(identifier);
@@ -36,6 +502,127 @@ export class AuthService {
 
     private normalizeIdentifier(identifier: string): string {
         return identifier.trim().toLowerCase();
+    }
+
+    async createOidcState(nextPath: string | null = null, tenantSlugRaw?: string | null) {
+        const state = crypto.randomBytes(32).toString('hex');
+        const correlationNonce = crypto.randomBytes(32).toString('hex');
+        const payload: OidcStatePayload = {
+            nextPath,
+            tenantSlug: this.normalizeTenantSlug(tenantSlugRaw) || null,
+            createdAt: Date.now(),
+            correlationHash: crypto.createHash('sha256').update(correlationNonce).digest('hex'),
+        };
+        await this.getRedis().set(KEY_OIDC_STATE(state), JSON.stringify(payload), 'EX', OIDC_STATE_TTL_SECONDS);
+        return { state, correlationNonce, expiresInSeconds: OIDC_STATE_TTL_SECONDS };
+    }
+
+    async consumeOidcState(
+        stateRaw: string,
+        correlationNonceRaw: unknown,
+    ): Promise<Omit<OidcStatePayload, 'correlationHash'>> {
+        const state = typeof stateRaw === 'string' ? stateRaw.trim() : '';
+        if (!/^[a-f0-9]{64}$/i.test(state)) {
+            throw new UnauthorizedException('Invalid OIDC state');
+        }
+
+        const key = KEY_OIDC_STATE(state);
+        const rawPayload = await this.getRedis().get(key);
+        await this.getRedis().del(key);
+        if (!rawPayload) {
+            throw new UnauthorizedException('Invalid OIDC state');
+        }
+
+        try {
+            const parsed = JSON.parse(rawPayload) as OidcStatePayload;
+            const correlationNonce = typeof correlationNonceRaw === 'string' ? correlationNonceRaw.trim() : '';
+            const correlationHash = typeof parsed.correlationHash === 'string' ? parsed.correlationHash : '';
+            const suppliedCorrelationHash = /^[a-f0-9]{64}$/i.test(correlationNonce)
+                ? crypto.createHash('sha256').update(correlationNonce).digest('hex')
+                : '';
+            if (!correlationHash || !this.safeEqual(correlationHash, suppliedCorrelationHash)) {
+                throw new UnauthorizedException('Invalid OIDC state');
+            }
+            return {
+                nextPath: typeof parsed.nextPath === 'string' ? parsed.nextPath : null,
+                tenantSlug: typeof parsed.tenantSlug === 'string' ? this.normalizeTenantSlug(parsed.tenantSlug) : null,
+                createdAt: typeof parsed.createdAt === 'number' ? parsed.createdAt : Date.now(),
+            };
+        } catch (error) {
+            if (error instanceof UnauthorizedException) throw error;
+            throw new UnauthorizedException('Invalid OIDC state');
+        }
+    }
+
+    private normalizeOidcIssuer(value: string): string {
+        try {
+            const issuer = new URL(value);
+            if (issuer.protocol !== 'https:' && issuer.protocol !== 'http:') throw new Error('invalid protocol');
+            return issuer.toString().replace(/\/$/, '');
+        } catch {
+            throw new ServiceUnavailableException('OIDC login is not configured correctly');
+        }
+    }
+
+    private normalizeOidcSubject(value: unknown): string {
+        const subject = typeof value === 'string' ? value.trim() : '';
+        if (!subject || subject.length > 512) {
+            throw new UnauthorizedException('OIDC provider identity is invalid');
+        }
+        return subject;
+    }
+
+    private async resolveAndBindOidcUser(tenantId: string, email: string, issuer: string, subject: string) {
+        try {
+            return await this.getTenantDb().withTenant(tenantId, async (tx) => {
+                const identityUser = await tx.user.findFirst({
+                    where: {
+                        tenantId,
+                        oidcIssuer: issuer,
+                        oidcSubject: subject,
+                        deletedAt: null,
+                    },
+                });
+                if (identityUser) {
+                    if (this.normalizeIdentifier(identityUser.email ?? '') !== email) {
+                        throw new UnauthorizedException('OIDC identity does not match this account');
+                    }
+                    return identityUser;
+                }
+
+                const emailUser = await tx.user.findFirst({
+                    where: { tenantId, email, deletedAt: null },
+                });
+                if (!emailUser) {
+                    throw new UnauthorizedException('Invalid workspace or login');
+                }
+
+                if (emailUser.oidcIssuer !== null || emailUser.oidcSubject !== null) {
+                    throw new UnauthorizedException('OIDC identity does not match this account');
+                }
+
+                const bound = await tx.user.updateMany({
+                    where: {
+                        id: emailUser.id,
+                        tenantId,
+                        oidcIssuer: null,
+                        oidcSubject: null,
+                    },
+                    data: { oidcIssuer: issuer, oidcSubject: subject },
+                });
+                if (bound.count !== 1) {
+                    throw new UnauthorizedException('OIDC identity does not match this account');
+                }
+
+                return { ...emailUser, oidcIssuer: issuer, oidcSubject: subject };
+            });
+        } catch (err) {
+            if (err instanceof UnauthorizedException) throw err;
+            if (typeof err === 'object' && err !== null && 'code' in err && err.code === 'P2002') {
+                throw new UnauthorizedException('OIDC identity does not match this account');
+            }
+            throw err;
+        }
     }
 
     private isPin(pin: string): boolean {
@@ -48,6 +635,19 @@ export class AuthService {
         return `${salt}:${hash}`;
     }
 
+    buildPinCredentialData(pin: string, pinResetRequired = false, now = new Date()) {
+        if (!this.isPin(pin)) {
+            throw new BadRequestException('PIN must be 4-8 numeric digits');
+        }
+
+        return {
+            pinHash: this.hashPin(pin),
+            pinSetAt: now,
+            pinResetRequired,
+            pinLoginAttempts: 0,
+            pinLockedUntil: null,
+        };
+    }
     private verifyPin(pin: string, storedHash: string): boolean {
         const [salt, hash] = storedHash.split(':');
         if (!salt || !hash) return false;
@@ -60,16 +660,145 @@ export class AuthService {
         return bcrypt.compareSync(password, normalizedHash);
     }
 
-    private async createSessionTokens(user: { id: string; tenantId: string; role: string; email: string | null; username: string | null }, source: string) {
+
+    private hashRefreshToken(refreshToken: string): string {
+        return `${HASHED_REFRESH_TOKEN_PREFIX}${crypto.createHash('sha256').update(refreshToken).digest('hex')}`;
+    }
+
+    private refreshTokenLookupCandidates(refreshToken: string): string[] {
+        const hashed = this.hashRefreshToken(refreshToken);
+        return hashed === refreshToken ? [hashed] : [hashed, refreshToken];
+    }
+
+    private hashSessionSelector(selector: string): string {
+        return `${HASHED_SESSION_SELECTOR_PREFIX}${crypto.createHash('sha256').update(selector).digest('hex')}`;
+    }
+
+    private generateSelectedRefreshCredential(): SelectedRefreshCredential & { validator: string; token: string } {
+        const selector = crypto.randomBytes(32).toString('base64url');
+        const validator = crypto.randomBytes(32).toString('base64url');
+        return {
+            kind: 'selected',
+            selector,
+            selectorHash: this.hashSessionSelector(selector),
+            validatorHash: this.hashRefreshToken(validator),
+            validator,
+            token: `${SELECTED_REFRESH_TOKEN_VERSION}.${selector}.${validator}`,
+        };
+    }
+
+    private parseRefreshCredential(refreshTokenRaw: unknown): RefreshCredential | null {
+        const refreshToken = typeof refreshTokenRaw === 'string' ? refreshTokenRaw.trim() : '';
+        if (!refreshToken) return null;
+
+        const selectedMatch = /^v2\.([A-Za-z0-9_-]{43})\.([A-Za-z0-9_-]{43})$/.exec(refreshToken);
+        if (selectedMatch) {
+            const [, selector, validator] = selectedMatch;
+            return {
+                kind: 'selected',
+                selector,
+                selectorHash: this.hashSessionSelector(selector),
+                validatorHash: this.hashRefreshToken(validator),
+            };
+        }
+        if (refreshToken.startsWith(`${SELECTED_REFRESH_TOKEN_VERSION}.`)) return null;
+
+        return { kind: 'legacy', candidates: this.refreshTokenLookupCandidates(refreshToken) };
+    }
+
+    private generatePasswordResetToken(): string {
+        return crypto.randomBytes(32).toString('base64url');
+    }
+
+    private hashPasswordResetToken(token: string): string {
+        return `${HASHED_REFRESH_TOKEN_PREFIX}${crypto.createHash('sha256').update(token).digest('hex')}`;
+    }
+
+    private normalizePasswordResetToken(tokenRaw: unknown): string | null {
+        if (typeof tokenRaw !== 'string') return null;
+        const token = tokenRaw.trim();
+        return /^[A-Za-z0-9_-]{32,128}$/.test(token) ? token : null;
+    }
+
+    private validateNewPassword(passwordRaw: unknown): string {
+        if (typeof passwordRaw !== 'string') {
+            throw new BadRequestException('Password is required');
+        }
+        const password = passwordRaw;
+        if (password.length < MIN_RESET_PASSWORD_LENGTH || Buffer.byteLength(password, 'utf8') > MAX_BCRYPT_PASSWORD_BYTES) {
+            throw new BadRequestException(`Password must be ${MIN_RESET_PASSWORD_LENGTH}-${MAX_BCRYPT_PASSWORD_BYTES} bytes.`);
+        }
+        return password;
+    }
+
+    private hashNewPassword(password: string): Promise<string> {
+        return bcrypt.hash(password, 12);
+    }
+
+    private sessionTokenAudit(source: SessionTokenAudit | string): NormalizedSessionTokenAudit {
+        if (typeof source === 'string') {
+            return {
+                loginMethod: source,
+                ipAddress: '',
+                userAgent: '',
+            };
+        }
+        return {
+            loginMethod: source.loginMethod,
+            ipAddress: source.ipAddress?.trim() ?? '',
+            userAgent: source.userAgent?.trim() ?? '',
+        };
+    }
+
+    private async createSessionTokens(
+        user: AuthenticatedUser,
+        source: SessionTokenAudit | string,
+        resetLoginAttempts = true,
+    ) {
+        const audit = this.sessionTokenAudit(source);
+        await this.assertTenantIdCanAuthenticate(user.tenantId);
         const access = await this.rbacService.getEffectiveAccess(user.id, user.tenantId);
-        const session = await this.prisma.session.create({
-            data: {
-                userId: user.id,
-                refreshToken: crypto.randomBytes(32).toString('hex'),
-                ipAddress: source,
-                userAgent: source,
-                expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
-            },
+        const settings = await this.getTenantSecuritySettings(user.tenantId);
+        const expiresAt = new Date(Date.now() + settings.sessionTimeoutMinutes * 60 * 1000);
+        const mfaRequired = this.isMfaRequired(user, settings, access);
+        const refreshCredential = this.generateSelectedRefreshCredential();
+        const session = await this.getTenantDb().withTenant(user.tenantId, async (tx) => {
+            const session = await tx.session.create({
+                data: {
+                    userId: user.id,
+                    refreshToken: refreshCredential.validatorHash,
+                    selectorHash: refreshCredential.selectorHash,
+                    ipAddress: audit.ipAddress,
+                    userAgent: audit.userAgent,
+                    expiresAt,
+                },
+            });
+
+            await tx.auditLog.create({
+                data: {
+                    tenantId: user.tenantId,
+                    userId: user.id,
+                    action: 'SESSION_CREATED',
+                    resource: 'Session',
+                    resourceId: session.id,
+                    newValue: { loginMethod: audit.loginMethod },
+                    ipAddress: audit.ipAddress || null,
+                    userAgent: audit.userAgent || null,
+                },
+            });
+
+            await tx.user.update({
+                where: { id: user.id },
+                data: resetLoginAttempts
+                    ? {
+                        lastLoginAt: new Date(),
+                        loginAttempts: 0,
+                        lockedUntil: null,
+                    }
+                    : { lastLoginAt: new Date() },
+            });
+
+            return session;
         });
 
         const payload: TokenPayload = {
@@ -78,22 +807,17 @@ export class AuthService {
             role: access.primaryRole,
             legacyRole: user.role,
             sessionId: session.id,
-            mfaVerified: true,
+            mfaVerified: !mfaRequired,
+            pinResetRequired: user.pinResetRequired === true,
         };
-
-        await this.prisma.user.update({
-            where: { id: user.id },
-            data: {
-                lastLoginAt: new Date(),
-                loginAttempts: 0,
-                lockedUntil: null,
-            },
-        });
 
         return {
             accessToken: this.jwtService.generateAccessToken(payload),
-            refreshToken: session.refreshToken,
+            refreshToken: refreshCredential.token,
             csrfToken: this.jwtService.generateCsrfToken(),
+            requiresMfa: mfaRequired,
+            pinResetRequired: user.pinResetRequired === true,
+            sessionMaxAgeMs: settings.sessionTimeoutMinutes * 60 * 1000,
             user: {
                 id: user.id,
                 email: user.email,
@@ -105,18 +829,21 @@ export class AuthService {
         };
     }
 
-    async resolveLoginMethod(identifierRaw: string): Promise<LoginResolveResult> {
+    async resolveLoginMethod(identifierRaw: string, tenantSlugRaw?: string): Promise<LoginResolveResult> {
         const identifier = this.normalizeIdentifier(identifierRaw);
         if (!identifier) {
             throw new BadRequestException('Email or username is required');
         }
+        const tenant = await this.resolveLoginTenantContext(tenantSlugRaw);
 
         if (this.isEmailIdentifier(identifier)) {
+            await this.assertEmailOtpAllowed(identifier, { tenantSlug: tenant.tenantSlug });
             return { flow: 'EMAIL_OTP', normalizedIdentifier: identifier };
         }
 
-        const user = await this.prisma.user.findFirst({
+        const user = await this.getTenantDb().withTenant(tenant.tenantId, (tx) => tx.user.findFirst({
             where: {
+                tenantId: tenant.tenantId,
                 username: identifier,
                 deletedAt: null,
             },
@@ -127,40 +854,100 @@ export class AuthService {
                 pinResetRequired: true,
                 passwordHash: true,
             },
-        });
+        }));
 
-        if (user) {
+        if (user?.passwordHash) {
+            await this.assertTenantAllowsLoginMethod(user.tenantId, 'USERNAME_PASSWORD');
             const access = await this.rbacService.getEffectiveAccess(user.id, user.tenantId);
-            if (user.passwordHash) {
-                if (!access.permissions.includes('auth:login_password')) {
-                    throw new ForbiddenException('This account does not allow username and password login.');
-                }
+            if (access.permissions.includes('auth:login_password')) {
                 return {
                     flow: 'USERNAME_PASSWORD',
                     normalizedIdentifier: identifier,
                 };
             }
-            if (!access.permissions.includes('auth:login_pin')) {
-                throw new ForbiddenException('This account does not allow username login.');
-            }
         }
 
+        // Unknown, PIN, and non-delegated username accounts intentionally resolve alike.
         return {
             flow: 'USERNAME_PIN',
             normalizedIdentifier: identifier,
-            pinResetRequired: user?.pinResetRequired ?? false,
+            pinResetRequired: false,
         };
     }
 
-    async loginWithUsernamePassword(identifierRaw: string, password: string) {
+    async assertEmailOtpAllowed(emailRaw: string, options: EmailLoginOptions = {}): Promise<boolean> {
+        const email = this.normalizeIdentifier(emailRaw);
+        if (!this.isEmailIdentifier(email)) {
+            throw new BadRequestException('Email is required');
+        }
+        if (!options.tenantSlug) {
+            if (options.allowProvision) {
+                this.normalizeProvisionedTenantName(options.provisionTenantName);
+                await this.assertPublicSignupOtpRequestAllowed(options);
+                return true;
+            }
+            throw new BadRequestException('Workspace is required');
+        }
+        let tenant: LoginTenantContext;
+        try {
+            tenant = await this.resolveLoginTenantContext(options.tenantSlug);
+        } catch (err) {
+            if (err instanceof UnauthorizedException) return false;
+            throw err;
+        }
+        const user = await this.getTenantDb().withTenant(tenant.tenantId, (tx) => tx.user.findFirst({
+            where: {
+                tenantId: tenant.tenantId,
+                email,
+                deletedAt: null,
+            },
+            select: {
+                id: true,
+                tenantId: true,
+            },
+        }));
+        if (!user) return false;
+
+        try {
+            await this.assertTenantAllowsLoginMethod(user.tenantId, 'EMAIL_OTP');
+        } catch (err) {
+            if (err instanceof ForbiddenException) return false;
+            throw err;
+        }
+
+        const access = await this.rbacService.getEffectiveAccess(user.id, user.tenantId);
+        return access.permissions.includes('auth:login_email');
+    }
+
+    async createOnboardingSignupChallenge(
+        emailRaw: string,
+        options: EmailLoginOptions,
+    ): Promise<{ challengeToken: string; code: string }> {
+        const email = this.normalizeIdentifier(emailRaw);
+        if (!this.isEmailIdentifier(email)) {
+            throw new BadRequestException('Email is required');
+        }
+        const tenantName = this.normalizeProvisionedTenantName(options.provisionTenantName);
+        this.assertPublicSignupLegalAssent(options);
+        await this.assertPublicSignupOtpRequestAllowed(options);
+        return this.getOnboardingSignup().createChallenge(email, tenantName);
+    }
+
+    async loginWithUsernamePassword(
+        identifierRaw: string,
+        password: string,
+        tenantSlugRaw?: string,
+        audit: SessionRequestAudit = {},
+    ) {
         const username = this.normalizeIdentifier(identifierRaw);
         if (!username || !password) {
             throw new UnauthorizedException('Invalid username or password');
         }
+        const tenant = await this.resolveLoginTenantContext(tenantSlugRaw);
 
-        const user = await this.prisma.user.findFirst({
-            where: { username, deletedAt: null },
-        });
+        const user = await this.getTenantDb().withTenant(tenant.tenantId, (tx) => tx.user.findFirst({
+            where: { tenantId: tenant.tenantId, username, deletedAt: null },
+        }));
 
         if (!user || !user.passwordHash) {
             throw new UnauthorizedException('Invalid username or password');
@@ -170,36 +957,255 @@ export class AuthService {
         if (!access.permissions.includes('auth:login_password')) {
             throw new UnauthorizedException('Invalid username or password');
         }
+        await this.assertTenantAllowsLoginMethod(user.tenantId, 'USERNAME_PASSWORD');
 
-        if (user.lockedUntil && user.lockedUntil > new Date()) {
+        const passwordAttempt = await this.getTenantDb().withTenant(user.tenantId, async (tx) => {
+            await tx.$queryRaw`
+                SELECT "id"
+                FROM "User"
+                WHERE "id" = ${user.id} AND "tenantId" = ${user.tenantId}
+                FOR UPDATE
+            `;
+            const lockedUser = await tx.user.findFirst({
+                where: { id: user.id, tenantId: user.tenantId, deletedAt: null },
+            });
+
+            if (!lockedUser?.passwordHash) {
+                return { status: 'invalid' as const };
+            }
+            if (lockedUser.lockedUntil && lockedUser.lockedUntil > new Date()) {
+                return { status: 'locked' as const };
+            }
+            if (!this.verifyLegacyPassword(password, lockedUser.passwordHash)) {
+                const attempts = lockedUser.loginAttempts + 1;
+                await tx.user.update({
+                    where: { id: lockedUser.id },
+                    data: {
+                        loginAttempts: attempts,
+                        lockedUntil: attempts >= 5
+                            ? new Date(Date.now() + 15 * 60 * 1000)
+                            : null,
+                    },
+                });
+                return { status: 'invalid' as const };
+            }
+
+            if (lockedUser.loginAttempts > 0 || lockedUser.lockedUntil) {
+                await tx.user.update({
+                    where: { id: lockedUser.id },
+                    data: {
+                        loginAttempts: 0,
+                        lockedUntil: null,
+                    },
+                });
+            }
+            return { status: 'authenticated' as const, user: lockedUser };
+        });
+
+        if (passwordAttempt.status === 'locked') {
             throw new ForbiddenException('Account locked due to too many failed attempts');
         }
-
-        const valid = this.verifyLegacyPassword(password, user.passwordHash);
-        if (!valid) {
-            const attempts = user.loginAttempts + 1;
-            const lockedUntil = attempts >= 5 ? new Date(Date.now() + 15 * 60 * 1000) : null;
-            await this.prisma.user.update({
-                where: { id: user.id },
-                data: {
-                    loginAttempts: attempts,
-                    lockedUntil,
-                },
-            });
+        if (passwordAttempt.status === 'invalid') {
             throw new UnauthorizedException('Invalid username or password');
         }
 
+        const authenticatedUser = passwordAttempt.user;
+
         return this.createSessionTokens({
-            id: user.id,
-            email: user.email,
-            username: user.username,
-            tenantId: user.tenantId,
-            role: user.role,
-        }, 'username-password');
+            id: authenticatedUser.id,
+            email: authenticatedUser.email,
+            username: authenticatedUser.username,
+            tenantId: authenticatedUser.tenantId,
+            role: authenticatedUser.role,
+            mfaEnabled: authenticatedUser.mfaEnabled,
+        }, { loginMethod: 'USERNAME_PASSWORD', ...audit }, false);
     }
 
-    async handleOidcCallback(code: string, state: string) {
-        const issuerUrl = this.configService.getOrThrow('OIDC_ISSUER_URL');
+    async createPasswordReset(identifierRaw: string, tenantSlugRaw?: string): Promise<null> {
+        const resetOutbox = new PasswordResetOutboxService(this.configService);
+        resetOutbox.validateConfiguration();
+
+        const identifier = this.normalizeIdentifier(typeof identifierRaw === 'string' ? identifierRaw : '');
+        if (!identifier) return null;
+
+        let tenant: LoginTenantContext;
+        try {
+            tenant = await this.resolveLoginTenantContext(tenantSlugRaw);
+        } catch (err) {
+            if (err instanceof BadRequestException || err instanceof UnauthorizedException || err instanceof ForbiddenException) {
+                return null;
+            }
+            throw err;
+        }
+
+        const user = await this.getTenantDb().withTenant(tenant.tenantId, (tx) => tx.user.findFirst({
+            where: {
+                tenantId: tenant.tenantId,
+                deletedAt: null,
+                passwordHash: { not: null },
+                OR: [
+                    { username: identifier },
+                    { email: identifier },
+                ],
+            },
+            select: {
+                id: true,
+                tenantId: true,
+                email: true,
+            },
+        }));
+
+        if (!user?.email) return null;
+
+        try {
+            await this.assertTenantAllowsLoginMethod(user.tenantId, 'USERNAME_PASSWORD');
+            const access = await this.rbacService.getEffectiveAccess(user.id, user.tenantId);
+            if (!access.permissions.includes('auth:login_password')) {
+                return null;
+            }
+        } catch (err) {
+            if (err instanceof ForbiddenException) return null;
+            throw err;
+        }
+
+        const resetToken = this.generatePasswordResetToken();
+        const tokenHash = this.hashPasswordResetToken(resetToken);
+        const expiresAt = new Date(Date.now() + PASSWORD_RESET_TOKEN_TTL_MINUTES * 60 * 1000);
+        const delivery = resetOutbox.createEncryptedEnvelope(user.email, resetToken, expiresAt);
+
+        await this.getTenantDb().withTenant(user.tenantId, async (tx) => {
+            await tx.passwordResetToken.updateMany({
+                where: {
+                    tenantId: user.tenantId,
+                    userId: user.id,
+                    consumedAt: null,
+                },
+                data: { consumedAt: new Date() },
+            });
+            await tx.passwordResetEmailOutbox.updateMany({
+                where: {
+                    tenantId: user.tenantId,
+                    userId: user.id,
+                    status: { in: ['PENDING', 'SENDING', 'FAILED'] },
+                },
+                data: {
+                    status: 'DEAD_LETTERED',
+                    deadLetteredAt: new Date(),
+                    leaseUntil: null,
+                    lastError: 'Superseded by a newer password reset request',
+                },
+            });
+            await tx.passwordResetToken.create({
+                data: {
+                    tenantId: user.tenantId,
+                    userId: user.id,
+                    tokenHash,
+                    expiresAt,
+                },
+            });
+            await tx.passwordResetEmailOutbox.create({
+                data: {
+                    tenantId: user.tenantId,
+                    userId: user.id,
+                    tokenHash,
+                    encryptedPayload: delivery.encryptedPayload,
+                    encryptionKeyRef: delivery.encryptionKeyRef,
+                    expiresAt,
+                },
+            });
+        });
+
+        return null;
+    }
+
+    async resetPasswordWithToken(tokenRaw: unknown, passwordRaw: unknown): Promise<void> {
+        const token = this.normalizePasswordResetToken(tokenRaw);
+        if (!token) {
+            throw new UnauthorizedException('Invalid or expired reset token');
+        }
+
+        const tokenHash = this.hashPasswordResetToken(token);
+        const password = this.validateNewPassword(passwordRaw);
+        const now = new Date();
+        let revokedSessionIds: string[] = [];
+
+        await this.getTenantDb().withPlatformAdmin(async (tx) => {
+            const reset = await tx.passwordResetToken.findFirst({
+                where: { tokenHash },
+                include: { user: true },
+            });
+
+            if (!reset || reset.consumedAt || reset.expiresAt <= now || reset.user.deletedAt || !reset.user.passwordHash) {
+                throw new UnauthorizedException('Invalid or expired reset token');
+            }
+
+            const tenant = await tx.tenant.findUnique({
+                where: { id: reset.tenantId },
+                select: { id: true, status: true, deletedAt: true },
+            });
+            this.assertTenantCanAuthenticate(tenant);
+
+            const passwordHash = await this.hashNewPassword(password);
+
+            const consumed = await tx.passwordResetToken.updateMany({
+                where: {
+                    id: reset.id,
+                    consumedAt: null,
+                    expiresAt: { gt: now },
+                },
+                data: { consumedAt: now },
+            });
+            if (consumed.count !== 1) {
+                throw new UnauthorizedException('Invalid or expired reset token');
+            }
+
+            const activeSessions = await tx.session.findMany({
+                where: {
+                    userId: reset.userId,
+                    revokedAt: null,
+                },
+                select: { id: true },
+            });
+            revokedSessionIds = activeSessions.map((session) => session.id);
+
+            await tx.user.update({
+                where: { id: reset.userId },
+                data: {
+                    passwordHash,
+                    loginAttempts: 0,
+                    lockedUntil: null,
+                },
+            });
+            await tx.session.updateMany({
+                where: {
+                    userId: reset.userId,
+                    revokedAt: null,
+                },
+                data: { revokedAt: now },
+            });
+            await tx.passwordResetToken.updateMany({
+                where: {
+                    userId: reset.userId,
+                    consumedAt: null,
+                },
+                data: { consumedAt: now },
+            });
+        });
+
+        try {
+            await Promise.all(revokedSessionIds.map((sessionId) => this.getRedis().del(KEY_SESSION_MFA(sessionId))));
+        } catch (err) {
+            this.logger.warn(`Password reset session MFA cleanup failed: ${err instanceof Error ? err.message : 'unknown_error'}`);
+        }
+    }
+
+    async handleOidcCallback(
+        code: string,
+        state: string,
+        tenantSlugRaw?: string | null,
+        audit: SessionRequestAudit = {},
+    ) {
+        const issuerUrl = this.normalizeOidcIssuer(this.configService.getOrThrow('OIDC_ISSUER_URL'));
         const clientId = this.configService.getOrThrow('OIDC_CLIENT_ID');
         const clientSecret = this.configService.getOrThrow('OIDC_CLIENT_SECRET');
         const redirectUri = this.configService.getOrThrow('OIDC_REDIRECT_URI');
@@ -213,38 +1219,21 @@ export class AuthService {
             redirect_uri: redirectUri,
         });
 
-        const userInfo = await this.fetchUserInfo(issuerUrl, tokenResponse.access_token);
+        const userInfo = await this.fetchUserInfo(issuerUrl, tokenResponse.access_token) as OidcUserInfo;
 
-        if (!userInfo.email) {
-            throw new UnauthorizedException('OIDC provider did not return an email address');
+        if (userInfo.email_verified !== true) {
+            throw new UnauthorizedException('OIDC provider email is not verified');
         }
-
-        let user = await this.prisma.user.findFirst({
-            where: { email: userInfo.email, deletedAt: null },
-        });
-
-        if (!user) {
-            const tenant = await this.prisma.tenant.create({
-                data: {
-                    name: `${userInfo.name || userInfo.email}'s Team`,
-                    slug: crypto.randomBytes(8).toString('hex'),
-                }
-            });
-
-            await assertTenantCanAddActiveUser(this.prisma, tenant.id);
-
-            user = await this.prisma.user.create({
-                data: {
-                    email: userInfo.email,
-                    name: userInfo.name || userInfo.email,
-                    tenantId: tenant.id,
-                    role: USER_ROLE.SUPER_ADMIN,
-                }
-            });
-            await this.rbacService.assignLegacySystemRole(user.id, user.tenantId, user.role as UserRole);
+        const email = this.normalizeIdentifier(typeof userInfo.email === 'string' ? userInfo.email : '');
+        if (!email || !this.isEmailIdentifier(email)) {
+            throw new UnauthorizedException('OIDC provider did not return a valid email address');
         }
+        const subject = this.normalizeOidcSubject(userInfo.sub);
 
-        await this.checkAccountLockout(user.email ?? undefined);
+        const tenant = await this.resolveLoginTenantContext(tenantSlugRaw);
+        const user = await this.resolveAndBindOidcUser(tenant.tenantId, email, issuerUrl, subject);
+
+        await this.assertTenantAllowsLoginMethod(user.tenantId, 'OIDC');
 
         const result = await this.createSessionTokens({
             id: user.id,
@@ -252,11 +1241,11 @@ export class AuthService {
             username: user.username,
             tenantId: user.tenantId,
             role: user.role,
-        }, 'OIDC');
+            mfaEnabled: user.mfaEnabled,
+        }, { loginMethod: 'OIDC', ...audit });
 
         return {
             ...result,
-            requiresMfa: user.mfaEnabled,
         };
     }
 
@@ -264,33 +1253,53 @@ export class AuthService {
      * Email OTP login — find or create user by email, issue session.
      * Used by the verify-otp endpoint after OTP is confirmed.
      */
-    async loginWithEmail(emailRaw: string) {
+    async loginWithEmail(emailRaw: string, options: EmailLoginOptions = {}, audit: SessionRequestAudit = {}) {
         const email = this.normalizeIdentifier(emailRaw);
-        let user = await this.prisma.user.findFirst({
-            where: { email, deletedAt: null },
-        });
+        if (!this.isEmailIdentifier(email)) {
+            throw new BadRequestException('Email is required');
+        }
+        const tenant = options.tenantSlug
+            ? await this.resolveLoginTenantContext(options.tenantSlug)
+            : null;
+        if (!tenant && !options.allowProvision) {
+            throw new BadRequestException('Workspace is required');
+        }
+        let workspaceSlug = tenant?.tenantSlug;
+        let user: AuthenticatedUser | null = tenant
+            ? await this.getTenantDb().withTenant(tenant.tenantId, (tx) => tx.user.findFirst({
+                where: { tenantId: tenant.tenantId, email, deletedAt: null },
+            }))
+            : null;
 
-        if (!user) {
-            const isFirstUser = (await this.prisma.user.count()) === 0;
-
-            const tenant = await this.prisma.tenant.create({
-                data: {
-                    name: `${email.split('@')[0]}'s Team`,
-                    slug: crypto.randomBytes(6).toString('hex'),
+        if (!tenant) {
+            const tenantName = this.normalizeProvisionedTenantName(options.provisionTenantName);
+            this.assertPublicSignupAllowed(options.signupCode);
+            this.assertPublicSignupLegalAssent(options);
+            const challengeToken = options.onboardingChallengeToken?.trim();
+            const otpCode = options.onboardingOtpCode?.trim();
+            if (!challengeToken || !otpCode) {
+                throw new BadRequestException('Onboarding challenge is required');
+            }
+            const claimed = await this.getOnboardingSignup().claimVerifiedOwner(
+                email,
+                tenantName,
+                challengeToken,
+                otpCode,
+                audit,
+                {
+                    termsVersion: PUBLIC_SIGNUP_TERMS_VERSION,
+                    privacyVersion: PUBLIC_SIGNUP_PRIVACY_VERSION,
                 },
+            );
+            this.assertTenantCanAuthenticate({
+                id: claimed.user.tenantId,
+                status: claimed.tenantStatus,
+                deletedAt: claimed.tenantDeletedAt,
             });
-
-            await assertTenantCanAddActiveUser(this.prisma, tenant.id);
-
-            user = await this.prisma.user.create({
-                data: {
-                    email,
-                    name: email.split('@')[0],
-                    tenantId: tenant.id,
-                    role: isFirstUser ? USER_ROLE.SUPER_ADMIN : USER_ROLE.ADMIN,
-                },
-            });
-            await this.rbacService.assignLegacySystemRole(user.id, user.tenantId, user.role as UserRole);
+            user = claimed.user;
+            workspaceSlug = claimed.workspaceSlug;
+        } else if (!user) {
+            throw new UnauthorizedException('Invalid workspace or login');
         }
         if (user) {
             const access = await this.rbacService.getEffectiveAccess(user.id, user.tenantId);
@@ -298,26 +1307,34 @@ export class AuthService {
                 throw new ForbiddenException('This account does not allow email login.');
             }
         }
+        await this.assertTenantAllowsLoginMethod(user.tenantId, 'EMAIL_OTP');
 
-        await this.checkAccountLockout(user.email ?? undefined);
-        return this.createSessionTokens({
+        const session = await this.createSessionTokens({
             id: user.id,
             email: user.email,
             username: user.username,
             tenantId: user.tenantId,
             role: user.role,
-        }, 'email-otp');
+            mfaEnabled: user.mfaEnabled,
+        }, { loginMethod: 'EMAIL_OTP', ...audit });
+        return { ...session, workspaceSlug };
     }
 
-    async loginWithUsernamePin(identifierRaw: string, pin: string) {
+    async loginWithUsernamePin(
+        identifierRaw: string,
+        pin: string,
+        tenantSlugRaw?: string,
+        audit: SessionRequestAudit = {},
+    ) {
         const username = this.normalizeIdentifier(identifierRaw);
         if (!username || !this.isPin(pin)) {
             throw new UnauthorizedException('Invalid username or PIN');
         }
+        const tenant = await this.resolveLoginTenantContext(tenantSlugRaw);
 
-        const user = await this.prisma.user.findFirst({
-            where: { username, deletedAt: null },
-        });
+        const user = await this.getTenantDb().withTenant(tenant.tenantId, (tx) => tx.user.findFirst({
+            where: { tenantId: tenant.tenantId, username, deletedAt: null },
+        }));
 
         if (!user || !user.pinHash) {
             throw new UnauthorizedException('Invalid username or PIN');
@@ -327,70 +1344,125 @@ export class AuthService {
         if (!access.permissions.includes('auth:login_pin')) {
             throw new UnauthorizedException('Invalid username or PIN');
         }
+        await this.assertTenantAllowsLoginMethod(user.tenantId, 'USERNAME_PIN');
 
-        if (user.pinLockedUntil && user.pinLockedUntil > new Date()) {
+        const pinAttempt = await this.getTenantDb().withTenant(user.tenantId, async (tx) => {
+            await tx.$queryRaw`
+                SELECT "id"
+                FROM "User"
+                WHERE "id" = ${user.id} AND "tenantId" = ${user.tenantId}
+                FOR UPDATE
+            `;
+            const lockedUser = await tx.user.findFirst({
+                where: { id: user.id, tenantId: user.tenantId, deletedAt: null },
+            });
+
+            if (!lockedUser?.pinHash) {
+                return { status: 'invalid' as const };
+            }
+            if (lockedUser.pinLockedUntil && lockedUser.pinLockedUntil > new Date()) {
+                return { status: 'locked' as const };
+            }
+            if (!this.verifyPin(pin, lockedUser.pinHash)) {
+                const attempts = lockedUser.pinLoginAttempts + 1;
+                await tx.user.update({
+                    where: { id: lockedUser.id },
+                    data: {
+                        pinLoginAttempts: attempts,
+                        pinLockedUntil: attempts >= 5
+                            ? new Date(Date.now() + 15 * 60 * 1000)
+                            : null,
+                    },
+                });
+                return { status: 'invalid' as const };
+            }
+
+            if (lockedUser.pinLoginAttempts > 0 || lockedUser.pinLockedUntil) {
+                await tx.user.update({
+                    where: { id: lockedUser.id },
+                    data: {
+                        pinLoginAttempts: 0,
+                        pinLockedUntil: null,
+                    },
+                });
+            }
+            return { status: 'authenticated' as const, user: lockedUser };
+        });
+
+        if (pinAttempt.status === 'locked') {
             throw new ForbiddenException('PIN login temporarily locked due to too many attempts');
         }
-
-        const valid = this.verifyPin(pin, user.pinHash);
-        if (!valid) {
-            const attempts = user.pinLoginAttempts + 1;
-            const lock = attempts >= 5 ? new Date(Date.now() + 15 * 60 * 1000) : null;
-            await this.prisma.user.update({
-                where: { id: user.id },
-                data: {
-                    pinLoginAttempts: attempts,
-                    pinLockedUntil: lock,
-                },
-            });
+        if (pinAttempt.status === 'invalid') {
             throw new UnauthorizedException('Invalid username or PIN');
         }
 
-        if (user.pinLoginAttempts > 0 || user.pinLockedUntil) {
-            await this.prisma.user.update({
-                where: { id: user.id },
-                data: {
-                    pinLoginAttempts: 0,
-                    pinLockedUntil: null,
-                },
-            });
-        }
+        const authenticatedUser = pinAttempt.user;
 
         return this.createSessionTokens({
-            id: user.id,
-            email: user.email,
-            username: user.username,
-            tenantId: user.tenantId,
-            role: user.role,
-        }, 'username-pin');
+            id: authenticatedUser.id,
+            email: authenticatedUser.email,
+            username: authenticatedUser.username,
+            tenantId: authenticatedUser.tenantId,
+            role: authenticatedUser.role,
+            mfaEnabled: authenticatedUser.mfaEnabled,
+            pinResetRequired: authenticatedUser.pinResetRequired,
+        }, { loginMethod: 'USERNAME_PIN', ...audit });
     }
 
-    async setUserPin(userId: string, pin: string, pinResetRequired = false): Promise<void> {
-        if (!this.isPin(pin)) {
-            throw new BadRequestException('PIN must be 4-8 numeric digits');
+    async setUserPin(userId: string, pin: string, pinResetRequired = false, tenantId?: string, revokeSessions = pinResetRequired): Promise<void> {
+        const data = this.buildPinCredentialData(pin, pinResetRequired);
+
+        if (tenantId) {
+            await this.getTenantDb().withTenant(tenantId, async (tx) => {
+                const updated = await tx.user.updateMany({
+                    where: { id: userId, tenantId },
+                    data,
+                });
+                if (updated.count === 0) {
+                    throw new UnauthorizedException('User account inactive');
+                }
+                if (revokeSessions) {
+                    await tx.session.updateMany({
+                        where: { userId, revokedAt: null },
+                        data: { revokedAt: new Date() },
+                    });
+                }
+            });
+            return;
         }
 
-        await this.prisma.user.update({
-            where: { id: userId },
-            data: {
-                pinHash: this.hashPin(pin),
-                pinSetAt: new Date(),
-                pinResetRequired,
-                pinLoginAttempts: 0,
-                pinLockedUntil: null,
-            },
+        await this.getTenantDb().withPlatformAdmin(async (tx) => {
+            await tx.user.update({ where: { id: userId }, data });
+            if (revokeSessions) {
+                await tx.session.updateMany({
+                    where: { userId, revokedAt: null },
+                    data: { revokedAt: new Date() },
+                });
+            }
         });
     }
 
-    async rotateOwnPin(userId: string, currentPin: string, newPin: string): Promise<void> {
+    async rotateOwnPin(userId: string, currentPin: string, newPin: string, tenantId?: string): Promise<void> {
         if (!this.isPin(currentPin) || !this.isPin(newPin)) {
             throw new BadRequestException('PIN must be 4-8 numeric digits');
         }
+        if (currentPin === newPin) {
+            throw new BadRequestException('New PIN must differ from the temporary PIN');
+        }
 
-        const user = await this.prisma.user.findUnique({
-            where: { id: userId },
-            select: { id: true, username: true, pinHash: true },
-        });
+        const loadUser = (tx: TenantPrismaTransaction | typeof this.prisma) => tenantId
+            ? tx.user.findFirst({
+                where: { id: userId, tenantId },
+                select: { id: true, username: true, pinHash: true },
+            })
+            : tx.user.findUnique({
+                where: { id: userId },
+                select: { id: true, username: true, pinHash: true },
+            });
+
+        const user = tenantId
+            ? await this.getTenantDb().withTenant(tenantId, loadUser)
+            : await loadUser(this.prisma);
 
         if (!user || !user.username || !user.pinHash) {
             throw new ForbiddenException('PIN change is only available for username accounts');
@@ -401,20 +1473,24 @@ export class AuthService {
             throw new UnauthorizedException('Current PIN is invalid');
         }
 
-        await this.setUserPin(user.id, newPin, false);
+        await this.setUserPin(user.id, newPin, false, tenantId, true);
     }
 
-    async refreshAccessToken(refreshToken: string) {
-        try {
-            this.jwtService.verifyRefreshToken(refreshToken);
-        } catch {
-            // Using DB-only refresh token approach as fallback.
+    async refreshAccessToken(refreshTokenRaw: unknown) {
+        const credential = this.parseRefreshCredential(refreshTokenRaw);
+        if (!credential) {
+            throw new UnauthorizedException('Invalid or expired refresh token');
         }
 
-        const session = await this.prisma.session.findUnique({
-            where: { refreshToken },
-            include: { user: true }
-        });
+        const session = await this.getTenantDb().withPlatformAdmin((tx) => tx.session.findFirst({
+            where: credential.kind === 'selected'
+                ? {
+                    selectorHash: credential.selectorHash,
+                    refreshToken: credential.validatorHash,
+                }
+                : { refreshToken: { in: credential.candidates } },
+            include: { user: true },
+        }));
 
         if (!session || session.revokedAt || session.expiresAt < new Date()) {
             throw new UnauthorizedException('Invalid or expired refresh token');
@@ -423,25 +1499,335 @@ export class AuthService {
         if (session.user.deletedAt) {
             throw new UnauthorizedException('User account inactive');
         }
+        await this.assertTenantIdCanAuthenticate(session.user.tenantId);
+        const settings = await this.getTenantSecuritySettings(session.user.tenantId);
+        const effectiveExpiresAt = this.assertSessionActive(session, settings);
+        const access = await this.rbacService.getEffectiveAccess(session.user.id, session.user.tenantId);
+        const mfaRequired = this.isMfaRequired(session.user, settings, access);
+        const mfaVerified = !mfaRequired || await this.isSessionMfaVerified(session.id);
+        const rotatedCredential = this.generateSelectedRefreshCredential();
+        const rotated = await this.getTenantDb().withPlatformAdmin((tx) => tx.session.updateMany({
+            where: {
+                id: session.id,
+                ...(credential.kind === 'selected'
+                    ? {
+                        selectorHash: credential.selectorHash,
+                        refreshToken: credential.validatorHash,
+                    }
+                    : { refreshToken: { in: credential.candidates } }),
+                revokedAt: null,
+                expiresAt: { gt: new Date() },
+            },
+            data: credential.kind === 'selected'
+                ? { refreshToken: rotatedCredential.validatorHash }
+                : {
+                    selectorHash: rotatedCredential.selectorHash,
+                    refreshToken: rotatedCredential.validatorHash,
+                },
+        }));
+        if (rotated.count !== 1) {
+            throw new UnauthorizedException('Invalid or expired refresh token');
+        }
 
         const payload: TokenPayload = {
             sub: session.user.id,
             tenantId: session.user.tenantId,
-            role: (
-                await this.rbacService.getEffectiveAccess(session.user.id, session.user.tenantId)
-            ).primaryRole,
+            role: access.primaryRole,
             legacyRole: session.user.role,
             sessionId: session.id,
-            mfaVerified: !session.user.mfaEnabled,
+            mfaVerified,
+            pinResetRequired: session.user.pinResetRequired === true,
         };
+
+        const refreshToken = credential.kind === 'selected'
+            ? `${SELECTED_REFRESH_TOKEN_VERSION}.${credential.selector}.${rotatedCredential.validator}`
+            : rotatedCredential.token;
 
         return {
             accessToken: this.jwtService.generateAccessToken(payload),
+            refreshToken,
+            csrfToken: this.jwtService.generateCsrfToken(),
+            mfaVerified,
+            requiresMfa: mfaRequired,
+            pinResetRequired: session.user.pinResetRequired === true,
+            accessTokenMaxAgeMs: this.getAccessTokenMaxAgeMs(effectiveExpiresAt),
+            sessionMaxAgeMs: Math.max(0, effectiveExpiresAt.getTime() - Date.now()),
+        };
+    }
+    async validateAccessSession(claims: TokenPayload) {
+        const session = await this.getTenantDb().withTenant(claims.tenantId, (tx) => tx.session.findFirst({
+            where: {
+                id: claims.sessionId,
+                userId: claims.sub,
+            },
+            include: {
+                user: true,
+            },
+        }));
+
+        if (!session || session.user.deletedAt || session.user.tenantId !== claims.tenantId) {
+            throw new UnauthorizedException('Invalid or expired session');
+        }
+
+        await this.assertTenantIdCanAuthenticate(claims.tenantId);
+        const settings = await this.getTenantSecuritySettings(session.user.tenantId);
+        const effectiveExpiresAt = this.assertSessionActive(session, settings);
+        const access = await this.rbacService.getEffectiveAccess(session.user.id, session.user.tenantId);
+        const mfaRequired = this.isMfaRequired(session.user, settings, access);
+        const mfaVerified = !mfaRequired || await this.isSessionMfaVerified(session.id);
+
+        return {
+            mfaRequired,
+            mfaVerified,
+            pinResetRequired: session.user.pinResetRequired === true,
+            accessTokenMaxAgeMs: this.getAccessTokenMaxAgeMs(effectiveExpiresAt),
+            legacyRole: session.user.role,
         };
     }
 
-    async getSessionUserContext(userId: string, tenantId: string, sessionClaims: { role: string; sessionId: string }) {
-        const user = await this.prisma.user.findFirst({
+    private async isSessionMfaVerified(sessionId: string): Promise<boolean> {
+        const value = await this.getRedis().get(KEY_SESSION_MFA(sessionId));
+        return value === '1';
+    }
+
+    private async markSessionMfaVerified(sessionId: string, expiresAt: Date): Promise<void> {
+        const ttlSeconds = Math.max(1, Math.ceil((expiresAt.getTime() - Date.now()) / 1000));
+        await this.getRedis().set(KEY_SESSION_MFA(sessionId), '1', 'EX', ttlSeconds);
+    }
+
+    private decodeBase32Secret(secret: string): Buffer | null {
+        const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
+        const normalized = secret.toUpperCase().replace(/=+$/g, '').replace(/\s+/g, '');
+        if (!normalized || !/^[A-Z2-7]+$/.test(normalized)) return null;
+
+        let bits = 0;
+        let value = 0;
+        const output: number[] = [];
+        for (const char of normalized) {
+            const index = alphabet.indexOf(char);
+            if (index === -1) return null;
+            value = (value << 5) | index;
+            bits += 5;
+            if (bits >= 8) {
+                output.push((value >>> (bits - 8)) & 0xff);
+                bits -= 8;
+            }
+        }
+        return Buffer.from(output);
+    }
+
+    private secretToBuffer(secret: string): Buffer | null {
+        const trimmed = this.decryptMfaSecret(secret)?.trim() ?? '';
+        if (!trimmed) return null;
+
+        const base32 = this.decodeBase32Secret(trimmed);
+        if (base32?.length) return base32;
+
+        if (/^[a-f0-9]+$/i.test(trimmed) && trimmed.length % 2 === 0) {
+            return Buffer.from(trimmed, 'hex');
+        }
+
+        try {
+            const base64 = Buffer.from(trimmed, 'base64');
+            if (base64.length > 0 && base64.toString('base64').replace(/=+$/g, '') === trimmed.replace(/=+$/g, '')) {
+                return base64;
+            }
+        } catch {
+            // Fall through to UTF-8.
+        }
+
+        return Buffer.from(trimmed, 'utf8');
+    }
+
+    private mfaEncryptionKeyRef(key: Buffer): string {
+        return crypto.createHash('sha256').update(key.toString('base64')).digest('hex').slice(0, 16);
+    }
+
+    private decodeMfaManagedKey(configured: string, envName: string): MfaManagedKey {
+        const normalized = configured.replace(/-/g, '+').replace(/_/g, '/');
+        const value = /^[a-f0-9]{64}$/i.test(configured)
+            ? Buffer.from(configured, 'hex')
+            : Buffer.from(normalized, 'base64');
+        if (value.length !== 32) {
+            throw new ServiceUnavailableException(`${envName} must decode to 32 bytes`);
+        }
+        return { value, ref: this.mfaEncryptionKeyRef(value), legacy: false };
+    }
+
+    private getMfaEncryptionKeys(): { current: MfaManagedKey | null; keys: MfaManagedKey[] } {
+        const currentValue = this.configService.get<string>(MFA_ENCRYPTION_CURRENT_KEY_ENV)?.trim();
+        const previousValue = this.configService.get<string>(MFA_ENCRYPTION_PREVIOUS_KEY_ENV)?.trim();
+        const legacyValue = this.configService.get<string>(MFA_ENCRYPTION_LEGACY_KEY_ENV)?.trim();
+        const current = currentValue
+            ? this.decodeMfaManagedKey(currentValue, MFA_ENCRYPTION_CURRENT_KEY_ENV)
+            : legacyValue
+                ? (() => {
+                    const value = crypto.createHash('sha256').update(legacyValue).digest();
+                    return { value, ref: this.mfaEncryptionKeyRef(value), legacy: true };
+                })()
+                : null;
+        const keys = current ? [current] : [];
+        if (previousValue) {
+            const previous = this.decodeMfaManagedKey(previousValue, MFA_ENCRYPTION_PREVIOUS_KEY_ENV);
+            if (previous.ref === current?.ref) {
+                throw new ServiceUnavailableException('MFA current and previous encryption keys must differ');
+            }
+            keys.push(previous);
+        }
+        if (legacyValue && !current?.legacy) {
+            const value = crypto.createHash('sha256').update(legacyValue).digest();
+            const legacy = { value, ref: this.mfaEncryptionKeyRef(value), legacy: true };
+            if (!keys.some((key) => key.ref === legacy.ref)) keys.push(legacy);
+        }
+        return { current, keys };
+    }
+
+    private encryptMfaSecret(secret: string): string {
+        const { current } = this.getMfaEncryptionKeys();
+        if (!current) {
+            if (process.env.NODE_ENV === 'production') {
+                this.logger.error('MFA_SECRET_ENCRYPTION_KEY_CURRENT is required before storing MFA secrets in production.');
+                throw new ServiceUnavailableException('MFA enrollment is not configured.');
+            }
+            return secret;
+        }
+
+        const iv = crypto.randomBytes(12);
+        const cipher = crypto.createCipheriv('aes-256-gcm', current.value, iv);
+        const ciphertext = Buffer.concat([cipher.update(secret, 'utf8'), cipher.final()]);
+        if (!current.legacy) {
+            return [
+                CURRENT_ENCRYPTED_MFA_SECRET_PREFIX.replace(/:$/, ''),
+                current.ref,
+                iv.toString('base64url'),
+                cipher.getAuthTag().toString('base64url'),
+                ciphertext.toString('base64url'),
+            ].join(':');
+        }
+        const tag = cipher.getAuthTag();
+        return [
+            ENCRYPTED_MFA_SECRET_PREFIX.replace(/:$/, ''),
+            iv.toString('base64url'),
+            tag.toString('base64url'),
+            ciphertext.toString('base64url'),
+        ].join(':');
+    }
+
+    private decryptMfaSecret(storedSecret: string): string | null {
+        const trimmed = storedSecret.trim();
+        if (!trimmed.startsWith('enc:')) {
+            return trimmed;
+        }
+
+        const parts = trimmed.split(':');
+        const isCurrent = trimmed.startsWith(CURRENT_ENCRYPTED_MFA_SECRET_PREFIX);
+        const isLegacy = trimmed.startsWith(ENCRYPTED_MFA_SECRET_PREFIX);
+        if ((!isCurrent && !isLegacy) || (isCurrent && parts.length !== 6) || (isLegacy && parts.length !== 5)) return null;
+        const keyRef = isCurrent ? parts[2] : null;
+        const [ivRaw, tagRaw, ciphertextRaw] = isCurrent ? parts.slice(3) : parts.slice(2);
+        if (!ivRaw || !tagRaw || !ciphertextRaw) return null;
+
+        const { keys } = this.getMfaEncryptionKeys();
+        const candidates = isCurrent ? keys.filter((key) => key.ref === keyRef) : keys;
+        for (const key of candidates) {
+            try {
+                const decipher = crypto.createDecipheriv('aes-256-gcm', key.value, Buffer.from(ivRaw, 'base64url'));
+                decipher.setAuthTag(Buffer.from(tagRaw, 'base64url'));
+                return Buffer.concat([
+                    decipher.update(Buffer.from(ciphertextRaw, 'base64url')),
+                    decipher.final(),
+                ]).toString('utf8');
+            } catch {
+                // Legacy v1 envelopes have no key reference, so overlap reads try every configured key.
+            }
+        }
+        return null;
+    }
+
+    private generateTotpCode(secret: Buffer, timeStep: number): string {
+        const counter = Buffer.alloc(8);
+        counter.writeUInt32BE(Math.floor(timeStep / 0x100000000), 0);
+        counter.writeUInt32BE(timeStep >>> 0, 4);
+
+        const digest = crypto.createHmac('sha1', secret).update(counter).digest();
+        const offset = digest[digest.length - 1] & 0x0f;
+        const binary = ((digest[offset] & 0x7f) << 24)
+            | ((digest[offset + 1] & 0xff) << 16)
+            | ((digest[offset + 2] & 0xff) << 8)
+            | (digest[offset + 3] & 0xff);
+
+        return (binary % 1_000_000).toString().padStart(6, '0');
+    }
+
+    private findMatchingTotpTimeStep(secret: string, code: string): number | null {
+        if (!/^\d{6}$/.test(code)) return null;
+        const secretBuffer = this.secretToBuffer(secret);
+        if (!secretBuffer?.length) return null;
+
+        const currentStep = Math.floor(Date.now() / 30_000);
+        for (const skew of [-1, 0, 1]) {
+            const timeStep = currentStep + skew;
+            if (this.safeEqual(this.generateTotpCode(secretBuffer, timeStep), code)) {
+                return timeStep;
+            }
+        }
+        return null;
+    }
+
+    private verifyTotpCode(secret: string, code: string): boolean {
+        return this.findMatchingTotpTimeStep(secret, code) !== null;
+    }
+
+    private async claimTotpTimeStep(
+        tx: TenantPrismaTransaction,
+        tenantId: string,
+        userId: string,
+        timeStep: number,
+    ): Promise<void> {
+        try {
+            await tx.mfaTotpClaim.create({
+                data: {
+                    tenantId,
+                    userId,
+                    timeStep: BigInt(timeStep),
+                },
+            });
+        } catch (error) {
+            if ((error as { code?: string })?.code === 'P2002') {
+                throw new ForbiddenException('Invalid MFA code');
+            }
+            throw error;
+        }
+    }
+
+    private safeEqual(expected: string, actual: string): boolean {
+        const expectedBuffer = Buffer.from(expected);
+        const actualBuffer = Buffer.from(actual);
+        return expectedBuffer.length === actualBuffer.length
+            && crypto.timingSafeEqual(expectedBuffer, actualBuffer);
+    }
+
+    private verifyScryptHash(value: string, storedHash: string): boolean {
+        const [salt, hash] = storedHash.split(':');
+        if (!salt || !hash) return false;
+        const computed = crypto.scryptSync(value, salt, 64).toString('hex');
+        return this.safeEqual(hash, computed);
+    }
+
+    private findMatchingBackupCodeHash(code: string, backupCodeHashes: string[]): string | null {
+        for (const hash of backupCodeHashes) {
+            if (hash.startsWith('$2') && bcrypt.compareSync(code, hash)) {
+                return hash;
+            }
+            if (/^[a-f0-9]+:[a-f0-9]+$/i.test(hash) && this.verifyScryptHash(code, hash)) {
+                return hash;
+            }
+        }
+        return null;
+    }
+
+    async getSessionUserContext(userId: string, tenantId: string, sessionClaims: { role: string; sessionId: string; mfaVerified?: boolean; mfaRequired?: boolean }) {
+        const user = await this.getTenantDb().withTenant(tenantId, (tx) => tx.user.findFirst({
             where: {
                 id: userId,
                 tenantId,
@@ -457,14 +1843,21 @@ export class AuthService {
                 tenant: {
                     select: {
                         name: true,
+                        status: true,
+                        deletedAt: true,
                     },
                 },
             },
-        });
+        }));
 
         if (!user) {
             throw new UnauthorizedException('User not found');
         }
+        this.assertTenantCanAuthenticate({
+            id: user.tenantId,
+            status: user.tenant.status,
+            deletedAt: user.tenant.deletedAt,
+        });
 
         const access = await this.rbacService.getEffectiveAccess(user.id, user.tenantId);
 
@@ -480,53 +1873,418 @@ export class AuthService {
             username: user.username,
             name: user.name,
             tenantName: user.tenant?.name ?? '',
+            mfaVerified: sessionClaims.mfaVerified === true,
+            mfaRequired: sessionClaims.mfaRequired === true,
         };
     }
 
-    async validateMfa(userId: string, code: string) {
-        const user = await this.prisma.user.findUnique({ where: { id: userId } });
-        if (!user || (!user.mfaEnabled)) {
-            return { success: true, mfaVerified: true };
+    async getMfaEnrollmentState(
+        userId: string,
+        sessionClaims: { tenantId: string; sessionId: string },
+    ) {
+        const { user } = await this.loadMfaSessionContext(userId, sessionClaims);
+        return {
+            enabled: user.mfaEnabled === true,
+            recoveryCodesRemaining: user.mfaBackupCodes.length,
+        };
+    }
+
+    private async loadMfaSessionContext(
+        userId: string,
+        sessionClaims: { tenantId: string; sessionId: string },
+    ): Promise<MfaSessionContext> {
+        const { user, session } = await this.getTenantDb().withTenant(sessionClaims.tenantId, async (tx) => {
+            const user = await tx.user.findFirst({
+                where: {
+                    id: userId,
+                    tenantId: sessionClaims.tenantId,
+                    deletedAt: null,
+                },
+                select: {
+                    id: true,
+                    tenantId: true,
+                    role: true,
+                    email: true,
+                    username: true,
+                    pinResetRequired: true,
+                    mfaEnabled: true,
+                    mfaSecret: true,
+                    mfaBackupCodes: true,
+                },
+            });
+            const session = user
+                ? await tx.session.findFirst({
+                    where: {
+                        id: sessionClaims.sessionId,
+                        userId,
+                    },
+                })
+                : null;
+            return { user, session };
+        });
+        if (!user) {
+            throw new UnauthorizedException('User not found');
+        }
+        if (!session) {
+            throw new UnauthorizedException('Invalid or expired session');
+        }
+        if (user.pinResetRequired) {
+            throw new ForbiddenException('PIN rotation required before MFA access');
+        }
+        await this.assertTenantIdCanAuthenticate(user.tenantId);
+
+        const settings = await this.getTenantSecuritySettings(user.tenantId);
+        const effectiveExpiresAt = this.assertSessionActive(session, settings);
+
+        return {
+            user: {
+                ...user,
+                mfaBackupCodes: user.mfaBackupCodes ?? [],
+            },
+            session,
+            settings,
+            effectiveExpiresAt,
+        };
+    }
+
+    async beginMfaEnrollment(
+        userId: string,
+        sessionClaims: { tenantId: string; sessionId: string },
+    ) {
+        const { user } = await this.loadMfaSessionContext(userId, sessionClaims);
+        if (user.mfaEnabled && user.mfaSecret) {
+            throw new BadRequestException('MFA is already enabled');
         }
 
-        const validCode = code.length === 6 && /^\d+$/.test(code);
-        if (!validCode) {
+        const secret = this.generateBase32Secret();
+        await this.getRedis().set(
+            KEY_PENDING_MFA_ENROLLMENT(sessionClaims.sessionId, user.id),
+            secret,
+            'EX',
+            MFA_ENROLLMENT_TTL_SECONDS,
+        );
+
+        return {
+            secret,
+            otpauthUrl: this.buildOtpAuthUrl(secret, user),
+            expiresInSeconds: MFA_ENROLLMENT_TTL_SECONDS,
+        };
+    }
+
+    async confirmMfaEnrollment(
+        userId: string,
+        code: string,
+        sessionClaims: { tenantId: string; sessionId: string },
+    ) {
+        const { user, session, effectiveExpiresAt } = await this.loadMfaSessionContext(userId, sessionClaims);
+        const key = KEY_PENDING_MFA_ENROLLMENT(session.id, user.id);
+        const secret = await this.getRedis().get(key);
+        if (!secret) {
+            throw new BadRequestException('MFA enrollment has expired');
+        }
+
+        const normalizedCode = typeof code === 'string' ? code.trim().replace(/\s+/g, '') : '';
+        const matchedTotpTimeStep = this.findMatchingTotpTimeStep(secret, normalizedCode);
+        if (matchedTotpTimeStep === null) {
             throw new ForbiddenException('Invalid MFA code');
         }
 
-        return { success: true, mfaVerified: true };
+        const backupCodes = this.generateBackupCodes();
+        await this.getTenantDb().withTenant(user.tenantId, async (tx) => {
+            await tx.$queryRaw`
+                SELECT "id"
+                FROM "User"
+                WHERE "id" = ${user.id} AND "tenantId" = ${user.tenantId}
+                FOR UPDATE
+            `;
+            const currentUser = await tx.user.findFirst({
+                where: { id: user.id, tenantId: user.tenantId, deletedAt: null },
+                select: { id: true, mfaEnabled: true },
+            });
+            if (!currentUser) throw new UnauthorizedException('User not found');
+            if (currentUser.mfaEnabled) throw new BadRequestException('MFA is already enabled');
+
+            await this.claimTotpTimeStep(tx, user.tenantId, user.id, matchedTotpTimeStep);
+            await tx.user.update({
+                where: { id: user.id },
+                data: {
+                    mfaEnabled: true,
+                    mfaSecret: this.encryptMfaSecret(secret),
+                    mfaBackupCodes: backupCodes.map((backupCode) => this.hashBackupCode(backupCode)),
+                },
+            });
+        });
+        await this.getRedis().del(key);
+        await this.markSessionMfaVerified(session.id, effectiveExpiresAt);
+
+        const access = await this.rbacService.getEffectiveAccess(user.id, user.tenantId);
+        const payload: TokenPayload = {
+            sub: user.id,
+            tenantId: user.tenantId,
+            role: access.primaryRole,
+            legacyRole: user.role,
+            sessionId: session.id,
+            mfaVerified: true,
+            pinResetRequired: false,
+        };
+
+        return {
+            success: true,
+            mfaVerified: true,
+            backupCodes,
+            accessToken: this.jwtService.generateAccessToken(payload),
+            accessTokenMaxAgeMs: this.getAccessTokenMaxAgeMs(effectiveExpiresAt),
+        };
     }
 
-    async checkAccountLockout(email?: string): Promise<void> {
-        if (!email) return;
-        const user = await this.prisma.user.findFirst({ where: { email } });
+    async disableMfa(
+        userId: string,
+        code: string,
+        sessionClaims: { tenantId: string; sessionId: string },
+    ) {
+        const { user, settings } = await this.loadMfaSessionContext(userId, sessionClaims);
+        const access = await this.rbacService.getEffectiveAccess(user.id, user.tenantId);
+        if (this.isMfaRequired(user, settings, access) && this.isPrivilegedMfaRequiredForAccess(access)) {
+            throw new ForbiddenException('MFA is required for administrative access');
+        }
+        if (settings.requireMfaForAll) {
+            throw new ForbiddenException('MFA is required by workspace policy');
+        }
+        if (!user.mfaEnabled) {
+            return { success: true, mfaEnabled: false };
+        }
+
+        const normalizedCode = typeof code === 'string' ? code.trim().replace(/\s+/g, '') : '';
+        const sessions = await this.getTenantDb().withTenant(user.tenantId, async (tx) => {
+            await tx.$queryRaw`
+                SELECT "id"
+                FROM "User"
+                WHERE "id" = ${user.id} AND "tenantId" = ${user.tenantId}
+                FOR UPDATE
+            `;
+            const currentUser = await tx.user.findFirst({
+                where: { id: user.id, tenantId: user.tenantId, deletedAt: null },
+                select: {
+                    id: true,
+                    mfaEnabled: true,
+                    mfaSecret: true,
+                    mfaBackupCodes: true,
+                },
+            });
+            if (!currentUser) throw new UnauthorizedException('User not found');
+            if (currentUser.mfaEnabled) {
+                const matchedTotpTimeStep = currentUser.mfaSecret
+                    ? this.findMatchingTotpTimeStep(currentUser.mfaSecret, normalizedCode)
+                    : null;
+                const matchingBackupCodeHash = this.findMatchingBackupCodeHash(
+                    normalizedCode,
+                    currentUser.mfaBackupCodes ?? [],
+                );
+                if (matchedTotpTimeStep === null && !matchingBackupCodeHash) {
+                    throw new ForbiddenException('Invalid MFA code');
+                }
+                if (matchedTotpTimeStep !== null) {
+                    await this.claimTotpTimeStep(tx, user.tenantId, user.id, matchedTotpTimeStep);
+                }
+
+                await tx.user.update({
+                    where: { id: user.id },
+                    data: {
+                        mfaEnabled: false,
+                        mfaSecret: null,
+                        mfaBackupCodes: [],
+                    },
+                });
+            }
+
+            return tx.session.findMany({
+                where: { userId: user.id },
+                select: { id: true },
+            });
+        });
+        if (sessions.length > 0) {
+            await this.getRedis().del(...sessions.map(({ id }) => KEY_SESSION_MFA(id)));
+        }
+
+        return { success: true, mfaEnabled: false };
+    }
+
+    async validateMfa(
+        userId: string,
+        code: string,
+        sessionClaims: { tenantId: string; sessionId: string },
+    ) {
+        await this.assertTenantIdCanAuthenticate(sessionClaims.tenantId);
+        const settings = await this.getTenantSecuritySettings(sessionClaims.tenantId);
+        const access = await this.rbacService.getEffectiveAccess(userId, sessionClaims.tenantId);
+        const normalizedCode = typeof code === 'string' ? code.trim().replace(/\s+/g, '') : '';
+
+        const verification = await this.getTenantDb().withTenant(sessionClaims.tenantId, async (tx) => {
+            await tx.$queryRaw`
+                SELECT "id"
+                FROM "User"
+                WHERE "id" = ${userId} AND "tenantId" = ${sessionClaims.tenantId}
+                FOR UPDATE
+            `;
+            const user = await tx.user.findFirst({
+                where: {
+                    id: userId,
+                    tenantId: sessionClaims.tenantId,
+                    deletedAt: null,
+                },
+                select: {
+                    id: true,
+                    tenantId: true,
+                    role: true,
+                    mfaEnabled: true,
+                    mfaSecret: true,
+                    mfaBackupCodes: true,
+                },
+            });
+            const session = user
+                ? await tx.session.findFirst({
+                    where: {
+                        id: sessionClaims.sessionId,
+                        userId,
+                    },
+                })
+                : null;
+            if (!user) throw new UnauthorizedException('User not found');
+            if (!session) throw new UnauthorizedException('Invalid or expired session');
+
+            const effectiveExpiresAt = this.assertSessionActive(session, settings);
+            if (!this.isMfaRequired(user, settings, access)) {
+                return { user, session, effectiveExpiresAt, verificationRequired: false };
+            }
+
+            const matchedTotpTimeStep = user.mfaSecret
+                ? this.findMatchingTotpTimeStep(user.mfaSecret, normalizedCode)
+                : null;
+            const matchingBackupCodeHash = this.findMatchingBackupCodeHash(
+                normalizedCode,
+                user.mfaBackupCodes ?? [],
+            );
+            if (matchedTotpTimeStep === null && !matchingBackupCodeHash) {
+                throw new ForbiddenException('Invalid MFA code');
+            }
+            if (matchedTotpTimeStep !== null) {
+                await this.claimTotpTimeStep(
+                    tx,
+                    sessionClaims.tenantId,
+                    user.id,
+                    matchedTotpTimeStep,
+                );
+            }
+            if (matchingBackupCodeHash) {
+                await tx.user.update({
+                    where: { id: user.id },
+                    data: {
+                        mfaBackupCodes: (user.mfaBackupCodes ?? []).filter((hash) => hash !== matchingBackupCodeHash),
+                    },
+                });
+            }
+            return { user, session, effectiveExpiresAt, verificationRequired: true };
+        });
+
+        if (!verification.verificationRequired) return { success: true, mfaVerified: true };
+
+        await this.markSessionMfaVerified(verification.session.id, verification.effectiveExpiresAt);
+        const payload: TokenPayload = {
+            sub: verification.user.id,
+            tenantId: verification.user.tenantId,
+            role: access.primaryRole,
+            legacyRole: verification.user.role,
+            sessionId: verification.session.id,
+            mfaVerified: true,
+            pinResetRequired: false,
+        };
+
+        return {
+            success: true,
+            mfaVerified: true,
+            accessToken: this.jwtService.generateAccessToken(payload),
+            accessTokenMaxAgeMs: this.getAccessTokenMaxAgeMs(verification.effectiveExpiresAt),
+        };
+    }
+
+    async checkAccountLockout(user?: { lockedUntil?: Date | null } | null): Promise<void> {
         if (user?.lockedUntil && user.lockedUntil > new Date()) {
             throw new ForbiddenException('Account locked due to too many failed attempts');
         }
     }
 
-    async recordFailedAttempt(email: string): Promise<void> {
-        const user = await this.prisma.user.findFirst({ where: { email } });
+    async recordFailedAttempt(userId: string): Promise<void> {
+        const user = await this.getTenantDb().withPlatformAdmin((tx) => tx.user.findUnique({ where: { id: userId } }));
         if (user) {
-            const newAttempts = user.loginAttempts + 1;
-            const lockedUntil = newAttempts >= 5 ? new Date(Date.now() + 15 * 60 * 1000) : null;
-            await this.prisma.user.update({
-                where: { id: user.id },
-                data: {
-                    loginAttempts: newAttempts,
-                    lockedUntil: lockedUntil
-                },
+            await this.getTenantDb().withTenant(user.tenantId, async (tx) => {
+                await tx.$queryRaw`
+                    SELECT "id"
+                    FROM "User"
+                    WHERE "id" = ${user.id} AND "tenantId" = ${user.tenantId}
+                    FOR UPDATE
+                `;
+                const lockedUser = await tx.user.findFirst({
+                    where: { id: user.id, tenantId: user.tenantId, deletedAt: null },
+                    select: { id: true, loginAttempts: true, lockedUntil: true },
+                });
+                if (!lockedUser || (lockedUser.lockedUntil && lockedUser.lockedUntil > new Date())) return;
+
+                const newAttempts = lockedUser.loginAttempts + 1;
+                await tx.user.update({
+                    where: { id: lockedUser.id },
+                    data: {
+                        loginAttempts: newAttempts,
+                        lockedUntil: newAttempts >= 5
+                            ? new Date(Date.now() + 15 * 60 * 1000)
+                            : null,
+                    },
+                });
             });
         }
     }
 
     async revokeSession(sessionId: string): Promise<void> {
-        await this.prisma.session.updateMany({
+        await this.getTenantDb().withPlatformAdmin((tx) => tx.session.updateMany({
             where: { id: sessionId },
             data: { revokedAt: new Date() },
-        });
+        }));
+        await this.getRedis().del(KEY_SESSION_MFA(sessionId));
     }
 
+    async revokeSessionByRefreshToken(
+        refreshTokenRaw: unknown,
+    ): Promise<{ status: 'revoked' | 'already_invalid' }> {
+        const credential = this.parseRefreshCredential(refreshTokenRaw);
+        if (!credential) return { status: 'already_invalid' };
+
+        const session = await this.getTenantDb().withPlatformAdmin((tx) => tx.session.findFirst({
+            where: credential.kind === 'selected'
+                ? { selectorHash: credential.selectorHash }
+                : { refreshToken: { in: credential.candidates } },
+            select: { id: true, revokedAt: true, expiresAt: true },
+        }));
+        if (!session) return { status: 'already_invalid' };
+
+        if (session.revokedAt || session.expiresAt <= new Date()) {
+            await this.getRedis().del(KEY_SESSION_MFA(session.id));
+            return { status: 'already_invalid' };
+        }
+
+        const revoked = await this.getTenantDb().withPlatformAdmin((tx) => tx.session.updateMany({
+            where: {
+                id: session.id,
+                ...(credential.kind === 'selected'
+                    ? { selectorHash: credential.selectorHash }
+                    : {}),
+                revokedAt: null,
+                expiresAt: { gt: new Date() },
+            },
+            data: { revokedAt: new Date() },
+        }));
+        await this.getRedis().del(KEY_SESSION_MFA(session.id));
+
+        return { status: revoked.count === 1 ? 'revoked' : 'already_invalid' };
+    }
     private async exchangeCode(endpoint: string, params: Record<string, string>): Promise<any> {
         const body = new URLSearchParams(params).toString();
         const response = await fetch(endpoint, {

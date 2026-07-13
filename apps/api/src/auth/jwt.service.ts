@@ -10,6 +10,7 @@ export interface TokenPayload {
     legacyRole?: string;
     sessionId: string;
     mfaVerified: boolean;
+    pinResetRequired?: boolean;
 }
 
 @Injectable()

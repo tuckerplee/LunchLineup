@@ -13,30 +13,47 @@ datasource db {
 // ─── Multi-Tenant Core ───
 
 model Tenant {
-  id                String            @id @default(uuid())
-  name              String
-  slug              String            @unique
-  planTier          PlanTier          @default(FREE)
-  stripeCustomerId  String?
-  stripeSubscriptionId String?
-  status            TenantStatus      @default(TRIAL)
-  trialEndsAt       DateTime?
-  gracePeriodEndsAt DateTime?
-  usageCredits      Int               @default(0) // Credits for beta customers
-  createdAt         DateTime          @default(now())
-  updatedAt         DateTime          @updatedAt
-  deletedAt         DateTime?
+  id                      String       @id @default(uuid())
+  name                    String
+  slug                    String       @unique
+  planTier                PlanTier     @default(FREE)
+  // Non-null Stripe identifier uniqueness is enforced by a partial SQL migration.
+  stripeCustomerId        String?
+  stripeSubscriptionId    String?
+  status                  TenantStatus @default(TRIAL)
+  trialEndsAt             DateTime?
+  gracePeriodEndsAt       DateTime?
+  usageCredits            Int          @default(0) // Credits for beta customers
+  createdAt               DateTime     @default(now())
+  updatedAt               DateTime     @updatedAt
+  deletedAt               DateTime?
+  applicationDataPurgedAt DateTime?
 
-  users             User[]
-  locations         Location[]
-  shifts            Shift[]
-  schedules         Schedule[]
-  tenantSettings    TenantSetting[]
-  roles             Role[]
-  billingEvents     BillingEvent[]
-  notifications     Notification[]
-  webhookEndpoints  WebhookEndpoint[]
-  creditTransactions CreditTransaction[]
+  users                        User[]
+  locations                    Location[]
+  shifts                       Shift[]
+  schedules                    Schedule[]
+  scheduleSolveJobs            ScheduleSolveJob[]
+  lunchBreakGenerationRequests LunchBreakGenerationRequest[]
+  staffAvailabilities          StaffAvailability[]
+  staffSkills                  StaffSkill[]
+  scheduleDemandWindows        ScheduleDemandWindow[]
+  timeCards                    TimeCard[]
+  auditLogs                    AuditLog[]
+  tenantSettings               TenantSetting[]
+  roles                        Role[]
+  roleAssignments              RoleAssignment[]
+  passwordResetTokens          PasswordResetToken[]
+  passwordResetEmailOutbox     PasswordResetEmailOutbox[]
+  billingEvents                BillingEvent[]
+  stripeUsageEvents            StripeUsageEvent[]
+  notifications                Notification[]
+  webhookEndpoints             WebhookEndpoint[]
+  webhookDeliveries            WebhookDelivery[]
+  creditTransactions           CreditTransaction[]
+  exportJobs                   TenantExportJob[]
+  mfaTotpClaims                MfaTotpClaim[]
+  onboardingSignupAttempts     OnboardingSignupAttempt[]
 
   @@index([slug])
   @@index([stripeCustomerId])
@@ -44,29 +61,29 @@ model Tenant {
 }
 
 model PlanDefinition {
-  id                String    @id @default(uuid())
-  code              String    @unique
+  id                String   @id @default(uuid())
+  code              String   @unique
   name              String
   monthlyPriceCents Int?
   locationLimit     Int?
   userLimit         Int?
   creditQuotaLimit  Int?
-  active            Boolean   @default(true)
+  active            Boolean  @default(true)
   metadata          Json?
-  createdAt         DateTime  @default(now())
-  updatedAt         DateTime  @updatedAt
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
 
   @@index([active])
 }
 
 model CreditTransaction {
-  id          String   @id @default(uuid())
-  tenantId    String
-  amount      Int      // Positive for granted, negative for consumed
-  reason      String   // E.g. "Beta signup bonus", "Schedule Generation"
-  createdAt   DateTime @default(now())
+  id        String   @id @default(uuid())
+  tenantId  String
+  amount    Int // Positive for granted, negative for consumed
+  reason    String // E.g. "Beta signup bonus", "Schedule Generation"
+  createdAt DateTime @default(now())
 
-  tenant      Tenant   @relation(fields: [tenantId], references: [id])
+  tenant Tenant @relation(fields: [tenantId], references: [id])
 
   @@index([tenantId])
   @@index([createdAt])
@@ -91,57 +108,93 @@ enum TenantStatus {
 // ─── Users & Auth ───
 
 model User {
-  id              String    @id @default(uuid())
-  tenantId        String
-  email           String?
-  username        String?
-  emailEncrypted  Bytes?    // AES-256-GCM encrypted PII
-  emailHash       String?   // For lookup without decryption
-  name            String
-  nameEncrypted   Bytes?
-  phone           String?
-  phoneEncrypted  Bytes?
-  phoneHash       String?
-  role            UserRole  @default(STAFF)
-  mfaEnabled      Boolean   @default(false)
-  mfaSecret       String?   // TOTP secret (encrypted)
-  mfaBackupCodes  String[]  // Hashed backup codes
-  passwordHash    String?
-  pinHash         String?
-  pinSetAt        DateTime?
-  pinResetRequired Boolean  @default(false)
-  pinLoginAttempts Int      @default(0)
-  pinLockedUntil  DateTime?
-  lastLoginAt     DateTime?
-  loginAttempts   Int       @default(0)
-  lockedUntil     DateTime?
-  createdAt       DateTime  @default(now())
-  updatedAt       DateTime  @updatedAt
-  deletedAt       DateTime?
+  id               String    @id @default(uuid())
+  tenantId         String
+  email            String?
+  username         String?
+  emailEncrypted   Bytes? // AES-256-GCM encrypted PII
+  emailHash        String? // For lookup without decryption
+  name             String
+  nameEncrypted    Bytes?
+  phone            String?
+  phoneEncrypted   Bytes?
+  phoneHash        String?
+  oidcIssuer       String?
+  oidcSubject      String?
+  role             UserRole  @default(STAFF)
+  mfaEnabled       Boolean   @default(false)
+  mfaSecret        String? // TOTP secret (encrypted)
+  mfaBackupCodes   String[] // Hashed backup codes
+  passwordHash     String?
+  pinHash          String?
+  pinSetAt         DateTime?
+  pinResetRequired Boolean   @default(false)
+  pinLoginAttempts Int       @default(0)
+  pinLockedUntil   DateTime?
+  lastLoginAt      DateTime?
+  loginAttempts    Int       @default(0)
+  lockedUntil      DateTime?
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+  deletedAt        DateTime?
 
-  tenant          Tenant    @relation(fields: [tenantId], references: [id])
-  sessions        Session[]
-  shifts          Shift[]
-  auditLogs       AuditLog[]
-  notifications   Notification[]
-  roleAssignments RoleAssignment[]
+  tenant                   Tenant                     @relation(fields: [tenantId], references: [id])
+  sessions                 Session[]
+  shifts                   Shift[]
+  staffAvailabilities      StaffAvailability[]
+  staffSkills              StaffSkill[]
+  timeCards                TimeCard[]
+  auditLogs                AuditLog[]
+  notifications            Notification[]
+  roleAssignments          RoleAssignment[]
+  passwordResetTokens      PasswordResetToken[]
+  passwordResetEmailOutbox PasswordResetEmailOutbox[]
+  mfaTotpClaims            MfaTotpClaim[]
+  onboardingSignupAttempts OnboardingSignupAttempt[]
 
   @@unique([tenantId, email])
   @@unique([tenantId, username])
+  @@unique([tenantId, oidcIssuer, oidcSubject])
   @@index([tenantId])
   @@index([username])
   @@index([emailHash])
   @@index([deletedAt])
 }
 
+model OnboardingSignupAttempt {
+  id                       String    @id @default(uuid())
+  identityOrganizationHash String    @unique
+  identityHash             String
+  organizationHash         String
+  challengeHash            String    @unique
+  otpHash                  String
+  otpSentAt                DateTime
+  otpExpiresAt             DateTime
+  otpFailedAttempts        Int       @default(0)
+  verifiedAt               DateTime?
+  recoveryExpiresAt        DateTime?
+  tenantId                 String?   @unique
+  userId                   String?   @unique
+  createdAt                DateTime  @default(now())
+  updatedAt                DateTime  @updatedAt
+
+  tenant Tenant? @relation(fields: [tenantId], references: [id], onDelete: SetNull)
+  user   User?   @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([identityHash])
+  @@index([organizationHash])
+  @@index([otpExpiresAt])
+  @@index([recoveryExpiresAt])
+}
+
 model Permission {
-  id          String           @id @default(uuid())
-  key         String           @unique
+  id          String             @id @default(uuid())
+  key         String             @unique
   label       String
   description String?
   category    PermissionCategory
-  createdAt   DateTime         @default(now())
-  updatedAt   DateTime         @updatedAt
+  createdAt   DateTime           @default(now())
+  updatedAt   DateTime           @updatedAt
 
   rolePermissions RolePermission[]
 
@@ -150,20 +203,20 @@ model Permission {
 
 model Role {
   id          String    @id @default(uuid())
-  tenantId     String
-  name         String
-  slug         String
-  description  String?
-  isSystem     Boolean   @default(false)
-  isDefault    Boolean   @default(false)
-  legacyRole   UserRole?
-  createdAt    DateTime  @default(now())
-  updatedAt    DateTime  @updatedAt
-  deletedAt    DateTime?
+  tenantId    String
+  name        String
+  slug        String
+  description String?
+  isSystem    Boolean   @default(false)
+  isDefault   Boolean   @default(false)
+  legacyRole  UserRole?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  deletedAt   DateTime?
 
-  tenant           Tenant            @relation(fields: [tenantId], references: [id])
-  rolePermissions  RolePermission[]
-  assignments      RoleAssignment[]
+  tenant          Tenant           @relation(fields: [tenantId], references: [id])
+  rolePermissions RolePermission[]
+  assignments     RoleAssignment[]
 
   @@unique([tenantId, slug])
   @@unique([tenantId, name])
@@ -177,23 +230,56 @@ model RolePermission {
   permissionId String
   createdAt    DateTime @default(now())
 
-  role         Role       @relation(fields: [roleId], references: [id], onDelete: Cascade)
-  permission   Permission @relation(fields: [permissionId], references: [id], onDelete: Cascade)
+  role       Role       @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  permission Permission @relation(fields: [permissionId], references: [id], onDelete: Cascade)
 
   @@id([roleId, permissionId])
   @@index([permissionId])
 }
 
 model RoleAssignment {
-  userId      String
-  roleId      String
-  createdAt   DateTime @default(now())
+  tenantId  String
+  userId    String
+  roleId    String
+  createdAt DateTime @default(now())
 
-  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
-  role        Role     @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  role   Role   @relation(fields: [roleId], references: [id], onDelete: Cascade)
 
   @@id([userId, roleId])
   @@index([roleId])
+  @@index([tenantId])
+  @@index([tenantId, userId])
+  @@index([tenantId, roleId])
+}
+
+model TenantExportJob {
+  id                 String    @id @default(uuid())
+  tenantId           String
+  requestedByUserId  String
+  tenantSlug         String
+  state              String    @default("QUEUED")
+  watermark          DateTime
+  expiresAt          DateTime
+  artifactKey        String?   @unique
+  bytes              Int       @default(0)
+  rowCounts          Json?
+  progressCollection String?
+  progressRows       Int       @default(0)
+  claimToken         String?
+  claimExpiresAt     DateTime?
+  attempts           Int       @default(0)
+  error              String?
+  completedAt        DateTime?
+  createdAt          DateTime  @default(now())
+  updatedAt          DateTime  @updatedAt
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId, requestedByUserId, createdAt])
+  @@index([state, claimExpiresAt, createdAt])
+  @@index([expiresAt, state])
 }
 
 enum UserRole {
@@ -211,44 +297,120 @@ enum PermissionCategory {
   SHIFTS
   SCHEDULES
   LUNCH_BREAKS
+  TIME_CARDS
   NOTIFICATIONS
   BILLING
   SETTINGS
 }
 
 model Session {
-  id            String    @id @default(uuid())
-  userId        String
-  refreshToken  String    @unique
-  ipAddress     String
-  userAgent     String
-  expiresAt     DateTime
-  createdAt     DateTime  @default(now())
-  revokedAt     DateTime?
+  id           String    @id @default(uuid())
+  userId       String
+  selectorHash String?   @unique // Hash of the stable opaque cookie selector; null for legacy sessions
+  refreshToken String    @unique // SHA-256 hash of the rotating refresh validator
+  ipAddress    String
+  userAgent    String
+  expiresAt    DateTime
+  createdAt    DateTime  @default(now())
+  revokedAt    DateTime?
 
-  user          User      @relation(fields: [userId], references: [id])
+  user User @relation(fields: [userId], references: [id])
 
   @@index([userId])
   @@index([refreshToken])
   @@index([expiresAt])
 }
 
+model MfaTotpClaim {
+  id        String   @id @default(uuid())
+  tenantId  String
+  userId    String
+  timeStep  BigInt
+  createdAt DateTime @default(now())
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, timeStep])
+  @@index([tenantId, userId, createdAt])
+}
+
+model PasswordResetToken {
+  id         String    @id @default(uuid())
+  tenantId   String
+  userId     String
+  tokenHash  String    @unique
+  expiresAt  DateTime
+  consumedAt DateTime?
+  createdAt  DateTime  @default(now())
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId])
+  @@index([userId])
+  @@index([expiresAt])
+  @@index([tenantId, userId, consumedAt])
+}
+
+enum PasswordResetEmailStatus {
+  PENDING
+  SENDING
+  FAILED
+  DELIVERED
+  DEAD_LETTERED
+}
+
+model PasswordResetEmailOutbox {
+  id               String                   @id @default(uuid())
+  tenantId         String
+  userId           String
+  tokenHash        String                   @unique
+  encryptedPayload String
+  encryptionKeyRef String
+  status           PasswordResetEmailStatus @default(PENDING)
+  attempts         Int                      @default(0)
+  nextAttemptAt    DateTime                 @default(now())
+  leaseUntil       DateTime?
+  expiresAt        DateTime
+  deliveredAt      DateTime?
+  deadLetteredAt   DateTime?
+  lastError        String?
+  createdAt        DateTime                 @default(now())
+  updatedAt        DateTime                 @updatedAt
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([status, nextAttemptAt])
+  @@index([leaseUntil])
+  @@index([tenantId, userId])
+  @@index([expiresAt])
+}
+
 // ─── Locations & Scheduling ───
 
 model Location {
-  id          String    @id @default(uuid())
-  tenantId    String
-  name        String
-  address     String?
-  timezone    String    @default("America/New_York")
-  createdAt   DateTime  @default(now())
-  updatedAt   DateTime  @updatedAt
-  deletedAt   DateTime?
+  id                     String    @id @default(uuid())
+  tenantId               String
+  name                   String
+  address                String?
+  timezone               String    @default("America/New_York")
+  creationRequestKeyHash String?
+  creationRequestHash    String?
+  createdAt              DateTime  @default(now())
+  updatedAt              DateTime  @updatedAt
+  deletedAt              DateTime?
 
-  tenant      Tenant    @relation(fields: [tenantId], references: [id])
-  shifts      Shift[]
-  schedules   Schedule[]
+  tenant                Tenant                 @relation(fields: [tenantId], references: [id])
+  shifts                Shift[]
+  schedules             Schedule[]
+  scheduleSolveJobs     ScheduleSolveJob[]
+  staffAvailabilities   StaffAvailability[]
+  scheduleDemandWindows ScheduleDemandWindow[]
+  timeCards             TimeCard[]
 
+  @@unique([tenantId, creationRequestKeyHash])
   @@index([tenantId])
   @@index([deletedAt])
 }
@@ -261,16 +423,151 @@ model Schedule {
   endDate     DateTime
   status      ScheduleStatus @default(DRAFT)
   publishedAt DateTime?
+  revision    Int            @default(0)
+  deletedAt   DateTime?
   createdAt   DateTime       @default(now())
   updatedAt   DateTime       @updatedAt
 
-  tenant      Tenant         @relation(fields: [tenantId], references: [id])
-  location    Location       @relation(fields: [locationId], references: [id])
-  shifts      Shift[]
+  tenant        Tenant                 @relation(fields: [tenantId], references: [id])
+  location      Location               @relation(fields: [locationId], references: [id])
+  shifts        Shift[]
+  solveJobs     ScheduleSolveJob[]
+  demandWindows ScheduleDemandWindow[]
 
   @@index([tenantId])
+  @@index([tenantId, deletedAt])
   @@index([locationId])
   @@index([startDate, endDate])
+  @@index([tenantId, locationId, startDate, endDate])
+}
+
+model ScheduleSolveJob {
+  id                   String    @id
+  tenantId             String
+  scheduleId           String
+  locationId           String
+  requestKeyHash       String
+  requestHash          String
+  status               String    @default("QUEUED")
+  statusReason         String?
+  retryCount           Int       @default(0)
+  resultShiftCount     Int?
+  requestedConstraints Json?
+  staffSnapshot        Json?
+  demandSnapshot       Json?
+  creditConsumption    Json?
+  queuePayload         Json?
+  publicationStatus    String    @default("PENDING")
+  publishAttempts      Int       @default(0)
+  nextPublishAt        DateTime  @default(now())
+  publishLeaseUntil    DateTime?
+  publishedAt          DateTime?
+  publishLastError     String?
+  startedAt            DateTime?
+  completedAt          DateTime?
+  createdAt            DateTime  @default(now())
+  updatedAt            DateTime  @updatedAt
+
+  tenant   Tenant   @relation(fields: [tenantId], references: [id])
+  schedule Schedule @relation(fields: [scheduleId], references: [id])
+  location Location @relation(fields: [locationId], references: [id])
+
+  @@unique([tenantId, scheduleId, requestKeyHash])
+  @@index([tenantId])
+  @@index([scheduleId])
+  @@index([locationId])
+  @@index([tenantId, scheduleId, createdAt])
+  @@index([tenantId, status, createdAt])
+  @@index([publicationStatus, nextPublishAt, createdAt])
+  @@index([publishLeaseUntil])
+}
+
+model LunchBreakGenerationRequest {
+  id                  String    @id @default(uuid())
+  tenantId            String
+  requestKeyHash      String
+  requestHash         String
+  status              String    @default("PENDING")
+  creditConsumption   Json?
+  response            Json?
+  failureStatus       Int?
+  failureMessage      String?
+  claimToken          String?
+  claimExpiresAt      DateTime?
+  attempts            Int       @default(0)
+  creditTransactionId String?
+  calculationSnapshot Json?
+  completedAt         DateTime?
+  createdAt           DateTime  @default(now())
+  updatedAt           DateTime  @updatedAt
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@unique([tenantId, requestKeyHash])
+  @@index([tenantId, status, createdAt])
+  @@index([status, claimExpiresAt])
+}
+
+model StaffAvailability {
+  id               String   @id @default(uuid())
+  tenantId         String
+  userId           String
+  locationId       String?
+  dayOfWeek        Int
+  startTimeMinutes Int
+  endTimeMinutes   Int
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  tenant   Tenant    @relation(fields: [tenantId], references: [id])
+  user     User      @relation(fields: [userId], references: [id])
+  location Location? @relation(fields: [locationId], references: [id])
+
+  @@index([tenantId])
+  @@index([userId])
+  @@index([locationId])
+  @@index([tenantId, userId, dayOfWeek, startTimeMinutes])
+  @@index([tenantId, locationId, dayOfWeek, startTimeMinutes])
+}
+
+model StaffSkill {
+  id        String   @id @default(uuid())
+  tenantId  String
+  userId    String
+  skill     String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  tenant Tenant @relation(fields: [tenantId], references: [id])
+  user   User   @relation(fields: [userId], references: [id])
+
+  @@unique([tenantId, userId, skill])
+  @@index([tenantId])
+  @@index([userId])
+  @@index([tenantId, skill])
+}
+
+model ScheduleDemandWindow {
+  id            String   @id @default(uuid())
+  tenantId      String
+  scheduleId    String
+  locationId    String
+  startTime     DateTime
+  endTime       DateTime
+  requiredStaff Int      @default(1)
+  skill         String?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  tenant   Tenant   @relation(fields: [tenantId], references: [id])
+  schedule Schedule @relation(fields: [scheduleId], references: [id])
+  location Location @relation(fields: [locationId], references: [id])
+
+  @@index([tenantId])
+  @@index([scheduleId])
+  @@index([locationId])
+  @@index([tenantId, scheduleId, startTime])
+  @@index([tenantId, locationId, startTime])
 }
 
 enum ScheduleStatus {
@@ -280,24 +577,25 @@ enum ScheduleStatus {
 }
 
 model Shift {
-  id           String    @id @default(uuid())
-  tenantId     String
-  locationId   String
-  scheduleId   String?
-  userId       String?
-  startTime    DateTime
-  endTime      DateTime
-  role         String?
-  notes        String?
-  createdAt    DateTime  @default(now())
-  updatedAt    DateTime  @updatedAt
-  deletedAt    DateTime?
+  id         String    @id @default(uuid())
+  tenantId   String
+  locationId String
+  scheduleId String?
+  userId     String?
+  startTime  DateTime
+  endTime    DateTime
+  role       String?
+  notes      String?
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+  deletedAt  DateTime?
 
-  tenant       Tenant    @relation(fields: [tenantId], references: [id])
-  location     Location  @relation(fields: [locationId], references: [id])
-  schedule     Schedule? @relation(fields: [scheduleId], references: [id])
-  user         User?     @relation(fields: [userId], references: [id])
-  breaks       Break[]
+  tenant    Tenant     @relation(fields: [tenantId], references: [id])
+  location  Location   @relation(fields: [locationId], references: [id])
+  schedule  Schedule?  @relation(fields: [scheduleId], references: [id])
+  user      User?      @relation(fields: [userId], references: [id])
+  breaks    Break[]
+  timeCards TimeCard[]
 
   @@index([tenantId])
   @@index([locationId])
@@ -305,22 +603,72 @@ model Shift {
   @@index([userId])
   @@index([startTime, endTime])
   @@index([deletedAt])
+  @@index([tenantId, locationId, deletedAt, startTime])
+  @@index([tenantId, scheduleId, deletedAt, startTime])
+  @@index([tenantId, userId, deletedAt, startTime])
 }
 
 model Break {
-  id         String   @id @default(uuid())
-  shiftId    String
-  startTime  DateTime
-  endTime    DateTime
-  paid       Boolean  @default(false)
-  createdAt  DateTime @default(now())
+  id        String     @id @default(uuid())
+  shiftId   String
+  type      BreakType?
+  startTime DateTime
+  endTime   DateTime
+  paid      Boolean    @default(false)
+  createdAt DateTime   @default(now())
 
-  shift      Shift    @relation(fields: [shiftId], references: [id])
+  shift Shift @relation(fields: [shiftId], references: [id])
 
   @@index([shiftId])
+  @@index([type])
 }
 
 // ─── Platform Configuration (Part I-A) ───
+
+enum BreakType {
+  BREAK1
+  LUNCH
+  BREAK2
+}
+
+model TimeCard {
+  id           String         @id @default(uuid())
+  tenantId     String
+  userId       String
+  locationId   String?
+  shiftId      String?
+  clockInOperationId String? @unique
+  clockInRequestHash String?
+  clockInAt    DateTime
+  clockOutAt   DateTime?
+  breakMinutes Int            @default(0)
+  notes        String?
+  status       TimeCardStatus @default(OPEN)
+  createdAt    DateTime       @default(now())
+  updatedAt    DateTime       @updatedAt
+  deletedAt    DateTime?
+
+  tenant   Tenant    @relation(fields: [tenantId], references: [id])
+  user     User      @relation(fields: [userId], references: [id])
+  location Location? @relation(fields: [locationId], references: [id])
+  shift    Shift?    @relation(fields: [shiftId], references: [id])
+
+  @@index([tenantId])
+  @@index([userId])
+  @@index([locationId])
+  @@index([shiftId])
+  @@index([clockInAt])
+  @@index([status])
+  @@index([deletedAt])
+  @@index([tenantId, userId, status, deletedAt, clockInAt])
+  @@index([tenantId, locationId, deletedAt, clockInAt])
+}
+
+enum TimeCardStatus {
+  OPEN
+  CLOSED
+  VOID
+}
 
 model PlatformConfig {
   id        String   @id @default(uuid())
@@ -339,7 +687,7 @@ model TenantSetting {
   value     Json
   updatedAt DateTime @updatedAt
 
-  tenant    Tenant   @relation(fields: [tenantId], references: [id])
+  tenant Tenant @relation(fields: [tenantId], references: [id])
 
   @@unique([tenantId, key])
   @@index([tenantId])
@@ -348,60 +696,108 @@ model TenantSetting {
 // ─── Billing (Part XII) ───
 
 model BillingEvent {
-  id               String   @id @default(uuid())
-  tenantId         String
-  type             String   // invoice.paid, subscription.created, etc.
-  stripeEventId    String?  @unique
-  amount           Int?     // cents
-  currency         String?  @default("usd")
-  metadata         Json?
-  createdAt        DateTime @default(now())
+  id            String   @id @default(uuid())
+  tenantId      String
+  type          String // invoice.paid, subscription.created, etc.
+  stripeEventId String?  @unique
+  amount        Int? // cents
+  currency      String?  @default("usd")
+  metadata      Json?
+  createdAt     DateTime @default(now())
 
-  tenant           Tenant   @relation(fields: [tenantId], references: [id])
+  tenant Tenant @relation(fields: [tenantId], references: [id])
 
   @@index([tenantId])
   @@index([type])
   @@index([createdAt])
 }
 
+enum StripeUsageMetric {
+  ACTIVE_STAFF
+}
+
+enum StripeUsageEventStatus {
+  PENDING
+  SENDING
+  SENT
+  FAILED
+  DEAD_LETTERED
+}
+
+model StripeUsageEvent {
+  id               String                 @id @default(uuid())
+  tenantId         String
+  metric           StripeUsageMetric
+  periodStart      DateTime
+  periodEnd        DateTime
+  quantity         Int
+  eventName        String
+  stripeCustomerId String
+  identifier       String                 @unique
+  idempotencyKey   String                 @unique
+  status           StripeUsageEventStatus @default(PENDING)
+  attempts         Int                    @default(0)
+  nextAttemptAt    DateTime               @default(now())
+  submittedAt      DateTime?
+  sentAt           DateTime?
+  stripeObjectId   String?
+  stripeRequestId  String?
+  lastError        String?
+  metadata         Json?
+  createdAt        DateTime               @default(now())
+  updatedAt        DateTime               @updatedAt
+
+  tenant Tenant @relation(fields: [tenantId], references: [id])
+
+  @@unique([tenantId, metric, periodStart, periodEnd])
+  @@index([tenantId])
+  @@index([status, nextAttemptAt])
+  @@index([eventName, status, submittedAt])
+}
+
 // ─── Audit Log (Append-Only, Part VII) ───
 
 model AuditLog {
-  id         String   @id @default(uuid())
-  tenantId   String
-  userId     String?
-  action     String
-  resource   String
-  resourceId String?
-  oldValue   Json?
-  newValue   Json?
-  ipAddress  String?
-  userAgent  String?
-  createdAt  DateTime @default(now())
+  id            String   @id @default(uuid())
+  tenantId      String
+  userId        String?
+  actorUserId   String?
+  actorTenantId String?
+  action        String
+  resource      String
+  resourceId    String?
+  oldValue      Json?
+  newValue      Json?
+  ipAddress     String?
+  userAgent     String?
+  createdAt     DateTime @default(now())
 
-  user       User?    @relation(fields: [userId], references: [id])
+  tenant Tenant @relation(fields: [tenantId], references: [id])
+  user   User?  @relation(fields: [userId], references: [id])
 
   // BRIN index for time-series queries on this high-churn table
   @@index([tenantId])
   @@index([createdAt])
   @@index([action])
   @@index([resource, resourceId])
+  @@index([tenantId, createdAt])
+  @@index([actorTenantId, actorUserId])
 }
 
 // ─── Notifications ───
 
 model Notification {
-  id         String           @id @default(uuid())
-  tenantId   String
-  userId     String
-  type       NotificationType
-  title      String
-  body       String
-  readAt     DateTime?
-  createdAt  DateTime         @default(now())
+  id        String           @id @default(uuid())
+  tenantId  String
+  userId    String
+  type      NotificationType
+  title     String
+  body      String
+  readAt    DateTime?
+  createdAt DateTime         @default(now())
 
-  tenant     Tenant           @relation(fields: [tenantId], references: [id])
-  user       User             @relation(fields: [userId], references: [id])
+  tenant Tenant @relation(fields: [tenantId], references: [id])
+  user   User   @relation(fields: [userId], references: [id])
 
   @@index([userId, readAt])
   @@index([tenantId])
@@ -421,17 +817,56 @@ enum NotificationType {
 // ─── Webhooks ───
 
 model WebhookEndpoint {
-  id          String   @id @default(uuid())
-  tenantId    String
-  url         String
-  secret      String   // HMAC signing secret
-  events      String[] // Which event types to deliver
-  active      Boolean  @default(true)
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  id        String   @id @default(uuid())
+  tenantId  String
+  url       String
+  secret    String // AES-256-GCM envelope containing the HMAC signing secret
+  events    String[] // Which event types to deliver
+  active    Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
-  tenant      Tenant   @relation(fields: [tenantId], references: [id])
+  tenant Tenant @relation(fields: [tenantId], references: [id])
 
   @@index([tenantId])
   @@index([active])
+}
+
+enum WebhookDeliveryStatus {
+  PENDING
+  QUEUED
+  SENDING
+  DELIVERED
+  FAILED
+  DEAD_LETTERED
+}
+
+model WebhookDelivery {
+  id               String                @id @default(uuid())
+  tenantId         String
+  endpointId       String?
+  status           WebhookDeliveryStatus @default(PENDING)
+  eventType        String?
+  endpointRef      String
+  payloadDigest    String
+  payloadBytes     Int
+  encryptedUrl     String
+  encryptedPayload String
+  encryptionKeyRef String
+  attempts         Int                   @default(0)
+  nextAttemptAt    DateTime?             @default(now())
+  queuedAt         DateTime?
+  deliveredAt      DateTime?
+  lastError        String?
+  createdAt        DateTime              @default(now())
+  updatedAt        DateTime              @updatedAt
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId])
+  @@index([endpointId])
+  @@index([status, nextAttemptAt])
+  @@index([status, updatedAt])
+  @@index([tenantId, status, nextAttemptAt])
+  @@index([payloadDigest])
 }

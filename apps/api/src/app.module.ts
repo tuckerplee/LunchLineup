@@ -1,7 +1,7 @@
 import { Module, NestModule, MiddlewareConsumer } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
 import { ThrottlerModule } from '@nestjs/throttler';
-import { APP_GUARD } from '@nestjs/core';
+import { APP_GUARD, APP_INTERCEPTOR } from '@nestjs/core';
 
 // Auth
 import { AuthModule } from './auth/auth.module';
@@ -14,6 +14,7 @@ import { LocationsController } from './locations/locations.controller';
 import { ShiftsController } from './shifts/shifts.controller';
 import { SchedulesController } from './schedules/schedules.controller';
 import { UsersController } from './users/users.controller';
+import { TimeCardsController } from './time-cards/time-cards.controller';
 import { MetricsController } from './common/metrics.controller';
 import { AdminController } from './admin/admin.controller';
 import { SettingsController } from './settings/settings.controller';
@@ -27,7 +28,10 @@ import { BillingModule } from './billing/billing.module';
 import { NotificationsModule } from './notifications/notifications.module';
 import { LunchBreaksModule } from './lunch-breaks/lunch-breaks.module';
 import { MetricsService } from './common/metrics.service';
+import { MetricsInterceptor } from './common/metrics.interceptor';
+import { HealthService } from './common/health.service';
 import { CorrelationIdMiddleware } from './middleware/correlation-id.middleware';
+import { TenantPrismaService } from './database/tenant-prisma.service';
 
 @Module({
     imports: [
@@ -35,6 +39,10 @@ import { CorrelationIdMiddleware } from './middleware/correlation-id.middleware'
         ThrottlerModule.forRoot([
             { name: 'default', ttl: 60000, limit: 100 },       // 100 req/min global
             { name: 'auth', ttl: 900000, limit: 5 },             // 5 auth attempts per 15 min
+            { name: 'authIp', ttl: 900000, limit: 30 },           // NAT-safe pre-auth ceiling per endpoint
+            { name: 'authIdentifier', ttl: 900000, limit: 5 },    // 5 pre-auth attempts per account and endpoint
+            { name: 'refreshIp', ttl: 900000, limit: 100 },        // Shared office NAT ceiling for refresh
+            { name: 'refreshCredential', ttl: 900000, limit: 5 }, // Per-refresh-credential abuse ceiling
             { name: 'expensive', ttl: 60000, limit: 10 },        // 10 expensive ops/min
         ]),
         AuthModule,
@@ -49,6 +57,7 @@ import { CorrelationIdMiddleware } from './middleware/correlation-id.middleware'
         ShiftsController,
         SchedulesController,
         UsersController,
+        TimeCardsController,
         MetricsController,
         AdminController,
         SettingsController,
@@ -58,7 +67,10 @@ import { CorrelationIdMiddleware } from './middleware/correlation-id.middleware'
         { provide: APP_GUARD, useClass: JwtAuthGuard },
         { provide: APP_GUARD, useClass: RbacGuard },
         { provide: APP_GUARD, useClass: RateLimitsGuard },
+        { provide: APP_INTERCEPTOR, useClass: MetricsInterceptor },
+        HealthService,
         MetricsService,
+        TenantPrismaService,
     ],
 })
 export class AppModule implements NestModule {

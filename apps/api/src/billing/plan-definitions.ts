@@ -1,8 +1,21 @@
 import { Prisma } from '@prisma/client';
 
-export type FeatureKey = 'scheduling' | 'lunch_breaks';
+export const FEATURE_KEYS = ['scheduling', 'lunch_breaks', 'time_cards', 'webhooks'] as const;
+export type FeatureKey = (typeof FEATURE_KEYS)[number];
 
 export type TenantPlanCode = 'FREE' | 'STARTER' | 'GROWTH' | 'ENTERPRISE';
+
+export type TenantEntitlementSnapshot = {
+    planTier: string;
+    status?: string | null;
+    stripeSubscriptionId?: string | null;
+    trialEndsAt?: Date | string | null;
+};
+
+export type EffectiveTenantEntitlement = {
+    planCode: TenantPlanCode;
+    source: 'free' | 'paid_subscription' | 'trial';
+};
 
 export type PlanDefinitionFeatureSet = Partial<Record<FeatureKey, true>>;
 
@@ -55,8 +68,8 @@ type PrismaLike = {
 export const DEFAULT_PLAN_FEATURES: Record<TenantPlanCode, FeatureKey[]> = {
     FREE: [],
     STARTER: ['scheduling'],
-    GROWTH: ['scheduling', 'lunch_breaks'],
-    ENTERPRISE: ['scheduling', 'lunch_breaks'],
+    GROWTH: ['scheduling', 'lunch_breaks', 'time_cards', 'webhooks'],
+    ENTERPRISE: ['scheduling', 'lunch_breaks', 'time_cards', 'webhooks'],
 };
 
 export const DEFAULT_PLAN_DEFINITIONS: PlanDefinitionRecord[] = [
@@ -122,13 +135,44 @@ export function normalizePlanCode(value: string): string {
     return value.trim().toUpperCase();
 }
 
+export function resolveEffectiveTenantEntitlement(
+    tenant: TenantEntitlementSnapshot,
+    now = new Date(),
+): EffectiveTenantEntitlement {
+    const normalizedPlan = normalizePlanCode(tenant.planTier || 'FREE');
+    const planCode = isTenantPlanCode(normalizedPlan) ? normalizedPlan : 'FREE';
+    if (planCode === 'FREE') {
+        return { planCode: 'FREE', source: 'free' };
+    }
+
+    const status = String(tenant.status ?? '').toUpperCase();
+    if (status === 'ACTIVE' && Boolean(tenant.stripeSubscriptionId)) {
+        return { planCode, source: 'paid_subscription' };
+    }
+
+    const trialEndsAt = tenant.trialEndsAt instanceof Date
+        ? tenant.trialEndsAt
+        : typeof tenant.trialEndsAt === 'string'
+            ? new Date(tenant.trialEndsAt)
+            : null;
+    if (status === 'TRIAL'
+        && trialEndsAt
+        && Number.isFinite(trialEndsAt.getTime())
+        && trialEndsAt.getTime() > now.getTime()) {
+        return { planCode, source: 'trial' };
+    }
+
+    return { planCode: 'FREE', source: 'free' };
+}
+
 export function coercePlanFeatureKeys(metadata: Prisma.JsonValue | null | undefined, fallbackCode: TenantPlanCode): FeatureKey[] {
     const raw = metadata && typeof metadata === 'object' && !Array.isArray(metadata)
         ? (metadata as Record<string, unknown>).features
         : undefined;
+    const featureKeys = new Set<string>(FEATURE_KEYS);
 
     const features = Array.isArray(raw)
-        ? raw.filter((item): item is FeatureKey => item === 'scheduling' || item === 'lunch_breaks')
+        ? raw.filter((item): item is FeatureKey => typeof item === 'string' && featureKeys.has(item))
         : [];
 
     return features.length > 0 ? features : DEFAULT_PLAN_FEATURES[fallbackCode];
@@ -172,20 +216,14 @@ export function resolveFallbackPlanDefinition(code: string): PlanDefinitionRecor
 
 export async function resolveTenantPlanDefinition(prisma: PrismaLike, code: string): Promise<PlanDefinitionRecord | null> {
     const normalized = normalizePlanCode(code);
-    const exactMatch = await prisma.planDefinition?.findUnique?.({
-        where: { code: normalized },
-    });
-
-    if (exactMatch) {
-        return exactMatch;
+    if (prisma.planDefinition?.findUnique) {
+        return prisma.planDefinition.findUnique({
+            where: { code: normalized },
+        });
     }
 
     const fallback = resolveFallbackPlanDefinition(normalized) ?? DEFAULT_PLAN_DEFINITIONS[0];
-    const record = await prisma.planDefinition?.findUnique?.({
-        where: { code: fallback.code },
-    });
-
-    return record ?? fallback;
+    return fallback;
 }
 
 export async function listPlanDefinitions(prisma: PrismaLike): Promise<PlanDefinitionRecord[]> {

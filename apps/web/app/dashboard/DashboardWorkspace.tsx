@@ -5,10 +5,12 @@ import Link from 'next/link';
 import { CalendarDays, Clock3, MapPin, Plus, Users, UserPlus } from 'lucide-react';
 import { LunchLineupMark } from '@/components/branding/LunchLineupMark';
 import { fetchWithSession } from '@/lib/client-api';
+import { getWorkspaceCapabilities } from '@/lib/permissions';
 
 type DashboardProfile = {
     name?: string | null;
     tenantName?: string | null;
+    permissions?: string[];
 };
 
 type ApiUser = {
@@ -90,7 +92,17 @@ type OverviewSnapshot = {
     activityItems: ActivityItem[];
 };
 
-const QUICK_ACTIONS = [
+type ActionIcon = typeof CalendarDays | typeof LunchLineupMark;
+
+type QuickAction = {
+    label: string;
+    desc: string;
+    icon: ActionIcon;
+    href: string;
+    tier: 'primary' | 'secondary';
+};
+
+const QUICK_ACTIONS: QuickAction[] = [
     {
         label: 'Build Weekly Schedule',
         desc: 'Assign and optimize shifts in one workspace',
@@ -391,6 +403,88 @@ export function DashboardWorkspace() {
         }];
     }, [overview]);
 
+    const capabilities = useMemo(
+        () => getWorkspaceCapabilities(overview?.profile?.permissions ?? []),
+        [overview?.profile?.permissions],
+    );
+
+    const heroActions = useMemo(() => {
+        const actions: Array<{ href: string; label: string; className: string }> = [];
+        if (capabilities.canWriteShifts) {
+            actions.push({ href: '/dashboard/scheduling?focus=open', label: 'Assign Open Shifts', className: 'btn btn-primary' });
+        }
+        if (capabilities.canReadScheduling) {
+            actions.push({
+                href: '/dashboard/scheduling',
+                label: capabilities.canWriteShifts ? 'Build Weekly Schedule' : 'View Schedule',
+                className: capabilities.canWriteShifts ? 'btn btn-secondary' : 'btn btn-primary',
+            });
+        }
+        if (!capabilities.canReadScheduling && capabilities.canReadTimeCards) {
+            actions.push({ href: '/dashboard/time-cards', label: 'Open Time Cards', className: 'btn btn-primary' });
+        }
+        return actions;
+    }, [capabilities]);
+
+    const quickActions = useMemo(() => {
+        const actions: typeof QUICK_ACTIONS = [];
+        if (capabilities.canWriteShifts) {
+            actions.push(QUICK_ACTIONS[0]);
+        } else if (capabilities.canReadScheduling) {
+            actions.push({
+                ...QUICK_ACTIONS[0],
+                label: 'Review Weekly Schedule',
+                desc: 'View assigned shifts and open coverage',
+                tier: 'primary',
+            });
+        }
+
+        if (capabilities.canWriteLunchBreaks) {
+            actions.push(QUICK_ACTIONS[1]);
+        } else if (capabilities.canReadLunchBreaks) {
+            actions.push({
+                ...QUICK_ACTIONS[1],
+                label: 'Review Lunch Plan',
+                desc: 'View generated meals, breaks, and coverage risk',
+                tier: 'primary',
+            });
+        }
+
+        if (capabilities.canWriteUsers) {
+            actions.push(QUICK_ACTIONS[2]);
+        } else if (capabilities.canReadUsers) {
+            actions.push({
+                ...QUICK_ACTIONS[2],
+                label: 'Staff Directory',
+                desc: 'Review team members and assigned roles',
+                tier: 'secondary',
+            });
+        }
+
+        if (capabilities.canWriteLocations) {
+            actions.push(QUICK_ACTIONS[3]);
+        } else if (capabilities.canReadLocations) {
+            actions.push({
+                ...QUICK_ACTIONS[3],
+                label: 'Locations',
+                desc: 'Review workspace locations',
+                tier: 'secondary',
+            });
+        }
+
+        if (capabilities.canReadTimeCards) {
+            actions.push({
+                label: capabilities.canWriteTimeCards ? 'Open Time Clock' : 'Review Time Cards',
+                desc: capabilities.canWriteTimeCards ? 'Clock in, clock out, and review history' : 'Review time card history',
+                icon: Clock3,
+                href: '/dashboard/time-cards',
+                tier: 'secondary',
+            });
+        }
+
+        return actions;
+    }, [capabilities]);
+
     return (
         <div style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem', maxWidth: 1420 }}>
             {error ? (
@@ -425,12 +519,11 @@ export function DashboardWorkspace() {
                     </div>
 
                     <div style={{ display: 'flex', gap: '0.6rem', flexWrap: 'wrap' }}>
-                        <Link href="/dashboard/scheduling?focus=open" className="btn btn-primary">
-                            Assign Open Shifts
-                        </Link>
-                        <Link href="/dashboard/scheduling" className="btn btn-secondary">
-                            Build Weekly Schedule
-                        </Link>
+                        {heroActions.map((action) => (
+                            <Link key={`${action.href}-${action.label}`} href={action.href} className={action.className}>
+                                {action.label}
+                            </Link>
+                        ))}
                     </div>
                 </div>
             </section>
@@ -458,14 +551,18 @@ export function DashboardWorkspace() {
                                     : `${overview?.coveragePercent ?? 0}% staffed across the current shift set`}
                             </p>
                         </div>
-                        <div style={{ display: 'flex', gap: '0.55rem', flexWrap: 'wrap' }}>
-                            <Link href="/dashboard/scheduling?focus=open" className="btn btn-primary">
-                                Assign now
-                            </Link>
-                            <Link href="/dashboard/scheduling" className="btn btn-secondary">
-                                View schedule
-                            </Link>
-                        </div>
+                        {capabilities.canReadScheduling ? (
+                            <div style={{ display: 'flex', gap: '0.55rem', flexWrap: 'wrap' }}>
+                                {capabilities.canWriteShifts ? (
+                                    <Link href="/dashboard/scheduling?focus=open" className="btn btn-primary">
+                                        Assign now
+                                    </Link>
+                                ) : null}
+                                <Link href="/dashboard/scheduling" className={capabilities.canWriteShifts ? 'btn btn-secondary' : 'btn btn-primary'}>
+                                    View schedule
+                                </Link>
+                            </div>
+                        ) : null}
                     </div>
                 </article>
             </section>
@@ -536,9 +633,11 @@ export function DashboardWorkspace() {
                                 </p>
                             </div>
                         </div>
-                        <Link href="/dashboard/lunch-breaks" className="btn btn-secondary">
-                            Open Lunch Plan
-                        </Link>
+                        {capabilities.canReadLunchBreaks ? (
+                            <Link href="/dashboard/lunch-breaks" className="btn btn-secondary">
+                                {capabilities.canWriteLunchBreaks ? 'Open Lunch Plan' : 'Review Lunch Plan'}
+                            </Link>
+                        ) : null}
                     </div>
                 </article>
             </section>
@@ -547,9 +646,11 @@ export function DashboardWorkspace() {
                 <article className="surface-card" style={{ padding: '1.2rem' }}>
                     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem' }}>
                         <h2 style={{ fontSize: '1rem', fontWeight: 750, color: 'var(--text-primary)' }}>Coverage this week</h2>
-                        <Link href="/dashboard/scheduling" className="text-sm text-brand" style={{ fontWeight: 700 }}>
-                            Open scheduler
-                        </Link>
+                        {capabilities.canReadScheduling ? (
+                            <Link href="/dashboard/scheduling" className="text-sm text-brand" style={{ fontWeight: 700 }}>
+                                Open scheduler
+                            </Link>
+                        ) : null}
                     </div>
 
                     <div style={{ display: 'grid', gap: '0.52rem' }}>
@@ -595,7 +696,7 @@ export function DashboardWorkspace() {
 
             <section style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '0.85rem' }}>
                 <div style={{ gridColumn: '1 / -1', display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: '0.85rem' }}>
-                    {QUICK_ACTIONS.filter((action) => action.tier === 'primary').map((action) => {
+                    {quickActions.filter((action) => action.tier === 'primary').map((action) => {
                         const Icon = action.icon;
                         return (
                         <Link
@@ -635,7 +736,7 @@ export function DashboardWorkspace() {
                 </div>
 
                 <div style={{ gridColumn: '1 / -1', display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '0.75rem' }}>
-                    {QUICK_ACTIONS.filter((action) => action.tier === 'secondary').map((action) => {
+                    {quickActions.filter((action) => action.tier === 'secondary').map((action) => {
                         const Icon = action.icon;
                         return (
                         <Link key={action.label} href={action.href} className="surface-card" style={{ padding: '0.85rem', display: 'flex', gap: '0.68rem' }}>
@@ -662,6 +763,11 @@ export function DashboardWorkspace() {
                         );
                     })}
                 </div>
+                {quickActions.length === 0 ? (
+                    <div className="surface-card" style={{ gridColumn: '1 / -1', padding: '1rem', color: 'var(--text-secondary)', fontSize: '0.84rem' }}>
+                        No additional workspace routes are available for this role.
+                    </div>
+                ) : null}
             </section>
 
             <section>

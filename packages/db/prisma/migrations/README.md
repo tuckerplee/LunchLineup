@@ -3,13 +3,63 @@
 ## Files
 
 - `README.md`: this migrations folder guide.
-- `20260310_username_pin_auth.sql`: adds username and PIN fields for non-email login.
+- `20260310_username_pin_auth.sql`: legacy username/PIN migration retained for history; canonical Prisma schema and forward reconciliation supersede direct replay.
 - `20260321_plan_definitions.sql`: adds plan definitions and seeds legacy tenant plan tiers.
-- `20260325_rbac_roles_permissions.sql`: creates RBAC permissions, roles, role permissions, and role assignments.
+- `20260325_rbac_roles_permissions.sql`: legacy RBAC seed retained for history; current-schema forward reconciliation supersedes direct replay.
 - `20260603_admin_pin_login.sql`: backfills username/PIN and migrated password login permissions onto existing tenant roles for imported accounts.
+- `20260708_break_type_identity.sql`: adds optional persisted break identity for `break1`, `lunch`, and `break2` records.
+- `20260708_time_card.sql`: creates the persisted employee time-card table, status enum, indexes, and foreign keys.
+- `20260709_permission_category_time_cards.sql`: adds the `TIME_CARDS` RBAC permission category before rows use that enum value.
+- `20260709_password_reset_tokens.sql`: creates hashed single-use password reset token rows with expiry, indexes, and RLS.
+- `20260709_platform_admin_rls.sql`: adds a transaction-local platform-admin RLS context and updates tenant policies to honor it.
+- `20260709_public_saas_data_hardening.sql`: backfills time-card permissions and plan metadata, adds tenant-integrity constraints, and adds SaaS-scale indexes.
+- `20260709_role_assignment_tenant_integrity.sql`: backfills and enforces tenant IDs on role assignments with direct and composite tenant foreign keys.
+- `20260709_audit_log_retention_purge.sql`: allows retained-record expiry purge to delete audit logs only after a transaction-local retention flag is set.
+- `20260709_auth_rbac_p1_hardening.sql`: adds explicit tenant data-export authority and grants email-login permission to default system Staff roles.
+- `20260709_lunch_break_generation_idempotency.sql`: stores tenant-scoped lunch/break generation request hashes, reserved credit state, terminal outcomes, uniqueness, and RLS for lost-response retry reuse.
+- `20260709_oidc_identity_binding.sql`: adds the unique all-or-null issuer and subject binding used to prevent OIDC email takeover.
+- `20260710_oidc_identity_binding_tenant_scope.sql`: replaces the global OIDC identity index with tenant-scoped uniqueness so one provider identity can join multiple invited workspaces.
+- `20260710_schedule_draft_revision.sql`: adds the monotonic schedule revision used by queued solve compare-and-swap persistence.
+- `20260710_first_location_idempotency.sql`: adds tenant-scoped durable request hashes so first-location retries after a lost response return the original location.
+- `20260709_shift_overlap_constraints.sql`: adds database-level active assigned-shift window validation and a deferrable no-overlap exclusion constraint.
+- `20260709_shift_schedule_window_enforcement.sql`: rejects attached shifts outside their authoritative schedule interval and prevents schedule edits from stranding shifts.
+- `20260709_schedule_integrity_constraints.sql`: adds database-level schedule-window, shift tenant/location, and break-window integrity constraints.
+- `20260709_schedule_solve_jobs.sql`: adds tenant-visible lifecycle rows, RLS, tenant foreign keys, and indexes for auto-schedule jobs.
+- `20260709_schedule_solve_request_idempotency.sql`: adds hashed request identity and a tenant/schedule uniqueness boundary so POST retries reuse one durable solve job.
+- `20260709_schedule_solve_publication_outbox.sql`: stores exact solve queue payloads plus bounded publication leases, attempts, retry times, errors, and publisher-confirm completion state.
+- `20260709_schedule_solve_persisted_inputs.sql`: creates persisted scheduler input tables for staff availability, staff skills, and schedule demand windows, then snapshots those inputs on solve jobs.
+- `20260709_stripe_identifier_uniqueness.sql`: adds partial unique indexes for non-null Stripe customer and subscription identifiers.
+- `20260709_stripe_usage_events.sql`: creates durable tenant-scoped Stripe metered usage event rows with idempotency keys, retry status, constraints, indexes, and RLS.
+- `20260709_webhook_delivery_outbox.sql`: creates encrypted tenant-scoped webhook delivery retry rows with opaque RabbitMQ replay IDs and RLS.
+- `20260709_webhook_delivery_terminal_state.sql`: makes webhook `nextAttemptAt` nullable so dead-lettered rows can represent a terminal state.
+- `20260709_webhook_first_delivery_outbox.sql`: indexes stale `SENDING` leases so API crashes before first delivery completion are recovered by the bounded publisher sweep.
+- `20260709_zz_broker_loss_outbox_recovery.sql`: adds durable broker-loss recovery metadata and due indexes for confirmed schedule and webhook outbox rows.
+- `20260709_zzz_schedule_break_recovery_hardening.sql`: adds schedule soft-delete and lunch/break generation claim and ledger metadata required by crash-safe retries.
+- `20260709_zzzz_webhook_endpoint_secret_encryption.sql`: non-destructively fails closed unless every endpoint secret is a structurally valid managed AES-256-GCM v1 or v2 envelope.
+- `20260712_auth_session_selector_totp_replay.sql`: adds hashed stable session selectors for rotation-safe logout and tenant-scoped unique TOTP time-step claims for cross-session replay prevention.
+- `20260712_core_rls_audit_forward_reconciliation.sql`: replaces superseded legacy bootstrap execution with Prisma-named, platform-capability-aware direct-tenant RLS and append-only audit enforcement.
+- `20260712_historical_forward_reconciliation.sql`: carries username-index and plan-feature deltas forward without modifying tracked migration history.
+- `20260709_zzzzz_schedule_soft_delete_overlap.sql`: replaces the schedule overlap exclusion so soft-deleted tombstones do not block replacement schedules.
+- `20260709_zzzzzz_schedule_solve_credit_refunds.sql`: backfills exactly-once wallet refunds for failed schedule solves that consumed tenant credits.
+- `20260709_zzzzzzz_platform_admin_capability.sql`: replaces caller-controlled RLS elevation with a private capability proof inaccessible to the runtime role.
+- `20260710_tenant_webhook_lifecycle.sql`: repairs the lunch-break generation tenant FK to cascade and atomically disables endpoints plus terminalizes retryable deliveries only when tenant deletion reaches `PURGED`; recoverable billing and admin states retain endpoint and queue state.
+- `20260711_stripe_usage_submission_window.sql`: records and indexes each Stripe usage submission attempt so aggregate asynchronous errors can reconcile every durable row in Stripe's authoritative validation window.
+- `20260711_tenant_application_data_purge.sql`: records when a deleted tenant's application data was purged and indexes due lifecycle rows.
+- `20260711_staff_availability_overnight.sql`: replaces the legacy same-day-only availability check with fail-closed `0..1439` endpoints and `start != end`, permitting overnight windows and midnight without a `1440` sentinel.
+- `20260711_zz_audit_log_user_redaction.sql`: permits only platform-authorized, transaction-local purge-time nulling of audit actor references while all other audit updates remain blocked.
+- `20260712_tenant_export_jobs.sql`: adds tenant/user-authorized export jobs with durable leases, progress, expiry, opaque artifact identity, queue indexes, and forced RLS.
+- `20260712_stripe_usage_logical_identity.sql`: deterministically collapses duplicate Stripe usage periods under a table lock and enforces immutable tenant, metric, period-start, and period-end uniqueness while transport identities remain rotatable.
+- `20260712_password_reset_email_outbox.sql`: adds encrypted tenant-scoped password-reset delivery rows with leases, bounded attempts, retry scheduling, terminal dead-letter state, indexes, constraints, and RLS.
+- `20260712_rbac_seed_forward_reconciliation.sql`: idempotently seeds baseline RBAC data, adds a legacy assignment only for a tenant-bound user with zero role assignments so custom/restricted access is never augmented, and reconciles the system Staff role so Staff never retains `lunch_breaks:write` after replay.
+- `20260712_onboarding_signup_attempt_recovery.sql`: adds platform-only durable onboarding challenge attempts that atomically bind verified identities and organizations to one tenant owner for retryable session issuance.
+- `20260712_platform_admin_audit_actor_attribution.sql`: adds immutable non-relational platform actor user/tenant identity to target-tenant audit rows without changing audit RLS or `userId` semantics.
+- `20260712_time_card_billable_clock_in.sql`: adds durable clock-in operation and request hashes with uniqueness and all-or-null integrity.
+- 20260712_tenant_context_helpers.sql: installs transaction-local tenant context functions before platform-admin and tenant RLS policies reference them.
 - `audit_log.sql`: creates audit-log database support.
 - `init_rls.sql`: initializes row-level-security database support.
+- `pre_20260709_role_assignment_tenant_integrity.sql`: expands existing role-assignment tables before Prisma schema push can require the tenant column.
+- `pre_20260712_stripe_usage_logical_identity.sql`: deduplicates legacy Stripe usage periods before Prisma applies the logical-period unique index.
+- `pre_20260709_schedule_solve_request_idempotency.sql`: adds nullable request hashes, backfills existing solve jobs, and makes the columns required before Prisma schema push enforces the final model.
+- `rls_relation_hardening.sql`: forces RLS for tenant-owned tables and adds relationship-based RLS for sessions, role joins, and breaks.
 
-## Notes
-
-These SQL files are part of the rebuild migration contract. Apply new forward migrations to already-created dev databases instead of relying only on edits to older seed migrations.
+These SQL files are part of the rebuild migration contract. Apply new forward migrations to already-created dev databases instead of relying only on edits to older seed migrations. Files prefixed with `pre_` run before `prisma db push`; they must safely no-op when their target table does not exist and stage existing data before the canonical schema adds required columns. The runner excludes legacy files fully superseded by the canonical schema and explicit forward reconciliation. It installs `20260712_tenant_context_helpers.sql` first, then `20260709_platform_admin_rls.sql`, before timestamped migrations whose policies call either helper.

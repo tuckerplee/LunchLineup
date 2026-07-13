@@ -1,91 +1,87 @@
 # Runbook: High CPU Usage
 
-**Trigger**: Prometheus alert `HighCpuUsage` — CPU > 85% sustained for 5 minutes on any service container.
+## Trigger
+
+Prometheus alert `HighCpuUsage`, `SolverQueueBacklog`, or correlated API latency indicates CPU saturation or solver backlog.
 
 ## Severity
 
-**P2 — Degraded Performance.** Escalate to P1 if coupled with error rate spike.
+P2 degraded performance. Escalate to P1 if coupled with a critical error-rate alert or failed scheduling workflow.
 
 ## Symptoms
 
-- API response p99 latency exceeds 2s
-- Solver jobs queuing (solver_queue_depth > 10)
-- Container CPU saturation visible in Grafana "Platform Overview" dashboard
+- API p99 latency exceeds 2 seconds.
+- Solver jobs are queued for more than 5 minutes.
+- Container CPU saturation is visible in the Grafana Platform Overview dashboard.
 
-## Investigation Steps
+## Investigation
 
-### 1. Identify the Saturated Service
+Identify the saturated service:
 
 ```bash
-# Check CPU usage per container
+docker compose ps
 docker stats --no-stream --format "table {{.Name}}\t{{.CPUPerc}}\t{{.MemUsage}}"
 ```
 
-### 2. Check for Runaway Solver Jobs
+Check solver and worker pressure:
 
 ```bash
-# Inspect the solver queue in RabbitMQ management UI
-open http://localhost:15672  # guest:guest  (internal only)
-
-# Or query Prometheus directly
-curl 'http://localhost:9090/api/v1/query?query=lunchlineup_solver_queue_depth'
+docker compose exec prometheus wget -qO- 'http://localhost:9090/api/v1/query?query=lunchlineup_solver_queue_depth'
+docker compose exec prometheus wget -qO- 'http://localhost:9090/api/v1/query?query=sum(rate(lunchlineup_worker_jobs_total{status=~"failed|non_retryable"}[5m]))'
 ```
 
-### 3. Check for Expensive DB Queries
+Check long-running database queries:
 
 ```bash
-# Connect to Postgres and look for long-running queries
-docker exec -it lunchlineup-postgres psql -U root -d lunchlineup -c \
+docker compose exec postgres psql -U "${POSTGRES_USER}" -d "${POSTGRES_DB}" -c \
   "SELECT pid, now() - pg_stat_activity.query_start AS duration, query, state
    FROM pg_stat_activity
    WHERE (now() - pg_stat_activity.query_start) > interval '5 seconds'
    ORDER BY duration DESC;"
 ```
 
-### 4. Check Application Logs
+Check application logs:
 
 ```bash
-# API logs with grep for slow markers
-docker logs lunchlineup-api --tail=200 | grep -E "SLOW|ERROR|timeout"
+docker compose logs --tail=200 api worker engine | grep -E "SLOW|ERROR|timeout"
 ```
 
 ## Mitigation
 
-### Option A: Scale the Affected Service (Horizontal)
+Scale the affected service if capacity is the issue:
 
 ```bash
-# Add more API replicas (if using Docker Swarm or Compose scale)
 docker compose up -d --scale api=3
 ```
 
-### Option B: Kill Runaway Job
+Terminate a confirmed runaway database query:
 
 ```bash
-# Kill a specific long-running Postgres query
-docker exec -it lunchlineup-postgres psql -U root -d lunchlineup -c \
+docker compose exec postgres psql -U "${POSTGRES_USER}" -d "${POSTGRES_DB}" -c \
   "SELECT pg_terminate_backend(<pid>);"
 ```
 
-### Option C: Restart the Saturated Container
+Restart only the saturated service if it is wedged:
 
 ```bash
-docker restart lunchlineup-engine
+docker compose restart engine
 ```
 
-### Option D: Reduce Solver Concurrency
-
-Edit `.env` and reduce `SOLVER_MAX_CONCURRENT_JOBS` then restart the worker:
+Reduce solver concurrency if backlog is harming interactive traffic:
 
 ```bash
 docker compose restart worker
 ```
 
+Record the temporary concurrency setting and revert after the incident.
+
 ## Recovery Verification
 
-- Grafana CPU panel returns below 60%
-- `lunchlineup_solver_queue_depth` drains
-- API p99 latency returns to < 500ms
+- Grafana CPU panels return below 60%.
+- `lunchlineup_solver_queue_depth` drains.
+- API p99 latency returns below 500 ms.
+- No `HighApiErrorRate` or `WorkerJobFailures` alert is firing.
 
 ## Escalation
 
-If CPU remains elevated after mitigation: page the on-call engineer and open a P1 incident in Slack `#ops-incidents`.
+If CPU remains elevated after mitigation, page the production on-call route defined in Terraform `alert_targets` and open a P1 incident record.

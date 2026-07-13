@@ -1,9 +1,12 @@
 import { ForbiddenException, Injectable, Optional } from '@nestjs/common';
 import { PrismaClient } from '@prisma/client';
+import { TenantPrismaService, TenantPrismaTransaction } from '../database/tenant-prisma.service';
 import { MeteringService } from './metering.service';
 import {
     coercePlanFeatureKeys,
     FeatureKey,
+    FEATURE_KEYS,
+    resolveEffectiveTenantEntitlement,
     TenantFeatureConfig,
     TenantPlanCode,
     resolveTenantPlanDefinition,
@@ -22,26 +25,37 @@ export type FeatureResolution = {
 };
 
 export type FeatureMatrix = {
+    planTier: TenantPlanTier;
+    effectivePlanTier: TenantPlanTier;
+    status: TenantStatusValue;
+    trialEndsAt: Date | null;
+    stripeSubscriptionActive: boolean;
+    stripeSubscriptionPresent: boolean;
     usageCredits: number;
     features: Record<FeatureKey, FeatureResolution>;
 };
 
-const FEATURE_COST: Record<FeatureKey, number> = {
+const FEATURE_COST: Record<FeatureKey, number | null> = {
     scheduling: 1,
     lunch_breaks: 1,
+    time_cards: 1,
+    webhooks: 1,
 };
 
 const TENANT_FEATURE_CONFIG_KEY = 'feature_access';
+const FEATURE_START_TENANT_STATUSES = new Set<TenantStatusValue>(['TRIAL', 'ACTIVE']);
 
 @Injectable()
 export class FeatureAccessService {
     private readonly prisma: PrismaClient;
+    private readonly tenantDb: TenantPrismaService;
 
     constructor(
         private readonly meteringService: MeteringService,
-        @Optional() prisma?: PrismaClient,
+        @Optional() tenantDb?: TenantPrismaService,
     ) {
-        this.prisma = prisma ?? new PrismaClient();
+        this.prisma = tenantDb?.client ?? new PrismaClient();
+        this.tenantDb = tenantDb ?? new TenantPrismaService(this.prisma);
     }
 
     async resolveTenantFeatures(tenantId: string): Promise<FeatureMatrix> {
@@ -49,38 +63,100 @@ export class FeatureAccessService {
     }
 
     async getFeatureMatrix(tenantId: string): Promise<FeatureMatrix> {
-        const [tenant, featureConfig] = await Promise.all([
-            this.prisma.tenant.findUniqueOrThrow({
-                where: { id: tenantId },
-                select: {
-                    id: true,
-                    planTier: true,
-                    status: true,
-                    usageCredits: true,
-                    stripeSubscriptionId: true,
-                },
-            }),
-            this.loadTenantFeatureConfig(tenantId),
-        ]);
-        const plan = await resolveTenantPlanDefinition(this.prisma, tenant.planTier);
+        const { tenant, featureConfig } = await this.tenantDb.withTenant(tenantId, async (tx) => {
+            const [tenant, featureConfig] = await Promise.all([
+                tx.tenant.findUniqueOrThrow({
+                    where: { id: tenantId },
+                    select: {
+                        id: true,
+                        planTier: true,
+                        status: true,
+                        trialEndsAt: true,
+                        usageCredits: true,
+                        stripeSubscriptionId: true,
+                    },
+                }),
+                this.loadTenantFeatureConfig(tx, tenantId),
+            ]);
+            return { tenant, featureConfig };
+        });
+        const effectiveEntitlement = resolveEffectiveTenantEntitlement(tenant);
+        const plan = await resolveTenantPlanDefinition(this.prisma, effectiveEntitlement.planCode);
 
-        const features: Record<FeatureKey, FeatureResolution> = {
-            scheduling: this.resolveFeature(tenant, 'scheduling', featureConfig, plan),
-            lunch_breaks: this.resolveFeature(tenant, 'lunch_breaks', featureConfig, plan),
-        };
+        const features = Object.fromEntries(
+            FEATURE_KEYS.map((feature) => [
+                feature,
+                this.resolveFeature(tenant, feature, featureConfig, plan),
+            ]),
+        ) as Record<FeatureKey, FeatureResolution>;
+        const planCode = (plan?.code ?? effectiveEntitlement.planCode).toUpperCase();
 
         return {
+            planTier: tenant.planTier,
+            effectivePlanTier: planCode as TenantPlanTier,
+            status: tenant.status,
+            trialEndsAt: tenant.trialEndsAt,
+            stripeSubscriptionActive: tenant.status === 'ACTIVE' && Boolean(tenant.stripeSubscriptionId),
+            stripeSubscriptionPresent: Boolean(tenant.stripeSubscriptionId),
             usageCredits: tenant.usageCredits,
             features,
         };
     }
 
-    async assertFeatureEnabled(tenantId: string, feature: FeatureKey): Promise<void> {
+    async assertFeatureEnabled(tenantId: string, feature: FeatureKey): Promise<FeatureResolution> {
         const matrix = await this.getFeatureMatrix(tenantId);
         const resolution = matrix.features[feature];
         if (!resolution.enabled) {
             throw new ForbiddenException(resolution.reason);
         }
+        return resolution;
+    }
+
+    async assertFeatureEnabledInTransaction(
+        tx: TenantPrismaTransaction,
+        tenantId: string,
+        feature: FeatureKey,
+    ): Promise<FeatureResolution> {
+        await tx.$queryRaw`SELECT "id" FROM "Tenant" WHERE "id" = ${tenantId} FOR UPDATE`;
+        const [tenant, featureConfig] = await Promise.all([
+            tx.tenant.findUniqueOrThrow({
+                where: { id: tenantId },
+                select: {
+                    id: true,
+                    planTier: true,
+                    status: true,
+                    trialEndsAt: true,
+                    usageCredits: true,
+                    stripeSubscriptionId: true,
+                },
+            }),
+            this.loadTenantFeatureConfig(tx, tenantId),
+        ]);
+        const effectiveEntitlement = resolveEffectiveTenantEntitlement(tenant);
+        const plan = await resolveTenantPlanDefinition(tx, effectiveEntitlement.planCode);
+        const resolution = this.resolveFeature(tenant, feature, featureConfig, plan);
+        if (!resolution.enabled) {
+            throw new ForbiddenException(resolution.reason);
+        }
+        return resolution;
+    }
+    async recordFeatureUsageInTransaction(
+        tx: TenantPrismaTransaction,
+        tenantId: string,
+        resolution: FeatureResolution,
+        reason: string,
+        operationId: string,
+    ): Promise<{ consumedCredits: number; newBalance: number | null }> {
+        if (!resolution.enabled) {
+            throw new ForbiddenException(resolution.reason);
+        }
+        return this.meteringService.recordFeatureUsageInTransaction(tx, {
+            tenantId,
+            source: resolution.source,
+            cost: resolution.creditCost ?? 0,
+            reason,
+            operationId,
+        });
     }
 
     async consumeCreditsForFeature(
@@ -108,8 +184,8 @@ export class FeatureAccessService {
         return { consumedCredits: 0, newBalance: matrix.usageCredits };
     }
 
-    private async loadTenantFeatureConfig(tenantId: string): Promise<TenantFeatureConfig | null> {
-        const tenantSetting = await this.prisma.tenantSetting?.findUnique?.({
+    private async loadTenantFeatureConfig(tx: TenantPrismaTransaction, tenantId: string): Promise<TenantFeatureConfig | null> {
+        const tenantSetting = await tx.tenantSetting?.findUnique?.({
             where: {
                 tenantId_key: {
                     tenantId,
@@ -134,20 +210,27 @@ export class FeatureAccessService {
     }
 
     private resolveFeature(
-        tenant: { planTier: TenantPlanTier; status: TenantStatusValue; usageCredits: number; stripeSubscriptionId: string | null },
+        tenant: { planTier: TenantPlanTier; status: TenantStatusValue; trialEndsAt: Date | null; usageCredits: number; stripeSubscriptionId: string | null },
         feature: FeatureKey,
         featureConfig: TenantFeatureConfig | null,
         plan: Awaited<ReturnType<typeof resolveTenantPlanDefinition>> | null,
     ): FeatureResolution {
         const creditCost = FEATURE_COST[feature];
-        const includedByPlan = coercePlanFeatureKeys(plan?.metadata ?? null, tenant.planTier).includes(feature);
-        const stripeActive = tenant.status === 'ACTIVE' && Boolean(tenant.stripeSubscriptionId);
-        const hasCredits = tenant.usageCredits >= creditCost;
+        const effectiveEntitlement = resolveEffectiveTenantEntitlement(tenant);
+        const includedByPlan = coercePlanFeatureKeys(plan?.metadata ?? null, effectiveEntitlement.planCode).includes(feature);
+        const paidSubscriptionActive = effectiveEntitlement.source === 'paid_subscription';
+        const subscriptionEntitled = paidSubscriptionActive || effectiveEntitlement.source === 'trial';
+        const creditEligible = creditCost !== null && creditCost > 0;
         const override = featureConfig?.features?.[feature];
-        const planCode = (plan?.code ?? tenant.planTier).toUpperCase();
-        const isFreePlan = planCode === 'FREE';
-        const includedByActivePlan = includedByPlan && (isFreePlan || stripeActive);
 
+        if (!FEATURE_START_TENANT_STATUSES.has(tenant.status)) {
+            return {
+                enabled: false,
+                source: 'disabled',
+                reason: 'Feature starts require a trial or active tenant.',
+                creditCost,
+            };
+        }
         if (override?.source === 'disabled' || override?.enabled === false) {
             return {
                 enabled: false,
@@ -157,82 +240,34 @@ export class FeatureAccessService {
             };
         }
 
-        if (override?.source === 'manual' && override.enabled === true) {
-            return {
-                enabled: true,
-                source: 'manual',
-                reason: override.reason ?? `Feature ${feature} was enabled manually.`,
-                creditCost,
-            };
-        }
-
-        if (override?.source === 'stripe') {
-            if (stripeActive) {
-                return {
-                    enabled: true,
-                    source: 'stripe',
-                    reason: override.reason ?? 'Enabled by active Stripe subscription.',
-                    creditCost,
-                };
-            }
-
+        const overrideEnabled = override?.enabled === true
+            && (override.source === 'manual' || override.source === 'stripe' || override.source === 'credits');
+        const entitlementSourceAllowed = override?.source === 'stripe'
+            ? paidSubscriptionActive
+            : subscriptionEntitled;
+        const subscriptionIncludesFeature = entitlementSourceAllowed && (includedByPlan || overrideEnabled);
+        if (!subscriptionIncludesFeature) {
             return {
                 enabled: false,
                 source: 'disabled',
-                reason: override.reason ?? 'Feature requires an active Stripe subscription.',
+                reason: 'Feature requires an active subscription that includes this feature.',
                 creditCost,
             };
         }
 
-        if (override?.source === 'credits') {
-            if (hasCredits) {
-                return {
-                    enabled: true,
-                    source: 'credits',
-                    reason: override.reason ?? `Enabled using usage credits (${creditCost} credit per run).`,
-                    creditCost,
-                };
-            }
-
+        if (!creditEligible) {
             return {
                 enabled: false,
                 source: 'disabled',
-                reason: override.reason ?? 'Insufficient usage credits.',
-                creditCost,
-            };
-        }
-
-        if (includedByActivePlan) {
-            return {
-                enabled: true,
-                source: 'plan',
-                reason: plan?.name ? `Included in ${plan.name} plan.` : `Included in ${tenant.planTier.toLowerCase()} plan.`,
-                creditCost,
-            };
-        }
-
-        if (stripeActive) {
-            return {
-                enabled: true,
-                source: 'stripe',
-                reason: 'Enabled by active Stripe subscription.',
-                creditCost,
-            };
-        }
-
-        if (hasCredits) {
-            return {
-                enabled: true,
-                source: 'credits',
-                reason: `Enabled using usage credits (${creditCost} credit per run).`,
+                reason: `Feature ${feature} does not have a valid credit cost configured.`,
                 creditCost,
             };
         }
 
         return {
-            enabled: false,
-            source: 'disabled',
-            reason: `Upgrade plan, connect Stripe, or add credits to enable`,
+            enabled: true,
+            source: 'credits',
+            reason: `Enabled by ${effectiveEntitlement.source === 'trial' ? 'unexpired trial' : 'active subscription'} (${creditCost} credit per billable use).`,
             creditCost,
         };
     }

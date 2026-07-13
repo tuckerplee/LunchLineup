@@ -13,6 +13,7 @@ export class SecurityHeadersMiddleware implements NestMiddleware {
         const csp = [
             "default-src 'self'",
             "base-uri 'self'",
+            "connect-src 'self'",
             "font-src 'self' https: data:",
             "form-action 'self'",
             "frame-ancestors 'none'",
@@ -28,12 +29,13 @@ export class SecurityHeadersMiddleware implements NestMiddleware {
         res.setHeader('Cross-Origin-Opener-Policy', 'same-origin');
         res.setHeader('Cross-Origin-Resource-Policy', 'same-origin');
         res.setHeader('Origin-Agent-Cluster', '?1');
+        res.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=(), payment=()');
         res.setHeader('Referrer-Policy', 'no-referrer');
         res.setHeader('Strict-Transport-Security', 'max-age=15552000; includeSubDomains');
         res.setHeader('X-Content-Type-Options', 'nosniff');
         res.setHeader('X-DNS-Prefetch-Control', 'off');
         res.setHeader('X-Download-Options', 'noopen');
-        res.setHeader('X-Frame-Options', 'SAMEORIGIN');
+        res.setHeader('X-Frame-Options', 'DENY');
         res.setHeader('X-Permitted-Cross-Domain-Policies', 'none');
         res.setHeader('X-XSS-Protection', '0');
 

@@ -1,27 +1,51 @@
-http://dev.lunchlineup.com, http://lunchlineup-dev.proxmox1.lan, http://lunchlineup-dev-vm.proxmox1.lan, http://10.231.10.108, http://10.231.10.108:80, http://localhost:80 {
-    # Route health checks to the NestJS backend
-    handle /health {
-        reverse_proxy api:3000
-    }
+{
+	email {$ADMIN_EMAIL:admin@example.com}
+}
 
-    handle /api/health {
-        uri strip_prefix /api
-        reverse_proxy api:3000
-    }
+{$CADDY_SITE_ADDRESSES:http://localhost:80, http://127.0.0.1:80, http://proxy:80} {
+	encode zstd gzip
+	request_body {
+		max_size 10MB
+	}
 
-    # Route API requests to the NestJS backend
-    handle /api/v1/* {
-        uri strip_prefix /api
-        reverse_proxy api:3000
-    }
+	header {
+		X-LunchLineup-Release "{$DEPLOY_RELEASE_SHA:local}"
+		Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
+		Content-Security-Policy "default-src 'self'; base-uri 'self'; object-src 'none'; frame-ancestors 'none'; frame-src 'self' https://challenges.cloudflare.com; form-action 'self'; script-src 'self' https://challenges.cloudflare.com 'unsafe-inline'; script-src-attr 'none'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self' https://challenges.cloudflare.com ws: wss:; upgrade-insecure-requests"
+		Cross-Origin-Opener-Policy "same-origin"
+		Cross-Origin-Resource-Policy "same-origin"
+		Origin-Agent-Cluster "?1"
+		X-Content-Type-Options "nosniff"
+		X-DNS-Prefetch-Control "off"
+		X-Download-Options "noopen"
+		X-Frame-Options "DENY"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		Permissions-Policy "camera=(), microphone=(), geolocation=(), payment=()"
+		X-Permitted-Cross-Domain-Policies "none"
+		-Server
+	}
 
-    # Route WebSocket connections to the Engine (if needed)
-    handle /ws/* {
-        reverse_proxy engine:8000
-    }
+	header /api/* Cache-Control "no-store"
 
-    # Route all other frontend traffic to Dockerized Next.js
-    handle {
-        reverse_proxy web:3000
-    }
+	handle /health {
+		reverse_proxy api:3000
+	}
+
+	handle /api/health {
+		uri strip_prefix /api
+		reverse_proxy api:3000
+	}
+
+	handle /api/v1/* {
+		uri strip_prefix /api
+		reverse_proxy api:3000
+	}
+
+	handle /ws/* {
+		reverse_proxy engine:8000
+	}
+
+	handle {
+		reverse_proxy web:3000
+	}
 }

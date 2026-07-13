@@ -1,5 +1,8 @@
 import { describe, it, expect, beforeAll } from 'vitest';
 import { Enforcer, MODEL_PATH, POLICY_PATH, newEnforcer } from '@lunchlineup/rbac';
+import { ALL_PERMISSION_KEYS, DEFAULT_ROLE_DEFINITIONS } from './rbac.service';
+
+const MANAGED_POLICY_ROLES = ['ADMIN', 'MANAGER', 'STAFF'] as const;
 
 describe('RBAC policy matrix', () => {
     let enforcer: Enforcer;
@@ -14,73 +17,40 @@ describe('RBAC policy matrix', () => {
     }
 
     it('SUPER_ADMIN can access every default permission', async () => {
-        const permissions = [
-            'locations:read', 'locations:write', 'locations:delete',
-            'users:read', 'users:write', 'users:admin',
-            'shifts:read', 'shifts:write', 'shifts:delete',
-            'schedules:read', 'schedules:write', 'schedules:publish',
-            'billing:write', 'admin:write',
-        ];
-
-        for (const permission of permissions) {
+        for (const permission of ALL_PERMISSION_KEYS) {
             await expect(can('SUPER_ADMIN', permission)).resolves.toBe(true);
         }
     });
 
-    it('ADMIN has operational access but no platform-admin permission', async () => {
-        const allowed = [
-            'locations:read', 'locations:write', 'locations:delete',
-            'users:read', 'users:write', 'users:admin',
-            'shifts:read', 'shifts:write', 'shifts:delete',
-            'schedules:read', 'schedules:write', 'schedules:publish',
-            'billing:write',
-        ];
+    it.each(MANAGED_POLICY_ROLES)('%s package policy matches API default role definition', async (role) => {
+        const definition = DEFAULT_ROLE_DEFINITIONS.find((item) => item.legacyRole === role);
+        const expected = new Set(definition?.permissions ?? []);
 
-        for (const permission of allowed) {
-            await expect(can('ADMIN', permission)).resolves.toBe(true);
-        }
-
-        await expect(can('ADMIN', 'admin:write')).resolves.toBe(false);
-    });
-
-    it('MANAGER can run scheduling + invites but cannot do admin-only actions', async () => {
-        const allowed = [
-            'locations:read',
-            'users:read', 'users:write',
-            'shifts:read', 'shifts:write',
-            'schedules:read', 'schedules:write', 'schedules:publish',
-        ];
-        const denied = [
-            'locations:delete',
-            'users:admin',
-            'shifts:delete',
-            'billing:write',
-            'admin:write',
-        ];
-
-        for (const permission of allowed) {
-            await expect(can('MANAGER', permission)).resolves.toBe(true);
-        }
-        for (const permission of denied) {
-            await expect(can('MANAGER', permission)).resolves.toBe(false);
+        for (const permission of ALL_PERMISSION_KEYS) {
+            await expect(can(role, permission)).resolves.toBe(expected.has(permission));
         }
     });
 
-    it('STAFF is read-only for operational resources', async () => {
-        const allowed = ['locations:read', 'shifts:read', 'schedules:read'];
-        const denied = [
-            'locations:write', 'locations:delete',
-            'users:read', 'users:write', 'users:admin',
-            'shifts:write', 'shifts:delete',
-            'schedules:write', 'schedules:publish',
-            'billing:write', 'admin:write',
-        ];
+    it('STAFF cannot mutate scheduling resources', async () => {
+        await expect(can('STAFF', 'shifts:write')).resolves.toBe(false);
+        await expect(can('STAFF', 'shifts:delete')).resolves.toBe(false);
+        await expect(can('STAFF', 'schedules:write')).resolves.toBe(false);
+        await expect(can('STAFF', 'schedules:publish')).resolves.toBe(false);
+        await expect(can('STAFF', 'lunch_breaks:write')).resolves.toBe(false);
+        await expect(can('STAFF', 'lunch_breaks:delete')).resolves.toBe(false);
+    });
 
-        for (const permission of allowed) {
-            await expect(can('STAFF', permission)).resolves.toBe(true);
-        }
-        for (const permission of denied) {
-            await expect(can('STAFF', permission)).resolves.toBe(false);
-        }
+    it('tenant admins can use tenant account lifecycle permission by default', async () => {
+        await expect(can('SUPER_ADMIN', 'tenant_account:lifecycle')).resolves.toBe(true);
+        await expect(can('ADMIN', 'tenant_account:lifecycle')).resolves.toBe(true);
+        await expect(can('MANAGER', 'tenant_account:lifecycle')).resolves.toBe(false);
+        await expect(can('STAFF', 'tenant_account:lifecycle')).resolves.toBe(false);
+    });
+
+    it('keeps full export admin-only while allowing staff email OTP login', async () => {
+        await expect(can('ADMIN', 'account:data_export')).resolves.toBe(true);
+        await expect(can('MANAGER', 'account:data_export')).resolves.toBe(false);
+        await expect(can('STAFF', 'account:data_export')).resolves.toBe(false);
+        await expect(can('STAFF', 'auth:login_email')).resolves.toBe(true);
     });
 });

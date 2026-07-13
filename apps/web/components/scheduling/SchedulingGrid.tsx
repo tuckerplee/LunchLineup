@@ -131,8 +131,6 @@ export function SchedulingGrid({ initialShifts, staffRows = [] }: SchedulingGrid
     const getShiftsForCell = (staffName: string, day: string) =>
         shifts.filter(s => s.userName === staffName && (s.day === day || (!s.day && day === 'Mon')));
 
-    const colWidth = `calc((100% - 100px) / 7)`;
-
     return (
         <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
             <div style={{

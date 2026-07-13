@@ -18,6 +18,12 @@
             "id": "loki",
             "name": "Loki",
             "version": "1.0.0"
+        },
+        {
+            "type": "datasource",
+            "id": "tempo",
+            "name": "Tempo",
+            "version": "1.0.0"
         }
     ],
     "annotations": {
@@ -39,8 +45,8 @@
             },
             "targets": [
                 {
-                    "expr": "rate(http_requests_total{job=\"api\"}[1m])",
-                    "legendFormat": "{{method}} {{route}}"
+                    "expr": "sum(rate(http_requests_total{job=\"api\"}[1m]))",
+                    "legendFormat": "requests"
                 }
             ],
             "gridPos": {
@@ -60,7 +66,7 @@
             },
             "targets": [
                 {
-                    "expr": "histogram_quantile(0.99, rate(http_request_duration_ms_bucket{job=\"api\"}[5m])) * 1000",
+                    "expr": "histogram_quantile(0.99, sum by (le) (rate(http_request_duration_ms_bucket{job=\"api\"}[5m])))",
                     "legendFormat": "p99"
                 }
             ],
@@ -123,7 +129,7 @@
             },
             "targets": [
                 {
-                    "expr": "rate(http_requests_total{job=\"api\"}[1m])",
+                    "expr": "sum by (method, route) (rate(http_requests_total{job=\"api\"}[1m]))",
                     "legendFormat": "{{method}} {{route}}"
                 }
             ],
@@ -144,8 +150,8 @@
             },
             "targets": [
                 {
-                    "expr": "rate(http_requests_total{job=\"api\",status=~\"5..\"}[1m])",
-                    "legendFormat": "5xx errors"
+                    "expr": "sum(rate(http_requests_total{job=\"api\",status=~\"5..\"}[5m])) / clamp_min(sum(rate(http_requests_total{job=\"api\"}[5m])), 0.001)",
+                    "legendFormat": "5xx ratio"
                 }
             ],
             "fieldConfig": {
@@ -173,11 +179,11 @@
             },
             "targets": [
                 {
-                    "expr": "histogram_quantile(0.95, rate(lunchlineup_solver_duration_seconds_bucket[5m]))",
+                    "expr": "histogram_quantile(0.95, sum by (le) (rate(lunchlineup_solver_duration_seconds_bucket[5m])))",
                     "legendFormat": "p95"
                 },
                 {
-                    "expr": "histogram_quantile(0.50, rate(lunchlineup_solver_duration_seconds_bucket[5m]))",
+                    "expr": "histogram_quantile(0.50, sum by (le) (rate(lunchlineup_solver_duration_seconds_bucket[5m])))",
                     "legendFormat": "p50"
                 }
             ],
@@ -215,6 +221,111 @@
                 "x": 12,
                 "y": 12
             }
+        },
+        {
+            "id": 9,
+            "type": "timeseries",
+            "title": "Worker Job Failures",
+            "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+            },
+            "targets": [
+                {
+                    "expr": "sum by (type, status) (rate(lunchlineup_worker_jobs_total{status=~\"failed|non_retryable\"}[5m]))",
+                    "legendFormat": "{{type}} {{status}}"
+                }
+            ],
+            "gridPos": {
+                "h": 8,
+                "w": 12,
+                "x": 0,
+                "y": 20
+            }
+        },
+        {
+            "id": 10,
+            "type": "stat",
+            "title": "Service Scrape Health",
+            "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+            },
+            "targets": [
+                {
+                    "expr": "up{job=~\"api|engine|worker|control|node\"}",
+                    "legendFormat": "{{job}}"
+                }
+            ],
+            "gridPos": {
+                "h": 8,
+                "w": 12,
+                "x": 12,
+                "y": 20
+            }
+        },
+        {
+            "id": 11,
+            "type": "stat",
+            "title": "Backup Age (hours)",
+            "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+            },
+            "targets": [
+                {
+                    "expr": "(time() - lunchlineup_backup_last_success_timestamp_seconds) / 3600",
+                    "legendFormat": "hours since backup"
+                }
+            ],
+            "fieldConfig": {
+                "defaults": {
+                    "thresholds": {
+                        "mode": "absolute",
+                        "steps": [
+                            {
+                                "color": "green",
+                                "value": null
+                            },
+                            {
+                                "color": "yellow",
+                                "value": 12
+                            },
+                            {
+                                "color": "red",
+                                "value": 24
+                            }
+                        ]
+                    }
+                }
+            },
+            "gridPos": {
+                "h": 8,
+                "w": 12,
+                "x": 0,
+                "y": 28
+            }
+        },
+        {
+            "id": 12,
+            "type": "timeseries",
+            "title": "Host Filesystem Free",
+            "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+            },
+            "targets": [
+                {
+                    "expr": "100 * node_filesystem_avail_bytes{job=\"node\",fstype!~\"tmpfs|overlay|squashfs|aufs\"} / node_filesystem_size_bytes{job=\"node\",fstype!~\"tmpfs|overlay|squashfs|aufs\"}",
+                    "legendFormat": "{{mountpoint}}"
+                }
+            ],
+            "gridPos": {
+                "h": 8,
+                "w": 12,
+                "x": 12,
+                "y": 28
+            }
         }
     ],
     "refresh": "30s",
@@ -229,7 +340,7 @@
     },
     "timepicker": {},
     "timezone": "browser",
-    "title": "LunchLineup — Platform Overview",
+    "title": "LunchLineup Platform Overview",
     "uid": "lunchlineup-platform",
     "version": 1
 }

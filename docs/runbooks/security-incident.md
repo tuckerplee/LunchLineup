@@ -1,30 +1,70 @@
 # Runbook: Security Incident Response
 
 ## Severity Levels
-- **P1 (Critical)**: Data breach, unauthorized access, credential compromise
-- **P2 (High)**: Vulnerability actively exploited, suspicious admin activity
-- **P3 (Medium)**: Vulnerability detected but not exploited
 
-## Immediate Actions (P1)
-1. **Contain**: Revoke all active sessions: `POST /api/cache/clear` via Control Plane
-2. **Isolate**: If external breach suspected, block external network: `docker network disconnect external lunchlineup-proxy`
-3. **Preserve evidence**: Snapshot all logs: `docker logs lunchlineup-api > incident-$(date +%s).log`
-4. **Notify**: Alert team lead within 15 minutes.
+- **P1 Critical**: data breach, unauthorized access, credential compromise.
+- **P2 High**: vulnerability actively exploited or suspicious admin activity.
+- **P3 Medium**: vulnerability detected but not exploited.
+
+## Immediate Actions For P1
+
+1. **Contain**: revoke active sessions through the control plane or the database-backed session store.
+2. **Isolate**: if external abuse is active, remove the proxy from the external network only after preserving enough evidence:
+
+   ```bash
+   docker compose stop proxy
+   ```
+
+3. **Preserve evidence**:
+
+   ```bash
+   mkdir -p /var/tmp/lunchlineup-incident
+   docker compose logs --no-color api worker engine proxy > /var/tmp/lunchlineup-incident/app-logs.txt
+   docker compose ps > /var/tmp/lunchlineup-incident/compose-ps.txt
+   cat /opt/lunchlineup/DEPLOYED_GIT_SHA > /var/tmp/lunchlineup-incident/deployed-git-sha.txt
+   ```
+
+4. **Notify**: page the production on-call route from Terraform `alert_targets` within 15 minutes.
 
 ## Investigation
-1. Query audit log for suspicious actions:
-   ```sql
-   SELECT * FROM "AuditLog" WHERE action IN ('login', 'role_change', 'data_export')
-   ORDER BY "createdAt" DESC LIMIT 100;
-   ```
-2. Check RBAC denial logs in Loki for permission escalation attempts.
-3. Review Tempo traces for unusual API call patterns.
 
-## Notification (GDPR)
-- If personal data was exposed, notify affected users within **72 hours**.
-- Document: what data was exposed, how many users affected, remediation steps taken.
+Query audit logs for suspicious actions:
+
+```sql
+SELECT *
+FROM "AuditLog"
+WHERE action IN ('login', 'role_change', 'data_export')
+ORDER BY "createdAt" DESC
+LIMIT 100;
+```
+
+Then:
+
+- Check RBAC denial logs in Loki for permission escalation attempts.
+- Review Tempo traces for unusual API call patterns.
+- Check proxy/API access logs for rejected Host, Origin, CORS, CSRF, and metrics-token failures.
+- Review webhook delivery failures for SSRF blocks; do not paste full webhook URLs if they include credentials or token query parameters.
+- Verify no `.env`, key, token, or backup payload has been committed to Git.
+- Confirm current runtime SHA with `/opt/lunchlineup/DEPLOYED_GIT_SHA`.
+
+## Notification
+
+If personal data was exposed, document what data was exposed, how many users were affected, the exposure window, and the remediation steps. Route legal or customer notification decisions through the incident owner.
+
+## Secret Rotation
+
+Rotate secrets in the managed production backend named by Terraform `secrets_backend`. Do not rotate by committing plaintext files or copying `.env` between machines.
+
+After rotation:
+
+```bash
+docker compose up -d --force-recreate api worker control grafana
+docker compose ps
+curl -fsS https://lunchlineup.com/health
+```
 
 ## Post-Incident
-1. Write post-mortem within 48 hours.
-2. Update security controls to prevent recurrence.
-3. Rotate all secrets: `./scripts/generate-secrets.sh --rotate`
+
+1. Write a postmortem within 48 hours.
+2. Update detection, tests, and runbooks for the failed control.
+3. Confirm backups and audit logs remain intact after containment.

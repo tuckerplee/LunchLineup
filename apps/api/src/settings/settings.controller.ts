@@ -1,7 +1,8 @@
-import { BadRequestException, Body, Controller, ForbiddenException, Get, Put, Req, UseGuards } from '@nestjs/common';
-import { PrismaClient } from '@prisma/client';
+import { BadRequestException, Body, Controller, ForbiddenException, Get, Optional, Put, Req, UseGuards } from '@nestjs/common';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { RbacGuard } from '../auth/rbac.guard';
+import { RequirePermission } from '../auth/require-permission.decorator';
+import { TenantPrismaService, type TenantPrismaTransaction } from '../database/tenant-prisma.service';
 
 type UserRoleValue = 'SUPER_ADMIN' | 'ADMIN' | 'MANAGER' | 'STAFF';
 type ShiftApprovalPolicy = 'AUTO_APPROVE' | 'MANAGER_APPROVAL' | 'ADMIN_APPROVAL';
@@ -82,10 +83,21 @@ type SecurityUpdateBody = {
     oidcIssuerUrl?: unknown;
 };
 
+type SecurityPolicyAuditValue = {
+    requireMfaForAll: boolean;
+    sessionTimeoutMinutes: number;
+    ssoOidcOnly: boolean;
+    oidcIssuerConfigured: boolean;
+};
+
 @Controller({ path: 'settings', version: '1' })
 @UseGuards(JwtAuthGuard, RbacGuard)
 export class SettingsController {
-    private prisma = new PrismaClient();
+    private readonly tenantDb: TenantPrismaService;
+
+    constructor(@Optional() tenantDb?: TenantPrismaService) {
+        this.tenantDb = tenantDb ?? new TenantPrismaService();
+    }
 
     private assertCanReadSettings(permissions: unknown): void {
         if (Array.isArray(permissions) && permissions.includes('settings:read')) {
@@ -248,7 +260,45 @@ export class SettingsController {
         }
     }
 
-    private async readNormalizedSettings(client: any, tenantId: string): Promise<NormalizedSettings> {
+    private isTruthyEnv(value: string | undefined): boolean {
+        return ['1', 'true', 'yes', 'on'].includes((value ?? '').toLowerCase());
+    }
+
+    private hasRequiredOidcValue(value: string | undefined): boolean {
+        return typeof value === 'string' && value.trim().length > 0;
+    }
+
+    private assertOidcAvailableForSsoOnly(): void {
+        const apiOidcEnabled = this.isTruthyEnv(process.env.OIDC_ENABLED);
+        const webOidcEnabled = this.isTruthyEnv(process.env.NEXT_PUBLIC_OIDC_ENABLED);
+        const hasApiConfig = [
+            process.env.OIDC_ISSUER_URL,
+            process.env.OIDC_CLIENT_ID,
+            process.env.OIDC_CLIENT_SECRET,
+            process.env.OIDC_REDIRECT_URI,
+        ].every((value) => this.hasRequiredOidcValue(value));
+
+        if (!apiOidcEnabled || !webOidcEnabled || !hasApiConfig) {
+            throw new BadRequestException('SSO-only login requires OIDC to be enabled and configured for both API and web.');
+        }
+    }
+
+    private securityPolicyAuditValue(settings: NormalizedSettings['security']): SecurityPolicyAuditValue {
+        return {
+            requireMfaForAll: settings.requireMfaForAll,
+            sessionTimeoutMinutes: settings.sessionTimeoutMinutes,
+            ssoOidcOnly: settings.ssoOidcOnly,
+            oidcIssuerConfigured: settings.oidcIssuerUrl !== null,
+        };
+    }
+
+    private securityPolicyChanged(before: SecurityPolicyAuditValue, after: SecurityPolicyAuditValue): boolean {
+        return Object.keys(before).some((key) => (
+            before[key as keyof SecurityPolicyAuditValue] !== after[key as keyof SecurityPolicyAuditValue]
+        ));
+    }
+
+    private async readNormalizedSettings(client: TenantPrismaTransaction, tenantId: string): Promise<NormalizedSettings> {
         const [tenant, setting] = await Promise.all([
             client.tenant.findUniqueOrThrow({
                 where: { id: tenantId },
@@ -277,7 +327,7 @@ export class SettingsController {
     }
 
     private async persistSettings(
-        client: any,
+        client: TenantPrismaTransaction,
         tenantId: string,
         settings: NormalizedSettings,
     ): Promise<void> {
@@ -300,12 +350,15 @@ export class SettingsController {
     }
 
     @Get()
+    @RequirePermission('settings:read')
     async getSettings(@Req() req: any): Promise<NormalizedSettings> {
         this.assertCanReadSettings(req.user?.permissions);
-        return this.readNormalizedSettings(this.prisma, req.user.tenantId);
+        const tenantId = req.user.tenantId;
+        return this.tenantDb.withTenant(tenantId, (tx) => this.readNormalizedSettings(tx, tenantId));
     }
 
     @Put('general')
+    @RequirePermission('settings:write')
     async updateGeneral(@Body() body: GeneralUpdateBody, @Req() req: any): Promise<NormalizedSettings> {
         this.assertCanWriteSettings(req.user?.permissions);
 
@@ -313,8 +366,9 @@ export class SettingsController {
         const slug = this.parseOptionalString(body?.slug, 'slug');
         const timezone = this.parseOptionalString(body?.timezone, 'timezone');
 
-        return this.prisma.$transaction(async (tx: any) => {
-            const current = await this.readNormalizedSettings(tx, req.user.tenantId);
+        const tenantId = req.user.tenantId;
+        return this.tenantDb.withTenant(tenantId, async (tx) => {
+            const current = await this.readNormalizedSettings(tx, tenantId);
             const tenantUpdate: Record<string, string> = {};
 
             if (name !== undefined) {
@@ -327,7 +381,7 @@ export class SettingsController {
 
             const tenant = Object.keys(tenantUpdate).length > 0
                 ? await tx.tenant.update({
-                    where: { id: req.user.tenantId },
+                    where: { id: tenantId },
                     data: tenantUpdate,
                     select: {
                         name: true,
@@ -346,12 +400,13 @@ export class SettingsController {
                 security: current.security,
             };
 
-            await this.persistSettings(tx, req.user.tenantId, nextSettings);
+            await this.persistSettings(tx, tenantId, nextSettings);
             return nextSettings;
         });
     }
 
     @Put('team')
+    @RequirePermission('settings:write')
     async updateTeam(@Body() body: TeamUpdateBody, @Req() req: any): Promise<NormalizedSettings> {
         this.assertCanWriteSettings(req.user?.permissions);
 
@@ -362,8 +417,9 @@ export class SettingsController {
             ? undefined
             : this.normalizeShiftApprovalPolicy(body.shiftApprovalPolicy);
 
-        return this.prisma.$transaction(async (tx: any) => {
-            const current = await this.readNormalizedSettings(tx, req.user.tenantId);
+        const tenantId = req.user.tenantId;
+        return this.tenantDb.withTenant(tenantId, async (tx) => {
+            const current = await this.readNormalizedSettings(tx, tenantId);
             const nextSettings: NormalizedSettings = {
                 general: current.general,
                 team: {
@@ -373,12 +429,13 @@ export class SettingsController {
                 security: current.security,
             };
 
-            await this.persistSettings(tx, req.user.tenantId, nextSettings);
+            await this.persistSettings(tx, tenantId, nextSettings);
             return nextSettings;
         });
     }
 
     @Put('security')
+    @RequirePermission('settings:write')
     async updateSecurity(@Body() body: SecurityUpdateBody, @Req() req: any): Promise<NormalizedSettings> {
         this.assertCanWriteSettings(req.user?.permissions);
 
@@ -387,8 +444,14 @@ export class SettingsController {
         const ssoOidcOnly = this.parseOptionalBoolean(body?.ssoOidcOnly, 'ssoOidcOnly');
         const oidcIssuerUrl = this.parseOptionalOidcIssuerUrl(body?.oidcIssuerUrl);
 
-        return this.prisma.$transaction(async (tx: any) => {
-            const current = await this.readNormalizedSettings(tx, req.user.tenantId);
+        const tenantId = req.user.tenantId;
+        const actorUserId = typeof req.user?.sub === 'string' ? req.user.sub.trim() : '';
+        if (!actorUserId) {
+            throw new ForbiddenException('A live actor identity is required to update security settings');
+        }
+
+        return this.tenantDb.withTenant(tenantId, async (tx) => {
+            const current = await this.readNormalizedSettings(tx, tenantId);
             const nextSettings: NormalizedSettings = {
                 general: current.general,
                 team: current.team,
@@ -400,7 +463,29 @@ export class SettingsController {
                 },
             };
 
-            await this.persistSettings(tx, req.user.tenantId, nextSettings);
+            if (nextSettings.security.ssoOidcOnly) {
+                this.assertOidcAvailableForSsoOnly();
+            }
+
+            await this.persistSettings(tx, tenantId, nextSettings);
+
+            const oldValue = this.securityPolicyAuditValue(current.security);
+            const newValue = this.securityPolicyAuditValue(nextSettings.security);
+            if (this.securityPolicyChanged(oldValue, newValue)) {
+                await tx.auditLog.create({
+                    data: {
+                        tenantId,
+                        userId: actorUserId,
+                        actorUserId,
+                        actorTenantId: tenantId,
+                        action: 'SECURITY_POLICY_UPDATED',
+                        resource: 'TenantSecurityPolicy',
+                        resourceId: tenantId,
+                        oldValue,
+                        newValue,
+                    },
+                });
+            }
             return nextSettings;
         });
     }

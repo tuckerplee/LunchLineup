@@ -1,12 +1,21 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import { CalendarClock, RotateCcw, Trash2, UserMinus } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { fetchWithSession } from '@/lib/client-api';
+import { buildStaffActionConfirmation, type StaffAction } from './staff-action-confirmation';
+import { buildRoleDeletionConfirmation, canConfirmRoleDeletion } from './role-deletion-confirmation';
+import { StaffSchedulingProfileEditor } from './StaffSchedulingProfileEditor';
 
 type StaffWorkspaceProps = {
-    canManage: boolean;
+    currentUserId: string;
+    canInvite: boolean;
+    canAdminister: boolean;
+    canReadRoles: boolean;
+    canAssignRoles: boolean;
     canManageRoles: boolean;
+    canManageSchedulingProfiles: boolean;
 };
 
 type AssignedRole = {
@@ -46,9 +55,15 @@ type RoleCatalogItem = {
     legacyRole?: 'SUPER_ADMIN' | 'ADMIN' | 'MANAGER' | 'STAFF' | null;
     userCount: number;
     permissions: string[];
+    canDelegate: boolean;
 };
 
 type StaffUser = ApiUser & { status: 'active' | 'inactive' };
+
+type PendingStaffAction = {
+    action: StaffAction;
+    user: StaffUser;
+};
 
 function getCsrfTokenFromCookie(): string {
     if (typeof document === 'undefined') return '';
@@ -88,13 +103,17 @@ function byCategory(items: PermissionCatalogItem[]): Record<string, PermissionCa
     }, {});
 }
 
-export function StaffWorkspace({ canManage, canManageRoles }: StaffWorkspaceProps) {
+export function StaffWorkspace({ currentUserId, canInvite, canAdminister, canReadRoles, canAssignRoles, canManageRoles, canManageSchedulingProfiles }: StaffWorkspaceProps) {
     const [users, setUsers] = useState<StaffUser[]>([]);
     const [roles, setRoles] = useState<RoleCatalogItem[]>([]);
     const [permissions, setPermissions] = useState<PermissionCatalogItem[]>([]);
     const [isLoading, setIsLoading] = useState(true);
     const [isSaving, setIsSaving] = useState<string | null>(null);
     const [error, setError] = useState<string | null>(null);
+    const [pendingAction, setPendingAction] = useState<PendingStaffAction | null>(null);
+    const [pendingRoleDeletion, setPendingRoleDeletion] = useState<RoleCatalogItem | null>(null);
+    const [roleDeletionName, setRoleDeletionName] = useState('');
+    const [schedulingProfileUser, setSchedulingProfileUser] = useState<StaffUser | null>(null);
 
     const [inviteName, setInviteName] = useState('');
     const [inviteEmail, setInviteEmail] = useState('');
@@ -116,20 +135,29 @@ export function StaffWorkspace({ canManage, canManageRoles }: StaffWorkspaceProp
         try {
             const [usersRes, accessRes] = await Promise.all([
                 fetchWithSession('/users'),
-                fetchWithSession('/users/access/catalog'),
+                canReadRoles ? fetchWithSession('/users/access/catalog') : Promise.resolve(null),
             ]);
 
             if (!usersRes.ok) throw new Error('Unable to load staff.');
-            if (!accessRes.ok) throw new Error('Unable to load roles and permissions.');
+            if (accessRes && !accessRes.ok) throw new Error('Unable to load roles and permissions.');
 
             const usersPayload = (await usersRes.json()) as { data?: ApiUser[] };
-            const accessPayload = (await accessRes.json()) as { roles?: RoleCatalogItem[]; permissions?: PermissionCatalogItem[] };
+            const accessPayload = accessRes
+                ? (await accessRes.json()) as { roles?: RoleCatalogItem[]; permissions?: PermissionCatalogItem[]; defaultInviteRoleId?: string | null }
+                : { roles: [], permissions: [] };
 
-            setUsers((usersPayload.data ?? []).map((user) => ({ ...user, status: 'active' as const })));
+            setUsers((usersPayload.data ?? []).map((user) => ({
+                ...user,
+                assignedRoles: user.assignedRoles ?? [],
+                status: 'active' as const,
+            })));
             setRoles(accessPayload.roles ?? []);
             setPermissions(accessPayload.permissions ?? []);
 
-            const defaultInviteRole = (accessPayload.roles ?? []).find((role) => role.isDefault) ?? accessPayload.roles?.[0];
+            const delegableRoles = (accessPayload.roles ?? []).filter((role) => role.canDelegate);
+            const defaultInviteRole = delegableRoles.find((role) => role.id === accessPayload.defaultInviteRoleId)
+                ?? delegableRoles.find((role) => role.legacyRole === 'STAFF')
+                ?? delegableRoles[0];
             if (defaultInviteRole) {
                 setInviteRoleId((current) => current || defaultInviteRole.id);
             }
@@ -138,13 +166,14 @@ export function StaffWorkspace({ canManage, canManageRoles }: StaffWorkspaceProp
         } finally {
             setIsLoading(false);
         }
-    }, []);
+    }, [canReadRoles]);
 
     useEffect(() => {
         void loadWorkspace();
     }, [loadWorkspace]);
 
     const permissionGroups = useMemo(() => byCategory(permissions), [permissions]);
+    const delegableRoles = useMemo(() => roles.filter((role) => role.canDelegate), [roles]);
 
     const stats = useMemo(() => {
         const total = users.length;
@@ -165,7 +194,7 @@ export function StaffWorkspace({ canManage, canManageRoles }: StaffWorkspaceProp
             setError('Name is required.');
             return;
         }
-        if (!inviteRoleId) {
+        if (canReadRoles && !inviteRoleId) {
             setError('Choose a role.');
             return;
         }
@@ -186,7 +215,7 @@ export function StaffWorkspace({ canManage, canManageRoles }: StaffWorkspaceProp
                 email: inviteLoginType === 'email' ? inviteEmail.trim() || undefined : undefined,
                 username: inviteLoginType === 'username' ? inviteUsername.trim() || undefined : undefined,
                 pin: inviteLoginType === 'username' ? invitePin.trim() || undefined : undefined,
-                roleId: inviteRoleId,
+                ...(inviteRoleId ? { roleId: inviteRoleId } : {}),
             }));
             const payload = (await res.json().catch(() => ({}))) as { temporaryPin?: string; message?: string };
             if (!res.ok) throw new Error(payload.message ?? 'Failed to create staff member.');
@@ -203,7 +232,7 @@ export function StaffWorkspace({ canManage, canManageRoles }: StaffWorkspaceProp
         } finally {
             setIsInviting(false);
         }
-    }, [inviteEmail, inviteLoginType, inviteName, invitePin, inviteRoleId, inviteUsername, loadWorkspace]);
+    }, [canReadRoles, inviteEmail, inviteLoginType, inviteName, invitePin, inviteRoleId, inviteUsername, loadWorkspace]);
 
     const updateUserRoles = useCallback(async (userId: string, roleIds: string[]) => {
         setIsSaving(userId);
@@ -254,6 +283,18 @@ export function StaffWorkspace({ canManage, canManageRoles }: StaffWorkspaceProp
         }
     }, []);
 
+    const confirmPendingAction = useCallback(() => {
+        if (!pendingAction) return;
+
+        const { action, user } = pendingAction;
+        setPendingAction(null);
+        if (action === 'reset-pin') {
+            void resetPin(user.id);
+            return;
+        }
+        void deactivate(user.id);
+    }, [deactivate, pendingAction, resetPin]);
+
     const saveRole = useCallback(async () => {
         if (!editorName.trim()) {
             setError('Role name is required.');
@@ -286,7 +327,8 @@ export function StaffWorkspace({ canManage, canManageRoles }: StaffWorkspaceProp
         setError(null);
         try {
             const res = await fetchWithSession(`/users/roles/${roleId}`, jsonWriteInit('DELETE'));
-            if (!res.ok && res.status !== 204) throw new Error('Failed to delete role.');
+            const payload = (await res.json().catch(() => ({}))) as { message?: string };
+            if (!res.ok && res.status !== 204) throw new Error(payload.message ?? 'Failed to delete role.');
             if (editorRoleId === roleId) {
                 resetRoleEditor();
             }
@@ -329,7 +371,7 @@ export function StaffWorkspace({ canManage, canManageRoles }: StaffWorkspaceProp
                     </div>
                 </div>
 
-                {canManage ? (
+                {canInvite ? (
                     <div className="surface-muted" style={{ padding: '0.8rem', display: 'grid', gap: '0.6rem' }}>
                         <div style={{ fontSize: '0.82rem', fontWeight: 700, color: 'var(--text-primary)' }}>Invite team member</div>
                         <div style={{ display: 'grid', gridTemplateColumns: '140px minmax(0, 1fr) minmax(0, 1fr) 140px 160px auto', gap: '0.5rem' }}>
@@ -373,15 +415,18 @@ export function StaffWorkspace({ canManage, canManageRoles }: StaffWorkspaceProp
                                 disabled={inviteLoginType !== 'username'}
                                 style={{ border: '1px solid var(--border)', borderRadius: 8, padding: '0.42rem 0.5rem', background: '#fff', color: 'var(--text-primary)' }}
                             />
-                            <select
-                                value={inviteRoleId}
-                                onChange={(e) => setInviteRoleId(e.target.value)}
-                                style={{ border: '1px solid var(--border)', borderRadius: 8, padding: '0.42rem 0.5rem', background: '#fff', color: 'var(--text-primary)' }}
-                            >
-                                {roles.map((role) => (
-                                    <option key={role.id} value={role.id}>{role.name}</option>
-                                ))}
-                            </select>
+                            {canReadRoles ? (
+                                <select
+                                    aria-label="Role"
+                                    value={inviteRoleId}
+                                    onChange={(e) => setInviteRoleId(e.target.value)}
+                                    style={{ border: '1px solid var(--border)', borderRadius: 8, padding: '0.42rem 0.5rem', background: '#fff', color: 'var(--text-primary)' }}
+                                >
+                                    {delegableRoles.map((role) => (
+                                        <option key={role.id} value={role.id}>{role.name}</option>
+                                    ))}
+                                </select>
+                            ) : null}
                             <Button size="sm" onClick={() => void inviteUser()} disabled={isInviting}>
                                 {isInviting ? 'Creating...' : 'Invite'}
                             </Button>
@@ -399,7 +444,7 @@ export function StaffWorkspace({ canManage, canManageRoles }: StaffWorkspaceProp
                 <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 980 }}>
                     <thead>
                         <tr style={{ background: '#f8faff', borderBottom: '1px solid var(--border)' }}>
-                            {['Member', 'Login', 'Assigned roles', ...(canManage ? ['Actions'] : [])].map((h) => (
+                            {['Member', 'Login', 'Assigned roles', ...(canAdminister || canManageSchedulingProfiles ? ['Actions'] : [])].map((h) => (
                                 <th
                                     key={h}
                                     style={{
@@ -452,7 +497,7 @@ export function StaffWorkspace({ canManage, canManageRoles }: StaffWorkspaceProp
                                                 </span>
                                             ))}
                                         </div>
-                                        {canManageRoles ? (
+                                        {canAssignRoles && canReadRoles && user.id !== currentUserId ? (
                                             <select
                                                 multiple
                                                 value={user.assignedRoles.map((role) => role.id)}
@@ -463,24 +508,34 @@ export function StaffWorkspace({ canManage, canManageRoles }: StaffWorkspaceProp
                                                 disabled={isSaving === user.id}
                                                 style={{ minHeight: 86, border: '1px solid var(--border)', borderRadius: 8, padding: '0.45rem', background: '#fff', color: 'var(--text-primary)' }}
                                             >
-                                                {roles.map((role) => (
+                                                {delegableRoles.map((role) => (
                                                     <option key={role.id} value={role.id}>{role.name}</option>
                                                 ))}
                                             </select>
                                         ) : null}
                                     </div>
                                 </td>
-                                {canManage ? (
+                                {canAdminister || canManageSchedulingProfiles ? (
                                     <td style={{ padding: '0.86rem 1rem' }}>
                                         <div style={{ display: 'flex', gap: '0.4rem', flexWrap: 'wrap' }}>
-                                            {!user.email ? (
-                                                <Button size="sm" variant="outline" onClick={() => void resetPin(user.id)} disabled={isSaving === user.id}>
+                                            {canManageSchedulingProfiles ? (
+                                                <Button size="sm" variant="outline" onClick={() => setSchedulingProfileUser(user)}>
+                                                    <CalendarClock aria-hidden="true" size={14} />
+                                                    Edit schedule profile
+                                                </Button>
+                                            ) : null}
+                                            {canAdminister && user.id !== currentUserId && !user.email ? (
+                                                <Button size="sm" variant="outline" onClick={() => setPendingAction({ action: 'reset-pin', user })} disabled={isSaving === user.id}>
+                                                    <RotateCcw aria-hidden="true" size={14} />
                                                     {isSaving === user.id ? 'Resetting...' : 'Reset PIN'}
                                                 </Button>
                                             ) : null}
-                                            <Button size="sm" variant="outline" onClick={() => void deactivate(user.id)} disabled={isSaving === user.id}>
-                                                {isSaving === user.id ? 'Removing...' : 'Remove'}
-                                            </Button>
+                                            {canAdminister && user.id !== currentUserId ? (
+                                                <Button size="sm" variant="outline" onClick={() => setPendingAction({ action: 'remove', user })} disabled={isSaving === user.id}>
+                                                    <UserMinus aria-hidden="true" size={14} />
+                                                    {isSaving === user.id ? 'Removing...' : 'Remove'}
+                                                </Button>
+                                            ) : null}
                                         </div>
                                     </td>
                                 ) : null}
@@ -488,7 +543,7 @@ export function StaffWorkspace({ canManage, canManageRoles }: StaffWorkspaceProp
                         ))}
                         {!isLoading && users.length === 0 ? (
                             <tr>
-                                <td colSpan={canManage ? 4 : 3} style={{ padding: '1rem', fontSize: '0.84rem', color: 'var(--text-muted)' }}>
+                                <td colSpan={canAdminister || canManageSchedulingProfiles ? 4 : 3} style={{ padding: '1rem', fontSize: '0.84rem', color: 'var(--text-muted)' }}>
                                     No staff members found.
                                 </td>
                             </tr>
@@ -497,7 +552,15 @@ export function StaffWorkspace({ canManage, canManageRoles }: StaffWorkspaceProp
                 </table>
             </section>
 
-            {canManageRoles ? (
+            {schedulingProfileUser ? (
+                <StaffSchedulingProfileEditor
+                    key={schedulingProfileUser.id}
+                    user={schedulingProfileUser}
+                    onClose={() => setSchedulingProfileUser(null)}
+                />
+            ) : null}
+
+            {canManageRoles && canReadRoles ? (
                 <section className="surface-card" style={{ padding: '1rem', display: 'grid', gap: '1rem' }}>
                     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '0.8rem', flexWrap: 'wrap' }}>
                         <div>
@@ -510,7 +573,7 @@ export function StaffWorkspace({ canManage, canManageRoles }: StaffWorkspaceProp
                         </Button>
                     </div>
 
-                    <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1.1fr) minmax(0, 1.4fr)', gap: '1rem' }}>
+                    <div className="staff-role-layout">
                         <div style={{ display: 'grid', gap: '0.6rem' }}>
                             {roles.map((role) => (
                                 <div key={role.id} className="surface-muted" style={{ padding: '0.8rem', display: 'grid', gap: '0.45rem' }}>
@@ -535,7 +598,16 @@ export function StaffWorkspace({ canManage, canManageRoles }: StaffWorkspaceProp
                                                 Edit
                                             </Button>
                                             {!role.isSystem ? (
-                                                <Button size="sm" variant="outline" onClick={() => void deleteRole(role.id)} disabled={isSaving === role.id}>
+                                                <Button
+                                                    size="sm"
+                                                    variant="outline"
+                                                    onClick={() => {
+                                                        setPendingRoleDeletion(role);
+                                                        setRoleDeletionName('');
+                                                    }}
+                                                    disabled={isSaving === role.id}
+                                                >
+                                                    <Trash2 aria-hidden="true" size={14} />
                                                     Delete
                                                 </Button>
                                             ) : null}
@@ -615,6 +687,99 @@ export function StaffWorkspace({ canManage, canManageRoles }: StaffWorkspaceProp
                     </div>
                 </section>
             ) : null}
+
+            {pendingAction ? (() => {
+                const confirmation = buildStaffActionConfirmation(pendingAction.action, pendingAction.user);
+                return (
+                    <div className="staff-confirmation-backdrop" role="presentation">
+                        <div
+                            className="staff-confirmation-dialog"
+                            role="alertdialog"
+                            aria-modal="true"
+                            aria-labelledby="staff-confirmation-title"
+                            aria-describedby="staff-confirmation-description"
+                            onKeyDown={(event) => {
+                                if (event.key === 'Escape') setPendingAction(null);
+                            }}
+                        >
+                            <div>
+                                <h2 id="staff-confirmation-title">{confirmation.title}</h2>
+                                <p id="staff-confirmation-description">{confirmation.description}</p>
+                            </div>
+                            <div className="staff-confirmation-actions">
+                                <Button variant="outline" onClick={() => setPendingAction(null)} autoFocus>
+                                    Cancel
+                                </Button>
+                                <Button
+                                    variant={pendingAction.action === 'remove' ? 'destructive' : 'default'}
+                                    onClick={confirmPendingAction}
+                                >
+                                    {pendingAction.action === 'reset-pin' ? (
+                                        <RotateCcw aria-hidden="true" size={16} />
+                                    ) : (
+                                        <UserMinus aria-hidden="true" size={16} />
+                                    )}
+                                    {confirmation.confirmLabel}
+                                </Button>
+                            </div>
+                        </div>
+                    </div>
+                );
+            })() : null}
+
+            {pendingRoleDeletion ? (() => {
+                const confirmation = buildRoleDeletionConfirmation(pendingRoleDeletion);
+                const canDelete = canConfirmRoleDeletion(confirmation, roleDeletionName);
+                return (
+                    <div className="staff-confirmation-backdrop" role="presentation">
+                        <div
+                            className="staff-confirmation-dialog"
+                            role="alertdialog"
+                            aria-modal="true"
+                            aria-labelledby="role-deletion-title"
+                            aria-describedby="role-deletion-description"
+                            onKeyDown={(event) => {
+                                if (event.key === 'Escape') setPendingRoleDeletion(null);
+                            }}
+                        >
+                            <div>
+                                <h2 id="role-deletion-title">{confirmation.title}</h2>
+                                <p id="role-deletion-description">{confirmation.description}</p>
+                            </div>
+                            <label style={{ display: 'grid', gap: '0.35rem', fontSize: '0.8rem', fontWeight: 700 }}>
+                                Role name
+                                <input
+                                    type="text"
+                                    value={roleDeletionName}
+                                    onChange={(event) => setRoleDeletionName(event.target.value)}
+                                    placeholder={confirmation.expectedName}
+                                    disabled={confirmation.blocked}
+                                    autoFocus={!confirmation.blocked}
+                                    style={{ border: '1px solid var(--border)', borderRadius: 8, padding: '0.5rem 0.6rem', background: '#fff', color: 'var(--text-primary)' }}
+                                />
+                            </label>
+                            <div className="staff-confirmation-actions">
+                                <Button variant="outline" onClick={() => setPendingRoleDeletion(null)} autoFocus={confirmation.blocked}>
+                                    Cancel
+                                </Button>
+                                <Button
+                                    variant="destructive"
+                                    disabled={!canDelete || isSaving === pendingRoleDeletion.id}
+                                    onClick={() => {
+                                        const roleId = pendingRoleDeletion.id;
+                                        setPendingRoleDeletion(null);
+                                        setRoleDeletionName('');
+                                        void deleteRole(roleId);
+                                    }}
+                                >
+                                    <Trash2 aria-hidden="true" size={16} />
+                                    {confirmation.confirmLabel}
+                                </Button>
+                            </div>
+                        </div>
+                    </div>
+                );
+            })() : null}
 
             {error ? (
                 <div style={{ padding: '0.7rem 0.8rem', borderRadius: 10, border: '1px solid rgba(244,63,94,0.35)', color: '#fda4af', background: 'rgba(244,63,94,0.06)' }}>

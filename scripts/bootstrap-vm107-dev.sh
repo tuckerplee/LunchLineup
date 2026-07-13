@@ -15,16 +15,25 @@ HOST_HEADER="${HOST_HEADER:-dev.lunchlineup.com}"
 VM_HOSTNAME="${VM_HOSTNAME:-lunchlineup-dev}"
 HEALTH_TIMEOUT_SECONDS="${HEALTH_TIMEOUT_SECONDS:-180}"
 BACKUP_FILE="${BACKUP_FILE:-}"
+DESTRUCTIVE_CONFIRMATION="replace-and-restore-disposable-vm107"
 
 services=(
-  proxy web api engine worker
-  pgbouncer postgres redis rabbitmq
-  prometheus loki tempo grafana autoheal
+  proxy web api webhook-replay engine worker control
+  migrate pgbouncer postgres redis rabbitmq
+  prometheus alertmanager node-exporter loki promtail otel-collector tempo grafana
+  autoheal
 )
 
 require_root() {
   if [[ "$(id -u)" -ne 0 ]]; then
     echo "Run as root or through sudo on the disposable dev VM." >&2
+    exit 1
+  fi
+}
+
+require_destructive_confirmation() {
+  if [[ "${VM107_DESTRUCTIVE_CONFIRM:-}" != "$DESTRUCTIVE_CONFIRMATION" ]]; then
+    echo "Set VM107_DESTRUCTIVE_CONFIRM=$DESTRUCTIVE_CONFIRMATION before replacing APP_DIR or restoring a backup." >&2
     exit 1
   fi
 }
@@ -59,6 +68,7 @@ install_host_dependencies() {
 
 sync_repository() {
   if [[ ! -d "$APP_DIR/.git" ]]; then
+    require_destructive_confirmation
     rm -rf "$APP_DIR"
     git clone "$REPO_URL" "$APP_DIR"
   fi
@@ -84,35 +94,125 @@ upsert_env() {
   fi
 }
 
+env_value() {
+  local key="$1"
+  grep -E "^${key}=" "$SECRET_ENV_PATH" | tail -n 1 | cut -d= -f2- || true
+}
+
+generated_secret() {
+  openssl rand -hex "$1"
+}
+ensure_secret_file() {
+  local name="$1"
+  local value="$2"
+  local path="$SECRETS_DIR/$name"
+
+  if [[ ! -s "$path" ]]; then
+    (umask 077; printf '%s\n' "$value" > "$path")
+  fi
+  chmod 600 "$path"
+}
+
+prepare_secret_files() {
+  mkdir -p "$SECRETS_DIR"
+  ensure_secret_file metrics_token "$(generated_secret 32)"
+  ensure_secret_file control_plane_admin_token "$(generated_secret 32)"
+  ensure_secret_file retention_purge_token "$(generated_secret 32)"
+  ensure_secret_file backup_key "$(generated_secret 32)"
+  ensure_secret_file alertmanager_webhook_url "${ALERTMANAGER_WEBHOOK_URL:-http://127.0.0.1:9/lunchlineup-dev}"
+}
+
+upsert_if_empty_or_placeholder() {
+  local key="$1"
+  local value="$2"
+  local current
+  current="$(env_value "$key")"
+  if [[ -z "$current" || "$current" == change_me* || "$current" == "password" || "$current" == "guest" || "$current" == generate_with_* ]]; then
+    upsert_env "$key" "$value"
+  fi
+}
+
 prepare_runtime_env() {
   cd "$APP_DIR"
 
   if [[ ! -f "$SECRET_ENV_PATH" ]]; then
     cp .env.example "$SECRET_ENV_PATH"
     chmod 600 "$SECRET_ENV_PATH"
-    upsert_env JWT_SECRET "$(openssl rand -hex 64)"
-    upsert_env JWT_REFRESH_SECRET "$(openssl rand -hex 64)"
-    upsert_env SESSION_SECRET "$(openssl rand -hex 64)"
-    upsert_env CSRF_SECRET "$(openssl rand -hex 32)"
+    upsert_env JWT_SECRET "$(generated_secret 64)"
+    upsert_env JWT_REFRESH_SECRET "$(generated_secret 64)"
+    upsert_env SESSION_SECRET "$(generated_secret 64)"
+    upsert_env CSRF_SECRET "$(generated_secret 32)"
   fi
 
   chmod 600 "$SECRET_ENV_PATH"
-  upsert_env NODE_ENV production
+  prepare_secret_files
+  upsert_if_empty_or_placeholder POSTGRES_USER lunchlineup
+  upsert_if_empty_or_placeholder POSTGRES_PASSWORD "$(generated_secret 24)"
+  upsert_if_empty_or_placeholder POSTGRES_DB lunchlineup
+  upsert_if_empty_or_placeholder APP_DB_USER lunchlineup_app
+  upsert_if_empty_or_placeholder APP_DB_PASSWORD "$(generated_secret 24)"
+  upsert_if_empty_or_placeholder RABBITMQ_USER lunchlineup
+  upsert_if_empty_or_placeholder RABBITMQ_PASSWORD "$(generated_secret 24)"
+  upsert_if_empty_or_placeholder GRAFANA_USER lunchlineup_admin
+  upsert_if_empty_or_placeholder GRAFANA_PASSWORD "$(generated_secret 24)"
+  upsert_if_empty_or_placeholder CONTROL_PLANE_PASSWORD "$(generated_secret 24)"
+  upsert_if_empty_or_placeholder JWT_SECRET "$(generated_secret 64)"
+  upsert_if_empty_or_placeholder JWT_REFRESH_SECRET "$(generated_secret 64)"
+  upsert_if_empty_or_placeholder SESSION_SECRET "$(generated_secret 64)"
+  upsert_if_empty_or_placeholder CSRF_SECRET "$(generated_secret 32)"
+  upsert_if_empty_or_placeholder PLATFORM_ADMIN_DB_CONTEXT_SECRET "$(generated_secret 32)"
+  upsert_if_empty_or_placeholder MFA_SECRET_ENCRYPTION_KEY_CURRENT "$(generated_secret 32)"
+  upsert_if_empty_or_placeholder WEBHOOK_DELIVERY_ENCRYPTION_KEY_CURRENT "$(generated_secret 32)"
+  upsert_if_empty_or_placeholder PASSWORD_RESET_OUTBOX_ENCRYPTION_KEY "$(generated_secret 32)"
+  upsert_if_empty_or_placeholder RESEND_API_KEY "${RESEND_API_KEY:-re_dev_$(generated_secret 24)}"
+  upsert_if_empty_or_placeholder STRIPE_SECRET_KEY "sk_test_$(generated_secret 24)"
+  upsert_if_empty_or_placeholder STRIPE_WEBHOOK_SECRET "whsec_$(generated_secret 24)"
+  upsert_if_empty_or_placeholder STRIPE_METER_ERROR_WEBHOOK_SECRET "whsec_$(generated_secret 24)"
+  upsert_if_empty_or_placeholder STRIPE_METER_ERROR_EVENT_DESTINATION_ID "ed_dev_$(generated_secret 12)"
+  upsert_if_empty_or_placeholder STRIPE_METER_ID "mtr_dev_$(generated_secret 12)"
+
+  local db_user db_pass db_name app_db_user app_db_pass rabbit_user rabbit_pass
+  db_user="$(env_value POSTGRES_USER)"
+  db_pass="$(env_value POSTGRES_PASSWORD)"
+  db_name="$(env_value POSTGRES_DB)"
+  app_db_user="$(env_value APP_DB_USER)"
+  app_db_pass="$(env_value APP_DB_PASSWORD)"
+  rabbit_user="$(env_value RABBITMQ_USER)"
+  rabbit_pass="$(env_value RABBITMQ_PASSWORD)"
+
+  upsert_env NODE_ENV development
+  upsert_env DATA_TARGET_ENV disposable
   upsert_env DOMAIN "$HOST_HEADER"
-  upsert_env DATABASE_URL "postgresql://root:password@postgres:5432/lunchlineup"
-  upsert_env POSTGRES_USER root
-  upsert_env POSTGRES_PASSWORD password
-  upsert_env POSTGRES_DB lunchlineup
+  upsert_env CADDY_SITE_ADDRESSES "http://${HOST_HEADER}:80, http://lunchlineup-dev.proxmox1.lan:80, http://lunchlineup-dev-vm.proxmox1.lan:80, http://10.231.10.108:80, http://localhost:80, http://127.0.0.1:80, http://proxy:80"
+  upsert_env PROXY_HTTP_BIND "0.0.0.0"
+  upsert_env PROXY_HTTPS_BIND "127.0.0.1"
+  upsert_env API_HOST_BIND "127.0.0.1"
+  upsert_env API_HOST_PORT "4000"
+  upsert_env DATABASE_URL "postgresql://${app_db_user}:${app_db_pass}@postgres:5432/${db_name}"
+  upsert_env MIGRATION_DATABASE_URL "postgresql://${db_user}:${db_pass}@postgres:5432/${db_name}"
   upsert_env REDIS_URL "redis://redis:6379"
-  upsert_env RABBITMQ_URL "amqp://guest:guest@rabbitmq:5672"
+  upsert_env RABBITMQ_URL "amqp://${rabbit_user}:${rabbit_pass}@rabbitmq:5672"
+  upsert_env METRICS_TOKEN_FILE "$SECRETS_DIR/metrics_token"
+  upsert_env RETENTION_PURGE_SERVICE_TOKEN_SECRET_FILE "$SECRETS_DIR/retention_purge_token"
+  upsert_env CONTROL_PLANE_ADMIN_TOKEN_SECRET_FILE "$SECRETS_DIR/control_plane_admin_token"
+  upsert_env CONTROL_PLANE_ADMIN_TOKEN_FILE "/run/secrets/control_plane_admin_token"
+  upsert_env CONTROL_PLANE_METRICS_TOKEN_FILE "/run/secrets/metrics_token"
+  upsert_env ALERTMANAGER_WEBHOOK_URL_FILE "$SECRETS_DIR/alertmanager_webhook_url"
+  upsert_env BACKUP_ENCRYPTION_KEY_SECRET_FILE "$SECRETS_DIR/backup_key"
+  upsert_env STRIPE_METER_AGGREGATION "last"
+  upsert_env STRIPE_METERED_USAGE_ENABLED "false"
+  upsert_env PASSWORD_RESET_EMAIL_OUTBOX_ENABLED "true"
+  upsert_env APP_ORIGIN "http://${HOST_HEADER}"
+  upsert_env NEXT_PUBLIC_APP_ORIGIN "http://${HOST_HEADER}"
+  upsert_env NEXT_PUBLIC_APP_URL "http://${HOST_HEADER}"
+  upsert_env NEXT_PUBLIC_APP_ENV "development"
   upsert_env NEXT_PUBLIC_API_URL "/api/v1"
   upsert_env INTERNAL_API_URL "http://api:3000/v1"
   upsert_env NEXT_PUBLIC_OIDC_ENABLED false
   upsert_env OIDC_ENABLED false
   upsert_env COOKIE_SECURE false
-  upsert_env ALLOWED_HOSTS "10.231.10.108,10.231.10.108:80,dev.lunchlineup.com,lunchlineup-dev.proxmox1.lan,lunchlineup-dev-vm.proxmox1.lan"
-  upsert_env ALLOWED_ORIGINS "http://10.231.10.108,http://dev.lunchlineup.com,http://lunchlineup-dev.proxmox1.lan,http://lunchlineup-dev-vm.proxmox1.lan"
-  upsert_env RESEND_API_KEY "${RESEND_API_KEY:-placeholder_resend_key}"
+  upsert_env ALLOWED_HOSTS "10.231.10.108,10.231.10.108:80,${HOST_HEADER},lunchlineup-dev.proxmox1.lan,lunchlineup-dev-vm.proxmox1.lan"
+  upsert_env ALLOWED_ORIGINS "http://10.231.10.108,http://${HOST_HEADER},http://lunchlineup-dev.proxmox1.lan,http://lunchlineup-dev-vm.proxmox1.lan"
   upsert_env EMAIL_FROM "${EMAIL_FROM:-LunchLineup Dev <no-reply@dev.lunchlineup.com>}"
 
   ln -sfn "$SECRET_ENV_PATH" .env
@@ -126,7 +226,6 @@ start_stack() {
     sleep 30
     docker compose --env-file "$SECRET_ENV_PATH" up -d --build "${services[@]}"
   fi
-  docker exec lunchlineup-api npx prisma db push --schema /app/packages/db/prisma/schema.prisma
 }
 
 restore_backup_if_requested() {
@@ -138,13 +237,14 @@ restore_backup_if_requested() {
     exit 1
   fi
 
+  require_destructive_confirmation
   echo "Restoring Postgres data from $BACKUP_FILE"
   case "$BACKUP_FILE" in
     *.sql)
-      docker exec -i lunchlineup-postgres psql -v ON_ERROR_STOP=1 -U root -d lunchlineup < "$BACKUP_FILE"
+      docker compose --env-file "$SECRET_ENV_PATH" exec -T postgres psql -v ON_ERROR_STOP=1 -U "$(env_value POSTGRES_USER)" -d "$(env_value POSTGRES_DB)" < "$BACKUP_FILE"
       ;;
     *.sql.zst)
-      zstd -d -c "$BACKUP_FILE" | docker exec -i lunchlineup-postgres psql -v ON_ERROR_STOP=1 -U root -d lunchlineup
+      zstd -d -c "$BACKUP_FILE" | docker compose --env-file "$SECRET_ENV_PATH" exec -T postgres psql -v ON_ERROR_STOP=1 -U "$(env_value POSTGRES_USER)" -d "$(env_value POSTGRES_DB)"
       ;;
     *.sql.zst.gpg)
       if [[ -z "${BACKUP_ENCRYPTION_KEY:-}" ]]; then
@@ -153,13 +253,16 @@ restore_backup_if_requested() {
       fi
       gpg --decrypt --batch --passphrase "$BACKUP_ENCRYPTION_KEY" "$BACKUP_FILE" \
         | zstd -d -c \
-        | docker exec -i lunchlineup-postgres psql -v ON_ERROR_STOP=1 -U root -d lunchlineup
+        | docker compose --env-file "$SECRET_ENV_PATH" exec -T postgres psql -v ON_ERROR_STOP=1 -U "$(env_value POSTGRES_USER)" -d "$(env_value POSTGRES_DB)"
       ;;
     *)
       echo "Unsupported BACKUP_FILE format. Use .sql, .sql.zst, or .sql.zst.gpg." >&2
       exit 1
       ;;
   esac
+
+  docker compose --env-file "$SECRET_ENV_PATH" run --rm migrate
+  docker compose --env-file "$SECRET_ENV_PATH" up -d api webhook-replay worker
 }
 
 write_deploy_proof() {
@@ -191,6 +294,9 @@ wait_for_health() {
 
 main() {
   require_root
+  if [[ ! -d "$APP_DIR/.git" || -n "$BACKUP_FILE" ]]; then
+    require_destructive_confirmation
+  fi
   install_host_dependencies
   sync_repository
   prepare_runtime_env

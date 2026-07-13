@@ -26,6 +26,7 @@ type AdminUser = {
     lockedUntil: string | null;
     pinLockedUntil: string | null;
     deletedAt: string | null;
+    mfaEnabled: boolean;
     status: UserStatus;
     tenant: AdminTenant | null;
 };
@@ -320,6 +321,37 @@ export function AdminUsersWorkspace({ currentUserId }: WorkspaceProps) {
         }
     }, [loadData, selectedUser]);
 
+    const resetMfa = useCallback(async () => {
+        if (!selectedUser || isSelf || !selectedUser.mfaEnabled || selectedUser.status === 'SUSPENDED') return;
+        const expected = `reset-mfa:${selectedUser.id}`;
+        const confirmation = typeof window === 'undefined'
+            ? null
+            : window.prompt(`Type ${expected} to clear MFA factors and revoke all sessions.`);
+        if (confirmation === null) return;
+        if (confirmation !== expected) {
+            setMessage({ tone: 'error', text: `Confirmation must exactly equal ${expected}.` });
+            return;
+        }
+        const reason = typeof window === 'undefined' ? null : window.prompt('Enter the support reason for this MFA recovery.');
+        if (reason === null) return;
+        if (reason.trim().length < 10) {
+            setMessage({ tone: 'error', text: 'Recovery reason must contain at least 10 characters.' });
+            return;
+        }
+
+        setSavingKey(`mfa:${selectedUser.id}`);
+        setMessage(null);
+        try {
+            await writeJson(`/admin/users/${selectedUser.id}/mfa/reset`, 'POST', { confirmation, reason: reason.trim() });
+            setMessage({ tone: 'success', text: `MFA factors cleared for ${selectedUser.name}; all sessions were revoked.` });
+            await loadData();
+        } catch (error) {
+            setMessage({ tone: 'error', text: (error as Error).message });
+        } finally {
+            setSavingKey(null);
+        }
+    }, [isSelf, loadData, selectedUser]);
+
     const toggleLock = useCallback(async (targetUser?: AdminUser) => {
         const user = targetUser ?? selectedUser;
         if (!user || user.status === 'SUSPENDED') return;
@@ -382,6 +414,7 @@ export function AdminUsersWorkspace({ currentUserId }: WorkspaceProps) {
     const actionDisabled = loading || !selectedUser;
     const saveDisabled = actionDisabled || savingKey === `save:${selectedUser?.id ?? ''}`;
     const pinDisabled = actionDisabled || savingKey === `pin:${selectedUser?.id ?? ''}`;
+    const mfaDisabled = actionDisabled || isSelf || !selectedUser?.mfaEnabled || selectedUser?.status === 'SUSPENDED' || savingKey === `mfa:${selectedUser?.id ?? ''}`;
     const lockDisabled = actionDisabled || isSelf || selectedUser?.status === 'SUSPENDED' || savingKey === `lock:${selectedUser?.id ?? ''}`;
     const suspendDisabled = actionDisabled || (isSelf && selectedUser?.status !== 'SUSPENDED') || savingKey === `suspend:${selectedUser?.id ?? ''}`;
     const visibleSelection = selectedUser ? filteredUsers.some((user) => user.id === selectedUser.id) : false;
@@ -405,7 +438,7 @@ export function AdminUsersWorkspace({ currentUserId }: WorkspaceProps) {
                             Users
                         </h1>
                         <p className="workspace-subtitle">
-                            Cross-tenant user management · {stats.total} accounts{loading ? ' · refreshing...' : ' · loaded from admin APIs'}
+                            Cross-tenant user management Â· {stats.total} accounts{loading ? ' Â· refreshing...' : ' Â· loaded from admin APIs'}
                         </p>
                     </div>
 
@@ -468,7 +501,7 @@ export function AdminUsersWorkspace({ currentUserId }: WorkspaceProps) {
                                     fontSize: '0.95rem',
                                 }}
                             >
-                                {card.label === 'Suspended' ? '⏸' : '◉'}
+                                {card.label === 'Suspended' ? 'â¸' : 'â—‰'}
                             </span>
                         </div>
                         <div style={{ fontSize: '1.9rem', fontWeight: 800, letterSpacing: '-0.03em', color: 'var(--text-primary)' }}>{card.value}</div>
@@ -716,7 +749,7 @@ export function AdminUsersWorkspace({ currentUserId }: WorkspaceProps) {
                                         {selectedUser.name}
                                     </h2>
                                     <div style={{ fontSize: '0.78rem', color: 'var(--text-muted)' }}>
-                                        {selectedUser.tenant ? `${selectedUser.tenant.name} · ${selectedUser.tenant.slug}` : 'No tenant assigned'}
+                                        {selectedUser.tenant ? `${selectedUser.tenant.name} Â· ${selectedUser.tenant.slug}` : 'No tenant assigned'}
                                     </div>
                                 </div>
 
@@ -846,7 +879,7 @@ export function AdminUsersWorkspace({ currentUserId }: WorkspaceProps) {
                                             ) : null}
                                             {tenants.map((tenant) => (
                                                 <option key={tenant.id} value={tenant.id}>
-                                                    {tenant.name} · {tenant.slug} · {tenant.planTier}
+                                                    {tenant.name} Â· {tenant.slug} Â· {tenant.planTier}
                                                 </option>
                                             ))}
                                         </select>
@@ -879,6 +912,14 @@ export function AdminUsersWorkspace({ currentUserId }: WorkspaceProps) {
                                 </button>
                                 <button className="btn btn-secondary" type="button" onClick={() => void resetPin()} disabled={pinDisabled}>
                                     {savingKey === `pin:${selectedUser.id}` ? 'Resetting PIN...' : 'Reset PIN'}
+                                </button>
+                                <button
+                                    className="btn btn-secondary"
+                                    type="button"
+                                    onClick={() => void resetMfa()}
+                                    disabled={mfaDisabled}
+                                >
+                                    {savingKey === `mfa:${selectedUser.id}` ? 'Resetting MFA...' : 'Reset MFA'}
                                 </button>
                                 {selectedUser.status === 'SUSPENDED' ? (
                                     <button

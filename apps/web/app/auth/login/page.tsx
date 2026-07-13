@@ -4,11 +4,24 @@ import Link from 'next/link';
 import { Suspense, useEffect, useRef, useState } from 'react';
 import { useSearchParams } from 'next/navigation';
 import { LunchLineupMark } from '@/components/branding/LunchLineupMark';
+import { normalizeWorkspaceSlug, readRememberedWorkspaceSlug, rememberWorkspaceSlug } from '@/lib/workspace-slug';
+import { isSelfServiceSignupAvailable } from '../../onboarding/challenge';
 
 const API = process.env.NEXT_PUBLIC_API_URL ?? '/api/v1';
 const OIDC_ENABLED = (process.env.NEXT_PUBLIC_OIDC_ENABLED ?? '').toLowerCase() === 'true';
+const SELF_SERVICE_SIGNUP_AVAILABLE = isSelfServiceSignupAvailable(process.env.NEXT_PUBLIC_SIGNUP_MODE);
 
 type Step = 'identifier' | 'otp' | 'pin' | 'password';
+
+function LoginError({ message }: { message: string | null }) {
+    if (!message) return null;
+
+    return (
+        <div className="login-card__error" role="alert" aria-live="assertive" aria-atomic="true">
+            {message}
+        </div>
+    );
+}
 
 function safeInternalPath(value: string | null): string {
     if (!value) return '/dashboard';
@@ -19,12 +32,14 @@ function safeInternalPath(value: string | null): string {
 function LoginContent() {
     const searchParams = useSearchParams();
     const prefillIdentifier = searchParams.get('identifier') ?? searchParams.get('email') ?? '';
+    const prefillWorkspace = searchParams.get('tenantSlug') ?? searchParams.get('workspace') ?? '';
     const stepParam = searchParams.get('step');
     const errorParam = searchParams.get('error');
     const nextPath = safeInternalPath(searchParams.get('next'));
 
     const [step, setStep] = useState<Step>('identifier');
     const [identifier, setIdentifier] = useState('');
+    const [workspaceSlug, setWorkspaceSlug] = useState('');
     const [email, setEmail] = useState('');
     const [username, setUsername] = useState('');
     const [otp, setOtp] = useState(['', '', '', '', '', '']);
@@ -47,6 +62,10 @@ function LoginContent() {
                 setUsername(normalized);
             }
         }
+        const normalizedWorkspace = prefillWorkspace
+            ? rememberWorkspaceSlug(window.localStorage, prefillWorkspace)
+            : readRememberedWorkspaceSlug(window.localStorage);
+        if (normalizedWorkspace) setWorkspaceSlug(normalizedWorkspace);
         if (stepParam === 'otp' || stepParam === 'pin' || stepParam === 'password') setStep(stepParam);
         if (errorParam === 'invalid') {
             if (stepParam === 'pin') {
@@ -57,7 +76,7 @@ function LoginContent() {
                 setError('Invalid or expired code. Please try again.');
             }
         }
-    }, [prefillIdentifier, stepParam, errorParam]);
+    }, [prefillIdentifier, prefillWorkspace, stepParam, errorParam]);
 
     useEffect(() => {
         if (resendCountdown <= 0) return;
@@ -65,11 +84,11 @@ function LoginContent() {
         return () => clearTimeout(t);
     }, [resendCountdown]);
 
-    const sendOtpForEmail = async (normalizedEmail: string) => {
+    const sendOtpForEmail = async (normalizedEmail: string, normalizedWorkspaceSlug: string) => {
         const res = await fetch(`${API}/auth/email/send-otp`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ email: normalizedEmail }),
+            body: JSON.stringify({ email: normalizedEmail, tenantSlug: normalizedWorkspaceSlug }),
             credentials: 'include',
         });
         const data = await res.json().catch(() => ({}));
@@ -83,17 +102,24 @@ function LoginContent() {
         setError(null);
 
         const normalizedIdentifier = identifier.trim().toLowerCase();
+        const normalizedWorkspaceSlug = normalizeWorkspaceSlug(workspaceSlug);
+        if (!normalizedWorkspaceSlug) {
+            setError('Enter your workspace slug.');
+            return;
+        }
         if (!normalizedIdentifier) {
             setError('Enter your work email or username.');
             return;
         }
+        setWorkspaceSlug(normalizedWorkspaceSlug);
+        rememberWorkspaceSlug(window.localStorage, normalizedWorkspaceSlug);
 
         setIsLoading(true);
         try {
             const res = await fetch(`${API}/auth/login/resolve`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ identifier: normalizedIdentifier }),
+                body: JSON.stringify({ identifier: normalizedIdentifier, tenantSlug: normalizedWorkspaceSlug }),
                 credentials: 'include',
             });
             const data = await res.json().catch(() => ({}));
@@ -103,7 +129,7 @@ function LoginContent() {
             }
 
             if (data.flow === 'EMAIL_OTP') {
-                await sendOtpForEmail(data.identifier);
+                await sendOtpForEmail(data.identifier, normalizedWorkspaceSlug);
                 setEmail(data.identifier);
                 setStep('otp');
                 setResendCountdown(60);
@@ -122,7 +148,7 @@ function LoginContent() {
             setPin('');
             setStep('pin');
             if (data.pinResetRequired) {
-                setError('Enter your PIN to continue.');
+                setError('Enter your temporary PIN to set a new PIN.');
             }
         } catch (err) {
             setError(err instanceof Error ? err.message : 'Network error. Please try again.');
@@ -134,13 +160,20 @@ function LoginContent() {
     const handleSendOtp = async () => {
         setError(null);
         const normalizedEmail = email.trim().toLowerCase();
+        const normalizedWorkspaceSlug = normalizeWorkspaceSlug(workspaceSlug);
+        if (!normalizedWorkspaceSlug) {
+            setError('Enter your workspace slug.');
+            return;
+        }
         if (!normalizedEmail || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalizedEmail)) {
             setError('Enter a valid email address.');
             return;
         }
+        setWorkspaceSlug(normalizedWorkspaceSlug);
+        rememberWorkspaceSlug(window.localStorage, normalizedWorkspaceSlug);
         setIsLoading(true);
         try {
-            await sendOtpForEmail(normalizedEmail);
+            await sendOtpForEmail(normalizedEmail, normalizedWorkspaceSlug);
             setResendCountdown(60);
         } catch (err) {
             setError((err as Error).message);
@@ -201,6 +234,11 @@ function LoginContent() {
         emailInput.value = email.trim().toLowerCase();
         form.appendChild(emailInput);
 
+        const tenantInput = document.createElement('input');
+        tenantInput.name = 'tenantSlug';
+        tenantInput.value = normalizeWorkspaceSlug(workspaceSlug);
+        form.appendChild(tenantInput);
+
         const codeInput = document.createElement('input');
         codeInput.name = 'code';
         codeInput.value = code;
@@ -232,6 +270,11 @@ function LoginContent() {
         identifierInput.value = username.trim().toLowerCase();
         form.appendChild(identifierInput);
 
+        const tenantInput = document.createElement('input');
+        tenantInput.name = 'tenantSlug';
+        tenantInput.value = normalizeWorkspaceSlug(workspaceSlug);
+        form.appendChild(tenantInput);
+
         const pinInput = document.createElement('input');
         pinInput.name = 'pin';
         pinInput.value = normalizedPin;
@@ -262,6 +305,11 @@ function LoginContent() {
         identifierInput.value = username.trim().toLowerCase();
         form.appendChild(identifierInput);
 
+        const tenantInput = document.createElement('input');
+        tenantInput.name = 'tenantSlug';
+        tenantInput.value = normalizeWorkspaceSlug(workspaceSlug);
+        form.appendChild(tenantInput);
+
         const passwordInput = document.createElement('input');
         passwordInput.name = 'password';
         passwordInput.value = password;
@@ -280,11 +328,19 @@ function LoginContent() {
     }, [otp, step, isLoading]);
 
     const handleOidcLogin = () => {
-        window.location.href = `${API}/auth/login`;
+        const normalizedWorkspaceSlug = normalizeWorkspaceSlug(workspaceSlug);
+        if (!normalizedWorkspaceSlug) {
+            setError('Enter your workspace slug before continuing with SSO.');
+            return;
+        }
+        setWorkspaceSlug(normalizedWorkspaceSlug);
+        rememberWorkspaceSlug(window.localStorage, normalizedWorkspaceSlug);
+        const params = new URLSearchParams({ tenantSlug: normalizedWorkspaceSlug, next: safeInternalPath(nextPath) });
+        window.location.href = `${API}/auth/login?${params.toString()}`;
     };
 
     return (
-        <div className="login-shell">
+        <main className="login-shell">
             <div className="login-orb login-orb--left" aria-hidden="true" />
             <div className="login-orb login-orb--right" aria-hidden="true" />
 
@@ -319,7 +375,7 @@ function LoginContent() {
                         </h2>
                         <p className="login-card__subtitle">
                             {step === 'identifier'
-                                ? 'Use your work email (admins) or username (supervisors/staff).'
+                                ? 'Use your workspace slug plus work email or username.'
                                 : step === 'otp'
                                     ? `Enter the 6-digit code sent to ${email}.`
                                     : `Sign in as ${username}.`}
@@ -335,6 +391,19 @@ function LoginContent() {
 
                                 <form onSubmit={handleContinue} style={{ display: 'grid', gap: '0.62rem' }}>
                                     <label className="form-group">
+                                        <span className="form-label">Workspace slug</span>
+                                        <input
+                                            type="text"
+                                            className="form-input"
+                                            placeholder="your-workspace"
+                                            value={workspaceSlug}
+                                            onChange={(e) => setWorkspaceSlug(normalizeWorkspaceSlug(e.target.value))}
+                                            autoComplete="organization"
+                                            required
+                                        />
+                                    </label>
+
+                                    <label className="form-group">
                                         <span className="form-label">Work email or username</span>
                                         <input
                                             type="text"
@@ -347,11 +416,7 @@ function LoginContent() {
                                         />
                                     </label>
 
-                                    {error ? (
-                                        <div className="login-card__error">
-                                            {error}
-                                        </div>
-                                    ) : null}
+                                    <LoginError message={error} />
 
                                     <button type="submit" className="btn btn-primary" disabled={isLoading} style={{ width: '100%' }}>
                                         {isLoading ? 'Continuing...' : 'Continue'}
@@ -384,11 +449,7 @@ function LoginContent() {
                                     ))}
                                 </div>
 
-                                {error ? (
-                                    <div className="login-card__error">
-                                        {error}
-                                    </div>
-                                ) : null}
+                                <LoginError message={error} />
 
                                 <button type="submit" className="btn btn-primary" disabled={isLoading || otp.join('').length !== 6} style={{ width: '100%' }}>
                                     {isLoading ? 'Verifying...' : 'Verify and continue'}
@@ -438,11 +499,7 @@ function LoginContent() {
                                     />
                                 </label>
 
-                                {error ? (
-                                    <div className="login-card__error">
-                                        {error}
-                                    </div>
-                                ) : null}
+                                <LoginError message={error} />
 
                                 <button type="submit" className="btn btn-primary" disabled={isLoading || pin.length < 4} style={{ width: '100%' }}>
                                     {isLoading ? 'Signing in...' : 'Sign in with PIN'}
@@ -480,17 +537,20 @@ function LoginContent() {
                                     />
                                 </label>
 
-                                {error ? (
-                                    <div className="login-card__error">
-                                        {error}
-                                    </div>
-                                ) : null}
+                                <LoginError message={error} />
 
                                 <button type="submit" className="btn btn-primary" disabled={isLoading || !password} style={{ width: '100%' }}>
                                     {isLoading ? 'Signing in...' : 'Sign in with password'}
                                 </button>
 
                                 <p className="login-card__trust">Uses the migrated LunchLineup password hash.</p>
+
+                                <Link
+                                    className="btn btn-ghost btn-sm"
+                                    href={`/auth/reset-password?identifier=${encodeURIComponent(username)}&tenantSlug=${encodeURIComponent(normalizeWorkspaceSlug(workspaceSlug))}`}
+                                >
+                                    Forgot password?
+                                </Link>
 
                                 <button
                                     type="button"
@@ -507,16 +567,20 @@ function LoginContent() {
                             </form>
                         ) : null}
 
-                        <div className="divider" style={{ marginTop: '0.9rem', marginBottom: '0.75rem' }} />
-                        <div className="login-secondary-cta">
-                            <span>New to LunchLineup?</span>
-                            <Link href="/onboarding">Create your account →</Link>
-                        </div>
+                        {SELF_SERVICE_SIGNUP_AVAILABLE ? (
+                            <>
+                                <div className="divider" style={{ marginTop: '0.9rem', marginBottom: '0.75rem' }} />
+                                <div className="login-secondary-cta">
+                                    <span>New to LunchLineup?</span>
+                                    <Link href="/onboarding">Create your account</Link>
+                                </div>
+                            </>
+                        ) : null}
                     </div>
                 </section>
             </div>
 
-            <style jsx>{`
+            <style>{`
                 .login-shell {
                     min-height: 100vh;
                     position: relative;
@@ -525,7 +589,8 @@ function LoginContent() {
                     grid-template-rows: auto 1fr;
                     align-content: normal;
                     align-items: stretch;
-                    overflow: hidden;
+                    overflow-x: hidden;
+                    overflow-y: auto;
                 }
 
                 .login-header {
@@ -726,7 +791,7 @@ function LoginContent() {
                     }
                 }
             `}</style>
-        </div>
+        </main>
     );
 }
 

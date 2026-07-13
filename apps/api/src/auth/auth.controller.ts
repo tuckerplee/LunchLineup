@@ -1,14 +1,60 @@
-import { Controller, Get, Post, Body, Req, UseGuards, SetMetadata, HttpCode, HttpStatus, UnauthorizedException, Logger, ServiceUnavailableException, BadRequestException, HttpException } from '@nestjs/common';
-import { AuthService } from './auth.service';
+import { Controller, Delete, Get, Post, Put, Body, Req, UseGuards, SetMetadata, HttpCode, HttpStatus, UnauthorizedException, Logger, ServiceUnavailableException, BadRequestException, HttpException, ForbiddenException } from '@nestjs/common';
+import { AuthService, type SessionRequestAudit } from './auth.service';
 import { OtpService } from './otp.service';
 import { EmailService } from './email.service';
 import { JwtAuthGuard } from './jwt-auth.guard';
+import { Throttle } from '@nestjs/throttler';
 import { Response, Request } from 'express';
 import { Res } from '@nestjs/common';
+import { AllowAuthenticated } from './require-permission.decorator';
 
 const Public = () => SetMetadata('isPublic', true);
 const ACCESS_TOKEN_COOKIE_MAX_AGE_MS = 30 * 60 * 1000;
 const REFRESH_TOKEN_COOKIE_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
+const OIDC_CORRELATION_COOKIE = 'oidc_correlation';
+const AuthThrottle = () => Throttle({ auth: { ttl: 15 * 60 * 1000, limit: 5 } });
+const RefreshThrottle = () => Throttle({
+    refreshIp: { ttl: 15 * 60 * 1000, limit: 100 },
+    refreshCredential: { ttl: 15 * 60 * 1000, limit: 5 },
+});
+const PreAuthThrottle = () => Throttle({
+    authIp: { ttl: 15 * 60 * 1000, limit: 30 },
+    authIdentifier: { ttl: 15 * 60 * 1000, limit: 5 },
+});
+const MAX_ONBOARDING_TENANT_NAME_LENGTH = 80;
+const HTML_SIGNIFICANT_EMAIL_CHARS = /[<>&"']/;
+const OTP_EMAIL_PATTERN = /^[a-z0-9.!#$%*+/=?^_`{|}~-]+@[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$/;
+
+type EmailOtpBody = {
+    email: string;
+    code?: string;
+    tenantSlug?: string;
+    onboarding?: boolean;
+    tenantName?: string;
+    organizationName?: string;
+    signupCode?: string;
+    turnstileToken?: string;
+    signupChallengeToken?: string;
+    captchaToken?: string;
+    onboardingChallengeToken?: string;
+    termsAccepted?: boolean;
+    privacyAccepted?: boolean;
+};
+
+type PasswordResetRequestBody = {
+    identifier?: string;
+    tenantSlug?: string;
+};
+
+type PasswordResetConfirmBody = {
+    token?: string;
+    password?: string;
+};
+
+const PASSWORD_RESET_REQUEST_RESPONSE = {
+    success: true,
+    message: 'If a matching account exists, a password reset email will be sent shortly.',
+};
 
 @Controller({ path: 'auth', version: '1' })
 export class AuthController {
@@ -31,6 +77,14 @@ export class AuthController {
         return `${safeLocal}@${domain}`;
     }
 
+    private normalizeOtpEmail(value: unknown): string | null {
+        if (typeof value !== 'string') return null;
+        const email = value.trim().toLowerCase();
+        if (!email || email.length > 254) return null;
+        if (HTML_SIGNIFICANT_EMAIL_CHARS.test(email)) return null;
+        return OTP_EMAIL_PATTERN.test(email) ? email : null;
+    }
+
     private authDebug(event: string, details: Record<string, unknown> = {}) {
         if (!this.isAuthDebugEnabled()) return;
         this.logger.log(`[auth-debug] ${JSON.stringify({ scope: 'api.auth', event, ...details })}`);
@@ -49,7 +103,150 @@ export class AuthController {
         return value;
     }
 
-    private setSessionCookies(res: Response, accessToken: string, refreshToken: string, csrfToken: string) {
+    private assertSameOriginRequest(req: Request): void {
+        const requestOrigin = this.headerOrigin(req, 'origin') ?? this.refererOrigin(req);
+        if (!requestOrigin) {
+            if (process.env.NODE_ENV === 'production') {
+                throw new ForbiddenException('Origin or Referer is required for auth requests');
+            }
+            return;
+        }
+
+        const allowedOrigins = this.allowedAuthOrigins(req);
+        if (!allowedOrigins.has(requestOrigin)) {
+            throw new ForbiddenException('Cross-origin auth requests are not allowed');
+        }
+    }
+
+    private assertCsrfHeaderMatchesCookie(req: Request): void {
+        const csrfCookie = req.cookies?.['csrf_token'];
+        const csrfHeader = this.headerValue(req, 'x-csrf-token');
+        if (!csrfHeader || csrfHeader !== csrfCookie) {
+            throw new ForbiddenException('CSRF validation failed');
+        }
+    }
+
+    private allowedAuthOrigins(req: Request): Set<string> {
+        const origins = new Set<string>();
+        const requestHost = this.headerValue(req, 'host');
+        if (requestHost) {
+            const forwardedProto = this.headerValue(req, 'x-forwarded-proto')?.split(',')[0]?.trim();
+            const protocol = forwardedProto || req.protocol || 'http';
+            this.addOrigin(origins, `${protocol}://${requestHost}`);
+        }
+
+        for (const value of [
+            process.env.APP_ORIGIN,
+            process.env.NEXT_PUBLIC_APP_ORIGIN,
+            process.env.NEXT_PUBLIC_APP_URL,
+            process.env.OIDC_REDIRECT_URI,
+            ...(process.env.ALLOWED_ORIGINS ?? '').split(','),
+        ]) {
+            this.addOrigin(origins, value);
+        }
+
+        return origins;
+    }
+
+    private refererOrigin(req: Request): string | null {
+        const referer = this.headerValue(req, 'referer');
+        return referer ? this.normalizeOrigin(referer) : null;
+    }
+
+    private headerOrigin(req: Request, name: string): string | null {
+        const value = this.headerValue(req, name);
+        return value ? this.normalizeOrigin(value) : null;
+    }
+
+    private headerValue(req: Request, name: string): string | null {
+        const direct = req.get?.(name);
+        if (direct) return direct;
+        const raw = req.headers?.[name.toLowerCase()];
+        if (Array.isArray(raw)) return raw[0] ?? null;
+        return typeof raw === 'string' ? raw : null;
+    }
+
+    private addOrigin(origins: Set<string>, value: string | undefined): void {
+        const normalized = value ? this.normalizeOrigin(value.trim()) : null;
+        if (normalized) origins.add(normalized);
+    }
+
+    private normalizeOrigin(value: string): string | null {
+        try {
+            const parsed = new URL(value);
+            return parsed.protocol === 'http:' || parsed.protocol === 'https:' ? parsed.origin : null;
+        } catch {
+            return null;
+        }
+    }
+
+    private onboardingTenantName(body: { onboarding?: boolean; tenantName?: string; organizationName?: string }): string | undefined {
+        if (body.onboarding !== true) return undefined;
+        const tenantName = (body.tenantName ?? body.organizationName ?? '').trim().replace(/\s+/g, ' ');
+        if (!tenantName) {
+            throw new BadRequestException('Organization name is required');
+        }
+        if (tenantName.length > MAX_ONBOARDING_TENANT_NAME_LENGTH) {
+            throw new BadRequestException(`Organization name must be ${MAX_ONBOARDING_TENANT_NAME_LENGTH} characters or less`);
+        }
+        return tenantName;
+    }
+
+    private onboardingLegalAssent(body: EmailOtpBody): { termsAccepted: true; privacyAccepted: true } | undefined {
+        if (body.onboarding !== true) return undefined;
+        if (body.termsAccepted !== true || body.privacyAccepted !== true) {
+            throw new BadRequestException('Terms and Privacy assent is required to create a workspace');
+        }
+        return { termsAccepted: true, privacyAccepted: true };
+    }
+
+    private signupChallengeToken(body: EmailOtpBody): string | undefined {
+        for (const value of [body.turnstileToken, body.signupChallengeToken, body.captchaToken]) {
+            if (typeof value === 'string' && value.trim()) {
+                return value;
+            }
+        }
+        return undefined;
+    }
+
+    private signupChallengeRemoteIp(req: Request): string | undefined {
+        return typeof req.ip === 'string' && req.ip.trim() ? req.ip.trim() : undefined;
+    }
+
+    private sessionRequestAudit(req: Request): SessionRequestAudit {
+        const forwardedFor = this.headerValue(req, 'x-forwarded-for')?.split(',')[0]?.trim();
+        const remoteAddress = typeof req.socket?.remoteAddress === 'string' ? req.socket.remoteAddress.trim() : '';
+        return {
+            ipAddress: forwardedFor || (typeof req.ip === 'string' ? req.ip.trim() : '') || remoteAddress || null,
+            userAgent: this.headerValue(req, 'user-agent') ?? null,
+        };
+    }
+
+    private mfaRedirect(nextPath: string | null): string {
+        const safeNext = nextPath ? this.safeInternalPath(nextPath) : null;
+        if (!safeNext || safeNext === '/mfa' || safeNext.startsWith('/mfa?')) return '/mfa';
+
+        const params = new URLSearchParams({ next: safeNext });
+        return `/mfa?${params.toString()}`;
+    }
+
+    private pinResetRedirect(nextPath: string | null): string {
+        const safeNext = nextPath ? this.safeInternalPath(nextPath) : null;
+        if (!safeNext || safeNext === '/auth/reset-pin' || safeNext.startsWith('/auth/reset-pin?')) {
+            return '/auth/reset-pin';
+        }
+
+        const params = new URLSearchParams({ next: safeNext });
+        return `/auth/reset-pin?${params.toString()}`;
+    }
+
+    private setSessionCookies(
+        res: Response,
+        accessToken: string,
+        refreshToken: string,
+        csrfToken: string,
+        sessionMaxAgeMs = REFRESH_TOKEN_COOKIE_MAX_AGE_MS,
+    ) {
         const secure = this.useSecureCookies();
         const cookieOptions = {
             httpOnly: true,
@@ -57,9 +254,10 @@ export class AuthController {
             sameSite: 'strict' as const,
             path: '/',
         };
+        const accessTokenMaxAgeMs = Math.min(ACCESS_TOKEN_COOKIE_MAX_AGE_MS, sessionMaxAgeMs);
 
-        res.cookie('access_token', accessToken, { ...cookieOptions, maxAge: ACCESS_TOKEN_COOKIE_MAX_AGE_MS });
-        res.cookie('refresh_token', refreshToken, { ...cookieOptions, maxAge: REFRESH_TOKEN_COOKIE_MAX_AGE_MS });
+        res.cookie('access_token', accessToken, { ...cookieOptions, maxAge: accessTokenMaxAgeMs });
+        res.cookie('refresh_token', refreshToken, { ...cookieOptions, maxAge: sessionMaxAgeMs });
         res.cookie('csrf_token', csrfToken, {
             httpOnly: false,
             secure,
@@ -68,11 +266,26 @@ export class AuthController {
         });
     }
 
+    private oidcCorrelationCookieOptions() {
+        return {
+            httpOnly: true,
+            secure: this.useSecureCookies(),
+            sameSite: 'lax' as const,
+            path: '/',
+        };
+    }
+
+    private clearOidcCorrelationCookie(res: Response): void {
+        res.clearCookie(OIDC_CORRELATION_COOKIE, this.oidcCorrelationCookieOptions());
+    }
+
     @Public()
+    @PreAuthThrottle()
     @Post('login/resolve')
     @HttpCode(HttpStatus.OK)
-    async resolveLoginFlow(@Body() body: { identifier: string }) {
-        const result = await this.authService.resolveLoginMethod(body.identifier);
+    async resolveLoginFlow(@Body() body: { identifier: string; tenantSlug?: string }, @Req() req: Request) {
+        this.assertSameOriginRequest(req);
+        const result = await this.authService.resolveLoginMethod(body.identifier, body.tenantSlug);
         return {
             success: true,
             flow: result.flow,
@@ -85,27 +298,29 @@ export class AuthController {
      * Username/password — Verify migrated legacy password hash and issue session cookies.
      */
     @Public()
+    @PreAuthThrottle()
     @Post('password/verify')
     @HttpCode(HttpStatus.OK)
     async verifyPassword(
-        @Body() body: { identifier: string; password: string },
+        @Body() body: { identifier: string; password: string; tenantSlug?: string },
         @Req() req: Request,
         @Res() res: Response,
     ) {
+        this.assertSameOriginRequest(req);
         const identifier = body.identifier.toLowerCase().trim();
         const redirectMode = String((req.query as any)?.redirect || '') === '1';
         const nextPath = String((req.query as any)?.next || '');
         const safeNext = this.safeInternalPath(nextPath);
 
         try {
-            const result = await this.authService.loginWithUsernamePassword(identifier, body.password);
-            this.setSessionCookies(res, result.accessToken, result.refreshToken, result.csrfToken);
+            const result = await this.authService.loginWithUsernamePassword(identifier, body.password, body.tenantSlug, this.sessionRequestAudit(req));
+            this.setSessionCookies(res, result.accessToken, result.refreshToken, result.csrfToken, result.sessionMaxAgeMs);
 
-            const redirectTo = safeNext ?? '/dashboard';
+            const redirectTo = result.requiresMfa ? this.mfaRedirect(safeNext) : safeNext ?? '/dashboard';
             if (redirectMode) {
                 return res.redirect(302, redirectTo);
             }
-            return res.json({ success: true, redirectTo });
+            return res.json({ success: true, redirectTo, requiresMfa: result.requiresMfa });
         } catch (err) {
             if (redirectMode && err instanceof UnauthorizedException) {
                 const params = new URLSearchParams({
@@ -113,6 +328,7 @@ export class AuthController {
                     identifier,
                     error: 'invalid',
                 });
+                if (body.tenantSlug) params.set('tenantSlug', body.tenantSlug);
                 if (safeNext) params.set('next', safeNext);
                 return res.redirect(302, `/auth/login?${params.toString()}`);
             }
@@ -123,6 +339,32 @@ export class AuthController {
     /**
      * Initiate OIDC login — redirects to provider.
      */
+    /**
+     * Username/password reset - always returns a generic request response.
+     */
+    @Public()
+    @PreAuthThrottle()
+    @Post('password/reset/request')
+    @HttpCode(HttpStatus.OK)
+    async requestPasswordReset(@Body() body: PasswordResetRequestBody, @Req() req: Request) {
+        this.assertSameOriginRequest(req);
+        await this.authService.createPasswordReset(body.identifier ?? '', body.tenantSlug);
+        return PASSWORD_RESET_REQUEST_RESPONSE;
+    }
+
+    /**
+     * Username/password reset - consume one reset token and revoke existing sessions.
+     */
+    @Public()
+    @PreAuthThrottle()
+    @Post('password/reset/confirm')
+    @HttpCode(HttpStatus.OK)
+    async confirmPasswordReset(@Body() body: PasswordResetConfirmBody, @Req() req: Request) {
+        this.assertSameOriginRequest(req);
+        await this.authService.resetPasswordWithToken(body.token, body.password);
+        return { success: true };
+    }
+
     @Public()
     @Get('login')
     async login(@Req() req: Request, @Res() res: Response) {
@@ -134,16 +376,32 @@ export class AuthController {
             const redirectTo = params.toString() ? `/auth/login?${params.toString()}` : '/auth/login';
             return res.redirect(302, redirectTo);
         }
+        const tenantSlug = String((req.query as any)?.tenantSlug || '').trim().toLowerCase();
+        if (!tenantSlug) {
+            throw new BadRequestException('Workspace is required for SSO login');
+        }
         const issuerUrl = process.env.OIDC_ISSUER_URL;
         const clientId = process.env.OIDC_CLIENT_ID;
         const redirectUri = process.env.OIDC_REDIRECT_URI;
-        const state = require('crypto').randomBytes(16).toString('hex');
+        if (!issuerUrl || !clientId || !redirectUri) {
+            throw new ServiceUnavailableException('OIDC login is not configured');
+        }
+        const nextPath = String((req.query as any)?.next || '');
+        const safeNext = this.safeInternalPath(nextPath);
+        const oidcState = await this.authService.createOidcState(safeNext, tenantSlug);
+        res.cookie(OIDC_CORRELATION_COOKIE, oidcState.correlationNonce, {
+            ...this.oidcCorrelationCookieOptions(),
+            maxAge: oidcState.expiresInSeconds * 1000,
+        });
 
-        const authUrl = `${issuerUrl}/o/oauth2/auth?` +
-            `response_type=code&client_id=${clientId}&redirect_uri=${redirectUri}` +
-            `&scope=openid email profile&state=${state}`;
+        const authUrl = new URL('o/oauth2/auth', issuerUrl.endsWith('/') ? issuerUrl : `${issuerUrl}/`);
+        authUrl.searchParams.set('response_type', 'code');
+        authUrl.searchParams.set('client_id', String(clientId));
+        authUrl.searchParams.set('redirect_uri', String(redirectUri));
+        authUrl.searchParams.set('scope', 'openid email profile');
+        authUrl.searchParams.set('state', oidcState.state);
 
-        res.redirect(authUrl);
+        res.redirect(authUrl.toString());
     }
 
     /**
@@ -152,17 +410,24 @@ export class AuthController {
     @Public()
     @Get('callback')
     async callback(@Req() req: Request, @Res() res: Response) {
+        const correlationNonce = req.cookies?.[OIDC_CORRELATION_COOKIE];
+        this.clearOidcCorrelationCookie(res);
         if ((process.env.OIDC_ENABLED || 'true').toLowerCase() === 'false') {
             return res.redirect(302, '/auth/login');
         }
-        const { code, state } = req.query as { code: string; state: string };
-        const result = await this.authService.handleOidcCallback(code, state);
-        this.setSessionCookies(res, result.accessToken, result.refreshToken, result.csrfToken);
+        const code = typeof req.query.code === 'string' ? req.query.code : '';
+        const state = typeof req.query.state === 'string' ? req.query.state : '';
+        if (!code || !state) {
+            throw new BadRequestException('OIDC code and state are required');
+        }
+        const oidcState = await this.authService.consumeOidcState(state, correlationNonce);
+        const result = await this.authService.handleOidcCallback(code, state, oidcState.tenantSlug, this.sessionRequestAudit(req));
+        this.setSessionCookies(res, result.accessToken, result.refreshToken, result.csrfToken, result.sessionMaxAgeMs);
 
         if (result.requiresMfa) {
-            res.redirect('/mfa');
+            res.redirect(this.mfaRedirect(oidcState.nextPath));
         } else {
-            res.redirect('/dashboard');
+            res.redirect(oidcState.nextPath ?? '/dashboard');
         }
     }
 
@@ -170,45 +435,99 @@ export class AuthController {
      * Email OTP — Send a 6-digit code to the given email address.
      */
     @Public()
+    @PreAuthThrottle()
     @Post('email/send-otp')
     @HttpCode(HttpStatus.OK)
-    async sendOtp(@Body() body: { email: string }) {
-        if (!body.email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(body.email)) {
+    async sendOtp(@Body() body: EmailOtpBody, @Req() req: Request) {
+        this.assertSameOriginRequest(req);
+        const normalizedEmail = this.normalizeOtpEmail(body.email);
+        if (!normalizedEmail) {
             this.authDebug('send_otp_invalid_email');
             return { success: false, error: 'Invalid email address' };
         }
-        const normalizedEmail = body.email.toLowerCase();
+        const onboarding = body.onboarding === true;
+        const provisionTenantName = this.onboardingTenantName(body);
+        const legalAssent = this.onboardingLegalAssent(body);
+        const signupCode = typeof body.signupCode === 'string' && body.signupCode.trim()
+            ? body.signupCode
+            : undefined;
+        const signupChallengeToken = this.signupChallengeToken(body);
+        const signupChallengeRemoteIp = this.signupChallengeRemoteIp(req);
         this.authDebug('send_otp_start', { email: this.maskEmail(normalizedEmail) });
+        let onboardingChallengeToken: string | undefined;
         try {
-            const code = await this.otpService.generateOtp(normalizedEmail);
+            let code: string;
+            if (onboarding) {
+                const challenge = await this.authService.createOnboardingSignupChallenge(normalizedEmail, {
+                    allowProvision: true,
+                    provisionTenantName,
+                    ...legalAssent,
+                    ...(signupCode ? { signupCode } : {}),
+                    ...(signupChallengeToken ? { signupChallengeToken } : {}),
+                    ...(signupChallengeRemoteIp ? { signupChallengeRemoteIp } : {}),
+                });
+                code = challenge.code;
+                onboardingChallengeToken = challenge.challengeToken;
+            } else {
+                const recipientEligible = await this.authService.assertEmailOtpAllowed(normalizedEmail, {
+                    tenantSlug: body.tenantSlug,
+                });
+                if (!recipientEligible) {
+                    this.authDebug('send_otp_suppressed', { email: this.maskEmail(normalizedEmail) });
+                    return { success: true };
+                }
+                code = await this.otpService.generateOtp(normalizedEmail, {
+                    tenantSlug: body.tenantSlug,
+                });
+            }
             await this.emailService.sendOtp(normalizedEmail, code);
         } catch (err) {
+            if (err instanceof ForbiddenException) {
+                throw err;
+            }
+            if (err instanceof ServiceUnavailableException) {
+                throw err;
+            }
             if (err instanceof BadRequestException) {
+                if (!String(err.message).includes('Please wait')) {
+                    throw err;
+                }
                 throw new HttpException('Please wait before requesting another code', HttpStatus.TOO_MANY_REQUESTS);
             }
             this.logger.error(
-                `Failed OTP delivery for ${this.maskEmail(normalizedEmail)}: ${
-                    err instanceof Error ? err.message : 'unknown_error'
-                }`,
+                `Failed OTP delivery for ${this.maskEmail(normalizedEmail)}: provider_error`,
             );
             throw new ServiceUnavailableException('Unable to send login code right now. Please try again shortly.');
         }
         this.authDebug('send_otp_success', { email: this.maskEmail(normalizedEmail) });
-        return { success: true };
+        return onboardingChallengeToken
+            ? { success: true, onboardingChallengeToken }
+            : { success: true };
     }
 
     /**
      * Email OTP — Verify the code and issue session cookies.
      */
     @Public()
+    @PreAuthThrottle()
     @Post('email/verify-otp')
     @HttpCode(HttpStatus.OK)
     async verifyOtp(
-        @Body() body: { email: string; code: string },
+        @Body() body: EmailOtpBody & { code: string },
         @Req() req: Request,
         @Res() res: Response,
     ) {
-        const email = body.email.toLowerCase();
+        this.assertSameOriginRequest(req);
+        const email = this.normalizeOtpEmail(body.email);
+        if (!email) {
+            throw new BadRequestException('Invalid email address');
+        }
+        const onboarding = body.onboarding === true;
+        const provisionTenantName = this.onboardingTenantName(body);
+        const legalAssent = this.onboardingLegalAssent(body);
+        const signupCode = typeof body.signupCode === 'string' && body.signupCode.trim()
+            ? body.signupCode
+            : undefined;
         const redirectMode = String((req.query as any)?.redirect || '') === '1';
         const nextPath = String((req.query as any)?.next || '');
         const safeNext = this.safeInternalPath(nextPath);
@@ -219,12 +538,24 @@ export class AuthController {
         });
 
         try {
-            await this.otpService.verifyOtp(email, body.code);
-            const result = await this.authService.loginWithEmail(email);
-            this.setSessionCookies(res, result.accessToken, result.refreshToken, result.csrfToken);
+            if (!onboarding) {
+                await this.otpService.verifyOtp(email, body.code, {
+                    tenantSlug: body.tenantSlug,
+                });
+            }
+            const result = await this.authService.loginWithEmail(email, {
+                tenantSlug: body.tenantSlug,
+                allowProvision: onboarding,
+                provisionTenantName,
+                ...legalAssent,
+                ...(signupCode ? { signupCode } : {}),
+                ...(onboarding ? { onboardingChallengeToken: body.onboardingChallengeToken } : {}),
+                ...(onboarding ? { onboardingOtpCode: body.code } : {}),
+            }, this.sessionRequestAudit(req));
+            this.setSessionCookies(res, result.accessToken, result.refreshToken, result.csrfToken, result.sessionMaxAgeMs);
 
             const roleRedirect = '/dashboard';
-            const redirectTo = safeNext ?? roleRedirect;
+            const redirectTo = result.requiresMfa ? this.mfaRedirect(safeNext) : safeNext ?? roleRedirect;
             this.authDebug('verify_otp_success', {
                 email: this.maskEmail(email),
                 role: result.user.role,
@@ -235,7 +566,12 @@ export class AuthController {
             if (redirectMode) {
                 return res.redirect(302, redirectTo);
             }
-            return res.json({ success: true, redirectTo });
+            return res.json({
+                success: true,
+                redirectTo,
+                requiresMfa: result.requiresMfa,
+                workspaceSlug: result.workspaceSlug,
+            });
         } catch (err) {
             this.authDebug('verify_otp_failed', {
                 email: this.maskEmail(email),
@@ -248,6 +584,7 @@ export class AuthController {
                     email,
                     error: 'invalid',
                 });
+                if (body.tenantSlug) params.set('tenantSlug', body.tenantSlug);
                 if (safeNext) params.set('next', safeNext);
                 return res.redirect(302, `/auth/login?${params.toString()}`);
             }
@@ -259,27 +596,39 @@ export class AuthController {
      * Username/PIN — Verify PIN and issue session cookies.
      */
     @Public()
+    @PreAuthThrottle()
     @Post('pin/verify')
     @HttpCode(HttpStatus.OK)
     async verifyPin(
-        @Body() body: { identifier: string; pin: string },
+        @Body() body: { identifier: string; pin: string; tenantSlug?: string },
         @Req() req: Request,
         @Res() res: Response,
     ) {
+        this.assertSameOriginRequest(req);
         const identifier = body.identifier.toLowerCase().trim();
         const redirectMode = String((req.query as any)?.redirect || '') === '1';
         const nextPath = String((req.query as any)?.next || '');
         const safeNext = this.safeInternalPath(nextPath);
 
         try {
-            const result = await this.authService.loginWithUsernamePin(identifier, body.pin);
-            this.setSessionCookies(res, result.accessToken, result.refreshToken, result.csrfToken);
+            const result = await this.authService.loginWithUsernamePin(identifier, body.pin, body.tenantSlug, this.sessionRequestAudit(req));
+            this.setSessionCookies(res, result.accessToken, result.refreshToken, result.csrfToken, result.sessionMaxAgeMs);
 
-            const redirectTo = safeNext ?? '/dashboard';
+            const pinResetRequired = result.pinResetRequired === true;
+            const redirectTo = pinResetRequired
+                ? this.pinResetRedirect(safeNext)
+                : result.requiresMfa
+                    ? this.mfaRedirect(safeNext)
+                    : safeNext ?? '/dashboard';
             if (redirectMode) {
                 return res.redirect(302, redirectTo);
             }
-            return res.json({ success: true, redirectTo, pinResetRequired: false });
+            return res.json({
+                success: true,
+                redirectTo,
+                pinResetRequired,
+                requiresMfa: result.requiresMfa,
+            });
         } catch (err) {
             if (redirectMode && err instanceof UnauthorizedException) {
                 const params = new URLSearchParams({
@@ -287,6 +636,7 @@ export class AuthController {
                     identifier,
                     error: 'invalid',
                 });
+                if (body.tenantSlug) params.set('tenantSlug', body.tenantSlug);
                 if (safeNext) params.set('next', safeNext);
                 return res.redirect(302, `/auth/login?${params.toString()}`);
             }
@@ -298,50 +648,161 @@ export class AuthController {
      * Refresh access token using refresh cookie.
      */
     @Public()
+    @RefreshThrottle()
     @Post('refresh')
     @HttpCode(HttpStatus.OK)
     async refresh(@Req() req: Request, @Res() res: Response) {
+        this.assertSameOriginRequest(req);
+        this.assertCsrfHeaderMatchesCookie(req);
         const refreshToken = req.cookies?.['refresh_token'];
         this.authDebug('refresh_start', { hasRefreshToken: Boolean(refreshToken) });
         const result = await this.authService.refreshAccessToken(refreshToken);
         this.authDebug('refresh_success', { hasAccessToken: Boolean(result?.accessToken) });
 
-        res.cookie('access_token', result.accessToken, {
-            httpOnly: true, secure: this.useSecureCookies(),
-            sameSite: 'strict' as const, path: '/', maxAge: ACCESS_TOKEN_COOKIE_MAX_AGE_MS,
-        });
+        this.setSessionCookies(
+            res,
+            result.accessToken,
+            result.refreshToken,
+            result.csrfToken,
+            result.sessionMaxAgeMs,
+        );
 
-        res.json({ success: true, accessToken: result.accessToken });
+        res.json({
+            success: true,
+            requiresMfa: result.requiresMfa,
+            mfaVerified: result.mfaVerified,
+        });
+    }
+
+    /**
+     * Start MFA enrollment for the current session.
+     */
+    @UseGuards(JwtAuthGuard)
+    @AllowAuthenticated()
+    @AuthThrottle()
+    @Post('mfa/enroll')
+    @HttpCode(HttpStatus.OK)
+    async beginMfaEnrollment(@Req() req: any) {
+        return this.authService.beginMfaEnrollment(req.user.sub, req.user);
+    }
+
+    @UseGuards(JwtAuthGuard)
+    @AllowAuthenticated()
+    @Get('mfa/enrollment')
+    async getMfaEnrollment(@Req() req: any) {
+        return this.authService.getMfaEnrollmentState(req.user.sub, req.user);
+    }
+
+    @UseGuards(JwtAuthGuard)
+    @AllowAuthenticated()
+    @AuthThrottle()
+    @Post('mfa/enrollment')
+    @HttpCode(HttpStatus.OK)
+    async beginMfaEnrollmentAlias(@Req() req: any) {
+        return this.beginMfaEnrollment(req);
+    }
+
+    /**
+     * Confirm MFA enrollment and return one-time backup codes.
+     */
+    @UseGuards(JwtAuthGuard)
+    @AllowAuthenticated()
+    @AuthThrottle()
+    @Post('mfa/enroll/confirm')
+    @HttpCode(HttpStatus.OK)
+    async confirmMfaEnrollment(@Req() req: any, @Body() body: { code: string }, @Res() res: Response) {
+        const result = await this.authService.confirmMfaEnrollment(req.user.sub, body.code, req.user);
+        if (result.accessToken) {
+            res.cookie('access_token', result.accessToken, {
+                httpOnly: true,
+                secure: this.useSecureCookies(),
+                sameSite: 'strict' as const,
+                path: '/',
+                maxAge: result.accessTokenMaxAgeMs ?? ACCESS_TOKEN_COOKIE_MAX_AGE_MS,
+            });
+        }
+        res.json({ success: true, mfaVerified: result.mfaVerified, backupCodes: result.backupCodes });
+    }
+
+    @UseGuards(JwtAuthGuard)
+    @AllowAuthenticated()
+    @AuthThrottle()
+    @Put('mfa/enrollment')
+    @HttpCode(HttpStatus.OK)
+    async confirmMfaEnrollmentAlias(@Req() req: any, @Body() body: { code: string }, @Res() res: Response) {
+        return this.confirmMfaEnrollment(req, body, res);
     }
 
     /**
      * Verify MFA code.
      */
     @UseGuards(JwtAuthGuard)
+    @AllowAuthenticated()
+    @AuthThrottle()
     @Post('mfa/verify')
     @HttpCode(HttpStatus.OK)
-    async verifyMfa(@Req() req: any, @Body() body: { code: string }) {
-        return this.authService.validateMfa(req.user.sub, body.code);
+    async verifyMfa(@Req() req: any, @Body() body: { code: string }, @Res() res: Response) {
+        const result = await this.authService.validateMfa(req.user.sub, body.code, req.user);
+        if (result.accessToken) {
+            res.cookie('access_token', result.accessToken, {
+                httpOnly: true,
+                secure: this.useSecureCookies(),
+                sameSite: 'strict' as const,
+                path: '/',
+                maxAge: result.accessTokenMaxAgeMs ?? ACCESS_TOKEN_COOKIE_MAX_AGE_MS,
+            });
+        }
+        res.json({ success: true, mfaVerified: result.mfaVerified });
     }
 
     /**
      * Logout — revoke session and clear cookies.
      */
+    /**
+     * Disable voluntary MFA when tenant policy allows it.
+     */
     @UseGuards(JwtAuthGuard)
+    @AllowAuthenticated()
+    @AuthThrottle()
+    @Post('mfa/disable')
+    @HttpCode(HttpStatus.OK)
+    async disableMfa(@Req() req: any, @Body() body: { code: string }) {
+        return this.authService.disableMfa(req.user.sub, body.code, req.user);
+    }
+
+    @UseGuards(JwtAuthGuard)
+    @AllowAuthenticated()
+    @AuthThrottle()
+    @Delete('mfa/enrollment')
+    @HttpCode(HttpStatus.OK)
+    async disableMfaAlias(@Req() req: any, @Body() body: { code: string }) {
+        return this.disableMfa(req, body);
+    }
+
+    /**
+     * Logout and revoke session cookies.
+     */
+    @Public()
+    @RefreshThrottle()
     @Post('logout')
     @HttpCode(HttpStatus.OK)
-    async logout(@Req() req: any, @Res() res: Response) {
-        await this.authService.revokeSession(req.user.sessionId);
-        res.clearCookie('access_token');
-        res.clearCookie('refresh_token');
-        res.clearCookie('csrf_token');
-        res.json({ success: true });
+    async logout(@Req() req: Request, @Res() res: Response) {
+        this.assertSameOriginRequest(req);
+        this.assertCsrfHeaderMatchesCookie(req);
+        const result = await this.authService.revokeSessionByRefreshToken(req.cookies?.['refresh_token']);
+        const secure = this.useSecureCookies();
+
+        res.clearCookie('access_token', { httpOnly: true, secure, sameSite: 'strict', path: '/' });
+        res.clearCookie('refresh_token', { httpOnly: true, secure, sameSite: 'strict', path: '/' });
+        res.clearCookie('csrf_token', { httpOnly: false, secure, sameSite: 'strict', path: '/' });
+        res.json({ success: true, session: result.status });
     }
 
     /**
      * Get current authenticated user.
      */
     @UseGuards(JwtAuthGuard)
+    @AllowAuthenticated()
     @Get('me')
     async me(@Req() req: any) {
         const user = await this.authService.getSessionUserContext(req.user.sub, req.user.tenantId, req.user);

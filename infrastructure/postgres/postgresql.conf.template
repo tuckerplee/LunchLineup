@@ -13,5 +13,6 @@ max_connections = {{postgres.maxConnections}}
 # Write-Ahead Log (WAL) Configuration for PITR
 wal_level = replica
 archive_mode = on
-archive_command = 'test ! -f /var/lib/postgresql/data/wal_archive/%f && cp %p /var/lib/postgresql/data/wal_archive/%f'
-archive_timeout = 600
+archive_command = 'sh /opt/lunchlineup/pitr/archive-wal.sh "%p" "%f"'
+archive_timeout = 60s
+max_wal_senders = 10

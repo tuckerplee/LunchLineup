@@ -1,9 +1,16 @@
-import { Controller, Post, Body, Req, Headers, HttpCode, Get } from '@nestjs/common';
+import { BadRequestException, Controller, Post, Body, Req, Headers, HttpCode, Get, SetMetadata } from '@nestjs/common';
 import { StripeService } from './stripe.service';
 import { MeteringService } from './metering.service';
 import { Request } from 'express';
 import { RequirePermission } from '../auth/require-permission.decorator';
 import { FeatureAccessService } from './feature-access.service';
+import { StripeMeterErrorService } from './stripe-meter-error.service';
+
+const Public = () => SetMetadata('isPublic', true);
+
+type StripeWebhookRequest = Request & {
+    rawBody?: Buffer;
+};
 
 @Controller('billing')
 export class BillingController {
@@ -11,11 +18,23 @@ export class BillingController {
         private readonly stripeService: StripeService,
         private readonly meteringService: MeteringService,
         private readonly featureAccessService: FeatureAccessService,
+        private readonly stripeMeterErrorService: StripeMeterErrorService,
     ) { }
 
     @Get('features')
+    @RequirePermission('billing:read')
     async features(@Req() req: any) {
-        return this.featureAccessService.getFeatureMatrix(req.user.tenantId);
+        const matrix = await this.featureAccessService.getFeatureMatrix(req.user.tenantId);
+        const subscriptionRecoveryAction = matrix.stripeSubscriptionPresent
+            ? await this.stripeService.getTenantSubscriptionRecoveryAction(req.user.tenantId)
+            : null;
+        return { ...matrix, subscriptionRecoveryAction };
+    }
+
+    @Get('price-options')
+    @RequirePermission('billing:read')
+    async priceOptions() {
+        return { data: this.stripeService.getPriceOptions() };
     }
 
     @Post('subscribe')
@@ -26,41 +45,98 @@ export class BillingController {
     ) {
         const tenantId = req.user.tenantId;
 
-        // Ensure customer exists
-        const customer = await this.stripeService.createCustomer(tenantId, req.user.email, req.user.name);
+        return this.stripeService.createSubscriptionCheckoutSession(tenantId, {
+            email: req.user.email,
+            name: req.user.name,
+        }, body.priceId);
+    }
 
-        // Attempt to create a subscription, which inherently honors usage credits if available
-        const subscription = await this.stripeService.createSubscription(tenantId, customer.id, body.priceId);
+    @Post('portal')
+    @RequirePermission('billing:write')
+    async portal(@Req() req: any) {
+        return this.stripeService.createBillingPortalSession(req.user.tenantId);
+    }
 
-        return { subscriptionId: subscription.id };
+    @Post('change-plan')
+    @RequirePermission('billing:write')
+    async changePlan(
+        @Req() req: any,
+        @Body() body: { priceId: string },
+    ) {
+        return this.stripeService.changeTenantSubscriptionPlan(req.user.tenantId, body.priceId);
+    }
+
+    @Post('resume')
+    @RequirePermission('billing:write')
+    async resume(@Req() req: any) {
+        return this.stripeService.resumeTenantSubscription(req.user.tenantId);
     }
 
     @Post('credits/grant')
     @RequirePermission('admin_portal:access')
     async grantCredits(
-        @Body() body: { tenantId: string, amount: number, reason: string }
+        @Body() body: { tenantId: string, amount: number, reason: string },
+        @Headers('idempotency-key') idempotencyKey?: string,
     ) {
         const { tenantId, amount, reason } = body;
-        const newBalance = await this.meteringService.grantCredits(tenantId, amount, reason);
+        const newBalance = await this.meteringService.grantCredits(
+            tenantId,
+            amount,
+            reason,
+            this.normalizeCreditGrantIdempotencyKey(idempotencyKey),
+        );
         return { success: true, newBalance };
     }
 
+    private normalizeCreditGrantIdempotencyKey(value: unknown): string {
+        if (typeof value !== 'string' || !value.trim()) {
+            throw new BadRequestException('Idempotency-Key header is required for credit grants.');
+        }
+        const key = value.trim();
+        if (key.length > 255 || /[\u0000-\u001f\u007f]/.test(key)) {
+            throw new BadRequestException('Idempotency-Key must be 255 printable characters or fewer.');
+        }
+        return key;
+    }
+
     @Post('webhook')
+    @Public()
     @HttpCode(200)
-    // We intentionally bypass standard JSON body parsing to capture raw Buffer for Stripe signature validation.
-    // In a real app, ensure `app.use('/billing/webhook', express.raw({type: 'application/json'}))` is deployed.
     async handleStripeWebhook(
-        @Req() req: Request,
-        @Headers('stripe-signature') signature: string
+        @Req() req: StripeWebhookRequest,
+        @Headers('stripe-signature') signature?: string
     ) {
-        if (!signature) {
-            throw new Error('Missing stripe-signature header');
+        const payload = Buffer.isBuffer(req.rawBody)
+            ? req.rawBody
+            : Buffer.isBuffer(req.body)
+                ? req.body
+                : null;
+
+        if (!payload) {
+            throw new BadRequestException('Missing raw Stripe webhook body');
         }
 
-        // The req.body here needs to be the raw Buffer. 
-        // This requires configuring NestJS global middleware to not JSON-parse this explicit route.
-        await this.stripeService.handleWebhook(req.body as any, signature);
+        await this.stripeService.handleWebhook(payload, signature);
 
         return { received: true };
+    }
+
+    @Post('meter-errors/webhook')
+    @Public()
+    @HttpCode(200)
+    async handleStripeMeterErrorWebhook(
+        @Req() req: StripeWebhookRequest,
+        @Headers('stripe-signature') signature?: string,
+    ) {
+        const payload = Buffer.isBuffer(req.rawBody)
+            ? req.rawBody
+            : Buffer.isBuffer(req.body)
+                ? req.body
+                : null;
+        if (!payload) {
+            throw new BadRequestException('Missing raw Stripe meter error webhook body');
+        }
+        const reconciliation = await this.stripeMeterErrorService.handleWebhook(payload, signature);
+        return { received: true, ...reconciliation };
     }
 }

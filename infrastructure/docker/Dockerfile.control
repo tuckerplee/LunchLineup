@@ -1,9 +1,17 @@
 # infrastructure/docker/Dockerfile.control
-# Stage 1: Runtime
-FROM node:22-alpine AS runner
+# Stage 1: Build
+FROM node:22-alpine@sha256:16e22a550f3863206a3f701448c45f7912c6896a62de43add43bb9c86130c3e2 AS builder
 WORKDIR /app
 COPY . .
-RUN npm ci
-COPY apps/control-plane/dist ./dist
+RUN npm ci --prefer-offline || npm ci
+RUN npm run build --workspace @lunchlineup/control-plane
+
+# Stage 2: Runtime
+FROM node:22-alpine@sha256:16e22a550f3863206a3f701448c45f7912c6896a62de43add43bb9c86130c3e2 AS runner
+WORKDIR /app
+ENV NODE_ENV=production
+COPY --from=builder /app/apps/control-plane/dist ./dist
+COPY --from=builder /app/node_modules ./node_modules
+COPY --from=builder /app/apps/control-plane/package.json ./package.json
 EXPOSE 3001
-CMD ["node", "dist/main"]
+CMD ["node", "dist/main.js"]

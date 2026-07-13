@@ -3,6 +3,18 @@
 import type { FormEvent } from 'react';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { fetchJsonWithSession, fetchWithSession } from '@/lib/client-api';
+import {
+    buildBulkTenantDeleteConfirmation,
+    buildTenantLifecycleConfirmation,
+    lifecycleConfirmationMatches,
+    type TenantLifecycleAction,
+} from './tenant-lifecycle-confirmation';
+import {
+    buildTenantEditPayload,
+    TENANT_PLAN_EDIT_GUIDANCE,
+    TENANT_STATUS_EDIT_GUIDANCE,
+} from './tenant-edit-contract';
+import { startingStatusForPlan, tenantProvisioningDescription } from './tenant-provisioning-contract';
 
 type PlanTier = 'FREE' | 'STARTER' | 'GROWTH' | 'ENTERPRISE';
 type TenantStatus = 'TRIAL' | 'ACTIVE' | 'PAST_DUE' | 'SUSPENDED' | 'CANCELLED' | 'PURGED';
@@ -29,25 +41,23 @@ type TenantListResponse = {
 type TenantFormState = {
     name: string;
     slug: string;
-    planTier: PlanTier;
-    status: TenantStatus;
     usageCredits: string;
 };
+
+type TenantCreateFormState = TenantFormState & {
+    planTier: PlanTier;
+    status: TenantStatus;
+    ownerName: string;
+    ownerEmail: string;
+};
+
+const OWNER_EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 const PLAN_OPTIONS: Array<{ value: PlanTier; label: string }> = [
     { value: 'FREE', label: 'FREE' },
     { value: 'STARTER', label: 'STARTER' },
     { value: 'GROWTH', label: 'GROWTH' },
     { value: 'ENTERPRISE', label: 'ENTERPRISE' },
-];
-
-const STATUS_OPTIONS: Array<{ value: TenantStatus; label: string }> = [
-    { value: 'TRIAL', label: 'TRIAL' },
-    { value: 'ACTIVE', label: 'ACTIVE' },
-    { value: 'PAST_DUE', label: 'PAST_DUE' },
-    { value: 'SUSPENDED', label: 'SUSPENDED' },
-    { value: 'CANCELLED', label: 'CANCELLED' },
-    { value: 'PURGED', label: 'PURGED' },
 ];
 
 const PLAN_COLORS: Record<string, { color: string; bg: string; border: string }> = {
@@ -96,8 +106,6 @@ function normalizeForm(tenant?: TenantRecord | null): TenantFormState {
     return {
         name: tenant?.name ?? '',
         slug: tenant?.slug ?? '',
-        planTier: tenant?.planTier ?? 'FREE',
-        status: tenant?.status ?? 'TRIAL',
         usageCredits: tenant ? String(tenant.usageCredits) : '0',
     };
 }
@@ -135,6 +143,30 @@ function getCsrfHeaders(): Record<string, string> {
     return csrfToken ? { 'x-csrf-token': csrfToken } : {};
 }
 
+function normalizeCreateForm(): TenantCreateFormState {
+    return {
+        ...normalizeForm(null),
+        planTier: 'FREE',
+        status: startingStatusForPlan('FREE'),
+        ownerName: '',
+        ownerEmail: '',
+    };
+}
+
+function confirmLifecycleAction(action: TenantLifecycleAction, tenant: TenantRecord): boolean {
+    if (typeof window === 'undefined') return true;
+    const confirmation = buildTenantLifecycleConfirmation(action, tenant);
+    const entered = window.prompt(confirmation.prompt);
+    return lifecycleConfirmationMatches(entered, confirmation.expectedInput);
+}
+
+function confirmBulkArchivedTenantDelete(count: number): boolean {
+    if (typeof window === 'undefined') return true;
+    const confirmation = buildBulkTenantDeleteConfirmation(count);
+    const entered = window.prompt(confirmation.prompt);
+    return lifecycleConfirmationMatches(entered, confirmation.expectedInput);
+}
+
 function jsonWriteInit(method: 'POST' | 'PUT' | 'DELETE', payload?: unknown): RequestInit {
     return {
         method,
@@ -167,7 +199,7 @@ export function TenantsClient() {
     const [notice, setNotice] = useState<string | null>(null);
     const [query, setQuery] = useState('');
     const [selectedTenantId, setSelectedTenantId] = useState<string | null>(null);
-    const [createForm, setCreateForm] = useState<TenantFormState>(() => normalizeForm(null));
+    const [createForm, setCreateForm] = useState<TenantCreateFormState>(normalizeCreateForm);
     const [editForm, setEditForm] = useState<TenantFormState>(() => normalizeForm(null));
 
     const selectedTenant = useMemo(
@@ -256,6 +288,16 @@ export function TenantsClient() {
             setError('Tenant name is required.');
             return;
         }
+        const ownerName = createForm.ownerName.trim();
+        if (!ownerName) {
+            setError('Owner name is required.');
+            return;
+        }
+        const ownerEmail = createForm.ownerEmail.trim().toLowerCase();
+        if (!OWNER_EMAIL_PATTERN.test(ownerEmail)) {
+            setError('A valid owner email is required.');
+            return;
+        }
 
         const credits = toNumber(createForm.usageCredits);
         if (!Number.isInteger(credits)) {
@@ -269,13 +311,24 @@ export function TenantsClient() {
             planTier: createForm.planTier,
             status: createForm.status,
             usageCredits: credits,
+            ownerName,
+            ownerEmail,
         };
 
         setSaving('create');
         try {
-            const result = await writeJson<{ id: string }>('/admin/tenants', 'POST', payload);
-            setCreateForm(normalizeForm(null));
-            setNotice('Tenant created.');
+            const result = await writeJson<{
+                id: string;
+                planTier: PlanTier;
+                status: TenantStatus;
+                trialEndsAt: string | null;
+            }>('/admin/tenants', 'POST', payload);
+            setCreateForm(normalizeCreateForm());
+            setNotice(
+                result.status === 'TRIAL' && result.trialEndsAt
+                    ? `Tenant and owner created. Paid trial ends ${formatDateTime(result.trialEndsAt)}.`
+                    : 'Tenant and owner created with FREE entitlements.',
+            );
             await refresh(result.id);
         } catch (err) {
             setError(err instanceof Error ? err.message : 'Failed to create tenant');
@@ -304,13 +357,15 @@ export function TenantsClient() {
 
         setSaving(`update:${selectedTenant.id}`);
         try {
-            await writeJson<{ id: string; updated: boolean }>(`/admin/tenants/${selectedTenant.id}`, 'PUT', {
-                name,
-                slug: editForm.slug.trim(),
-                planTier: editForm.planTier,
-                status: editForm.status,
-                usageCredits: credits,
-            });
+            await writeJson<{ id: string; updated: boolean }>(
+                `/admin/tenants/${selectedTenant.id}`,
+                'PUT',
+                buildTenantEditPayload({
+                    name,
+                    slug: editForm.slug.trim(),
+                    usageCredits: credits,
+                }),
+            );
             setNotice(`${selectedTenant.name} updated.`);
             await refresh(selectedTenant.id);
         } catch (err) {
@@ -335,9 +390,9 @@ export function TenantsClient() {
         } as const;
 
         const confirmNeeded = action === 'suspend' || action === 'archive';
-        if (confirmNeeded && typeof window !== 'undefined') {
-            const confirmed = window.confirm(`${labelMap[action]} ${tenant.name}?`);
-            if (!confirmed) return;
+        if (confirmNeeded && !confirmLifecycleAction(action, tenant)) {
+            setNotice(`${labelMap[action]} canceled.`);
+            return;
         }
 
         setError(null);
@@ -359,9 +414,9 @@ export function TenantsClient() {
             setError('Tenant must be archived before permanent deletion.');
             return;
         }
-        if (typeof window !== 'undefined') {
-            const confirmed = window.confirm(`Permanently delete ${tenant.name}? This cannot be undone.`);
-            if (!confirmed) return;
+        if (!confirmLifecycleAction('delete', tenant)) {
+            setNotice('Permanent delete canceled.');
+            return;
         }
 
         setError(null);
@@ -384,11 +439,9 @@ export function TenantsClient() {
             return;
         }
 
-        if (typeof window !== 'undefined') {
-            const confirmed = window.confirm(
-                `Permanently delete ${archivedTenants.length} archived tenant${archivedTenants.length === 1 ? '' : 's'}? This cannot be undone.`,
-            );
-            if (!confirmed) return;
+        if (!confirmBulkArchivedTenantDelete(archivedTenants.length)) {
+            setNotice('Bulk delete canceled.');
+            return;
         }
 
         setError(null);
@@ -719,15 +772,45 @@ export function TenantsClient() {
                                 />
                             </label>
 
+                            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 12rem), 1fr))', gap: '0.75rem' }}>
+                                <label className="form-group">
+                                    <span className="form-label">Owner name</span>
+                                    <input
+                                        className="form-input"
+                                        value={createForm.ownerName}
+                                        onChange={(event) => setCreateForm((current) => ({ ...current, ownerName: event.target.value }))}
+                                        placeholder="Alex Owner"
+                                        required
+                                    />
+                                </label>
+
+                                <label className="form-group">
+                                    <span className="form-label">Owner email</span>
+                                    <input
+                                        className="form-input"
+                                        type="email"
+                                        value={createForm.ownerEmail}
+                                        onChange={(event) => setCreateForm((current) => ({ ...current, ownerEmail: event.target.value }))}
+                                        placeholder="owner@example.com"
+                                        required
+                                    />
+                                </label>
+                            </div>
+
                             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: '0.75rem' }}>
                                 <label className="form-group">
                                     <span className="form-label">Plan</span>
                                     <select
                                         className="form-input"
                                         value={createForm.planTier}
-                                        onChange={(event) =>
-                                            setCreateForm((current) => ({ ...current, planTier: event.target.value as PlanTier }))
-                                        }
+                                        onChange={(event) => {
+                                            const planTier = event.target.value as PlanTier;
+                                            setCreateForm((current) => ({
+                                                ...current,
+                                                planTier,
+                                                status: startingStatusForPlan(planTier),
+                                            }));
+                                        }}
                                     >
                                         {PLAN_OPTIONS.map((option) => (
                                             <option key={option.value} value={option.value}>
@@ -737,22 +820,23 @@ export function TenantsClient() {
                                     </select>
                                 </label>
 
-                                <label className="form-group">
-                                    <span className="form-label">Status</span>
-                                    <select
-                                        className="form-input"
-                                        value={createForm.status}
-                                        onChange={(event) =>
-                                            setCreateForm((current) => ({ ...current, status: event.target.value as TenantStatus }))
-                                        }
-                                    >
-                                        {STATUS_OPTIONS.map((option) => (
-                                            <option key={option.value} value={option.value}>
-                                                {option.label}
-                                            </option>
-                                        ))}
-                                    </select>
-                                </label>
+                                    <label className="form-group">
+                                        <span className="form-label">Status</span>
+                                        <input
+                                            className="form-input"
+                                            value={createForm.status}
+                                            readOnly
+                                            aria-describedby="tenant-create-entitlement-note"
+                                        />
+                                    </label>
+                            </div>
+
+                            <div
+                                id="tenant-create-entitlement-note"
+                                className="surface-muted"
+                                style={{ padding: '0.55rem 0.65rem', fontSize: '0.75rem', color: 'var(--text-muted)' }}
+                            >
+                                {tenantProvisioningDescription(createForm.planTier)}
                             </div>
 
                             <label className="form-group">
@@ -811,37 +895,28 @@ export function TenantsClient() {
                                 <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: '0.75rem' }}>
                                     <label className="form-group">
                                         <span className="form-label">Plan</span>
-                                        <select
+                                        <input
                                             className="form-input"
-                                            value={editForm.planTier}
-                                            onChange={(event) =>
-                                                setEditForm((current) => ({ ...current, planTier: event.target.value as PlanTier }))
-                                            }
-                                        >
-                                            {PLAN_OPTIONS.map((option) => (
-                                                <option key={option.value} value={option.value}>
-                                                    {option.label}
-                                                </option>
-                                            ))}
-                                        </select>
+                                            value={tenantToEdit.planTier}
+                                            readOnly
+                                            aria-describedby="tenant-plan-billing-note"
+                                        />
                                     </label>
 
                                     <label className="form-group">
                                         <span className="form-label">Status</span>
-                                        <select
+                                        <input
                                             className="form-input"
-                                            value={editForm.status}
-                                            onChange={(event) =>
-                                                setEditForm((current) => ({ ...current, status: event.target.value as TenantStatus }))
-                                            }
-                                        >
-                                            {STATUS_OPTIONS.map((option) => (
-                                                <option key={option.value} value={option.value}>
-                                                    {option.label}
-                                                </option>
-                                            ))}
-                                        </select>
+                                            value={tenantToEdit.status}
+                                            readOnly
+                                            aria-describedby="tenant-status-lifecycle-note"
+                                        />
                                     </label>
+                                </div>
+
+                                <div className="surface-muted" style={{ padding: '0.55rem 0.65rem', fontSize: '0.75rem', color: 'var(--text-muted)', display: 'grid', gap: '0.35rem' }}>
+                                    <div id="tenant-plan-billing-note">{TENANT_PLAN_EDIT_GUIDANCE}</div>
+                                    <div id="tenant-status-lifecycle-note">{TENANT_STATUS_EDIT_GUIDANCE}</div>
                                 </div>
 
                                 <label className="form-group">

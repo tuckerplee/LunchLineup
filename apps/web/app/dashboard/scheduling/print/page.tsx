@@ -1,13 +1,21 @@
 'use client';
 
-import { Suspense, useCallback, useEffect, useMemo, useState } from 'react';
+import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useSearchParams } from 'next/navigation';
 import { ArrowLeft, Printer, RefreshCw } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { fetchJsonWithSession } from '@/lib/client-api';
+import { createLatestRequestGate } from '@/lib/latest-request';
+import { formatTimeInTimeZone, localDateRange, safeTimeZone } from '@/lib/location-timezone';
+import {
+  createPrintScheduleScope,
+  isPrintScheduleScopeCurrent,
+  type PrintScheduleScope,
+} from './print-schedule-scope';
 
 type StaffRole = 'SUPER_ADMIN' | 'ADMIN' | 'MANAGER' | 'STAFF';
 type BreakItem = { startTime: string; endTime: string; paid: boolean };
+type LocationItem = { id: string; name: string; timezone: string };
 type ShiftRecord = {
   id: string;
   userId: string | null;
@@ -39,28 +47,23 @@ function toDateInputValue(date: Date): string {
   return `${y}-${m}-${d}`;
 }
 
-function dayRange(dateValue: string) {
-  const start = new Date(`${dateValue}T00:00:00`);
-  const end = new Date(start);
-  end.setDate(start.getDate() + 1);
-  return { start: start.toISOString(), end: end.toISOString() };
-}
-
 function formatDateLabel(dateValue: string): string {
-  const parsed = new Date(`${dateValue}T00:00:00`);
+  const parsed = new Date(`${dateValue}T12:00:00.000Z`);
   if (!Number.isFinite(parsed.getTime())) return dateValue;
-  return parsed.toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' });
+  return parsed.toLocaleDateString('en-US', { timeZone: 'UTC', month: 'long', day: 'numeric', year: 'numeric' });
 }
 
-function formatTime(dateIso: string): string {
-  const parsed = new Date(dateIso);
-  if (!Number.isFinite(parsed.getTime())) return '';
-  return parsed.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true }).toLowerCase();
+function formatTime(dateIso: string, timeZone: string): string {
+  try {
+    return formatTimeInTimeZone(dateIso, timeZone).toLowerCase();
+  } catch {
+    return '';
+  }
 }
 
-function formatRange(startIso: string, endIso: string): string {
-  const start = formatTime(startIso);
-  const end = formatTime(endIso);
+function formatRange(startIso: string, endIso: string, timeZone: string): string {
+  const start = formatTime(startIso, timeZone);
+  const end = formatTime(endIso, timeZone);
   return start && end ? `${start}-${end}` : '';
 }
 
@@ -69,17 +72,17 @@ function roleToPos(role: string | null | undefined): string {
   return /^\d+$/.test(normalized) ? normalized : '';
 }
 
-function shiftToPrintRow(shift: ShiftRecord): PrintRow {
+function shiftToPrintRow(shift: ShiftRecord, timeZone: string): PrintRow {
   const paid = [...(shift.breaks ?? [])].filter((item) => item.paid).sort((a, b) => new Date(a.startTime).getTime() - new Date(b.startTime).getTime());
   const unpaid = [...(shift.breaks ?? [])].filter((item) => !item.paid).sort((a, b) => new Date(a.startTime).getTime() - new Date(b.startTime).getTime());
   return {
     id: shift.id,
     employee: shift.user?.name ?? 'Open shift',
-    shift: formatRange(shift.startTime, shift.endTime),
+    shift: formatRange(shift.startTime, shift.endTime, timeZone),
     pos: roleToPos(shift.role),
-    break1: paid[0] ? formatTime(paid[0].startTime) : '',
-    lunch: unpaid[0] ? formatTime(unpaid[0].startTime) : '',
-    break2: paid[1] ? formatTime(paid[1].startTime) : '',
+    break1: paid[0] ? formatTime(paid[0].startTime, timeZone) : '',
+    lunch: unpaid[0] ? formatTime(unpaid[0].startTime, timeZone) : '',
+    break2: paid[1] ? formatTime(paid[1].startTime, timeZone) : '',
   };
 }
 
@@ -87,32 +90,59 @@ function PrintScheduleView() {
   const searchParams = useSearchParams();
   const [selectedDate, setSelectedDate] = useState(searchParams.get('date') || toDateInputValue(new Date()));
   const [shifts, setShifts] = useState<ShiftRecord[]>([]);
+  const [timeZone, setTimeZone] = useState('UTC');
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [autoPrintDone, setAutoPrintDone] = useState(false);
+  const [loadedScope, setLoadedScope] = useState<PrintScheduleScope | null>(null);
+  const scheduleRequestGate = useRef(createLatestRequestGate<PrintScheduleScope>());
+  const requestedLocationId = searchParams.get('locationId') ?? '';
+  const selectedScope = useMemo(
+    () => createPrintScheduleScope(selectedDate, requestedLocationId),
+    [requestedLocationId, selectedDate],
+  );
 
   const loadSchedule = useCallback(async (dateValue: string) => {
+    const requestScope = createPrintScheduleScope(dateValue, requestedLocationId);
+    const ticket = scheduleRequestGate.current.begin(requestScope);
     setIsLoading(true);
     setError(null);
+    setLoadedScope(null);
+    setShifts([]);
     try {
-      const range = dayRange(dateValue);
+      const locationsPayload = await fetchJsonWithSession<{ data: LocationItem[] }>('/locations');
+      const location = locationsPayload.data?.find((item) => item.id === requestedLocationId) ?? locationsPayload.data?.[0];
+      const nextTimeZone = safeTimeZone(location?.timezone);
+      const range = localDateRange(dateValue, 1, nextTimeZone);
+      const locationQuery = location?.id ? `&locationId=${encodeURIComponent(location.id)}` : '';
+      if (!scheduleRequestGate.current.isLatest(ticket)) return;
       const payload = await fetchJsonWithSession<{ data: ShiftRecord[] }>(
-        `/shifts?startDate=${encodeURIComponent(range.start)}&endDate=${encodeURIComponent(range.end)}`,
+        `/shifts?startDate=${encodeURIComponent(range.start)}&endDate=${encodeURIComponent(range.end)}${locationQuery}`,
       );
+      if (!scheduleRequestGate.current.isLatest(ticket)) return;
+      setTimeZone(nextTimeZone);
       setShifts(payload.data ?? []);
+      setLoadedScope(requestScope);
     } catch (err) {
-      setError((err as Error).message);
-      setShifts([]);
+      if (scheduleRequestGate.current.isLatest(ticket)) {
+        setError((err as Error).message);
+        setShifts([]);
+      }
     } finally {
-      setIsLoading(false);
+      if (scheduleRequestGate.current.isLatest(ticket)) setIsLoading(false);
     }
-  }, []);
+  }, [requestedLocationId]);
 
   useEffect(() => {
     void loadSchedule(selectedDate);
+    return () => scheduleRequestGate.current.invalidate();
   }, [loadSchedule, selectedDate]);
 
-  const rows = useMemo(() => shifts.map(shiftToPrintRow), [shifts]);
+  const isCurrentScope = isPrintScheduleScopeCurrent(loadedScope, selectedScope);
+  const rows = useMemo(
+    () => isCurrentScope ? shifts.map((shift) => shiftToPrintRow(shift, timeZone)) : [],
+    [isCurrentScope, shifts, timeZone],
+  );
   const paddedRows = useMemo<Array<PrintRow | null>>(() => {
     const next: Array<PrintRow | null> = [...rows];
     while (next.length < MIN_SCHEDULE_ROWS) next.push(null);
@@ -120,11 +150,20 @@ function PrintScheduleView() {
   }, [rows]);
 
   useEffect(() => {
-    if (autoPrintDone || isLoading || error || rows.length === 0) return;
+    if (autoPrintDone || isLoading || !isCurrentScope || error || rows.length === 0) return;
     if (searchParams.get('autoprint') !== '1') return;
     setAutoPrintDone(true);
     window.setTimeout(() => window.print(), 250);
-  }, [autoPrintDone, error, isLoading, rows.length, searchParams]);
+  }, [autoPrintDone, error, isCurrentScope, isLoading, rows.length, searchParams]);
+
+  const selectDate = useCallback((dateValue: string) => {
+    scheduleRequestGate.current.invalidate();
+    setSelectedDate(dateValue);
+    setLoadedScope(null);
+    setShifts([]);
+    setError(null);
+    setIsLoading(true);
+  }, []);
 
   return (
     <>
@@ -136,13 +175,13 @@ function PrintScheduleView() {
           </div>
           <label>
             Date
-            <input type="date" value={selectedDate} onChange={(event) => setSelectedDate(event.target.value)} />
+            <input type="date" value={selectedDate} onChange={(event) => selectDate(event.target.value)} />
           </label>
           <Button variant="outline" onClick={() => void loadSchedule(selectedDate)} disabled={isLoading}>
             <RefreshCw size={14} />
             Reload
           </Button>
-          <Button onClick={() => window.print()} disabled={isLoading || rows.length === 0}>
+          <Button onClick={() => window.print()} disabled={isLoading || !isCurrentScope || rows.length === 0}>
             <Printer size={14} />
             Print
           </Button>

@@ -6,6 +6,9 @@ export default defineConfig({
     test: {
         globals: true,
         environment: 'node',
+        env: {
+            PLATFORM_ADMIN_DB_CONTEXT_SECRET: 'unit-test-platform-admin-capability',
+        },
         include: ['src/**/*.spec.ts', 'src/**/*.test.ts'],
         exclude: ['node_modules', 'dist'],
         coverage: {

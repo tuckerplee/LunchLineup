@@ -38,7 +38,11 @@ On the fresh VM:
 ```bash
 curl -fsSL https://raw.githubusercontent.com/tuckerplee/LunchLineup/migration-testing-baseline/scripts/bootstrap-vm107-dev.sh -o /tmp/bootstrap-vm107-dev.sh
 chmod +x /tmp/bootstrap-vm107-dev.sh
-sudo BRANCH=migration-testing-baseline BACKUP_FILE=/path/to/lunchlineup.sql.zst.gpg BACKUP_ENCRYPTION_KEY='...' /tmp/bootstrap-vm107-dev.sh
+sudo env \
+  BRANCH=migration-testing-baseline \
+  BACKUP_FILE=/path/to/lunchlineup.sql.zst.gpg \
+  BACKUP_ENCRYPTION_KEY="$(sudo cat /run/secrets/lunchlineup-dev-backup-key)" \
+  /tmp/bootstrap-vm107-dev.sh
 ```
 
 If the data volume is intentionally empty, omit `BACKUP_FILE` and import dev data later.

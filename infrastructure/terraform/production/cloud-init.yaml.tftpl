@@ -1,0 +1,17 @@
+#cloud-config
+package_update: true
+packages:
+  - ca-certificates
+  - curl
+  - qemu-guest-agent
+write_files:
+  - path: /etc/lunchlineup/bootstrap-contract.json
+    owner: root:root
+    permissions: '0644'
+    encoding: b64
+    content: ${bootstrap_contract_b64}
+runcmd:
+  - [systemctl, enable, --now, qemu-guest-agent]
+  - [install, -d, -m, '0755', '${app_dir}']
+  - [bash, -lc, "set -euo pipefail; artifact=/run/lunchlineup-bootstrap; curl --fail --silent --show-error --location --proto '=https' --tlsv1.3 '${bootstrap_artifact_url}' --output \"$artifact\"; printf '%s  %s\\n' '${bootstrap_sha256}' \"$artifact\" | sha256sum --check --strict; install -m 0755 \"$artifact\" /usr/local/sbin/lunchlineup-bootstrap; /usr/local/sbin/lunchlineup-bootstrap --contract /etc/lunchlineup/bootstrap-contract.json"]
+final_message: "LunchLineUp ${role} bootstrap completed after $UPTIME seconds"

@@ -1,0 +1,622 @@
+import assert from 'node:assert/strict';
+import { execFileSync, spawnSync } from 'node:child_process';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { join, resolve } from 'node:path';
+import { tmpdir } from 'node:os';
+import test from 'node:test';
+
+const root = resolve(import.meta.dirname, '../..');
+const validator = join(root, 'scripts/validate-production-launch.mjs');
+
+function run(envText, extraArgs = []) {
+  const scratch = mkdtempSync(join(tmpdir(), 'll-launch-env-'));
+  const envPath = join(scratch, 'runtime.env');
+  writeFileSync(envPath, envText, 'utf8');
+  const result = spawnSync(process.execPath, [validator, envPath, ...extraArgs], {
+    cwd: root,
+    encoding: 'utf8',
+  });
+  rmSync(scratch, { recursive: true, force: true });
+  return result;
+}
+
+function validEnv(overrides = {}) {
+  const values = {
+    NODE_ENV: 'production',
+    DATA_TARGET_ENV: 'production',
+    MIGRATION_PRODUCTION_CONFIRM: 'apply-lunchlineup-production-migrations',
+    DOMAIN: 'lunchlineup.com',
+    PRODUCTION_API_HEALTH_URL: 'https://lunchlineup.com/api/health',
+    ADMIN_EMAIL: 'ops@lunchlineup.com',
+    CADDY_SITE_ADDRESSES: 'https://lunchlineup.com, https://www.lunchlineup.com',
+    ALLOWED_HOSTS: 'lunchlineup.com,www.lunchlineup.com',
+    ALLOWED_ORIGINS: 'https://lunchlineup.com,https://www.lunchlineup.com',
+    COOKIE_SECURE: 'true',
+    POSTGRES_USER: 'lunchlineup_admin',
+    POSTGRES_PASSWORD: 'pg_abcdefghijklmnopqrstuvwxyz123456',
+    POSTGRES_DB: 'lunchlineup',
+    APP_DB_USER: 'lunchlineup_app',
+    APP_DB_PASSWORD: 'app_pg_abcdefghijklmnopqrstuvwxyz123456',
+    PLATFORM_ADMIN_DB_CONTEXT_SECRET: 'platform_admin_db_abcdefghijklmnopqrstuvwxyz123456',
+    DATABASE_URL: 'postgresql://lunchlineup_app:app_pg_abcdefghijklmnopqrstuvwxyz123456@postgres:5432/lunchlineup',
+    MIGRATION_DATABASE_URL: 'postgresql://lunchlineup_admin:pg_abcdefghijklmnopqrstuvwxyz123456@postgres:5432/lunchlineup',
+    REDIS_URL: 'redis://redis:6379',
+    RABBITMQ_USER: 'lunchlineup',
+    RABBITMQ_PASSWORD: 'mq_abcdefghijklmnopqrstuvwxyz123456',
+    RABBITMQ_URL: 'amqp://lunchlineup:mq_abcdefghijklmnopqrstuvwxyz123456@rabbitmq:5672',
+    API_HOST_BIND: '127.0.0.1',
+    JWT_SECRET: 'jwt_abcdefghijklmnopqrstuvwxyz1234567890',
+    JWT_REFRESH_SECRET: 'refresh_abcdefghijklmnopqrstuvwxyz1234567890',
+    SESSION_SECRET: 'session_abcdefghijklmnopqrstuvwxyz1234567890',
+    MFA_SECRET_ENCRYPTION_KEY_CURRENT: '1111111111111111111111111111111111111111111111111111111111111111',
+    MFA_SECRET_ENCRYPTION_KEY_PREVIOUS: '',
+    MFA_SECRET_ENCRYPTION_KEY: '',
+    WEBHOOK_DELIVERY_ENCRYPTION_KEY_CURRENT: '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
+    PASSWORD_RESET_OUTBOX_ENCRYPTION_KEY: 'abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789',
+    PASSWORD_RESET_EMAIL_OUTBOX_ENABLED: 'true',
+    CSRF_SECRET: 'csrf_abcdefghijklmnopqrstuvwxyz1234567890',
+    RESEND_API_KEY: 're_abcdefghijklmnopqrstuvwxyz123456',
+    EMAIL_FROM: 'LunchLineup <no-reply@lunchlineup.com>',
+    STRIPE_SECRET_KEY: ['sk', 'live', 'abcdefghijklmnopqrstuvwxyz123456'].join('_'),
+    STRIPE_WEBHOOK_SECRET: 'whsec_abcdefghijklmnopqrstuvwxyz123456',
+    STRIPE_WEBHOOK_ENDPOINT_ID: 'we_1234567890abcdef',
+    STRIPE_METER_ERROR_WEBHOOK_SECRET: 'whsec_metererrorabcdefghijklmnopqrstuvwxyz',
+    STRIPE_METER_ERROR_EVENT_DESTINATION_ID: 'ed_live_1234567890abcdef',
+    STRIPE_PRICE_STARTER: 'price_starter1234567890',
+    STRIPE_PRICE_GROWTH: 'price_growth1234567890',
+    STRIPE_PRICE_ENTERPRISE: 'price_enterprise1234567890',
+    STRIPE_METER_ID: 'mtr_1234567890abcdef',
+    STRIPE_METER_AGGREGATION: 'last',
+    STRIPE_METERED_USAGE_ENABLED: 'true',
+    STRIPE_METER_EVENT_NAME: 'll.active_staff',
+    STRIPE_USAGE_SNAPSHOT_INTERVAL_SECONDS: '300',
+    METRICS_TOKEN_FILE: '/run/secrets/metrics_token',
+    RETENTION_PURGE_SERVICE_TOKEN_SECRET_FILE: '/run/secrets/retention_purge_token',
+    CONTROL_PLANE_ADMIN_TOKEN_SECRET_FILE: '/run/secrets/control_plane_admin_token.host',
+    CONTROL_PLANE_ADMIN_TOKEN_FILE: '/run/secrets/control_plane_admin_token',
+    BACKUP_ENCRYPTION_KEY_SECRET_FILE: '/run/secrets/backup_key',
+    BACKUP_OFFSITE_URI: 's3://lunchlineup-prod/db-backups/',
+    BACKUP_METRICS_FILE: '/var/lib/node_exporter/textfile_collector/lunchlineup_backup.prom',
+    PITR_ENABLED: 'true',
+    PITR_S3_ENDPOINT: 'https://s3.us-west-2.amazonaws.com',
+    PITR_S3_BUCKET: 'lunchlineup-prod-pitr',
+    PITR_S3_PREFIX: 'lunchlineup/production/cluster-01',
+    PITR_WAL_OBJECT_STORE_SECRETS_DIR: '/run/secrets/pitr-wal-object-store',
+    PITR_BASE_BACKUP_OBJECT_STORE_SECRETS_DIR: '/run/secrets/pitr-base-backup-object-store',
+    PITR_RESTORE_OBJECT_STORE_SECRETS_DIR: '/run/secrets/pitr-restore-object-store',
+    PITR_OBJECT_LOCK_RETENTION_DAYS: '14',
+    ALERTMANAGER_WEBHOOK_URL_FILE: '/run/secrets/alertmanager_webhook_url',
+    GRAFANA_USER: 'lunchlineup_admin',
+    GRAFANA_PASSWORD: 'grafana_abcdefghijklmnopqrstuvwxyz123456',
+    CONTROL_PLANE_PASSWORD: 'control_abcdefghijklmnopqrstuvwxyz123456',
+    NEXT_PUBLIC_API_URL: '/api/v1',
+    NEXT_PUBLIC_WS_URL: 'wss://lunchlineup.com',
+    APP_ORIGIN: 'https://lunchlineup.com',
+    NEXT_PUBLIC_APP_ORIGIN: 'https://lunchlineup.com',
+    NEXT_PUBLIC_APP_URL: 'https://lunchlineup.com',
+    NEXT_PUBLIC_APP_ENV: 'production',
+    NEXT_PUBLIC_PRIVACY_CONTACT_EMAIL: 'privacy@lunchlineup.com',
+    NEXT_PUBLIC_SUPPORT_CONTACT_EMAIL: 'support@lunchlineup.com',
+    NEXT_PUBLIC_DPA_CONTACT_EMAIL: 'dpa@lunchlineup.com',
+    PAID_GA_LEGAL_APPROVED: 'true',
+    PAID_GA_CONTRACTING_ENTITY: 'LunchLineup Incorporated',
+    PAID_GA_TERMS_VERSION: '2026-07-01',
+    PAID_GA_DPA_VERSION: '2026-07-01',
+    PAID_GA_COUNSEL_APPROVAL_OWNER: 'legal@lunchlineup.com',
+    PAID_GA_COUNSEL_APPROVED_AT: '2026-07-01',
+    PAID_GA_INCIDENT_NOTICE_HOURS: '72',
+    PAID_GA_SIGNATURE_PROCESS: 'countersigned-dpa-workflow',
+    PAID_GA_TRANSFER_TERMS: 'standard-contractual-clauses',
+    PAID_GA_CONTACT_OWNER_EMAIL: 'legal-operations@lunchlineup.com',
+    PAID_GA_APPROVAL_RECORD_URI: 's3://lunchlineup-prod/legal/paid-ga-approval-20260701.json',
+    PUBLIC_SIGNUP_MODE: 'closed_beta',
+    NEXT_PUBLIC_SIGNUP_MODE: 'closed_beta',
+    PUBLIC_SIGNUP_INVITE_CODES: '',
+    NEXT_PUBLIC_TURNSTILE_SITE_KEY: '',
+    TURNSTILE_SECRET_KEY: '',
+    LUNCHLINEUP_STATUS_HEALTH_URL: 'https://lunchlineup.com/health',
+    LAUNCH_PROOF_MANIFEST_URI: 's3://lunchlineup-prod/launch-proof/launch-proof-20260709.json',
+    LAUNCH_PROOF_DAST_URL: 'https://github.com/tuckerplee/lunchlineup/actions/runs/123456789/artifacts/111',
+    LAUNCH_PROOF_LOAD_TEST_URL: 'https://github.com/tuckerplee/lunchlineup/actions/runs/123456789/artifacts/112',
+    LAUNCH_PROOF_DR_DRILL_URI: 's3://lunchlineup-prod/launch-proof/dr-drill-20260709.json',
+    LAUNCH_PROOF_ALERT_ROUTE_URL: 'https://pagerduty.com/incidents/ABC123',
+    LAUNCH_PROOF_EXTERNAL_HEALTH_URL: 'https://status.lunchlineup.com/checks/api-health-20260709',
+    OIDC_ENABLED: 'false',
+    NEXT_PUBLIC_OIDC_ENABLED: 'false',
+    ...overrides,
+  };
+
+  return `${Object.entries(values).filter(([, value]) => value !== undefined).map(([key, value]) => `${key}=${value}`).join('\n')}\n`;
+}
+
+test('production launch validator accepts a real public launch profile', () => {
+  const result = run(validEnv());
+
+  assert.equal(result.status, 0, result.stderr);
+  const payload = JSON.parse(result.stdout);
+  assert.equal(payload.ok, true);
+  assert.ok(payload.checked.includes('STRIPE_SECRET_KEY'));
+  assert.ok(payload.checked.includes('STRIPE_METER_ID'));
+  assert.ok(payload.checked.includes('STRIPE_METER_AGGREGATION'));
+  assert.ok(payload.checked.includes('STRIPE_METERED_USAGE_ENABLED'));
+  assert.ok(payload.checked.includes('STRIPE_METER_EVENT_NAME'));
+  assert.ok(payload.checked.includes('DOMAIN'));
+  assert.ok(payload.checked.includes('MFA_SECRET_ENCRYPTION_KEY_CURRENT'));
+  assert.ok(payload.checked.includes('PLATFORM_ADMIN_DB_CONTEXT_SECRET'));
+  assert.ok(payload.checked.includes('WEBHOOK_DELIVERY_ENCRYPTION_KEY_CURRENT'));
+  assert.ok(payload.checked.includes('PASSWORD_RESET_OUTBOX_ENCRYPTION_KEY'));
+  assert.ok(payload.checked.includes('PASSWORD_RESET_EMAIL_OUTBOX_ENABLED'));
+  assert.ok(payload.checked.includes('APP_ORIGIN'));
+  assert.ok(payload.checked.includes('NEXT_PUBLIC_PRIVACY_CONTACT_EMAIL'));
+  assert.ok(payload.checked.includes('PAID_GA_LEGAL_APPROVED'));
+  assert.ok(payload.checked.includes('PAID_GA_APPROVAL_RECORD_URI'));
+  assert.ok(payload.checked.includes('NEXT_PUBLIC_APP_ENV'));
+  assert.ok(payload.checked.includes('PUBLIC_SIGNUP_MODE'));
+  assert.ok(payload.checked.includes('NEXT_PUBLIC_API_URL'));
+  assert.ok(payload.checked.includes('NEXT_PUBLIC_OIDC_ENABLED'));
+  assert.ok(payload.checked.includes('DATABASE_ROLE_ISOLATION'));
+});
+
+test('production launch validator verifies the host backup secret source when requested', () => {
+  const scratch = mkdtempSync(join(tmpdir(), 'll-backup-secret-'));
+  const secretPath = join(scratch, 'backup-key');
+  writeFileSync(secretPath, 'managed-secret', 'utf8');
+
+  try {
+    const valid = run(validEnv({
+      BACKUP_ENCRYPTION_KEY_SECRET_FILE: secretPath,
+    }), ['--verify-local-secret-files']);
+    assert.equal(valid.status, 0, valid.stderr);
+
+    const missing = run(validEnv({
+      BACKUP_ENCRYPTION_KEY_SECRET_FILE: join(scratch, 'missing-key'),
+    }), ['--verify-local-secret-files']);
+    assert.notEqual(missing.status, 0);
+    assert.match(missing.stderr, /BACKUP_ENCRYPTION_KEY_SECRET_FILE must exist and be readable on the deployment host/);
+  } finally {
+    rmSync(scratch, { recursive: true, force: true });
+  }
+});
+
+test('production launch validator requires last-value metering and password-reset delivery', () => {
+  const aggregation = run(validEnv({
+    STRIPE_METER_AGGREGATION: 'sum',
+  }));
+  assert.notEqual(aggregation.status, 0);
+  assert.match(aggregation.stderr, /STRIPE_METER_AGGREGATION must be exactly last/);
+
+  const missingResetDelivery = run(validEnv({
+    PASSWORD_RESET_EMAIL_OUTBOX_ENABLED: undefined,
+  }));
+  assert.notEqual(missingResetDelivery.status, 0);
+  assert.match(missingResetDelivery.stderr, /PASSWORD_RESET_EMAIL_OUTBOX_ENABLED is required/);
+
+  const disabledResetDelivery = run(validEnv({
+    PASSWORD_RESET_EMAIL_OUTBOX_ENABLED: 'false',
+  }));
+  assert.notEqual(disabledResetDelivery.status, 0);
+  assert.match(disabledResetDelivery.stderr, /PASSWORD_RESET_EMAIL_OUTBOX_ENABLED must be exactly true/);
+});
+
+test('production launch validator fails closed without approved paid-GA legal terms', () => {
+  const result = run(validEnv({
+    PAID_GA_LEGAL_APPROVED: 'false',
+    PAID_GA_DPA_VERSION: 'TBD',
+    PAID_GA_COUNSEL_APPROVED_AT: '2099-01-01',
+    PAID_GA_INCIDENT_NOTICE_HOURS: '0',
+    PAID_GA_APPROVAL_RECORD_URI: 's3://lunchlineup-prod/legal/latest.json',
+  }));
+
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /PAID_GA_LEGAL_APPROVED must be exactly true/);
+  assert.match(result.stderr, /PAID_GA_DPA_VERSION must be an approved, non-placeholder/);
+  assert.match(result.stderr, /PAID_GA_COUNSEL_APPROVED_AT must be a valid, non-future/);
+  assert.match(result.stderr, /PAID_GA_INCIDENT_NOTICE_HOURS must be an approved integer/);
+  assert.match(result.stderr, /PAID_GA_APPROVAL_RECORD_URI must reference a specific retained proof artifact/);
+});
+
+test('production launch validator rejects shared PITR identities or weak immutable retention', () => {
+  const result = run(validEnv({
+    PITR_ENABLED: 'false',
+    PITR_S3_ENDPOINT: 'http://localhost:9000',
+    PITR_S3_PREFIX: 'lunchlineup/production/replace-with-cluster-id',
+    PITR_WAL_OBJECT_STORE_SECRETS_DIR: './secrets/pitr-object-store',
+    PITR_BASE_BACKUP_OBJECT_STORE_SECRETS_DIR: '/run/secrets/shared-pitr',
+    PITR_RESTORE_OBJECT_STORE_SECRETS_DIR: '/run/secrets/shared-pitr',
+    PITR_OBJECT_LOCK_RETENTION_DAYS: '8',
+  }));
+
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /PITR_ENABLED must be exactly true/);
+  assert.match(result.stderr, /PITR_S3_ENDPOINT must use https/);
+  assert.match(result.stderr, /PITR_S3_PREFIX must be a dedicated cluster-specific prefix/);
+  assert.match(result.stderr, /PITR_WAL_OBJECT_STORE_SECRETS_DIR must be an absolute managed-secret directory/);
+  assert.match(result.stderr, /PITR WAL, base-backup, and restore identities must use distinct/);
+  assert.match(result.stderr, /PITR_OBJECT_LOCK_RETENTION_DAYS must be an integer of at least 14/);
+});
+
+test('production launch validator rejects shared database owner and runtime credentials', () => {
+  const result = run(validEnv({
+    APP_DB_USER: 'lunchlineup_admin',
+    APP_DB_PASSWORD: 'pg_abcdefghijklmnopqrstuvwxyz123456',
+    DATABASE_URL: 'postgresql://lunchlineup_admin:pg_abcdefghijklmnopqrstuvwxyz123456@postgres:5432/lunchlineup',
+  }));
+
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /APP_DB_USER must be distinct from POSTGRES_USER/);
+  assert.match(result.stderr, /APP_DB_PASSWORD must be distinct from POSTGRES_PASSWORD/);
+});
+
+test('production launch validator rejects database URLs using the wrong roles or targets', () => {
+  const result = run(validEnv({
+    DATABASE_URL: 'postgresql://lunchlineup_admin:pg_abcdefghijklmnopqrstuvwxyz123456@postgres:5432/lunchlineup',
+    MIGRATION_DATABASE_URL: 'postgresql://lunchlineup_admin:pg_abcdefghijklmnopqrstuvwxyz123456@other-db:5432/lunchlineup',
+  }));
+
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /DATABASE_URL must authenticate with APP_DB_USER and APP_DB_PASSWORD/);
+  assert.match(result.stderr, /must target the same PostgreSQL database/);
+});
+
+test('production launch validator rejects an external database not protected by Compose recovery', () => {
+  const result = run(validEnv({
+    DATABASE_URL: 'postgresql://lunchlineup_app:app_pg_abcdefghijklmnopqrstuvwxyz123456@db.prod.example:5432/lunchlineup',
+    MIGRATION_DATABASE_URL: 'postgresql://lunchlineup_admin:pg_abcdefghijklmnopqrstuvwxyz123456@db.prod.example:5432/lunchlineup',
+  }));
+
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /must target Compose service postgres:5432\/POSTGRES_DB/);
+});
+
+test('production launch validator accepts percent-encoded reserved-character credentials', () => {
+  const ownerPassword = 'owner:@/?[]%abcdefghijklmnopqrstuvwxyz';
+  const appPassword = 'app:@/?[]%abcdefghijklmnopqrstuvwxyz';
+  const rabbitPassword = 'rabbit:@/?[]%abcdefghijklmnopqrst';
+  const result = run(validEnv({
+    POSTGRES_PASSWORD: ownerPassword,
+    APP_DB_PASSWORD: appPassword,
+    RABBITMQ_PASSWORD: rabbitPassword,
+    DATABASE_URL: `postgresql://lunchlineup_app:${encodeURIComponent(appPassword)}@postgres:5432/lunchlineup`,
+    MIGRATION_DATABASE_URL: `postgresql://lunchlineup_admin:${encodeURIComponent(ownerPassword)}@postgres:5432/lunchlineup`,
+    RABBITMQ_URL: `amqp://lunchlineup:${encodeURIComponent(rabbitPassword)}@rabbitmq:5672`,
+  }));
+
+  assert.equal(result.status, 0, result.stderr);
+  const payload = JSON.parse(result.stdout);
+  assert.ok(payload.checked.includes('RABBITMQ_URL_CREDENTIALS'));
+});
+
+test('production launch validator rejects raw reserved-character URL credentials', () => {
+  const result = run(validEnv({
+    APP_DB_PASSWORD: 'app:raw-reserved-password-abcdefghijklmnopqrstuvwxyz',
+    DATABASE_URL: 'postgresql://lunchlineup_app:app:raw-reserved-password-abcdefghijklmnopqrstuvwxyz@postgres:5432/lunchlineup',
+  }));
+
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /DATABASE_URL credentials must percent-encode reserved characters/);
+});
+
+test('production API health proof must be public HTTPS on DOMAIN and an API health route', () => {
+  for (const value of [
+    'http://lunchlineup.com/api/health',
+    'https://127.0.0.1/api/health',
+    'https://status.lunchlineup.com/api/health',
+    'https://lunchlineup.com/admin',
+  ]) {
+    const result = run(validEnv({ PRODUCTION_API_HEALTH_URL: value }));
+    assert.notEqual(result.status, 0, value);
+    assert.match(result.stderr, /PRODUCTION_API_HEALTH_URL/);
+  }
+});
+
+test('production launch validator rejects open signup even with Turnstile keys', () => {
+  const result = run(validEnv({
+    PUBLIC_SIGNUP_MODE: 'open',
+    NEXT_PUBLIC_SIGNUP_MODE: 'open',
+    NEXT_PUBLIC_TURNSTILE_SITE_KEY: '0x4AAAAAAABBBBBBBBBCCCC',
+    TURNSTILE_SECRET_KEY: '0x4AAAAAAABBBBBBBBBCCCCDDDDDDDDDDDDDD',
+  }));
+
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /must both be closed_beta while the checked-in Terms are not counsel-approved and versioned/);
+});
+
+test('production launch validator rejects invite-only signup even with generated codes', () => {
+  const result = run(validEnv({
+    PUBLIC_SIGNUP_MODE: 'invite_only',
+    NEXT_PUBLIC_SIGNUP_MODE: 'invite_only',
+    PUBLIC_SIGNUP_INVITE_CODES: 'g7K4P9xQ2rV6mT8cY3nB5sHd',
+  }));
+
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /must both be closed_beta while the checked-in Terms are not counsel-approved and versioned/);
+});
+
+test('production launch validator rejects the example environment', () => {
+  const result = spawnSync(process.execPath, [validator, '.env.example'], {
+    cwd: root,
+    encoding: 'utf8',
+  });
+
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /DATA_TARGET_ENV must be exactly production/);
+  assert.match(result.stderr, /MIGRATION_PRODUCTION_CONFIRM is required/);
+  assert.match(result.stderr, /DOMAIN must be a real public hostname/);
+  assert.match(result.stderr, /STRIPE_SECRET_KEY is required/);
+  assert.match(result.stderr, /METRICS_TOKEN_FILE must be an absolute managed-secret path/);
+});
+
+test('production launch validator rejects placeholder public contacts and unsafe signup modes', () => {
+  const result = run(validEnv({
+    NEXT_PUBLIC_PRIVACY_CONTACT_EMAIL: 'privacy@example.com',
+    NEXT_PUBLIC_SUPPORT_CONTACT_EMAIL: 'support@lunchlineup.example',
+    NEXT_PUBLIC_DPA_CONTACT_EMAIL: 'LunchLineup DPA <dpa@lunchlineup.com>',
+    PUBLIC_SIGNUP_MODE: 'public',
+    NEXT_PUBLIC_SIGNUP_MODE: 'open',
+  }));
+
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /NEXT_PUBLIC_PRIVACY_CONTACT_EMAIL must use a real public mailbox domain/);
+  assert.match(result.stderr, /NEXT_PUBLIC_SUPPORT_CONTACT_EMAIL must use a real public mailbox domain/);
+  assert.match(result.stderr, /NEXT_PUBLIC_DPA_CONTACT_EMAIL must be a bare email address/);
+  assert.match(result.stderr, /PUBLIC_SIGNUP_MODE must be one of: closed_beta, invite_only, open/);
+  assert.match(result.stderr, /PUBLIC_SIGNUP_MODE and NEXT_PUBLIC_SIGNUP_MODE must match/);
+});
+
+test('production launch validator keeps invite-only closed regardless of code quality', () => {
+  const result = run(validEnv({
+    PUBLIC_SIGNUP_MODE: 'invite_only',
+    NEXT_PUBLIC_SIGNUP_MODE: 'invite_only',
+    PUBLIC_SIGNUP_INVITE_CODES: 'invite_code,abcdefghijklmnopqrstuvwx',
+  }));
+
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /must both be closed_beta while the checked-in Terms are not counsel-approved and versioned/);
+});
+
+test('production launch validator keeps open signup closed regardless of Turnstile configuration', () => {
+  const result = run(validEnv({
+    PUBLIC_SIGNUP_MODE: 'open',
+    NEXT_PUBLIC_SIGNUP_MODE: 'open',
+    NEXT_PUBLIC_TURNSTILE_SITE_KEY: '1x00000000000000000000AA',
+    TURNSTILE_SECRET_KEY: '',
+  }));
+
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /must both be closed_beta while the checked-in Terms are not counsel-approved and versioned/);
+});
+
+test('production launch validator rejects omitted and blank APP_ORIGIN', () => {
+  for (const value of [undefined, '', '   ']) {
+    const result = run(validEnv({ APP_ORIGIN: value }));
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /APP_ORIGIN must be a valid https URL/);
+  }
+});
+
+test('production launch validator rejects unsafe public app URLs', () => {
+  const result = run(validEnv({
+    NEXT_PUBLIC_APP_ORIGIN: 'http://localhost:3000',
+    NEXT_PUBLIC_APP_URL: 'https://example.com',
+    NEXT_PUBLIC_APP_ENV: 'preview',
+  }));
+
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /NEXT_PUBLIC_APP_ORIGIN must use https/);
+  assert.match(result.stderr, /NEXT_PUBLIC_APP_URL must use a real public hostname/);
+  assert.match(result.stderr, /NEXT_PUBLIC_APP_ENV must be production/);
+});
+
+test('production launch validator rejects non-same-origin public API URLs', () => {
+  for (const value of [
+    'https://api.lunchlineup.com/api/v1',
+    'https://lunchlineup.com/api/v1',
+    '/api/v2',
+    '/v1',
+  ]) {
+    const result = run(validEnv({ NEXT_PUBLIC_API_URL: value }));
+
+    assert.notEqual(result.status, 0, value);
+    assert.match(result.stderr, /NEXT_PUBLIC_API_URL must be exactly \/api\/v1/);
+  }
+});
+
+test('production launch validator requires OIDC on both API and web before SSO-only launch', () => {
+  const apiOnly = run(validEnv({
+    OIDC_ENABLED: 'true',
+    NEXT_PUBLIC_OIDC_ENABLED: 'false',
+    OIDC_ISSUER_URL: 'https://accounts.lunchlineup.com',
+    OIDC_CLIENT_ID: 'lunchlineup-prod',
+    OIDC_CLIENT_SECRET: 'oidc_abcdefghijklmnopqrstuvwxyz1234567890',
+    OIDC_REDIRECT_URI: 'https://lunchlineup.com/api/v1/auth/callback',
+  }));
+  assert.notEqual(apiOnly.status, 0);
+  assert.match(apiOnly.stderr, /OIDC_ENABLED and NEXT_PUBLIC_OIDC_ENABLED must match/);
+
+  const webOnly = run(validEnv({
+    OIDC_ENABLED: 'false',
+    NEXT_PUBLIC_OIDC_ENABLED: 'true',
+    OIDC_ISSUER_URL: 'https://accounts.lunchlineup.com',
+    OIDC_CLIENT_ID: 'lunchlineup-prod',
+    OIDC_CLIENT_SECRET: 'oidc_abcdefghijklmnopqrstuvwxyz1234567890',
+    OIDC_REDIRECT_URI: 'https://lunchlineup.com/api/v1/auth/callback',
+  }));
+  assert.notEqual(webOnly.status, 0);
+  assert.match(webOnly.stderr, /OIDC_ENABLED and NEXT_PUBLIC_OIDC_ENABLED must match/);
+
+  const missingSecret = run(validEnv({
+    OIDC_ENABLED: 'true',
+    NEXT_PUBLIC_OIDC_ENABLED: 'true',
+    OIDC_ISSUER_URL: 'https://accounts.lunchlineup.com',
+    OIDC_CLIENT_ID: 'lunchlineup-prod',
+    OIDC_CLIENT_SECRET: '',
+    OIDC_REDIRECT_URI: 'https://lunchlineup.com/api/v1/auth/callback',
+  }));
+  assert.notEqual(missingSecret.status, 0);
+  assert.match(missingSecret.stderr, /OIDC_CLIENT_SECRET is required/);
+
+  const externalCallback = run(validEnv({
+    OIDC_ENABLED: 'true',
+    NEXT_PUBLIC_OIDC_ENABLED: 'true',
+    OIDC_ISSUER_URL: 'https://accounts.lunchlineup.com',
+    OIDC_CLIENT_ID: 'lunchlineup-prod',
+    OIDC_CLIENT_SECRET: 'oidc_abcdefghijklmnopqrstuvwxyz1234567890',
+    OIDC_REDIRECT_URI: 'https://auth.lunchlineup.com/callback',
+  }));
+  assert.notEqual(externalCallback.status, 0);
+  assert.match(externalCallback.stderr, /OIDC_REDIRECT_URI must use DOMAIN/);
+});
+
+test('production launch validator accepts OIDC when API and web login are both available', () => {
+  const result = run(validEnv({
+    OIDC_ENABLED: 'true',
+    NEXT_PUBLIC_OIDC_ENABLED: 'true',
+    OIDC_ISSUER_URL: 'https://accounts.lunchlineup.com',
+    OIDC_CLIENT_ID: 'lunchlineup-prod',
+    OIDC_CLIENT_SECRET: 'oidc_abcdefghijklmnopqrstuvwxyz1234567890',
+    OIDC_REDIRECT_URI: 'https://lunchlineup.com/api/v1/auth/callback',
+  }));
+
+  assert.equal(result.status, 0, result.stderr);
+  const payload = JSON.parse(result.stdout);
+  assert.ok(payload.checked.includes('OIDC_ENABLED'));
+  assert.ok(payload.checked.includes('NEXT_PUBLIC_OIDC_ENABLED'));
+  assert.ok(payload.checked.includes('OIDC_REDIRECT_URI'));
+});
+
+test('production launch validator blocks smoke-only payment and local secret values', () => {
+  const result = run(validEnv({
+    DATA_TARGET_ENV: 'development',
+    MIGRATION_PRODUCTION_CONFIRM: '',
+    DOMAIN: 'app.example.com',
+    ALLOWED_HOSTS: 'app.example.com,localhost',
+    ALLOWED_ORIGINS: 'https://app.example.com,http://localhost',
+    CADDY_SITE_ADDRESSES: 'http://app.example.com',
+    STRIPE_SECRET_KEY: 'sk_test_abcdefghijklmnopqrstuvwxyz123456',
+    STRIPE_WEBHOOK_ENDPOINT_ID: '',
+    STRIPE_METER_ERROR_WEBHOOK_SECRET: '',
+    STRIPE_METER_ERROR_EVENT_DESTINATION_ID: '',
+    STRIPE_PRICE_STARTER: '',
+    STRIPE_METER_ID: '',
+    STRIPE_METERED_USAGE_ENABLED: 'false',
+    STRIPE_METER_EVENT_NAME: '',
+    STRIPE_USAGE_SNAPSHOT_INTERVAL_SECONDS: '',
+    METRICS_TOKEN_FILE: './secrets/metrics_token',
+    RETENTION_PURGE_SERVICE_TOKEN_SECRET_FILE: './secrets/retention_purge_token',
+    CONTROL_PLANE_ADMIN_TOKEN_SECRET_FILE: './secrets/control_plane_admin_token',
+    API_HOST_BIND: '0.0.0.0',
+    BACKUP_ENCRYPTION_KEY_SECRET_FILE: './secrets/backup_key',
+    BACKUP_OFFSITE_URI: 'file:///backups',
+    BACKUP_METRICS_FILE: './backup.prom',
+    ALERTMANAGER_WEBHOOK_URL_FILE: './secrets/alertmanager_webhook_url',
+    NEXT_PUBLIC_WS_URL: 'ws://app.example.com',
+    LUNCHLINEUP_STATUS_HEALTH_URL: 'http://localhost/health',
+    LAUNCH_PROOF_MANIFEST_URI: 's3://lunchlineup-prod/launch-proof/latest.json',
+    LAUNCH_PROOF_DAST_URL: '',
+    LAUNCH_PROOF_LOAD_TEST_URL: 'https://example.com/load/latest',
+    LAUNCH_PROOF_DR_DRILL_URI: 's3://lunchlineup-prod/launch-proof/latest.json',
+    LAUNCH_PROOF_ALERT_ROUTE_URL: 'http://ops.example.com/alert',
+    LAUNCH_PROOF_EXTERNAL_HEALTH_URL: 'https://localhost/checks/api-health',
+  }));
+
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /DOMAIN must be a real public hostname/);
+  assert.match(result.stderr, /STRIPE_SECRET_KEY must be a live Stripe secret key/);
+  assert.match(result.stderr, /STRIPE_WEBHOOK_ENDPOINT_ID is required/);
+  assert.match(result.stderr, /STRIPE_METER_ERROR_WEBHOOK_SECRET is required/);
+  assert.match(result.stderr, /STRIPE_METER_ERROR_EVENT_DESTINATION_ID is required/);
+  assert.match(result.stderr, /STRIPE_PRICE_STARTER is required/);
+  assert.match(result.stderr, /STRIPE_METER_ID is required/);
+  assert.match(result.stderr, /STRIPE_METERED_USAGE_ENABLED must be true/);
+  assert.match(result.stderr, /STRIPE_METER_EVENT_NAME is required/);
+  assert.match(result.stderr, /STRIPE_USAGE_SNAPSHOT_INTERVAL_SECONDS is required/);
+  assert.match(result.stderr, /METRICS_TOKEN_FILE must be an absolute managed-secret path/);
+  assert.match(result.stderr, /RETENTION_PURGE_SERVICE_TOKEN_SECRET_FILE must be an absolute managed-secret path/);
+  assert.match(result.stderr, /CONTROL_PLANE_ADMIN_TOKEN_SECRET_FILE must be an absolute managed-secret path/);
+  assert.match(result.stderr, /API_HOST_BIND must bind only to loopback/);
+  assert.match(result.stderr, /BACKUP_ENCRYPTION_KEY_SECRET_FILE must be an absolute managed-secret path/);
+  assert.match(result.stderr, /BACKUP_OFFSITE_URI must point at off-host storage/);
+  assert.match(result.stderr, /BACKUP_METRICS_FILE must be an absolute Prometheus textfile collector/);
+  assert.match(result.stderr, /ALERTMANAGER_WEBHOOK_URL_FILE must be an absolute managed-secret path/);
+  assert.match(result.stderr, /NEXT_PUBLIC_WS_URL must use wss/);
+  assert.match(result.stderr, /LUNCHLINEUP_STATUS_HEALTH_URL must use https/);
+  assert.match(result.stderr, /LAUNCH_PROOF_MANIFEST_URI must reference a specific retained proof artifact/);
+  assert.match(result.stderr, /LAUNCH_PROOF_DAST_URL is required/);
+  assert.match(result.stderr, /LAUNCH_PROOF_LOAD_TEST_URL must use a real public hostname/);
+  assert.match(result.stderr, /LAUNCH_PROOF_DR_DRILL_URI must reference a specific retained proof artifact/);
+  assert.match(result.stderr, /LAUNCH_PROOF_ALERT_ROUTE_URL must use https/);
+  assert.match(result.stderr, /LAUNCH_PROOF_EXTERNAL_HEALTH_URL must use a real public hostname/);
+});
+
+test('production launch validator rejects shared control-plane token source', () => {
+  const result = run(validEnv({
+    CONTROL_PLANE_ADMIN_TOKEN_SECRET_FILE: '/run/secrets/metrics_token',
+  }));
+
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /CONTROL_PLANE_ADMIN_TOKEN_SECRET_FILE must use a separate secret file from METRICS_TOKEN_FILE/);
+});
+
+test('production launch validator rejects invalid managed MFA encryption keys', () => {
+  const missing = run(validEnv({ MFA_SECRET_ENCRYPTION_KEY_CURRENT: '' }));
+  assert.notEqual(missing.status, 0);
+  assert.match(missing.stderr, /MFA_SECRET_ENCRYPTION_KEY_CURRENT is required/);
+
+  const malformed = run(validEnv({ MFA_SECRET_ENCRYPTION_KEY_CURRENT: 'short' }));
+  assert.notEqual(malformed.status, 0);
+  assert.match(malformed.stderr, /MFA_SECRET_ENCRYPTION_KEY_CURRENT must decode to exactly 32 bytes/);
+
+  const duplicate = run(validEnv({
+    MFA_SECRET_ENCRYPTION_KEY_PREVIOUS: '1111111111111111111111111111111111111111111111111111111111111111',
+  }));
+  assert.notEqual(duplicate.status, 0);
+  assert.match(duplicate.stderr, /MFA_SECRET_ENCRYPTION_KEY_PREVIOUS must differ/);
+});
+
+test('production launch validator rejects missing or malformed webhook delivery encryption key', () => {
+  const missing = run(validEnv({ WEBHOOK_DELIVERY_ENCRYPTION_KEY_CURRENT: '' }));
+  assert.notEqual(missing.status, 0);
+  assert.match(missing.stderr, /WEBHOOK_DELIVERY_ENCRYPTION_KEY_CURRENT is required/);
+
+  const malformed = run(validEnv({ WEBHOOK_DELIVERY_ENCRYPTION_KEY_CURRENT: 'short-webhook-key' }));
+  assert.notEqual(malformed.status, 0);
+  assert.match(malformed.stderr, /WEBHOOK_DELIVERY_ENCRYPTION_KEY_CURRENT must decode to exactly 32 bytes/);
+});
+
+test('production launch validator rejects missing or malformed password reset outbox encryption key', () => {
+  const missing = run(validEnv({ PASSWORD_RESET_OUTBOX_ENCRYPTION_KEY: '' }));
+  assert.notEqual(missing.status, 0);
+  assert.match(missing.stderr, /PASSWORD_RESET_OUTBOX_ENCRYPTION_KEY is required/);
+
+  const malformed = run(validEnv({ PASSWORD_RESET_OUTBOX_ENCRYPTION_KEY: 'short-reset-key' }));
+  assert.notEqual(malformed.status, 0);
+  assert.match(malformed.stderr, /PASSWORD_RESET_OUTBOX_ENCRYPTION_KEY must decode to exactly 32 bytes/);
+});
+
+test('production launch validator rejects placeholder launch-proof references', () => {
+  const result = run(validEnv({
+    LAUNCH_PROOF_MANIFEST_URI: 's3://lunchlineup-prod/launch-proof/launch-proof-YYYYMMDDHHMMSS.json',
+    LAUNCH_PROOF_DAST_URL: 'https://github.com/tuckerplee/lunchlineup/actions/runs/<run-id>/artifacts/<artifact-id>',
+    LAUNCH_PROOF_LOAD_TEST_URL: 'https://github.com/tuckerplee/lunchlineup/actions/runs/123456789/artifacts/<artifact-id>',
+    LAUNCH_PROOF_DR_DRILL_URI: 's3://lunchlineup-prod/launch-proof/dr-drill-YYYYMMDDHHMMSS.json',
+    LAUNCH_PROOF_ALERT_ROUTE_URL: 'https://pagerduty.com/incidents/<incident-id>',
+    LAUNCH_PROOF_EXTERNAL_HEALTH_URL: 'https://status.lunchlineup.com/checks/api-health-YYYYMMDDHHMMSS',
+  }));
+
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /LAUNCH_PROOF_MANIFEST_URI must not contain placeholder text/);
+  assert.match(result.stderr, /LAUNCH_PROOF_DAST_URL must not contain placeholder text/);
+  assert.match(result.stderr, /LAUNCH_PROOF_LOAD_TEST_URL must not contain placeholder text/);
+  assert.match(result.stderr, /LAUNCH_PROOF_DR_DRILL_URI must not contain placeholder text/);
+  assert.match(result.stderr, /LAUNCH_PROOF_ALERT_ROUTE_URL must not contain placeholder text/);
+  assert.match(result.stderr, /LAUNCH_PROOF_EXTERNAL_HEALTH_URL must not contain placeholder text/);
+});
+
+test('production launch validator help is read-only', () => {
+  const output = execFileSync(process.execPath, [validator, '--help'], {
+    cwd: root,
+    encoding: 'utf8',
+  });
+
+  assert.match(output, /Usage: node scripts\/validate-production-launch\.mjs/);
+});

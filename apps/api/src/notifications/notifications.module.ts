@@ -1,17 +1,11 @@
 import { Module } from '@nestjs/common';
 import { NotificationsService } from './notifications.service';
-import { PrismaClient } from '@lunchlineup/db';
-import { NOTIFICATIONS_PRISMA } from './notifications.constants';
 import { NotificationsController } from './notifications.controller';
-
-const prismaProvider = {
-    provide: NOTIFICATIONS_PRISMA,
-    useFactory: () => new PrismaClient()
-};
+import { TenantPrismaService } from '../database/tenant-prisma.service';
 
 @Module({
     controllers: [NotificationsController],
-    providers: [NotificationsService, prismaProvider],
+    providers: [TenantPrismaService, NotificationsService],
     exports: [NotificationsService],
 })
 export class NotificationsModule { }

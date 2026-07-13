@@ -1,11 +1,23 @@
 'use client';
 
-import React, { useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { LunchLineupMark } from '@/components/branding/LunchLineupMark';
+import { buildOnboardingOtpPayload, normalizePublicSignupMode, shouldUseOpenSignupChallenge } from './challenge';
+import {
+    clearPendingFirstLocation,
+    readPendingFirstLocation,
+    savePendingFirstLocation,
+    type PendingFirstLocation,
+} from './first-location-recovery';
+import { TurnstileChallenge } from './TurnstileChallenge';
+import { rememberWorkspaceSlug } from '@/lib/workspace-slug';
 
 const API = '/api/v1';
+const PUBLIC_SIGNUP_MODE = normalizePublicSignupMode(process.env.NEXT_PUBLIC_SIGNUP_MODE);
+const TURNSTILE_SITE_KEY = process.env.NEXT_PUBLIC_TURNSTILE_SITE_KEY?.trim() ?? '';
+const FIRST_LOCATION_RESUME_PATH = '/onboarding?resume=first-location';
 
 const STEPS = [
     { id: 1, label: 'Account' },
@@ -23,21 +35,51 @@ function isValidEmail(email: string): boolean {
     return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
 }
 
+function mfaResumePath(redirectTo: unknown): string {
+    if (typeof redirectTo === 'string' && redirectTo.startsWith('/mfa?')) return redirectTo;
+    return `/mfa?next=${encodeURIComponent(FIRST_LOCATION_RESUME_PATH)}`;
+}
+
 export default function OnboardingPage() {
     const router = useRouter();
+    const resumeAttemptedRef = useRef(false);
     const [step, setStep] = useState(1);
     const [isSendingOtp, setIsSendingOtp] = useState(false);
     const [isSubmitting, setIsSubmitting] = useState(false);
     const [resendCountdown, setResendCountdown] = useState(0);
     const [otpSent, setOtpSent] = useState(false);
     const [error, setError] = useState<string | null>(null);
+    const [onboardingChallengeToken, setOnboardingChallengeToken] = useState('');
+    const [turnstileToken, setTurnstileToken] = useState('');
+    const [turnstileUnavailable, setTurnstileUnavailable] = useState(false);
+    const [turnstileResetSignal, setTurnstileResetSignal] = useState(0);
+    const [termsAccepted, setTermsAccepted] = useState(false);
+    const [privacyAccepted, setPrivacyAccepted] = useState(false);
+    const [launchedWorkspaceSlug, setLaunchedWorkspaceSlug] = useState('');
+    const [pendingFirstLocation, setPendingFirstLocation] = useState<PendingFirstLocation | null>(null);
 
     const [formData, setFormData] = useState({
         email: '',
+        signupCode: '',
         tenantName: '',
         firstLocationName: '',
     });
     const [otp, setOtp] = useState('');
+    const signupRequiresInvite = PUBLIC_SIGNUP_MODE === 'invite_only';
+    const signupClosed = PUBLIC_SIGNUP_MODE === 'closed_beta';
+    const signupUsesChallenge = shouldUseOpenSignupChallenge(PUBLIC_SIGNUP_MODE, TURNSTILE_SITE_KEY);
+    const challengePending = signupUsesChallenge && !turnstileUnavailable && !turnstileToken;
+    const challengeBlocked = signupUsesChallenge && turnstileUnavailable && !turnstileToken;
+    const challengeCannotSubmit = signupUsesChallenge && !turnstileToken;
+    const legalAssentComplete = termsAccepted && privacyAccepted;
+
+    const handleTurnstileTokenChange = useCallback((token: string) => {
+        setTurnstileToken(token);
+    }, []);
+
+    const handleTurnstileUnavailableChange = useCallback((unavailable: boolean) => {
+        setTurnstileUnavailable(unavailable);
+    }, []);
 
     useEffect(() => {
         if (resendCountdown <= 0) return;
@@ -45,7 +87,127 @@ export default function OnboardingPage() {
         return () => clearTimeout(t);
     }, [resendCountdown]);
 
+    useEffect(() => {
+        setOtpSent(false);
+        setOtp('');
+        setOnboardingChallengeToken('');
+        setResendCountdown(0);
+        setTurnstileToken('');
+        if (signupUsesChallenge) {
+            setTurnstileResetSignal((signal) => signal + 1);
+        }
+    }, [formData.email, formData.tenantName, formData.signupCode, signupUsesChallenge]);
+
+    const getTurnstileTokenForRequest = (message: string): string | undefined | null => {
+        if (!signupUsesChallenge) return undefined;
+        if (turnstileToken) return turnstileToken;
+        if (turnstileUnavailable) {
+            setError('Security check is unavailable. Refresh the page and try again.');
+            return null;
+        }
+        setError(message);
+        return null;
+    };
+
+    const resetOpenSignupChallenge = () => {
+        if (!signupUsesChallenge || turnstileUnavailable) return;
+        setTurnstileToken('');
+        setTurnstileResetSignal((signal) => signal + 1);
+    };
+
+    const provisionFirstLocation = useCallback(async (pending: PendingFirstLocation) => {
+        savePendingFirstLocation(window.sessionStorage, pending);
+        setPendingFirstLocation(pending);
+        const csrfToken = getCsrfTokenFromCookie();
+        const provisionRes = await fetch(`${API}/locations`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'Idempotency-Key': pending.requestKey,
+                ...(csrfToken ? { 'x-csrf-token': csrfToken } : {}),
+            },
+            credentials: 'include',
+            body: JSON.stringify({
+                name: pending.firstLocationName,
+                tenantName: pending.tenantName,
+                timezone: pending.timezone,
+            }),
+        });
+        const data = await provisionRes.json().catch(() => ({}));
+        if (!provisionRes.ok) {
+            if (provisionRes.status === 403 && /mfa/i.test(String(data.message ?? data.error ?? ''))) {
+                router.push(mfaResumePath(undefined));
+                return;
+            }
+            throw new Error(data.message || 'Your workspace is saved, but the first location could not be created. Retry when the service is available.');
+        }
+
+        clearPendingFirstLocation(window.sessionStorage);
+        setPendingFirstLocation(null);
+        const workspaceSlug = rememberWorkspaceSlug(window.localStorage, pending.workspaceSlug);
+        if (!workspaceSlug) throw new Error('Workspace setup completed without a valid sign-in slug. Contact support.');
+        setLaunchedWorkspaceSlug(workspaceSlug);
+        setIsSubmitting(false);
+    }, [router]);
+
+    useEffect(() => {
+        if (resumeAttemptedRef.current) return;
+        const params = new URLSearchParams(window.location.search);
+        if (params.get('resume') !== 'first-location') return;
+
+        resumeAttemptedRef.current = true;
+        const pending = readPendingFirstLocation(window.sessionStorage);
+        if (!pending) {
+            setStep(4);
+            setError('Workspace setup expired. Restart onboarding to create the first location.');
+            return;
+        }
+
+        setStep(4);
+        setIsSubmitting(true);
+        void provisionFirstLocation(pending).catch((err) => {
+            setError((err as Error).message);
+            setIsSubmitting(false);
+        });
+    }, [provisionFirstLocation]);
+
+    const retryFirstLocation = () => {
+        if (!pendingFirstLocation || isSubmitting) return;
+        setIsSubmitting(true);
+        setError(null);
+        void provisionFirstLocation(pendingFirstLocation).catch((err) => {
+            setError((err as Error).message);
+            setIsSubmitting(false);
+        });
+    };
+
     const sendOtp = async () => {
+        const email = formData.email.trim().toLowerCase();
+        const signupCode = formData.signupCode.trim();
+        const tenantName = formData.tenantName.trim();
+        if (signupClosed) {
+            setError('Public signup is currently closed.');
+            return false;
+        }
+        if (!isValidEmail(email)) {
+            setError('Please enter a valid email address.');
+            return false;
+        }
+        if (signupRequiresInvite && !signupCode) {
+            setError('Invite code is required.');
+            return false;
+        }
+        if (!tenantName) {
+            setError('Organization name is required.');
+            return false;
+        }
+        if (!legalAssentComplete) {
+            setError('Accept the Terms and acknowledge the Privacy notice before requesting a code.');
+            return false;
+        }
+        const challengeToken = getTurnstileTokenForRequest('Complete the security check before requesting a code.');
+        if (challengeToken === null) return false;
+
         setIsSendingOtp(true);
         setError(null);
         try {
@@ -53,16 +215,29 @@ export default function OnboardingPage() {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 credentials: 'include',
-                body: JSON.stringify({ email: formData.email.trim().toLowerCase() }),
+                body: JSON.stringify(buildOnboardingOtpPayload({
+                    email,
+                    tenantName,
+                    signupCode,
+                    turnstileToken: challengeToken,
+                    termsAccepted,
+                    privacyAccepted,
+                })),
             });
             const data = await res.json().catch(() => ({}));
             if (!res.ok || !data.success) {
                 throw new Error(data.error || 'Failed to send verification code.');
             }
+            if (typeof data.onboardingChallengeToken !== 'string' || !data.onboardingChallengeToken.trim()) {
+                throw new Error('Verification challenge was not created. Request a new code.');
+            }
+            setOnboardingChallengeToken(data.onboardingChallengeToken.trim());
             setOtpSent(true);
             setResendCountdown(60);
+            resetOpenSignupChallenge();
             return true;
         } catch (err) {
+            resetOpenSignupChallenge();
             setError((err as Error).message);
             return false;
         } finally {
@@ -71,16 +246,24 @@ export default function OnboardingPage() {
     };
 
     useEffect(() => {
-        if (step === 4 && !otpSent && isValidEmail(formData.email.trim())) {
+        if (step === 4 && !otpSent && legalAssentComplete && isValidEmail(formData.email.trim()) && formData.tenantName.trim() && !challengeCannotSubmit) {
             void sendOtp();
         }
-    }, [step, otpSent, formData.email]);
+    }, [step, otpSent, legalAssentComplete, formData.email, formData.tenantName, challengeCannotSubmit]);
 
     const nextStep = () => {
         setError(null);
 
+        if (signupClosed) {
+            setError('Public signup is currently closed.');
+            return;
+        }
         if (step === 1 && !isValidEmail(formData.email.trim())) {
             setError('Please enter a valid email address.');
+            return;
+        }
+        if (step === 1 && signupRequiresInvite && !formData.signupCode.trim()) {
+            setError('Invite code is required.');
             return;
         }
         if (step === 2 && !formData.tenantName.trim()) {
@@ -101,59 +284,80 @@ export default function OnboardingPage() {
     };
 
     const handleComplete = async () => {
+        if (!legalAssentComplete) {
+            setError('Accept the Terms and acknowledge the Privacy notice before creating your workspace.');
+            return;
+        }
         const cleanOtp = otp.trim();
         if (!/^\d{6}$/.test(cleanOtp)) {
             setError('Enter a valid 6-digit code.');
             return;
         }
 
+        if (!onboardingChallengeToken) {
+            setError('Request a new verification code before creating your workspace.');
+            return;
+        }
         try {
             setIsSubmitting(true);
             setError(null);
+            const signupCode = formData.signupCode.trim();
+            const challengeToken = getTurnstileTokenForRequest('Complete the security check before verifying your code.');
+            if (challengeToken === null) {
+                setIsSubmitting(false);
+                return;
+            }
 
-            const verifyRes = await fetch(`${API}/auth/email/verify-otp`, {
+            const verifyRes = await fetch(`${API}/auth/email/verify-otp?next=${encodeURIComponent(FIRST_LOCATION_RESUME_PATH)}`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 credentials: 'include',
-                body: JSON.stringify({
+                body: JSON.stringify(buildOnboardingOtpPayload({
                     email: formData.email.trim().toLowerCase(),
                     code: cleanOtp,
-                }),
+                    tenantName: formData.tenantName.trim(),
+                    signupCode,
+                    turnstileToken: challengeToken,
+                    termsAccepted,
+                    onboardingChallengeToken,
+                    privacyAccepted,
+                })),
             });
             const verifyData = await verifyRes.json().catch(() => ({}));
             if (!verifyRes.ok || !verifyData.success) {
                 throw new Error(verifyData.message || verifyData.error || 'Invalid or expired verification code.');
             }
-
-            const csrfToken = getCsrfTokenFromCookie();
-            const provisionRes = await fetch(`${API}/locations`, {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                    ...(csrfToken ? { 'x-csrf-token': csrfToken } : {}),
-                },
-                credentials: 'include',
-                body: JSON.stringify({
-                    name: formData.firstLocationName,
-                    tenantName: formData.tenantName,
-                    timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
-                }),
-            });
-            if (!provisionRes.ok) {
-                const data = await provisionRes.json().catch(() => ({}));
-                throw new Error(data.message || 'Failed to provision workspace. Please try again.');
+            const workspaceSlug = rememberWorkspaceSlug(window.localStorage, String(verifyData.workspaceSlug ?? ''));
+            if (!workspaceSlug) {
+                throw new Error('Workspace created without a sign-in slug. Contact support before signing out.');
             }
 
-            router.push('/dashboard');
-            router.refresh();
+            const pending: PendingFirstLocation = {
+                requestKey: crypto.randomUUID(),
+                workspaceSlug,
+                firstLocationName: formData.firstLocationName.trim(),
+                tenantName: formData.tenantName.trim(),
+                timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+                createdAt: Date.now(),
+            };
+            savePendingFirstLocation(window.sessionStorage, pending);
+            setPendingFirstLocation(pending);
+            if (verifyData.requiresMfa) {
+                router.push(mfaResumePath(verifyData.redirectTo));
+                return;
+            }
+
+            window.history.replaceState(window.history.state, '', FIRST_LOCATION_RESUME_PATH);
+            await provisionFirstLocation(pending);
         } catch (err) {
+            resetOpenSignupChallenge();
             setError((err as Error).message);
             setIsSubmitting(false);
         }
     };
 
     return (
-        <div className="onb-shell">
+        <main className="onb-shell">
             <div className="onb-orb onb-orb--left" aria-hidden="true" />
             <div className="onb-orb onb-orb--right" aria-hidden="true" />
 
@@ -240,6 +444,57 @@ export default function OnboardingPage() {
 
                 <section className="onb-auth">
                     <div className="surface-card onb-card">
+                        {launchedWorkspaceSlug ? (
+                            <div style={{ display: 'grid', gap: '0.8rem' }}>
+                                <h2 className="onb-card__title">Workspace ready</h2>
+                                <p className="onb-card__subtitle">
+                                    Your sign-in workspace slug is saved in this browser. Keep it with your account records.
+                                </p>
+                                <div className="surface-muted" style={{ padding: '0.85rem' }}>
+                                    <div className="form-label" style={{ marginBottom: 6 }}>Workspace slug</div>
+                                    <code style={{ display: 'block', fontSize: '1rem', fontWeight: 750, overflowWrap: 'anywhere' }}>
+                                        {launchedWorkspaceSlug}
+                                    </code>
+                                </div>
+                                <Link href="/dashboard" className="btn onb-btn-primary" style={{ width: '100%' }}>
+                                    Open dashboard
+                                </Link>
+                                <Link
+                                    href={`/auth/login?tenantSlug=${encodeURIComponent(launchedWorkspaceSlug)}`}
+                                    className="btn btn-secondary"
+                                    style={{ width: '100%' }}
+                                >
+                                    View sign-in page
+                                </Link>
+                            </div>
+                        ) : pendingFirstLocation ? (
+                            <div style={{ display: 'grid', gap: '0.8rem' }}>
+                                <h2 className="onb-card__title">Finish setting up your workspace</h2>
+                                <p className="onb-card__subtitle">
+                                    Your verified account is saved. Creating the first location will not ask for another code.
+                                </p>
+                                <div className="surface-muted" style={{ padding: '0.85rem' }}>
+                                    <div className="form-label" style={{ marginBottom: 6 }}>Workspace slug</div>
+                                    <code style={{ display: 'block', fontSize: '1rem', fontWeight: 750, overflowWrap: 'anywhere' }}>
+                                        {pendingFirstLocation.workspaceSlug}
+                                    </code>
+                                    <div style={{ marginTop: 10, fontSize: '0.8rem' }}>
+                                        <strong>Location:</strong> {pendingFirstLocation.firstLocationName}
+                                    </div>
+                                </div>
+                                {error ? <div className="onb-card__error">{error}</div> : null}
+                                <button
+                                    type="button"
+                                    onClick={retryFirstLocation}
+                                    className="btn onb-btn-primary"
+                                    style={{ width: '100%' }}
+                                    disabled={isSubmitting}
+                                >
+                                    {isSubmitting ? 'Creating location...' : 'Retry creating location'}
+                                </button>
+                            </div>
+                        ) : (
+                        <>
                         <div className="onb-steps" role="list" aria-label="Onboarding progress">
                             {STEPS.map((s) => (
                                 <React.Fragment key={s.id}>
@@ -258,12 +513,26 @@ export default function OnboardingPage() {
                         {step === 1 && (
                             <div style={{ display: 'grid', gap: '0.65rem' }}>
                                 <h2 className="onb-card__title">Start your LunchLineup workspace</h2>
-                                <p className="onb-card__subtitle">Create your account in under a minute.</p>
+                                <p className="onb-card__subtitle">
+                                    {signupClosed ? 'Public signup is currently closed.' : 'Create your account in under a minute.'}
+                                </p>
                                 <label className="form-group">
                                     <span className="form-label">Work email</span>
-                                    <input className="form-input" value={formData.email} onChange={(e) => setFormData({ ...formData, email: e.target.value })} placeholder="name@company.com" autoComplete="email" autoFocus />
+                                    <input className="form-input" value={formData.email} onChange={(e) => setFormData({ ...formData, email: e.target.value })} placeholder="name@company.com" autoComplete="email" autoFocus disabled={signupClosed} />
                                 </label>
-                                <button onClick={nextStep} className="btn onb-btn-primary" style={{ width: '100%' }}>
+                                {signupRequiresInvite ? (
+                                    <label className="form-group">
+                                        <span className="form-label">Invite code</span>
+                                        <input
+                                            className="form-input"
+                                            value={formData.signupCode}
+                                            onChange={(e) => setFormData({ ...formData, signupCode: e.target.value })}
+                                            placeholder="Invite code"
+                                            autoComplete="one-time-code"
+                                        />
+                                    </label>
+                                ) : null}
+                                <button onClick={nextStep} className="btn onb-btn-primary" style={{ width: '100%' }} disabled={signupClosed}>
                                     Continue setup
                                 </button>
                                 <p className="onb-card__trust">Secure email verification · No passwords required</p>
@@ -311,7 +580,17 @@ export default function OnboardingPage() {
                         {step === 4 && (
                             <div style={{ display: 'grid', gap: '0.65rem' }}>
                                 <h2 className="onb-card__title">Verify and launch</h2>
-                                <p className="onb-card__subtitle">Enter the 6-digit code sent to {formData.email}.</p>
+                                <p className="onb-card__subtitle">
+                                    {!legalAssentComplete
+                                        ? 'Review and accept the legal terms to send your verification code.'
+                                        : otpSent
+                                        ? `Enter the 6-digit code sent to ${formData.email}.`
+                                        : challengeBlocked
+                                            ? 'Security check is unavailable. Refresh the page and try again.'
+                                            : challengePending
+                                            ? 'Complete the security check to send your verification code.'
+                                            : `Sending a 6-digit code to ${formData.email}.`}
+                                </p>
 
                                 <div className="surface-muted" style={{ padding: '0.7rem' }}>
                                     <div style={{ fontSize: '0.8rem', marginBottom: 4 }}><strong>Email:</strong> {formData.email}</div>
@@ -319,6 +598,23 @@ export default function OnboardingPage() {
                                     <div style={{ fontSize: '0.8rem', marginBottom: 4 }}><strong>Location:</strong> {formData.firstLocationName}</div>
                                     <div style={{ fontSize: '0.8rem' }}><strong>Timezone:</strong> {Intl.DateTimeFormat().resolvedOptions().timeZone}</div>
                                 </div>
+
+                                <label style={{ display: 'flex', alignItems: 'flex-start', gap: '0.55rem', fontSize: '0.8rem', lineHeight: 1.4 }}>
+                                    <input type="checkbox" checked={termsAccepted} onChange={(event) => setTermsAccepted(event.target.checked)} />
+                                    <span>I agree to the <Link href="/terms" target="_blank" rel="noreferrer">Terms</Link>.</span>
+                                </label>
+                                <label style={{ display: 'flex', alignItems: 'flex-start', gap: '0.55rem', fontSize: '0.8rem', lineHeight: 1.4 }}>
+                                    <input type="checkbox" checked={privacyAccepted} onChange={(event) => setPrivacyAccepted(event.target.checked)} />
+                                    <span>I acknowledge the <Link href="/privacy" target="_blank" rel="noreferrer">Privacy notice</Link>.</span>
+                                </label>
+
+                                <TurnstileChallenge
+                                    enabled={signupUsesChallenge}
+                                    siteKey={TURNSTILE_SITE_KEY}
+                                    resetSignal={turnstileResetSignal}
+                                    onTokenChange={handleTurnstileTokenChange}
+                                    onUnavailableChange={handleTurnstileUnavailableChange}
+                                />
 
                                 <label className="form-group">
                                     <span className="form-label">Verification code</span>
@@ -329,12 +625,12 @@ export default function OnboardingPage() {
                                     <button onClick={prevStep} className="btn btn-secondary" style={{ minWidth: 120 }} disabled={isSubmitting}>
                                         Back
                                     </button>
-                                    <button onClick={handleComplete} className="btn onb-btn-primary" style={{ flex: 1 }} disabled={isSubmitting}>
+                                    <button onClick={handleComplete} className="btn onb-btn-primary" style={{ flex: 1 }} disabled={isSubmitting || challengeCannotSubmit || !legalAssentComplete}>
                                         {isSubmitting ? 'Finalizing...' : 'Verify code and launch'}
                                     </button>
                                 </div>
 
-                                <button type="button" onClick={() => { void sendOtp(); }} disabled={isSendingOtp || resendCountdown > 0 || isSubmitting} className="btn btn-ghost btn-sm" style={{ width: 'fit-content' }}>
+                                <button type="button" onClick={() => { void sendOtp(); }} disabled={isSendingOtp || resendCountdown > 0 || isSubmitting || challengeCannotSubmit || !legalAssentComplete} className="btn btn-ghost btn-sm" style={{ width: 'fit-content' }}>
                                     {isSendingOtp ? 'Sending...' : resendCountdown > 0 ? `Resend in ${resendCountdown}s` : 'Resend code'}
                                 </button>
                             </div>
@@ -345,11 +641,13 @@ export default function OnboardingPage() {
                             <span>Already have an account?</span>
                             <Link href="/auth/login">Sign in</Link>
                         </div>
+                        </>
+                        )}
                     </div>
                 </section>
             </div>
 
-            <style jsx>{`
+            <style>{`
                 .onb-shell {
                     min-height: 100vh;
                     position: relative;
@@ -358,7 +656,8 @@ export default function OnboardingPage() {
                     grid-template-rows: auto 1fr;
                     align-content: normal;
                     align-items: stretch;
-                    overflow: hidden;
+                    overflow-x: hidden;
+                    overflow-y: auto;
                 }
 
                 .onb-header {
@@ -565,7 +864,7 @@ export default function OnboardingPage() {
                     display: grid;
                     grid-template-columns: repeat(4, 1fr);
                     font-size: 0.58rem;
-                    color: #8393b0;
+                    color: #475569;
                     padding: 0 0.15rem;
                 }
 
@@ -603,12 +902,12 @@ export default function OnboardingPage() {
 
                 .onb-block--lunch {
                     background: rgba(106, 199, 154, 0.2);
-                    color: #1c7f54;
+                    color: #14532d;
                 }
 
                 .onb-block--break {
                     background: rgba(34, 184, 207, 0.16);
-                    color: #187f92;
+                    color: #155e75;
                 }
 
                 .onb-block--warn {
@@ -690,7 +989,7 @@ export default function OnboardingPage() {
 
                 .onb-step--active .onb-step__label,
                 .onb-step--done .onb-step__label {
-                    color: #456fcf;
+                    color: #1e40af;
                 }
 
                 .onb-card__title {
@@ -734,6 +1033,60 @@ export default function OnboardingPage() {
                     color: #cb3653;
                     font-size: 0.82rem;
                     font-weight: 600;
+                }
+
+                .onb-challenge {
+                    border: 1px solid #dbe7f7;
+                    border-radius: 8px;
+                    background: #f8fbff;
+                    padding: 0.68rem;
+                    display: grid;
+                    gap: 0.52rem;
+                }
+
+                .onb-challenge__header {
+                    display: flex;
+                    align-items: center;
+                    justify-content: space-between;
+                    gap: 0.7rem;
+                }
+
+                .onb-challenge__title {
+                    color: #243752;
+                    font-size: 0.82rem;
+                    font-weight: 750;
+                }
+
+                .onb-challenge__status {
+                    border: 1px solid #c8d7ee;
+                    border-radius: 999px;
+                    color: #36557d;
+                    background: #ffffff;
+                    font-size: 0.7rem;
+                    font-weight: 750;
+                    line-height: 1;
+                    padding: 0.22rem 0.42rem;
+                }
+
+                .onb-challenge[data-status='ready'] .onb-challenge__status {
+                    border-color: #b7dfc7;
+                    color: #146c43;
+                }
+
+                .onb-challenge[data-status='unavailable'] .onb-challenge__status {
+                    border-color: #f0c4c4;
+                    color: #9f2f2f;
+                }
+
+                .onb-challenge__widget {
+                    min-height: 65px;
+                }
+
+                .onb-challenge__hint {
+                    color: var(--text-secondary);
+                    font-size: 0.76rem;
+                    line-height: 1.35;
+                    margin: 0;
                 }
 
                 .onb-secondary-cta {
@@ -806,6 +1159,6 @@ export default function OnboardingPage() {
                     }
                 }
             `}</style>
-        </div>
+        </main>
     );
 }

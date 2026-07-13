@@ -1,0 +1,159 @@
+#!/usr/bin/env node
+import { execFileSync } from 'node:child_process';
+import { dirname, join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const roleNamePattern = /^[a-z_][a-z0-9_]{0,62}$/;
+const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+const prismaCli = join(root, 'node_modules/prisma/build/index.js');
+const schemaPath = 'packages/db/prisma/schema.prisma';
+
+export const roleProvisionSql = String.raw`DO $provision$
+DECLARE
+  app_role TEXT := current_setting('app.provision.app_role', true);
+  app_password TEXT := current_setting('app.provision.app_password', true);
+  platform_admin_capability TEXT := current_setting('app.provision.platform_admin_capability', true);
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = app_role) THEN
+    EXECUTE format('CREATE ROLE %I', app_role);
+  END IF;
+
+  EXECUTE format(
+    'ALTER ROLE %I WITH LOGIN PASSWORD %L NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS',
+    app_role,
+    app_password
+  );
+
+  EXECUTE format('GRANT CONNECT ON DATABASE %I TO %I', current_database(), app_role);
+  EXECUTE format('GRANT USAGE ON SCHEMA public TO %I', app_role);
+  EXECUTE format('GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO %I', app_role);
+  EXECUTE format('GRANT USAGE, SELECT, UPDATE ON ALL SEQUENCES IN SCHEMA public TO %I', app_role);
+  EXECUTE format('GRANT EXECUTE ON ALL ROUTINES IN SCHEMA public TO %I', app_role);
+
+  INSERT INTO lunchlineup_private.platform_admin_capability (singleton, secret_hash)
+  VALUES (TRUE, encode(public.digest(platform_admin_capability, 'sha256'), 'hex'))
+  ON CONFLICT (singleton) DO UPDATE SET secret_hash = EXCLUDED.secret_hash;
+
+  EXECUTE format(
+    'ALTER DEFAULT PRIVILEGES FOR ROLE %I IN SCHEMA public GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO %I',
+    current_user,
+    app_role
+  );
+  EXECUTE format(
+    'ALTER DEFAULT PRIVILEGES FOR ROLE %I IN SCHEMA public GRANT USAGE, SELECT, UPDATE ON SEQUENCES TO %I',
+    current_user,
+    app_role
+  );
+  EXECUTE format(
+    'ALTER DEFAULT PRIVILEGES FOR ROLE %I IN SCHEMA public GRANT EXECUTE ON ROUTINES TO %I',
+    current_user,
+    app_role
+  );
+END;
+$provision$;
+`;
+
+function sqlLiteral(value) {
+  if (value.includes('\0')) throw new Error('Database role provisioning values must not contain null bytes');
+  return `'${value.replaceAll("'", "''")}'`;
+}
+
+export function buildRoleProvisionSql(config) {
+  return `BEGIN;
+SELECT set_config('app.provision.app_role', ${sqlLiteral(config.appRole)}, true);
+SELECT set_config('app.provision.app_password', ${sqlLiteral(config.appPassword)}, true);
+SELECT set_config('app.provision.platform_admin_capability', ${sqlLiteral(config.platformAdminCapability)}, true);
+${roleProvisionSql}
+COMMIT;
+`;
+}
+
+function required(env, key) {
+  const value = String(env[key] ?? '').trim();
+  if (!value) throw new Error(`${key} is required to provision the application database role`);
+  return value;
+}
+
+function parseDatabaseUrl(value, key) {
+  let url;
+  try {
+    url = new URL(value);
+  } catch {
+    throw new Error(`${key} must be a valid PostgreSQL URL`);
+  }
+
+  if (!['postgres:', 'postgresql:'].includes(url.protocol) || !url.hostname || !url.username || !url.pathname.slice(1)) {
+    throw new Error(`${key} must include a PostgreSQL user, host, and database`);
+  }
+  return url;
+}
+
+function decodedUsername(url, key) {
+  try {
+    return decodeURIComponent(url.username);
+  } catch {
+    throw new Error(`${key} contains an invalid encoded username`);
+  }
+}
+
+export function readRoleProvisionConfig(env = process.env) {
+  const appRole = required(env, 'APP_DB_USER');
+  const appPassword = required(env, 'APP_DB_PASSWORD');
+  const platformAdminCapability = required(env, 'PLATFORM_ADMIN_DB_CONTEXT_SECRET');
+  const adminUrl = parseDatabaseUrl(required(env, 'MIGRATION_DATABASE_URL'), 'MIGRATION_DATABASE_URL');
+  const adminRole = decodedUsername(adminUrl, 'MIGRATION_DATABASE_URL');
+  let adminPassword;
+  try {
+    adminPassword = decodeURIComponent(adminUrl.password);
+  } catch {
+    throw new Error('MIGRATION_DATABASE_URL contains an invalid encoded password');
+  }
+
+  if (!roleNamePattern.test(appRole)) {
+    throw new Error('APP_DB_USER must be a lowercase PostgreSQL identifier with at most 63 characters');
+  }
+  if (appRole === adminRole || appRole === String(env.POSTGRES_USER ?? '').trim()) {
+    throw new Error('APP_DB_USER must be distinct from the migration/owner role');
+  }
+  if (appPassword === adminPassword || appPassword === String(env.POSTGRES_PASSWORD ?? '')) {
+    throw new Error('APP_DB_PASSWORD must be distinct from the migration/owner password');
+  }
+
+  const runtimeUrlValue = String(env.DATABASE_URL ?? '').trim();
+  if (runtimeUrlValue) {
+    const runtimeUrl = parseDatabaseUrl(runtimeUrlValue, 'DATABASE_URL');
+    if (decodedUsername(runtimeUrl, 'DATABASE_URL') !== appRole) {
+      throw new Error('DATABASE_URL must authenticate as APP_DB_USER');
+    }
+  }
+
+  const sanitizedAdminUrl = new URL(adminUrl);
+  sanitizedAdminUrl.password = '';
+
+  return {
+    appPassword,
+    appRole,
+    platformAdminCapability,
+    adminPassword,
+    migrationDatabaseUrl: adminUrl.toString(),
+    sanitizedAdminUrl: sanitizedAdminUrl.toString(),
+  };
+}
+
+export function provisionAppDatabaseRole(env = process.env) {
+  const config = readRoleProvisionConfig(env);
+  execFileSync(process.execPath, [prismaCli, 'db', 'execute', '--schema', schemaPath, '--stdin'], {
+    cwd: root,
+    env: {
+      ...env,
+      DATABASE_URL: config.migrationDatabaseUrl,
+    },
+    input: buildRoleProvisionSql(config),
+    stdio: ['pipe', 'inherit', 'inherit'],
+  });
+}
+
+const isDirectRun = process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1];
+if (isDirectRun) {
+  provisionAppDatabaseRole();
+}

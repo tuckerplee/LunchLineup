@@ -1,4 +1,5 @@
-import { Body, Controller, Get, Param, Post, Put, Query, Req, SetMetadata } from '@nestjs/common';
+import { Body, Controller, Get, Headers, Param, Post, Put, Query, Req, SetMetadata } from '@nestjs/common';
+import { normalizeLunchBreakGenerationIdempotencyKey } from './lunch-break-generation-idempotency';
 import {
     GenerateLunchBreaksRequest,
     LunchBreakPolicy,
@@ -7,7 +8,7 @@ import {
     UpdateShiftLunchBreaksRequest,
 } from './lunch-breaks.service';
 
-const Permission = (perm: string) => SetMetadata('permission', perm);
+const Permission = (permission: string | string[]) => SetMetadata('permission', permission);
 
 @Controller({ path: 'lunch-breaks', version: '1' })
 export class LunchBreaksController {
@@ -33,7 +34,7 @@ export class LunchBreaksController {
             shiftIds,
             startDate,
             endDate,
-        });
+        }, req.user);
     }
 
     @Get('policy')
@@ -50,12 +51,17 @@ export class LunchBreaksController {
 
     @Post('generate')
     @Permission('lunch_breaks:write')
-    async generate(@Req() req: any, @Body() body: GenerateLunchBreaksRequest) {
-        return this.lunchBreaksService.generateLunchBreaks(req.user.tenantId, body ?? {});
+    async generate(
+        @Req() req: any,
+        @Body() body: GenerateLunchBreaksRequest,
+        @Headers('idempotency-key') idempotencyKey?: string,
+    ) {
+        const attemptKey = normalizeLunchBreakGenerationIdempotencyKey(idempotencyKey);
+        return this.lunchBreaksService.generateLunchBreaks(req.user.tenantId, body ?? {}, attemptKey);
     }
 
     @Post('setup-shifts')
-    @Permission('lunch_breaks:write')
+    @Permission(['lunch_breaks:write', 'shifts:write'])
     async persistSetupShifts(@Req() req: any, @Body() body: PersistSetupShiftsRequest) {
         return this.lunchBreaksService.persistSetupShifts(req.user.tenantId, body ?? {});
     }

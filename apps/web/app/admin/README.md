@@ -4,7 +4,8 @@ System administration routes for super admins and users with `admin_portal:acces
 
 ## File map
 
-- `layout.tsx` - Admin shell, environment/user labeling, and permission gate.
+- `README.md` - This admin route folder guide.
+- `layout.tsx` - Admin shell, responsive top-bar sign-out, environment/user labeling, and permission gate.
 - `AdminNav.tsx` - Client route-aware admin navigation grouped by team operations and platform admin routes.
 - `page.tsx` - Admin overview route.
 - `credits/` - Tenant usage credit administration; see `credits/README.md`.

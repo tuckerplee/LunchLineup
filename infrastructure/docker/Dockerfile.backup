@@ -1,7 +1,7 @@
 # infrastructure/docker/Dockerfile.backup
 # Stage 1: Runtime
-FROM alpine:latest AS runner
-RUN apk add --no-cache postgresql-client rsync zstd gpg
+FROM alpine:3.22@sha256:14358309a308569c32bdc37e2e0e9694be33a9d99e68afb0f5ff33cc1f695dce AS runner
+RUN apk add --no-cache postgresql-client rsync zstd gpg aws-cli rclone
 WORKDIR /app
 COPY scripts/backup.sh .
 RUN chmod +x backup.sh
