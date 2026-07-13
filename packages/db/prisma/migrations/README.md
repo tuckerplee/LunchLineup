@@ -54,6 +54,7 @@
 - `20260712_onboarding_signup_attempt_recovery.sql`: adds platform-only durable onboarding challenge attempts that atomically bind verified identities and organizations to one tenant owner for retryable session issuance.
 - `20260712_platform_admin_audit_actor_attribution.sql`: adds immutable non-relational platform actor user/tenant identity to target-tenant audit rows without changing audit RLS or `userId` semantics.
 - `20260712_time_card_billable_clock_in.sql`: adds durable clock-in operation and request hashes with uniqueness and all-or-null integrity.
+- `20260713_tenant_account_lifecycle_rbac_reconciliation.sql`: idempotently restores the tenant lifecycle permission and grants it only to active system Super Admin and Admin roles for every tenant.
 - 20260712_tenant_context_helpers.sql: installs transaction-local tenant context functions before platform-admin and tenant RLS policies reference them.
 - `audit_log.sql`: creates audit-log database support.
 - `init_rls.sql`: initializes row-level-security database support.

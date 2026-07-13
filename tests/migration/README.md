@@ -14,6 +14,7 @@
 - `shift-overlap-constraint.test.mjs`: verifies assigned-shift no-overlap, schedule window/overlap, shift tenant/location, and break window database constraints plus their schema prerequisites.
 - `staff-availability-overnight.test.mjs`: verifies overnight endpoints plus forced tenant RLS, tenant policies, and composite staff/location integrity for persisted scheduling profiles.
 - `stripe-usage-logical-identity.test.mjs`: verifies deterministic Stripe usage snapshot dedupe and immutable tenant, metric, and period uniqueness.
+- `tenant-account-lifecycle-rbac.test.mjs`: verifies fresh and upgrade ordering, duplicate-safe lifecycle permission reconciliation, and active system Admin-only grants without custom-role privilege expansion.
 - `webhook-reliability.test.mjs`: verifies fresh migration helper ordering, nullable terminal retry timestamps, durable-before-network first-attempt crash recovery, ACTIVE/TRIAL delivery eligibility, nonterminal pause recovery, and PURGED-only lifecycle terminalization.
 - `webhook-secret-preflight.test.mjs`: verifies v2 encryption output and legacy v1 envelopes pass structural preflight while plaintext or malformed values fail without destructive SQL.
 
