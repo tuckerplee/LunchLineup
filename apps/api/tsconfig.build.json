@@ -1,0 +1,14 @@
+{
+    "extends": "./tsconfig.json",
+    "compilerOptions": {
+        "paths": {},
+        "incremental": false
+    },
+    "exclude": [
+        "node_modules",
+        "dist",
+        "test",
+        "src/**/*.spec.ts",
+        "src/**/*.test.ts"
+    ]
+}

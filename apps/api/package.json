@@ -3,7 +3,7 @@
     "version": "0.1.0",
     "private": true,
     "scripts": {
-        "build": "nest build",
+        "build": "nest build -p tsconfig.build.json",
         "format": "prettier --write \"src/**/*.ts\"",
         "start": "nest start",
         "start:dev": "nest start --watch",
@@ -11,7 +11,7 @@
         "start:prod": "node dist/main",
         "start:webhook-replay": "node dist/webhooks/webhook-replay.worker.js",
         "lint": "eslint \"{src,apps,libs,test}/**/*.ts\" --fix",
-        "typecheck": "tsc --noEmit",
+        "typecheck": "tsc --noEmit --rootDir ../.. --incremental false",
         "test": "vitest run",
         "test:watch": "vitest",
         "test:cov": "vitest run --coverage",
