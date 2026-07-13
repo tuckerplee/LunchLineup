@@ -49,6 +49,12 @@ Line counts were captured on 2026-07-09 from non-generated `apps/` and `packages
 | `packages/db/prisma/schema.prisma` | 526 | Deferred | Prisma schema now owns tenant core, RBAC, schedules, solve jobs, shifts, breaks, time cards, billing, audit logs, notifications, and webhooks in one file. | Keep domain comments clear and route DB ownership through forward SQL migrations and model-specific docs until a schema split is practical. |
 | `apps/api/src/auth/auth.controller.ts` | 511 | Deferred | Auth controller owns origin/CSRF policy, cookie setting, login redirects, OTP, PIN, MFA, refresh, logout, and current-user response. | Extract request security/cookie helpers and keep endpoint methods focused on transport. |
 
+## Infrastructure Hotspots
+
+| File | Lines | Status | Risk | Next extraction |
+| --- | ---: | --- | --- | --- |
+| `.github/workflows/ci.yml` | 1273 | Deferred | One workflow owns static analysis, Terraform, SAST, dependency audit, unit/integration/E2E tests, seven image builds, release registry state, runtime secret materialization, retained evidence, staging, production deployment, smoke, and rollback. Repeated variable and artifact mappings can drift between release phases. | Extract validation and image publication into reusable workflows, then move production input binding/deploy/rollback into one separately reviewed reusable workflow with a shared configuration contract. |
+
 ## Hygiene Rule
 
 The oversized-source threshold is intentionally conservative at 500 lines. A file can exceed it temporarily, but the public SaaS maintainability risk must be visible in this document before the migration hygiene suite passes.
