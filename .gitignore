@@ -1,5 +1,6 @@
 # ── Secrets ────────────────────────────────────────────────────────────────
 .env
+.env.smoke
 .env.local
 .env.production
 secrets/
@@ -17,10 +18,26 @@ apps/web/out/
 
 # ── NestJS / TypeScript ──────────────────────────────────────────────────────
 apps/api/dist/
+apps/*/dist/
 packages/*/dist/
+*.tsbuildinfo
+
+# ── Python ──────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.coverage
+coverage/
 
 # ── Turbo ───────────────────────────────────────────────────────────────────
 .turbo/
+
+# ── Test artifacts ──────────────────────────────────────────────────────────
+playwright-report/
+test-results/
+apps/web/playwright-report/
+apps/web/test-results/
+.release/
 
 # ── Docker ──────────────────────────────────────────────────────────────────
 *.log
