@@ -3,6 +3,7 @@
 ## Files
 
 - `.gitignore`: blocks local Terraform state, plans, backend configuration, and working data from Git.
+- `.terraform.lock.hcl`: pins verified provider package checksums for reproducible CI and operator initialization.
 - `cloud-init.yaml.tftpl`: role-specific, secret-free cloud-init template that verifies an immutable bootstrap artifact.
 - `compute.tf`: provider-managed app/data VMs, cloned boot disks, persistent protected data disk, and cloud-init attachment.
 - `dns.tf`: conditional Cloudflare A record with explicit external-owner fallback.

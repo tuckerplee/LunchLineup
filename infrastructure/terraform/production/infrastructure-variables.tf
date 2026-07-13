@@ -74,7 +74,7 @@ variable "proxmox_vms" {
 
   validation {
     condition = (
-      setequals(toset(keys(var.proxmox_vms)), toset(["app", "data"])) &&
+      toset(keys(var.proxmox_vms)) == toset(["app", "data"]) &&
       alltrue([
         for role, target in var.proxmox_vms :
         trimspace(target.node_name) != "" &&
@@ -168,10 +168,11 @@ variable "dns_ownership" {
 locals {
   infrastructure_inputs_ready = (
     trimspace(var.network_cidr) == trimspace(var.proxmox_network.private_cidr) &&
-    cidrcontains(var.proxmox_network.private_cidr, var.proxmox_network.gateway) &&
+    cidrhost(format("%s/%s", var.proxmox_network.gateway, split("/", var.proxmox_network.private_cidr)[1]), 0) == cidrhost(var.proxmox_network.private_cidr, 0) &&
     alltrue([
       for role, target in var.proxmox_vms :
-      cidrcontains(var.proxmox_network.private_cidr, split("/", target.ipv4_cidr)[0]) &&
+      split("/", target.ipv4_cidr)[1] == split("/", var.proxmox_network.private_cidr)[1] &&
+      cidrhost(target.ipv4_cidr, 0) == cidrhost(var.proxmox_network.private_cidr, 0) &&
       length([
         for declared_target in var.vm_targets : declared_target
         if declared_target.role == role &&

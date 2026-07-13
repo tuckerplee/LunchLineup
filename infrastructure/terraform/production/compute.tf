@@ -64,8 +64,8 @@ resource "proxmox_virtual_environment_vm" "data" {
     node_name    = var.proxmox_template.node_name
     vm_id        = var.proxmox_template.vm_id
     datastore_id = var.proxmox_vms["data"].boot_datastore
-    full          = true
-    retries       = 3
+    full         = true
+    retries      = 3
   }
 
   cpu {
@@ -181,8 +181,8 @@ resource "proxmox_virtual_environment_vm" "app" {
     node_name    = var.proxmox_template.node_name
     vm_id        = var.proxmox_template.vm_id
     datastore_id = var.proxmox_vms["app"].boot_datastore
-    full          = true
-    retries       = 3
+    full         = true
+    retries      = 3
   }
 
   cpu {

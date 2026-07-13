@@ -85,7 +85,7 @@ variable "operator_runbook_url" {
 }
 
 locals {
-  required_services = toset(["api", "web", "engine", "worker", "control", "migrate"])
+  required_services   = toset(["api", "web", "engine", "worker", "control", "migrate"])
   placeholder_pattern = "(^|[^a-z0-9])(todo|tbd|change[_ -]?me|example|placeholder|dummy|none|unset|localhost|local)([^a-z0-9]|$)"
 
   image_digest_ready = alltrue([
@@ -278,6 +278,6 @@ output "production_readiness" {
       operator_runbook_url              = var.operator_runbook_url
       public_unauthenticated_metrics_ok = false
     }
-    service_contracts       = local.service_contracts
+    service_contracts = local.service_contracts
   }
 }
