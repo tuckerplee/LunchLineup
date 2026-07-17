@@ -255,12 +255,15 @@ test('paid-through, exact admin grant, and deterministic replay hold in real Pos
       'utf8',
     ));
     assert.equal(scalar(container, `SELECT count(*) FROM public."CreditTransaction" WHERE "id" = 'stripe-credit-purchase-cs_real_pg_legacy' AND "balanceAfter" IS NULL;`), '1');
-    const rejectedNewNullSettlement = psql(container, `
+    const retainedWriterSettlement = psql(container, `
       INSERT INTO public."CreditTransaction" ("id", "tenantId", "amount", "reason", "balanceAfter")
-      VALUES ('new-null-settlement', 'credit-pack', 1, 'invalid current writer', NULL);
+      VALUES ('retained-writer-null-settlement', 'credit-pack', 1, 'retained release compatibility', NULL);
     `, { allowFailure: true });
-    assert.notEqual(rejectedNewNullSettlement.status, 0);
-    assert.match(rejectedNewNullSettlement.stderr, /CreditTransaction_balanceAfter_required_check/);
+    assert.equal(retainedWriterSettlement.status, 0);
+    assert.equal(scalar(container, `
+      SELECT count(*) FROM public."CreditTransaction"
+      WHERE "id" = 'retained-writer-null-settlement' AND "balanceAfter" IS NULL;
+    `), '1');
 
     psql(container, `
       INSERT INTO public."PlanDefinition"

@@ -26,13 +26,11 @@ ALTER TABLE public."CreditTransaction"
   ADD CONSTRAINT "CreditTransaction_balanceAfter_nonnegative_check"
   CHECK ("balanceAfter" IS NULL OR "balanceAfter" >= 0);
 
--- Keep historical nullable rows readable, but reject every new unsettled ledger insert.
+-- Keep the additive column nullable while the retained old release can still write.
+-- Current writers persist balanceAfter and reject nullable replay; database-level
+-- required enforcement belongs in a later release after old-writer retirement.
 ALTER TABLE public."CreditTransaction"
   DROP CONSTRAINT IF EXISTS "CreditTransaction_balanceAfter_required_check";
-
-ALTER TABLE public."CreditTransaction"
-  ADD CONSTRAINT "CreditTransaction_balanceAfter_required_check"
-  CHECK ("balanceAfter" IS NOT NULL) NOT VALID;
 
 CREATE INDEX IF NOT EXISTS "Tenant_paid_subscription_entitlement_idx"
   ON public."Tenant" ("stripeSubscriptionCurrentPeriodEnd", "id")

@@ -5,6 +5,7 @@ import test from 'node:test';
 const read = (path) => readFileSync(path, 'utf8');
 const schema = read('packages/db/prisma/schema.prisma');
 const migration = read('packages/db/prisma/migrations/20260716_zzzzzz_billing_exact_once.sql');
+const compatibilityMigration = read('packages/db/prisma/migrations/20260716_zzzzzzz_credit_balance_rollout_compatibility.sql');
 const plans = read('apps/api/src/billing/plan-definitions.ts');
 const featureAccess = read('apps/api/src/billing/feature-access.service.ts');
 const userCapacity = read('apps/api/src/billing/user-capacity.ts');
@@ -41,10 +42,12 @@ test('admin credit grants have one exact-session Serializable transaction owner'
   assert.doesNotMatch(admin, /meteringService\.grantCredits\(/);
 });
 
-test('wallet settlement replay is immutable and returns the stored original balance', () => {
+test('wallet settlement replay is immutable and remains compatible with retained nullable writers', () => {
   assert.match(schema, /balanceAfter\s+Int\?/);
   assert.match(migration, /CreditTransaction_balanceAfter_nonnegative_check/);
-  assert.match(migration, /CreditTransaction_balanceAfter_required_check[\s\S]*CHECK \("balanceAfter" IS NOT NULL\) NOT VALID/);
+  assert.match(migration, /DROP CONSTRAINT IF EXISTS "CreditTransaction_balanceAfter_required_check"/);
+  assert.doesNotMatch(migration, /ADD CONSTRAINT "CreditTransaction_balanceAfter_required_check"/);
+  assert.match(compatibilityMigration, /DROP CONSTRAINT IF EXISTS "CreditTransaction_balanceAfter_required_check"/);
   assert.match(migration, /CreditTransaction_settlement_immutable/);
   assert.match(migration, /ROW\(NEW\."id", NEW\."tenantId", NEW\."amount", NEW\."reason", NEW\."balanceAfter", NEW\."createdAt"\)/);
   assert.doesNotMatch(migration, /BEFORE UPDATE OF "balanceAfter"/);

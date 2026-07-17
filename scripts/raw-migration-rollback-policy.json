@@ -287,12 +287,20 @@
       "rationale": "durable tenant deletion billing reconciliation state, leases, fencing tokens, and tenant isolation remain during rollback; isolated old-release proof is required before production mutation."
     },
     "packages/db/prisma/migrations/20260716_zzzzzz_billing_exact_once.sql": {
-      "sha256": "51e2399d9fc053b588afd388494d59e3120790766136a640980605e59e645863",
+      "sha256": "77e403305a95f229c911944e24976e8f794982a0a42cf962c1cc02452c4af3a1",
       "phase": "expand-contract",
       "rollbackSchema": "retain",
       "contractPhase": "compatibility-proven-inline",
       "requiresOldReleaseProof": true,
-      "rationale": "paid-through entitlement binding, settled wallet balances, and immutable ledger balance enforcement remain during rollback; isolated old-release proof is required before production mutation."
+      "rationale": "paid-through entitlement binding, nullable settled wallet balances, and immutable ledger rows remain during rollback; isolated old-release proof is required before production mutation."
+    },
+    "packages/db/prisma/migrations/20260716_zzzzzzz_credit_balance_rollout_compatibility.sql": {
+      "sha256": "bd25213356cb9947fc623bc65dc99a9b097f90d2754f02b151e35b8db54edb15",
+      "phase": "expand-contract",
+      "rollbackSchema": "retain",
+      "contractPhase": "compatibility-proven-inline",
+      "requiresOldReleaseProof": true,
+      "rationale": "the nullable credit settlement rollout boundary remains during rollback; isolated old-release proof is required before production mutation."
     },
     "packages/db/prisma/migrations/pre_20260715_availability_import_lifecycle.sql": {
       "sha256": "1563895292cca5540c95b88ffa22c99b82923a5f2ea295886f779f550367e70f",

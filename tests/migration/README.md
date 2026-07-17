@@ -3,7 +3,7 @@
 ## Files
 
 - `README.md`: this migration test folder guide.
-- `billing-exact-once.test.mjs`: verifies authoritative paid-through plus non-`FREE` schema/API/worker threading, admin exact-session Serializable grant ownership, immutable `balanceAfter` storage/replay, attributed audit replay, and fail-closed legacy settlement handling.
+- `billing-exact-once.test.mjs`: verifies authoritative paid-through plus non-`FREE` schema/API/worker threading, admin exact-session Serializable grant ownership, immutable `balanceAfter` storage/replay with retained nullable-writer rollout compatibility, attributed audit replay, and fail-closed legacy settlement handling.
 - `bounded-child-process.test.mjs`: proves migration subprocess deadlines terminate a TERM-ignoring descendant tree before it can perform delayed output.
 - `availability-import-state-machine.test.mjs`: verifies leased publication recovery, fresh no-op and populated replay semantics for the availability pre-migration, nullable bounded encrypted source expansion, separate public document and active-account identity checks, API/worker secret wiring, forced tenant isolation, deletion cancellation/refund/source-erasure barriers, quote-agnostic lifecycle contracts, final-handoff lock order, and 24-hour terminal retention.
 - `audit-log-retention.test.mjs`: verifies deleted-user and 30-day tenant audit pseudonymization preserve immutable event evidence while seven-year deletion remains separately restricted to the platform-admin security-definer owner function.
