@@ -526,8 +526,14 @@ test('shared reconciliation proves exact retained pointer, service owner, public
   assert.match(deadlines, /legacy state still has release-owned v2 project containers/);
   assert.match(deadlines, /systemctl is-active --quiet apache2/);
   assert.match(deadlines, /legacy_traffic=true/);
-  assert.match(ci, /Reconcile exact VM217 active release, services, and legacy traffic state[\s\S]*if: \$\{\{ always\(\)/);
-  assert.match(ci, /VM217_RECONCILE_ONLY=true env/);
+  assert.match(
+    ci,
+    /name: "17\. Guarded production deploy; Reconcile exact VM217 active release, services, and legacy traffic state; cleanup"[\s\S]*VM217_RECONCILE_ONLY=true env/,
+  );
+  assert.match(
+    ci,
+    /if \[ "\$deploy_status" -ne 0 \]; then exit "\$deploy_status"; fi[\s\S]*if \[ "\$reconcile_status" -ne 0 \]; then exit "\$reconcile_status"; fi/,
+  );
 });
 
 test('shared reconciliation uses the real Compose proxy/pdf-parser contract and rejects missing, unhealthy, or mixed services', { skip: !bashAvailable }, () => {
