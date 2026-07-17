@@ -3,27 +3,21 @@ import { createHash } from 'node:crypto';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { spawnSync } from 'node:child_process';
 import { after, test } from 'node:test';
-import { fileURLToPath } from 'node:url';
 import {
   REQUIRED_EVIDENCE_KINDS,
   buildLaunchProofManifest as buildStrictLaunchProofManifest,
+  runBuildLaunchProofManifestCli,
   serializeLaunchProofManifest,
 } from '../../scripts/build-launch-proof-manifest.mjs';
 
-const builderScript = fileURLToPath(new URL('../../scripts/build-launch-proof-manifest.mjs', import.meta.url));
 const scratch = mkdtempSync(join(tmpdir(), 'lunchlineup-launch-proof-builder-'));
 const sourceSha = '0123456789abcdef0123456789abcdef01234567';
 const generatedAt = '2026-07-13T12:00:00.000Z';
 const capturedAt = '2026-07-13T11:30:00.000Z';
 const originalCwd = process.cwd();
-const originalCosignBinary = process.env.RECOVERY_EXECUTION_COSIGN_BINARY;
-const cosignStub = join(scratch, 'verify-blob');
 
-writeFileSync(cosignStub, 'process.exit(0);\n');
 process.chdir(scratch);
-process.env.RECOVERY_EXECUTION_COSIGN_BINARY = process.execPath;
 
 const buildLaunchProofManifest = (input) => buildStrictLaunchProofManifest(input, {
   verifyRecoveryExecutionSignature: () => {},
@@ -31,8 +25,6 @@ const buildLaunchProofManifest = (input) => buildStrictLaunchProofManifest(input
 
 after(() => {
   process.chdir(originalCwd);
-  if (originalCosignBinary === undefined) delete process.env.RECOVERY_EXECUTION_COSIGN_BINARY;
-  else process.env.RECOVERY_EXECUTION_COSIGN_BINARY = originalCosignBinary;
   rmSync(scratch, { recursive: true, force: true });
 });
 
@@ -359,14 +351,15 @@ test('CLI resolves evidence paths relative to its input and writes reproducible 
   ));
   writeFileSync(configPath, `${JSON.stringify({ version: 1, ...input, evidence: relativeEvidence })}\n`);
 
+  const messages = [];
   for (const output of [outputOne, outputTwo]) {
-    const result = spawnSync(process.execPath, [builderScript, '--input', configPath, '--output', output], {
-      cwd: scratch,
-      encoding: 'utf8',
+    runBuildLaunchProofManifestCli(['--input', configPath, '--output', output], {
+      verificationOptions: { verifyRecoveryExecutionSignature: () => {} },
+      writeLine: (message) => messages.push(message),
     });
-    assert.equal(result.status, 0, result.stderr);
-    assert.match(result.stdout, /launch_proof_manifest_built/);
   }
+  assert.equal(messages.length, 2);
+  assert.ok(messages.every((message) => /launch_proof_manifest_built/.test(message)));
   assert.equal(readFileSync(outputOne, 'utf8'), readFileSync(outputTwo, 'utf8'));
 });
 

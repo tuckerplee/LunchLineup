@@ -450,13 +450,19 @@ function option(argv, name) {
   return argv[index + 1];
 }
 
-function usage() {
-  console.log('Usage: node scripts/build-launch-proof-manifest.mjs --input <builder-input.json> --output <launch-proof.json>');
+function usage(writeLine = console.log) {
+  writeLine('Usage: node scripts/build-launch-proof-manifest.mjs --input <builder-input.json> --output <launch-proof.json>');
 }
 
-function main(argv = process.argv.slice(2)) {
+export function runBuildLaunchProofManifestCli(
+  argv = process.argv.slice(2),
+  {
+    verificationOptions = {},
+    writeLine = console.log,
+  } = {},
+) {
   if (argv.includes('--help') || argv.includes('-h')) {
-    usage();
+    usage(writeLine);
     return;
   }
   const inputPath = resolve(option(argv, '--input'));
@@ -475,15 +481,16 @@ function main(argv = process.argv.slice(2)) {
   if (Array.isArray(evidence) && evidence.some((descriptor) => resolve(descriptor.path) === outputPath)) {
     throw new Error('Output path must not overwrite an evidence file.');
   }
-  const manifest = buildLaunchProofManifest({ ...input, evidence });
+  const manifest = buildLaunchProofManifest({ ...input, evidence }, verificationOptions);
   const serialized = serializeLaunchProofManifest(manifest);
   writeFileSync(outputPath, serialized, { encoding: 'utf8', mode: 0o600, flag: 'wx' });
-  console.log(`launch_proof_manifest_built source_sha=${manifest.sourceSha} sha256=${sha256(serialized)} output=${outputPath}`);
+  writeLine(`launch_proof_manifest_built source_sha=${manifest.sourceSha} sha256=${sha256(serialized)} output=${outputPath}`);
+  return manifest;
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   try {
-    main();
+    runBuildLaunchProofManifestCli();
   } catch (error) {
     console.error(error instanceof Error ? error.message : String(error));
     process.exit(1);
