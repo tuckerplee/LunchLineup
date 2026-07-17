@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import asyncio
 from collections import OrderedDict
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date, datetime, timezone
 import hashlib
 import json
@@ -17,6 +17,9 @@ import logging
 import os
 from pathlib import Path
 import re
+import signal
+import socket
+import threading
 import time
 from typing import Any, Awaitable, Callable
 import uuid
@@ -56,7 +59,7 @@ from src.availability_import import (
     run_availability_import_retention_loop,
     validate_availability_import_config,
 )
-from src.parser_health import run_pdf_parser_health_loop
+from src.parser_health import PDF_PARSER_READY, run_pdf_parser_health_loop
 
 configure_tracing("lunchlineup-worker")
 TRACER = trace.get_tracer("lunchlineup.worker")
@@ -118,6 +121,12 @@ SCHEDULE_SOLVE_EXECUTION_LEASE_SECONDS = int_env(
 SOLVER_QUEUE_DEPTH_POLL_SECONDS = int_env(
     "WORKER_QUEUE_DEPTH_POLL_SECONDS", 15, 5, 300
 )
+WORKER_SHUTDOWN_TIMEOUT_SECONDS = float_env(
+    "WORKER_SHUTDOWN_TIMEOUT_SECONDS", 30.0, 1.0, 120.0
+)
+GRPC_CLOSE_TIMEOUT_SECONDS = float_env(
+    "WORKER_GRPC_CLOSE_TIMEOUT_SECONDS", 2.0, 0.1, 10.0
+)
 SOLVE_SUCCESS_STATUS = "SUCCESS"
 SCHEDULE_JOB_TERMINAL_STATUSES = {"SUCCEEDED", "FAILED", "DEAD_LETTERED"}
 POSTGRES_INTEGER_MAX = 2_147_483_647
@@ -134,9 +143,18 @@ BREAK_TYPE_ALIASES = {
     "SECOND_BREAK": "BREAK2",
 }
 _METRICS_STARTED = False
+_METRICS_SERVER: Any | None = None
+_METRICS_THREAD: threading.Thread | None = None
+_ACTIVE_RABBIT_CONNECTION: Any | None = None
+_ACTIVE_RABBIT_CHANNEL: Any | None = None
+_ACTIVE_GRPC_CHANNELS: set[Any] = set()
 _COMPLETED_JOB_KEYS: OrderedDict[str, float] = OrderedDict()
 _MAX_COMPLETED_KEYS = int_env("WORKER_IDEMPOTENCY_CACHE_SIZE", 10_000, 100, 100_000)
 
+WORKER_READY = Gauge(
+    "lunchlineup_worker_ready",
+    "Whether the worker is accepting RabbitMQ deliveries",
+)
 JOB_TOTAL = Counter("lunchlineup_worker_jobs_total", "Jobs processed by the worker", ["type", "status"])
 JOB_RETRIES = Counter("lunchlineup_worker_job_retries_total", "Jobs republished for retry", ["type"])
 JOB_DURATION = Histogram(
@@ -266,6 +284,41 @@ class ScheduleJobBusyError(RuntimeError):
 
 class ScheduleJobOwnershipLostError(RuntimeError):
     pass
+
+
+class WorkerDrainTimeout(RuntimeError):
+    pass
+
+
+@dataclass
+class ShutdownCoordinator:
+    timeout_seconds: float = WORKER_SHUTDOWN_TIMEOUT_SECONDS
+    event: asyncio.Event = field(default_factory=asyncio.Event)
+    reason: str | None = None
+    signal_number: int | None = None
+    deadline: float | None = None
+
+    def request(self, reason: str, signal_number: int | None = None) -> None:
+        if signal_number is not None and self.signal_number is None:
+            self.signal_number = signal_number
+        if self.event.is_set():
+            return
+        self.reason = reason
+        self.deadline = time.monotonic() + self.timeout_seconds
+        mark_worker_unready()
+        self.event.set()
+        logger.info("Worker shutdown requested reason=%s", reason)
+
+    def remaining(self) -> float:
+        if self.deadline is None:
+            return self.timeout_seconds
+        return max(0.0, self.deadline - time.monotonic())
+
+
+def mark_worker_unready() -> None:
+    WORKER_READY.set(0)
+    PDF_PARSER_READY.set(0)
+    SOLVER_QUEUE_TELEMETRY_AVAILABLE.set(0)
 
 
 def lock_tenant_status(cursor: Any, tenant_id: str) -> str | None:
@@ -600,16 +653,48 @@ async def handle_solve_job(
 
 
 async def calculate_schedule(request: Any, solver_pb2_grpc: Any) -> Any:
+    channel = grpc.aio.insecure_channel(ENGINE_GRPC_URL)
+    _ACTIVE_GRPC_CHANNELS.add(channel)
     try:
-        async with grpc.aio.insecure_channel(ENGINE_GRPC_URL) as channel:
-            stub = solver_pb2_grpc.SolverServiceStub(channel)
-            return await stub.CalculateSchedule(
-                request,
-                timeout=ENGINE_GRPC_TIMEOUT_SECONDS,
-                metadata=current_trace_metadata(),
-            )
+        stub = solver_pb2_grpc.SolverServiceStub(channel)
+        return await stub.CalculateSchedule(
+            request,
+            timeout=ENGINE_GRPC_TIMEOUT_SECONDS,
+            metadata=current_trace_metadata(),
+        )
     except grpc.aio.AioRpcError as exc:
         raise RetryableJobError(f"engine rpc failed: {exc.code().name}") from exc
+    finally:
+        await close_grpc_channel(channel)
+
+
+async def close_grpc_channel(channel: Any) -> None:
+    close_task = asyncio.create_task(channel.close(grace=0))
+    done, pending = await asyncio.wait(
+        {close_task},
+        timeout=GRPC_CLOSE_TIMEOUT_SECONDS,
+    )
+    if pending:
+        close_task.cancel()
+        force_close_grpc_channel(channel)
+    elif done:
+        await close_task
+    _ACTIVE_GRPC_CHANNELS.discard(channel)
+
+
+def force_close_grpc_channel(channel: Any) -> None:
+    core_channel = getattr(channel, "_channel", None)
+    close = getattr(core_channel, "close", None)
+    if callable(close):
+        try:
+            close()
+        except Exception:
+            pass
+
+
+def force_close_active_grpc_channels() -> None:
+    for channel in tuple(_ACTIVE_GRPC_CHANNELS):
+        force_close_grpc_channel(channel)
 
 
 def solve_failure_reason(response: Any) -> str:
@@ -2080,10 +2165,46 @@ def safe_ref(value: str) -> str:
     return hashlib.sha256(value.encode("utf-8")).hexdigest()[:12]
 
 
-async def consume_queue(queue: Any, channel: Any) -> None:
+async def consume_queue(
+    queue: Any,
+    channel: Any,
+    shutdown: ShutdownCoordinator | None = None,
+) -> None:
+    active_shutdown = shutdown or ShutdownCoordinator()
+    if active_shutdown.event.is_set():
+        return
+
     async with queue.iterator() as queue_iter:
-        async for message in queue_iter:
-            await handle_queue_message(channel, message)
+        WORKER_READY.set(1)
+
+        async def close_on_shutdown() -> None:
+            await active_shutdown.event.wait()
+            await queue_iter.close()
+
+        close_task = asyncio.create_task(
+            close_on_shutdown(),
+            name="rabbitmq-consumer-stop",
+        )
+        try:
+            async for message in queue_iter:
+                if active_shutdown.event.is_set():
+                    await message.nack(requeue=True)
+                    break
+                await handle_queue_message(channel, message)
+                if active_shutdown.event.is_set():
+                    break
+            if not active_shutdown.event.is_set():
+                raise RuntimeError("RabbitMQ consumer stopped unexpectedly")
+        finally:
+            WORKER_READY.set(0)
+            if not close_task.done():
+                close_task.cancel()
+            done, _ = await asyncio.wait(
+                {close_task},
+                timeout=min(0.1, active_shutdown.remaining()),
+            )
+            if close_task in done and not close_task.cancelled():
+                await close_task
 
 
 @dataclass(frozen=True)
@@ -2143,9 +2264,14 @@ async def run_solver_queue_telemetry_loop(channel: Any) -> None:
         await asyncio.sleep(SOLVER_QUEUE_DEPTH_POLL_SECONDS)
 
 
-async def run_worker_tasks(queue: Any, channel: Any) -> None:
+async def run_worker_tasks(
+    queue: Any,
+    channel: Any,
+    shutdown: ShutdownCoordinator | None = None,
+) -> None:
+    active_shutdown = shutdown or ShutdownCoordinator()
     consumer_task = asyncio.create_task(
-        consume_queue(queue, channel),
+        consume_queue(queue, channel, active_shutdown),
         name="rabbitmq-consumer",
     )
     queue_telemetry_task = asyncio.create_task(
@@ -2185,30 +2311,152 @@ async def run_worker_tasks(queue: Any, channel: Any) -> None:
         )
         tasks[staff_invitation_task] = "staff-invitation-outbox-sweep"
 
+    def stop_on_unexpected_task_exit(task: asyncio.Task[Any]) -> None:
+        if not active_shutdown.event.is_set():
+            active_shutdown.request(f"required_task_stopped:{tasks[task]}")
+
+    for task in tasks:
+        task.add_done_callback(stop_on_unexpected_task_exit)
+
+    shutdown_task = asyncio.create_task(
+        active_shutdown.event.wait(),
+        name="worker-shutdown-wait",
+    )
+    fatal_error: RuntimeError | None = None
     try:
-        done, _ = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
-        stopped_background = next(
-            (task for task in done if task is not consumer_task),
+        done, _ = await asyncio.wait(
+            {*tasks, shutdown_task},
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+        stopped_task = next(
+            (
+                task
+                for task, task_name in tasks.items()
+                if active_shutdown.reason == f"required_task_stopped:{task_name}"
+            ),
             None,
         )
-        if stopped_background is not None:
-            task_name = tasks[stopped_background]
-            if stopped_background.cancelled():
-                raise RuntimeError(f"Required background task stopped unexpectedly: {task_name}")
-            error = stopped_background.exception()
-            if error is not None:
-                raise RuntimeError(f"Required background task failed: {task_name}") from error
-            raise RuntimeError(f"Required background task exited unexpectedly: {task_name}")
-        await consumer_task
-    finally:
+        if (
+            stopped_task is not None
+            and stopped_task.done()
+        ):
+            task_name = tasks[stopped_task]
+            if stopped_task.cancelled():
+                fatal_error = RuntimeError(
+                    f"Required background task stopped unexpectedly: {task_name}"
+                )
+            else:
+                error = stopped_task.exception()
+                if error is not None:
+                    fatal_error = RuntimeError(
+                        f"Required background task failed: {task_name}"
+                    )
+                    fatal_error.__cause__ = error
+                else:
+                    fatal_error = RuntimeError(
+                        f"Required background task exited unexpectedly: {task_name}"
+                    )
+
         for task in tasks:
-            if not task.done():
+            if task is not consumer_task and not task.done():
                 task.cancel()
-        await asyncio.gather(*tasks, return_exceptions=True)
+
+        done, pending = await asyncio.wait(
+            tasks,
+            timeout=active_shutdown.remaining(),
+        )
+        if pending:
+            for task in pending:
+                task.cancel()
+            force_close_active_grpc_channels()
+            names = ",".join(sorted(tasks[task] for task in pending))
+            raise WorkerDrainTimeout(
+                f"Worker drain deadline exceeded pending={names}"
+            ) from fatal_error
+
+        await asyncio.gather(*done, return_exceptions=True)
+        if fatal_error is not None:
+            raise fatal_error
+    finally:
+        if not shutdown_task.done():
+            shutdown_task.cancel()
+        done, _ = await asyncio.wait({shutdown_task}, timeout=0.1)
+        if shutdown_task in done and not shutdown_task.cancelled():
+            await shutdown_task
 
 
-async def start_consumer():
+def force_close_rabbit_transport(connection: Any, channel: Any) -> None:
+    candidates: list[Any] = [connection, channel]
+    index = 0
+    while index < len(candidates) and len(candidates) < 32:
+        candidate = candidates[index]
+        index += 1
+        if candidate is None:
+            continue
+        for attribute in (
+            "transport",
+            "_transport",
+            "connection",
+            "_connection",
+            "stream",
+            "writer",
+        ):
+            nested = getattr(candidate, attribute, None)
+            if nested is not None and not any(
+                nested is existing for existing in candidates
+            ):
+                candidates.append(nested)
+
+    seen: set[int] = set()
+    for candidate in candidates:
+        if candidate is None or id(candidate) in seen:
+            continue
+        seen.add(id(candidate))
+        abort = getattr(candidate, "abort", None)
+        if callable(abort):
+            try:
+                abort()
+            except Exception:
+                pass
+        for attribute in ("socket", "_sock"):
+            transport_socket = getattr(candidate, attribute, None)
+            close = getattr(transport_socket, "close", None)
+            if callable(close):
+                try:
+                    close()
+                except Exception:
+                    pass
+
+
+async def close_rabbit_connection(
+    connection: Any,
+    channel: Any,
+    shutdown: ShutdownCoordinator,
+) -> None:
+    close_task = asyncio.create_task(
+        connection.close(),
+        name="rabbitmq-connection-close",
+    )
+    done, pending = await asyncio.wait(
+        {close_task},
+        timeout=shutdown.remaining(),
+    )
+    if pending:
+        close_task.cancel()
+        force_close_rabbit_transport(connection, channel)
+        raise WorkerDrainTimeout("RabbitMQ transport close exceeded worker deadline")
+    try:
+        await close_task
+    except Exception:
+        force_close_rabbit_transport(connection, channel)
+        raise
+
+
+async def start_consumer(shutdown: ShutdownCoordinator | None = None) -> None:
     """Connect to RabbitMQ and consume durable messages."""
+
+    global _ACTIVE_RABBIT_CHANNEL, _ACTIVE_RABBIT_CONNECTION
+    active_shutdown = shutdown or ShutdownCoordinator()
 
     try:
         import aio_pika
@@ -2220,9 +2468,13 @@ async def start_consumer():
         )
         return
 
+    connection: Any | None = None
+    channel: Any | None = None
     try:
         connection = await aio_pika.connect_robust(RABBITMQ_URL)
+        _ACTIVE_RABBIT_CONNECTION = connection
         channel = await connection.channel(publisher_confirms=True, on_return_raises=True)
+        _ACTIVE_RABBIT_CHANNEL = channel
         await channel.set_qos(prefetch_count=int_env("WORKER_PREFETCH", 10, 1, 100))
 
         await channel.declare_queue(DLQ_NAME, durable=True)
@@ -2237,17 +2489,31 @@ async def start_consumer():
         await declare_retry_queues(channel)
         await refresh_solver_queue_telemetry(channel)
 
+        if active_shutdown.event.is_set():
+            return
+
         logger.info("Worker connected to RabbitMQ queue=%s", QUEUE_NAME)
-        try:
-            await run_worker_tasks(queue, channel)
-        finally:
-            await connection.close()
+        await run_worker_tasks(queue, channel, active_shutdown)
     except Exception as exc:
+        active_shutdown.request("rabbitmq_consumer_failure")
         logger.error(
             "RabbitMQ consumer failed operation=consumer_start failure_class=%s",
             sanitized_failure_class(exc),
         )
         raise
+    finally:
+        if connection is not None:
+            if not active_shutdown.event.is_set():
+                active_shutdown.request("rabbitmq_consumer_exit")
+            try:
+                await close_rabbit_connection(
+                    connection,
+                    channel,
+                    active_shutdown,
+                )
+            finally:
+                _ACTIVE_RABBIT_CHANNEL = None
+                _ACTIVE_RABBIT_CONNECTION = None
 
 
 async def handle_queue_message(channel: Any, message: Any) -> None:
@@ -2305,6 +2571,8 @@ async def handle_queue_message(channel: Any, message: Any) -> None:
         logger.warning("Non-retryable job routed to DLQ reason=%s", exc.__class__.__name__)
         await reject_to_solver_dlq(message, "non_retryable")
         return
+    except asyncio.CancelledError:
+        raise
     except Exception as exc:
         retry_count = read_retry_count(message.body)
         job_type = read_job_type(message.body)
@@ -2482,14 +2750,160 @@ async def publish_retry(exchange: Any, body: bytes, retry_count: int, message_id
     )
 
 
-def start_metrics_server() -> None:
-    global _METRICS_STARTED
+def start_metrics_server() -> tuple[Any, threading.Thread] | None:
+    global _METRICS_SERVER, _METRICS_STARTED, _METRICS_THREAD
     if _METRICS_STARTED:
-        return
+        if _METRICS_SERVER is None or _METRICS_THREAD is None:
+            return None
+        return _METRICS_SERVER, _METRICS_THREAD
     port = int_env("WORKER_METRICS_PORT", 3003, 1, 65535)
-    start_http_server(port)
+    _METRICS_SERVER, _METRICS_THREAD = start_http_server(port)
     _METRICS_STARTED = True
     logger.info("Worker metrics endpoint started port=%s", port)
+    return _METRICS_SERVER, _METRICS_THREAD
+
+
+def force_close_metrics_server(server: Any) -> None:
+    server_socket = getattr(server, "socket", None)
+    if server_socket is None:
+        return
+    try:
+        server_socket.shutdown(socket.SHUT_RDWR)
+    except (OSError, ValueError):
+        pass
+    try:
+        server_socket.close()
+    except OSError:
+        pass
+
+
+async def stop_metrics_server(shutdown: ShutdownCoordinator) -> bool:
+    global _METRICS_SERVER, _METRICS_STARTED, _METRICS_THREAD
+    server = _METRICS_SERVER
+    _METRICS_SERVER = None
+    _METRICS_THREAD = None
+    _METRICS_STARTED = False
+    if server is None:
+        return True
+
+    mark_worker_unready()
+    remaining = shutdown.remaining()
+    if remaining <= 0:
+        force_close_metrics_server(server)
+        return False
+
+    loop = asyncio.get_running_loop()
+    stopped: asyncio.Future[None] = loop.create_future()
+
+    def stop_server() -> None:
+        error: BaseException | None = None
+        try:
+            server.shutdown()
+            server.server_close()
+        except BaseException as exc:
+            error = exc
+        try:
+            if error is None:
+                loop.call_soon_threadsafe(stopped.set_result, None)
+            else:
+                loop.call_soon_threadsafe(stopped.set_exception, error)
+        except RuntimeError:
+            pass
+
+    threading.Thread(
+        target=stop_server,
+        name="worker-metrics-stop",
+        daemon=True,
+    ).start()
+    done, pending = await asyncio.wait({stopped}, timeout=remaining)
+    if pending:
+        force_close_metrics_server(server)
+        return False
+    await stopped
+    return True
+
+
+def install_signal_handlers(
+    shutdown: ShutdownCoordinator,
+) -> Callable[[], None]:
+    loop = asyncio.get_running_loop()
+    previous_handlers: dict[signal.Signals, Any] = {}
+
+    def handle_signal(signal_number: int, _frame: Any) -> None:
+        signal_name = signal.Signals(signal_number).name.lower()
+        loop.call_soon_threadsafe(
+            shutdown.request,
+            f"signal_{signal_name}",
+            signal_number,
+        )
+
+    for runtime_signal in (signal.SIGTERM, signal.SIGINT):
+        try:
+            previous_handlers[runtime_signal] = signal.getsignal(runtime_signal)
+            signal.signal(runtime_signal, handle_signal)
+        except (OSError, RuntimeError, ValueError):
+            previous_handlers.pop(runtime_signal, None)
+
+    def restore() -> None:
+        for runtime_signal, previous in previous_handlers.items():
+            try:
+                signal.signal(runtime_signal, previous)
+            except (OSError, RuntimeError, ValueError):
+                pass
+
+    return restore
+
+
+async def run_worker_runtime(
+    shutdown: ShutdownCoordinator | None = None,
+) -> int | None:
+    active_shutdown = shutdown or ShutdownCoordinator()
+    restore_signal_handlers = install_signal_handlers(active_shutdown)
+    consumer_task: asyncio.Task[None] | None = None
+    shutdown_task: asyncio.Task[bool] | None = None
+    try:
+        start_metrics_server()
+        consumer_task = asyncio.create_task(
+            start_consumer(active_shutdown),
+            name="worker-consumer-runtime",
+        )
+        shutdown_task = asyncio.create_task(
+            active_shutdown.event.wait(),
+            name="worker-runtime-shutdown-wait",
+        )
+        done, _ = await asyncio.wait(
+            {consumer_task, shutdown_task},
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+        if consumer_task not in done:
+            drained, pending = await asyncio.wait(
+                {consumer_task},
+                timeout=active_shutdown.remaining(),
+            )
+            if pending:
+                consumer_task.cancel()
+                force_close_rabbit_transport(
+                    _ACTIVE_RABBIT_CONNECTION,
+                    _ACTIVE_RABBIT_CHANNEL,
+                )
+                force_close_active_grpc_channels()
+                raise WorkerDrainTimeout("Worker runtime exceeded aggregate shutdown deadline")
+            done = drained
+        if consumer_task in done:
+            await consumer_task
+    finally:
+        if not active_shutdown.event.is_set():
+            active_shutdown.request("worker_runtime_exit")
+        mark_worker_unready()
+        if shutdown_task is not None and not shutdown_task.done():
+            shutdown_task.cancel()
+        if shutdown_task is not None:
+            done, _ = await asyncio.wait({shutdown_task}, timeout=0.1)
+            if shutdown_task in done and not shutdown_task.cancelled():
+                await shutdown_task
+        await stop_metrics_server(active_shutdown)
+        restore_signal_handlers()
+    return active_shutdown.signal_number
 
 
 def validate_runtime_config() -> None:
@@ -2507,8 +2921,94 @@ def validate_runtime_config() -> None:
     validate_availability_import_config()
 
 
-if __name__ == "__main__":
+def shutdown_exit_code(
+    shutdown: ShutdownCoordinator,
+    fallback: int = 1,
+) -> int:
+    if shutdown.signal_number is None:
+        return fallback
+    return 128 + shutdown.signal_number
+
+
+async def cancel_loop_tasks_with_deadline(
+    tasks: set[asyncio.Task[Any]],
+    timeout: float,
+) -> bool:
+    if not tasks:
+        return True
+    for task in tasks:
+        task.cancel()
+    done, pending = await asyncio.wait(tasks, timeout=timeout)
+    await asyncio.gather(*done, return_exceptions=True)
+    return not pending
+
+
+def shutdown_executor_threads_with_deadline(
+    loop: asyncio.AbstractEventLoop,
+    shutdown: ShutdownCoordinator,
+) -> bool:
+    executor = getattr(loop, "_default_executor", None)
+    if executor is None:
+        return True
+    executor.shutdown(wait=False, cancel_futures=True)
+    threads = tuple(getattr(executor, "_threads", ()))
+    for executor_thread in threads:
+        executor_thread.join(timeout=shutdown.remaining())
+        if shutdown.remaining() <= 0:
+            break
+    return not any(executor_thread.is_alive() for executor_thread in threads)
+
+
+def run_worker_process() -> None:
     logger.info("Starting LunchLineup Worker")
     validate_runtime_config()
-    start_metrics_server()
-    asyncio.run(start_consumer())
+    shutdown = ShutdownCoordinator()
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    signal_number: int | None = None
+    failure: BaseException | None = None
+    forced_exit_code: int | None = None
+    try:
+        signal_number = loop.run_until_complete(run_worker_runtime(shutdown))
+    except WorkerDrainTimeout:
+        forced_exit_code = shutdown_exit_code(shutdown)
+    except BaseException as exc:
+        failure = exc
+    finally:
+        pending_tasks = {
+            task for task in asyncio.all_tasks(loop)
+            if not task.done()
+        }
+        if forced_exit_code is None and pending_tasks:
+            drained = loop.run_until_complete(
+                cancel_loop_tasks_with_deadline(
+                    pending_tasks,
+                    shutdown.remaining(),
+                )
+            )
+            if not drained:
+                forced_exit_code = shutdown_exit_code(shutdown)
+        if (
+            forced_exit_code is None
+            and not shutdown_executor_threads_with_deadline(loop, shutdown)
+        ):
+            forced_exit_code = shutdown_exit_code(shutdown)
+        asyncio.set_event_loop(None)
+        loop.close()
+    if forced_exit_code is not None:
+        force_close_rabbit_transport(
+            _ACTIVE_RABBIT_CONNECTION,
+            _ACTIVE_RABBIT_CHANNEL,
+        )
+        force_close_active_grpc_channels()
+        if _METRICS_SERVER is not None:
+            force_close_metrics_server(_METRICS_SERVER)
+        os._exit(forced_exit_code)
+    if failure is not None:
+        raise failure
+    if signal_number is not None:
+        raise SystemExit(128 + signal_number)
+
+
+if __name__ == "__main__":
+    run_worker_process()
