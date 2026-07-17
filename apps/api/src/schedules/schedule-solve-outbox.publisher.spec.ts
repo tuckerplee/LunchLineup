@@ -64,7 +64,7 @@ function harness(
     const events: string[] = [];
     const executions: Array<{ sql: string; values: unknown[] }> = [];
     const queries: Array<{ sql: string; values: unknown[] }> = [];
-    const quarantines: Array<{ sql: string; values: unknown[] }> = [];
+    const failClosedUpdates: Array<{ sql: string; values: unknown[] }> = [];
     const platformTx = {
         $queryRaw: vi.fn(async (query: { sql?: string; values?: unknown[] }) => {
             const sql = query.sql ?? '';
@@ -75,7 +75,7 @@ function harness(
             return rows;
         }),
         $executeRaw: vi.fn(async (query: { sql?: string; values?: unknown[] }) => {
-            quarantines.push({ sql: query.sql ?? '', values: query.values ?? [] });
+            failClosedUpdates.push({ sql: query.sql ?? '', values: query.values ?? [] });
             return 1;
         }),
     };
@@ -198,7 +198,7 @@ function harness(
         events,
         executions,
         queries,
-        quarantines,
+        failClosedUpdates,
         refundState: state,
     };
 }
@@ -444,7 +444,7 @@ describe('ScheduleSolveOutboxPublisher', () => {
             reason: 'Schedule generation refund (job-1)',
             balanceAfter: 1,
         }]],
-    ])('quarantines a publication with %s paid provenance', async (_label, debits) => {
+    ])('leaves a publication nonterminal with %s paid provenance', async (_label, debits) => {
         const h = harness([publication()], refundState(), debits);
 
         await expect(h.publisher.publishPendingNow('job-1')).resolves.toBeUndefined();
@@ -452,12 +452,20 @@ describe('ScheduleSolveOutboxPublisher', () => {
         expect(h.connect).not.toHaveBeenCalled();
         expect(h.platformTx.$queryRaw).toHaveBeenCalledTimes(2);
         expect(h.platformTx.$executeRaw).toHaveBeenCalledOnce();
-        expect(h.quarantines[0].sql).toContain('"status" = \'DEAD_LETTERED\'');
-        expect(h.quarantines[0].sql).not.toContain('UPDATE "Tenant"');
-        expect(h.quarantines[0].sql).not.toContain('CreditTransaction');
+        const failClosedSql = h.failClosedUpdates[0].sql;
+        expect(failClosedSql).toContain('"publicationStatus" = \'FAILED\'');
+        expect(failClosedSql).toContain('"nextPublishAt" =');
+        expect(failClosedSql).toContain('"publishLastError" =');
+        expect(failClosedSql).not.toContain('"status" = \'DEAD_LETTERED\'');
+        expect(failClosedSql).not.toContain('"statusReason" =');
+        expect(failClosedSql).not.toContain('"executionToken" =');
+        expect(failClosedSql).not.toContain('"executionLeaseUntil" =');
+        expect(failClosedSql).not.toContain('"completedAt" =');
+        expect(failClosedSql).not.toContain('UPDATE "Tenant"');
+        expect(failClosedSql).not.toContain('CreditTransaction');
     });
 
-    it('quarantines a corrupt oldest item and publishes the next valid item in the same batch', async () => {
+    it('fails closed on a corrupt oldest item and publishes the next valid item in the same batch', async () => {
         const invalid = publication(1, 'job-invalid');
         const valid = publication(1, 'job-valid');
         const h = harness([invalid, valid], refundState(), [{
@@ -471,7 +479,7 @@ describe('ScheduleSolveOutboxPublisher', () => {
         await h.publisher.publishPendingNow();
 
         expect(h.platformTx.$executeRaw).toHaveBeenCalledOnce();
-        expect(h.quarantines[0].values).toContain('job-invalid');
+        expect(h.failClosedUpdates[0].values).toContain('job-invalid');
         expect(h.channel.sendToQueue).toHaveBeenCalledOnce();
         expect(h.channel.sendToQueue).toHaveBeenCalledWith(
             'lunchlineup.jobs',

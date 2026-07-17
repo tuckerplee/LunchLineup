@@ -116,6 +116,40 @@ test('permanent schedule publication failure terminalizes and refunds atomically
   assert.match(publisher, /FROM inserted_refund/);
 });
 
+test('malformed schedule paths remain nonterminal until exact authoritative settlement succeeds', () => {
+  const publisher = read('apps/api/src/schedules/schedule-solve-outbox.publisher.ts');
+  const worker = read('apps/worker/main.py');
+
+  const invalidPublisherStart = publisher.indexOf('for (const candidate of invalidCandidates)');
+  const invalidPublisherEnd = publisher.indexOf('if (validCandidates.length === 0)', invalidPublisherStart);
+  assert.ok(invalidPublisherStart >= 0 && invalidPublisherEnd > invalidPublisherStart);
+  const invalidPublisherBlock = publisher.slice(invalidPublisherStart, invalidPublisherEnd);
+  assert.match(invalidPublisherBlock, /"publicationStatus" = 'FAILED'/);
+  assert.match(invalidPublisherBlock, /"nextPublishAt" =/);
+  assert.doesNotMatch(invalidPublisherBlock, /"status" = 'DEAD_LETTERED'/);
+  assert.doesNotMatch(invalidPublisherBlock, /"executionToken" = NULL/);
+  assert.doesNotMatch(invalidPublisherBlock, /"executionLeaseUntil" = NULL/);
+
+  const claimStart = worker.indexOf('def _claim_schedule_solve_job_sync(');
+  const claimEnd = worker.indexOf('async def try_mark_schedule_solve_job_status(', claimStart);
+  assert.ok(claimStart >= 0 && claimEnd > claimStart);
+  const claimBlock = worker.slice(claimStart, claimEnd);
+  assert.match(claimBlock, /error_type=ScheduleCreditProvenanceError/);
+  assert.doesNotMatch(claimBlock, /"status" = 'DEAD_LETTERED'/);
+  assert.doesNotMatch(claimBlock, /"executionToken" = NULL/);
+
+  const authoritativeStart = worker.indexOf('def _terminalize_schedule_solve_job_by_id_sync(');
+  const authoritativeEnd = worker.indexOf('def _update_schedule_solve_job_status_sync(', authoritativeStart);
+  assert.ok(authoritativeStart >= 0 && authoritativeEnd > authoritativeStart);
+  const authoritativeBlock = worker.slice(authoritativeStart, authoritativeEnd);
+  assert.match(authoritativeBlock, /set_current_platform_admin/);
+  assert.match(authoritativeBlock, /SELECT "tenantId", "scheduleId", "locationId"/);
+  assert.match(authoritativeBlock, /lock_tenant_status/);
+  assert.match(authoritativeBlock, /_terminalize_schedule_solve_job_with_refund/);
+  assert.ok(authoritativeBlock.indexOf('lock_tenant_status') < authoritativeBlock.indexOf('_terminalize_schedule_solve_job_with_refund'));
+  assert.match(worker, /read_malformed_schedule_job_id\(message\.body\)[\s\S]*terminalize_schedule_solve_job_by_id/);
+});
+
 test('schedule solve execution uses a durable single-owner lease', () => {
   const schema = read('packages/db/prisma/schema.prisma');
   const migration = read('packages/db/prisma/migrations/20260713_schedule_solve_execution_lease.sql');
