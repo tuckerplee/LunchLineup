@@ -262,6 +262,9 @@ export class AvailabilityImportsService implements OnModuleInit, OnModuleDestroy
     }
 
     async createImport(args: CreateImportArgs) {
+        if (!this.publisher.isReady()) {
+            throw new ServiceUnavailableException('Availability import publishing is draining.');
+        }
         const file = validateAvailabilityPdf(args.file);
         const idempotencyKey = normalizeImportIdempotencyKey(args.idempotencyKey);
         const suppliedIdentity = normalizeAvailabilityImportStaffIdentity(args.staffIdentity);

@@ -10,7 +10,7 @@ import tempfile
 import threading
 from types import SimpleNamespace
 import unittest
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
@@ -405,6 +405,24 @@ class RetryHandoffRaceCursor:
         return self.result
 
 
+class RetentionCursor:
+    def __init__(self, rows):
+        self.rows = rows
+        self.calls = []
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, traceback):
+        return False
+
+    def execute(self, sql, params=None):
+        self.calls.append((" ".join(sql.split()), params))
+
+    def fetchall(self):
+        return self.rows
+
+
 class AvailabilityImportStoreTests(unittest.TestCase):
     def test_claim_rejects_a_refunded_late_delivery_without_overwriting_terminal_ownership(self):
         cursor = ClaimCursor(has_refund=True)
@@ -696,9 +714,82 @@ class AvailabilityImportStoreTests(unittest.TestCase):
         source = inspect.getsource(availability_import_store.sweep_expired_imports)
 
         self.assertIn('"completedAt" <= CURRENT_TIMESTAMP - INTERVAL \'24 hours\'', source)
-        self.assertIn('"resultErasedAt" = COALESCE("resultErasedAt", CURRENT_TIMESTAMP)', source)
-        self.assertIn('"encryptedSourcePayload" = NULL', source)
         self.assertIn("'CANCELLED'", source)
+
+    def test_malformed_oldest_retention_row_does_not_starve_later_rows(self):
+        rows = [
+            ("import-1", "tenant-1", STORAGE_KEY, "PENDING"),
+            ("import-2", "tenant-2", None, "SUCCEEDED"),
+        ]
+        cursor = RetentionCursor(rows)
+        visited = []
+
+        def sweep_row(payload, storage_key, status):
+            visited.append((payload.import_id, storage_key, status))
+            if payload.import_id == "import-1":
+                raise availability_import_store.AvailabilityImportRejected("malformed settlement")
+
+        with patch.dict(
+            os.environ,
+            {"PLATFORM_ADMIN_DB_CONTEXT_SECRET": "test-capability"},
+        ), patch.object(
+            availability_import_store,
+            "_connect",
+            return_value=FakeConnection(cursor),
+        ), patch.object(
+            availability_import_store,
+            "_sweep_expired_import",
+            side_effect=sweep_row,
+        ), self.assertRaisesRegex(
+            availability_import_store.AvailabilityImportRetentionSweepFailed,
+            "1 availability import retention row",
+        ):
+            availability_import_store.sweep_expired_imports()
+
+        self.assertEqual(
+            visited,
+            [
+                ("import-1", STORAGE_KEY, "PENDING"),
+                ("import-2", None, "SUCCEEDED"),
+            ],
+        )
+        selection = cursor.calls[1][0]
+        self.assertIn('THEN "updatedAt"', selection)
+        self.assertIn("FOR UPDATE SKIP LOCKED", selection)
+
+    def test_retention_erases_an_expired_source_even_when_terminal_settlement_is_malformed(self):
+        payload = availability_import_store.ImportPayload("import-1", "tenant-1")
+        with patch.object(
+            availability_import_store,
+            "terminalize_import",
+            side_effect=availability_import_store.AvailabilityImportRejected(
+                "debit provenance check failed",
+            ),
+        ), patch.object(
+            availability_import_store,
+            "_erase_retained_import_source",
+        ) as erase:
+            with self.assertRaises(availability_import_store.AvailabilityImportRejected):
+                availability_import_store._sweep_expired_import(
+                    payload,
+                    STORAGE_KEY,
+                    "PENDING",
+                )
+
+        erase.assert_called_once_with(
+            payload,
+            availability_import_store.resolve_storage_key(STORAGE_KEY),
+        )
+
+    def test_retention_source_erasure_never_changes_status_or_billing_rows(self):
+        source = inspect.getsource(availability_import_store._erase_retained_import_source)
+
+        self.assertIn('"encryptedSourcePayload" = NULL', source)
+        self.assertIn('"resultErasedAt" = COALESCE("resultErasedAt", CURRENT_TIMESTAMP)', source)
+        self.assertNotIn('UPDATE "Tenant"', source)
+        self.assertNotIn('INSERT INTO "CreditTransaction"', source)
+        self.assertNotIn('SET "status"', source)
+
     def test_terminalization_refunds_the_wallet_once_and_is_idempotent(self):
         state = TerminalState()
         payload = availability_import_store.ImportPayload("import-1", "tenant-1")
@@ -918,6 +1009,132 @@ def valid_parser_result():
 
 
 class AvailabilityImportOrchestrationTests(unittest.IsolatedAsyncioTestCase):
+
+    async def test_dead_letter_settlement_poison_erases_owned_source_without_looping(self):
+        payload = availability_import_store.ImportPayload("import-1", "tenant-1")
+        reason = availability_import_store.AvailabilityImportRetryable(
+            "parser infrastructure failed",
+            payload,
+            "execution-token",
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / STORAGE_KEY
+            path.write_bytes(b"LLAI\x03encrypted-source")
+            with patch.object(
+                availability_import,
+                "terminalize_import",
+                side_effect=availability_import_store.AvailabilityImportRejected(
+                    "debit provenance check failed",
+                ),
+            ) as terminalize, patch.object(
+                availability_import,
+                "erase_owned_import_source",
+                return_value=path,
+            ) as erase:
+                await availability_import.mark_import_retry(
+                    {"import_id": "import-1", "tenant_id": "tenant-1"},
+                    "DEAD_LETTERED",
+                    3,
+                    reason,
+                )
+
+            terminalize.assert_called_once_with(
+                payload,
+                "execution-token",
+                "DEAD_LETTERED",
+                "PROCESSING_FAILED",
+            )
+            erase.assert_called_once_with(payload, "execution-token")
+            self.assertFalse(path.exists())
+
+    async def test_dead_letter_transient_database_failure_still_requests_redelivery(self):
+        payload = availability_import_store.ImportPayload("import-1", "tenant-1")
+        reason = availability_import_store.AvailabilityImportRetryable(
+            "parser infrastructure failed",
+            payload,
+            "execution-token",
+        )
+        with patch.object(
+            availability_import,
+            "terminalize_import",
+            side_effect=RuntimeError("database unavailable"),
+        ), patch.object(
+            availability_import,
+            "erase_owned_import_source",
+        ) as erase:
+            with self.assertRaisesRegex(RuntimeError, "database unavailable"):
+                await availability_import.mark_import_retry(
+                    {"import_id": "import-1", "tenant_id": "tenant-1"},
+                    "DEAD_LETTERED",
+                    3,
+                    reason,
+                )
+
+        erase.assert_not_called()
+
+    async def test_retention_loop_sets_ready_only_after_success_and_fails_closed_while_draining(self):
+        observed = {}
+
+        async def stop_while_ready(interval):
+            observed.update({
+                "interval": interval,
+                "running": availability_import_store.RETENTION_SWEEP_RUNNING._value.get(),
+                "ready": availability_import_store.RETENTION_SWEEP_READY._value.get(),
+                "last_success": availability_import_store.RETENTION_SWEEP_LAST_SUCCESS._value.get(),
+            })
+            raise asyncio.CancelledError()
+
+        availability_import_store.RETENTION_SWEEP_LAST_SUCCESS.set(0)
+        with patch.object(
+            availability_import_store.asyncio,
+            "to_thread",
+            new=AsyncMock(return_value=0),
+        ), patch.object(
+            availability_import_store.asyncio,
+            "sleep",
+            side_effect=stop_while_ready,
+        ):
+            with self.assertRaises(asyncio.CancelledError):
+                await availability_import_store.run_availability_import_retention_loop()
+
+        self.assertEqual(observed["interval"], 300.0)
+        self.assertEqual(observed["running"], 1)
+        self.assertEqual(observed["ready"], 1)
+        self.assertGreater(observed["last_success"], 0)
+        self.assertEqual(availability_import_store.RETENTION_SWEEP_READY._value.get(), 0)
+        self.assertEqual(availability_import_store.RETENTION_SWEEP_RUNNING._value.get(), 0)
+
+    async def test_retention_shutdown_marks_draining_before_waiting_for_the_active_sweep(self):
+        started = asyncio.Event()
+        release = asyncio.Event()
+
+        async def blocked_sweep(_function):
+            started.set()
+            await release.wait()
+            return 0
+
+        with patch.object(
+            availability_import_store.asyncio,
+            "to_thread",
+            side_effect=blocked_sweep,
+        ):
+            loop = asyncio.create_task(
+                availability_import_store.run_availability_import_retention_loop(),
+            )
+            await started.wait()
+            loop.cancel()
+            await asyncio.sleep(0)
+
+            self.assertFalse(loop.done())
+            self.assertEqual(availability_import_store.RETENTION_SWEEP_READY._value.get(), 0)
+            self.assertEqual(availability_import_store.RETENTION_SWEEP_RUNNING._value.get(), 1)
+
+            release.set()
+            with self.assertRaises(asyncio.CancelledError):
+                await loop
+
+        self.assertEqual(availability_import_store.RETENTION_SWEEP_READY._value.get(), 0)
+        self.assertEqual(availability_import_store.RETENTION_SWEEP_RUNNING._value.get(), 0)
 
     async def test_ambiguous_claim_failure_propagates_only_its_candidate_token(self):
         candidate_token = "b" * 32

@@ -26,6 +26,7 @@ from src.availability_import_store import (
     cleanup_source,
     claim_import,
     complete_import,
+    erase_owned_import_source,
     mark_retrying,
     run_availability_import_retention_loop,
     terminalize_import,
@@ -141,13 +142,23 @@ async def mark_import_retry(
     payload = validate_import_payload(raw)
     token = reason.execution_token if isinstance(reason, AvailabilityImportRetryable) else None
     if status == "DEAD_LETTERED":
-        path = await asyncio.to_thread(
-            terminalize_import,
-            payload,
-            token,
-            status,
-            "PROCESSING_FAILED",
-        )
+        try:
+            path = await asyncio.to_thread(
+                terminalize_import,
+                payload,
+                token,
+                status,
+                "PROCESSING_FAILED",
+            )
+        except AvailabilityImportRejected:
+            path = await asyncio.to_thread(erase_owned_import_source, payload, token)
+            if path is not None:
+                try:
+                    await asyncio.to_thread(path.unlink, missing_ok=True)
+                except OSError:
+                    # The API orphan sweep removes an opaque local replica after DB erasure.
+                    pass
+            return
         if path is not None:
             await asyncio.to_thread(cleanup_source, payload, path)
         return
