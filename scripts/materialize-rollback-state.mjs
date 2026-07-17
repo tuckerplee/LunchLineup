@@ -170,6 +170,17 @@ try {
 } catch (error) {
   fail(error instanceof Error ? error.message : String(error));
 }
+const requiredRollbackExecutables = [
+  'scripts/activate-retained-rollback.sh',
+  'scripts/rollback-vm217-transport.sh',
+  'scripts/vm217-transport-deadlines.sh',
+];
+for (const path of requiredRollbackExecutables) {
+  const bytes = materializedFiles.get(path);
+  if (!bytes || bytes.length === 0 || bytes.subarray(0, 2).toString() !== '#!') {
+    fail(`Retained deployment bundle is missing executable rollback handoff bytes: ${path}`);
+  }
+}
 
 const outputDir = resolve(process.argv[outputIndex + 1]);
 if (existsSync(outputDir)) fail(`Output directory must not already exist: ${outputDir}`);
@@ -201,6 +212,9 @@ const exports = {
   PREVIOUS_LAUNCH_PROOF_ARTIFACT_SHA256: proofSha,
   PREVIOUS_LAUNCH_PROOF_MAX_AGE_SECONDS: String(maxAge),
   PREVIOUS_LAUNCH_PROOF_MANIFEST_URI: manifestUri,
+  PREVIOUS_ROLLBACK_TRANSPORT_PATH: join(appDir, 'scripts', 'rollback-vm217-transport.sh'),
+  PREVIOUS_ROLLBACK_ACTIVATOR_PATH: join(appDir, 'scripts', 'activate-retained-rollback.sh'),
+  PREVIOUS_ROLLBACK_DEADLINES_PATH: join(appDir, 'scripts', 'vm217-transport-deadlines.sh'),
 };
 
 if (githubEnvIndex !== -1) {

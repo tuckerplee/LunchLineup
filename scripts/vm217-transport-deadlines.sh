@@ -36,6 +36,18 @@ vm217_validate_transport_deadlines() {
   fi
 }
 
+vm217_assert_mutation_cutoff() {
+  local now_epoch_seconds
+  if [[ -n "$VM217_MUTATION_NOT_AFTER_EPOCH_SECONDS" ]]; then
+    now_epoch_seconds="$(date +%s)" \
+      || { echo "Could not read the VM217 mutation cutoff clock." >&2; return 70; }
+    if (( now_epoch_seconds > VM217_MUTATION_NOT_AFTER_EPOCH_SECONDS )); then
+      printf 'VM217 pre-mutation cutoff passed before remote mutation began; no mutation was attempted. Re-run compatibility validation and do not bypass the cutoff.\n' >&2
+      return 124
+    fi
+  fi
+}
+
 vm217_run_with_deadline() {
   local operation="$1"
   local deadline_seconds="$2"
@@ -62,17 +74,9 @@ vm217_run_with_deadline() {
 }
 
 vm217_begin_mutation_budget() {
-  local now_epoch_seconds
   [[ -z "$VM217_MUTATION_BUDGET_STARTED_AT_SECONDS" ]] \
     || { echo "VM217 aggregate mutation budget has already started." >&2; return 64; }
-  if [[ -n "$VM217_MUTATION_NOT_AFTER_EPOCH_SECONDS" ]]; then
-    now_epoch_seconds="$(date +%s)" \
-      || { echo "Could not read the VM217 mutation cutoff clock." >&2; return 70; }
-    if (( now_epoch_seconds > VM217_MUTATION_NOT_AFTER_EPOCH_SECONDS )); then
-      printf 'VM217 pre-mutation cutoff passed before remote mutation began; no mutation was attempted. Re-run compatibility validation and do not bypass the cutoff.\n' >&2
-      return 124
-    fi
-  fi
+  vm217_assert_mutation_cutoff || return $?
   VM217_MUTATION_BUDGET_STARTED_AT_SECONDS="$SECONDS"
 }
 

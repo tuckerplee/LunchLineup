@@ -11,6 +11,7 @@ COMPOSE_PROJECT="${COMPOSE_PROJECT_NAME:-lunchlineup}"
 TRANSPORT_DEADLINES="$SCRIPT_DIR/vm217-transport-deadlines.sh"
 REMOTE_STAGE=""
 LOCAL_PROTECTED_CHANNEL=""
+REMOTE_OPERATION_STARTED=false
 
 HOST=""
 USER_NAME=""
@@ -252,9 +253,21 @@ cleanup_remote_stage() {
   exit "$exit_code"
 }
 
+handle_transport_signal() {
+  local signal_name="$1"
+  local signal_exit_code="$2"
+  trap '' INT TERM
+  if [[ "$REMOTE_OPERATION_STARTED" == "true" ]]; then
+    echo "VM217 deploy transport received $signal_name after remote operations began; attempting one bounded authenticated reconciliation before cleanup." >&2
+    reconcile_vm217_deploy_state >&2 \
+      || echo "VM217 deploy signal reconciliation did not prove a stable exact release/services/traffic state." >&2
+  fi
+  exit "$signal_exit_code"
+}
+
 trap cleanup_remote_stage EXIT
-trap 'exit 130' INT
-trap 'exit 143' TERM
+trap 'handle_transport_signal INT 130' INT
+trap 'handle_transport_signal TERM 143' TERM
 
 run_transport_mutation_step() {
   local status
@@ -263,24 +276,11 @@ run_transport_mutation_step() {
   else
     status=$?
   fi
-  if (( status == 124 || status == 137 )); then
-    reconcile_vm217_deploy_state >&2 \
-      || echo "VM217 transport mutation-budget reconciliation did not prove a stable exact state." >&2
-  fi
+  echo "VM217 transport operation failed after remote operations began; reconciling exact release/services/traffic state before any next action." >&2
+  reconcile_vm217_deploy_state >&2 \
+    || echo "VM217 transport reconciliation did not prove a stable exact state." >&2
   return "$status"
 }
-
-vm217_begin_mutation_budget
-REMOTE_STAGE="$(run_transport_mutation_step vm217_run_ssh "remote deployment staging allocation" \
-  "${SSH_OPTIONS[@]}" "$SSH_TARGET" mktemp -d /tmp/lunchlineup-ci-transport.XXXXXXXX)"
-[[ "$REMOTE_STAGE" =~ ^/tmp/lunchlineup-ci-transport\.[A-Za-z0-9]+$ ]] \
-  || fail "VM217 returned an invalid transport staging path."
-
-REMOTE_MANIFEST="$REMOTE_STAGE/release-manifest.json"
-REMOTE_RUNTIME_ENV="$REMOTE_STAGE/runtime.env"
-REMOTE_LAUNCH_PROOF="$REMOTE_STAGE/launch-proof.json"
-REMOTE_PROTECTED_CHANNEL="$REMOTE_STAGE/protected-channel"
-REMOTE_ENTRYPOINT_PATH="$REMOTE_APP_DIR/$REMOTE_ENTRYPOINT"
 
 if [[ "${LAUNCH_PROOF_MANIFEST_URI:-}" == *$'\n'* || "${LAUNCH_PROOF_MANIFEST_URI:-}" == *$'\r'* ]]; then
   fail "LAUNCH_PROOF_MANIFEST_URI must be a single-line value when provided."
@@ -290,6 +290,22 @@ LOCAL_PROTECTED_CHANNEL="$(mktemp "${TMPDIR:-/tmp}/lunchlineup-vm217-protected.X
 printf '%s\n' "${LAUNCH_PROOF_MANIFEST_URI:--}" > "$LOCAL_PROTECTED_CHANNEL"
 chmod 600 "$LOCAL_PROTECTED_CHANNEL"
 PROTECTED_CHANNEL_SHA256="$(sha256_file "$LOCAL_PROTECTED_CHANNEL")"
+stage_token="${LOCAL_PROTECTED_CHANNEL##*.}"
+[[ "$stage_token" =~ ^[A-Za-z0-9]+$ ]] \
+  || fail "Could not derive a safe deployment transport staging token."
+remote_stage_candidate="/tmp/lunchlineup-ci-transport.$stage_token"
+
+vm217_begin_mutation_budget
+REMOTE_STAGE="$remote_stage_candidate"
+REMOTE_OPERATION_STARTED=true
+run_transport_mutation_step vm217_run_ssh "remote deployment staging allocation" \
+  "${SSH_OPTIONS[@]}" "$SSH_TARGET" mkdir -m 700 -- "$REMOTE_STAGE"
+
+REMOTE_MANIFEST="$REMOTE_STAGE/release-manifest.json"
+REMOTE_RUNTIME_ENV="$REMOTE_STAGE/runtime.env"
+REMOTE_LAUNCH_PROOF="$REMOTE_STAGE/launch-proof.json"
+REMOTE_PROTECTED_CHANNEL="$REMOTE_STAGE/protected-channel"
+REMOTE_ENTRYPOINT_PATH="$REMOTE_APP_DIR/$REMOTE_ENTRYPOINT"
 
 run_transport_mutation_step vm217_run_scp "release manifest upload" "${SCP_OPTIONS[@]}" -- "$RELEASE_MANIFEST" "$SCP_TARGET:$REMOTE_MANIFEST"
 run_transport_mutation_step vm217_run_scp "runtime environment upload" "${SCP_OPTIONS[@]}" -- "$RUNTIME_ENV" "$SCP_TARGET:$REMOTE_RUNTIME_ENV"
@@ -339,7 +355,7 @@ REMOTE_MAX_PROOF_AGE="${LAUNCH_PROOF_MAX_AGE_SECONDS:--}"
 REMOTE_EXPECTED_CURRENT_RELEASE_SHA="${EXPECTED_CURRENT_RELEASE_SHA:--}"
 
 deploy_status=0
-if vm217_run_ssh "remote production deployment" "${SSH_OPTIONS[@]}" "$SSH_TARGET" \
+if run_transport_mutation_step vm217_run_ssh "remote production deployment" "${SSH_OPTIONS[@]}" "$SSH_TARGET" \
   bash -s -- \
   "$PRODUCTION_API_HEALTH_URL_B64" \
   "$PRODUCTION_WEB_URL_B64" \
@@ -506,9 +522,6 @@ then
   :
 else
   deploy_status=$?
-  if (( deploy_status == 124 || deploy_status == 137 )); then
-    reconcile_vm217_deploy_state || echo "VM217 deploy timeout reconciliation did not prove a stable exact state." >&2
-  fi
   exit "$deploy_status"
 fi
 

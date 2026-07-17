@@ -127,6 +127,9 @@ test('rollback state materializer preserves every verified previous release inpu
       'PREVIOUS_LAUNCH_PROOF_ARTIFACT_SHA256',
       'PREVIOUS_LAUNCH_PROOF_MAX_AGE_SECONDS',
       'PREVIOUS_LAUNCH_PROOF_MANIFEST_URI',
+      'PREVIOUS_ROLLBACK_TRANSPORT_PATH',
+      'PREVIOUS_ROLLBACK_ACTIVATOR_PATH',
+      'PREVIOUS_ROLLBACK_DEADLINES_PATH',
     ]) assert.match(exported, new RegExp(`^${name}=`, 'm'));
     assert.equal(JSON.parse(readFileSync(join(outputDir, 'runtime-secret.json'), 'utf8')).sha256, 'b'.repeat(64));
     assert.equal(existsSync(join(outputDir, 'runtime.env')), false);
@@ -142,6 +145,14 @@ test('rollback state materializer preserves every verified previous release inpu
     ]) assert.equal(
       readFileSync(join(outputDir, 'app', 'infrastructure', 'systemd', unit), 'utf8'),
       readFileSync(join(root, 'infrastructure', 'systemd', unit), 'utf8'),
+    );
+    for (const executable of [
+      'scripts/activate-retained-rollback.sh',
+      'scripts/rollback-vm217-transport.sh',
+      'scripts/vm217-transport-deadlines.sh',
+    ]) assert.equal(
+      readFileSync(join(outputDir, 'app', ...executable.split('/')), 'utf8'),
+      readFileSync(join(root, ...executable.split('/')), 'utf8'),
     );
   } finally {
     rmSync(scratch, { recursive: true, force: true });
@@ -197,6 +208,32 @@ test('rollback state materializer rejects state and deployment bundle hash drift
     } finally {
       rmSync(scratch, { recursive: true, force: true });
     }
+  }
+});
+
+test('rollback state materializer rejects non-executable rollback handoff bytes', () => {
+  const value = state();
+  const archive = JSON.parse(Buffer.from(value.deploymentContractBundleBase64, 'base64').toString('utf8'));
+  const path = 'scripts/activate-retained-rollback.sh';
+  const entry = archive.files.find((candidate) => candidate.path === path);
+  assert.ok(entry);
+  const hostileBytes = Buffer.from('rollback handoff removed\n');
+  entry.contentsBase64 = hostileBytes.toString('base64');
+  value.releaseManifest.deploymentContract.files[path] = hash(hostileBytes);
+  const changed = Buffer.from(JSON.stringify(archive));
+  value.deploymentContractBundleBase64 = changed.toString('base64');
+  value.releaseManifest.deploymentContract.bundle.sha256 = hash(changed);
+  value.releaseManifest.deploymentContract.bundle.bytes = changed.length;
+
+  const scratch = mkdtempSync(join(tmpdir(), 'll-rollback-handoff-bad-'));
+  const outputDir = join(scratch, 'state');
+  try {
+    const result = run(value, outputDir, join(scratch, 'github.env'));
+    assert.notEqual(result.status, 0, `${result.stdout}\n${result.stderr}`);
+    assert.match(result.stderr, /missing executable rollback handoff bytes: scripts\/activate-retained-rollback\.sh/);
+    assert.equal(existsSync(outputDir), false);
+  } finally {
+    rmSync(scratch, { recursive: true, force: true });
   }
 });
 
@@ -286,7 +323,7 @@ test('CI retains one validated baseline and routes every post-arm failure throug
   assert.equal((automaticDeploy.match(/release-bundle-registry\.mjs resolve/g) ?? []).length, 3);
   assert.equal((ci.match(/name: Retain validated secret-free rollback baseline/g) ?? []).length, 1);
   assert.match(ci, /production_rollback_armed: \$\{\{ steps\.arm_production_rollback\.outputs\.armed \}\}/);
-  assert.match(ci, /name: Arm production rollback[\s\S]*echo "armed=true" >> "\$GITHUB_OUTPUT"/);
+  assert.match(ci, /name: Arm production rollback[\s\S]*ROLLBACK_BASELINE_ARTIFACT_DIGEST[\s\S]*echo "armed=true"/);
   assert.doesNotMatch(ci, /production_deploy_mutation_started|Rollback failed production deploy|Auto-rollback if configured/);
 
   const retainBaseline = ci.indexOf('name: Retain validated secret-free rollback baseline');
@@ -296,16 +333,19 @@ test('CI retains one validated baseline and routes every post-arm failure throug
   assert.ok(rollbackArm > retainBaseline && rollbackArm < deployMutation);
   const retainedStep = ci.slice(retainBaseline, ci.indexOf('      - name:', retainBaseline + 10));
   assert.match(retainedStep, /lunchlineup-rollback-baseline/);
+  assert.match(retainedStep, /retention-days: 90/);
   assert.doesNotMatch(retainedStep, /runtime\.env|PRODUCTION_RUNTIME_ENV_B64|runtimeEnvBase64/);
+  assert.match(ci, /name: Arm production rollback[\s\S]*rm -rf "\$RUNNER_TEMP\/lunchlineup-rollback-baseline"/);
 
-  const rollbackStart = automaticDeploy.indexOf('name: Materialize retained automatic rollback baseline');
+  const rollbackStart = automaticDeploy.indexOf('name: Download durable automatic rollback handoff');
   const rollbackEnd = automaticDeploy.indexOf('name: Cleanup production runtime environment and rollback secrets');
   const rollback = automaticDeploy.slice(rollbackStart, rollbackEnd);
   assert.ok(rollbackStart > -1 && rollbackEnd > rollbackStart);
   assert.match(rollback, /always\(\)/);
   assert.match(rollback, /steps\.arm_production_rollback\.outcome == 'success'/);
   assert.match(rollback, /steps\.same_gate_release_outcome\.outcome != 'success'/);
-  assert.match(rollback, /lunchlineup-rollback-baseline\/release\.json/);
+  assert.match(rollback, /actions\/download-artifact@/);
+  assert.match(rollback, /lunchlineup-rollback-handoff/);
   assert.match(rollback, /materialize-rollback-state\.mjs/);
   assert.match(rollback, /--launch-proof-mode rollback/);
   assert.match(rollback, /rehydrate-runtime-secret\.mjs/);
@@ -314,9 +354,11 @@ test('CI retains one validated baseline and routes every post-arm failure throug
   assert.match(rollback, /registry_before="\$RUNNER_TEMP\/lunchlineup-centralized-rollback-current-before\.json"/);
   assert.match(rollback, /registry_current_sha="\$\(node -e/);
   assert.match(rollback, /"\$registry_current_sha" != "\$GITHUB_SHA"[\s\S]*"\$registry_current_sha" != "\$PREVIOUS_RELEASE_SOURCE_SHA"/);
-  assert.match(rollback, /--expected-current-source-sha "\$registry_current_sha"/);
+  assert.match(rollback, /ROLLBACK_REGISTRY_CURRENT_SHA=\$registry_current_sha/);
+  assert.match(rollback, /--expected-current-source-sha "\$ROLLBACK_REGISTRY_CURRENT_SHA"/);
   assert.doesNotMatch(rollback, /--expected-current-source-sha "\$GITHUB_SHA"/);
-  assert.match(rollback, /Require completed automatic rollback after release failure[\s\S]*test "\$ROLLBACK_PROOF_OUTCOME" = success/);
+  assert.match(rollback, /rollback_mutation_remaining="\$\(\(rollback_mutation_not_after - \$\(date \+%s\)\)\)"/);
+  assert.match(rollback, /Require completed automatic rollback after release failure[\s\S]*test "\$ROLLBACK_HANDOFF_DOWNLOAD_OUTCOME" = success[\s\S]*test "\$ROLLBACK_REGISTRY_PRECONDITION_OUTCOME" = success[\s\S]*test "\$ROLLBACK_PROOF_OUTCOME" = success/);
 });
 
 test('post-arm failure injection matrix always triggers centralized rollback', () => {
