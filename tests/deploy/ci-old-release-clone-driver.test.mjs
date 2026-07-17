@@ -84,7 +84,23 @@ test('production compatibility provision and destroy use bounded exact clone con
     if (item.emergency) {
       assert.match(item.run, /run_pre_mutation "isolated clone provisioning" "\$EMERGENCY_ROLLBACK_CLONE_TIMEOUT_SECONDS"/);
     } else {
-      assert.match(item.run, /timeout --foreground --signal=TERM --kill-after=5s "\$\{PRODUCTION_DEPLOY_CLONE_PROVISION_TIMEOUT_SECONDS\}s" "\$clone_driver"/);
+      const provisionStart = item.run.indexOf('provision_seconds=');
+      const provisionEnd = item.run.indexOf('test ! -e "$evidence_dir"', provisionStart);
+      const provision = item.run.slice(provisionStart, provisionEnd);
+      assert.match(
+        provision,
+        /provision_seconds="\$\(phase_seconds compatibility "\$PRODUCTION_DEPLOY_CLONE_PROVISION_TIMEOUT_SECONDS"\)"[\s\S]*timeout \\\n\s+--signal=TERM \\\n\s+--kill-after="\$\{PRODUCTION_DEPLOY_TIMEOUT_KILL_RESERVE_SECONDS\}s" \\\n\s+"\$\{provision_seconds\}s" \\\n\s+"\$clone_driver"/,
+      );
+      assert.doesNotMatch(provision, /--foreground/, 'production provision must time out the clone-driver process group');
+
+      const destroyStart = item.run.indexOf('cleanup_compatibility_clone()');
+      const destroyEnd = item.run.indexOf('trap cleanup_compatibility_clone EXIT', destroyStart);
+      const destroy = item.run.slice(destroyStart, destroyEnd);
+      assert.match(
+        destroy,
+        /cleanup_seconds="\$\(phase_seconds compatibility-cleanup "\$PRODUCTION_DEPLOY_COMPATIBILITY_CLEANUP_RESERVE_SECONDS"\)"[\s\S]*timeout \\\n\s+--signal=TERM \\\n\s+--kill-after="\$\{PRODUCTION_DEPLOY_TIMEOUT_KILL_RESERVE_SECONDS\}s" \\\n\s+"\$\{cleanup_seconds\}s" \\\n\s+bash scripts\/destroy-old-release-compatibility-clone\.sh \\\n\s+--driver "\$clone_driver" \\\n\s+--clone-env "\$clone_env" \\\n\s+--clone-id "\$clone_id" \\\n\s+--production-runtime-env "\$PRODUCTION_RUNTIME_ENV_PATH" \\\n\s+--timeout-seconds "\$cleanup_seconds"/,
+      );
+      assert.doesNotMatch(destroy, /--foreground/, 'production destroy must time out the clone-driver process group');
     }
     assert.match(item.run, /test ! -e "\$evidence_dir"[\s\S]*test -s "\$clone_env"[\s\S]*chmod 600 "\$clone_env"/);
     assert.match(item.run, /clone env keys do not exactly match the protected contract/);
@@ -104,7 +120,11 @@ test('production compatibility provision and destroy use bounded exact clone con
     if (item.emergency) {
       assert.match(item.cleanup, /--timeout-seconds "\$EMERGENCY_ROLLBACK_CLEANUP_TIMEOUT_SECONDS"/);
     } else {
-      assert.match(item.cleanup, /--timeout-seconds "\$PRODUCTION_DEPLOY_CLEANUP_RESERVE_SECONDS"/);
+      assert.match(
+        item.cleanup,
+        /cleanup_seconds="\$\(node scripts\/validate-production-deploy-deadlines\.mjs remaining \\\n\s+--phase runner-cleanup \\\n\s+--maximum-seconds "\$PRODUCTION_DEPLOY_RUNNER_RESERVE_SECONDS"\)"[\s\S]*timeout \\\n\s+--signal=TERM \\\n\s+--kill-after="\$\{PRODUCTION_DEPLOY_TIMEOUT_KILL_RESERVE_SECONDS\}s" \\\n\s+"\$\{cleanup_seconds\}s" \\\n\s+bash scripts\/destroy-old-release-compatibility-clone\.sh \\\n\s+--driver "\$clone_driver" \\\n\s+--clone-env "\$clone_env" \\\n\s+--clone-id "\$clone_id" \\\n\s+--production-runtime-env "\$\{PRODUCTION_RUNTIME_ENV_PATH:-\}" \\\n\s+--timeout-seconds "\$cleanup_seconds"/,
+      );
+      assert.doesNotMatch(item.cleanup, /--foreground/, 'final cleanup must time out the clone-driver process group');
     }
     assert.doesNotMatch(item.cleanup, /rm -f "\$clone_env" "\$clone_driver"/);
   }
