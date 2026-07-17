@@ -72,6 +72,7 @@ lunchlineup/
 - `.dockerignore`: Docker build ignore rules.
 - `.env.example`: local environment variable template.
 - `.github/`: GitHub workflow and repository automation configuration.
+- `.gitattributes`: Git path attributes and line-ending normalization rules.
 - `.gitignore`: Git ignore rules for local, generated, and sensitive files.
 - `.zap-rules.tsv`: OWASP ZAP baseline scan rule severity configuration.
 - `README.md`: this project overview and repository map.

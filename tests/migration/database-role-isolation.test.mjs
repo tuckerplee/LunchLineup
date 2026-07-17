@@ -112,11 +112,14 @@ test('role provisioning uses repository-local Prisma stdin without host psql', (
 });
 test('migration runner uses the admin URL for schema work and provisions the RLS capability before admin bootstrap', () => {
   const runner = read('scripts/apply-db-migrations.mjs');
-  const switchToAdmin = runner.indexOf('process.env.DATABASE_URL = requireMigrationDatabaseUrl();');
-  const sequenceInvocation = runner.indexOf('runMigrationSequence({', switchToAdmin);
+  const readAdminUrl = runner.indexOf('const migrationDatabaseUrl = requireMigrationDatabaseUrl();');
+  const switchToAdmin = runner.indexOf('process.env.DATABASE_URL = migrationDatabaseUrl;');
+  const sequenceInvocation = runner.indexOf('await runMigrationSequence({');
   const sequence = runner.match(/export async function runMigrationSequence\(operations\) \{([\s\S]*?)\n\}/)?.[1];
 
-  assert.ok(switchToAdmin >= 0 && switchToAdmin < sequenceInvocation);
+  assert.ok(readAdminUrl >= 0, 'migration runner must require the admin URL');
+  assert.ok(readAdminUrl < switchToAdmin, 'migration runner must switch Prisma to the validated admin URL');
+  assert.ok(switchToAdmin < sequenceInvocation, 'migration runner must switch to the admin URL before schema work');
   assert.ok(sequence, 'runMigrationSequence must remain exported');
   const schemaPush = sequence.indexOf('operations.pushSchema();');
   const provision = sequence.indexOf('operations.provisionAppRole();');
