@@ -51,7 +51,10 @@ describe('AvailabilityImportsService', () => {
             assertFeatureEnabledInTransaction: vi.fn().mockResolvedValue({ code: 'scheduling' }),
             recordFeatureUsageInTransaction: vi.fn().mockResolvedValue({ consumedCredits: 1 }),
         };
-        publisher = { kick: vi.fn() };
+        publisher = {
+            isReady: vi.fn().mockReturnValue(true),
+            kick: vi.fn(),
+        };
     });
 
     afterEach(() => {
@@ -258,6 +261,23 @@ describe('AvailabilityImportsService', () => {
 
         expect(tenantDb.withTenant).not.toHaveBeenCalled();
         expect(featureAccess.recordFeatureUsageInTransaction).not.toHaveBeenCalled();
+    });
+
+    it('rejects new imports before validation or debit while the publisher is draining', async () => {
+        publisher.isReady.mockReturnValue(false);
+        const service = new AvailabilityImportsService(tenantDb, featureAccess, publisher);
+
+        await expect(service.createImport({
+            tenantId: 'tenant-1',
+            requestedByUserId: 'manager-1',
+            userId: 'user-1',
+            idempotencyKey: 'draining-import',
+        })).rejects.toThrow('publishing is draining');
+
+        expect(tenantDb.withTenant).not.toHaveBeenCalled();
+        expect(featureAccess.assertFeatureEnabledInTransaction).not.toHaveBeenCalled();
+        expect(featureAccess.recordFeatureUsageInTransaction).not.toHaveBeenCalled();
+        expect(publisher.kick).not.toHaveBeenCalled();
     });
 
     it('withholds a succeeded result after completion-based retention erases its payload', async () => {

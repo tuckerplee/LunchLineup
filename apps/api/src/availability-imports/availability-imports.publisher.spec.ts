@@ -100,4 +100,49 @@ describe('AvailabilityImportPublisher', () => {
         expect(mutation.data.nextPublishAt).toBeInstanceOf(Date);
         expect(mutation.data).not.toHaveProperty('status');
     });
+
+    it('fails readiness before draining and never starts another sweep during shutdown', async () => {
+        const publisher = new AvailabilityImportPublisher(tenantDb);
+        let releaseSweep!: () => void;
+        const pendingSweep = new Promise<void>((resolve) => {
+            releaseSweep = resolve;
+        });
+        const publishPending = vi.spyOn(publisher as any, 'publishPending')
+            .mockReturnValue(pendingSweep);
+
+        publisher.onModuleInit();
+        expect(publisher.isReady()).toBe(true);
+        expect(publishPending).toHaveBeenCalledOnce();
+
+        const shutdown = publisher.onModuleDestroy();
+        expect(publisher.isReady()).toBe(false);
+        publisher.kick();
+        expect(publishPending).toHaveBeenCalledOnce();
+
+        releaseSweep();
+        await shutdown;
+        expect(publisher.isReady()).toBe(false);
+    });
+
+    it('bounds shutdown and force-destroys active RabbitMQ transports', async () => {
+        vi.useFakeTimers();
+        try {
+            const publisher = new AvailabilityImportPublisher(tenantDb);
+            const destroy = vi.fn();
+            (publisher as any).lifecycle = 'ready';
+            (publisher as any).activeSweep = new Promise<void>(() => undefined);
+            (publisher as any).activeConnections.add({
+                connection: { stream: { destroy } },
+            });
+
+            const shutdown = publisher.onModuleDestroy();
+            await vi.advanceTimersByTimeAsync(15_000);
+            await shutdown;
+
+            expect(destroy).toHaveBeenCalledOnce();
+            expect(publisher.isReady()).toBe(false);
+        } finally {
+            vi.useRealTimers();
+        }
+    });
 });

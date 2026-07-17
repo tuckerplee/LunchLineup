@@ -10,6 +10,8 @@ from pathlib import Path
 import re
 from typing import Any
 
+from prometheus_client import Counter, Gauge
+
 
 ID_RE = re.compile(r"^[A-Za-z0-9._:@+-]{1,128}$")
 HASH_RE = re.compile(r"^[a-f0-9]{64}$")
@@ -17,6 +19,22 @@ STORAGE_KEY_RE = re.compile(r"^[a-f0-9-]{36}\.pdf$", re.IGNORECASE)
 TERMINAL_STATUSES = {"SUCCEEDED", "FAILED", "DEAD_LETTERED", "CANCELLED"}
 ENCRYPTED_SOURCE_MAGIC = b"LLAI"
 MIN_AAD_BOUND_ENVELOPE_VERSION = 3
+RETENTION_SWEEP_FAILURES = Counter(
+    "lunchlineup_availability_import_retention_sweep_failures_total",
+    "Availability import retention sweeps with one or more failed rows",
+)
+RETENTION_SWEEP_RUNNING = Gauge(
+    "lunchlineup_availability_import_retention_sweep_running",
+    "Whether the availability import retention sweep task is running",
+)
+RETENTION_SWEEP_READY = Gauge(
+    "lunchlineup_availability_import_retention_sweep_ready",
+    "Whether the most recent availability import retention sweep completed every row",
+)
+RETENTION_SWEEP_LAST_SUCCESS = Gauge(
+    "lunchlineup_availability_import_retention_sweep_last_success_unixtime",
+    "Unix time of the last fully successful availability import retention sweep",
+)
 
 
 class AvailabilityImportRejected(RuntimeError):
@@ -31,6 +49,10 @@ class AvailabilityImportRetryable(RuntimeError):
 
 
 class AvailabilityImportBusy(RuntimeError):
+    pass
+
+
+class AvailabilityImportRetentionSweepFailed(RuntimeError):
     pass
 
 
@@ -386,6 +408,71 @@ def cleanup_source(payload: ImportPayload, path: Path | None) -> None:
             pass
 
 
+def erase_owned_import_source(payload: ImportPayload, token: str | None) -> Path | None:
+    """Erase poison-delivery source bytes without changing billing or terminal state."""
+    source_path: Path | None = None
+    with _connect() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute("SELECT set_current_tenant(%s)", (payload.tenant_id,))
+            cursor.execute(
+                """
+                SELECT
+                    "storageKey",
+                    "status",
+                    "executionToken",
+                    "executionLeaseUntil" > CURRENT_TIMESTAMP
+                FROM "AvailabilityImportJob"
+                WHERE "id" = %s AND "tenantId" = %s
+                FOR UPDATE
+                """,
+                (payload.import_id, payload.tenant_id),
+            )
+            row = cursor.fetchone()
+            if row is None:
+                return None
+            terminal = str(row[1]) in TERMINAL_STATUSES
+            execution_token = str(row[2]) if row[2] is not None else None
+            lease_active = bool(row[3]) if row[3] is not None else None
+            owns_execution = (
+                execution_token is None or lease_active is False
+                if token is None
+                else execution_token == token
+            )
+            if not terminal and not owns_execution:
+                return None
+            if row[0]:
+                try:
+                    source_path = resolve_storage_key(str(row[0]))
+                except AvailabilityImportRejected:
+                    source_path = None
+            cursor.execute(
+                """
+                UPDATE "AvailabilityImportJob"
+                SET "storageKey" = NULL,
+                    "encryptedSourcePayload" = NULL,
+                    "resultErasedAt" = COALESCE("resultErasedAt", CURRENT_TIMESTAMP),
+                    "updatedAt" = CURRENT_TIMESTAMP
+                WHERE "id" = %s AND "tenantId" = %s
+                  AND (
+                      "status" IN ('SUCCEEDED', 'FAILED', 'DEAD_LETTERED', 'CANCELLED')
+                      OR (
+                          "status" NOT IN ('SUCCEEDED', 'FAILED', 'DEAD_LETTERED', 'CANCELLED')
+                          AND CASE
+                              WHEN %s IS NULL THEN
+                                  "executionToken" IS NULL
+                                  OR "executionLeaseUntil" <= CURRENT_TIMESTAMP
+                              ELSE "executionToken" = %s
+                          END
+                      )
+                  )
+                """,
+                (payload.import_id, payload.tenant_id, token, token),
+            )
+            if cursor.rowcount != 1:
+                raise AvailabilityImportBusy("availability import source erasure ownership changed")
+    return source_path
+
+
 def resolve_storage_key(storage_key: str) -> Path:
     if not STORAGE_KEY_RE.fullmatch(storage_key):
         raise AvailabilityImportRejected("availability import storage reference is invalid")
@@ -403,15 +490,34 @@ async def run_availability_import_retention_loop() -> None:
         30.0,
         3600.0,
     )
-    while True:
-        try:
-            await asyncio.to_thread(sweep_expired_imports)
-        except asyncio.CancelledError:
-            raise
-        except Exception:
-            # The next bounded sweep retries; queue processing must remain available.
-            pass
-        await asyncio.sleep(interval)
+    RETENTION_SWEEP_RUNNING.set(1)
+    RETENTION_SWEEP_READY.set(0)
+    try:
+        while True:
+            try:
+                await _run_retention_sweep()
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                RETENTION_SWEEP_FAILURES.inc()
+                RETENTION_SWEEP_READY.set(0)
+            else:
+                RETENTION_SWEEP_READY.set(1)
+                RETENTION_SWEEP_LAST_SUCCESS.set_to_current_time()
+            await asyncio.sleep(interval)
+    finally:
+        RETENTION_SWEEP_READY.set(0)
+        RETENTION_SWEEP_RUNNING.set(0)
+
+
+async def _run_retention_sweep() -> int:
+    sweep = asyncio.create_task(asyncio.to_thread(sweep_expired_imports))
+    try:
+        return await asyncio.shield(sweep)
+    except asyncio.CancelledError:
+        RETENTION_SWEEP_READY.set(0)
+        await asyncio.gather(sweep, return_exceptions=True)
+        raise
 
 
 def sweep_expired_imports() -> int:
@@ -439,44 +545,98 @@ def sweep_expired_imports() -> int:
                         OR "resultErasedAt" IS NULL
                     )
                 )
-                ORDER BY COALESCE("completedAt", "expiresAt"), "id"
+                ORDER BY
+                    CASE
+                        WHEN "status" NOT IN ('SUCCEEDED', 'FAILED', 'DEAD_LETTERED', 'CANCELLED')
+                            THEN "updatedAt"
+                        ELSE "completedAt"
+                    END,
+                    COALESCE("completedAt", "expiresAt"),
+                    "id"
                 LIMIT %s
                 FOR UPDATE SKIP LOCKED
                 """,
                 (batch_size,),
             )
             rows = cursor.fetchall()
+    failures: list[Exception] = []
     for import_id, tenant_id, storage_key, status in rows:
-        payload = ImportPayload(str(import_id), str(tenant_id))
-        path = None
-        if storage_key:
-            try:
-                path = resolve_storage_key(str(storage_key))
-            except AvailabilityImportRejected:
-                path = None
-        if str(status) not in TERMINAL_STATUSES:
+        try:
+            _sweep_expired_import(
+                ImportPayload(str(import_id), str(tenant_id)),
+                str(storage_key) if storage_key is not None else None,
+                str(status),
+            )
+        except Exception as exc:
+            failures.append(exc)
+    if failures:
+        raise AvailabilityImportRetentionSweepFailed(
+            f"{len(failures)} availability import retention row(s) failed",
+        ) from failures[0]
+    return len(rows)
+
+
+def _sweep_expired_import(
+    payload: ImportPayload,
+    storage_key: str | None,
+    status: str,
+) -> None:
+    path = None
+    if storage_key:
+        try:
+            path = resolve_storage_key(storage_key)
+        except AvailabilityImportRejected:
+            path = None
+    try:
+        if status not in TERMINAL_STATUSES:
             terminal_path = terminalize_import(payload, None, "FAILED", "EXPIRED")
             path = terminal_path or path
-        if path is not None:
-            cleanup_source(payload, path)
+    finally:
+        _erase_retained_import_source(payload, path)
+
+
+def _erase_retained_import_source(payload: ImportPayload, path: Path | None) -> None:
+    database_error: Exception | None = None
+    try:
         with _connect() as connection:
             with connection.cursor() as cursor:
                 cursor.execute("SELECT set_current_tenant(%s)", (payload.tenant_id,))
                 cursor.execute(
                     """
                     UPDATE "AvailabilityImportJob"
-                    SET "parsedAvailability" = NULL,
+                    SET "parsedAvailability" = CASE
+                            WHEN "status" IN ('SUCCEEDED', 'FAILED', 'DEAD_LETTERED', 'CANCELLED')
+                                THEN NULL
+                            ELSE "parsedAvailability"
+                        END,
                         "storageKey" = NULL,
                         "resultErasedAt" = COALESCE("resultErasedAt", CURRENT_TIMESTAMP),
                         "encryptedSourcePayload" = NULL,
                         "updatedAt" = CURRENT_TIMESTAMP
                     WHERE "id" = %s AND "tenantId" = %s
-                      AND "status" IN ('SUCCEEDED', 'FAILED', 'DEAD_LETTERED', 'CANCELLED')
-                      AND "completedAt" <= CURRENT_TIMESTAMP - INTERVAL '24 hours'
+                      AND (
+                          (
+                              "status" NOT IN ('SUCCEEDED', 'FAILED', 'DEAD_LETTERED', 'CANCELLED')
+                              AND "expiresAt" <= CURRENT_TIMESTAMP
+                          )
+                          OR (
+                              "status" IN ('SUCCEEDED', 'FAILED', 'DEAD_LETTERED', 'CANCELLED')
+                              AND "completedAt" <= CURRENT_TIMESTAMP - INTERVAL '24 hours'
+                          )
+                      )
                     """,
                     (payload.import_id, payload.tenant_id),
                 )
-    return len(rows)
+    except Exception as exc:
+        database_error = exc
+    try:
+        if path is not None:
+            path.unlink(missing_ok=True)
+    except OSError:
+        if database_error is None:
+            raise
+    if database_error is not None:
+        raise database_error
 
 
 def _lock_tenant(

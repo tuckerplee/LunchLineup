@@ -13,8 +13,10 @@ import { TenantPrismaService } from '../database/tenant-prisma.service';
 const PUBLISH_INTERVAL_MS = 2_000;
 const PUBLISH_LEASE_MS = 60_000;
 const PUBLISH_BATCH_SIZE = 10;
+const PUBLISH_CONNECT_TIMEOUT_MS = 5_000;
 const PUBLISH_CONFIRM_TIMEOUT_MS = 10_000;
 const PUBLISH_CLOSE_TIMEOUT_MS = 2_000;
+const PUBLISH_SHUTDOWN_TIMEOUT_MS = 15_000;
 
 type ClaimedPublication = {
     id: string;
@@ -28,22 +30,40 @@ export class AvailabilityImportPublisher implements OnModuleInit, OnModuleDestro
     private readonly logger = new Logger(AvailabilityImportPublisher.name);
     private timer?: NodeJS.Timeout;
     private activeSweep?: Promise<void>;
+    private shutdown?: Promise<void>;
+    private lifecycle: 'starting' | 'ready' | 'draining' | 'stopped' = 'starting';
+    private readonly activeConnections = new Set<Awaited<ReturnType<typeof amqp.connect>>>();
+    private readonly activeChannels = new Set<amqp.ConfirmChannel>();
 
     constructor(private readonly tenantDb: TenantPrismaService) {}
 
     onModuleInit(): void {
+        if (this.lifecycle !== 'starting') return;
+        this.lifecycle = 'ready';
         this.timer = setInterval(() => this.kick(), PUBLISH_INTERVAL_MS);
         this.timer.unref();
         this.kick();
     }
 
-    async onModuleDestroy(): Promise<void> {
-        if (this.timer) clearInterval(this.timer);
-        await this.activeSweep;
+    onModuleDestroy(): Promise<void> {
+        if (this.shutdown) return this.shutdown;
+        this.lifecycle = 'draining';
+        if (this.timer) {
+            clearInterval(this.timer);
+            this.timer = undefined;
+        }
+        this.shutdown = this.drain().finally(() => {
+            this.lifecycle = 'stopped';
+        });
+        return this.shutdown;
+    }
+
+    isReady(): boolean {
+        return this.lifecycle === 'ready';
     }
 
     kick(): void {
-        if (this.activeSweep) return;
+        if (!this.isReady() || this.activeSweep) return;
         this.activeSweep = this.publishPending()
             .catch((error) => {
                 this.logger.warn(
@@ -191,18 +211,38 @@ export class AvailabilityImportPublisher implements OnModuleInit, OnModuleDestro
         if (!rabbitUrl) throw new Error('RabbitMQ URL is not configured');
         const queueName = process.env.WORKER_QUEUE_NAME || 'lunchlineup.jobs';
         const dlqName = process.env.WORKER_DLQ_NAME || 'lunchlineup.jobs.dlq';
-        const connection = await amqp.connect(rabbitUrl, { timeout: 5_000 });
+        const connectionPromise = amqp.connect(rabbitUrl, { timeout: PUBLISH_CONNECT_TIMEOUT_MS });
+        let connection: Awaited<ReturnType<typeof amqp.connect>>;
         try {
-            const channel = await connection.createConfirmChannel();
+            connection = await this.withTimeout(connectionPromise, PUBLISH_CONNECT_TIMEOUT_MS);
+        } catch (error) {
+            void connectionPromise
+                .then((lateConnection) => this.closeConnection(lateConnection))
+                .catch(() => undefined);
+            throw error;
+        }
+        this.activeConnections.add(connection);
+        try {
+            const channel = await this.withTimeout(
+                connection.createConfirmChannel(),
+                PUBLISH_CONFIRM_TIMEOUT_MS,
+            );
+            this.activeChannels.add(channel);
             try {
-                await channel.assertQueue(dlqName, { durable: true });
-                await channel.assertQueue(queueName, {
-                    durable: true,
-                    arguments: {
-                        'x-dead-letter-exchange': '',
-                        'x-dead-letter-routing-key': dlqName,
-                    },
-                });
+                await this.withTimeout(
+                    channel.assertQueue(dlqName, { durable: true }),
+                    PUBLISH_CONFIRM_TIMEOUT_MS,
+                );
+                await this.withTimeout(
+                    channel.assertQueue(queueName, {
+                        durable: true,
+                        arguments: {
+                            'x-dead-letter-exchange': '',
+                            'x-dead-letter-routing-key': dlqName,
+                        },
+                    }),
+                    PUBLISH_CONFIRM_TIMEOUT_MS,
+                );
                 const body = Buffer.from(JSON.stringify({
                     type: 'pdf.parse',
                     job_id: importId,
@@ -214,19 +254,82 @@ export class AvailabilityImportPublisher implements OnModuleInit, OnModuleDestro
                     contentType: 'application/json',
                     messageId: importId,
                 })) {
-                    await this.withTimeout(
-                        new Promise<void>((resolveDrain) => channel.once('drain', resolveDrain)),
-                        PUBLISH_CONFIRM_TIMEOUT_MS,
-                    );
+                    await this.waitForDrain(channel);
                 }
                 await this.withTimeout(channel.waitForConfirms(), PUBLISH_CONFIRM_TIMEOUT_MS);
             } finally {
                 await this.withTimeout(channel.close(), PUBLISH_CLOSE_TIMEOUT_MS)
-                    .catch(() => undefined);
+                    .catch(() => this.forceDestroy(channel));
+                this.activeChannels.delete(channel);
             }
         } finally {
-            await this.withTimeout(connection.close(), PUBLISH_CLOSE_TIMEOUT_MS)
-                .catch(() => undefined);
+            await this.closeConnection(connection);
+            this.activeConnections.delete(connection);
+        }
+    }
+
+    private async drain(): Promise<void> {
+        const active = this.activeSweep;
+        if (!active) return;
+        try {
+            await this.withTimeout(active, PUBLISH_SHUTDOWN_TIMEOUT_MS);
+        } catch {
+            this.forceDestroyTransports();
+            this.logger.warn(
+                'Availability import publisher shutdown exceeded its drain deadline; RabbitMQ transports were destroyed.',
+            );
+            void active.catch(() => undefined);
+        }
+    }
+
+    private async closeConnection(
+        connection: Awaited<ReturnType<typeof amqp.connect>>,
+    ): Promise<void> {
+        await this.withTimeout(connection.close(), PUBLISH_CLOSE_TIMEOUT_MS)
+            .catch(() => {
+                this.forceDestroy(connection);
+            });
+    }
+
+    private forceDestroyTransports(): void {
+        for (const channel of this.activeChannels) this.forceDestroy(channel);
+        for (const connection of this.activeConnections) this.forceDestroy(connection);
+    }
+
+    private forceDestroy(candidate: unknown): void {
+        const transports = [
+            candidate,
+            (candidate as { connection?: unknown } | undefined)?.connection,
+        ];
+        const destroyed = new Set<unknown>();
+        for (const transport of transports) {
+            const target = transport as {
+                destroy?: () => void;
+                socket?: { destroy?: () => void };
+                stream?: { destroy?: () => void };
+            } | undefined;
+            for (const item of [target, target?.socket, target?.stream]) {
+                if (!item || destroyed.has(item) || typeof item.destroy !== 'function') continue;
+                destroyed.add(item);
+                try {
+                    item.destroy();
+                } catch {
+                    // Best-effort transport teardown must not extend shutdown.
+                }
+            }
+        }
+    }
+
+    private async waitForDrain(channel: amqp.ConfirmChannel): Promise<void> {
+        let onDrain!: () => void;
+        const onDrainPromise = new Promise<void>((resolve) => {
+            onDrain = resolve;
+            channel.once('drain', onDrain);
+        });
+        try {
+            await this.withTimeout(onDrainPromise, PUBLISH_CONFIRM_TIMEOUT_MS);
+        } finally {
+            channel.removeListener('drain', onDrain);
         }
     }
 
