@@ -389,6 +389,7 @@ exit 79
     ], {
       LAUNCH_PROOF_HTTP_BEARER_TOKEN: bearer,
       BASH_ENV: bashPath(providerEnvironment),
+      ...(process.platform === 'win32' ? { BACKUP_PROVIDER_OWNERSHIP_MODE: 'container-job' } : {}),
     });
     assert.notEqual(result.status, 0);
     assert.match(`${result.stdout}\n${result.stderr}`, /Unable to retrieve launchProof\.evidence\.runtimeEnv\.uri/);
