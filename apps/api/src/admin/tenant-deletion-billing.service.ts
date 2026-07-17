@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { BadRequestException, ConflictException } from '@nestjs/common';
-import { Prisma, TenantStatus, WebhookDeliveryStatus } from '@prisma/client';
+import { Prisma, TenantStatus } from '@prisma/client';
+import { FEATURE_CREDIT_COST } from '../billing/plan-definitions';
 import type { StripeService } from '../billing/stripe.service';
 import { TenantPrismaService, type TenantPrismaTransaction } from '../database/tenant-prisma.service';
 import type { TenantLifecycleActor } from './tenant-account-lifecycle.service';
@@ -105,6 +106,9 @@ type TenantDeletionBillingServiceOptions = {
 type TenantDeletionPaidWorkSettlementOutcome = {
     candidateCount: number | bigint;
     insertedCount: number | bigint;
+    lockedWebhookCount: number | bigint;
+    refundableWebhookCount: number | bigint;
+    terminalizedWebhookCount: number | bigint;
     walletUpdateCount: number | bigint;
 };
 
@@ -397,24 +401,6 @@ export class TenantDeletionBillingService {
             await tx.webhookEndpoint.updateMany({
                 where: { tenantId: actor.tenantId, active: true },
                 data: { active: false },
-            });
-            await tx.webhookDelivery.updateMany({
-                where: {
-                    tenantId: actor.tenantId,
-                    status: {
-                        in: [
-                            WebhookDeliveryStatus.PENDING,
-                            WebhookDeliveryStatus.QUEUED,
-                            WebhookDeliveryStatus.SENDING,
-                            WebhookDeliveryStatus.FAILED,
-                        ],
-                    },
-                },
-                data: {
-                    status: WebhookDeliveryStatus.DEAD_LETTERED,
-                    nextAttemptAt: null,
-                    lastError: 'Tenant account deletion requested',
-                },
             });
             await this.terminalizePaidWorkForDeletion(tx, actor.tenantId, barrierCommittedAt);
 
@@ -986,6 +972,45 @@ export class TenantDeletionBillingService {
                 FROM "Tenant" tenant
                 WHERE tenant."id" = ${tenantId}
                 FOR UPDATE OF tenant
+            ), locked_webhook_deliveries AS MATERIALIZED (
+                SELECT delivery."id", delivery."tenantId", delivery."status"::text AS "status"
+                FROM "WebhookDelivery" delivery
+                WHERE delivery."tenantId" = ${tenantId}
+                  AND delivery."status" IN (
+                      'PENDING'::"WebhookDeliveryStatus",
+                      'QUEUED'::"WebhookDeliveryStatus",
+                      'SENDING'::"WebhookDeliveryStatus",
+                      'FAILED'::"WebhookDeliveryStatus"
+                  )
+                ORDER BY delivery."id"
+                FOR UPDATE OF delivery
+            ), refundable_webhook_deliveries AS (
+                SELECT
+                    delivery."id",
+                    delivery."tenantId",
+                    -debit."amount" AS "amount"
+                FROM locked_webhook_deliveries delivery
+                JOIN "CreditTransaction" debit
+                  ON debit."id" = 'feature-usage-webhook-delivery:' || delivery."id"
+                 AND debit."tenantId" = delivery."tenantId"
+                 AND debit."amount" = ${-FEATURE_CREDIT_COST.webhooks}
+                 AND debit."reason" = 'Webhook delivery (' || delivery."id" || ')'
+                 AND debit."balanceAfter" IS NOT NULL
+                 AND debit."balanceAfter" >= 0
+            ), terminalized_webhook_deliveries AS (
+                UPDATE "WebhookDelivery" delivery
+                SET
+                    "status" = 'DEAD_LETTERED'::"WebhookDeliveryStatus",
+                    "nextAttemptAt" = NULL,
+                    "lastError" = 'Tenant account deletion requested',
+                    "encryptedUrl" = '',
+                    "encryptedPayload" = '',
+                    "encryptionKeyRef" = 'erased-v1',
+                    "updatedAt" = ${completedAt}
+                FROM locked_webhook_deliveries locked
+                WHERE delivery."id" = locked."id"
+                  AND delivery."tenantId" = locked."tenantId"
+                RETURNING delivery."id"
             ), terminalized_jobs AS (
                 UPDATE "ScheduleSolveJob"
                 SET
@@ -1102,6 +1127,13 @@ export class TenantDeletionBillingService {
                     "amount",
                     'Availability PDF import refund (' || "id" || ')' AS "reason"
                 FROM refundable_availability_imports
+                UNION ALL
+                SELECT
+                    'feature-refund-webhook-delivery:' || "id" AS "id",
+                    "tenantId",
+                    "amount",
+                    'Webhook delivery refund (' || "id" || ')' AS "reason"
+                FROM refundable_webhook_deliveries
             ), settled_refunds AS MATERIALIZED (
                 SELECT
                     candidate."id",
@@ -1141,14 +1173,23 @@ export class TenantDeletionBillingService {
             SELECT
                 (SELECT COUNT(*)::integer FROM refund_candidates) AS "candidateCount",
                 (SELECT COUNT(*)::integer FROM inserted_refunds) AS "insertedCount",
+                (SELECT COUNT(*)::integer FROM locked_webhook_deliveries) AS "lockedWebhookCount",
+                (SELECT COUNT(*)::integer FROM refundable_webhook_deliveries) AS "refundableWebhookCount",
+                (SELECT COUNT(*)::integer FROM terminalized_webhook_deliveries) AS "terminalizedWebhookCount",
                 (SELECT COUNT(*)::integer FROM updated_wallet) AS "walletUpdateCount"
         `;
         const outcome = outcomes[0];
         const candidateCount = this.nonnegativeCount(outcome?.candidateCount);
         const insertedCount = this.nonnegativeCount(outcome?.insertedCount);
+        const lockedWebhookCount = this.nonnegativeCount(outcome?.lockedWebhookCount);
+        const refundableWebhookCount = this.nonnegativeCount(outcome?.refundableWebhookCount);
+        const terminalizedWebhookCount = this.nonnegativeCount(outcome?.terminalizedWebhookCount);
         const walletUpdateCount = this.nonnegativeCount(outcome?.walletUpdateCount);
         if (candidateCount === null
             || insertedCount !== candidateCount
+            || lockedWebhookCount === null
+            || refundableWebhookCount !== lockedWebhookCount
+            || terminalizedWebhookCount !== lockedWebhookCount
             || walletUpdateCount !== (candidateCount > 0 ? 1 : 0)) {
             throw new ConflictException('Tenant deletion paid-work refund settlement failed.');
         }
@@ -1291,6 +1332,43 @@ export class TenantDeletionBillingService {
                     FROM "CreditTransaction" ledger
                     WHERE ledger."id" = 'feature-refund-availability-import:' || configured."id"
                 ) refund
+            ), locked_webhook_deliveries AS MATERIALIZED (
+                SELECT delivery."id", delivery."tenantId", delivery."status"::text AS "status"
+                FROM "WebhookDelivery" delivery
+                WHERE delivery."tenantId" = ${tenantId}
+                ORDER BY delivery."id"
+                FOR UPDATE OF delivery
+            ), webhook_provenance AS (
+                SELECT delivery.*,
+                       debit."count" AS "debitCount",
+                       debit."tenantId" AS "debitTenantId",
+                       debit."amount" AS "debitAmount",
+                       debit."reason" AS "debitReason",
+                       debit."balanceAfter" AS "debitBalanceAfter",
+                       refund."count" AS "refundCount",
+                       refund."tenantId" AS "refundTenantId",
+                       refund."amount" AS "refundAmount",
+                       refund."reason" AS "refundReason",
+                       refund."balanceAfter" AS "refundBalanceAfter"
+                FROM locked_webhook_deliveries delivery
+                CROSS JOIN LATERAL (
+                    SELECT COUNT(*)::integer AS "count",
+                           MIN(ledger."tenantId") AS "tenantId",
+                           MIN(ledger."amount") AS "amount",
+                           MIN(ledger."reason") AS "reason",
+                           MIN(ledger."balanceAfter") AS "balanceAfter"
+                    FROM "CreditTransaction" ledger
+                    WHERE ledger."id" = 'feature-usage-webhook-delivery:' || delivery."id"
+                ) debit
+                CROSS JOIN LATERAL (
+                    SELECT COUNT(*)::integer AS "count",
+                           MIN(ledger."tenantId") AS "tenantId",
+                           MIN(ledger."amount") AS "amount",
+                           MIN(ledger."reason") AS "reason",
+                           MIN(ledger."balanceAfter") AS "balanceAfter"
+                    FROM "CreditTransaction" ledger
+                    WHERE ledger."id" = 'feature-refund-webhook-delivery:' || delivery."id"
+                ) refund
             ), invalid_provenance AS (
                 SELECT 'schedule'::text AS "jobType", provenance."id" AS "jobId"
                 FROM schedule_provenance provenance
@@ -1316,8 +1394,8 @@ export class TenantDeletionBillingService {
                    OR provenance."status" NOT IN (
                        'QUEUED', 'RUNNING', 'RETRYING', 'SUCCEEDED', 'FAILED', 'DEAD_LETTERED'
                    )
-                   OR (provenance."refundCount" = 1 AND (
-                       provenance."refundTenantId" IS DISTINCT FROM provenance."tenantId"
+                    OR (provenance."refundCount" = 1 AND (
+                        provenance."refundTenantId" IS DISTINCT FROM provenance."tenantId"
                        OR provenance."refundAmount" IS DISTINCT FROM provenance."configuredAmount"
                        OR provenance."refundReason" IS DISTINCT FROM 'Schedule generation refund (' || provenance."id" || ')'
                        OR provenance."refundBalanceAfter" IS NULL
@@ -1354,8 +1432,35 @@ export class TenantDeletionBillingService {
                        OR provenance."refundAmount" IS DISTINCT FROM provenance."configuredAmount"
                        OR provenance."refundReason" IS DISTINCT FROM 'Availability PDF import refund (' || provenance."id" || ')'
                        OR provenance."refundBalanceAfter" IS NULL
-                       OR provenance."refundBalanceAfter" < 0
-                   ))
+                        OR provenance."refundBalanceAfter" < 0
+                    ))
+                 UNION ALL
+                 SELECT 'webhook_delivery'::text AS "jobType", provenance."id" AS "jobId"
+                 FROM webhook_provenance provenance
+                 WHERE provenance."debitCount" <> 1
+                    OR provenance."debitTenantId" IS DISTINCT FROM provenance."tenantId"
+                    OR provenance."debitAmount" IS DISTINCT FROM ${-FEATURE_CREDIT_COST.webhooks}
+                    OR provenance."debitReason" IS DISTINCT FROM 'Webhook delivery (' || provenance."id" || ')'
+                    OR provenance."debitBalanceAfter" IS NULL
+                    OR provenance."debitBalanceAfter" < 0
+                    OR (
+                        provenance."status" = 'DEAD_LETTERED'
+                        AND provenance."refundCount" <> 1
+                    )
+                    OR (
+                        provenance."status" IN ('PENDING', 'QUEUED', 'SENDING', 'FAILED', 'DELIVERED')
+                        AND provenance."refundCount" <> 0
+                    )
+                    OR provenance."status" NOT IN (
+                        'PENDING', 'QUEUED', 'SENDING', 'FAILED', 'DELIVERED', 'DEAD_LETTERED'
+                    )
+                    OR (provenance."refundCount" = 1 AND (
+                        provenance."refundTenantId" IS DISTINCT FROM provenance."tenantId"
+                        OR provenance."refundAmount" IS DISTINCT FROM ${FEATURE_CREDIT_COST.webhooks}
+                        OR provenance."refundReason" IS DISTINCT FROM 'Webhook delivery refund (' || provenance."id" || ')'
+                        OR provenance."refundBalanceAfter" IS NULL
+                        OR provenance."refundBalanceAfter" < 0
+                    ))
             )
             SELECT "jobType", "jobId"
             FROM invalid_provenance

@@ -440,7 +440,14 @@ function mockDeletionReconciliationClaim(prisma: ReturnType<typeof buildTenantLi
             return barrierAuditId ? [{ operationId: `tenant-deletion-${barrierAuditId}` }] : [];
         }
         if (queryText.includes('refund_candidates AS MATERIALIZED')) {
-            return [{ candidateCount: 0, insertedCount: 0, walletUpdateCount: 0 }];
+            return [{
+                candidateCount: 0,
+                insertedCount: 0,
+                lockedWebhookCount: 0,
+                refundableWebhookCount: 0,
+                terminalizedWebhookCount: 0,
+                walletUpdateCount: 0,
+            }];
         }
         return fallback(query);
     });

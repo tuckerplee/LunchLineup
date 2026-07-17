@@ -61,7 +61,14 @@ function addTransactionMock<T extends Record<string, any>>(prisma: T): T {
             return [];
         }
         if (sql.includes('COUNT(*)::integer FROM refund_candidates')) {
-            return [{ candidateCount: 0, insertedCount: 0, walletUpdateCount: 0 }];
+            return [{
+                candidateCount: 0,
+                insertedCount: 0,
+                lockedWebhookCount: 0,
+                refundableWebhookCount: 0,
+                terminalizedWebhookCount: 0,
+                walletUpdateCount: 0,
+            }];
         }
         return [{
             id: 'tenant-1',
@@ -262,19 +269,14 @@ describe('TenantAccountLifecycleService deletion saga', () => {
             where: { tenantId: 'tenant-1', active: true },
             data: { active: false },
         });
-        expect(prisma.webhookDelivery.updateMany).toHaveBeenCalledWith({
-            where: {
-                tenantId: 'tenant-1',
-                status: { in: ['PENDING', 'QUEUED', 'SENDING', 'FAILED'] },
-            },
-            data: {
-                status: 'DEAD_LETTERED',
-                nextAttemptAt: null,
-                lastError: 'Tenant account deletion requested',
-            },
-        });
         const terminalizationCallIndexes = queryRawCallIndexesContaining(prisma, 'terminalized_jobs AS');
         expect(terminalizationCallIndexes).toHaveLength(1);
+        const terminalizationSql = Array.from(
+            prisma.$queryRaw.mock.calls[terminalizationCallIndexes[0]][0] as readonly string[],
+        ).join(' ');
+        expect(terminalizationSql).toContain('terminalized_webhook_deliveries AS');
+        expect(terminalizationSql).toContain('refundable_webhook_deliveries AS');
+        expect(terminalizationSql).toContain('feature-refund-webhook-delivery:');
         expect(prisma.tenant.update.mock.invocationCallOrder[0]).toBeLessThan(
             stripeBilling.finalizeTenantBillingForPurge.mock.invocationCallOrder[0],
         );

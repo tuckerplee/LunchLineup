@@ -19,7 +19,14 @@ async function scheduleSettlementSql(): Promise<{
     const executeRaw = vi.fn().mockResolvedValue(1);
     const queryRaw = vi.fn()
         .mockResolvedValueOnce([])
-        .mockResolvedValueOnce([{ candidateCount: 0, insertedCount: 0, walletUpdateCount: 0 }]);
+        .mockResolvedValueOnce([{
+            candidateCount: 0,
+            insertedCount: 0,
+            lockedWebhookCount: 0,
+            refundableWebhookCount: 0,
+            terminalizedWebhookCount: 0,
+            walletUpdateCount: 0,
+        }]);
     const service = new TenantDeletionBillingService({} as any, () => ({
         finalizeTenantBillingForPurge: vi.fn(),
     } as any));
@@ -402,6 +409,28 @@ describe('TenantDeletionBillingService schedule refund settlement', () => {
         expect(sql).toContain('tenant."usageCredits" + refund_totals."amount"');
         expect(sql).toContain('COUNT(*)::integer FROM refund_candidates');
     });
+
+    it('settles every nonterminal paid webhook before tenant-deletion dead-lettering', async () => {
+        const { sql, provenanceSql } = await scheduleSettlementSql();
+
+        expect(sql).toContain('locked_webhook_deliveries AS MATERIALIZED');
+        expect(sql).toContain('refundable_webhook_deliveries AS');
+        expect(sql).toContain('terminalized_webhook_deliveries AS');
+        expect(sql).toContain(`debit."id" = 'feature-usage-webhook-delivery:' || delivery."id"`);
+        expect(sql).toContain(`'feature-refund-webhook-delivery:' || "id"`);
+        expect(sql).toContain(`'Webhook delivery refund (' || "id" || ')'`);
+        expect(sql).toContain('"encryptedUrl" = \'\'');
+        expect(sql).toContain('"encryptedPayload" = \'\'');
+        expect(sql).toContain('"encryptionKeyRef" = \'erased-v1\'');
+        expect(sql).toContain('COUNT(*)::integer FROM refundable_webhook_deliveries');
+        expect(sql).toContain('COUNT(*)::integer FROM terminalized_webhook_deliveries');
+
+        expect(provenanceSql).toContain('webhook_provenance AS');
+        expect(provenanceSql).toContain(`ledger."id" = 'feature-usage-webhook-delivery:' || delivery."id"`);
+        expect(provenanceSql).toContain(`ledger."id" = 'feature-refund-webhook-delivery:' || delivery."id"`);
+        expect(provenanceSql).toContain(`provenance."status" = 'DEAD_LETTERED'`);
+        expect(provenanceSql).toContain(`provenance."status" IN ('PENDING', 'QUEUED', 'SENDING', 'FAILED', 'DELIVERED')`);
+    });
 });
 
 describe('TenantDeletionBillingService availability-import settlement', () => {
@@ -410,7 +439,14 @@ describe('TenantDeletionBillingService availability-import settlement', () => {
             $executeRaw: vi.fn().mockResolvedValue(1),
             $queryRaw: vi.fn()
                 .mockResolvedValueOnce([])
-                .mockResolvedValueOnce([{ candidateCount: 0, insertedCount: 0, walletUpdateCount: 0 }]),
+                .mockResolvedValueOnce([{
+                    candidateCount: 0,
+                    insertedCount: 0,
+                    lockedWebhookCount: 0,
+                    refundableWebhookCount: 0,
+                    terminalizedWebhookCount: 0,
+                    walletUpdateCount: 0,
+                }]),
         };
         const service = new TenantDeletionBillingService({} as any, () => ({
             finalizeTenantBillingForPurge: vi.fn(),

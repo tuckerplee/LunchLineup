@@ -85,6 +85,8 @@ export type WebhookReplayClaim =
     | { status: 'deferred'; tenantId: string; attempts: number; retryAfterMs: number }
     | { status: 'not_found' };
 
+export type WebhookDeliverySendAuthority = 'eligible' | 'paused' | 'terminal' | 'not_found';
+
 export type WebhookDeliveryAttemptState = {
     attempts: number;
 };
@@ -249,7 +251,6 @@ export class WebhookDeliveryStore {
                       AND tenant."planTier" <> 'FREE'::"PlanTier"
                       AND NULLIF(BTRIM(tenant."stripeSubscriptionId"), '') IS NOT NULL
                       AND tenant."stripeSubscriptionCurrentPeriodEnd" > CURRENT_TIMESTAMP
-                      AND endpoint."active" = true
                       AND EXISTS (
                           SELECT 1
                           FROM "CreditTransaction" AS credit
@@ -325,7 +326,8 @@ export class WebhookDeliveryStore {
         });
     }
 
-    async claimReplayByDeliveryId(deliveryId: string): Promise<WebhookReplayClaim> {
+    async claimReplayByDeliveryId(deliveryId: string, maxAttempts: number): Promise<WebhookReplayClaim> {
+        const boundedMaxAttempts = Math.max(1, Math.floor(maxAttempts));
         return this.tenantDb.withPlatformAdmin(async (tx) => {
             const now = new Date();
             const leaseMs = this.resolveReplayLeaseMs();
@@ -339,6 +341,7 @@ export class WebhookDeliveryStore {
                     tenant: {
                         is: deliveryEligibleTenantWhere(now),
                     },
+                    attempts: { lt: boundedMaxAttempts },
                     OR: [
                         {
                             status: 'QUEUED' satisfies WebhookDeliveryStatus,
@@ -376,6 +379,26 @@ export class WebhookDeliveryStore {
                 });
 
                 const retryAt = this.retryAtForUnclaimedDelivery(current, leaseMs);
+                const terminalAttemptIsReclaimable = current
+                    && current.attempts >= boundedMaxAttempts
+                    && (
+                        current.status !== 'SENDING'
+                        || current.updatedAt.getTime() <= staleBefore.getTime()
+                    )
+                    && (
+                        REPLAYABLE_DELIVERY_STATUSES.includes(current.status)
+                        || current.status === 'SENDING'
+                    );
+                if (terminalAttemptIsReclaimable) {
+                    await this.settleDeadLetteredInTransaction(
+                        tx,
+                        current.tenantId,
+                        deliveryId,
+                        `Webhook replay exceeded ${boundedMaxAttempts} attempts`,
+                        current.attempts,
+                    );
+                    return { status: 'not_found' };
+                }
                 return retryAt
                     ? {
                         status: 'deferred',
@@ -420,15 +443,13 @@ export class WebhookDeliveryStore {
                 : null;
 
             if (!endpoint) {
-                await (tx as any).webhookDelivery.updateMany({
-                    where: { id: row.id, tenantId: row.tenantId, status: 'SENDING' },
-                    data: {
-                        status: 'DEAD_LETTERED',
-                        nextAttemptAt: null,
-                        lastError: 'Webhook endpoint is not active',
-                        ...TERMINAL_DELIVERY_ERASURE,
-                    },
-                });
+                await this.settleDeadLetteredInTransaction(
+                    tx,
+                    row.tenantId,
+                    row.id,
+                    'Webhook endpoint is not active',
+                    row.attempts,
+                );
                 return { status: 'not_found' };
             }
 
@@ -450,11 +471,11 @@ export class WebhookDeliveryStore {
         });
     }
 
-    async withActiveDeliverySendLease<T>(
+    async validateActiveDeliverySendAuthority(
         tenantId: string,
         deliveryId: string,
-        operation: () => Promise<T>,
-    ): Promise<T | null> {
+        expectedAttempts: number,
+    ): Promise<WebhookDeliverySendAuthority> {
         return this.tenantDb.withPlatformAdmin(async (tx) => {
             const leaseState = await (tx as any).$queryRaw(Prisma.sql`
                 SELECT tenant."status" AS "tenantStatus",
@@ -463,6 +484,7 @@ export class WebhookDeliveryStore {
                     tenant."stripeSubscriptionId" AS "tenantStripeSubscriptionId",
                     tenant."stripeSubscriptionCurrentPeriodEnd" AS "tenantPaidThrough",
                     endpoint."active" AS "endpointActive",
+                    delivery."attempts" AS "attempts",
                     EXISTS (
                         SELECT 1
                         FROM "CreditTransaction" AS credit
@@ -481,6 +503,7 @@ export class WebhookDeliveryStore {
                 WHERE delivery."id" = ${deliveryId}
                   AND delivery."tenantId" = ${tenantId}
                   AND delivery."status" = 'SENDING'::"WebhookDeliveryStatus"
+                  AND delivery."attempts" = ${expectedAttempts}
                 FOR SHARE OF tenant, endpoint
             `) as Array<{
                 tenantStatus: string;
@@ -489,10 +512,14 @@ export class WebhookDeliveryStore {
                 tenantStripeSubscriptionId: string | null;
                 tenantPaidThrough: Date | null;
                 endpointActive: boolean;
+                attempts: number;
                 hasExactCreditReservation: boolean;
             }>;
 
             const current = leaseState[0];
+            if (!current || current.attempts !== expectedAttempts) {
+                return 'not_found';
+            }
             const now = new Date();
             const deliveryEligible = current
                 && current.endpointActive
@@ -505,25 +532,33 @@ export class WebhookDeliveryStore {
                 && current.hasExactCreditReservation;
             if (!deliveryEligible) {
                 const terminal = !current?.endpointActive || current?.tenantStatus === 'PURGED';
+                if (terminal) {
+                    await this.settleDeadLetteredInTransaction(
+                        tx,
+                        tenantId,
+                        deliveryId,
+                        'Tenant was purged or webhook endpoint was deactivated',
+                        expectedAttempts,
+                    );
+                    return 'terminal';
+                }
                 await (tx as any).webhookDelivery.updateMany({
-                    where: { id: deliveryId, tenantId, status: 'SENDING' },
-                    data: terminal
-                        ? {
-                            status: 'DEAD_LETTERED' satisfies WebhookDeliveryStatus,
-                            nextAttemptAt: null,
-                            lastError: 'Tenant was purged or webhook endpoint was deactivated',
-                            ...TERMINAL_DELIVERY_ERASURE,
-                        }
-                        : {
+                    where: {
+                        id: deliveryId,
+                        tenantId,
+                        status: 'SENDING',
+                        attempts: expectedAttempts,
+                    },
+                    data: {
                             status: 'FAILED' satisfies WebhookDeliveryStatus,
                             nextAttemptAt: now,
                             lastError: 'Tenant webhook delivery is paused',
-                        },
+                    },
                 });
-                return null;
+                return 'paused';
             }
 
-            return operation();
+            return 'eligible';
         });
     }
 
@@ -546,7 +581,6 @@ export class WebhookDeliveryStore {
               AND tenant."planTier" <> 'FREE'::"PlanTier"
               AND NULLIF(BTRIM(tenant."stripeSubscriptionId"), '') IS NOT NULL
               AND tenant."stripeSubscriptionCurrentPeriodEnd" > CURRENT_TIMESTAMP
-              AND endpoint."active" = TRUE
               AND EXISTS (
                   SELECT 1
                   FROM "CreditTransaction" credit
@@ -562,13 +596,18 @@ export class WebhookDeliveryStore {
         return rows.length === 1;
     }
 
-    async markDelivered(tenantId: string, deliveryId: string): Promise<WebhookDeliveryReplayState> {
+    async markDelivered(
+        tenantId: string,
+        deliveryId: string,
+        expectedAttempts: number,
+    ): Promise<WebhookDeliveryReplayState> {
         return this.tenantDb.withTenant(tenantId, async (tx) => {
             const transitioned = await (tx as any).webhookDelivery.updateMany({
                 where: {
                     id: deliveryId,
                     tenantId,
                     status: 'SENDING' satisfies WebhookDeliveryStatus,
+                    attempts: expectedAttempts,
                 },
                 data: {
                     status: 'DELIVERED' satisfies WebhookDeliveryStatus,
@@ -578,7 +617,14 @@ export class WebhookDeliveryStore {
                     ...TERMINAL_DELIVERY_ERASURE,
                 },
             });
-            return this.loadTransitionedState(tx, tenantId, deliveryId, transitioned.count, 'DELIVERED');
+            return this.loadTransitionedState(
+                tx,
+                tenantId,
+                deliveryId,
+                transitioned.count,
+                'DELIVERED',
+                expectedAttempts,
+            );
         });
     }
 
@@ -594,6 +640,7 @@ export class WebhookDeliveryStore {
                     id: deliveryId,
                     tenantId,
                     status: 'SENDING' satisfies WebhookDeliveryStatus,
+                    attempts,
                 },
                 data: {
                     status: 'FAILED' satisfies WebhookDeliveryStatus,
@@ -601,7 +648,7 @@ export class WebhookDeliveryStore {
                     lastError: this.redactLastError(failureReason),
                 },
             });
-            return this.loadTransitionedState(tx, tenantId, deliveryId, transitioned.count, 'FAILED');
+            return this.loadTransitionedState(tx, tenantId, deliveryId, transitioned.count, 'FAILED', attempts);
         });
     }
 
@@ -609,25 +656,18 @@ export class WebhookDeliveryStore {
         tenantId: string,
         deliveryId: string,
         failureReason: unknown,
-        attempts?: number,
+        expectedAttempts: number,
     ): Promise<WebhookDeliveryReplayState> {
-        return this.tenantDb.withTenant(tenantId, async (tx) => {
-            const transitioned = await (tx as any).webhookDelivery.updateMany({
-                where: {
-                    id: deliveryId,
-                    tenantId,
-                    status: { in: ['SENDING', 'FAILED', 'QUEUED'] satisfies WebhookDeliveryStatus[] },
-                },
-                data: {
-                    status: 'DEAD_LETTERED' satisfies WebhookDeliveryStatus,
-                    nextAttemptAt: null,
-                    lastError: this.redactLastError(failureReason),
-                    ...TERMINAL_DELIVERY_ERASURE,
-                    ...(attempts === undefined ? {} : { attempts }),
-                },
-            });
-            return this.loadTransitionedState(tx, tenantId, deliveryId, transitioned.count, 'DEAD_LETTERED');
-        });
+        return this.tenantDb.withTenant(
+            tenantId,
+            (tx) => this.settleDeadLetteredInTransaction(
+                tx,
+                tenantId,
+                deliveryId,
+                failureReason,
+                expectedAttempts,
+            ),
+        );
     }
 
     private async loadTransitionedState(
@@ -636,18 +676,134 @@ export class WebhookDeliveryStore {
         deliveryId: string,
         transitionedCount: number,
         expectedStatus: WebhookDeliveryStatus,
+        expectedAttempts?: number,
     ): Promise<WebhookDeliveryReplayState> {
-        if (transitionedCount !== 1) {
-            throw new ServiceUnavailableException(`Webhook delivery state did not transition to ${expectedStatus}`);
-        }
         const state = await tx.webhookDelivery.findFirst({
             where: { id: deliveryId, tenantId, status: expectedStatus },
             select: { status: true, attempts: true },
         });
-        if (!state) {
+        if (!state
+            || (expectedAttempts !== undefined && state.attempts !== expectedAttempts)
+            || (transitionedCount !== 0 && transitionedCount !== 1)) {
             throw new ServiceUnavailableException(`Webhook delivery state ${expectedStatus} could not be loaded`);
         }
         return state;
+    }
+
+    private async settleDeadLetteredInTransaction(
+        tx: TenantPrismaTransaction,
+        tenantId: string,
+        deliveryId: string,
+        failureReason: unknown,
+        expectedAttempts: number,
+    ): Promise<WebhookDeliveryReplayState> {
+        const walletRows = await (tx as any).$queryRaw(Prisma.sql`
+            SELECT tenant."usageCredits"
+            FROM "Tenant" tenant
+            WHERE tenant."id" = ${tenantId}
+            FOR UPDATE OF tenant
+        `) as Array<{ usageCredits: number | bigint }>;
+        const deliveryRows = await (tx as any).$queryRaw(Prisma.sql`
+            SELECT delivery."status"::text AS "status", delivery."attempts"
+            FROM "WebhookDelivery" delivery
+            WHERE delivery."id" = ${deliveryId}
+              AND delivery."tenantId" = ${tenantId}
+            FOR UPDATE OF delivery
+        `) as Array<{ status: WebhookDeliveryStatus; attempts: number }>;
+        const walletBalance = this.nonnegativeInteger(walletRows[0]?.usageCredits);
+        const delivery = deliveryRows[0];
+        if (walletBalance === null || !delivery || delivery.attempts !== expectedAttempts) {
+            throw new ServiceUnavailableException('Webhook terminal settlement ownership is unavailable');
+        }
+
+        const debitId = `feature-usage-webhook-delivery:${deliveryId}`;
+        const refundId = `feature-refund-webhook-delivery:${deliveryId}`;
+        const debitReason = `Webhook delivery (${deliveryId})`;
+        const refundReason = `Webhook delivery refund (${deliveryId})`;
+        const ledgerRows = await (tx as any).creditTransaction.findMany({
+            where: {
+                id: { in: [debitId, refundId] },
+                tenantId,
+            },
+            select: {
+                id: true,
+                amount: true,
+                reason: true,
+                balanceAfter: true,
+            },
+            orderBy: { id: 'asc' },
+        }) as Array<{
+            id: string;
+            amount: number;
+            reason: string;
+            balanceAfter: number | null;
+        }>;
+        const debit = ledgerRows.find((row) => row.id === debitId);
+        const existingRefund = ledgerRows.find((row) => row.id === refundId);
+        if (!debit
+            || debit.amount !== -WEBHOOK_CREDIT_COST
+            || debit.reason !== debitReason
+            || this.nonnegativeInteger(debit.balanceAfter) === null
+            || (existingRefund && (
+                existingRefund.amount !== WEBHOOK_CREDIT_COST
+                || existingRefund.reason !== refundReason
+                || this.nonnegativeInteger(existingRefund.balanceAfter) === null
+            ))) {
+            throw new ServiceUnavailableException('Webhook terminal credit provenance is malformed or mismatched');
+        }
+        if (delivery.status === 'DELIVERED') {
+            throw new ServiceUnavailableException('Delivered webhook cannot be terminally refunded');
+        }
+
+        if (!existingRefund) {
+            const balanceAfter = walletBalance + WEBHOOK_CREDIT_COST;
+            if (!Number.isSafeInteger(balanceAfter)) {
+                throw new ServiceUnavailableException('Webhook terminal refund balance exceeds the supported range');
+            }
+            await (tx as any).tenant.update({
+                where: { id: tenantId },
+                data: { usageCredits: balanceAfter },
+            });
+            await (tx as any).creditTransaction.create({
+                data: {
+                    id: refundId,
+                    tenantId,
+                    amount: WEBHOOK_CREDIT_COST,
+                    reason: refundReason,
+                    balanceAfter,
+                },
+            });
+        }
+
+        if (delivery.status !== 'DEAD_LETTERED') {
+            const transitioned = await (tx as any).webhookDelivery.updateMany({
+                where: {
+                    id: deliveryId,
+                    tenantId,
+                    status: {
+                        in: ['PENDING', 'SENDING', 'FAILED', 'QUEUED'] satisfies WebhookDeliveryStatus[],
+                    },
+                    attempts: expectedAttempts,
+                },
+                data: {
+                    status: 'DEAD_LETTERED' satisfies WebhookDeliveryStatus,
+                    nextAttemptAt: null,
+                    lastError: this.redactLastError(failureReason),
+                    ...TERMINAL_DELIVERY_ERASURE,
+                },
+            });
+            if (transitioned.count !== 1) {
+                throw new ServiceUnavailableException('Webhook delivery did not enter terminal settlement');
+            }
+        }
+        return this.loadTransitionedState(
+            tx,
+            tenantId,
+            deliveryId,
+            delivery.status === 'DEAD_LETTERED' ? 0 : 1,
+            'DEAD_LETTERED',
+            expectedAttempts,
+        );
     }
 
     private digestRef(value: string, length = 16): string {
@@ -726,5 +882,15 @@ export class WebhookDeliveryStore {
             return row.nextAttemptAt;
         }
         return null;
+    }
+
+    private nonnegativeInteger(value: unknown): number | null {
+        if (typeof value === 'bigint') {
+            const numeric = Number(value);
+            return Number.isSafeInteger(numeric) && numeric >= 0 ? numeric : null;
+        }
+        return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0
+            ? value
+            : null;
     }
 }

@@ -51,7 +51,7 @@ function deliveryStoreMock() {
         markQueued: vi.fn().mockResolvedValue(undefined),
         claimRecoverableForQueue: vi.fn().mockResolvedValue([]),
         claimReplayByDeliveryId: vi.fn(),
-        withActiveDeliverySendLease: vi.fn(async (_tenantId: string, _deliveryId: string, operation: () => Promise<unknown>) => operation()),
+        validateActiveDeliverySendAuthority: vi.fn().mockResolvedValue('eligible'),
         markDelivered: vi.fn().mockResolvedValue({ status: 'DELIVERED', attempts: 2 }),
         markReplayFailed: vi.fn().mockResolvedValue({ status: 'FAILED', attempts: 2 }),
         markDeadLettered: vi.fn().mockResolvedValue({ status: 'DEAD_LETTERED', attempts: 8 }),
@@ -287,7 +287,21 @@ describe('WebhooksService', () => {
         });
 
         expect(secureHttpRequestMock).toHaveBeenCalledOnce();
-        expect(deliveryStore.markDelivered).toHaveBeenCalledOnce();
+        const request = secureHttpRequestMock.mock.calls[0];
+        expect(request[1].headers).toMatchObject({
+            'X-LunchLineup-Delivery-Id': 'delivery-1',
+            'X-LunchLineup-Event': 'schedule.published',
+            'X-LunchLineup-Signature-Version': 'v2',
+            'X-LunchLineup-Signature': crypto
+                .createHmac('sha256', 'signing-secret')
+                .update('v2:delivery-1:schedule.published:{}')
+                .digest('hex'),
+        });
+        expect(deliveryStore.validateActiveDeliverySendAuthority)
+            .toHaveBeenCalledWith('tenant-1', 'delivery-1', 3);
+        expect(deliveryStore.markDelivered).toHaveBeenCalledWith('tenant-1', 'delivery-1', 3);
+        expect(deliveryStore.validateActiveDeliverySendAuthority.mock.invocationCallOrder[0])
+            .toBeLessThan(secureHttpRequestMock.mock.invocationCallOrder[0]);
         expect(featureAccess.recordFeatureUsageInTransaction).not.toHaveBeenCalled();
     });
 
@@ -426,7 +440,7 @@ describe('WebhooksService', () => {
         };
         const store = new WebhookDeliveryStore(configMock() as any, tenantDb as any);
 
-        await expect(store.claimReplayByDeliveryId('delivery-malformed')).resolves.toEqual({
+        await expect(store.claimReplayByDeliveryId('delivery-malformed', 8)).resolves.toEqual({
             status: 'not_found',
         });
 
@@ -447,6 +461,7 @@ describe('WebhooksService', () => {
             tenantStripeSubscriptionId,
             tenantPaidThrough,
             endpointActive: true,
+            attempts: 1,
             hasExactCreditReservation,
         }]);
         const tx = {
@@ -455,29 +470,27 @@ describe('WebhooksService', () => {
         };
         const tenantDb = { withPlatformAdmin: vi.fn(async (operation: any) => operation(tx)) };
         const store = new WebhookDeliveryStore(configMock() as any, tenantDb as any);
-        const send = vi.fn().mockResolvedValue('sent');
-
-        await expect(store.withActiveDeliverySendLease('tenant-1', 'delivery-1', send))
-            .resolves.toBe('sent');
+        await expect(store.validateActiveDeliverySendAuthority('tenant-1', 'delivery-1', 1))
+            .resolves.toBe('eligible');
 
         hasExactCreditReservation = false;
-        await expect(store.withActiveDeliverySendLease('tenant-1', 'delivery-1', send))
-            .resolves.toBeNull();
+        await expect(store.validateActiveDeliverySendAuthority('tenant-1', 'delivery-1', 1))
+            .resolves.toBe('paused');
 
         hasExactCreditReservation = true;
         tenantStripeSubscriptionId = null;
-        await expect(store.withActiveDeliverySendLease('tenant-1', 'delivery-1', send))
-            .resolves.toBeNull();
+        await expect(store.validateActiveDeliverySendAuthority('tenant-1', 'delivery-1', 1))
+            .resolves.toBe('paused');
 
         tenantStripeSubscriptionId = 'sub_paid_1';
         tenantPlanTier = 'FREE';
-        await expect(store.withActiveDeliverySendLease('tenant-1', 'delivery-1', send))
-            .resolves.toBeNull();
+        await expect(store.validateActiveDeliverySendAuthority('tenant-1', 'delivery-1', 1))
+            .resolves.toBe('paused');
 
         tenantPlanTier = 'GROWTH';
         tenantPaidThrough = new Date(Date.now() - 1);
-        await expect(store.withActiveDeliverySendLease('tenant-1', 'delivery-1', send))
-            .resolves.toBeNull();
+        await expect(store.validateActiveDeliverySendAuthority('tenant-1', 'delivery-1', 1))
+            .resolves.toBe('paused');
 
         const leaseSql = JSON.stringify((queryRaw.mock.calls as unknown[][])[0]?.[0]);
         expect(leaseSql).toContain('feature-usage-webhook-delivery:');
@@ -486,7 +499,6 @@ describe('WebhooksService', () => {
         expect(updateMany).toHaveBeenLastCalledWith(expect.objectContaining({
             data: expect.objectContaining({ status: 'FAILED' }),
         }));
-        expect(send).toHaveBeenCalledOnce();
     });
     it('pauses an in-flight PAST_DUE delivery and permits sending after ACTIVE recovery', async () => {
         let tenantStatus = 'ACTIVE';
@@ -498,6 +510,7 @@ describe('WebhooksService', () => {
             tenantStripeSubscriptionId: 'sub_paid_1',
             tenantPaidThrough: new Date(Date.now() + 60_000),
             endpointActive: true,
+            attempts: 1,
             hasExactCreditReservation: true,
         }]);
         const tx = {
@@ -506,16 +519,14 @@ describe('WebhooksService', () => {
         };
         const tenantDb = { withPlatformAdmin: vi.fn(async (operation: any) => operation(tx)) };
         const store = new WebhookDeliveryStore(configMock() as any, tenantDb as any);
-        const send = vi.fn().mockResolvedValue('sent');
-
-        await expect(store.withActiveDeliverySendLease('tenant-1', 'delivery-1', send))
-            .resolves.toBe('sent');
+        await expect(store.validateActiveDeliverySendAuthority('tenant-1', 'delivery-1', 1))
+            .resolves.toBe('eligible');
 
         tenantStatus = 'PAST_DUE';
-        await expect(store.withActiveDeliverySendLease('tenant-1', 'delivery-1', send))
-            .resolves.toBeNull();
+        await expect(store.validateActiveDeliverySendAuthority('tenant-1', 'delivery-1', 1))
+            .resolves.toBe('paused');
         expect(updateMany).toHaveBeenLastCalledWith({
-            where: { id: 'delivery-1', tenantId: 'tenant-1', status: 'SENDING' },
+            where: { id: 'delivery-1', tenantId: 'tenant-1', status: 'SENDING', attempts: 1 },
             data: {
                 status: 'FAILED',
                 nextAttemptAt: expect.any(Date),
@@ -525,9 +536,8 @@ describe('WebhooksService', () => {
         expect(updateMany.mock.calls.at(-1)?.[0].data.status).not.toBe('DEAD_LETTERED');
 
         tenantStatus = 'ACTIVE';
-        await expect(store.withActiveDeliverySendLease('tenant-1', 'delivery-1', send))
-            .resolves.toBe('sent');
-        expect(send).toHaveBeenCalledTimes(2);
+        await expect(store.validateActiveDeliverySendAuthority('tenant-1', 'delivery-1', 1))
+            .resolves.toBe('eligible');
     });
 
     it('clears the recovery timestamp only when marking a confirmed publish queued', async () => {
@@ -660,7 +670,7 @@ describe('WebhooksService', () => {
             eventType: 'schedule.published',
         });
 
-        const replay = await store.claimReplayByDeliveryId(delivery.id);
+        const replay = await store.claimReplayByDeliveryId(delivery.id, 8);
 
         expect(replay).toEqual({
             status: 'claimed',
@@ -698,8 +708,8 @@ describe('WebhooksService', () => {
         });
 
         const claims = await Promise.all([
-            store.claimReplayByDeliveryId(delivery.id),
-            store.claimReplayByDeliveryId(delivery.id),
+            store.claimReplayByDeliveryId(delivery.id, 8),
+            store.claimReplayByDeliveryId(delivery.id, 8),
         ]);
 
         expect(claims.filter((claim) => claim.status === 'claimed')).toHaveLength(1);
@@ -720,9 +730,9 @@ describe('WebhooksService', () => {
             body: '{}',
         });
 
-        const firstClaim = await store.claimReplayByDeliveryId(delivery.id);
+        const firstClaim = await store.claimReplayByDeliveryId(delivery.id, 8);
         vi.advanceTimersByTime(10_001);
-        const recoveredClaim = await store.claimReplayByDeliveryId(delivery.id);
+        const recoveredClaim = await store.claimReplayByDeliveryId(delivery.id, 8);
 
         expect(firstClaim).toMatchObject({ status: 'claimed', delivery: { attempts: 2 } });
         expect(recoveredClaim).toMatchObject({ status: 'claimed', delivery: { attempts: 3 } });
@@ -743,15 +753,15 @@ describe('WebhooksService', () => {
         const tenantDb = { withTenant: vi.fn(async (_tenantId: string, operation: any) => operation(tx)) };
         const store = new WebhookDeliveryStore(configMock() as any, tenantDb as any);
 
-        await store.markDelivered('tenant-1', 'delivery-1');
+        await store.markDelivered('tenant-1', 'delivery-1', 2);
         await store.markReplayFailed('tenant-1', 'delivery-1', new Error('Authorization: Bearer delivery-token'), 2);
-        await store.markDeadLettered('tenant-1', 'delivery-1', new Error('Authorization: Bearer delivery-token'), 8);
 
         const delivered = updateMany.mock.calls[0][0];
         expect(delivered.where).toEqual({
             id: 'delivery-1',
             tenantId: 'tenant-1',
             status: 'SENDING',
+            attempts: 2,
         });
         expect(delivered.data).toEqual(expect.objectContaining({
             status: 'DELIVERED',
@@ -771,17 +781,66 @@ describe('WebhooksService', () => {
         expect(failed.data.lastError).not.toContain('delivery-token');
         expect(failed.data.lastError).toBe('category=unknown class=Error');
 
-        const deadLettered = updateMany.mock.calls[2][0];
-        expect(deadLettered.data).toEqual({
-            status: 'DEAD_LETTERED',
-            nextAttemptAt: null,
-            lastError: 'category=unknown class=Error',
-            encryptedUrl: '',
-            encryptedPayload: '',
-            encryptionKeyRef: 'erased-v1',
-            attempts: 8,
-        });
-
         vi.useRealTimers();
+    });
+
+    it('dead-letters a fenced paid attempt with one deterministic refund and wallet restoration', async () => {
+        let state = { status: 'SENDING', attempts: 4 };
+        const updateMany = vi.fn(async ({ data }) => {
+            state = { ...state, status: data.status };
+            return { count: 1 };
+        });
+        const findFirst = vi.fn(async () => state);
+        const queryRaw = vi.fn()
+            .mockResolvedValueOnce([{ usageCredits: 7 }])
+            .mockResolvedValueOnce([{ status: 'SENDING', attempts: 4 }]);
+        const creditCreate = vi.fn().mockResolvedValue({ id: 'feature-refund-webhook-delivery:delivery-1' });
+        const tenantUpdate = vi.fn().mockResolvedValue({ id: 'tenant-1' });
+        const tx = {
+            $queryRaw: queryRaw,
+            webhookDelivery: { updateMany, findFirst },
+            creditTransaction: {
+                findMany: vi.fn().mockResolvedValue([{
+                    id: 'feature-usage-webhook-delivery:delivery-1',
+                    amount: -1,
+                    reason: 'Webhook delivery (delivery-1)',
+                    balanceAfter: 7,
+                }]),
+                create: creditCreate,
+            },
+            tenant: { update: tenantUpdate },
+        };
+        const tenantDb = { withTenant: vi.fn(async (_tenantId: string, operation: any) => operation(tx)) };
+        const store = new WebhookDeliveryStore(configMock() as any, tenantDb as any);
+
+        await expect(store.markDeadLettered(
+            'tenant-1',
+            'delivery-1',
+            new Error('HTTP 500'),
+            4,
+        )).resolves.toEqual({ status: 'DEAD_LETTERED', attempts: 4 });
+
+        expect(tenantUpdate).toHaveBeenCalledWith({
+            where: { id: 'tenant-1' },
+            data: { usageCredits: 8 },
+        });
+        expect(creditCreate).toHaveBeenCalledWith({
+            data: {
+                id: 'feature-refund-webhook-delivery:delivery-1',
+                tenantId: 'tenant-1',
+                amount: 1,
+                reason: 'Webhook delivery refund (delivery-1)',
+                balanceAfter: 8,
+            },
+        });
+        expect(updateMany).toHaveBeenCalledWith(expect.objectContaining({
+            where: expect.objectContaining({ attempts: 4 }),
+            data: expect.objectContaining({
+                status: 'DEAD_LETTERED',
+                encryptedUrl: '',
+                encryptedPayload: '',
+                encryptionKeyRef: 'erased-v1',
+            }),
+        }));
     });
 });

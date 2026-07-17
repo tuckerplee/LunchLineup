@@ -85,6 +85,24 @@ test('tenant webhook lifecycle requires subscription plus credits, pauses recove
   assert.doesNotMatch(migration, /PAST_DUE[\s\S]*DEAD_LETTERED|DEAD_LETTERED[\s\S]*PAST_DUE/);
 });
 
+test('webhook send and terminal settlement are attempt-fenced and refund paid failures exactly once', () => {
+  const service = read('apps/api/src/webhooks/webhooks.service.ts');
+  const store = read('apps/api/src/webhooks/webhook-delivery.store.ts');
+  const deletion = read('apps/api/src/admin/tenant-deletion-billing.service.ts');
+
+  assert.match(service, /validateActiveDeliverySendAuthority\([\s\S]*await this\.sendSignedWebhook/);
+  assert.match(service, /markDelivered\([\s\S]*replay\.attempts/);
+  assert.match(service, /v2:\$\{deliveryId\}:\$\{eventType \?\? ''\}:\$\{body\}/);
+  assert.match(store, /status: 'SENDING'[\s\S]*attempts: expectedAttempts/);
+  assert.match(store, /feature-refund-webhook-delivery:/);
+  assert.match(store, /Webhook delivery refund \(/);
+  assert.match(store, /usageCredits: balanceAfter[\s\S]*creditTransaction\.create/);
+  assert.doesNotMatch(store, /return operation\(\)/);
+  assert.match(deletion, /refundable_webhook_deliveries AS/);
+  assert.match(deletion, /terminalized_webhook_deliveries AS/);
+  assert.match(deletion, /feature-refund-webhook-delivery:/);
+});
+
 test('runtime shutdown drains API and webhook replay resources', () => {
   const apiMain = read('apps/api/src/main.ts');
   const replayWorker = read('apps/api/src/webhooks/webhook-replay.worker.ts');

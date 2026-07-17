@@ -11,6 +11,7 @@ import { secureHttpRequest } from '../common/secure-http-client';
 import type { TenantPrismaTransaction } from '../database/tenant-prisma.service';
 import { FeatureAccessService, type FeatureResolution } from '../billing/feature-access.service';
 import { type RecoverableWebhookDelivery, WebhookDeliveryStore } from './webhook-delivery.store';
+import { resolveWebhookRetryQueueConfig } from './webhook-retry-queue';
 
 const DEFAULT_MAX_WEBHOOK_PAYLOAD_BYTES = 64 * 1024;
 const HARD_MAX_WEBHOOK_PAYLOAD_BYTES = 256 * 1024;
@@ -190,7 +191,8 @@ export class WebhooksService {
     }
 
     async replayDelivery(deliveryId: string): Promise<WebhookReplayResult> {
-        const claim = await this.deliveryStore.claimReplayByDeliveryId(deliveryId);
+        const maxAttempts = resolveWebhookRetryQueueConfig(this.configService).maxAttempts;
+        const claim = await this.deliveryStore.claimReplayByDeliveryId(deliveryId, maxAttempts);
         if (claim.status === 'not_found') {
             return {
                 deliveryId,
@@ -227,12 +229,12 @@ export class WebhooksService {
         }
 
         try {
-            const response = await this.deliveryStore.withActiveDeliverySendLease(
+            const authority = await this.deliveryStore.validateActiveDeliverySendAuthority(
                 replay.tenantId,
                 replay.id,
-                () => this.sendSignedWebhook(replay.url, replay.body, replaySecret, replay.id, replay.eventType),
+                replay.attempts,
             );
-            if (!response) {
+            if (authority !== 'eligible') {
                 return {
                     deliveryId: replay.id,
                     tenantId: replay.tenantId,
@@ -241,11 +243,22 @@ export class WebhooksService {
                     error: 'Tenant or webhook endpoint is not active',
                 };
             }
+            const response = await this.sendSignedWebhook(
+                replay.url,
+                replay.body,
+                replaySecret,
+                replay.id,
+                replay.eventType,
+            );
             if (!response.ok) {
                 throw Object.assign(new Error('Webhook provider rejected delivery'), { status: response.status });
             }
 
-            const delivered = await this.deliveryStore.markDelivered(replay.tenantId, replay.id);
+            const delivered = await this.deliveryStore.markDelivered(
+                replay.tenantId,
+                replay.id,
+                replay.attempts,
+            );
             return {
                 deliveryId: replay.id,
                 tenantId: replay.tenantId,
@@ -275,7 +288,7 @@ export class WebhooksService {
         tenantId: string,
         deliveryId: string,
         failureReason: unknown,
-        attempts?: number,
+        attempts: number,
     ): Promise<void> {
         await this.deliveryStore.markDeadLettered(tenantId, deliveryId, failureReason, attempts);
     }
@@ -294,13 +307,14 @@ export class WebhooksService {
         secret: string,
         deliveryId: string,
         eventType?: string | null,
-        signature = crypto.createHmac('sha256', secret).update(body).digest('hex'),
     ): Promise<Response> {
+        const signedPayload = `v2:${deliveryId}:${eventType ?? ''}:${body}`;
+        const signature = crypto.createHmac('sha256', secret).update(signedPayload).digest('hex');
         return secureHttpRequest(url, {
             method: 'POST',
             headers: {
                 'X-LunchLineup-Signature': signature,
-                'X-LunchLineup-Signature-Version': 'v1',
+                'X-LunchLineup-Signature-Version': 'v2',
                 'X-LunchLineup-Delivery-Id': deliveryId,
                 ...(eventType ? { 'X-LunchLineup-Event': eventType } : {}),
                 'Content-Type': 'application/json',
