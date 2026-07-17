@@ -63,7 +63,15 @@ export class MeteringService {
         await tx.$queryRaw`SELECT "id" FROM "Tenant" WHERE "id" = ${normalizedTenantId} FOR UPDATE`;
         const existing = await tx.creditTransaction.findUnique({
             where: { id: transactionId },
-            select: { id: true, tenantId: true, amount: true, reason: true, balanceAfter: true },
+            select: {
+                id: true,
+                tenantId: true,
+                amount: true,
+                debtAmount: true,
+                reason: true,
+                balanceAfter: true,
+                debtAfter: true,
+            },
         });
         if (existing) {
             return this.replayCreditGrant(
@@ -75,23 +83,38 @@ export class MeteringService {
             );
         }
 
+        const current = await tx.tenant.findUniqueOrThrow({
+            where: { id: normalizedTenantId },
+            select: { usageCredits: true, creditDebt: true },
+        });
+        const repaidDebt = Math.min(current.creditDebt, amount);
+        const spendableAmount = amount - repaidDebt;
         const tenant = await tx.tenant.update({
             where: { id: normalizedTenantId },
-            data: { usageCredits: { increment: amount } },
-            select: { usageCredits: true },
+            data: {
+                usageCredits: { increment: spendableAmount },
+                creditDebt: { decrement: repaidDebt },
+            },
+            select: { usageCredits: true, creditDebt: true },
         });
         const newBalance = this.requireStoredBalanceAfter(
             tenant.usageCredits,
             'Credit grant settlement produced an invalid wallet balance.',
+        );
+        const debtAfter = this.requireStoredDebtAfter(
+            tenant.creditDebt,
+            'Credit grant settlement produced an invalid debt balance.',
         );
 
         await tx.creditTransaction.create({
             data: {
                 id: transactionId,
                 tenantId: normalizedTenantId,
-                amount,
+                amount: spendableAmount,
+                debtAmount: -repaidDebt,
                 reason: normalizedReason,
                 balanceAfter: newBalance,
+                debtAfter,
             },
             select: { id: true },
         });
@@ -100,15 +123,31 @@ export class MeteringService {
     }
 
     private replayCreditGrant(
-        existing: { tenantId: string; amount: number; reason: string; balanceAfter: number | null },
+        existing: {
+            tenantId: string;
+            amount: number;
+            debtAmount: number;
+            reason: string;
+            balanceAfter: number | null;
+            debtAfter: number | null;
+        },
         tenantId: string,
         amount: number,
         reason: string,
         transactionId: string,
     ): CreditGrantSettlement {
-        if (existing.tenantId !== tenantId || existing.amount !== amount || existing.reason !== reason) {
+        if (
+            existing.tenantId !== tenantId
+            || existing.amount - existing.debtAmount !== amount
+            || existing.debtAmount > 0
+            || existing.reason !== reason
+        ) {
             throw new ConflictException('Idempotency-Key was already used with a different credit grant request.');
         }
+        this.requireStoredDebtAfter(
+            existing.debtAfter,
+            'Existing credit grant is missing its immutable debt balance.',
+        );
 
         return {
             transactionId,
@@ -138,6 +177,13 @@ export class MeteringService {
         return Number(value);
     }
 
+    private requireStoredDebtAfter(value: unknown, message: string): number {
+        if (!Number.isSafeInteger(value) || Number(value) < 0) {
+            throw new ConflictException(message);
+        }
+        return Number(value);
+    }
+
     async recordFeatureUsageInTransaction(
         tx: TenantPrismaTransaction,
         args: {
@@ -160,12 +206,21 @@ export class MeteringService {
         await tx.$queryRaw`SELECT "id" FROM "Tenant" WHERE "id" = ${args.tenantId} FOR UPDATE`;
         const existing = await tx.creditTransaction.findUnique({
             where: { id: ledgerId },
-            select: { id: true, tenantId: true, amount: true, reason: true, balanceAfter: true },
+            select: {
+                id: true,
+                tenantId: true,
+                amount: true,
+                debtAmount: true,
+                reason: true,
+                balanceAfter: true,
+                debtAfter: true,
+            },
         });
         if (existing) {
             if (
                 existing.tenantId !== args.tenantId
                 || existing.amount !== -args.cost
+                || existing.debtAmount !== 0
                 || existing.reason !== args.reason
             ) {
                 throw new ConflictException('Feature usage operation was already recorded with different billing details.');
@@ -182,6 +237,7 @@ export class MeteringService {
         const debit = await tx.tenant.updateMany({
             where: {
                 id: args.tenantId,
+                creditDebt: 0,
                 usageCredits: { gte: args.cost },
             },
             data: { usageCredits: { decrement: args.cost } },
@@ -191,19 +247,25 @@ export class MeteringService {
         }
         const tenant = await tx.tenant.findUniqueOrThrow({
             where: { id: args.tenantId },
-            select: { usageCredits: true },
+            select: { usageCredits: true, creditDebt: true },
         });
         const newBalance = this.requireStoredBalanceAfter(
             tenant.usageCredits,
             'Feature usage settlement produced an invalid wallet balance.',
+        );
+        const debtAfter = this.requireStoredDebtAfter(
+            tenant.creditDebt,
+            'Feature usage settlement produced an invalid debt balance.',
         );
         await tx.creditTransaction.create({
             data: {
                 id: ledgerId,
                 tenantId: args.tenantId,
                 amount: -args.cost,
+                debtAmount: 0,
                 reason: args.reason,
                 balanceAfter: newBalance,
+                debtAfter,
             },
         });
         return { consumedCredits: args.cost, newBalance };

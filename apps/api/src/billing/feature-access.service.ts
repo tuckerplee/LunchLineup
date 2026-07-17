@@ -35,6 +35,7 @@ export type FeatureMatrix = {
     stripeSubscriptionPresent: boolean;
     stripeSubscriptionCurrentPeriodEnd: Date | null;
     usageCredits: number;
+    creditDebt: number;
     features: Record<FeatureKey, FeatureResolution>;
 };
 
@@ -68,6 +69,7 @@ export class FeatureAccessService {
                         status: true,
                         trialEndsAt: true,
                         usageCredits: true,
+                        creditDebt: true,
                         stripeSubscriptionId: true,
                         stripeSubscriptionCurrentPeriodEnd: true,
                     },
@@ -96,6 +98,7 @@ export class FeatureAccessService {
             stripeSubscriptionPresent: hasNonBlankStripeSubscriptionId(tenant.stripeSubscriptionId),
             stripeSubscriptionCurrentPeriodEnd: tenant.stripeSubscriptionCurrentPeriodEnd,
             usageCredits: tenant.usageCredits,
+            creditDebt: tenant.creditDebt,
             features,
         };
     }
@@ -158,6 +161,7 @@ export class FeatureAccessService {
                     status: true,
                     trialEndsAt: true,
                     usageCredits: true,
+                    creditDebt: true,
                     stripeSubscriptionId: true,
                     stripeSubscriptionCurrentPeriodEnd: true,
                 },
@@ -234,6 +238,7 @@ export class FeatureAccessService {
             status: TenantStatusValue;
             trialEndsAt: Date | null;
             usageCredits: number;
+            creditDebt: number;
             stripeSubscriptionId: string | null;
             stripeSubscriptionCurrentPeriodEnd: Date | null;
         },
@@ -278,6 +283,14 @@ export class FeatureAccessService {
         }
 
         if (requireBillableCredits) {
+            if (!Number.isSafeInteger(tenant.creditDebt) || tenant.creditDebt !== 0) {
+                return {
+                    enabled: false,
+                    source: 'disabled',
+                    reason: 'Billable feature usage is blocked until outstanding credit debt is repaid.',
+                    creditCost,
+                };
+            }
             if (creditCost === null || !Number.isSafeInteger(creditCost) || creditCost <= 0) {
                 return {
                     enabled: false,
