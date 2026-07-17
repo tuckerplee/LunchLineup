@@ -4,7 +4,7 @@ This document maps the first rebuild test layer. It covers SaaS behavior, legacy
 
 ## Files
 
-- `dependency-audit.md`: production npm audit gate and Next/PostCSS advisory triage.
+- `dependency-audit.md`: fail-closed production npm audit gate and the narrow Next/PostCSS override lifecycle.
 - `launch-proof-template.json`: fill-in template for retained public-launch proof manifests.
 - `security-automation.md`: CodeQL, Semgrep SARIF, Dependabot, permissions, and required GitHub control contracts.
 - `README.md`: this testing and migration control map.
@@ -39,7 +39,7 @@ Run the production dependency audit gate:
 npm run audit:prod
 ```
 
-`dependency-audit.md` records the current Next/PostCSS moderate advisory triage and the removal rule once a stable Next release carries the patched nested PostCSS dependency.
+`dependency-audit.md` records the current narrow Next/PostCSS override and the removal rule once a stable Next release carries the patched nested PostCSS dependency.
 
 Run browser smoke tests from the web app when the stack is available:
 

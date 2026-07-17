@@ -1,35 +1,29 @@
 # Dependency Audit Gate
 
-This document records the production dependency audit triage for the rebuild.
 Run the launch gate with:
 
 ```bash
 npm run audit:prod
 ```
 
-The gate runs `npm audit --omit=dev --json`, fails any high or critical production advisory, fails unexpected production advisories, and allows only the documented Next/PostCSS moderate advisory below.
+The gate runs `npm audit --omit=dev --json` and fails every production advisory, regardless of severity or whether it is direct or transitive. It also fails closed when npm exits unexpectedly or returns an incomplete, malformed, unsupported-version, or metadata-inconsistent report. There is no advisory allowlist.
 
-The allowlist is intentionally exact. The `next` vulnerability object must contain only the nested `postcss` via entry with npm's documented downgrade fix, and the `postcss` vulnerability object must contain only advisory `GHSA-qx2v-qp2m-jg93` for `node_modules/next/node_modules/postcss`. If npm adds another advisory to either object, `npm run audit:prod` must fail until the new advisory is triaged.
+## July 16, 2026 Next/PostCSS Resolution
 
-## July 9, 2026 Next/PostCSS Triage
+Stable `next@16.2.10` still declares nested `postcss@8.4.31`, which is affected by `GHSA-qx2v-qp2m-jg93`. npm proposes the production-breaking downgrade `next@9.3.3`; the first Next release line observed using patched PostCSS is canary, not stable.
 
-Local npm evidence:
+The root `package.json` therefore makes every PostCSS edge use the root direct dependency through npm's `$postcss` override. The current lock resolves that dependency to `postcss@8.5.19`; every other consumer already selected that release, so the only resolved-package change is Next's nested copy. This keeps stable Next and avoids a second PostCSS version. Do not downgrade Next, move production to canary only for audit output, or add an advisory allowlist.
 
-- `npm view next dist-tags --json`: `latest` is `16.2.10`; `canary` is `16.3.0-canary.81`.
-- `npm view next@latest dependencies.postcss version --json`: `next@16.2.10` still declares `postcss: 8.4.31`.
-- `npm view next@canary dependencies.postcss version --json`: `next@16.3.0-canary.81` declares `postcss: 8.5.10`.
-- `npm audit --omit=dev --json`: production advisories are moderate `next` via `postcss` and nested `node_modules/next/node_modules/postcss`, advisory `GHSA-qx2v-qp2m-jg93`.
-- `npm audit fix --omit=dev --dry-run --json`: npm's available fix is `next@9.3.3` with `isSemVerMajor: true`, which is a production-breaking downgrade for this rebuild.
+Resolve and validate the dependency tree with the root `packageManager` version (`npm@10.8.1` at this review). `corepack npm` selects that version; an unrelated globally installed npm must not regenerate the lock.
 
-Do not run `npm audit fix --force` for this advisory. Do not move production to a Next canary only to clear audit output.
+## Override Removal Rule
 
-## Removal Rule
-
-Remove the triage from `scripts/audit-prod.mjs` after a stable `next@latest` release keeps this project on the supported Next major and resolves the nested PostCSS range with `postcss >=8.5.10`. Validate removal with:
+Remove the PostCSS override after a supported stable Next upgrade declares `postcss >=8.5.10`. Review the override whenever Next changes so it does not outlive the compatibility proof. Validate dependency changes with:
 
 ```bash
-npm install
-npm audit --omit=dev
-npm run audit:prod
-npm run build --workspace @lunchlineup/web
+corepack npm ci
+corepack npm audit --omit=dev
+corepack npm run audit:prod
+corepack npm run typecheck --workspace @lunchlineup/web
+corepack npm run build --workspace @lunchlineup/web
 ```
