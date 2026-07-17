@@ -27,6 +27,9 @@ type CheckoutSessionResolution = {
     reusable: CheckoutSessionResponse | null;
     generation: string;
 };
+type CheckoutTenantState = {
+    stripeCustomerId: string | null;
+};
 
 type BillingPortalSessionResponse = {
     portalUrl: string;
@@ -173,6 +176,7 @@ export class StripeService {
     private readonly prisma: PrismaClient;
     private readonly tenantDb: TenantPrismaService;
     private readonly creditPurchases: StripeCreditPurchaseService;
+    private readonly subscriptionCheckoutLocks = new Map<string, Promise<void>>();
 
     constructor(
         private configService: ConfigService,
@@ -240,44 +244,115 @@ export class StripeService {
         }
         const metadata = { tenantId, planCode, priceId: allowedPriceId };
         const returnOrigin = this.resolveBillingReturnOrigin();
-        return this.tenantDb.withTenant(tenantId, async (tx) => {
-            await this.lockTenantBilling(tx, tenantId);
-            await this.assertTenantCanStartCheckout(tx, tenantId, planCode);
-            const customer = await this.ensureCustomer(tx, tenantId, actor);
-            await this.assertCustomerHasNoBlockingSubscription(customer.id);
+        return this.withSubscriptionCheckoutLock(tenantId, async () => {
+            const initialTenant = await this.readCheckoutTenantState(tenantId, planCode);
+            const customerId = await this.resolveCheckoutCustomer(
+                tenantId,
+                planCode,
+                actor,
+                initialTenant.stripeCustomerId,
+            );
+            await this.assertCustomerHasNoBlockingSubscription(customerId, tenantId);
 
             const openSessions = await this.resolveOpenCheckoutSessions(
-                customer.id,
+                customerId,
                 tenantId,
                 allowedPriceId,
                 planCode,
             );
             if (openSessions.reusable) {
+                await this.assertCheckoutTenantBinding(tenantId, planCode, customerId);
                 return openSessions.reusable;
             }
 
-            const session = await this.getStripe().checkout.sessions.create({
-                mode: 'subscription',
-                customer: customer.id,
-                line_items: [{ price: allowedPriceId }],
-                success_url: `${returnOrigin}/dashboard/settings?billing=success&session_id={CHECKOUT_SESSION_ID}`,
-                cancel_url: `${returnOrigin}/dashboard/settings?billing=cancelled`,
-                client_reference_id: tenantId,
-                metadata,
-                subscription_data: { metadata },
-                allow_promotion_codes: true,
-            } as any, {
-                idempotencyKey: this.checkoutIdempotencyKey(tenantId, allowedPriceId, openSessions.generation),
-            });
-
-            const sessionId = this.asString(session.id);
-            const checkoutUrl = this.asString(session.url);
-            if (!sessionId || !checkoutUrl) {
-                this.logger.error('Stripe Checkout did not return a session URL.');
-                throw new ServiceUnavailableException('Stripe Checkout did not return a session URL');
+            let session: Stripe.Checkout.Session;
+            try {
+                session = await this.getStripe().checkout.sessions.create({
+                    mode: 'subscription',
+                    customer: customerId,
+                    line_items: [{ price: allowedPriceId }],
+                    success_url: `${returnOrigin}/dashboard/settings?billing=success&session_id={CHECKOUT_SESSION_ID}`,
+                    cancel_url: `${returnOrigin}/dashboard/settings?billing=cancelled`,
+                    client_reference_id: tenantId,
+                    metadata,
+                    subscription_data: { metadata },
+                    allow_promotion_codes: true,
+                } as any, {
+                    idempotencyKey: this.checkoutIdempotencyKey(tenantId, openSessions.generation),
+                });
+            } catch (err) {
+                const recovered = await this.resolveOpenCheckoutSessions(
+                    customerId,
+                    tenantId,
+                    allowedPriceId,
+                    planCode,
+                );
+                if (recovered.reusable) {
+                    await this.assertCheckoutTenantBinding(tenantId, planCode, customerId);
+                    return recovered.reusable;
+                }
+                throw err;
             }
 
-            return { sessionId, checkoutUrl };
+            const sessionId = this.asString(session.id);
+            if (!sessionId) {
+                throw new ServiceUnavailableException('Stripe Checkout did not return a session ID');
+            }
+            let verifiedSession: CheckoutSessionResponse;
+            try {
+                verifiedSession = await this.retrieveVerifiedCheckoutSession(
+                    sessionId,
+                    customerId,
+                    tenantId,
+                    allowedPriceId,
+                    planCode,
+                );
+            } catch (err) {
+                const recovered = await this.resolveOpenCheckoutSessions(
+                    customerId,
+                    tenantId,
+                    allowedPriceId,
+                    planCode,
+                );
+                if (!recovered.reusable) throw err;
+                verifiedSession = recovered.reusable;
+            }
+
+            await this.assertCheckoutTenantBinding(tenantId, planCode, customerId);
+            return verifiedSession;
+        });
+    }
+
+    private async withSubscriptionCheckoutLock<T>(
+        tenantId: string,
+        operation: () => Promise<T>,
+    ): Promise<T> {
+        const previous = this.subscriptionCheckoutLocks.get(tenantId) ?? Promise.resolve();
+        let release!: () => void;
+        const gate = new Promise<void>((resolve) => {
+            release = resolve;
+        });
+        const tail = previous.then(() => gate);
+        this.subscriptionCheckoutLocks.set(tenantId, tail);
+        await previous;
+
+        try {
+            return await operation();
+        } finally {
+            release();
+            if (this.subscriptionCheckoutLocks.get(tenantId) === tail) {
+                this.subscriptionCheckoutLocks.delete(tenantId);
+            }
+        }
+    }
+
+    private async readCheckoutTenantState(
+        tenantId: string,
+        planCode: PlanTier,
+    ): Promise<CheckoutTenantState> {
+        return this.tenantDb.withTenant(tenantId, async (tx) => {
+            await this.lockTenantBilling(tx, tenantId);
+            return this.assertTenantCanStartCheckout(tx, tenantId, planCode);
         });
     }
 
@@ -285,14 +360,20 @@ export class StripeService {
         tx: Prisma.TransactionClient,
         tenantId: string,
         planCode: PlanTier,
-    ): Promise<void> {
+    ): Promise<CheckoutTenantState> {
         const plan = await resolveTenantPlanDefinition(tx as any, planCode);
         if (!plan?.active) {
             throw new BadRequestException('Selected subscription plan is not available.');
         }
         const tenant = await tx.tenant.findUnique({
             where: { id: tenantId },
-            select: { id: true, status: true, stripeSubscriptionId: true, deletedAt: true },
+            select: {
+                id: true,
+                status: true,
+                stripeCustomerId: true,
+                stripeSubscriptionId: true,
+                deletedAt: true,
+            },
         });
         if (!tenant) throw new BadRequestException('Tenant not found');
         if (tenant.deletedAt || CHECKOUT_BLOCKED_TENANT_STATUSES.has(tenant.status)) {
@@ -302,6 +383,115 @@ export class StripeService {
             throw new BadRequestException('Use the billing portal to manage an existing subscription.');
         }
         await this.assertTenantFitsPlan(tx, tenantId, planCode);
+        return { stripeCustomerId: tenant.stripeCustomerId };
+    }
+
+    private async resolveCheckoutCustomer(
+        tenantId: string,
+        planCode: PlanTier,
+        actor: CheckoutActor,
+        initialCustomerId: string | null,
+    ): Promise<string> {
+        if (initialCustomerId) {
+            await this.assertCheckoutCustomerOwnership(initialCustomerId, tenantId);
+            return initialCustomerId;
+        }
+
+        const customer = await this.createCheckoutCustomerWithRecovery(tenantId, actor);
+        const candidateId = this.asString(customer.id);
+        if (!candidateId || this.resolveTenantIdFromMetadata(customer as StripeWebhookObject) !== tenantId) {
+            throw new ServiceUnavailableException('Stripe customer ownership is not authoritative');
+        }
+
+        const customerId = await this.claimCheckoutCustomerWithRecovery(
+            tenantId,
+            planCode,
+            candidateId,
+        );
+        await this.assertCheckoutCustomerOwnership(customerId, tenantId);
+        return customerId;
+    }
+
+    private async createCheckoutCustomerWithRecovery(
+        tenantId: string,
+        actor: CheckoutActor,
+    ): Promise<Stripe.Customer> {
+        const request = {
+            email: actor.email ?? undefined,
+            name: actor.name ?? undefined,
+            metadata: { tenantId },
+        } as Stripe.CustomerCreateParams;
+        const options = { idempotencyKey: this.stripeCustomerIdempotencyKey(tenantId) };
+
+        try {
+            return await this.getStripe().customers.create(request, options);
+        } catch (err) {
+            this.logger.warn(stripeErrorLog('stripe.customer_create_recovery', err));
+            return this.getStripe().customers.create(request, options);
+        }
+    }
+
+    private async claimCheckoutCustomerWithRecovery(
+        tenantId: string,
+        planCode: PlanTier,
+        candidateId: string,
+    ): Promise<string> {
+        const claim = () => this.tenantDb.withTenant(tenantId, async (tx) => {
+            await this.lockTenantBilling(tx, tenantId);
+            const tenant = await this.assertTenantCanStartCheckout(tx, tenantId, planCode);
+            if (tenant.stripeCustomerId) return tenant.stripeCustomerId;
+
+            const claimed = await tx.tenant.updateMany({
+                where: { id: tenantId, stripeCustomerId: null },
+                data: { stripeCustomerId: candidateId },
+            });
+            if (claimed.count === 1) return candidateId;
+
+            const current = await tx.tenant.findUnique({
+                where: { id: tenantId },
+                select: { stripeCustomerId: true },
+            });
+            if (current?.stripeCustomerId) return current.stripeCustomerId;
+            throw new ServiceUnavailableException('Stripe customer could not be attached to the tenant');
+        });
+
+        try {
+            return await claim();
+        } catch (err) {
+            let current: CheckoutTenantState;
+            try {
+                current = await this.readCheckoutTenantState(tenantId, planCode);
+            } catch {
+                throw err;
+            }
+            if (current.stripeCustomerId) return current.stripeCustomerId;
+            return claim();
+        }
+    }
+
+    private async assertCheckoutCustomerOwnership(
+        customerId: string,
+        tenantId: string,
+    ): Promise<void> {
+        const customer = await this.getStripe().customers.retrieve(customerId) as StripeWebhookObject;
+        if (
+            customer.deleted === true
+            || this.asString(customer.id) !== customerId
+            || this.resolveTenantIdFromMetadata(customer) !== tenantId
+        ) {
+            throw new ServiceUnavailableException('Stripe customer ownership is not authoritative');
+        }
+    }
+
+    private async assertCheckoutTenantBinding(
+        tenantId: string,
+        planCode: PlanTier,
+        customerId: string,
+    ): Promise<void> {
+        const tenant = await this.readCheckoutTenantState(tenantId, planCode);
+        if (tenant.stripeCustomerId !== customerId) {
+            throw new ServiceUnavailableException('Stripe customer binding changed during Checkout');
+        }
     }
 
     private async resolveOpenCheckoutSessions(
@@ -312,21 +502,48 @@ export class StripeService {
     ): Promise<CheckoutSessionResolution> {
         const sessions = await this.getStripe().checkout.sessions.list({
             customer: customerId,
-            status: 'open',
-            limit: 10,
+            limit: 100,
         });
+        if (!Array.isArray(sessions.data) || sessions.has_more === true) {
+            throw new ServiceUnavailableException('Stripe Checkout session state is not authoritative');
+        }
         let reusable: CheckoutSessionResponse | null = null;
         const tenantSessionIds: string[] = [];
         for (const session of sessions.data) {
-            if (session.metadata?.tenantId !== tenantId || !session.id) continue;
-            tenantSessionIds.push(session.id);
+            const sessionId = this.asString(session.id);
+            if (
+                !sessionId
+                || this.resolveCustomerId(session as StripeWebhookObject) !== customerId
+                || this.resolveTenantIdFromMetadata(session as StripeWebhookObject) !== tenantId
+                || this.asString(session.client_reference_id) !== tenantId
+            ) {
+                throw new ServiceUnavailableException('Stripe Checkout ownership is not authoritative');
+            }
+            if (this.asString(session.mode)?.toLowerCase() !== 'subscription') continue;
+
+            const status = this.asString(session.status)?.toLowerCase();
+            if (!status) {
+                throw new ServiceUnavailableException('Stripe Checkout status is not authoritative');
+            }
+            tenantSessionIds.push(sessionId);
+            if (status !== 'open') continue;
+
+            const exactLineItem = await this.checkoutSessionHasExactLineItem(sessionId, priceId);
             const exactPrice = session.metadata?.priceId === priceId;
             const exactPlan = session.metadata?.planCode === planCode;
-            if (!reusable && exactPrice && exactPlan && session.url) {
-                reusable = { sessionId: session.id, checkoutUrl: session.url };
+            const checkoutUrl = this.resolveHostedCheckoutUrl(session.url);
+            if (
+                !reusable
+                && exactPrice
+                && exactPlan
+                && exactLineItem
+                && !this.resolveSubscriptionId(session as StripeWebhookObject)
+                && checkoutUrl
+            ) {
+                reusable = { sessionId, checkoutUrl };
                 continue;
             }
-            await this.getStripe().checkout.sessions.expire(session.id);
+            await this.getStripe().checkout.sessions.expire(sessionId);
         }
         return {
             reusable,
@@ -334,12 +551,70 @@ export class StripeService {
         };
     }
 
-    private async assertCustomerHasNoBlockingSubscription(customerId: string): Promise<void> {
+    private async retrieveVerifiedCheckoutSession(
+        sessionId: string,
+        customerId: string,
+        tenantId: string,
+        priceId: string,
+        planCode: PlanTier,
+    ): Promise<CheckoutSessionResponse> {
+        const session = await this.getStripe().checkout.sessions.retrieve(sessionId) as StripeWebhookObject;
+        const checkoutUrl = this.resolveHostedCheckoutUrl(session.url);
+        if (
+            this.asString(session.id) !== sessionId
+            || this.resolveCustomerId(session) !== customerId
+            || this.resolveTenantIdFromMetadata(session) !== tenantId
+            || this.asString(session.client_reference_id) !== tenantId
+            || this.asString(session.mode)?.toLowerCase() !== 'subscription'
+            || this.asString(session.status)?.toLowerCase() !== 'open'
+            || session.metadata?.priceId !== priceId
+            || session.metadata?.planCode !== planCode
+            || this.resolveSubscriptionId(session)
+            || !checkoutUrl
+            || !await this.checkoutSessionHasExactLineItem(sessionId, priceId)
+        ) {
+            throw new ServiceUnavailableException('Stripe Checkout session is not authoritative');
+        }
+        return { sessionId, checkoutUrl };
+    }
+
+    private async checkoutSessionHasExactLineItem(
+        sessionId: string,
+        priceId: string,
+    ): Promise<boolean> {
+        const lineItems = await this.getStripe().checkout.sessions.listLineItems(sessionId, { limit: 2 });
+        if (!Array.isArray(lineItems.data) || lineItems.has_more === true || lineItems.data.length !== 1) {
+            return false;
+        }
+        const [lineItem] = lineItems.data;
+        return this.resolveObjectId(lineItem.price) === priceId && lineItem.quantity === 1;
+    }
+
+    private resolveHostedCheckoutUrl(value: unknown): string | null {
+        const rawUrl = this.asString(value);
+        if (!rawUrl) return null;
+        try {
+            const url = new URL(rawUrl);
+            return url.protocol === 'https:' && url.hostname === 'checkout.stripe.com'
+                ? url.toString()
+                : null;
+        } catch {
+            return null;
+        }
+    }
+
+    private async assertCustomerHasNoBlockingSubscription(
+        customerId: string,
+        tenantId: string,
+    ): Promise<void> {
         const subscriptions = await this.getStripe().subscriptions.list({
             customer: customerId,
             status: 'all',
             limit: 100,
         });
+        if (!Array.isArray(subscriptions.data) || subscriptions.has_more === true) {
+            throw new ServiceUnavailableException('Stripe subscription state is not authoritative');
+        }
         const blockingStatuses = new Set([
             'active',
             'trialing',
@@ -348,15 +623,20 @@ export class StripeService {
             'incomplete',
             'paused',
         ]);
+        if (subscriptions.data.some((subscription) =>
+            this.resolveCustomerId(subscription as StripeWebhookObject) !== customerId
+            || this.resolveTenantIdFromMetadata(subscription as StripeWebhookObject) !== tenantId,
+        )) {
+            throw new ServiceUnavailableException('Stripe subscription ownership is not authoritative');
+        }
         if (subscriptions.data.some((subscription) => blockingStatuses.has(subscription.status))) {
             throw new BadRequestException('Use the billing portal to manage an existing subscription.');
         }
     }
 
-    private checkoutIdempotencyKey(tenantId: string, priceId: string, sessionGeneration: string): string {
-        const minuteBucket = Math.floor(Date.now() / 60_000);
+    private checkoutIdempotencyKey(tenantId: string, sessionGeneration: string): string {
         return createHash('sha256')
-            .update(`subscription-checkout:${tenantId}:${priceId}:${sessionGeneration}:${minuteBucket}`)
+            .update(`subscription-checkout:${tenantId}:${sessionGeneration}`)
             .digest('hex');
     }
 
@@ -1620,12 +1900,10 @@ export class StripeService {
     }
 
     private resolveCurrentSubscriptionPlanCode(subscription: StripeWebhookObject): PlanTier | null {
-        const planCodes = new Set(
-            this.collectPriceIds(subscription)
-                .map((priceId) => this.resolvePlanCodeForPriceId(priceId))
-                .filter((planCode): planCode is PlanTier => Boolean(planCode)),
-        );
-        return planCodes.size === 1 ? Array.from(planCodes)[0] : null;
+        const priceIds = this.collectPriceIds(subscription);
+        return priceIds.length === 1
+            ? this.resolvePlanCodeForPriceId(priceIds[0])
+            : null;
     }
 
     private resolvePlanCodeFromMetadata(data: StripeWebhookObject): PlanTier | null {
@@ -1736,12 +2014,8 @@ export class StripeService {
         }
 
         const canonicalSubscriptionSync = this.isCanonicalSubscriptionSyncEvent(event.type);
-        const authoritativeSubscriptionSync = canonicalSubscriptionSync
-            || event.type === 'invoice.finalization_failed';
-        let subscriptionResolution = purgedTenant
+        const subscriptionResolution = purgedTenant
             ? { subscription: resolvedSubscription, verified: Boolean(resolvedSubscription) }
-            : authoritativeSubscriptionSync
-                ? { subscription: null, verified: false }
             : await this.resolveWebhookSubscription(
                 event.type,
                 tenantId,
@@ -1750,7 +2024,14 @@ export class StripeService {
                 resolvedSubscription,
             );
         let currentSubscription = subscriptionResolution.subscription;
-        let purchasedPlanCode = this.resolvePurchasedPlanCode(data, currentSubscription);
+        if (purgedTenant && subscriptionId && currentSubscription) {
+            currentSubscription = await this.cancelVerifiedPostPurgeSubscriptionAtProvider(
+                tenantId,
+                subscriptionId,
+                currentSubscription,
+            );
+        }
+        const purchasedPlanCode = this.resolvePurchasedPlanCode(data, currentSubscription);
 
         try {
             await this.tenantDb.withTenant(tenantId, async (tx) => {
@@ -1808,14 +2089,13 @@ export class StripeService {
                     const disposition: StripeSideEffectDisposition = subscriptionId
                         ? 'post_purge_cancelled'
                         : 'skipped_unverified_subscription';
-                    if (subscriptionId) {
-                        currentSubscription = await this.cancelVerifiedPostPurgeSubscription(
+                    if (subscriptionId && currentSubscription) {
+                        await this.finalizeVerifiedPostPurgeSubscription(
                             tx,
                             tenantId,
                             subscriptionId,
-                            data,
+                            currentSubscription,
                         );
-                        purchasedPlanCode = this.resolvePurchasedPlanCode(data, currentSubscription);
                     }
                     const purgeEventOrder = this.resolveEntitlementEventOrder(
                         event,
@@ -1836,7 +2116,7 @@ export class StripeService {
                     return;
                 }
                 const entitlementStatus = this.asString(currentSubscription?.status) ?? this.asString(data.status);
-                let eventOrder = this.resolveEntitlementEventOrder(event, subscriptionId, entitlementStatus);
+                const eventOrder = this.resolveEntitlementEventOrder(event, subscriptionId, entitlementStatus);
                 const terminalDeletedBindingValid = event.type !== 'customer.subscription.deleted'
                     || await this.isExactTerminalDeletedWebhookBinding(
                         tx,
@@ -1871,6 +2151,7 @@ export class StripeService {
                     const distinctSameSecondCanonicalEvent = canonicalSubscriptionSync
                         && highWaterMark
                         && eventOrder.created === highWaterMark.created
+                        && eventOrder.terminalPriority === highWaterMark.terminalPriority
                         && eventOrder.id !== highWaterMark.id;
                     if (!sideEffectDisposition) {
                         sideEffectDisposition = highWaterMark
@@ -1880,43 +2161,15 @@ export class StripeService {
                                 : 'applied';
                     }
 
-                    if (authoritativeSubscriptionSync && sideEffectDisposition === 'applied') {
-                        subscriptionResolution = await this.resolveWebhookSubscription(
-                            event.type,
-                            tenantId,
-                            subscriptionId,
-                            data,
-                            resolvedSubscription,
-                        );
-                        currentSubscription = subscriptionResolution.subscription;
-                        locallyOwnedSubscription = subscriptionResolution.verified;
-                        purchasedPlanCode = this.resolvePurchasedPlanCode(data, currentSubscription);
-
-                        const authoritativeStatus = this.asString(currentSubscription?.status)
-                            ?? this.asString(data.status);
-                        eventOrder = this.resolveEntitlementEventOrder(
-                            event,
-                            subscriptionId,
-                            authoritativeStatus,
-                        );
-                        const equalPrioritySameSecondCanonicalEvent = canonicalSubscriptionSync
-                            && eventOrder
-                            && highWaterMark
-                            && eventOrder.created === highWaterMark.created
-                            && eventOrder.terminalPriority === highWaterMark.terminalPriority
-                            && eventOrder.id !== highWaterMark.id;
-                        if (eventOrder
-                            && highWaterMark
-                            && this.compareEventOrder(eventOrder, highWaterMark) <= 0
-                            && !equalPrioritySameSecondCanonicalEvent) {
-                            sideEffectDisposition = 'skipped_stale';
-                        }
-                    }
-
-                    if (currentSubscription && this.isInvoiceSubscriptionEvent(event.type)) {
-                        locallyOwnedSubscription = await this.ensureInvoiceSubscriptionBinding(
+                    if (
+                        currentSubscription
+                        && this.webhookRequiresVerifiedSubscription(event.type, data)
+                        && sideEffectDisposition !== 'skipped_stale'
+                    ) {
+                        locallyOwnedSubscription = await this.ensureWebhookSubscriptionBinding(
                             tx,
                             event.type,
+                            data,
                             tenantId,
                             subscriptionId,
                             currentSubscription,
@@ -2000,12 +2253,43 @@ export class StripeService {
         });
     }
 
-    private async cancelVerifiedPostPurgeSubscription(
+    private async cancelVerifiedPostPurgeSubscriptionAtProvider(
+        tenantId: string,
+        subscriptionId: string,
+        subscription: StripeWebhookObject,
+    ): Promise<StripeWebhookObject> {
+        const customerId = this.resolveCustomerId(subscription);
+        if (!customerId) {
+            throw new ServiceUnavailableException('Purged tenant billing ownership is not authoritative');
+        }
+        this.assertPurgeSubscriptionOwnership(
+            tenantId,
+            customerId,
+            subscription,
+            true,
+        );
+        let terminalSubscription = subscription;
+        if (!this.isTerminalSubscriptionState(subscription)) {
+            terminalSubscription = await this.getStripe().subscriptions.cancel(subscriptionId) as StripeWebhookObject;
+            this.assertPurgeSubscriptionOwnership(
+                tenantId,
+                customerId,
+                terminalSubscription,
+                true,
+            );
+            if (!this.isTerminalSubscriptionState(terminalSubscription)) {
+                throw new ServiceUnavailableException('Post-purge Stripe subscription cancellation was not confirmed');
+            }
+        }
+        return terminalSubscription;
+    }
+
+    private async finalizeVerifiedPostPurgeSubscription(
         tx: Prisma.TransactionClient,
         tenantId: string,
         subscriptionId: string,
-        eventData: StripeWebhookObject,
-    ): Promise<StripeWebhookObject> {
+        terminalSubscription: StripeWebhookObject,
+    ): Promise<void> {
         const tenant = await tx.tenant.findUnique({
             where: { id: tenantId },
             select: {
@@ -2022,31 +2306,23 @@ export class StripeService {
         ) {
             throw new ServiceUnavailableException('Purged tenant billing ownership is not authoritative');
         }
-
-        const subscription = await this.retrievePostPurgeSubscription(subscriptionId, eventData);
         this.assertPurgeSubscriptionOwnership(
             tenantId,
             tenant.stripeCustomerId,
-            subscription,
+            terminalSubscription,
             true,
         );
-        let terminalSubscription = subscription;
-        if (!this.isTerminalSubscriptionState(subscription)) {
-            terminalSubscription = await this.getStripe().subscriptions.cancel(subscriptionId) as StripeWebhookObject;
-            this.assertPurgeSubscriptionOwnership(
-                tenantId,
-                tenant.stripeCustomerId,
-                terminalSubscription,
-                true,
-            );
-            if (!this.isTerminalSubscriptionState(terminalSubscription)) {
-                throw new ServiceUnavailableException('Post-purge Stripe subscription cancellation was not confirmed');
-            }
+        if (
+            this.asString(terminalSubscription.id) !== subscriptionId
+            || !this.isTerminalSubscriptionState(terminalSubscription)
+        ) {
+            throw new ServiceUnavailableException('Post-purge Stripe subscription cancellation was not confirmed');
         }
         await tx.tenant.updateMany({
             where: {
                 id: tenantId,
                 status: TenantStatus.PURGED,
+                stripeCustomerId: tenant.stripeCustomerId,
             },
             data: {
                 stripeSubscriptionId: null,
@@ -2056,7 +2332,6 @@ export class StripeService {
         this.logger.warn(
             `Canceled verified post-purge Stripe subscription for tenant_ref=${this.safeIdentifierRef(tenantId)}`,
         );
-        return terminalSubscription;
     }
 
     private async applyWebhookSideEffect(
@@ -2310,7 +2585,12 @@ export class StripeService {
             const subscription = resolvedSubscription
                 ?? await this.retrieveWebhookSubscription(subscriptionId, data);
             const metadataTenantId = this.resolveTenantIdFromMetadata(subscription);
-            if (metadataTenantId && metadataTenantId !== tenantId) {
+            const status = this.asString(subscription.status)?.toLowerCase();
+            if (
+                metadataTenantId !== tenantId
+                || !status
+                || !AUTHORITATIVE_STRIPE_SUBSCRIPTION_STATUSES.has(status)
+            ) {
                 return { subscription: null, verified: false };
             }
             return { subscription, verified: true };
@@ -2731,9 +3011,10 @@ export class StripeService {
         return { tenantId: tenant.id, subscriptionId, subscription };
     }
 
-    private async ensureInvoiceSubscriptionBinding(
+    private async ensureWebhookSubscriptionBinding(
         tx: Prisma.TransactionClient,
         eventType: string,
+        eventData: StripeWebhookObject,
         tenantId: string,
         subscriptionId: string,
         subscription: StripeWebhookObject,
@@ -2741,11 +3022,30 @@ export class StripeService {
         const customerId = this.resolveCustomerId(subscription);
         const metadataTenantId = this.resolveTenantIdFromMetadata(subscription);
         const status = this.asString(subscription.status)?.toLowerCase();
-        if (!customerId
-            || (metadataTenantId && metadataTenantId !== tenantId)
+        if (this.asString(subscription.id) !== subscriptionId
+            || !customerId
+            || metadataTenantId !== tenantId
             || !status
             || !AUTHORITATIVE_STRIPE_SUBSCRIPTION_STATUSES.has(status)) {
             throw new ServiceUnavailableException('Stripe subscription ownership is not authoritative yet');
+        }
+        if (
+            ['active', 'trialing'].includes(status)
+            && !this.resolveCurrentSubscriptionPlanCode(subscription)
+        ) {
+            return false;
+        }
+        if (
+            eventType === 'checkout.session.completed'
+            && !this.isAuthoritativeSubscriptionCheckout(
+                eventData,
+                tenantId,
+                customerId,
+                subscriptionId,
+                subscription,
+            )
+        ) {
+            return false;
         }
 
         const tenant = await tx.tenant.findUnique({
@@ -2758,14 +3058,21 @@ export class StripeService {
                 stripeSubscriptionId: true,
             },
         });
-        if (!tenant
+        if (
+            !tenant
             || tenant.deletedAt
             || tenant.stripeCustomerId !== customerId
-            || (tenant.stripeSubscriptionId && tenant.stripeSubscriptionId !== subscriptionId)) {
-            throw new ServiceUnavailableException('Stripe subscription ownership is not authoritative yet');
+            || (tenant.stripeSubscriptionId && tenant.stripeSubscriptionId !== subscriptionId)
+        ) {
+            return false;
         }
         if (tenant.stripeSubscriptionId === subscriptionId) return true;
-        if (INVOICE_BINDING_BLOCKED_TENANT_STATUSES.has(tenant.status)) {
+        const initialCheckoutBinding = eventType === 'checkout.session.completed'
+            || eventType === 'customer.subscription.created';
+        if (
+            INVOICE_BINDING_BLOCKED_TENANT_STATUSES.has(tenant.status)
+            && !(initialCheckoutBinding && tenant.status === TenantStatus.CANCELLED)
+        ) {
             return false;
         }
         if (this.isTerminalSubscriptionState(subscription)) {
@@ -2803,6 +3110,33 @@ export class StripeService {
         }
         this.logger.warn(`Stripe ${eventType} subscription binding lost a concurrent claim; webhook will be retried`);
         throw new ServiceUnavailableException('Stripe subscription ownership could not be claimed');
+    }
+
+    private isAuthoritativeSubscriptionCheckout(
+        checkout: StripeWebhookObject,
+        tenantId: string,
+        customerId: string,
+        subscriptionId: string,
+        subscription: StripeWebhookObject,
+    ): boolean {
+        const priceIds = this.collectPriceIds(subscription);
+        if (priceIds.length !== 1) return false;
+        const [priceId] = priceIds;
+        const planCode = this.resolvePlanCodeForPriceId(priceId);
+        if (!planCode) return false;
+
+        return checkout.object === 'checkout.session'
+            && this.asString(checkout.mode)?.toLowerCase() === 'subscription'
+            && this.asString(checkout.status)?.toLowerCase() === 'complete'
+            && this.resolveCustomerId(checkout) === customerId
+            && this.resolveSubscriptionId(checkout) === subscriptionId
+            && this.resolveTenantIdFromMetadata(checkout) === tenantId
+            && this.asString(checkout.client_reference_id) === tenantId
+            && this.asString(checkout.metadata?.priceId) === priceId
+            && this.asString(checkout.metadata?.planCode) === planCode
+            && this.resolveTenantIdFromMetadata(subscription) === tenantId
+            && this.asString(subscription.metadata?.priceId) === priceId
+            && this.asString(subscription.metadata?.planCode) === planCode;
     }
 
     private async findTenantByStripeIdentifiers(subscriptionId: string | null, customerId: string | null): Promise<{ id: string } | null> {

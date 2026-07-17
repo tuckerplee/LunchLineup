@@ -131,6 +131,23 @@ function buildService(options: {
     const prisma = options.prisma ?? buildPrismaMock();
     const service = new StripeService(config as any, new TenantPrismaService(prisma as any));
     const constructEvent = options.constructEvent ?? vi.fn().mockReturnValue(options.event);
+    const checkoutSessionCreate = vi.fn();
+    const checkoutSessionRetrieve = vi.fn(async (sessionId: string) => {
+        const createCall = checkoutSessionCreate.mock.calls.at(-1)?.[0] as any;
+        const created = checkoutSessionCreate.mock.results.at(-1)?.value
+            ? await checkoutSessionCreate.mock.results.at(-1).value
+            : {};
+        return {
+            ...created,
+            id: sessionId,
+            mode: createCall?.mode,
+            customer: createCall?.customer,
+            status: 'open',
+            client_reference_id: createCall?.client_reference_id,
+            metadata: createCall?.metadata,
+            subscription: null,
+        };
+    });
     const stripe = {
         customers: {
             create: vi.fn(),
@@ -138,29 +155,29 @@ function buildService(options: {
                 id: 'cus_123',
                 deleted: true,
             }),
-            retrieve: vi.fn().mockResolvedValue({
-                id: 'cus_123',
+            retrieve: vi.fn(async (customerId: string) => ({
+                id: customerId,
                 deleted: false,
                 metadata: { tenantId: 'tenant-1' },
-            }),
+            })),
         },
         checkout: {
             sessions: {
-                create: vi.fn(),
+                create: checkoutSessionCreate,
                 list: vi.fn().mockResolvedValue({ data: [] }),
                 expire: vi.fn().mockResolvedValue({ status: 'expired' }),
                 listLineItems: vi.fn().mockResolvedValue({
                     data: [{
-                        id: 'li_credit_100',
-                        price: { id: 'price_credit_100' },
+                        id: 'li_subscription',
+                        price: { id: 'price_123' },
                         quantity: 1,
-                        amount_subtotal: 1200,
-                        amount_total: 1200,
+                        amount_subtotal: 2900,
+                        amount_total: 2900,
                         currency: 'usd',
                     }],
                     has_more: false,
                 }),
-                retrieve: vi.fn(),
+                retrieve: checkoutSessionRetrieve,
             },
         },
         prices: {
@@ -313,6 +330,68 @@ describe('StripeService - subscription creation', () => {
         expect(prisma.tx.tenant.update).not.toHaveBeenCalled();
     });
 
+    it('performs no Stripe network I/O inside a Checkout database transaction', async () => {
+        const prisma = buildPrismaMock();
+        prisma.tenant.findUnique.mockResolvedValue({
+            id: 'tenant-1',
+            status: TenantStatus.TRIAL,
+            deletedAt: null,
+            stripeCustomerId: 'cus_existing',
+            stripeSubscriptionId: null,
+        });
+        let transactionActive = false;
+        prisma.$transaction.mockImplementation(async (operation: any) => {
+            transactionActive = true;
+            try {
+                return await operation(prisma.tx);
+            } finally {
+                transactionActive = false;
+            }
+        });
+        const { service, stripe } = buildService({
+            prisma,
+            configValues: { APP_ORIGIN: 'https://app.example.com' },
+        });
+        const outsideTransaction = <T>(value: T) => async () => {
+            expect(transactionActive).toBe(false);
+            return value;
+        };
+        stripe.customers.retrieve.mockImplementation(outsideTransaction({
+            id: 'cus_existing',
+            deleted: false,
+            metadata: { tenantId: 'tenant-1' },
+        }));
+        stripe.subscriptions.list.mockImplementation(outsideTransaction({ data: [] }));
+        stripe.checkout.sessions.list.mockImplementation(outsideTransaction({ data: [] }));
+        stripe.checkout.sessions.create.mockImplementation(outsideTransaction({
+            id: 'cs_outside_tx',
+            url: 'https://checkout.stripe.com/cs_outside_tx',
+        }));
+        stripe.checkout.sessions.retrieve.mockImplementation(outsideTransaction({
+            id: 'cs_outside_tx',
+            url: 'https://checkout.stripe.com/cs_outside_tx',
+            mode: 'subscription',
+            status: 'open',
+            customer: 'cus_existing',
+            client_reference_id: 'tenant-1',
+            subscription: null,
+            metadata: { tenantId: 'tenant-1', planCode: 'STARTER', priceId: 'price_123' },
+        }));
+        stripe.checkout.sessions.listLineItems.mockImplementation(outsideTransaction({
+            data: [{ id: 'li_outside_tx', price: { id: 'price_123' }, quantity: 1 }],
+            has_more: false,
+        }));
+
+        await expect(service.createSubscriptionCheckoutSession(
+            'tenant-1',
+            { email: 'owner@example.com' },
+            'price_123',
+        )).resolves.toEqual({
+            sessionId: 'cs_outside_tx',
+            checkoutUrl: 'https://checkout.stripe.com/cs_outside_tx',
+        });
+    });
+
     it('rejects checkout when the mapped database plan is inactive', async () => {
         const prisma = buildPrismaMock();
         prisma.tx.planDefinition.findUnique.mockResolvedValue({ code: 'STARTER', active: false });
@@ -334,7 +413,20 @@ describe('StripeService - subscription creation', () => {
             prisma,
             configValues: { APP_ORIGIN: 'https://app.example.com' },
         });
-        stripe.customers.create.mockResolvedValue({ id: 'cus_new' });
+        stripe.customers.create.mockResolvedValue({
+            id: 'cus_new',
+            metadata: { tenantId: 'tenant-1' },
+        });
+        prisma.tx.tenant.updateMany.mockImplementation(async () => {
+            prisma.tenant.findUnique.mockResolvedValue({
+                id: 'tenant-1',
+                status: TenantStatus.TRIAL,
+                deletedAt: null,
+                stripeCustomerId: 'cus_new',
+                stripeSubscriptionId: null,
+            });
+            return { count: 1 };
+        });
         stripe.checkout.sessions.create.mockResolvedValue({
             id: 'cs_test_456',
             url: 'https://checkout.stripe.com/cs_test_456',
@@ -362,6 +454,87 @@ describe('StripeService - subscription creation', () => {
         }), expect.objectContaining({ idempotencyKey: expect.any(String) }));
     });
 
+    it('reconciles a customer claim after an unknown database commit outcome', async () => {
+        const prisma = buildPrismaMock();
+        let stripeCustomerId: string | null = null;
+        let transactionNumber = 0;
+        prisma.tenant.findUnique.mockImplementation(async () => ({
+            id: 'tenant-1',
+            status: TenantStatus.TRIAL,
+            deletedAt: null,
+            stripeCustomerId,
+            stripeSubscriptionId: null,
+        }));
+        prisma.tx.tenant.updateMany.mockImplementation(async () => {
+            stripeCustomerId = 'cus_recovered';
+            return { count: 1 };
+        });
+        prisma.$transaction.mockImplementation(async (operation: any) => {
+            transactionNumber += 1;
+            const result = await operation(prisma.tx);
+            if (transactionNumber === 2) {
+                stripeCustomerId = null;
+                throw new Error('database commit outcome unknown');
+            }
+            return result;
+        });
+        const { service, stripe } = buildService({ prisma });
+        stripe.customers.create.mockResolvedValue({
+            id: 'cus_recovered',
+            metadata: { tenantId: 'tenant-1' },
+        });
+        stripe.checkout.sessions.create.mockResolvedValue({
+            id: 'cs_after_commit_recovery',
+            url: 'https://checkout.stripe.com/cs_after_commit_recovery',
+        });
+
+        await expect(service.createSubscriptionCheckoutSession(
+            'tenant-1',
+            { email: 'owner@example.com' },
+            'price_123',
+        )).resolves.toEqual({
+            sessionId: 'cs_after_commit_recovery',
+            checkoutUrl: 'https://checkout.stripe.com/cs_after_commit_recovery',
+        });
+
+        expect(stripe.customers.create).toHaveBeenCalledOnce();
+        expect(prisma.tx.tenant.updateMany).toHaveBeenCalledTimes(2);
+        expect(stripeCustomerId).toBe('cus_recovered');
+    });
+
+    it('replays customer creation with one stable idempotency key after response loss', async () => {
+        const prisma = buildPrismaMock();
+        let stripeCustomerId: string | null = null;
+        prisma.tenant.findUnique.mockImplementation(async () => ({
+            id: 'tenant-1',
+            status: TenantStatus.TRIAL,
+            deletedAt: null,
+            stripeCustomerId,
+            stripeSubscriptionId: null,
+        }));
+        prisma.tx.tenant.updateMany.mockImplementation(async () => {
+            stripeCustomerId = 'cus_response_lost';
+            return { count: 1 };
+        });
+        const { service, stripe } = buildService({ prisma });
+        stripe.customers.create
+            .mockRejectedValueOnce(new Error('customer response lost'))
+            .mockResolvedValueOnce({
+                id: 'cus_response_lost',
+                metadata: { tenantId: 'tenant-1' },
+            });
+        stripe.checkout.sessions.create.mockResolvedValue({
+            id: 'cs_after_customer_recovery',
+            url: 'https://checkout.stripe.com/cs_after_customer_recovery',
+        });
+
+        await service.createSubscriptionCheckoutSession('tenant-1', {}, 'price_123');
+
+        expect(stripe.customers.create).toHaveBeenCalledTimes(2);
+        expect(stripe.customers.create.mock.calls[0][1].idempotencyKey)
+            .toBe(stripe.customers.create.mock.calls[1][1].idempotencyKey);
+    });
+
     it('reuses an open Checkout Session for the same tenant and plan', async () => {
         const prisma = buildPrismaMock();
         prisma.tenant.findUnique.mockResolvedValue({
@@ -379,6 +552,11 @@ describe('StripeService - subscription creation', () => {
             data: [{
                 id: 'cs_open',
                 url: 'https://checkout.stripe.com/cs_open',
+                mode: 'subscription',
+                status: 'open',
+                customer: 'cus_existing',
+                client_reference_id: 'tenant-1',
+                subscription: null,
                 metadata: { tenantId: 'tenant-1', planCode: 'STARTER', priceId: 'price_123' },
             }],
         });
@@ -393,6 +571,43 @@ describe('StripeService - subscription creation', () => {
         });
 
         expect(stripe.checkout.sessions.create).not.toHaveBeenCalled();
+    });
+
+    it('recovers a lost Checkout response across retries with a stable provider key', async () => {
+        const prisma = buildPrismaMock();
+        prisma.tenant.findUnique.mockResolvedValue({
+            id: 'tenant-1',
+            status: TenantStatus.TRIAL,
+            deletedAt: null,
+            stripeCustomerId: 'cus_existing',
+            stripeSubscriptionId: null,
+        });
+        const { service, stripe } = buildService({ prisma });
+        stripe.checkout.sessions.list.mockResolvedValue({ data: [] });
+        stripe.checkout.sessions.create
+            .mockRejectedValueOnce(new Error('Checkout response lost'))
+            .mockResolvedValueOnce({
+                id: 'cs_replayed',
+                url: 'https://checkout.stripe.com/cs_replayed',
+            });
+
+        await expect(service.createSubscriptionCheckoutSession(
+            'tenant-1',
+            {},
+            'price_123',
+        )).rejects.toThrow('Checkout response lost');
+        await expect(service.createSubscriptionCheckoutSession(
+            'tenant-1',
+            {},
+            'price_123',
+        )).resolves.toEqual({
+            sessionId: 'cs_replayed',
+            checkoutUrl: 'https://checkout.stripe.com/cs_replayed',
+        });
+
+        expect(stripe.checkout.sessions.create).toHaveBeenCalledTimes(2);
+        expect(stripe.checkout.sessions.create.mock.calls[0][1].idempotencyKey)
+            .toBe(stripe.checkout.sessions.create.mock.calls[1][1].idempotencyKey);
     });
 
     it('expires an open Checkout Session for another plan before creating the selected plan', async () => {
@@ -414,13 +629,26 @@ describe('StripeService - subscription creation', () => {
             data: [{
                 id: 'cs_starter_open',
                 url: 'https://checkout.stripe.com/cs_starter_open',
-                metadata: { tenantId: 'tenant-1', planCode: 'STARTER' },
+                mode: 'subscription',
+                status: 'open',
+                customer: 'cus_existing',
+                client_reference_id: 'tenant-1',
+                subscription: null,
+                metadata: { tenantId: 'tenant-1', planCode: 'STARTER', priceId: 'price_123' },
             }],
         });
         stripe.checkout.sessions.create.mockResolvedValue({
             id: 'cs_growth_open',
             url: 'https://checkout.stripe.com/cs_growth_open',
         });
+        stripe.checkout.sessions.listLineItems.mockImplementation(async (sessionId: string) => ({
+            data: [{
+                id: 'li_subscription',
+                price: { id: sessionId === 'cs_growth_open' ? 'price_growth' : 'price_123' },
+                quantity: 1,
+            }],
+            has_more: false,
+        }));
 
         await expect(service.createSubscriptionCheckoutSession(
             'tenant-1',
@@ -500,7 +728,10 @@ describe('StripeService - subscription creation', () => {
                 STRIPE_PRICE_GROWTH: 'price_growth',
             },
         });
-        stripe.customers.create.mockResolvedValue({ id: 'cus_once' });
+        stripe.customers.create.mockResolvedValue({
+            id: 'cus_once',
+            metadata: { tenantId: 'tenant-1' },
+        });
         stripe.checkout.sessions.list.mockImplementation(async () => ({
             data: openSession ? [openSession] : [],
         }));
@@ -508,6 +739,11 @@ describe('StripeService - subscription creation', () => {
             openSession = {
                 id: `cs_${input.metadata.planCode.toLowerCase()}`,
                 url: `https://checkout.stripe.com/cs_${input.metadata.planCode.toLowerCase()}`,
+                mode: 'subscription',
+                status: 'open',
+                customer: input.customer,
+                client_reference_id: input.client_reference_id,
+                subscription: null,
                 metadata: input.metadata,
             };
             return openSession;
@@ -516,6 +752,14 @@ describe('StripeService - subscription creation', () => {
             if (openSession?.id === sessionId) openSession = null;
             return { id: sessionId, status: 'expired' };
         });
+        stripe.checkout.sessions.listLineItems.mockImplementation(async () => ({
+            data: [{
+                id: 'li_current',
+                price: { id: openSession?.metadata.priceId },
+                quantity: 1,
+            }],
+            has_more: false,
+        }));
 
         const [starter, growth] = await Promise.all([
             service.createSubscriptionCheckoutSession('tenant-1', { email: 'owner@example.com' }, 'price_123'),
@@ -556,6 +800,11 @@ describe('StripeService - subscription creation', () => {
             openSession = {
                 id: `cs_${sequence}`,
                 url: `https://checkout.stripe.com/cs_${sequence}`,
+                mode: 'subscription',
+                status: 'open',
+                customer: input.customer,
+                client_reference_id: input.client_reference_id,
+                subscription: null,
                 metadata: input.metadata,
             };
             return openSession;
@@ -564,6 +813,14 @@ describe('StripeService - subscription creation', () => {
             if (openSession?.id === sessionId) openSession = null;
             return { id: sessionId, status: 'expired' };
         });
+        stripe.checkout.sessions.listLineItems.mockImplementation(async () => ({
+            data: [{
+                id: 'li_current',
+                price: { id: openSession?.metadata.priceId },
+                quantity: 1,
+            }],
+            has_more: false,
+        }));
 
         const firstStarter = await service.createSubscriptionCheckoutSession('tenant-1', {}, 'price_123');
         await service.createSubscriptionCheckoutSession('tenant-1', {}, 'price_growth');
@@ -810,7 +1067,12 @@ describe('StripeService - subscription creation', () => {
         });
         const { service, stripe } = buildService({ prisma });
         stripe.subscriptions.list.mockResolvedValue({
-            data: [{ id: 'sub_pending_webhook', status: 'active' }],
+            data: [{
+                id: 'sub_pending_webhook',
+                status: 'active',
+                customer: 'cus_existing',
+                metadata: { tenantId: 'tenant-1' },
+            }],
         });
 
         await expect(service.createSubscriptionCheckoutSession(
@@ -2165,7 +2427,11 @@ describe('StripeService - webhook safety', () => {
         expect(stripe.subscriptions.cancel).toHaveBeenCalledWith('sub_post_purge');
         expect(prisma.tx.tenant.update).not.toHaveBeenCalled();
         expect(prisma.tx.tenant.updateMany).toHaveBeenCalledWith({
-            where: { id: 'tenant-1', status: TenantStatus.PURGED },
+            where: {
+                id: 'tenant-1',
+                status: TenantStatus.PURGED,
+                stripeCustomerId: 'cus_123',
+            },
             data: {
                 stripeSubscriptionId: null,
                 stripeSubscriptionCurrentPeriodEnd: null,
@@ -2381,7 +2647,7 @@ describe('StripeService - webhook safety', () => {
         expect(prisma.tx.tenant.update).toHaveBeenCalledTimes(1);
         expect(prisma.tx.billingEvent.create.mock.calls[1][0].data.metadata.sideEffectDisposition)
             .toBe('skipped_stale');
-        expect(stripe.subscriptions.retrieve).toHaveBeenCalledTimes(1);
+        expect(stripe.subscriptions.retrieve).toHaveBeenCalledTimes(2);
     });
 
     it('retries an invoice-first event instead of binding conflicting subscription metadata', async () => {
@@ -2498,9 +2764,11 @@ describe('StripeService - webhook safety', () => {
                     object: 'checkout.session',
                     id: 'cs_123',
                     mode: 'subscription',
+                    status: 'complete',
                     payment_status: 'paid',
                     subscription: 'sub_123',
                     customer: 'cus_123',
+                    client_reference_id: 'tenant-1',
                     customer_details: {
                         email: 'owner@example.com',
                         name: 'Owner Example',
@@ -2508,6 +2776,7 @@ describe('StripeService - webhook safety', () => {
                     metadata: {
                         tenantId: 'tenant-1',
                         planCode: 'STARTER',
+                        priceId: 'price_123',
                         internalNote: 'do-not-retain',
                     },
                     line_items: {
@@ -2526,7 +2795,7 @@ describe('StripeService - webhook safety', () => {
             status: 'active',
             customer: 'cus_123',
             items: { data: [{ price: { id: 'price_123' } }] },
-            metadata: { tenantId: 'tenant-1', planCode: 'STARTER' },
+            metadata: { tenantId: 'tenant-1', planCode: 'STARTER', priceId: 'price_123' },
         });
 
         await service.handleWebhook(Buffer.from('{"id":"evt_checkout"}'), 'sig_123');
@@ -2542,6 +2811,7 @@ describe('StripeService - webhook safety', () => {
             subscriptionId: 'sub_123',
             customerId: 'cus_123',
             checkoutSessionId: 'cs_123',
+            status: 'complete',
             paymentStatus: 'paid',
             mode: 'subscription',
             stripeSubscriptionStatus: 'active',
@@ -2595,10 +2865,16 @@ describe('StripeService - webhook safety', () => {
                     object: 'checkout.session',
                     id: 'cs_123',
                     mode: 'subscription',
+                    status: 'complete',
                     payment_status: paymentStatus,
                     subscription: 'sub_123',
                     customer: 'cus_123',
-                    metadata: { tenantId: 'tenant-1' },
+                    client_reference_id: 'tenant-1',
+                    metadata: {
+                        tenantId: 'tenant-1',
+                        planCode: 'STARTER',
+                        priceId: 'price_123',
+                    },
                 },
             },
         };
@@ -2608,7 +2884,7 @@ describe('StripeService - webhook safety', () => {
             status: subscriptionStatus,
             customer: 'cus_123',
             items: { data: [{ id: 'si_123', price: { id: 'price_123' } }] },
-            metadata: { tenantId: 'tenant-1' },
+            metadata: { tenantId: 'tenant-1', planCode: 'STARTER', priceId: 'price_123' },
         });
 
         await service.handleWebhook(Buffer.from('{}'), 'sig_123');
@@ -2656,7 +2932,7 @@ describe('StripeService - webhook safety', () => {
         expect(prisma.tx.tenant.update).toHaveBeenCalledTimes(1);
         expect(prisma.tx.billingEvent.create.mock.calls[1][0].data.metadata.sideEffectDisposition)
             .toBe('skipped_stale');
-        expect(stripe.subscriptions.retrieve).toHaveBeenCalledTimes(1);
+        expect(stripe.subscriptions.retrieve).toHaveBeenCalledTimes(2);
     });
 
     it('uses the verified current subscription price instead of an old-plan proration credit line', async () => {
@@ -3287,13 +3563,24 @@ describe('StripeService - webhook safety', () => {
                 }),
             }),
         }));
-        expect(stripe.subscriptions.retrieve).not.toHaveBeenCalled();
+        expect(stripe.subscriptions.retrieve).toHaveBeenCalledWith('sub_123', {
+            expand: ['items.data.price'],
+        });
         expect(prisma.tx.tenant.update).not.toHaveBeenCalled();
     });
 
-    it('retrieves canonical subscription state only after billing locks and chronology checks', async () => {
+    it('retrieves canonical subscription state before entering the billing transaction', async () => {
         const prisma = buildPrismaMock();
         const calls: string[] = [];
+        let transactionActive = false;
+        prisma.$transaction.mockImplementation(async (operation: any) => {
+            transactionActive = true;
+            try {
+                return await operation(prisma.tx);
+            } finally {
+                transactionActive = false;
+            }
+        });
         prisma.tx.$executeRaw.mockImplementation(async (query: unknown) => {
             const sql = Array.isArray(query) ? query.join(' ') : String(query);
             if (sql.includes('SELECT pg_advisory_xact_lock')) {
@@ -3322,6 +3609,7 @@ describe('StripeService - webhook safety', () => {
         };
         const { service, stripe } = buildService({ prisma, event });
         stripe.subscriptions.retrieve.mockImplementation(async () => {
+            expect(transactionActive).toBe(false);
             calls.push('retrieve');
             return event.data.object;
         });
@@ -3330,10 +3618,11 @@ describe('StripeService - webhook safety', () => {
 
         const highWaterIndex = calls.indexOf('high-water');
         const retrieveIndex = calls.indexOf('retrieve');
-        expect(calls.slice(0, highWaterIndex).filter((call) => call === 'lock').length)
+        expect(calls.slice(retrieveIndex + 1, highWaterIndex).filter((call) => call === 'lock').length)
             .toBeGreaterThanOrEqual(2);
         expect(highWaterIndex).toBeGreaterThanOrEqual(0);
-        expect(retrieveIndex).toBeGreaterThan(highWaterIndex);
+        expect(retrieveIndex).toBeGreaterThanOrEqual(0);
+        expect(retrieveIndex).toBeLessThan(highWaterIndex);
         expect(prisma.tx.billingEvent.create.mock.calls[0][0].data.metadata.sideEffectDisposition)
             .toBe('applied');
         expect(prisma.tx.tenant.update).toHaveBeenCalledWith(expect.objectContaining({
@@ -3747,7 +4036,9 @@ describe('StripeService - webhook safety', () => {
             }),
         }));
         expect(prisma.tx.tenant.update).not.toHaveBeenCalled();
-        expect(stripe.subscriptions.retrieve).not.toHaveBeenCalled();
+        expect(stripe.subscriptions.retrieve).toHaveBeenCalledWith('sub_old', {
+            expand: ['items.data.price'],
+        });
     });
 
     it('revalidates a resolved deleted subscription even without a pre-transaction finalized marker', async () => {
