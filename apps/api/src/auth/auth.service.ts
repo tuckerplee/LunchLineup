@@ -1,19 +1,29 @@
-import { Injectable, UnauthorizedException, ForbiddenException, BadRequestException, Logger, Optional, ServiceUnavailableException } from '@nestjs/common';
+import { Injectable, UnauthorizedException, ForbiddenException, BadRequestException, Logger, OnModuleDestroy, Optional, ServiceUnavailableException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { JwtService, TokenPayload } from './jwt.service';
-import { PrismaClient, TenantStatus } from '@prisma/client';
+import { Prisma, PrismaClient, TenantStatus } from '@prisma/client';
 import * as crypto from 'crypto';
-import { RbacService } from './rbac.service';
+import { PRIVILEGED_MFA_PERMISSION_KEYS, RbacService } from './rbac.service';
 import * as bcrypt from 'bcryptjs';
 import Redis from 'ioredis';
 import { TenantPrismaService, TenantPrismaTransaction } from '../database/tenant-prisma.service';
 import { PasswordResetOutboxService } from './password-reset-outbox.service';
 import { OnboardingSignupService } from './onboarding-signup.service';
+import { operationalErrorLog } from './operational-error';
+import { secureHttpRequest, type SecureRequestOptions } from '../common/secure-http-client';
+import { PUBLIC_LEGAL_MANIFEST, hasCurrentSelfServiceLegalApproval } from '@lunchlineup/config';
+import {
+    isPrismaUniqueConstraintConflict,
+    isSerializableTransactionConflict,
+} from '../database/transaction-error';
+import { runSerializableMutationWithRetry } from './serializable-mutation';
 
 const WORKSPACE_SETTINGS_KEY = 'workspace_settings';
 const DEFAULT_SESSION_TIMEOUT_MINUTES = 480;
 const MIN_SESSION_TIMEOUT_MINUTES = 5;
 const MAX_SESSION_TIMEOUT_MINUTES = 1440;
+const MAX_ACTIVE_SESSIONS_PER_USER = 20;
+const SESSION_CREATION_TRANSACTION_OPTIONS = { maxWait: 5_000, timeout: 10_000 } as const;
 const ACCESS_TOKEN_MAX_AGE_MS = 30 * 60 * 1000;
 const OIDC_STATE_TTL_SECONDS = 10 * 60;
 const KEY_OIDC_STATE = (state: string) => `oidc_state:${state}`;
@@ -23,16 +33,25 @@ const KEY_PENDING_MFA_ENROLLMENT = (sessionId: string, userId: string) => `mfa_e
 const DEFAULT_MFA_ISSUER = 'LunchLineup';
 const MFA_BACKUP_CODE_COUNT = 10;
 const MAX_PROVISIONED_TENANT_NAME_LENGTH = 80;
-export const PUBLIC_SIGNUP_TERMS_VERSION = '2026-07-09';
-export const PUBLIC_SIGNUP_PRIVACY_VERSION = '2026-07-09';
 const TURNSTILE_VERIFY_URL = 'https://challenges.cloudflare.com/turnstile/v0/siteverify';
 const MAX_TURNSTILE_TOKEN_LENGTH = 2048;
+const AUTH_PROVIDER_REQUEST_TIMEOUT_MS = 8_000;
+const MAX_TURNSTILE_RESPONSE_BYTES = 16 * 1024;
+const MAX_OIDC_TOKEN_RESPONSE_BYTES = 32 * 1024;
+const MAX_OIDC_USERINFO_RESPONSE_BYTES = 64 * 1024;
+const MAX_OIDC_ACCESS_TOKEN_LENGTH = 16 * 1024;
 const HASHED_REFRESH_TOKEN_PREFIX = 'sha256:';
 const HASHED_SESSION_SELECTOR_PREFIX = 'selector-sha256:';
 const SELECTED_REFRESH_TOKEN_VERSION = 'v2';
 const PASSWORD_RESET_TOKEN_TTL_MINUTES = 60;
 const MIN_RESET_PASSWORD_LENGTH = 8;
 const MAX_BCRYPT_PASSWORD_BYTES = 72;
+const MAX_LOGIN_IDENTIFIER_LENGTH = 254;
+const MAX_SESSION_IP_LENGTH = 64;
+const MAX_SESSION_USER_AGENT_LENGTH = 512;
+const SYSTEM_GENERATED_USER_EMAIL_DOMAIN = 'staff.lunchlineup.local';
+const DUMMY_PASSWORD_HASH = '$2a$10$N9qo8uLOickgx2ZMRZoMyeIjZAgcfl7p92ldGxad68LJZdL17lhWy';
+const DUMMY_PIN_HASH = 'dummy-salt:' + '0'.repeat(128);
 const ENCRYPTED_MFA_SECRET_PREFIX = 'enc:v1:';
 const CURRENT_ENCRYPTED_MFA_SECRET_PREFIX = 'enc:v2:';
 const MFA_ENCRYPTION_CURRENT_KEY_ENV = 'MFA_SECRET_ENCRYPTION_KEY_CURRENT';
@@ -43,6 +62,8 @@ const AUTH_BLOCKED_TENANT_STATUSES = new Set<string>([
     TenantStatus.PURGED,
 ]);
 const PUBLIC_SIGNUP_MODES = new Set(['closed_beta', 'invite_only', 'open']);
+
+class UsernameReservationConflict extends Error {}
 
 type TenantSecuritySettings = {
     requireMfaForAll: boolean;
@@ -104,23 +125,32 @@ type LegacyRefreshCredential = {
 
 type RefreshCredential = SelectedRefreshCredential | LegacyRefreshCredential;
 
+type RefreshSession = Prisma.SessionGetPayload<{ include: { user: true } }>;
+
+type RefreshRotationResult =
+    | {
+        status: 'rotated';
+        session: RefreshSession;
+    }
+    | {
+        status: 'replayed';
+        sessionId: string;
+    }
+    | { status: 'invalid' };
+
+type RefreshAuthorizationContext = {
+    session: RefreshSession;
+    access: MfaPolicyAccess & { primaryRole: string };
+    effectiveExpiresAt: Date;
+    mfaRequired: boolean;
+    mfaVerified: boolean;
+};
+
 type NormalizedSessionTokenAudit = {
     loginMethod: LoginMethod | string;
     ipAddress: string;
     userAgent: string;
 };
-
-const PRIVILEGED_MFA_PERMISSIONS = new Set([
-    'admin_portal:access',
-    'users:write',
-    'users:admin',
-    'roles:write',
-    'roles:assign',
-    'billing:write',
-    'settings:write',
-    'tenant_account:lifecycle',
-    'account:data_export',
-]);
 
 type MfaSessionUser = {
     id: string;
@@ -162,6 +192,8 @@ type LoginTenantContext = {
 type EmailLoginOptions = {
     tenantSlug?: string;
     allowProvision?: boolean;
+    termsVersion?: string;
+    privacyVersion?: string;
     provisionTenantName?: string;
     signupCode?: string;
     onboardingChallengeToken?: string;
@@ -181,11 +213,10 @@ type TenantAuthState = {
 
 export type LoginResolveResult =
     | { flow: 'EMAIL_OTP'; normalizedIdentifier: string }
-    | { flow: 'USERNAME_PIN'; normalizedIdentifier: string; pinResetRequired: boolean }
     | { flow: 'USERNAME_PASSWORD'; normalizedIdentifier: string };
 
 @Injectable()
-export class AuthService {
+export class AuthService implements OnModuleDestroy {
     private readonly logger = new Logger(AuthService.name);
     private prisma = new PrismaClient();
     private redis?: Redis;
@@ -202,12 +233,16 @@ export class AuthService {
         }
     }
 
+    onModuleDestroy(): void {
+        this.redis?.disconnect(false);
+    }
+
     private getRedis(): Redis {
         if (!this.redis) {
             this.redis = new Redis(
                 this.configService.get<string>('REDIS_URL', 'redis://localhost:6379'),
             );
-            this.redis.on('error', (err) => this.logger.error(`Redis error: ${err instanceof Error ? err.message : 'unknown_error'}`));
+            this.redis.on('error', (err) => this.logger.error(operationalErrorLog('auth.redis_client_error', err)));
         }
         return this.redis;
     }
@@ -235,12 +270,12 @@ export class AuthService {
             : DEFAULT_SESSION_TIMEOUT_MINUTES;
     }
 
-    private normalizeTenantSlug(value?: string | null): string {
-        return (value ?? '').trim().toLowerCase();
+    private normalizeTenantSlug(value?: unknown): string {
+        return typeof value === 'string' ? value.trim().toLowerCase() : '';
     }
 
-    private normalizeProvisionedTenantName(value?: string | null): string {
-        const tenantName = (value ?? '').trim().replace(/\s+/g, ' ');
+    private normalizeProvisionedTenantName(value?: unknown): string {
+        const tenantName = typeof value === 'string' ? value.trim().replace(/\s+/g, ' ') : '';
         if (!tenantName) {
             throw new BadRequestException('Organization name is required');
         }
@@ -265,9 +300,25 @@ export class AuthService {
         this.assertTenantCanAuthenticate(tenant);
     }
 
+    private async lockTenantForSessionIssuance(
+        tx: TenantPrismaTransaction,
+        tenantId: string,
+    ): Promise<void> {
+        await tx.$queryRaw`
+            SELECT "id"
+            FROM "Tenant"
+            WHERE "id" = ${tenantId}
+            FOR UPDATE
+        `;
+        const tenant = await tx.tenant.findUnique({
+            where: { id: tenantId },
+            select: { id: true, status: true, deletedAt: true },
+        });
+        this.assertTenantCanAuthenticate(tenant);
+    }
+
     private getPublicSignupMode(): 'closed_beta' | 'invite_only' | 'open' {
-        // Production self-service is code-locked until counsel approves versioned Terms.
-        if (process.env.NODE_ENV === 'production') {
+        if (process.env.NODE_ENV === 'production' && !hasCurrentSelfServiceLegalApproval()) {
             return 'closed_beta';
         }
         const configured = this.configService.get<string>('PUBLIC_SIGNUP_MODE')?.trim().toLowerCase();
@@ -299,7 +350,12 @@ export class AuthService {
     }
 
     private assertPublicSignupLegalAssent(options: EmailLoginOptions): void {
-        if (options.termsAccepted !== true || options.privacyAccepted !== true) {
+        if (
+            options.termsAccepted !== true
+            || options.privacyAccepted !== true
+            || options.termsVersion !== PUBLIC_LEGAL_MANIFEST.documents.terms.version
+            || options.privacyVersion !== PUBLIC_LEGAL_MANIFEST.documents.privacy.version
+        ) {
             throw new BadRequestException('Terms and Privacy assent is required to create a workspace');
         }
     }
@@ -337,15 +393,18 @@ export class AuthService {
         }
 
         try {
-            const response = await fetch(TURNSTILE_VERIFY_URL, {
+            const response = await this.requestAuthProvider(TURNSTILE_VERIFY_URL, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
                 body: body.toString(),
+                timeoutMs: AUTH_PROVIDER_REQUEST_TIMEOUT_MS,
+                maxResponseBytes: MAX_TURNSTILE_RESPONSE_BYTES,
+                redirect: 'error',
             });
             if (!response.ok) {
                 throw new ServiceUnavailableException('Signup verification is unavailable.');
             }
-            const result = await response.json() as { success?: boolean };
+            const result = await this.readProviderJsonObject(response);
             if (result.success !== true) {
                 throw new ForbiddenException('Signup verification failed.');
             }
@@ -375,7 +434,17 @@ export class AuthService {
     }
 
     private async getTenantSecuritySettings(tenantId: string): Promise<TenantSecuritySettings> {
-        const setting = await this.getTenantDb().withTenant(tenantId, (tx) => tx.tenantSetting.findUnique({
+        return this.getTenantDb().withTenant(
+            tenantId,
+            (tx) => this.tenantSecuritySettingsInTransaction(tx, tenantId),
+        );
+    }
+
+    private async tenantSecuritySettingsInTransaction(
+        tx: TenantPrismaTransaction,
+        tenantId: string,
+    ): Promise<TenantSecuritySettings> {
+        const setting = await tx.tenantSetting.findUnique({
             where: {
                 tenantId_key: {
                     tenantId,
@@ -385,7 +454,7 @@ export class AuthService {
             select: {
                 value: true,
             },
-        }));
+        });
         const raw = setting?.value && typeof setting.value === 'object' && !Array.isArray(setting.value)
             ? setting.value as { security?: Record<string, unknown> }
             : {};
@@ -400,7 +469,7 @@ export class AuthService {
 
     private isPrivilegedMfaRequiredForAccess(access?: MfaPolicyAccess): boolean {
         return Array.isArray(access?.permissions)
-            && access.permissions.some((permission) => PRIVILEGED_MFA_PERMISSIONS.has(permission));
+            && access.permissions.some((permission) => PRIVILEGED_MFA_PERMISSION_KEYS.has(permission));
     }
 
     private isMfaRequired(
@@ -500,8 +569,10 @@ export class AuthService {
         return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(identifier);
     }
 
-    private normalizeIdentifier(identifier: string): string {
-        return identifier.trim().toLowerCase();
+    private normalizeIdentifier(identifier: unknown): string {
+        if (typeof identifier !== 'string') return '';
+        const normalized = identifier.trim().toLowerCase();
+        return normalized.length <= MAX_LOGIN_IDENTIFIER_LENGTH ? normalized : '';
     }
 
     async createOidcState(nextPath: string | null = null, tenantSlugRaw?: string | null) {
@@ -580,7 +651,7 @@ export class AuthService {
                         tenantId,
                         oidcIssuer: issuer,
                         oidcSubject: subject,
-                        deletedAt: null,
+                        deletedAt: null, suspendedAt: null,
                     },
                 });
                 if (identityUser) {
@@ -591,7 +662,7 @@ export class AuthService {
                 }
 
                 const emailUser = await tx.user.findFirst({
-                    where: { tenantId, email, deletedAt: null },
+                    where: { tenantId, email, deletedAt: null, suspendedAt: null },
                 });
                 if (!emailUser) {
                     throw new UnauthorizedException('Invalid workspace or login');
@@ -607,6 +678,8 @@ export class AuthService {
                         tenantId,
                         oidcIssuer: null,
                         oidcSubject: null,
+                        deletedAt: null,
+                        suspendedAt: null,
                     },
                     data: { oidcIssuer: issuer, oidcSubject: subject },
                 });
@@ -625,8 +698,8 @@ export class AuthService {
         }
     }
 
-    private isPin(pin: string): boolean {
-        return /^\d{4,8}$/.test(pin);
+    private isPin(pin: unknown): pin is string {
+        return typeof pin === 'string' && /^\d{4,8}$/.test(pin);
     }
 
     private hashPin(pin: string): string {
@@ -648,16 +721,53 @@ export class AuthService {
             pinLockedUntil: null,
         };
     }
+
+    private usernameFromName(name: string): string {
+        const base = name
+            .toLowerCase()
+            .replace(/[^a-z0-9]+/g, '.')
+            .replace(/^\.+|\.+$/g, '')
+            .slice(0, 28);
+        if (!base) return 'staff.user';
+        return base.length < 3 ? `${base}.usr` : base;
+    }
+
+    private async generateUniqueUsername(
+        tx: TenantPrismaTransaction,
+        tenantId: string,
+        name: string,
+    ): Promise<string> {
+        const seed = this.usernameFromName(name);
+        let candidate = seed;
+        for (let attempt = 0; attempt < 20; attempt += 1) {
+            const taken = await tx.user.findFirst({
+                where: { tenantId, username: candidate },
+                select: { id: true },
+            });
+            if (!taken) return candidate;
+            candidate = `${seed.slice(0, 24)}.${crypto.randomInt(1000, 10_000)}`;
+        }
+        return `${seed.slice(0, 20)}.${Date.now().toString().slice(-6)}`;
+    }
+
+    private canBootstrapPinUsername(email: string | null): boolean {
+        return !email || email.endsWith(`@${SYSTEM_GENERATED_USER_EMAIL_DOMAIN}`);
+    }
+
     private verifyPin(pin: string, storedHash: string): boolean {
         const [salt, hash] = storedHash.split(':');
         if (!salt || !hash) return false;
         const computed = crypto.scryptSync(pin, salt, 64).toString('hex');
-        return crypto.timingSafeEqual(Buffer.from(hash, 'hex'), Buffer.from(computed, 'hex'));
+        return this.safeEqual(hash, computed);
     }
 
     private verifyLegacyPassword(password: string, storedHash: string): boolean {
-        const normalizedHash = storedHash.replace(/^\$2y\$/, '$2a$');
-        return bcrypt.compareSync(password, normalizedHash);
+        try {
+            const normalizedHash = storedHash.replace(/^\$2y\$/, '$2a$');
+            return bcrypt.compareSync(password, normalizedHash);
+        } catch {
+            return false;
+        }
     }
 
 
@@ -668,6 +778,12 @@ export class AuthService {
     private refreshTokenLookupCandidates(refreshToken: string): string[] {
         const hashed = this.hashRefreshToken(refreshToken);
         return hashed === refreshToken ? [hashed] : [hashed, refreshToken];
+    }
+
+    private canonicalRefreshTokenHash(storedToken: string): string {
+        return /^sha256:[a-f0-9]{64}$/i.test(storedToken)
+            ? storedToken.toLowerCase()
+            : this.hashRefreshToken(storedToken);
     }
 
     private hashSessionSelector(selector: string): string {
@@ -735,6 +851,38 @@ export class AuthService {
         return bcrypt.hash(password, 12);
     }
 
+    private normalizeSessionAuditValue(value: string | null | undefined, maxLength: number): string {
+        return typeof value === 'string'
+            ? value.replace(/[\u0000-\u001F\u007F]/g, '').trim().slice(0, maxLength)
+            : '';
+    }
+
+    private securityRequestAudit(source: SessionRequestAudit = {}): { ipAddress: string | null; userAgent: string | null } {
+        return {
+            ipAddress: this.normalizeSessionAuditValue(source.ipAddress, MAX_SESSION_IP_LENGTH) || null,
+            userAgent: this.normalizeSessionAuditValue(source.userAgent, MAX_SESSION_USER_AGENT_LENGTH) || null,
+        };
+    }
+
+    private async clearSessionMfaMarkersBestEffort(sessionIds: string[], event: string): Promise<void> {
+        if (sessionIds.length === 0) return;
+        await this.runRedisMutationBestEffort(
+            event,
+            () => this.getRedis().del(...sessionIds.map((sessionId) => KEY_SESSION_MFA(sessionId))),
+        );
+    }
+
+    private async runRedisMutationBestEffort(
+        event: string,
+        operation: () => Promise<unknown>,
+    ): Promise<void> {
+        try {
+            await operation();
+        } catch (err) {
+            this.logger.warn(operationalErrorLog(event, err));
+        }
+    }
+
     private sessionTokenAudit(source: SessionTokenAudit | string): NormalizedSessionTokenAudit {
         if (typeof source === 'string') {
             return {
@@ -745,8 +893,8 @@ export class AuthService {
         }
         return {
             loginMethod: source.loginMethod,
-            ipAddress: source.ipAddress?.trim() ?? '',
-            userAgent: source.userAgent?.trim() ?? '',
+            ipAddress: this.normalizeSessionAuditValue(source.ipAddress, MAX_SESSION_IP_LENGTH),
+            userAgent: this.normalizeSessionAuditValue(source.userAgent, MAX_SESSION_USER_AGENT_LENGTH),
         };
     }
 
@@ -757,15 +905,65 @@ export class AuthService {
     ) {
         const audit = this.sessionTokenAudit(source);
         await this.assertTenantIdCanAuthenticate(user.tenantId);
-        const access = await this.rbacService.getEffectiveAccess(user.id, user.tenantId);
         const settings = await this.getTenantSecuritySettings(user.tenantId);
         const expiresAt = new Date(Date.now() + settings.sessionTimeoutMinutes * 60 * 1000);
-        const mfaRequired = this.isMfaRequired(user, settings, access);
         const refreshCredential = this.generateSelectedRefreshCredential();
-        const session = await this.getTenantDb().withTenant(user.tenantId, async (tx) => {
+        const issuance = await this.getTenantDb().withTenant(user.tenantId, async (tx) => {
+            await this.lockTenantForSessionIssuance(tx, user.tenantId);
+            await tx.$queryRaw(Prisma.sql`
+                SELECT "id"
+                FROM "User"
+                WHERE "id" = ${user.id} AND "tenantId" = ${user.tenantId}
+                FOR UPDATE
+            `);
+            const lockedUser = await tx.user.findFirst({
+                where: {
+                    id: user.id,
+                    tenantId: user.tenantId,
+                    deletedAt: null,
+                    suspendedAt: null,
+                },
+            });
+            if (!lockedUser) {
+                throw new UnauthorizedException('User account inactive');
+            }
+
+            // Role assignment mutations lock this same user row before replacing
+            // access and revoking sessions. Resolve access only after the lock so
+            // the session, permission, and MFA policy share one linearization point.
+            const access = await this.rbacService.getEffectiveAccess(lockedUser.id, lockedUser.tenantId);
+            const mfaRequired = this.isMfaRequired(lockedUser, settings, access);
+            const now = new Date();
+            await tx.session.deleteMany({
+                where: {
+                    userId: lockedUser.id,
+                    OR: [
+                        { revokedAt: { not: null } },
+                        { expiresAt: { lte: now } },
+                    ],
+                },
+            });
+            const excessSessions = await tx.session.findMany({
+                where: {
+                    userId: lockedUser.id,
+                    revokedAt: null,
+                    expiresAt: { gt: now },
+                },
+                orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+                skip: MAX_ACTIVE_SESSIONS_PER_USER - 1,
+                select: { id: true },
+            });
+            if (excessSessions.length > 0) {
+                await tx.session.deleteMany({
+                    where: {
+                        userId: lockedUser.id,
+                        id: { in: excessSessions.map((candidate) => candidate.id) },
+                    },
+                });
+            }
             const session = await tx.session.create({
                 data: {
-                    userId: user.id,
+                    userId: lockedUser.id,
                     refreshToken: refreshCredential.validatorHash,
                     selectorHash: refreshCredential.selectorHash,
                     ipAddress: audit.ipAddress,
@@ -776,8 +974,8 @@ export class AuthService {
 
             await tx.auditLog.create({
                 data: {
-                    tenantId: user.tenantId,
-                    userId: user.id,
+                    tenantId: lockedUser.tenantId,
+                    userId: lockedUser.id,
                     action: 'SESSION_CREATED',
                     resource: 'Session',
                     resourceId: session.id,
@@ -788,7 +986,7 @@ export class AuthService {
             });
 
             await tx.user.update({
-                where: { id: user.id },
+                where: { id: lockedUser.id },
                 data: resetLoginAttempts
                     ? {
                         lastLoginAt: new Date(),
@@ -798,17 +996,18 @@ export class AuthService {
                     : { lastLoginAt: new Date() },
             });
 
-            return session;
-        });
+            return { session, user: lockedUser, access, mfaRequired };
+        }, SESSION_CREATION_TRANSACTION_OPTIONS);
+        const { session, user: currentUser, access, mfaRequired } = issuance;
 
         const payload: TokenPayload = {
-            sub: user.id,
-            tenantId: user.tenantId,
+            sub: currentUser.id,
+            tenantId: currentUser.tenantId,
             role: access.primaryRole,
-            legacyRole: user.role,
+            legacyRole: currentUser.role,
             sessionId: session.id,
             mfaVerified: !mfaRequired,
-            pinResetRequired: user.pinResetRequired === true,
+            pinResetRequired: currentUser.pinResetRequired === true,
         };
 
         return {
@@ -816,12 +1015,12 @@ export class AuthService {
             refreshToken: refreshCredential.token,
             csrfToken: this.jwtService.generateCsrfToken(),
             requiresMfa: mfaRequired,
-            pinResetRequired: user.pinResetRequired === true,
+            pinResetRequired: currentUser.pinResetRequired === true,
             sessionMaxAgeMs: settings.sessionTimeoutMinutes * 60 * 1000,
             user: {
-                id: user.id,
-                email: user.email,
-                username: user.username,
+                id: currentUser.id,
+                email: currentUser.email,
+                username: currentUser.username,
                 role: access.primaryRole,
                 roles: access.roles,
                 permissions: access.permissions,
@@ -834,44 +1033,17 @@ export class AuthService {
         if (!identifier) {
             throw new BadRequestException('Email or username is required');
         }
-        const tenant = await this.resolveLoginTenantContext(tenantSlugRaw);
+        if (!this.normalizeTenantSlug(tenantSlugRaw)) {
+            throw new BadRequestException('Workspace is required');
+        }
 
         if (this.isEmailIdentifier(identifier)) {
-            await this.assertEmailOtpAllowed(identifier, { tenantSlug: tenant.tenantSlug });
             return { flow: 'EMAIL_OTP', normalizedIdentifier: identifier };
         }
 
-        const user = await this.getTenantDb().withTenant(tenant.tenantId, (tx) => tx.user.findFirst({
-            where: {
-                tenantId: tenant.tenantId,
-                username: identifier,
-                deletedAt: null,
-            },
-            select: {
-                id: true,
-                tenantId: true,
-                role: true,
-                pinResetRequired: true,
-                passwordHash: true,
-            },
-        }));
-
-        if (user?.passwordHash) {
-            await this.assertTenantAllowsLoginMethod(user.tenantId, 'USERNAME_PASSWORD');
-            const access = await this.rbacService.getEffectiveAccess(user.id, user.tenantId);
-            if (access.permissions.includes('auth:login_password')) {
-                return {
-                    flow: 'USERNAME_PASSWORD',
-                    normalizedIdentifier: identifier,
-                };
-            }
-        }
-
-        // Unknown, PIN, and non-delegated username accounts intentionally resolve alike.
         return {
-            flow: 'USERNAME_PIN',
+            flow: 'USERNAME_PASSWORD',
             normalizedIdentifier: identifier,
-            pinResetRequired: false,
         };
     }
 
@@ -899,7 +1071,7 @@ export class AuthService {
             where: {
                 tenantId: tenant.tenantId,
                 email,
-                deletedAt: null,
+                deletedAt: null, suspendedAt: null,
             },
             select: {
                 id: true,
@@ -934,30 +1106,35 @@ export class AuthService {
     }
 
     async loginWithUsernamePassword(
-        identifierRaw: string,
-        password: string,
+        identifierRaw: unknown,
+        passwordRaw: unknown,
         tenantSlugRaw?: string,
         audit: SessionRequestAudit = {},
     ) {
         const username = this.normalizeIdentifier(identifierRaw);
-        if (!username || !password) {
+        const password = typeof passwordRaw === 'string' ? passwordRaw : '';
+        if (!username || !password || Buffer.byteLength(password, 'utf8') > MAX_BCRYPT_PASSWORD_BYTES) {
+            this.verifyLegacyPassword('invalid-password', DUMMY_PASSWORD_HASH);
             throw new UnauthorizedException('Invalid username or password');
         }
-        const tenant = await this.resolveLoginTenantContext(tenantSlugRaw);
 
+        const tenant = await this.resolveLoginTenantContext(tenantSlugRaw);
+        await this.assertTenantAllowsLoginMethod(tenant.tenantId, 'USERNAME_PASSWORD');
         const user = await this.getTenantDb().withTenant(tenant.tenantId, (tx) => tx.user.findFirst({
-            where: { tenantId: tenant.tenantId, username, deletedAt: null },
+            where: { tenantId: tenant.tenantId, username, deletedAt: null, suspendedAt: null },
         }));
+        const numericCredential = this.isPin(password);
+
+        if (user && !user.passwordHash && user.pinHash && numericCredential) {
+            this.verifyLegacyPassword(password, DUMMY_PASSWORD_HASH);
+            return this.loginWithUsernamePin(username, password, tenant.tenantSlug, audit);
+        }
 
         if (!user || !user.passwordHash) {
+            this.verifyLegacyPassword(password, DUMMY_PASSWORD_HASH);
+            if (numericCredential) this.verifyPin(password, DUMMY_PIN_HASH);
             throw new UnauthorizedException('Invalid username or password');
         }
-
-        const access = await this.rbacService.getEffectiveAccess(user.id, user.tenantId);
-        if (!access.permissions.includes('auth:login_password')) {
-            throw new UnauthorizedException('Invalid username or password');
-        }
-        await this.assertTenantAllowsLoginMethod(user.tenantId, 'USERNAME_PASSWORD');
 
         const passwordAttempt = await this.getTenantDb().withTenant(user.tenantId, async (tx) => {
             await tx.$queryRaw`
@@ -967,13 +1144,15 @@ export class AuthService {
                 FOR UPDATE
             `;
             const lockedUser = await tx.user.findFirst({
-                where: { id: user.id, tenantId: user.tenantId, deletedAt: null },
+                where: { id: user.id, tenantId: user.tenantId, deletedAt: null, suspendedAt: null },
             });
 
             if (!lockedUser?.passwordHash) {
+                this.verifyLegacyPassword(password, DUMMY_PASSWORD_HASH);
                 return { status: 'invalid' as const };
             }
             if (lockedUser.lockedUntil && lockedUser.lockedUntil > new Date()) {
+                this.verifyLegacyPassword(password, DUMMY_PASSWORD_HASH);
                 return { status: 'locked' as const };
             }
             if (!this.verifyLegacyPassword(password, lockedUser.passwordHash)) {
@@ -1002,14 +1181,16 @@ export class AuthService {
             return { status: 'authenticated' as const, user: lockedUser };
         });
 
-        if (passwordAttempt.status === 'locked') {
-            throw new ForbiddenException('Account locked due to too many failed attempts');
-        }
-        if (passwordAttempt.status === 'invalid') {
+        if (numericCredential) this.verifyPin(password, DUMMY_PIN_HASH);
+        if (passwordAttempt.status !== 'authenticated') {
             throw new UnauthorizedException('Invalid username or password');
         }
 
         const authenticatedUser = passwordAttempt.user;
+        const access = await this.rbacService.getEffectiveAccess(authenticatedUser.id, authenticatedUser.tenantId);
+        if (!access.permissions.includes('auth:login_password')) {
+            throw new UnauthorizedException('Invalid username or password');
+        }
 
         return this.createSessionTokens({
             id: authenticatedUser.id,
@@ -1020,7 +1201,6 @@ export class AuthService {
             mfaEnabled: authenticatedUser.mfaEnabled,
         }, { loginMethod: 'USERNAME_PASSWORD', ...audit }, false);
     }
-
     async createPasswordReset(identifierRaw: string, tenantSlugRaw?: string): Promise<null> {
         const resetOutbox = new PasswordResetOutboxService(this.configService);
         resetOutbox.validateConfiguration();
@@ -1041,7 +1221,7 @@ export class AuthService {
         const user = await this.getTenantDb().withTenant(tenant.tenantId, (tx) => tx.user.findFirst({
             where: {
                 tenantId: tenant.tenantId,
-                deletedAt: null,
+                deletedAt: null, suspendedAt: null,
                 passwordHash: { not: null },
                 OR: [
                     { username: identifier },
@@ -1118,7 +1298,11 @@ export class AuthService {
         return null;
     }
 
-    async resetPasswordWithToken(tokenRaw: unknown, passwordRaw: unknown): Promise<void> {
+    async resetPasswordWithToken(
+        tokenRaw: unknown,
+        passwordRaw: unknown,
+        requestAudit: SessionRequestAudit = {},
+    ): Promise<void> {
         const token = this.normalizePasswordResetToken(tokenRaw);
         if (!token) {
             throw new UnauthorizedException('Invalid or expired reset token');
@@ -1127,6 +1311,7 @@ export class AuthService {
         const tokenHash = this.hashPasswordResetToken(token);
         const password = this.validateNewPassword(passwordRaw);
         const now = new Date();
+        const audit = this.securityRequestAudit(requestAudit);
         let revokedSessionIds: string[] = [];
 
         await this.getTenantDb().withPlatformAdmin(async (tx) => {
@@ -1135,7 +1320,7 @@ export class AuthService {
                 include: { user: true },
             });
 
-            if (!reset || reset.consumedAt || reset.expiresAt <= now || reset.user.deletedAt || !reset.user.passwordHash) {
+            if (!reset || reset.consumedAt || reset.expiresAt <= now || reset.user.deletedAt || reset.user.suspendedAt || !reset.user.passwordHash) {
                 throw new UnauthorizedException('Invalid or expired reset token');
             }
 
@@ -1190,12 +1375,26 @@ export class AuthService {
                 },
                 data: { consumedAt: now },
             });
+            await tx.auditLog.create({
+                data: {
+                    tenantId: reset.tenantId,
+                    userId: reset.userId,
+                    actorUserId: reset.userId,
+                    actorTenantId: reset.tenantId,
+                    action: 'PASSWORD_RESET_COMPLETED',
+                    resource: 'User',
+                    resourceId: reset.userId,
+                    newValue: { sessionsRevoked: activeSessions.length },
+                    ipAddress: audit.ipAddress,
+                    userAgent: audit.userAgent,
+                },
+            });
         });
 
         try {
             await Promise.all(revokedSessionIds.map((sessionId) => this.getRedis().del(KEY_SESSION_MFA(sessionId))));
         } catch (err) {
-            this.logger.warn(`Password reset session MFA cleanup failed: ${err instanceof Error ? err.message : 'unknown_error'}`);
+            this.logger.warn(operationalErrorLog('auth.password_reset_mfa_cleanup_failed', err));
         }
     }
 
@@ -1267,7 +1466,7 @@ export class AuthService {
         let workspaceSlug = tenant?.tenantSlug;
         let user: AuthenticatedUser | null = tenant
             ? await this.getTenantDb().withTenant(tenant.tenantId, (tx) => tx.user.findFirst({
-                where: { tenantId: tenant.tenantId, email, deletedAt: null },
+                where: { tenantId: tenant.tenantId, email, deletedAt: null, suspendedAt: null },
             }))
             : null;
 
@@ -1287,8 +1486,8 @@ export class AuthService {
                 otpCode,
                 audit,
                 {
-                    termsVersion: PUBLIC_SIGNUP_TERMS_VERSION,
-                    privacyVersion: PUBLIC_SIGNUP_PRIVACY_VERSION,
+                    termsVersion: PUBLIC_LEGAL_MANIFEST.documents.terms.version,
+                    privacyVersion: PUBLIC_LEGAL_MANIFEST.documents.privacy.version,
                 },
             );
             this.assertTenantCanAuthenticate({
@@ -1321,30 +1520,28 @@ export class AuthService {
     }
 
     async loginWithUsernamePin(
-        identifierRaw: string,
-        pin: string,
+        identifierRaw: unknown,
+        pinRaw: unknown,
         tenantSlugRaw?: string,
         audit: SessionRequestAudit = {},
     ) {
         const username = this.normalizeIdentifier(identifierRaw);
+        const pin = typeof pinRaw === 'string' ? pinRaw : '';
         if (!username || !this.isPin(pin)) {
+            this.verifyPin('invalid-pin', DUMMY_PIN_HASH);
             throw new UnauthorizedException('Invalid username or PIN');
         }
-        const tenant = await this.resolveLoginTenantContext(tenantSlugRaw);
 
+        const tenant = await this.resolveLoginTenantContext(tenantSlugRaw);
+        await this.assertTenantAllowsLoginMethod(tenant.tenantId, 'USERNAME_PIN');
         const user = await this.getTenantDb().withTenant(tenant.tenantId, (tx) => tx.user.findFirst({
-            where: { tenantId: tenant.tenantId, username, deletedAt: null },
+            where: { tenantId: tenant.tenantId, username, deletedAt: null, suspendedAt: null },
         }));
 
         if (!user || !user.pinHash) {
+            this.verifyPin(pin, DUMMY_PIN_HASH);
             throw new UnauthorizedException('Invalid username or PIN');
         }
-
-        const access = await this.rbacService.getEffectiveAccess(user.id, user.tenantId);
-        if (!access.permissions.includes('auth:login_pin')) {
-            throw new UnauthorizedException('Invalid username or PIN');
-        }
-        await this.assertTenantAllowsLoginMethod(user.tenantId, 'USERNAME_PIN');
 
         const pinAttempt = await this.getTenantDb().withTenant(user.tenantId, async (tx) => {
             await tx.$queryRaw`
@@ -1354,13 +1551,15 @@ export class AuthService {
                 FOR UPDATE
             `;
             const lockedUser = await tx.user.findFirst({
-                where: { id: user.id, tenantId: user.tenantId, deletedAt: null },
+                where: { id: user.id, tenantId: user.tenantId, deletedAt: null, suspendedAt: null },
             });
 
             if (!lockedUser?.pinHash) {
+                this.verifyPin(pin, DUMMY_PIN_HASH);
                 return { status: 'invalid' as const };
             }
             if (lockedUser.pinLockedUntil && lockedUser.pinLockedUntil > new Date()) {
+                this.verifyPin(pin, DUMMY_PIN_HASH);
                 return { status: 'locked' as const };
             }
             if (!this.verifyPin(pin, lockedUser.pinHash)) {
@@ -1389,14 +1588,15 @@ export class AuthService {
             return { status: 'authenticated' as const, user: lockedUser };
         });
 
-        if (pinAttempt.status === 'locked') {
-            throw new ForbiddenException('PIN login temporarily locked due to too many attempts');
-        }
-        if (pinAttempt.status === 'invalid') {
+        if (pinAttempt.status !== 'authenticated') {
             throw new UnauthorizedException('Invalid username or PIN');
         }
 
         const authenticatedUser = pinAttempt.user;
+        const access = await this.rbacService.getEffectiveAccess(authenticatedUser.id, authenticatedUser.tenantId);
+        if (!access.permissions.includes('auth:login_pin')) {
+            throw new UnauthorizedException('Invalid username or PIN');
+        }
 
         return this.createSessionTokens({
             id: authenticatedUser.id,
@@ -1408,41 +1608,118 @@ export class AuthService {
             pinResetRequired: authenticatedUser.pinResetRequired,
         }, { loginMethod: 'USERNAME_PIN', ...audit });
     }
-
-    async setUserPin(userId: string, pin: string, pinResetRequired = false, tenantId?: string, revokeSessions = pinResetRequired): Promise<void> {
-        const data = this.buildPinCredentialData(pin, pinResetRequired);
-
-        if (tenantId) {
-            await this.getTenantDb().withTenant(tenantId, async (tx) => {
-                const updated = await tx.user.updateMany({
-                    where: { id: userId, tenantId },
-                    data,
-                });
-                if (updated.count === 0) {
-                    throw new UnauthorizedException('User account inactive');
-                }
-                if (revokeSessions) {
-                    await tx.session.updateMany({
-                        where: { userId, revokedAt: null },
-                        data: { revokedAt: new Date() },
-                    });
-                }
-            });
-            return;
+    async resetUserPinAsAdmin(
+        userId: string,
+        pin: unknown,
+        tenantId: string,
+        actorUserId: string,
+        actorSessionId: string,
+        requestAudit: SessionRequestAudit = {},
+    ): Promise<{ username: string }> {
+        const normalizedPin = typeof pin === 'string' ? pin.trim() : pin;
+        if (!this.isPin(normalizedPin)) {
+            throw new BadRequestException('PIN must be 4-8 numeric digits');
         }
+        const now = new Date();
+        const data = this.buildPinCredentialData(normalizedPin, true, now);
+        const audit = this.securityRequestAudit(requestAudit);
+        const reset = await runSerializableMutationWithRetry(
+            () => this.getTenantDb().withTenant(tenantId, async (tx) => {
+                    let usernameBootstrapAttempted = false;
+                    const user = await this.rbacService.authorizeUserAdministrationInTransaction(
+                        tx,
+                        tenantId,
+                        {
+                            actorUserId,
+                            actorSessionId,
+                            targetUserId: userId,
+                            requiredPermission: 'users:admin',
+                            selfMutationMessage: 'Use the self-service PIN rotation route for your own account',
+                        },
+                    );
 
-        await this.getTenantDb().withPlatformAdmin(async (tx) => {
-            await tx.user.update({ where: { id: userId }, data });
-            if (revokeSessions) {
-                await tx.session.updateMany({
-                    where: { userId, revokedAt: null },
-                    data: { revokedAt: new Date() },
-                });
-            }
-        });
+                    let username = user.username;
+                    if (!username) {
+                        if (!this.canBootstrapPinUsername(user.email)) {
+                            throw new BadRequestException('PIN reset is only available for username accounts');
+                        }
+                        usernameBootstrapAttempted = true;
+                        username = await this.generateUniqueUsername(tx, tenantId, user.name);
+                    }
+
+                    const activeSessions = await tx.session.findMany({
+                        where: { userId, revokedAt: null },
+                        select: { id: true },
+                    });
+                    let updated: { count: number };
+                    try {
+                        updated = await tx.user.updateMany({
+                            where: { id: userId, tenantId, deletedAt: null },
+                            data: {
+                                ...data,
+                                username,
+                            },
+                        });
+                    } catch (error) {
+                        if (usernameBootstrapAttempted && isPrismaUniqueConstraintConflict(error)) {
+                            throw new UsernameReservationConflict();
+                        }
+                        throw error;
+                    }
+                    if (updated.count !== 1) {
+                        throw new UnauthorizedException('User account inactive');
+                    }
+                    const sessions = await tx.session.updateMany({
+                        where: { userId, revokedAt: null },
+                        data: { revokedAt: now },
+                    });
+                    await tx.auditLog.create({
+                        data: {
+                            tenantId,
+                            userId: actorUserId,
+                            actorUserId,
+                            actorTenantId: tenantId,
+                            action: 'USER_PIN_RESET',
+                            resource: 'User',
+                            resourceId: userId,
+                            newValue: {
+                                pinResetRequired: true,
+                                sessionsRevoked: sessions.count,
+                            },
+                            ipAddress: audit.ipAddress,
+                            userAgent: audit.userAgent,
+                        },
+                    });
+
+                    return {
+                        username,
+                        revokedSessionIds: activeSessions.map((session) => session.id),
+                    };
+                }, { isolationLevel: 'Serializable' }),
+            {
+                isConflict: (error) => error instanceof UsernameReservationConflict
+                    || isSerializableTransactionConflict(error),
+                conflictMessage: (error) => error instanceof UsernameReservationConflict
+                    ? 'Unable to reserve a unique username; retry the PIN reset'
+                    : 'Authorization or PIN state changed concurrently; retry the request',
+            },
+        );
+
+        await this.clearSessionMfaMarkersBestEffort(
+            reset.revokedSessionIds,
+            'auth.admin_pin_reset_mfa_cleanup_failed',
+        );
+        return { username: reset.username };
     }
 
-    async rotateOwnPin(userId: string, currentPin: string, newPin: string, tenantId?: string): Promise<void> {
+    async rotateOwnPin(
+        userId: string,
+        currentPin: string,
+        newPin: string,
+        tenantId: string,
+        actorSessionId: string,
+        requestAudit: SessionRequestAudit = {},
+    ): Promise<void> {
         if (!this.isPin(currentPin) || !this.isPin(newPin)) {
             throw new BadRequestException('PIN must be 4-8 numeric digits');
         }
@@ -1450,85 +1727,249 @@ export class AuthService {
             throw new BadRequestException('New PIN must differ from the temporary PIN');
         }
 
-        const loadUser = (tx: TenantPrismaTransaction | typeof this.prisma) => tenantId
-            ? tx.user.findFirst({
-                where: { id: userId, tenantId },
-                select: { id: true, username: true, pinHash: true },
-            })
-            : tx.user.findUnique({
-                where: { id: userId },
+        const now = new Date();
+        const data = this.buildPinCredentialData(newPin, false, now);
+        const audit = this.securityRequestAudit(requestAudit);
+        const revokedSessionIds = await runSerializableMutationWithRetry(
+            () => this.getTenantDb().withTenant(tenantId, async (tx) => {
+            await this.rbacService.authorizeSelfSecurityMutationInTransaction(tx, tenantId, {
+                actorUserId: userId,
+                actorSessionId,
+                requiredPermission: 'auth:login_pin',
+            });
+            const user = await tx.user.findFirst({
+                where: { id: userId, tenantId, deletedAt: null, suspendedAt: null },
                 select: { id: true, username: true, pinHash: true },
             });
+            if (!user || !user.username || !user.pinHash) {
+                throw new ForbiddenException('PIN change is only available for username accounts');
+            }
+            if (!this.verifyPin(currentPin, user.pinHash)) {
+                throw new UnauthorizedException('Current PIN is invalid');
+            }
 
-        const user = tenantId
-            ? await this.getTenantDb().withTenant(tenantId, loadUser)
-            : await loadUser(this.prisma);
+            const activeSessions = await tx.session.findMany({
+                where: { userId, revokedAt: null },
+                select: { id: true },
+            });
+            const updated = await tx.user.updateMany({
+                where: { id: userId, tenantId, deletedAt: null, suspendedAt: null },
+                data,
+            });
+            if (updated.count !== 1) {
+                throw new UnauthorizedException('User account inactive');
+            }
+            const sessions = await tx.session.updateMany({
+                where: { userId, revokedAt: null },
+                data: { revokedAt: now },
+            });
+            await tx.auditLog.create({
+                data: {
+                    tenantId,
+                    userId,
+                    actorUserId: userId,
+                    actorTenantId: tenantId,
+                    action: 'USER_PIN_ROTATED',
+                    resource: 'User',
+                    resourceId: userId,
+                    newValue: {
+                        pinResetRequired: false,
+                        sessionsRevoked: sessions.count,
+                    },
+                    ipAddress: audit.ipAddress,
+                    userAgent: audit.userAgent,
+                },
+            });
 
-        if (!user || !user.username || !user.pinHash) {
-            throw new ForbiddenException('PIN change is only available for username accounts');
-        }
+            return activeSessions.map((session) => session.id);
+            }, { isolationLevel: 'Serializable' }),
+            { conflictMessage: 'Authorization or PIN state changed concurrently; retry the request' },
+        );
 
-        const validCurrentPin = this.verifyPin(currentPin, user.pinHash);
-        if (!validCurrentPin) {
-            throw new UnauthorizedException('Current PIN is invalid');
-        }
-
-        await this.setUserPin(user.id, newPin, false, tenantId, true);
+        await this.clearSessionMfaMarkersBestEffort(
+            revokedSessionIds,
+            'auth.pin_rotation_mfa_cleanup_failed',
+        );
     }
 
-    async refreshAccessToken(refreshTokenRaw: unknown) {
-        const credential = this.parseRefreshCredential(refreshTokenRaw);
-        if (!credential) {
-            throw new UnauthorizedException('Invalid or expired refresh token');
-        }
-
+    private async prepareRefreshAuthorization(
+        credential: RefreshCredential,
+    ): Promise<RefreshAuthorizationContext | null> {
         const session = await this.getTenantDb().withPlatformAdmin((tx) => tx.session.findFirst({
             where: credential.kind === 'selected'
-                ? {
-                    selectorHash: credential.selectorHash,
-                    refreshToken: credential.validatorHash,
-                }
+                ? { selectorHash: credential.selectorHash }
                 : { refreshToken: { in: credential.candidates } },
             include: { user: true },
         }));
+        if (!session) return null;
 
-        if (!session || session.revokedAt || session.expiresAt < new Date()) {
+        const currentCredentialMatches = credential.kind === 'selected'
+            ? session.refreshToken === credential.validatorHash
+            : credential.candidates.includes(session.refreshToken);
+        if (!currentCredentialMatches) return null;
+        if (
+            session.revokedAt
+            || session.expiresAt <= new Date()
+            || session.user.deletedAt
+            || session.user.suspendedAt
+        ) {
             throw new UnauthorizedException('Invalid or expired refresh token');
         }
 
-        if (session.user.deletedAt) {
-            throw new UnauthorizedException('User account inactive');
-        }
         await this.assertTenantIdCanAuthenticate(session.user.tenantId);
         const settings = await this.getTenantSecuritySettings(session.user.tenantId);
         const effectiveExpiresAt = this.assertSessionActive(session, settings);
         const access = await this.rbacService.getEffectiveAccess(session.user.id, session.user.tenantId);
         const mfaRequired = this.isMfaRequired(session.user, settings, access);
         const mfaVerified = !mfaRequired || await this.isSessionMfaVerified(session.id);
-        const rotatedCredential = this.generateSelectedRefreshCredential();
-        const rotated = await this.getTenantDb().withPlatformAdmin((tx) => tx.session.updateMany({
-            where: {
-                id: session.id,
-                ...(credential.kind === 'selected'
-                    ? {
-                        selectorHash: credential.selectorHash,
-                        refreshToken: credential.validatorHash,
-                    }
-                    : { refreshToken: { in: credential.candidates } }),
-                revokedAt: null,
-                expiresAt: { gt: new Date() },
-            },
-            data: credential.kind === 'selected'
-                ? { refreshToken: rotatedCredential.validatorHash }
-                : {
-                    selectorHash: rotatedCredential.selectorHash,
-                    refreshToken: rotatedCredential.validatorHash,
+
+        return {
+            session,
+            access,
+            effectiveExpiresAt,
+            mfaRequired,
+            mfaVerified,
+        };
+    }
+
+    private async rotateRefreshCredential(
+        credential: RefreshCredential,
+        rotatedCredential: SelectedRefreshCredential,
+        allowRotation: boolean,
+    ): Promise<RefreshRotationResult> {
+        return this.getTenantDb().withPlatformAdmin(async (tx) => {
+            let session: RefreshSession | null;
+            let legacyReplayHash: string | null = null;
+
+            if (credential.kind === 'selected') {
+                await tx.$queryRaw`
+                    SELECT "id"
+                    FROM "Session"
+                    WHERE "selectorHash" = ${credential.selectorHash}
+                    FOR UPDATE
+                `;
+                session = await tx.session.findFirst({
+                    where: { selectorHash: credential.selectorHash },
+                    include: { user: true },
+                });
+            } else {
+                legacyReplayHash = credential.candidates[0];
+                const candidate = await tx.session.findFirst({
+                    where: { refreshToken: { in: credential.candidates } },
+                    select: { id: true },
+                });
+                const replay = candidate
+                    ? null
+                    : await tx.refreshTokenReplay.findUnique({
+                        where: { validatorHash: legacyReplayHash },
+                        select: { sessionId: true },
+                    });
+                const sessionId = candidate?.id ?? replay?.sessionId;
+                if (!sessionId) return { status: 'invalid' };
+
+                await tx.$queryRaw`
+                    SELECT "id"
+                    FROM "Session"
+                    WHERE "id" = ${sessionId}
+                    FOR UPDATE
+                `;
+                session = await tx.session.findFirst({
+                    where: { id: sessionId },
+                    include: { user: true },
+                });
+            }
+
+            const now = new Date();
+            if (!session || session.revokedAt || session.expiresAt <= now || session.user.deletedAt || session.user.suspendedAt) {
+                return { status: 'invalid' };
+            }
+
+            const suppliedValidatorHash = credential.kind === 'selected'
+                ? credential.validatorHash
+                : legacyReplayHash;
+            const currentCredentialMatches = credential.kind === 'selected'
+                ? session.refreshToken === credential.validatorHash
+                : credential.candidates.includes(session.refreshToken);
+
+            if (!currentCredentialMatches) {
+                const replay = suppliedValidatorHash
+                    ? await tx.refreshTokenReplay.findUnique({
+                        where: { validatorHash: suppliedValidatorHash },
+                        select: { sessionId: true },
+                    })
+                    : null;
+                if (replay?.sessionId !== session.id) {
+                    return { status: 'invalid' };
+                }
+
+                await tx.session.updateMany({
+                    where: { id: session.id, revokedAt: null },
+                    data: { revokedAt: now },
+                });
+                return { status: 'replayed', sessionId: session.id };
+            }
+
+            if (!allowRotation) {
+                return { status: 'invalid' };
+            }
+
+            await tx.refreshTokenReplay.create({
+                data: {
+                    sessionId: session.id,
+                    validatorHash: credential.kind === 'selected'
+                        ? credential.validatorHash
+                        : this.canonicalRefreshTokenHash(session.refreshToken),
                 },
-        }));
-        if (rotated.count !== 1) {
+            });
+
+            const rotated = await tx.session.updateMany({
+                where: {
+                    id: session.id,
+                    ...(credential.kind === 'selected'
+                        ? {
+                            selectorHash: credential.selectorHash,
+                            refreshToken: credential.validatorHash,
+                        }
+                        : { refreshToken: { in: credential.candidates } }),
+                    revokedAt: null,
+                    expiresAt: { gt: now },
+                },
+                data: credential.kind === 'selected'
+                    ? { refreshToken: rotatedCredential.validatorHash }
+                    : {
+                        selectorHash: rotatedCredential.selectorHash,
+                        refreshToken: rotatedCredential.validatorHash,
+                    },
+            });
+            if (rotated.count !== 1) {
+                throw new UnauthorizedException('Invalid or expired refresh token');
+            }
+
+            return { status: 'rotated', session };
+        });
+    }
+    async refreshAccessToken(refreshTokenRaw: unknown) {
+        const credential = this.parseRefreshCredential(refreshTokenRaw);
+        if (!credential) {
             throw new UnauthorizedException('Invalid or expired refresh token');
         }
 
+        const authorization = await this.prepareRefreshAuthorization(credential);
+        const rotatedCredential = this.generateSelectedRefreshCredential();
+        const rotation = await this.rotateRefreshCredential(credential, rotatedCredential, Boolean(authorization));
+        if (rotation.status === 'replayed') {
+            await this.getRedis().del(KEY_SESSION_MFA(rotation.sessionId));
+            throw new UnauthorizedException('Invalid or expired refresh token');
+        }
+        if (rotation.status === 'invalid') {
+            throw new UnauthorizedException('Invalid or expired refresh token');
+        }
+        if (!authorization) {
+            throw new UnauthorizedException('Invalid or expired refresh token');
+        }
+
+        const { session } = rotation;
+        const { access, effectiveExpiresAt, mfaRequired, mfaVerified } = authorization;
         const payload: TokenPayload = {
             sub: session.user.id,
             tenantId: session.user.tenantId,
@@ -1565,23 +2006,42 @@ export class AuthService {
             },
         }));
 
-        if (!session || session.user.deletedAt || session.user.tenantId !== claims.tenantId) {
+        if (!session || session.user.deletedAt || session.user.suspendedAt || session.user.tenantId !== claims.tenantId) {
             throw new UnauthorizedException('Invalid or expired session');
         }
 
         await this.assertTenantIdCanAuthenticate(claims.tenantId);
         const settings = await this.getTenantSecuritySettings(session.user.tenantId);
-        const effectiveExpiresAt = this.assertSessionActive(session, settings);
+        this.assertSessionActive(session, settings);
         const access = await this.rbacService.getEffectiveAccess(session.user.id, session.user.tenantId);
         const mfaRequired = this.isMfaRequired(session.user, settings, access);
         const mfaVerified = !mfaRequired || await this.isSessionMfaVerified(session.id);
+        const finalSession = await this.getTenantDb().withTenant(claims.tenantId, (tx) => tx.session.findFirst({
+            where: {
+                id: claims.sessionId,
+                userId: claims.sub,
+            },
+            include: {
+                user: true,
+            },
+        }));
+        if (
+            !finalSession
+            || finalSession.user.deletedAt
+            || finalSession.user.suspendedAt
+            || finalSession.user.tenantId !== claims.tenantId
+        ) {
+            throw new UnauthorizedException('Invalid or expired session');
+        }
+        const finalEffectiveExpiresAt = this.assertSessionActive(finalSession, settings);
 
         return {
+            access,
             mfaRequired,
             mfaVerified,
-            pinResetRequired: session.user.pinResetRequired === true,
-            accessTokenMaxAgeMs: this.getAccessTokenMaxAgeMs(effectiveExpiresAt),
-            legacyRole: session.user.role,
+            pinResetRequired: finalSession.user.pinResetRequired === true,
+            accessTokenMaxAgeMs: this.getAccessTokenMaxAgeMs(finalEffectiveExpiresAt),
+            legacyRole: finalSession.user.role,
         };
     }
 
@@ -1831,7 +2291,7 @@ export class AuthService {
             where: {
                 id: userId,
                 tenantId,
-                deletedAt: null,
+                deletedAt: null, suspendedAt: null,
             },
             select: {
                 id: true,
@@ -1898,7 +2358,7 @@ export class AuthService {
                 where: {
                     id: userId,
                     tenantId: sessionClaims.tenantId,
-                    deletedAt: null,
+                    deletedAt: null, suspendedAt: null,
                 },
                 select: {
                     id: true,
@@ -1975,8 +2435,9 @@ export class AuthService {
         userId: string,
         code: string,
         sessionClaims: { tenantId: string; sessionId: string },
+        requestAudit: SessionRequestAudit = {},
     ) {
-        const { user, session, effectiveExpiresAt } = await this.loadMfaSessionContext(userId, sessionClaims);
+        const { user, session } = await this.loadMfaSessionContext(userId, sessionClaims);
         const key = KEY_PENDING_MFA_ENROLLMENT(session.id, user.id);
         const secret = await this.getRedis().get(key);
         if (!secret) {
@@ -1990,19 +2451,37 @@ export class AuthService {
         }
 
         const backupCodes = this.generateBackupCodes();
-        await this.getTenantDb().withTenant(user.tenantId, async (tx) => {
-            await tx.$queryRaw`
-                SELECT "id"
-                FROM "User"
-                WHERE "id" = ${user.id} AND "tenantId" = ${user.tenantId}
-                FOR UPDATE
-            `;
+        const audit = this.securityRequestAudit(requestAudit);
+        const committed = await runSerializableMutationWithRetry(
+            () => this.getTenantDb().withTenant(user.tenantId, async (tx) => {
+            const access = await this.rbacService.authorizeSelfSecurityMutationInTransaction(
+                tx,
+                user.tenantId,
+                { actorUserId: user.id, actorSessionId: session.id },
+            );
             const currentUser = await tx.user.findFirst({
-                where: { id: user.id, tenantId: user.tenantId, deletedAt: null },
-                select: { id: true, mfaEnabled: true },
+                where: { id: user.id, tenantId: user.tenantId, deletedAt: null, suspendedAt: null },
+                select: {
+                    id: true,
+                    tenantId: true,
+                    role: true,
+                    email: true,
+                    username: true,
+                    pinResetRequired: true,
+                    mfaEnabled: true,
+                },
             });
             if (!currentUser) throw new UnauthorizedException('User not found');
+            if (currentUser.pinResetRequired) {
+                throw new ForbiddenException('PIN rotation required before MFA access');
+            }
             if (currentUser.mfaEnabled) throw new BadRequestException('MFA is already enabled');
+            const currentSession = await tx.session.findFirst({
+                where: { id: session.id, userId: currentUser.id },
+            });
+            if (!currentSession) throw new UnauthorizedException('Invalid or expired session');
+            const settings = await this.tenantSecuritySettingsInTransaction(tx, currentUser.tenantId);
+            const effectiveExpiresAt = this.assertSessionActive(currentSession, settings);
 
             await this.claimTotpTimeStep(tx, user.tenantId, user.id, matchedTotpTimeStep);
             await tx.user.update({
@@ -2013,27 +2492,54 @@ export class AuthService {
                     mfaBackupCodes: backupCodes.map((backupCode) => this.hashBackupCode(backupCode)),
                 },
             });
-        });
-        await this.getRedis().del(key);
-        await this.markSessionMfaVerified(session.id, effectiveExpiresAt);
-
-        const access = await this.rbacService.getEffectiveAccess(user.id, user.tenantId);
-        const payload: TokenPayload = {
-            sub: user.id,
-            tenantId: user.tenantId,
-            role: access.primaryRole,
-            legacyRole: user.role,
-            sessionId: session.id,
-            mfaVerified: true,
-            pinResetRequired: false,
-        };
+            await tx.auditLog.create({
+                data: {
+                    tenantId: user.tenantId,
+                    userId: user.id,
+                    actorUserId: user.id,
+                    actorTenantId: user.tenantId,
+                    action: 'MFA_ENABLED',
+                    resource: 'User',
+                    resourceId: user.id,
+                    newValue: { mfaEnabled: true },
+                    ipAddress: audit.ipAddress,
+                    userAgent: audit.userAgent,
+                },
+            });
+            const payload: TokenPayload = {
+                sub: user.id,
+                tenantId: user.tenantId,
+                role: access.primaryRole,
+                legacyRole: currentUser.role,
+                sessionId: session.id,
+                mfaVerified: true,
+                pinResetRequired: false,
+            };
+            return {
+                effectiveExpiresAt,
+                accessToken: this.jwtService.generateAccessToken(payload),
+                accessTokenMaxAgeMs: this.getAccessTokenMaxAgeMs(effectiveExpiresAt),
+            };
+            }, { isolationLevel: 'Serializable' }),
+            { conflictMessage: 'Authorization or MFA state changed concurrently; retry the request' },
+        );
+        await Promise.all([
+            this.runRedisMutationBestEffort(
+                'auth.mfa_enrollment_cleanup_failed',
+                () => this.getRedis().del(key),
+            ),
+            this.runRedisMutationBestEffort(
+                'auth.mfa_enrollment_session_marker_failed',
+                () => this.markSessionMfaVerified(session.id, committed.effectiveExpiresAt),
+            ),
+        ]);
 
         return {
             success: true,
             mfaVerified: true,
             backupCodes,
-            accessToken: this.jwtService.generateAccessToken(payload),
-            accessTokenMaxAgeMs: this.getAccessTokenMaxAgeMs(effectiveExpiresAt),
+            accessToken: committed.accessToken,
+            accessTokenMaxAgeMs: committed.accessTokenMaxAgeMs,
         };
     }
 
@@ -2041,29 +2547,21 @@ export class AuthService {
         userId: string,
         code: string,
         sessionClaims: { tenantId: string; sessionId: string },
+        requestAudit: SessionRequestAudit = {},
     ) {
-        const { user, settings } = await this.loadMfaSessionContext(userId, sessionClaims);
-        const access = await this.rbacService.getEffectiveAccess(user.id, user.tenantId);
-        if (this.isMfaRequired(user, settings, access) && this.isPrivilegedMfaRequiredForAccess(access)) {
-            throw new ForbiddenException('MFA is required for administrative access');
-        }
-        if (settings.requireMfaForAll) {
-            throw new ForbiddenException('MFA is required by workspace policy');
-        }
-        if (!user.mfaEnabled) {
-            return { success: true, mfaEnabled: false };
-        }
+        const { user, session } = await this.loadMfaSessionContext(userId, sessionClaims);
 
         const normalizedCode = typeof code === 'string' ? code.trim().replace(/\s+/g, '') : '';
-        const sessions = await this.getTenantDb().withTenant(user.tenantId, async (tx) => {
-            await tx.$queryRaw`
-                SELECT "id"
-                FROM "User"
-                WHERE "id" = ${user.id} AND "tenantId" = ${user.tenantId}
-                FOR UPDATE
-            `;
+        const audit = this.securityRequestAudit(requestAudit);
+        const revokedSessionIds = await runSerializableMutationWithRetry(
+            () => this.getTenantDb().withTenant(user.tenantId, async (tx) => {
+            const access = await this.rbacService.authorizeSelfSecurityMutationInTransaction(
+                tx,
+                user.tenantId,
+                { actorUserId: user.id, actorSessionId: session.id },
+            );
             const currentUser = await tx.user.findFirst({
-                where: { id: user.id, tenantId: user.tenantId, deletedAt: null },
+                where: { id: user.id, tenantId: user.tenantId, deletedAt: null, suspendedAt: null },
                 select: {
                     id: true,
                     mfaEnabled: true,
@@ -2072,6 +2570,18 @@ export class AuthService {
                 },
             });
             if (!currentUser) throw new UnauthorizedException('User not found');
+            const currentSession = await tx.session.findFirst({
+                where: { id: session.id, userId: currentUser.id },
+            });
+            if (!currentSession) throw new UnauthorizedException('Invalid or expired session');
+            const settings = await this.tenantSecuritySettingsInTransaction(tx, user.tenantId);
+            this.assertSessionActive(currentSession, settings);
+            if (this.isPrivilegedMfaRequiredForAccess(access)) {
+                throw new ForbiddenException('MFA is required for administrative access');
+            }
+            if (settings.requireMfaForAll) {
+                throw new ForbiddenException('MFA is required by workspace policy');
+            }
             if (currentUser.mfaEnabled) {
                 const matchedTotpTimeStep = currentUser.mfaSecret
                     ? this.findMatchingTotpTimeStep(currentUser.mfaSecret, normalizedCode)
@@ -2087,6 +2597,11 @@ export class AuthService {
                     await this.claimTotpTimeStep(tx, user.tenantId, user.id, matchedTotpTimeStep);
                 }
 
+                const activeSessions = await tx.session.findMany({
+                    where: { userId: user.id, revokedAt: null },
+                    select: { id: true },
+                });
+
                 await tx.user.update({
                     where: { id: user.id },
                     data: {
@@ -2095,16 +2610,39 @@ export class AuthService {
                         mfaBackupCodes: [],
                     },
                 });
+                const sessions = await tx.session.updateMany({
+                    where: { userId: user.id, revokedAt: null },
+                    data: { revokedAt: new Date() },
+                });
+                await tx.auditLog.create({
+                    data: {
+                        tenantId: user.tenantId,
+                        userId: user.id,
+                        actorUserId: user.id,
+                        actorTenantId: user.tenantId,
+                        action: 'MFA_DISABLED',
+                        resource: 'User',
+                        resourceId: user.id,
+                        newValue: {
+                            mfaEnabled: false,
+                            sessionsRevoked: sessions.count,
+                        },
+                        ipAddress: audit.ipAddress,
+                        userAgent: audit.userAgent,
+                    },
+                });
+
+                return activeSessions.map((session) => session.id);
             }
 
-            return tx.session.findMany({
-                where: { userId: user.id },
-                select: { id: true },
-            });
-        });
-        if (sessions.length > 0) {
-            await this.getRedis().del(...sessions.map(({ id }) => KEY_SESSION_MFA(id)));
-        }
+            return [];
+            }, { isolationLevel: 'Serializable' }),
+            { conflictMessage: 'Authorization or MFA state changed concurrently; retry the request' },
+        );
+        await this.clearSessionMfaMarkersBestEffort(
+            revokedSessionIds,
+            'auth.mfa_disable_marker_cleanup_failed',
+        );
 
         return { success: true, mfaEnabled: false };
     }
@@ -2130,7 +2668,7 @@ export class AuthService {
                 where: {
                     id: userId,
                     tenantId: sessionClaims.tenantId,
-                    deletedAt: null,
+                    deletedAt: null, suspendedAt: null,
                 },
                 select: {
                     id: true,
@@ -2224,7 +2762,7 @@ export class AuthService {
                     FOR UPDATE
                 `;
                 const lockedUser = await tx.user.findFirst({
-                    where: { id: user.id, tenantId: user.tenantId, deletedAt: null },
+                    where: { id: user.id, tenantId: user.tenantId, deletedAt: null, suspendedAt: null },
                     select: { id: true, loginAttempts: true, lockedUntil: true },
                 });
                 if (!lockedUser || (lockedUser.lockedUntil && lockedUser.lockedUntil > new Date())) return;
@@ -2285,22 +2823,73 @@ export class AuthService {
 
         return { status: revoked.count === 1 ? 'revoked' : 'already_invalid' };
     }
-    private async exchangeCode(endpoint: string, params: Record<string, string>): Promise<any> {
-        const body = new URLSearchParams(params).toString();
-        const response = await fetch(endpoint, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-            body,
+    private async requestAuthProvider(url: string, options: SecureRequestOptions): Promise<Response> {
+        let deadlineTimer: ReturnType<typeof setTimeout> | undefined;
+        const deadline = new Promise<never>((_resolve, reject) => {
+            deadlineTimer = setTimeout(
+                () => reject(new Error('Auth provider request deadline exceeded')),
+                AUTH_PROVIDER_REQUEST_TIMEOUT_MS,
+            );
         });
-        if (!response.ok) throw new UnauthorizedException('OIDC token exchange failed');
-        return response.json();
+
+        try {
+            return await Promise.race([
+                secureHttpRequest(url, {
+                    ...options,
+                    timeoutMs: AUTH_PROVIDER_REQUEST_TIMEOUT_MS,
+                }),
+                deadline,
+            ]);
+        } finally {
+            if (deadlineTimer) clearTimeout(deadlineTimer);
+        }
     }
 
-    private async fetchUserInfo(issuerUrl: string, accessToken: string): Promise<any> {
-        const response = await fetch(`${issuerUrl}/o/oauth2/userinfo`, {
-            headers: { Authorization: `Bearer ${accessToken}` },
-        });
-        if (!response.ok) throw new UnauthorizedException('Failed to fetch user info');
-        return response.json();
+    private async readProviderJsonObject(response: Response): Promise<Record<string, unknown>> {
+        const payload: unknown = await response.json();
+        if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
+            throw new Error('Provider returned an invalid JSON object');
+        }
+        return payload as Record<string, unknown>;
+    }
+
+    private async exchangeCode(endpoint: string, params: Record<string, string>): Promise<{ access_token: string }> {
+        const body = new URLSearchParams(params).toString();
+        try {
+            const response = await this.requestAuthProvider(endpoint, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                body,
+                timeoutMs: AUTH_PROVIDER_REQUEST_TIMEOUT_MS,
+                maxResponseBytes: MAX_OIDC_TOKEN_RESPONSE_BYTES,
+                redirect: 'error',
+            });
+            if (!response.ok) throw new UnauthorizedException('OIDC token exchange failed');
+            const payload = await this.readProviderJsonObject(response);
+            const accessToken = payload.access_token;
+            if (typeof accessToken !== 'string' || !accessToken || accessToken.length > MAX_OIDC_ACCESS_TOKEN_LENGTH) {
+                throw new UnauthorizedException('OIDC token exchange failed');
+            }
+            return { access_token: accessToken };
+        } catch (error) {
+            if (error instanceof UnauthorizedException) throw error;
+            throw new UnauthorizedException('OIDC token exchange failed');
+        }
+    }
+
+    private async fetchUserInfo(issuerUrl: string, accessToken: string): Promise<OidcUserInfo> {
+        try {
+            const response = await this.requestAuthProvider(`${issuerUrl}/o/oauth2/userinfo`, {
+                headers: { Authorization: `Bearer ${accessToken}` },
+                timeoutMs: AUTH_PROVIDER_REQUEST_TIMEOUT_MS,
+                maxResponseBytes: MAX_OIDC_USERINFO_RESPONSE_BYTES,
+                redirect: 'error',
+            });
+            if (!response.ok) throw new UnauthorizedException('Failed to fetch user info');
+            return await this.readProviderJsonObject(response) as OidcUserInfo;
+        } catch (error) {
+            if (error instanceof UnauthorizedException) throw error;
+            throw new UnauthorizedException('Failed to fetch user info');
+        }
     }
 }

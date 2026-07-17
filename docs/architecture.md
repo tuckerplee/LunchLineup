@@ -12,7 +12,7 @@ Before any technology choice, these are the principles that govern every decisio
 
 1. **If it's manual, it will fail at 3am.** Every process that touches production must be automated, tested, and reversible.
 2. **If it's external, it can disappear.** Every CDN asset, every npm package, every Docker base image — either we vendor it, pin it, or have a fallback. We never depend on a third-party URL being available at deploy time.
-3. **If it can't roll back in under 60 seconds, it can't ship.** No deployment, migration, or config change goes live without a proven rollback path.
+3. **If rollback is not proven, it cannot ship.** Every deployment, migration, or config change needs a tested rollback path and a measured recovery objective.
 4. **If it wasn't tested exactly like production, it wasn't tested.** Dev, staging, and production are the same Docker images, same Postgres version, same Redis version, same network topology. Only secrets differ.
 5. **If we can't see it, it doesn't exist.** Every request, every error, every slow query, every failed background job must be observable, traceable, and alertable before the first beta user logs in.
 6. **Assume the network is hostile.** Every request could be forged, replayed, or redirected. DNS can lie. Browsers can be coerced. Internal services can be probed. We defend at every layer — network, transport, application, and database — because defense-in-depth is the only defense that works.
@@ -166,7 +166,7 @@ export function buildSecurityHeaders(config: PlatformConfig) {
       styleSrc:   ["'self'", "'unsafe-inline'", ...config.security.cspExtraStyleSrc],
       imgSrc:     ["'self'", 'data:', ...config.security.cspExtraImgSrc],
       fontSrc:    ["'self'", ...config.security.cspExtraFontSrc],
-      connectSrc: ["'self'", `wss://${config.domain}`, ...config.security.cspExtraConnectSrc],
+      connectSrc: ["'self'", ...config.security.cspExtraConnectSrc],
       frameAncestors: config.security.allowIframeEmbedding ? config.security.iframeAllowedOrigins : ["'none'"],
       baseUri:    ["'self'"],
       formAction: ["'self'"],
@@ -225,6 +225,12 @@ Docker is not a deployment detail — it is the **entire development, testing, a
 | `lunchlineup-control` | `node:22-alpine` (pinned digest) | Out-of-band management/control plane (port 300X) |
 
 > **Every base image is pinned by SHA256 digest**, not just tag. `node:22-alpine` can change without notice. `node@sha256:abc123...` cannot. Base images are rebuilt and re-pinned monthly via an automated PR.
+
+### Current production ownership
+
+Production currently uses the `vm217-compose-v1` topology. Terraform accepts exactly Proxmox VM ID `217` for the protected production app host and rejects every other ID. It owns that host's bootstrap, network/firewall boundary, and DNS contract. The checked-in production Compose stack on VM217 is the sole current data plane for PgBouncer, PostgreSQL, Redis, and RabbitMQ. Runtime and migration DSNs target `postgres:5432`, and the logical-backup and PITR jobs target that same Compose service. Terraform does not provision a parallel data VM or expose data-service ports.
+
+Moving the data plane off VM217 requires a new versioned topology and one reviewed cutover that changes DSNs, backup/PITR ownership, restore proof, queue/data replication, rollback proof, and Compose service ownership together. A second live owner must not be introduced as an incremental Terraform resource.
 
 ## 2.2 — Docker Compose: One Command Development
 
@@ -297,7 +303,7 @@ Every push to any branch triggers the full pipeline. **No human manually builds,
 │ 14. Deploy to Staging (auto on main branch merge)                  │
 │ 15. Staging Smoke Tests (Playwright critical path subset)           │
 │ 16. Manual Promotion Gate → Production                             │
-│ 17. Blue/Green Deploy to Production                                │
+│ 17. Guarded In-Place Deploy to Production                                │
 │ 18. Production Smoke Tests (health endpoints + critical query)      │
 │ 19. If smoke fails → Auto-Rollback to Previous SHA                 │
 └─────────────────────────────────────────────────────────────────────┘
@@ -309,7 +315,7 @@ Every push to any branch triggers the full pipeline. **No human manually builds,
 - **Steps 6–7**: Images tagged with the exact git SHA. Every image is traceable to a commit.
 - **Steps 8–13**: The ephemeral environment is a complete Docker Compose stack spun up inside CI with real Postgres, real Redis, real service containers. Tests run against *production-identical infrastructure*, not mocks.
 - **Step 16**: Manual gate. A senior engineer clicks "Deploy to Production" in the GitHub Actions UI after reviewing staging. No auto-deploy to production.
-- **Step 19**: If production smoke tests fail, the pipeline automatically rolls back to the previous known-good image SHA. Rollback takes < 60 seconds (it's just re-deploying the old image).
+- **Step 19**: If production smoke tests fail, the pipeline restores the retained previous release inputs. The recovery duration is measured in drills because secret rehydration, compatibility checks, and service readiness can exceed one minute.
 
 ## 3.2 — Automated Database Migrations
 
@@ -321,7 +327,7 @@ Migrations are **never run manually**. They are an automated, gated step in the 
    - **Adding** a column: Allowed. Old code ignores it.
    - **Dropping** a column: Never in one step. Phase 1: stop reading it. Phase 2 (next deploy): drop it.
    - **Renaming**: Never. Add new → backfill → deprecate old → drop old (across 3 separate deployments).
-4. **Rollback migrations**: Every migration has a corresponding `down` migration tested in CI. If a deploy fails post-migration, the rollback pipeline runs the down migration automatically.
+4. **Schema-compatible rollback**: Production rollback keeps the candidate schema and restores the prior compatible application release; destructive down migrations are not run automatically.
 5. **Migration lock**: Postgres advisory locks prevent two migration containers from running simultaneously (e.g., during a race in CI).
 
 ## 3.3 — Automated Upgrade Process (Self-Healing)
@@ -679,7 +685,7 @@ All rate limits are resolved from the tenant's billing plan tier via `resolveRat
 - **npm/pip lockfiles with integrity hashes**: `npm ci` and `pip install --require-hashes` in CI. If a dependency's hash changes (indicating tampering or silent republish), the build fails.
 - **Dependabot + manual review**: Automated PRs for dependency updates. No auto-merge — a human reviews every dependency update before it enters the codebase.
 - **No `postinstall` scripts**: ESLint rule + CI check prevents packages with `postinstall` scripts from being added without explicit allowlisting. This is a common supply-chain attack vector.
-- **SBOM generation**: A Software Bill of Materials (SBOM) in CycloneDX format is generated on every release. Enables rapid response to newly discovered CVEs in transitive dependencies.
+- **Release report provenance**: Syft SPDX and Trivy JSON reports are generated from each of the seven digest-pinned release images. CI hashes each report into versioned evidence, keylessly signs that evidence with the main-workflow GitHub OIDC identity, attaches the predicate to the exact image digest as an OCI attestation, re-verifies both proofs at the aggregate gate, retains the offline files for the public Actions maximum of 90 days, and publishes all 43 source-bound assets in an indefinitely retained immutable GitHub prerelease.
 
 ---
 
@@ -747,7 +753,7 @@ Dashboard showing:
 - **Quick actions**:
   - Start / Stop / Restart any individual service.
   - Restart all services.
-  - Pull latest images and redeploy (with blue/green rollout).
+  - Pull immutable release images and perform a guarded in-place redeploy.
   - Trigger a manual backup.
   - Restore from a previous backup (dropdown of available encrypted dumps).
   - View recent logs (tail of structured log output, filterable by service).
@@ -958,7 +964,7 @@ All endpoints require the control plane session token. All actions are logged.
 | **4** | **Core API** | NestJS API gateway (all CRUD routes), Zod validation, rate limiting, API versioning, webhook system. |
 | **5** | **Scheduling Engine** | Python FastAPI gRPC service, constraint solver, PDF parser, break calculator, message queue integration. |
 | **6** | **Frontend Foundation** | Next.js scaffold, design system tokens, Storybook component library, vendored assets, font self-hosting, asset fallback system. |
-| **7** | **UX Implementation** | Schedule table, drag-and-drop, Framer Motion animations, real-time WebSocket sync, optimistic UI, responsive tablet/mobile. |
+| **7** | **UX Implementation** | Schedule table, drag-and-drop, Framer Motion animations, optimistic UI, responsive tablet/mobile. |
 | **8** | **Billing & Onboarding** | Stripe integration, plan management, onboarding wizard, seed data, notification system. |
 | **9** | **Testing** | Full test suite (unit, integration, E2E, load, chaos, fuzz), visual regression, accessibility audit. |
 | **10** | **Observability** | Prometheus/Grafana/Loki/Tempo stack, all dashboards, alerting, runbooks, public status page. |

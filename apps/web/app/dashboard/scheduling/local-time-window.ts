@@ -1,8 +1,8 @@
 import {
   addLocalDays,
   dateValueInTimeZone,
-  localDateTimeToIso,
   timeValueInTimeZone,
+  unambiguousLocalDateTimeToIso,
 } from '../../../lib/location-timezone';
 
 export type LocalTimeWindow = {
@@ -25,24 +25,6 @@ export function serializeLocalTimeWindow(window: LocalTimeWindow, timeZone: stri
   const endDate = window.endTime < window.startTime ? addLocalDays(window.date, 1) : window.date;
   const endTime = unambiguousLocalDateTimeToIso(endDate, window.endTime, timeZone);
   return { startTime, endTime };
-}
-
-function unambiguousLocalDateTimeToIso(date: string, time: string, timeZone: string): string {
-  const iso = localDateTimeToIso(date, time, timeZone);
-  const instant = new Date(iso);
-  const ambiguous = [30, 60, 90, 120].some((minutes) => (
-    matchesWallTime(new Date(instant.getTime() - minutes * 60_000), date, time, timeZone)
-    || matchesWallTime(new Date(instant.getTime() + minutes * 60_000), date, time, timeZone)
-  ));
-  if (ambiguous) {
-    throw new Error('Local date/time is ambiguous during the daylight-saving fallback. Choose a different time.');
-  }
-  return iso;
-}
-
-function matchesWallTime(instant: Date, date: string, time: string, timeZone: string): boolean {
-  return dateValueInTimeZone(instant, timeZone) === date
-    && timeValueInTimeZone(instant, timeZone) === time;
 }
 
 export function localTimeWindowFromInstants(

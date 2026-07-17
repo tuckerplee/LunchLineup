@@ -1,24 +1,72 @@
 import { BadRequestException, UnauthorizedException } from '@nestjs/common';
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { OtpService } from './otp.service';
 
-vi.mock('ioredis', () => ({
-    default: vi.fn().mockImplementation(function RedisMock() {
-        return { on: vi.fn() };
+const { redisConstructor } = vi.hoisted(() => ({
+    redisConstructor: vi.fn().mockImplementation(function RedisMock(this: { on: ReturnType<typeof vi.fn> }) {
+        this.on = vi.fn();
     }),
 }));
 
+vi.mock('ioredis', () => ({
+    default: redisConstructor,
+}));
+
+const OTP_HMAC_SECRET = 'otp-test-hmac-secret-with-at-least-32-characters';
 const configService = {
-    get: (_key: string, fallback?: string) => fallback,
+    get: (key: string, fallback?: string) => key === 'OTP_HMAC_SECRET' ? OTP_HMAC_SECRET : fallback,
 };
 
-function serviceWith(redis: { eval: ReturnType<typeof vi.fn>; on: ReturnType<typeof vi.fn> }) {
+function serviceWith(redis: {
+    eval: ReturnType<typeof vi.fn>;
+    on: ReturnType<typeof vi.fn>;
+    disconnect?: ReturnType<typeof vi.fn>;
+}) {
     const service = new OtpService(configService as any);
     (service as any).redis = redis;
     return service;
 }
 
 describe('OtpService', () => {
+    beforeEach(() => {
+        vi.clearAllMocks();
+    });
+
+    it('does not create a Redis client during construction or unused shutdown', () => {
+        const service = new OtpService(configService as any);
+
+        expect(redisConstructor).not.toHaveBeenCalled();
+        service.onModuleDestroy();
+        expect(redisConstructor).not.toHaveBeenCalled();
+    });
+
+    it('creates and configures Redis only when the first OTP operation needs it', async () => {
+        const redis = { eval: vi.fn().mockResolvedValue(1), on: vi.fn(), disconnect: vi.fn() };
+        redisConstructor.mockImplementationOnce(function RedisOperationMock(this: typeof redis) {
+            this.eval = redis.eval;
+            this.on = redis.on;
+            this.disconnect = redis.disconnect;
+        });
+        const service = new OtpService(configService as any);
+
+        expect(redisConstructor).not.toHaveBeenCalled();
+        await service.generateOtp('admin@example.com', { tenantSlug: 'demo' });
+
+        expect(redisConstructor).toHaveBeenCalledOnce();
+        expect(redis.on).toHaveBeenCalledWith('error', expect.any(Function));
+        service.onModuleDestroy();
+        expect(redis.disconnect).toHaveBeenCalledWith(false);
+    });
+
+    it('disconnects its Redis client during module shutdown', () => {
+        const redis = { eval: vi.fn(), on: vi.fn(), disconnect: vi.fn() };
+        const service = serviceWith(redis);
+
+        service.onModuleDestroy();
+
+        expect(redis.disconnect).toHaveBeenCalledWith(false);
+    });
+
     it('generates and stores a 6-digit OTP atomically', async () => {
         const redis = { eval: vi.fn().mockResolvedValue(1), on: vi.fn() };
         const service = serviceWith(redis);
@@ -33,11 +81,19 @@ describe('OtpService', () => {
             'otp_rate:tenant:demo:admin@example.com',
             'otp_attempts:tenant:demo:admin@example.com',
             'otp_lock:tenant:demo:admin@example.com',
-            code,
+            expect.stringMatching(/^[a-f0-9]{64}$/),
             '600',
             '60',
             '5',
         );
+        expect(redis.eval.mock.calls[0][6]).not.toBe(code);
+        expect(redis.eval.mock.calls[0][6]).toBe((service as any).hashOtp('tenant:demo:admin@example.com', code));
+    });
+
+    it('fails closed without a dedicated HMAC secret in production', () => {
+        expect(() => new OtpService({
+            get: (key: string) => key === 'NODE_ENV' ? 'production' : undefined,
+        } as any)).toThrow(/OTP_HMAC_SECRET/);
     });
 
     it('requires a tenant or onboarding scope for OTP storage', async () => {
@@ -96,7 +152,7 @@ describe('OtpService', () => {
             'otp:tenant:demo:owner@example.com',
             'otp_attempts:tenant:demo:owner@example.com',
             'otp_lock:tenant:demo:owner@example.com',
-            '000000',
+            (service as any).hashOtp('tenant:demo:owner@example.com', '000000'),
             '5',
             '600',
         );
@@ -118,7 +174,7 @@ describe('OtpService', () => {
             'otp:tenant:demo:owner@example.com',
             'otp_attempts:tenant:demo:owner@example.com',
             'otp_lock:tenant:demo:owner@example.com',
-            '123456',
+            (service as any).hashOtp('tenant:demo:owner@example.com', '123456'),
             '5',
             '600',
         );

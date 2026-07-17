@@ -1,3 +1,5 @@
+import { PUBLIC_LEGAL_MANIFEST } from '@lunchlineup/config';
+
 export type LegalContact = {
   displayName: string;
   email: string | null;
@@ -56,12 +58,12 @@ function publicEmail(displayName: string, candidates: ContactCandidate[]): Legal
   };
 }
 
-export const LEGAL_LAST_UPDATED = 'July 9, 2026';
+export const LEGAL_LAST_UPDATED = PUBLIC_LEGAL_MANIFEST.documents.privacy.lastUpdated;
 
 export const selfServiceTermsReadiness = {
-  counselApproved: false,
-  version: null as string | null,
-  status: 'Draft - not counsel approved',
+  counselApproved: PUBLIC_LEGAL_MANIFEST.selfServiceSignup.counselApproved,
+  version: PUBLIC_LEGAL_MANIFEST.selfServiceSignup.approvedVersions.terms,
+  status: PUBLIC_LEGAL_MANIFEST.selfServiceSignup.status,
 };
 
 export const legalContacts = {

@@ -16,6 +16,34 @@ BACKUP_DIR="${PITR_STAGING_DIR}/${BACKUP_ID}"
 BACKUP_DATA_DIR="${BACKUP_DIR}/data"
 PITR_MC_CONFIG_DIR=""
 
+validate_candidate_binding() {
+  [ "${PITR_REQUIRE_CANDIDATE_BINDING:-false}" = "true" ] || return 0
+  case "${CANDIDATE_SYSTEMD_INVOCATION_ID:-}" in
+    ????????????????????????????????)
+      case "${CANDIDATE_SYSTEMD_INVOCATION_ID}" in *[!A-Fa-f0-9]*) pitr_fail "Candidate systemd InvocationID must be 32 hexadecimal characters." ;; esac
+      ;;
+    *) pitr_fail "Candidate systemd InvocationID must be 32 hexadecimal characters." ;;
+  esac
+  case "${CANDIDATE_SOURCE_SHA:-}" in
+    ????????????????????????????????????????)
+      case "${CANDIDATE_SOURCE_SHA}" in *[!a-f0-9]*) pitr_fail "Candidate source SHA must be 40 lowercase hexadecimal characters." ;; esac
+      ;;
+    *) pitr_fail "Candidate source SHA must be 40 lowercase hexadecimal characters." ;;
+  esac
+  case "${CANDIDATE_IMAGE_DIGEST:-}" in
+    sha256:????????????????????????????????????????????????????????????????)
+      case "${CANDIDATE_IMAGE_DIGEST#sha256:}" in *[!a-f0-9]*) pitr_fail "Candidate image digest must be a lowercase sha256 digest." ;; esac
+      ;;
+    *) pitr_fail "Candidate image digest must be a lowercase sha256 digest." ;;
+  esac
+  case "${CANDIDATE_RELEASE_PATH:-}" in
+    /*) ;;
+    *) pitr_fail "Candidate release path must be absolute." ;;
+  esac
+  [ "${CANDIDATE_RELEASE_PATH##*/}" = "${CANDIDATE_SOURCE_SHA}" ] \
+    || pitr_fail "Candidate release path must end with the candidate source SHA."
+}
+
 cleanup() {
   rm -rf "${BACKUP_DIR}"
   pitr_close_object_store
@@ -25,6 +53,7 @@ trap cleanup EXIT HUP INT TERM
 case "${PITR_STAGING_DIR}" in
   '' | / | . | ..) pitr_fail "PITR_STAGING_DIR must be a dedicated directory." ;;
 esac
+validate_candidate_binding
 
 for command_name in pg_basebackup pg_verifybackup tar sha256sum find mktemp; do
   command -v "${command_name}" >/dev/null 2>&1 || pitr_fail "Required command is missing: ${command_name}"
@@ -85,3 +114,8 @@ fi
 
 printf 'pitr_base_backup_ok backup_id=%s manifest_sha256=%s remote=%s completed_at=%s\n' \
   "${BACKUP_ID}" "${MANIFEST_SHA256}" "${REMOTE_BACKUP}" "${COMPLETED_AT}"
+if [ "${PITR_REQUIRE_CANDIDATE_BINDING:-false}" = "true" ]; then
+  printf 'pitr_candidate_binding_ok invocation_id=%s candidate_path=%s source_sha=%s image_digest=%s\n' \
+    "${CANDIDATE_SYSTEMD_INVOCATION_ID}" "${CANDIDATE_RELEASE_PATH}" \
+    "${CANDIDATE_SOURCE_SHA}" "${CANDIDATE_IMAGE_DIGEST}"
+fi

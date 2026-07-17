@@ -4,7 +4,7 @@
 
 VM107 is disposable. If the VM is broken or intentionally removed, restore access by creating a fresh Debian VM on a healthy Proxmox1 host, assigning the same private IP shape, bootstrapping from GitHub, restoring already-available data, and validating private routes. Target restore time is 15 minutes after the VM exists and the data dump is available.
 
-Do not use this runbook for production VM106.
+Do not use this runbook for current production VM217. VM106 is the historical legacy PHP source identity, not the production target; VM107 remains disposable development only.
 
 ## Files
 

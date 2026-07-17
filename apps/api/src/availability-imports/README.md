@@ -1,0 +1,16 @@
+# Availability Imports
+
+Tenant-scoped, credit-metered PDF availability imports.
+
+## Files
+
+- `README.md`: this folder guide.
+- `availability-imports.controller.spec.ts`: upload boundary, tenant authorization, and private error response coverage.
+- `availability-imports.controller.ts`: authenticated multipart upload and import-status endpoints.
+- `availability-imports.module.ts`: NestJS module wiring.
+- `availability-imports.publisher.spec.ts`: fast-worker, confirmed-publish crash recovery, lease reclaim, and broker-failure state-machine coverage.
+- `availability-imports.publisher.ts`: leased database outbox publisher that confirms RabbitMQ delivery without mutating worker-owned processing status.
+- `availability-imports.service.spec.ts`: PDF validation, public employee-identity/account-binding separation, encrypted-envelope/AAD recovery, idempotency, exact debit/refund ledger settlement, terminal-result erasure, and cleanup contracts.
+- `availability-imports.service.ts`: atomic AES-256-GCM durable source creation, tenant-scoped public employee-identity and account binding, replay-safe job creation, paid-credit reservation, exact durable debit/refund settlement responses, and stale-file cleanup.
+
+Uploads accept exactly one PDF no larger than 5 MiB and require a manager-visible Employee ID or Staff ID that matches the PDF. The API stores only its normalized hash for document matching; a separate server-only hash binds the job to the active tenant user, so email-only invitees work without showing or asking managers for database UUIDs. The versioned request identity is part of replay comparison, so changing the target user, PDF, or visible identifier conflicts instead of consuming credit again. Before returning `202`, the API validates MIME, extension, signature, filename, and size; encrypts the bytes with dedicated `AVAILABILITY_IMPORT_ENCRYPTION_KEY`; authenticates tenant ID, import ID, and SHA-256 as AAD; and commits the envelope in the same transaction as the tenant-RLS job, active paid-subscription check, positive paid-credit reservation/debit, and publication outbox state. Plaintext filenames, employee identifiers, and PDF bytes are never persisted or logged. Local upload storage is only a verified optimization. The worker can recover after local-file loss from the authenticated database envelope, rechecks size, hash, and PDF signature before parser execution, and treats missing/corrupt durable plus local sources as retryable infrastructure failure. Success, failure, dead-letter, cancellation, user deletion, and retention cleanup erase both the encrypted payload and local reference; raw source retention is at most 24 hours and normally ends immediately at terminalization. Parsed results remain review-only and are erased 24 hours after completion.

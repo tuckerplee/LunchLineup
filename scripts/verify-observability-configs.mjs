@@ -2,7 +2,7 @@ import yaml from 'js-yaml';
 import { spawnSync } from 'node:child_process';
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, join, resolve } from 'node:path';
+import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 export const OBSERVABILITY_FILES = Object.freeze({
@@ -25,6 +25,12 @@ export const OBSERVABILITY_TOOL_IMAGES = Object.freeze({
 });
 
 export const OBSERVABILITY_TOOL_MODES = Object.freeze(['off', 'auto', 'host', 'container']);
+export const PROMETHEUS_VALIDATION_CREDENTIALS_FILE =
+  'infrastructure/prometheus/promtool-validation-credentials.txt';
+export const PROMETHEUS_RULE_TEST_FILES = Object.freeze([
+  'infrastructure/prometheus/alerts/tests/lunchlineup.test.yml',
+  'infrastructure/prometheus/alerts/tests/tenant-deletion-billing.test.yml',
+]);
 
 const scriptDir = dirname(fileURLToPath(import.meta.url));
 const defaultRoot = resolve(scriptDir, '..');
@@ -35,6 +41,8 @@ const containerPaths = Object.freeze({
   prometheusConfig: '/etc/prometheus/prometheus.yml',
   prometheusAlertsDir: '/etc/prometheus/alerts',
   prometheusAlertRules: '/etc/prometheus/alerts/lunchlineup.yml',
+  prometheusCredentials: '/run/secrets/metrics_token',
+  prometheusRuleTestsDir: '/etc/prometheus/alerts/tests',
   alertmanagerConfig: '/etc/alertmanager/alertmanager.yml',
 });
 const toolVersionArgs = Object.freeze({
@@ -84,7 +92,11 @@ const expectedAlerts = Object.freeze([
   'PublicWebProbeStale',
   'HighApiErrorRate',
   'HighApiLatency',
-  'RabbitMQDependencyUnavailable',
+  'ApiAvailabilityBudgetFastBurn',
+  'ApiAvailabilityBudgetSlowBurn',
+  'PublicWebAvailabilityBudgetFastBurn',
+  'PublicWebAvailabilityBudgetSlowBurn',
+  'RequiredApiDependencyUnavailable',
   'WorkerJobFailures',
   'WebhookReplayNotReady',
   'WebhookReplayFailures',
@@ -100,6 +112,8 @@ const expectedAlerts = Object.freeze([
   'PitrWalArchiveStale',
   'RetentionPurgeTelemetryMissing',
   'RetentionPurgeStale',
+  'ApplicationDataRetentionExecutionTelemetryMissing',
+  'ApplicationDataRetentionExecutionStale',
   'RetentionPurgeFailed',
   'RetentionPurgeCandidatesReady',
 ]);
@@ -182,6 +196,7 @@ function defaultToolRunner(command, args, options = {}) {
     cwd: options.cwd,
     encoding: 'utf8',
     env: options.env ?? process.env,
+    timeout: options.timeoutMs ?? 180_000,
     windowsHide: true,
   });
 }
@@ -242,6 +257,19 @@ function prepareHostPrometheusConfigCommand(root) {
   const adjustedConfig = {
     ...prometheus,
     rule_files: asArray(prometheus.rule_files).map((ruleFile) => repoPrometheusRulePath(root, String(ruleFile))),
+    scrape_configs: asArray(prometheus.scrape_configs).map((scrapeConfig) => {
+      const authorization = asMap(scrapeConfig?.authorization);
+      if (authorization.credentials_file !== containerPaths.prometheusCredentials) {
+        return scrapeConfig;
+      }
+      return {
+        ...scrapeConfig,
+        authorization: {
+          ...authorization,
+          credentials_file: join(root, PROMETHEUS_VALIDATION_CREDENTIALS_FILE),
+        },
+      };
+    }),
   };
   writeFileSync(tempConfigPath, yaml.dump(adjustedConfig, { lineWidth: -1 }), 'utf8');
 
@@ -286,8 +314,9 @@ export function buildObservabilityToolCommands(options = {}) {
       '--rm',
       '-v',
       dockerVolume(root, relativePath, containerPaths.caddyConfig),
+      '--entrypoint',
+      '/usr/bin/caddy',
       OBSERVABILITY_TOOL_IMAGES.caddy,
-      'caddy',
       'validate',
       '--config',
       containerPaths.caddyConfig,
@@ -310,8 +339,15 @@ export function buildObservabilityToolCommands(options = {}) {
         dockerVolume(root, OBSERVABILITY_FILES.prometheus, containerPaths.prometheusConfig),
         '-v',
         dockerVolume(root, 'infrastructure/prometheus/alerts', containerPaths.prometheusAlertsDir),
+        '-v',
+        dockerVolume(
+          root,
+          PROMETHEUS_VALIDATION_CREDENTIALS_FILE,
+          containerPaths.prometheusCredentials,
+        ),
+        '--entrypoint',
+        '/bin/promtool',
         OBSERVABILITY_TOOL_IMAGES.prometheus,
-        'promtool',
         'check',
         'config',
         containerPaths.prometheusConfig,
@@ -327,11 +363,36 @@ export function buildObservabilityToolCommands(options = {}) {
         '--rm',
         '-v',
         dockerVolume(root, OBSERVABILITY_FILES.prometheusAlerts, containerPaths.prometheusAlertRules),
+        '--entrypoint',
+        '/bin/promtool',
         OBSERVABILITY_TOOL_IMAGES.prometheus,
-        'promtool',
         'check',
         'rules',
         containerPaths.prometheusAlertRules,
+      ]),
+    },
+    {
+      id: 'prometheus-rule-tests',
+      tool: 'promtool',
+      label: 'Prometheus alert rule fixtures',
+      hostCommand: commandSpec('promtool', [
+        'test',
+        'rules',
+        ...PROMETHEUS_RULE_TEST_FILES.map((relativePath) => join(root, relativePath)),
+      ]),
+      containerCommand: commandSpec('docker', [
+        'run',
+        '--rm',
+        '-v',
+        dockerVolume(root, 'infrastructure/prometheus/alerts', containerPaths.prometheusAlertsDir),
+        '--workdir',
+        containerPaths.prometheusRuleTestsDir,
+        '--entrypoint',
+        '/bin/promtool',
+        OBSERVABILITY_TOOL_IMAGES.prometheus,
+        'test',
+        'rules',
+        ...PROMETHEUS_RULE_TEST_FILES.map((relativePath) => basename(relativePath)),
       ]),
     },
     {
@@ -344,8 +405,9 @@ export function buildObservabilityToolCommands(options = {}) {
         '--rm',
         '-v',
         dockerVolume(root, OBSERVABILITY_FILES.alertmanager, containerPaths.alertmanagerConfig),
+        '--entrypoint',
+        '/bin/amtool',
         OBSERVABILITY_TOOL_IMAGES.alertmanager,
-        'amtool',
         'check-config',
         containerPaths.alertmanagerConfig,
       ]),
@@ -790,7 +852,6 @@ function validateCaddyfile(root, relativePath, errors, checked) {
   validateCaddyRoute(errors, relativePath, site, '/health', 'api:3000');
   validateCaddyRoute(errors, relativePath, site, '/api/health', 'api:3000', '/api');
   validateCaddyRoute(errors, relativePath, site, '/api/v1/*', 'api:3000', '/api');
-  validateCaddyRoute(errors, relativePath, site, '/ws/*', 'engine:8000');
   validateCaddyRoute(errors, relativePath, site, undefined, 'web:3000');
 
   const handles = childDirectives(site, 'handle');
@@ -836,11 +897,16 @@ function validateComposeObservability(compose, errors) {
 
   const alertmanager = services.alertmanager;
   if (alertmanager) {
+    const publishedPorts = asArray(alertmanager.ports).map(String);
     expect(errors, hasVolume(alertmanager, './infrastructure/alertmanager/alertmanager.yml', '/etc/alertmanager/alertmanager.yml', 'ro'), 'docker-compose.yml: alertmanager must mount alertmanager.yml read-only');
     expect(errors, hasSecret(alertmanager, 'alertmanager_webhook_url'), 'docker-compose.yml: alertmanager must receive alertmanager_webhook_url secret');
     expect(errors, commandList(alertmanager.command).includes('--config.file=/etc/alertmanager/alertmanager.yml'), 'docker-compose.yml: alertmanager must load the mounted config file');
     expect(errors, listValue(alertmanager.networks).includes('management'), 'docker-compose.yml: alertmanager must stay on the management network');
-    expect(errors, !alertmanager.ports, 'docker-compose.yml: alertmanager must not publish host ports');
+    expect(
+      errors,
+      publishedPorts.length === 1 && publishedPorts[0] === '127.0.0.1:9093:9093',
+      'docker-compose.yml: alertmanager must publish only exact 127.0.0.1:9093:9093',
+    );
   }
 
   const nodeExporter = services['node-exporter'];
@@ -885,7 +951,7 @@ function validatePublicWebProbe(root, errors, checked) {
   for (const token of [
     'PUBLIC_WEB_PROBE_URL=https://lunchlineup.com/',
     'PUBLIC_WEB_PROBE_METRICS_FILE=/var/lib/node_exporter/textfile_collector/lunchlineup_public_web.prom',
-    'PUBLIC_WEB_PROBE_EXPECTED_RELEASE_FILE=/opt/lunchlineup/DEPLOYED_GIT_SHA',
+    'PUBLIC_WEB_PROBE_EXPECTED_RELEASE_FILE=/opt/lunchlineup/current/DEPLOYED_GIT_SHA',
     'PUBLIC_WEB_PROBE_CONNECT_TIMEOUT_SECONDS=5',
     'PUBLIC_WEB_PROBE_MAX_TIME_SECONDS=15',
     'PUBLIC_WEB_PROBE_MAX_BYTES=262144',
@@ -896,7 +962,7 @@ function validatePublicWebProbe(root, errors, checked) {
   for (const token of [
     'User=lunchlineup',
     'EnvironmentFile=/etc/lunchlineup/public-web-probe.env',
-    'ExecStart=/usr/bin/bash /opt/lunchlineup/infrastructure/control/public-web-probe.sh',
+    'ExecStart=/usr/bin/bash /opt/lunchlineup/current/infrastructure/control/public-web-probe.sh',
     'TimeoutStartSec=25s',
     'NoNewPrivileges=true',
     'ProtectSystem=strict',
@@ -1087,6 +1153,37 @@ function validateAlertRules(root, alertRules, prometheus, errors) {
     expect(errors, expression.includes('lunchlineup_public_web_probe_last_attempt_timestamp_seconds{job="node"}'), 'lunchlineup.yml: PublicWebProbeStale must use the last-attempt timestamp');
     expect(errors, expression.includes('absent('), 'lunchlineup.yml: PublicWebProbeStale must fail closed when telemetry is absent');
     expect(errors, publicWebProbeStale.labels?.severity === 'critical', 'lunchlineup.yml: PublicWebProbeStale must be critical');
+  }
+
+  for (const [alertName, metric] of [
+    ['PasswordResetEmailDeadLetters', 'lunchlineup_password_reset_email_total'],
+    ['StaffInvitationDeadLetters', 'lunchlineup_staff_invitation_outbox_total'],
+    ['NotificationOutboxDeadLetters', 'lunchlineup_notification_outbox_total'],
+  ]) {
+    const alert = ruleEntries.find(({ rule }) => rule.alert === alertName)?.rule;
+    if (!alert) continue;
+    const expression = String(alert.expr);
+    expect(errors, expression.includes(`increase(${metric}`), `lunchlineup.yml: ${alertName} must use recent terminal transitions`);
+    expect(errors, expression.includes('status="dead_lettered"'), `lunchlineup.yml: ${alertName} must select dead-letter transitions`);
+    expect(errors, expression.includes('[15m]'), `lunchlineup.yml: ${alertName} must recover after the bounded 15-minute incident window`);
+  }
+
+  const retentionExecutionMissing = ruleEntries.find(({ rule }) =>
+    rule.alert === 'ApplicationDataRetentionExecutionTelemetryMissing')?.rule;
+  if (retentionExecutionMissing) {
+    const expression = String(retentionExecutionMissing.expr);
+    expect(errors, expression.includes('absent('), 'lunchlineup.yml: application-data execution telemetry must fail closed when missing');
+    expect(errors, expression.includes('mode="execute"'), 'lunchlineup.yml: application-data execution missing alert must require execute mode');
+    expect(errors, expression.includes('stage="application_data"'), 'lunchlineup.yml: application-data execution missing alert must require the application_data stage');
+  }
+
+  const retentionExecutionStale = ruleEntries.find(({ rule }) =>
+    rule.alert === 'ApplicationDataRetentionExecutionStale')?.rule;
+  if (retentionExecutionStale) {
+    const expression = String(retentionExecutionStale.expr);
+    expect(errors, expression.includes('mode="execute"'), 'lunchlineup.yml: application-data execution stale alert must require execute mode');
+    expect(errors, expression.includes('stage="application_data"'), 'lunchlineup.yml: application-data execution stale alert must require the application_data stage');
+    expect(errors, expression.includes('> 93600'), 'lunchlineup.yml: application-data execution stale alert must use the 26-hour boundary');
   }
 }
 

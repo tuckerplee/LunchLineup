@@ -1,4 +1,5 @@
 import type { Metadata } from 'next';
+import { PUBLIC_LEGAL_MANIFEST } from '@lunchlineup/config';
 import { LEGAL_LAST_UPDATED, legalContacts } from '../legal-config';
 import { LegalContactLink, LegalPage } from '../legal-page';
 
@@ -13,6 +14,7 @@ export default function PrivacyPage() {
       title="Privacy"
       eyebrow="Privacy commitments"
       updated={LEGAL_LAST_UPDATED}
+      version={PUBLIC_LEGAL_MANIFEST.documents.privacy.version}
       summary="LunchLineup uses workspace and scheduling data to run the service, protect customer accounts, support customers, and maintain reliability."
       sections={[
         {
@@ -48,11 +50,18 @@ export default function PrivacyPage() {
         {
           title: 'Retention and Requests',
           body: (
-            <p>
-              Active workspace data is retained while the workspace is active. Archived workspaces are eligible for deletion after the
-              documented retention window unless legal, billing, security, or backup requirements require longer retention.
-              Contact your workspace administrator or LunchLineup support for access, export, correction, or deletion requests.
-            </p>
+            <>
+              <p>
+                Active workspace data is retained while the workspace is active. After a workspace deletion request, application data
+                becomes eligible for purge after 30 days. Database backups are retained for up to 35 days, application and security
+                logs for 90 days, and billing, credit, and audit records for up to seven years when required for financial, compliance,
+                or security evidence. A documented legal hold can delay deletion.
+              </p>
+              <p>
+                Contact your workspace administrator or LunchLineup support for access, export, correction, or deletion requests.
+                Tenant admins can generate an expiring workspace export before requesting deletion.
+              </p>
+            </>
           ),
         },
         {

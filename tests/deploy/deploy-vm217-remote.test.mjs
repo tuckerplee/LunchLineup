@@ -1,24 +1,50 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { spawnSync } from 'node:child_process';
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync, existsSync } from 'node:fs';
+import { spawn, spawnSync } from 'node:child_process';
+import { once } from 'node:events';
+import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
+const deployScript = join(root, 'scripts', 'deploy-vm217-remote.sh');
+const bashPath = process.platform === 'win32' && existsSync('C:\\Program Files\\Git\\bin\\bash.exe')
+  ? 'C:\\Program Files\\Git\\bin\\bash.exe'
+  : 'bash';
+const bashAvailable = spawnSync(bashPath, ['--version'], { encoding: 'utf8' }).status === 0;
 
 function read(path) {
-  return readFileSync(join(root, path), 'utf8');
+  return readFileSync(join(root, path), 'utf8').replaceAll('\r\n', '\n');
+}
+
+function bashPathFor(path) {
+  if (process.platform !== 'win32') return path;
+  return path.replace(/^([A-Za-z]):\\/, (_, drive) => `/${drive.toLowerCase()}/`).replaceAll('\\', '/');
+}
+
+function runChild(command, args, options) {
+  return new Promise((resolvePromise, reject) => {
+    const child = spawn(command, args, options);
+    let stdout = '';
+    let stderr = '';
+    child.stdout.on('data', (chunk) => { stdout += chunk; });
+    child.stderr.on('data', (chunk) => { stderr += chunk; });
+    child.once('error', reject);
+    child.once('close', (status, signal) => resolvePromise({ status, signal, stdout, stderr }));
+  });
 }
 
 test('VM217 production deploy gates success on public and required internal health', () => {
   const script = read('scripts/deploy-vm217-remote.sh');
   const ci = read('.github/workflows/ci.yml');
-  const requiredServices = ['worker', 'engine', 'webhook-replay', 'prometheus', 'alertmanager'];
+  const requiredServices = ['pdf-parser', 'worker', 'engine', 'webhook-replay', 'prometheus', 'alertmanager'];
 
   assert.match(script, /HEALTH_URL="\$\{HEALTH_URL:-\}"/);
+  assert.match(script, /HEALTH_REQUEST_TIMEOUT_SECONDS="\$\{HEALTH_REQUEST_TIMEOUT_SECONDS:-10\}"/);
+  assert.match(script, /HEALTH_POLL_SECONDS="\$\{HEALTH_POLL_SECONDS:-5\}"/);
   assert.match(script, /PRODUCTION_WEB_URL="\$\{PRODUCTION_WEB_URL:-\}"/);
   assert.match(script, /wait_for_health "\$\{HEALTH_URL:-\$PRODUCTION_API_HEALTH_URL\}"/);
   assert.match(script, /wait_for_release_health "\$PRODUCTION_API_HEALTH_URL" "\$SOURCE_SHA"/);
@@ -44,7 +70,44 @@ test('VM217 production deploy gates success on public and required internal heal
   assert.ok(retainedProofIndex < deployedShaIndex);
   assert.ok(deployedShaIndex < successIndex);
   assert.match(script, /Production post-deploy verification failed; the CI failure path must run the configured verified rollback command/);
-  assert.match(ci, /production-rollback:[\s\S]*production_rollback_armed == 'true'[\s\S]*PRODUCTION_ROLLBACK_COMMAND/);
+  assert.match(script, /compose_release up -d --no-build --pull never pdf-parser\r?\n\s*compose_release up -d --no-build --pull never/);
+  assert.match(script, /compose_release logs --tail=100 proxy web api pdf-parser worker/);
+  assert.match(ci, /id: same_gate_release_outcome[\s\S]*id: automatic_production_rollback[\s\S]*scripts\/rollback-vm217-transport\.sh/);
+});
+
+test('VM217 alert gate verifies fresh loopback Alertmanager state before proof and pointer promotion', () => {
+  const script = read('scripts/deploy-vm217-remote.sh');
+  const compose = read('docker-compose.yml');
+  const productionDeploy = script.slice(
+    script.indexOf('run_production_release_deploy()'),
+    script.indexOf('run_development_source_deploy()'),
+  );
+  const alertmanager = compose.slice(
+    compose.indexOf('  alertmanager:'),
+    compose.indexOf('\n  # Observability: Node Exporter'),
+  );
+
+  assert.match(script, /DEPLOY_ALERTMANAGER_URL="\$\{DEPLOY_ALERTMANAGER_URL:-http:\/\/127\.0\.0\.1:9093\/api\/v2\/alerts\}"/);
+  assert.match(script, /DEPLOY_ALERT_MAX_RESPONSE_AGE_MS="\$\{DEPLOY_ALERT_MAX_RESPONSE_AGE_MS:-30000\}"/);
+  assert.match(script, /DEPLOY_ALERT_STABILITY_SECONDS="\$\{DEPLOY_ALERT_STABILITY_SECONDS:-900\}"/);
+  assert.match(script, /--alertmanager-url "\$DEPLOY_ALERTMANAGER_URL"/);
+  assert.match(script, /--max-response-age-ms "\$DEPLOY_ALERT_MAX_RESPONSE_AGE_MS"/);
+  assert.match(script, /DEPLOY_ALERT_MAX_RESPONSE_AGE_MS < 1000 \|\| DEPLOY_ALERT_MAX_RESPONSE_AGE_MS > 300000/);
+  assert.match(script, /DEPLOY_ALERT_BOOT_GRACE_SECONDS > 300/);
+  assert.match(script, /DEPLOY_ALERT_STABILITY_SECONDS < 60 \|\| DEPLOY_ALERT_STABILITY_SECONDS > 900/);
+  assert.match(script, /stable_since=0[\s\S]*now - stable_since >= DEPLOY_ALERT_STABILITY_SECONDS/);
+  assert.match(script, /stable_since=0[\s\S]*Critical LunchLineup alerts did not remain continuously inactive/);
+
+  const alertGateIndex = productionDeploy.indexOf('if ! verify_deploy_alerts');
+  const proofIndex = productionDeploy.indexOf('write_post_deploy_proof');
+  const stagePointerIndex = productionDeploy.indexOf('stage_backup_release_pointer');
+  const commitPointerIndex = productionDeploy.indexOf('commit_release_pointers');
+  assert.ok(alertGateIndex !== -1 && alertGateIndex < proofIndex);
+  assert.ok(proofIndex < stagePointerIndex);
+  assert.ok(stagePointerIndex < commitPointerIndex);
+
+  assert.match(alertmanager, /ports:\s*\n\s+- "127\.0\.0\.1:9093:9093"/);
+  assert.doesNotMatch(alertmanager, /0\.0\.0\.0:9093|"9093:9093"/);
 });
 
 test('production releases for the same workflow and ref serialize without cancellation', () => {
@@ -82,8 +145,9 @@ test('production rollback is durably armed in a completed step before remote mut
   assert.ok(armStepIndex < deployStepStart, 'arming must complete before the remote deploy command starts');
   assert.match(ci, /id: arm_production_rollback[\s\S]*echo "armed=true" >> "\$GITHUB_OUTPUT"/);
   assert.match(ci, /production_rollback_armed: \$\{\{ steps\.arm_production_rollback\.outputs\.armed \}\}/);
-  assert.match(ci, /needs\.deploy-production\.outputs\.production_rollback_armed == 'true'/);
-  assert.match(ci, /needs\.deploy-production\.result != 'success'[\s\S]*needs\.production-smoke\.result != 'success'/);
+  assert.match(ci, /if: always\(\) && steps\.arm_production_rollback\.outcome == 'success'/);
+  assert.match(ci, /steps\.same_gate_release_outcome\.outcome != 'success' \|\| steps\.same_gate_release_outcome\.outputs\.rollback_required == 'true'/);
+  assert.match(ci, /Require completed automatic rollback after release failure[\s\S]*test "\$ROLLBACK_PROOF_OUTCOME" = success/);
   assert.doesNotMatch(script, /production_deploy_mutation_started/);
   assert.doesNotMatch(deployStep, /GITHUB_OUTPUT|PIPESTATUS|while IFS= read/);
 });
@@ -100,6 +164,290 @@ test('VM217 public web gate rejects API health and generic edge responses', () =
   assert.match(script, /grep -Fq '\/_next\/static\/'/);
   assert.match(script, /Cache-Control: no-cache/);
   assert.match(script, /lunchlineup_deploy_probe=/);
+  assert.match(script, /--connect-timeout "\$request_timeout"/);
+  assert.match(script, /--max-time "\$request_timeout"/);
+  assert.match(script, /sleep_before_health_retry "\$deadline"/);
+  assert.equal(
+    (script.match(/--max-time "\$HEALTH_REQUEST_TIMEOUT_SECONDS"/g) ?? []).length,
+    2,
+    'post-deploy API and launch-proof readbacks must also have request deadlines',
+  );
+});
+
+test('production Compose identity stays stable across retained release SHA directories', { skip: !bashAvailable }, (t) => {
+  const python = process.platform === 'win32' ? 'python' : 'python3';
+  if (spawnSync(python, ['--version'], { encoding: 'utf8' }).status !== 0) {
+    t.skip('Python is not available');
+    return;
+  }
+
+  const scratch = mkdtempSync(join(tmpdir(), 'll-compose-identity-'));
+  const fakeBin = join(scratch, 'bin');
+  const dockerLog = join(scratch, 'docker.log');
+  const fakeDocker = join(fakeBin, 'docker');
+  mkdirSync(fakeBin);
+  writeFileSync(fakeDocker, `#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "$*" >> "\${FAKE_DOCKER_LOG:?}"
+`);
+  chmodSync(fakeDocker, 0o700);
+
+  const runCandidate = (sourceSha, runtimeBytes = '') => {
+    const candidate = join(scratch, 'releases', sourceSha);
+    const composeFile = join(candidate, 'docker-compose.yml');
+    const runtimeEnv = join(candidate, 'runtime.env');
+    mkdirSync(candidate, { recursive: true });
+    writeFileSync(composeFile, 'services: {}\n');
+    writeFileSync(runtimeEnv, runtimeBytes);
+    return {
+      candidate,
+      result: spawnSync(bashPath, [
+        '-c',
+        `PATH="$1:$PATH"; export PATH
+python3() { "$PYTHON_BINARY" "$@"; }
+export -f python3
+source "$2"
+validate_production_compose_scope
+compose_release ps`,
+        'compose-identity-fixture',
+        bashPathFor(fakeBin),
+        bashPathFor(deployScript),
+      ], {
+        cwd: root,
+        encoding: 'utf8',
+        timeout: 10_000,
+        env: {
+          ...process.env,
+          APP_DIR: bashPathFor(candidate),
+          COMPOSE_PROJECT_NAME: 'lunchlineup',
+          COMPOSE_PROJECT_DIRECTORY: bashPathFor(candidate),
+          COMPOSE_FILE: bashPathFor(composeFile),
+          COMPOSE_SERVICE_ENV_FILE: bashPathFor(runtimeEnv),
+          RELEASE_SOURCE_SHA: sourceSha,
+          VM217_DEPLOY_SCOPE: 'production',
+          PYTHON_BINARY: python,
+          FAKE_DOCKER_LOG: bashPathFor(dockerLog),
+        },
+      }),
+    };
+  };
+
+  try {
+    const first = runCandidate('1'.repeat(40));
+    assert.equal(first.result.status, 0, `${first.result.stdout}\n${first.result.stderr}`);
+    const second = runCandidate('2'.repeat(40));
+    assert.equal(second.result.status, 0, `${second.result.stdout}\n${second.result.stderr}`);
+
+    const calls = readFileSync(dockerLog, 'utf8').trim().split(/\r?\n/);
+    assert.equal(calls.length, 2);
+    for (const [call, candidate] of [
+      [calls[0], first.candidate],
+      [calls[1], second.candidate],
+    ]) {
+      assert.match(call, /^compose --project-name lunchlineup /);
+      assert.match(call, new RegExp(`--project-directory ${bashPathFor(candidate).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`));
+      assert.doesNotMatch(call, /--project-name [^\s]*(?:1{40}|2{40})/);
+    }
+
+    const beforeDrift = readFileSync(dockerLog, 'utf8');
+    const drifted = runCandidate('3'.repeat(40), 'COMPOSE_PROJECT_NAME=release-scoped-project\n');
+    assert.notEqual(drifted.result.status, 0);
+    assert.match(drifted.result.stderr, /COMPOSE_PROJECT_NAME conflicts with the stable production Compose scope/);
+    assert.equal(readFileSync(dockerLog, 'utf8'), beforeDrift, 'scope drift must fail before Docker is invoked');
+  } finally {
+    rmSync(scratch, { recursive: true, force: true });
+  }
+});
+
+test('VM217 EXIT cleanup fails closed and preserves exact backup snapshots on systemctl or readback failure', { skip: !bashAvailable }, () => {
+  const units = ['lunchlineup-backup.timer'];
+
+  const runCase = (failure = '') => {
+    const scratch = mkdtempSync(join(tmpdir(), 'll-deploy-backup-restore-'));
+    const fakeBin = join(scratch, 'bin');
+    const unitDir = join(scratch, 'systemd');
+    const systemctlState = join(scratch, 'systemctl-state');
+    const snapshotDir = join(scratch, 'backup-systemd-state');
+    const backupEnv = join(scratch, 'backup-release.env');
+    const previousBackupEnv = join(scratch, 'backup-release.env.previous');
+    const runtimeState = join(snapshotDir, 'runtime-state');
+    const originalBytes = new Map(units.map((unit) => [unit, `original exact ${unit}\n`]));
+
+    for (const directory of [fakeBin, unitDir, systemctlState, snapshotDir]) mkdirSync(directory);
+    writeFileSync(backupEnv, 'candidate=true\n');
+    writeFileSync(previousBackupEnv, 'previous=true\n');
+    writeFileSync(join(snapshotDir, 'units'), units.map((unit) => `${unit}|true`).join('\n') + '\n');
+    writeFileSync(runtimeState, [
+      'lunchlineup-backup.timer|true|true|true',
+    ].join('\n') + '\n');
+    for (const [unit, bytes] of originalBytes) {
+      writeFileSync(join(snapshotDir, `unit-${unit}`), bytes);
+      writeFileSync(join(unitDir, unit), `candidate ${unit}\n`);
+    }
+    for (const unit of units) {
+      writeFileSync(join(systemctlState, `enabled-${unit}`), 'false');
+      writeFileSync(join(systemctlState, `active-${unit}`), 'false');
+    }
+
+    const fakeSystemctl = join(fakeBin, 'systemctl');
+    writeFileSync(fakeSystemctl, `#!/usr/bin/env bash
+set -u
+state_dir="\${FAKE_SYSTEMCTL_STATE:?}"
+command="\${1:-}"
+[ "$#" -eq 0 ] || shift
+case "$command" in
+  is-enabled)
+    unit="\${1:-}"
+    if [ "\${FAKE_RESTORE_READBACK_FAIL:-false}" = true ] && [ -f "$state_dir/reloaded" ]; then echo transport-error; exit 9; fi
+    if [ -f "$state_dir/enabled-$unit" ]; then echo enabled; exit 0; fi
+    echo disabled; exit 1
+    ;;
+  is-active)
+    unit="\${1:-}"
+    if [ "\${FAKE_RESTORE_READBACK_FAIL:-false}" = true ] && [ -f "$state_dir/reloaded" ]; then echo transport-error; exit 9; fi
+    if [ -f "$state_dir/active-$unit" ]; then echo active; exit 0; fi
+    echo inactive; exit 3
+    ;;
+  enable)
+    unit="\${1:-}"
+    if [ "\${FAKE_RESTORE_ENABLE_FAIL:-false}" = true ] && [ "$unit" = lunchlineup-backup.timer ]; then exit 8; fi
+    touch "$state_dir/enabled-$unit"
+    ;;
+  disable) for unit in "$@"; do rm -f "$state_dir/enabled-$unit"; done ;;
+  start) for unit in "$@"; do touch "$state_dir/active-$unit"; done ;;
+  stop) for unit in "$@"; do rm -f "$state_dir/active-$unit"; done ;;
+  daemon-reload) touch "$state_dir/reloaded" ;;
+  *) exit 91 ;;
+esac
+`);
+    chmodSync(fakeSystemctl, 0o700);
+
+    const result = spawnSync(bashPath, [
+      '-c',
+      `PATH="$1:$PATH"; export PATH
+source "$2"
+FAKE_STATE_PATH="$8"
+FAKE_RELOADED=false
+systemctl() {
+  local command="$1"
+  shift
+  local unit
+  case "$command" in
+    is-enabled)
+      unit="$1"
+      if [ "$FAKE_RESTORE_READBACK_FAIL" = true ] && [ "$FAKE_RELOADED" = true ]; then echo transport-error; return 9; fi
+      if [ "$(<"$FAKE_STATE_PATH/enabled-$unit")" = true ]; then echo enabled; return 0; fi
+      echo disabled; return 1
+      ;;
+    is-active)
+      unit="$1"
+      if [ "$FAKE_RESTORE_READBACK_FAIL" = true ] && [ "$FAKE_RELOADED" = true ]; then echo transport-error; return 9; fi
+      if [ "$(<"$FAKE_STATE_PATH/active-$unit")" = true ]; then echo active; return 0; fi
+      echo inactive; return 3
+      ;;
+    enable)
+      unit="$1"
+      if [ "$FAKE_RESTORE_ENABLE_FAIL" = true ] && [ "$unit" = lunchlineup-backup.timer ]; then return 8; fi
+      printf true > "$FAKE_STATE_PATH/enabled-$unit"
+      ;;
+    disable) for unit in "$@"; do printf false > "$FAKE_STATE_PATH/enabled-$unit"; done ;;
+    start) for unit in "$@"; do printf true > "$FAKE_STATE_PATH/active-$unit"; done ;;
+    stop) for unit in "$@"; do printf false > "$FAKE_STATE_PATH/active-$unit"; done ;;
+    daemon-reload) FAKE_RELOADED=true ;;
+    *) return 91 ;;
+  esac
+}
+BACKUP_RELEASE_ENV_STAGE_ACTIVE=true
+BACKUP_RELEASE_ENV_PATH="$3"
+BACKUP_RELEASE_ENV_PREVIOUS_PATH="$4"
+BACKUP_RELEASE_ENV_PREVIOUS_EXISTED=true
+BACKUP_SYSTEMD_UNIT_DIR="$5"
+BACKUP_SYSTEMD_STATE_DIR="$6"
+BACKUP_RUNTIME_STATE_PATH="$7"
+RUNTIME_ENV_STAGE_ACTIVE=false
+trap cleanup_staged_release_state EXIT`,
+      'deploy-backup-restore-fixture',
+      bashPathFor(fakeBin),
+      bashPathFor(deployScript),
+      bashPathFor(backupEnv),
+      bashPathFor(previousBackupEnv),
+      bashPathFor(unitDir),
+      bashPathFor(snapshotDir),
+      bashPathFor(runtimeState),
+      bashPathFor(systemctlState),
+    ], {
+      cwd: root,
+      encoding: 'utf8',
+      timeout: 10_000,
+      env: {
+        ...process.env,
+        FAKE_SYSTEMCTL_STATE: bashPathFor(systemctlState),
+        FAKE_RESTORE_ENABLE_FAIL: failure === 'systemctl' ? 'true' : 'false',
+        FAKE_RESTORE_READBACK_FAIL: failure === 'readback' ? 'true' : 'false',
+      },
+    });
+
+    assert.equal(result.error?.code, undefined, `${failure || 'success'} case exceeded its deadline`);
+    assert.equal(readFileSync(backupEnv, 'utf8'), 'previous=true\n');
+    for (const [unit, bytes] of originalBytes) assert.equal(readFileSync(join(unitDir, unit), 'utf8'), bytes);
+    return { scratch, snapshotDir, previousBackupEnv, result };
+  };
+
+  for (const [failure, expected] of [
+    ['systemctl', /could not enable lunchlineup-backup.timer/],
+    ['readback', /could not read lunchlineup-backup.timer enabled state/],
+  ]) {
+    const fixture = runCase(failure);
+    try {
+      assert.notEqual(fixture.result.status, 0);
+      assert.match(`${fixture.result.stdout}\n${fixture.result.stderr}`, expected);
+      assert.doesNotMatch(fixture.result.stdout, /backup_release_env_restored/);
+      assert.equal(existsSync(fixture.snapshotDir), true, `${failure} failure deleted systemd snapshots`);
+      assert.equal(existsSync(fixture.previousBackupEnv), true, `${failure} failure deleted env snapshot`);
+    } finally {
+      rmSync(fixture.scratch, { recursive: true, force: true });
+    }
+  }
+
+  const restored = runCase();
+  try {
+    assert.equal(restored.result.status, 0, `${restored.result.stdout}\n${restored.result.stderr}`);
+    assert.match(restored.result.stdout, /backup_release_env_restored path=.* units=exact runtime_state=confirmed/);
+    assert.equal(existsSync(restored.snapshotDir), false);
+    assert.equal(existsSync(restored.previousBackupEnv), false);
+  } finally {
+    rmSync(restored.scratch, { recursive: true, force: true });
+  }
+});
+
+test('VM217 curl health loop times out against a peer that accepts but never responds', { skip: !bashAvailable }, async () => {
+  const sockets = new Set();
+  const server = createServer((socket) => {
+    sockets.add(socket);
+    socket.on('close', () => sockets.delete(socket));
+  });
+  server.listen(0, '127.0.0.1');
+  await once(server, 'listening');
+  const { port } = server.address();
+  const startedAt = Date.now();
+
+  try {
+    const result = await runChild(bashPath, [
+      '-c',
+      'set -euo pipefail; HEALTH_TIMEOUT_SECONDS=2; HEALTH_REQUEST_TIMEOUT_SECONDS=1; HEALTH_POLL_SECONDS=1; source "$1"; docker() { :; }; wait_for_health "$2"',
+      'bounded-health-fixture',
+      bashPathFor(deployScript),
+      `http://127.0.0.1:${port}/health`,
+    ], { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+
+    assert.notEqual(result.status, 0, `${result.stdout}\n${result.stderr}`);
+    assert.match(result.stderr, /Health check timed out after 2s/);
+    assert.ok(Date.now() - startedAt < 5000, 'health loop must respect its overall deadline');
+  } finally {
+    for (const socket of sockets) socket.destroy();
+    server.close();
+    await once(server, 'close');
+  }
 });
 
 test('VM217 binds downloaded launch proof to CI checksum, source SHA, and freshness', () => {
@@ -175,6 +523,114 @@ test('VM217 proof validator accepts exact fresh bytes and rejects checksum drift
   }
 });
 
+test('protected launch-proof URI stays out of curl argv and retained proof JSON', { skip: !bashAvailable }, () => {
+  const scratch = mkdtempSync(join(tmpdir(), 'll-vm217-protected-proof-'));
+  const fakeBin = join(scratch, 'bin');
+  const fakeCurl = join(fakeBin, 'curl');
+  const argvLog = join(scratch, 'curl-argv.log');
+  const configPathLog = join(scratch, 'curl-config-path.log');
+  const apiBody = join(scratch, 'api.json');
+  const launchProofBody = join(scratch, 'launch-proof.json');
+  const externalHealth = join(scratch, 'external-health.json');
+  const releaseManifest = join(scratch, 'release-manifest.json');
+  const proofDir = join(scratch, 'proofs');
+  const proofPath = join(proofDir, 'retained-proof.json');
+  const sourceSha = '0123456789abcdef0123456789abcdef01234567';
+  const protectedUri = `https://proof-user:proof-password@proofs.lunchlineup.com/releases/${sourceSha}/launch-proof.json?X-Amz-Signature=${'a'.repeat(64)}#private-fragment`;
+  try {
+    mkdirSync(fakeBin);
+    writeFileSync(apiBody, '{"status":"ok"}\n');
+    writeFileSync(launchProofBody, `${JSON.stringify({ sourceSha, generatedAt: '2026-07-16T12:00:00.000Z' })}\n`);
+    writeFileSync(externalHealth, '{"status":"passed"}\n');
+    writeFileSync(releaseManifest, `${JSON.stringify({ sourceSha })}\n`);
+    writeFileSync(fakeCurl, `#!/usr/bin/env bash
+set -euo pipefail
+if [[ -r /proc/$$/cmdline ]]; then
+  tr '\\0' ' ' < /proc/$$/cmdline >> "$FAKE_CURL_ARGV_LOG"
+  printf '\\n' >> "$FAKE_CURL_ARGV_LOG"
+else
+  printf 'curl' >> "$FAKE_CURL_ARGV_LOG"
+  printf ' <%s>' "$@" >> "$FAKE_CURL_ARGV_LOG"
+  printf '\\n' >> "$FAKE_CURL_ARGV_LOG"
+fi
+config=''
+output=''
+while (( $# > 0 )); do
+  case "$1" in
+    --config) config="$2"; shift 2 ;;
+    -o|--output) output="$2"; shift 2 ;;
+    *) shift ;;
+  esac
+done
+[[ -n "$output" ]]
+if [[ -n "$config" ]]; then
+  grep -Fq -- "$EXPECTED_PROTECTED_URI" "$config"
+  printf '%s\\n' "$config" > "$FAKE_CURL_CONFIG_PATH_LOG"
+  cp "$FAKE_LAUNCH_PROOF_BODY" "$output"
+else
+  cp "$FAKE_API_BODY" "$output"
+fi
+`);
+    chmodSync(fakeCurl, 0o755);
+
+    const wrapper = `
+set -euo pipefail
+source "$1"
+EXTERNAL_HEALTH_PROOF_PATH="$2"
+PATH="$3:$PATH"
+export PATH
+python3() {
+  if [[ "\${1:-}" == "scripts/verify-downloaded-launch-proof.py" ]]; then return 0; fi
+  command "$PYTHON_BINARY" "$@"
+}
+node() { return 0; }
+write_post_deploy_proof
+config_path="$(tr -d '\\r\\n' < "$FAKE_CURL_CONFIG_PATH_LOG")"
+[[ -n "$config_path" && ! -e "$config_path" ]]
+`;
+    const result = spawnSync(bashPath, [
+      '-c', wrapper, 'protected-proof-fixture', bashPathFor(deployScript), bashPathFor(externalHealth),
+      bashPathFor(fakeBin),
+    ], {
+      cwd: root,
+      encoding: 'utf8',
+      env: {
+        ...process.env,
+        RELEASE_SOURCE_SHA: sourceSha,
+        RELEASE_MANIFEST_PATH: bashPathFor(releaseManifest),
+        POST_DEPLOY_PROOF_DIR: bashPathFor(proofDir),
+        POST_DEPLOY_PROOF_PATH: bashPathFor(proofPath),
+        PRODUCTION_API_HEALTH_URL: 'https://api.lunchlineup.com/health',
+        PRODUCTION_WEB_URL: 'https://lunchlineup.com/',
+        LAUNCH_PROOF_MANIFEST_URI: protectedUri,
+        LAUNCH_PROOF_ARTIFACT_SHA256: createHash('sha256').update(readFileSync(launchProofBody)).digest('hex'),
+        FAKE_CURL_ARGV_LOG: bashPathFor(argvLog),
+        FAKE_CURL_CONFIG_PATH_LOG: bashPathFor(configPathLog),
+        FAKE_API_BODY: bashPathFor(apiBody),
+        FAKE_LAUNCH_PROOF_BODY: bashPathFor(launchProofBody),
+        EXPECTED_PROTECTED_URI: protectedUri,
+        PYTHON_BINARY: process.platform === 'win32' ? 'python' : 'python3',
+      },
+    });
+    assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
+
+    const argv = readFileSync(argvLog, 'utf8');
+    const retainedProofBytes = readFileSync(proofPath, 'utf8');
+    const retainedProof = JSON.parse(retainedProofBytes);
+    for (const secret of ['proof-user', 'proof-password', 'X-Amz-Signature', 'private-fragment', protectedUri]) {
+      assert.equal(argv.includes(secret), false, `curl argv leaked ${secret}`);
+      assert.equal(retainedProofBytes.includes(secret), false, `retained proof leaked ${secret}`);
+    }
+    assert.equal(
+      retainedProof.launchProofManifestUri,
+      `https://proofs.lunchlineup.com/releases/${sourceSha}/launch-proof.json`,
+    );
+    assert.equal(retainedProof.launchProofManifestUriRedacted, true);
+  } finally {
+    rmSync(scratch, { recursive: true, force: true });
+  }
+});
+
 test('rollback performs compatibility preflight and skips old schema application', () => {
   const script = read('scripts/deploy-vm217-remote.sh');
   const compose = read('docker-compose.yml');
@@ -182,19 +638,43 @@ test('rollback performs compatibility preflight and skips old schema application
   assert.match(script, /VM217_DEPLOY_OPERATION:-deploy/);
   assert.match(script, /rollback\)[\s\S]*DEPLOY_MIGRATION_MODE="\$\{DEPLOY_MIGRATION_MODE:-skip\}"/);
   assert.match(script, /Rollback refuses to apply an older release schema/);
+  assert.match(script, /MIGRATION_SOURCE_SHA="\$SOURCE_SHA"/);
+  assert.match(script, /MIGRATION_BASELINE_SOURCE_SHA="\$EXPECTED_CURRENT_RELEASE_SHA"/);
+  assert.match(script, /export MIGRATION_BASELINE_SOURCE_SHA/);
+  assert.match(script, /export MIGRATION_SOURCE_SHA/);
   assert.match(script, /npx prisma migrate diff/);
   assert.match(script, /--from-schema-datamodel=\/app\/packages\/db\/prisma\/schema\.prisma/);
   assert.match(script, /--to-url="\$MIGRATION_DATABASE_URL"/);
   assert.match(script, /python3 scripts\/verify-rollback-schema-compatibility\.py "\$diff_path"/);
   assert.match(script, /verify-raw-migration-rollback\.mjs/);
+  assert.match(script, /--old-release-compatibility-proof "\$OLD_RELEASE_COMPATIBILITY_PROOF_PATH"/);
+  assert.match(script, /Old-release compatibility proof changed after signed transport verification/);
+  assert.match(script, /OLD_RELEASE_COMPATIBILITY_SIGNATURE_BUNDLE_SHA256/);
   assert.ok(script.indexOf('preflight_rollback_raw_migrations') < script.indexOf('compose_release up -d --no-build --pull never'));
   assert.match(script, /failed closed/);
   assert.match(script, /ROLLBACK_SCHEMA_COMPATIBILITY_CONFIRM/);
   assert.match(script, /ROLLBACK_SCHEMA_COMPATIBILITY_VERIFIED=true/);
   assert.match(compose, /DEPLOY_MIGRATION_MODE=\$\{DEPLOY_MIGRATION_MODE:-apply\}/);
+  assert.match(compose, /MIGRATION_SOURCE_SHA=\$\{MIGRATION_SOURCE_SHA:-\}/);
+  assert.match(compose, /MIGRATION_BASELINE_SOURCE_SHA=\$\{MIGRATION_BASELINE_SOURCE_SHA:-\}/);
+  assert.match(compose, /MIGRATION_FRESH_DATABASE_CONFIRM=\$\{MIGRATION_FRESH_DATABASE_CONFIRM:-\}/);
   assert.match(compose, /skip\)[\s\S]*ROLLBACK_SCHEMA_COMPATIBILITY_VERIFIED/);
   assert.match(compose, /apply\)[\s\S]*exec node scripts\/apply-db-migrations\.mjs/);
   assert.doesNotMatch(script, /prisma db push/);
+});
+
+test('candidate deploy blocks authenticated registry and live-pointer disagreement before mutation', () => {
+  const script = read('scripts/deploy-vm217-remote.sh');
+  const productionDeploy = script.slice(
+    script.indexOf('run_production_release_deploy()'),
+    script.indexOf('run_development_source_deploy()'),
+  );
+  assert.match(script, /preflight_expected_current_release/);
+  assert.match(script, /Live release SHA does not match the authenticated release registry current pointer/);
+  assert.ok(
+    productionDeploy.indexOf('preflight_expected_current_release') < productionDeploy.indexOf('pull_release_images'),
+    'live/current-pointer agreement must precede image pulls and mutation',
+  );
 });
 
 test('deploy delegates owner DDL exclusively to the migration service', () => {
@@ -289,7 +769,9 @@ test('raw migration rollback policy requires exact approval and rejects trigger 
     writeFileSync(rollbackManifestPath, JSON.stringify({ deploymentContract: contract({}, {}) }));
     writeFileSync(candidateManifestPath, JSON.stringify({ deploymentContract: contract({ [migrationPath]: digest }, { [migrationPath]: digest }) }));
     writeFileSync(policyPath, JSON.stringify({
-      version: 1,
+      version: 2,
+      historicalBaselineSourceSha: '0'.repeat(40),
+      historicalMigrations: {},
       compatibilityClass: 'backward-compatible-additive-v1',
       migrations: approved ? { [migrationPath]: { sha256: digest, compatibility: 'backward-compatible-additive-v1' } } : {},
     }));
@@ -336,10 +818,16 @@ test('release pointers advance only after retained proof and use staged atomic w
   assert.ok(productionDeploy.indexOf('stage_backup_release_pointer') < productionDeploy.indexOf('verify-backup-readiness.sh'));
   assert.ok(productionDeploy.indexOf('verify-backup-readiness.sh') < productionDeploy.indexOf('commit_release_pointers'));
   assert.match(script, /mktemp "\$APP_DIR\/DEPLOYED_GIT_SHA\.tmp\.XXXXXX"/);
+  assert.match(script, /chmod 440 -- "\$APP_DIR\/DEPLOYED_GIT_SHA"/);
+  assert.match(script, /expected_release="\$production_root\/releases\/\$\{SOURCE_SHA,,\}"/);
+  assert.match(script, /Production APP_DIR must be the exact retained releases\/<source SHA> path/);
+  assert.match(script, /lock_candidate_release_bytes/);
+  assert.match(script, /find "\$APP_DIR" -type d[\s\S]*chmod 550/);
+  assert.match(script, /"\$ACTIVE_RELEASE_POINTER\/DEPLOYED_GIT_SHA"[\s\S]*"\$SOURCE_SHA"/);
   assert.match(script, /mktemp "\$POST_DEPLOY_PROOF_DIR\/deploy-proof\.tmp\.XXXXXX"/);
   assert.match(script, /mv "\$proof_tmp" "\$proof_path"/);
-  assert.match(script, /the staged backup release pointer will be restored/);
-  assert.match(script, /trap cleanup_staged_backup_release_pointer EXIT/);
+  assert.match(script, /the staged release state will be restored/);
+  assert.match(script, /trap cleanup_staged_release_state EXIT/);
   assert.doesNotMatch(productionDeploy, /> DEPLOYED_GIT_SHA/);
 });
 
@@ -362,7 +850,7 @@ test('production workflow carries the verified proof digest into deploy and smok
   assert.match(ci, /launch_proof_sha256="\$\(sha256sum "\$launch_proof"/);
   assert.match(ci, /LAUNCH_PROOF_ARTIFACT_SHA256=\$launch_proof_sha256/);
   assert.match(ci, /launch_proof_sha256: \$\{\{ steps\.launch_proof\.outputs\.sha256 \}\}/);
-  assert.match(ci, /LAUNCH_PROOF_ARTIFACT_SHA256: \$\{\{ needs\.deploy-production\.outputs\.launch_proof_sha256 \}\}/);
+  assert.match(ci, /LAUNCH_PROOF_ARTIFACT_SHA256: \$\{\{ env\.DEPLOYED_LAUNCH_PROOF_SHA256 \}\}/);
   assert.match(ci, /--expected-launch-proof-sha256 "\$LAUNCH_PROOF_ARTIFACT_SHA256"/);
   assert.match(ci, /--max-proof-age-seconds "\$LAUNCH_PROOF_MAX_AGE_SECONDS"/);
   assert.match(ci, /PRODUCTION_API_HEALTH_URL: \$\{\{ vars\.PRODUCTION_API_HEALTH_URL \}\}/);
@@ -371,6 +859,7 @@ test('production workflow carries the verified proof digest into deploy and smok
   assert.match(ci, /test -n "\$PRODUCTION_API_HEALTH_URL"/);
   assert.match(ci, /test -n "\$PRODUCTION_WEB_URL"/);
   assert.match(ci, /test -n "\$LAUNCH_PROOF_MANIFEST_URI"/);
-  assert.match(ci, /env \\\n\s+PRODUCTION_API_HEALTH_URL="\$PRODUCTION_API_HEALTH_URL" \\\n\s+PRODUCTION_WEB_URL="\$PRODUCTION_WEB_URL" \\\n\s+LAUNCH_PROOF_MANIFEST_URI="\$LAUNCH_PROOF_MANIFEST_URI" \\\n\s+bash \/tmp\/lunchlineup-deploy-production\.sh/);
+  assert.match(ci, /EXPECTED_CURRENT_RELEASE_SHA: \$\{\{ env\.EXPECTED_CURRENT_RELEASE_SHA \}\}/);
+  assert.match(ci, /EXPECTED_CURRENT_RELEASE_SHA="\$EXPECTED_CURRENT_RELEASE_SHA"/);
   assert.doesNotMatch(ci, /run:.*\$\{\{ (?:vars\.PRODUCTION_(?:API_HEALTH|WEB)_URL|secrets\.LAUNCH_PROOF_MANIFEST_URI) \}\}/);
 });

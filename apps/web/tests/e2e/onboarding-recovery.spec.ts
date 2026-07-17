@@ -58,6 +58,20 @@ async function expectRetrySuccess(page: Page) {
   await expect.poll(() => page.evaluate(() => window.localStorage.getItem('lunchlineup:last-workspace-slug'))).toBe(WORKSPACE_SLUG);
 }
 
+test.describe('Closed beta onboarding', () => {
+  test.skip(process.env.E2E_SIGNUP_MODE !== 'closed_beta', 'Rendered closed-beta coverage requires E2E_SIGNUP_MODE=closed_beta.');
+
+  test('renders a closed beta access state without an unusable signup form', async ({ page }) => {
+    await page.goto('/onboarding');
+
+    await expect(page.getByRole('heading', { name: 'Closed beta access' })).toBeVisible();
+    await expect(page.getByLabel('Work email')).toHaveCount(0);
+    await expect(page.getByRole('button', { name: 'Continue setup' })).toHaveCount(0);
+    await expect(page.getByRole('link', { name: 'Request beta access' }))
+      .toHaveAttribute('href', 'mailto:support@lunchlineup.test');
+    await expect(page.getByRole('link', { name: 'Sign in' })).toHaveAttribute('href', '/auth/login');
+  });
+});
 test.describe('Onboarding first-location recovery', () => {
   let verificationCalls: number;
   let locationCalls: number;
@@ -75,6 +89,11 @@ test.describe('Onboarding first-location recovery', () => {
     });
     await page.route('**/api/v1/locations', async (route) => {
       locationCalls += 1;
+      expect(route.request().postDataJSON()).toMatchObject({
+        workspaceSlug: WORKSPACE_SLUG,
+        tenantName: 'Test Diner Corp',
+        name: 'Downtown Diner',
+      });
       await route.fulfill({
         status: locationCalls === 1 ? 503 : 201,
         contentType: 'application/json',
@@ -103,6 +122,61 @@ test.describe('Onboarding first-location recovery', () => {
     await expectRetrySuccess(page);
     expect(verificationCalls).toBe(1);
     expect(locationCalls).toBe(2);
+  });
+
+  test('refreshes one expired session and replays the location POST with the same key without resubmitting the OTP', async ({ page }) => {
+    const requestKeys: string[] = [];
+    const csrfHeaders: string[] = [];
+    let refreshCalls = 0;
+    await page.context().addCookies([{
+      name: 'csrf_token',
+      value: 'csrf-before-refresh',
+      domain: '127.0.0.1',
+      path: '/',
+    }]);
+    await page.unroute('**/api/v1/locations');
+    await page.route('**/api/v1/locations', async (route) => {
+      locationCalls += 1;
+      requestKeys.push(route.request().headers()['idempotency-key'] ?? '');
+      csrfHeaders.push(route.request().headers()['x-csrf-token'] ?? '');
+      await route.fulfill({
+        status: locationCalls === 1 ? 401 : 201,
+        contentType: 'application/json',
+        body: JSON.stringify(locationCalls === 1
+          ? { message: 'Access token expired.' }
+          : { id: 'loc-onboarding', name: 'Downtown Diner' }),
+      });
+    });
+    await page.route('**/api/v1/auth/refresh', async (route) => {
+      refreshCalls += 1;
+      expect(route.request().headers()['x-csrf-token']).toBe('csrf-before-refresh');
+      await route.fulfill({
+        status: 200,
+        headers: {
+          'content-type': 'application/json',
+          'set-cookie': 'csrf_token=csrf-after-refresh; Path=/; SameSite=Strict',
+        },
+        body: JSON.stringify({ success: true }),
+      });
+    });
+    await page.route('**/api/v1/auth/email/verify-otp**', async (route) => {
+      verificationCalls += 1;
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({ success: true, workspaceSlug: WORKSPACE_SLUG }),
+      });
+    });
+
+    await fillAndVerifyOnboarding(page);
+
+    await expect(page.getByRole('heading', { name: 'Workspace ready' })).toBeVisible();
+    expect(refreshCalls).toBe(1);
+    expect(locationCalls).toBe(2);
+    expect(requestKeys[0]).toMatch(/^[0-9a-f-]{36}$/i);
+    expect(requestKeys[1]).toBe(requestKeys[0]);
+    expect(csrfHeaders).toEqual(['csrf-before-refresh', 'csrf-after-refresh']);
+    expect(verificationCalls).toBe(1);
   });
 
   test('reuses the first-location idempotency key after a successful create response is lost', async ({ page }) => {

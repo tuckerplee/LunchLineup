@@ -21,6 +21,8 @@ const sourcePayload = sourceBuffer.toString('utf8').replace(/^\uFEFF/, '');
 const source = JSON.parse(sourcePayload);
 const { PrismaClient, PermissionCategory, PlanTier, TenantStatus, UserRole } = await import('@prisma/client');
 const prisma = new PrismaClient();
+const LEGACY_CREDIT_PROVENANCE_VERSION = 1;
+const LEGACY_CREDIT_PROVENANCE_PREFIX = 'legacy-import.credit-provenance.v1.';
 
 const PERMISSIONS = [
   ['dashboard:access', 'Access dashboard', 'Sign in to the tenant dashboard.', PermissionCategory.AUTH],
@@ -217,6 +219,50 @@ function csvEscape(value) {
   return `"${stringValue.replace(/"/g, '""')}"`;
 }
 
+async function upsertLegacyTenant(company) {
+  const slug = `legacy-company-${company.id}`;
+  return prisma.$transaction(async (tx) => {
+    await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${`legacy-import:${slug}`}, 0))`;
+    const existing = await tx.tenant.findUnique({ where: { slug } });
+    if (existing) {
+      return tx.tenant.update({
+        where: { id: existing.id },
+        data: {
+          name: company.name,
+          planTier: PlanTier.ENTERPRISE,
+          status: TenantStatus.ACTIVE,
+          deletedAt: null,
+        },
+      });
+    }
+
+    const tenant = await tx.tenant.create({
+      data: {
+        name: company.name,
+        slug,
+        planTier: PlanTier.ENTERPRISE,
+        status: TenantStatus.ACTIVE,
+        usageCredits: 0,
+      },
+    });
+    await tx.platformConfig.create({
+      data: {
+        id: `legacy-import-credit-provenance-${tenant.id}`,
+        key: `${LEGACY_CREDIT_PROVENANCE_PREFIX}${tenant.id}`,
+        value: {
+          version: LEGACY_CREDIT_PROVENANCE_VERSION,
+          tenantId: tenant.id,
+          sourceSha256,
+          initialCreditPolicy: 'zero-wallet-no-ledger',
+          initialCreditGrant: 0,
+        },
+        updatedBy: 'scripts/import-legacy-users.mjs',
+      },
+    });
+    return tenant;
+  });
+}
+
 async function main() {
   const reservedUsernames = new Set();
   const tenantByLegacyCompany = new Map();
@@ -224,22 +270,7 @@ async function main() {
   const reportRows = [['source_type', 'legacy_id', 'name', 'username', 'role', 'login_method', 'has_password_hash', 'import_note']];
 
   for (const company of source.companies ?? []) {
-    const tenant = await prisma.tenant.upsert({
-      where: { slug: `legacy-company-${company.id}` },
-      update: {
-        name: company.name,
-        planTier: PlanTier.ENTERPRISE,
-        status: TenantStatus.ACTIVE,
-        deletedAt: null,
-      },
-      create: {
-        name: company.name,
-        slug: `legacy-company-${company.id}`,
-        planTier: PlanTier.ENTERPRISE,
-        status: TenantStatus.ACTIVE,
-        usageCredits: 1000,
-      },
-    });
+    const tenant = await upsertLegacyTenant(company);
     tenantByLegacyCompany.set(Number(company.id), tenant);
     await ensureRoles(tenant.id);
   }

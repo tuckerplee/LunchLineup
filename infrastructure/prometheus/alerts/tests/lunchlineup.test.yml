@@ -1,0 +1,132 @@
+rule_files:
+  - ../lunchlineup.yml
+
+evaluation_interval: 1m
+
+tests:
+  - name: one durable solver poison item fires from DLQ depth
+    interval: 1m
+    input_series:
+      - series: 'lunchlineup_solver_queue_messages{job="worker",state="dead_letter"}'
+        values: '1+0x5'
+    alert_rule_test:
+      - eval_time: 1m
+        alertname: SolverQueuePoisoned
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              team: engineering
+            exp_annotations:
+              summary: Solver queue contains terminal messages
+              description: At least one solver message is in the durable DLQ or entered a terminal broker state within 15 minutes.
+              runbook: docs/runbooks/high-cpu.md
+
+  - name: solver terminal transition fires after immediate DLQ drain then recovers
+    interval: 1m
+    input_series:
+      - series: 'lunchlineup_solver_queue_messages{job="worker",state="dead_letter"}'
+        values: '0+0x20'
+      - series: 'lunchlineup_solver_terminal_transitions_total{job="worker",reason="non_retryable"}'
+        values: '0 1+0x20'
+    alert_rule_test:
+      - eval_time: 5m
+        alertname: SolverQueuePoisoned
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              team: engineering
+            exp_annotations:
+              summary: Solver queue contains terminal messages
+              description: At least one solver message is in the durable DLQ or entered a terminal broker state within 15 minutes.
+              runbook: docs/runbooks/high-cpu.md
+      - eval_time: 18m
+        alertname: SolverQueuePoisoned
+        exp_alerts: []
+
+  - name: recent delivery dead letters fire and then recover
+    interval: 1m
+    input_series:
+      - series: 'lunchlineup_password_reset_email_total{job="worker",status="dead_lettered"}'
+        values: '0+0x1 1+0x20'
+      - series: 'lunchlineup_staff_invitation_outbox_total{job="worker",status="dead_lettered"}'
+        values: '0+0x1 1+0x20'
+      - series: 'lunchlineup_notification_outbox_total{job="api",status="dead_lettered"}'
+        values: '0+0x1 1+0x20'
+    alert_rule_test:
+      - eval_time: 5m
+        alertname: PasswordResetEmailDeadLetters
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              team: engineering
+            exp_annotations:
+              summary: Password-reset email outbox has terminal delivery failures
+              description: Recent password-reset terminal transitions require lifecycle or provider triage; the alert resolves after 15 minutes without a new dead letter.
+              runbook: docs/runbooks/outbound-delivery.md
+      - eval_time: 5m
+        alertname: StaffInvitationDeadLetters
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              team: engineering
+            exp_annotations:
+              summary: Staff invitation outbox has terminal delivery failures
+              description: Recent terminal invitation transitions require triage by opaque outbox ID; resolve the cause, then use the tenant-scoped reissue action. The alert resolves after 15 minutes without a new dead letter.
+              runbook: docs/runbooks/outbound-delivery.md
+      - eval_time: 5m
+        alertname: NotificationOutboxDeadLetters
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              team: engineering
+            exp_annotations:
+              summary: Notification outbox has terminal delivery failures
+              description: Recent notification terminal transitions require operator triage; the alert resolves after 15 minutes without a new dead letter.
+              runbook: docs/runbooks/outbound-delivery.md
+      - eval_time: 18m
+        alertname: PasswordResetEmailDeadLetters
+        exp_alerts: []
+      - eval_time: 18m
+        alertname: StaffInvitationDeadLetters
+        exp_alerts: []
+      - eval_time: 18m
+        alertname: NotificationOutboxDeadLetters
+        exp_alerts: []
+
+  - name: retained-record dry run cannot satisfy application-data execution telemetry
+    interval: 1m
+    input_series:
+      - series: 'lunchlineup_retention_purge_last_attempt_timestamp_seconds{mode="dry_run",stage="retained_records"}'
+        values: '60+60x35'
+    alert_rule_test:
+      - eval_time: 31m
+        alertname: ApplicationDataRetentionExecutionTelemetryMissing
+        exp_alerts:
+          - exp_labels:
+              mode: execute
+              stage: application_data
+              severity: critical
+              team: ops
+            exp_annotations:
+              summary: Automatic application-data retention execution telemetry is missing
+              description: Prometheus cannot confirm the scheduled application_data execution; retained-record dry-run success does not satisfy this alert.
+              runbook: docs/runbooks/data-retention-delete-export.md
+
+  - name: application-data execution older than 26 hours is stale
+    interval: 1m
+    input_series:
+      - series: 'lunchlineup_retention_purge_last_attempt_timestamp_seconds{mode="execute",stage="application_data"}'
+        values: '60+0x1630'
+    alert_rule_test:
+      - eval_time: 27h
+        alertname: ApplicationDataRetentionExecutionStale
+        exp_alerts:
+          - exp_labels:
+              mode: execute
+              stage: application_data
+              severity: critical
+              team: ops
+            exp_annotations:
+              summary: Automatic application-data retention execution is older than 26 hours
+              description: The last scheduled application_data execution attempt is 1d 2h 59m 0s old; dry-run telemetry is intentionally independent.
+              runbook: docs/runbooks/data-retention-delete-export.md

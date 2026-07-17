@@ -14,11 +14,14 @@ import {
     validateProductionEnvironment,
 } from './common/bootstrap-security';
 import { ProductionExceptionFilter } from './common/production-exception.filter';
+import { installProcessShutdownDeadline } from './common/shutdown-deadline';
 
 async function bootstrap() {
+    installProcessShutdownDeadline();
     validateProductionEnvironment();
 
     const app = await NestFactory.create(AppModule, { bodyParser: false });
+    app.enableShutdownHooks(['SIGINT', 'SIGTERM']);
     const expressApp = app.getHttpAdapter().getInstance() as express.Express;
     const bodyLimit = resolveRequestBodyLimit();
 

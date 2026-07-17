@@ -6,7 +6,8 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import type { AddressInfo } from 'node:net';
 import { performance } from 'node:perf_hooks';
 import { collectDefaultMetrics, Counter, Gauge, Histogram, Registry } from 'prom-client';
-import { redactSensitiveText } from '../common/sensitive-redaction';
+import { runtimeErrorText } from '../common/runtime-error-diagnostic';
+import { installProcessShutdownDeadline } from '../common/shutdown-deadline';
 import { WebhookDeliveryStore } from './webhook-delivery.store';
 import { startPendingRecoveryLoop } from './webhook-pending-recovery';
 import {
@@ -27,6 +28,19 @@ type ReplayWorkerOptions = {
     startRuntimeServer?: boolean;
 };
 
+export type WebhookReplayDeliveryLossReason =
+    | 'connection_close'
+    | 'connection_error'
+    | 'channel_close'
+    | 'channel_error'
+    | 'consumer_cancel';
+
+type ShutdownProcess = {
+    exitCode?: string | number;
+    once(signal: 'SIGINT' | 'SIGTERM', listener: () => void): unknown;
+    off(signal: 'SIGINT' | 'SIGTERM', listener: () => void): unknown;
+};
+
 type AmqpConnection = Awaited<ReturnType<typeof amqp.connect>>;
 type WebhookReplayMessageStatus = 'delivered' | 'not_found' | 'requeued' | 'dead_lettered' | 'malformed' | 'failed';
 
@@ -35,21 +49,73 @@ export type WebhookReplayWorkerHandle = {
     channel: ConfirmChannel;
     runtime: WebhookReplayRuntime;
     runtimeServer?: WebhookReplayRuntimeServer;
+    failure: Promise<WebhookReplayDeliveryLossReason>;
     close(): Promise<void>;
 };
 
 export type WebhookReplayHealth = {
-    status: 'ok' | 'starting';
+    status: 'ok' | 'starting' | 'unhealthy';
     ready: boolean;
+    deliveryLossReason: WebhookReplayDeliveryLossReason | null;
     queue: string | null;
     prefetch: number | null;
+    inFlightMessages: number;
     uptimeSeconds: number;
+};
+
+export type WebhookReplayShutdownRegistration = {
+    shutdown(): Promise<void>;
+    dispose(): void;
 };
 
 export type WebhookReplayRuntimeServer = {
     port: number;
     close(): Promise<void>;
+    forceClose(): void;
 };
+
+async function beforeShutdownDeadline<T>(
+    operation: Promise<T>,
+    deadlineAtMs: number,
+    label: string,
+): Promise<T> {
+    const remainingMs = deadlineAtMs - Date.now();
+    if (remainingMs <= 0) throw new Error(`Webhook replay shutdown deadline exceeded before ${label}`);
+    let timer: NodeJS.Timeout | undefined;
+    try {
+        return await Promise.race([
+            operation,
+            new Promise<never>((_resolve, reject) => {
+                timer = setTimeout(
+                    () => reject(new Error(`Webhook replay shutdown deadline exceeded during ${label}`)),
+                    remainingMs,
+                );
+            }),
+        ]);
+    } finally {
+        if (timer) clearTimeout(timer);
+    }
+}
+
+function forceCloseReplayResources(
+    connection: AmqpConnection,
+    channel: ConfirmChannel,
+    runtimeServer?: WebhookReplayRuntimeServer,
+): void {
+    const streams = new Set<unknown>([
+        (channel as any)?.connection?.stream,
+        (connection as any)?.connection?.stream,
+        (connection as any)?.stream,
+    ]);
+    for (const stream of streams) {
+        try {
+            (stream as { destroy?: () => void } | undefined)?.destroy?.();
+        } catch {
+            // Forced cleanup is best effort after the aggregate deadline.
+        }
+    }
+    runtimeServer?.forceClose();
+}
 
 export class WebhookReplayRuntime {
     public readonly registry: Registry;
@@ -61,8 +127,12 @@ export class WebhookReplayRuntime {
     private readonly inFlightMessages: Gauge<string>;
     private readonly lastHandledTimestampSeconds: Gauge<string>;
     private readonly lastFailureTimestampSeconds: Gauge<string>;
+    private readonly deliveryLossesTotal: Counter<'reason'>;
     private readonly startedAtMs = Date.now();
+    private readonly idleWaiters = new Set<() => void>();
+    private activeMessages = 0;
     private ready = false;
+    private deliveryLossReason: WebhookReplayDeliveryLossReason | null = null;
     private queueName: string | null = null;
     private prefetch: number | null = null;
 
@@ -114,6 +184,12 @@ export class WebhookReplayRuntime {
             help: 'Unix timestamp of the latest malformed, failed, or dead-lettered webhook replay outcome',
             registers: [this.registry],
         });
+        this.deliveryLossesTotal = new Counter({
+            name: 'lunchlineup_webhook_replay_delivery_losses_total',
+            help: 'Webhook replay delivery capability losses by bounded broker event',
+            labelNames: ['reason'],
+            registers: [this.registry],
+        });
 
         this.readyGauge.set(0);
         this.inFlightMessages.set(0);
@@ -122,6 +198,7 @@ export class WebhookReplayRuntime {
 
     markReady(queueName: string, prefetch: number): void {
         this.ready = true;
+        this.deliveryLossReason = null;
         this.queueName = queueName;
         this.prefetch = prefetch;
         this.readyGauge.set(1);
@@ -133,13 +210,31 @@ export class WebhookReplayRuntime {
         this.readyGauge.set(0);
     }
 
+    markDeliveryLost(reason: WebhookReplayDeliveryLossReason): void {
+        if (this.deliveryLossReason) {
+            return;
+        }
+        this.deliveryLossReason = reason;
+        this.markNotReady();
+        this.deliveryLossesTotal.inc({ reason });
+        this.lastFailureTimestampSeconds.set(Date.now() / 1000);
+    }
+
     beginMessage(): number {
+        this.activeMessages += 1;
         this.inFlightMessages.inc();
         return performance.now();
     }
 
     finishMessage(status: WebhookReplayMessageStatus, startedAtMs: number): void {
+        this.activeMessages = Math.max(0, this.activeMessages - 1);
         this.inFlightMessages.dec();
+        if (this.activeMessages === 0) {
+            for (const resolveIdle of this.idleWaiters) {
+                resolveIdle();
+            }
+            this.idleWaiters.clear();
+        }
         this.messagesTotal.inc({ status });
         this.messageDurationSeconds.observe({ status }, (performance.now() - startedAtMs) / 1000);
         this.lastHandledTimestampSeconds.set(Date.now() / 1000);
@@ -151,12 +246,37 @@ export class WebhookReplayRuntime {
 
     health(): WebhookReplayHealth {
         return {
-            status: this.ready ? 'ok' : 'starting',
+            status: this.ready ? 'ok' : this.deliveryLossReason ? 'unhealthy' : 'starting',
             ready: this.ready,
+            deliveryLossReason: this.deliveryLossReason,
             queue: this.queueName,
             prefetch: this.prefetch,
+            inFlightMessages: this.activeMessages,
             uptimeSeconds: Math.floor((Date.now() - this.startedAtMs) / 1000),
         };
+    }
+
+    async waitForIdle(timeoutMs: number): Promise<boolean> {
+        if (this.activeMessages === 0) {
+            return true;
+        }
+        return new Promise<boolean>((resolve) => {
+            let settled = false;
+            let timeout: NodeJS.Timeout;
+            const finish = (drained: boolean) => {
+                if (settled) {
+                    return;
+                }
+                settled = true;
+                clearTimeout(timeout);
+                this.idleWaiters.delete(resolveIdle);
+                resolve(drained);
+            };
+            const resolveIdle = () => finish(true);
+            timeout = setTimeout(() => finish(false), timeoutMs);
+            timeout.unref?.();
+            this.idleWaiters.add(resolveIdle);
+        });
     }
 
     async metrics(): Promise<string> {
@@ -174,30 +294,142 @@ export async function startWebhookReplayWorker(
     const retryConfig = resolveWebhookRetryQueueConfig(configService);
     const rabbitUrl = String(configService.get('RABBITMQ_URL') || 'amqp://localhost');
     let runtimeServer: WebhookReplayRuntimeServer | undefined;
+    let startupCleanup: (() => Promise<void>) | undefined;
 
     try {
-        if (options.startRuntimeServer !== false) {
-            runtimeServer = await startWebhookReplayRuntimeServer(runtime, configService);
-        }
-
         const connection = await (options.connect ?? amqp.connect)(rabbitUrl);
         const channel = await connection.createConfirmChannel();
         const prefetch = resolvePrefetch(configService);
+        const shutdownTimeoutMs = resolveShutdownTimeoutMs(configService);
+        let consumerTag: string | undefined;
+        let stopPendingRecovery: (() => Promise<void>) | undefined;
+        let closing = false;
+        let closePromise: Promise<void> | undefined;
+        let failureReason: WebhookReplayDeliveryLossReason | undefined;
+        let resolveFailure!: (reason: WebhookReplayDeliveryLossReason) => void;
+        const failure = new Promise<WebhookReplayDeliveryLossReason>((resolve) => {
+            resolveFailure = resolve;
+        });
+
+        const onConnectionClose = () => deliveryCapabilityLost('connection_close');
+        const onConnectionError = () => deliveryCapabilityLost('connection_error');
+        const onChannelClose = () => deliveryCapabilityLost('channel_close');
+        const onChannelError = () => deliveryCapabilityLost('channel_error');
+        connection.on('close', onConnectionClose);
+        connection.on('error', onConnectionError);
+        channel.on('close', onChannelClose);
+        channel.on('error', onChannelError);
+
+        const detachTransportListeners = () => {
+            connection.off('close', onConnectionClose);
+            connection.off('error', onConnectionError);
+            channel.off('close', onChannelClose);
+            channel.off('error', onChannelError);
+        };
+
+        const performClose = (): Promise<void> => {
+            closing = true;
+            closePromise ??= (async () => {
+                runtime.markNotReady();
+                detachTransportListeners();
+                const deadlineAtMs = Date.now() + shutdownTimeoutMs;
+                let firstError: unknown;
+                if (stopPendingRecovery) {
+                    try {
+                        await beforeShutdownDeadline(
+                            stopPendingRecovery(),
+                            deadlineAtMs,
+                            'pending recovery stop',
+                        );
+                    } catch (error) {
+                        firstError ??= error;
+                    }
+                }
+                if (consumerTag) {
+                    try {
+                        await beforeShutdownDeadline(
+                            channel.cancel(consumerTag),
+                            deadlineAtMs,
+                            'consumer cancellation',
+                        );
+                    } catch (error) {
+                        firstError ??= error;
+                    }
+                }
+                const drained = await runtime.waitForIdle(Math.max(1, deadlineAtMs - Date.now()));
+                if (!drained) {
+                    console.warn(
+                        'Webhook replay shutdown timed out with '
+                        + runtime.health().inFlightMessages
+                        + ' message(s) in flight',
+                    );
+                }
+                const closeOperations: Array<[string, () => Promise<unknown>]> = [
+                    ['channel close', () => channel.close()],
+                    ['connection close', () => connection.close()],
+                    ['runtime server close', () => runtimeServer?.close() ?? Promise.resolve()],
+                ];
+                for (const [label, closeOperation] of closeOperations) {
+                    try {
+                        await beforeShutdownDeadline(closeOperation(), deadlineAtMs, label);
+                    } catch (error) {
+                        firstError ??= error;
+                    }
+                }
+                if (Date.now() >= deadlineAtMs) {
+                    forceCloseReplayResources(connection, channel, runtimeServer);
+                }
+                if (firstError) {
+                    forceCloseReplayResources(connection, channel, runtimeServer);
+                    throw firstError;
+                }
+            })();
+            return closePromise;
+        };
+        startupCleanup = performClose;
+
+        function deliveryCapabilityLost(reason: WebhookReplayDeliveryLossReason): void {
+            if (closing || failureReason) {
+                return;
+            }
+            failureReason = reason;
+            runtime.markDeliveryLost(reason);
+            console.error(`Webhook replay delivery capability lost reason=${reason}`);
+            resolveFailure(reason);
+            void performClose().catch(() => {
+                console.error(`Webhook replay failure cleanup failed reason=${reason}`);
+            });
+        }
 
         await assertWebhookRetryQueues(channel, retryConfig);
         await channel.prefetch(prefetch);
-        await channel.consume(
+        const consumer = await channel.consume(
             retryConfig.queueName,
-            (message) => handleReplayMessage(channel, webhooksService, retryConfig, message, runtime),
+            (message) => {
+                if (!message) {
+                    deliveryCapabilityLost('consumer_cancel');
+                    return;
+                }
+                void handleReplayMessage(channel, webhooksService, retryConfig, message, runtime);
+            },
             { noAck: false },
         );
+        consumerTag = consumer.consumerTag;
+        if (failureReason) {
+            await performClose().catch(() => undefined);
+            throw new Error('Webhook replay delivery capability was lost during startup');
+        }
 
-        const stopPendingRecovery = startPendingRecoveryLoop(
+        stopPendingRecovery = startPendingRecoveryLoop(
             channel,
             webhooksService,
             retryConfig,
             configService,
         );
+
+        if (options.startRuntimeServer !== false) {
+            runtimeServer = await startWebhookReplayRuntimeServer(runtime, configService);
+        }
 
         runtime.markReady(retryConfig.queueName, prefetch);
         console.log(`Webhook replay worker consuming ${retryConfig.queueName} with prefetch=${prefetch}`);
@@ -207,30 +439,16 @@ export async function startWebhookReplayWorker(
             channel,
             runtime,
             runtimeServer,
-            async close() {
-                runtime.markNotReady();
-                await stopPendingRecovery();
-                const closeOperations: Array<() => Promise<unknown>> = [
-                    () => channel.close(),
-                    () => connection.close(),
-                    () => runtimeServer?.close() ?? Promise.resolve(),
-                ];
-                let firstError: unknown;
-                for (const closeOperation of closeOperations) {
-                    try {
-                        await closeOperation();
-                    } catch (error) {
-                        firstError ??= error;
-                    }
-                }
-                if (firstError) {
-                    throw firstError;
-                }
-            },
+            failure,
+            close: performClose,
         };
     } catch (error) {
         runtime.markNotReady();
-        await runtimeServer?.close();
+        if (startupCleanup) {
+            await startupCleanup().catch(() => undefined);
+        } else {
+            await runtimeServer?.close();
+        }
         throw error;
     }
 }
@@ -310,10 +528,7 @@ export async function handleReplayMessage(
         channel.ack(message);
     } catch (error) {
         status = 'failed';
-        console.error(
-            'Webhook replay worker failed',
-            redactSensitiveText(error instanceof Error ? error.stack ?? error.message : error),
-        );
+        console.error(`Webhook replay worker failed ${runtimeErrorText(error)}`);
         channel.nack(message, false, !terminalAttempt);
     } finally {
         if (runtime && startedAtMs !== undefined) {
@@ -330,10 +545,7 @@ async function recordConfirmedRetryPublication(
     try {
         await webhooksService.markRetryQueued(tenantId, deliveryId);
     } catch (error) {
-        console.error(
-            `Webhook retry publication state update failed delivery_id=${deliveryId}`,
-            redactSensitiveText(error instanceof Error ? error.stack ?? error.message : error),
-        );
+        console.error(`Webhook retry publication state update failed ${runtimeErrorText(error)}`);
     }
 }
 
@@ -366,6 +578,10 @@ export async function startWebhookReplayRuntimeServer(
     return {
         port: boundPort(address, port),
         close: () => closeServer(server),
+        forceClose: () => {
+            server.closeAllConnections?.();
+            server.close();
+        },
     };
 }
 
@@ -408,6 +624,11 @@ function resolveMetricsPort(configService: ConfigService): number {
     return Number.isFinite(configured) && configured >= 0 && configured <= 65535 ? configured : 3004;
 }
 
+function resolveShutdownTimeoutMs(configService: ConfigService): number {
+    const configured = Number.parseInt(String(configService.get('WEBHOOK_REPLAY_SHUTDOWN_TIMEOUT_MS') ?? ''), 10);
+    return Number.isFinite(configured) && configured >= 1_000 && configured <= 120_000 ? configured : 30_000;
+}
+
 function stringConfig(configService: ConfigService, key: string, fallback: string): string {
     const value = String(configService.get(key) ?? '').trim();
     return value || fallback;
@@ -445,12 +666,45 @@ function writeText(res: ServerResponse, statusCode: number, body: string): void 
     res.end(body);
 }
 
+export function registerWebhookReplayShutdown(
+    worker: Pick<WebhookReplayWorkerHandle, 'close'>,
+    runtimeProcess: ShutdownProcess = process,
+): WebhookReplayShutdownRegistration {
+    let shutdownPromise: Promise<void> | undefined;
+    const dispose = () => {
+        runtimeProcess.off('SIGINT', onSignal);
+        runtimeProcess.off('SIGTERM', onSignal);
+    };
+    const shutdown = () => {
+        shutdownPromise ??= worker.close()
+            .catch((error) => {
+                runtimeProcess.exitCode = 1;
+                console.error(`Webhook replay worker failed to close ${runtimeErrorText(error)}`);
+            })
+            .finally(dispose);
+        return shutdownPromise;
+    };
+    const onSignal = () => {
+        void shutdown();
+    };
+
+    runtimeProcess.once('SIGINT', onSignal);
+    runtimeProcess.once('SIGTERM', onSignal);
+    return { shutdown, dispose };
+}
+
 if (require.main === module) {
-    startWebhookReplayWorker().catch((error) => {
-        console.error(
-            'Webhook replay worker failed to start',
-            redactSensitiveText(error instanceof Error ? error.stack ?? error.message : error),
-        );
-        process.exit(1);
-    });
+    installProcessShutdownDeadline();
+    startWebhookReplayWorker()
+        .then((worker) => {
+            registerWebhookReplayShutdown(worker);
+            void worker.failure.then((reason) => {
+                process.exitCode = 1;
+                console.error(`Webhook replay worker terminating reason=${reason}`);
+            });
+        })
+        .catch((error) => {
+            console.error(`Webhook replay worker failed to start ${runtimeErrorText(error)}`);
+            process.exitCode = 1;
+        });
 }

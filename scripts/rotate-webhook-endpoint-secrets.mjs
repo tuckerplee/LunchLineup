@@ -3,27 +3,17 @@ import crypto from 'node:crypto';
 import { PrismaClient } from '@prisma/client';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import {
+  CURRENT_KEY_ENV,
+  PREVIOUS_KEY_ENV,
+  decodeEncryptionKey,
+  encryptionKeyRef,
+  managedKeys,
+} from './webhook-encryption-keyring.mjs';
 
-export const CURRENT_KEY_ENV = 'WEBHOOK_DELIVERY_ENCRYPTION_KEY_CURRENT';
-export const PREVIOUS_KEY_ENV = 'WEBHOOK_DELIVERY_ENCRYPTION_KEY_PREVIOUS';
+export { CURRENT_KEY_ENV, PREVIOUS_KEY_ENV, decodeEncryptionKey, encryptionKeyRef };
 const BATCH_SIZE = 250;
 const NONTERMINAL_STATUSES = ['PENDING', 'QUEUED', 'SENDING', 'FAILED'];
-
-export function decodeEncryptionKey(value, envName = CURRENT_KEY_ENV) {
-  const configured = String(value ?? '').trim();
-  const normalized = configured.replace(/-/g, '+').replace(/_/g, '/');
-  const key = /^[a-f0-9]{64}$/i.test(configured)
-    ? Buffer.from(configured, 'hex')
-    : Buffer.from(normalized, 'base64');
-  if (!configured || key.length !== 32) {
-    throw new Error(`${envName} must decode to 32 bytes.`);
-  }
-  return key;
-}
-
-export function encryptionKeyRef(key) {
-  return crypto.createHash('sha256').update(key.toString('base64')).digest('hex').slice(0, 16);
-}
 
 export function encryptSecret(value, key) {
   const iv = crypto.randomBytes(12);
@@ -67,12 +57,9 @@ function decryptWithKey(envelope, key) {
   ]).toString('utf8');
 }
 
-export function decryptSecret(value, keys, { allowPlaintext = false } = {}) {
+export function decryptSecret(value, keys) {
   const envelope = parseEnvelope(String(value));
-  if (!envelope) {
-    if (allowPlaintext) return { plaintext: String(value), keyRef: 'plaintext' };
-    throw new Error('Expected an encrypted webhook delivery envelope.');
-  }
+  if (!envelope) throw new Error('Expected an encrypted webhook delivery envelope.');
   const candidates = envelope.v === 2
     ? keys.filter(({ ref }) => ref === envelope.keyRef)
     : keys;
@@ -86,17 +73,6 @@ export function decryptSecret(value, keys, { allowPlaintext = false } = {}) {
   throw new Error('Webhook encryption envelope could not be decrypted with a managed key.');
 }
 
-function managedKeys(currentValue, previousValue) {
-  const currentKey = decodeEncryptionKey(currentValue, CURRENT_KEY_ENV);
-  const current = { key: currentKey, ref: encryptionKeyRef(currentKey) };
-  const configuredPrevious = String(previousValue ?? '').trim();
-  if (!configuredPrevious) return { current, keys: [current] };
-  const previousKey = decodeEncryptionKey(configuredPrevious, PREVIOUS_KEY_ENV);
-  const previous = { key: previousKey, ref: encryptionKeyRef(previousKey) };
-  if (previous.ref === current.ref) throw new Error('Webhook current and previous encryption keys must differ.');
-  return { current, keys: [current, previous] };
-}
-
 async function existingTables(prisma) {
   const rows = await prisma.$queryRawUnsafe(`
     SELECT to_regclass('"WebhookEndpoint"')::text AS endpoint,
@@ -105,7 +81,7 @@ async function existingTables(prisma) {
   return { endpoint: Boolean(rows[0]?.endpoint), delivery: Boolean(rows[0]?.delivery) };
 }
 
-async function rotateEndpointRows(tx, keyring) {
+async function processEndpointRows(tx, keyring, execute) {
   let cursor = '';
   let count = 0;
   let overlap = 0;
@@ -119,14 +95,16 @@ async function rotateEndpointRows(tx, keyring) {
     );
     if (rows.length === 0) break;
     for (const row of rows) {
-      const decrypted = decryptSecret(row.secret, keyring.keys, { allowPlaintext: true });
+      const decrypted = decryptSecret(row.secret, keyring.keys);
       if (decrypted.keyRef !== keyring.current.ref) overlap += 1;
-      const encrypted = encryptSecret(decrypted.plaintext, keyring.current.key);
-      await tx.$executeRawUnsafe(
-        `UPDATE "WebhookEndpoint" SET "secret" = $1, "updatedAt" = NOW() WHERE "id" = $2`,
-        encrypted,
-        row.id,
-      );
+      if (execute) {
+        const encrypted = encryptSecret(decrypted.plaintext, keyring.current.key);
+        await tx.$executeRawUnsafe(
+          `UPDATE "WebhookEndpoint" SET "secret" = $1, "updatedAt" = NOW() WHERE "id" = $2`,
+          encrypted,
+          row.id,
+        );
+      }
       count += 1;
     }
     cursor = rows.at(-1).id;
@@ -134,7 +112,7 @@ async function rotateEndpointRows(tx, keyring) {
   return { count, overlap };
 }
 
-async function rotateDeliveryRows(tx, keyring) {
+async function processDeliveryRows(tx, keyring, execute) {
   let cursor = '';
   let count = 0;
   let overlap = 0;
@@ -154,15 +132,17 @@ async function rotateDeliveryRows(tx, keyring) {
       const payload = decryptSecret(row.encryptedPayload, keyring.keys);
       if (url.keyRef !== keyring.current.ref || payload.keyRef !== keyring.current.ref
         || row.encryptionKeyRef !== keyring.current.ref) overlap += 1;
-      await tx.$executeRawUnsafe(
-        `UPDATE "WebhookDelivery"
-         SET "encryptedUrl" = $1, "encryptedPayload" = $2, "encryptionKeyRef" = $3, "updatedAt" = NOW()
-         WHERE "id" = $4`,
-        encryptSecret(url.plaintext, keyring.current.key),
-        encryptSecret(payload.plaintext, keyring.current.key),
-        keyring.current.ref,
-        row.id,
-      );
+      if (execute) {
+        await tx.$executeRawUnsafe(
+          `UPDATE "WebhookDelivery"
+           SET "encryptedUrl" = $1, "encryptedPayload" = $2, "encryptionKeyRef" = $3, "updatedAt" = NOW()
+           WHERE "id" = $4`,
+          encryptSecret(url.plaintext, keyring.current.key),
+          encryptSecret(payload.plaintext, keyring.current.key),
+          keyring.current.ref,
+          row.id,
+        );
+      }
       count += 1;
     }
     cursor = rows.at(-1).id;
@@ -170,18 +150,20 @@ async function rotateDeliveryRows(tx, keyring) {
   return { count, overlap };
 }
 
-export async function rotateWebhookEncryption(prisma, currentValue, previousValue) {
+async function inspectWebhookEncryption(prisma, currentValue, previousValue, execute) {
   const tables = await existingTables(prisma);
   const keyring = managedKeys(currentValue, previousValue);
   if (!tables.endpoint && !tables.delivery) {
     return { endpointRows: 0, deliveryRows: 0, overlapRows: 0, currentKeyRef: keyring.current.ref };
   }
   return prisma.$transaction(async (tx) => {
+    await tx.$executeRawUnsafe("SET LOCAL lock_timeout = '10s'");
+    await tx.$executeRawUnsafe("SET LOCAL statement_timeout = '110s'");
     await tx.$executeRawUnsafe(`SELECT pg_advisory_xact_lock(hashtext('lunchlineup:webhook-encryption-rotation'))`);
     if (tables.endpoint) await tx.$executeRawUnsafe(`LOCK TABLE "WebhookEndpoint" IN SHARE ROW EXCLUSIVE MODE`);
     if (tables.delivery) await tx.$executeRawUnsafe(`LOCK TABLE "WebhookDelivery" IN SHARE ROW EXCLUSIVE MODE`);
-    const endpoints = tables.endpoint ? await rotateEndpointRows(tx, keyring) : { count: 0, overlap: 0 };
-    const deliveries = tables.delivery ? await rotateDeliveryRows(tx, keyring) : { count: 0, overlap: 0 };
+    const endpoints = tables.endpoint ? await processEndpointRows(tx, keyring, execute) : { count: 0, overlap: 0 };
+    const deliveries = tables.delivery ? await processDeliveryRows(tx, keyring, execute) : { count: 0, overlap: 0 };
     return {
       endpointRows: endpoints.count,
       deliveryRows: deliveries.count,
@@ -191,17 +173,26 @@ export async function rotateWebhookEncryption(prisma, currentValue, previousValu
   }, { isolationLevel: 'Serializable', timeout: 120_000, maxWait: 10_000 });
 }
 
+export function verifyWebhookEncryption(prisma, currentValue, previousValue) {
+  return inspectWebhookEncryption(prisma, currentValue, previousValue, false);
+}
+
+export function rotateWebhookEncryption(prisma, currentValue, previousValue) {
+  return inspectWebhookEncryption(prisma, currentValue, previousValue, true);
+}
+
 async function main() {
   if (!process.env.MIGRATION_DATABASE_URL) throw new Error('MIGRATION_DATABASE_URL is required.');
   const prisma = new PrismaClient({ datasources: { db: { url: process.env.MIGRATION_DATABASE_URL } } });
   try {
-    const result = await rotateWebhookEncryption(
+    const verifyOnly = process.argv.includes('--verify-only');
+    const result = await (verifyOnly ? verifyWebhookEncryption : rotateWebhookEncryption)(
       prisma,
       process.env[CURRENT_KEY_ENV],
       process.env[PREVIOUS_KEY_ENV],
     );
     process.stdout.write(
-      `webhook_encryption_rotation_ok current_key_ref=${result.currentKeyRef} endpoint_rows=${result.endpointRows} delivery_rows=${result.deliveryRows} overlap_rows=${result.overlapRows} previous_dependency_rows=0\n`,
+      `webhook_encryption_${verifyOnly ? 'preflight' : 'rotation'}_ok current_key_ref=${result.currentKeyRef} endpoint_rows=${result.endpointRows} delivery_rows=${result.deliveryRows} overlap_rows=${result.overlapRows} previous_dependency_rows=${result.overlapRows}\n`,
     );
   } finally {
     await prisma.$disconnect();
@@ -209,8 +200,15 @@ async function main() {
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  main().catch(() => {
-    console.error('Webhook encryption rotation failed closed; no row changes or DDL were committed.');
+  main().catch((error) => {
+    const errorClass = String(error?.constructor?.name ?? 'UnknownError').replace(/[^A-Za-z0-9_]/g, '');
+    const rawCode = typeof error?.code === 'string'
+      ? error.code
+      : (typeof error?.errorCode === 'string' ? error.errorCode : '');
+    const errorCode = /^[A-Z0-9_]{1,32}$/.test(rawCode) ? rawCode : 'unknown';
+    console.error(
+      `Webhook encryption verification or rotation failed closed; no plaintext fallback was used. error_class=${errorClass} error_code=${errorCode}`,
+    );
     process.exit(1);
   });
 }

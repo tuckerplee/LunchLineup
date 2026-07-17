@@ -37,7 +37,7 @@ variable "image_digests" {
 }
 
 variable "vm_targets" {
-  description = "Production VM targets that the eventual provider modules must manage."
+  description = "The single production VM217 target managed by this stack."
   type = list(object({
     name        = string
     address     = string
@@ -103,13 +103,12 @@ locals {
   )
 
   vm_targets_ready = (
-    length(var.vm_targets) >= 2 &&
-    contains(local.target_roles, "app") &&
-    contains(local.target_roles, "data") &&
+    length(var.vm_targets) == 1 &&
+    local.target_roles == toset(["app"]) &&
     alltrue([
       for target in var.vm_targets :
       trimspace(target.name) != "" &&
-      can(regex("^(app|data|ops)$", target.role)) &&
+      target.role == "app" &&
       trimspace(target.ssh_user) != "" &&
       trimspace(target.data_volume) != "" &&
       can(regex("^([A-Za-z0-9][A-Za-z0-9.-]*|[0-9]{1,3}([.][0-9]{1,3}){3})$", trimspace(target.address))) &&
@@ -250,8 +249,13 @@ locals {
 
 resource "terraform_data" "production_readiness_gate" {
   input = {
-    environment       = var.environment
-    domain_name       = var.domain_name
+    environment = var.environment
+    domain_name = var.domain_name
+    production_topology = {
+      version          = "vm217-compose-v1"
+      runtime_owner    = "docker-compose"
+      external_data_vm = "disabled"
+    }
     service_contracts = local.service_contracts
     vm_targets        = var.vm_targets
   }

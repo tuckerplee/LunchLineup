@@ -16,12 +16,104 @@ describe('LocationsController', () => {
         expect(Reflect.getMetadata('permission', controller.create)).toBe('locations:write');
     });
 
-    it('updates tenant name during onboarding and creates location', async () => {
-        const tenantFindUniqueOrThrow = vi.fn().mockResolvedValue({ planTier: 'FREE' });
+    it('declares the bounded list and summary as locations read routes', () => {
+        expect(Reflect.getMetadata('permission', controller.findAll)).toBe('locations:read');
+        expect(Reflect.getMetadata('permission', controller.summary)).toBe('locations:read');
+    });
+
+    it('returns stable bounded location pages with an explicit continuation cursor', async () => {
+        const rows = [
+            { id: 'loc-a', name: 'Alpha' },
+            { id: 'loc-b1', name: 'Bravo' },
+            { id: 'loc-b2', name: 'Bravo' },
+            { id: 'loc-c', name: 'Charlie' },
+        ];
+        const findMany = vi.fn().mockImplementation(async ({ where, take }) => {
+            const cursorName = where.OR?.[0]?.name?.gt;
+            const cursorId = where.OR?.[1]?.id?.gt;
+            const pageRows = cursorName === undefined
+                ? rows
+                : rows.filter((row) => row.name > cursorName || (row.name === cursorName && row.id > cursorId));
+            return pageRows.slice(0, take);
+        });
+        const tx = {
+            $executeRaw: vi.fn().mockResolvedValue(1),
+            $queryRaw: vi.fn().mockResolvedValue([]),
+            location: { findMany },
+        };
+        controller = new LocationsController(new TenantPrismaService({
+            $transaction: vi.fn(async (callback: any) => callback(tx)),
+        } as any));
+
+        const first = await controller.findAll({ user: { tenantId: 'tenant-1' } }, '2');
+        const second = await controller.findAll(
+            { user: { tenantId: 'tenant-1' } },
+            '2',
+            first.pagination.nextCursor ?? undefined,
+        );
+
+        expect(first.data).toEqual(rows.slice(0, 2));
+        expect(first.pagination).toMatchObject({
+            limit: 2,
+            maxLimit: 200,
+            returned: 2,
+            hasMore: true,
+            nextCursor: expect.any(String),
+        });
+        expect(second.data).toEqual(rows.slice(2));
+        expect(second.pagination).toMatchObject({
+            limit: 2,
+            returned: 2,
+            hasMore: false,
+            nextCursor: null,
+        });
+        expect(findMany).toHaveBeenNthCalledWith(1, {
+            where: { tenantId: 'tenant-1', deletedAt: null },
+            orderBy: [{ name: 'asc' }, { id: 'asc' }],
+            take: 3,
+        });
+        expect(findMany).toHaveBeenNthCalledWith(2, {
+            where: {
+                tenantId: 'tenant-1',
+                deletedAt: null,
+                OR: [
+                    { name: { gt: 'Bravo' } },
+                    { name: 'Bravo', id: { gt: 'loc-b1' } },
+                ],
+            },
+            orderBy: [{ name: 'asc' }, { id: 'asc' }],
+            take: 3,
+        });
+    });
+
+    it('rejects location list limits above the public API maximum before querying', async () => {
+        await expect(controller.findAll({ user: { tenantId: 'tenant-1' } }, '201'))
+            .rejects
+            .toThrow('Use 1 through 200');
+    });
+
+    it('returns an exact active-location count without loading location rows', async () => {
+        const count = vi.fn().mockResolvedValue(237);
+        const tx = {
+            $executeRaw: vi.fn().mockResolvedValue(1),
+            $queryRaw: vi.fn().mockResolvedValue([]),
+            location: { count },
+        };
+        controller = new LocationsController(new TenantPrismaService({
+            $transaction: vi.fn(async (callback: any) => callback(tx)),
+        } as any));
+
+        await expect(controller.summary({ user: { tenantId: 'tenant-1' } })).resolves.toEqual({ count: 237 });
+        expect(count).toHaveBeenCalledWith({ where: { tenantId: 'tenant-1', deletedAt: null } });
+    });
+
+    it('updates tenant name and creates a location with an explicit non-Eastern timezone', async () => {
+        const tenantFindUniqueOrThrow = vi.fn().mockResolvedValue({ planTier: 'FREE', slug: 'acme-dining-a1b2c3' });
         const tenantUpdate = vi.fn().mockResolvedValue({});
         const locationCount = vi.fn().mockResolvedValue(0);
         const locationCreate = vi.fn().mockResolvedValue({ id: 'loc-1', name: 'Downtown Bistro' });
         const tx = {
+            $executeRaw: vi.fn().mockResolvedValue(1),
             $queryRaw: vi.fn().mockResolvedValue([{ set_current_tenant: null }]),
             tenant: {
                 findUniqueOrThrow: tenantFindUniqueOrThrow,
@@ -35,20 +127,30 @@ describe('LocationsController', () => {
         const transaction = vi.fn(async (cb: any) => cb(tx));
         controller = new LocationsController(new TenantPrismaService({ $transaction: transaction } as any));
 
-        const body = { name: 'Downtown Bistro', tenantName: 'Acme Dining' };
+        const body = {
+            name: 'Downtown Bistro',
+            tenantName: 'Acme Dining',
+            workspaceSlug: 'acme-dining-a1b2c3',
+            timezone: 'America/Los_Angeles',
+        };
         const result = await controller.create(body, writeReq);
 
         expect(transaction).toHaveBeenCalledOnce();
-        expect(tx.$queryRaw).toHaveBeenCalledTimes(2);
-        expect(tx.$queryRaw.mock.calls[1][1]).toBe('location-capacity:tenant-1');
-        expect(tx.$queryRaw.mock.invocationCallOrder[1]).toBeLessThan(locationCount.mock.invocationCallOrder[0]);
+        expect(tx.$executeRaw).toHaveBeenCalledTimes(2);
+        expect(tx.$executeRaw.mock.calls[1][1]).toBe('location-capacity:tenant-1');
+        expect(tx.$executeRaw.mock.invocationCallOrder[1]).toBeLessThan(locationCount.mock.invocationCallOrder[0]);
         expect(locationCount.mock.invocationCallOrder[0]).toBeLessThan(locationCreate.mock.invocationCallOrder[0]);
+        expect(tenantFindUniqueOrThrow).toHaveBeenCalledWith({
+            where: { id: 'tenant-1' },
+            select: { slug: true },
+        });
         expect(tenantFindUniqueOrThrow).toHaveBeenCalledWith({
             where: { id: 'tenant-1' },
             select: {
                 planTier: true,
                 status: true,
                 stripeSubscriptionId: true,
+                stripeSubscriptionCurrentPeriodEnd: true,
                 trialEndsAt: true,
             },
         });
@@ -63,11 +165,52 @@ describe('LocationsController', () => {
             data: {
                 name: 'Downtown Bistro',
                 address: undefined,
-                timezone: undefined,
+                timezone: 'America/Los_Angeles',
                 tenantId: 'tenant-1',
             },
         });
         expect(result).toEqual({ id: 'loc-1', name: 'Downtown Bistro' });
+    });
+
+    it('rejects first-location recovery when the signed-in workspace changed', async () => {
+        const tx = {
+            $executeRaw: vi.fn().mockResolvedValue(1),
+            $queryRaw: vi.fn().mockResolvedValue([]),
+            tenant: {
+                findUniqueOrThrow: vi.fn().mockResolvedValue({ slug: 'current-workspace' }),
+                update: vi.fn(),
+            },
+            location: {
+                findFirst: vi.fn(),
+                count: vi.fn(),
+                create: vi.fn(),
+            },
+        };
+        controller = new LocationsController(new TenantPrismaService({
+            $transaction: vi.fn(async (cb: any) => cb(tx)),
+        } as any));
+
+        await expect(controller.create({
+            name: 'Downtown Bistro',
+            tenantName: 'Acme Dining',
+            workspaceSlug: 'verified-workspace',
+            timezone: 'America/Los_Angeles',
+        }, writeReq, 'first-location-request-123')).rejects.toThrow(
+            'First-location setup does not match the signed-in workspace',
+        );
+
+        expect(tx.location.findFirst).not.toHaveBeenCalled();
+        expect(tx.location.count).not.toHaveBeenCalled();
+        expect(tx.location.create).not.toHaveBeenCalled();
+        expect(tx.tenant.update).not.toHaveBeenCalled();
+    });
+
+    it('rejects organization updates outside workspace-bound first-location setup', async () => {
+        await expect(controller.create({
+            name: 'Downtown Bistro',
+            tenantName: 'Acme Dining',
+            timezone: 'America/Los_Angeles',
+        }, writeReq)).rejects.toThrow('workspaceSlug is required for first-location setup');
     });
 
     it('returns the original location when a create response is lost and retried with the same key', async () => {
@@ -83,9 +226,10 @@ describe('LocationsController', () => {
             return persistedLocation;
         });
         const tx = {
+            $executeRaw: vi.fn().mockResolvedValue(1),
             $queryRaw: vi.fn().mockResolvedValue([]),
             tenant: {
-                findUniqueOrThrow: vi.fn().mockResolvedValue({ planTier: 'FREE' }),
+                findUniqueOrThrow: vi.fn().mockResolvedValue({ planTier: 'FREE', slug: 'acme-dining-a1b2c3' }),
                 update: vi.fn().mockResolvedValue({}),
             },
             location: {
@@ -97,14 +241,14 @@ describe('LocationsController', () => {
         controller = new LocationsController(new TenantPrismaService({
             $transaction: vi.fn(async (cb: any) => cb(tx)),
         } as any));
-        const body = { name: 'Downtown Bistro', tenantName: 'Acme Dining', timezone: 'America/Los_Angeles' };
+        const body = { name: 'Downtown Bistro', tenantName: 'Acme Dining', timezone: 'America/Los_Angeles', workspaceSlug: 'acme-dining-a1b2c3' };
 
         const first = await controller.create(body, writeReq, 'first-location-request-123');
         const retry = await controller.create(body, writeReq, 'first-location-request-123');
 
         expect(retry).toEqual(first);
         expect(locationCreate).toHaveBeenCalledOnce();
-        expect(tx.location.count).toHaveBeenCalledOnce();
+        expect(tx.location.count).toHaveBeenCalledTimes(2);
         expect(tx.tenant.update).toHaveBeenCalledOnce();
         expect(locationFindFirst).toHaveBeenCalledTimes(2);
         expect(locationCreate).toHaveBeenCalledWith({
@@ -117,6 +261,7 @@ describe('LocationsController', () => {
 
     it('rejects reuse of a location idempotency key with a different payload', async () => {
         const tx = {
+            $executeRaw: vi.fn().mockResolvedValue(1),
             $queryRaw: vi.fn().mockResolvedValue([]),
             location: {
                 findFirst: vi.fn().mockResolvedValue({
@@ -132,7 +277,7 @@ describe('LocationsController', () => {
         } as any));
 
         await expect(controller.create(
-            { name: 'Uptown Bistro' },
+            { name: 'Uptown Bistro', timezone: 'America/Los_Angeles' },
             writeReq,
             'first-location-request-123',
         )).rejects.toBeInstanceOf(ConflictException);
@@ -141,7 +286,7 @@ describe('LocationsController', () => {
     });
 
     it('blocks bootstrap create when the plan location limit has already been reached', async () => {
-        const tenantFindUniqueOrThrow = vi.fn().mockResolvedValue({ planTier: 'FREE' });
+        const tenantFindUniqueOrThrow = vi.fn().mockResolvedValue({ planTier: 'FREE', slug: 'acme-dining-a1b2c3' });
         const tenantUpdate = vi.fn().mockResolvedValue({});
         const locationCount = vi.fn().mockResolvedValue(0);
         const locationCreate = vi.fn().mockResolvedValue({ id: 'loc-1', name: 'Downtown Bistro' });
@@ -159,6 +304,7 @@ describe('LocationsController', () => {
             updatedAt: new Date(),
         });
         const tx = {
+            $executeRaw: vi.fn().mockResolvedValue(1),
             $queryRaw: vi.fn().mockResolvedValue([{ set_current_tenant: null }]),
             tenant: {
                 findUniqueOrThrow: tenantFindUniqueOrThrow,
@@ -175,7 +321,12 @@ describe('LocationsController', () => {
         const transaction = vi.fn(async (cb: any) => cb(tx));
         controller = new LocationsController(new TenantPrismaService({ $transaction: transaction } as any));
 
-        await expect(controller.create({ name: 'Downtown Bistro', tenantName: 'Acme Dining' }, writeReq))
+        await expect(controller.create({
+            name: 'Downtown Bistro',
+            tenantName: 'Acme Dining',
+            workspaceSlug: 'acme-dining-a1b2c3',
+            timezone: 'America/Los_Angeles',
+        }, writeReq))
             .rejects
             .toBeInstanceOf(ForbiddenException);
 
@@ -187,9 +338,19 @@ describe('LocationsController', () => {
     });
 
     it('throws bad request for empty location name', async () => {
-        await expect(controller.create({ name: '   ' }, { user: { tenantId: 'tenant-1' } }))
+        await expect(controller.create(
+            { name: '   ', timezone: 'America/Los_Angeles' },
+            { user: { tenantId: 'tenant-1' } },
+        ))
             .rejects
             .toBeInstanceOf(BadRequestException);
+    });
+
+    it('rejects an omitted timezone before creating a location', async () => {
+        await expect(controller.create(
+            { name: 'Downtown' },
+            writeReq,
+        )).rejects.toThrow('Location timezone is required.');
     });
 
     it('rejects invalid IANA timezones before creating a location', async () => {
@@ -229,6 +390,7 @@ describe('LocationsController', () => {
         },
     ])('applies free-tier location capacity to a $label tenant', async ({ tenant }) => {
         const tx = {
+            $executeRaw: vi.fn().mockResolvedValue(1),
             $queryRaw: vi.fn().mockResolvedValue([]),
             tenant: {
                 findUniqueOrThrow: vi.fn().mockResolvedValue(tenant),
@@ -255,7 +417,7 @@ describe('LocationsController', () => {
             $transaction: vi.fn(async (cb: any) => cb(tx)),
         } as any));
 
-        await expect(controller.create({ name: 'Second location' }, writeReq))
+        await expect(controller.create({ name: 'Second location', timezone: 'America/Denver' }, writeReq))
             .rejects.toThrow(/Free plan/i);
         expect(tx.planDefinition.findUnique).toHaveBeenCalledWith({ where: { code: 'FREE' } });
         expect(tx.location.create).not.toHaveBeenCalled();
@@ -271,6 +433,7 @@ describe('LocationsController', () => {
             timezone: 'America/Chicago',
         });
         const tx = {
+            $executeRaw: vi.fn().mockResolvedValue(1),
             $queryRaw: vi.fn(async (query: any) => {
                 const sql = Array.isArray(query) ? query.join(' ') : String(query);
                 if (sql.includes('FROM "Location"')) {
@@ -322,15 +485,16 @@ describe('LocationsController', () => {
             },
             data: { revision: { increment: 1 } },
         });
-        expect(tx.$queryRaw).toHaveBeenCalledTimes(3);
+        expect(tx.$queryRaw).toHaveBeenCalledTimes(2);
+        expect(tx.$queryRaw.mock.invocationCallOrder[0]).toBeLessThan(updateMany.mock.invocationCallOrder[0]);
         expect(tx.$queryRaw.mock.invocationCallOrder[1]).toBeLessThan(updateMany.mock.invocationCallOrder[0]);
-        expect(tx.$queryRaw.mock.invocationCallOrder[2]).toBeLessThan(updateMany.mock.invocationCallOrder[0]);
         expect(updateMany.mock.invocationCallOrder[0]).toBeLessThan(invalidateDrafts.mock.invocationCallOrder[0]);
         expect(result.name).toBe('Uptown Bistro');
     });
 
     it('does not invalidate draft solves when the timezone is unchanged', async () => {
         const tx = {
+            $executeRaw: vi.fn().mockResolvedValue(1),
             $queryRaw: vi.fn().mockResolvedValue([{ id: 'loc-1', timezone: 'America/Chicago' }]),
             location: {
                 updateMany: vi.fn().mockResolvedValue({ count: 1 }),
@@ -351,6 +515,7 @@ describe('LocationsController', () => {
 
     it.each(['PUBLISHED', 'ARCHIVED'])('rejects timezone changes with non-deleted %s schedule history', async (status) => {
         const tx = {
+            $executeRaw: vi.fn().mockResolvedValue(1),
             $queryRaw: vi.fn(async (query: any) => {
                 const sql = Array.isArray(query) ? query.join(' ') : String(query);
                 if (sql.includes('FROM "Location"')) {
@@ -383,8 +548,9 @@ describe('LocationsController', () => {
         expect(tx.schedule.updateMany).not.toHaveBeenCalled();
     });
 
-    it('allows name-only updates when the location has published schedule history', async () => {
+    it('allows name updates with an explicit unchanged timezone when published history exists', async () => {
         const tx = {
+            $executeRaw: vi.fn().mockResolvedValue(1),
             $queryRaw: vi.fn().mockResolvedValue([{ id: 'loc-1', timezone: 'America/Chicago' }]),
             location: {
                 updateMany: vi.fn().mockResolvedValue({ count: 1 }),
@@ -402,10 +568,14 @@ describe('LocationsController', () => {
             $transaction: vi.fn(async (cb: any) => cb(tx)),
         } as any));
 
-        const result = await controller.update('loc-1', { name: 'Renamed' }, writeReq);
+        const result = await controller.update(
+            'loc-1',
+            { name: 'Renamed', timezone: 'America/Chicago' },
+            writeReq,
+        );
 
         expect(result.name).toBe('Renamed');
-        expect(tx.$queryRaw).toHaveBeenCalledTimes(2);
+        expect(tx.$queryRaw).toHaveBeenCalledOnce();
         expect(tx.schedule.updateMany).not.toHaveBeenCalled();
     });
 
@@ -413,6 +583,7 @@ describe('LocationsController', () => {
         const locationUpdate = vi.fn().mockResolvedValue({ count: 1 });
         const invalidateDrafts = vi.fn().mockResolvedValue({ count: 3 });
         const tx = {
+            $executeRaw: vi.fn().mockResolvedValue(1),
             $queryRaw: vi.fn().mockResolvedValue([{ id: 'loc-1', timezone: 'America/Los_Angeles' }]),
             location: { updateMany: locationUpdate },
             schedule: { updateMany: invalidateDrafts },
@@ -436,13 +607,14 @@ describe('LocationsController', () => {
             where: { id: 'loc-1', tenantId: 'tenant-1', deletedAt: null },
             data: { deletedAt: expect.any(Date) },
         });
-        expect(tx.$queryRaw.mock.invocationCallOrder[1]).toBeLessThan(invalidateDrafts.mock.invocationCallOrder[0]);
+        expect(tx.$queryRaw.mock.invocationCallOrder[0]).toBeLessThan(invalidateDrafts.mock.invocationCallOrder[0]);
         expect(invalidateDrafts.mock.invocationCallOrder[0]).toBeLessThan(locationUpdate.mock.invocationCallOrder[0]);
     });
 
-    it('rejects location updates without supported fields', async () => {
+    it('rejects location updates that omit timezone', async () => {
         const updateMany = vi.fn();
         const tx = {
+            $executeRaw: vi.fn().mockResolvedValue(1),
             $queryRaw: vi.fn().mockResolvedValue([{ set_current_tenant: null }]),
             location: {
                 updateMany,
@@ -451,9 +623,9 @@ describe('LocationsController', () => {
         const transaction = vi.fn(async (cb: any) => cb(tx));
         controller = new LocationsController(new TenantPrismaService({ $transaction: transaction } as any));
 
-        await expect(controller.update('loc-1', { tenantId: 'tenant-2' } as any, writeReq))
+        await expect(controller.update('loc-1', { name: 'Renamed' }, writeReq))
             .rejects
-            .toBeInstanceOf(BadRequestException);
+            .toThrow('Location timezone is required.');
 
         expect(updateMany).not.toHaveBeenCalled();
     });

@@ -1,7 +1,16 @@
-import { Injectable, Logger, Optional } from '@nestjs/common';
+import { Inject, Injectable, Logger, Optional, type OnModuleDestroy, type OnModuleInit } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { ModuleRef } from '@nestjs/core';
 import Redis from 'ioredis';
+import type { Notification } from '@prisma/client';
+import { MetricsService } from '../common/metrics.service';
+import { runtimeErrorText } from '../common/runtime-error-diagnostic';
 import { TenantPrismaService } from '../database/tenant-prisma.service';
+import {
+    NotificationOutboxProcessor,
+    type NotificationDeliverySummary,
+    type NotificationOutboxEntry,
+} from './notification-outbox.processor';
 
 export enum NotificationType {
     INFO = 'INFO',
@@ -14,14 +23,17 @@ export enum NotificationType {
 }
 
 @Injectable()
-export class NotificationsService {
+export class NotificationsService implements OnModuleInit, OnModuleDestroy {
     private readonly logger = new Logger(NotificationsService.name);
     private readonly redis: Redis | null;
     private readonly tenantDb: TenantPrismaService;
+    private readonly outbox: NotificationOutboxProcessor;
+    private metrics!: MetricsService;
 
     constructor(
-        private readonly configService: ConfigService,
-        @Optional() tenantDb?: TenantPrismaService,
+        @Inject(ConfigService) private readonly configService: ConfigService,
+        @Inject(ModuleRef) private readonly moduleRef: ModuleRef,
+        @Inject(TenantPrismaService) @Optional() tenantDb?: TenantPrismaService,
     ) {
         this.tenantDb = tenantDb ?? new TenantPrismaService();
         const redisUrl = this.configService.get<string>('REDIS_URL');
@@ -32,13 +44,37 @@ export class NotificationsService {
                 enableReadyCheck: false,
             })
             : null;
+        this.outbox = new NotificationOutboxProcessor(this.tenantDb, {
+            fanOut: (notification) => this.publishExisting(notification),
+            recordOutcome: (status) => this.metrics.notificationOutboxDeliveriesTotal.inc({ status }),
+            setDeadLetteredCount: (count) => this.metrics.notificationOutboxDeadLettered.set(count),
+        });
     }
 
+    onModuleInit(): void {
+        this.metrics = this.moduleRef.get(MetricsService, { strict: false });
+        this.outbox.start();
+    }
+
+    async onModuleDestroy(): Promise<void> {
+        await this.outbox.stop();
+        if (this.redis) {
+            await this.redis.quit().catch(() => this.redis?.disconnect());
+        }
+    }
+
+    async enqueueInTransaction(tx: any, entries: NotificationOutboxEntry[]): Promise<number> {
+        return this.outbox.enqueueInTransaction(tx, entries);
+    }
+
+    async deliverPendingNow(tenantId: string, dedupeKeys: string[]): Promise<NotificationDeliverySummary> {
+        return this.outbox.deliverPendingNow(tenantId, dedupeKeys);
+    }
     /**
-     * Persists a notification to the database and pushes it to the user's specific WebSocket channel via Redis Pub/Sub.
+     * Persists a notification to the database and publishes an internal Redis fan-out event.
      */
     async send(tenantId: string, userId: string, type: NotificationType, title: string, body: string) {
-        this.logger.log(`Handling ${type} notification to user ${userId}: ${title}`);
+        this.logger.log(`Handling notification type=${type}`);
 
         // 1. Save to DB
         const notification = await this.tenantDb.withTenant(tenantId, (tx) => tx.notification.create({
@@ -51,19 +87,7 @@ export class NotificationsService {
             }
         }));
 
-        // 2. Push via WebSocket using Redis Pub/Sub
-        // We broadcast to a dedicated user channel. Websocket gateways will listen to this.
-        const channel = `notifications:user:${userId}`;
-        const payload = JSON.stringify(notification);
-
-        if (!this.redis) return notification;
-
-        try {
-            await this.redis.publish(channel, payload);
-        } catch (error) {
-            this.logger.warn(`Redis publish skipped for ${channel}: ${error instanceof Error ? error.message : 'unknown_error'}`);
-        }
-
+        await this.publishExisting(notification);
         return notification;
     }
 
@@ -134,6 +158,16 @@ export class NotificationsService {
                 readAt: new Date()
             }
         }));
+    }
+
+    private async publishExisting(notification: Notification): Promise<void> {
+        const channel = `notifications:user:${notification.userId}`;
+        if (!this.redis) return;
+        try {
+            await this.redis.publish(channel, JSON.stringify(notification));
+        } catch (error) {
+            this.logger.warn(`Redis notification publish skipped ${runtimeErrorText(error)}`);
+        }
     }
 
     async getFeed(tenantId: string, userId: string, options?: { unreadOnly?: boolean; limit?: number }) {

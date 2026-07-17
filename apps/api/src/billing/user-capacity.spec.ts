@@ -33,6 +33,7 @@ describe('assertTenantCanAddActiveUser', () => {
                     planTier: 'mystery-tier',
                     status: 'ACTIVE',
                     stripeSubscriptionId: 'sub_123',
+                    stripeSubscriptionCurrentPeriodEnd: new Date('2099-01-01T00:00:00.000Z'),
                 }),
             },
             user: {
@@ -62,12 +63,13 @@ describe('assertTenantCanAddActiveUser', () => {
 
     it('serializes active user capacity checks with a tenant advisory lock', async () => {
         const prisma = buildPrismaMock({
-            $queryRaw: vi.fn().mockResolvedValue([]),
+            $executeRaw: vi.fn().mockResolvedValue(1),
             tenant: {
                 findUnique: vi.fn().mockResolvedValue({
                     planTier: 'STARTER',
                     status: 'ACTIVE',
                     stripeSubscriptionId: 'sub_123',
+                    stripeSubscriptionCurrentPeriodEnd: new Date('2099-01-01T00:00:00.000Z'),
                 }),
             },
             user: {
@@ -77,9 +79,12 @@ describe('assertTenantCanAddActiveUser', () => {
 
         await assertTenantCanAddActiveUser(prisma as any, 'tenant-1');
 
-        expect((prisma as any).$queryRaw).toHaveBeenCalledOnce();
+        expect((prisma as any).$executeRaw).toHaveBeenCalledOnce();
+        const [query, lockTenantId] = (prisma as any).$executeRaw.mock.calls[0];
+        expect(Array.from(query).join(' ')).toContain('SELECT pg_advisory_xact_lock');
+        expect(lockTenantId).toBe('tenant-1');
         expect(prisma.user.count).toHaveBeenCalledWith({
-            where: { tenantId: 'tenant-1', deletedAt: null },
+            where: { tenantId: 'tenant-1', deletedAt: null, suspendedAt: null },
         });
     });
 
@@ -90,6 +95,7 @@ describe('assertTenantCanAddActiveUser', () => {
                     planTier: 'GROWTH',
                     status: 'PAST_DUE',
                     stripeSubscriptionId: 'sub_123',
+                    stripeSubscriptionCurrentPeriodEnd: new Date('2099-01-01T00:00:00.000Z'),
                 }),
             },
             user: {

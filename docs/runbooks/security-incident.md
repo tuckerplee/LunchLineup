@@ -12,15 +12,30 @@
 2. **Isolate**: if external abuse is active, remove the proxy from the external network only after preserving enough evidence:
 
    ```bash
-   docker compose stop proxy
+   docker compose \
+     --project-name lunchlineup \
+     --project-directory /opt/lunchlineup/current \
+     --env-file /var/lib/lunchlineup/runtime-env/current \
+     -f /opt/lunchlineup/current/docker-compose.yml \
+     stop proxy
    ```
 
 3. **Preserve evidence**:
 
    ```bash
    mkdir -p /var/tmp/lunchlineup-incident
-   docker compose logs --no-color api worker engine proxy > /var/tmp/lunchlineup-incident/app-logs.txt
-   docker compose ps > /var/tmp/lunchlineup-incident/compose-ps.txt
+   docker compose \
+     --project-name lunchlineup \
+     --project-directory /opt/lunchlineup/current \
+     --env-file /var/lib/lunchlineup/runtime-env/current \
+     -f /opt/lunchlineup/current/docker-compose.yml \
+     logs --no-color api worker engine proxy > /var/tmp/lunchlineup-incident/app-logs.txt
+   docker compose \
+     --project-name lunchlineup \
+     --project-directory /opt/lunchlineup/current \
+     --env-file /var/lib/lunchlineup/runtime-env/current \
+     -f /opt/lunchlineup/current/docker-compose.yml \
+     ps > /var/tmp/lunchlineup-incident/compose-ps.txt
    cat /opt/lunchlineup/DEPLOYED_GIT_SHA > /var/tmp/lunchlineup-incident/deployed-git-sha.txt
    ```
 
@@ -58,8 +73,18 @@ Rotate secrets in the managed production backend named by Terraform `secrets_bac
 After rotation:
 
 ```bash
-docker compose up -d --force-recreate api worker control grafana
-docker compose ps
+docker compose \
+  --project-name lunchlineup \
+  --project-directory /opt/lunchlineup/current \
+  --env-file /var/lib/lunchlineup/runtime-env/current \
+  -f /opt/lunchlineup/current/docker-compose.yml \
+  up -d --force-recreate api worker control grafana
+docker compose \
+  --project-name lunchlineup \
+  --project-directory /opt/lunchlineup/current \
+  --env-file /var/lib/lunchlineup/runtime-env/current \
+  -f /opt/lunchlineup/current/docker-compose.yml \
+  ps
 curl -fsS https://lunchlineup.com/health
 ```
 

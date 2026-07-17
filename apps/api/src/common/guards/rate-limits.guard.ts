@@ -1,17 +1,46 @@
-import { Injectable } from '@nestjs/common';
-import { PrismaClient } from '@prisma/client';
+import { Inject, Injectable } from '@nestjs/common';
 import { resolveRateLimits } from '@lunchlineup/config';
-import { ThrottlerGuard } from '@nestjs/throttler';
+import {
+    getOptionsToken,
+    getStorageToken,
+    ThrottlerGuard,
+    type ThrottlerModuleOptions,
+    type ThrottlerStorage,
+} from '@nestjs/throttler';
+import { Reflector } from '@nestjs/core';
 import type { ThrottlerRequest } from '@nestjs/throttler/dist/throttler.guard.interface';
 import { createHash } from 'crypto';
 import { isIP } from 'net';
+import {
+    hasFutureStripeSubscriptionCurrentPeriodEnd,
+    hasNonBlankStripeSubscriptionId,
+} from '../../billing/plan-definitions';
 import { TenantPrismaService } from '../../database/tenant-prisma.service';
 
 type RateLimitPlan = Parameters<typeof resolveRateLimits>[0];
 type RateLimits = ReturnType<typeof resolveRateLimits>;
+type RateLimitTenantSnapshot = {
+    planTier?: string | null;
+    status?: string | null;
+    stripeSubscriptionId?: string | null;
+    stripeSubscriptionCurrentPeriodEnd?: Date | string | null;
+};
 const THROTTLER_LIMIT = 'THROTTLER:LIMIT';
 const THROTTLER_TTL = 'THROTTLER:TTL';
 const THROTTLER_BLOCK_DURATION = 'THROTTLER:BLOCK_DURATION';
+const TENANT_CEILING_BUCKET = 'tenantCeiling';
+// Ten full principal budgets form the independent aggregate abuse ceiling.
+const TENANT_CEILING_MULTIPLIER = 10;
+
+type AuthenticatedRateLimitUser = {
+    tenantId?: string;
+    sub?: string;
+    sessionId?: string;
+};
+
+type RateLimitResponse = {
+    header(name: string, value: number): unknown;
+};
 
 /**
  * Custom Rate Limits Guard.
@@ -21,14 +50,21 @@ const THROTTLER_BLOCK_DURATION = 'THROTTLER:BLOCK_DURATION';
  */
 @Injectable()
 export class RateLimitsGuard extends ThrottlerGuard {
-    private prisma = new PrismaClient();
-    private tenantDb = new TenantPrismaService(this.prisma);
     private tenantRateLimitCache = new Map<string, { limits: RateLimits; expiresAt: number }>();
+
+    constructor(
+        @Inject(getOptionsToken()) options: ThrottlerModuleOptions,
+        @Inject(getStorageToken()) storageService: ThrottlerStorage,
+        reflector: Reflector,
+        private readonly tenantDb: TenantPrismaService,
+    ) {
+        super(options, storageService, reflector);
+    }
 
     protected async handleRequest(requestProps: ThrottlerRequest): Promise<boolean> {
         const { context, throttler, ttl, blockDuration, getTracker, generateKey } = requestProps;
         const { req, res } = this.getRequestResponse(context);
-        const user = req.user;
+        const user = req.user as AuthenticatedRateLimitUser | undefined;
         const throttlerName = throttler.name ?? 'default';
         const limits = await this.resolveTenantRateLimits(user?.tenantId);
         if (throttlerName !== 'default' && !this.hasNamedThrottleMetadata(context, throttlerName)) {
@@ -36,41 +72,66 @@ export class RateLimitsGuard extends ThrottlerGuard {
         }
 
         const appliedLimit = this.resolveAppliedLimit(throttlerName, limits, requestProps.limit);
-        const appliedTtl = ttl;
-
         const tracker = await this.resolveTracker(throttlerName, user, req, context, getTracker);
         const key = generateKey(context, tracker, throttlerName);
 
-        const { totalHits, timeToExpire, isBlocked, timeToBlockExpire } =
-            await this.storageService.increment(
-                key,
-                appliedTtl,
-                appliedLimit,
+        await this.consumeBucket(
+            context,
+            res as RateLimitResponse,
+            key,
+            tracker,
+            throttlerName,
+            ttl,
+            appliedLimit,
+            blockDuration,
+        );
+
+        const authenticatedScope = this.resolveAuthenticatedScope(user);
+        if (throttlerName === 'default' && authenticatedScope) {
+            const tenantLimit = appliedLimit * TENANT_CEILING_MULTIPLIER;
+            const tenantKey = generateKey(context, authenticatedScope.tenantTracker, TENANT_CEILING_BUCKET);
+            await this.consumeBucket(
+                context,
+                res as RateLimitResponse,
+                tenantKey,
+                authenticatedScope.tenantTracker,
+                TENANT_CEILING_BUCKET,
+                ttl,
+                tenantLimit,
                 blockDuration,
-                throttlerName
             );
-
-        const suffix = throttlerName === 'default' ? '' : `-${throttlerName}`;
-
-        res.header(`${this.headerPrefix}-Limit${suffix}`, appliedLimit);
-        res.header(`${this.headerPrefix}-Remaining${suffix}`, Math.max(0, appliedLimit - totalHits));
-        res.header(`${this.headerPrefix}-Reset${suffix}`, timeToExpire);
-
-        if (isBlocked) {
-            res.header(`Retry-After${suffix}`, timeToBlockExpire);
-            await this.throwThrottlingException(context, {
-                limit: appliedLimit,
-                ttl: appliedTtl,
-                key,
-                tracker,
-                totalHits,
-                timeToExpire,
-                isBlocked,
-                timeToBlockExpire,
-            });
         }
 
         return true;
+    }
+
+    private async consumeBucket(
+        context: ThrottlerRequest['context'],
+        res: RateLimitResponse,
+        key: string,
+        tracker: string,
+        throttlerName: string,
+        ttl: number,
+        limit: number,
+        blockDuration: number,
+    ): Promise<void> {
+        const result = await this.storageService.increment(key, ttl, limit, blockDuration, throttlerName);
+        const suffix = throttlerName === 'default' ? '' : '-' + throttlerName;
+
+        res.header(this.headerPrefix + '-Limit' + suffix, limit);
+        res.header(this.headerPrefix + '-Remaining' + suffix, Math.max(0, limit - result.totalHits));
+        res.header(this.headerPrefix + '-Reset' + suffix, result.timeToExpire);
+
+        if (result.isBlocked) {
+            res.header('Retry-After' + suffix, result.timeToBlockExpire);
+            await this.throwThrottlingException(context, {
+                limit,
+                ttl,
+                key,
+                tracker,
+                ...result,
+            });
+        }
     }
 
     private resolveAppliedLimit(throttlerName: string, limits: RateLimits, configuredLimit: number): number {
@@ -81,17 +142,18 @@ export class RateLimitsGuard extends ThrottlerGuard {
 
     private async resolveTracker(
         throttlerName: string,
-        user: { tenantId?: string; sub?: string; sessionId?: string } | undefined,
+        user: AuthenticatedRateLimitUser | undefined,
         req: Parameters<ThrottlerRequest['getTracker']>[0],
         context: ThrottlerRequest['context'],
         getTracker: ThrottlerRequest['getTracker'],
     ): Promise<string> {
-        if (throttlerName === 'auth' && user?.tenantId && user?.sub && user?.sessionId) {
-            return `${user.tenantId}:${user.sub}:${user.sessionId}`;
+        const authenticatedScope = this.resolveAuthenticatedScope(user);
+        if (throttlerName === 'auth' && authenticatedScope) {
+            return authenticatedScope.sessionTracker;
         }
         if (throttlerName === 'authIdentifier') {
             const sourceIp = this.normalizeSourceIp(await getTracker(req, context));
-            return `${sourceIp}:${this.resolvePreAuthSubject(req)}`;
+            return sourceIp + ':' + this.resolvePreAuthSubject(req);
         }
         if (throttlerName === 'authIp' || throttlerName === 'refreshIp') {
             return this.normalizeSourceIp(await getTracker(req, context));
@@ -101,13 +163,32 @@ export class RateLimitsGuard extends ThrottlerGuard {
                 ? req.cookies.refresh_token
                 : '';
             if (refreshToken) {
-                return `sha256:${createHash('sha256').update(refreshToken).digest('hex')}`;
+                return 'sha256:' + createHash('sha256').update(refreshToken).digest('hex');
             }
         }
-        if (throttlerName === 'default' && user?.tenantId) {
-            return user.tenantId;
+        if (throttlerName === 'default' && authenticatedScope) {
+            return authenticatedScope.principalTracker;
         }
         return getTracker(req, context);
+    }
+
+    private resolveAuthenticatedScope(user?: AuthenticatedRateLimitUser): {
+        principalTracker: string;
+        sessionTracker: string;
+        tenantTracker: string;
+    } | null {
+        const tenantId = typeof user?.tenantId === 'string' ? user.tenantId.trim() : '';
+        const subject = typeof user?.sub === 'string' ? user.sub.trim() : '';
+        if (!tenantId || !subject) return null;
+
+        const sessionId = typeof user?.sessionId === 'string' && user.sessionId.trim()
+            ? user.sessionId.trim()
+            : 'subject';
+        return {
+            principalTracker: this.hashTrackerValue('api-principal:' + tenantId + ':' + subject),
+            sessionTracker: this.hashTrackerValue('auth-session:' + tenantId + ':' + subject + ':' + sessionId),
+            tenantTracker: this.hashTrackerValue('api-tenant:' + tenantId),
+        };
     }
 
     private resolvePreAuthSubject(req: Parameters<ThrottlerRequest['getTracker']>[0]): string {
@@ -197,14 +278,21 @@ export class RateLimitsGuard extends ThrottlerGuard {
         }
 
         try {
+            const now = new Date();
             const tenant = await this.tenantDb.withTenant(tenantId, (tx) => tx.tenant.findUnique({
                 where: { id: tenantId },
-                select: { planTier: true, status: true, stripeSubscriptionId: true },
+                select: {
+                    planTier: true,
+                    status: true,
+                    stripeSubscriptionId: true,
+                    stripeSubscriptionCurrentPeriodEnd: true,
+                },
             }));
-            const limits = resolveRateLimits(this.normalizeActivePlanTier(tenant));
+            const plan = this.normalizeActivePlanTier(tenant, now);
+            const limits = resolveRateLimits(plan);
             this.tenantRateLimitCache.set(tenantId, {
                 limits,
-                expiresAt: Date.now() + 60_000,
+                expiresAt: this.resolveCacheExpiry(tenant, plan, now),
             });
             return limits;
         } catch {
@@ -212,12 +300,38 @@ export class RateLimitsGuard extends ThrottlerGuard {
         }
     }
 
-    private normalizeActivePlanTier(tenant?: { planTier?: string | null; status?: string | null; stripeSubscriptionId?: string | null } | null): RateLimitPlan {
+    private normalizeActivePlanTier(
+        tenant: RateLimitTenantSnapshot | null | undefined,
+        now: Date,
+    ): RateLimitPlan {
         const plan = this.normalizePlanTier(tenant?.planTier);
         if (plan === 'free') return plan;
-        return tenant?.status === 'ACTIVE' && Boolean(tenant?.stripeSubscriptionId)
+        return String(tenant?.status ?? '').trim().toUpperCase() === 'ACTIVE'
+            && hasNonBlankStripeSubscriptionId(tenant?.stripeSubscriptionId)
+            && hasFutureStripeSubscriptionCurrentPeriodEnd(
+                tenant?.stripeSubscriptionCurrentPeriodEnd,
+                now,
+            )
             ? plan
             : 'free';
+    }
+
+    private resolveCacheExpiry(
+        tenant: RateLimitTenantSnapshot | null | undefined,
+        plan: RateLimitPlan,
+        now: Date,
+    ): number {
+        const normalExpiry = now.getTime() + 60_000;
+        if (plan === 'free') return normalExpiry;
+        const paidThrough = tenant?.stripeSubscriptionCurrentPeriodEnd;
+        const paidThroughEpoch = paidThrough instanceof Date
+            ? paidThrough.getTime()
+            : typeof paidThrough === 'string'
+                ? new Date(paidThrough).getTime()
+                : Number.NaN;
+        return Number.isFinite(paidThroughEpoch)
+            ? Math.min(normalExpiry, paidThroughEpoch)
+            : now.getTime();
     }
 
     private normalizePlanTier(value?: string | null): RateLimitPlan {

@@ -1,8 +1,19 @@
 'use client';
 
 import type { FormEvent } from 'react';
-import { useCallback, useEffect, useMemo, useState } from 'react';
-import { fetchJsonWithSession, fetchWithSession } from '@/lib/client-api';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { fetchJsonWithSession, fetchWithSession, withIdempotencyKey } from '@/lib/client-api';
+import {
+    EMPTY_ADMIN_LIST_PAGINATION,
+    buildAdminListPath,
+    mergeAdminListPage,
+    parseAdminListPagination,
+} from '../admin-list-pagination';
+import {
+    createCreditGrantSubmissionState,
+    submitCreditGrant,
+    type CreditGrantPayload,
+} from './credit-grant-submission';
 
 type CreditTenant = {
     id: string;
@@ -23,6 +34,8 @@ type CreditHistoryRow = {
 type CreditsPayload = {
     tenants?: CreditTenant[];
     history?: CreditHistoryRow[];
+    tenantPagination?: unknown;
+    historyPagination?: unknown;
 };
 
 type CreditGrantForm = {
@@ -33,14 +46,14 @@ type CreditGrantForm = {
 
 const PLAN_COLORS: Record<string, { color: string; bg: string; border: string }> = {
     FREE: { color: '#4c5f85', bg: '#eef2f9', border: '#d3ddeb' },
-    STARTER: { color: '#2f63ff', bg: '#edf3ff', border: '#c9d9ff' },
-    GROWTH: { color: '#0f8c52', bg: '#e9fbf1', border: '#bdeed4' },
-    ENTERPRISE: { color: '#cc7f06', bg: '#fff4e2', border: '#ffe1a6' },
+    STARTER: { color: '#1d4ed8', bg: '#edf3ff', border: '#c9d9ff' },
+    GROWTH: { color: '#166534', bg: '#e9fbf1', border: '#bdeed4' },
+    ENTERPRISE: { color: '#7c4a03', bg: '#fff4e2', border: '#ffe1a6' },
 };
 
 const HISTORY_META = {
-    positive: { label: 'Grant', color: '#0f8c52', bg: '#e9fbf1', border: '#bdeed4' },
-    negative: { label: 'Debit', color: '#cb3653', bg: '#ffeef2', border: '#ffd0da' },
+    positive: { label: 'Grant', color: '#166534', bg: '#e9fbf1', border: '#bdeed4' },
+    negative: { label: 'Debit', color: '#b4233f', bg: '#ffeef2', border: '#ffd0da' },
 };
 
 const NUMBER_FORMAT = new Intl.NumberFormat('en-US');
@@ -54,20 +67,29 @@ function getCsrfHeaders(): Record<string, string> {
     return csrfToken ? { 'x-csrf-token': csrfToken } : {};
 }
 
-function jsonWriteInit(method: 'POST' | 'PUT' | 'DELETE', payload?: unknown): RequestInit {
-    return {
+function jsonWriteInit(
+    method: 'POST' | 'PUT' | 'DELETE',
+    payload: unknown,
+    idempotencyKey: string,
+): RequestInit {
+    return withIdempotencyKey({
         method,
         credentials: 'include',
         headers: {
             'Content-Type': 'application/json',
             ...getCsrfHeaders(),
         },
-        ...(payload === undefined ? {} : { body: JSON.stringify(payload) }),
-    };
+        body: JSON.stringify(payload),
+    }, idempotencyKey);
 }
 
-async function writeJson<T>(path: string, method: 'POST' | 'PUT' | 'DELETE', payload?: unknown): Promise<T> {
-    const response = await fetchWithSession(path, jsonWriteInit(method, payload));
+async function writeJson<T>(
+    path: string,
+    method: 'POST' | 'PUT' | 'DELETE',
+    payload: unknown,
+    idempotencyKey: string,
+): Promise<T> {
+    const response = await fetchWithSession(path, jsonWriteInit(method, payload, idempotencyKey));
     const responsePayload = await response.json().catch(() => ({} as Record<string, unknown>));
     if (!response.ok) {
         const message = typeof (responsePayload as { message?: unknown }).message === 'string'
@@ -106,15 +128,22 @@ function formatCredits(value: number) {
     return NUMBER_FORMAT.format(value);
 }
 
-function parseCreditsPayload(payload: unknown): { tenants: CreditTenant[]; history: CreditHistoryRow[] } {
+function parseCreditsPayload(payload: unknown) {
     if (!payload || typeof payload !== 'object') {
-        return { tenants: [], history: [] };
+        return {
+            tenants: [] as CreditTenant[],
+            history: [] as CreditHistoryRow[],
+            tenantPagination: EMPTY_ADMIN_LIST_PAGINATION,
+            historyPagination: EMPTY_ADMIN_LIST_PAGINATION,
+        };
     }
 
     const typed = payload as CreditsPayload;
     return {
         tenants: Array.isArray(typed.tenants) ? typed.tenants : [],
         history: Array.isArray(typed.history) ? typed.history : [],
+        tenantPagination: parseAdminListPagination(typed.tenantPagination),
+        historyPagination: parseAdminListPagination(typed.historyPagination),
     };
 }
 
@@ -131,34 +160,65 @@ export function CreditsClient() {
     const [error, setError] = useState<string | null>(null);
     const [notice, setNotice] = useState<string | null>(null);
     const [query, setQuery] = useState('');
+    const [appliedQuery, setAppliedQuery] = useState('');
+    const [tenantPagination, setTenantPagination] = useState(EMPTY_ADMIN_LIST_PAGINATION);
+    const [historyPagination, setHistoryPagination] = useState(EMPTY_ADMIN_LIST_PAGINATION);
     const [form, setForm] = useState<CreditGrantForm>({ tenantId: '', amount: '', reason: '' });
+    const grantSubmission = useRef(createCreditGrantSubmissionState());
 
-    const loadCredits = useCallback(async () => {
-        setLoading(true);
-        setSaving('load');
+    const loadCredits = useCallback(async (options: {
+        tenantCursor?: string | null;
+        historyCursor?: string | null;
+        appendTenants?: boolean;
+        appendHistory?: boolean;
+        search?: string;
+    } = {}) => {
+        const operation = options.appendTenants
+            ? 'load-more-tenants'
+            : options.appendHistory
+                ? 'load-more-history'
+                : 'load';
         setError(null);
+        setSaving(operation);
+        if (!options.appendTenants && !options.appendHistory) setLoading(true);
         try {
-            const payload = await fetchJsonWithSession<unknown>('/admin/credits');
-            const next = parseCreditsPayload(payload);
-            setTenants(next.tenants);
-            setHistory(next.history);
-            setForm((current) => ({
-                ...current,
-                tenantId: next.tenants.some((tenant) => tenant.id === current.tenantId)
-                    ? current.tenantId
-                    : next.tenants[0]?.id ?? '',
-            }));
+            const path = buildAdminListPath('/admin/credits', {
+                tenantLimit: 50,
+                tenantCursor: options.tenantCursor,
+                q: options.search,
+                historyLimit: 50,
+                historyCursor: options.historyCursor,
+            });
+            const next = parseCreditsPayload(await fetchJsonWithSession<unknown>(path));
+            if (options.appendTenants) {
+                setTenants((current) => mergeAdminListPage(current, next.tenants, true));
+                setTenantPagination(next.tenantPagination);
+            } else if (options.appendHistory) {
+                setHistory((current) => mergeAdminListPage(current, next.history, true));
+                setHistoryPagination(next.historyPagination);
+            } else {
+                setTenants(next.tenants);
+                setHistory(next.history);
+                setTenantPagination(next.tenantPagination);
+                setHistoryPagination(next.historyPagination);
+                setForm((current) => ({
+                    ...current,
+                    tenantId: next.tenants.some((tenant) => tenant.id === current.tenantId)
+                        ? current.tenantId
+                        : next.tenants[0]?.id ?? '',
+                }));
+            }
         } catch (err) {
             setError(err instanceof Error ? err.message : 'Failed to load credit balances');
         } finally {
-            setLoading(false);
-            setSaving((current) => (current === 'load' ? null : current));
+            if (!options.appendTenants && !options.appendHistory) setLoading(false);
+            setSaving((current) => (current === operation ? null : current));
         }
     }, []);
 
     useEffect(() => {
-        void loadCredits();
-    }, [loadCredits]);
+        void loadCredits({ search: appliedQuery });
+    }, [appliedQuery, loadCredits]);
 
     useEffect(() => {
         if (form.tenantId) return;
@@ -168,22 +228,10 @@ export function CreditsClient() {
         }));
     }, [form.tenantId, tenants]);
 
-    const filteredTenants = useMemo(() => {
-        const normalized = query.trim().toLowerCase();
-        const sorted = [...tenants].sort((a, b) => b.usageCredits - a.usageCredits);
-        if (!normalized) return sorted;
-        return sorted.filter((tenant) => {
-            return [
-                tenant.name,
-                tenant.slug,
-                tenant.planTier,
-                String(tenant.usageCredits),
-            ]
-                .join(' ')
-                .toLowerCase()
-                .includes(normalized);
-        });
-    }, [query, tenants]);
+    const visibleTenants = useMemo(
+        () => [...tenants].sort((a, b) => b.usageCredits - a.usageCredits),
+        [tenants],
+    );
 
     const sortedHistory = useMemo(() => {
         return [...history].sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
@@ -196,11 +244,11 @@ export function CreditsClient() {
         const maxBalance = tenants.length > 0 ? Math.max(...tenants.map((tenant) => tenant.usageCredits)) : 0;
 
         return [
-            { value: tenants.length, subtitle: 'tenant balances', icon: 'T', color: '#2f63ff', bg: '#edf3ff' },
-            { value: formatCredits(totalCredits), subtitle: 'total credits', icon: 'C', color: '#0f8c52', bg: '#e9fbf1' },
-            { value: historyCount, subtitle: 'ledger entries', icon: 'L', color: '#cb3653', bg: '#ffeef2' },
-            { value: formatCredits(maxBalance), subtitle: 'largest balance', icon: 'M', color: '#cc7f06', bg: '#fff4e2' },
-            { value: positiveCount, subtitle: 'grant rows', icon: '+', color: '#0f8c52', bg: '#e9fbf1' },
+            { value: tenants.length, subtitle: 'balances loaded', icon: 'T', color: '#1d4ed8', bg: '#edf3ff' },
+            { value: formatCredits(totalCredits), subtitle: 'credits in loaded rows', icon: 'C', color: '#166534', bg: '#e9fbf1' },
+            { value: historyCount, subtitle: 'ledger rows loaded', icon: 'L', color: '#b4233f', bg: '#ffeef2' },
+            { value: formatCredits(maxBalance), subtitle: 'largest loaded balance', icon: 'M', color: '#7c4a03', bg: '#fff4e2' },
+            { value: positiveCount, subtitle: 'grants in loaded rows', icon: '+', color: '#166534', bg: '#e9fbf1' },
         ];
     }, [history, tenants]);
 
@@ -213,8 +261,19 @@ export function CreditsClient() {
         ? selectedTenant.usageCredits + parsedAmount
         : null;
 
+    function applySearch(event: FormEvent<HTMLFormElement>) {
+        event.preventDefault();
+        const nextQuery = query.trim();
+        if (nextQuery === appliedQuery) {
+            void loadCredits({ search: nextQuery });
+        } else {
+            setAppliedQuery(nextQuery);
+        }
+    }
+
     async function grantCredits(event: FormEvent<HTMLFormElement>) {
         event.preventDefault();
+        if (grantSubmission.current.inFlight) return;
         setError(null);
         setNotice(null);
 
@@ -246,15 +305,26 @@ export function CreditsClient() {
         );
         if (!confirmed) return;
 
+        const payload: CreditGrantPayload = {
+            tenantId: selected.id,
+            amount,
+            reason,
+        };
         setSaving('grant');
         try {
-            await writeJson<{ success?: boolean; newBalance?: number }>('/admin/credits/grant', 'POST', {
-                tenantId: form.tenantId,
-                amount,
-                reason,
-            });
+            const result = await submitCreditGrant(
+                grantSubmission.current,
+                payload,
+                (requestPayload, idempotencyKey) => writeJson<{ success?: boolean; newBalance?: number }>(
+                    '/admin/credits/grant',
+                    'POST',
+                    requestPayload,
+                    idempotencyKey,
+                ),
+            );
+            if (!result.submitted) return;
             setNotice('Credits granted.');
-            await loadCredits();
+            await loadCredits({ search: appliedQuery });
         } catch (err) {
             setError(err instanceof Error ? err.message : 'Failed to grant credits');
         } finally {
@@ -274,26 +344,32 @@ export function CreditsClient() {
             >
                 <div style={{ display: 'flex', justifyContent: 'space-between', gap: '0.85rem', alignItems: 'flex-start', flexWrap: 'wrap' }}>
                     <div>
-                        <div className="workspace-kicker" style={{ color: '#cb3653' }}>
+                        <div className="workspace-kicker" style={{ color: '#b4233f' }}>
                             Billing controls
                         </div>
                         <h1 className="workspace-title" style={{ fontSize: '1.6rem', marginBottom: 2 }}>
                             Credits
                         </h1>
                         <p className="workspace-subtitle">
-                            Live tenant balances and credit ledger data from the admin API - {loading ? 'Loading...' : `${tenants.length} tenant${tenants.length === 1 ? '' : 's'} synced`}
+                            Live tenant balances and ledger data - {loading ? 'Loading...' : tenants.length + ' balances loaded' + ((tenantPagination.hasMore || historyPagination.hasMore) ? ' - more available' : '')}
                         </p>
                     </div>
 
-                    <label className="form-group" style={{ minWidth: 280, flex: '1 1 320px' }}>
-                        <span className="form-label">Search</span>
-                        <input
-                            className="form-input"
-                            value={query}
-                            onChange={(event) => setQuery(event.target.value)}
-                            placeholder="Filter by tenant, plan, or balance"
-                        />
-                    </label>
+                    <form onSubmit={applySearch} style={{ minWidth: 280, flex: '1 1 360px', display: 'flex', gap: '0.45rem', alignItems: 'flex-end' }}>
+                        <label className="form-group" style={{ flex: 1 }}>
+                            <span className="form-label">Tenant search</span>
+                            <input
+                                className="form-input"
+                                value={query}
+                                onChange={(event) => setQuery(event.target.value)}
+                                placeholder="Search by tenant name or slug"
+                                maxLength={100}
+                            />
+                        </label>
+                        <button className="btn btn-sm btn-secondary" type="submit" disabled={saving === 'load'}>
+                            Search
+                        </button>
+                    </form>
                 </div>
             </section>
 
@@ -317,7 +393,7 @@ export function CreditsClient() {
                                 {item.icon}
                             </span>
                         </div>
-                        <div style={{ fontSize: '1.9rem', fontWeight: 800, letterSpacing: '-0.03em', color: 'var(--text-primary)' }}>{item.value}</div>
+                        <div style={{ fontSize: '1.9rem', fontWeight: 800, letterSpacing: 0, color: 'var(--text-primary)' }}>{item.value}</div>
                         <div style={{ fontSize: '0.72rem', fontWeight: 700, color: item.color }}>Real-time credit control</div>
                     </article>
                 ))}
@@ -330,7 +406,7 @@ export function CreditsClient() {
                         borderRadius: 12,
                         border: '1px solid #ffd0da',
                         background: '#fff1f4',
-                        color: '#cb3653',
+                        color: '#b4233f',
                         fontWeight: 600,
                         fontSize: '0.86rem',
                     }}
@@ -346,7 +422,7 @@ export function CreditsClient() {
                         borderRadius: 12,
                         border: '1px solid #c9d9ff',
                         background: '#edf3ff',
-                        color: '#2f63ff',
+                        color: '#1d4ed8',
                         fontWeight: 600,
                         fontSize: '0.86rem',
                     }}
@@ -356,7 +432,12 @@ export function CreditsClient() {
             ) : null}
 
             <section style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1.25fr) minmax(320px, 0.75fr)', gap: '0.85rem', alignItems: 'start' }}>
-                <article className="surface-card" style={{ overflowX: 'auto' }}>
+                <article
+                    className="surface-card"
+                    aria-label="Tenant credit balances table"
+                    tabIndex={0}
+                    style={{ overflowX: 'auto' }}
+                >
                     <div style={{ padding: '0.95rem 1rem 0.55rem', display: 'flex', justifyContent: 'space-between', gap: '0.75rem', alignItems: 'center', flexWrap: 'wrap' }}>
                         <div>
                             <h2 style={{ fontSize: '0.98rem', fontWeight: 760, color: 'var(--text-primary)' }}>Tenant Balances</h2>
@@ -367,7 +448,7 @@ export function CreditsClient() {
 
                         <button
                             className="btn btn-sm btn-secondary"
-                            onClick={() => void loadCredits()}
+                            onClick={() => void loadCredits({ search: appliedQuery })}
                             disabled={saving === 'load'}
                             type="button"
                         >
@@ -397,13 +478,13 @@ export function CreditsClient() {
                             </tr>
                         </thead>
                         <tbody>
-                            {filteredTenants.map((tenant, index) => {
+                            {visibleTenants.map((tenant, index) => {
                                 const planStyle = PLAN_COLORS[tenant.planTier] ?? PLAN_COLORS.FREE;
                                 return (
                                     <tr
                                         key={tenant.id}
                                         style={{
-                                            borderBottom: index < filteredTenants.length - 1 ? '1px solid var(--border)' : 'none',
+                                            borderBottom: index < visibleTenants.length - 1 ? '1px solid var(--border)' : 'none',
                                         }}
                                     >
                                         <td style={{ padding: '0.9rem 1rem' }}>
@@ -417,7 +498,7 @@ export function CreditsClient() {
                                         </td>
                                         <td style={{ padding: '0.9rem 1rem' }}>
                                             <div style={{ display: 'flex', alignItems: 'baseline', gap: '0.35rem' }}>
-                                                <span style={{ fontSize: '1.2rem', fontWeight: 800, color: '#cc7f06', letterSpacing: '-0.02em' }}>
+                                                <span style={{ fontSize: '1.2rem', fontWeight: 800, color: '#7c4a03', letterSpacing: 0 }}>
                                                     {formatCredits(tenant.usageCredits)}
                                                 </span>
                                                 <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>credits</span>
@@ -436,7 +517,7 @@ export function CreditsClient() {
                                 );
                             })}
 
-                            {!loading && filteredTenants.length === 0 ? (
+                            {!loading && visibleTenants.length === 0 ? (
                                 <tr>
                                     <td colSpan={4} style={{ padding: '1rem', fontSize: '0.84rem', color: 'var(--text-muted)' }}>
                                         No tenant balances match the current filter.
@@ -445,6 +526,22 @@ export function CreditsClient() {
                             ) : null}
                         </tbody>
                     </table>
+                    {tenantPagination.hasMore ? (
+                        <div style={{ padding: '0.8rem 1rem', borderTop: '1px solid var(--border)', display: 'flex', justifyContent: 'center' }}>
+                            <button
+                                className="btn btn-sm btn-secondary"
+                                type="button"
+                                disabled={saving === 'load-more-tenants' || !tenantPagination.nextCursor}
+                                onClick={() => void loadCredits({
+                                    tenantCursor: tenantPagination.nextCursor,
+                                    appendTenants: true,
+                                    search: appliedQuery,
+                                })}
+                            >
+                                {saving === 'load-more-tenants' ? 'Loading...' : 'Load more tenant balances'}
+                            </button>
+                        </div>
+                    ) : null}
                 </article>
 
                 <article className="surface-card" style={{ padding: '1rem' }}>
@@ -455,7 +552,7 @@ export function CreditsClient() {
                                 Writes a ledger entry and updates the tenant balance immediately.
                             </div>
                         </div>
-                        <span className="badge" style={badgeStyle('#2f63ff', '#edf3ff', '#c9d9ff')}>
+                        <span className="badge" style={badgeStyle('#1d4ed8', '#edf3ff', '#c9d9ff')}>
                             POST /admin/credits/grant
                         </span>
                     </div>
@@ -546,7 +643,12 @@ export function CreditsClient() {
                 </article>
             </section>
 
-            <article className="surface-card" style={{ overflowX: 'auto' }}>
+            <article
+                className="surface-card"
+                aria-label="Credit transaction history table"
+                tabIndex={0}
+                style={{ overflowX: 'auto' }}
+            >
                 <div style={{ padding: '0.95rem 1rem 0.55rem' }}>
                     <h2 style={{ fontSize: '0.98rem', fontWeight: 760, color: 'var(--text-primary)' }}>Transaction History</h2>
                     <div style={{ fontSize: '0.76rem', color: 'var(--text-muted)', marginTop: 2 }}>
@@ -616,6 +718,22 @@ export function CreditsClient() {
                         ) : null}
                     </tbody>
                 </table>
+                {historyPagination.hasMore ? (
+                    <div style={{ padding: '0.8rem 1rem', borderTop: '1px solid var(--border)', display: 'flex', justifyContent: 'center' }}>
+                        <button
+                            className="btn btn-sm btn-secondary"
+                            type="button"
+                            disabled={saving === 'load-more-history' || !historyPagination.nextCursor}
+                            onClick={() => void loadCredits({
+                                historyCursor: historyPagination.nextCursor,
+                                appendHistory: true,
+                                search: appliedQuery,
+                            })}
+                        >
+                            {saving === 'load-more-history' ? 'Loading...' : 'Load more ledger history'}
+                        </button>
+                    </div>
+                ) : null}
             </article>
         </div>
     );

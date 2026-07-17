@@ -1,17 +1,11 @@
 output "provisioned_vms" {
-  description = "Provider-managed VM identities and private addresses."
+  description = "Provider-managed VM217 identity and private address."
   value = {
     app = {
       node_name = proxmox_virtual_environment_vm.app.node_name
       vm_id     = proxmox_virtual_environment_vm.app.vm_id
       name      = proxmox_virtual_environment_vm.app.name
       ipv4_cidr = var.proxmox_vms["app"].ipv4_cidr
-    }
-    data = {
-      node_name = proxmox_virtual_environment_vm.data.node_name
-      vm_id     = proxmox_virtual_environment_vm.data.vm_id
-      name      = proxmox_virtual_environment_vm.data.name
-      ipv4_cidr = var.proxmox_vms["data"].ipv4_cidr
     }
   }
 }
@@ -32,7 +26,16 @@ output "dns_provisioning" {
   }
 }
 
-output "persistent_data_disk" {
-  description = "Persistent data disk contract protected from Terraform destroy."
-  value       = "${var.proxmox_vms["data"].node_name}/${var.proxmox_vms["data"].vm_id}/scsi1"
+output "production_topology" {
+  description = "Authoritative current production data-plane contract."
+  value = {
+    version            = "vm217-compose-v1"
+    host_role          = "app"
+    runtime_owner      = "docker-compose"
+    data_services      = ["pgbouncer", "postgres", "redis", "rabbitmq"]
+    database_dsn_host  = "postgres"
+    backup_target_host = "postgres"
+    pitr_target_host   = "postgres"
+    external_data_vm   = "disabled"
+  }
 }

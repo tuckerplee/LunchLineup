@@ -77,7 +77,7 @@
       "uri": "s3://lunchlineup-prod/launch-proof/dr-drill-YYYYMMDDHHMMSS.json",
       "checkedAt": "<iso-8601-check-timestamp>",
       "summary": "Off-host encrypted backup restored into the disposable DR drill database.",
-      "command": "BACKUP_FILE=<downloaded-backup> DR_OFFHOST_SOURCE_URI=<exact-offhost-uri> ./scripts/dr-drill.sh",
+      "command": "BACKUP_FILE=<new-disposable-path> DR_OFFHOST_SOURCE_URI=<exact-offhost-uri> DR_OFFHOST_SOURCE_VERSION=<immutable-version> DR_OFFHOST_EXPECTED_SHA256=<64hex> DR_OFFHOST_FETCH_COMMAND=<trusted-adapter> ./scripts/dr-drill.sh",
       "exitCode": 0,
       "artifactSha256": "<64-character-sha256-of-retained-artifact>",
       "artifactBytes": 1,

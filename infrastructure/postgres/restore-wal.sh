@@ -25,6 +25,6 @@ case "${ARCHIVE_KIND}" in
   wal) REMOTE_PATH="${PITR_REMOTE_ROOT}/wal/${ARCHIVE_NAME}" ;;
 esac
 
-pitr_mc cp "${REMOTE_PATH}" "${TMP_DESTINATION}" >/dev/null
-[ -s "${TMP_DESTINATION}" ] || pitr_fail "Restored WAL object is empty: ${ARCHIVE_NAME}"
+RESTORED_VERSION="$(pitr_download_single_version "${REMOTE_PATH}" "${TMP_DESTINATION}")"
 mv "${TMP_DESTINATION}" "${DESTINATION}"
+printf 'pitr_wal_restored name=%s version_id=%s\n' "${ARCHIVE_NAME}" "${RESTORED_VERSION}" >&2

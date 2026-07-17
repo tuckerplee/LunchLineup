@@ -14,6 +14,7 @@ type LegalPageProps = {
   eyebrow: string;
   updated: string;
   summary: string;
+  version?: string;
   sections: LegalSection[];
 };
 
@@ -40,7 +41,7 @@ export function LegalContactReadinessNotice() {
   );
 }
 
-export function LegalPage({ title, eyebrow, updated, summary, sections }: LegalPageProps) {
+export function LegalPage({ title, eyebrow, updated, version, summary, sections }: LegalPageProps) {
   return (
     <main className="public-doc">
       <header className="public-home__nav">
@@ -64,6 +65,7 @@ export function LegalPage({ title, eyebrow, updated, summary, sections }: LegalP
           <h1>{title}</h1>
           <p>{summary}</p>
           <span className="public-doc__updated">Last updated {updated}</span>
+          {version ? <span className="public-doc__updated">Version {version}</span> : null}
         </div>
 
         <LegalContactReadinessNotice />

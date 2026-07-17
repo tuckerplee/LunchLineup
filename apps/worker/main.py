@@ -16,6 +16,7 @@ import json
 import logging
 import os
 from pathlib import Path
+import re
 import time
 from typing import Any, Awaitable, Callable
 import uuid
@@ -42,6 +43,20 @@ from src.password_reset_email import (
     run_password_reset_email_loop,
     validate_password_reset_email_config,
 )
+from src.staff_invitation_outbox import (
+    run_staff_invitation_outbox_loop,
+    staff_invitation_outbox_enabled,
+    validate_staff_invitation_outbox_config,
+)
+from src.availability_import import (
+    AvailabilityImportBusy,
+    AvailabilityImportRejected,
+    mark_import_retry,
+    process_availability_import,
+    run_availability_import_retention_loop,
+    validate_availability_import_config,
+)
+from src.parser_health import run_pdf_parser_health_loop
 
 configure_tracing("lunchlineup-worker")
 TRACER = trace.get_tracer("lunchlineup.worker")
@@ -50,6 +65,7 @@ logger = logging.getLogger("worker")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
 
 ID_PATTERN = r"^[A-Za-z0-9._:@+-]{1,128}$"
+ID_RE = re.compile(ID_PATTERN)
 SOLVER_CONSTRAINTS = {
     "availability",
     "break_rules",
@@ -96,9 +112,15 @@ RETRY_BACKOFF_SECONDS = [int_env("WORKER_RETRY_BACKOFF_1_SECONDS", 5, 1, 300),
 RETRY_PUBLISH_FAILURE_REQUEUE_DELAY_SECONDS = int_env(
     "WORKER_RETRY_PUBLISH_FAILURE_REQUEUE_DELAY_SECONDS", 5, 1, 30
 )
+SCHEDULE_SOLVE_EXECUTION_LEASE_SECONDS = int_env(
+    "WORKER_SCHEDULE_SOLVE_EXECUTION_LEASE_SECONDS", 300, 60, 1800
+)
+SOLVER_QUEUE_DEPTH_POLL_SECONDS = int_env(
+    "WORKER_QUEUE_DEPTH_POLL_SECONDS", 15, 5, 300
+)
 SOLVE_SUCCESS_STATUS = "SUCCESS"
 SCHEDULE_JOB_TERMINAL_STATUSES = {"SUCCEEDED", "FAILED", "DEAD_LETTERED"}
-SCHEDULING_TENANT_STATUSES = {"ACTIVE", "TRIAL"}
+POSTGRES_INTEGER_MAX = 2_147_483_647
 SCHEDULABLE_DB_ROLES = ("MANAGER", "STAFF")
 SHIFT_ROLE_MAX_LENGTH = 64
 BREAK_TYPE_ALIASES = {
@@ -124,7 +146,106 @@ JOB_DURATION = Histogram(
     buckets=[0.05, 0.1, 0.5, 1.0, 2.0, 5.0, 10.0, 30.0, 60.0],
 )
 IN_FLIGHT_JOBS = Gauge("lunchlineup_worker_in_flight_jobs", "Jobs currently being processed by this worker")
-SOLVER_QUEUE_DEPTH = Gauge("lunchlineup_solver_queue_depth", "Pending jobs in the schedule solver queue")
+SOLVER_QUEUE_DEPTH = Gauge(
+    "lunchlineup_solver_queue_depth",
+    "Ready and delayed-retry jobs pending in the schedule solver queues",
+)
+SOLVER_QUEUE_MESSAGES = Gauge(
+    "lunchlineup_solver_queue_messages",
+    "RabbitMQ schedule solver messages by queue state",
+    ["state"],
+)
+SOLVER_QUEUE_TELEMETRY_AVAILABLE = Gauge(
+    "lunchlineup_solver_queue_telemetry_available",
+    "Whether the latest complete RabbitMQ solver queue snapshot succeeded",
+)
+SOLVER_TERMINAL_TRANSITIONS = Counter(
+    "lunchlineup_solver_terminal_transitions_total",
+    "Messages durably routed to the schedule solver dead-letter queue",
+    ["reason"],
+)
+
+MAX_EXCEPTION_CHAIN_DEPTH = 8
+SANITIZED_FAILURE_CLASSES = frozenset({
+    "database_configuration",
+    "database_connectivity",
+    "database_operation",
+    "message_broker_connectivity",
+    "scheduling_engine_rpc",
+    "dependency_timeout",
+    "dependency_connectivity",
+    "runtime_dependency_missing",
+    "invalid_runtime_input",
+    "retryable_job",
+    "non_retryable_job",
+    "job_busy",
+    "job_ownership_lost",
+    "internal_error",
+})
+JOB_STATUS_REASON_BY_FAILURE_CLASS = {
+    failure_class: f"WORKER_FAILURE_{failure_class.upper()}"
+    for failure_class in SANITIZED_FAILURE_CLASSES
+}
+INTERNAL_JOB_STATUS_REASON = JOB_STATUS_REASON_BY_FAILURE_CLASS["internal_error"]
+
+
+def sanitized_failure_class(error: BaseException) -> str:
+    """Return a bounded operational classification without emitting exception text."""
+
+    chain: list[BaseException] = []
+    seen: set[int] = set()
+    current: BaseException | None = error
+    while current is not None and len(chain) < MAX_EXCEPTION_CHAIN_DEPTH and id(current) not in seen:
+        chain.append(current)
+        seen.add(id(current))
+        current = current.__cause__ or current.__context__
+
+    names = {item.__class__.__name__ for item in chain}
+    modules = {item.__class__.__module__.split(".", 1)[0].lower() for item in chain}
+    messages: list[str] = []
+    for item in chain:
+        try:
+            messages.append(str(item).lower())
+        except Exception:
+            continue
+    combined_message = " ".join(messages)
+
+    database_configuration_markers = (
+        "invalid connection option",
+        "invalid dsn",
+        "invalid uri query parameter",
+        "missing \"=\" after",
+        "extra key/value separator",
+    )
+    if any(marker in combined_message for marker in database_configuration_markers):
+        return "database_configuration"
+    if "psycopg" in modules:
+        if names & {"ProgrammingError", "InterfaceError"}:
+            return "database_configuration"
+        if "OperationalError" in names:
+            return "database_connectivity"
+        return "database_operation"
+    if modules & {"aio_pika", "aiormq", "pamqp"}:
+        return "message_broker_connectivity"
+    if "grpc" in modules:
+        return "scheduling_engine_rpc"
+    if names & {"TimeoutError", "CancelledError"}:
+        return "dependency_timeout"
+    if names & {"ConnectionError", "ConnectionRefusedError", "ConnectionResetError", "OSError"}:
+        return "dependency_connectivity"
+    if names & {"ImportError", "ModuleNotFoundError"}:
+        return "runtime_dependency_missing"
+    if names & {"ValidationError", "ValueError", "JSONDecodeError"}:
+        return "invalid_runtime_input"
+    if "ScheduleJobBusyError" in names:
+        return "job_busy"
+    if "ScheduleJobOwnershipLostError" in names:
+        return "job_ownership_lost"
+    if "RetryableJobError" in names:
+        return "retryable_job"
+    if "NonRetryableJobError" in names:
+        return "non_retryable_job"
+    return "internal_error"
 
 
 class RetryableJobError(RuntimeError):
@@ -132,6 +253,18 @@ class RetryableJobError(RuntimeError):
 
 
 class NonRetryableJobError(RuntimeError):
+    pass
+
+
+class ScheduleCreditProvenanceError(NonRetryableJobError):
+    pass
+
+
+class ScheduleJobBusyError(RuntimeError):
+    pass
+
+
+class ScheduleJobOwnershipLostError(RuntimeError):
     pass
 
 
@@ -144,9 +277,60 @@ def lock_tenant_status(cursor: Any, tenant_id: str) -> str | None:
     return str(tenant[0]) if tenant else None
 
 
+def lock_scheduling_tenant_state(
+    cursor: Any,
+    tenant_id: str,
+) -> tuple[str, str, str, bool] | None:
+    cursor.execute(
+        '''
+        SELECT
+            "status",
+            "planTier",
+            "stripeSubscriptionId",
+            "stripeSubscriptionCurrentPeriodEnd" > CURRENT_TIMESTAMP
+        FROM "Tenant"
+        WHERE "id" = %s
+        FOR UPDATE
+        ''',
+        (tenant_id,),
+    )
+    tenant = cursor.fetchone()
+    if not tenant:
+        return None
+    return (
+        str(tenant[0]),
+        str(tenant[1]),
+        str(tenant[2] or "").strip(),
+        tenant[3] is True,
+    )
+
+
+def require_active_paid_scheduling_tenant(
+    tenant: tuple[str, str, str, bool] | None,
+) -> None:
+    if (
+        not tenant
+        or tenant[0] != "ACTIVE"
+        or tenant[1] == "FREE"
+        or not tenant[2]
+        or not tenant[3]
+    ):
+        raise NonRetryableJobError(
+            "tenant does not have an active paid subscription for schedule solving"
+        )
+
+
 def lock_scheduling_tenant(cursor: Any, tenant_id: str) -> None:
-    if lock_tenant_status(cursor, tenant_id) not in SCHEDULING_TENANT_STATUSES:
-        raise NonRetryableJobError("tenant is not active for schedule solving")
+    require_active_paid_scheduling_tenant(
+        lock_scheduling_tenant_state(cursor, tenant_id)
+    )
+
+
+def lock_scheduling_mutations(cursor: Any, tenant_id: str) -> None:
+    cursor.execute(
+        "SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))",
+        (f"lunchlineup:scheduling:{tenant_id}",),
+    )
 
 
 @dataclass
@@ -211,7 +395,7 @@ class SolvePayload(BaseModel):
     location_id: str = Field(..., min_length=1, max_length=128, pattern=ID_PATTERN)
     start_date: str = Field(..., min_length=8, max_length=40)
     end_date: str = Field(..., min_length=8, max_length=40)
-    draft_revision: int = Field(..., ge=0)
+    draft_revision: int = Field(..., ge=0, le=POSTGRES_INTEGER_MAX)
     input_shift_snapshot: list[DraftShiftSnapshotEntry] = Field(default_factory=list, max_length=10_000)
     staff_ids: list[str] = Field(..., min_length=1)
     constraints: dict[str, Any] = Field(default_factory=dict)
@@ -330,6 +514,7 @@ async def handle_solve_job(
     payload: dict[str, Any],
     job_id: str | None = None,
     retry_count: int = 0,
+    execution_token: str | None = None,
 ) -> dict[str, Any]:
     """Delegate a validated scheduling job to the engine via gRPC."""
     solve_payload = validate_solve_payload(payload)
@@ -402,7 +587,7 @@ async def handle_solve_job(
 
     solved_shifts = normalize_solved_shifts(solve_payload, response)
     validate_solved_demand_coverage(solve_payload, solved_shifts)
-    await persist_solved_schedule(solve_payload, solved_shifts, job_id, retry_count)
+    await persist_solved_schedule(solve_payload, solved_shifts, job_id, retry_count, execution_token)
     logger.info("Solve complete schedule_ref=%s shifts=%s", schedule_ref, len(solved_shifts))
     return {"status": response.status, "schedule_id": response.schedule_id, "shift_count": len(solved_shifts)}
 
@@ -446,8 +631,16 @@ async def persist_solved_schedule(
     solved_shifts: list[NormalizedShift],
     job_id: str | None,
     retry_count: int,
+    execution_token: str | None,
 ) -> None:
-    await asyncio.to_thread(_persist_solved_schedule_sync, solve_payload, solved_shifts, job_id, retry_count)
+    await asyncio.to_thread(
+        _persist_solved_schedule_sync,
+        solve_payload,
+        solved_shifts,
+        job_id,
+        retry_count,
+        execution_token,
+    )
 
 
 def _persist_solved_schedule_sync(
@@ -455,6 +648,7 @@ def _persist_solved_schedule_sync(
     solved_shifts: list[NormalizedShift],
     job_id: str | None,
     retry_count: int = 0,
+    execution_token: str | None = None,
 ) -> None:
     database_url = os.getenv("DATABASE_URL")
     if not database_url:
@@ -472,6 +666,7 @@ def _persist_solved_schedule_sync(
             with connection.cursor() as cursor:
                 cursor.execute("SELECT set_current_tenant(%s)", (solve_payload.tenant_id,))
                 lock_scheduling_tenant(cursor, solve_payload.tenant_id)
+                lock_scheduling_mutations(cursor, solve_payload.tenant_id)
                 cursor.execute(
                     'SELECT id, timezone FROM "Location" WHERE id = %s AND "tenantId" = %s AND "deletedAt" IS NULL FOR UPDATE',
                     (solve_payload.location_id, solve_payload.tenant_id),
@@ -496,25 +691,74 @@ def _persist_solved_schedule_sync(
 
                 cursor.execute(
                     '''
-                    SELECT "status"
-                    FROM "ScheduleSolveJob"
-                    WHERE "id" = %s
-                      AND "tenantId" = %s
-                      AND "scheduleId" = %s
+                    SELECT
+                        job."status",
+                        job."executionToken",
+                        job."creditConsumption",
+                        (SELECT COUNT(*)::integer FROM "CreditTransaction" credit
+                         WHERE credit."id" = 'schedule-credit-' || job."id"),
+                        (SELECT MIN(credit."tenantId") FROM "CreditTransaction" credit
+                         WHERE credit."id" = 'schedule-credit-' || job."id"),
+                        (SELECT MIN(credit."amount") FROM "CreditTransaction" credit
+                         WHERE credit."id" = 'schedule-credit-' || job."id"),
+                        (SELECT MIN(credit."reason") FROM "CreditTransaction" credit
+                         WHERE credit."id" = 'schedule-credit-' || job."id"),
+                        (SELECT MIN(credit."balanceAfter") FROM "CreditTransaction" credit
+                         WHERE credit."id" = 'schedule-credit-' || job."id"),
+                        (SELECT COUNT(*)::integer FROM "CreditTransaction" refund
+                         WHERE refund."id" = 'schedule-credit-refund-' || job."id"),
+                        (SELECT MIN(refund."tenantId") FROM "CreditTransaction" refund
+                         WHERE refund."id" = 'schedule-credit-refund-' || job."id"),
+                        (SELECT MIN(refund."amount") FROM "CreditTransaction" refund
+                         WHERE refund."id" = 'schedule-credit-refund-' || job."id"),
+                        (SELECT MIN(refund."reason") FROM "CreditTransaction" refund
+                         WHERE refund."id" = 'schedule-credit-refund-' || job."id"),
+                        (SELECT MIN(refund."balanceAfter") FROM "CreditTransaction" refund
+                         WHERE refund."id" = 'schedule-credit-refund-' || job."id")
+                    FROM "ScheduleSolveJob" job
+                    WHERE job."id" = %s
+                      AND job."tenantId" = %s
+                      AND job."scheduleId" = %s
+                      AND job."locationId" = %s
                     FOR UPDATE
                     ''',
-                    (job_id, solve_payload.tenant_id, solve_payload.schedule_id),
+                    (
+                        job_id,
+                        solve_payload.tenant_id,
+                        solve_payload.schedule_id,
+                        solve_payload.location_id,
+                    ),
                 )
                 job = cursor.fetchone()
                 if not job:
                     raise NonRetryableJobError("schedule solve job not found")
-                if str(job[0]) == "SUCCEEDED":
+                job_status = str(job[0])
+                _assert_schedule_credit_provenance(
+                    status=job_status,
+                    credit_consumption=job[2],
+                    tenant_id=solve_payload.tenant_id,
+                    job_id=job_id,
+                    debit_count=job[3],
+                    debit_tenant_id=job[4],
+                    debit_amount=job[5],
+                    debit_reason=job[6],
+                    debit_balance_after=job[7],
+                    refund_count=job[8],
+                    refund_tenant_id=job[9],
+                    refund_amount=job[10],
+                    refund_reason=job[11],
+                    refund_balance_after=job[12],
+                    error_type=NonRetryableJobError,
+                )
+                if job_status == "SUCCEEDED":
                     return
-                if str(job[0]) in {"FAILED", "DEAD_LETTERED"}:
+                if job_status in {"FAILED", "DEAD_LETTERED"}:
                     raise NonRetryableJobError("schedule solve job is already terminal")
+                if not execution_token or str(job[1] or "") != execution_token:
+                    raise ScheduleJobOwnershipLostError("schedule solve execution ownership was lost")
 
                 cursor.execute(
-                    'SELECT id FROM "User" WHERE "tenantId" = %s AND "deletedAt" IS NULL AND role = ANY(%s::"UserRole"[]) AND id = ANY(%s)',
+                    'SELECT id FROM "User" WHERE "tenantId" = %s AND "deletedAt" IS NULL AND "suspendedAt" IS NULL AND role = ANY(%s::"UserRole"[]) AND id = ANY(%s) FOR UPDATE',
                     (solve_payload.tenant_id, list(SCHEDULABLE_DB_ROLES), solve_payload.staff_ids),
                 )
                 known_staff = {row[0] for row in cursor.fetchall()}
@@ -605,18 +849,52 @@ def _persist_solved_schedule_sync(
                         )
                 cursor.execute(
                     '''
+                    UPDATE "Schedule"
+                    SET
+                        "revision" = "revision" + 1,
+                        "updatedAt" = CURRENT_TIMESTAMP
+                    WHERE "id" = %s
+                      AND "tenantId" = %s
+                      AND "locationId" = %s
+                      AND "status" = 'DRAFT'
+                      AND "deletedAt" IS NULL
+                      AND "revision" = %s
+                    RETURNING "revision"
+                    ''',
+                    (
+                        solve_payload.schedule_id,
+                        solve_payload.tenant_id,
+                        solve_payload.location_id,
+                        solve_payload.draft_revision,
+                    ),
+                )
+                revised_schedule = cursor.fetchone()
+                if (
+                    not revised_schedule
+                    or int(revised_schedule[0]) != solve_payload.draft_revision + 1
+                ):
+                    raise NonRetryableJobError(
+                        "draft changed before the solved result revision could be committed"
+                    )
+
+                cursor.execute(
+                    '''
                     UPDATE "ScheduleSolveJob"
                     SET
                         "status" = 'SUCCEEDED',
                         "statusReason" = NULL,
                         "retryCount" = %s,
                         "resultShiftCount" = %s,
+                        "executionToken" = NULL,
+                        "executionLeaseUntil" = NULL,
                         "completedAt" = CURRENT_TIMESTAMP,
                         "updatedAt" = CURRENT_TIMESTAMP
                     WHERE "id" = %s
                       AND "tenantId" = %s
                       AND "scheduleId" = %s
                       AND "status" NOT IN ('SUCCEEDED', 'FAILED', 'DEAD_LETTERED')
+                      AND "executionToken" = %s
+                    RETURNING "id"
                     ''',
                     (
                         retry_count,
@@ -624,65 +902,53 @@ def _persist_solved_schedule_sync(
                         job_id,
                         solve_payload.tenant_id,
                         solve_payload.schedule_id,
+                        execution_token,
                     ),
                 )
-    except NonRetryableJobError:
+                if not cursor.fetchone():
+                    raise ScheduleJobOwnershipLostError(
+                        "schedule solve execution ownership was lost before completion"
+                    )
+    except (NonRetryableJobError, ScheduleJobOwnershipLostError):
         raise
     except Exception as exc:
         raise RetryableJobError("failed to persist solved schedule") from exc
 
 
 async def handle_email_job(payload: dict[str, Any]) -> dict[str, Any]:
-    outbox_id = payload.get("outbox_id")
-    if not isinstance(outbox_id, str) or not outbox_id.strip():
-        raise NonRetryableJobError("email.send requires an opaque outbox_id")
+    outbox_id = required_payload_identifier(payload, "outbox_id", "email.send")
     try:
-        return await dispatch_password_reset_email(outbox_id.strip())
+        return await dispatch_password_reset_email(outbox_id)
     except NonRetryableEmailError as exc:
-        raise NonRetryableJobError(str(exc)) from exc
+        raise NonRetryableJobError("email delivery failed permanently") from exc
     except RetryableEmailError as exc:
-        raise RetryableJobError(str(exc)) from exc
+        raise RetryableJobError("email delivery will be retried") from exc
 
 
-async def handle_pdf_job(payload: dict[str, Any]) -> dict[str, Any]:
-    job_action = payload.get("action", "generate")
-    if job_action == "parse":
-        safe_path = resolve_worker_file_path(payload.get("file_path"))
-        logger.info("Parsing PDF availability document")
-        from src.parser.pdf_parser import AvailabilityParseError, AvailabilityParser
-
-        parser = AvailabilityParser()
-        try:
-            result = parser.parse_document(safe_path)
-        except AvailabilityParseError as exc:
-            raise NonRetryableJobError(str(exc)) from exc
-        return {"parsed": True, "data": result}
-
-    logger.info("Generating PDF schedule report")
-    return {"generated": True}
-
+async def handle_pdf_job(payload: dict[str, Any], retry_count: int = 0) -> dict[str, Any]:
+    logger.info("Processing tenant-bound PDF availability import")
+    try:
+        return await process_availability_import(payload, retry_count)
+    except AvailabilityImportRejected as exc:
+        raise NonRetryableJobError("availability import was rejected") from exc
+    except AvailabilityImportBusy as exc:
+        raise ScheduleJobBusyError("availability import already has an active execution owner") from exc
 
 async def handle_billing_sync(payload: dict[str, Any]) -> dict[str, Any]:
     logger.info("Processing billing sync job tenant_ref=%s", safe_ref(str(payload.get("tenant_id", ""))))
     try:
         return await dispatch_usage(payload)
     except NonRetryableBillingError as exc:
-        raise NonRetryableJobError(str(exc)) from exc
+        raise NonRetryableJobError("billing delivery failed permanently") from exc
     except RetryableBillingError as exc:
-        raise RetryableJobError(str(exc)) from exc
-
-
-async def handle_webhook_delivery(payload: dict[str, Any]) -> dict[str, Any]:
-    logger.info("Processing webhook delivery job")
-    return {"delivered": True}
+        raise RetryableJobError("billing delivery will be retried") from exc
 
 
 JOB_HANDLERS: dict[str, Callable[..., Awaitable[dict[str, Any]]]] = {
     "schedule.solve": handle_solve_job,
     "email.send": handle_email_job,
-    "pdf.generate": handle_pdf_job,
+    "pdf.parse": handle_pdf_job,
     "billing.sync": handle_billing_sync,
-    "webhook.deliver": handle_webhook_delivery,
 }
 
 
@@ -692,10 +958,11 @@ async def process_message(body: bytes, message_id: str | None = None) -> dict[st
 
 
 async def _process_message(body: bytes, message_id: str | None = None) -> dict[str, Any] | None:
-    """Route one queue message to a handler after validation and duplicate checks."""
+    """Route one queue message to a handler after validation and durable ownership checks."""
     message = parse_job_message(body)
     job_type = message.type if message.type in JOB_HANDLERS else "unknown"
     solve_payload: SolvePayload | None = None
+    execution_token: str | None = None
     start = time.perf_counter()
     IN_FLIGHT_JOBS.inc()
     try:
@@ -705,11 +972,24 @@ async def _process_message(body: bytes, message_id: str | None = None) -> dict[s
 
         if message.type == "schedule.solve":
             solve_payload = validate_solve_payload(message.payload)
-            claimed = await claim_schedule_solve_job(solve_payload, message.job_id, message.retry_count)
-            if not claimed:
-                logger.info("Skipping terminal schedule solve job job_ref=%s", safe_ref(message.job_id or ""))
+            candidate_token = uuid.uuid4().hex
+            claim_status = await claim_schedule_solve_job(
+                solve_payload,
+                message.job_id,
+                message.retry_count,
+                candidate_token,
+            )
+            if claim_status in {"terminal", "quarantined"}:
+                logger.info(
+                    "Skipping terminal schedule solve job job_ref=%s status=%s",
+                    safe_ref(message.job_id or ""),
+                    claim_status,
+                )
                 JOB_TOTAL.labels(type=job_type, status="duplicate").inc()
-                return {"skipped": True, "status": "terminal"}
+                return {"skipped": True, "status": claim_status}
+            if claim_status == "busy":
+                raise ScheduleJobBusyError("schedule solve job already has an active execution owner")
+            execution_token = candidate_token
 
         idempotency_key = job_key(message, message_id)
         if idempotency_key in _COMPLETED_JOB_KEYS:
@@ -717,15 +997,24 @@ async def _process_message(body: bytes, message_id: str | None = None) -> dict[s
             JOB_TOTAL.labels(type=job_type, status="duplicate").inc()
             return {"skipped": True}
 
-        result = await handler(
-            message.payload,
-            message.job_id,
-            message.retry_count,
-        ) if solve_payload else await handler(message.payload)
+        if solve_payload:
+            result = await handler(
+                message.payload,
+                message.job_id,
+                message.retry_count,
+                execution_token,
+            )
+        elif message.type == "pdf.parse":
+            result = await handler(message.payload, message.retry_count)
+        else:
+            result = await handler(message.payload)
         remember_completed_job(idempotency_key)
         JOB_TOTAL.labels(type=job_type, status="success").inc()
         logger.info("Job completed type=%s", job_type)
         return result
+    except ScheduleJobBusyError:
+        JOB_TOTAL.labels(type=job_type, status="duplicate").inc()
+        raise
     except NonRetryableJobError as exc:
         if solve_payload:
             await try_mark_schedule_solve_job_status(
@@ -734,10 +1023,13 @@ async def _process_message(body: bytes, message_id: str | None = None) -> dict[s
                 "FAILED",
                 job_status_reason(exc),
                 message.retry_count,
+                execution_token,
             )
         JOB_TOTAL.labels(type=job_type, status="non_retryable").inc()
         raise
     except Exception as exc:
+        if execution_token:
+            setattr(exc, "schedule_execution_token", execution_token)
         JOB_TOTAL.labels(type=job_type, status="failed").inc()
         raise
     finally:
@@ -765,18 +1057,34 @@ def validate_solve_payload(payload: dict[str, Any]) -> SolvePayload:
         raise NonRetryableJobError("schedule solve payload failed validation") from exc
 
 
-async def claim_schedule_solve_job(solve_payload: SolvePayload, job_id: str | None, retry_count: int) -> bool:
+async def claim_schedule_solve_job(
+    solve_payload: SolvePayload,
+    job_id: str | None,
+    retry_count: int,
+    execution_token: str,
+) -> str:
     if not os.getenv("DATABASE_URL"):
-        return True
+        return "claimed"
     if not job_id:
         raise NonRetryableJobError("schedule solve job id is required")
-    return await asyncio.to_thread(_claim_schedule_solve_job_sync, solve_payload, job_id, retry_count)
+    return await asyncio.to_thread(
+        _claim_schedule_solve_job_sync,
+        solve_payload,
+        job_id,
+        retry_count,
+        execution_token,
+    )
 
 
-def _claim_schedule_solve_job_sync(solve_payload: SolvePayload, job_id: str, retry_count: int) -> bool:
+def _claim_schedule_solve_job_sync(
+    solve_payload: SolvePayload,
+    job_id: str,
+    retry_count: int,
+    execution_token: str,
+) -> str:
     database_url = os.getenv("DATABASE_URL")
     if not database_url:
-        return True
+        return "claimed"
 
     try:
         import psycopg
@@ -787,23 +1095,97 @@ def _claim_schedule_solve_job_sync(solve_payload: SolvePayload, job_id: str, ret
         with psycopg.connect(database_url) as connection:
             with connection.cursor() as cursor:
                 cursor.execute("SELECT set_current_tenant(%s)", (solve_payload.tenant_id,))
-                lock_scheduling_tenant(cursor, solve_payload.tenant_id)
+                tenant = lock_scheduling_tenant_state(cursor, solve_payload.tenant_id)
                 cursor.execute(
                     '''
-                    SELECT "status"
-                    FROM "ScheduleSolveJob"
+                    SELECT
+                        "status",
+                        "executionToken",
+                        "executionLeaseUntil",
+                        "executionLeaseUntil" > CURRENT_TIMESTAMP,
+                        job."creditConsumption",
+                        (SELECT COUNT(*)::integer FROM "CreditTransaction" credit
+                         WHERE credit."id" = 'schedule-credit-' || job."id"),
+                        (SELECT MIN(credit."tenantId") FROM "CreditTransaction" credit
+                         WHERE credit."id" = 'schedule-credit-' || job."id"),
+                        (SELECT MIN(credit."amount") FROM "CreditTransaction" credit
+                         WHERE credit."id" = 'schedule-credit-' || job."id"),
+                        (SELECT MIN(credit."reason") FROM "CreditTransaction" credit
+                         WHERE credit."id" = 'schedule-credit-' || job."id"),
+                        (SELECT MIN(credit."balanceAfter") FROM "CreditTransaction" credit
+                         WHERE credit."id" = 'schedule-credit-' || job."id"),
+                        (SELECT COUNT(*)::integer FROM "CreditTransaction" refund
+                         WHERE refund."id" = 'schedule-credit-refund-' || job."id"),
+                        (SELECT MIN(refund."tenantId") FROM "CreditTransaction" refund
+                         WHERE refund."id" = 'schedule-credit-refund-' || job."id"),
+                        (SELECT MIN(refund."amount") FROM "CreditTransaction" refund
+                         WHERE refund."id" = 'schedule-credit-refund-' || job."id"),
+                        (SELECT MIN(refund."reason") FROM "CreditTransaction" refund
+                         WHERE refund."id" = 'schedule-credit-refund-' || job."id"),
+                        (SELECT MIN(refund."balanceAfter") FROM "CreditTransaction" refund
+                         WHERE refund."id" = 'schedule-credit-refund-' || job."id")
+                    FROM "ScheduleSolveJob" job
                     WHERE "id" = %s
                       AND "tenantId" = %s
                       AND "scheduleId" = %s
+                      AND "locationId" = %s
                     FOR UPDATE
                     ''',
-                    (job_id, solve_payload.tenant_id, solve_payload.schedule_id),
+                    (
+                        job_id,
+                        solve_payload.tenant_id,
+                        solve_payload.schedule_id,
+                        solve_payload.location_id,
+                    ),
                 )
                 row = cursor.fetchone()
                 if not row:
                     raise NonRetryableJobError("schedule solve job not found")
-                if str(row[0]) in SCHEDULE_JOB_TERMINAL_STATUSES:
-                    return False
+                status = str(row[0])
+                try:
+                    _assert_schedule_credit_provenance(
+                        status=status,
+                        credit_consumption=row[4],
+                        tenant_id=solve_payload.tenant_id,
+                        job_id=job_id,
+                        debit_count=row[5],
+                        debit_tenant_id=row[6],
+                        debit_amount=row[7],
+                        debit_reason=row[8],
+                        debit_balance_after=row[9],
+                        refund_count=row[10],
+                        refund_tenant_id=row[11],
+                        refund_amount=row[12],
+                        refund_reason=row[13],
+                        refund_balance_after=row[14],
+                        error_type=ScheduleCreditProvenanceError,
+                    )
+                except ScheduleCreditProvenanceError:
+                    cursor.execute(
+                        '''
+                        UPDATE "ScheduleSolveJob"
+                        SET
+                            "status" = 'DEAD_LETTERED',
+                            "statusReason" = 'Schedule solve billing provenance is invalid',
+                            "publicationStatus" = 'FAILED',
+                            "publishLeaseUntil" = NULL,
+                            "publishLastError" = 'Schedule solve billing provenance is invalid',
+                            "executionToken" = NULL,
+                            "executionLeaseUntil" = NULL,
+                            "completedAt" = COALESCE("completedAt", CURRENT_TIMESTAMP),
+                            "updatedAt" = CURRENT_TIMESTAMP
+                        WHERE "id" = %s
+                          AND "tenantId" = %s
+                          AND "status" NOT IN ('SUCCEEDED', 'FAILED', 'DEAD_LETTERED')
+                        ''',
+                        (job_id, solve_payload.tenant_id),
+                    )
+                    return "quarantined"
+                if status in SCHEDULE_JOB_TERMINAL_STATUSES:
+                    return "terminal"
+                require_active_paid_scheduling_tenant(tenant)
+                if status == "RUNNING" and bool(row[3]) and str(row[1] or "") != execution_token:
+                    return "busy"
                 cursor.execute(
                     '''
                     UPDATE "ScheduleSolveJob"
@@ -811,6 +1193,8 @@ def _claim_schedule_solve_job_sync(solve_payload: SolvePayload, job_id: str, ret
                         "status" = 'RUNNING',
                         "statusReason" = NULL,
                         "retryCount" = %s,
+                        "executionToken" = %s,
+                        "executionLeaseUntil" = CURRENT_TIMESTAMP + (%s * INTERVAL '1 second'),
                         "startedAt" = COALESCE("startedAt", CURRENT_TIMESTAMP),
                         "completedAt" = NULL,
                         "updatedAt" = CURRENT_TIMESTAMP
@@ -818,9 +1202,16 @@ def _claim_schedule_solve_job_sync(solve_payload: SolvePayload, job_id: str, ret
                       AND "tenantId" = %s
                       AND "scheduleId" = %s
                     ''',
-                    (retry_count, job_id, solve_payload.tenant_id, solve_payload.schedule_id),
+                    (
+                        retry_count,
+                        execution_token,
+                        SCHEDULE_SOLVE_EXECUTION_LEASE_SECONDS,
+                        job_id,
+                        solve_payload.tenant_id,
+                        solve_payload.schedule_id,
+                    ),
                 )
-                return True
+                return "claimed"
     except (RetryableJobError, NonRetryableJobError):
         raise
     except Exception as exc:
@@ -833,6 +1224,7 @@ async def try_mark_schedule_solve_job_status(
     status: str,
     reason: str,
     retry_count: int,
+    execution_token: str | None = None,
 ) -> None:
     if not job_id or not os.getenv("DATABASE_URL"):
         return
@@ -844,6 +1236,305 @@ async def try_mark_schedule_solve_job_status(
         reason,
         retry_count,
         None,
+        execution_token,
+    )
+
+
+def _assert_schedule_credit_provenance(
+    *,
+    status: str,
+    credit_consumption: Any,
+    tenant_id: str,
+    job_id: str,
+    debit_count: Any,
+    debit_tenant_id: Any,
+    debit_amount: Any,
+    debit_reason: Any,
+    debit_balance_after: Any,
+    refund_count: Any,
+    refund_tenant_id: Any,
+    refund_amount: Any,
+    refund_reason: Any,
+    refund_balance_after: Any,
+    error_type: type[Exception] = RetryableJobError,
+) -> tuple[int, int]:
+    if (
+        not isinstance(credit_consumption, dict)
+        or set(credit_consumption) != {"source", "consumedCredits", "newBalance"}
+        or credit_consumption.get("source") != "credits"
+        or type(credit_consumption.get("consumedCredits")) is not int
+        or type(credit_consumption.get("newBalance")) is not int
+    ):
+        raise error_type("schedule solve paid credit reservation metadata is invalid")
+    consumed_credits = credit_consumption["consumedCredits"]
+    new_balance = credit_consumption["newBalance"]
+    max_wallet_credits = 2_147_483_647
+    if (
+        consumed_credits <= 0
+        or consumed_credits > max_wallet_credits
+        or new_balance < 0
+        or new_balance > max_wallet_credits
+        or consumed_credits > max_wallet_credits - new_balance
+    ):
+        raise error_type("schedule solve paid credit reservation metadata is invalid")
+
+    exact_debit = (
+        _provenance_integer(debit_count) == 1
+        and str(debit_tenant_id) == tenant_id
+        and _provenance_integer(debit_amount) == -consumed_credits
+        and str(debit_reason) == f"Schedule generation ({job_id})"
+        and _provenance_integer(debit_balance_after) == new_balance
+    )
+    if not exact_debit:
+        raise error_type("schedule solve paid credit reservation debit provenance is invalid")
+
+    exact_refund = (
+        _provenance_integer(refund_count) == 1
+        and str(refund_tenant_id) == tenant_id
+        and _provenance_integer(refund_amount) == consumed_credits
+        and str(refund_reason) == f"Schedule generation refund ({job_id})"
+        and _provenance_integer(refund_balance_after) is not None
+        and _provenance_integer(refund_balance_after) >= 0
+    )
+    if status in {"FAILED", "DEAD_LETTERED"}:
+        if not exact_refund:
+            raise error_type("schedule solve refund provenance is invalid")
+    elif status in {"QUEUED", "RUNNING", "RETRYING", "SUCCEEDED"}:
+        if _provenance_integer(refund_count) != 0:
+            raise error_type("schedule solve debit and deterministic refund cannot coexist")
+    else:
+        raise error_type("schedule solve status provenance is invalid")
+    return consumed_credits, new_balance
+
+
+def _provenance_integer(value: Any) -> int | None:
+    if type(value) is int:
+        return value
+    return None
+
+
+def _assert_schedule_refund_outcome(
+    outcome: tuple[Any, ...] | None,
+    tenant_id: str,
+    job_id: str,
+) -> None:
+    if outcome is None or outcome[0] is None:
+        raise ScheduleJobOwnershipLostError("schedule solve job no longer exists")
+
+    initial_status = str(outcome[0])
+    credit_consumption = outcome[1]
+    debit_count = int(outcome[2])
+    debit_tenant_id = str(outcome[3]) if outcome[3] is not None else None
+    debit_amount = int(outcome[4]) if outcome[4] is not None else None
+    debit_reason = str(outcome[5]) if outcome[5] is not None else None
+    debit_balance_after = int(outcome[6]) if outcome[6] is not None else None
+    refund_count = int(outcome[7])
+    refund_tenant_id = str(outcome[8]) if outcome[8] is not None else None
+    refund_amount = int(outcome[9]) if outcome[9] is not None else None
+    refund_reason = str(outcome[10]) if outcome[10] is not None else None
+    refund_balance_after = int(outcome[11]) if outcome[11] is not None else None
+    updated_count = int(outcome[12])
+    wallet_update_count = int(outcome[13])
+    inserted_refund_count = int(outcome[14])
+    inserted_refund_amount = int(outcome[15]) if outcome[15] is not None else None
+    inserted_refund_balance_after = (
+        int(outcome[16]) if outcome[16] is not None else None
+    )
+
+    consumed_credits, _debit_new_balance = _assert_schedule_credit_provenance(
+        status=initial_status,
+        credit_consumption=credit_consumption,
+        tenant_id=tenant_id,
+        job_id=job_id,
+        debit_count=debit_count,
+        debit_tenant_id=debit_tenant_id,
+        debit_amount=debit_amount,
+        debit_reason=debit_reason,
+        debit_balance_after=debit_balance_after,
+        refund_count=refund_count,
+        refund_tenant_id=refund_tenant_id,
+        refund_amount=refund_amount,
+        refund_reason=refund_reason,
+        refund_balance_after=refund_balance_after,
+    )
+    if initial_status in SCHEDULE_JOB_TERMINAL_STATUSES:
+        return
+    if updated_count != 1:
+        raise ScheduleJobOwnershipLostError("schedule solve job execution ownership changed")
+    if inserted_refund_count != 1 or wallet_update_count != 1:
+        raise RetryableJobError("schedule solve refund settlement failed")
+    if (
+        inserted_refund_amount != consumed_credits
+        or _provenance_integer(inserted_refund_balance_after) is None
+        or inserted_refund_balance_after < 0
+    ):
+        raise RetryableJobError("schedule solve refund settlement balance is invalid")
+
+
+def _terminalize_schedule_solve_job_with_refund(
+    cursor: Any,
+    solve_payload: SolvePayload,
+    job_id: str,
+    status: str,
+    safe_reason: str | None,
+    retry_count: int,
+    result_shift_count: int | None,
+    execution_token: str | None,
+) -> None:
+    refund_id = f"schedule-credit-refund-{job_id}"
+    refund_reason = f"Schedule generation refund ({job_id})"
+    cursor.execute(
+        '''
+        WITH locked_job AS MATERIALIZED (
+            SELECT
+                job."id",
+                job."tenantId",
+                job."status",
+                job."creditConsumption",
+                CASE
+                    WHEN jsonb_typeof(job."creditConsumption") = 'object'
+                     AND job."creditConsumption" = jsonb_build_object(
+                        'consumedCredits', job."creditConsumption"->'consumedCredits',
+                        'newBalance', job."creditConsumption"->'newBalance',
+                        'source', job."creditConsumption"->'source'
+                     )
+                     AND job."creditConsumption"->>'source' = 'credits'
+                     AND jsonb_typeof(job."creditConsumption"->'consumedCredits') = 'number'
+                     AND job."creditConsumption"->>'consumedCredits' ~ '^[1-9][0-9]*$'
+                     AND jsonb_typeof(job."creditConsumption"->'newBalance') = 'number'
+                     AND job."creditConsumption"->>'newBalance' ~ '^(0|[1-9][0-9]*)$'
+                     AND (job."creditConsumption"->>'newBalance')::numeric <= 2147483647
+                     AND (job."creditConsumption"->>'consumedCredits')::numeric
+                         <= 2147483647 - (job."creditConsumption"->>'newBalance')::numeric
+                    THEN CASE
+                        WHEN (job."creditConsumption"->>'consumedCredits')::numeric <= 2147483647
+                        THEN (job."creditConsumption"->>'consumedCredits')::integer
+                        ELSE NULL
+                    END
+                    ELSE NULL
+                END AS "configuredAmount"
+            FROM "ScheduleSolveJob" job
+            WHERE job."id" = %s
+              AND job."tenantId" = %s
+              AND job."scheduleId" = %s
+              AND job."locationId" = %s
+            FOR UPDATE
+        ), debit_rows AS MATERIALIZED (
+            SELECT
+                debit."tenantId",
+                debit."amount",
+                debit."reason",
+                debit."balanceAfter"
+            FROM "CreditTransaction" debit
+            JOIN locked_job job
+              ON debit."id" = 'schedule-credit-' || job."id"
+        ), refund_rows AS MATERIALIZED (
+            SELECT
+                refund."tenantId",
+                refund."amount",
+                refund."reason",
+                refund."balanceAfter"
+            FROM "CreditTransaction" refund
+            JOIN locked_job job
+              ON refund."id" = %s
+        ), valid_provenance AS (
+            SELECT job."id", job."tenantId", debit."amount" AS "debitAmount"
+            FROM locked_job job
+            JOIN debit_rows debit ON TRUE
+            WHERE (SELECT COUNT(*) FROM debit_rows) = 1
+              AND job."configuredAmount" IS NOT NULL
+              AND debit."tenantId" = job."tenantId"
+              AND debit."amount" = -job."configuredAmount"
+              AND debit."reason" = 'Schedule generation (' || job."id" || ')'
+              AND debit."balanceAfter" =
+                  (job."creditConsumption"->>'newBalance')::integer
+              AND (SELECT COUNT(*) FROM refund_rows) = 0
+        ), updated_job AS (
+            UPDATE "ScheduleSolveJob" job
+            SET
+                "status" = %s,
+                "statusReason" = %s,
+                "retryCount" = %s,
+                "resultShiftCount" = %s,
+                "executionToken" = NULL,
+                "executionLeaseUntil" = NULL,
+                "completedAt" = CURRENT_TIMESTAMP,
+                "updatedAt" = CURRENT_TIMESTAMP
+            FROM valid_provenance provenance
+            WHERE job."id" = provenance."id"
+              AND job."tenantId" = provenance."tenantId"
+              AND job."status" NOT IN ('SUCCEEDED', 'FAILED', 'DEAD_LETTERED')
+              AND CASE
+                  WHEN %s::text IS NULL THEN
+                      job."executionToken" IS NULL
+                      OR job."executionLeaseUntil" <= CURRENT_TIMESTAMP
+                  ELSE job."executionToken" = %s
+              END
+            RETURNING job."id", job."tenantId"
+        ), updated_wallet AS (
+            UPDATE "Tenant" tenant
+            SET
+                "usageCredits" = tenant."usageCredits" - provenance."debitAmount",
+                "updatedAt" = CURRENT_TIMESTAMP
+            FROM updated_job updated
+            JOIN valid_provenance provenance ON provenance."id" = updated."id"
+            WHERE tenant."id" = updated."tenantId"
+            RETURNING
+                tenant."id",
+                tenant."usageCredits" AS "balanceAfter",
+                -provenance."debitAmount" AS "refundAmount"
+        ), inserted_refund AS (
+            INSERT INTO "CreditTransaction"
+                ("id", "tenantId", "amount", "reason", "balanceAfter", "createdAt")
+            SELECT
+                %s,
+                wallet."id",
+                wallet."refundAmount",
+                %s,
+                wallet."balanceAfter",
+                CURRENT_TIMESTAMP
+            FROM updated_wallet wallet
+            RETURNING "tenantId", "amount", "balanceAfter"
+        )
+        SELECT
+            (SELECT "status" FROM locked_job),
+            (SELECT "creditConsumption" FROM locked_job),
+            (SELECT COUNT(*)::integer FROM debit_rows),
+            (SELECT MIN("tenantId") FROM debit_rows),
+            (SELECT MIN("amount") FROM debit_rows),
+            (SELECT MIN("reason") FROM debit_rows),
+            (SELECT MIN("balanceAfter") FROM debit_rows),
+            (SELECT COUNT(*)::integer FROM refund_rows),
+            (SELECT MIN("tenantId") FROM refund_rows),
+            (SELECT MIN("amount") FROM refund_rows),
+            (SELECT MIN("reason") FROM refund_rows),
+            (SELECT MIN("balanceAfter") FROM refund_rows),
+            (SELECT COUNT(*)::integer FROM updated_job),
+            (SELECT COUNT(*)::integer FROM updated_wallet),
+            (SELECT COUNT(*)::integer FROM inserted_refund),
+            (SELECT MIN("amount") FROM inserted_refund),
+            (SELECT MIN("balanceAfter") FROM inserted_refund)
+        ''',
+        (
+            job_id,
+            solve_payload.tenant_id,
+            solve_payload.schedule_id,
+            solve_payload.location_id,
+            refund_id,
+            status,
+            safe_reason,
+            retry_count,
+            result_shift_count,
+            execution_token,
+            execution_token,
+            refund_id,
+            refund_reason,
+        ),
+    )
+    _assert_schedule_refund_outcome(
+        cursor.fetchone(),
+        solve_payload.tenant_id,
+        job_id,
     )
 
 
@@ -854,6 +1545,7 @@ def _update_schedule_solve_job_status_sync(
     reason: str | None,
     retry_count: int,
     result_shift_count: int | None,
+    execution_token: str | None = None,
 ) -> None:
     database_url = os.getenv("DATABASE_URL")
     if not database_url:
@@ -867,21 +1559,34 @@ def _update_schedule_solve_job_status_sync(
         raise RetryableJobError("psycopg is required to update schedule job state") from exc
 
     terminal = status in SCHEDULE_JOB_TERMINAL_STATUSES
-    safe_reason = truncate_status_reason(reason)
+    safe_reason = None if status == "SUCCEEDED" else normalize_job_status_reason(reason)
     try:
         with psycopg.connect(database_url) as connection:
             with connection.cursor() as cursor:
                 cursor.execute("SELECT set_current_tenant(%s)", (solve_payload.tenant_id,))
                 lock_tenant_status(cursor, solve_payload.tenant_id)
+                if status in {"FAILED", "DEAD_LETTERED"}:
+                    _terminalize_schedule_solve_job_with_refund(
+                        cursor,
+                        solve_payload,
+                        job_id,
+                        status,
+                        safe_reason,
+                        retry_count,
+                        result_shift_count,
+                        execution_token,
+                    )
+                    return
                 cursor.execute(
                     '''
-                    WITH updated_job AS (
                     UPDATE "ScheduleSolveJob"
                     SET
                         "status" = %s,
                         "statusReason" = %s,
                         "retryCount" = %s,
                         "resultShiftCount" = %s,
+                        "executionToken" = NULL,
+                        "executionLeaseUntil" = NULL,
                         "completedAt" = CASE WHEN %s THEN CURRENT_TIMESTAMP ELSE NULL END,
                         "publicationStatus" = CASE WHEN %s THEN 'PUBLISHED' ELSE "publicationStatus" END,
                         "publishedAt" = CASE WHEN %s THEN CURRENT_TIMESTAMP ELSE "publishedAt" END,
@@ -892,29 +1597,12 @@ def _update_schedule_solve_job_status_sync(
                       AND "tenantId" = %s
                       AND "scheduleId" = %s
                       AND "status" NOT IN ('SUCCEEDED', 'FAILED', 'DEAD_LETTERED')
-                    RETURNING "tenantId", "creditConsumption"
-                    ), inserted_refund AS (
-                    INSERT INTO "CreditTransaction" ("id", "tenantId", "amount", "reason", "createdAt")
-                    SELECT
-                        %s,
-                        "tenantId",
-                        ("creditConsumption"->>'consumedCredits')::integer,
-                        %s,
-                        CURRENT_TIMESTAMP
-                    FROM updated_job
-                    WHERE %s
-                      AND "creditConsumption"->>'source' = 'credits'
-                      AND jsonb_typeof("creditConsumption"->'consumedCredits') = 'number'
-                      AND ("creditConsumption"->>'consumedCredits')::integer > 0
-                    ON CONFLICT ("id") DO NOTHING
-                    RETURNING "tenantId", "amount"
-                    )
-                    UPDATE "Tenant" tenant
-                    SET
-                        "usageCredits" = tenant."usageCredits" + inserted_refund."amount",
-                        "updatedAt" = CURRENT_TIMESTAMP
-                    FROM inserted_refund
-                    WHERE tenant."id" = inserted_refund."tenantId"
+                      AND CASE
+                          WHEN %s::text IS NULL THEN
+                              "executionToken" IS NULL
+                              OR "executionLeaseUntil" <= CURRENT_TIMESTAMP
+                          ELSE "executionToken" = %s
+                      END
                     ''',
                     (
                         status,
@@ -929,26 +1617,25 @@ def _update_schedule_solve_job_status_sync(
                         job_id,
                         solve_payload.tenant_id,
                         solve_payload.schedule_id,
-                        f"schedule-credit-refund-{job_id}",
-                        f"Schedule generation refund ({job_id})",
-                        status in {"FAILED", "DEAD_LETTERED"},
+                        execution_token,
+                        execution_token,
                     ),
                 )
-    except RetryableJobError:
+    except (RetryableJobError, ScheduleJobOwnershipLostError):
         raise
     except Exception as exc:
         raise RetryableJobError("failed to update schedule solve job status") from exc
 
 
 def job_status_reason(exc: Exception) -> str:
-    message = str(exc).strip() or exc.__class__.__name__
-    return truncate_status_reason(message) or exc.__class__.__name__
+    failure_class = sanitized_failure_class(exc)
+    return JOB_STATUS_REASON_BY_FAILURE_CLASS.get(failure_class, INTERNAL_JOB_STATUS_REASON)
 
 
-def truncate_status_reason(reason: str | None) -> str | None:
-    if not reason:
-        return None
-    return reason[:512]
+def normalize_job_status_reason(reason: str | None) -> str:
+    if reason in JOB_STATUS_REASON_BY_FAILURE_CLASS.values():
+        return reason
+    return INTERNAL_JOB_STATUS_REASON
 
 
 def normalize_solved_shifts(solve_payload: SolvePayload, response: Any) -> list[NormalizedShift]:
@@ -956,7 +1643,7 @@ def normalize_solved_shifts(solve_payload: SolvePayload, response: Any) -> list[
         schedule_start = parse_iso_datetime(solve_payload.start_date, "start_date")
         schedule_end = parse_iso_datetime(solve_payload.end_date, "end_date")
     except ValueError as exc:
-        raise NonRetryableJobError(str(exc)) from exc
+        raise NonRetryableJobError("solve response contains invalid schedule bounds") from exc
 
     solved_shifts: list[NormalizedShift] = []
     staff_ids = set(solve_payload.staff_ids)
@@ -971,7 +1658,7 @@ def normalize_solved_shifts(solve_payload: SolvePayload, response: Any) -> list[
             end_time = parse_iso_datetime(getattr(raw_shift, "end_time", ""), f"shifts[{index}].end_time", require_time=True)
             role = normalize_shift_role(getattr(raw_shift, "role", "STAFF"))
         except ValueError as exc:
-            raise NonRetryableJobError(str(exc)) from exc
+            raise NonRetryableJobError("solve response contains invalid shift fields") from exc
 
         if end_time <= start_time:
             raise NonRetryableJobError("solve response includes a shift with end_time before start_time")
@@ -1072,7 +1759,7 @@ def normalize_solved_breaks(raw_shift: Any, shift_id: str, shift_start: datetime
             end_time = parse_iso_datetime(getattr(raw_break, "end_time", ""), f"breaks[{index}].end_time", require_time=True)
             break_type = normalize_break_type(getattr(raw_break, "type", "LUNCH"))
         except ValueError as exc:
-            raise NonRetryableJobError(str(exc)) from exc
+            raise NonRetryableJobError("solve response contains invalid break fields") from exc
 
         if not (shift_start <= start_time < end_time <= shift_end):
             raise NonRetryableJobError("solve response includes a break outside its shift window")
@@ -1269,10 +1956,42 @@ def load_solver_modules():
     return solver_pb2, solver_pb2_grpc
 
 
+def optional_identifier(value: Any, field: str) -> str | None:
+    if value is None:
+        return None
+    if not isinstance(value, str) or not ID_RE.fullmatch(value.strip()):
+        raise NonRetryableJobError(f"{field} is invalid")
+    return value.strip()
+
+
+def required_payload_identifier(
+    payload: dict[str, Any],
+    field: str,
+    job_type: str,
+) -> str:
+    value = optional_identifier(payload.get(field), field)
+    if value is None:
+        raise NonRetryableJobError(f"{job_type} requires an opaque {field}")
+    return value
+
+
 def job_key(message: JobMessage, message_id: str | None) -> str:
+    generic_id = message.job_id or optional_identifier(message_id, "message_id")
+    durable_id = ""
+    if message.type == "email.send":
+        durable_id = required_payload_identifier(message.payload, "outbox_id", message.type)
+    elif message.type == "billing.sync":
+        usage_event_id = optional_identifier(message.payload.get("usage_event_id"), "usage_event_id")
+        if generic_id is None and usage_event_id is None:
+            raise NonRetryableJobError(
+                "billing.sync requires usage_event_id when job_id and message_id are absent"
+            )
+        durable_id = usage_event_id or ""
+
     raw_key = "|".join([
         message.type,
-        message.job_id or message_id or "",
+        generic_id or "",
+        durable_id,
         str(message.payload.get("tenant_id", "")),
         str(message.payload.get("schedule_id", "")),
         str(message.payload.get("location_id", "")),
@@ -1291,24 +2010,67 @@ def safe_ref(value: str) -> str:
     return hashlib.sha256(value.encode("utf-8")).hexdigest()[:12]
 
 
-def resolve_worker_file_path(file_path: Any) -> str:
-    if not isinstance(file_path, str) or not file_path.strip():
-        raise NonRetryableJobError("file_path is required")
-    root = Path(os.getenv("WORKER_UPLOAD_ROOT", "/app/uploads")).resolve()
-    candidate = Path(file_path)
-    if not candidate.is_absolute():
-        candidate = root / candidate
-    resolved = candidate.resolve()
-    if resolved != root and root not in resolved.parents:
-        raise NonRetryableJobError("file_path must stay inside WORKER_UPLOAD_ROOT")
-    return str(resolved)
-
-
 async def consume_queue(queue: Any, channel: Any) -> None:
     async with queue.iterator() as queue_iter:
         async for message in queue_iter:
-            update_solver_queue_depth(queue)
             await handle_queue_message(channel, message)
+
+
+@dataclass(frozen=True)
+class SolverQueueTelemetry:
+    ready: int
+    retry: int
+    dead_letter: int
+
+
+def queue_message_count(queue: Any) -> int:
+    message_count = getattr(getattr(queue, "declaration_result", None), "message_count", None)
+    if isinstance(message_count, bool) or not isinstance(message_count, int) or message_count < 0:
+        raise RuntimeError("RabbitMQ queue declaration did not return a valid message count")
+    return message_count
+
+
+def update_solver_queue_telemetry(telemetry: SolverQueueTelemetry) -> None:
+    SOLVER_QUEUE_MESSAGES.labels(state="ready").set(telemetry.ready)
+    SOLVER_QUEUE_MESSAGES.labels(state="retry").set(telemetry.retry)
+    SOLVER_QUEUE_MESSAGES.labels(state="dead_letter").set(telemetry.dead_letter)
+    SOLVER_QUEUE_DEPTH.set(telemetry.ready + telemetry.retry)
+    SOLVER_QUEUE_TELEMETRY_AVAILABLE.set(1)
+
+
+async def refresh_solver_queue_telemetry(channel: Any) -> SolverQueueTelemetry:
+    try:
+        ready_queue = await channel.declare_queue(QUEUE_NAME, passive=True)
+        retry_depth = 0
+        for retry_count in range(1, declared_retry_queue_count() + 1):
+            retry_queue = await channel.declare_queue(
+                retry_queue_name(retry_count),
+                passive=True,
+            )
+            retry_depth += queue_message_count(retry_queue)
+        dead_letter_queue = await channel.declare_queue(DLQ_NAME, passive=True)
+        telemetry = SolverQueueTelemetry(
+            ready=queue_message_count(ready_queue),
+            retry=retry_depth,
+            dead_letter=queue_message_count(dead_letter_queue),
+        )
+    except Exception:
+        SOLVER_QUEUE_TELEMETRY_AVAILABLE.set(0)
+        raise
+
+    update_solver_queue_telemetry(telemetry)
+    return telemetry
+
+
+async def run_solver_queue_telemetry_loop(channel: Any) -> None:
+    while True:
+        try:
+            await refresh_solver_queue_telemetry(channel)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.warning("Solver queue telemetry refresh failed reason=%s", exc.__class__.__name__)
+        await asyncio.sleep(SOLVER_QUEUE_DEPTH_POLL_SECONDS)
 
 
 async def run_worker_tasks(queue: Any, channel: Any) -> None:
@@ -1316,7 +2078,24 @@ async def run_worker_tasks(queue: Any, channel: Any) -> None:
         consume_queue(queue, channel),
         name="rabbitmq-consumer",
     )
-    tasks = {consumer_task: "rabbitmq-consumer"}
+    queue_telemetry_task = asyncio.create_task(
+        run_solver_queue_telemetry_loop(channel),
+        name="solver-queue-telemetry-poll",
+    )
+    tasks = {
+        consumer_task: "rabbitmq-consumer",
+        queue_telemetry_task: "solver-queue-telemetry-poll",
+    }
+    parser_health_task = asyncio.create_task(
+        run_pdf_parser_health_loop(),
+        name="pdf-parser-health-poll",
+    )
+    tasks[parser_health_task] = "pdf-parser-health-poll"
+    availability_retention_task = asyncio.create_task(
+        run_availability_import_retention_loop(),
+        name="availability-import-retention",
+    )
+    tasks[availability_retention_task] = "availability-import-retention"
     if metered_usage_enabled():
         billing_task = asyncio.create_task(
             run_billing_usage_loop(),
@@ -1329,6 +2108,12 @@ async def run_worker_tasks(queue: Any, channel: Any) -> None:
             name="password-reset-email-sweep",
         )
         tasks[password_reset_task] = "password-reset-email-sweep"
+    if staff_invitation_outbox_enabled():
+        staff_invitation_task = asyncio.create_task(
+            run_staff_invitation_outbox_loop(),
+            name="staff-invitation-outbox-sweep",
+        )
+        tasks[staff_invitation_task] = "staff-invitation-outbox-sweep"
 
     try:
         done, _ = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
@@ -1354,9 +2139,18 @@ async def run_worker_tasks(queue: Any, channel: Any) -> None:
 
 async def start_consumer():
     """Connect to RabbitMQ and consume durable messages."""
+
     try:
         import aio_pika
+    except ImportError as exc:
+        if ENVIRONMENT == "production":
+            raise RuntimeError("aio-pika is required for the production worker") from exc
+        logger.warning(
+            "aio-pika not installed; standalone mode is allowed only outside production"
+        )
+        return
 
+    try:
         connection = await aio_pika.connect_robust(RABBITMQ_URL)
         channel = await connection.channel(publisher_confirms=True, on_return_raises=True)
         await channel.set_qos(prefetch_count=int_env("WORKER_PREFETCH", 10, 1, 100))
@@ -1371,18 +2165,18 @@ async def start_consumer():
             },
         )
         await declare_retry_queues(channel)
-        update_solver_queue_depth(queue)
+        await refresh_solver_queue_telemetry(channel)
 
         logger.info("Worker connected to RabbitMQ queue=%s", QUEUE_NAME)
         try:
             await run_worker_tasks(queue, channel)
         finally:
             await connection.close()
-
-    except ImportError:
-        logger.warning("aio-pika not installed; running in standalone mode")
-    except Exception as e:
-        logger.error("Failed to connect to RabbitMQ: %s", e)
+    except Exception as exc:
+        logger.error(
+            "RabbitMQ consumer failed operation=consumer_start failure_class=%s",
+            sanitized_failure_class(exc),
+        )
         raise
 
 
@@ -1390,9 +2184,33 @@ async def handle_queue_message(channel: Any, message: Any) -> None:
     """Settle one source message only after durable replacement ownership is known."""
     try:
         await process_message(message.body, message_id=message.message_id)
+    except ScheduleJobOwnershipLostError:
+        logger.info("Stale schedule solve delivery discarded after ownership changed")
+        await message.ack()
+        return
+    except ScheduleJobBusyError:
+        retry_count = read_retry_count(message.body)
+        try:
+            await publish_retry(
+                channel.default_exchange,
+                message.body,
+                retry_count,
+                message.message_id,
+            )
+        except Exception as publish_error:
+            logger.warning(
+                "Busy schedule replacement publish failed; source will be requeued reason=%s",
+                publish_error.__class__.__name__,
+            )
+            await asyncio.sleep(RETRY_PUBLISH_FAILURE_REQUEUE_DELAY_SECONDS)
+            await message.nack(requeue=True)
+            return
+        logger.info("Busy schedule delivery delayed without consuming retry budget")
+        await message.ack()
+        return
     except NonRetryableJobError as exc:
         logger.warning("Non-retryable job routed to DLQ reason=%s", exc.__class__.__name__)
-        await message.reject(requeue=False)
+        await reject_to_solver_dlq(message, "non_retryable")
         return
     except Exception as exc:
         retry_count = read_retry_count(message.body)
@@ -1407,15 +2225,15 @@ async def handle_queue_message(channel: Any, message: Any) -> None:
                 )
             except Exception as state_error:
                 logger.error(
-                    "Terminal schedule state update failed; source will be requeued type=%s reason=%s",
+                    "Terminal schedule state update failed; source will be requeued operation=terminal_schedule_state_update type=%s status=DEAD_LETTERED failure_class=%s",
                     job_type,
-                    state_error.__class__.__name__,
+                    sanitized_failure_class(state_error),
                 )
                 await asyncio.sleep(RETRY_PUBLISH_FAILURE_REQUEUE_DELAY_SECONDS)
                 await message.nack(requeue=True)
                 return
             logger.error("Job exhausted retries and will route to DLQ type=%s", job_type)
-            await message.reject(requeue=False)
+            await reject_to_solver_dlq(message, "retries_exhausted")
             return
 
         replacement_retry_count = retry_count + 1
@@ -1445,9 +2263,9 @@ async def handle_queue_message(channel: Any, message: Any) -> None:
             )
         except Exception as state_error:
             logger.error(
-                "Confirmed retry state update failed; replacement still owns delivery type=%s reason=%s",
+                "Confirmed retry state update failed; replacement still owns delivery operation=retry_schedule_state_update type=%s status=RETRYING failure_class=%s",
                 job_type,
-                state_error.__class__.__name__,
+                sanitized_failure_class(state_error),
             )
         JOB_RETRIES.labels(type=job_type).inc()
         logger.warning(
@@ -1469,6 +2287,9 @@ async def try_mark_schedule_status_from_message(
     retry_count: int,
 ) -> None:
     message = parse_job_message(body)
+    if message.type == "pdf.parse":
+        await mark_import_retry(message.payload, status, retry_count, reason)
+        return
     if message.type != "schedule.solve":
         return
     solve_payload = validate_solve_payload(message.payload)
@@ -1478,8 +2299,8 @@ async def try_mark_schedule_status_from_message(
         status,
         job_status_reason(reason),
         retry_count,
+        getattr(reason, "schedule_execution_token", None),
     )
-
 
 def read_retry_count(body: bytes) -> int:
     try:
@@ -1508,8 +2329,12 @@ def retry_queue_name(retry_count: int) -> str:
     return f"{RETRY_QUEUE_PREFIX}.{index}"
 
 
+def declared_retry_queue_count() -> int:
+    return max(1, min(MAX_RETRIES, len(RETRY_BACKOFF_SECONDS)))
+
+
 async def declare_retry_queues(channel: Any) -> None:
-    for retry_count in range(1, min(MAX_RETRIES, len(RETRY_BACKOFF_SECONDS)) + 1):
+    for retry_count in range(1, declared_retry_queue_count() + 1):
         await channel.declare_queue(
             retry_queue_name(retry_count),
             durable=True,
@@ -1521,10 +2346,9 @@ async def declare_retry_queues(channel: Any) -> None:
         )
 
 
-def update_solver_queue_depth(queue: Any) -> None:
-    message_count = getattr(getattr(queue, "declaration_result", None), "message_count", None)
-    if isinstance(message_count, int):
-        SOLVER_QUEUE_DEPTH.set(message_count)
+async def reject_to_solver_dlq(message: Any, reason: str) -> None:
+    await message.reject(requeue=False)
+    SOLVER_TERMINAL_TRANSITIONS.labels(reason=reason).inc()
 
 
 async def publish_retry(exchange: Any, body: bytes, retry_count: int, message_id: str | None) -> None:
@@ -1566,6 +2390,8 @@ def validate_runtime_config() -> None:
         raise RuntimeError("ENGINE_GRPC_URL is required")
     validate_billing_runtime_config()
     validate_password_reset_email_config()
+    validate_staff_invitation_outbox_config()
+    validate_availability_import_config()
 
 
 if __name__ == "__main__":

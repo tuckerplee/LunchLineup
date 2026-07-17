@@ -43,7 +43,7 @@ export class TenantProvisioningService {
                     planTier: input.planTier,
                     status: input.status,
                     trialEndsAt: input.trialEndsAt,
-                    usageCredits: input.usageCredits,
+                    usageCredits: 0,
                 },
             });
             const owner = await tx.user.create({
@@ -83,6 +83,11 @@ export class TenantProvisioningService {
     }
 
     private assertEntitlementState(input: PlatformTenantProvisioningInput): void {
+        if (input.usageCredits !== 0) {
+            throw new BadRequestException(
+                'New tenants start with zero credits. Use the dedicated idempotent credit grant endpoint after provisioning.',
+            );
+        }
         if (input.planTier !== PlanTier.FREE && input.status === TenantStatus.ACTIVE) {
             throw new BadRequestException(
                 'Paid tenants cannot be created ACTIVE without verified Stripe or manual entitlement proof. Create a bounded TRIAL instead.',

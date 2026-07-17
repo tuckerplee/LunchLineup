@@ -18,6 +18,15 @@ async function saveDemandWindow(page: Page, date: string) {
   await expect(editor.getByText('1 demand window saved.')).toBeVisible();
 }
 
+async function openBillingSettings(page: Page) {
+  await loginAsSeedAdmin(page, '/dashboard/settings');
+  await expect(page.getByLabel('Organization Name')).toHaveValue('E2E Operations Diner');
+  const billingTab = page.getByRole('tab', { name: 'Billing' });
+  await billingTab.click();
+  await expect(billingTab).toHaveAttribute('aria-selected', 'true');
+  await expect(page.getByRole('heading', { name: 'Billing' })).toBeVisible();
+}
+
 test('E2E configuration includes an authenticated readiness layer', () => {
   expect(
     runFullStack || runMockReadiness || publicOnlyOverride,
@@ -36,7 +45,41 @@ test.describe('Authenticated scheduling SaaS readiness', () => {
   });
 
   test('logs in and proves scheduler, break generation, and time-card writes', async ({ page }) => {
+    const publishKeys: string[] = [];
+    const publishBodies: unknown[] = [];
+    await page.route('**/api/v1/schedules/*/publish', async (route) => {
+      publishKeys.push(route.request().headers()['idempotency-key'] ?? '');
+      publishBodies.push(route.request().postDataJSON());
+      if (publishKeys.length === 1) {
+        const committedResponse = await route.fetch();
+        expect(committedResponse.ok()).toBe(true);
+        await route.fulfill({ status: 503, contentType: 'application/json', body: JSON.stringify({ message: 'Publish response lost.' }) });
+        return;
+      }
+      await route.continue();
+    });
     await loginAsSeedAdmin(page, '/dashboard/scheduling');
+
+    const initialBillingResponse = await page.request.get('/api/v1/billing/features');
+    expect(initialBillingResponse.ok()).toBe(true);
+    const initialBilling = await initialBillingResponse.json() as {
+      status: string;
+      stripeSubscriptionActive: boolean;
+      stripeSubscriptionPresent: boolean;
+      usageCredits: number;
+      features: Record<string, { source: string; creditCost: number | null }>;
+    };
+    expect(initialBilling).toMatchObject({
+      status: 'ACTIVE',
+      stripeSubscriptionActive: true,
+      stripeSubscriptionPresent: true,
+      usageCredits: 500,
+      features: {
+        scheduling: { source: 'credits', creditCost: 1 },
+        lunch_breaks: { source: 'credits', creditCost: 1 },
+        time_cards: { source: 'credits', creditCost: 1 },
+      },
+    });
 
     await expect(page.getByRole('heading', { name: 'Calendar' })).toBeVisible();
     await expect(page.getByText('E2E Operations Diner')).toBeVisible();
@@ -79,9 +122,40 @@ test.describe('Authenticated scheduling SaaS readiness', () => {
     await expect(page.locator('.shift-marker-break').first()).toBeVisible();
 
     await page.getByRole('button', { name: 'Publish' }).click();
-    await expect(page.getByText(/Review complete/)).toBeVisible();
-    await page.getByRole('button', { name: 'Confirm publish' }).click();
-    await expect(page.getByText(/Schedule published/)).toBeVisible();
+    await expect(page.locator('.scheduler-publish-row__cost').getByText('Configured total: 1 credit')).toBeVisible();
+    const confirmPublish = page.getByRole('button', { name: 'Confirm - 1 credit' });
+    await confirmPublish.evaluate((button) => {
+      button.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      button.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+    await expect(page.getByText(/Retry uses the original Idempotency-Key and settlement attempt/)).toBeVisible();
+    expect(publishKeys).toHaveLength(1);
+    await page.getByRole('button', { name: 'Retry publish' }).click();
+    await expect(page.locator('.scheduler-publish-row__settlement')).toContainText('1 credit was debited exactly once');
+    expect(publishKeys).toHaveLength(2);
+    expect(publishKeys[1]).toBe(publishKeys[0]);
+    expect(publishBodies).toEqual([
+      {
+        acceptedContract: {
+          version: 0,
+          totalConfiguredCost: 1,
+          scheduleCost: 1,
+          matchingWebhookDeliveryCount: 0,
+          matchingWebhookDeliveryUnitCost: 0,
+          matchingWebhookDeliveryCost: 0,
+        },
+      },
+      {
+        acceptedContract: {
+          version: 0,
+          totalConfiguredCost: 1,
+          scheduleCost: 1,
+          matchingWebhookDeliveryCount: 0,
+          matchingWebhookDeliveryUnitCost: 0,
+          matchingWebhookDeliveryCost: 0,
+        },
+      },
+    ]);
 
     await page.getByRole('link', { name: /Time Cards/ }).click();
     await expect(page.getByRole('heading', { name: 'Time Cards' })).toBeVisible();
@@ -93,6 +167,17 @@ test.describe('Authenticated scheduling SaaS readiness', () => {
     await page.getByRole('button', { name: 'Clock out' }).click();
     await expect(page.getByText('Clocked out.')).toBeVisible();
     await expect(page.getByText('CLOSED').first()).toBeVisible();
+
+    const endingBillingResponse = await page.request.get('/api/v1/billing/features');
+    expect(endingBillingResponse.ok()).toBe(true);
+    expect(await endingBillingResponse.json()).toMatchObject({
+      usageCredits: 495,
+      features: {
+        scheduling: { enabled: true, source: 'credits', creditCost: 1 },
+        lunch_breaks: { enabled: true, source: 'credits', creditCost: 1 },
+        time_cards: { enabled: true, source: 'credits', creditCost: 1 },
+      },
+    });
   });
 
   test('creates and edits an overnight shift inside the containing weekly draft', async ({ page }) => {
@@ -115,7 +200,9 @@ test.describe('Authenticated scheduling SaaS readiness', () => {
     const createRequestPromise = page.waitForRequest((request) =>
       request.method() === 'POST' && new URL(request.url()).pathname.endsWith('/api/v1/shifts'));
     await shiftForm.getByRole('button', { name: 'Create shift' }).click();
-    const createPayload = (await createRequestPromise).postDataJSON() as { scheduleId: string; startTime: string; endTime: string };
+    const createRequest = await createRequestPromise;
+    expect(createRequest.headers()['idempotency-key']).toMatch(/^[0-9a-f-]{36}$/i);
+    const createPayload = createRequest.postDataJSON() as { scheduleId: string; startTime: string; endTime: string };
     expect(createPayload).toMatchObject({
       scheduleId: weeklySchedule.id,
       startTime: '2026-07-12T02:00:00.000Z',
@@ -131,16 +218,54 @@ test.describe('Authenticated scheduling SaaS readiness', () => {
     await expect(shiftForm.getByLabel('Start')).toHaveValue('22:00');
     await expect(shiftForm.getByLabel('End')).toHaveValue('02:00');
 
+    const editKeys: string[] = [];
+    await page.route('**/api/v1/shifts/*', async (route) => {
+      if (route.request().method() !== 'PUT') {
+        await route.continue();
+        return;
+      }
+      editKeys.push(route.request().headers()['idempotency-key'] ?? '');
+      if (editKeys.length === 1) {
+        const committed = await route.fetch();
+        expect(committed.ok()).toBe(true);
+        await route.fulfill({
+          status: 503,
+          contentType: 'application/json',
+          body: JSON.stringify({ message: 'Shift update response lost.' }),
+        });
+        return;
+      }
+      await route.continue();
+    });
     await shiftForm.getByLabel('End').fill('01:30');
+    await shiftForm.getByRole('button', { name: 'Save shift' }).click();
+    await expect(page.getByText('Shift save failed. Schedule was not changed.')).toBeVisible();
+    expect(editKeys[0]).toMatch(/^[0-9a-f-]{36}$/i);
+    await expect.poll(() => page.evaluate(() => window.sessionStorage.getItem('lunchlineup:shift-update-recovery:v1'))).not.toBeNull();
+    const afterLostResponse = await page.request.get('/api/v1/billing/features');
+    expect(await afterLostResponse.json()).toMatchObject({ usageCredits: 499 });
+
+    await page.reload();
+    await expect(page.getByRole('heading', { name: 'Calendar' })).toBeVisible();
+    const recoveredShift = page.locator('.shift-block').filter({ hasText: '22:00-01:30' }).first();
+    await expect(recoveredShift).toBeVisible();
+    await recoveredShift.click();
+    await page.getByRole('button', { name: 'Edit shift' }).click();
+    const recoveredForm = page.locator('form.shift-form');
     const editRequestPromise = page.waitForRequest((request) =>
       request.method() === 'PUT' && /\/api\/v1\/shifts\/[^/]+$/.test(new URL(request.url()).pathname));
-    await shiftForm.getByRole('button', { name: 'Save shift' }).click();
+    await recoveredForm.getByRole('button', { name: 'Save shift' }).click();
     const editPayload = (await editRequestPromise).postDataJSON() as { startTime: string; endTime: string };
     expect(editPayload).toMatchObject({
       startTime: '2026-07-12T02:00:00.000Z',
       endTime: '2026-07-12T05:30:00.000Z',
     });
     await expect(page.getByText(/Shift changes saved/)).toBeVisible();
+    expect(editKeys).toHaveLength(2);
+    expect(editKeys[1]).toBe(editKeys[0]);
+    const afterReplay = await page.request.get('/api/v1/billing/features');
+    expect(await afterReplay.json()).toMatchObject({ usageCredits: 499 });
+    await expect.poll(() => page.evaluate(() => window.sessionStorage.getItem('lunchlineup:shift-update-recovery:v1'))).toBeNull();
 
     const editor = page.getByLabel('Schedule demand setup').first();
     await editor.getByRole('button', { name: 'Add window' }).click();
@@ -204,8 +329,26 @@ test.describe('Authenticated scheduling SaaS readiness', () => {
       releaseDowntownLoad = resolve;
     });
 
-    await page.route('**/api/v1/locations', async (route) => {
-      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ data: locations }) });
+    await page.route('**/api/v1/locations**', async (route) => {
+      const url = new URL(route.request().url());
+      const match = new RegExp('^/api/v1/locations/([^/]+)$').exec(url.pathname);
+      if (match) {
+        const location = locations.find((candidate) => candidate.id === decodeURIComponent(match[1]));
+        await route.fulfill({
+          status: location ? 200 : 404,
+          contentType: 'application/json',
+          body: JSON.stringify(location ?? { message: 'Location not found.' }),
+        });
+        return;
+      }
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          data: locations,
+          pagination: { limit: 200, maxLimit: 200, returned: locations.length, hasMore: false, nextCursor: null },
+        }),
+      });
     });
     await page.route('**/api/v1/shifts?*', async (route) => {
       const locationId = new URL(route.request().url()).searchParams.get('locationId');
@@ -383,25 +526,87 @@ test.describe('Authenticated scheduling SaaS readiness', () => {
           stripeSubscriptionPresent: true,
           subscriptionRecoveryAction: recoveryAction,
           usageCredits: 0,
-          features: {},
+          features: {
+            scheduling: {
+              enabled: false,
+              source: 'disabled',
+              reason: 'An active paid subscription and separately purchased usage credits are required.',
+              creditCost: 1,
+            },
+          },
         }),
       });
     });
 
-    await loginAsSeedAdmin(page, '/dashboard/settings');
-    await expect(page.getByLabel('Organization Name')).toHaveValue('E2E Operations Diner');
-    const billingTab = page.getByRole('tab', { name: 'Billing' });
-    await billingTab.click();
-    await expect(billingTab).toHaveAttribute('aria-selected', 'true');
+    await openBillingSettings(page);
 
     await expect(page.getByRole('button', { name: 'Resume paused subscription' })).toBeVisible();
     await expect(page.getByRole('button', { name: 'Payment & invoices' })).toBeVisible();
+    await expect(page.getByText('An active paid subscription and separately purchased usage credits are required.')).toBeVisible();
+    const purchaseButtons = page
+      .locator('section[aria-labelledby=credit-packs-title]')
+      .getByRole('button', { name: 'Purchase' });
+    await expect(purchaseButtons).toHaveCount(3);
+    for (let index = 0; index < 3; index += 1) {
+      await expect(purchaseButtons.nth(index)).toBeDisabled();
+    }
 
     recoveryAction = 'portal';
     await page.getByRole('button', { name: 'Refresh billing' }).click();
 
     await expect(page.getByRole('button', { name: 'Resolve payment issue' })).toBeVisible();
     await expect(page.getByRole('button', { name: 'Resume paused subscription' })).toHaveCount(0);
+  });
+
+  test('starts credit-pack checkout from purchased-credit billing state without making a real charge', async ({ page }) => {
+    await page.route('https://checkout.stripe.com/mock-credit-pack', async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: 'text/html',
+        body: '<!doctype html><title>Mock Stripe Checkout</title><h1>Mock Stripe Checkout</h1><p>No payment was submitted.</p>',
+      });
+    });
+
+    await openBillingSettings(page);
+
+    await expect(page.getByText('Enabled - Credits', { exact: true })).toHaveCount(3);
+    await expect(page.getByText(
+      'Active paid subscription and separately purchased credits authorize this billable feature.',
+      { exact: true },
+    )).toHaveCount(3);
+    const purchasedCredits = page.getByText('Purchased credits', { exact: true }).locator('..');
+    await expect(purchasedCredits.getByText('500', { exact: true })).toBeVisible();
+
+    const creditPackSection = page.locator('section[aria-labelledby=credit-packs-title]');
+    await expect(creditPackSection.getByText(
+      'Subscriptions provide plan access. Credits are purchased separately; subscriptions include no recurring or unlimited credits.',
+      { exact: true },
+    )).toBeVisible();
+    const selectedPack = creditPackSection
+      .getByText('500 credits', { exact: true })
+      .locator('xpath=../..');
+    await expect(selectedPack.getByRole('button', { name: 'Purchase' })).toBeEnabled();
+
+    const checkoutRequestPromise = page.waitForRequest((request) => (
+      request.method() === 'POST'
+      && new URL(request.url()).pathname === '/api/v1/billing/credit-packs/checkout'
+    ));
+    await selectedPack.getByRole('button', { name: 'Purchase' }).click();
+    const checkoutRequest = await checkoutRequestPromise;
+
+    expect(checkoutRequest.postDataJSON()).toEqual({ code: 'CREDITS_500' });
+    await expect(page).toHaveURL('https://checkout.stripe.com/mock-credit-pack');
+    await expect(page.getByRole('heading', { name: 'Mock Stripe Checkout' })).toBeVisible();
+    await expect(page.getByText('No payment was submitted.')).toBeVisible();
+
+    await page.goto('/dashboard/settings?billing=credit-purchase-success&session_id=cs_test_mock_credit_pack');
+    await expect(page.getByRole('tab', { name: 'Billing' })).toHaveAttribute('aria-selected', 'true');
+    await expect(page.getByText(
+      'Stripe Checkout completed. This return does not confirm fulfillment; rely on the server-reported balance below.',
+      { exact: true },
+    )).toBeVisible();
+    await expect(page).toHaveURL(/\/dashboard\/settings$/);
+    await expect(page.getByText('Purchased credits', { exact: true }).locator('..').getByText('500', { exact: true })).toBeVisible();
   });
 
   test('keeps settings writes disabled after a transient read failure until retry hydrates them', async ({ page }) => {
@@ -425,6 +630,7 @@ test.describe('Authenticated scheduling SaaS readiness', () => {
     await expect(page.getByText('Settings changes are disabled until the current values load.')).toBeVisible();
     await expect(page.getByRole('button', { name: 'Save Changes' })).toBeDisabled();
     await expect(page.getByLabel('Organization Name')).toBeDisabled();
+    expect(settingsReads).toBe(1);
     expect(settingsWrites).toBe(0);
 
     await page.getByRole('button', { name: 'Retry settings load' }).click();
@@ -494,7 +700,7 @@ test.describe('Authenticated scheduling SaaS readiness', () => {
     await expect(page.getByText('Not enrolled')).toBeVisible();
   });
 
-  test('exposes account export, cancellation, and deletion request controls', async ({ page }) => {
+  test('uses the deletion response as a public receipt and ends the browser session', async ({ page }) => {
     await loginAsSeedAdmin(page, '/dashboard/settings');
 
     await expect(page.getByRole('heading', { name: 'Settings' })).toBeVisible();
@@ -513,11 +719,75 @@ test.describe('Authenticated scheduling SaaS readiness', () => {
     await expect(page.getByText(/Subscription renewal cancelled/)).toBeVisible();
     await expect(page.locator('.surface-muted').filter({ hasText: 'Lifecycle' }).getByText('Open')).toBeVisible();
 
+    let postDeleteStatusReads = 0;
+    await page.route('**/api/v1/admin/account/status', async (route) => {
+      postDeleteStatusReads += 1;
+      await route.continue();
+    });
+    const deletionResponsePromise = page.waitForResponse((response) => (
+      response.request().method() === 'DELETE'
+      && new URL(response.url()).pathname === '/api/v1/admin/account'
+    ));
+    const localLogoutResponsePromise = page.waitForResponse((response) => (
+      response.request().method() === 'POST'
+      && new URL(response.url()).pathname === '/auth/logout'
+    ));
+
     await page.getByLabel('Confirm workspace slug').nth(1).fill('e2e-operations');
     await page.getByRole('button', { name: 'Request deletion' }).click();
-    await expect(page.getByText('Account deletion request recorded.')).toBeVisible();
-    await expect(page.getByText('Retention schedule')).toBeVisible();
-    await expect(page.locator('.surface-muted').filter({ hasText: 'Lifecycle' }).getByText('Deletion Requested')).toBeVisible();
+
+    const deletionResponse = await deletionResponsePromise;
+    const deletionPayload = await deletionResponse.json() as {
+      id: string;
+      slug: string;
+      deletionRequestedAt: string;
+      retention: {
+        applicationDataEligibleAt: string;
+        databaseBackupEligibleAt: string;
+        securityLogEligibleAt: string;
+        fullDatabasePurgeEligibleAt: string;
+      };
+    };
+    const localLogoutResponse = await localLogoutResponsePromise;
+    expect(localLogoutResponse.status()).toBe(204);
+    await expect(page).toHaveURL(/\/auth\/account-deleted$/);
+    await expect(page.getByRole('heading', { name: 'Account deletion requested' })).toBeVisible();
+    await expect(page.getByRole('heading', { name: 'Retention and purge schedule' })).toBeVisible();
+    await expect(page.getByText('Application data purge eligible')).toBeVisible();
+    await expect(page.getByText('Full database purge eligible')).toBeVisible();
+    await expect(page.getByRole('link', { name: 'support@lunchlineup.test' })).toHaveAttribute(
+      'href',
+      'mailto:support@lunchlineup.test',
+    );
+    expect(postDeleteStatusReads).toBe(0);
+
+    const receiptUrl = new URL(page.url());
+    expect(receiptUrl.search).toBe('');
+    expect(receiptUrl.hash).toBe('');
+    expect(page.url()).not.toContain(deletionPayload.id);
+    expect(page.url()).not.toContain(deletionPayload.slug);
+
+    const serializedReceipt = await page.evaluate(() => (
+      window.sessionStorage.getItem('lunchlineup.account-deletion-receipt.v1')
+    ));
+    expect(serializedReceipt).not.toBeNull();
+    expect(JSON.parse(serializedReceipt ?? '{}')).toMatchObject({
+      version: 1,
+      receipt: {
+        deletionRequestedAt: deletionPayload.deletionRequestedAt,
+        applicationDataEligibleAt: deletionPayload.retention.applicationDataEligibleAt,
+        databaseBackupEligibleAt: deletionPayload.retention.databaseBackupEligibleAt,
+        securityLogEligibleAt: deletionPayload.retention.securityLogEligibleAt,
+        fullDatabasePurgeEligibleAt: deletionPayload.retention.fullDatabasePurgeEligibleAt,
+      },
+    });
+    expect(serializedReceipt).not.toContain(deletionPayload.id);
+    expect(serializedReceipt).not.toContain(deletionPayload.slug);
+
+    const remainingCookieNames = (await page.context().cookies()).map((cookie) => cookie.name);
+    expect(remainingCookieNames).not.toContain('access_token');
+    expect(remainingCookieNames).not.toContain('refresh_token');
+    expect(remainingCookieNames).not.toContain('csrf_token');
   });
 
   test('redirects unverified enrolled MFA sessions to the MFA gate and continues after verification', async ({ page }) => {
@@ -572,5 +842,54 @@ test.describe('Authenticated scheduling SaaS readiness', () => {
 
     await expect(page).toHaveURL(/\/dashboard$/);
     await expect(page.getByText('E2E Operations Diner', { exact: true })).toBeVisible();
+  });
+});
+
+test.describe('Mobile schedule publish readiness', () => {
+  test.skip(runFullStack, 'DB-backed authenticated specs cover this path when E2E_FULL_STACK=1.');
+  test.skip(!runMockReadiness, 'Mock API readiness runs only when Playwright starts the local web app.');
+  test.skip(({ browserName, isMobile }) => browserName !== 'chromium' || !isMobile, 'Runs on the configured mobile Chromium project.');
+
+  test.beforeEach(async ({ page }) => {
+    const response = await page.request.post('/api/v1/__e2e/reset');
+    expect(response.ok(), `mock API reset returned ${response.status()}`).toBeTruthy();
+  });
+
+  test('confirms the bound publish preflight and exact settlement on mobile', async ({ page }) => {
+    await loginAsSeedAdmin(page, '/dashboard/scheduling');
+    await expect(page.getByRole('heading', { name: 'Calendar' })).toBeVisible();
+
+    await page.getByRole('button', { name: /Add shift/ }).click();
+    const shiftForm = page.locator('form.shift-form');
+    await shiftForm.locator('select').first().selectOption({ label: 'Mock Staff' });
+    await shiftForm.locator('input[type="time"]').first().fill('10:00');
+    await shiftForm.locator('input[type="time"]').nth(1).fill('18:00');
+    await shiftForm.getByRole('button', { name: 'Create shift' }).click();
+    await expect(page.getByText(/Shift created and saved/)).toBeVisible();
+
+    await page.getByRole('button', { name: 'Publish' }).click();
+    await expect(page.locator('.scheduler-publish-row__cost').getByText('Configured total: 1 credit')).toBeVisible();
+    const publishRequestPromise = page.waitForRequest((request) => (
+      request.method() === 'POST'
+      && /\/api\/v1\/schedules\/[^/]+\/publish$/.test(new URL(request.url()).pathname)
+    ));
+    await page.getByRole('button', { name: 'Confirm - 1 credit' }).click();
+    const publishRequest = await publishRequestPromise;
+
+    expect(publishRequest.headers()['idempotency-key']).toMatch(/^[0-9a-f-]{36}$/i);
+    expect(publishRequest.postDataJSON()).toEqual({
+      acceptedContract: {
+        version: 0,
+        totalConfiguredCost: 1,
+        scheduleCost: 1,
+        matchingWebhookDeliveryCount: 0,
+        matchingWebhookDeliveryUnitCost: 0,
+        matchingWebhookDeliveryCost: 0,
+      },
+    });
+    await expect(page.locator('.scheduler-publish-row__settlement')).toContainText('1 credit was debited exactly once');
+
+    const billingResponse = await page.request.get('/api/v1/billing/features');
+    expect(await billingResponse.json()).toMatchObject({ usageCredits: 499 });
   });
 });

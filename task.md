@@ -1,6 +1,6 @@
 # LunchLineup System Rebuild Checklist
 
-This tracking document corresponds to the 12-month Execution Roadmap in the Series A Public Beta plan.
+This historical checklist preserves the original 12-month Execution Roadmap from the Series A Public Beta plan. It is not the current implementation or launch gate: completed, replaced, and intentionally deferred items remain unchecked here. Use `docs/runbooks/production-readiness.md` and its machine-checked evidence contracts as the authoritative launch checklist.
 
 ## Month 1: Infrastructure
 - [ ] Scaffold Turborepo monorepo (`apps/`, `packages/`, `infrastructure/`)
@@ -56,7 +56,6 @@ This tracking document corresponds to the 12-month Execution Roadmap in the Seri
 ## Month 7: UX Implementation
 - [ ] Build responsive Drag-and-Drop scheduling table
 - [ ] Add Framer Motion micro-interactions
-- [ ] Implement real-time WebSocket state sync via Redis Pub/Sub
 - [ ] Add optimistic UI updates on mutations
 - [ ] Create specialized mobile & tablet responsive views
 

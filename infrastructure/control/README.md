@@ -3,7 +3,7 @@
 ## Files
 
 - `README.md`: this host-side control and observability guide.
-- `public-web-probe.sh`: bounded HTTPS probe that publishes public edge availability through the node-exporter textfile collector.
+- `public-web-probe.sh`: bounded HTTPS probe that compares the public release header with `/opt/lunchlineup/current/DEPLOYED_GIT_SHA` and publishes public edge availability through the node-exporter textfile collector.
 
 ## Public Web Probe
 

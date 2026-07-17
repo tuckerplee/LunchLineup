@@ -1,0 +1,11 @@
+[Unit]
+Description=Daily LunchLineup seven-year retained-record eligibility review
+
+[Timer]
+OnCalendar=*-*-* 04:17:00
+RandomizedDelaySec=30m
+Persistent=true
+Unit=lunchlineup-retained-record-review.service
+
+[Install]
+WantedBy=timers.target

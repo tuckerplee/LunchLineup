@@ -3,4 +3,4 @@
 ## Files
 
 - `README.md`: this logout folder guide.
-- `route.ts`: same-origin API logout proxy that forwards refresh and CSRF cookies, preserves browser credentials on ambiguous failures, and clears them only after authoritative revocation or already-invalid confirmation.
+- `route.ts`: same-origin logout handler that preserves browser credentials on ambiguous API revocation failures, clears them after authoritative revocation, and supports API-free local cookie clearing after tenant deletion has already revoked every session.

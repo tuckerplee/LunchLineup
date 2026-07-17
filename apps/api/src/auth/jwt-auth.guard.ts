@@ -3,8 +3,8 @@ import { Reflector } from '@nestjs/core';
 import crypto from 'crypto';
 import { readFileSync } from 'fs';
 import { JwtService } from './jwt.service';
-import { RbacService } from './rbac.service';
 import { AuthService } from './auth.service';
+import { operationalErrorLog } from './operational-error';
 
 const ACCESS_TOKEN_COOKIE_MAX_AGE_MS = 30 * 60 * 1000;
 const RETENTION_PURGE_PERMISSION = 'admin_portal:access';
@@ -29,7 +29,6 @@ export class JwtAuthGuard implements CanActivate {
     constructor(
         private jwtService: JwtService,
         private authService: AuthService,
-        private rbacService: RbacService,
         private reflector: Reflector,
     ) { }
 
@@ -136,7 +135,7 @@ export class JwtAuthGuard implements CanActivate {
             try {
                 const verified = this.jwtService.verifyAccessToken(accessToken);
                 const sessionState = await this.authService.validateAccessSession(verified);
-                const access = await this.rbacService.getEffectiveAccess(verified.sub, verified.tenantId);
+                const access = sessionState.access;
                 request.user = {
                     ...verified,
                     legacyRole: sessionState.legacyRole,
@@ -178,9 +177,8 @@ export class JwtAuthGuard implements CanActivate {
                     });
                 } catch (rotationError) {
                     // Auth should not fail if sliding rotation fails.
-                    this.logger.warn(
-                        `Access token rotation skipped: ${rotationError instanceof Error ? rotationError.message : 'unknown_error'}`,
-                    );
+                    const requestId = request.headers?.['x-request-id'];
+                    this.logger.warn(operationalErrorLog('auth.access_token_rotation_skipped', rotationError, requestId));
                 }
 
                 return true;
@@ -195,7 +193,7 @@ export class JwtAuthGuard implements CanActivate {
         try {
             const verified = this.jwtService.verifyAccessToken(token);
             const sessionState = await this.authService.validateAccessSession(verified);
-            const access = await this.rbacService.getEffectiveAccess(verified.sub, verified.tenantId);
+            const access = sessionState.access;
             request.user = {
                 ...verified,
                 legacyRole: sessionState.legacyRole,

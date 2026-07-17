@@ -1,12 +1,29 @@
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
-import { join, resolve } from 'node:path';
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { dirname, join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import test from 'node:test';
 
 const root = resolve(import.meta.dirname, '../..');
 const validator = join(root, 'scripts/validate-production-launch.mjs');
+
+const composeSecretSources = {
+  control_plane_admin_token: 'CONTROL_PLANE_ADMIN_TOKEN_SECRET_FILE',
+  metrics_token: 'METRICS_TOKEN_FILE',
+  retention_purge_token: 'RETENTION_PURGE_SERVICE_TOKEN_SECRET_FILE',
+  alertmanager_webhook_url: 'ALERTMANAGER_WEBHOOK_URL_FILE',
+  backup_encryption_key: 'BACKUP_ENCRYPTION_KEY_SECRET_FILE',
+};
+
+function portablePath(path) {
+  return path.replaceAll('\\', '/');
+}
+
+function writeFixtureFile(path, value) {
+  mkdirSync(dirname(path), { recursive: true });
+  writeFileSync(path, value, 'utf8');
+}
 
 function run(envText, extraArgs = []) {
   const scratch = mkdtempSync(join(tmpdir(), 'll-launch-env-'));
@@ -18,6 +35,91 @@ function run(envText, extraArgs = []) {
   });
   rmSync(scratch, { recursive: true, force: true });
   return result;
+}
+
+function createProductionSecretFixture() {
+  const scratch = mkdtempSync(join(tmpdir(), 'll-production-secrets-'));
+  const files = {};
+  const overrides = {};
+
+  for (const [composeName, envKey] of Object.entries(composeSecretSources)) {
+    const path = join(scratch, 'secrets', 'compose', composeName);
+    writeFixtureFile(path, `${envKey}-fixture-value\n`);
+    files[envKey] = path;
+    overrides[envKey] = portablePath(path);
+  }
+
+  for (const [role, envKey] of [
+    ['wal', 'PITR_WAL_OBJECT_STORE_SECRETS_DIR'],
+    ['base-backup', 'PITR_BASE_BACKUP_OBJECT_STORE_SECRETS_DIR'],
+    ['restore', 'PITR_RESTORE_OBJECT_STORE_SECRETS_DIR'],
+    ['lifecycle-audit', 'PITR_LIFECYCLE_AUDIT_OBJECT_STORE_SECRETS_DIR'],
+  ]) {
+    const directory = join(scratch, 'secrets', 'pitr', role);
+    const accessKey = join(directory, 'access_key');
+    const secretKey = join(directory, 'secret_key');
+    writeFixtureFile(accessKey, `${role}-access-key-fixture\n`);
+    writeFixtureFile(secretKey, `${role}-secret-key-fixture\n`);
+    overrides[envKey] = portablePath(directory);
+    files[`${envKey}_ACCESS_KEY`] = accessKey;
+    files[`${envKey}_SECRET_KEY`] = secretKey;
+  }
+
+  const lifecycleProof = join(scratch, 'proofs', 'pitr-lifecycle-policy.json');
+  writeFixtureFile(lifecycleProof, '{"schemaVersion":1}\n');
+  overrides.PITR_LIFECYCLE_POLICY_PROOF_FILE = portablePath(lifecycleProof);
+  files.PITR_LIFECYCLE_POLICY_PROOF_FILE = lifecycleProof;
+  const authorizationSimulator = join(scratch, 'bin', 'pitr-provider-authorization-simulator');
+  writeFixtureFile(authorizationSimulator, '#!/bin/sh\nexit 0\n');
+  chmodSync(authorizationSimulator, 0o700);
+  overrides.PITR_AUTHORIZATION_SIMULATOR_FILE = portablePath(authorizationSimulator);
+  files.PITR_AUTHORIZATION_SIMULATOR_FILE = authorizationSimulator;
+
+  return {
+    root: scratch,
+    files,
+    overrides,
+    cleanup() {
+      rmSync(scratch, { recursive: true, force: true });
+    },
+  };
+}
+
+function renderCompose(envText) {
+  const scratch = mkdtempSync(join(tmpdir(), 'll-rendered-compose-'));
+  const envPath = join(scratch, 'production.env');
+  const childEnv = { ...process.env };
+  for (const line of envText.split(/\r?\n/)) {
+    const separator = line.indexOf('=');
+    if (separator > 0) delete childEnv[line.slice(0, separator)];
+  }
+  childEnv.COMPOSE_PROJECT_NAME = 'lunchlineup-production-fixture';
+  writeFileSync(
+    envPath,
+    `${envText}COMPOSE_SERVICE_ENV_FILE=${portablePath(envPath)}\n`,
+    'utf8',
+  );
+
+  try {
+    const result = spawnSync(
+      process.platform === 'win32' ? 'docker.exe' : 'docker',
+      ['compose', '--env-file', envPath, '--profile', '*', 'config', '--format', 'json'],
+      {
+        cwd: root,
+        encoding: 'utf8',
+        env: childEnv,
+        maxBuffer: 10 * 1024 * 1024,
+      },
+    );
+    assert.equal(
+      result.status,
+      0,
+      `${result.error?.message ?? ''}\n${result.stdout}\n${result.stderr}`,
+    );
+    return JSON.parse(result.stdout);
+  } finally {
+    rmSync(scratch, { recursive: true, force: true });
+  }
 }
 
 function validEnv(overrides = {}) {
@@ -53,9 +155,13 @@ function validEnv(overrides = {}) {
     MFA_SECRET_ENCRYPTION_KEY: '',
     WEBHOOK_DELIVERY_ENCRYPTION_KEY_CURRENT: '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
     PASSWORD_RESET_OUTBOX_ENCRYPTION_KEY: 'abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789',
+    AVAILABILITY_IMPORT_ENCRYPTION_KEY: '2222222222222222222222222222222222222222222222222222222222222222',
+    STAFF_INVITATION_OUTBOX_ENCRYPTION_KEY: '3333333333333333333333333333333333333333333333333333333333333333',
     PASSWORD_RESET_EMAIL_OUTBOX_ENABLED: 'true',
+    STAFF_INVITATION_OUTBOX_ENABLED: 'true',
     CSRF_SECRET: 'csrf_abcdefghijklmnopqrstuvwxyz1234567890',
     RESEND_API_KEY: 're_abcdefghijklmnopqrstuvwxyz123456',
+    RESEND_WEBHOOK_SECRET: 'whsec_abcdefghijklmnopqrstuvwxyz123456',
     EMAIL_FROM: 'LunchLineup <no-reply@lunchlineup.com>',
     STRIPE_SECRET_KEY: ['sk', 'live', 'abcdefghijklmnopqrstuvwxyz123456'].join('_'),
     STRIPE_WEBHOOK_SECRET: 'whsec_abcdefghijklmnopqrstuvwxyz123456',
@@ -76,21 +182,32 @@ function validEnv(overrides = {}) {
     CONTROL_PLANE_ADMIN_TOKEN_FILE: '/run/secrets/control_plane_admin_token',
     BACKUP_ENCRYPTION_KEY_SECRET_FILE: '/run/secrets/backup_key',
     BACKUP_OFFSITE_URI: 's3://lunchlineup-prod/db-backups/',
+    BACKUP_OFFSITE_RETENTION_DAYS: '35',
+    BACKUP_OFFSITE_RETENTION_DRY_RUN: 'false',
+    BACKUP_OFFSITE_LIFECYCLE_MAX_DAYS: '90',
     BACKUP_METRICS_FILE: '/var/lib/node_exporter/textfile_collector/lunchlineup_backup.prom',
     PITR_ENABLED: 'true',
+    PITR_ARCHIVE_MODE: 'on',
     PITR_S3_ENDPOINT: 'https://s3.us-west-2.amazonaws.com',
     PITR_S3_BUCKET: 'lunchlineup-prod-pitr',
     PITR_S3_PREFIX: 'lunchlineup/production/cluster-01',
     PITR_WAL_OBJECT_STORE_SECRETS_DIR: '/run/secrets/pitr-wal-object-store',
     PITR_BASE_BACKUP_OBJECT_STORE_SECRETS_DIR: '/run/secrets/pitr-base-backup-object-store',
     PITR_RESTORE_OBJECT_STORE_SECRETS_DIR: '/run/secrets/pitr-restore-object-store',
+    PITR_LIFECYCLE_AUDIT_OBJECT_STORE_SECRETS_DIR: '/run/secrets/pitr-lifecycle-audit-object-store',
     PITR_OBJECT_LOCK_RETENTION_DAYS: '14',
+    PITR_LIFECYCLE_MAX_RETENTION_DAYS: '35',
+    PITR_LIFECYCLE_POLICY_PROOF_FILE: '/etc/lunchlineup/pitr-lifecycle-policy.json',
+    PITR_LIFECYCLE_POLICY_PROOF_URI: 's3://lunchlineup-prod/pitr-policy/lifecycle-policy-20260714.json',
+    PITR_LIFECYCLE_POLICY_SHA256: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+    PITR_AUTHORIZATION_SIMULATOR_FILE: '/usr/local/libexec/lunchlineup-pitr-authorization-simulator',
+    PITR_AUTHORIZATION_SIMULATOR_SHA256: 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+    PITR_AUTHORIZATION_SIMULATOR_TIMEOUT_SECONDS: '60',
     ALERTMANAGER_WEBHOOK_URL_FILE: '/run/secrets/alertmanager_webhook_url',
     GRAFANA_USER: 'lunchlineup_admin',
     GRAFANA_PASSWORD: 'grafana_abcdefghijklmnopqrstuvwxyz123456',
     CONTROL_PLANE_PASSWORD: 'control_abcdefghijklmnopqrstuvwxyz123456',
     NEXT_PUBLIC_API_URL: '/api/v1',
-    NEXT_PUBLIC_WS_URL: 'wss://lunchlineup.com',
     APP_ORIGIN: 'https://lunchlineup.com',
     NEXT_PUBLIC_APP_ORIGIN: 'https://lunchlineup.com',
     NEXT_PUBLIC_APP_URL: 'https://lunchlineup.com',
@@ -115,7 +232,7 @@ function validEnv(overrides = {}) {
     NEXT_PUBLIC_TURNSTILE_SITE_KEY: '',
     TURNSTILE_SECRET_KEY: '',
     LUNCHLINEUP_STATUS_HEALTH_URL: 'https://lunchlineup.com/health',
-    LAUNCH_PROOF_MANIFEST_URI: 's3://lunchlineup-prod/launch-proof/launch-proof-20260709.json',
+    LAUNCH_PROOF_MANIFEST_URI: 'https://artifacts.lunchlineup.com/launch-proof/launch-proof-20260709.json',
     LAUNCH_PROOF_DAST_URL: 'https://github.com/tuckerplee/lunchlineup/actions/runs/123456789/artifacts/111',
     LAUNCH_PROOF_LOAD_TEST_URL: 'https://github.com/tuckerplee/lunchlineup/actions/runs/123456789/artifacts/112',
     LAUNCH_PROOF_DR_DRILL_URI: 's3://lunchlineup-prod/launch-proof/dr-drill-20260709.json',
@@ -145,7 +262,11 @@ test('production launch validator accepts a real public launch profile', () => {
   assert.ok(payload.checked.includes('PLATFORM_ADMIN_DB_CONTEXT_SECRET'));
   assert.ok(payload.checked.includes('WEBHOOK_DELIVERY_ENCRYPTION_KEY_CURRENT'));
   assert.ok(payload.checked.includes('PASSWORD_RESET_OUTBOX_ENCRYPTION_KEY'));
+  assert.ok(payload.checked.includes('AVAILABILITY_IMPORT_ENCRYPTION_KEY'));
+  assert.ok(payload.checked.includes('STAFF_INVITATION_OUTBOX_ENCRYPTION_KEY'));
   assert.ok(payload.checked.includes('PASSWORD_RESET_EMAIL_OUTBOX_ENABLED'));
+  assert.ok(payload.checked.includes('STAFF_INVITATION_OUTBOX_ENABLED'));
+  assert.ok(payload.checked.includes('RESEND_WEBHOOK_SECRET'));
   assert.ok(payload.checked.includes('APP_ORIGIN'));
   assert.ok(payload.checked.includes('NEXT_PUBLIC_PRIVACY_CONTACT_EMAIL'));
   assert.ok(payload.checked.includes('PAID_GA_LEGAL_APPROVED'));
@@ -155,26 +276,78 @@ test('production launch validator accepts a real public launch profile', () => {
   assert.ok(payload.checked.includes('NEXT_PUBLIC_API_URL'));
   assert.ok(payload.checked.includes('NEXT_PUBLIC_OIDC_ENABLED'));
   assert.ok(payload.checked.includes('DATABASE_ROLE_ISOLATION'));
+  assert.ok(payload.checked.includes('PITR_LIFECYCLE_MAX_RETENTION_DAYS'));
+  assert.ok(payload.checked.includes('PITR_LIFECYCLE_POLICY_PROOF_URI'));
+  assert.ok(payload.checked.includes('PITR_LIFECYCLE_POLICY_SHA256'));
+  assert.ok(payload.checked.includes('PITR_ARCHIVE_MODE'));
+  assert.ok(payload.checked.includes('PITR_AUTHORIZATION_SIMULATOR_FILE'));
+  assert.ok(payload.checked.includes('PITR_AUTHORIZATION_SIMULATOR_SHA256'));
 });
 
-test('production launch validator verifies the host backup secret source when requested', () => {
-  const scratch = mkdtempSync(join(tmpdir(), 'll-backup-secret-'));
-  const secretPath = join(scratch, 'backup-key');
-  writeFileSync(secretPath, 'managed-secret', 'utf8');
+test('production launch validator verifies every rendered Compose and PITR secret file', () => {
+  const fixture = createProductionSecretFixture();
 
   try {
-    const valid = run(validEnv({
-      BACKUP_ENCRYPTION_KEY_SECRET_FILE: secretPath,
-    }), ['--verify-local-secret-files']);
+    const envText = validEnv(fixture.overrides);
+    const valid = run(envText, ['--verify-local-secret-files']);
     assert.equal(valid.status, 0, valid.stderr);
+    const payload = JSON.parse(valid.stdout);
+    for (const envKey of Object.values(composeSecretSources)) {
+      assert.ok(payload.checked.includes(envKey), envKey);
+    }
 
-    const missing = run(validEnv({
-      BACKUP_ENCRYPTION_KEY_SECRET_FILE: join(scratch, 'missing-key'),
-    }), ['--verify-local-secret-files']);
-    assert.notEqual(missing.status, 0);
-    assert.match(missing.stderr, /BACKUP_ENCRYPTION_KEY_SECRET_FILE must exist and be readable on the deployment host/);
+    const rendered = renderCompose(envText);
+    assert.deepEqual(Object.keys(rendered.secrets).sort(), Object.keys(composeSecretSources).sort());
+    for (const [composeName, envKey] of Object.entries(composeSecretSources)) {
+      assert.equal(resolve(rendered.secrets[composeName].file), resolve(fixture.overrides[envKey]));
+    }
+
+    rmSync(fixture.files.METRICS_TOKEN_FILE);
+    const missingComposeSecret = run(validEnv(fixture.overrides), ['--verify-local-secret-files']);
+    assert.notEqual(missingComposeSecret.status, 0);
+    assert.match(
+      missingComposeSecret.stderr,
+      /METRICS_TOKEN_FILE must exist and be a readable file on the deployment host/,
+    );
+    writeFixtureFile(fixture.files.METRICS_TOKEN_FILE, 'restored-metrics-token-fixture\n');
+
+    rmSync(fixture.files.PITR_RESTORE_OBJECT_STORE_SECRETS_DIR_SECRET_KEY);
+    const missingPitrCredential = run(validEnv(fixture.overrides), ['--verify-local-secret-files']);
+    assert.notEqual(missingPitrCredential.status, 0);
+    assert.match(
+      missingPitrCredential.stderr,
+      /PITR_RESTORE_OBJECT_STORE_SECRETS_DIR_SECRET_KEY must exist and be a readable file on the deployment host/,
+    );
   } finally {
-    rmSync(scratch, { recursive: true, force: true });
+    fixture.cleanup();
+  }
+});
+
+test('rendered production Compose uses blank MFA overlap and a dedicated Caddy loopback health route', () => {
+  const fixture = createProductionSecretFixture();
+
+  try {
+    const rendered = renderCompose(validEnv(fixture.overrides));
+    assert.equal(rendered.services.api.environment.MFA_SECRET_ENCRYPTION_KEY_PREVIOUS, '');
+    assert.equal(rendered.services.api.environment.MFA_SECRET_ENCRYPTION_KEY, '');
+    assert.equal(
+      rendered.services.proxy.environment.CADDY_SITE_ADDRESSES,
+      'https://lunchlineup.com, https://www.lunchlineup.com',
+    );
+    assert.deepEqual(rendered.services.proxy.healthcheck.test, [
+      'CMD',
+      'wget',
+      '--no-verbose',
+      '--tries=1',
+      '--spider',
+      'http://127.0.0.1:2015/health',
+    ]);
+
+    const caddy = readFileSync(join(root, 'infrastructure/caddy/Caddyfile'), 'utf8');
+    assert.match(caddy, /http:\/\/127\.0\.0\.1:2015 \{\s*respond \/health 200\s*\}/);
+    assert.match(caddy, /\{\$CADDY_SITE_ADDRESSES:/);
+  } finally {
+    fixture.cleanup();
   }
 });
 
@@ -198,6 +371,20 @@ test('production launch validator requires last-value metering and password-rese
   assert.match(disabledResetDelivery.stderr, /PASSWORD_RESET_EMAIL_OUTBOX_ENABLED must be exactly true/);
 });
 
+test('production launch validator requires staff invitation delivery', () => {
+  const missing = run(validEnv({
+    STAFF_INVITATION_OUTBOX_ENABLED: undefined,
+  }));
+  assert.notEqual(missing.status, 0);
+  assert.match(missing.stderr, /STAFF_INVITATION_OUTBOX_ENABLED is required/);
+
+  const disabled = run(validEnv({
+    STAFF_INVITATION_OUTBOX_ENABLED: 'false',
+  }));
+  assert.notEqual(disabled.status, 0);
+  assert.match(disabled.stderr, /STAFF_INVITATION_OUTBOX_ENABLED must be exactly true/);
+});
+
 test('production launch validator fails closed without approved paid-GA legal terms', () => {
   const result = run(validEnv({
     PAID_GA_LEGAL_APPROVED: 'false',
@@ -215,24 +402,53 @@ test('production launch validator fails closed without approved paid-GA legal te
   assert.match(result.stderr, /PAID_GA_APPROVAL_RECORD_URI must reference a specific retained proof artifact/);
 });
 
-test('production launch validator rejects shared PITR identities or weak immutable retention', () => {
+test('production launch validator rejects weak immutable or unbounded PITR lifecycle policy', () => {
   const result = run(validEnv({
     PITR_ENABLED: 'false',
+    PITR_ARCHIVE_MODE: 'off',
     PITR_S3_ENDPOINT: 'http://localhost:9000',
     PITR_S3_PREFIX: 'lunchlineup/production/replace-with-cluster-id',
     PITR_WAL_OBJECT_STORE_SECRETS_DIR: './secrets/pitr-object-store',
     PITR_BASE_BACKUP_OBJECT_STORE_SECRETS_DIR: '/run/secrets/shared-pitr',
     PITR_RESTORE_OBJECT_STORE_SECRETS_DIR: '/run/secrets/shared-pitr',
+    PITR_LIFECYCLE_AUDIT_OBJECT_STORE_SECRETS_DIR: '/run/secrets/shared-pitr',
     PITR_OBJECT_LOCK_RETENTION_DAYS: '8',
+    PITR_LIFECYCLE_MAX_RETENTION_DAYS: '120',
+    PITR_LIFECYCLE_POLICY_PROOF_FILE: './proofs/lifecycle.json',
+    PITR_LIFECYCLE_POLICY_PROOF_URI: 's3://lunchlineup-prod/pitr-policy/latest.json',
+    PITR_LIFECYCLE_POLICY_SHA256: 'not-a-sha',
+    PITR_AUTHORIZATION_SIMULATOR_FILE: './scripts/fake-simulator',
+    PITR_AUTHORIZATION_SIMULATOR_SHA256: 'not-a-sha',
+    PITR_AUTHORIZATION_SIMULATOR_TIMEOUT_SECONDS: '0',
   }));
 
   assert.notEqual(result.status, 0);
   assert.match(result.stderr, /PITR_ENABLED must be exactly true/);
+  assert.match(result.stderr, /PITR_ARCHIVE_MODE must be exactly on/);
   assert.match(result.stderr, /PITR_S3_ENDPOINT must use https/);
   assert.match(result.stderr, /PITR_S3_PREFIX must be a dedicated cluster-specific prefix/);
   assert.match(result.stderr, /PITR_WAL_OBJECT_STORE_SECRETS_DIR must be an absolute managed-secret directory/);
-  assert.match(result.stderr, /PITR WAL, base-backup, and restore identities must use distinct/);
+  assert.match(result.stderr, /PITR WAL, base-backup, restore, and lifecycle-audit identities must use distinct/);
   assert.match(result.stderr, /PITR_OBJECT_LOCK_RETENTION_DAYS must be an integer of at least 14/);
+  assert.match(result.stderr, /PITR_LIFECYCLE_MAX_RETENTION_DAYS must be an integer/);
+  assert.match(result.stderr, /PITR_LIFECYCLE_POLICY_PROOF_FILE must be an absolute managed-secret path/);
+  assert.match(result.stderr, /PITR_LIFECYCLE_POLICY_PROOF_URI must reference a specific retained proof artifact/);
+  assert.match(result.stderr, /PITR_LIFECYCLE_POLICY_SHA256 must be 64 lowercase hex characters/);
+  assert.match(result.stderr, /PITR_AUTHORIZATION_SIMULATOR_FILE must be an absolute managed-secret path/);
+  assert.match(result.stderr, /PITR_AUTHORIZATION_SIMULATOR_SHA256 must be 64 lowercase hex characters/);
+  assert.match(result.stderr, /PITR_AUTHORIZATION_SIMULATOR_TIMEOUT_SECONDS must be an integer/);
+});
+
+test('production launch validator rejects mutable logical-backup providers and operator-owned expiry', () => {
+  for (const [overrides, expected] of [
+    [{ BACKUP_OFFSITE_URI: 'rclone:production/db-backups' }, /mutable rclone is forbidden in production/],
+    [{ BACKUP_OFFSITE_RETENTION_DRY_RUN: 'true' }, /BACKUP_OFFSITE_RETENTION_DRY_RUN must be exactly false/],
+    [{ BACKUP_OFFSITE_LIFECYCLE_MAX_DAYS: '14' }, /must cover immutable logical-backup retention/],
+  ]) {
+    const result = run(validEnv(overrides));
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, expected);
+  }
 });
 
 test('production launch validator rejects shared database owner and runtime credentials', () => {
@@ -256,6 +472,15 @@ test('production launch validator rejects database URLs using the wrong roles or
   assert.notEqual(result.status, 0);
   assert.match(result.stderr, /DATABASE_URL must authenticate with APP_DB_USER and APP_DB_PASSWORD/);
   assert.match(result.stderr, /must target the same PostgreSQL database/);
+});
+
+test('production launch validator rejects Prisma-only runtime database URL options', () => {
+  const result = run(validEnv({
+    DATABASE_URL: 'postgresql://lunchlineup_app:app_pg_abcdefghijklmnopqrstuvwxyz123456@postgres:5432/lunchlineup?schema=public',
+  }));
+
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /DATABASE_URL must not include query parameters or fragments/);
 });
 
 test('production launch validator rejects an external database not protected by Compose recovery', () => {
@@ -509,7 +734,6 @@ test('production launch validator blocks smoke-only payment and local secret val
     BACKUP_OFFSITE_URI: 'file:///backups',
     BACKUP_METRICS_FILE: './backup.prom',
     ALERTMANAGER_WEBHOOK_URL_FILE: './secrets/alertmanager_webhook_url',
-    NEXT_PUBLIC_WS_URL: 'ws://app.example.com',
     LUNCHLINEUP_STATUS_HEALTH_URL: 'http://localhost/health',
     LAUNCH_PROOF_MANIFEST_URI: 's3://lunchlineup-prod/launch-proof/latest.json',
     LAUNCH_PROOF_DAST_URL: '',
@@ -538,7 +762,6 @@ test('production launch validator blocks smoke-only payment and local secret val
   assert.match(result.stderr, /BACKUP_OFFSITE_URI must point at off-host storage/);
   assert.match(result.stderr, /BACKUP_METRICS_FILE must be an absolute Prometheus textfile collector/);
   assert.match(result.stderr, /ALERTMANAGER_WEBHOOK_URL_FILE must be an absolute managed-secret path/);
-  assert.match(result.stderr, /NEXT_PUBLIC_WS_URL must use wss/);
   assert.match(result.stderr, /LUNCHLINEUP_STATUS_HEALTH_URL must use https/);
   assert.match(result.stderr, /LAUNCH_PROOF_MANIFEST_URI must reference a specific retained proof artifact/);
   assert.match(result.stderr, /LAUNCH_PROOF_DAST_URL is required/);
@@ -548,13 +771,59 @@ test('production launch validator blocks smoke-only payment and local secret val
   assert.match(result.stderr, /LAUNCH_PROOF_EXTERNAL_HEALTH_URL must use a real public hostname/);
 });
 
-test('production launch validator rejects shared control-plane token source', () => {
+test('production launch validator rejects absolute paths inside the repo-local secrets tree', () => {
+  const result = run(validEnv({
+    METRICS_TOKEN_FILE: portablePath(join(root, 'secrets', 'metrics_token')),
+    PITR_WAL_OBJECT_STORE_SECRETS_DIR: portablePath(join(root, 'secrets', 'pitr-wal')),
+  }));
+
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /METRICS_TOKEN_FILE cannot point at the repo-local secrets directory/);
+  assert.match(result.stderr, /PITR_WAL_OBJECT_STORE_SECRETS_DIR cannot point at the repo-local secrets directory/);
+});
+
+test('production launch validator rejects reused managed-secret paths across roles', () => {
   const result = run(validEnv({
     CONTROL_PLANE_ADMIN_TOKEN_SECRET_FILE: '/run/secrets/metrics_token',
   }));
 
   assert.notEqual(result.status, 0);
-  assert.match(result.stderr, /CONTROL_PLANE_ADMIN_TOKEN_SECRET_FILE must use a separate secret file from METRICS_TOKEN_FILE/);
+  assert.match(
+    result.stderr,
+    /CONTROL_PLANE_ADMIN_TOKEN_SECRET_FILE must use a separate managed secret file from METRICS_TOKEN_FILE/,
+  );
+});
+
+test('production launch validator rejects reused credential material without printing it', () => {
+  const fixture = createProductionSecretFixture();
+
+  try {
+    const reusedComposeCredential = readFileSync(fixture.files.METRICS_TOKEN_FILE, 'utf8');
+    const reusedPitrCredential = readFileSync(
+      fixture.files.PITR_WAL_OBJECT_STORE_SECRETS_DIR_ACCESS_KEY,
+      'utf8',
+    );
+    writeFixtureFile(fixture.files.RETENTION_PURGE_SERVICE_TOKEN_SECRET_FILE, reusedComposeCredential);
+    writeFixtureFile(
+      fixture.files.PITR_BASE_BACKUP_OBJECT_STORE_SECRETS_DIR_ACCESS_KEY,
+      reusedPitrCredential,
+    );
+
+    const result = run(validEnv(fixture.overrides), ['--verify-local-secret-files']);
+    assert.notEqual(result.status, 0);
+    assert.match(
+      result.stderr,
+      /RETENTION_PURGE_SERVICE_TOKEN_SECRET_FILE must not reuse credential material from METRICS_TOKEN_FILE/,
+    );
+    assert.match(
+      result.stderr,
+      /PITR_BASE_BACKUP_OBJECT_STORE_SECRETS_DIR_ACCESS_KEY must not reuse credential material from PITR_WAL_OBJECT_STORE_SECRETS_DIR_ACCESS_KEY/,
+    );
+    assert.doesNotMatch(result.stderr, new RegExp(reusedComposeCredential.trim()));
+    assert.doesNotMatch(result.stderr, new RegExp(reusedPitrCredential.trim()));
+  } finally {
+    fixture.cleanup();
+  }
 });
 
 test('production launch validator rejects invalid managed MFA encryption keys', () => {
@@ -583,6 +852,12 @@ test('production launch validator rejects missing or malformed webhook delivery 
   assert.match(malformed.stderr, /WEBHOOK_DELIVERY_ENCRYPTION_KEY_CURRENT must decode to exactly 32 bytes/);
 });
 
+test('production launch validator rejects a missing Resend feedback signing secret', () => {
+  const missing = run(validEnv({ RESEND_WEBHOOK_SECRET: '' }));
+  assert.notEqual(missing.status, 0);
+  assert.match(missing.stderr, /RESEND_WEBHOOK_SECRET is required/);
+});
+
 test('production launch validator rejects missing or malformed password reset outbox encryption key', () => {
   const missing = run(validEnv({ PASSWORD_RESET_OUTBOX_ENCRYPTION_KEY: '' }));
   assert.notEqual(missing.status, 0);
@@ -593,9 +868,62 @@ test('production launch validator rejects missing or malformed password reset ou
   assert.match(malformed.stderr, /PASSWORD_RESET_OUTBOX_ENCRYPTION_KEY must decode to exactly 32 bytes/);
 });
 
+test('production launch validator requires an isolated staff invitation outbox encryption key', () => {
+  const missing = run(validEnv({ STAFF_INVITATION_OUTBOX_ENCRYPTION_KEY: '' }));
+  assert.notEqual(missing.status, 0);
+  assert.match(missing.stderr, /STAFF_INVITATION_OUTBOX_ENCRYPTION_KEY is required/);
+
+  const malformed = run(validEnv({
+    STAFF_INVITATION_OUTBOX_ENCRYPTION_KEY: 'short-invitation-key',
+  }));
+  assert.notEqual(malformed.status, 0);
+  assert.match(
+    malformed.stderr,
+    /STAFF_INVITATION_OUTBOX_ENCRYPTION_KEY must decode to exactly 32 bytes/,
+  );
+
+  const reused = run(validEnv({
+    STAFF_INVITATION_OUTBOX_ENCRYPTION_KEY: '1111111111111111111111111111111111111111111111111111111111111111',
+  }));
+  assert.notEqual(reused.status, 0);
+  assert.match(reused.stderr, /must not reuse encryption key material from MFA_SECRET_ENCRYPTION_KEY_CURRENT/);
+});
+
+test('production launch validator requires an isolated availability import encryption key', () => {
+  const missing = run(validEnv({ AVAILABILITY_IMPORT_ENCRYPTION_KEY: '' }));
+  assert.notEqual(missing.status, 0);
+  assert.match(missing.stderr, /AVAILABILITY_IMPORT_ENCRYPTION_KEY is required/);
+
+  const malformed = run(validEnv({ AVAILABILITY_IMPORT_ENCRYPTION_KEY: 'short-source-key' }));
+  assert.notEqual(malformed.status, 0);
+  assert.match(malformed.stderr, /AVAILABILITY_IMPORT_ENCRYPTION_KEY must decode to exactly 32 bytes/);
+
+  const reused = run(validEnv({
+    AVAILABILITY_IMPORT_ENCRYPTION_KEY: 'ERERERERERERERERERERERERERERERERERERERERERE=',
+  }));
+  assert.notEqual(reused.status, 0);
+  assert.match(reused.stderr, /must not reuse encryption key material from MFA_SECRET_ENCRYPTION_KEY_CURRENT/);
+});
+
+test('production launch validator requires an HTTPS-only downloadable launch-proof manifest', () => {
+  for (const value of [
+    's3://lunchlineup-prod/launch-proof/launch-proof-20260709.json',
+    'rclone:launch-proof/launch-proof-20260709.json',
+  ]) {
+    const result = run(validEnv({ LAUNCH_PROOF_MANIFEST_URI: value }));
+    assert.notEqual(result.status, 0, value);
+    assert.match(result.stderr, /LAUNCH_PROOF_MANIFEST_URI must use a retained HTTPS proof URI/);
+  }
+
+  const retainedDrEvidence = run(validEnv({
+    LAUNCH_PROOF_DR_DRILL_URI: 'rclone:launch-proof/dr-drill-20260709.json',
+  }));
+  assert.equal(retainedDrEvidence.status, 0, retainedDrEvidence.stderr);
+});
+
 test('production launch validator rejects placeholder launch-proof references', () => {
   const result = run(validEnv({
-    LAUNCH_PROOF_MANIFEST_URI: 's3://lunchlineup-prod/launch-proof/launch-proof-YYYYMMDDHHMMSS.json',
+    LAUNCH_PROOF_MANIFEST_URI: 'https://artifacts.lunchlineup.com/launch-proof/launch-proof-YYYYMMDDHHMMSS.json',
     LAUNCH_PROOF_DAST_URL: 'https://github.com/tuckerplee/lunchlineup/actions/runs/<run-id>/artifacts/<artifact-id>',
     LAUNCH_PROOF_LOAD_TEST_URL: 'https://github.com/tuckerplee/lunchlineup/actions/runs/123456789/artifacts/<artifact-id>',
     LAUNCH_PROOF_DR_DRILL_URI: 's3://lunchlineup-prod/launch-proof/dr-drill-YYYYMMDDHHMMSS.json',

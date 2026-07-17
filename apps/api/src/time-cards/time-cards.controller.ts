@@ -9,6 +9,7 @@ import {
     NotFoundException,
     Optional,
     Param,
+    Patch,
     Post,
     Query,
     Req,
@@ -24,15 +25,32 @@ import {
     timeCardClockInOperationId,
     timeCardClockInRequestHash,
 } from './time-card-idempotency';
+import {
+    parseUtcInstant,
+    timeCardAuditValue,
+    TimeCardCorrectionBody,
+} from './time-card-correction';
+import {
+    correctTimeCardInTransaction,
+    TIME_CARD_RELATIONS,
+} from './time-card-correction.workflow';
+import {
+    assertClockOutWithinPayrollPeriod,
+    isPayrollLockConstraint,
+    lockTimeCardPayrollContext,
+    resolveTimeCardPayrollAssignment,
+} from './time-card-payroll-lock';
+import { lockActiveSchedulableUser } from '../common/schedulable-user';
 
 const Permission = (perm: string) => SetMetadata('permission', perm);
-const UTC_INSTANT_RE = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2})(?:\.\d{1,3})?)?Z$/;
 const TIME_CARD_STATUS = {
     OPEN: 'OPEN',
     CLOSED: 'CLOSED',
     VOID: 'VOID',
 } as const;
 const TEAM_TIME_CARD_PERMISSIONS = ['users:read', 'shifts:read'];
+const DEFAULT_TIME_CARD_PAGE_SIZE = 100;
+const MAX_TIME_CARD_PAGE_SIZE = 250;
 
 type ClockInBody = {
     userId?: string;
@@ -68,7 +86,10 @@ export class TimeCardsController {
         @Query('locationId') locationId?: string,
         @Query('startDate') startDate?: string,
         @Query('endDate') endDate?: string,
+        @Query('limit') limitRaw?: string,
+        @Query('cursor') cursorRaw?: string,
     ) {
+        await this.assertTimeCardsEntitled(req);
         const tenantId = req.user.tenantId;
         const where: any = {
             tenantId,
@@ -90,13 +111,25 @@ export class TimeCardsController {
             if (endDate) where.clockInAt.lt = this.parseDate(endDate, 'endDate');
         }
 
+        const pageSize = this.parsePageSize(limitRaw);
+        const cursor = this.parseCursor(cursorRaw);
         const cards = await this.tenantDb.withTenant(tenantId, (tx) => tx.timeCard.findMany({
             where,
-            orderBy: { clockInAt: 'desc' },
+            orderBy: [{ clockInAt: 'desc' }, { id: 'desc' }],
+            take: pageSize + 1,
+            ...(cursor ? { cursor: { id: cursor }, skip: 1 } : {}),
             include: this.includeRelations(),
         }));
+        const page = cards.slice(0, pageSize);
+        const nextCursor = cards.length > pageSize && page.length > 0
+            ? page[page.length - 1].id
+            : null;
 
-        return { data: cards.map((card: any) => this.serialize(card)), tenantId };
+        return {
+            data: page.map((card: any) => this.serialize(card)),
+            tenantId,
+            nextCursor,
+        };
     }
 
     @Get('active')
@@ -111,7 +144,7 @@ export class TimeCardsController {
                 status: TIME_CARD_STATUS.OPEN,
                 deletedAt: null,
             },
-            orderBy: { clockInAt: 'desc' },
+            orderBy: [{ clockInAt: 'desc' }, { id: 'desc' }],
             include: this.includeRelations(),
         }));
 
@@ -121,6 +154,7 @@ export class TimeCardsController {
     @Get(':id')
     @Permission('time_cards:read')
     async findOne(@Param('id') id: string, @Req() req: any) {
+        await this.assertTimeCardsEntitled(req);
         const tenantId = req.user.tenantId;
         const card = await this.tenantDb.withTenant(tenantId, (tx) => this.findScopedTimeCard(tx, id, req, true));
         return this.serialize(card);
@@ -182,9 +216,12 @@ export class TimeCardsController {
                 if (shift && locationId && locationId !== shift.locationId) {
                     throw new BadRequestException('Time card location must match the selected shift location.');
                 }
-                if (locationId) {
-                    await this.assertLocationInTenant(tx, locationId, tenantId);
-                }
+                const location = locationId
+                    ? await this.assertLocationInTenant(tx, locationId, tenantId)
+                    : null;
+
+                const clockInAt = requestedClockInAt ?? new Date();
+                const payroll = await resolveTimeCardPayrollAssignment(tx, tenantId, clockInAt, location);
 
                 const created = await tx.timeCard.create({
                     data: {
@@ -194,7 +231,9 @@ export class TimeCardsController {
                         shiftId: body.shiftId ?? null,
                         clockInOperationId: operationId,
                         clockInRequestHash: requestHash,
-                        clockInAt: requestedClockInAt ?? new Date(),
+                        clockInAt,
+                        payrollPeriodId: payroll.payrollPeriodId,
+                        workTimeZone: payroll.workTimeZone,
                         notes,
                         status: TIME_CARD_STATUS.OPEN,
                     },
@@ -214,17 +253,17 @@ export class TimeCardsController {
                         action: 'TIME_CARD_CLOCKED_IN',
                         resource: 'TimeCard',
                         resourceId: created.id,
-                        newValue: this.timeCardAuditValue(created),
+                        newValue: timeCardAuditValue(created),
                     },
                 });
                 return created;
-            });
+            }, { maxWait: 5_000, timeout: 10_000 });
             return this.serialize(card);
         } catch (error) {
-            if (!this.isUniqueConstraintError(error)) throw error;
             const replay = await this.tenantDb.withTenant(tenantId, (tx) =>
                 this.findClockInReplay(tx, tenantId, operationId, requestHash));
             if (replay) return this.serialize(replay);
+            if (!this.isUniqueConstraintError(error)) throw error;
             throw new BadRequestException('This employee already has an open time card.');
         }
     }
@@ -235,6 +274,13 @@ export class TimeCardsController {
         this.assertManualClockEventAllowed(req, body.clockOutAt, 'clockOutAt');
         const requestedClockOutAt = body.clockOutAt ? this.parseDate(body.clockOutAt, 'clockOutAt') : null;
         const updated = await this.tenantDb.withTenant(tenantId, async (tx) => {
+            const initialCard = await this.findScopedTimeCard(tx, id, req, false);
+            const payrollPeriods = await lockTimeCardPayrollContext(
+                tx,
+                tenantId,
+                id,
+                [initialCard.payrollPeriodId],
+            );
             const card = await this.findScopedTimeCard(tx, id, req, false);
             if (card.status !== TIME_CARD_STATUS.OPEN) {
                 throw new BadRequestException('This time card is already closed.');
@@ -244,6 +290,7 @@ export class TimeCardsController {
             if (clockOutAt <= card.clockInAt) {
                 throw new BadRequestException('Clock out must be after clock in.');
             }
+            assertClockOutWithinPayrollPeriod(card.payrollPeriodId, clockOutAt, payrollPeriods);
 
             const totalMinutes = Math.floor((clockOutAt.getTime() - card.clockInAt.getTime()) / 60000);
             const breakMinutes = this.normalizeBreakMinutes(body.breakMinutes, totalMinutes);
@@ -255,12 +302,14 @@ export class TimeCardsController {
                     deletedAt: null,
                     status: TIME_CARD_STATUS.OPEN,
                     clockOutAt: null,
+                    revision: card.revision,
                 },
                 data: {
                     clockOutAt,
                     breakMinutes,
                     ...(notes !== undefined ? { notes } : {}),
                     status: TIME_CARD_STATUS.CLOSED,
+                    revision: { increment: 1 },
                 },
             });
             if (closeResult.count !== 1) {
@@ -274,16 +323,62 @@ export class TimeCardsController {
                     action: 'TIME_CARD_CLOCKED_OUT',
                     resource: 'TimeCard',
                     resourceId: updated.id,
-                    oldValue: this.timeCardAuditValue(card),
-                    newValue: this.timeCardAuditValue(updated),
+                    oldValue: timeCardAuditValue(card),
+                    newValue: timeCardAuditValue(updated),
                 },
             });
             return updated;
+        }, { maxWait: 5_000, timeout: 10_000 }).catch((error: unknown) => {
+            if (isPayrollLockConstraint(error)) {
+                throw new ConflictException('This time card belongs to a locked payroll period and cannot be changed.');
+            }
+            throw error;
         });
 
         return this.serialize(updated);
     }
 
+    @Patch(':id/correction')
+    @Permission('time_cards:write')
+    async correct(@Param('id') id: string, @Body() body: TimeCardCorrectionBody, @Req() req: any) {
+        this.assertCanManageTeam(req);
+        const tenantId = req.user.tenantId;
+        const corrected = await this.tenantDb.withTenant(
+            tenantId,
+            async (tx) => {
+                await this.featureAccessService.assertFeatureEntitledInTransaction(
+                    tx,
+                    tenantId,
+                    'time_cards',
+                );
+                const corrected = await correctTimeCardInTransaction(tx, tenantId, req.user.sub, id, body);
+                if (corrected.payrollPeriodId && corrected.clockOutAt) {
+                    const payrollPeriods = await lockTimeCardPayrollContext(
+                        tx,
+                        tenantId,
+                        id,
+                        [corrected.payrollPeriodId],
+                    );
+                    assertClockOutWithinPayrollPeriod(
+                        corrected.payrollPeriodId,
+                        corrected.clockOutAt,
+                        payrollPeriods,
+                    );
+                }
+                return corrected;
+            },
+            { maxWait: 5_000, timeout: 10_000 },
+        ).catch((error: unknown) => {
+            if (this.errorContainsConstraint(error, 'TimeCard_employee_no_overlap')) {
+                throw new ConflictException('Corrected time cards cannot overlap another card for this employee.');
+            }
+            if (isPayrollLockConstraint(error)) {
+                throw new ConflictException('This time card belongs to a locked payroll period and cannot be changed.');
+            }
+            throw error;
+        });
+        return this.serialize(corrected);
+    }
     private async findClockInReplay(
         tx: TenantPrismaTransaction,
         tenantId: string,
@@ -307,16 +402,22 @@ export class TimeCardsController {
             && 'code' in error
             && (error as { code?: unknown }).code === 'P2002';
     }
-    private includeRelations() {
-        return {
-            user: { select: { id: true, name: true, username: true, role: true } },
-            location: { select: { id: true, name: true } },
-            shift: { select: { id: true, startTime: true, endTime: true } },
-        };
+
+    private errorContainsConstraint(error: unknown, constraint: string): boolean {
+        if (error instanceof Error && error.message.includes(constraint)) return true;
+        try {
+            return JSON.stringify(error).includes(constraint);
+        } catch {
+            return false;
+        }
     }
 
-    private async assertTimeCardsEnabled(req: any): Promise<FeatureResolution> {
-        return this.featureAccessService.assertFeatureEnabled(req.user.tenantId, 'time_cards');
+    private includeRelations() {
+        return TIME_CARD_RELATIONS;
+    }
+
+    private async assertTimeCardsEntitled(req: any): Promise<FeatureResolution> {
+        return this.featureAccessService.assertFeatureEntitled(req.user.tenantId, 'time_cards');
     }
     private canViewTeam(req: any): boolean {
         const permissions = Array.isArray(req.user?.permissions) ? req.user.permissions : [];
@@ -351,6 +452,12 @@ export class TimeCardsController {
         }
     }
 
+    private assertCanManageTeam(req: any): void {
+        if (!this.canViewTeam(req)) {
+            throw new ForbiddenException('Team time-card corrections require manager access.');
+        }
+    }
+
     private async findScopedTimeCard(tx: TenantPrismaTransaction, id: string, req: any, includeClosed: boolean) {
         const where: any = {
             id,
@@ -375,23 +482,21 @@ export class TimeCardsController {
     }
 
     private async assertUserInTenant(tx: TenantPrismaTransaction, userId: string, tenantId: string) {
-        const user = await tx.user.findFirst({
-            where: { id: userId, tenantId, deletedAt: null },
-            select: { id: true },
-        });
+        const user = await lockActiveSchedulableUser(tx, tenantId, userId);
         if (!user) {
-            throw new BadRequestException('User is not available for this workspace.');
+            throw new BadRequestException('User is not available for time tracking in this workspace.');
         }
     }
 
     private async assertLocationInTenant(tx: TenantPrismaTransaction, locationId: string, tenantId: string) {
         const location = await tx.location.findFirst({
             where: { id: locationId, tenantId, deletedAt: null },
-            select: { id: true },
+            select: { id: true, timezone: true },
         });
         if (!location) {
             throw new BadRequestException('Location is not available for this workspace.');
         }
+        return location;
     }
 
     private async assertShiftInTenant(tx: TenantPrismaTransaction, shiftId: string, tenantId: string, targetUserId: string) {
@@ -408,30 +513,29 @@ export class TimeCardsController {
         return shift;
     }
 
-    private parseDate(value: string, field: string): Date {
-        if (typeof value !== 'string' || !value.trim()) {
-            throw new BadRequestException(`${field} is required`);
+    private parsePageSize(value?: string): number {
+        if (value === undefined || value.trim() === '') return DEFAULT_TIME_CARD_PAGE_SIZE;
+        if (!/^[0-9]+$/.test(value.trim())) {
+            throw new BadRequestException('limit must be a positive integer');
         }
-        const normalized = value.trim();
-        const match = UTC_INSTANT_RE.exec(normalized);
-        if (!match) {
-            throw new BadRequestException(`Invalid ${field}. Use UTC ISO 8601.`);
-        }
-        const parsed = new Date(normalized);
-        if (!this.isValidUtcInstant(parsed, match)) {
-            throw new BadRequestException(`Invalid ${field}. Use UTC ISO 8601.`);
+        const parsed = Number(value);
+        if (!Number.isSafeInteger(parsed) || parsed < 1 || parsed > MAX_TIME_CARD_PAGE_SIZE) {
+            throw new BadRequestException('limit must be between 1 and ' + MAX_TIME_CARD_PAGE_SIZE);
         }
         return parsed;
     }
 
-    private isValidUtcInstant(parsed: Date, match: RegExpExecArray): boolean {
-        return Number.isFinite(parsed.getTime()) &&
-            parsed.getUTCFullYear() === Number(match[1]) &&
-            parsed.getUTCMonth() === Number(match[2]) - 1 &&
-            parsed.getUTCDate() === Number(match[3]) &&
-            parsed.getUTCHours() === Number(match[4]) &&
-            parsed.getUTCMinutes() === Number(match[5]) &&
-            parsed.getUTCSeconds() === Number(match[6] ?? 0);
+    private parseCursor(value?: string): string | null {
+        if (value === undefined) return null;
+        const normalized = value.trim();
+        if (!normalized || normalized.length > 200) {
+            throw new BadRequestException('cursor must contain between 1 and 200 characters');
+        }
+        return normalized;
+    }
+
+    private parseDate(value: string, field: string): Date {
+        return parseUtcInstant(value, field);
     }
 
     private normalizeBreakMinutes(value: number | undefined, totalMinutes: number): number {
@@ -455,29 +559,13 @@ export class TimeCardsController {
         return trimmed || null;
     }
 
-    private timeCardAuditValue(card: any) {
-        return {
-            targetUserId: card.userId,
-            locationId: card.locationId ?? null,
-            shiftId: card.shiftId ?? null,
-            clockInAt: this.toAuditIso(card.clockInAt),
-            clockOutAt: this.toAuditIso(card.clockOutAt),
-            breakMinutes: card.breakMinutes ?? 0,
-            status: card.status,
-        };
-    }
-
-    private toAuditIso(value: Date | string | null | undefined): string | null {
-        if (!value) return null;
-        return new Date(value).toISOString();
-    }
-
     private serialize(card: any) {
         const end = card.clockOutAt ? new Date(card.clockOutAt) : new Date();
         const grossMinutes = Math.max(0, Math.floor((end.getTime() - new Date(card.clockInAt).getTime()) / 60000));
         const workedMinutes = Math.max(0, grossMinutes - (card.breakMinutes ?? 0));
         return {
             ...card,
+            displayTimeZone: card.workTimeZone ?? 'UTC',
             grossMinutes,
             workedMinutes,
         };

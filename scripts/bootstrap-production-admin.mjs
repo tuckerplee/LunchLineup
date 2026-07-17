@@ -163,6 +163,69 @@ async function enablePlatformAdmin(tx) {
   await tx.$executeRaw`SELECT set_current_platform_admin(true, ${capability})`;
 }
 
+async function assertNoUnexpectedPlatformAdmins(tx, adminEmail, tenantSlug) {
+  const [schema] = await tx.$queryRaw`
+    SELECT
+      to_regclass('"Tenant"') IS NOT NULL AS "tenantExists",
+      to_regclass('"User"') IS NOT NULL AS "userExists",
+      to_regclass('"Role"') IS NOT NULL AS "roleExists",
+      to_regclass('"RoleAssignment"') IS NOT NULL AS "roleAssignmentExists",
+      to_regprocedure('set_current_platform_admin(boolean,text)') IS NOT NULL AS "platformAdminHelperExists"
+  `;
+  if (!schema?.tenantExists || !schema?.userExists) return;
+  if (schema.platformAdminHelperExists) await enablePlatformAdmin(tx);
+
+  const unauthorized = schema.roleExists && schema.roleAssignmentExists
+    ? await tx.$queryRaw`
+        SELECT u."id"
+        FROM "User" u
+        JOIN "Tenant" t ON t."id" = u."tenantId"
+        WHERE u."deletedAt" IS NULL
+          AND u."suspendedAt" IS NULL
+          AND t."deletedAt" IS NULL
+          AND t."status" = 'ACTIVE'::"TenantStatus"
+          AND (
+            u."role" = 'SUPER_ADMIN'::"UserRole"
+            OR EXISTS (
+              SELECT 1
+              FROM "RoleAssignment" ra
+              JOIN "Role" r ON r."id" = ra."roleId"
+              WHERE ra."tenantId" = u."tenantId"
+                AND ra."userId" = u."id"
+                AND r."tenantId" = u."tenantId"
+                AND r."slug" = 'super-admin'
+                AND r."deletedAt" IS NULL
+            )
+          )
+          AND NOT (
+            t."slug" = ${tenantSlug}
+            AND lower(COALESCE(u."email", '')) = ${adminEmail}
+          )
+        LIMIT 1
+      `
+    : await tx.$queryRaw`
+        SELECT u."id"
+        FROM "User" u
+        JOIN "Tenant" t ON t."id" = u."tenantId"
+        WHERE u."deletedAt" IS NULL
+          AND u."suspendedAt" IS NULL
+          AND t."deletedAt" IS NULL
+          AND t."status" = 'ACTIVE'::"TenantStatus"
+          AND u."role" = 'SUPER_ADMIN'::"UserRole"
+          AND NOT (
+            t."slug" = ${tenantSlug}
+            AND lower(COALESCE(u."email", '')) = ${adminEmail}
+          )
+        LIMIT 1
+      `;
+
+  if (unauthorized.length > 0) {
+    throw new Error(
+      'Refusing production admin preflight: an active non-designated account has legacy SUPER_ADMIN or a super-admin RBAC assignment.',
+    );
+  }
+}
+
 async function ensurePermissionCatalog(tx) {
   for (const [key, label, category] of PERMISSIONS) {
     await tx.permission.upsert({
@@ -219,9 +282,16 @@ async function bootstrap() {
   const tenantSlug = String(process.env.ADMIN_TENANT_SLUG ?? 'system').trim() || 'system';
   const tenantName = String(process.env.ADMIN_TENANT_NAME ?? 'System Administration').trim() || 'System Administration';
   const adminName = String(process.env.ADMIN_NAME ?? 'System Admin').trim() || 'System Admin';
+  const preflightOnly = process.argv.includes('--preflight-only');
+
+  if (preflightOnly) {
+    await prisma.$transaction((tx) => assertNoUnexpectedPlatformAdmins(tx, adminEmail, tenantSlug));
+    console.log(JSON.stringify({ ok: true, preflightOnly: true }));
+    return;
+  }
 
   const result = await prisma.$transaction(async (tx) => {
-    await enablePlatformAdmin(tx);
+    await assertNoUnexpectedPlatformAdmins(tx, adminEmail, tenantSlug);
     await ensurePermissionCatalog(tx);
 
     let tenant = await tx.tenant.findUnique({ where: { slug: tenantSlug } });
@@ -242,14 +312,18 @@ async function bootstrap() {
 
     await ensureSystemRoles(tx, tenant.id);
 
-    let user = await tx.user.findUnique({
+    const matchingUsers = await tx.user.findMany({
       where: {
-        tenantId_email: {
-          tenantId: tenant.id,
-          email: adminEmail,
-        },
+        tenantId: tenant.id,
+        email: { equals: adminEmail, mode: 'insensitive' },
       },
+      orderBy: { id: 'asc' },
+      take: 2,
     });
+    if (matchingUsers.length > 1) {
+      throw new Error('Refusing to bootstrap an ambiguous designated administrator identity.');
+    }
+    let user = matchingUsers[0];
     const adminCreated = !user;
     if (!user) {
       user = await tx.user.create({
@@ -261,21 +335,31 @@ async function bootstrap() {
           mfaEnabled: false,
         },
       });
-
-      const role = await tx.role.findFirstOrThrow({
-        where: {
-          tenantId: tenant.id,
-          slug: 'super-admin',
-          deletedAt: null,
-        },
-        select: { id: true },
-      });
-
-      await tx.roleAssignment.createMany({
-        data: [{ tenantId: tenant.id, userId: user.id, roleId: role.id }],
-        skipDuplicates: true,
-      });
+    } else {
+      if (user.deletedAt || user.suspendedAt) {
+        throw new Error('Refusing to repair an unavailable designated administrator account.');
+      }
+      if (user.role !== 'SUPER_ADMIN') {
+        user = await tx.user.update({
+          where: { id: user.id },
+          data: { role: 'SUPER_ADMIN' },
+        });
+      }
     }
+
+    const role = await tx.role.findFirstOrThrow({
+      where: {
+        tenantId: tenant.id,
+        slug: 'super-admin',
+        deletedAt: null,
+      },
+      select: { id: true },
+    });
+
+    await tx.roleAssignment.createMany({
+      data: [{ tenantId: tenant.id, userId: user.id, roleId: role.id }],
+      skipDuplicates: true,
+    });
 
     return {
       tenantId: tenant.id,

@@ -3,41 +3,70 @@
 ## Files
 
 - `README.md`: this unit test folder guide.
-- `account-lifecycle-panel.test.ts`: source-contract coverage for requester-visible export recovery, uncapped active polling, retry cleanup, and server-expiring downloads.
+- `account-deletion-receipt.test.ts`: finalized and pending DELETE receipt normalization, identifier/provider-error exclusion, versioned tab-storage round-trip, and malformed-storage coverage.
+- `account-lifecycle-panel.test.ts`: source-contract coverage for requester-visible export recovery, uncapped active polling, retry cleanup, server-expiring downloads, API-to-UI scheduled-cancellation/effective-date reload projection with duplicate-action prevention, and no authenticated status reload after deletion.
+- `admin-credit-grant-submission.test.ts`: stable payload-bound grant keys across ambiguous failure and deliberate retry, payload-change and success rotation, opaque reason handling, and concurrent-submit rejection.
+- `availability-pdf-import.test.ts`: required manager-visible employee identity, identity-change attempt-key rotation, PDF validation, strict scheduling costs, accepted-cost mismatch rejection, exact/partial/over-refund settlement handling, and singular/plural charge/refund copy.
 - `admin-mfa-recovery-contract.test.ts`: source contract for target-bound, reason-required, self-safe platform MFA recovery.
+- `admin-plan-credit-policy.test.ts`: prevents plan administration from restoring recurring, included, or unlimited credits; subscriptions provide eligibility while usage requires a separate wallet.
+- `admin-user-account-safety.test.ts`: source contract keeping tenant assignment read-only and out of user-update payloads while preserving bounded email and authoritative role edits.
+- `admin-user-suspension.test.ts`: verifies deleted-state precedence, reversible suspension, immutable deletion, and current lock resolution for platform user administration.
+- `admin-list-pagination.test.ts`: bounded admin-list page parsing, URL encoding, deduplicated manual append, and tenant/credit UI continuation wiring coverage.
 - `auto-schedule-recovery.test.ts`: tab-session attempt/job identity persistence, replacement, terminal cleanup, and expiry coverage.
-- `billing-settings-contract.test.ts`: safe billing portal, capacity-checked plan-change wiring, explicit paused-versus-delinquent recovery, hosted resumption-payment redirect, cancelled resubscription, and Stripe URL contract coverage.
-- `client-api.test.ts`: unit coverage for CSRF header attachment, session refresh, off-origin rejection, canonical attempt-key reuse, and idempotency preservation across refreshed request replay.
+- `billing-settings-contract.test.ts`: billing/credit-pack normalization, active-paid purchase gating, minor-unit currency formatting, sanitized checkout-return state, safe Stripe redirects, plan changes, and subscription recovery coverage.
+- `bounded-pagination.test.ts`: bounded continuation filter preservation, compatibility, cursor-loop rejection, request caps, and scheduling/list consumer wiring coverage.
+- `client-api.test.ts`: unit coverage for CSRF/session preservation, off-origin rejection, sanitized network/5xx/non-JSON failures, secret-free login redirects, and idempotency-gated unsafe request replay.
 - `dashboard-navigation.test.ts`: unit coverage for dashboard shell navigation filtering, lunch/location prerequisite alignment, current-page matching, and account initials.
 - `demand-window-contract.test.ts`: exact timezone serialization, overnight handling, fallback ambiguity rejection for shift and demand windows, and no-arbitrary-time validation.
-- `location-timezone.test.ts`: DST boundary and UTC-persistence coverage for scheduling timezone helpers.
-- `lunch-break-location-contract.test.ts`: explicit location scoping for planner reads and writes plus deterministic delayed-response rejection after rapid location changes.
+- `frontend-accessibility-contract.test.ts`: source contracts for onboarding form/error semantics, mobile sign-out sizing, notification dialog focus management, settings tab ARIA wiring, pack-specific purchase names, admin user status icons, and encoding-safe admin separators.
+- `frontend-transport-contract.test.ts`: source contracts keeping public API callers on the bounded same-origin transport, direct fetches deadline-wrapped, root recovery states present, and sensitive proxy diagnostics omission-based.
+- `http-safety.test.ts`: request deadline plus declared and streamed response-body limit coverage.
+- `location-form.test.ts`: browser-resolved IANA default validation, timezone option de-duplication, persisted edit-draft restoration, required-zone rejection, and explicit create/update request payload coverage.
+- `location-timezone.test.ts`: DST boundary, nonexistent/repeated wall-time rejection, and UTC-persistence coverage for scheduling timezone helpers.
+- `lunch-break-location-contract.test.ts`: explicit captured-location scoping, monotonic visit epochs, request-token busy ownership, A-to-B-to-A-safe mutation and refresh fencing, Strict Mode-safe read ownership, synchronous scope invalidation, fail-closed writes, active-location labels, and deterministic delayed-response rejection.
+- `lunch-break-generation-recovery.test.ts`: durable full-intent generation identity across A-to-B-to-A, lost responses, reload/storage loss, payload-free persistence, same-key/one-debit recovery after subscription, separate-credit, and rolled-back persistence failures, same-session ninth-attempt preservation plus oldest-key retry, and opaque session-partitioned capacity.
 - `logout-route.test.ts`: same-origin logout proxy coverage for refresh-cookie forwarding, authoritative cookie clearing, ambiguous failure preservation, and cross-origin rejection.
+- `next-config-security.test.ts`: isolated production config coverage for CSP origin allowlisting, development-only loopback access, transport headers, reset-route no-referrer/no-store policy, source-map and framework disclosure controls, local-only images, API rewrites, and the absence of custom redirects.
 - `lunch-break-time.test.ts`: location-scoped lunch/break day, wall-clock, DST, and overnight-shift conversion coverage.
 - `manual-shift-schedule.test.ts`: containing weekly-draft selection, too-short draft rejection, and DST-aware overnight fallback-window coverage.
 - `latest-request.test.ts`: deterministic request-generation coverage proving superseded and explicitly invalidated completions are rejected.
 - `mfa-page.test.ts`: MFA CSRF, accessible dynamic-error announcements, support-backed privileged-account recovery, plus mandatory-enrollment recovery-code normalization, in-memory handling, copy/print, acknowledgment, and redirect-gating coverage.
-- `mfa-enrollment-panel.test.ts`: unit coverage for MFA enrollment/status/setup/recovery-code client contract normalization.
-- `onboarding-challenge.test.ts`: unit coverage for the production closed-beta legal gate, non-production signup modes, Turnstile enablement, and OTP payload shaping.
+- `mfa-enrollment-panel.test.ts`: unit coverage for customer-facing MFA unavailability plus enrollment/status/setup/recovery-code client contract normalization.
+- `onboarding-challenge.test.ts`: unit coverage for the production closed-beta legal gate, non-production signup modes, Turnstile enablement, OTP payload shaping, structured API errors, and actionable network-failure messages.
 - `onboarding-first-location-recovery.test.ts`: stable first-location idempotency-key persistence and legacy recovery-record rejection coverage.
+- `onboarding-first-location-transport.test.ts`: first-location 401 refresh/replay, stable-key preservation, concurrent single-flight refresh, rejected-refresh safety, and blank-key rejection coverage.
+- `payroll/`: payroll API, authoritative export eligibility, exact ambiguous form replay, reconciliation correction, normalization, navigation, responsive accessibility, and session-scoped state coverage; see `payroll/README.md`.
 - `pin-reset-page.test.ts`: static contract coverage that temporary PIN rotation hands off through logout instead of refreshing a revoked session.
-- `playwright-config-contract.test.ts`: source contract keeping default mock Playwright on a serialized Next development server while preserving external and full-stack targeting.
+- `playwright-config-contract.test.ts`: source contract keeping default mock Playwright on a serialized Next development server, validating the closed-beta render override, and preserving external/full-stack targeting.
 - `staff-permission-contract.test.ts`: static server-to-client capability coverage keeping manager scheduling-profile/invitation access separate from admin-only PIN reset and staff removal controls.
 - `permissions.test.ts`: unit coverage for the shared read/write capability matrix, including the lunch/location read prerequisite.
-- `proxy.test.ts`: unit coverage for auth proxy login redirects, hard-navigation session recovery, complete CSRF-protected cookie rotation, definitive invalid-session cleanup, transient auth-service cookie preservation with bounded `503` responses, debug redaction, and shared permission redirects.
+- `proxy.test.ts`: unit coverage for explicit protected roots, unknown-route pass-through, reset-token cookie exchange, approved-origin redirects, secret-free return paths and diagnostics, strict auth payload parsing, exact/overflow role assignment bounds, legacy control-bearing display-name compatibility, delimiter-safe role-ID forwarding, CSRF-protected cookie rotation, bounded generic `503` failures, and shared permission redirects.
+- `public-web-p1.test.ts`: source-contract coverage for retryable JSON login verification, reset-token URL/cookie/referrer handling, branded login/MFA fallbacks, dashboard unavailable-vs-zero behavior, and authoritative-only navigation badges.
+- `safe-navigation.test.ts`: secret-bearing query removal, same-origin return-path rejection, and production application-origin validation coverage.
+- `public-metadata.test.ts`: verifies canonical social metadata, public-only crawler routes, and the generated social image contract.
 - `print-schedule-scope.test.ts`: printable schedule date/location scope matching coverage.
 - `role-deletion-confirmation.test.ts`: exact-name custom-role deletion and affected-assignment blocking coverage.
+- `scheduling-publish-attempt.test.ts`: schedule publish attempt-key stability across retries and rotation for different schedules.
 - `scheduling-publish-result.test.ts`: publish status coverage for partial, failed, delivered, and no-notification outcomes.
+- `scheduling-publish-settlement.test.ts`: authoritative aggregate preflight parsing, configured-cost reconfirmation, exact-once settlement validation/copy, and 402/409/ambiguous retry policy coverage.
 - `scheduling-route-access.test.tsx`: server scheduling-route coverage for the complete schedule, shift, and location read contract without admin-portal bypass.
 - `scheduling-location-scope.test.ts`: tenant-visible linked-location resolution, multi-location shift query, stale loaded-scope invalidation, response filtering, and break-generation context isolation coverage.
 - `scheduler-projection.test.ts`: compact multi-day positioning, late-week visibility, overnight clipping, and timeline offset conversion coverage.
+- `scheduler-responsive-accessibility.test.ts`: fixed-scale mobile timeline, desktop-fit preservation, horizontal keyboard inspection, date naming, staff-row semantics, and compact-label contrast coverage.
+- `server-auth.test.ts`: strict middleware identity-header role, tenant, permission-count, and role-name validation coverage.
+- `settings-tabs.test.ts`: focused ArrowLeft/ArrowRight wrapping, Home/End activation, unrelated-key handling, and stable tab/panel identifier coverage.
+- `setup-shifts-recovery.test.ts`: deterministic full-scope/request recovery across response loss/reload/storage loss, A-to-B-to-A retention, two-page exact-once race behavior, concurrent distinct-scope submission, per-session fail-closed cap handling with oldest-key retry and new-login admission, payload-storage exclusion, fingerprint duplicate-submit exclusion, 403/409 surfacing, and page wiring coverage.
+- `shift-update-recovery.test.ts`: payload-bound shift-update key reuse across reloads, changed-payload rotation, matching-response cleanup, and expiry coverage.
 - `staff-action-confirmation.test.ts`: destructive staff PIN-reset and removal confirmation copy coverage.
+- `staff-invitation-delivery.test.ts`: exact lowercase invitation status parsing, malformed-data rejection, terminal retry/reissue policy, PII-free view state, date labels, and stable recovery-key coverage.
 - `stale-request-wiring-contract.test.ts`: static wiring coverage for immediate time-card invalidation and current-scope-only schedule printing.
 - `status-health.test.ts`: unit coverage for public status health endpoint URL resolution.
-- `tenant-edit-contract.test.ts`: generic tenant edit payload allowlist and dedicated billing/lifecycle guidance coverage.
+- `tenant-edit-contract.test.ts`: credit-free tenant create/edit payload allowlists, static wallet display, and dedicated Admin Credits/billing/lifecycle guidance coverage.
 - `tenant-lifecycle-confirmation.test.ts`: unit coverage for typed tenant lifecycle destructive-action confirmations.
 - `tenant-provisioning-contract.test.ts`: FREE active and paid bounded-trial admin provisioning UI contract coverage.
-- `time-card-format.test.ts`: unit coverage for timecard duration formatting.
+- `time-card-correction-contract.test.ts`: source-contract coverage for manager-only corrections, optimistic versions, reasons, break intervals, and repeated-hour disambiguation.
+- `time-card-format.test.ts`: unit coverage for duration formatting, explicit location timezones, skipped DST times, and repeated-hour UTC candidates.
 - `time-card-permission-contract.test.ts`: static permission-parity coverage for optional time-card staff and location catalogs.
 - `time-card-request.test.ts`: selected-employee active-card ownership coverage.
+- `user-directory-pagination.test.ts`: fixed-size user pages, cursor validation, bounded Previous/Next staff navigation, and aggregate dashboard count contracts.
 - `workspace-slug.test.ts`: unit coverage for canonical generated-workspace slug persistence and login fallback reads.

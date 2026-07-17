@@ -123,8 +123,8 @@ export function createApp(config: RuntimeConfig, docker?: DockerStatusClient) {
         res.status(404).json({ error: 'not_found' });
     });
 
-    app.use((err: Error, _req: Request, res: Response, _next: NextFunction) => {
-        console.error('Control plane request failed', { error: err.name });
+    app.use((_err: Error, _req: Request, res: Response, _next: NextFunction) => {
+        console.error('Control plane request failed category=unknown');
         res.status(500).json({ error: 'internal_error' });
     });
 

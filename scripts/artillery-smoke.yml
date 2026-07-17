@@ -4,19 +4,28 @@ config:
     - duration: 30
       arrivalRate: 2
   plugins:
+    expect:
+      expectDefault200: true
+      reportFailuresAsErrors: true
+      outputFormat: prettyError
     ensure:
       thresholds:
         - http.response_time.p99: 1000
         - vusers.failed: 1
+      conditions:
+        - expression: http.responses == http.requests and http.codes.200 == http.requests and plugins.expect.ok == http.requests
+          strict: true
 
 scenarios:
   - name: proxy health and web shell
     flow:
       - get:
+          name: proxy health
           url: "/health"
           expect:
             - statusCode: 200
       - get:
+          name: web shell
           url: "/"
           expect:
             - statusCode: 200

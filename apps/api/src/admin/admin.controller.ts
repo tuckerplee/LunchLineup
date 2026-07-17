@@ -1,22 +1,41 @@
-import { BadRequestException, Body, ConflictException, Controller, Delete, ForbiddenException, Get, Headers, HttpCode, HttpStatus, NotFoundException, Optional, Param, Post, Put, Query, Req, Res, ServiceUnavailableException, UseGuards } from '@nestjs/common';
+import { BadRequestException, Body, ConflictException, Controller, Delete, ForbiddenException, Get, Header, Headers, HttpCode, HttpStatus, NotFoundException, type OnModuleDestroy, Optional, Param, Post, Put, Query, Req, Res, ServiceUnavailableException, UseGuards } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { PlanTier, Prisma, PrismaClient, TenantStatus, UserRole } from '@prisma/client';
 import Redis from 'ioredis';
 import { MetricsService } from '../common/metrics.service';
+import {
+    buildBoundedListPage,
+    decodeBoundedListCursor,
+    parseBoundedListLimit,
+} from '../common/bounded-pagination';
 import { MeteringService } from '../billing/metering.service';
-import { isTenantPlanCode, listPlanDefinitions, normalizePlanCode, planDefinitionToResponse, resolveFallbackPlanDefinition } from '../billing/plan-definitions';
-import { assertPlanUserLimitChangeAllowsExistingTenants, assertTenantCanAddActiveUser } from '../billing/user-capacity';
+import {
+    DEFAULT_PLAN_FEATURES,
+    FEATURE_KEYS,
+    isTenantPlanCode,
+    listPlanDefinitions,
+    normalizePlanCode,
+    planDefinitionToResponse,
+    resolveFallbackPlanDefinition,
+} from '../billing/plan-definitions';
+import { assertPlanUserLimitChangeAllowsExistingTenants } from '../billing/user-capacity';
 import { StripeService } from '../billing/stripe.service';
 import { TenantPrismaService } from '../database/tenant-prisma.service';
+import { isSerializableTransactionConflict } from '../database/transaction-error';
 import { RequirePermission } from '../auth/require-permission.decorator';
+import { applyOnboardingSignupAttemptRetention } from '../auth/onboarding-signup-retention';
 import { TenantAccountLifecycleService, type TenantLifecycleActor, type TenantRetentionStage } from './tenant-account-lifecycle.service';
 import { RbacService } from '../auth/rbac.service';
 import { TenantProvisioningService } from './tenant-provisioning.service';
 import { TenantExportService } from './tenant-export.service';
 import { AdminUserMfaRecoveryService } from './admin-user-mfa-recovery.service';
+import { AdminUserLifecycleService, type AdminUserLifecycleActor } from './admin-user-lifecycle.service';
+import { applyStaffInvitationOutboxRetention } from '../users/staff-invitation-outbox.service';
 import {
     TENANT_RETENTION_POLICY,
+    applyDormantSessionRetention,
+    applyPasswordResetTokenRetention,
     buildExpiredTenantApplicationDataWhere,
     buildExpiredTenantRetentionWhere,
     buildTenantRetentionSchedule,
@@ -24,10 +43,17 @@ import {
     serializeTenantRetentionCandidate,
 } from './tenant-account-lifecycle';
 
+type AdminUserDirectoryStatus = 'ALL' | 'ACTIVE' | 'LOCKED' | 'SUSPENDED' | 'DELETED';
+type SolverQueueTelemetry = {
+    ready: number;
+    retry: number;
+    deadLetter: number;
+};
+
 @Controller({ path: 'admin', version: '1' })
 @RequirePermission('admin_portal:access')
 @UseGuards(JwtAuthGuard)
-export class AdminController {
+export class AdminController implements OnModuleDestroy {
     private static readonly DEFAULT_TENANT_TRIAL_DAYS = 14;
     private static readonly MAX_TENANT_TRIAL_DAYS = 90;
     private static readonly MILLISECONDS_PER_DAY = 24 * 60 * 60 * 1000;
@@ -37,10 +63,14 @@ export class AdminController {
     private readonly tenantProvisioning: TenantProvisioningService;
     private readonly tenantExport: TenantExportService;
     private readonly userMfaRecovery: AdminUserMfaRecoveryService;
+    private readonly userLifecycle: AdminUserLifecycleService;
+    private readonly rbac: RbacService;
     private static readonly USERNAME_REGEX = /^[a-z0-9._-]{3,32}$/;
     private static readonly OWNER_EMAIL_REGEX = /^[a-z0-9.!#$%*+/=?^_`{|}~-]+@[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$/;
     private static readonly RETAINED_RECORD_PURGE_CONFIRM = 'purge-expired-retained-records';
     private static readonly APPLICATION_DATA_PURGE_CONFIRM = 'purge-expired-application-data';
+    private static readonly WORKER_METRICS_TIMEOUT_MS = 1_000;
+    private static readonly WORKER_METRICS_MAX_BYTES = 2_000_000;
 
     constructor(
         private readonly configService: ConfigService,
@@ -52,13 +82,19 @@ export class AdminController {
     ) {
         this.tenantDb = tenantDb ?? new TenantPrismaService(this.prisma);
         this.prisma = this.tenantDb.client;
-        this.userMfaRecovery = new AdminUserMfaRecoveryService(this.tenantDb);
+        this.rbac = rbacService ?? new RbacService(this.tenantDb);
+        this.userMfaRecovery = new AdminUserMfaRecoveryService(this.tenantDb, this.rbac);
+        this.userLifecycle = new AdminUserLifecycleService(this.tenantDb, this.rbac);
         this.tenantAccountLifecycle = new TenantAccountLifecycleService(this.tenantDb, this.stripeBilling);
         this.tenantProvisioning = new TenantProvisioningService(
             this.tenantDb,
-            rbacService ?? new RbacService(this.tenantDb),
+            this.rbac,
         );
         this.tenantExport = new TenantExportService(this.tenantDb, this.metricsService);
+    }
+
+    onModuleDestroy(): void {
+        this.tenantExport.onModuleDestroy();
     }
 
     private assertSuperAdmin(req: any) {
@@ -76,6 +112,40 @@ export class AdminController {
             throw new BadRequestException('Idempotency-Key must be 255 printable characters or fewer.');
         }
         return key;
+    }
+
+    private creditGrantAuditId(transactionId: string): string {
+        return `${transactionId}-audit`;
+    }
+
+    private creditGrantAuditMatches(
+        audit: {
+            tenantId: string;
+            action: string;
+            resource: string;
+            resourceId: string | null;
+            newValue: Prisma.JsonValue | null;
+        } | null,
+        expected: {
+            tenantId: string;
+            transactionId: string;
+            amount: number;
+            reason: string;
+            newBalance: number;
+        },
+    ): boolean {
+        const value = audit?.newValue;
+        return audit?.tenantId === expected.tenantId
+            && audit.action === 'TENANT_CREDITS_GRANTED'
+            && audit.resource === 'CreditTransaction'
+            && audit.resourceId === expected.transactionId
+            && value !== null
+            && typeof value === 'object'
+            && !Array.isArray(value)
+            && value.creditTransactionId === expected.transactionId
+            && value.amount === expected.amount
+            && value.reason === expected.reason
+            && value.newBalance === expected.newBalance;
     }
 
     private tenantLifecycleActor(req: any, permission = 'settings:write'): TenantLifecycleActor {
@@ -99,6 +169,24 @@ export class AdminController {
         options?: { maxWait?: number; timeout?: number; isolationLevel?: Prisma.TransactionIsolationLevel },
     ): Promise<T> {
         return this.tenantDb.withPlatformAdmin(operation, options);
+    }
+
+    private async withPlatformAdminUserMutation<T>(
+        operation: (tx: Prisma.TransactionClient) => Promise<T>,
+    ): Promise<T> {
+        for (let attempt = 0; attempt < 2; attempt += 1) {
+            try {
+                return await this.withPlatformAdmin(operation, {
+                    isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
+                });
+            } catch (error) {
+                if (!isSerializableTransactionConflict(error)) throw error;
+                if (attempt === 1) {
+                    throw new ConflictException('Authorization or access state changed concurrently; retry the request');
+                }
+            }
+        }
+        throw new ConflictException('Authorization or access state changed concurrently; retry the request');
     }
 
     private auditUserIdForTenant(req: any, tenantId: string): string | null {
@@ -133,6 +221,24 @@ export class AdminController {
         return {
             userId: this.auditUserIdForTenant(req, targetTenantId),
             ...this.platformAuditAttribution(req),
+        };
+    }
+
+    private adminUserLifecycleActor(req: any): AdminUserLifecycleActor {
+        const attribution = this.platformAuditAttribution(req);
+        if (!attribution.actorUserId || !attribution.actorTenantId) {
+            throw new BadRequestException('Authenticated platform administrator identity is required.');
+        }
+        const sessionId = typeof req?.user?.sessionId === 'string' ? req.user.sessionId.trim() : '';
+        if (!sessionId) {
+            throw new BadRequestException('Authenticated platform administrator session is required.');
+        }
+        return {
+            userId: attribution.actorUserId,
+            tenantId: attribution.actorTenantId,
+            sessionId,
+            ipAddress: attribution.ipAddress,
+            userAgent: attribution.userAgent,
         };
     }
 
@@ -277,13 +383,74 @@ export class AdminController {
         return { deletedAt, id: idRaw.trim() };
     }
 
-    private mapUserStatus(user: { deletedAt: Date | null; lockedUntil: Date | null; pinLockedUntil: Date | null }): 'ACTIVE' | 'LOCKED' | 'SUSPENDED' {
-        if (user.deletedAt) return 'SUSPENDED';
-        const now = new Date();
+    private mapUserStatus(
+        user: { deletedAt: Date | null; suspendedAt: Date | null; lockedUntil: Date | null; pinLockedUntil: Date | null },
+        now = new Date(),
+    ): Exclude<AdminUserDirectoryStatus, 'ALL'> {
+        if (user.deletedAt) return 'DELETED';
+        if (user.suspendedAt) return 'SUSPENDED';
         if ((user.lockedUntil && user.lockedUntil > now) || (user.pinLockedUntil && user.pinLockedUntil > now)) {
             return 'LOCKED';
         }
         return 'ACTIVE';
+    }
+
+    private parseAdminUserDirectoryStatus(value: unknown): AdminUserDirectoryStatus {
+        if (value === undefined || value === null || value === '') return 'ALL';
+        if (typeof value !== 'string') {
+            throw new BadRequestException('Invalid status filter.');
+        }
+        const status = value.trim().toUpperCase();
+        if (!['ALL', 'ACTIVE', 'LOCKED', 'SUSPENDED', 'DELETED'].includes(status)) {
+            throw new BadRequestException('Invalid status filter. Use ALL, ACTIVE, LOCKED, SUSPENDED, or DELETED.');
+        }
+        return status as AdminUserDirectoryStatus;
+    }
+
+    private buildAdminUserSearchWhere(search: string): Prisma.UserWhereInput {
+        const normalizedRoleSearch = search.trim().toUpperCase().replace(/[\s-]+/g, '_');
+        const matchingRoles = Object.values(UserRole).filter((role) => role.includes(normalizedRoleSearch));
+        const fields: Prisma.UserWhereInput[] = [
+            { name: { contains: search, mode: 'insensitive' } },
+            { email: { contains: search, mode: 'insensitive' } },
+            { username: { contains: search, mode: 'insensitive' } },
+            { tenant: { is: { name: { contains: search, mode: 'insensitive' } } } },
+            { tenant: { is: { slug: { contains: search, mode: 'insensitive' } } } },
+        ];
+        if (matchingRoles.length > 0) {
+            fields.push({ role: { in: matchingRoles } });
+        }
+        return { OR: fields };
+    }
+
+    private buildAdminUserStatusWhere(
+        status: Exclude<AdminUserDirectoryStatus, 'ALL'>,
+        now: Date,
+    ): Prisma.UserWhereInput {
+        switch (status) {
+            case 'DELETED':
+                return { deletedAt: { not: null } };
+            case 'SUSPENDED':
+                return { deletedAt: null, suspendedAt: { not: null } };
+            case 'LOCKED':
+                return {
+                    deletedAt: null,
+                    suspendedAt: null,
+                    OR: [
+                        { lockedUntil: { gt: now } },
+                        { pinLockedUntil: { gt: now } },
+                    ],
+                };
+            case 'ACTIVE':
+                return {
+                    deletedAt: null,
+                    suspendedAt: null,
+                    AND: [
+                        { OR: [{ lockedUntil: null }, { lockedUntil: { lte: now } }] },
+                        { OR: [{ pinLockedUntil: null }, { pinLockedUntil: { lte: now } }] },
+                    ],
+                };
+        }
     }
 
     @Get('stats')
@@ -291,31 +458,63 @@ export class AdminController {
         this.assertSuperAdmin(req);
 
         const now = new Date();
-        const [totalTenants, totalUsers, activeSessions] = await this.withPlatformAdmin((tx) => Promise.all([
-            tx.tenant.count({ where: { deletedAt: null } }),
-            tx.user.count({ where: { deletedAt: null } }),
-            tx.session.count({
-                where: {
-                    revokedAt: null,
-                    expiresAt: { gt: now },
-                },
-            }),
-        ]));
+        const [[totalTenants, totalUsers, activeSessions], solverQueue] = await Promise.all([
+            this.withPlatformAdmin((tx) => Promise.all([
+                tx.tenant.count({ where: { deletedAt: null } }),
+                tx.user.count({ where: { deletedAt: null } }),
+                tx.session.count({
+                    where: {
+                        revokedAt: null,
+                        expiresAt: { gt: now },
+                    },
+                }),
+            ])),
+            this.readSolverQueueTelemetry(),
+        ]);
 
         return {
             totalTenants,
             totalUsers,
             activeSessions,
-            solverQueue: 0,
+            solverQueue: solverQueue === null ? null : solverQueue.ready + solverQueue.retry,
+            solverQueueReady: solverQueue?.ready ?? null,
+            solverQueueRetry: solverQueue?.retry ?? null,
+            solverQueueDeadLetter: solverQueue?.deadLetter ?? null,
         };
     }
 
     @Get('tenants')
-    async tenants(@Req() req: any) {
+    async tenants(
+        @Req() req: any,
+        @Query('limit') limitRaw?: string,
+        @Query('cursor') cursorRaw?: string,
+        @Query('q') qRaw?: string,
+    ) {
         this.assertSuperAdmin(req);
+        const limit = parseBoundedListLimit(limitRaw);
+        const cursor = decodeBoundedListCursor(cursorRaw);
+        const search = this.parseAdminListSearch(qRaw);
+        const where: Prisma.TenantWhereInput = {
+            ...(search ? {
+                OR: [
+                    { name: { contains: search, mode: 'insensitive' } },
+                    { slug: { contains: search, mode: 'insensitive' } },
+                ],
+            } : {}),
+            ...(cursor ? {
+                AND: [{
+                    OR: [
+                        { createdAt: { lt: cursor.timestamp } },
+                        { createdAt: cursor.timestamp, id: { lt: cursor.id } },
+                    ],
+                }],
+            } : {}),
+        };
 
-        const data = await this.withPlatformAdmin((tx) => tx.tenant.findMany({
-            orderBy: { createdAt: 'desc' },
+        const rows = await this.withPlatformAdmin((tx) => tx.tenant.findMany({
+            where,
+            orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+            take: limit + 1,
             include: {
                 _count: {
                     select: {
@@ -329,9 +528,10 @@ export class AdminController {
                 },
             },
         }));
+        const page = buildBoundedListPage(rows, limit, (tenant) => tenant.createdAt, {});
 
         return {
-            data: data.map((tenant: any) => ({
+            data: page.data.map((tenant: any) => ({
                 id: tenant.id,
                 name: tenant.name,
                 slug: tenant.slug,
@@ -345,6 +545,7 @@ export class AdminController {
                 usersCount: tenant._count?.users ?? 0,
                 locationsCount: tenant._count?.locations ?? 0,
             })),
+            pagination: page.pagination,
         };
     }
 
@@ -378,8 +579,12 @@ export class AdminController {
             );
         }
         const trialEndsAt = this.resolveProvisioningTrialEnd(status, body.trialEndsAt);
-        const usageCredits = Number.isFinite(body.usageCredits as number) ? Number(body.usageCredits) : 0;
-        if (!Number.isInteger(usageCredits)) throw new BadRequestException('usageCredits must be an integer');
+        if (body.usageCredits !== undefined && body.usageCredits !== 0) {
+            throw new BadRequestException(
+                'New tenants start with zero credits. Use the dedicated idempotent credit grant endpoint after provisioning.',
+            );
+        }
+        const usageCredits = 0;
         const ownerName = (body.ownerName ?? '').trim();
         if (!ownerName) throw new BadRequestException('Owner name is required');
         if (ownerName.length > 120) throw new BadRequestException('Owner name must be 120 characters or less');
@@ -414,7 +619,13 @@ export class AdminController {
         },
     ) {
         this.assertSuperAdmin(req);
-        const protectedFields = ['planTier', 'status'].filter((field) =>
+        const protectedFields = [
+            'planTier',
+            'status',
+            'usageCredits',
+            'stripeSubscriptionId',
+            'stripeSubscriptionCurrentPeriodEnd',
+        ].filter((field) =>
             Object.prototype.hasOwnProperty.call(body, field),
         );
         if (protectedFields.length > 0) {
@@ -444,15 +655,16 @@ export class AdminController {
             if (!slug) throw new BadRequestException('slug cannot be empty');
             patch.slug = slug;
         }
-        if (body.usageCredits !== undefined) {
-            if (!Number.isInteger(body.usageCredits)) throw new BadRequestException('usageCredits must be an integer');
-            patch.usageCredits = body.usageCredits;
-        }
+
         if (body.trialEndsAt !== undefined) patch.trialEndsAt = this.parseOptionalIsoDate(body.trialEndsAt);
         if (body.gracePeriodEndsAt !== undefined) patch.gracePeriodEndsAt = this.parseOptionalIsoDate(body.gracePeriodEndsAt);
         if (Object.keys(patch).length === 0) throw new BadRequestException('No valid fields to update');
+        const mutationActor = this.adminUserLifecycleActor(req);
 
-        await this.withPlatformAdmin(async (tx) => {
+        await this.withPlatformAdminUserMutation(async (tx) => {
+            await this.rbac.authorizePlatformAdminTenantMutationInTransaction(tx, id, mutationActor);
+            const lockedTenant = await tx.tenant.findUnique({ where: { id }, select: { id: true } });
+            if (!lockedTenant) throw new BadRequestException('Tenant not found');
             await tx.tenant.update({
                 where: { id },
                 data: patch,
@@ -475,7 +687,11 @@ export class AdminController {
     @Post('tenants/:id/suspend')
     async suspendTenant(@Req() req: any, @Param('id') id: string) {
         this.assertSuperAdmin(req);
-        await this.withPlatformAdmin(async (tx) => {
+        const mutationActor = this.adminUserLifecycleActor(req);
+        await this.withPlatformAdminUserMutation(async (tx) => {
+            await this.rbac.authorizePlatformAdminTenantMutationInTransaction(tx, id, mutationActor);
+            const tenant = await tx.tenant.findUnique({ where: { id }, select: { id: true } });
+            if (!tenant) throw new BadRequestException('Tenant not found');
             await tx.tenant.update({
                 where: { id },
                 data: { status: TenantStatus.SUSPENDED },
@@ -494,8 +710,11 @@ export class AdminController {
     @Post('tenants/:id/activate')
     async activateTenant(@Req() req: any, @Param('id') id: string) {
         this.assertSuperAdmin(req);
-        await this.assertTenantCanBeActivated(id, 'activated');
+        const eligibility = await this.assertTenantCanBeActivated(id, 'activated');
         await this.withPlatformAdmin(async (tx) => {
+            await this.lockTenantLifecycleForActivation(tx, id);
+            const tenant = await this.assertTenantHasNoDeletionBarrier(tx, id, 'activated');
+            this.assertTenantActivationEligibilityUnchanged(tenant, eligibility, 'activated');
             await tx.tenant.update({
                 where: { id },
                 data: { status: TenantStatus.ACTIVE, deletedAt: null },
@@ -510,38 +729,20 @@ export class AdminController {
     @Post('tenants/:id/archive')
     async archiveTenant(@Req() req: any, @Param('id') id: string) {
         this.assertSuperAdmin(req);
-        const tenant = await this.withPlatformAdmin((tx) => tx.tenant.findUnique({
-            where: { id },
-            select: { id: true, stripeSubscriptionId: true },
-        }));
-        if (!tenant) throw new NotFoundException('Tenant not found');
-        if (tenant.stripeSubscriptionId) {
-            if (!this.stripeBilling) {
-                throw new ServiceUnavailableException('Stripe billing is unavailable; tenant was not archived.');
-            }
-            await this.stripeBilling.cancelTenantSubscriptionAtPeriodEnd(id, tenant.stripeSubscriptionId);
-        }
-        await this.withPlatformAdmin(async (tx) => {
-            await tx.tenant.update({
-                where: { id },
-                data: { deletedAt: new Date(), status: TenantStatus.CANCELLED },
-            });
-            await tx.session.updateMany({
-                where: { user: { tenantId: id }, revokedAt: null },
-                data: { revokedAt: new Date() },
-            });
-            await tx.auditLog.create({
-                data: { tenantId: id, ...this.platformAuditData(req, id), action: 'TENANT_ARCHIVED', resource: 'Tenant', resourceId: id },
-            });
-        });
-        return { id, archived: true };
+        return this.tenantAccountLifecycle.archiveTenant(
+            id,
+            this.adminUserLifecycleActor(req),
+        );
     }
 
     @Post('tenants/:id/restore')
     async restoreTenant(@Req() req: any, @Param('id') id: string) {
         this.assertSuperAdmin(req);
-        await this.assertTenantCanBeActivated(id, 'restored');
+        const eligibility = await this.assertTenantCanBeActivated(id, 'restored');
         await this.withPlatformAdmin(async (tx) => {
+            await this.lockTenantLifecycleForActivation(tx, id);
+            const tenant = await this.assertTenantHasNoDeletionBarrier(tx, id, 'restored');
+            this.assertTenantActivationEligibilityUnchanged(tenant, eligibility, 'restored');
             await tx.tenant.update({
                 where: { id },
                 data: { deletedAt: null, status: TenantStatus.ACTIVE },
@@ -553,12 +754,37 @@ export class AdminController {
         return { id, restored: true };
     }
 
-    private async assertTenantCanBeActivated(id: string, action: 'activated' | 'restored'): Promise<void> {
-        const tenant = await this.withPlatformAdmin((tx) => tx.tenant.findUnique({
-            where: { id },
-            select: { id: true, planTier: true, stripeSubscriptionId: true },
-        }));
-        if (!tenant) throw new NotFoundException('Tenant not found');
+    @Put('tenants/:id/retention-legal-hold')
+    async placeTenantRetentionLegalHold(
+        @Req() req: any,
+        @Param('id') id: string,
+        @Body() body: { reason?: unknown } = {},
+    ) {
+        this.assertSuperAdmin(req);
+        return this.tenantAccountLifecycle.placeRetentionLegalHold(
+            id,
+            this.adminUserLifecycleActor(req),
+            body,
+        );
+    }
+
+    @Delete('tenants/:id/retention-legal-hold')
+    async releaseTenantRetentionLegalHold(
+        @Req() req: any,
+        @Param('id') id: string,
+        @Body() body: { reason?: unknown } = {},
+    ) {
+        this.assertSuperAdmin(req);
+        return this.tenantAccountLifecycle.releaseRetentionLegalHold(
+            id,
+            this.adminUserLifecycleActor(req),
+            body,
+        );
+    }
+
+    private async assertTenantCanBeActivated(id: string, action: 'activated' | 'restored') {
+        const tenant = await this.withPlatformAdmin((tx) =>
+            this.assertTenantHasNoDeletionBarrier(tx, id, action));
         if (tenant.stripeSubscriptionId) {
             if (!this.stripeBilling) {
                 throw new ServiceUnavailableException(`Stripe billing is unavailable; tenant was not ${action}.`);
@@ -567,6 +793,75 @@ export class AdminController {
         } else if (tenant.planTier !== PlanTier.FREE) {
             throw new BadRequestException(`Paid tenants require an active Stripe subscription before being ${action}.`);
         }
+        return {
+            planTier: tenant.planTier,
+            stripeSubscriptionId: tenant.stripeSubscriptionId,
+        };
+    }
+
+    private async lockTenantLifecycleForActivation(
+        tx: Prisma.TransactionClient,
+        id: string,
+    ): Promise<void> {
+        await tx.$executeRaw`SELECT public.lock_tenant_lifecycle(${id})`;
+        await tx.$queryRaw`
+            SELECT "id"
+            FROM "Tenant"
+            WHERE "id" = ${id}
+            FOR UPDATE
+        `;
+    }
+
+    private assertTenantActivationEligibilityUnchanged(
+        tenant: { planTier: PlanTier; stripeSubscriptionId: string | null },
+        eligibility: { planTier: PlanTier; stripeSubscriptionId: string | null },
+        action: 'activated' | 'restored',
+    ): void {
+        if (tenant.planTier !== eligibility.planTier
+            || tenant.stripeSubscriptionId !== eligibility.stripeSubscriptionId) {
+            throw new ConflictException(
+                `Tenant billing eligibility changed before it could be ${action}.`,
+            );
+        }
+    }
+
+    private async assertTenantHasNoDeletionBarrier(
+        tx: Prisma.TransactionClient,
+        id: string,
+        action: 'activated' | 'restored',
+    ) {
+        const tenant = await tx.tenant.findUnique({
+            where: { id },
+            select: {
+                id: true,
+                planTier: true,
+                stripeSubscriptionId: true,
+                status: true,
+                deletedAt: true,
+                auditLogs: {
+                    where: {
+                        tenantId: id,
+                        resource: 'Tenant',
+                        resourceId: id,
+                        action: {
+                            in: [
+                                'TENANT_DELETION_BARRIER_COMMITTED',
+                                'TENANT_DELETION_REQUESTED_BY_CUSTOMER',
+                            ],
+                        },
+                    },
+                    select: { id: true, action: true },
+                    take: 1,
+                },
+            },
+        });
+        if (!tenant) throw new NotFoundException('Tenant not found');
+        if (tenant.status === TenantStatus.PURGED || (tenant.auditLogs?.length ?? 0) > 0) {
+            throw new ConflictException(
+                `Finalized or pending tenant deletion is irreversible; tenant cannot be ${action}.`,
+            );
+        }
+        return tenant;
     }
 
     @Delete('tenants/:id')
@@ -579,7 +874,15 @@ export class AdminController {
 
         const tenant = await this.withPlatformAdmin((tx) => tx.tenant.findUnique({
             where: { id },
-            select: { id: true, slug: true, status: true, deletedAt: true },
+            select: {
+                id: true,
+                slug: true,
+                status: true,
+                deletedAt: true,
+                retentionLegalHoldAt: true,
+                retentionLegalHoldReason: true,
+                retentionLegalHoldByUserId: true,
+            },
         }));
 
         if (!tenant) {
@@ -588,6 +891,9 @@ export class AdminController {
 
         if (!tenant.deletedAt) {
             throw new BadRequestException('Archive tenant before permanent deletion.');
+        }
+        if (tenant.retentionLegalHoldAt) {
+            throw new ConflictException('Tenant retained records are under retention legal hold.');
         }
 
         const asOf = new Date();
@@ -622,8 +928,8 @@ export class AdminController {
         const asOf = isRetentionService ? new Date() : this.parseRetentionAsOf(body?.asOf);
         const dryRun = this.parseRetentionDryRun(body?.dryRun);
         const stage = this.parseRetentionStage(body?.stage);
-        if (isRetentionService && stage !== 'application_data') {
-            throw new ForbiddenException('Retention service automation is restricted to the application_data stage.');
+        if (isRetentionService && stage === 'retained_records' && !dryRun) {
+            throw new ForbiddenException('Retention service automation may only dry-run the retained_records stage.');
         }
         this.assertRetentionExecuteConfirmed(dryRun, stage, body?.executeConfirmation);
         const limit = this.parseRetentionLimit(body?.limit);
@@ -645,12 +951,34 @@ export class AdminController {
             }
             : eligibilityWhere;
 
-        const candidates = await this.withPlatformAdmin((tx) => tx.tenant.findMany({
+        const { candidates, passwordResetTokenRetention, sessionRetention, signupAttemptRetention, staffInvitationRetention } = await this.withPlatformAdmin(async (tx) => {
+            const signupAttemptRetention = await applyOnboardingSignupAttemptRetention(tx, asOf, dryRun);
+            const passwordResetTokenRetention = stage === 'application_data' && !continuation
+                ? await applyPasswordResetTokenRetention(tx, asOf, dryRun)
+                : null;
+            const sessionRetention = stage === 'application_data' && !continuation
+                ? await applyDormantSessionRetention(tx, asOf, dryRun)
+                : null;
+            const staffInvitationRetention = stage === 'application_data' && !continuation
+                ? await applyStaffInvitationOutboxRetention(tx, asOf, dryRun)
+                : null;
+            const candidates = await tx.tenant.findMany({
                 where,
                 orderBy: [{ deletedAt: 'asc' }, { id: 'asc' }],
                 take: limit,
-                select: { id: true, slug: true, status: true, deletedAt: true, applicationDataPurgedAt: true },
-            }), { maxWait: 2_000, timeout: 5_000 });
+                select: {
+                    id: true,
+                    slug: true,
+                    status: true,
+                    deletedAt: true,
+                    applicationDataPurgedAt: true,
+                    retentionLegalHoldAt: true,
+                    retentionLegalHoldReason: true,
+                    retentionLegalHoldByUserId: true,
+                },
+            });
+            return { candidates, passwordResetTokenRetention, sessionRetention, signupAttemptRetention, staffInvitationRetention };
+        }, { maxWait: 2_000, timeout: 5_000 });
         const pendingDeletionBillingCandidates = stage === 'application_data' && !continuation
             ? await this.tenantAccountLifecycle.listPendingDeletionBillingCandidates(limit)
             : [];
@@ -710,6 +1038,10 @@ export class AdminController {
                 ...TENANT_RETENTION_POLICY,
                 retainedRecords: Array.from(TENANT_RETENTION_POLICY.retainedRecords),
             },
+            signupAttemptRetention,
+            passwordResetTokenRetention,
+            sessionRetention,
+            staffInvitationRetention,
             candidates: candidates.map((tenant) => serializeTenantRetentionCandidate(tenant, asOf)),
             blockedTenants,
             skippedTenants,
@@ -733,6 +1065,7 @@ export class AdminController {
     }
 
     @Post('account/export')
+    @Header('Cache-Control', 'private, no-store')
     @RequirePermission('account:data_export')
     @HttpCode(HttpStatus.OK)
     async exportOwnTenant(@Req() req: any) {
@@ -740,12 +1073,14 @@ export class AdminController {
     }
 
     @Get('account/exports')
+    @Header('Cache-Control', 'private, no-store')
     @RequirePermission('account:data_export')
     async listOwnTenantExports(@Req() req: any) {
         return this.tenantExport.listRecent(this.tenantLifecycleActor(req, 'account:data_export'));
     }
 
     @Get('account/exports/:jobId')
+    @Header('Cache-Control', 'private, no-store')
     @RequirePermission('account:data_export')
     async getOwnTenantExport(@Req() req: any, @Param('jobId') jobId: string) {
         const actor = this.tenantLifecycleActor(req, 'account:data_export');
@@ -760,16 +1095,21 @@ export class AdminController {
         res.setHeader('Content-Type', 'application/x-ndjson');
         res.setHeader('Content-Length', String(artifact.bytes));
         res.setHeader('Content-Disposition', `attachment; filename="${artifact.filename.replace(/[^a-zA-Z0-9._-]/g, '_')}"`);
+        res.setHeader('Cache-Control', 'private, no-store');
+        res.setHeader('Pragma', 'no-cache');
+        res.setHeader('X-Content-Type-Options', 'nosniff');
         artifact.stream.pipe(res);
     }
 
     @Get('account/status')
+    @Header('Cache-Control', 'private, no-store')
     @RequirePermission('settings:write')
     async getOwnTenantAccountStatus(@Req() req: any) {
         return this.tenantAccountLifecycle.getStatus(this.tenantLifecycleActor(req));
     }
 
     @Post('account/cancel')
+    @Header('Cache-Control', 'private, no-store')
     @RequirePermission('tenant_account:lifecycle')
     async cancelOwnTenant(
         @Req() req: any,
@@ -782,6 +1122,7 @@ export class AdminController {
     }
 
     @Delete('account')
+    @Header('Cache-Control', 'private, no-store')
     @RequirePermission('tenant_account:lifecycle')
     async requestOwnTenantDeletion(
         @Req() req: any,
@@ -794,24 +1135,41 @@ export class AdminController {
     }
 
     @Get('users')
-    async users(@Req() req: any, @Query('q') q?: string) {
+    async users(
+        @Req() req: any,
+        @Query('limit') limitRaw?: string,
+        @Query('cursor') cursorRaw?: string,
+        @Query('q') qRaw?: string,
+        @Query('status') statusRaw?: string,
+    ) {
         this.assertSuperAdmin(req);
-
-        const search = q?.trim();
-        const where: any = {};
+        const limit = parseBoundedListLimit(limitRaw);
+        const cursor = decodeBoundedListCursor(cursorRaw);
+        const search = this.parseAdminListSearch(qRaw);
+        const status = this.parseAdminUserDirectoryStatus(statusRaw);
+        const now = new Date();
+        const conditions: Prisma.UserWhereInput[] = [];
         if (search) {
-            where.OR = [
-                { name: { contains: search, mode: 'insensitive' } },
-                { email: { contains: search, mode: 'insensitive' } },
-                { username: { contains: search, mode: 'insensitive' } },
-                { tenant: { is: { name: { contains: search, mode: 'insensitive' } } } },
-                { tenant: { is: { slug: { contains: search, mode: 'insensitive' } } } },
-            ];
+            conditions.push(this.buildAdminUserSearchWhere(search));
         }
+        if (status !== 'ALL') {
+            conditions.push(this.buildAdminUserStatusWhere(status, now));
+        }
+        if (cursor) {
+            conditions.push({
+                OR: [
+                    { createdAt: { lt: cursor.timestamp } },
+                    { createdAt: cursor.timestamp, id: { lt: cursor.id } },
+                ],
+            });
+        }
+        const where: Prisma.UserWhereInput = conditions.length > 1
+            ? { AND: conditions }
+            : conditions[0] ?? {};
 
-        const data = await this.withPlatformAdmin((tx) => tx.user.findMany({
+        const rows = await this.withPlatformAdmin((tx) => tx.user.findMany({
             where,
-            orderBy: { createdAt: 'desc' },
+            orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
             include: {
                 tenant: {
                     select: {
@@ -821,11 +1179,12 @@ export class AdminController {
                     },
                 },
             },
-            take: 200,
+            take: limit + 1,
         }));
+        const page = buildBoundedListPage(rows, limit, (user) => user.createdAt, {});
 
         return {
-            data: data.map((user: any) => ({
+            data: page.data.map((user: any) => ({
                 id: user.id,
                 name: user.name,
                 email: user.email,
@@ -835,11 +1194,13 @@ export class AdminController {
                 lastLoginAt: user.lastLoginAt,
                 lockedUntil: user.lockedUntil,
                 pinLockedUntil: user.pinLockedUntil,
+                suspendedAt: user.suspendedAt,
                 deletedAt: user.deletedAt,
                 mfaEnabled: user.mfaEnabled,
-                status: this.mapUserStatus(user),
+                status: this.mapUserStatus(user, now),
                 tenant: user.tenant,
             })),
+            pagination: page.pagination,
         };
     }
 
@@ -857,17 +1218,6 @@ export class AdminController {
         },
     ) {
         this.assertSuperAdmin(req);
-        const existingUser = await this.withPlatformAdmin((tx) => tx.user.findUnique({
-            where: { id },
-            select: {
-                tenantId: true,
-                deletedAt: true,
-            },
-        }));
-        if (!existingUser) {
-            throw new BadRequestException('User not found');
-        }
-
         const patch: any = {};
         if (body.name !== undefined) {
             const name = body.name.trim();
@@ -893,39 +1243,136 @@ export class AdminController {
                 patch.username = username;
             }
         }
+        let requestedRole: UserRole | undefined;
         if (body.role !== undefined) {
             if (!this.isUserRole(body.role)) throw new BadRequestException(`Invalid role: ${body.role}`);
-            patch.role = body.role;
+            requestedRole = body.role;
         }
+        let requestedTenantId: string | undefined;
         if (body.tenantId !== undefined) {
-            patch.tenantId = body.tenantId;
+            if (typeof body.tenantId !== 'string' || !body.tenantId.trim()) {
+                throw new BadRequestException('tenantId must be a non-empty string');
+            }
+            requestedTenantId = body.tenantId.trim();
         }
         if (body.pinResetRequired !== undefined) {
             patch.pinResetRequired = Boolean(body.pinResetRequired);
         }
-        if (Object.keys(patch).length === 0) throw new BadRequestException('No valid fields to update');
+        if (Object.keys(patch).length === 0 && requestedRole === undefined && requestedTenantId === undefined) {
+            throw new BadRequestException('No valid fields to update');
+        }
+        const mutationActor = this.adminUserLifecycleActor(req);
 
-        const updated = await this.withPlatformAdmin(async (tx) => {
-            if (body.tenantId !== undefined && !existingUser.deletedAt && body.tenantId !== existingUser.tenantId) {
-                await assertTenantCanAddActiveUser(tx as any, body.tenantId as string);
-            }
-            const updated = await tx.user.update({
+        const updated = await this.withPlatformAdminUserMutation(async (tx) => {
+            const authorizedTarget = requestedRole === undefined
+                ? await this.rbac.authorizePlatformAdminUserMutationInTransaction(
+                    tx,
+                    id,
+                    mutationActor,
+                )
+                : null;
+            const existingUser = await tx.user.findUnique({
                 where: { id },
-                data: patch,
-                include: { tenant: { select: { id: true, name: true, slug: true } } },
+                select: {
+                    id: true,
+                    tenantId: true,
+                    email: true,
+                    role: true,
+                    deletedAt: true,
+                },
             });
+            if (!existingUser) {
+                throw new BadRequestException('User not found');
+            }
+            if (authorizedTarget && authorizedTarget.tenantId !== existingUser.tenantId) {
+                throw new ConflictException('User tenant changed before authorization completed');
+            }
+            if (requestedTenantId !== undefined && requestedTenantId !== existingUser.tenantId) {
+                throw new BadRequestException(
+                    'Cross-tenant user reassignment is not supported because tenant-owned access and data cannot be migrated safely.',
+                );
+            }
+            if (requestedTenantId !== undefined
+                && requestedRole === undefined
+                && Object.keys(patch).length === 0) {
+                throw new BadRequestException('No valid fields to update');
+            }
+
+            const roleReplacement = requestedRole === undefined
+                ? null
+                : await this.rbac.replaceLegacySystemRoleForPlatformAdminActorInTransaction(
+                    tx,
+                    id,
+                    existingUser.tenantId,
+                    requestedRole,
+                    mutationActor,
+                );
+            const emailChanged = body.email !== undefined && patch.email !== existingUser.email;
+            const now = new Date();
+
+            if (emailChanged) {
+                await tx.passwordResetToken.updateMany({
+                    where: {
+                        tenantId: existingUser.tenantId,
+                        userId: id,
+                        consumedAt: null,
+                    },
+                    data: { consumedAt: now },
+                });
+                await tx.passwordResetEmailOutbox.updateMany({
+                    where: {
+                        tenantId: existingUser.tenantId,
+                        userId: id,
+                        status: { in: ['PENDING', 'SENDING', 'FAILED'] },
+                    },
+                    data: {
+                        status: 'DEAD_LETTERED',
+                        deadLetteredAt: now,
+                        leaseUntil: null,
+                        encryptedPayload: '',
+                        encryptionKeyRef: 'erased-v1',
+                        lastError: null,
+                    },
+                });
+            }
+
+            if (Object.keys(patch).length > 0) {
+                await tx.user.update({
+                    where: { id },
+                    data: patch,
+                });
+            }
+            if (emailChanged || roleReplacement?.changed) {
+                await tx.session.updateMany({
+                    where: { userId: id, revokedAt: null },
+                    data: { revokedAt: now },
+                });
+            }
 
             await tx.auditLog.create({
                 data: {
-                    tenantId: updated.tenantId,
-                    ...this.platformAuditData(req, updated.tenantId),
+                    tenantId: existingUser.tenantId,
+                    ...this.platformAuditData(req, existingUser.tenantId),
                     action: 'USER_UPDATED',
                     resource: 'User',
                     resourceId: id,
+                    oldValue: {
+                        role: roleReplacement?.previousLegacyRole ?? existingUser.role,
+                        emailIdentityChanged: false,
+                        ...(roleReplacement ? { roleIds: roleReplacement.previousRoleIds } : {}),
+                    },
+                    newValue: {
+                        role: roleReplacement?.legacyRole ?? existingUser.role,
+                        emailIdentityChanged: emailChanged,
+                        ...(roleReplacement ? { roleIds: [roleReplacement.roleId] } : {}),
+                    },
                 },
             });
 
-            return updated;
+            return tx.user.findUniqueOrThrow({
+                where: { id },
+                include: { tenant: { select: { id: true, name: true, slug: true } } },
+            });
         });
 
         return {
@@ -946,13 +1393,14 @@ export class AdminController {
         @Body() body: { confirmation?: string; reason?: string },
     ) {
         this.assertSuperAdmin(req);
-        const actor = this.platformAuditAttribution(req);
+        const actor = this.adminUserLifecycleActor(req);
         return this.userMfaRecovery.reset({
             targetUserId: id,
             confirmation: body?.confirmation ?? '',
             reason: body?.reason ?? '',
-            actorUserId: actor.actorUserId ?? '',
-            actorTenantId: actor.actorTenantId ?? '',
+            actorUserId: actor.userId,
+            actorTenantId: actor.tenantId,
+            actorSessionId: actor.sessionId,
             ipAddress: actor.ipAddress,
             userAgent: actor.userAgent,
         });
@@ -963,9 +1411,15 @@ export class AdminController {
         this.assertSuperAdmin(req);
         const minutes = Number.isFinite(body?.minutes as number) ? Math.max(1, Math.min(60 * 24 * 30, Number(body.minutes))) : 60;
         const lockedUntil = new Date(Date.now() + minutes * 60 * 1000);
-        await this.withPlatformAdmin(async (tx) => {
+        const mutationActor = this.adminUserLifecycleActor(req);
+        await this.withPlatformAdminUserMutation(async (tx) => {
+            const authorizedTarget = await this.rbac.authorizePlatformAdminUserMutationInTransaction(
+                tx,
+                id,
+                mutationActor,
+            );
             const user = await tx.user.update({
-                where: { id },
+                where: { id: authorizedTarget.id },
                 data: { lockedUntil, pinLockedUntil: lockedUntil },
             });
             await tx.session.updateMany({
@@ -982,9 +1436,15 @@ export class AdminController {
     @Post('users/:id/unlock')
     async unlockUser(@Req() req: any, @Param('id') id: string) {
         this.assertSuperAdmin(req);
-        await this.withPlatformAdmin(async (tx) => {
+        const mutationActor = this.adminUserLifecycleActor(req);
+        await this.withPlatformAdminUserMutation(async (tx) => {
+            const authorizedTarget = await this.rbac.authorizePlatformAdminUserMutationInTransaction(
+                tx,
+                id,
+                mutationActor,
+            );
             const user = await tx.user.update({
-                where: { id },
+                where: { id: authorizedTarget.id },
                 data: { lockedUntil: null, pinLockedUntil: null, loginAttempts: 0, pinLoginAttempts: 0 },
             });
             await tx.auditLog.create({
@@ -997,49 +1457,13 @@ export class AdminController {
     @Post('users/:id/suspend')
     async suspendUser(@Req() req: any, @Param('id') id: string) {
         this.assertSuperAdmin(req);
-        const now = new Date();
-        await this.withPlatformAdmin(async (tx) => {
-            const user = await tx.user.update({
-                where: { id },
-                data: { deletedAt: now, lockedUntil: now, pinLockedUntil: now },
-            });
-            await tx.session.updateMany({
-                where: { userId: id, revokedAt: null },
-                data: { revokedAt: now },
-            });
-            await tx.auditLog.create({
-                data: { tenantId: user.tenantId, ...this.platformAuditData(req, user.tenantId), action: 'USER_SUSPENDED', resource: 'User', resourceId: id },
-            });
-        });
-        return { id, suspended: true };
+        return this.userLifecycle.suspend(id, this.adminUserLifecycleActor(req));
     }
 
     @Post('users/:id/activate')
     async activateUser(@Req() req: any, @Param('id') id: string) {
         this.assertSuperAdmin(req);
-        await this.withPlatformAdmin(async (tx) => {
-            const existingUser = await tx.user.findUnique({
-                where: { id },
-                select: {
-                    tenantId: true,
-                    deletedAt: true,
-                },
-            });
-            if (!existingUser) {
-                throw new BadRequestException('User not found');
-            }
-            if (existingUser.deletedAt) {
-                await assertTenantCanAddActiveUser(tx as any, existingUser.tenantId);
-            }
-            const user = await tx.user.update({
-                where: { id },
-                data: { deletedAt: null, lockedUntil: null, pinLockedUntil: null, loginAttempts: 0, pinLoginAttempts: 0 },
-            });
-            await tx.auditLog.create({
-                data: { tenantId: user.tenantId, ...this.platformAuditData(req, user.tenantId), action: 'USER_ACTIVATED', resource: 'User', resourceId: id },
-            });
-        });
-        return { id, activated: true };
+        return this.userLifecycle.activate(id, this.adminUserLifecycleActor(req));
     }
 
     @Get('audit')
@@ -1087,25 +1511,63 @@ export class AdminController {
     }
 
     @Get('credits')
-    async credits(@Req() req: any, @Query('limit') limitRaw?: string) {
+    async credits(
+        @Req() req: any,
+        @Query('limit') legacyHistoryLimitRaw?: string,
+        @Query('tenantLimit') tenantLimitRaw?: string,
+        @Query('tenantCursor') tenantCursorRaw?: string,
+        @Query('q') qRaw?: string,
+        @Query('historyLimit') historyLimitRaw?: string,
+        @Query('historyCursor') historyCursorRaw?: string,
+    ) {
         this.assertSuperAdmin(req);
+        const tenantLimit = parseBoundedListLimit(tenantLimitRaw ?? '50');
+        const historyLimit = parseBoundedListLimit(historyLimitRaw ?? legacyHistoryLimitRaw ?? '50');
+        const tenantCursor = decodeBoundedListCursor(tenantCursorRaw);
+        const historyCursor = decodeBoundedListCursor(historyCursorRaw);
+        const search = this.parseAdminListSearch(qRaw);
+        const tenantWhere: Prisma.TenantWhereInput = {
+            deletedAt: null,
+            ...(search ? {
+                OR: [
+                    { name: { contains: search, mode: 'insensitive' } },
+                    { slug: { contains: search, mode: 'insensitive' } },
+                ],
+            } : {}),
+            ...(tenantCursor ? {
+                AND: [{
+                    OR: [
+                        { createdAt: { lt: tenantCursor.timestamp } },
+                        { createdAt: tenantCursor.timestamp, id: { lt: tenantCursor.id } },
+                    ],
+                }],
+            } : {}),
+        };
+        const historyWhere: Prisma.CreditTransactionWhereInput = historyCursor ? {
+            OR: [
+                { createdAt: { lt: historyCursor.timestamp } },
+                { createdAt: historyCursor.timestamp, id: { lt: historyCursor.id } },
+            ],
+        } : {};
 
-        const limit = Math.min(Math.max(Number(limitRaw) || 50, 1), 200);
         const [tenants, transactions] = await this.withPlatformAdmin((tx) => Promise.all([
             tx.tenant.findMany({
-                where: { deletedAt: null },
-                orderBy: { createdAt: 'desc' },
+                where: tenantWhere,
+                orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+                take: tenantLimit + 1,
                 select: {
                     id: true,
                     name: true,
                     slug: true,
                     planTier: true,
                     usageCredits: true,
+                    createdAt: true,
                 },
             }),
             tx.creditTransaction.findMany({
-                orderBy: { createdAt: 'desc' },
-                take: limit,
+                where: historyWhere,
+                orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+                take: historyLimit + 1,
                 include: {
                     tenant: {
                         select: {
@@ -1117,16 +1579,19 @@ export class AdminController {
                 },
             }),
         ]));
+        const tenantPage = buildBoundedListPage(tenants, tenantLimit, (tenant) => tenant.createdAt, {});
+        const historyPage = buildBoundedListPage(transactions, historyLimit, (row) => row.createdAt, {});
 
         return {
-            tenants: tenants.map((tenant: any) => ({
+            tenants: tenantPage.data.map((tenant: any) => ({
                 id: tenant.id,
                 name: tenant.name,
                 slug: tenant.slug,
                 planTier: tenant.planTier,
                 usageCredits: tenant.usageCredits,
             })),
-            history: transactions.map((tx: any) => ({
+            tenantPagination: tenantPage.pagination,
+            history: historyPage.data.map((tx: any) => ({
                 id: tx.id,
                 amount: tx.amount,
                 reason: tx.reason,
@@ -1139,6 +1604,7 @@ export class AdminController {
                     }
                     : null,
             })),
+            historyPagination: historyPage.pagination,
         };
     }
 
@@ -1162,7 +1628,62 @@ export class AdminController {
             throw new BadRequestException('amount must be a positive integer');
         }
 
-        const newBalance = await this.meteringService.grantCredits(tenantId, amount, reason, idempotencyKey);
+        const actor = this.adminUserLifecycleActor(req);
+        const newBalance = await this.withPlatformAdminUserMutation(async (tx) => {
+            await tx.$executeRaw`
+                LOCK TABLE "Tenant", "CreditTransaction" IN ROW EXCLUSIVE MODE
+            `;
+            await this.rbac.authorizePlatformAdminTenantMutationInTransaction(tx, tenantId, actor);
+            const settlement = await this.meteringService.grantCreditsInTransaction(tx, {
+                tenantId,
+                amount,
+                reason,
+                idempotencyKey,
+            });
+            const auditId = this.creditGrantAuditId(settlement.transactionId);
+            const auditValue = {
+                creditTransactionId: settlement.transactionId,
+                amount,
+                reason,
+                newBalance: settlement.newBalance,
+            };
+
+            if (settlement.replayed) {
+                const existingAudit = await tx.auditLog.findUnique({
+                    where: { id: auditId },
+                    select: {
+                        tenantId: true,
+                        action: true,
+                        resource: true,
+                        resourceId: true,
+                        newValue: true,
+                    },
+                });
+                if (!this.creditGrantAuditMatches(existingAudit, {
+                    tenantId,
+                    transactionId: settlement.transactionId,
+                    amount,
+                    reason,
+                    newBalance: settlement.newBalance,
+                })) {
+                    throw new ConflictException('Existing credit grant is missing its exact attributed audit record.');
+                }
+            } else {
+                await tx.auditLog.create({
+                    data: {
+                        id: auditId,
+                        tenantId,
+                        ...this.platformAuditData(req, tenantId),
+                        action: 'TENANT_CREDITS_GRANTED',
+                        resource: 'CreditTransaction',
+                        resourceId: settlement.transactionId,
+                        newValue: auditValue,
+                    },
+                });
+            }
+
+            return settlement.newBalance;
+        });
 
         return {
             success: true,
@@ -1222,7 +1743,8 @@ export class AdminController {
         const monthlyPriceCents = this.parseMonthlyPriceCents(body.monthlyPriceCents, body.priceMonthly);
         const locationLimit = this.parseRequiredInteger(body.locationLimit ?? body.storeLimit ?? body.maxLocations, 'locationLimit');
         const userLimit = this.parseRequiredInteger(body.userLimit ?? body.maxUsers, 'userLimit');
-        const creditQuotaLimit = this.parseOptionalIntegerOrNull(body.creditQuotaLimit ?? body.creditsLimit, 'creditQuotaLimit');
+        this.assertPlanCreditInvariant(body);
+        const creditQuotaLimit = null;
         const active = this.parsePlanActive(body.active, body.status) ?? true;
         const metadata = body.metadata === undefined
             ? { features: this.defaultPlanFeaturesFor(code) }
@@ -1280,6 +1802,7 @@ export class AdminController {
         },
     ) {
         this.assertSuperAdmin(req);
+        this.assertPlanCreditInvariant(body);
 
         const existing = await this.findPlanByCodeOrId(codeOrId);
         const code = existing?.code ?? normalizePlanCode(codeOrId);
@@ -1309,7 +1832,7 @@ export class AdminController {
             patch.userLimit = this.parseRequiredInteger(body.userLimit ?? body.maxUsers, 'userLimit');
         }
         if (body.creditQuotaLimit !== undefined || body.creditsLimit !== undefined) {
-            patch.creditQuotaLimit = this.parseOptionalIntegerOrNull(body.creditQuotaLimit ?? body.creditsLimit, 'creditQuotaLimit');
+            patch.creditQuotaLimit = null;
         }
         const activePatch = this.parsePlanActive(body.active, body.status);
         if (activePatch !== undefined) {
@@ -1345,9 +1868,7 @@ export class AdminController {
                         userLimit: body.userLimit !== undefined || body.maxUsers !== undefined
                             ? this.parseRequiredInteger(body.userLimit ?? body.maxUsers, 'userLimit')
                             : fallbackPlan.userLimit,
-                        creditQuotaLimit: body.creditQuotaLimit !== undefined || body.creditsLimit !== undefined
-                            ? this.parseOptionalIntegerOrNull(body.creditQuotaLimit ?? body.creditsLimit, 'creditQuotaLimit')
-                            : fallbackPlan.creditQuotaLimit,
+                        creditQuotaLimit: null,
                         active: this.parsePlanActive(body.active, body.status) ?? fallbackPlan.active,
                         metadata: body.metadata !== undefined
                             ? (body.metadata === null ? Prisma.DbNull : body.metadata)
@@ -1453,20 +1974,20 @@ export class AdminController {
             });
         }
 
-        let queueDepth: number | null = null;
-        try {
-            const metric: any = await this.metricsService.solverQueueDepth.get();
-            const raw = Array.isArray(metric?.values) ? metric.values[0]?.value : undefined;
-            queueDepth = typeof raw === 'number' ? raw : null;
-        } catch {
-            queueDepth = null;
-        }
+        const solverQueue = await this.readSolverQueueTelemetry();
+        const pendingQueueDepth = solverQueue === null ? null : solverQueue.ready + solverQueue.retry;
 
         components.push({
             label: 'Solver Queue',
-            status: queueDepth === null ? 'unknown' : queueDepth > 50 ? 'degraded' : 'online',
+            status: solverQueue === null
+                ? 'unknown'
+                : solverQueue.deadLetter > 0 || pendingQueueDepth! > 50
+                    ? 'degraded'
+                    : 'online',
             latencyMs: null,
-            details: queueDepth === null ? 'no queue telemetry available yet' : `${queueDepth} pending jobs`,
+            details: solverQueue === null
+                ? 'worker broker telemetry is unavailable'
+                : `${pendingQueueDepth} pending jobs (${solverQueue.ready} ready, ${solverQueue.retry} retry, ${solverQueue.deadLetter} dead-letter)`,
         });
 
         const hasOffline = components.some((component) => component.status === 'offline');
@@ -1477,6 +1998,95 @@ export class AdminController {
         return { checkedAt, overall, components };
     }
 
+    private async readSolverQueueTelemetry(): Promise<SolverQueueTelemetry | null> {
+        const configuredUrl = (
+            this.configService.get<string>('WORKER_METRICS_URL')
+            ?? process.env.WORKER_METRICS_URL
+            ?? 'http://worker:3003/metrics'
+        ).trim();
+        let metricsUrl: URL;
+        try {
+            metricsUrl = new URL(configuredUrl);
+        } catch {
+            return null;
+        }
+        if (
+            !['http:', 'https:'].includes(metricsUrl.protocol)
+            || metricsUrl.username
+            || metricsUrl.password
+        ) {
+            return null;
+        }
+
+        const controller = new AbortController();
+        const timeout = setTimeout(
+            () => controller.abort(),
+            AdminController.WORKER_METRICS_TIMEOUT_MS,
+        );
+        try {
+            const response = await fetch(metricsUrl, {
+                headers: { accept: 'text/plain' },
+                signal: controller.signal,
+            });
+            if (!response.ok) return null;
+            const metrics = await response.text();
+            if (Buffer.byteLength(metrics, 'utf8') > AdminController.WORKER_METRICS_MAX_BYTES) {
+                return null;
+            }
+            if (this.readPrometheusSample(
+                metrics,
+                'lunchlineup_solver_queue_telemetry_available',
+            ) !== 1) {
+                return null;
+            }
+
+            const ready = this.readPrometheusSample(
+                metrics,
+                'lunchlineup_solver_queue_messages',
+                'ready',
+            );
+            const retry = this.readPrometheusSample(
+                metrics,
+                'lunchlineup_solver_queue_messages',
+                'retry',
+            );
+            const deadLetter = this.readPrometheusSample(
+                metrics,
+                'lunchlineup_solver_queue_messages',
+                'dead_letter',
+            );
+            if (ready === null || retry === null || deadLetter === null) {
+                return null;
+            }
+            return { ready, retry, deadLetter };
+        } catch {
+            return null;
+        } finally {
+            clearTimeout(timeout);
+        }
+    }
+
+    private readPrometheusSample(
+        metrics: string,
+        metricName: string,
+        state?: string,
+    ): number | null {
+        const expectedIdentity = state === undefined
+            ? metricName
+            : `${metricName}{state="${state}"}`;
+        const samples = metrics
+            .split(/\r?\n/)
+            .map((line) => line.trim().split(/\s+/))
+            .filter(([identity, value, extra]) =>
+                identity === expectedIdentity
+                && value !== undefined
+                && extra === undefined,
+            );
+        if (samples.length !== 1) return null;
+        const value = Number(samples[0][1]);
+        return Number.isSafeInteger(value) && value >= 0 ? value : null;
+    }
+
     private async timeCheck(task: () => Promise<void>) {
         const start = Date.now();
         try {
@@ -1485,6 +2095,17 @@ export class AdminController {
         } catch (error) {
             return { ok: false as const, latencyMs: Date.now() - start, error: this.stringifyError(error) };
         }
+    }
+
+    private parseAdminListSearch(value: unknown): string | undefined {
+        if (value === undefined || value === null || value === '') return undefined;
+        if (typeof value !== 'string') throw new BadRequestException('Invalid search query.');
+        const search = value.trim();
+        if (!search) return undefined;
+        if (search.length > 100 || /[\u0000-\u001f\u007f]/.test(search)) {
+            throw new BadRequestException('Search query must be 100 printable characters or fewer.');
+        }
+        return search;
     }
 
     private parseRequiredInteger(value: unknown, field: string): number {
@@ -1506,6 +2127,62 @@ export class AdminController {
         return parsed;
     }
 
+    private assertPlanCreditInvariant(body: {
+        creditQuotaLimit?: number | null;
+        creditsLimit?: number | null;
+        metadata?: Prisma.InputJsonValue | null;
+    }): void {
+        for (const field of ['creditQuotaLimit', 'creditsLimit'] as const) {
+            if (body[field] !== undefined && body[field] !== null) {
+                throw new BadRequestException(
+                    'Subscription plans never include usage credits. Credits must be purchased or administratively granted separately.',
+                );
+            }
+        }
+
+        const forbiddenMetadataKeys = new Set([
+            'credits',
+            'includedcredits',
+            'usagecredits',
+            'creditquotalimit',
+            'creditslimit',
+            'unlimitedcredits',
+            'walletcredits',
+        ]);
+        const inspect = (value: unknown): void => {
+            if (Array.isArray(value)) {
+                value.forEach(inspect);
+                return;
+            }
+            if (!value || typeof value !== 'object') return;
+            for (const [key, child] of Object.entries(value as Record<string, unknown>)) {
+                if (forbiddenMetadataKeys.has(key.replace(/[_-]/g, '').toLowerCase())) {
+                    throw new BadRequestException(
+                        'Plan metadata cannot define included, unlimited, or wallet credits.',
+                    );
+                }
+                inspect(child);
+            }
+        };
+        inspect(body.metadata);
+        this.assertPlanFeatureMetadata(body.metadata);
+    }
+
+    private assertPlanFeatureMetadata(metadata: Prisma.InputJsonValue | null | undefined): void {
+        if (!metadata || typeof metadata !== 'object' || Array.isArray(metadata)) return;
+        if (!Object.prototype.hasOwnProperty.call(metadata, 'features')) return;
+
+        const features = (metadata as Record<string, unknown>).features;
+        if (!Array.isArray(features)) {
+            throw new BadRequestException('Plan metadata features must be an array of known feature keys.');
+        }
+        const allowed = new Set<string>(FEATURE_KEYS);
+        if (features.some((feature) => typeof feature !== 'string' || !allowed.has(feature))) {
+            throw new BadRequestException(
+                `Plan metadata features may only contain: ${FEATURE_KEYS.join(', ')}.`,
+            );
+        }
+    }
     private parseOptionalIntegerOrNull(value: unknown, field: string): number | null {
         if (value === undefined) {
             return null;
@@ -1569,17 +2246,8 @@ export class AdminController {
     }
 
     private defaultPlanFeaturesFor(code: string) {
-        switch (normalizePlanCode(code)) {
-            case 'FREE':
-                return [];
-            case 'STARTER':
-                return ['scheduling'];
-            case 'GROWTH':
-            case 'ENTERPRISE':
-                return ['scheduling', 'lunch_breaks'];
-            default:
-                return [];
-        }
+        const normalized = normalizePlanCode(code);
+        return isTenantPlanCode(normalized) ? [...DEFAULT_PLAN_FEATURES[normalized]] : [];
     }
 
     private stringifyError(error: unknown): string {

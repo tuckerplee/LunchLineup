@@ -1,6 +1,9 @@
+import { readBoundedJson, withRequestTimeout } from '../../lib/http-safety';
+
 export const INCIDENT_REVIEW_DATE = 'July 9, 2026';
 
 const HEALTH_PROBE_TIMEOUT_MS = 1200;
+const HEALTH_RESPONSE_LIMIT_BYTES = 64 * 1024;
 
 type HealthStatus = 'ok' | 'degraded';
 export type DependencyStatus = 'online' | 'offline' | 'unknown';
@@ -20,7 +23,7 @@ type ApiHealthPayload = {
 };
 
 export type HealthProbe = {
-  status: HealthStatus | 'reachable' | 'unavailable';
+  status: HealthStatus | 'reachable' | 'unavailable' | 'not_configured';
   label: string;
   detail: string;
   checkedAt: Date;
@@ -76,9 +79,10 @@ function stripVersionSuffix(value: string): string {
   return value.replace(/\/v\d+$/i, '');
 }
 
-export function resolveApiHealthUrl(env: Partial<NodeJS.ProcessEnv> = process.env): string {
+export function resolveApiHealthUrl(env: Partial<NodeJS.ProcessEnv> = process.env): string | null {
   const explicit = env.LUNCHLINEUP_STATUS_HEALTH_URL?.trim();
   if (explicit) return explicit;
+  if (env.NODE_ENV === 'production') return null;
 
   const internalApiUrl = env.INTERNAL_API_URL ?? 'http://api:3000/v1';
   return `${stripVersionSuffix(trimTrailingSlash(internalApiUrl))}/health`;
@@ -95,9 +99,13 @@ function normalizeHealthPayload(value: unknown): ApiHealthPayload | null {
 
   const status = source.status === 'ok' ? 'ok' : source.status === 'degraded' ? 'degraded' : null;
   if (!status) return null;
+  const timestamp = typeof source.timestamp === 'string'
+    && Number.isFinite(Date.parse(source.timestamp))
+    ? source.timestamp
+    : null;
+  if (!timestamp || !Array.isArray(source.checks) || source.checks.length === 0) return null;
 
-  const checks = Array.isArray(source.checks)
-    ? source.checks.map((entry): ApiHealthCheck | null => {
+  const normalizedChecks = source.checks.map((entry): ApiHealthCheck | null => {
       if (!entry || typeof entry !== 'object') return null;
       const check = entry as {
         name?: unknown;
@@ -106,41 +114,70 @@ function normalizeHealthPayload(value: unknown): ApiHealthPayload | null {
         details?: unknown;
       };
       const name = typeof check.name === 'string' && check.name.trim() ? check.name.trim() : null;
-      if (!name) return null;
+      const dependencyStatus = check.status === 'online'
+        ? 'online'
+        : check.status === 'offline'
+          ? 'offline'
+          : null;
+      const latencyMs = typeof check.latencyMs === 'number'
+        && Number.isFinite(check.latencyMs)
+        && check.latencyMs >= 0
+        ? check.latencyMs
+        : null;
+      if (!name || !dependencyStatus || latencyMs === null || typeof check.details !== 'string') {
+        return null;
+      }
 
       return {
         name,
-        status: check.status === 'online' ? 'online' : check.status === 'offline' ? 'offline' : 'unknown',
-        latencyMs: typeof check.latencyMs === 'number' && Number.isFinite(check.latencyMs) ? check.latencyMs : null,
-        details: typeof check.details === 'string' ? check.details : null,
+        status: dependencyStatus,
+        latencyMs,
+        details: check.details,
       };
-    }).filter((check): check is ApiHealthCheck => Boolean(check))
-    : [];
+    });
+  if (normalizedChecks.some((check) => check === null)) return null;
+  const checks = normalizedChecks as ApiHealthCheck[];
 
   return {
     status,
-    timestamp: typeof source.timestamp === 'string' ? source.timestamp : null,
+    timestamp,
     checks,
   };
 }
 
-export async function readApiHealth(): Promise<HealthProbe> {
+export async function readApiHealth(
+  env: Partial<NodeJS.ProcessEnv> = process.env,
+): Promise<HealthProbe> {
   const checkedAt = new Date();
   const startedAt = Date.now();
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), HEALTH_PROBE_TIMEOUT_MS);
-
+  const healthUrl = resolveApiHealthUrl(env);
+  if (!healthUrl) {
+    return {
+      status: 'not_configured',
+      label: 'API health not configured',
+      detail: 'The public API health probe is not configured for this production web runtime.',
+      checkedAt,
+      latencyMs: null,
+      httpStatus: null,
+      payload: null,
+    };
+  }
   try {
-    const response = await fetch(resolveApiHealthUrl(), {
-      cache: 'no-store',
-      headers: { accept: 'application/json' },
-      signal: controller.signal,
-    });
+    const { response, body } = await withRequestTimeout(async (signal) => {
+      const response = await fetch(healthUrl, {
+        cache: 'no-store',
+        headers: { accept: 'application/json' },
+        redirect: 'error',
+        signal,
+      });
+      const contentType = response.headers.get('content-type') ?? '';
+      const body = contentType.toLowerCase().includes('application/json')
+        ? await readBoundedJson(response, HEALTH_RESPONSE_LIMIT_BYTES).catch(() => null)
+        : null;
+      if (body === null) await response.body?.cancel().catch(() => undefined);
+      return { response, body };
+    }, HEALTH_PROBE_TIMEOUT_MS);
     const latencyMs = Date.now() - startedAt;
-    const contentType = response.headers.get('content-type') ?? '';
-    const body = contentType.includes('application/json')
-      ? await response.json().catch(() => null)
-      : null;
     const payload = normalizeHealthPayload(body);
 
     if (payload) {
@@ -159,16 +196,16 @@ export async function readApiHealth(): Promise<HealthProbe> {
     }
 
     return {
-      status: response.status >= 500 ? 'degraded' : 'reachable',
-      label: response.status >= 500 ? 'API health degraded' : 'API reachable',
-      detail: `The status page reached the API endpoint, but dependency details were not returned. HTTP ${response.status}.`,
+      status: 'degraded',
+      label: 'API health degraded',
+      detail: `The configured API health endpoint returned an invalid dependency report. HTTP ${response.status}.`,
       checkedAt,
       latencyMs,
       httpStatus: response.status,
       payload: null,
     };
   } catch (error) {
-    const timedOut = error instanceof Error && error.name === 'AbortError';
+    const timedOut = error instanceof Error && error.name === 'TimeoutError';
     return {
       status: 'unavailable',
       label: 'API health unavailable',
@@ -180,14 +217,12 @@ export async function readApiHealth(): Promise<HealthProbe> {
       httpStatus: null,
       payload: null,
     };
-  } finally {
-    clearTimeout(timeout);
   }
 }
 
 function probeTone(status: HealthProbe['status']): Tone {
   if (status === 'ok') return 'success';
-  if (status === 'reachable') return 'info';
+  if (status === 'reachable' || status === 'not_configured') return 'info';
   if (status === 'degraded') return 'warn';
   return 'danger';
 }
@@ -235,6 +270,8 @@ function apiComponent(probe: HealthProbe): StatusComponent {
     ? 'Operational'
     : probe.status === 'reachable'
       ? 'Reachable'
+      : probe.status === 'not_configured'
+        ? 'Not configured'
       : probe.status === 'degraded'
         ? 'Degraded'
         : 'Unavailable';
@@ -244,7 +281,11 @@ function apiComponent(probe: HealthProbe): StatusComponent {
     detail: probe.detail,
     state,
     tone,
-    source: probe.payload ? 'GET /health dependency report' : 'GET /health reachability probe',
+    source: probe.status === 'not_configured'
+      ? 'Runtime configuration'
+      : probe.payload
+        ? 'GET /health dependency report'
+        : 'GET /health reachability probe',
   };
 }
 
@@ -298,6 +339,15 @@ export function summaryCopy(probe: HealthProbe): { heading: string; copy: string
       heading: 'Public page online; API reachable',
       copy: 'The public status page rendered and reached the API, but dependency-level health was not available from this environment.',
       label: 'Partial signal',
+      tone: 'info',
+    };
+  }
+
+  if (probe.status === 'not_configured') {
+    return {
+      heading: 'Public page online; API health not configured',
+      copy: 'The public status page rendered, but this web runtime has no configured public API health endpoint.',
+      label: 'Not configured',
       tone: 'info',
     };
   }

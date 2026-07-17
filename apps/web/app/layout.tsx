@@ -1,14 +1,33 @@
 import type { Metadata } from 'next';
 import '../styles/globals.css';
 
+const appOrigin = process.env.NEXT_PUBLIC_APP_ORIGIN?.trim() || 'https://lunchlineup.com';
+
 export const metadata: Metadata = {
-    title: 'LunchLineup - Workforce Scheduling',
+    metadataBase: new URL(appOrigin),
+    title: {
+        default: 'LunchLineup | Workforce Scheduling',
+        template: '%s | LunchLineup',
+    },
     description: 'Workforce scheduling with constraint-based optimization, real-time sync, and automated compliance.',
     keywords: ['workforce scheduling', 'shift management', 'employee scheduling', 'team management'],
+    alternates: {
+        canonical: '/',
+    },
     openGraph: {
-        title: 'LunchLineup',
-        description: 'Smart scheduling for modern teams.',
+        title: 'LunchLineup | Workforce Scheduling',
+        description: 'Build and manage reliable team schedules from one operational workspace.',
         type: 'website',
+        url: '/',
+        siteName: 'LunchLineup',
+        locale: 'en_US',
+        images: [{ url: '/opengraph-image', width: 1200, height: 630, alt: 'LunchLineup workforce scheduling' }],
+    },
+    twitter: {
+        card: 'summary_large_image',
+        title: 'LunchLineup | Workforce Scheduling',
+        description: 'Build and manage reliable team schedules from one operational workspace.',
+        images: ['/opengraph-image'],
     },
 };
 

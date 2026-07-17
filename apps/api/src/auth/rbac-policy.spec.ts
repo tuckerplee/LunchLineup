@@ -3,6 +3,14 @@ import { Enforcer, MODEL_PATH, POLICY_PATH, newEnforcer } from '@lunchlineup/rba
 import { ALL_PERMISSION_KEYS, DEFAULT_ROLE_DEFINITIONS } from './rbac.service';
 
 const MANAGED_POLICY_ROLES = ['ADMIN', 'MANAGER', 'STAFF'] as const;
+const PAYROLL_PERMISSION_KEYS = [
+    'time_cards:approve',
+    'payroll:read',
+    'payroll:policy_write',
+    'payroll:lock',
+    'payroll:export',
+    'payroll:reconcile',
+] as const;
 
 describe('RBAC policy matrix', () => {
     let enforcer: Enforcer;
@@ -52,5 +60,20 @@ describe('RBAC policy matrix', () => {
         await expect(can('MANAGER', 'account:data_export')).resolves.toBe(false);
         await expect(can('STAFF', 'account:data_export')).resolves.toBe(false);
         await expect(can('STAFF', 'auth:login_email')).resolves.toBe(true);
+    });
+
+    it('grants the exact payroll defaults without implicitly expanding staff access', async () => {
+        const expectedByRole = {
+            SUPER_ADMIN: new Set(PAYROLL_PERMISSION_KEYS),
+            ADMIN: new Set(PAYROLL_PERMISSION_KEYS),
+            MANAGER: new Set(['time_cards:approve', 'payroll:read']),
+            STAFF: new Set<string>(),
+        };
+
+        for (const [role, expected] of Object.entries(expectedByRole)) {
+            for (const permission of PAYROLL_PERMISSION_KEYS) {
+                await expect(can(role, permission)).resolves.toBe(expected.has(permission));
+            }
+        }
     });
 });

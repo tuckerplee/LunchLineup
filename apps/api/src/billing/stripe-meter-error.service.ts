@@ -9,6 +9,8 @@ import { ConfigService } from "@nestjs/config";
 import { createHash } from "crypto";
 import Stripe from "stripe";
 import { TenantPrismaService } from "../database/tenant-prisma.service";
+import { secureHttpRequest } from "../common/secure-http-client";
+import { stripeErrorLog } from "./stripe-error-diagnostic";
 
 const METER_ERROR_EVENT_TYPES = new Set([
   "v1.billing.meter.error_report_triggered",
@@ -21,6 +23,8 @@ const RETRYABLE_ASYNC_ERROR_CODES = new Set([
 const MAX_EVENT_BYTES = 1_048_576;
 const MAX_SAMPLE_ERRORS = 100;
 const RECONCILIATION_BATCH_SIZE = 200;
+const RECONCILIATION_PAGE_SIZE = 50;
+const MAX_RECONCILIATION_WORK = MAX_SAMPLE_ERRORS + RECONCILIATION_BATCH_SIZE;
 const MAX_VALIDATION_WINDOW_MS = 24 * 60 * 60_000;
 
 type MeterErrorSample = {
@@ -114,7 +118,7 @@ export class StripeMeterErrorService {
       ) as unknown as ThinMeterEvent;
     } catch (error) {
       this.logger.warn(
-        `Stripe meter error signature verification failed: ${(error as Error).message}`,
+        stripeErrorLog("stripe.meter_error.signature_verification_failed", error),
       );
       throw new BadRequestException(
         "Invalid Stripe meter error webhook signature",
@@ -141,11 +145,13 @@ export class StripeMeterErrorService {
       eventType === "v1.billing.meter.error_report_triggered"
         ? this.extractAggregateReport(event)
         : null;
+    if (report && report.errorCount > MAX_RECONCILIATION_WORK) {
+      throw new ServiceUnavailableException(
+        "Stripe meter error report exceeds bounded reconciliation work",
+      );
+    }
     const samples = report?.samples ?? [this.extractNoMeterSample(event)];
-    const alreadyHandled = await this.findPreviouslyHandled(
-      eventId,
-      (report?.errorCount ?? 1) + RECONCILIATION_BATCH_SIZE + 1,
-    );
+    const alreadyHandled = await this.findPreviouslyHandled(eventId);
     if (
       (!report && alreadyHandled.length === 1) ||
       (report && alreadyHandled.length >= report.errorCount)
@@ -159,6 +165,7 @@ export class StripeMeterErrorService {
         eventId,
         eventType,
         report,
+        alreadyHandled,
       );
       matched = result.matched;
       transitioned = result.transitioned;
@@ -206,7 +213,7 @@ export class StripeMeterErrorService {
 
     let response: Response;
     try {
-      response = await fetch(
+      response = await secureHttpRequest(
         `https://api.stripe.com/v2/core/events/${encodeURIComponent(eventId)}`,
         {
           headers: {
@@ -214,12 +221,16 @@ export class StripeMeterErrorService {
             Accept: "application/json",
             "Stripe-Version": "2026-01-28.preview",
           },
-          signal: AbortSignal.timeout(10_000),
+          timeoutMs: 10_000,
+          maxResponseBytes: MAX_EVENT_BYTES,
         },
       );
     } catch (error) {
+      this.logger.error(
+        stripeErrorLog("stripe.meter_error.event_retrieval_failed", error),
+      );
       throw new ServiceUnavailableException(
-        `Unable to retrieve Stripe meter error event: ${(error as Error).message}`,
+        "Unable to retrieve Stripe meter error event",
       );
     }
     if (!response.ok) {
@@ -336,6 +347,7 @@ export class StripeMeterErrorService {
     eventId: string,
     eventType: string,
     report: MeterErrorReport,
+    previouslyHandled: Array<{ id: string }>,
   ): Promise<{ matched: number; transitioned: number }> {
     this.assertLastValueAggregation();
     const eventName = this.configService
@@ -359,10 +371,6 @@ export class StripeMeterErrorService {
       transitioned += result.transitioned;
     }
 
-    const previouslyHandled = await this.findPreviouslyHandled(
-      eventId,
-      report.errorCount + RECONCILIATION_BATCH_SIZE + 1,
-    );
     for (const row of previouslyHandled) accountedIds.add(row.id);
 
     const remainingErrorCount = report.errorCount - accountedIds.size;
@@ -370,21 +378,12 @@ export class StripeMeterErrorService {
       remainingErrorCount > 0 &&
       remainingErrorCount <= RECONCILIATION_BATCH_SIZE
     ) {
-      const candidates = (await this.tenantDb.withPlatformAdmin((tx: any) =>
-        tx.stripeUsageEvent.findMany({
-          where: {
-            ...windowWhere,
-            status: { in: ["SENT", "SENDING", "FAILED"] },
-          },
-          orderBy: [{ submittedAt: "asc" }, { id: "asc" }],
-          take: RECONCILIATION_BATCH_SIZE + 1,
-        }),
-      )) as any[];
-      if (
-        candidates.length >= remainingErrorCount &&
-        candidates.length <= RECONCILIATION_BATCH_SIZE
-      ) {
-        for (const row of candidates) {
+      const candidates = await this.findReconciliationCandidates(windowWhere);
+      const unaccountedCandidates = candidates.filter(
+        (row) => !accountedIds.has(row.id),
+      );
+      if (unaccountedCandidates.length >= remainingErrorCount) {
+        for (const row of unaccountedCandidates) {
           const rowTransitioned = await this.transitionUsageEvent(
             row,
             eventId,
@@ -581,19 +580,97 @@ export class StripeMeterErrorService {
     }
   }
 
-  private findPreviouslyHandled(
-    eventId: string,
-    take: number,
-  ): Promise<Array<{ id: string }>> {
-    return this.tenantDb.withPlatformAdmin((tx: any) =>
-      tx.stripeUsageEvent.findMany({
-        where: {
-          metadata: { path: ["stripeAsyncError", "eventId"], equals: eventId },
-        },
-        select: { id: true },
-        take,
-      }),
-    ) as Promise<Array<{ id: string }>>;
+  private findPreviouslyHandled(eventId: string): Promise<Array<{ id: string }>> {
+    return this.tenantDb.withPlatformAdmin(
+      (tx: any) =>
+        this.collectBoundedPages(
+          (cursor, take) =>
+            tx.stripeUsageEvent.findMany({
+              where: {
+                metadata: {
+                  path: ["stripeAsyncError", "eventId"],
+                  equals: eventId,
+                },
+              },
+              select: { id: true },
+              orderBy: { id: "asc" },
+              take,
+              ...(cursor ? { cursor: { id: cursor }, skip: 1 } : {}),
+            }),
+          MAX_RECONCILIATION_WORK,
+          "previously handled rows",
+        ),
+      { isolationLevel: "RepeatableRead" },
+    );
+  }
+
+  private findReconciliationCandidates(windowWhere: {
+    eventName: string;
+    submittedAt: { gte: Date; lt: Date };
+  }): Promise<any[]> {
+    return this.tenantDb.withPlatformAdmin(
+      (tx: any) =>
+        this.collectBoundedPages(
+          (cursor, take) =>
+            tx.stripeUsageEvent.findMany({
+              where: {
+                ...windowWhere,
+                status: { in: ["SENT", "SENDING", "FAILED"] },
+              },
+              orderBy: [{ submittedAt: "asc" }, { id: "asc" }],
+              take,
+              ...(cursor ? { cursor: { id: cursor }, skip: 1 } : {}),
+            }),
+          RECONCILIATION_BATCH_SIZE,
+          "candidate rows",
+        ),
+      { isolationLevel: "RepeatableRead" },
+    );
+  }
+
+  private async collectBoundedPages<T extends { id: string }>(
+    loadPage: (cursor: string | null, take: number) => Promise<T[]>,
+    limit: number,
+    label: string,
+  ): Promise<T[]> {
+    const rows: T[] = [];
+    const seenIds = new Set<string>();
+    const pageLimit = Math.ceil(limit / RECONCILIATION_PAGE_SIZE) + 1;
+    let cursor: string | null = null;
+
+    for (let page = 0; page < pageLimit; page += 1) {
+      const remaining = limit - rows.length;
+      const take = Math.min(RECONCILIATION_PAGE_SIZE, Math.max(remaining, 1));
+      const pageRows = await loadPage(cursor, take);
+      if (!Array.isArray(pageRows) || pageRows.length > take) {
+        throw new ServiceUnavailableException(
+          `Stripe meter error ${label} returned an invalid page`,
+        );
+      }
+      if (remaining === 0) {
+        if (pageRows.length > 0) {
+          throw new ServiceUnavailableException(
+            `Stripe meter error ${label} exceeded bounded pagination`,
+          );
+        }
+        return rows;
+      }
+      for (const row of pageRows) {
+        if (!row?.id || seenIds.has(row.id)) {
+          throw new ServiceUnavailableException(
+            `Stripe meter error ${label} pagination was unstable`,
+          );
+        }
+        seenIds.add(row.id);
+        rows.push(row);
+      }
+      if (pageRows.length < take) return rows;
+      cursor = pageRows[pageRows.length - 1].id;
+    }
+
+    throw new ServiceUnavailableException(
+      `Stripe meter error ${label} exceeded bounded pagination`,
+    );
   }
 
   private requireEventType(value: unknown): string {

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { createHash } from 'node:crypto';
-import { appendFileSync, readFileSync, writeFileSync } from 'node:fs';
+import { appendFileSync, lstatSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { validateRuntimeSecretDescriptor } from './rehydrate-runtime-secret.mjs';
@@ -11,6 +11,9 @@ const FILE_NAMES = {
   runtimeSecret: 'runtime-secret.json',
   launchProof: 'launch-proof.json',
 };
+const PLACEHOLDER_PROOF_PATTERN =
+  /<[^>]+>|YYYY|MMDD|HHMMSS|change_me|generate_with|replace_me|example|secret|password|guest|placeholder|todo|tbd|not_applicable|n\/a|dummy|fake|artifact-id|run-id/i;
+const VAGUE_PROOF_REFERENCE_PATTERN = /(^|[\/:_-])(latest|current)([\/:_.-]|$)/i;
 
 function fail(message) { throw new Error(message); }
 function option(name) {
@@ -20,6 +23,44 @@ function option(name) {
 }
 function sha256(bytes) { return createHash('sha256').update(bytes).digest('hex'); }
 function fileClaim(bytes) { return { sha256: sha256(bytes), bytes: bytes.length }; }
+
+export function validateLaunchProofManifestUri(value) {
+  if (typeof value !== 'string' || value.length === 0 || value !== value.trim() || /[\r\n]/.test(value)) {
+    fail('Launch proof manifest URI must be a non-empty single-line string.');
+  }
+  if (PLACEHOLDER_PROOF_PATTERN.test(value)) {
+    fail('Launch proof manifest URI must not contain placeholder text.');
+  }
+  if (VAGUE_PROOF_REFERENCE_PATTERN.test(value)) {
+    fail('Launch proof manifest URI must reference a specific retained proof, not latest/current.');
+  }
+  let url;
+  try {
+    url = new URL(value);
+  } catch {
+    fail('Launch proof manifest URI must be a valid retained HTTPS URL.');
+  }
+  if (!value.startsWith('https://') || url.protocol !== 'https:') fail('Launch proof manifest URI must be a retained HTTPS URL.');
+  return value;
+}
+
+export function readProtectedLaunchProofManifestUri(path) {
+  const requested = resolve(path);
+  const stat = lstatSync(requested);
+  if (!stat.isFile() || stat.isSymbolicLink()) fail('Launch proof manifest URI input must be a regular file and not a symlink.');
+  if (stat.size < 1 || stat.size > 8192) fail('Launch proof manifest URI input must contain 1 through 8192 bytes.');
+  if (process.platform !== 'win32' && (stat.mode & 0o777) !== 0o600) {
+    fail('Launch proof manifest URI input must have mode 0600.');
+  }
+  if (typeof process.geteuid === 'function' && stat.uid !== process.geteuid()) {
+    fail('Launch proof manifest URI input must be owned by the current user.');
+  }
+  const absolute = realpathSync(requested);
+  if (absolute !== requested) fail('Launch proof manifest URI input must not traverse aliases.');
+  const bytes = readFileSync(absolute);
+  if (bytes.includes(0)) fail('Launch proof manifest URI input must not contain NUL bytes.');
+  return validateLaunchProofManifestUri(bytes.toString('utf8'));
+}
 
 export function createDeployedReleaseBinding({ files, launchProofManifestUri, maxAgeSeconds }) {
   const releaseManifest = JSON.parse(files.releaseManifest.toString('utf8'));
@@ -34,12 +75,12 @@ export function createDeployedReleaseBinding({ files, launchProofManifestUri, ma
   }
   const maxAge = Number(maxAgeSeconds);
   if (!Number.isSafeInteger(maxAge) || maxAge < 1) fail('Launch proof max age must be a positive integer.');
-  if (!/^(https:\/\/|s3:\/\/|rclone:)/.test(launchProofManifestUri)) fail('Launch proof URI is invalid.');
+  const retainedLaunchProofManifestUri = validateLaunchProofManifestUri(launchProofManifestUri);
   const runtimeSecret = validateRuntimeSecretDescriptor(JSON.parse(files.runtimeSecret.toString('utf8')));
   return {
     version: 2,
     sourceSha,
-    launchProofManifestUri,
+    launchProofManifestUri: retainedLaunchProofManifestUri,
     launchProofMaxAgeSeconds: maxAge,
     runtimeSecret,
     files: Object.fromEntries(Object.keys(FILE_NAMES).map((key) => [key, fileClaim(files[key])])),
@@ -78,6 +119,9 @@ export function readDeployedReleaseInputs(bindingPath) {
 function main() {
   const [command] = process.argv.slice(2);
   if (command === 'create') {
+    if (process.argv.includes('--launch-proof-uri') || process.argv.includes('--launch-proof-uri-base64')) {
+      fail('Raw or base64 launch proof URI arguments are forbidden; use --launch-proof-uri-file.');
+    }
     const output = resolve(option('--output'));
     const files = {
       releaseManifest: readFileSync(resolve(option('--manifest'))),
@@ -87,7 +131,7 @@ function main() {
     };
     const binding = createDeployedReleaseBinding({
       files,
-      launchProofManifestUri: option('--launch-proof-uri'),
+      launchProofManifestUri: readProtectedLaunchProofManifestUri(option('--launch-proof-uri-file')),
       maxAgeSeconds: option('--max-proof-age-seconds'),
     });
     writeFileSync(output, `${JSON.stringify(binding)}\n`, { mode: 0o600, flag: 'wx' });

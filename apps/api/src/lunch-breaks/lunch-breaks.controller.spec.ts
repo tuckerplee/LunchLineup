@@ -41,6 +41,32 @@ describe('LunchBreaksController', () => {
         ]))).rejects.toBeInstanceOf(ForbiddenException);
     });
 
+    it('passes bounded list filters and continuation to the service', async () => {
+        const service = { listLunchBreaks: vi.fn().mockResolvedValue({ data: [] }) };
+        const controller = new LunchBreaksController(service as any);
+        const req = { user: { tenantId: 'tenant-1', sub: 'manager-1' } };
+
+        await controller.list(
+            req,
+            'schedule-1',
+            'location-1',
+            'shift-1, shift-2',
+            '2026-03-05T00:00:00.000Z',
+            '2026-03-06T00:00:00.000Z',
+            '50',
+            'cursor-1',
+        );
+
+        expect(service.listLunchBreaks).toHaveBeenCalledWith('tenant-1', {
+            scheduleId: 'schedule-1',
+            locationId: 'location-1',
+            shiftIds: ['shift-1', 'shift-2'],
+            startDate: '2026-03-05T00:00:00.000Z',
+            endDate: '2026-03-06T00:00:00.000Z',
+            limit: '50',
+            cursor: 'cursor-1',
+        }, req.user);
+    });
     it('requires an Idempotency-Key before generation work', async () => {
         const service = { generateLunchBreaks: vi.fn() };
         const controller = new LunchBreaksController(service as any);
@@ -65,5 +91,65 @@ describe('LunchBreaksController', () => {
         );
 
         expect(service.generateLunchBreaks).toHaveBeenCalledWith('tenant-1', body, 'attempt-1');
+    });
+
+    it('requires a bounded Idempotency-Key before setup shift work', async () => {
+        const service = { persistSetupShifts: vi.fn() };
+        const controller = new LunchBreaksController(service as any);
+
+        await expect(controller.persistSetupShifts(
+            { user: { tenantId: 'tenant-1', sub: 'manager-1' } },
+            { locationId: 'location-1', rows: [] },
+            undefined,
+        )).rejects.toThrow('Idempotency-Key header is required for setup shift persistence');
+
+        expect(service.persistSetupShifts).not.toHaveBeenCalled();
+    });
+
+    it('passes the normalized setup key and actor to the service', async () => {
+        const service = { persistSetupShifts: vi.fn().mockResolvedValue({ shiftIds: [] }) };
+        const controller = new LunchBreaksController(service as any);
+        const req = { user: { tenantId: 'tenant-1', sub: 'manager-1' } };
+        const body = { locationId: 'location-1', rows: [] };
+
+        await controller.persistSetupShifts(req, body, ' setup-attempt-1 ');
+
+        expect(service.persistSetupShifts).toHaveBeenCalledWith(
+            'tenant-1',
+            body,
+            'setup-attempt-1',
+            req.user,
+        );
+    });
+
+    it('requires a bounded Idempotency-Key before manual break replacement', async () => {
+        const service = { updateShiftBreaks: vi.fn() };
+        const controller = new LunchBreaksController(service as any);
+
+        await expect(controller.updateShiftBreaks(
+            { user: { tenantId: 'tenant-1', sub: 'manager-1' } },
+            'shift-1',
+            { locationId: 'location-1', breaks: [] },
+            undefined,
+        )).rejects.toThrow('Idempotency-Key header is required for shift lunch/break replacement');
+
+        expect(service.updateShiftBreaks).not.toHaveBeenCalled();
+    });
+
+    it('passes the normalized manual-break key and actor to the service', async () => {
+        const service = { updateShiftBreaks: vi.fn().mockResolvedValue({ shiftId: 'shift-1' }) };
+        const controller = new LunchBreaksController(service as any);
+        const req = { user: { tenantId: 'tenant-1', sub: 'manager-1' } };
+        const body = { locationId: 'location-1', breaks: [] };
+
+        await controller.updateShiftBreaks(req, 'shift-1', body, ' break-attempt-1 ');
+
+        expect(service.updateShiftBreaks).toHaveBeenCalledWith(
+            'tenant-1',
+            'shift-1',
+            body,
+            'break-attempt-1',
+            req.user,
+        );
     });
 });

@@ -7,9 +7,10 @@ System administration routes for super admins and users with `admin_portal:acces
 - `README.md` - This admin route folder guide.
 - `layout.tsx` - Admin shell, responsive top-bar sign-out, environment/user labeling, and permission gate.
 - `AdminNav.tsx` - Client route-aware admin navigation grouped by team operations and platform admin routes.
+- `admin-list-pagination.ts` - Shared page-metadata parser, encoded admin-list URL builder, and explicit-page deduplication helper; it never follows continuations automatically.
 - `page.tsx` - Admin overview route.
 - `credits/` - Tenant usage credit administration; see `credits/README.md`.
-- `plans/` - Plan and subscription configuration.
+- `plans/` - Plan and subscription configuration; see `plans/README.md`.
 - `tenants/` - Tenant/company administration.
 - `users/` - Platform user administration.
 

@@ -258,7 +258,7 @@ textarea {
   margin: 0;
   font-size: 15px;
   font-weight: 800;
-  letter-spacing: -0.01em;
+  letter-spacing: 0;
   color: var(--text);
 }
 
@@ -887,8 +887,13 @@ textarea.form-input {
 
 .workspace-mobile-signout {
   display: none;
+  width: 32px;
+  min-width: 32px;
+  height: 32px;
   align-items: center;
-  gap: 6px;
+  justify-content: center;
+  padding: 0;
+  line-height: 1;
 }
 
 .staff-confirmation-backdrop {
@@ -931,6 +936,17 @@ textarea.form-input {
   gap: 8px;
 }
 
+.staff-workspace {
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.staff-invite-form,
+.staff-table-scroll {
+  min-width: 0;
+  max-width: 100%;
+}
 .staff-role-layout {
   display: grid;
   grid-template-columns: minmax(0, 1.1fr) minmax(0, 1.4fr);
@@ -960,7 +976,7 @@ textarea.form-input {
   font-size: clamp(28px, 2.6vw, 36px);
   line-height: 1.2;
   font-weight: 700;
-  letter-spacing: -0.02em;
+  letter-spacing: 0;
 }
 
 .workspace-subtitle {
@@ -1776,13 +1792,12 @@ textarea.form-input {
     width: 100%;
   }
 
-  .workspace-mobile-signout-label {
-    display: none;
+  .workspace-topbar .workspace-mobile-signout {
+    flex: 0 0 32px;
   }
 
-  .workspace-topbar .workspace-mobile-signout {
-    width: 32px;
-    padding-inline: 0;
+  .workspace-mobile-signout-label {
+    display: none;
   }
 
   .staff-confirmation-actions {
@@ -1790,6 +1805,19 @@ textarea.form-input {
     flex-direction: column-reverse;
   }
 
+  .staff-invite-form {
+    grid-template-columns: minmax(0, 1fr) !important;
+  }
+
+  .staff-invite-form > * {
+    width: 100%;
+    min-width: 0;
+    max-width: 100%;
+  }
+
+  .staff-table-scroll {
+    width: 100%;
+  }
   .staff-role-layout {
     grid-template-columns: minmax(0, 1fr);
   }

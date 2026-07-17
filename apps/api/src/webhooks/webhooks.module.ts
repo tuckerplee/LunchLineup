@@ -1,4 +1,5 @@
 import { Module } from '@nestjs/common';
+import { AuthModule } from '../auth/auth.module';
 import { TenantPrismaService } from '../database/tenant-prisma.service';
 import { BillingModule } from '../billing/billing.module';
 import { WebhookEndpointsController } from './webhook-endpoints.controller';
@@ -7,7 +8,7 @@ import { WebhookDeliveryStore } from './webhook-delivery.store';
 import { WebhooksService } from './webhooks.service';
 
 @Module({
-    imports: [BillingModule],
+    imports: [AuthModule, BillingModule],
     controllers: [WebhookEndpointsController],
     providers: [TenantPrismaService, WebhookDeliveryCrypto, WebhookDeliveryStore, WebhooksService],
     exports: [WebhookDeliveryStore, WebhooksService],

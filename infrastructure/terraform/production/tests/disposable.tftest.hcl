@@ -25,13 +25,6 @@ variables {
       ssh_user    = "lunchlineup"
       data_volume = "/srv/lunchlineup"
     },
-    {
-      name        = "terraform-fixture-data"
-      address     = "10.77.0.11"
-      role        = "data"
-      ssh_user    = "lunchlineup"
-      data_volume = "/srv/lunchlineup-data"
-    },
   ]
 
   network_cidr             = "10.77.0.0/24"
@@ -60,27 +53,13 @@ variables {
   proxmox_vms = {
     app = {
       node_name      = "pve-fixture"
-      vm_id          = 9101
+      vm_id          = 217
       name           = "terraform-fixture-app"
       ipv4_cidr      = "10.77.0.10/24"
       cores          = 2
       memory_mb      = 4096
       boot_disk_gb   = 32
-      data_disk_gb   = 0
       boot_datastore = "fixture-vm"
-      data_datastore = "fixture-data"
-    }
-    data = {
-      node_name      = "pve-fixture"
-      vm_id          = 9102
-      name           = "terraform-fixture-data"
-      ipv4_cidr      = "10.77.0.11/24"
-      cores          = 4
-      memory_mb      = 8192
-      boot_disk_gb   = 32
-      data_disk_gb   = 128
-      boot_datastore = "fixture-vm"
-      data_datastore = "fixture-data"
     }
   }
 
@@ -115,8 +94,8 @@ run "disposable_provider_plan" {
   command = plan
 
   assert {
-    condition     = output.provisioned_vms.app.vm_id == 9101 && output.provisioned_vms.data.vm_id == 9102
-    error_message = "The mocked plan must include both provider-backed production VMs."
+    condition     = output.provisioned_vms.app.vm_id == 217 && length(keys(output.provisioned_vms)) == 1
+    error_message = "The mocked plan must include only the provider-backed production VM ID 217 host."
   }
 
   assert {
@@ -130,15 +109,41 @@ run "disposable_provider_plan" {
   }
 
   assert {
-    condition     = output.persistent_data_disk == "pve-fixture/9102/scsi1"
-    error_message = "The mocked plan must preserve the protected data-disk identity."
+    condition = (
+      output.production_topology.runtime_owner == "docker-compose" &&
+      output.production_topology.external_data_vm == "disabled" &&
+      output.production_topology.database_dsn_host == "postgres"
+    )
+    error_message = "The mocked plan must preserve the sole Compose data-plane owner."
   }
 
   assert {
     condition = (
       output.bootstrap_contracts.app.release_source_sha == "1234567890abcdef1234567890abcdef12345678" &&
-      output.bootstrap_contracts.data.secrets_backend_uri == "vault://kv/terraform-fixture"
+      output.bootstrap_contracts.app.secrets_backend_uri == "vault://kv/terraform-fixture" &&
+      output.bootstrap_contracts.app.data_plane_owner == "docker-compose"
     )
     error_message = "The mocked plan must propagate immutable release and managed-secret bootstrap inputs."
   }
+}
+
+run "reject_non_217_production_vm_id" {
+  command = plan
+
+  variables {
+    proxmox_vms = {
+      app = {
+        node_name      = "pve-fixture"
+        vm_id          = 107
+        name           = "terraform-fixture-app"
+        ipv4_cidr      = "10.77.0.10/24"
+        cores          = 2
+        memory_mb      = 4096
+        boot_disk_gb   = 32
+        boot_datastore = "fixture-vm"
+      }
+    }
+  }
+
+  expect_failures = [var.proxmox_vms]
 }

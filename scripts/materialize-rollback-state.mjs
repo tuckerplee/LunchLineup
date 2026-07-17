@@ -2,7 +2,10 @@
 import { createHash } from 'node:crypto';
 import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join, posix, resolve } from 'node:path';
+import { validateLaunchProofManifestUri } from './deployed-release-inputs.mjs';
 import { validateRuntimeSecretDescriptor } from './rehydrate-runtime-secret.mjs';
+import { verifyReleaseAuthenticity } from './signed-release-authenticity.mjs';
+import { validateRetainedDeploymentContract } from './write-deployment-contract.mjs';
 
 function fail(message) {
   console.error(`ERROR: ${message}`);
@@ -49,17 +52,34 @@ function requireSafeBundlePath(value, label) {
   return path;
 }
 
+function requiredOption(name) {
+  const index = process.argv.indexOf(name);
+  if (index === -1 || !process.argv[index + 1]) fail(`${name} is required.`);
+  return process.argv[index + 1];
+}
+
 const outputIndex = process.argv.indexOf('--output-dir');
 const githubEnvIndex = process.argv.indexOf('--github-env');
-const stateFileIndex = process.argv.indexOf('--state-file');
 if (outputIndex === -1 || !process.argv[outputIndex + 1]) {
-  fail('Usage: materialize-rollback-state.mjs --output-dir DIR --state-file PATH [--github-env PATH]');
+  fail('Usage: materialize-rollback-state.mjs --output-dir DIR --state-file PATH --index-file PATH --bundle-signature-bundle PATH --index-signature-bundle PATH --expected-certificate-identity ID --expected-oidc-issuer URL [--github-env PATH]');
+}
+const statePath = resolve(requiredOption('--state-file'));
+try {
+  verifyReleaseAuthenticity({
+    statePath,
+    indexPath: resolve(requiredOption('--index-file')),
+    bundleSignaturePath: resolve(requiredOption('--bundle-signature-bundle')),
+    indexSignaturePath: resolve(requiredOption('--index-signature-bundle')),
+    certificateIdentity: requiredOption('--expected-certificate-identity'),
+    oidcIssuer: requiredOption('--expected-oidc-issuer'),
+  });
+} catch (error) {
+  fail(`Rollback state authenticity verification failed: ${error instanceof Error ? error.message : String(error)}`);
 }
 
 let state;
 try {
-  if (stateFileIndex === -1 || !process.argv[stateFileIndex + 1]) fail('--state-file is required.');
-  const stateText = readFileSync(resolve(process.argv[stateFileIndex + 1]), 'utf8');
+  const stateText = readFileSync(statePath, 'utf8');
   for (const forbidden of ['runtimeEnvBase64', 'runtimeBytes', 'productionRuntimeEnv', 'PRODUCTION_RUNTIME_ENV_B64']) {
     if (stateText.includes(`"${forbidden}"`)) fail('Rollback state contains forbidden runtime secret material.');
   }
@@ -83,8 +103,8 @@ const deploymentContract = manifest.deploymentContract;
 if (!deploymentContract || typeof deploymentContract !== 'object' || deploymentContract.algorithm !== 'sha256') {
   fail('releaseManifest.deploymentContract with sha256 algorithm is required.');
 }
-if (!deploymentContract.bundle || deploymentContract.bundle.format !== 'lunchlineup-deployment-contract-json-v1') {
-  fail('releaseManifest.deploymentContract.bundle format is unsupported.');
+try { validateRetainedDeploymentContract(deploymentContract); } catch (error) {
+  fail(`Retained deployment contract is insufficient: ${error instanceof Error ? error.message : String(error)}`);
 }
 const bundleBytes = decode(state.deploymentContractBundleBase64, 'deploymentContractBundleBase64');
 const bundleSha = requireSha(deploymentContract.bundle.sha256, 'releaseManifest.deploymentContract.bundle.sha256', 64);
@@ -98,8 +118,8 @@ try {
 } catch {
   fail('deploymentContractBundleBase64 must decode to JSON.');
 }
-if (!bundle || typeof bundle !== 'object' || bundle.version !== 1 || !Array.isArray(bundle.files)) {
-  fail('Deployment contract bundle must be a version 1 file archive.');
+if (!bundle || typeof bundle !== 'object' || bundle.version !== 2 || !Array.isArray(bundle.files)) {
+  fail('Deployment contract bundle must be a version 2 file archive.');
 }
 const contractFiles = deploymentContract.files;
 if (!contractFiles || typeof contractFiles !== 'object' || Array.isArray(contractFiles) || Object.keys(contractFiles).length === 0) {
@@ -144,8 +164,12 @@ if (proof.sourceSha !== sourceSha) fail('launch proof sourceSha must match sourc
 
 const maxAge = Number(state.launchProofMaxAgeSeconds);
 if (!Number.isSafeInteger(maxAge) || maxAge < 1) fail('launchProofMaxAgeSeconds must be a positive integer.');
-const manifestUri = requireString(state.launchProofManifestUri, 'launchProofManifestUri');
-if (!/^(https:\/\/|s3:\/\/|rclone:)/.test(manifestUri)) fail('launchProofManifestUri must use https://, s3://, or rclone:.');
+let manifestUri;
+try {
+  manifestUri = validateLaunchProofManifestUri(state.launchProofManifestUri);
+} catch (error) {
+  fail(error instanceof Error ? error.message : String(error));
+}
 
 const outputDir = resolve(process.argv[outputIndex + 1]);
 if (existsSync(outputDir)) fail(`Output directory must not already exist: ${outputDir}`);

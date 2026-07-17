@@ -1,9 +1,10 @@
 import { createHash } from 'node:crypto';
-import { Controller, Get, Post, Put, Delete, Param, Body, Req, Headers, UseGuards, SetMetadata, HttpCode, HttpStatus, NotFoundException, BadRequestException, ConflictException, ForbiddenException, Optional } from '@nestjs/common';
+import { Controller, Get, Post, Put, Delete, Param, Query, Body, Req, Headers, UseGuards, SetMetadata, HttpCode, HttpStatus, NotFoundException, BadRequestException, ConflictException, ForbiddenException, Optional } from '@nestjs/common';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { RbacGuard } from '../auth/rbac.guard';
 import { resolveEffectiveTenantEntitlement, resolveTenantPlanDefinition } from '../billing/plan-definitions';
 import { normalizeTimeZone } from '../common/location-timezone';
+import { MAX_BOUNDED_LIST_LIMIT, parseBoundedListLimit } from '../common/bounded-pagination';
 import { TenantPrismaService, TenantPrismaTransaction } from '../database/tenant-prisma.service';
 
 const Permission = (perm: string) => SetMetadata('permission', perm);
@@ -25,6 +26,7 @@ type LocationCreateBody = {
     address?: string;
     timezone?: string;
     tenantName?: string;
+    workspaceSlug?: string;
 };
 
 type LockedLocationRow = {
@@ -37,6 +39,40 @@ type LockedScheduleStatusRow = {
     status: string;
 };
 
+type LocationListCursor = {
+    name: string;
+    id: string;
+};
+
+function encodeLocationListCursor(location: LocationListCursor): string {
+    return Buffer.from(JSON.stringify({ v: 1, name: location.name, id: location.id }), 'utf8').toString('base64url');
+}
+
+function decodeLocationListCursor(value: unknown): LocationListCursor | undefined {
+    if (value === undefined || value === null || value === '') return undefined;
+    if (typeof value !== 'string' || value.length > 512) throw new BadRequestException('Invalid cursor.');
+    try {
+        const payload = JSON.parse(Buffer.from(value, 'base64url').toString('utf8')) as {
+            v?: unknown;
+            name?: unknown;
+            id?: unknown;
+        };
+        if (
+            payload.v !== 1
+            || typeof payload.name !== 'string'
+            || payload.name.length > 500
+            || typeof payload.id !== 'string'
+            || !payload.id
+            || payload.id.length > 200
+        ) {
+            throw new Error('Invalid payload');
+        }
+        return { name: payload.name, id: payload.id };
+    } catch {
+        throw new BadRequestException('Invalid cursor.');
+    }
+}
+
 @Controller({ path: 'locations', version: '1' })
 @UseGuards(JwtAuthGuard, RbacGuard)
 export class LocationsController {
@@ -48,12 +84,52 @@ export class LocationsController {
 
     @Get()
     @Permission('locations:read')
-    async findAll(@Req() req: any) {
+    async findAll(
+        @Req() req: any,
+        @Query('limit') limitValue?: string,
+        @Query('cursor') cursorValue?: string,
+    ) {
         const tenantId = req.user.tenantId;
+        const limit = parseBoundedListLimit(limitValue);
+        const cursor = decodeLocationListCursor(cursorValue);
         const locations = await this.tenantDb.withTenant(tenantId, (tx) => tx.location.findMany({
+            where: {
+                tenantId,
+                deletedAt: null,
+                ...(cursor ? {
+                    OR: [
+                        { name: { gt: cursor.name } },
+                        { name: cursor.name, id: { gt: cursor.id } },
+                    ],
+                } : {}),
+            },
+            orderBy: [{ name: 'asc' }, { id: 'asc' }],
+            take: limit + 1,
+        }));
+        const hasMore = locations.length > limit;
+        const data = hasMore ? locations.slice(0, limit) : locations;
+        const last = hasMore ? data.at(-1) : undefined;
+        return {
+            data,
+            tenantId,
+            pagination: {
+                limit,
+                maxLimit: MAX_BOUNDED_LIST_LIMIT,
+                returned: data.length,
+                hasMore,
+                nextCursor: last ? encodeLocationListCursor(last) : null,
+            },
+        };
+    }
+
+    @Get('summary')
+    @Permission('locations:read')
+    async summary(@Req() req: any) {
+        const tenantId = req.user.tenantId;
+        const count = await this.tenantDb.withTenant(tenantId, (tx) => tx.location.count({
             where: { tenantId, deletedAt: null },
         }));
-        return { data: locations, tenantId };
+        return { count };
     }
 
     @Get(':id')
@@ -75,20 +151,34 @@ export class LocationsController {
         @Headers('idempotency-key') idempotencyKey?: string,
     ) {
         const tenantId = req.user.tenantId;
-        const locationName = body.name?.trim();
-        const tenantName = body.tenantName?.trim();
-        const timezone = body.timezone === undefined
-            ? undefined
-            : this.parseTimeZone(body.timezone);
+        const locationName = typeof body?.name === 'string' ? body.name.trim() : '';
+        const tenantName = typeof body?.tenantName === 'string'
+            ? body.tenantName.trim().replace(/\s+/g, ' ')
+            : undefined;
+        const workspaceSlug = typeof body?.workspaceSlug === 'string'
+            ? body.workspaceSlug.trim().toLowerCase()
+            : undefined;
+        const timezone = this.parseTimeZone(body?.timezone);
         const requestIdentity = this.locationCreateRequestIdentity(idempotencyKey, {
             name: locationName,
             tenantName,
+            workspaceSlug,
             address: body.address,
             timezone,
         });
 
         if (!locationName) {
             throw new BadRequestException('Location name is required');
+        }
+
+        if (body?.tenantName !== undefined && typeof body.tenantName !== 'string') {
+            throw new BadRequestException('tenantName must be a string');
+        }
+        if (body?.workspaceSlug !== undefined && typeof body.workspaceSlug !== 'string') {
+            throw new BadRequestException('workspaceSlug must be a string');
+        }
+        if (tenantName && !workspaceSlug) {
+            throw new BadRequestException('workspaceSlug is required for first-location setup');
         }
 
         const canWrite = Array.isArray(req.user?.permissions) && req.user.permissions.includes('locations:write');
@@ -98,6 +188,9 @@ export class LocationsController {
 
         const location = await this.tenantDb.withTenant(tenantId, async (tx) => {
             await this.lockLocationCapacity(tx, tenantId);
+            if (workspaceSlug) {
+                await this.assertWorkspaceMatchesSession(tx, tenantId, workspaceSlug);
+            }
 
             if (requestIdentity) {
                 const existing = await tx.location.findFirst({
@@ -115,6 +208,14 @@ export class LocationsController {
             }
 
             await this.assertLocationLimit(tx, tenantId);
+            if (tenantName) {
+                const activeLocationCount = await tx.location.count({
+                    where: { tenantId, deletedAt: null },
+                });
+                if (activeLocationCount > 0) {
+                    throw new ConflictException('Organization name can only be set during first-location setup');
+                }
+            }
 
             if (tenantName) {
                 await tx.tenant.update({
@@ -141,12 +242,32 @@ export class LocationsController {
     }
 
     private async lockLocationCapacity(tx: TenantPrismaTransaction, tenantId: string): Promise<void> {
-        await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtextextended(${`location-capacity:${tenantId}`}, 0))`;
+        await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${`location-capacity:${tenantId}`}, 0))`;
+    }
+
+    private async assertWorkspaceMatchesSession(
+        tx: TenantPrismaTransaction,
+        tenantId: string,
+        workspaceSlug: string,
+    ): Promise<void> {
+        const tenant = await tx.tenant.findUniqueOrThrow({
+            where: { id: tenantId },
+            select: { slug: true },
+        });
+        if (tenant.slug !== workspaceSlug) {
+            throw new ForbiddenException('First-location setup does not match the signed-in workspace');
+        }
     }
 
     private locationCreateRequestIdentity(
         idempotencyKey: string | undefined,
-        payload: { name: string | undefined; tenantName: string | undefined; address: string | undefined; timezone: string | undefined },
+        payload: {
+            name: string | undefined;
+            tenantName: string | undefined;
+            workspaceSlug: string | undefined;
+            address: string | undefined;
+            timezone: string | undefined;
+        },
     ): { keyHash: string; requestHash: string } | null {
         if (idempotencyKey === undefined) return null;
         const normalizedKey = idempotencyKey.trim();
@@ -157,6 +278,7 @@ export class LocationsController {
         const requestPayload = JSON.stringify({
             name: payload.name ?? null,
             tenantName: payload.tenantName ?? null,
+            workspaceSlug: payload.workspaceSlug ?? null,
             address: payload.address ?? null,
             timezone: payload.timezone ?? null,
         });
@@ -275,6 +397,7 @@ export class LocationsController {
                 planTier: true,
                 status: true,
                 stripeSubscriptionId: true,
+                stripeSubscriptionCurrentPeriodEnd: true,
                 trialEndsAt: true,
             },
         });
@@ -324,12 +447,10 @@ export class LocationsController {
             }
         }
 
-        if (Object.prototype.hasOwnProperty.call(body, 'timezone')) {
-            if (typeof body.timezone !== 'string') {
-                throw new BadRequestException('timezone must be a string');
-            }
-            data.timezone = this.parseTimeZone(body.timezone);
+        if (!Object.prototype.hasOwnProperty.call(body, 'timezone')) {
+            throw new BadRequestException('Location timezone is required.');
         }
+        data.timezone = this.parseTimeZone(body.timezone);
 
         if (Object.keys(data).length === 0) {
             throw new BadRequestException('At least one supported location field is required');
@@ -338,9 +459,12 @@ export class LocationsController {
         return data;
     }
 
-    private parseTimeZone(value: string): string {
-        if (!value.trim()) {
-            throw new BadRequestException('timezone is required');
+    private parseTimeZone(value: unknown): string {
+        if (value === undefined || value === null || (typeof value === 'string' && !value.trim())) {
+            throw new BadRequestException('Location timezone is required.');
+        }
+        if (typeof value !== 'string') {
+            throw new BadRequestException('timezone must be a string');
         }
         return normalizeTimeZone(value);
     }

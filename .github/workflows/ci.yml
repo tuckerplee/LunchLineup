@@ -5,6 +5,8 @@ on:
     branches: [ main, develop ]
   pull_request:
     branches: [ main, develop ]
+  schedule:
+    - cron: '23 9 * * 1'
   workflow_dispatch:
     inputs:
       bootstrap_release_registry:
@@ -24,20 +26,64 @@ on:
         description: Exact bootstrap-current-live-release:<live SHA> confirmation
         required: false
         type: string
+      emergency_production_rollback:
+        description: Run the protected production emergency rollback path
+        required: true
+        type: boolean
+        default: false
+      emergency_rollback_source_sha:
+        description: Exact retained 40-character release SHA to restore
+        required: false
+        type: string
+      emergency_rollback_confirmation:
+        description: Exact rollback-production-to:<target SHA> confirmation
+        required: false
+        type: string
+
+permissions:
+  contents: read
 
 env:
   REGISTRY: ghcr.io
   IMAGE_PREFIX: ghcr.io/tuckerplee/lunchlineup
+  ZAP_IMAGE: ${{ vars.ZAP_IMAGE }}
+  ARTILLERY_IMAGE: artilleryio/artillery:2.0.33@sha256:ee382d480f5cb8473c52fe94cb8e1505a9564ce2accbc94114098e0be06dff56
+  RELEASE_BUNDLE_CERTIFICATE_IDENTITY: https://github.com/${{ github.repository }}/.github/workflows/ci.yml@refs/heads/main
+  RELEASE_BUNDLE_OIDC_ISSUER: https://token.actions.githubusercontent.com
+  RECOVERY_ADAPTER_CERTIFICATE_IDENTITY: https://github.com/${{ github.repository }}/.github/workflows/ci.yml@refs/heads/main
+  RECOVERY_ADAPTER_OIDC_ISSUER: https://token.actions.githubusercontent.com
+  RELEASE_REGISTRY_COMMAND_TIMEOUT_MS: '120000'
+  RELEASE_REGISTRY_FETCH_MAX_BYTES: '10485760'
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
+  manual-production-operation-policy:
+    name: "Validate Manual Production Operation"
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - name: Reject conflicting production operations
+        env:
+          BOOTSTRAP_RELEASE_REGISTRY: ${{ inputs.bootstrap_release_registry }}
+          EMERGENCY_PRODUCTION_ROLLBACK: ${{ inputs.emergency_production_rollback }}
+        run: |
+          set -euo pipefail
+          if [ "$BOOTSTRAP_RELEASE_REGISTRY" = "true" ] && [ "$EMERGENCY_PRODUCTION_ROLLBACK" = "true" ]; then
+            echo "Registry bootstrap and emergency rollback are mutually exclusive." >&2
+            exit 1
+          fi
+
   # --- Stage 1-2: Static Analysis ---
   static-analysis:
     name: "Stage 1-2: Lint, Format & Type Check"
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
@@ -51,11 +97,14 @@ jobs:
         run: npm run typecheck
       - name: "2b. Migration SaaS and hygiene tests"
         run: npm run test:migration
+      - name: "2c. Validate observability configs and Prometheus rule fixtures"
+        run: node scripts/verify-observability-configs.mjs --root . --tool-mode container
 
   terraform-validation:
     name: "Terraform: Format, Validate & Test"
     needs: static-analysis
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
       - uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd # v3.1.2
@@ -69,21 +118,80 @@ jobs:
   # --- Stage 3: SAST Security Scan ---
   sast:
     name: "Stage 3: SAST (Semgrep)"
-    needs: static-analysis
     runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      security-events: write
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
-      - uses: returntocorp/semgrep-action@713efdd345f3035192eaa63f56867b88e63e4e5d # v1
+      - name: Run digest-pinned Semgrep and retain its exit status
+        id: semgrep
+        env:
+          SEMGREP_IMAGE: semgrep/semgrep:1.169.0@sha256:2b33f46ba66cf8cc2ad59ccfa7d22951fd00c632c38f1339e84ec8e6e641a942
+        run: |
+          set +e
+          docker run --rm \
+            --user "$(id -u):$(id -g)" \
+            --volume "$PWD:/src" \
+            --workdir /src \
+            "$SEMGREP_IMAGE" \
+            semgrep scan --config p/default --error --sarif --output semgrep.sarif .
+          scan_status=$?
+          set -e
+          echo "exit-code=$scan_status" >> "$GITHUB_OUTPUT"
+          test -s semgrep.sarif
+      - name: Upload Semgrep SARIF
+        if: ${{ always() && hashFiles('semgrep.sarif') != '' }}
+        uses: github/codeql-action/upload-sarif@641a925cfafe92d0fdf8b239ba4053e3f8d99d6d # v3
         with:
-          config: p/default
+          sarif_file: semgrep.sarif
+          category: semgrep
+          wait-for-processing: true
+      - name: Enforce Semgrep result
+        if: always()
+        env:
+          SEMGREP_EXIT_CODE: ${{ steps.semgrep.outputs.exit-code }}
+        run: test "$SEMGREP_EXIT_CODE" = "0"
+
+  codeql:
+    name: "Stage 3: CodeQL (${{ matrix.language }})"
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      actions: read
+      contents: read
+      security-events: write
+    strategy:
+      fail-fast: false
+      matrix:
+        language: [javascript-typescript, python]
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@641a925cfafe92d0fdf8b239ba4053e3f8d99d6d # v3
+        with:
+          languages: ${{ matrix.language }}
+          build-mode: none
+          config-file: ./.github/codeql/codeql-config.yml
+      - name: Analyze and upload CodeQL results
+        uses: github/codeql-action/analyze@641a925cfafe92d0fdf8b239ba4053e3f8d99d6d # v3
+        with:
+          category: /language:${{ matrix.language }}
+          wait-for-processing: true
 
   # --- Stage 4: Dependency Audit ---
   dependency-audit:
     # --- Stage 4: Dependency Audit ---
-    needs: static-analysis
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - name: Reject newly introduced vulnerable dependencies
+        if: github.event_name == 'pull_request'
+        uses: actions/dependency-review-action@2031cfc080254a8a887f58cffee85186f0e49e48 # v4.9.0
+        with:
+          fail-on-severity: high
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: '22'
@@ -92,13 +200,18 @@ jobs:
       - name: npm audit
         run: npm run audit:prod
       - name: License check
-        run: npx --yes license-checker@25.0.1 --failOn "GPL-2.0;GPL-3.0"
+        env:
+          NPM_CONFIG_OFFLINE: 'true'
+        run: |
+          test -x ./node_modules/.bin/license-checker
+          ./node_modules/.bin/license-checker --failOn "GPL-2.0;GPL-3.0"
 
   # --- Stage 5: Unit Tests (90%+ coverage gate) ---
   unit-tests:
     name: "Stage 5: Unit Tests"
-    needs: [sast, dependency-audit]
+    needs: [static-analysis, sast, codeql, dependency-audit]
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
@@ -119,15 +232,18 @@ jobs:
           pip install -r requirements.txt
           python -m pytest --cov=src --cov-fail-under=90
       - name: Run worker unit tests
+        working-directory: apps/worker
         run: |
-          pip install -r apps/worker/requirements.txt
-          python -m unittest discover -s apps/worker/tests
+          pip install -r requirements.txt
+          python -m unittest discover -s tests
 
   # --- Stage 6-7: Build & Push Docker Images ---
   build-images:
     name: "Stage 6-7: Build Docker Images"
     needs: unit-tests
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
+    timeout-minutes: 90
     permissions:
       contents: read
       packages: write
@@ -161,7 +277,6 @@ jobs:
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         env:
           NEXT_PUBLIC_API_URL: ${{ vars.NEXT_PUBLIC_API_URL }}
-          NEXT_PUBLIC_WS_URL: ${{ vars.NEXT_PUBLIC_WS_URL }}
           NEXT_PUBLIC_OIDC_ENABLED: ${{ vars.NEXT_PUBLIC_OIDC_ENABLED }}
           NEXT_PUBLIC_SIGNUP_MODE: ${{ vars.NEXT_PUBLIC_SIGNUP_MODE }}
           NEXT_PUBLIC_TURNSTILE_SITE_KEY: ${{ vars.NEXT_PUBLIC_TURNSTILE_SITE_KEY }}
@@ -175,7 +290,6 @@ jobs:
           set -euo pipefail
           for name in \
             NEXT_PUBLIC_API_URL \
-            NEXT_PUBLIC_WS_URL \
             NEXT_PUBLIC_OIDC_ENABLED \
             NEXT_PUBLIC_SIGNUP_MODE \
             NEXT_PUBLIC_PRIVACY_CONTACT_EMAIL \
@@ -194,13 +308,6 @@ jobs:
             https://*|/api/*) ;;
             *) echo "NEXT_PUBLIC_API_URL must be https or a same-origin /api path." >&2; exit 1 ;;
           esac
-          case "$NEXT_PUBLIC_WS_URL" in
-            wss://*) ;;
-            *) echo "NEXT_PUBLIC_WS_URL must use wss for main-branch web image builds." >&2; exit 1 ;;
-          esac
-          case "$NEXT_PUBLIC_WS_URL" in
-            *localhost*|*127.0.0.1*) echo "NEXT_PUBLIC_WS_URL must not point at localhost in release images." >&2; exit 1 ;;
-          esac
           if [ "$NEXT_PUBLIC_SIGNUP_MODE" = "open" ] && [ -z "${NEXT_PUBLIC_TURNSTILE_SITE_KEY:-}" ]; then
             echo "NEXT_PUBLIC_TURNSTILE_SITE_KEY is required when NEXT_PUBLIC_SIGNUP_MODE=open." >&2
             exit 1
@@ -215,7 +322,6 @@ jobs:
           tags: ${{ env.IMAGE_PREFIX }}/web:${{ github.sha }}
           build-args: |
             NEXT_PUBLIC_API_URL=${{ vars.NEXT_PUBLIC_API_URL || '/api/v1' }}
-            NEXT_PUBLIC_WS_URL=${{ vars.NEXT_PUBLIC_WS_URL || 'ws://localhost:3001' }}
             NEXT_PUBLIC_OIDC_ENABLED=${{ vars.NEXT_PUBLIC_OIDC_ENABLED || 'false' }}
             NEXT_PUBLIC_SIGNUP_MODE=${{ vars.NEXT_PUBLIC_SIGNUP_MODE || 'closed_beta' }}
             NEXT_PUBLIC_TURNSTILE_SITE_KEY=${{ vars.NEXT_PUBLIC_TURNSTILE_SITE_KEY || '' }}
@@ -291,7 +397,6 @@ jobs:
           DOMAIN: ${{ vars.DOMAIN }}
           PRODUCTION_API_HEALTH_URL: ${{ vars.PRODUCTION_API_HEALTH_URL }}
           NEXT_PUBLIC_API_URL: ${{ vars.NEXT_PUBLIC_API_URL }}
-          NEXT_PUBLIC_WS_URL: ${{ vars.NEXT_PUBLIC_WS_URL }}
           NEXT_PUBLIC_OIDC_ENABLED: ${{ vars.NEXT_PUBLIC_OIDC_ENABLED }}
           NEXT_PUBLIC_SIGNUP_MODE: ${{ vars.NEXT_PUBLIC_SIGNUP_MODE }}
           NEXT_PUBLIC_TURNSTILE_SITE_KEY: ${{ vars.NEXT_PUBLIC_TURNSTILE_SITE_KEY }}
@@ -308,7 +413,6 @@ jobs:
           const crypto = require('node:crypto');
           const keys = [
             'NEXT_PUBLIC_API_URL',
-            'NEXT_PUBLIC_WS_URL',
             'NEXT_PUBLIC_OIDC_ENABLED',
             'NEXT_PUBLIC_SIGNUP_MODE',
             'NEXT_PUBLIC_TURNSTILE_SITE_KEY',
@@ -334,7 +438,7 @@ jobs:
           process.stdout.write(JSON.stringify({ domain, url }));
           NODE
           )"
-          deployment_contract="$(node scripts/write-deployment-contract.mjs --bundle-output .release/deployment-contract.bundle.json)"
+          deployment_contract="$(RELEASE_REQUIRE_TRACKED_INPUTS=true node scripts/write-deployment-contract.mjs --bundle-output .release/deployment-contract.bundle.json)"
           API_REF="${IMAGE_PREFIX}/api:${GITHUB_SHA}@${API_DIGEST}"
           WEB_REF="${IMAGE_PREFIX}/web:${GITHUB_SHA}@${WEB_DIGEST}"
           ENGINE_REF="${IMAGE_PREFIX}/engine:${GITHUB_SHA}@${ENGINE_DIGEST}"
@@ -384,8 +488,9 @@ jobs:
   # --- Stage 8-10: Ephemeral Environment & Integration Tests ---
   integration-tests:
     name: "Stage 8-10: Integration Tests (Ephemeral Stack)"
-    needs: build-images
+    needs: unit-tests
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     services:
       postgres:
         image: postgres:16-alpine@sha256:57c72fd2a128e416c7fcc499958864df5301e940bca0a56f58fddf30ffc07777
@@ -407,14 +512,32 @@ jobs:
           --health-interval 10s
       rabbitmq:
         image: rabbitmq:3-alpine@sha256:d7af1c87c5f1eda13fcfca06db452bf3aeab6619fc3358b68535c0c02c4e52bc
+        env:
+          RABBITMQ_DEFAULT_USER: lunchlineup_ci
+          RABBITMQ_DEFAULT_PASS: rabbit-testpass
+          RABBITMQ_DEFAULT_VHOST: /
         ports: ['5672:5672']
+        options: >-
+          --health-cmd "rabbitmq-diagnostics -q ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: '22'
           cache: 'npm'
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+          cache-dependency-path: |
+            apps/engine/requirements.txt
+            apps/worker/requirements.txt
       - run: npm ci
+      - name: Install engine and worker integration dependencies
+        run: python -m pip install -r apps/engine/requirements.txt -r apps/worker/requirements.txt
       - name: "9. Run Migrations"
         run: node scripts/apply-db-migrations.mjs
         env:
@@ -432,13 +555,20 @@ jobs:
         env:
           DATABASE_URL: postgresql://lunchlineup_app:app-testpass@localhost:5432/lunchlineup_test
           MIGRATION_DATABASE_URL: postgresql://root:testpass@localhost:5432/lunchlineup_test
+          PLATFORM_ADMIN_DB_CONTEXT_SECRET: ci-platform-admin-capability-secret-1234567890
           REDIS_URL: redis://localhost:6379
+          RABBITMQ_URL: amqp://lunchlineup_ci:rabbit-testpass@localhost:5672/%2f
+          ENGINE_GRPC_URL: 127.0.0.1:50051
 
   # --- Stage 11: DAST (OWASP ZAP) ---
   dast:
     # --- Stage 11: DAST (OWASP ZAP) ---
     needs: [integration-tests, build-images]
     runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      packages: read
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     env:
       COMPOSE_PROJECT_NAME: lunchlineup-ci-dast
@@ -446,6 +576,11 @@ jobs:
       IMAGE_TAG: ${{ github.sha }}
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: '22'
@@ -474,7 +609,7 @@ jobs:
           for service in api web engine worker migrate control backup; do
             docker image inspect "${IMAGE_PREFIX}/${service}:${IMAGE_TAG}" > /dev/null
           done
-          docker compose --env-file .env.smoke pull proxy pgbouncer postgres redis rabbitmq pitr-tools
+          docker compose --env-file .env.smoke pull proxy pgbouncer postgres redis rabbitmq
       - name: Start smoke stack
         run: docker compose --env-file .env.smoke up -d --no-build --pull never migrate proxy web api engine worker pgbouncer postgres redis rabbitmq
       - name: Wait for smoke target
@@ -488,14 +623,21 @@ jobs:
           done
           docker compose logs --tail=150
           exit 1
-      - name: ZAP Baseline Scan
-        uses: zaproxy/action-baseline@906a3c93ffde4864839d31a93daadcbd2737b4da # v0.12.0
+      - name: Run candidate-bound DAST helper
+        env:
+          DAST_OUTPUT_DIR: ${{ runner.temp }}/lunchlineup-candidate-dast/${{ github.sha }}
+          EXPECTED_SOURCE_SHA: ${{ github.sha }}
+        run: bash scripts/run-dast.sh "$SMOKE_TARGET_URL"
+      - name: Upload source-bound DAST evidence bundle
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          target: ${{ env.SMOKE_TARGET_URL }}
-          rules_file_name: '.zap-rules.tsv'
-          cmd_options: '-a'
-          fail_action: true
-          allow_issue_writing: false
+          name: candidate-dast-${{ github.sha }}
+          path: |
+            ${{ runner.temp }}/lunchlineup-candidate-dast/${{ github.sha }}/dast-evidence-${{ github.sha }}.json
+            ${{ runner.temp }}/lunchlineup-candidate-dast/${{ github.sha }}/dast-zap-${{ github.sha }}.json
+            ${{ runner.temp }}/lunchlineup-candidate-dast/${{ github.sha }}/dast-zap-${{ github.sha }}.html
+          if-no-files-found: error
+          retention-days: 90
       - name: Stop smoke stack
         if: always()
         run: |
@@ -507,6 +649,7 @@ jobs:
     # --- Stage 12: E2E Tests (Playwright) ---
     needs: integration-tests
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
@@ -527,6 +670,10 @@ jobs:
     name: "Stage 12b: Full-Stack E2E (Release Images)"
     needs: [integration-tests, build-images]
     runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      packages: read
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     env:
       COMPOSE_PROJECT_NAME: lunchlineup-ci-fullstack-e2e
@@ -538,6 +685,11 @@ jobs:
         docker compose --env-file .env.smoke run --rm -e DATA_TARGET_ENV=disposable migrate sh -lc 'DATABASE_URL="$MIGRATION_DATABASE_URL" node scripts/seed-e2e.mjs'
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: '22'
@@ -566,7 +718,7 @@ jobs:
           for ref in "$API_IMAGE_REF" "$WEB_IMAGE_REF" "$ENGINE_IMAGE_REF" "$WORKER_IMAGE_REF" "$MIGRATE_IMAGE_REF" "$CONTROL_IMAGE_REF" "$BACKUP_IMAGE_REF"; do
             docker pull "$ref"
           done
-          docker compose --env-file .env.smoke pull proxy pgbouncer postgres redis rabbitmq pitr-tools
+          docker compose --env-file .env.smoke pull proxy pgbouncer postgres redis rabbitmq
       - name: Start full-stack release images
         run: docker compose --env-file .env.smoke up -d --no-build --pull never migrate proxy web api engine worker pgbouncer postgres redis rabbitmq
       - name: Wait for full-stack target
@@ -597,6 +749,10 @@ jobs:
     # --- Stage 13: Load Test Smoke ---
     needs: [integration-tests, build-images]
     runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      packages: read
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     env:
       COMPOSE_PROJECT_NAME: lunchlineup-ci-load
@@ -604,6 +760,11 @@ jobs:
       IMAGE_TAG: ${{ github.sha }}
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: '22'
@@ -632,7 +793,7 @@ jobs:
           for service in api web engine worker migrate control backup; do
             docker image inspect "${IMAGE_PREFIX}/${service}:${IMAGE_TAG}" > /dev/null
           done
-          docker compose --env-file .env.smoke pull proxy pgbouncer postgres redis rabbitmq pitr-tools
+          docker compose --env-file .env.smoke pull proxy pgbouncer postgres redis rabbitmq
       - name: Start smoke stack
         run: docker compose --env-file .env.smoke up -d --no-build --pull never migrate proxy web api engine worker pgbouncer postgres redis rabbitmq
       - name: Wait for smoke target
@@ -646,8 +807,36 @@ jobs:
           done
           docker compose logs --tail=150
           exit 1
-      - name: Run Artillery
-        run: npx --yes artillery@2 run scripts/artillery-smoke.yml
+      - name: Seed mandatory availability-import load fixtures
+        run: |
+          set -euo pipefail
+          docker compose --env-file .env.smoke run --rm \
+            -e DATA_TARGET_ENV=disposable \
+            migrate sh -lc 'test -n "$MIGRATION_DATABASE_URL" && DATABASE_URL="$MIGRATION_DATABASE_URL" node scripts/seed-e2e.mjs'
+      - name: Run mandatory load and availability-import smoke
+        env:
+          ALLOW_LOCAL_LOAD_SMOKE: 'true'
+          AVAILABILITY_IMPORT_TENANT_SLUG: e2e-operations
+          AVAILABILITY_IMPORT_LOGIN_IDENTIFIER: e2e.admin
+          AVAILABILITY_IMPORT_LOGIN_PIN: '246810'
+          AVAILABILITY_IMPORT_TARGET_USER_IDENTIFIER: staff-1
+          AVAILABILITY_IMPORT_ORIGIN: https://smoke.lunchlineup.test
+          AVAILABILITY_IMPORT_CREDIT_SOURCE_ATTESTATION: admin-credit-grant
+          LOAD_OUTPUT_DIR: ${{ runner.temp }}/lunchlineup-candidate-load/${{ github.sha }}
+          EXPECTED_SOURCE_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          bash scripts/load-test.sh
+      - name: Upload source-bound load evidence bundle
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: candidate-load-${{ github.sha }}
+          path: |
+            ${{ runner.temp }}/lunchlineup-candidate-load/${{ github.sha }}/load-evidence-${{ github.sha }}.json
+            ${{ runner.temp }}/lunchlineup-candidate-load/${{ github.sha }}/load-artillery-${{ github.sha }}.json
+            ${{ runner.temp }}/lunchlineup-candidate-load/${{ github.sha }}/load-availability-${{ github.sha }}.json
+          if-no-files-found: error
+          retention-days: 90
       - name: Stop smoke stack
         if: always()
         run: |
@@ -656,13 +845,17 @@ jobs:
 
   bootstrap-release-registry:
     name: "Bootstrap Production Release Registry"
-    if: github.event_name == 'workflow_dispatch' && inputs.bootstrap_release_registry == true
+    needs: manual-production-operation-policy
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && inputs.bootstrap_release_registry == true && inputs.emergency_production_rollback != true
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     environment: production
     permissions:
       contents: read
+      id-token: write
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
       - name: Bootstrap registry from verified current-live retained bundle
         env:
           PRODUCTION_RELEASE_REGISTRY_URI: ${{ vars.PRODUCTION_RELEASE_REGISTRY_URI }}
@@ -680,30 +873,631 @@ jobs:
           [[ "$BOOTSTRAP_LIVE_SOURCE_SHA" =~ ^[a-f0-9]{40}$ ]]
           test "$BOOTSTRAP_CONFIRMATION" = "bootstrap-current-live-release:$BOOTSTRAP_LIVE_SOURCE_SHA"
           retained_bundle="$RUNNER_TEMP/lunchlineup-retained-live-release.json"
+          signed_index="$retained_bundle.index.json"
+          bundle_signature="$retained_bundle.sigstore.json"
+          index_signature="$retained_bundle.index.sigstore.json"
           api_proof="$RUNNER_TEMP/lunchlineup-retained-live-api-proof.json"
           web_proof="$RUNNER_TEMP/lunchlineup-retained-live-web-proof.json"
-          rm -f "$retained_bundle" "$retained_bundle.index" "$api_proof" "$web_proof"
+          rm -f "$retained_bundle" "$signed_index" "$bundle_signature" "$index_signature" "$api_proof" "$web_proof"
           node scripts/verify-external-health-release.mjs "$PRODUCTION_API_HEALTH_URL" "$BOOTSTRAP_LIVE_SOURCE_SHA" --output "$api_proof"
-          node scripts/verify-external-health-release.mjs "$PRODUCTION_WEB_URL" "$BOOTSTRAP_LIVE_SOURCE_SHA" --output "$web_proof"
-          node scripts/release-bundle-registry.mjs bootstrap-retained \
+          node scripts/verify-external-health-release.mjs "$PRODUCTION_WEB_URL" "$BOOTSTRAP_LIVE_SOURCE_SHA" --expect-public-html --output "$web_proof"
+          node scripts/release-bundle-registry.mjs prepare-bootstrap-retained \
             --registry-uri "$PRODUCTION_RELEASE_REGISTRY_URI" \
             --retained-bundle-uri "$BOOTSTRAP_LIVE_RELEASE_BUNDLE_URI" \
             --state-file "$retained_bundle" \
             --verified-source-sha "$BOOTSTRAP_LIVE_SOURCE_SHA" \
             --confirm "$BOOTSTRAP_CONFIRMATION" \
             --max-live-proof-age-seconds 300 \
+            --expected-api-health-url "$PRODUCTION_API_HEALTH_URL" \
+            --expected-public-web-url "$PRODUCTION_WEB_URL" \
             --live-identity-proof "$api_proof" \
             --live-identity-proof "$web_proof"
-          rm -f "$retained_bundle" "$retained_bundle.index" "$api_proof" "$web_proof"
+          node scripts/release-bundle-registry.mjs create-index \
+            --state-file "$retained_bundle" \
+            --index-file "$signed_index" \
+            --expected-certificate-identity "$RELEASE_BUNDLE_CERTIFICATE_IDENTITY" \
+            --expected-oidc-issuer "$RELEASE_BUNDLE_OIDC_ISSUER"
+          cosign sign-blob --yes --bundle "$bundle_signature" "$retained_bundle"
+          cosign sign-blob --yes --bundle "$index_signature" "$signed_index"
+          node scripts/release-bundle-registry.mjs bootstrap-retained \
+            --registry-uri "$PRODUCTION_RELEASE_REGISTRY_URI" \
+            --state-file "$retained_bundle" \
+            --index-file "$signed_index" \
+            --bundle-signature-bundle "$bundle_signature" \
+            --index-signature-bundle "$index_signature" \
+            --expected-certificate-identity "$RELEASE_BUNDLE_CERTIFICATE_IDENTITY" \
+            --expected-oidc-issuer "$RELEASE_BUNDLE_OIDC_ISSUER" \
+            --verified-source-sha "$BOOTSTRAP_LIVE_SOURCE_SHA" \
+            --confirm "$BOOTSTRAP_CONFIRMATION" \
+            --max-live-proof-age-seconds 300 \
+            --expected-api-health-url "$PRODUCTION_API_HEALTH_URL" \
+            --expected-public-web-url "$PRODUCTION_WEB_URL" \
+            --live-identity-proof "$api_proof" \
+            --live-identity-proof "$web_proof"
+          rm -f "$retained_bundle" "$signed_index" "$bundle_signature" "$index_signature" "$api_proof" "$web_proof"
+
+  emergency-production-rollback:
+    name: "Protected Emergency Production Rollback"
+    needs: manual-production-operation-policy
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && inputs.emergency_production_rollback == true && inputs.bootstrap_release_registry != true
+    runs-on: ubuntu-latest
+    timeout-minutes: 100
+    environment: production
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      EMERGENCY_ROLLBACK_JOB_TIMEOUT_SECONDS: '6000'
+      EMERGENCY_ROLLBACK_PRE_MUTATION_PHASE_SECONDS: '3000'
+      EMERGENCY_ROLLBACK_CLONE_TIMEOUT_SECONDS: '300'
+      EMERGENCY_ROLLBACK_CLONE_ENV_INSPECTION_TIMEOUT_SECONDS: '30'
+      EMERGENCY_ROLLBACK_COMPATIBILITY_PREFLIGHT_TIMEOUT_SECONDS: '60'
+      EMERGENCY_ROLLBACK_NPM_CI_TIMEOUT_SECONDS: '300'
+      EMERGENCY_ROLLBACK_PIP_INSTALL_TIMEOUT_SECONDS: '300'
+      OLD_RELEASE_COMPATIBILITY_TIMEOUT_MS: '900000'
+      EMERGENCY_ROLLBACK_HARNESS_INSPECTION_TIMEOUT_SECONDS: '90'
+      EMERGENCY_ROLLBACK_CLONE_TEARDOWN_TIMEOUT_SECONDS: '300'
+      EMERGENCY_ROLLBACK_COMPATIBILITY_FINALIZE_TIMEOUT_SECONDS: '180'
+      EMERGENCY_ROLLBACK_PRE_MUTATION_RESERVE_SECONDS: '240'
+      VM217_MUTATION_BUDGET_SECONDS: '1800'
+      VM217_SSH_COMMAND_TIMEOUT_SECONDS: '1800'
+      VM217_SSH_RECONCILE_TIMEOUT_SECONDS: '60'
+      EMERGENCY_ROLLBACK_HEALTH_PROOF_RESERVE_SECONDS: '180'
+      EMERGENCY_ROLLBACK_REGISTRY_REPOINT_RESERVE_SECONDS: '180'
+      VM217_SSH_CLEANUP_TIMEOUT_SECONDS: '30'
+      EMERGENCY_ROLLBACK_CLEANUP_TIMEOUT_SECONDS: '300'
+      EMERGENCY_ROLLBACK_TIMEOUT_KILL_RESERVE_SECONDS: '20'
+      EMERGENCY_ROLLBACK_RUNNER_RESERVE_SECONDS: '430'
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '22'
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.12'
+      - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+      - name: Validate emergency rollback aggregate deadline
+        run: |
+          set -euo pipefail
+          for value in \
+            "$EMERGENCY_ROLLBACK_JOB_TIMEOUT_SECONDS" \
+            "$EMERGENCY_ROLLBACK_PRE_MUTATION_PHASE_SECONDS" \
+            "$EMERGENCY_ROLLBACK_CLONE_TIMEOUT_SECONDS" \
+            "$EMERGENCY_ROLLBACK_CLONE_ENV_INSPECTION_TIMEOUT_SECONDS" \
+            "$EMERGENCY_ROLLBACK_COMPATIBILITY_PREFLIGHT_TIMEOUT_SECONDS" \
+            "$EMERGENCY_ROLLBACK_NPM_CI_TIMEOUT_SECONDS" \
+            "$EMERGENCY_ROLLBACK_PIP_INSTALL_TIMEOUT_SECONDS" \
+            "$EMERGENCY_ROLLBACK_PRE_MUTATION_RESERVE_SECONDS" \
+            "$OLD_RELEASE_COMPATIBILITY_TIMEOUT_MS" \
+            "$EMERGENCY_ROLLBACK_HARNESS_INSPECTION_TIMEOUT_SECONDS" \
+            "$EMERGENCY_ROLLBACK_CLONE_TEARDOWN_TIMEOUT_SECONDS" \
+            "$EMERGENCY_ROLLBACK_COMPATIBILITY_FINALIZE_TIMEOUT_SECONDS" \
+            "$VM217_MUTATION_BUDGET_SECONDS" \
+            "$VM217_SSH_COMMAND_TIMEOUT_SECONDS" \
+            "$VM217_SSH_RECONCILE_TIMEOUT_SECONDS" \
+            "$EMERGENCY_ROLLBACK_HEALTH_PROOF_RESERVE_SECONDS" \
+            "$EMERGENCY_ROLLBACK_REGISTRY_REPOINT_RESERVE_SECONDS" \
+            "$VM217_SSH_CLEANUP_TIMEOUT_SECONDS" \
+            "$EMERGENCY_ROLLBACK_CLEANUP_TIMEOUT_SECONDS" \
+            "$EMERGENCY_ROLLBACK_TIMEOUT_KILL_RESERVE_SECONDS" \
+            "$EMERGENCY_ROLLBACK_RUNNER_RESERVE_SECONDS"; do
+            [[ "$value" =~ ^[1-9][0-9]*$ ]]
+          done
+          (( OLD_RELEASE_COMPATIBILITY_TIMEOUT_MS % 1000 == 0 ))
+          compatibility_seconds=$((OLD_RELEASE_COMPATIBILITY_TIMEOUT_MS / 1000))
+          test "$VM217_MUTATION_BUDGET_SECONDS" = "$VM217_SSH_COMMAND_TIMEOUT_SECONDS"
+          pre_mutation_sequential_budget=$((
+            EMERGENCY_ROLLBACK_CLONE_TIMEOUT_SECONDS
+            + EMERGENCY_ROLLBACK_CLONE_ENV_INSPECTION_TIMEOUT_SECONDS
+            + EMERGENCY_ROLLBACK_COMPATIBILITY_PREFLIGHT_TIMEOUT_SECONDS
+            + (2 * EMERGENCY_ROLLBACK_NPM_CI_TIMEOUT_SECONDS)
+            + EMERGENCY_ROLLBACK_PIP_INSTALL_TIMEOUT_SECONDS
+            + compatibility_seconds
+            + EMERGENCY_ROLLBACK_HARNESS_INSPECTION_TIMEOUT_SECONDS
+            + EMERGENCY_ROLLBACK_CLONE_TEARDOWN_TIMEOUT_SECONDS
+            + EMERGENCY_ROLLBACK_COMPATIBILITY_FINALIZE_TIMEOUT_SECONDS
+          ))
+          test "$EMERGENCY_ROLLBACK_PRE_MUTATION_PHASE_SECONDS" = "$((pre_mutation_sequential_budget + EMERGENCY_ROLLBACK_PRE_MUTATION_RESERVE_SECONDS))"
+          pre_mutation_budget="$EMERGENCY_ROLLBACK_PRE_MUTATION_PHASE_SECONDS"
+          post_mutation_budget=$((
+            VM217_SSH_RECONCILE_TIMEOUT_SECONDS
+            + EMERGENCY_ROLLBACK_HEALTH_PROOF_RESERVE_SECONDS
+            + EMERGENCY_ROLLBACK_REGISTRY_REPOINT_RESERVE_SECONDS
+            + VM217_SSH_CLEANUP_TIMEOUT_SECONDS
+            + EMERGENCY_ROLLBACK_CLEANUP_TIMEOUT_SECONDS
+            + EMERGENCY_ROLLBACK_TIMEOUT_KILL_RESERVE_SECONDS
+          ))
+          internal_budget=$((pre_mutation_budget + VM217_MUTATION_BUDGET_SECONDS + post_mutation_budget))
+          (( internal_budget < EMERGENCY_ROLLBACK_JOB_TIMEOUT_SECONDS ))
+          (( internal_budget + EMERGENCY_ROLLBACK_RUNNER_RESERVE_SECONDS == EMERGENCY_ROLLBACK_JOB_TIMEOUT_SECONDS ))
+          ((
+            EMERGENCY_ROLLBACK_JOB_TIMEOUT_SECONDS - pre_mutation_budget - VM217_MUTATION_BUDGET_SECONDS
+            >= post_mutation_budget + EMERGENCY_ROLLBACK_RUNNER_RESERVE_SECONDS
+          ))
+          pre_mutation_started_at_epoch_seconds="$(date +%s)"
+          mutation_not_after_epoch_seconds="$((pre_mutation_started_at_epoch_seconds + pre_mutation_budget))"
+          {
+            echo "VM217_MUTATION_NOT_AFTER_EPOCH_SECONDS=$mutation_not_after_epoch_seconds"
+            echo "EMERGENCY_ROLLBACK_PRE_MUTATION_STARTED_AT_EPOCH_SECONDS=$pre_mutation_started_at_epoch_seconds"
+          } >> "$GITHUB_ENV"
+          printf 'emergency_rollback_deadline_ok outer_seconds=%s internal_seconds=%s pre_mutation_seconds=%s post_mutation_seconds=%s runner_reserve_seconds=%s mutation_not_after=%s\n' \
+            "$EMERGENCY_ROLLBACK_JOB_TIMEOUT_SECONDS" \
+            "$internal_budget" \
+            "$pre_mutation_budget" \
+            "$post_mutation_budget" \
+            "$EMERGENCY_ROLLBACK_RUNNER_RESERVE_SECONDS" \
+            "$mutation_not_after_epoch_seconds"
+      - name: Validate protected emergency rollback intent
+        env:
+          EMERGENCY_ROLLBACK_SOURCE_SHA: ${{ inputs.emergency_rollback_source_sha }}
+          EMERGENCY_ROLLBACK_CONFIRMATION: ${{ inputs.emergency_rollback_confirmation }}
+          PRODUCTION_RELEASE_REGISTRY_URI: ${{ vars.PRODUCTION_RELEASE_REGISTRY_URI }}
+          PRODUCTION_ROLLBACK_COMMAND: ${{ vars.PRODUCTION_ROLLBACK_COMMAND }}
+          PRODUCTION_POST_DEPLOY_PROOF_COMMAND: ${{ vars.PRODUCTION_POST_DEPLOY_PROOF_COMMAND }}
+          OLD_RELEASE_COMPATIBILITY_CLONE_COMMAND: ${{ secrets.OLD_RELEASE_COMPATIBILITY_CLONE_COMMAND }}
+          OLD_RELEASE_COMPATIBILITY_PROVIDER_IMAGE: ${{ vars.OLD_RELEASE_COMPATIBILITY_PROVIDER_IMAGE }}
+          PRODUCTION_API_HEALTH_URL: ${{ vars.PRODUCTION_API_HEALTH_URL }}
+          PRODUCTION_WEB_URL: ${{ vars.PRODUCTION_WEB_URL }}
+        run: |
+          set -euo pipefail
+          [[ "$EMERGENCY_ROLLBACK_SOURCE_SHA" =~ ^[a-f0-9]{40}$ ]]
+          test "$EMERGENCY_ROLLBACK_CONFIRMATION" = "rollback-production-to:$EMERGENCY_ROLLBACK_SOURCE_SHA"
+          test -n "$PRODUCTION_RELEASE_REGISTRY_URI"
+          test -n "$PRODUCTION_ROLLBACK_COMMAND"
+          test -n "$PRODUCTION_POST_DEPLOY_PROOF_COMMAND"
+          test -n "$OLD_RELEASE_COMPATIBILITY_CLONE_COMMAND"
+          [[ "$OLD_RELEASE_COMPATIBILITY_PROVIDER_IMAGE" =~ ^[A-Za-z0-9._/:=-]+@sha256:[a-f0-9]{64}$ ]]
+          test -n "$PRODUCTION_API_HEALTH_URL"
+          test -n "$PRODUCTION_WEB_URL"
+      - name: Resolve and authenticate target and current retained releases
+        env:
+          EMERGENCY_ROLLBACK_SOURCE_SHA: ${{ inputs.emergency_rollback_source_sha }}
+          PRODUCTION_RELEASE_REGISTRY_URI: ${{ vars.PRODUCTION_RELEASE_REGISTRY_URI }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.RELEASE_REGISTRY_AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.RELEASE_REGISTRY_AWS_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: ${{ vars.RELEASE_REGISTRY_AWS_REGION }}
+        run: |
+          set -euo pipefail
+          root="$RUNNER_TEMP/lunchlineup-emergency-rollback"
+          target_state="$root/target-release.json"
+          current_state="$root/current-release.json"
+          target_dir="$root/target"
+          current_dir="$root/current"
+          rm -rf "$root"
+          mkdir -p "$root"
+          node scripts/release-bundle-registry.mjs resolve \
+            --registry-uri "$PRODUCTION_RELEASE_REGISTRY_URI" \
+            --source-sha "$EMERGENCY_ROLLBACK_SOURCE_SHA" \
+            --output "$target_state" \
+            --expected-certificate-identity "$RELEASE_BUNDLE_CERTIFICATE_IDENTITY" \
+            --expected-oidc-issuer "$RELEASE_BUNDLE_OIDC_ISSUER"
+          node scripts/release-bundle-registry.mjs resolve \
+            --registry-uri "$PRODUCTION_RELEASE_REGISTRY_URI" \
+            --output "$current_state" \
+            --expected-certificate-identity "$RELEASE_BUNDLE_CERTIFICATE_IDENTITY" \
+            --expected-oidc-issuer "$RELEASE_BUNDLE_OIDC_ISSUER"
+          node scripts/materialize-rollback-state.mjs \
+            --state-file "$target_state" \
+            --index-file "$target_state.index.json" \
+            --bundle-signature-bundle "$target_state.sigstore.json" \
+            --index-signature-bundle "$target_state.index.sigstore.json" \
+            --expected-certificate-identity "$RELEASE_BUNDLE_CERTIFICATE_IDENTITY" \
+            --expected-oidc-issuer "$RELEASE_BUNDLE_OIDC_ISSUER" \
+            --output-dir "$target_dir" \
+            --github-env "$GITHUB_ENV"
+          node scripts/materialize-rollback-state.mjs \
+            --state-file "$current_state" \
+            --index-file "$current_state.index.json" \
+            --bundle-signature-bundle "$current_state.sigstore.json" \
+            --index-signature-bundle "$current_state.index.sigstore.json" \
+            --expected-certificate-identity "$RELEASE_BUNDLE_CERTIFICATE_IDENTITY" \
+            --expected-oidc-issuer "$RELEASE_BUNDLE_OIDC_ISSUER" \
+            --output-dir "$current_dir"
+          current_sha="$(node -e 'const fs=require("fs"); const value=JSON.parse(fs.readFileSync(process.argv[1],"utf8")); process.stdout.write(value.sourceSha)' "$current_state")"
+          current_runtime_sha="$(node -e 'const fs=require("fs"); const value=JSON.parse(fs.readFileSync(process.argv[1],"utf8")); process.stdout.write(value.sha256)' "$current_dir/runtime-secret.json")"
+          test "$current_sha" != "$EMERGENCY_ROLLBACK_SOURCE_SHA"
+          {
+            echo "CURRENT_RELEASE_SOURCE_SHA=$current_sha"
+            echo "CURRENT_RELEASE_MANIFEST_PATH=$current_dir/app/.release/release-manifest.json"
+            echo "CURRENT_DEPLOYMENT_APP_DIR=$current_dir/app"
+            echo "CURRENT_RUNTIME_SECRET_DESCRIPTOR=$current_dir/runtime-secret.json"
+            echo "CURRENT_PRODUCTION_RUNTIME_ENV_SHA256=$current_runtime_sha"
+          } >> "$GITHUB_ENV"
+      - name: Verify retained target, current release, and rollback command
+        env:
+          EMERGENCY_ROLLBACK_SOURCE_SHA: ${{ inputs.emergency_rollback_source_sha }}
+          PRODUCTION_ROLLBACK_COMMAND: ${{ vars.PRODUCTION_ROLLBACK_COMMAND }}
+          PRODUCTION_POST_DEPLOY_PROOF_COMMAND: ${{ vars.PRODUCTION_POST_DEPLOY_PROOF_COMMAND }}
+          PRODUCTION_API_HEALTH_URL: ${{ vars.PRODUCTION_API_HEALTH_URL }}
+        run: |
+          set -euo pipefail
+          test "$PREVIOUS_RELEASE_SOURCE_SHA" = "$EMERGENCY_ROLLBACK_SOURCE_SHA"
+          node scripts/verify-release-artifacts.mjs "$PREVIOUS_RELEASE_MANIFEST_PATH" \
+            --source-sha "$PREVIOUS_RELEASE_SOURCE_SHA" \
+            --deployment-root "$PREVIOUS_DEPLOYMENT_APP_DIR" \
+            --launch-proof-file "$PREVIOUS_LAUNCH_PROOF_PATH" \
+            --launch-proof-mode rollback \
+            --rollback-command-env PRODUCTION_ROLLBACK_COMMAND \
+            --post-deploy-proof-command-env PRODUCTION_POST_DEPLOY_PROOF_COMMAND \
+            --production-api-health-url-env PRODUCTION_API_HEALTH_URL
+          node "$PREVIOUS_DEPLOYMENT_APP_DIR/scripts/verify-release-artifacts.mjs" "$PREVIOUS_RELEASE_MANIFEST_PATH" \
+            --source-sha "$PREVIOUS_RELEASE_SOURCE_SHA" \
+            --deployment-root "$PREVIOUS_DEPLOYMENT_APP_DIR" \
+            --launch-proof-file "$PREVIOUS_LAUNCH_PROOF_PATH" \
+            --launch-proof-mode rollback
+          node scripts/verify-release-artifacts.mjs "$CURRENT_RELEASE_MANIFEST_PATH" \
+            --source-sha "$CURRENT_RELEASE_SOURCE_SHA" \
+            --deployment-root "$CURRENT_DEPLOYMENT_APP_DIR"
+      - name: Rehydrate current and target runtime secrets
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.RUNTIME_SECRET_AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.RUNTIME_SECRET_AWS_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: ${{ vars.RUNTIME_SECRET_AWS_REGION }}
+        run: |
+          set -euo pipefail
+          current_runtime="$RUNNER_TEMP/lunchlineup-current-runtime.env"
+          target_runtime="$RUNNER_TEMP/lunchlineup-rollback-runtime.env"
+          rm -f "$current_runtime" "$target_runtime"
+          node scripts/rehydrate-runtime-secret.mjs --descriptor "$CURRENT_RUNTIME_SECRET_DESCRIPTOR" --output "$current_runtime"
+          node scripts/rehydrate-runtime-secret.mjs --descriptor "$PREVIOUS_RUNTIME_SECRET_DESCRIPTOR" --output "$target_runtime"
+          test "$(sha256sum "$current_runtime" | awk '{print $1}')" = "$CURRENT_PRODUCTION_RUNTIME_ENV_SHA256"
+          test "$(sha256sum "$target_runtime" | awk '{print $1}')" = "$PREVIOUS_PRODUCTION_RUNTIME_ENV_SHA256"
+          {
+            echo "CURRENT_RUNTIME_ENV_PATH=$current_runtime"
+            echo "ROLLBACK_RUNTIME_ENV_PATH=$target_runtime"
+          } >> "$GITHUB_ENV"
+      - name: Execute target release against current production schema clone
+        env:
+          OLD_RELEASE_COMPATIBILITY_CLONE_COMMAND: ${{ secrets.OLD_RELEASE_COMPATIBILITY_CLONE_COMMAND }}
+          OLD_RELEASE_COMPATIBILITY_PROVIDER_IMAGE: ${{ vars.OLD_RELEASE_COMPATIBILITY_PROVIDER_IMAGE }}
+        run: |
+          set -euo pipefail
+          evidence_dir="$RUNNER_TEMP/emergency-old-release-compatibility-evidence"
+          clone_driver="$RUNNER_TEMP/lunchlineup-emergency-compatibility-clone-driver.sh"
+          clone_env="$RUNNER_TEMP/lunchlineup-emergency-compatibility-clone.env"
+          clone_suffix="$(printf '%s' "emergency:$GITHUB_RUN_ID:$GITHUB_RUN_ATTEMPT" | sha256sum | cut -c1-12)"
+          clone_id="llc-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT-$clone_suffix"
+          clone_network="$clone_id-network"
+          clone_driver_ready=false
+          clone_destroy_attempted=false
+          clone_destroyed=false
+          run_pre_mutation() {
+            local operation="$1"
+            local requested_seconds="$2"
+            local reserved_seconds="$3"
+            shift 3
+            local now_epoch_seconds remaining_seconds effective_seconds status
+            now_epoch_seconds="$(date +%s)"
+            remaining_seconds=$((VM217_MUTATION_NOT_AFTER_EPOCH_SECONDS - now_epoch_seconds - reserved_seconds))
+            if (( remaining_seconds < 1 )); then
+              echo "Emergency rollback pre-mutation cutoff exhausted before $operation; production mutation remains blocked." >&2
+              return 124
+            fi
+            effective_seconds="$requested_seconds"
+            (( effective_seconds <= remaining_seconds )) || effective_seconds="$remaining_seconds"
+            if timeout --foreground --signal=TERM --kill-after=5s "${effective_seconds}s" "$@"; then
+              return 0
+            else
+              status=$?
+            fi
+            if (( status == 124 || status == 137 )); then
+              echo "Emergency rollback pre-mutation deadline exceeded during $operation; production mutation remains blocked." >&2
+              return 124
+            fi
+            return "$status"
+          }
+          destroy_clone() {
+            [[ "$clone_driver_ready" == "true" && "$clone_destroyed" != "true" ]] || return 0
+            clone_destroy_attempted=true
+            run_pre_mutation "isolated clone teardown" "$EMERGENCY_ROLLBACK_CLONE_TEARDOWN_TIMEOUT_SECONDS" 0 \
+              bash scripts/destroy-old-release-compatibility-clone.sh \
+              --driver "$clone_driver" \
+              --clone-env "$clone_env" \
+              --clone-id "$clone_id" \
+              --production-runtime-env "$CURRENT_RUNTIME_ENV_PATH" \
+              --timeout-seconds "$EMERGENCY_ROLLBACK_CLONE_TEARDOWN_TIMEOUT_SECONDS"
+            clone_destroyed=true
+          }
+          cleanup_clone_on_exit() {
+            local exit_code=$?
+            local destroy_status=0
+            trap - EXIT INT TERM
+            if [[ "$clone_destroy_attempted" != "true" ]]; then
+              destroy_clone || destroy_status=$?
+            fi
+            (( exit_code != 0 )) || exit_code="$destroy_status"
+            exit "$exit_code"
+          }
+          trap cleanup_clone_on_exit EXIT
+          trap 'exit 130' INT
+          trap 'exit 143' TERM
+          clone_provider_runtime="$(readlink -f "$(command -v docker)")"
+          test -x "$clone_provider_runtime"
+          test "$(stat -c '%u' "$clone_provider_runtime")" = 0
+          clone_provider_runtime_sha256="$(sha256sum "$clone_provider_runtime" | awk '{print $1}')"
+          [[ "$clone_provider_runtime_sha256" =~ ^[a-f0-9]{64}$ ]]
+          rm -rf "$evidence_dir"
+          rm -f "$clone_driver" "$clone_env"
+          install -m 700 /dev/null "$clone_driver"
+          printf '%s\n' "$OLD_RELEASE_COMPATIBILITY_CLONE_COMMAND" > "$clone_driver"
+          clone_driver_ready=true
+          test ! -e "$evidence_dir"
+          run_pre_mutation "isolated clone provisioning" "$EMERGENCY_ROLLBACK_CLONE_TIMEOUT_SECONDS" "$EMERGENCY_ROLLBACK_CLONE_TEARDOWN_TIMEOUT_SECONDS" \
+            env OLD_RELEASE_COMPATIBILITY_CLONE_OPERATION=provision \
+            OLD_RELEASE_COMPATIBILITY_CLONE_ID="$clone_id" \
+            OLD_RELEASE_COMPATIBILITY_CLONE_ENV_PATH="$clone_env" \
+            OLD_RELEASE_COMPATIBILITY_PRODUCTION_RUNTIME_ENV_PATH="$CURRENT_RUNTIME_ENV_PATH" \
+            "$clone_driver"
+          test ! -e "$evidence_dir"
+          test -f "$clone_env"
+          test ! -L "$clone_env"
+          test -s "$clone_env"
+          chmod 600 "$clone_env"
+          run_pre_mutation "isolated clone environment inspection" "$EMERGENCY_ROLLBACK_CLONE_ENV_INSPECTION_TIMEOUT_SECONDS" "$EMERGENCY_ROLLBACK_CLONE_TEARDOWN_TIMEOUT_SECONDS" \
+            python - "$clone_env" <<'PY'
+          import sys
+
+          expected = {
+              "APP_DB_PASSWORD",
+              "APP_DB_USER",
+              "DATABASE_URL",
+              "DATA_TARGET_ENV",
+              "ENGINE_GRPC_URL",
+              "MIGRATION_DATABASE_URL",
+              "PLATFORM_ADMIN_DB_CONTEXT_SECRET",
+              "POSTGRES_PASSWORD",
+              "POSTGRES_USER",
+              "RABBITMQ_URL",
+              "REDIS_URL",
+              "WEBHOOK_DELIVERY_ENCRYPTION_KEY_CURRENT",
+          }
+          keys = []
+          with open(sys.argv[1], encoding="utf-8") as handle:
+              for raw_line in handle:
+                  line = raw_line.rstrip("\r\n")
+                  if not line or "=" not in line:
+                      raise SystemExit("clone env must contain only nonempty KEY=VALUE records")
+                  key, value = line.split("=", 1)
+                  if not key or not value:
+                      raise SystemExit("clone env must contain only nonempty KEY=VALUE records")
+                  keys.append(key)
+          if len(keys) != len(set(keys)) or set(keys) != expected:
+              raise SystemExit("clone env keys do not exactly match the protected contract")
+          PY
+          run_pre_mutation "materialized release compatibility preflight" "$EMERGENCY_ROLLBACK_COMPATIBILITY_PREFLIGHT_TIMEOUT_SECONDS" "$EMERGENCY_ROLLBACK_CLONE_TEARDOWN_TIMEOUT_SECONDS" \
+            node scripts/old-release-compatibility-harness.mjs preflight \
+            --old-root "$PREVIOUS_DEPLOYMENT_APP_DIR" \
+            --old-manifest "$PREVIOUS_RELEASE_MANIFEST_PATH" \
+            --old-sha "$PREVIOUS_RELEASE_SOURCE_SHA" \
+            --candidate-root "$CURRENT_DEPLOYMENT_APP_DIR" \
+            --candidate-manifest "$CURRENT_RELEASE_MANIFEST_PATH" \
+            --candidate-sha "$CURRENT_RELEASE_SOURCE_SHA"
+          provider_dependency_seconds="$((2 * EMERGENCY_ROLLBACK_NPM_CI_TIMEOUT_SECONDS + EMERGENCY_ROLLBACK_PIP_INSTALL_TIMEOUT_SECONDS))"
+          harness_outer_seconds="$((provider_dependency_seconds + OLD_RELEASE_COMPATIBILITY_TIMEOUT_MS / 1000 + EMERGENCY_ROLLBACK_HARNESS_INSPECTION_TIMEOUT_SECONDS))"
+          run_pre_mutation "provider dependency preparation, execution, and harness inspection" "$harness_outer_seconds" "$EMERGENCY_ROLLBACK_CLONE_TEARDOWN_TIMEOUT_SECONDS" \
+            env \
+            OLD_RELEASE_COMPATIBILITY_NPM_CI_TIMEOUT_MS="$((EMERGENCY_ROLLBACK_NPM_CI_TIMEOUT_SECONDS * 1000))" \
+            OLD_RELEASE_COMPATIBILITY_PIP_INSTALL_TIMEOUT_MS="$((EMERGENCY_ROLLBACK_PIP_INSTALL_TIMEOUT_SECONDS * 1000))" \
+            node scripts/old-release-compatibility-harness.mjs run \
+            --old-root "$PREVIOUS_DEPLOYMENT_APP_DIR" \
+            --old-manifest "$PREVIOUS_RELEASE_MANIFEST_PATH" \
+            --old-sha "$PREVIOUS_RELEASE_SOURCE_SHA" \
+            --candidate-root "$CURRENT_DEPLOYMENT_APP_DIR" \
+            --candidate-manifest "$CURRENT_RELEASE_MANIFEST_PATH" \
+            --candidate-sha "$CURRENT_RELEASE_SOURCE_SHA" \
+            --clone-env "$clone_env" \
+            --production-runtime-env "$CURRENT_RUNTIME_ENV_PATH" \
+            --clone-id "$clone_id" \
+            --clone-network "$clone_network" \
+            --clone-provider-runtime "$clone_provider_runtime" \
+            --clone-provider-runtime-sha256 "$clone_provider_runtime_sha256" \
+            --clone-provider-image "$OLD_RELEASE_COMPATIBILITY_PROVIDER_IMAGE" \
+            --evidence-dir "$evidence_dir"
+          destroy_clone
+          trap - EXIT INT TERM
+          now_epoch_seconds="$(date +%s)"
+          (( now_epoch_seconds <= VM217_MUTATION_NOT_AFTER_EPOCH_SECONDS )) \
+            || { echo "Emergency rollback pre-mutation cutoff passed after compatibility teardown; production mutation remains blocked." >&2; exit 124; }
+          echo "EMERGENCY_ROLLBACK_PRE_MUTATION_COMPATIBILITY_COMPLETE=true" >> "$GITHUB_ENV"
+      - name: Retain executable emergency compatibility evidence
+        id: upload_emergency_compatibility_evidence
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: emergency-old-release-compatibility-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/emergency-old-release-compatibility-evidence
+          if-no-files-found: error
+          retention-days: 90
+          compression-level: 0
+      - name: Bind, verify, and sign emergency compatibility proof
+        env:
+          COMPATIBILITY_EVIDENCE_URI: ${{ steps.upload_emergency_compatibility_evidence.outputs.artifact-url }}
+        run: |
+          set -euo pipefail
+          proof="$RUNNER_TEMP/emergency-old-release-current-schema-compatibility.json"
+          rm -f "$proof"
+          finalize_not_after_epoch_seconds="$(($(date +%s) + EMERGENCY_ROLLBACK_COMPATIBILITY_FINALIZE_TIMEOUT_SECONDS))"
+          (( finalize_not_after_epoch_seconds <= VM217_MUTATION_NOT_AFTER_EPOCH_SECONDS )) \
+            || finalize_not_after_epoch_seconds="$VM217_MUTATION_NOT_AFTER_EPOCH_SECONDS"
+          run_finalize() {
+            local operation="$1"
+            shift
+            local remaining_seconds status
+            remaining_seconds=$((finalize_not_after_epoch_seconds - $(date +%s)))
+            if (( remaining_seconds < 1 )); then
+              echo "Emergency compatibility finalization deadline exhausted before $operation; production mutation remains blocked." >&2
+              return 124
+            fi
+            if timeout --foreground --signal=TERM --kill-after=5s "${remaining_seconds}s" "$@"; then
+              return 0
+            else
+              status=$?
+            fi
+            (( status != 124 && status != 137 )) \
+              || echo "Emergency compatibility finalization deadline exceeded during $operation; production mutation remains blocked." >&2
+            return "$status"
+          }
+          run_finalize "compatibility proof finalization" node scripts/old-release-compatibility-harness.mjs finalize \
+            --attestation "$RUNNER_TEMP/emergency-old-release-compatibility-evidence/compatibility-execution.json" \
+            --evidence-uri "$COMPATIBILITY_EVIDENCE_URI" \
+            --output "$proof"
+          run_finalize "compatibility proof verification" node scripts/verify-old-release-compatibility.mjs "$proof" "$PREVIOUS_RELEASE_SOURCE_SHA" "$CURRENT_RELEASE_SOURCE_SHA"
+          run_finalize "raw migration compatibility verification" node scripts/verify-raw-migration-rollback.mjs \
+            --rollback-manifest "$PREVIOUS_RELEASE_MANIFEST_PATH" \
+            --candidate-manifest "$CURRENT_RELEASE_MANIFEST_PATH" \
+            --candidate-root "$CURRENT_DEPLOYMENT_APP_DIR" \
+            --old-release-compatibility-proof "$proof"
+          signature="$proof.sigstore.json"
+          run_finalize "compatibility proof signing" cosign sign-blob --yes --bundle "$signature" "$proof"
+          run_finalize "compatibility signature verification" cosign verify-blob "$proof" \
+            --bundle "$signature" \
+            --certificate-identity "$RELEASE_BUNDLE_CERTIFICATE_IDENTITY" \
+            --certificate-oidc-issuer "$RELEASE_BUNDLE_OIDC_ISSUER"
+          proof_sha256="$(sha256sum "$proof" | awk '{print tolower($1)}')"
+          signature_sha256="$(sha256sum "$signature" | awk '{print tolower($1)}')"
+          {
+            echo "OLD_RELEASE_COMPATIBILITY_PROOF_PATH=$proof"
+            echo "OLD_RELEASE_COMPATIBILITY_PROOF_SHA256=$proof_sha256"
+            echo "OLD_RELEASE_COMPATIBILITY_SIGNATURE_BUNDLE_PATH=$signature"
+            echo "OLD_RELEASE_COMPATIBILITY_SIGNATURE_BUNDLE_SHA256=$signature_sha256"
+            echo "ROLLBACK_CANDIDATE_SOURCE_SHA=$CURRENT_RELEASE_SOURCE_SHA"
+            echo "EMERGENCY_ROLLBACK_PRE_MUTATION_PROOF_COMPLETE=true"
+          } >> "$GITHUB_ENV"
+      - name: Execute checked-in emergency rollback transport and verify release identity
+        env:
+          PRODUCTION_API_HEALTH_URL: ${{ vars.PRODUCTION_API_HEALTH_URL }}
+          PRODUCTION_WEB_URL: ${{ vars.PRODUCTION_WEB_URL }}
+          VM217_HOST: ${{ vars.VM217_HOST }}
+          VM217_USER: ${{ vars.VM217_USER }}
+          VM217_SSH_PRIVATE_KEY: ${{ secrets.VM217_SSH_PRIVATE_KEY }}
+          VM217_SSH_KNOWN_HOSTS: ${{ secrets.VM217_SSH_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+          test "$EMERGENCY_ROLLBACK_PRE_MUTATION_COMPATIBILITY_COMPLETE" = "true"
+          test "$EMERGENCY_ROLLBACK_PRE_MUTATION_PROOF_COMPLETE" = "true"
+          test -n "$VM217_HOST"
+          test -n "$VM217_USER"
+          test -n "$VM217_SSH_PRIVATE_KEY"
+          test -n "$VM217_SSH_KNOWN_HOSTS"
+          now_epoch_seconds="$(date +%s)"
+          (( now_epoch_seconds <= VM217_MUTATION_NOT_AFTER_EPOCH_SECONDS )) \
+            || { echo "Emergency rollback pre-mutation cutoff passed; production mutation was not started." >&2; exit 124; }
+          private_key="$RUNNER_TEMP/lunchlineup-emergency-vm217-private-key"
+          known_hosts="$RUNNER_TEMP/lunchlineup-emergency-vm217-known-hosts"
+          install -m 600 /dev/null "$private_key"
+          install -m 600 /dev/null "$known_hosts"
+          printf '%s\n' "$VM217_SSH_PRIVATE_KEY" > "$private_key"
+          printf '%s\n' "$VM217_SSH_KNOWN_HOSTS" > "$known_hosts"
+          unset VM217_SSH_PRIVATE_KEY VM217_SSH_KNOWN_HOSTS
+          LAUNCH_PROOF_MANIFEST_URI="$PREVIOUS_LAUNCH_PROOF_MANIFEST_URI" \
+            bash scripts/rollback-vm217-transport.sh \
+            --host "$VM217_HOST" \
+            --user "$VM217_USER" \
+            --private-key "$private_key" \
+            --known-hosts "$known_hosts" \
+            --rollback-app-dir "$PREVIOUS_DEPLOYMENT_APP_DIR" \
+            --release-manifest "$PREVIOUS_RELEASE_MANIFEST_PATH" \
+            --runtime-env "$ROLLBACK_RUNTIME_ENV_PATH" \
+            --runtime-secret-descriptor "$PREVIOUS_RUNTIME_SECRET_DESCRIPTOR" \
+            --launch-proof "$PREVIOUS_LAUNCH_PROOF_PATH" \
+            --source-sha "$PREVIOUS_RELEASE_SOURCE_SHA" \
+            --old-release-compatibility-proof "$OLD_RELEASE_COMPATIBILITY_PROOF_PATH" \
+            --old-release-compatibility-signature-bundle "$OLD_RELEASE_COMPATIBILITY_SIGNATURE_BUNDLE_PATH" \
+            --old-release-compatibility-proof-sha256 "$OLD_RELEASE_COMPATIBILITY_PROOF_SHA256" \
+            --compatibility-candidate-source-sha "$ROLLBACK_CANDIDATE_SOURCE_SHA" \
+            --expected-certificate-identity "$RELEASE_BUNDLE_CERTIFICATE_IDENTITY" \
+            --expected-oidc-issuer "$RELEASE_BUNDLE_OIDC_ISSUER"
+          health_not_after_epoch_seconds="$(($(date +%s) + EMERGENCY_ROLLBACK_HEALTH_PROOF_RESERVE_SECONDS))"
+          run_health_proof() {
+            local operation="$1"
+            shift
+            local remaining_seconds
+            remaining_seconds=$((health_not_after_epoch_seconds - $(date +%s)))
+            (( remaining_seconds >= 1 )) \
+              || { echo "Emergency rollback health-proof reserve exhausted before $operation." >&2; return 124; }
+            timeout --foreground --signal=TERM --kill-after=5s "${remaining_seconds}s" "$@"
+          }
+          run_health_proof "API release identity proof" node scripts/verify-external-health-release.mjs "$PRODUCTION_API_HEALTH_URL" "$PREVIOUS_RELEASE_SOURCE_SHA"
+          run_health_proof "web release identity proof" node scripts/verify-external-health-release.mjs "$PRODUCTION_WEB_URL" "$PREVIOUS_RELEASE_SOURCE_SHA" --expect-public-html
+      - name: Repoint and authenticate emergency rollback registry current pointer
+        env:
+          PRODUCTION_RELEASE_REGISTRY_URI: ${{ vars.PRODUCTION_RELEASE_REGISTRY_URI }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.RELEASE_REGISTRY_AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.RELEASE_REGISTRY_AWS_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: ${{ vars.RELEASE_REGISTRY_AWS_REGION }}
+        run: |
+          set -euo pipefail
+          readback="$RUNNER_TEMP/lunchlineup-emergency-registry-current.json"
+          rm -f "$readback" "$readback".*
+          repoint_not_after_epoch_seconds="$(($(date +%s) + EMERGENCY_ROLLBACK_REGISTRY_REPOINT_RESERVE_SECONDS))"
+          run_registry_repoint() {
+            local operation="$1"
+            shift
+            local remaining_seconds
+            remaining_seconds=$((repoint_not_after_epoch_seconds - $(date +%s)))
+            (( remaining_seconds >= 1 )) \
+              || { echo "Emergency registry repoint reserve exhausted before $operation." >&2; return 124; }
+            timeout --foreground --signal=TERM --kill-after=5s "${remaining_seconds}s" "$@"
+          }
+          run_registry_repoint "authenticated registry repoint" node scripts/release-bundle-registry.mjs repoint \
+            --registry-uri "$PRODUCTION_RELEASE_REGISTRY_URI" \
+            --source-sha "$PREVIOUS_RELEASE_SOURCE_SHA" \
+            --expected-current-source-sha "$CURRENT_RELEASE_SOURCE_SHA" \
+            --confirm "repoint-current-to:$PREVIOUS_RELEASE_SOURCE_SHA" \
+            --expected-certificate-identity "$RELEASE_BUNDLE_CERTIFICATE_IDENTITY" \
+            --expected-oidc-issuer "$RELEASE_BUNDLE_OIDC_ISSUER"
+          run_registry_repoint "authenticated registry repoint readback" node scripts/release-bundle-registry.mjs resolve \
+            --registry-uri "$PRODUCTION_RELEASE_REGISTRY_URI" \
+            --output "$readback" \
+            --expected-certificate-identity "$RELEASE_BUNDLE_CERTIFICATE_IDENTITY" \
+            --expected-oidc-issuer "$RELEASE_BUNDLE_OIDC_ISSUER"
+          test "$(node -e 'const fs=require("fs");process.stdout.write(JSON.parse(fs.readFileSync(process.argv[1],"utf8")).sourceSha)' "$readback")" = "$PREVIOUS_RELEASE_SOURCE_SHA"
+          rm -f "$readback" "$readback".*
+      - name: Cleanup emergency rollback material
+        if: always()
+        env:
+          OLD_RELEASE_COMPATIBILITY_CLONE_COMMAND: ${{ secrets.OLD_RELEASE_COMPATIBILITY_CLONE_COMMAND }}
+        run: |
+          set -euo pipefail
+          clone_driver="$RUNNER_TEMP/lunchlineup-emergency-compatibility-clone-driver.sh"
+          clone_env="$RUNNER_TEMP/lunchlineup-emergency-compatibility-clone.env"
+          clone_suffix="$(printf '%s' "emergency:$GITHUB_RUN_ID:$GITHUB_RUN_ATTEMPT" | sha256sum | cut -c1-12)"
+          clone_id="llc-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT-$clone_suffix"
+          destroy_status=0
+          if [ -f "$clone_driver" ]; then
+            bash scripts/destroy-old-release-compatibility-clone.sh \
+              --driver "$clone_driver" \
+              --clone-env "$clone_env" \
+              --clone-id "$clone_id" \
+              --production-runtime-env "${CURRENT_RUNTIME_ENV_PATH:-}" \
+              --timeout-seconds "$EMERGENCY_ROLLBACK_CLEANUP_TIMEOUT_SECONDS" \
+              || destroy_status=$?
+          fi
+          rm -f "$RUNNER_TEMP/lunchlineup-emergency-vm217-private-key" "$RUNNER_TEMP/lunchlineup-emergency-vm217-known-hosts"
+          rm -f "$RUNNER_TEMP/emergency-old-release-current-schema-compatibility.json" "$RUNNER_TEMP/emergency-old-release-current-schema-compatibility.json.sigstore.json"
+          rm -f "$RUNNER_TEMP/lunchlineup-emergency-registry-current.json" "$RUNNER_TEMP/lunchlineup-emergency-registry-current.json".*
+          rm -f "$RUNNER_TEMP/lunchlineup-current-runtime.env" "$RUNNER_TEMP/lunchlineup-rollback-runtime.env"
+          rm -rf "$RUNNER_TEMP/lunchlineup-emergency-rollback" "$RUNNER_TEMP/emergency-old-release-compatibility-evidence"
+          exit "$destroy_status"
   validate-release-gates:
     name: "Release Gate Configuration"
     needs: [e2e-tests, fullstack-e2e, load-test, dast, trivy-scan, sbom, build-images, terraform-validation]
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    permissions:
+      contents: write
+      packages: read
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           fetch-depth: 0
+      - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           name: release-manifest
@@ -716,61 +1510,75 @@ jobs:
           test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
           remote_sha="$(git ls-remote origin refs/heads/main | cut -f1)"
           test "$remote_sha" = "$GITHUB_SHA"
-      - name: Require staging and production deploy configuration
+      - name: Require repository release configuration
         env:
-          STAGING_DEPLOY_COMMAND: ${{ vars.STAGING_DEPLOY_COMMAND }}
-          STAGING_API_HEALTH_URL: ${{ vars.STAGING_API_HEALTH_URL }}
-          STAGING_WEB_URL: ${{ vars.STAGING_WEB_URL }}
-          PRODUCTION_DEPLOY_COMMAND: ${{ vars.PRODUCTION_DEPLOY_COMMAND }}
-          PRODUCTION_HEALTH_URL: ${{ vars.PRODUCTION_HEALTH_URL }}
-          PRODUCTION_API_HEALTH_URL: ${{ vars.PRODUCTION_API_HEALTH_URL }}
-          PRODUCTION_WEB_URL: ${{ vars.PRODUCTION_WEB_URL }}
-          PRODUCTION_POST_DEPLOY_PROOF_COMMAND: ${{ vars.PRODUCTION_POST_DEPLOY_PROOF_COMMAND }}
-          PRODUCTION_ROLLBACK_COMMAND: ${{ vars.PRODUCTION_ROLLBACK_COMMAND }}
-          PRODUCTION_RELEASE_REGISTRY_URI: ${{ vars.PRODUCTION_RELEASE_REGISTRY_URI }}
-          OLD_RELEASE_COMPATIBILITY_COMMAND: ${{ vars.OLD_RELEASE_COMPATIBILITY_COMMAND }}
           DOMAIN: ${{ vars.DOMAIN }}
-        run: |
-          test -n "$DOMAIN"
-          test -n "$STAGING_DEPLOY_COMMAND"
-          test -n "$STAGING_API_HEALTH_URL"
-          test -n "$STAGING_WEB_URL"
-          test -n "$PRODUCTION_DEPLOY_COMMAND"
-          test -n "$PRODUCTION_HEALTH_URL"
-          test -n "$PRODUCTION_API_HEALTH_URL"
-          test -n "$PRODUCTION_WEB_URL"
-          test -n "$PRODUCTION_POST_DEPLOY_PROOF_COMMAND"
-          test -n "$PRODUCTION_ROLLBACK_COMMAND"
-          test -n "$PRODUCTION_RELEASE_REGISTRY_URI"
-          test -n "$OLD_RELEASE_COMPATIBILITY_COMMAND"
-      - name: Verify immutable release and deploy command contract
-        env:
-          STAGING_DEPLOY_COMMAND: ${{ vars.STAGING_DEPLOY_COMMAND }}
-          PRODUCTION_DEPLOY_COMMAND: ${{ vars.PRODUCTION_DEPLOY_COMMAND }}
-          PRODUCTION_POST_DEPLOY_PROOF_COMMAND: ${{ vars.PRODUCTION_POST_DEPLOY_PROOF_COMMAND }}
-          PRODUCTION_ROLLBACK_COMMAND: ${{ vars.PRODUCTION_ROLLBACK_COMMAND }}
-          PRODUCTION_API_HEALTH_URL: ${{ vars.PRODUCTION_API_HEALTH_URL }}
-        run: |
-          node scripts/verify-release-artifacts.mjs .release/release-manifest.json \
-            --source-sha "$GITHUB_SHA" \
-            --command-env STAGING_DEPLOY_COMMAND \
-            --command-env PRODUCTION_DEPLOY_COMMAND \
-            --post-deploy-proof-command-env PRODUCTION_POST_DEPLOY_PROOF_COMMAND \
-            --rollback-command-env PRODUCTION_ROLLBACK_COMMAND \
-            --production-api-health-url-env PRODUCTION_API_HEALTH_URL
+        run: test -n "$DOMAIN"
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           pattern: trivy-release-*
           path: .release/trivy
           merge-multiple: true
-      - name: Verify digest-pinned Trivy release reports
-        run: node scripts/verify-trivy-release-reports.mjs .release/release-manifest.json .release/trivy
+      - name: Verify signed digest-pinned Trivy release reports
+        run: |
+          node scripts/verify-trivy-release-reports.mjs .release/release-manifest.json .release/trivy \
+            --expected-certificate-identity "$RELEASE_BUNDLE_CERTIFICATE_IDENTITY" \
+            --expected-oidc-issuer "$RELEASE_BUNDLE_OIDC_ISSUER"
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          pattern: sbom-release-*
+          path: .release/sbom
+          merge-multiple: true
+      - name: Verify signed digest-pinned release SBOMs
+        run: |
+          node scripts/verify-sbom-release-reports.mjs .release/release-manifest.json .release/sbom \
+            --expected-certificate-identity "$RELEASE_BUNDLE_CERTIFICATE_IDENTITY" \
+            --expected-oidc-issuer "$RELEASE_BUNDLE_OIDC_ISSUER"
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: candidate-dast-${{ github.sha }}
+          path: .release/candidate-dast
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: candidate-load-${{ github.sha }}
+          path: .release/candidate-load
+      - name: Verify exact candidate DAST and load evidence bundles
+        run: |
+          node scripts/launch-proof-evidence.mjs verify-bundle dast \
+            --evidence ".release/candidate-dast/dast-evidence-$GITHUB_SHA.json" \
+            --raw-report ".release/candidate-dast/dast-zap-$GITHUB_SHA.json" \
+            --raw-html ".release/candidate-dast/dast-zap-$GITHUB_SHA.html" \
+            --expected-source-sha "$GITHUB_SHA" \
+            --expected-tool-image "$ZAP_IMAGE" \
+            --max-age-seconds 14400
+          node scripts/launch-proof-evidence.mjs verify-bundle load \
+            --evidence ".release/candidate-load/load-evidence-$GITHUB_SHA.json" \
+            --raw-result ".release/candidate-load/load-artillery-$GITHUB_SHA.json" \
+            --availability-result ".release/candidate-load/load-availability-$GITHUB_SHA.json" \
+            --expected-source-sha "$GITHUB_SHA" \
+            --expected-tool-image "$ARTILLERY_IMAGE" \
+            --max-age-seconds 14400
+      - name: Publish immutable release evidence
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          node scripts/publish-release-evidence.mjs \
+            --repository "$GITHUB_REPOSITORY" \
+            --source-sha "$GITHUB_SHA" \
+            --manifest .release/release-manifest.json \
+            --sbom-dir .release/sbom \
+            --trivy-dir .release/trivy \
+            --dast-dir .release/candidate-dast \
+            --load-dir .release/candidate-load \
+            --zap-image "$ZAP_IMAGE" \
+            --artillery-image "$ARTILLERY_IMAGE"
 
   # --- Stage 14-15: Deploy to Staging ---
   deploy-staging:
     name: "Stage 14-15: Deploy & Smoke Test Staging"
     needs: validate-release-gates
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     environment: staging
     steps:
@@ -782,7 +1590,13 @@ jobs:
       - name: Verify staging release artifact contract
         env:
           STAGING_DEPLOY_COMMAND: ${{ vars.STAGING_DEPLOY_COMMAND }}
+          STAGING_API_HEALTH_URL: ${{ vars.STAGING_API_HEALTH_URL }}
+          STAGING_WEB_URL: ${{ vars.STAGING_WEB_URL }}
         run: |
+          set -euo pipefail
+          test -n "$STAGING_DEPLOY_COMMAND"
+          test -n "$STAGING_API_HEALTH_URL"
+          test -n "$STAGING_WEB_URL"
           node scripts/verify-release-artifacts.mjs .release/release-manifest.json \
             --source-sha "$GITHUB_SHA" \
             --command-env STAGING_DEPLOY_COMMAND
@@ -799,44 +1613,130 @@ jobs:
           STAGING_API_HEALTH_URL: ${{ vars.STAGING_API_HEALTH_URL }}
           STAGING_WEB_URL: ${{ vars.STAGING_WEB_URL }}
           RELEASE_SOURCE_SHA: ${{ github.sha }}
+          CF_ACCESS_CLIENT_ID: ${{ secrets.CF_ACCESS_CLIENT_ID }}
+          CF_ACCESS_CLIENT_SECRET: ${{ secrets.CF_ACCESS_CLIENT_SECRET }}
         run: |
           set -euo pipefail
           test -n "$STAGING_API_HEALTH_URL"
           test -n "$STAGING_WEB_URL"
           node scripts/verify-external-health-release.mjs "$STAGING_API_HEALTH_URL" "$RELEASE_SOURCE_SHA"
-          node scripts/verify-external-health-release.mjs "$STAGING_WEB_URL" "$RELEASE_SOURCE_SHA"
+          node scripts/verify-external-health-release.mjs "$STAGING_WEB_URL" "$RELEASE_SOURCE_SHA" --expect-public-html
 
   # --- Stage 16-17: Production Deploy (Manual Gate) ---
   deploy-production:
-    name: "Stage 16-17: Blue/Green Production Deploy"
+    name: "Stage 16-19: Guarded Production Release Transaction"
     needs: deploy-staging
     runs-on: ubuntu-latest
+    timeout-minutes: 180
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     environment: production
+    permissions:
+      contents: read
+      id-token: write
     outputs:
       launch_proof_sha256: ${{ steps.launch_proof.outputs.sha256 }}
       deployed_inputs_artifact_digest: ${{ steps.upload_deployed_inputs.outputs.artifact-digest }}
+      deployed_inputs_content_sha256: ${{ steps.deployed_inputs_content_digest.outputs.sha256 }}
       production_rollback_armed: ${{ steps.arm_production_rollback.outputs.armed }}
+    env:
+      PRODUCTION_RELEASE_TRANSACTION_TIMEOUT_SECONDS: '10800'
+      PRODUCTION_DEPLOY_PHASE_TIMEOUT_SECONDS: '5400'
+      PRODUCTION_AUTOMATIC_ROLLBACK_POST_MUTATION_RESERVE_SECONDS: '900'
+      PRODUCTION_DEPLOY_CLONE_PROVISION_TIMEOUT_SECONDS: '600'
+      PRODUCTION_DEPLOY_COMPATIBILITY_PREFLIGHT_TIMEOUT_SECONDS: '120'
+      PRODUCTION_DEPLOY_COMPATIBILITY_PROVIDER_TIMEOUT_SECONDS: '1800'
+      PRODUCTION_DEPLOY_COMPATIBILITY_CLEANUP_RESERVE_SECONDS: '120'
+      VM217_MUTATION_BUDGET_SECONDS: '1800'
+      VM217_SSH_COMMAND_TIMEOUT_SECONDS: '1800'
+      VM217_SSH_RECONCILE_TIMEOUT_SECONDS: '60'
+      VM217_SSH_CLEANUP_TIMEOUT_SECONDS: '30'
+      PRODUCTION_DEPLOY_RECONCILIATION_RESERVE_SECONDS: '120'
+      PRODUCTION_DEPLOY_CLEANUP_RESERVE_SECONDS: '600'
+      PRODUCTION_DEPLOY_TIMEOUT_KILL_RESERVE_SECONDS: '5'
+      PRODUCTION_DEPLOY_RUNNER_RESERVE_SECONDS: '600'
     steps:
+      - name: Capture production deploy runner deadline origin
+        run: echo "PRODUCTION_DEPLOY_STARTED_AT_EPOCH_SECONDS=$(date +%s)" >> "$GITHUB_ENV"
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - name: Start production deploy aggregate deadline
+        run: node scripts/validate-production-deploy-deadlines.mjs start --github-env "$GITHUB_ENV"
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '22'
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.12'
+      - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           name: release-manifest
           path: .release
+      - name: Require production release configuration and contract
+        env:
+          PRODUCTION_HEALTH_URL: ${{ vars.PRODUCTION_HEALTH_URL }}
+          PRODUCTION_API_HEALTH_URL: ${{ vars.PRODUCTION_API_HEALTH_URL }}
+          PRODUCTION_WEB_URL: ${{ vars.PRODUCTION_WEB_URL }}
+          PRODUCTION_POST_DEPLOY_PROOF_COMMAND: ${{ vars.PRODUCTION_POST_DEPLOY_PROOF_COMMAND }}
+          PRODUCTION_ROLLBACK_COMMAND: ${{ vars.PRODUCTION_ROLLBACK_COMMAND }}
+          PRODUCTION_RELEASE_REGISTRY_URI: ${{ vars.PRODUCTION_RELEASE_REGISTRY_URI }}
+          OLD_RELEASE_COMPATIBILITY_CLONE_COMMAND: ${{ secrets.OLD_RELEASE_COMPATIBILITY_CLONE_COMMAND }}
+          OLD_RELEASE_COMPATIBILITY_PROVIDER_IMAGE: ${{ vars.OLD_RELEASE_COMPATIBILITY_PROVIDER_IMAGE }}
+          VM217_HOST: ${{ vars.VM217_HOST }}
+          VM217_USER: ${{ vars.VM217_USER }}
+          VM217_SSH_PRIVATE_KEY: ${{ secrets.VM217_SSH_PRIVATE_KEY }}
+          VM217_SSH_KNOWN_HOSTS: ${{ secrets.VM217_SSH_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+          test -n "$PRODUCTION_HEALTH_URL"
+          test -n "$PRODUCTION_API_HEALTH_URL"
+          test -n "$PRODUCTION_WEB_URL"
+          test -n "$PRODUCTION_POST_DEPLOY_PROOF_COMMAND"
+          test -n "$PRODUCTION_ROLLBACK_COMMAND"
+          test -n "$PRODUCTION_RELEASE_REGISTRY_URI"
+          test -n "$OLD_RELEASE_COMPATIBILITY_CLONE_COMMAND"
+          test -n "$VM217_HOST"
+          test -n "$VM217_USER"
+          test -n "$VM217_SSH_PRIVATE_KEY"
+          test -n "$VM217_SSH_KNOWN_HOSTS"
+          [[ "$OLD_RELEASE_COMPATIBILITY_PROVIDER_IMAGE" =~ ^[A-Za-z0-9._/:=-]+@sha256:[a-f0-9]{64}$ ]]
+          node scripts/verify-release-artifacts.mjs .release/release-manifest.json \
+            --source-sha "$GITHUB_SHA" \
+            --post-deploy-proof-command-env PRODUCTION_POST_DEPLOY_PROOF_COMMAND \
+            --rollback-command-env PRODUCTION_ROLLBACK_COMMAND \
+            --production-api-health-url-env PRODUCTION_API_HEALTH_URL
       - name: Resolve and materialize previous successful release bundle
         env:
           PRODUCTION_RELEASE_REGISTRY_URI: ${{ vars.PRODUCTION_RELEASE_REGISTRY_URI }}
+          PRODUCTION_API_HEALTH_URL: ${{ vars.PRODUCTION_API_HEALTH_URL }}
+          PRODUCTION_WEB_URL: ${{ vars.PRODUCTION_WEB_URL }}
           AWS_ACCESS_KEY_ID: ${{ secrets.RELEASE_REGISTRY_AWS_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.RELEASE_REGISTRY_AWS_SECRET_ACCESS_KEY }}
           AWS_DEFAULT_REGION: ${{ vars.RELEASE_REGISTRY_AWS_REGION }}
         run: |
           set -euo pipefail
           rollback_dir="$RUNNER_TEMP/lunchlineup-rollback-state"
-          rm -rf "$rollback_dir"
-          rollback_state="$RUNNER_TEMP/lunchlineup-previous-release.json"
-          rm -f "$rollback_state"
-          node scripts/release-bundle-registry.mjs resolve --registry-uri "$PRODUCTION_RELEASE_REGISTRY_URI" --output "$rollback_state"
-          node scripts/materialize-rollback-state.mjs --state-file "$rollback_state" --output-dir "$rollback_dir" --github-env "$GITHUB_ENV"
+          rollback_baseline="$RUNNER_TEMP/lunchlineup-rollback-baseline"
+          rm -rf "$rollback_dir" "$rollback_baseline"
+          mkdir -p "$rollback_baseline"
+          rollback_state="$rollback_baseline/release.json"
+          node scripts/release-bundle-registry.mjs resolve \
+            --registry-uri "$PRODUCTION_RELEASE_REGISTRY_URI" \
+            --output "$rollback_state" \
+            --expected-certificate-identity "$RELEASE_BUNDLE_CERTIFICATE_IDENTITY" \
+            --expected-oidc-issuer "$RELEASE_BUNDLE_OIDC_ISSUER"
+          node scripts/materialize-rollback-state.mjs \
+            --state-file "$rollback_state" \
+            --index-file "$rollback_state.index.json" \
+            --bundle-signature-bundle "$rollback_state.sigstore.json" \
+            --index-signature-bundle "$rollback_state.index.sigstore.json" \
+            --expected-certificate-identity "$RELEASE_BUNDLE_CERTIFICATE_IDENTITY" \
+            --expected-oidc-issuer "$RELEASE_BUNDLE_OIDC_ISSUER" \
+            --output-dir "$rollback_dir" \
+            --github-env "$GITHUB_ENV"
+          previous_sha="$(node -e 'const fs=require("fs");process.stdout.write(JSON.parse(fs.readFileSync(process.argv[1],"utf8")).sourceSha)' "$rollback_state")"
+          node scripts/verify-external-health-release.mjs "$PRODUCTION_API_HEALTH_URL" "$previous_sha"
+          node scripts/verify-external-health-release.mjs "$PRODUCTION_WEB_URL" "$previous_sha" --expect-public-html
+          echo "EXPECTED_CURRENT_RELEASE_SHA=$previous_sha" >> "$GITHUB_ENV"
           echo "REGISTRY_BASELINE_AVAILABLE=true" >> "$GITHUB_ENV"
       - name: Verify previous rollback release inputs
         run: |
@@ -847,14 +1747,6 @@ jobs:
             --launch-proof-file "$PREVIOUS_LAUNCH_PROOF_PATH" \
             --launch-proof-mode rollback \
             --max-proof-age-seconds "$PREVIOUS_LAUNCH_PROOF_MAX_AGE_SECONDS"
-      - name: Retain validated secret-free rollback baseline
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        with:
-          name: production-rollback-baseline-${{ github.run_id }}-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/lunchlineup-previous-release.json
-          if-no-files-found: error
-          retention-days: 1
-          compression-level: 0
       - name: Rehydrate and verify production runtime secret
         env:
           PRODUCTION_RUNTIME_SECRET_REFERENCE: ${{ vars.PRODUCTION_RUNTIME_SECRET_REFERENCE }}
@@ -872,27 +1764,190 @@ jobs:
           mkdir -p "$release_inputs"
           node scripts/rehydrate-runtime-secret.mjs --provider aws-secretsmanager --reference "$PRODUCTION_RUNTIME_SECRET_REFERENCE" --secret-version "$PRODUCTION_RUNTIME_SECRET_VERSION" --output "$runtime_env" --descriptor-output "$release_inputs/runtime-secret.json" --github-env "$GITHUB_ENV"
           node scripts/validate-production-launch.mjs "$runtime_env"
-      - name: Prove previous release against candidate schema clone
+      - name: Execute previous release against candidate schema clone
         env:
-          OLD_RELEASE_COMPATIBILITY_COMMAND: ${{ vars.OLD_RELEASE_COMPATIBILITY_COMMAND }}
+          OLD_RELEASE_COMPATIBILITY_CLONE_COMMAND: ${{ secrets.OLD_RELEASE_COMPATIBILITY_CLONE_COMMAND }}
+          OLD_RELEASE_COMPATIBILITY_PROVIDER_IMAGE: ${{ vars.OLD_RELEASE_COMPATIBILITY_PROVIDER_IMAGE }}
+          OLD_RELEASE_COMPATIBILITY_NPM_CI_TIMEOUT_MS: '300000'
+          OLD_RELEASE_COMPATIBILITY_PIP_INSTALL_TIMEOUT_MS: '300000'
+          OLD_RELEASE_COMPATIBILITY_TIMEOUT_MS: '900000'
+        run: |
+          set -euo pipefail
+          evidence_dir="$RUNNER_TEMP/old-release-compatibility-evidence"
+          clone_driver="$RUNNER_TEMP/lunchlineup-compatibility-clone-driver.sh"
+          clone_env="$RUNNER_TEMP/lunchlineup-compatibility-clone.env"
+          clone_suffix="$(printf '%s' "deploy:$GITHUB_RUN_ID:$GITHUB_RUN_ATTEMPT" | sha256sum | cut -c1-12)"
+          clone_id="llc-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT-$clone_suffix"
+          clone_network="$clone_id-network"
+          clone_provider_runtime="$(readlink -f "$(command -v docker)")"
+          test -x "$clone_provider_runtime"
+          test "$(stat -c '%u' "$clone_provider_runtime")" = 0
+          clone_provider_runtime_sha256="$(sha256sum "$clone_provider_runtime" | awk '{print $1}')"
+          [[ "$clone_provider_runtime_sha256" =~ ^[a-f0-9]{64}$ ]]
+          rm -rf "$evidence_dir"
+          rm -f "$clone_driver" "$clone_env"
+          install -m 700 /dev/null "$clone_driver"
+          printf '%s\n' "$OLD_RELEASE_COMPATIBILITY_CLONE_COMMAND" > "$clone_driver"
+          phase_seconds() {
+            node scripts/validate-production-deploy-deadlines.mjs remaining \
+              --phase "$1" \
+              --maximum-seconds "$2"
+          }
+          cleanup_compatibility_clone() {
+            operation_status=$?
+            trap - EXIT
+            cleanup_status=0
+            if [ -f "$clone_driver" ]; then
+              cleanup_seconds="$(phase_seconds compatibility-cleanup "$PRODUCTION_DEPLOY_COMPATIBILITY_CLEANUP_RESERVE_SECONDS")" \
+                || cleanup_status=$?
+              if [ "$cleanup_status" -eq 0 ]; then
+                timeout \
+                  --signal=TERM \
+                  --kill-after="${PRODUCTION_DEPLOY_TIMEOUT_KILL_RESERVE_SECONDS}s" \
+                  "${cleanup_seconds}s" \
+                  bash scripts/destroy-old-release-compatibility-clone.sh \
+                    --driver "$clone_driver" \
+                    --clone-env "$clone_env" \
+                    --clone-id "$clone_id" \
+                    --production-runtime-env "$PRODUCTION_RUNTIME_ENV_PATH" \
+                    --timeout-seconds "$cleanup_seconds" \
+                  || cleanup_status=$?
+              fi
+            fi
+            if [ "$cleanup_status" -ne 0 ]; then operation_status=$cleanup_status; fi
+            exit "$operation_status"
+          }
+          trap cleanup_compatibility_clone EXIT
+          test ! -e "$evidence_dir"
+          provision_seconds="$(phase_seconds compatibility "$PRODUCTION_DEPLOY_CLONE_PROVISION_TIMEOUT_SECONDS")"
+          OLD_RELEASE_COMPATIBILITY_CLONE_OPERATION=provision \
+            OLD_RELEASE_COMPATIBILITY_CLONE_ID="$clone_id" \
+            OLD_RELEASE_COMPATIBILITY_CLONE_ENV_PATH="$clone_env" \
+            OLD_RELEASE_COMPATIBILITY_PRODUCTION_RUNTIME_ENV_PATH="$PRODUCTION_RUNTIME_ENV_PATH" \
+            timeout \
+              --signal=TERM \
+              --kill-after="${PRODUCTION_DEPLOY_TIMEOUT_KILL_RESERVE_SECONDS}s" \
+              "${provision_seconds}s" \
+              "$clone_driver"
+          test ! -e "$evidence_dir"
+          test -f "$clone_env"
+          test ! -L "$clone_env"
+          test -s "$clone_env"
+          chmod 600 "$clone_env"
+          python - "$clone_env" <<'PY'
+          import sys
+
+          expected = {
+              "APP_DB_PASSWORD",
+              "APP_DB_USER",
+              "DATABASE_URL",
+              "DATA_TARGET_ENV",
+              "ENGINE_GRPC_URL",
+              "MIGRATION_DATABASE_URL",
+              "PLATFORM_ADMIN_DB_CONTEXT_SECRET",
+              "POSTGRES_PASSWORD",
+              "POSTGRES_USER",
+              "RABBITMQ_URL",
+              "REDIS_URL",
+              "WEBHOOK_DELIVERY_ENCRYPTION_KEY_CURRENT",
+          }
+          keys = []
+          with open(sys.argv[1], encoding="utf-8") as handle:
+              for raw_line in handle:
+                  line = raw_line.rstrip("\r\n")
+                  if not line or "=" not in line:
+                      raise SystemExit("clone env must contain only nonempty KEY=VALUE records")
+                  key, value = line.split("=", 1)
+                  if not key or not value:
+                      raise SystemExit("clone env must contain only nonempty KEY=VALUE records")
+                  keys.append(key)
+          if len(keys) != len(set(keys)) or set(keys) != expected:
+              raise SystemExit("clone env keys do not exactly match the protected contract")
+          PY
+          preflight_seconds="$(phase_seconds compatibility "$PRODUCTION_DEPLOY_COMPATIBILITY_PREFLIGHT_TIMEOUT_SECONDS")"
+          timeout \
+            --signal=TERM \
+            --kill-after="${PRODUCTION_DEPLOY_TIMEOUT_KILL_RESERVE_SECONDS}s" \
+            "${preflight_seconds}s" \
+            node scripts/old-release-compatibility-harness.mjs preflight \
+            --old-root "$PREVIOUS_DEPLOYMENT_APP_DIR" \
+            --old-manifest "$PREVIOUS_RELEASE_MANIFEST_PATH" \
+            --old-sha "$PREVIOUS_RELEASE_SOURCE_SHA" \
+            --candidate-root "$GITHUB_WORKSPACE" \
+            --candidate-manifest .release/release-manifest.json \
+            --candidate-sha "$GITHUB_SHA"
+          provider_seconds="$(phase_seconds compatibility "$PRODUCTION_DEPLOY_COMPATIBILITY_PROVIDER_TIMEOUT_SECONDS")"
+          timeout \
+            --signal=TERM \
+            --kill-after="${PRODUCTION_DEPLOY_TIMEOUT_KILL_RESERVE_SECONDS}s" \
+            "${provider_seconds}s" \
+            node scripts/old-release-compatibility-harness.mjs run \
+            --old-root "$PREVIOUS_DEPLOYMENT_APP_DIR" \
+            --old-manifest "$PREVIOUS_RELEASE_MANIFEST_PATH" \
+            --old-sha "$PREVIOUS_RELEASE_SOURCE_SHA" \
+            --candidate-root "$GITHUB_WORKSPACE" \
+            --candidate-manifest .release/release-manifest.json \
+            --candidate-sha "$GITHUB_SHA" \
+            --clone-env "$clone_env" \
+            --production-runtime-env "$PRODUCTION_RUNTIME_ENV_PATH" \
+            --clone-id "$clone_id" \
+            --clone-network "$clone_network" \
+            --clone-provider-runtime "$clone_provider_runtime" \
+            --clone-provider-runtime-sha256 "$clone_provider_runtime_sha256" \
+            --clone-provider-image "$OLD_RELEASE_COMPATIBILITY_PROVIDER_IMAGE" \
+            --evidence-dir "$evidence_dir"
+      - name: Retain executable old-release compatibility evidence
+        id: upload_old_release_compatibility_evidence
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: old-release-compatibility-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.sha }}
+          path: ${{ runner.temp }}/old-release-compatibility-evidence
+          if-no-files-found: error
+          retention-days: 90
+          compression-level: 0
+      - name: Bind, verify, and sign old-release compatibility proof
+        env:
+          COMPATIBILITY_EVIDENCE_URI: ${{ steps.upload_old_release_compatibility_evidence.outputs.artifact-url }}
         run: |
           set -euo pipefail
           proof="$RUNNER_TEMP/old-release-candidate-schema-compatibility.json"
           rm -f "$proof"
-          printf '%s\n' "$OLD_RELEASE_COMPATIBILITY_COMMAND" > /tmp/lunchlineup-old-release-compatibility.sh
-          OLD_RELEASE_COMPATIBILITY_PROOF_PATH="$proof" \
-            PREVIOUS_RELEASE_SOURCE_SHA="$PREVIOUS_RELEASE_SOURCE_SHA" \
-            CANDIDATE_RELEASE_SOURCE_SHA="$GITHUB_SHA" \
-            PREVIOUS_DEPLOYMENT_APP_DIR="$PREVIOUS_DEPLOYMENT_APP_DIR" \
-            PRODUCTION_RUNTIME_ENV_PATH="$PRODUCTION_RUNTIME_ENV_PATH" \
-            bash /tmp/lunchlineup-old-release-compatibility.sh
+          node scripts/old-release-compatibility-harness.mjs finalize \
+            --attestation "$RUNNER_TEMP/old-release-compatibility-evidence/compatibility-execution.json" \
+            --evidence-uri "$COMPATIBILITY_EVIDENCE_URI" \
+            --output "$proof"
           node scripts/verify-old-release-compatibility.mjs "$proof" "$PREVIOUS_RELEASE_SOURCE_SHA" "$GITHUB_SHA"
-          echo "OLD_RELEASE_COMPATIBILITY_PROOF_PATH=$proof" >> "$GITHUB_ENV"
           node scripts/verify-raw-migration-rollback.mjs \
             --rollback-manifest "$PREVIOUS_RELEASE_MANIFEST_PATH" \
             --candidate-manifest .release/release-manifest.json \
             --candidate-root "$GITHUB_WORKSPACE" \
             --old-release-compatibility-proof "$proof"
+          signature="$proof.sigstore.json"
+          cosign sign-blob --yes --bundle "$signature" "$proof"
+          cosign verify-blob "$proof" \
+            --bundle "$signature" \
+            --certificate-identity "$RELEASE_BUNDLE_CERTIFICATE_IDENTITY" \
+            --certificate-oidc-issuer "$RELEASE_BUNDLE_OIDC_ISSUER"
+          baseline="$RUNNER_TEMP/lunchlineup-rollback-baseline"
+          cp "$proof" "$baseline/old-release-compatibility.json"
+          cp "$signature" "$baseline/old-release-compatibility.sigstore.json"
+          proof_sha256="$(sha256sum "$proof" | awk '{print tolower($1)}')"
+          signature_sha256="$(sha256sum "$signature" | awk '{print tolower($1)}')"
+          {
+            echo "OLD_RELEASE_COMPATIBILITY_PROOF_PATH=$proof"
+            echo "OLD_RELEASE_COMPATIBILITY_PROOF_SHA256=$proof_sha256"
+            echo "OLD_RELEASE_COMPATIBILITY_SIGNATURE_BUNDLE_PATH=$signature"
+            echo "OLD_RELEASE_COMPATIBILITY_SIGNATURE_BUNDLE_SHA256=$signature_sha256"
+            echo "ROLLBACK_CANDIDATE_SOURCE_SHA=$GITHUB_SHA"
+          } >> "$GITHUB_ENV"
+      - name: Retain validated secret-free rollback baseline and signed compatibility proof
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: production-rollback-baseline-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/lunchlineup-rollback-baseline
+          if-no-files-found: error
+          retention-days: 1
+          compression-level: 0
       - name: Verify production launch proof artifact
         id: launch_proof
         env:
@@ -901,7 +1956,6 @@ jobs:
           AWS_ACCESS_KEY_ID: ${{ secrets.LAUNCH_PROOF_AWS_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.LAUNCH_PROOF_AWS_SECRET_ACCESS_KEY }}
           AWS_DEFAULT_REGION: ${{ vars.LAUNCH_PROOF_AWS_REGION }}
-          PRODUCTION_DEPLOY_COMMAND: ${{ vars.PRODUCTION_DEPLOY_COMMAND }}
           LAUNCH_PROOF_MAX_AGE_SECONDS: '86400'
         run: |
           set -euo pipefail
@@ -916,8 +1970,7 @@ jobs:
           node scripts/verify-production-launch-proof.mjs .release/release-manifest.json "$launch_proof" \
             --fetch-evidence \
             --source-sha "$GITHUB_SHA" \
-            --max-proof-age-seconds "$LAUNCH_PROOF_MAX_AGE_SECONDS" \
-            --command-env PRODUCTION_DEPLOY_COMMAND
+            --max-proof-age-seconds "$LAUNCH_PROOF_MAX_AGE_SECONDS"
           launch_proof_sha256="$(sha256sum "$launch_proof" | awk '{print $1}')"
           {
             echo "LAUNCH_PROOF_ARTIFACT_SHA256=$launch_proof_sha256"
@@ -926,7 +1979,6 @@ jobs:
           echo "sha256=$launch_proof_sha256" >> "$GITHUB_OUTPUT"
       - name: Verify production release artifact contract
         env:
-          PRODUCTION_DEPLOY_COMMAND: ${{ vars.PRODUCTION_DEPLOY_COMMAND }}
           PRODUCTION_RUNTIME_ENV_PATH: ${{ env.PRODUCTION_RUNTIME_ENV_PATH }}
           COMPOSE_SERVICE_ENV_FILE: ${{ env.COMPOSE_SERVICE_ENV_FILE }}
           PRODUCTION_RUNTIME_ENV_SHA256: ${{ env.PRODUCTION_RUNTIME_ENV_SHA256 }}
@@ -936,7 +1988,6 @@ jobs:
         run: |
           node scripts/verify-release-artifacts.mjs .release/release-manifest.json \
             --source-sha "$GITHUB_SHA" \
-            --command-env PRODUCTION_DEPLOY_COMMAND \
             --production-api-health-url-env PRODUCTION_API_HEALTH_URL
       - name: Bind exact production deployment inputs
         env:
@@ -944,7 +1995,14 @@ jobs:
           LAUNCH_PROOF_MAX_AGE_SECONDS: ${{ env.LAUNCH_PROOF_MAX_AGE_SECONDS }}
         run: |
           set -euo pipefail
+          umask 077
           release_inputs="$RUNNER_TEMP/lunchlineup-deployed-inputs"
+          launch_proof_uri_file="$RUNNER_TEMP/lunchlineup-launch-proof-manifest-uri"
+          rm -f "$launch_proof_uri_file"
+          install -m 600 /dev/null "$launch_proof_uri_file"
+          printf '%s' "$LAUNCH_PROOF_MANIFEST_URI" > "$launch_proof_uri_file"
+          cleanup_launch_proof_uri() { rm -f "$launch_proof_uri_file"; }
+          trap cleanup_launch_proof_uri EXIT
           cp .release/release-manifest.json "$release_inputs/release-manifest.json"
           cp .release/deployment-contract.bundle.json "$release_inputs/deployment-contract.bundle.json"
           node scripts/deployed-release-inputs.mjs create \
@@ -952,12 +2010,13 @@ jobs:
             --deployment-bundle "$release_inputs/deployment-contract.bundle.json" \
             --runtime-secret "$release_inputs/runtime-secret.json" \
             --launch-proof "$release_inputs/launch-proof.json" \
-            --launch-proof-uri "$LAUNCH_PROOF_MANIFEST_URI" \
+            --launch-proof-uri-file "$launch_proof_uri_file" \
             --max-proof-age-seconds "$LAUNCH_PROOF_MAX_AGE_SECONDS" \
             --output "$release_inputs/binding.json"
+          cleanup_launch_proof_uri
+          trap - EXIT
       - name: Verify production deployment inputs
         env:
-          PRODUCTION_DEPLOY_COMMAND: ${{ vars.PRODUCTION_DEPLOY_COMMAND }}
           RELEASE_MANIFEST_PATH: .release/release-manifest.json
           RELEASE_SOURCE_SHA: ${{ github.sha }}
           PRODUCTION_RUNTIME_ENV_PATH: ${{ env.PRODUCTION_RUNTIME_ENV_PATH }}
@@ -982,12 +2041,12 @@ jobs:
           test "$COMPOSE_SERVICE_ENV_FILE" = "$PRODUCTION_RUNTIME_ENV_PATH"
           node scripts/deployed-release-inputs.mjs verify \
             --binding "$RUNNER_TEMP/lunchlineup-deployed-inputs/binding.json"
-          printf '%s\n' "$PRODUCTION_DEPLOY_COMMAND" > /tmp/lunchlineup-deploy-production.sh
       - name: Arm production rollback
         id: arm_production_rollback
         run: echo "armed=true" >> "$GITHUB_OUTPUT"
-      - name: "17. Blue/Green deploy"
+      - name: "17. Guarded production deploy; Reconcile exact VM217 active release, services, and legacy traffic state; cleanup"
         id: production_deploy
+        if: ${{ !cancelled() && steps.arm_production_rollback.outcome == 'success' }}
         env:
           RELEASE_MANIFEST_PATH: .release/release-manifest.json
           RELEASE_SOURCE_SHA: ${{ github.sha }}
@@ -999,15 +2058,134 @@ jobs:
           PRODUCTION_API_HEALTH_URL: ${{ vars.PRODUCTION_API_HEALTH_URL }}
           PRODUCTION_WEB_URL: ${{ vars.PRODUCTION_WEB_URL }}
           LAUNCH_PROOF_MANIFEST_URI: ${{ secrets.LAUNCH_PROOF_MANIFEST_URI }}
+          EXPECTED_CURRENT_RELEASE_SHA: ${{ env.EXPECTED_CURRENT_RELEASE_SHA }}
+          OLD_RELEASE_COMPATIBILITY_CLONE_COMMAND: ${{ secrets.OLD_RELEASE_COMPATIBILITY_CLONE_COMMAND }}
+          VM217_HOST: ${{ vars.VM217_HOST }}
+          VM217_USER: ${{ vars.VM217_USER }}
+          VM217_SSH_PRIVATE_KEY: ${{ secrets.VM217_SSH_PRIVATE_KEY }}
+          VM217_SSH_KNOWN_HOSTS: ${{ secrets.VM217_SSH_KNOWN_HOSTS }}
         run: |
-          env \
-              PRODUCTION_API_HEALTH_URL="$PRODUCTION_API_HEALTH_URL" \
-              PRODUCTION_WEB_URL="$PRODUCTION_WEB_URL" \
-              LAUNCH_PROOF_MANIFEST_URI="$LAUNCH_PROOF_MANIFEST_URI" \
-              bash /tmp/lunchlineup-deploy-production.sh
+          set -euo pipefail
+          test -n "$VM217_HOST"
+          test -n "$VM217_USER"
+          test -n "$VM217_SSH_PRIVATE_KEY"
+          test -n "$VM217_SSH_KNOWN_HOSTS"
+          private_key="$RUNNER_TEMP/lunchlineup-vm217-private-key"
+          known_hosts="$RUNNER_TEMP/lunchlineup-vm217-known-hosts"
+          launch_proof="$RUNNER_TEMP/lunchlineup-deployed-inputs/launch-proof.json"
+          rm -f "$private_key" "$known_hosts"
+          install -m 600 /dev/null "$private_key"
+          install -m 600 /dev/null "$known_hosts"
+          printf '%s\n' "$VM217_SSH_PRIVATE_KEY" > "$private_key"
+          printf '%s\n' "$VM217_SSH_KNOWN_HOSTS" > "$known_hosts"
+          unset VM217_SSH_PRIVATE_KEY VM217_SSH_KNOWN_HOSTS
+          test -s "$launch_proof"
+
+          deploy_status=0
+          mutation_seconds="$(node scripts/validate-production-deploy-deadlines.mjs remaining \
+            --phase mutation \
+            --maximum-seconds "$VM217_MUTATION_BUDGET_SECONDS")" \
+            || deploy_status=$?
+          if [ "$deploy_status" -eq 0 ]; then
+            timeout \
+              --signal=TERM \
+              --kill-after="${PRODUCTION_DEPLOY_TIMEOUT_KILL_RESERVE_SECONDS}s" \
+              "${mutation_seconds}s" \
+              env \
+                VM217_MUTATION_BUDGET_SECONDS="$mutation_seconds" \
+                VM217_SSH_COMMAND_TIMEOUT_SECONDS="$mutation_seconds" \
+                PRODUCTION_API_HEALTH_URL="$PRODUCTION_API_HEALTH_URL" \
+                PRODUCTION_WEB_URL="$PRODUCTION_WEB_URL" \
+                LAUNCH_PROOF_MANIFEST_URI="$LAUNCH_PROOF_MANIFEST_URI" \
+                EXPECTED_CURRENT_RELEASE_SHA="$EXPECTED_CURRENT_RELEASE_SHA" \
+                bash scripts/deploy-vm217-transport.sh \
+                  --host "$VM217_HOST" \
+                  --user "$VM217_USER" \
+                  --private-key "$private_key" \
+                  --known-hosts "$known_hosts" \
+                  --release-manifest "$RELEASE_MANIFEST_PATH" \
+                  --runtime-env "$PRODUCTION_RUNTIME_ENV_PATH" \
+                  --launch-proof "$launch_proof" \
+                  --source-sha "$RELEASE_SOURCE_SHA" \
+              || deploy_status=$?
+          fi
+
+          reconcile_status=0
+          reconciliation_seconds="$(node scripts/validate-production-deploy-deadlines.mjs remaining \
+            --phase reconciliation \
+            --maximum-seconds "$PRODUCTION_DEPLOY_RECONCILIATION_RESERVE_SECONDS")" \
+            || reconcile_status=$?
+          if [ "$reconcile_status" -eq 0 ]; then
+            timeout \
+              --signal=TERM \
+              --kill-after="${PRODUCTION_DEPLOY_TIMEOUT_KILL_RESERVE_SECONDS}s" \
+              "${reconciliation_seconds}s" \
+              env \
+                VM217_RECONCILE_ONLY=true env \
+                VM217_SSH_RECONCILE_TIMEOUT_SECONDS="$reconciliation_seconds" \
+                PRODUCTION_API_HEALTH_URL="$PRODUCTION_API_HEALTH_URL" \
+                PRODUCTION_WEB_URL="$PRODUCTION_WEB_URL" \
+                LAUNCH_PROOF_MANIFEST_URI="$LAUNCH_PROOF_MANIFEST_URI" \
+                EXPECTED_CURRENT_RELEASE_SHA="$EXPECTED_CURRENT_RELEASE_SHA" \
+                bash scripts/deploy-vm217-transport.sh \
+                  --host "$VM217_HOST" \
+                  --user "$VM217_USER" \
+                  --private-key "$private_key" \
+                  --known-hosts "$known_hosts" \
+                  --release-manifest "$RELEASE_MANIFEST_PATH" \
+                  --runtime-env "$PRODUCTION_RUNTIME_ENV_PATH" \
+                  --launch-proof "$launch_proof" \
+                  --source-sha "$RELEASE_SOURCE_SHA" \
+              || reconcile_status=$?
+          fi
+
+          cleanup_status=0
+          clone_driver="$RUNNER_TEMP/lunchlineup-compatibility-clone-driver.sh"
+          clone_env="$RUNNER_TEMP/lunchlineup-compatibility-clone.env"
+          clone_suffix="$(printf '%s' "deploy:$GITHUB_RUN_ID:$GITHUB_RUN_ATTEMPT" | sha256sum | cut -c1-12)"
+          clone_id="llc-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT-$clone_suffix"
+          if [ -f "$clone_driver" ]; then
+            cleanup_seconds="$(node scripts/validate-production-deploy-deadlines.mjs remaining \
+              --phase cleanup \
+              --maximum-seconds "$PRODUCTION_DEPLOY_CLEANUP_RESERVE_SECONDS")" \
+              || cleanup_status=$?
+            if [ "$cleanup_status" -eq 0 ]; then
+              timeout \
+                --signal=TERM \
+                --kill-after="${PRODUCTION_DEPLOY_TIMEOUT_KILL_RESERVE_SECONDS}s" \
+                "${cleanup_seconds}s" \
+                bash scripts/destroy-old-release-compatibility-clone.sh \
+                  --driver "$clone_driver" \
+                  --clone-env "$clone_env" \
+                  --clone-id "$clone_id" \
+                  --production-runtime-env "${PRODUCTION_RUNTIME_ENV_PATH:-}" \
+                  --timeout-seconds "$cleanup_seconds" \
+                || cleanup_status=$?
+            fi
+          fi
+          rm -f "$private_key" "$known_hosts"
+          rm -rf "$RUNNER_TEMP/old-release-compatibility-evidence"
+          rm -f "$RUNNER_TEMP/lunchlineup-runtime.env" "$RUNNER_TEMP/lunchlineup-previous-runtime.env"
+          if [ -n "${PREVIOUS_RELEASE_MANIFEST_PATH:-}" ]; then
+            rm -rf "$(dirname "$PREVIOUS_RELEASE_MANIFEST_PATH")"
+          fi
+
+          if [ "$deploy_status" -ne 0 ]; then exit "$deploy_status"; fi
+          if [ "$reconcile_status" -ne 0 ]; then exit "$reconcile_status"; fi
+          exit "$cleanup_status"
       - name: Verify deployed release inputs remain exact
+        id: verify_deployed_inputs
         if: steps.production_deploy.outcome == 'success'
         run: node scripts/deployed-release-inputs.mjs verify --binding "$RUNNER_TEMP/lunchlineup-deployed-inputs/binding.json"
+      - name: Compute exact deployed release inputs content digest
+        id: deployed_inputs_content_digest
+        if: steps.production_deploy.outcome == 'success'
+        run: |
+          set -euo pipefail
+          release_inputs="$RUNNER_TEMP/lunchlineup-deployed-inputs"
+          deployed_inputs_content_sha256="$(node scripts/deployed-inputs-content-digest.mjs "$release_inputs")"
+          [[ "$deployed_inputs_content_sha256" =~ ^[a-f0-9]{64}$ ]]
+          echo "sha256=$deployed_inputs_content_sha256" >> "$GITHUB_OUTPUT"
       - name: Upload exact deployed release inputs
         id: upload_deployed_inputs
         if: steps.production_deploy.outcome == 'success'
@@ -1018,44 +2196,28 @@ jobs:
           if-no-files-found: error
           retention-days: 1
           compression-level: 0
-      - name: Cleanup production runtime environment and rollback secrets
-        if: always()
-        run: |
-          rm -f /tmp/lunchlineup-deploy-production.sh
-          rm -rf "$RUNNER_TEMP/lunchlineup-deployed-inputs"
-          rm -f "$RUNNER_TEMP/lunchlineup-runtime.env" "$RUNNER_TEMP/lunchlineup-previous-runtime.env"
-          if [ -n "${PREVIOUS_RELEASE_MANIFEST_PATH:-}" ]; then
-            rm -rf "$(dirname "$PREVIOUS_RELEASE_MANIFEST_PATH")"
-          fi
-
-  # Stage 18-19: Production Smoke and centralized rollback
-  production-smoke:
-    name: "Stage 18-19: Production Smoke"
-    needs: deploy-production
-    runs-on: ubuntu-latest
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    environment: production
-    steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
-      - name: Download exact deployed release inputs
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
-        with:
-          name: production-deployed-inputs-${{ github.run_id }}-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/lunchlineup-deployed-inputs
-      - name: Verify exact deployed release inputs
+      - name: Verify exact deployed release inputs for same-gate smoke
+        id: verify_production_smoke_inputs
+        if: steps.upload_deployed_inputs.outcome == 'success'
         env:
-          EXPECTED_ARTIFACT_DIGEST: ${{ needs.deploy-production.outputs.deployed_inputs_artifact_digest }}
-          LAUNCH_PROOF_ARTIFACT_SHA256: ${{ needs.deploy-production.outputs.launch_proof_sha256 }}
+          EXPECTED_ARTIFACT_DIGEST: ${{ steps.upload_deployed_inputs.outputs.artifact-digest }}
+          EXPECTED_DEPLOYED_INPUTS_CONTENT_SHA256: ${{ steps.deployed_inputs_content_digest.outputs.sha256 }}
+          LAUNCH_PROOF_ARTIFACT_SHA256: ${{ steps.launch_proof.outputs.sha256 }}
         run: |
           set -euo pipefail
           test -n "$EXPECTED_ARTIFACT_DIGEST"
-          test -n "$LAUNCH_PROOF_ARTIFACT_SHA256"
+          [[ "$EXPECTED_DEPLOYED_INPUTS_CONTENT_SHA256" =~ ^[a-f0-9]{64}$ ]]
+          [[ "$LAUNCH_PROOF_ARTIFACT_SHA256" =~ ^[a-f0-9]{64}$ ]]
+          release_inputs="$RUNNER_TEMP/lunchlineup-deployed-inputs"
+          actual_deployed_inputs_content_sha256="$(node scripts/deployed-inputs-content-digest.mjs "$release_inputs")"
+          test "$actual_deployed_inputs_content_sha256" = "$EXPECTED_DEPLOYED_INPUTS_CONTENT_SHA256"
           node scripts/deployed-release-inputs.mjs verify \
-            --binding "$RUNNER_TEMP/lunchlineup-deployed-inputs/binding.json" \
+            --binding "$release_inputs/binding.json" \
             --expected-launch-proof-sha256 "$LAUNCH_PROOF_ARTIFACT_SHA256" \
             --github-env "$GITHUB_ENV"
       - name: "18. Production smoke tests"
-        id: smoke
+        id: production_smoke
+        if: steps.verify_production_smoke_inputs.outcome == 'success'
         env:
           PRODUCTION_HEALTH_URL: ${{ vars.PRODUCTION_HEALTH_URL }}
           PRODUCTION_API_HEALTH_URL: ${{ vars.PRODUCTION_API_HEALTH_URL }}
@@ -1074,12 +2236,15 @@ jobs:
           test -n "$PRODUCTION_POST_DEPLOY_PROOF_COMMAND"
           test -n "$LAUNCH_PROOF_ARTIFACT_SHA256"
           test -n "$LAUNCH_PROOF_MAX_AGE_SECONDS"
-          curl -fsS "$PRODUCTION_HEALTH_URL"
+          curl --fail --silent --show-error --connect-timeout 10 --max-time 30 "$PRODUCTION_HEALTH_URL"
           node scripts/verify-external-health-release.mjs "$PRODUCTION_API_HEALTH_URL" "$RELEASE_SOURCE_SHA"
+          node scripts/verify-external-health-release.mjs "$PRODUCTION_WEB_URL" "$RELEASE_SOURCE_SHA" --expect-public-html
           printf '%s\n' "$PRODUCTION_POST_DEPLOY_PROOF_COMMAND" > /tmp/lunchlineup-post-deploy-proof.sh
+          chmod 600 /tmp/lunchlineup-post-deploy-proof.sh
           bash /tmp/lunchlineup-post-deploy-proof.sh
       - name: Publish immutable successful release bundle
         id: publish_release
+        if: steps.production_smoke.outcome == 'success'
         env:
           PRODUCTION_RELEASE_REGISTRY_URI: ${{ vars.PRODUCTION_RELEASE_REGISTRY_URI }}
           AWS_ACCESS_KEY_ID: ${{ secrets.RELEASE_REGISTRY_AWS_ACCESS_KEY_ID }}
@@ -1089,41 +2254,76 @@ jobs:
           set -euo pipefail
           umask 077
           release_bundle="$RUNNER_TEMP/lunchlineup-release-$GITHUB_SHA.json"
+          signed_index="$release_bundle.index.json"
+          bundle_signature="$release_bundle.sigstore.json"
+          index_signature="$release_bundle.index.sigstore.json"
+          rm -f "$release_bundle" "$signed_index" "$bundle_signature" "$index_signature"
           node scripts/build-release-bundle.mjs \
             --deployed-input-binding "$DEPLOYED_RELEASE_INPUT_BINDING" \
             --expected-source-sha "$GITHUB_SHA" \
             --output "$release_bundle"
-          node scripts/release-bundle-registry.mjs publish --registry-uri "$PRODUCTION_RELEASE_REGISTRY_URI" --state-file "$release_bundle"
-          rm -f "$release_bundle" "$release_bundle.index"
-      - name: Cleanup production smoke proof
-        if: always()
-        run: rm -f /tmp/lunchlineup-post-deploy-proof.sh
-
-  production-rollback:
-    name: "Production rollback after any post-mutation failure"
-    needs: [deploy-production, production-smoke]
-    runs-on: ubuntu-latest
-    if: >-
-      always() &&
-      github.ref == 'refs/heads/main' &&
-      needs.deploy-production.outputs.production_rollback_armed == 'true' &&
-      (needs.deploy-production.result != 'success' || needs.production-smoke.result != 'success')
-    environment: production
-    steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
-      - name: Download retained validated rollback baseline
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
-        with:
-          name: production-rollback-baseline-${{ github.run_id }}-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/lunchlineup-rollback-baseline
-      - name: Materialize and verify retained rollback baseline
+          node scripts/release-bundle-registry.mjs create-index \
+            --state-file "$release_bundle" \
+            --index-file "$signed_index" \
+            --expected-certificate-identity "$RELEASE_BUNDLE_CERTIFICATE_IDENTITY" \
+            --expected-oidc-issuer "$RELEASE_BUNDLE_OIDC_ISSUER"
+          cosign sign-blob --yes --bundle "$bundle_signature" "$release_bundle"
+          cosign sign-blob --yes --bundle "$index_signature" "$signed_index"
+          node scripts/release-bundle-registry.mjs publish \
+            --registry-uri "$PRODUCTION_RELEASE_REGISTRY_URI" \
+            --state-file "$release_bundle" \
+            --index-file "$signed_index" \
+            --bundle-signature-bundle "$bundle_signature" \
+            --index-signature-bundle "$index_signature" \
+            --expected-certificate-identity "$RELEASE_BUNDLE_CERTIFICATE_IDENTITY" \
+            --expected-oidc-issuer "$RELEASE_BUNDLE_OIDC_ISSUER"
+          rm -f "$release_bundle" "$signed_index" "$bundle_signature" "$index_signature"
+      - name: Determine same-gate release outcome
+        id: same_gate_release_outcome
+        if: always() && steps.arm_production_rollback.outcome == 'success'
+        env:
+          DEPLOY_OUTCOME: ${{ steps.production_deploy.outcome }}
+          INPUT_READBACK_OUTCOME: ${{ steps.verify_deployed_inputs.outcome }}
+          CONTENT_DIGEST_OUTCOME: ${{ steps.deployed_inputs_content_digest.outcome }}
+          INPUT_UPLOAD_OUTCOME: ${{ steps.upload_deployed_inputs.outcome }}
+          SMOKE_INPUT_OUTCOME: ${{ steps.verify_production_smoke_inputs.outcome }}
+          SMOKE_OUTCOME: ${{ steps.production_smoke.outcome }}
+          PUBLISH_OUTCOME: ${{ steps.publish_release.outcome }}
         run: |
           set -euo pipefail
-          rollback_state="$RUNNER_TEMP/lunchlineup-rollback-baseline/lunchlineup-previous-release.json"
+          rollback_required=false
+          for outcome in \
+            "$DEPLOY_OUTCOME" \
+            "$INPUT_READBACK_OUTCOME" \
+            "$CONTENT_DIGEST_OUTCOME" \
+            "$INPUT_UPLOAD_OUTCOME" \
+            "$SMOKE_INPUT_OUTCOME" \
+            "$SMOKE_OUTCOME" \
+            "$PUBLISH_OUTCOME"; do
+            if [ "$outcome" != success ]; then
+              rollback_required=true
+            fi
+          done
+          echo "rollback_required=$rollback_required" >> "$GITHUB_OUTPUT"
+          if [ "$rollback_required" = true ]; then
+            echo "Production release transaction failed after rollback was armed; starting rollback inside the already-approved production job." >&2
+          fi
+      - name: Materialize retained automatic rollback baseline
+        id: materialize_automatic_rollback
+        if: always() && steps.arm_production_rollback.outcome == 'success' && (steps.same_gate_release_outcome.outcome != 'success' || steps.same_gate_release_outcome.outputs.rollback_required == 'true')
+        run: |
+          set -euo pipefail
+          rollback_state="$RUNNER_TEMP/lunchlineup-rollback-baseline/release.json"
           rollback_dir="$RUNNER_TEMP/lunchlineup-rollback-state"
+          rm -rf "$rollback_dir"
           test -f "$rollback_state"
           node scripts/materialize-rollback-state.mjs \
             --state-file "$rollback_state" \
+            --index-file "$rollback_state.index.json" \
+            --bundle-signature-bundle "$rollback_state.sigstore.json" \
+            --index-signature-bundle "$rollback_state.index.sigstore.json" \
+            --expected-certificate-identity "$RELEASE_BUNDLE_CERTIFICATE_IDENTITY" \
+            --expected-oidc-issuer "$RELEASE_BUNDLE_OIDC_ISSUER" \
             --output-dir "$rollback_dir" \
             --github-env "$GITHUB_ENV"
           node "$rollback_dir/app/scripts/verify-release-artifacts.mjs" "$rollback_dir/app/.release/release-manifest.json" \
@@ -1132,73 +2332,212 @@ jobs:
             --launch-proof-file "$rollback_dir/launch-proof.json" \
             --launch-proof-mode rollback \
             --max-proof-age-seconds "$PREVIOUS_LAUNCH_PROOF_MAX_AGE_SECONDS"
-      - name: Roll back to retained validated baseline
+          compatibility_proof="$RUNNER_TEMP/lunchlineup-rollback-baseline/old-release-compatibility.json"
+          compatibility_signature="$RUNNER_TEMP/lunchlineup-rollback-baseline/old-release-compatibility.sigstore.json"
+          test -f "$compatibility_proof"
+          test -f "$compatibility_signature"
+          cosign verify-blob "$compatibility_proof" \
+            --bundle "$compatibility_signature" \
+            --certificate-identity "$RELEASE_BUNDLE_CERTIFICATE_IDENTITY" \
+            --certificate-oidc-issuer "$RELEASE_BUNDLE_OIDC_ISSUER"
+          node scripts/verify-old-release-compatibility.mjs "$compatibility_proof" "$PREVIOUS_RELEASE_SOURCE_SHA" "$GITHUB_SHA"
+          {
+            echo "OLD_RELEASE_COMPATIBILITY_PROOF_PATH=$compatibility_proof"
+            echo "OLD_RELEASE_COMPATIBILITY_PROOF_SHA256=$(sha256sum "$compatibility_proof" | awk '{print tolower($1)}')"
+            echo "OLD_RELEASE_COMPATIBILITY_SIGNATURE_BUNDLE_PATH=$compatibility_signature"
+            echo "OLD_RELEASE_COMPATIBILITY_SIGNATURE_BUNDLE_SHA256=$(sha256sum "$compatibility_signature" | awk '{print tolower($1)}')"
+            echo "ROLLBACK_CANDIDATE_SOURCE_SHA=$GITHUB_SHA"
+          } >> "$GITHUB_ENV"
+      - name: Roll back to retained validated baseline in the approved job
+        id: automatic_production_rollback
+        if: always() && steps.materialize_automatic_rollback.outcome == 'success'
         env:
-          PRODUCTION_ROLLBACK_COMMAND: ${{ vars.PRODUCTION_ROLLBACK_COMMAND }}
           PRODUCTION_API_HEALTH_URL: ${{ vars.PRODUCTION_API_HEALTH_URL }}
           PRODUCTION_WEB_URL: ${{ vars.PRODUCTION_WEB_URL }}
           PREVIOUS_RUNTIME_SECRET_DESCRIPTOR: ${{ env.PREVIOUS_RUNTIME_SECRET_DESCRIPTOR }}
+          VM217_HOST: ${{ vars.VM217_HOST }}
+          VM217_USER: ${{ vars.VM217_USER }}
+          VM217_SSH_PRIVATE_KEY: ${{ secrets.VM217_SSH_PRIVATE_KEY }}
+          VM217_SSH_KNOWN_HOSTS: ${{ secrets.VM217_SSH_KNOWN_HOSTS }}
           AWS_ACCESS_KEY_ID: ${{ secrets.RUNTIME_SECRET_AWS_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.RUNTIME_SECRET_AWS_SECRET_ACCESS_KEY }}
           AWS_DEFAULT_REGION: ${{ vars.RUNTIME_SECRET_AWS_REGION }}
         run: |
           set -euo pipefail
-          test -n "$PRODUCTION_ROLLBACK_COMMAND"
+          test -n "$VM217_HOST"
+          test -n "$VM217_USER"
+          test -n "$VM217_SSH_PRIVATE_KEY"
+          test -n "$VM217_SSH_KNOWN_HOSTS"
           previous_runtime="$RUNNER_TEMP/lunchlineup-previous-runtime.env"
           node scripts/rehydrate-runtime-secret.mjs \
             --descriptor "$PREVIOUS_RUNTIME_SECRET_DESCRIPTOR" \
             --output "$previous_runtime"
           test "$(sha256sum "$previous_runtime" | awk '{print $1}')" = "$PREVIOUS_PRODUCTION_RUNTIME_ENV_SHA256"
-          printf '%s\n' "$PRODUCTION_ROLLBACK_COMMAND" > /tmp/lunchlineup-rollback-production.sh
-          (
-            cd "$PREVIOUS_DEPLOYMENT_APP_DIR"
-            env \
-              ROLLBACK_DEPLOYMENT_APP_DIR="$PREVIOUS_DEPLOYMENT_APP_DIR" \
-              RELEASE_MANIFEST_PATH="$PREVIOUS_RELEASE_MANIFEST_PATH" \
-              RELEASE_SOURCE_SHA="$PREVIOUS_RELEASE_SOURCE_SHA" \
-              PRODUCTION_RUNTIME_ENV_PATH="$previous_runtime" \
-              COMPOSE_SERVICE_ENV_FILE="$previous_runtime" \
-              PRODUCTION_RUNTIME_ENV_SHA256="$PREVIOUS_PRODUCTION_RUNTIME_ENV_SHA256" \
-              LAUNCH_PROOF_PATH="$PREVIOUS_LAUNCH_PROOF_PATH" \
-              LAUNCH_PROOF_ARTIFACT_SHA256="$PREVIOUS_LAUNCH_PROOF_ARTIFACT_SHA256" \
-              LAUNCH_PROOF_MAX_AGE_SECONDS="$PREVIOUS_LAUNCH_PROOF_MAX_AGE_SECONDS" \
-              LAUNCH_PROOF_MANIFEST_URI="$PREVIOUS_LAUNCH_PROOF_MANIFEST_URI" \
-              PRODUCTION_API_HEALTH_URL="$PRODUCTION_API_HEALTH_URL" \
-              PRODUCTION_WEB_URL="$PRODUCTION_WEB_URL" \
-              bash /tmp/lunchlineup-rollback-production.sh
-          )
-      - name: Cleanup rollback material
-        if: always()
+          private_key="$RUNNER_TEMP/lunchlineup-centralized-vm217-private-key"
+          known_hosts="$RUNNER_TEMP/lunchlineup-centralized-vm217-known-hosts"
+          install -m 600 /dev/null "$private_key"
+          install -m 600 /dev/null "$known_hosts"
+          printf '%s\n' "$VM217_SSH_PRIVATE_KEY" > "$private_key"
+          printf '%s\n' "$VM217_SSH_KNOWN_HOSTS" > "$known_hosts"
+          unset VM217_SSH_PRIVATE_KEY VM217_SSH_KNOWN_HOSTS
+          rollback_mutation_not_after="$(node scripts/validate-production-deploy-deadlines.mjs automatic-rollback-cutoff)"
+          export VM217_MUTATION_NOT_AFTER_EPOCH_SECONDS="$rollback_mutation_not_after"
+          LAUNCH_PROOF_MANIFEST_URI="$PREVIOUS_LAUNCH_PROOF_MANIFEST_URI" \
+            bash scripts/rollback-vm217-transport.sh \
+            --host "$VM217_HOST" \
+            --user "$VM217_USER" \
+            --private-key "$private_key" \
+            --known-hosts "$known_hosts" \
+            --rollback-app-dir "$PREVIOUS_DEPLOYMENT_APP_DIR" \
+            --release-manifest "$PREVIOUS_RELEASE_MANIFEST_PATH" \
+            --runtime-env "$previous_runtime" \
+            --runtime-secret-descriptor "$PREVIOUS_RUNTIME_SECRET_DESCRIPTOR" \
+            --launch-proof "$PREVIOUS_LAUNCH_PROOF_PATH" \
+            --source-sha "$PREVIOUS_RELEASE_SOURCE_SHA" \
+            --old-release-compatibility-proof "$OLD_RELEASE_COMPATIBILITY_PROOF_PATH" \
+            --old-release-compatibility-signature-bundle "$OLD_RELEASE_COMPATIBILITY_SIGNATURE_BUNDLE_PATH" \
+            --old-release-compatibility-proof-sha256 "$OLD_RELEASE_COMPATIBILITY_PROOF_SHA256" \
+            --compatibility-candidate-source-sha "$ROLLBACK_CANDIDATE_SOURCE_SHA" \
+            --expected-certificate-identity "$RELEASE_BUNDLE_CERTIFICATE_IDENTITY" \
+            --expected-oidc-issuer "$RELEASE_BUNDLE_OIDC_ISSUER"
+      - name: Prove automatic rollback and reconcile registry pointer
+        id: prove_automatic_production_rollback
+        if: always() && steps.automatic_production_rollback.outcome == 'success'
+        env:
+          PRODUCTION_API_HEALTH_URL: ${{ vars.PRODUCTION_API_HEALTH_URL }}
+          PRODUCTION_WEB_URL: ${{ vars.PRODUCTION_WEB_URL }}
+          PRODUCTION_RELEASE_REGISTRY_URI: ${{ vars.PRODUCTION_RELEASE_REGISTRY_URI }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.RELEASE_REGISTRY_AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.RELEASE_REGISTRY_AWS_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: ${{ vars.RELEASE_REGISTRY_AWS_REGION }}
         run: |
-          rm -f /tmp/lunchlineup-rollback-production.sh "$RUNNER_TEMP/lunchlineup-previous-runtime.env"
+          set -euo pipefail
+          node scripts/verify-external-health-release.mjs "$PRODUCTION_API_HEALTH_URL" "$PREVIOUS_RELEASE_SOURCE_SHA"
+          node scripts/verify-external-health-release.mjs "$PRODUCTION_WEB_URL" "$PREVIOUS_RELEASE_SOURCE_SHA" --expect-public-html
+          registry_before="$RUNNER_TEMP/lunchlineup-centralized-rollback-current-before.json"
+          rm -f "$registry_before" "$registry_before".*
+          node scripts/release-bundle-registry.mjs resolve \
+            --registry-uri "$PRODUCTION_RELEASE_REGISTRY_URI" \
+            --output "$registry_before" \
+            --expected-certificate-identity "$RELEASE_BUNDLE_CERTIFICATE_IDENTITY" \
+            --expected-oidc-issuer "$RELEASE_BUNDLE_OIDC_ISSUER"
+          registry_current_sha="$(node -e 'const fs=require("fs");process.stdout.write(JSON.parse(fs.readFileSync(process.argv[1],"utf8")).sourceSha)' "$registry_before")"
+          if [ "$registry_current_sha" != "$GITHUB_SHA" ] && [ "$registry_current_sha" != "$PREVIOUS_RELEASE_SOURCE_SHA" ]; then
+            echo "Authenticated registry pointer names an unexpected competing release; refusing rollback repoint." >&2
+            exit 1
+          fi
+          node scripts/release-bundle-registry.mjs repoint \
+            --registry-uri "$PRODUCTION_RELEASE_REGISTRY_URI" \
+            --source-sha "$PREVIOUS_RELEASE_SOURCE_SHA" \
+            --expected-current-source-sha "$registry_current_sha" \
+            --confirm "repoint-current-to:$PREVIOUS_RELEASE_SOURCE_SHA" \
+            --expected-certificate-identity "$RELEASE_BUNDLE_CERTIFICATE_IDENTITY" \
+            --expected-oidc-issuer "$RELEASE_BUNDLE_OIDC_ISSUER"
+          registry_readback="$RUNNER_TEMP/lunchlineup-centralized-rollback-current.json"
+          node scripts/release-bundle-registry.mjs resolve \
+            --registry-uri "$PRODUCTION_RELEASE_REGISTRY_URI" \
+            --output "$registry_readback" \
+            --expected-certificate-identity "$RELEASE_BUNDLE_CERTIFICATE_IDENTITY" \
+            --expected-oidc-issuer "$RELEASE_BUNDLE_OIDC_ISSUER"
+          test "$(node -e 'const fs=require("fs");process.stdout.write(JSON.parse(fs.readFileSync(process.argv[1],"utf8")).sourceSha)' "$registry_readback")" = "$PREVIOUS_RELEASE_SOURCE_SHA"
+          rm -f "$registry_before" "$registry_before".* "$registry_readback" "$registry_readback".*
+      - name: Require completed automatic rollback after release failure
+        if: always() && steps.arm_production_rollback.outcome == 'success' && (steps.same_gate_release_outcome.outcome != 'success' || steps.same_gate_release_outcome.outputs.rollback_required == 'true')
+        env:
+          RELEASE_OUTCOME_CHECK: ${{ steps.same_gate_release_outcome.outcome }}
+          ROLLBACK_MATERIALIZATION_OUTCOME: ${{ steps.materialize_automatic_rollback.outcome }}
+          ROLLBACK_MUTATION_OUTCOME: ${{ steps.automatic_production_rollback.outcome }}
+          ROLLBACK_PROOF_OUTCOME: ${{ steps.prove_automatic_production_rollback.outcome }}
+        run: |
+          set -euo pipefail
+          test "$RELEASE_OUTCOME_CHECK" = success
+          test "$ROLLBACK_MATERIALIZATION_OUTCOME" = success
+          test "$ROLLBACK_MUTATION_OUTCOME" = success
+          test "$ROLLBACK_PROOF_OUTCOME" = success
+      - name: Cleanup automatic rollback material
+        if: always() && steps.arm_production_rollback.outcome == 'success' && (steps.same_gate_release_outcome.outcome != 'success' || steps.same_gate_release_outcome.outputs.rollback_required == 'true')
+        run: |
+          rm -f /tmp/lunchlineup-post-deploy-proof.sh "$RUNNER_TEMP/lunchlineup-previous-runtime.env"
+          rm -f "$RUNNER_TEMP/lunchlineup-centralized-vm217-private-key" "$RUNNER_TEMP/lunchlineup-centralized-vm217-known-hosts"
+          rm -f "$RUNNER_TEMP/lunchlineup-centralized-rollback-current.json" "$RUNNER_TEMP/lunchlineup-centralized-rollback-current.json".*
+          rm -rf "$RUNNER_TEMP/lunchlineup-rollback-state"
+      - name: Cleanup production runtime environment and rollback secrets
+        if: always()
+        env:
+          OLD_RELEASE_COMPATIBILITY_CLONE_COMMAND: ${{ secrets.OLD_RELEASE_COMPATIBILITY_CLONE_COMMAND }}
+        run: |
+          set -uo pipefail
+          cleanup_status=0
+          clone_driver="$RUNNER_TEMP/lunchlineup-compatibility-clone-driver.sh"
+          clone_env="$RUNNER_TEMP/lunchlineup-compatibility-clone.env"
+          clone_suffix="$(printf '%s' "deploy:$GITHUB_RUN_ID:$GITHUB_RUN_ATTEMPT" | sha256sum | cut -c1-12)"
+          clone_id="llc-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT-$clone_suffix"
+          if [ -f "$clone_driver" ]; then
+            cleanup_seconds="$(node scripts/validate-production-deploy-deadlines.mjs remaining \
+              --phase runner-cleanup \
+              --maximum-seconds "$PRODUCTION_DEPLOY_RUNNER_RESERVE_SECONDS")" \
+              || cleanup_status=$?
+            if [ "$cleanup_status" -eq 0 ]; then
+              timeout \
+                --signal=TERM \
+                --kill-after="${PRODUCTION_DEPLOY_TIMEOUT_KILL_RESERVE_SECONDS}s" \
+                "${cleanup_seconds}s" \
+                bash scripts/destroy-old-release-compatibility-clone.sh \
+                  --driver "$clone_driver" \
+                  --clone-env "$clone_env" \
+                  --clone-id "$clone_id" \
+                  --production-runtime-env "${PRODUCTION_RUNTIME_ENV_PATH:-}" \
+                  --timeout-seconds "$cleanup_seconds" \
+                || cleanup_status=$?
+            fi
+          fi
+          rm -f "$RUNNER_TEMP/lunchlineup-vm217-private-key" "$RUNNER_TEMP/lunchlineup-vm217-known-hosts"
+          rm -rf "$RUNNER_TEMP/lunchlineup-deployed-inputs"
           rm -rf "$RUNNER_TEMP/lunchlineup-rollback-baseline" "$RUNNER_TEMP/lunchlineup-rollback-state"
-  # --- SBOM Generation ---
-  sbom:
-    name: "Generate SBOM"
+          rm -rf "$RUNNER_TEMP/old-release-compatibility-evidence"
+          rm -f "$RUNNER_TEMP/lunchlineup-runtime.env" "$RUNNER_TEMP/lunchlineup-previous-runtime.env"
+          rm -f /tmp/lunchlineup-post-deploy-proof.sh
+          rm -f "$RUNNER_TEMP/lunchlineup-centralized-vm217-private-key" "$RUNNER_TEMP/lunchlineup-centralized-vm217-known-hosts"
+          if [ -n "${PREVIOUS_RELEASE_MANIFEST_PATH:-}" ]; then
+            rm -rf "$(dirname "$PREVIOUS_RELEASE_MANIFEST_PATH")"
+          fi
+          exit "$cleanup_status"
+
+  production-image-inventory:
+    name: "Resolve Production Image Inventory"
     needs: build-images
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    outputs:
+      matrix: ${{ steps.inventory.outputs.matrix }}
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
-      - uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
-          artifact-name: sbom.spdx.json
+          name: release-manifest
+          path: .release
+      - name: Derive every production image from Compose
+        id: inventory
+        run: node scripts/production-image-inventory.mjs --manifest .release/release-manifest.json --github-matrix-output "$GITHUB_OUTPUT"
 
-  # --- Base Image Vulnerability Scan ---
-  trivy-scan:
-    name: "Container Vulnerability Scan (Trivy)"
-    needs: build-images
+  # --- SBOM Generation ---
+  sbom:
+    name: "Generate SBOM (${{ matrix.service }})"
+    needs: [build-images, production-image-inventory]
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     permissions:
       contents: read
-      packages: read
+      id-token: write
+      packages: write
     strategy:
       fail-fast: false
-      matrix:
-        service: [api, web, engine, worker, migrate, control, backup]
+      matrix: ${{ fromJSON(needs.production-image-inventory.outputs.matrix) }}
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           name: release-manifest
@@ -1210,13 +2549,93 @@ jobs:
         run: |
           set -euo pipefail
           node scripts/verify-release-artifacts.mjs .release/release-manifest.json --source-sha "$GITHUB_SHA"
-          node <<'NODE' >> "$GITHUB_OUTPUT"
-          const fs = require('node:fs');
-          const manifest = JSON.parse(fs.readFileSync('.release/release-manifest.json', 'utf8'));
-          const image = manifest.images[process.env.SERVICE];
-          if (!image?.ref || !image?.digest || !image.ref.endsWith(`@${image.digest}`)) process.exit(1);
-          process.stdout.write(`ref=${image.ref}\ndigest=${image.digest}\n`);
-          NODE
+          node scripts/production-image-inventory.mjs \
+            --manifest .release/release-manifest.json \
+            --service "$SERVICE" \
+            --github-output "$GITHUB_OUTPUT"
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Prepare SBOM report directory
+        run: mkdir -p .release/sbom
+      - uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0
+        with:
+          image: ${{ steps.release_image.outputs.ref }}
+          format: spdx-json
+          output-file: .release/sbom/${{ matrix.service }}.spdx.json
+          upload-artifact: false
+      - name: Bind SBOM to release manifest
+        env:
+          SERVICE: ${{ matrix.service }}
+          IMAGE_REF: ${{ steps.release_image.outputs.ref }}
+          CERTIFICATE_IDENTITY: ${{ env.RELEASE_BUNDLE_CERTIFICATE_IDENTITY }}
+          OIDC_ISSUER: ${{ env.RELEASE_BUNDLE_OIDC_ISSUER }}
+        run: |
+          node scripts/write-release-image-report-evidence.mjs \
+            --kind sbom \
+            --service "$SERVICE" \
+            --manifest .release/release-manifest.json \
+            --report ".release/sbom/${SERVICE}.spdx.json" \
+            --output ".release/sbom/${SERVICE}.sbom-evidence.json" \
+            --certificate-identity "$CERTIFICATE_IDENTITY" \
+            --oidc-issuer "$OIDC_ISSUER"
+      - name: Sign and attach SBOM evidence to the release image
+        env:
+          IMAGE_REF: ${{ steps.release_image.outputs.ref }}
+          REGISTRY_ATTESTATION_REQUIRED: ${{ steps.release_image.outputs.registry_attestation_required }}
+          SERVICE: ${{ matrix.service }}
+        run: |
+          evidence=".release/sbom/${SERVICE}.sbom-evidence.json"
+          cosign sign-blob --yes --bundle ".release/sbom/${SERVICE}.sbom-evidence.sigstore.json" "$evidence"
+          if [ "$REGISTRY_ATTESTATION_REQUIRED" = true ]; then
+            cosign attest --yes --type custom --predicate "$evidence" "$IMAGE_REF"
+          fi
+      - name: Verify signed release-bound SBOM
+        run: |
+          node scripts/verify-sbom-release-reports.mjs .release/release-manifest.json .release/sbom \
+            --service "${{ matrix.service }}" \
+            --expected-certificate-identity "$RELEASE_BUNDLE_CERTIFICATE_IDENTITY" \
+            --expected-oidc-issuer "$RELEASE_BUNDLE_OIDC_ISSUER"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: sbom-release-${{ matrix.service }}
+          path: .release/sbom/${{ matrix.service }}.*.json
+          if-no-files-found: error
+          retention-days: 90
+  # --- Base Image Vulnerability Scan ---
+  trivy-scan:
+    name: "Container Vulnerability Scan (Trivy)"
+    needs: [build-images, sbom, production-image-inventory]
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    permissions:
+      contents: read
+      id-token: write
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.production-image-inventory.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: release-manifest
+          path: .release
+      - name: Verify and resolve digest-pinned release image
+        id: release_image
+        env:
+          SERVICE: ${{ matrix.service }}
+        run: |
+          set -euo pipefail
+          node scripts/verify-release-artifacts.mjs .release/release-manifest.json --source-sha "$GITHUB_SHA"
+          node scripts/production-image-inventory.mjs \
+            --manifest .release/release-manifest.json \
+            --service "$SERVICE" \
+            --github-output "$GITHUB_OUTPUT"
       - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
         with:
           registry: ghcr.io
@@ -1237,37 +2656,38 @@ jobs:
       - name: Bind Trivy report to release manifest
         env:
           SERVICE: ${{ matrix.service }}
+          CERTIFICATE_IDENTITY: ${{ env.RELEASE_BUNDLE_CERTIFICATE_IDENTITY }}
+          OIDC_ISSUER: ${{ env.RELEASE_BUNDLE_OIDC_ISSUER }}
         run: |
-          node <<'NODE'
-          const crypto = require('node:crypto');
-          const fs = require('node:fs');
-          const service = process.env.SERVICE;
-          const manifestPath = '.release/release-manifest.json';
-          const reportPath = `.release/trivy/${service}.trivy.json`;
-          const manifestBytes = fs.readFileSync(manifestPath);
-          const reportBytes = fs.readFileSync(reportPath);
-          const manifest = JSON.parse(manifestBytes);
-          const image = manifest.images[service];
-          const sha256 = (bytes) => crypto.createHash('sha256').update(bytes).digest('hex');
-          const evidence = {
-            version: 1,
-            scanner: 'trivy',
-            sourceSha: manifest.sourceSha,
-            service,
-            imageRef: image.ref,
-            imageDigest: image.digest,
-            releaseManifestSha256: sha256(manifestBytes),
-            reportFile: `${service}.trivy.json`,
-            reportSha256: sha256(reportBytes),
-            severityGate: ['HIGH', 'CRITICAL'],
-          };
-          fs.writeFileSync(`.release/trivy/${service}.trivy-evidence.json`, `${JSON.stringify(evidence, null, 2)}\n`);
-          NODE
+          node scripts/write-release-image-report-evidence.mjs \
+            --kind trivy \
+            --service "$SERVICE" \
+            --manifest .release/release-manifest.json \
+            --report ".release/trivy/${SERVICE}.trivy.json" \
+            --output ".release/trivy/${SERVICE}.trivy-evidence.json" \
+            --certificate-identity "$CERTIFICATE_IDENTITY" \
+            --oidc-issuer "$OIDC_ISSUER"
+      - name: Sign and attach Trivy evidence to the release image
+        env:
+          IMAGE_REF: ${{ steps.release_image.outputs.ref }}
+          REGISTRY_ATTESTATION_REQUIRED: ${{ steps.release_image.outputs.registry_attestation_required }}
+          SERVICE: ${{ matrix.service }}
+        run: |
+          evidence=".release/trivy/${SERVICE}.trivy-evidence.json"
+          cosign sign-blob --yes --bundle ".release/trivy/${SERVICE}.trivy-evidence.sigstore.json" "$evidence"
+          if [ "$REGISTRY_ATTESTATION_REQUIRED" = true ]; then
+            cosign attest --yes --type custom --predicate "$evidence" "$IMAGE_REF"
+          fi
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: always()
         with:
           name: trivy-release-${{ matrix.service }}
           path: .release/trivy/${{ matrix.service }}.trivy*.json
           if-no-files-found: error
-      - name: Enforce HIGH and CRITICAL release image gate
-        run: node scripts/verify-trivy-release-reports.mjs .release/release-manifest.json .release/trivy --service "${{ matrix.service }}"
+          retention-days: 90
+      - name: Enforce signed HIGH and CRITICAL release image gate
+        run: |
+          node scripts/verify-trivy-release-reports.mjs .release/release-manifest.json .release/trivy \
+            --service "${{ matrix.service }}" \
+            --expected-certificate-identity "$RELEASE_BUNDLE_CERTIFICATE_IDENTITY" \
+            --expected-oidc-issuer "$RELEASE_BUNDLE_OIDC_ISSUER"

@@ -4,8 +4,12 @@ import {
 } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { secureHttpRequest } from "../common/secure-http-client";
 import { StripeMeterErrorService } from "./stripe-meter-error.service";
 
+vi.mock("../common/secure-http-client", () => ({ secureHttpRequest: vi.fn() }));
+
+const secureHttpRequestMock = vi.mocked(secureHttpRequest);
 const eventId = "evt_meter_error_123";
 const meterId = "mtr_live_123";
 
@@ -24,6 +28,7 @@ function buildService({
   event?: Record<string, unknown>;
   updateCount?: number;
 } = {}) {
+  secureHttpRequestMock.mockReset();
   const storedRows = rows ?? (row ? [row] : []);
   const findUnique = vi.fn(async ({ where }: any) => {
     return (
@@ -59,41 +64,36 @@ function buildService({
       submittedAt < where.submittedAt.lt
     );
   };
-  const findMany = vi.fn(async ({ where, take }: any) => {
-    if (where.metadata) {
-      return storedRows
-        .filter(
-          (candidate) =>
-            candidate.metadata?.stripeAsyncError?.eventId ===
-            where.metadata.equals,
-        )
-        .slice(0, take)
-        .map(({ id }) => ({ id }));
-    }
-    return storedRows
-      .filter(
-        (candidate) =>
-          inWindow(candidate, where) &&
-          where.status.in.includes(candidate.status),
-      )
-      .slice(0, take);
-  });
-  const count = vi.fn(
-    async ({ where }: any) =>
-      storedRows.filter((candidate) => {
-        if (!inWindow(candidate, where)) return false;
-        if (where.status && !where.status.in.includes(candidate.status))
-          return false;
-        if (where.metadata) {
-          return (
-            candidate.metadata?.stripeAsyncError?.eventId ===
-            where.metadata.equals
+  const findMany = vi.fn(
+    async ({ where, take, cursor, skip = 0, select }: any) => {
+      const matching = where.metadata
+        ? storedRows.filter(
+            (candidate) =>
+              candidate.metadata?.stripeAsyncError?.eventId ===
+              where.metadata.equals,
+          )
+        : storedRows.filter(
+            (candidate) =>
+              inWindow(candidate, where) &&
+              where.status.in.includes(candidate.status),
           );
+      const ordered = [...matching].sort((left, right) => {
+        if (!where.metadata) {
+          const timeDifference =
+            left.submittedAt.getTime() - right.submittedAt.getTime();
+          if (timeDifference !== 0) return timeDifference;
         }
-        return true;
-      }).length,
+        return left.id.localeCompare(right.id);
+      });
+      const cursorIndex = cursor
+        ? ordered.findIndex((candidate) => candidate.id === cursor.id)
+        : -1;
+      const start = cursor ? Math.max(cursorIndex, 0) + skip : 0;
+      const page = ordered.slice(start, start + take);
+      return select?.id ? page.map(({ id }) => ({ id })) : page;
+    },
   );
-  const tx = { stripeUsageEvent: { findUnique, findMany, count, updateMany } };
+  const tx = { stripeUsageEvent: { findUnique, findMany, updateMany } };
   const tenantDb = {
     withPlatformAdmin: vi.fn((operation: any) => operation(tx)),
     withTenant: vi.fn((_tenantId: string, operation: any) => operation(tx)),
@@ -133,10 +133,7 @@ function buildService({
       validation_end: "2026-07-11T12:00:10.000Z",
     },
   };
-  vi.stubGlobal(
-    "fetch",
-    vi.fn().mockImplementation(async () => response(fullEvent)),
-  );
+  secureHttpRequestMock.mockImplementation(async () => response(fullEvent));
   return {
     service: new StripeMeterErrorService(
       config,
@@ -156,6 +153,64 @@ afterEach(() => {
 });
 
 describe("StripeMeterErrorService", () => {
+  it("sanitizes signature verification diagnostics", async () => {
+    const { service, stripe } = buildService();
+    const warn = vi
+      .spyOn((service as any).logger, "warn")
+      .mockImplementation(() => undefined);
+    stripe.webhooks.constructEvent.mockImplementation(() => {
+      throw new Error(
+        "Authorization: Bearer sk_live_secret https://user:password@stripe.example?token=secret",
+      );
+    });
+
+    try {
+      await expect(
+        service.handleWebhook(Buffer.from("{}"), "sig"),
+      ).rejects.toBeInstanceOf(BadRequestException);
+      const diagnostic = String(warn.mock.calls[0]?.[0] ?? "");
+      expect(JSON.parse(diagnostic)).toMatchObject({
+        event: "stripe.meter_error.signature_verification_failed",
+        errorClass: "Error",
+        category: "unknown",
+      });
+      expect(diagnostic).not.toContain("sk_live_secret");
+      expect(diagnostic).not.toContain("password");
+      expect(diagnostic).not.toContain("token=secret");
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it("returns a fixed retrieval failure and logs only safe diagnostics", async () => {
+    const { service } = buildService();
+    const loggerError = vi
+      .spyOn((service as any).logger, "error")
+      .mockImplementation(() => undefined);
+    secureHttpRequestMock.mockRejectedValue(
+      new Error("DATABASE_URL=postgresql://user:password@db/private?token=secret"),
+    );
+
+    try {
+      await expect(
+        service.handleWebhook(Buffer.from("{}"), "sig"),
+      ).rejects.toMatchObject({
+        message: "Unable to retrieve Stripe meter error event",
+      });
+      const diagnostic = String(loggerError.mock.calls[0]?.[0] ?? "");
+      expect(JSON.parse(diagnostic)).toMatchObject({
+        event: "stripe.meter_error.event_retrieval_failed",
+        errorClass: "Error",
+        category: "unknown",
+      });
+      expect(diagnostic).not.toContain("password");
+      expect(diagnostic).not.toContain("token=secret");
+      expect(diagnostic).not.toContain("DATABASE_URL");
+    } finally {
+      loggerError.mockRestore();
+    }
+  });
+
   it("dead-letters a customer-not-found rejection using exact durable correlation", async () => {
     const row = {
       id: "usage-1",

@@ -2,7 +2,8 @@
 # scripts/bootstrap-vm107-dev.sh
 # Bootstrap a fresh VM107-style LunchLineup dev host from GitHub, then optionally
 # restore an existing Postgres dump. This script is for disposable private dev
-# servers only; do not run it against production VM106.
+# servers only; do not run it against current production VM217. VM106 identifies
+# only the historical legacy PHP source environment.
 set -euo pipefail
 
 APP_DIR="${APP_DIR:-/opt/lunchlineup}"

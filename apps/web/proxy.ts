@@ -1,25 +1,75 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { hasLunchBreakReadAccess, hasSchedulingReadAccess } from './lib/permissions';
+import { readBoundedJson, withRequestTimeout } from './lib/http-safety';
+import { parseApprovedAppOrigin, safeSameOriginReturnPath } from './lib/safe-navigation';
 
-const PUBLIC_PATHS = ['/auth', '/mfa', '/onboarding', '/privacy', '/security', '/status', '/subprocessors', '/terms', '/_next', '/favicon.ico', '/vendor', '/sw.js'];
+const PROTECTED_PATH_ROOTS = ['/admin', '/dashboard'];
+const PASSWORD_RESET_PATH = '/auth/reset-password';
+const PASSWORD_RESET_TOKEN_COOKIE = 'll_password_reset_token';
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? '/api/v1';
-const INTERNAL_API_URL = process.env.INTERNAL_API_URL;
 const AUTH_DEBUG_ENABLED = ['1', 'true', 'yes', 'on'].includes((process.env.AUTH_DEBUG ?? '').toLowerCase());
-const SENSITIVE_QUERY_KEYS = /(?:code|csrf|key|password|secret|session|signature|token)/i;
-const BEARER_RE = /\b(Bearer\s+)[A-Za-z0-9._~+/=-]+/gi;
-const SECRET_QUERY_RE = /([?&][^=&#\s]*(?:code|csrf|key|password|secret|session|signature|token)[^=&#\s]*=)[^&#\s]+/gi;
+const UNSAFE_DEBUG_VALUE = /(?:\b(?:bearer|authorization|cookie|set-cookie|password|secret|stack|token)\b|https?:\/\/|file:\/\/|\\\\|[\r\n\0<>]|localhost|127\.0\.0\.1|\.internal\b|\b(?:10|192\.168)\.\d{1,3}\.\d{1,3}|\b172\.(?:1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3})/i;
+const AUTH_FETCH_TIMEOUT_MS = 5_000;
+const AUTH_RESPONSE_LIMIT_BYTES = 64 * 1024;
+const MAX_IDENTITY_ROLES = 100;
+const MAX_ROLE_DISPLAY_NAME_LENGTH = 80;
+
+type AuthUser = {
+    sub: string;
+    role: string;
+    legacyRole: 'SUPER_ADMIN' | 'ADMIN' | 'MANAGER' | 'STAFF';
+    tenantId: string;
+    sessionId: string;
+    permissions: string[];
+    roles: Array<{ id: string; name: string }>;
+    mfaRequired?: boolean;
+    requiresMfa?: boolean;
+    mfaVerified?: boolean;
+};
+
+const LEGACY_USER_ROLES = new Set<AuthUser['legacyRole']>(['SUPER_ADMIN', 'ADMIN', 'MANAGER', 'STAFF']);
+const SAFE_ROLE_ID = /^[A-Za-z0-9:_-]{1,64}$/;
+const ROLE_NAME_CONTROL_CHARACTERS = /[\u0000-\u001f\u007f-\u009f]/g;
 
 type RefreshResult =
     | { outcome: 'refreshed'; response: NextResponse }
     | { outcome: 'invalid' }
     | { outcome: 'unavailable' };
 
-function isPublicPath(pathname: string): boolean {
-    return PUBLIC_PATHS.some((publicPath) => pathname === publicPath || pathname.startsWith(`${publicPath}/`));
+function isProtectedPath(pathname: string): boolean {
+    return PROTECTED_PATH_ROOTS.some((root) => pathname === root || pathname.startsWith(`${root}/`));
 }
 
-function pathWithSearch(request: NextRequest): string {
-    return `${request.nextUrl.pathname}${request.nextUrl.search}`;
+function safePasswordResetToken(value: string | null): string | null {
+    return value && /^[A-Za-z0-9_-]{1,512}$/.test(value) ? value : null;
+}
+
+function approvedAppOrigin(request: NextRequest): string | null {
+    const configured = process.env.NEXT_PUBLIC_APP_ORIGIN?.trim()
+        || process.env.NEXT_PUBLIC_APP_URL?.trim();
+    if (configured) {
+        return parseApprovedAppOrigin(configured, process.env.NODE_ENV === 'production');
+    }
+    if (process.env.NODE_ENV === 'production') return null;
+    return parseApprovedAppOrigin(request.nextUrl.origin, false);
+}
+
+function parseServiceBase(value: string): string | null {
+    try {
+        const parsed = new URL(value);
+        if (
+            !['http:', 'https:'].includes(parsed.protocol)
+            || parsed.username
+            || parsed.password
+            || parsed.search
+            || parsed.hash
+        ) {
+            return null;
+        }
+        return parsed.toString().replace(/\/$/, '');
+    } catch {
+        return null;
+    }
 }
 
 function readCookie(request: NextRequest, name: string): string | undefined {
@@ -32,30 +82,97 @@ function readCookie(request: NextRequest, name: string): string | undefined {
     return match?.[1];
 }
 
-function apiEndpoint(request: NextRequest, path: string): string {
-    // Prefer internal service-to-service URL in production containers.
-    if (INTERNAL_API_URL && INTERNAL_API_URL.startsWith('http')) {
-        return `${INTERNAL_API_URL.replace(/\/$/, '')}${path}`;
+function apiEndpoint(appOrigin: string, path: string): string {
+    const internalApiUrl = process.env.INTERNAL_API_URL?.trim();
+    if (internalApiUrl) {
+        const internalBase = parseServiceBase(internalApiUrl);
+        if (!internalBase) throw new Error('invalid_api_configuration');
+        return `${internalBase}${path}`;
     }
 
-    // NEXT_PUBLIC_API_URL may be relative (e.g. "/api/v1").
+    if (/^https?:/i.test(API_URL)) {
+        const publicBase = parseServiceBase(API_URL);
+        if (!publicBase || new URL(publicBase).origin !== appOrigin) {
+            throw new Error('invalid_api_configuration');
+        }
+        return `${publicBase}${path}`;
+    }
+
     const relativeBase = API_URL.startsWith('/') ? API_URL : `/${API_URL}`;
-    const base = API_URL.startsWith('http')
-        ? API_URL.replace(/\/$/, '')
-        : process.env.NODE_ENV === 'production'
-            ? `http://api:3000${relativeBase}`
-            : `${request.nextUrl.origin}${relativeBase}`;
+    const base = process.env.NODE_ENV === 'production'
+        ? `http://api:3000${relativeBase}`
+        : `${appOrigin}${relativeBase}`;
     return `${base}${path}`;
 }
 
-function getErrorMessage(error: unknown): string {
-    if (error instanceof Error) return error.message;
-    if (typeof error === 'string') return error;
-    try {
-        return JSON.stringify(error);
-    } catch {
-        return 'unknown_error';
+function classifyProxyFailure(error: unknown): 'aborted' | 'invalid_response' | 'network' | 'timeout' {
+    const name = error instanceof Error ? error.name : '';
+    if (name === 'AbortError') return 'aborted';
+    if (name === 'TimeoutError') return 'timeout';
+    if (name === 'SyntaxError' || name === 'ResponseBodyLimitError') return 'invalid_response';
+    return 'network';
+}
+
+function safeHeaderToken(value: unknown): value is string {
+    return typeof value === 'string' && /^[A-Za-z0-9:_-]{1,128}$/.test(value);
+}
+
+function migrationSafeRoleName(value: string): string {
+    const normalized = value
+        .replace(ROLE_NAME_CONTROL_CHARACTERS, ' ')
+        .replace(/ {2,}/g, ' ')
+        .trim()
+        .slice(0, MAX_ROLE_DISPLAY_NAME_LENGTH);
+    return normalized || 'Unknown role';
+}
+
+function parseAuthUser(payload: unknown): AuthUser | null {
+    if (!payload || typeof payload !== 'object') return null;
+    const candidate = (payload as { user?: unknown }).user;
+    if (!candidate || typeof candidate !== 'object') return null;
+    const user = candidate as Record<string, unknown>;
+    if (
+        !safeHeaderToken(user.sub)
+        || typeof user.role !== 'string'
+        || typeof user.legacyRole !== 'string'
+        || !LEGACY_USER_ROLES.has(user.legacyRole as AuthUser['legacyRole'])
+        || !safeHeaderToken(user.tenantId)
+        || !safeHeaderToken(user.sessionId)
+    ) {
+        return null;
     }
+
+    const permissions = user.permissions ?? [];
+    if (!Array.isArray(permissions) || permissions.length > 200 || !permissions.every(safeHeaderToken)) {
+        return null;
+    }
+    const roles = user.roles ?? [];
+    if (!Array.isArray(roles) || roles.length > MAX_IDENTITY_ROLES) return null;
+    const normalizedRoles: Array<{ id: string; name: string }> = [];
+    for (const role of roles) {
+        if (!role || typeof role !== 'object') return null;
+        const { id, name } = role as { id?: unknown; name?: unknown };
+        if (typeof id !== 'string' || !SAFE_ROLE_ID.test(id) || typeof name !== 'string') {
+            return null;
+        }
+        normalizedRoles.push({ id, name: migrationSafeRoleName(name) });
+    }
+    for (const key of ['mfaRequired', 'requiresMfa', 'mfaVerified'] as const) {
+        if (user[key] !== undefined && typeof user[key] !== 'boolean') return null;
+    }
+
+    return {
+        sub: user.sub,
+        role: migrationSafeRoleName(user.role),
+        legacyRole: user.legacyRole as AuthUser['legacyRole'],
+        tenantId: user.tenantId,
+        sessionId: user.sessionId,
+        permissions: [...permissions],
+        roles: normalizedRoles,
+        mfaRequired: user.mfaRequired as boolean | undefined,
+        requiresMfa: user.requiresMfa as boolean | undefined,
+        mfaVerified: user.mfaVerified as boolean | undefined,
+    };
 }
 
 function getSetCookieHeaders(headers: Headers): string[] {
@@ -71,27 +188,8 @@ function hasCookie(setCookieHeaders: string[], name: string): boolean {
 }
 
 function redactDebugString(value: string): string {
-    const bearerRedacted = value.replace(BEARER_RE, '$1[REDACTED]');
-    if (!bearerRedacted.includes('?') && !bearerRedacted.includes('&')) {
-        return bearerRedacted;
-    }
-
-    try {
-        const isSearchOnly = bearerRedacted.startsWith('?');
-        const isRelative = bearerRedacted.startsWith('/');
-        const parsed = new URL(bearerRedacted, 'http://redaction.local');
-        for (const key of Array.from(parsed.searchParams.keys())) {
-            if (SENSITIVE_QUERY_KEYS.test(key)) {
-                parsed.searchParams.set(key, '[REDACTED]');
-            }
-        }
-        if (isSearchOnly) return parsed.search;
-        return isRelative
-            ? `${parsed.pathname}${parsed.search}${parsed.hash}`
-            : parsed.toString();
-    } catch {
-        return bearerRedacted.replace(SECRET_QUERY_RE, '$1[REDACTED]');
-    }
+    if (value.length > 200 || UNSAFE_DEBUG_VALUE.test(value)) return '[REDACTED]';
+    return value;
 }
 
 function redactDebugDetails(details: Record<string, unknown>): Record<string, unknown> {
@@ -102,7 +200,6 @@ function redactDebugDetails(details: Record<string, unknown>): Record<string, un
         ]),
     );
 }
-
 function shouldDebugAuth(request: NextRequest): boolean {
     if (AUTH_DEBUG_ENABLED) return true;
     if (process.env.NODE_ENV === 'production') return false;
@@ -112,9 +209,7 @@ function shouldDebugAuth(request: NextRequest): boolean {
 export async function proxy(request: NextRequest) {
     const { pathname } = request.nextUrl;
     const startedAt = Date.now();
-    const requestId = request.headers.get('x-request-id')
-        ?? request.headers.get('cf-ray')
-        ?? `${startedAt.toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+    const requestId = `${startedAt.toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
     const debugEnabled = shouldDebugAuth(request);
     const authDebug = (event: string, details: Record<string, unknown> = {}) => {
         if (!debugEnabled) return;
@@ -123,25 +218,10 @@ export async function proxy(request: NextRequest) {
             event,
             requestId,
             method: request.method,
-            path: request.nextUrl.pathname,
-            search: redactDebugString(request.nextUrl.search || ''),
-            host: request.headers.get('host') ?? '',
             durationMs: Date.now() - startedAt,
             ...redactDebugDetails(details),
         };
         console.info(`[auth-debug] ${JSON.stringify(payload)}`);
-    };
-    const redirectToLogin = (event: string) => {
-        const loginUrl = request.nextUrl.clone();
-        loginUrl.pathname = '/auth/login';
-        loginUrl.search = '';
-        loginUrl.searchParams.set('next', pathWithSearch(request));
-        const response = NextResponse.redirect(loginUrl);
-        response.cookies.delete('access_token');
-        response.cookies.delete('refresh_token');
-        response.cookies.delete('csrf_token');
-        authDebug(event, { next: pathWithSearch(request) });
-        return response;
     };
     const serviceUnavailable = (event: string, details: Record<string, unknown> = {}) => {
         authDebug(event, details);
@@ -152,6 +232,51 @@ export async function proxy(request: NextRequest) {
                 'Retry-After': '5',
             },
         });
+    };
+
+    if (pathname === PASSWORD_RESET_PATH) {
+        const token = safePasswordResetToken(request.nextUrl.searchParams.get('token'));
+        if (request.nextUrl.searchParams.has('token')) {
+            const resetOrigin = approvedAppOrigin(request);
+            if (!resetOrigin) return serviceUnavailable('invalid_public_app_origin');
+            const cleanPath = safeSameOriginReturnPath(pathname, request.nextUrl.search);
+            const response = NextResponse.redirect(new URL(cleanPath, resetOrigin), 303);
+            response.headers.set('Cache-Control', 'no-store');
+            response.headers.set('Referrer-Policy', 'no-referrer');
+            response.cookies.set(PASSWORD_RESET_TOKEN_COOKIE, token ?? '', {
+                httpOnly: false,
+                sameSite: 'strict',
+                secure: new URL(resetOrigin).protocol === 'https:',
+                path: PASSWORD_RESET_PATH,
+                maxAge: token ? 15 * 60 : 0,
+            });
+            authDebug('scrub_password_reset_token', { accepted: Boolean(token) });
+            return response;
+        }
+
+        const response = NextResponse.next();
+        response.headers.set('Cache-Control', 'no-store');
+        response.headers.set('Referrer-Policy', 'no-referrer');
+        return response;
+    }
+
+    if (!isProtectedPath(pathname)) {
+        authDebug('allow_unprotected_path');
+        return NextResponse.next();
+    }
+
+    const appOrigin = approvedAppOrigin(request);
+    if (!appOrigin) return serviceUnavailable('invalid_public_app_origin');
+    const returnPath = safeSameOriginReturnPath(pathname, request.nextUrl.search);
+    const redirectToLogin = (event: string) => {
+        const loginUrl = new URL('/auth/login', appOrigin);
+        loginUrl.searchParams.set('next', returnPath);
+        const response = NextResponse.redirect(loginUrl);
+        response.cookies.delete('access_token');
+        response.cookies.delete('refresh_token');
+        response.cookies.delete('csrf_token');
+        authDebug(event, { next: returnPath });
+        return response;
     };
     const refreshSession = async (): Promise<RefreshResult> => {
         const refreshToken = readCookie(request, 'refresh_token');
@@ -164,21 +289,27 @@ export async function proxy(request: NextRequest) {
 
         let refreshResponse: Response;
         try {
-            refreshResponse = await fetch(apiEndpoint(request, '/auth/refresh'), {
-                method: 'POST',
-                headers: {
-                    Cookie: `refresh_token=${refreshToken}; csrf_token=${csrfToken}`,
-                    Origin: request.nextUrl.origin,
-                    Referer: request.url,
-                    'x-csrf-token': csrfToken,
-                },
-                cache: 'no-store',
-            });
+            refreshResponse = await withRequestTimeout(
+                (signal) => fetch(apiEndpoint(appOrigin, '/auth/refresh'), {
+                    method: 'POST',
+                    headers: {
+                        Cookie: `refresh_token=${refreshToken}; csrf_token=${csrfToken}`,
+                        Origin: appOrigin,
+                        Referer: new URL(returnPath, appOrigin).toString(),
+                        'x-csrf-token': csrfToken,
+                    },
+                    cache: 'no-store',
+                    redirect: 'error',
+                    signal,
+                }),
+                AUTH_FETCH_TIMEOUT_MS,
+            );
         } catch (error) {
-            authDebug('auth_refresh_exception', { error: getErrorMessage(error) });
+            authDebug('auth_refresh_exception', { failureCategory: classifyProxyFailure(error) });
             return { outcome: 'unavailable' };
         }
         authDebug('auth_refresh_response', { status: refreshResponse.status, ok: refreshResponse.ok });
+        await refreshResponse.body?.cancel().catch(() => undefined);
         if (!refreshResponse.ok) {
             return refreshResponse.status >= 400 && refreshResponse.status < 500 && refreshResponse.status !== 429
                 ? { outcome: 'invalid' }
@@ -193,26 +324,13 @@ export async function proxy(request: NextRequest) {
             return { outcome: 'invalid' };
         }
 
-        const response = NextResponse.redirect(request.url);
+        const response = NextResponse.redirect(new URL(returnPath, appOrigin));
         for (const cookie of rotatedCookies) {
             response.headers.append('set-cookie', cookie);
         }
-        authDebug('auth_refresh_rotated', { to: request.url });
+        authDebug('auth_refresh_rotated', { to: returnPath });
         return { outcome: 'refreshed', response };
     };
-
-    // Always allow public paths through
-    if (isPublicPath(pathname)) {
-        authDebug('allow_public_path');
-        return NextResponse.next();
-    }
-
-    // Allow the root marketing page
-    if (pathname === '/') {
-        authDebug('allow_root');
-        return NextResponse.next();
-    }
-
     const accessToken = readCookie(request, 'access_token');
 
     // Hard navigations can arrive after only the short-lived access cookie expires.
@@ -224,30 +342,28 @@ export async function proxy(request: NextRequest) {
     }
 
     // Validate token server-side via the API
-    let user: {
-        sub: string;
-        role: string;
-        tenantId: string;
-        sessionId: string;
-        permissions?: string[];
-        roles?: Array<{ id: string; name: string }>;
-        mfaRequired?: boolean;
-        requiresMfa?: boolean;
-        mfaVerified?: boolean;
-    } | null = null;
+    let user: AuthUser | null = null;
     try {
-        const fetchUserByAccessToken = async (token: string) => {
-            const response = await fetch(apiEndpoint(request, '/auth/me'), {
-                headers: {
-                    Cookie: `access_token=${token}`,
-                    'Content-Type': 'application/json',
-                },
-                cache: 'no-store',
-            });
-            if (!response.ok) return { status: response.status, user: null as typeof user };
-            const data = await response.json();
-            return { status: response.status, user: data.user as typeof user };
-        };
+        const fetchUserByAccessToken = async (token: string) => withRequestTimeout(
+            async (signal) => {
+                const response = await fetch(apiEndpoint(appOrigin, '/auth/me'), {
+                    headers: {
+                        Cookie: `access_token=${token}`,
+                        'Content-Type': 'application/json',
+                    },
+                    cache: 'no-store',
+                    redirect: 'error',
+                    signal,
+                });
+                if (!response.ok) {
+                    await response.body?.cancel().catch(() => undefined);
+                    return { status: response.status, user: null as AuthUser | null };
+                }
+                const data = await readBoundedJson(response, AUTH_RESPONSE_LIMIT_BYTES);
+                return { status: response.status, user: parseAuthUser(data) };
+            },
+            AUTH_FETCH_TIMEOUT_MS,
+        );
 
         const meResponse = await fetchUserByAccessToken(accessToken);
         if (meResponse.user) {
@@ -263,7 +379,7 @@ export async function proxy(request: NextRequest) {
             return serviceUnavailable('auth_me_failed_non_401', { status: meResponse.status });
         }
     } catch (error) {
-        return serviceUnavailable('auth_me_exception', { error: getErrorMessage(error) });
+        return serviceUnavailable('auth_me_exception', { failureCategory: classifyProxyFailure(error) });
     }
 
     if (!user) {
@@ -273,11 +389,9 @@ export async function proxy(request: NextRequest) {
     const mfaRequired = user.mfaRequired === true || user.requiresMfa === true;
     const mfaVerified = user.mfaVerified === true;
     if (mfaRequired && !mfaVerified) {
-        const mfaUrl = request.nextUrl.clone();
-        mfaUrl.pathname = '/mfa';
-        mfaUrl.search = '';
-        mfaUrl.searchParams.set('next', pathWithSearch(request));
-        authDebug('redirect_mfa_required', { role: user.role, next: pathWithSearch(request) });
+        const mfaUrl = new URL('/mfa', appOrigin);
+        mfaUrl.searchParams.set('next', returnPath);
+        authDebug('redirect_mfa_required', { role: user.role, next: returnPath });
         return NextResponse.redirect(mfaUrl);
     }
 
@@ -288,60 +402,53 @@ export async function proxy(request: NextRequest) {
     const canReadLunchBreaks = hasLunchBreakReadAccess(permissions);
 
     if (!isSuperAdmin && pathname.startsWith('/admin')) {
-        const dashboardUrl = request.nextUrl.clone();
-        dashboardUrl.pathname = '/dashboard';
+        const dashboardUrl = new URL('/dashboard', appOrigin);
         authDebug('redirect_non_super_admin_to_dashboard', { role: user.role });
         return NextResponse.redirect(dashboardUrl);
     }
 
     if (pathname.startsWith('/dashboard/scheduling') && !canReadScheduling) {
-        const dashboardUrl = request.nextUrl.clone();
-        dashboardUrl.pathname = '/dashboard';
-        authDebug('redirect_scheduling_forbidden', { role: user.role, path: pathname });
+        const dashboardUrl = new URL('/dashboard', appOrigin);
+        authDebug('redirect_scheduling_forbidden', { role: user.role });
         return NextResponse.redirect(dashboardUrl);
     }
 
     if (pathname.startsWith('/dashboard/lunch-breaks') && !canReadLunchBreaks) {
-        const dashboardUrl = request.nextUrl.clone();
-        dashboardUrl.pathname = '/dashboard';
-        authDebug('redirect_lunch_breaks_forbidden', { role: user.role, path: pathname });
+        const dashboardUrl = new URL('/dashboard', appOrigin);
+        authDebug('redirect_lunch_breaks_forbidden', { role: user.role });
         return NextResponse.redirect(dashboardUrl);
     }
 
     if (pathname.startsWith('/dashboard/settings') && !hasPermission('settings:read')) {
-        const dashboardUrl = request.nextUrl.clone();
-        dashboardUrl.pathname = '/dashboard';
+        const dashboardUrl = new URL('/dashboard', appOrigin);
         authDebug('redirect_settings_forbidden', { role: user.role });
         return NextResponse.redirect(dashboardUrl);
     }
 
     if (pathname.startsWith('/dashboard/staff') && !hasPermission('users:read')) {
-        const dashboardUrl = request.nextUrl.clone();
-        dashboardUrl.pathname = '/dashboard';
-        authDebug('redirect_staff_restricted_area', { role: user.role, path: pathname });
+        const dashboardUrl = new URL('/dashboard', appOrigin);
+        authDebug('redirect_staff_restricted_area', { role: user.role });
         return NextResponse.redirect(dashboardUrl);
     }
 
     if (pathname.startsWith('/dashboard/time-cards') && !hasPermission('time_cards:read')) {
-        const dashboardUrl = request.nextUrl.clone();
-        dashboardUrl.pathname = '/dashboard';
-        authDebug('redirect_time_cards_forbidden', { role: user.role, path: pathname });
+        const dashboardUrl = new URL('/dashboard', appOrigin);
+        authDebug('redirect_time_cards_forbidden', { role: user.role });
         return NextResponse.redirect(dashboardUrl);
     }
 
     if (pathname.startsWith('/dashboard/locations') && !hasPermission('locations:read')) {
-        const dashboardUrl = request.nextUrl.clone();
-        dashboardUrl.pathname = '/dashboard';
-        authDebug('redirect_locations_forbidden', { role: user.role, path: pathname });
+        const dashboardUrl = new URL('/dashboard', appOrigin);
+        authDebug('redirect_locations_forbidden', { role: user.role });
         return NextResponse.redirect(dashboardUrl);
     }
 
     const forwardedHeaders = new Headers(request.headers);
     forwardedHeaders.set('x-user-id', user.sub);
-    forwardedHeaders.set('x-user-role', user.role);
+    forwardedHeaders.set('x-user-role', user.legacyRole);
     forwardedHeaders.set('x-tenant-id', user.tenantId ?? '');
     forwardedHeaders.set('x-user-permissions', permissions.join(','));
-    forwardedHeaders.set('x-user-roles', Array.isArray(user.roles) ? user.roles.map((role) => role.name).join(',') : '');
+    forwardedHeaders.set('x-user-roles', user.roles.map((role) => role.id).join(','));
     const response = NextResponse.next({
         request: {
             headers: forwardedHeaders,
@@ -353,6 +460,8 @@ export async function proxy(request: NextRequest) {
 
 export const config = {
     matcher: [
-        '/((?!api|_next/static|_next/image|favicon.ico|.*\\.(?:svg|png|jpg|jpeg|gif|webp|ico|woff2?|ttf|eot|js\\.map)$).*)',
+        '/admin/:path*',
+        '/dashboard/:path*',
+        '/auth/reset-password',
     ],
 };

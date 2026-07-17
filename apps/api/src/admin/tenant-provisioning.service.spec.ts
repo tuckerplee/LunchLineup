@@ -92,6 +92,17 @@ describe('TenantProvisioningService', () => {
         });
     });
 
+    it('rejects nonzero initial credits before opening a transaction', async () => {
+        const tenantDb = { withPlatformAdmin: vi.fn() };
+        const service = new TenantProvisioningService(tenantDb as any, {} as any);
+
+        await expect(service.createPlatformTenant({
+            ...input,
+            usageCredits: 25,
+        })).rejects.toThrow(/start with zero credits/i);
+
+        expect(tenantDb.withPlatformAdmin).not.toHaveBeenCalled();
+    });
     it('rejects paid ACTIVE creation before opening a transaction', async () => {
         const tenantDb = { withPlatformAdmin: vi.fn() };
         const service = new TenantProvisioningService(tenantDb as any, {} as any);

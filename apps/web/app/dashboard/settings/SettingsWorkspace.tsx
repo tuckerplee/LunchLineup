@@ -1,19 +1,19 @@
 'use client';
 
-import type { CSSProperties } from 'react';
+import type { CSSProperties, KeyboardEvent } from 'react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { fetchJsonWithSession, fetchWithSession } from '@/lib/client-api';
-import {
-    BillingSettingsPanel,
-    type BillingPriceOption,
-    type BillingState,
-} from './BillingSettingsPanel';
+import { BillingSettingsPanel } from './BillingSettingsPanel';
 import { AccountLifecyclePanel } from './AccountLifecyclePanel';
-import { normalizeBillingFeatureMatrix, readBillingRedirectUrl } from './billing-settings-contract';
 import { MfaEnrollmentPanel } from './MfaEnrollmentPanel';
-
-const TABS = ['General', 'Team', 'Billing', 'Security', 'Account'] as const;
-type Tab = (typeof TABS)[number];
+import { useBillingSettings } from './use-billing-settings';
+import {
+    SETTINGS_TABS,
+    resolveSettingsTabKey,
+    settingsPanelId,
+    settingsTabId,
+    type SettingsTab,
+} from './settings-tabs';
 
 type Banner = {
     tone: 'success' | 'error';
@@ -177,21 +177,6 @@ function extractBannerMessage(payload: unknown, fallback: string): string {
     return fallback;
 }
 
-function unwrapDataArray(payload: unknown): Record<string, unknown>[] {
-    const root = asRecord(payload);
-    const raw = Array.isArray(payload) ? payload : Array.isArray(root?.data) ? root.data : [];
-    return raw.map(asRecord).filter((value): value is Record<string, unknown> => Boolean(value));
-}
-
-function normalizePriceOptions(payload: unknown): BillingPriceOption[] {
-    return unwrapDataArray(payload).map((option) => ({
-        code: readString([option], ['code'], 'UNKNOWN'),
-        label: readString([option], ['label'], readString([option], ['code'], 'Plan')),
-        priceId: readString([option], ['priceId'], '') || null,
-        configured: readBoolean([option], ['configured']),
-    }));
-}
-
 function noticeStyle(tone: 'success' | 'error'): CSSProperties {
     return {
         padding: '0.8rem 0.95rem',
@@ -211,7 +196,7 @@ export function SettingsWorkspace({
     canExportAccount,
     canManageAccountLifecycle,
 }: SettingsWorkspaceProps) {
-    const [activeTab, setActiveTab] = useState<Tab>('General');
+    const [activeTab, setActiveTab] = useState<SettingsTab>('General');
     const [isLoading, setIsLoading] = useState(true);
     const [isSettingsHydrated, setIsSettingsHydrated] = useState(false);
     const [loadError, setLoadError] = useState<string | null>(null);
@@ -230,20 +215,12 @@ export function SettingsWorkspace({
         sessionTimeoutMinutes: '30',
         ssoOnly: false,
     });
-    const [billingState, setBillingState] = useState<BillingState>({
-        loading: false,
-        error: null,
-        matrix: null,
-        priceOptions: [],
-    });
     const [generalNotice, setGeneralNotice] = useState<Banner>(null);
     const [teamNotice, setTeamNotice] = useState<Banner>(null);
-    const [billingNotice, setBillingNotice] = useState<Banner>(null);
     const [securityNotice, setSecurityNotice] = useState<Banner>(null);
     const [pinNotice, setPinNotice] = useState<Banner>(null);
     const [generalSaving, setGeneralSaving] = useState(false);
     const [teamSaving, setTeamSaving] = useState(false);
-    const [subscriptionSaving, setSubscriptionSaving] = useState<string | null>(null);
     const [securitySaving, setSecuritySaving] = useState(false);
     const [pinSaving, setPinSaving] = useState(false);
 
@@ -251,7 +228,26 @@ export function SettingsWorkspace({
     const [newPin, setNewPin] = useState('');
     const [confirmPin, setConfirmPin] = useState('');
     const settingsLoadRequestRef = useRef(0);
+    const initialSettingsLoadStartedRef = useRef(false);
+    const tabButtonRefs = useRef(new Map<SettingsTab, HTMLButtonElement>());
 
+    const {
+        billingState,
+        creditPackState,
+        billingNotice,
+        billingFeatures,
+        configuredPriceOptions,
+        canPurchaseCreditPacks,
+        subscriptionSaving,
+        creditPackSaving,
+        billingReturnDetected,
+        loadBilling,
+        startSubscription,
+        changeSubscription,
+        openBillingPortal,
+        resumeSubscription,
+        purchaseCreditPack,
+    } = useBillingSettings({ canReadBilling, canManageBilling });
     const loadSettings = useCallback(async () => {
         const requestId = ++settingsLoadRequestRef.current;
         setIsLoading(true);
@@ -290,40 +286,8 @@ export function SettingsWorkspace({
         }
     }, []);
 
-    const loadBilling = useCallback(async () => {
-        if (!canReadBilling) {
-            setBillingState({
-                loading: false,
-                error: null,
-                matrix: null,
-                priceOptions: [],
-            });
-            return;
-        }
-        setBillingState((current) => ({ ...current, loading: true, error: null }));
-        try {
-            const [featurePayload, pricePayload] = await Promise.all([
-                fetchJsonWithSession<unknown>('/billing/features'),
-                fetchJsonWithSession<unknown>('/billing/price-options'),
-            ]);
-
-            setBillingState({
-                loading: false,
-                error: null,
-                matrix: normalizeBillingFeatureMatrix(featurePayload),
-                priceOptions: normalizePriceOptions(pricePayload),
-            });
-        } catch (error) {
-            setBillingState((current) => ({
-                ...current,
-                loading: false,
-                error: error instanceof Error ? error.message : 'Unable to load billing.',
-            }));
-        }
-    }, [canReadBilling]);
-
-    const visibleTabs = useMemo<Tab[]>(
-        () => TABS.filter((tab) => {
+    const visibleTabs = useMemo<SettingsTab[]>(
+        () => SETTINGS_TABS.filter((tab) => {
             if (tab === 'Billing') return canReadBilling;
             if (tab === 'Account') return canWriteSettings;
             return true;
@@ -331,7 +295,24 @@ export function SettingsWorkspace({
         [canReadBilling, canWriteSettings],
     );
 
+    const handleTabKeyDown = (event: KeyboardEvent<HTMLButtonElement>, tab: SettingsTab) => {
+        const targetTab = resolveSettingsTabKey(event.key, tab, visibleTabs);
+        if (!targetTab) return;
+        event.preventDefault();
+        setActiveTab(targetTab);
+        window.requestAnimationFrame(() => tabButtonRefs.current.get(targetTab)?.focus());
+    };
+
+    const panelProps = (tab: SettingsTab) => ({
+        id: settingsPanelId(tab),
+        role: 'tabpanel' as const,
+        'aria-labelledby': settingsTabId(tab),
+        tabIndex: 0,
+    });
+
     useEffect(() => {
+        if (initialSettingsLoadStartedRef.current) return;
+        initialSettingsLoadStartedRef.current = true;
         void loadSettings();
     }, [loadSettings]);
 
@@ -344,20 +325,17 @@ export function SettingsWorkspace({
             void loadBilling();
         }
     }, [activeTab, loadBilling, visibleTabs]);
+    useEffect(() => {
+        if (billingReturnDetected && canReadBilling) {
+            setActiveTab('Billing');
+        }
+    }, [billingReturnDetected, canReadBilling]);
 
     const workspaceName = generalForm.organizationName || 'Workspace settings';
     const subtitle = useMemo(() => {
         if (isLoading) return 'Loading live settings...';
         return `${workspaceName} · Configure organization defaults, team behavior, billing, and security`;
     }, [isLoading, workspaceName]);
-    const billingFeatures = useMemo(
-        () => Object.entries(billingState.matrix?.features ?? {}).sort(([left], [right]) => left.localeCompare(right)),
-        [billingState.matrix],
-    );
-    const configuredPriceOptions = useMemo(
-        () => billingState.priceOptions.filter((option) => option.configured && option.priceId),
-        [billingState.priceOptions],
-    );
     const canMutateSettings = canWriteSettings && isSettingsHydrated && !isLoading;
 
     const saveGeneral = useCallback(async () => {
@@ -413,122 +391,6 @@ export function SettingsWorkspace({
             setTeamSaving(false);
         }
     }, [canMutateSettings, isSettingsHydrated, teamForm.defaultRole, teamForm.shiftApprovalPolicy]);
-
-    const startSubscription = useCallback(async (option: BillingPriceOption) => {
-        if (!canManageBilling) {
-            setBillingNotice({ tone: 'error', text: 'You need billing write access to start subscription setup.' });
-            return;
-        }
-        if (!option.priceId) {
-            setBillingNotice({ tone: 'error', text: `${option.label} subscription setup is not configured.` });
-            return;
-        }
-
-        setSubscriptionSaving(option.code);
-        setBillingNotice(null);
-        try {
-            const response = await fetchWithSession('/billing/subscribe', jsonWriteInit('POST', { priceId: option.priceId }));
-            const payload = await response.json().catch(() => ({}));
-            if (!response.ok) {
-                throw new Error(extractBannerMessage(payload, `Subscription failed (${response.status}).`));
-            }
-            const checkoutUrl = readBillingRedirectUrl(payload, 'checkoutUrl');
-            if (!checkoutUrl) {
-                throw new Error('Stripe Checkout did not return a redirect URL.');
-            }
-            setBillingNotice({
-                tone: 'success',
-                text: 'Redirecting to Stripe Checkout...',
-            });
-            window.location.assign(checkoutUrl);
-        } catch (error) {
-            setBillingNotice({ tone: 'error', text: error instanceof Error ? error.message : 'Unable to start subscription.' });
-            setSubscriptionSaving(null);
-        }
-    }, [canManageBilling]);
-
-    const openBillingPortal = useCallback(async () => {
-        if (!canManageBilling) {
-            setBillingNotice({ tone: 'error', text: 'You need billing write access to manage the subscription.' });
-            return;
-        }
-
-        setSubscriptionSaving('portal');
-        setBillingNotice(null);
-        try {
-            const response = await fetchWithSession('/billing/portal', jsonWriteInit('POST', {}));
-            const payload = await response.json().catch(() => ({}));
-            if (!response.ok) {
-                throw new Error(extractBannerMessage(payload, `Billing portal failed (${response.status}).`));
-            }
-            const portalUrl = readBillingRedirectUrl(payload, 'portalUrl');
-            if (!portalUrl) {
-                throw new Error('Stripe billing portal did not return a redirect URL.');
-            }
-            setBillingNotice({ tone: 'success', text: 'Redirecting to Stripe billing...' });
-            window.location.assign(portalUrl);
-        } catch (error) {
-            setBillingNotice({ tone: 'error', text: error instanceof Error ? error.message : 'Unable to open billing portal.' });
-            setSubscriptionSaving(null);
-        }
-    }, [canManageBilling]);
-
-    const changeSubscription = useCallback(async (option: BillingPriceOption) => {
-        if (!canManageBilling) {
-            setBillingNotice({ tone: 'error', text: 'You need billing write access to change plans.' });
-            return;
-        }
-        if (!option.priceId) {
-            setBillingNotice({ tone: 'error', text: `${option.label} is not configured.` });
-            return;
-        }
-
-        setSubscriptionSaving(`change:${option.code}`);
-        setBillingNotice(null);
-        try {
-            const response = await fetchWithSession('/billing/change-plan', jsonWriteInit('POST', { priceId: option.priceId }));
-            const payload = await response.json().catch(() => ({}));
-            if (!response.ok) {
-                throw new Error(extractBannerMessage(payload, `Plan change failed (${response.status}).`));
-            }
-            setBillingNotice({ tone: 'success', text: `Plan change to ${option.label} submitted.` });
-            await loadBilling();
-        } catch (error) {
-            setBillingNotice({ tone: 'error', text: error instanceof Error ? error.message : 'Unable to change plans.' });
-        } finally {
-            setSubscriptionSaving(null);
-        }
-    }, [canManageBilling, loadBilling]);
-
-    const resumeSubscription = useCallback(async () => {
-        if (!canManageBilling) {
-            setBillingNotice({ tone: 'error', text: 'You need billing write access to resume subscriptions.' });
-            return;
-        }
-
-        setSubscriptionSaving('resume');
-        setBillingNotice(null);
-        try {
-            const response = await fetchWithSession('/billing/resume', jsonWriteInit('POST', {}));
-            const payload = await response.json().catch(() => ({}));
-            if (!response.ok) {
-                throw new Error(extractBannerMessage(payload, `Subscription resume failed (${response.status}).`));
-            }
-            const paymentUrl = readBillingRedirectUrl(payload, 'paymentUrl');
-            if (paymentUrl) {
-                setBillingNotice({ tone: 'success', text: 'Redirecting to Stripe payment recovery...' });
-                window.location.assign(paymentUrl);
-                return;
-            }
-            setBillingNotice({ tone: 'success', text: 'Subscription resume submitted.' });
-            await loadBilling();
-        } catch (error) {
-            setBillingNotice({ tone: 'error', text: error instanceof Error ? error.message : 'Unable to resume the subscription.' });
-        } finally {
-            setSubscriptionSaving(null);
-        }
-    }, [canManageBilling, loadBilling]);
-
     const saveSecurity = useCallback(async () => {
         if (!canMutateSettings) {
             setSecurityNotice({ tone: 'error', text: isSettingsHydrated ? 'You have read-only settings access.' : 'Reload settings before saving.' });
@@ -637,14 +499,23 @@ export function SettingsWorkspace({
                     }}
                     role="tablist"
                     aria-label="Settings sections"
+                    aria-orientation="horizontal"
                 >
                     {visibleTabs.map((tab) => (
                         <button
                             key={tab}
                             type="button"
+                            id={settingsTabId(tab)}
+                            ref={(element) => {
+                                if (element) tabButtonRefs.current.set(tab, element);
+                                else tabButtonRefs.current.delete(tab);
+                            }}
                             role="tab"
                             aria-selected={activeTab === tab}
+                            aria-controls={settingsPanelId(tab)}
+                            tabIndex={activeTab === tab ? 0 : -1}
                             onClick={() => setActiveTab(tab)}
+                            onKeyDown={(event) => handleTabKeyDown(event, tab)}
                             style={{
                                 padding: '0.5rem 0.8rem',
                                 borderRadius: 10,
@@ -663,8 +534,11 @@ export function SettingsWorkspace({
                 </div>
 
                 <div style={{ padding: '1rem' }}>
+                    {visibleTabs.filter((tab) => tab !== activeTab).map((tab) => (
+                        <div key={tab} {...panelProps(tab)} hidden />
+                    ))}
                     {activeTab === 'General' && (
-                        <div style={{ display: 'grid', gap: '1rem' }}>
+                        <div {...panelProps('General')} style={{ display: 'grid', gap: '1rem' }}>
                             <div style={{ display: 'grid', gap: '0.2rem' }}>
                                 <h2 style={{ fontWeight: 750, fontSize: '1.02rem', color: 'var(--text-primary)' }}>Organization Profile</h2>
                                 <p style={{ color: 'var(--text-muted)', fontSize: '0.82rem' }}>Update the visible workspace identity and routing defaults.</p>
@@ -723,7 +597,7 @@ export function SettingsWorkspace({
                     )}
 
                     {activeTab === 'Team' && (
-                        <div style={{ display: 'grid', gap: '1rem' }}>
+                        <div {...panelProps('Team')} style={{ display: 'grid', gap: '1rem' }}>
                             <div style={{ display: 'grid', gap: '0.2rem' }}>
                                 <h2 style={{ fontWeight: 750, fontSize: '1.02rem', color: 'var(--text-primary)' }}>Team Defaults</h2>
                                 <p style={{ color: 'var(--text-muted)', fontSize: '0.82rem' }}>Controls invite defaults and approval behavior for new work.</p>
@@ -783,32 +657,40 @@ export function SettingsWorkspace({
                     )}
 
                     {activeTab === 'Billing' && (
-                        <BillingSettingsPanel
-                            billingState={billingState}
-                            billingNotice={billingNotice}
-                            billingFeatures={billingFeatures}
-                            configuredPriceOptions={configuredPriceOptions}
-                            canManageBilling={canManageBilling}
-                            subscriptionSaving={subscriptionSaving}
-                            noticeStyle={noticeStyle}
-                            onStartSubscription={startSubscription}
-                            onChangeSubscription={changeSubscription}
-                            onOpenBillingPortal={openBillingPortal}
-                            onResumeSubscription={resumeSubscription}
-                            onRefreshBilling={loadBilling}
-                        />
+                        <div {...panelProps('Billing')}>
+                            <BillingSettingsPanel
+                                billingState={billingState}
+                                creditPackState={creditPackState}
+                                billingNotice={billingNotice}
+                                billingFeatures={billingFeatures}
+                                configuredPriceOptions={configuredPriceOptions}
+                                canManageBilling={canManageBilling}
+                                canPurchaseCreditPacks={canPurchaseCreditPacks}
+                                subscriptionSaving={subscriptionSaving}
+                                creditPackSaving={creditPackSaving}
+                                noticeStyle={noticeStyle}
+                                onStartSubscription={startSubscription}
+                                onChangeSubscription={changeSubscription}
+                                onOpenBillingPortal={openBillingPortal}
+                                onResumeSubscription={resumeSubscription}
+                                onPurchaseCreditPack={purchaseCreditPack}
+                                onRefreshBilling={loadBilling}
+                            />
+                        </div>
                     )}
 
                     {activeTab === 'Account' && (
-                        <AccountLifecyclePanel
-                            canExportAccount={canExportAccount}
-                            canManageAccountLifecycle={canManageAccountLifecycle}
-                            noticeStyle={noticeStyle}
-                        />
+                        <div {...panelProps('Account')}>
+                            <AccountLifecyclePanel
+                                canExportAccount={canExportAccount}
+                                canManageAccountLifecycle={canManageAccountLifecycle}
+                                noticeStyle={noticeStyle}
+                            />
+                        </div>
                     )}
 
                     {activeTab === 'Security' && (
-                        <div style={{ display: 'grid', gap: '1rem' }}>
+                        <div {...panelProps('Security')} style={{ display: 'grid', gap: '1rem' }}>
                             <div style={{ display: 'grid', gap: '0.2rem' }}>
                                 <h2 style={{ fontWeight: 750, fontSize: '1.02rem', color: 'var(--text-primary)' }}>Security Controls</h2>
                                 <p style={{ color: 'var(--text-muted)', fontSize: '0.82rem' }}>Adjust account protection settings, MFA enrollment, and PIN rotation.</p>

@@ -1,6 +1,47 @@
+x-locked-runtime: &locked-runtime
+  security_opt:
+    - no-new-privileges:true
+  cap_drop:
+    - ALL
+  read_only: true
+  cpus: "1.00"
+  mem_limit: 512m
+  pids_limit: 256
+  ulimits:
+    nofile:
+      soft: 4096
+      hard: 8192
+  logging:
+    driver: json-file
+    options:
+      max-size: "10m"
+      max-file: "5"
+
+x-read-only-runtime: &read-only-runtime
+  security_opt:
+    - no-new-privileges:true
+  read_only: true
+  cpus: "1.00"
+  mem_limit: 512m
+  pids_limit: 256
+  ulimits:
+    nofile:
+      soft: 4096
+      hard: 8192
+  logging:
+    driver: json-file
+    options:
+      max-size: "10m"
+      max-file: "5"
+
 services:
   # ─── Reverse Proxy & Load Balancer ───
   proxy:
+    <<: *locked-runtime
+    cap_add:
+      - NET_BIND_SERVICE
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=16m,mode=1777
     image: caddy:2-alpine@sha256:5f5c8640aae01df9654968d946d8f1a56c497f1dd5c5cda4cf95ab7c14d58648
     ports:
       - "${PROXY_HTTP_BIND:-127.0.0.1}:${PROXY_HTTP_PORT:-80}:80"
@@ -10,14 +51,14 @@ services:
       ADMIN_EMAIL: "${ADMIN_EMAIL:-admin@example.com}"
       DEPLOY_RELEASE_SHA: "${IMAGE_TAG:-local}"
     volumes:
-      - ./infrastructure/caddy/Caddyfile:/etc/caddy/Caddyfile
+      - ./infrastructure/caddy/Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy_data:/data
       - caddy_config:/config
     networks:
       - external
       - app
     healthcheck:
-      test: [ "CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:80" ]
+      test: [ "CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://127.0.0.1:2015/health" ]
       interval: 15s
       timeout: 5s
       retries: 3
@@ -25,13 +66,19 @@ services:
 
   # ─── Next.js Frontend ───
   web:
+    <<: *locked-runtime
+    cpus: "1.50"
+    mem_limit: 768m
+    pids_limit: 256
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=64m,mode=1777
+      - /app/.next/cache:rw,noexec,nosuid,nodev,size=128m,mode=1777
     image: "${IMAGE_PREFIX:-lunchlineup}/web:${IMAGE_TAG:-local}"
     build:
       context: .
       dockerfile: infrastructure/docker/Dockerfile.web
       args:
         NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-/api/v1}
-        NEXT_PUBLIC_WS_URL: ${NEXT_PUBLIC_WS_URL:-ws://localhost:3001}
         NEXT_PUBLIC_OIDC_ENABLED: ${NEXT_PUBLIC_OIDC_ENABLED:-false}
         NEXT_PUBLIC_SIGNUP_MODE: ${NEXT_PUBLIC_SIGNUP_MODE:-closed_beta}
         NEXT_PUBLIC_TURNSTILE_SITE_KEY: ${NEXT_PUBLIC_TURNSTILE_SITE_KEY:-}
@@ -47,8 +94,8 @@ services:
       - NODE_ENV=production
       - COOKIE_SECURE=${COOKIE_SECURE:-true}
       - NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL:-/api/v1}
-      - NEXT_PUBLIC_WS_URL=${NEXT_PUBLIC_WS_URL:-ws://localhost:3001}
       - INTERNAL_API_URL=${INTERNAL_API_URL:-http://api:3000/v1}
+      - LUNCHLINEUP_STATUS_HEALTH_URL=${LUNCHLINEUP_STATUS_HEALTH_URL:?Set public HTTPS LUNCHLINEUP_STATUS_HEALTH_URL ending in /health in .env}
       - NEXT_PUBLIC_OIDC_ENABLED=${NEXT_PUBLIC_OIDC_ENABLED:-false}
       - NEXT_PUBLIC_SIGNUP_MODE=${NEXT_PUBLIC_SIGNUP_MODE:-closed_beta}
       - NEXT_PUBLIC_TURNSTILE_SITE_KEY=${NEXT_PUBLIC_TURNSTILE_SITE_KEY:-}
@@ -67,6 +114,12 @@ services:
 
   # ─── NestJS API Gateway ───
   api:
+    <<: *locked-runtime
+    cpus: "2.00"
+    mem_limit: 1g
+    pids_limit: 512
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=64m,mode=1777
     image: "${IMAGE_PREFIX:-lunchlineup}/api:${IMAGE_TAG:-local}"
     build:
       context: .
@@ -92,6 +145,7 @@ services:
       - PLATFORM_ADMIN_DB_CONTEXT_SECRET=${PLATFORM_ADMIN_DB_CONTEXT_SECRET:?Set PLATFORM_ADMIN_DB_CONTEXT_SECRET in .env}
       - REDIS_URL=${REDIS_URL:-redis://redis:6379}
       - RABBITMQ_URL=${RABBITMQ_URL:?Set validated percent-encoded RABBITMQ_URL in .env}
+      - PROCESS_SHUTDOWN_DEADLINE_MS=${PROCESS_SHUTDOWN_DEADLINE_MS:-30000}
       - JWT_SECRET=${JWT_SECRET:?Set JWT_SECRET in .env}
       - JWT_REFRESH_SECRET=${JWT_REFRESH_SECRET:?Set JWT_REFRESH_SECRET in .env}
       - SESSION_SECRET=${SESSION_SECRET:?Set SESSION_SECRET in .env}
@@ -101,8 +155,13 @@ services:
       - WEBHOOK_DELIVERY_ENCRYPTION_KEY_CURRENT=${WEBHOOK_DELIVERY_ENCRYPTION_KEY_CURRENT:?Set WEBHOOK_DELIVERY_ENCRYPTION_KEY_CURRENT in .env}
       - WEBHOOK_DELIVERY_ENCRYPTION_KEY_PREVIOUS=${WEBHOOK_DELIVERY_ENCRYPTION_KEY_PREVIOUS:-}
       - PASSWORD_RESET_OUTBOX_ENCRYPTION_KEY=${PASSWORD_RESET_OUTBOX_ENCRYPTION_KEY:?Set PASSWORD_RESET_OUTBOX_ENCRYPTION_KEY in .env}
+      - AVAILABILITY_IMPORT_ENCRYPTION_KEY=${AVAILABILITY_IMPORT_ENCRYPTION_KEY:?Set AVAILABILITY_IMPORT_ENCRYPTION_KEY in .env}
+      - STAFF_INVITATION_OUTBOX_ENABLED=${STAFF_INVITATION_OUTBOX_ENABLED:?Set STAFF_INVITATION_OUTBOX_ENABLED=true in .env}
+      - STAFF_INVITATION_OUTBOX_ENCRYPTION_KEY=${STAFF_INVITATION_OUTBOX_ENCRYPTION_KEY:?Set STAFF_INVITATION_OUTBOX_ENCRYPTION_KEY in .env}
+      - STAFF_INVITATION_MAX_ATTEMPTS=${STAFF_INVITATION_MAX_ATTEMPTS:-8}
       - CSRF_SECRET=${CSRF_SECRET:?Set CSRF_SECRET in .env}
       - RESEND_API_KEY=${RESEND_API_KEY:?Set RESEND_API_KEY in .env}
+      - RESEND_WEBHOOK_SECRET=${RESEND_WEBHOOK_SECRET:?Set RESEND_WEBHOOK_SECRET in .env}
       - EMAIL_FROM=${EMAIL_FROM:?Set EMAIL_FROM in .env}
       - STRIPE_SECRET_KEY=${STRIPE_SECRET_KEY:?Set STRIPE_SECRET_KEY in .env}
       - STRIPE_WEBHOOK_SECRET=${STRIPE_WEBHOOK_SECRET:?Set STRIPE_WEBHOOK_SECRET in .env}
@@ -133,6 +192,7 @@ services:
       - NEXT_PUBLIC_APP_URL=${NEXT_PUBLIC_APP_URL:-}
       - WORKER_QUEUE_NAME=${WORKER_QUEUE_NAME:-lunchlineup.jobs}
       - WORKER_DLQ_NAME=${WORKER_DLQ_NAME:-lunchlineup.jobs.dlq}
+      - AVAILABILITY_UPLOAD_ROOT=/app/uploads
       - SCHEDULE_OUTBOX_POLL_INTERVAL_MS=${SCHEDULE_OUTBOX_POLL_INTERVAL_MS:-5000}
       - SCHEDULE_OUTBOX_LEASE_MS=${SCHEDULE_OUTBOX_LEASE_MS:-60000}
       - SCHEDULE_OUTBOX_BATCH_SIZE=${SCHEDULE_OUTBOX_BATCH_SIZE:-50}
@@ -153,11 +213,12 @@ services:
       - API_REPLICA_COUNT=${API_REPLICA_COUNT:-1}
     volumes:
       - tenant_export_artifacts:/var/lib/lunchlineup/tenant-exports
+      - availability_uploads:/app/uploads
     secrets:
       - metrics_token
       - retention_purge_token
     healthcheck:
-      test: [ "CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://127.0.0.1:3000/health" ]
+      test: [ "CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://127.0.0.1:3000/live" ]
       interval: 15s
       timeout: 5s
       retries: 3
@@ -172,6 +233,12 @@ services:
 
   # Webhook Replay Worker
   webhook-replay:
+    <<: *locked-runtime
+    cpus: "1.00"
+    mem_limit: 768m
+    pids_limit: 256
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=64m,mode=1777
     image: "${IMAGE_PREFIX:-lunchlineup}/api:${IMAGE_TAG:-local}"
     build:
       context: .
@@ -191,6 +258,8 @@ services:
       - WEBHOOK_DELIVERY_ENCRYPTION_KEY_PREVIOUS=${WEBHOOK_DELIVERY_ENCRYPTION_KEY_PREVIOUS:-}
       - WEBHOOK_RETRY_WORKER_PREFETCH=${WEBHOOK_RETRY_WORKER_PREFETCH:-5}
       - WEBHOOK_REPLAY_METRICS_PORT=${WEBHOOK_REPLAY_METRICS_PORT:-3004}
+      - WEBHOOK_REPLAY_SHUTDOWN_TIMEOUT_MS=${WEBHOOK_REPLAY_SHUTDOWN_TIMEOUT_MS:-30000}
+      - PROCESS_SHUTDOWN_DEADLINE_MS=${PROCESS_SHUTDOWN_DEADLINE_MS:-30000}
       - WEBHOOK_REPLAY_LEASE_MS=${WEBHOOK_REPLAY_LEASE_MS:-60000}
       - WEBHOOK_PENDING_CLAIM_LEASE_MS=${WEBHOOK_PENDING_CLAIM_LEASE_MS:-60000}
       - WEBHOOK_CONFIRMED_QUEUE_RECOVERY_AGE_MS=${WEBHOOK_CONFIRMED_QUEUE_RECOVERY_AGE_MS:-600000}
@@ -216,6 +285,12 @@ services:
 
   # Database Schema and Raw SQL Migrations
   migrate:
+    <<: *locked-runtime
+    cpus: "2.00"
+    mem_limit: 1g
+    pids_limit: 512
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=64m,mode=1777
     image: "${IMAGE_PREFIX:-lunchlineup}/migrate:${IMAGE_TAG:-local}"
     build:
       context: .
@@ -230,6 +305,9 @@ services:
       - PLATFORM_ADMIN_DB_CONTEXT_SECRET=${PLATFORM_ADMIN_DB_CONTEXT_SECRET:?Set PLATFORM_ADMIN_DB_CONTEXT_SECRET in .env}
       - DATA_TARGET_ENV=${DATA_TARGET_ENV:-development}
       - DEPLOY_MIGRATION_MODE=${DEPLOY_MIGRATION_MODE:-apply}
+      - MIGRATION_SOURCE_SHA=${MIGRATION_SOURCE_SHA:-}
+      - MIGRATION_BASELINE_SOURCE_SHA=${MIGRATION_BASELINE_SOURCE_SHA:-}
+      - MIGRATION_FRESH_DATABASE_CONFIRM=${MIGRATION_FRESH_DATABASE_CONFIRM:-}
       - ROLLBACK_SCHEMA_COMPATIBILITY_VERIFIED=${ROLLBACK_SCHEMA_COMPATIBILITY_VERIFIED:-false}
     command:
       - /bin/sh
@@ -258,6 +336,12 @@ services:
 
   # ─── Python Scheduling Engine (gRPC + health HTTP) ───
   engine:
+    <<: *locked-runtime
+    cpus: "2.00"
+    mem_limit: 1g
+    pids_limit: 512
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=64m,mode=1777
     image: "${IMAGE_PREFIX:-lunchlineup}/engine:${IMAGE_TAG:-local}"
     build:
       context: .
@@ -278,7 +362,48 @@ services:
     restart: unless-stopped
 
   # ─── Background Worker ───
+  # --- Isolated Availability PDF Parser ---
+  pdf-parser:
+    <<: *locked-runtime
+    cpus: "0.50"
+    mem_limit: 384m
+    pids_limit: 64
+    init: true
+    network_mode: none
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=64m,mode=1777
+    image: "${IMAGE_PREFIX:-lunchlineup}/worker:${IMAGE_TAG:-local}"
+    build:
+      context: .
+      dockerfile: infrastructure/docker/Dockerfile.worker
+    command: [ "python", "-m", "src.parser.pdf_service" ]
+    environment:
+      - PARSER_SOCKET_PATH=/run/lunchlineup-parser/parser.sock
+      - PARSER_JOB_TIMEOUT_SECONDS=${PARSER_JOB_TIMEOUT_SECONDS:-10}
+      - WORKER_MAX_AVAILABILITY_PDF_BYTES=${WORKER_MAX_AVAILABILITY_PDF_BYTES:-5242880}
+      - WORKER_MAX_AVAILABILITY_PDF_PAGES=${WORKER_MAX_AVAILABILITY_PDF_PAGES:-20}
+      - WORKER_MAX_AVAILABILITY_TEXT_CHARS=${WORKER_MAX_AVAILABILITY_TEXT_CHARS:-100000}
+      - WORKER_MAX_AVAILABILITY_ROWS=${WORKER_MAX_AVAILABILITY_ROWS:-21}
+      - WORKER_PDF_PARSE_MEMORY_BYTES=${WORKER_PDF_PARSE_MEMORY_BYTES:-268435456}
+      - WORKER_PDF_PARSE_CPU_SECONDS=${WORKER_PDF_PARSE_CPU_SECONDS:-10}
+    volumes:
+      - parser_ipc:/run/lunchlineup-parser
+    healthcheck:
+      test: [ "CMD", "python", "-m", "src.parser.pdf_sandbox", "--health" ]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+    restart: unless-stopped
+
   worker:
+    <<: *locked-runtime
+    cpus: "2.00"
+    mem_limit: 1536m
+    pids_limit: 512
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=64m,mode=1777
+
     image: "${IMAGE_PREFIX:-lunchlineup}/worker:${IMAGE_TAG:-local}"
     build:
       context: .
@@ -307,7 +432,20 @@ services:
       - WORKER_RETRY_BACKOFF_2_SECONDS=${WORKER_RETRY_BACKOFF_2_SECONDS:-30}
       - WORKER_RETRY_BACKOFF_3_SECONDS=${WORKER_RETRY_BACKOFF_3_SECONDS:-120}
       - WORKER_RETRY_PUBLISH_FAILURE_REQUEUE_DELAY_SECONDS=${WORKER_RETRY_PUBLISH_FAILURE_REQUEUE_DELAY_SECONDS:-5}
+      - WORKER_SCHEDULE_SOLVE_EXECUTION_LEASE_SECONDS=${WORKER_SCHEDULE_SOLVE_EXECUTION_LEASE_SECONDS:-300}
+      - WORKER_QUEUE_DEPTH_POLL_SECONDS=${WORKER_QUEUE_DEPTH_POLL_SECONDS:-15}
+      - PARSER_SOCKET_PATH=/run/lunchlineup-parser/parser.sock
+      - WORKER_PDF_PARSER_HEALTH_POLL_SECONDS=${WORKER_PDF_PARSER_HEALTH_POLL_SECONDS:-10}
+      - WORKER_PDF_PARSER_HEALTH_TIMEOUT_SECONDS=${WORKER_PDF_PARSER_HEALTH_TIMEOUT_SECONDS:-3}
       - WORKER_UPLOAD_ROOT=${WORKER_UPLOAD_ROOT:-/app/uploads}
+      - WORKER_MAX_AVAILABILITY_PDF_BYTES=${WORKER_MAX_AVAILABILITY_PDF_BYTES:-5242880}
+      - WORKER_MAX_AVAILABILITY_PDF_PAGES=${WORKER_MAX_AVAILABILITY_PDF_PAGES:-20}
+      - WORKER_MAX_AVAILABILITY_TEXT_CHARS=${WORKER_MAX_AVAILABILITY_TEXT_CHARS:-100000}
+      - WORKER_MAX_AVAILABILITY_ROWS=${WORKER_MAX_AVAILABILITY_ROWS:-21}
+      - WORKER_PDF_PARSE_TIMEOUT_SECONDS=${WORKER_PDF_PARSE_TIMEOUT_SECONDS:-15}
+      - WORKER_PDF_PARSE_MEMORY_BYTES=${WORKER_PDF_PARSE_MEMORY_BYTES:-268435456}
+      - WORKER_PDF_PARSE_CPU_SECONDS=${WORKER_PDF_PARSE_CPU_SECONDS:-10}
+      - WORKER_AVAILABILITY_RETENTION_INTERVAL_SECONDS=${WORKER_AVAILABILITY_RETENTION_INTERVAL_SECONDS:-300}
       - WORKER_METRICS_PORT=${WORKER_METRICS_PORT:-3003}
       - STRIPE_METER_ID=${STRIPE_METER_ID:-}
       - STRIPE_METER_AGGREGATION=${STRIPE_METER_AGGREGATION:-last}
@@ -323,26 +461,70 @@ services:
       - STRIPE_USAGE_DEAD_LETTER_MAX_REPLAYS=${STRIPE_USAGE_DEAD_LETTER_MAX_REPLAYS:-1}
       - PASSWORD_RESET_EMAIL_OUTBOX_ENABLED=${PASSWORD_RESET_EMAIL_OUTBOX_ENABLED:?Set PASSWORD_RESET_EMAIL_OUTBOX_ENABLED=true in .env}
       - PASSWORD_RESET_OUTBOX_ENCRYPTION_KEY=${PASSWORD_RESET_OUTBOX_ENCRYPTION_KEY:?Set PASSWORD_RESET_OUTBOX_ENCRYPTION_KEY in .env}
+      - AVAILABILITY_IMPORT_ENCRYPTION_KEY=${AVAILABILITY_IMPORT_ENCRYPTION_KEY:?Set AVAILABILITY_IMPORT_ENCRYPTION_KEY in .env}
+      - STAFF_INVITATION_OUTBOX_ENABLED=${STAFF_INVITATION_OUTBOX_ENABLED:?Set STAFF_INVITATION_OUTBOX_ENABLED=true in .env}
+      - STAFF_INVITATION_OUTBOX_ENCRYPTION_KEY=${STAFF_INVITATION_OUTBOX_ENCRYPTION_KEY:?Set STAFF_INVITATION_OUTBOX_ENCRYPTION_KEY in .env}
+      - APP_ORIGIN=${APP_ORIGIN:?Set public HTTPS APP_ORIGIN in .env}
+      - STAFF_INVITATION_MAX_ATTEMPTS=${STAFF_INVITATION_MAX_ATTEMPTS:-8}
+      - STAFF_INVITATION_LEASE_SECONDS=${STAFF_INVITATION_LEASE_SECONDS:-120}
+      - STAFF_INVITATION_SWEEP_INTERVAL_SECONDS=${STAFF_INVITATION_SWEEP_INTERVAL_SECONDS:-10}
+      - STAFF_INVITATION_SWEEP_BATCH_SIZE=${STAFF_INVITATION_SWEEP_BATCH_SIZE:-25}
+      - STAFF_INVITATION_PROVIDER_TIMEOUT_SECONDS=${STAFF_INVITATION_PROVIDER_TIMEOUT_SECONDS:-10}
+      - STAFF_INVITATION_RETRY_BASE_SECONDS=${STAFF_INVITATION_RETRY_BASE_SECONDS:-15}
+      - STAFF_INVITATION_RETRY_MAX_SECONDS=${STAFF_INVITATION_RETRY_MAX_SECONDS:-3600}
+      - STAFF_INVITATION_RETRY_JITTER_RATIO=${STAFF_INVITATION_RETRY_JITTER_RATIO:-0.25}
+      - STAFF_INVITATION_PROVIDER_FAILURE_THRESHOLD=${STAFF_INVITATION_PROVIDER_FAILURE_THRESHOLD:-3}
+      - STAFF_INVITATION_PROVIDER_HEALTH_WINDOW_SECONDS=${STAFF_INVITATION_PROVIDER_HEALTH_WINDOW_SECONDS:-300}
+      - STAFF_INVITATION_DIAGNOSTICS_COUNT_CAP=${STAFF_INVITATION_DIAGNOSTICS_COUNT_CAP:-1000}
+      - STAFF_INVITATION_SWEEP_MAX_STALENESS_SECONDS=${STAFF_INVITATION_SWEEP_MAX_STALENESS_SECONDS:-60}
       - PASSWORD_RESET_EMAIL_MAX_ATTEMPTS=${PASSWORD_RESET_EMAIL_MAX_ATTEMPTS:-5}
       - PASSWORD_RESET_EMAIL_SWEEP_INTERVAL_SECONDS=${PASSWORD_RESET_EMAIL_SWEEP_INTERVAL_SECONDS:-10}
       - PASSWORD_RESET_EMAIL_SWEEP_BATCH_SIZE=${PASSWORD_RESET_EMAIL_SWEEP_BATCH_SIZE:-25}
+      - PASSWORD_RESET_EMAIL_PROVIDER_FAILURE_THRESHOLD=${PASSWORD_RESET_EMAIL_PROVIDER_FAILURE_THRESHOLD:-3}
+      - PASSWORD_RESET_EMAIL_PROVIDER_HEALTH_WINDOW_SECONDS=${PASSWORD_RESET_EMAIL_PROVIDER_HEALTH_WINDOW_SECONDS:-300}
+      - PASSWORD_RESET_EMAIL_SWEEP_MAX_STALENESS_SECONDS=${PASSWORD_RESET_EMAIL_SWEEP_MAX_STALENESS_SECONDS:-60}
       - RESEND_API_KEY=${RESEND_API_KEY:?Set RESEND_API_KEY in .env}
       - EMAIL_FROM=${EMAIL_FROM:?Set EMAIL_FROM in .env}
       - OTEL_EXPORTER_OTLP_TRACES_ENDPOINT=http://otel-collector:4318/v1/traces
       - OTEL_DEPLOYMENT_ENVIRONMENT=production
+    volumes:
+      - availability_uploads:/app/uploads
+      - parser_ipc:/run/lunchlineup-parser
     healthcheck:
       test:
         - CMD-SHELL
         - |
           metrics="$$(curl -fsS http://127.0.0.1:$${WORKER_METRICS_PORT:-3003}/metrics)" || exit 1
+          printf '%s\n' "$$metrics" | grep -Eq '^lunchlineup_pdf_parser_ready 1(\.0+)?[[:space:]]*$$' || exit 1
           if [ "$${PASSWORD_RESET_EMAIL_OUTBOX_ENABLED:-false}" = "true" ]; then
             printf '%s\n' "$$metrics" | grep -Eq '^lunchlineup_password_reset_email_sweep_running 1(\.0+)?[[:space:]]*$$' || exit 1
             printf '%s\n' "$$metrics" | grep -Eq '^lunchlineup_password_reset_email_sweep_ready 1(\.0+)?[[:space:]]*$$' || exit 1
+            printf '%s\n' "$$metrics" | grep -Eq '^lunchlineup_password_reset_email_systemic_provider_failure 0(\.0+)?[[:space:]]*$$' || exit 1
+            last_success="$$(printf '%s\n' "$$metrics" | grep -E '^lunchlineup_password_reset_email_sweep_last_success_unixtime [0-9]+(\.[0-9]+)?[[:space:]]*$$' | head -n 1 | cut -d ' ' -f 2)"
+            [ -n "$$last_success" ] || exit 1
+            last_success="$${last_success%%.*}"
+            now="$$(date +%s)"
+            age="$$((now - last_success))"
+            [ "$$age" -ge 0 ] && [ "$$age" -le "$${PASSWORD_RESET_EMAIL_SWEEP_MAX_STALENESS_SECONDS:-60}" ] || exit 1
+          fi
+          if [ "$${STAFF_INVITATION_OUTBOX_ENABLED:-false}" = "true" ]; then
+            printf '%s\n' "$$metrics" | grep -Eq '^lunchlineup_staff_invitation_sweep_running 1(\.0+)?[[:space:]]*$$' || exit 1
+            printf '%s\n' "$$metrics" | grep -Eq '^lunchlineup_staff_invitation_sweep_ready 1(\.0+)?[[:space:]]*$$' || exit 1
+            printf '%s\n' "$$metrics" | grep -Eq '^lunchlineup_staff_invitation_systemic_provider_failure 0(\.0+)?[[:space:]]*$$' || exit 1
+            invitation_last_success="$$(printf '%s\n' "$$metrics" | grep -E '^lunchlineup_staff_invitation_sweep_last_success_unixtime [0-9]+(\.[0-9]+)?[[:space:]]*$$' | head -n 1 | cut -d ' ' -f 2)"
+            [ -n "$$invitation_last_success" ] || exit 1
+            invitation_last_success="$${invitation_last_success%%.*}"
+            invitation_now="$$(date +%s)"
+            invitation_age="$$((invitation_now - invitation_last_success))"
+            [ "$$invitation_age" -ge 0 ] && [ "$$invitation_age" -le "$${STAFF_INVITATION_SWEEP_MAX_STALENESS_SECONDS:-60}" ] || exit 1
           fi
       interval: 15s
       timeout: 5s
       retries: 3
+      start_period: 15s
     depends_on:
+      pdf-parser:
+        condition: service_healthy
       engine:
         condition: service_healthy
       rabbitmq:
@@ -355,6 +537,10 @@ services:
 
   # ─── Database Connection Pooler ───
   pgbouncer:
+    <<: *read-only-runtime
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=16m,mode=1777
+      - /etc/pgbouncer:rw,noexec,nosuid,nodev,size=4m,mode=1777
     image: edoburu/pgbouncer:v1.25.2-p0@sha256:7d7a27d9e90985cab5cf42256f5c13a3120baa4b055b69df37beb272b89b2340
     networks:
       - data
@@ -365,39 +551,23 @@ services:
         condition: service_healthy
     restart: unless-stopped
 
-  # Pinned static S3-compatible client copied into a project-scoped tools volume.
-  pitr-tools:
-    image: minio/mc:RELEASE.2025-08-13T08-35-41Z@sha256:a7fe349ef4bd8521fb8497f55c6042871b2ae640607cf99d9bede5e9bdf11727
-    user: "0:0"
-    entrypoint: [ "/bin/sh", "-ec" ]
-    command:
-      - |
-        source="$$(command -v mc)"
-        test -x "$$source"
-        cp "$$source" /tools/mc.tmp
-        chmod 0755 /tools/mc.tmp
-        mv /tools/mc.tmp /tools/mc
-    volumes:
-      - pitr_tools:/tools
-    restart: "no"
-
-  # ─── Primary Database ───
-  postgres:
-    image: postgres:16-alpine@sha256:57c72fd2a128e416c7fcc499958864df5301e940bca0a56f58fddf30ffc07777
-    volumes:
-      - postgres_data:/var/lib/postgresql/data
-      - ./infrastructure/postgres/postgresql.conf:/etc/postgresql/postgresql.conf:ro
-      - ./infrastructure/postgres:/opt/lunchlineup/pitr:ro
-      - pitr_tools:/opt/lunchlineup/tools:ro
-      - ${PITR_WAL_OBJECT_STORE_SECRETS_DIR:-./secrets/pitr-wal-object-store}:/run/secrets/pitr-wal-object-store:ro
-      - ${NODE_EXPORTER_TEXTFILE_DIR:-/var/lib/node_exporter/textfile_collector}:/metrics
-    networks:
-      - data
-      - pitr-egress
+  # Request-scoped WAL provider. It exits after each upload so Docker owns and
+  # terminates the complete provider process tree before the next request.
+  pitr-wal-provider:
+    <<: *locked-runtime
+    init: true
+    cpus: "1.00"
+    mem_limit: 512m
+    pids_limit: 128
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=128m,mode=1777
+    image: "${IMAGE_PREFIX:-lunchlineup}/backup:${IMAGE_TAG:-local}"
+    build:
+      context: .
+      dockerfile: infrastructure/docker/Dockerfile.backup
+    user: "70:70"
+    entrypoint: [ "node", "/app/pitr-wal-provider.mjs" ]
     environment:
-      - POSTGRES_USER=${POSTGRES_USER:?Set POSTGRES_USER in .env}
-      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
-      - POSTGRES_DB=${POSTGRES_DB:?Set POSTGRES_DB in .env}
       - PITR_ENABLED=${PITR_ENABLED:-false}
       - PITR_S3_ENDPOINT=${PITR_S3_ENDPOINT:-}
       - PITR_S3_BUCKET=${PITR_S3_BUCKET:-}
@@ -405,24 +575,98 @@ services:
       - PITR_OBJECT_LOCK_RETENTION_DAYS=${PITR_OBJECT_LOCK_RETENTION_DAYS:-}
       - PITR_ACCESS_KEY_FILE=/run/secrets/pitr-wal-object-store/access_key
       - PITR_SECRET_KEY_FILE=/run/secrets/pitr-wal-object-store/secret_key
+      - PITR_MC_BIN=/opt/lunchlineup/tools/mc
+      - PITR_PROVIDER_OWNERSHIP_MODE=container-job
+      - PITR_WAL_PROVIDER_HOST=0.0.0.0
+      - PITR_WAL_PROVIDER_PORT=8080
+      - PITR_WAL_PROVIDER_MAX_BYTES=33554432
+      - PITR_WAL_PROVIDER_REQUEST_TIMEOUT_MS=900000
+    volumes:
+      - ${PITR_WAL_OBJECT_STORE_SECRETS_DIR:-./secrets/pitr-wal-object-store}:/run/secrets/pitr-wal-object-store:ro
+    networks:
+      - pitr-wal-control
+      - pitr-egress
+    restart: unless-stopped
+
+  # Read-only provider identity used only to export and verify lifecycle policy.
+  pitr-lifecycle-audit:
+    <<: *locked-runtime
+    init: true
+    cpus: "0.50"
+    mem_limit: 256m
+    pids_limit: 64
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=32m,mode=1777
+    profiles:
+      - ops
+    image: "${IMAGE_PREFIX:-lunchlineup}/backup:${IMAGE_TAG:-local}"
+    build:
+      context: .
+      dockerfile: infrastructure/docker/Dockerfile.backup
+    user: "70:70"
+    entrypoint: [ "/bin/true" ]
+    environment:
+      - PITR_ENABLED=true
+      - PITR_S3_ENDPOINT=${PITR_S3_ENDPOINT:-}
+      - PITR_S3_BUCKET=${PITR_S3_BUCKET:-}
+      - PITR_S3_PREFIX=${PITR_S3_PREFIX:-}
+      - PITR_OBJECT_LOCK_RETENTION_DAYS=${PITR_OBJECT_LOCK_RETENTION_DAYS:-}
+      - PITR_ACCESS_KEY_FILE=/run/secrets/pitr-lifecycle-audit-object-store/access_key
+      - PITR_SECRET_KEY_FILE=/run/secrets/pitr-lifecycle-audit-object-store/secret_key
+      - PITR_MC_BIN=/opt/lunchlineup/tools/mc
+      - PITR_PROVIDER_OWNERSHIP_MODE=container-job
+    volumes:
+      - ${PITR_LIFECYCLE_AUDIT_OBJECT_STORE_SECRETS_DIR:-./secrets/pitr-lifecycle-audit-object-store}:/run/secrets/pitr-lifecycle-audit-object-store:ro
+    networks:
+      - pitr-egress
+    restart: "no"
+
+  # ─── Primary Database ───
+  postgres:
+    <<: *read-only-runtime
+    cpus: "2.00"
+    mem_limit: 2g
+    pids_limit: 512
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=64m,mode=1777
+      - /var/run/postgresql:rw,noexec,nosuid,nodev,size=16m,mode=1777
+    image: postgres:16-alpine@sha256:57c72fd2a128e416c7fcc499958864df5301e940bca0a56f58fddf30ffc07777
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./infrastructure/postgres/postgresql.conf:/etc/postgresql/postgresql.conf:ro
+      - ./infrastructure/postgres:/opt/lunchlineup/pitr:ro
+      - ${NODE_EXPORTER_TEXTFILE_DIR:-/var/lib/node_exporter/textfile_collector}:/metrics
+    networks:
+      - data
+      - pitr-wal-control
+    environment:
+      - POSTGRES_USER=${POSTGRES_USER:?Set POSTGRES_USER in .env}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+      - POSTGRES_DB=${POSTGRES_DB:?Set POSTGRES_DB in .env}
+      - PITR_ENABLED=${PITR_ENABLED:-false}
+      - PITR_WAL_PROVIDER_URL=http://pitr-wal-provider:8080
+      - PITR_WAL_PROVIDER_CLIENT_TIMEOUT_SECONDS=930
       - PITR_WAL_METRICS_FILE=/metrics/lunchlineup_pitr_wal.prom
-    command: [ "postgres", "-c", "config_file=/etc/postgresql/postgresql.conf" ]
+    command: [ "postgres", "-c", "config_file=/etc/postgresql/postgresql.conf", "-c", "archive_mode=${PITR_ARCHIVE_MODE:-off}" ]
     healthcheck:
       test: [ "CMD-SHELL", "pg_isready -U ${POSTGRES_USER:?Set POSTGRES_USER in .env} -d ${POSTGRES_DB:?Set POSTGRES_DB in .env}" ]
       interval: 10s
       timeout: 5s
       retries: 5
     depends_on:
-      pitr-tools:
-        condition: service_completed_successfully
+      pitr-wal-provider:
+        condition: service_started
     restart: unless-stopped
 
   # ─── Cache & Session Store ───
   redis:
+    <<: *read-only-runtime
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=16m,mode=1777
     image: redis:7-alpine@sha256:6ab0b6e7381779332f97b8ca76193e45b0756f38d4c0dcda72dbb3c32061ab99
     volumes:
       - redis_data:/data
-      - ./infrastructure/redis/redis.conf.template:/usr/local/etc/redis/redis.conf
+      - ./infrastructure/redis/redis.conf.template:/usr/local/etc/redis/redis.conf:ro
     networks:
       - data
     command: [ "redis-server", "/usr/local/etc/redis/redis.conf" ]
@@ -435,6 +679,12 @@ services:
 
   # ─── Message Broker ───
   rabbitmq:
+    <<: *read-only-runtime
+    cpus: "1.50"
+    mem_limit: 1g
+    pids_limit: 512
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=32m,mode=1777
     image: rabbitmq:3-management-alpine@sha256:606d8c0d6b3c18d1da9afc53bc7cdb2a8d5486df91b5a9830e9e07626c9ae281
     volumes:
       - rabbitmq_data:/var/lib/rabbitmq
@@ -452,6 +702,9 @@ services:
 
   # ─── Control Plane (Out-of-band management) ───
   control:
+    <<: *locked-runtime
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=32m,mode=1777
     image: "${IMAGE_PREFIX:-lunchlineup}/control:${IMAGE_TAG:-local}"
     build:
       context: .
@@ -478,6 +731,9 @@ services:
 
   # ─── Autoheal (restart unhealthy containers) ───
   autoheal:
+    <<: *locked-runtime
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=16m,mode=1777
     profiles:
       - ops
     image: willfarrell/autoheal:1.2.0@sha256:31f580ef0279eaced5b38d631b08c474d70d8403c1c2fdd6ddcf2e879d5f3f7c
@@ -493,6 +749,12 @@ services:
 
   # ─── Observability: Prometheus ───
   prometheus:
+    <<: *locked-runtime
+    cpus: "1.50"
+    mem_limit: 2g
+    pids_limit: 512
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=32m,mode=1777
     image: prom/prometheus:v2.51.2@sha256:4f6c47e39a9064028766e8c95890ed15690c30f00c4ba14e7ce6ae1ded0295b1
     volumes:
       - ./infrastructure/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
@@ -517,6 +779,13 @@ services:
 
   # One-shot encrypted database backup. Invoke with: docker compose --profile ops run --rm --no-deps backup
   backup:
+    <<: *locked-runtime
+    init: true
+    cpus: "2.00"
+    mem_limit: 2g
+    pids_limit: 512
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=64m,mode=1777
     profiles:
       - ops
     image: "${IMAGE_PREFIX:-lunchlineup}/backup:${IMAGE_TAG:-local}"
@@ -536,6 +805,11 @@ services:
       - BACKUP_OFFSITE_URI=${BACKUP_OFFSITE_URI:-}
       - BACKUP_OFFSITE_RETENTION_DAYS=${BACKUP_OFFSITE_RETENTION_DAYS:-35}
       - BACKUP_OFFSITE_RETENTION_DRY_RUN=${BACKUP_OFFSITE_RETENTION_DRY_RUN:-false}
+      - BACKUP_PROVIDER_OWNERSHIP_MODE=container-job
+      - CANDIDATE_SYSTEMD_INVOCATION_ID=${CANDIDATE_SYSTEMD_INVOCATION_ID:-}
+      - CANDIDATE_RELEASE_PATH=${CANDIDATE_RELEASE_PATH:-}
+      - CANDIDATE_SOURCE_SHA=${CANDIDATE_SOURCE_SHA:-}
+      - CANDIDATE_IMAGE_DIGEST=${CANDIDATE_IMAGE_DIGEST:-}
       - AWS_SHARED_CREDENTIALS_FILE=/run/secrets/backup-offsite/aws-credentials
       - AWS_CONFIG_FILE=/run/secrets/backup-offsite/aws-config
       - RCLONE_CONFIG=/run/secrets/backup-offsite/rclone.conf
@@ -557,9 +831,19 @@ services:
 
   # Daily verified physical base backup for the continuous remote WAL archive.
   pitr-base-backup:
+    <<: *read-only-runtime
+    init: true
+    cpus: "2.00"
+    mem_limit: 2g
+    pids_limit: 512
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=64m,mode=1777
     profiles:
       - ops
-    image: postgres:16-alpine@sha256:57c72fd2a128e416c7fcc499958864df5301e940bca0a56f58fddf30ffc07777
+    image: "${IMAGE_PREFIX:-lunchlineup}/backup:${IMAGE_TAG:-local}"
+    build:
+      context: .
+      dockerfile: infrastructure/docker/Dockerfile.backup
     entrypoint: [ "/bin/sh", "/opt/lunchlineup/scripts/pitr-base-backup.sh" ]
     environment:
       - POSTGRES_HOST=postgres
@@ -575,10 +859,16 @@ services:
       - PITR_METRICS_FILE=/metrics/lunchlineup_pitr.prom
       - PITR_ACCESS_KEY_FILE=/run/secrets/pitr-base-backup-object-store/access_key
       - PITR_SECRET_KEY_FILE=/run/secrets/pitr-base-backup-object-store/secret_key
+      - PITR_MC_BIN=/opt/lunchlineup/tools/mc
+      - PITR_PROVIDER_OWNERSHIP_MODE=container-job
+      - PITR_REQUIRE_CANDIDATE_BINDING=${PITR_REQUIRE_CANDIDATE_BINDING:-false}
+      - CANDIDATE_SYSTEMD_INVOCATION_ID=${CANDIDATE_SYSTEMD_INVOCATION_ID:-}
+      - CANDIDATE_RELEASE_PATH=${CANDIDATE_RELEASE_PATH:-}
+      - CANDIDATE_SOURCE_SHA=${CANDIDATE_SOURCE_SHA:-}
+      - CANDIDATE_IMAGE_DIGEST=${CANDIDATE_IMAGE_DIGEST:-}
     volumes:
       - ./scripts:/opt/lunchlineup/scripts:ro
       - ./infrastructure/postgres:/opt/lunchlineup/infrastructure/postgres:ro
-      - pitr_tools:/opt/lunchlineup/tools:ro
       - pitr_staging:/var/lib/lunchlineup-pitr
       - ${NODE_EXPORTER_TEXTFILE_DIR:-/var/lib/node_exporter/textfile_collector}:/metrics
       - ${PITR_BASE_BACKUP_OBJECT_STORE_SECRETS_DIR:-./secrets/pitr-base-backup-object-store}:/run/secrets/pitr-base-backup-object-store:ro
@@ -588,15 +878,23 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
-      pitr-tools:
-        condition: service_completed_successfully
     restart: "no"
 
   # One-shot recovery materialization into a separate volume; never the live PGDATA volume.
   pitr-restore:
+    <<: *read-only-runtime
+    init: true
+    cpus: "2.00"
+    mem_limit: 2g
+    pids_limit: 512
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=64m,mode=1777
     profiles:
       - recovery
-    image: postgres:16-alpine@sha256:57c72fd2a128e416c7fcc499958864df5301e940bca0a56f58fddf30ffc07777
+    image: "${IMAGE_PREFIX:-lunchlineup}/backup:${IMAGE_TAG:-local}"
+    build:
+      context: .
+      dockerfile: infrastructure/docker/Dockerfile.backup
     entrypoint: [ "/bin/sh", "/opt/lunchlineup/scripts/pitr-restore.sh" ]
     environment:
       - PITR_ENABLED=true
@@ -607,15 +905,20 @@ services:
       - PITR_BASE_BACKUP_ID=${PITR_BASE_BACKUP_ID:-}
       - PITR_RECOVERY_TARGET_TIME=${PITR_RECOVERY_TARGET_TIME:-}
       - PITR_ARCHIVED_WAL_SEGMENT=${PITR_ARCHIVED_WAL_SEGMENT:-}
+      - PITR_BASE_BACKUP_COMPLETE_VERSION_ID=${PITR_BASE_BACKUP_COMPLETE_VERSION_ID:-}
+      - PITR_BASE_BACKUP_ARCHIVE_VERSION_ID=${PITR_BASE_BACKUP_ARCHIVE_VERSION_ID:-}
+      - PITR_BASE_BACKUP_MANIFEST_VERSION_ID=${PITR_BASE_BACKUP_MANIFEST_VERSION_ID:-}
+      - PITR_ARCHIVED_WAL_VERSION_ID=${PITR_ARCHIVED_WAL_VERSION_ID:-}
       - PITR_RESTORE_CONFIRM=${PITR_RESTORE_CONFIRM:-}
       - PITR_RESTORE_DATA_DIR=/restore
       - PITR_STAGING_DIR=/var/lib/lunchlineup-pitr
       - PITR_ACCESS_KEY_FILE=/run/secrets/pitr-restore-object-store/access_key
       - PITR_SECRET_KEY_FILE=/run/secrets/pitr-restore-object-store/secret_key
+      - PITR_MC_BIN=/opt/lunchlineup/tools/mc
+      - PITR_PROVIDER_OWNERSHIP_MODE=container-job
     volumes:
       - ./scripts:/opt/lunchlineup/scripts:ro
       - ./infrastructure/postgres:/opt/lunchlineup/infrastructure/postgres:ro
-      - pitr_tools:/opt/lunchlineup/tools:ro
       - pitr_staging:/var/lib/lunchlineup-pitr
       - postgres_pitr_restore_data:/restore
       - ${PITR_RESTORE_OBJECT_STORE_SECRETS_DIR:-./secrets/pitr-restore-object-store}:/run/secrets/pitr-restore-object-store:ro
@@ -625,7 +928,12 @@ services:
 
   # Observability: Alertmanager
   alertmanager:
+    <<: *locked-runtime
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=16m,mode=1777
     image: prom/alertmanager:v0.27.0@sha256:e13b6ed5cb929eeaee733479dce55e10eb3bc2e9c4586c705a4e8da41e5eacf5
+    ports:
+      - "127.0.0.1:9093:9093"
     volumes:
       - ./infrastructure/alertmanager/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
       - alertmanager_data:/alertmanager
@@ -647,6 +955,9 @@ services:
 
   # Observability: Node Exporter
   node-exporter:
+    <<: *locked-runtime
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=16m,mode=1777
     image: prom/node-exporter:v1.8.1@sha256:fa7fa12a57eff607176d5c363d8bb08dfbf636b36ac3cb5613a202f3c61a6631
     command:
       - '--path.rootfs=/host'
@@ -662,6 +973,12 @@ services:
 
   # Observability: Loki
   loki:
+    <<: *locked-runtime
+    cpus: "1.50"
+    mem_limit: 2g
+    pids_limit: 512
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=32m,mode=1777
     image: grafana/loki:2.9.7@sha256:792a791d9e52fdff6a4e21be57b5fd9e5868218156e175bb8dde0fa258c76e20
     volumes:
       - ./infrastructure/loki/loki-config.yml:/etc/loki/local-config.yaml:ro
@@ -678,6 +995,9 @@ services:
 
   # Observability: read-only Docker JSON log shipping
   promtail:
+    <<: *locked-runtime
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=16m,mode=1777
     image: grafana/promtail:2.9.7@sha256:ba5f128849f51db31459a8ecd63d3f50e443af8585cf088ec11cb22248c6ae23
     command: -config.file=/etc/promtail/config.yml -config.expand-env=true
     environment:
@@ -695,6 +1015,12 @@ services:
 
   # Observability: internal OTLP receiver and buffered Tempo export
   otel-collector:
+    <<: *locked-runtime
+    cpus: "1.00"
+    mem_limit: 1g
+    pids_limit: 512
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=32m,mode=1777
     image: otel/opentelemetry-collector-contrib:0.153.0@sha256:93aad750175cbf1a973ae1c5886c3371f4d800f61be25cdd26870b8441ffe9fa
     command: [ "--config=/etc/otelcol-contrib/config.yml" ]
     volumes:
@@ -709,6 +1035,12 @@ services:
 
   # ─── Observability: Tempo (Distributed Tracing) ───
   tempo:
+    <<: *locked-runtime
+    cpus: "1.50"
+    mem_limit: 2g
+    pids_limit: 512
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=32m,mode=1777
     image: grafana/tempo:2.4.1@sha256:5b9c08f6d8fb43b3b72dfd1252ba4f198b11a245257bf76ee2ca13e243bac565
     volumes:
       - ./infrastructure/tempo/tempo-config.yml:/etc/tempo/config.yml:ro
@@ -725,6 +1057,12 @@ services:
 
   # ─── Observability: Grafana ───
   grafana:
+    <<: *locked-runtime
+    cpus: "1.00"
+    mem_limit: 1g
+    pids_limit: 512
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=64m,mode=1777
     image: grafana/grafana:10.4.2@sha256:7d5faae481a4c6f436c99e98af11534f7fd5e8d3e35213552dd1dd02bc393d2e
     ports:
       - "127.0.0.1:3002:3000"
@@ -784,6 +1122,9 @@ networks:
     internal: false
     driver_opts:
       com.docker.network.bridge.enable_icc: "false"
+  pitr-wal-control:
+    driver: bridge
+    internal: true
   outbound-egress:
     driver: bridge
     internal: false
@@ -798,7 +1139,6 @@ volumes:
   backup_data:
   redis_data:
   rabbitmq_data:
-  pitr_tools:
   pitr_staging:
   prometheus_data:
   alertmanager_data:
@@ -807,6 +1147,19 @@ volumes:
   tempo_data:
   grafana_data:
   tenant_export_artifacts:
+  availability_uploads:
+    driver: local
+    driver_opts:
+      type: tmpfs
+      device: tmpfs
+      o: size=268435456,mode=0777,noexec,nosuid,nodev
+
+  parser_ipc:
+    driver: local
+    driver_opts:
+      type: tmpfs
+      device: tmpfs
+      o: size=1048576,mode=0700,uid=10001,gid=10001,noexec,nosuid,nodev
 
 secrets:
   control_plane_admin_token:

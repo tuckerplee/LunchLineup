@@ -1,0 +1,54 @@
+rule_files:
+  - ../tenant-deletion-billing.yml
+
+evaluation_interval: 1m
+
+tests:
+  - name: failed sweeps cannot hide missing successful-sweep freshness
+    interval: 1m
+    input_series:
+      - series: 'lunchlineup_tenant_deletion_billing_reconciliation_last_sweep_timestamp_seconds{app="lunchlineup",job="api"}'
+        values: '0+60x10'
+      - series: 'lunchlineup_tenant_deletion_billing_reconciliation_sweep_max_staleness_seconds{app="lunchlineup",job="api"}'
+        values: '120+0x10'
+      - series: 'lunchlineup_tenant_deletion_billing_reconciliation_backlog{app="lunchlineup",job="api"}'
+        values: '4+0x10'
+      - series: 'lunchlineup_tenant_deletion_billing_reconciliation_oldest_pending_age_seconds{app="lunchlineup",job="api"}'
+        values: '1200+60x10'
+    alert_rule_test:
+      - eval_time: 6m
+        alertname: TenantDeletionBillingSweepStale
+        exp_alerts:
+          - exp_labels:
+              job: api
+              severity: critical
+              team: engineering
+            exp_annotations:
+              summary: Tenant deletion billing successful sweep is stale
+              description: The API has not completed a successful deletion billing reconciliation sweep inside its exported freshness bound; failed sweeps do not refresh this alert.
+              runbook: docs/runbooks/data-retention-delete-export.md
+
+  - name: failed sweeps cannot hide a stale successful sweep
+    interval: 1m
+    input_series:
+      - series: 'lunchlineup_tenant_deletion_billing_reconciliation_last_sweep_timestamp_seconds{app="lunchlineup",job="api"}'
+        values: '0+60x12'
+      - series: 'lunchlineup_tenant_deletion_billing_reconciliation_last_success_timestamp_seconds{app="lunchlineup",job="api"}'
+        values: '0+0x12'
+      - series: 'lunchlineup_tenant_deletion_billing_reconciliation_sweep_max_staleness_seconds{app="lunchlineup",job="api"}'
+        values: '120+0x12'
+      - series: 'lunchlineup_tenant_deletion_billing_reconciliation_backlog{app="lunchlineup",job="api"}'
+        values: '4+0x12'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: TenantDeletionBillingSweepStale
+        exp_alerts:
+          - exp_labels:
+              app: lunchlineup
+              job: api
+              severity: critical
+              team: engineering
+            exp_annotations:
+              summary: Tenant deletion billing successful sweep is stale
+              description: The API has not completed a successful deletion billing reconciliation sweep inside its exported freshness bound; failed sweeps do not refresh this alert.
+              runbook: docs/runbooks/data-retention-delete-export.md

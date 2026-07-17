@@ -13,4 +13,4 @@
 
 Run production checks from `infrastructure/terraform/production`.
 
-This folder is not production-ready by default. The production module must receive real host, image digest, DNS, backup, secrets, alerting, and runbook inputs before Terraform can produce a successful production plan.
+This folder is not production-ready by default. The production module accepts exactly Proxmox VM ID `217`; every other app VM ID fails input validation. It must also receive real image digest, DNS, backup, secrets, alerting, and runbook inputs before Terraform can produce a successful production plan. Terraform owns the VM217 host boundary; production Compose on VM217 is the sole current PostgreSQL/Redis/RabbitMQ data plane.

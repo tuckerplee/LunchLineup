@@ -3,6 +3,17 @@ import { Request, Response, NextFunction } from 'express';
 import { randomUUID } from 'crypto';
 import { redactUrlForLog } from '../common/sensitive-redaction';
 
+const SAFE_CORRELATION_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$/;
+const MAX_LOG_PATH_LENGTH = 512;
+
+function safeCorrelationId(value: string | string[] | undefined): string | null {
+    return typeof value === 'string' && SAFE_CORRELATION_ID.test(value) ? value : null;
+}
+
+function safeLogPath(value: string): string {
+    return (redactUrlForLog(value).replace(/[\u0000-\u001f\u007f]/g, '').slice(0, MAX_LOG_PATH_LENGTH) || '/');
+}
+
 /**
  * Correlation ID Middleware - Architecture Part X
  *
@@ -22,18 +33,18 @@ export class CorrelationIdMiddleware implements NestMiddleware {
 
     use(req: Request, res: Response, next: NextFunction): void {
         const correlationId =
-            (req.headers['x-correlation-id'] as string) ||
-            (req.headers['x-request-id'] as string) ||
+            safeCorrelationId(req.headers['x-correlation-id']) ||
+            safeCorrelationId(req.headers['x-request-id']) ||
             randomUUID();
 
         (req as any).correlationId = correlationId;
         res.setHeader('X-Correlation-ID', correlationId);
 
-        const { method, originalUrl, ip } = req;
-        const safeUrl = redactUrlForLog(originalUrl ?? req.url ?? '');
+        const { method, originalUrl } = req;
+        const safeUrl = safeLogPath(originalUrl ?? req.url ?? '');
         const startMs = Date.now();
 
-        this.logger.log(`-> [${correlationId}] ${method} ${safeUrl} from ${ip}`);
+        this.logger.log(`-> [${correlationId}] ${method} ${safeUrl}`);
 
         res.on('finish', () => {
             const { statusCode } = res;

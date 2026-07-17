@@ -1,11 +1,16 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-
+import { PUBLIC_LEGAL_MANIFEST } from "@lunchlineup/config";
 import {
   buildOnboardingOtpPayload,
   isSelfServiceSignupAvailable,
   normalizePublicSignupMode,
+  onboardingApiErrorMessage,
+  onboardingRequestErrorMessage,
   shouldUseOpenSignupChallenge,
 } from "../../app/onboarding/challenge";
+
+const CURRENT_TERMS_VERSION = PUBLIC_LEGAL_MANIFEST.documents.terms.version;
+const CURRENT_PRIVACY_VERSION = PUBLIC_LEGAL_MANIFEST.documents.privacy.version;
 
 describe("onboarding signup challenge helpers", () => {
   afterEach(() => {
@@ -42,6 +47,24 @@ describe("onboarding signup challenge helpers", () => {
     expect(isSelfServiceSignupAvailable("closed_beta")).toBe(false);
   });
 
+  it("surfaces structured API failures and keeps network recovery actionable", () => {
+    expect(onboardingApiErrorMessage(
+      { message: "Please wait before requesting another code", error: "ignored" },
+      "fallback",
+    )).toBe("Please wait before requesting another code");
+    expect(onboardingApiErrorMessage({ error: "Invite code is invalid" }, "fallback"))
+      .toBe("Invite code is invalid");
+    expect(onboardingApiErrorMessage({ message: ["invalid"] }, "fallback")).toBe("fallback");
+    expect(onboardingRequestErrorMessage(
+      new TypeError("Failed to fetch"),
+      "Unable to confirm code delivery.",
+    )).toBe("Unable to confirm code delivery.");
+    expect(onboardingRequestErrorMessage(
+      new Error("Invalid or expired code"),
+      "fallback",
+    )).toBe("Invalid or expired code");
+  });
+
   it("adds invite and Turnstile fields only when present", () => {
     expect(
       buildOnboardingOtpPayload({
@@ -62,6 +85,8 @@ describe("onboarding signup challenge helpers", () => {
       turnstileToken: "token-abc",
       termsAccepted: true,
       privacyAccepted: true,
+      termsVersion: CURRENT_TERMS_VERSION,
+      privacyVersion: CURRENT_PRIVACY_VERSION,
     });
     expect(
       buildOnboardingOtpPayload({
@@ -74,6 +99,8 @@ describe("onboarding signup challenge helpers", () => {
       tenantName: "Test Diner",
       onboarding: true,
       code: "123456",
+      termsVersion: CURRENT_TERMS_VERSION,
+      privacyVersion: CURRENT_PRIVACY_VERSION,
     });
   });
 });

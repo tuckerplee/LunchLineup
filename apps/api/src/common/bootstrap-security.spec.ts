@@ -32,6 +32,27 @@ describe('bootstrap security policy', () => {
         })).toThrow('Invalid ALLOWED_ORIGINS');
     });
 
+    it('does not echo credential-bearing invalid origin or host values', () => {
+        const originSecret = 'postgresql://config-user:origin-secret@private-db/app';
+        const hostSecret = 'https://host-user:host-secret@example.com';
+
+        for (const operation of [
+            () => resolveAllowedOrigins({ NODE_ENV: 'production', ALLOWED_ORIGINS: originSecret }),
+            () => normalizeAllowedHost(hostSecret),
+        ]) {
+            try {
+                operation();
+                throw new Error('Expected invalid configuration');
+            } catch (error) {
+                const message = error instanceof Error ? error.message : String(error);
+                expect(message).not.toContain('origin-secret');
+                expect(message).not.toContain('host-secret');
+                expect(message).not.toContain('config-user');
+                expect(message).not.toContain('host-user');
+            }
+        }
+    });
+
     it('fails production startup when every app origin is omitted or blank', () => {
         expect(() => resolvePublicAppOrigin({ NODE_ENV: 'production' }))
             .toThrow(/APP_ORIGIN/);
@@ -67,6 +88,7 @@ describe('bootstrap security policy', () => {
             SESSION_SECRET: 'change_me',
             MFA_SECRET_ENCRYPTION_KEY: 'replace_me',
             RESEND_API_KEY: 'replace_me',
+            RESEND_WEBHOOK_SECRET: 'replace_me',
             EMAIL_FROM: 'invalid',
             STRIPE_SECRET_KEY: '',
             STRIPE_WEBHOOK_SECRET: 'replace_me',
@@ -74,9 +96,24 @@ describe('bootstrap security policy', () => {
         })).toThrow(/Refusing to start/);
     });
 
+    it('requires a dedicated OTP HMAC secret and disables auth diagnostics in production', () => {
+        expect(() => validateProductionEnvironment(productionEnv({ OTP_HMAC_SECRET: '' })))
+            .toThrow(/OTP_HMAC_SECRET/);
+        expect(() => validateProductionEnvironment(productionEnv({ AUTH_DEBUG: 'true' })))
+            .toThrow(/AUTH_DEBUG/);
+    });
+
     it('accepts current-only MFA encryption in production', () => {
         expect(() => validateProductionEnvironment(productionEnv({
             MFA_SECRET_ENCRYPTION_KEY_CURRENT: Buffer.alloc(32, 0x11).toString('base64'),
+        }))).not.toThrow();
+    });
+
+    it('treats Compose-injected blank MFA overlap values as absent', () => {
+        expect(() => validateProductionEnvironment(productionEnv({
+            MFA_SECRET_ENCRYPTION_KEY_CURRENT: Buffer.alloc(32, 0x11).toString('base64'),
+            MFA_SECRET_ENCRYPTION_KEY_PREVIOUS: '',
+            MFA_SECRET_ENCRYPTION_KEY: '   ',
         }))).not.toThrow();
     });
 
@@ -116,6 +153,48 @@ describe('bootstrap security policy', () => {
         }))).toThrow(/must resolve to different encryption keys/);
     });
 
+    it('requires a dedicated exact 32-byte availability import key', () => {
+        const mfaKey = Buffer.alloc(32, 0x31);
+        expect(() => validateProductionEnvironment(productionEnv({
+            MFA_SECRET_ENCRYPTION_KEY_CURRENT: mfaKey.toString('base64'),
+            AVAILABILITY_IMPORT_ENCRYPTION_KEY: '',
+        }))).toThrow(/AVAILABILITY_IMPORT_ENCRYPTION_KEY is required/);
+        expect(() => validateProductionEnvironment(productionEnv({
+            MFA_SECRET_ENCRYPTION_KEY_CURRENT: mfaKey.toString('base64'),
+            AVAILABILITY_IMPORT_ENCRYPTION_KEY: Buffer.alloc(16, 0x21).toString('base64'),
+        }))).toThrow(/AVAILABILITY_IMPORT_ENCRYPTION_KEY must decode to exactly 32 bytes/);
+
+        const reused = Buffer.alloc(32, 0x41);
+        expect(() => validateProductionEnvironment(productionEnv({
+            MFA_SECRET_ENCRYPTION_KEY_CURRENT: reused.toString('base64'),
+            AVAILABILITY_IMPORT_ENCRYPTION_KEY: reused.toString('hex'),
+        }))).toThrow(/must not reuse MFA_SECRET_ENCRYPTION_KEY_CURRENT/);
+    });
+    it('requires staff invitation outbox delivery to be explicitly enabled', () => {
+        expect(() => validateProductionEnvironment(productionEnv({
+            STAFF_INVITATION_OUTBOX_ENABLED: undefined,
+        }))).toThrow(/STAFF_INVITATION_OUTBOX_ENABLED must be exactly true/);
+        expect(() => validateProductionEnvironment(productionEnv({
+            STAFF_INVITATION_OUTBOX_ENABLED: 'false',
+        }))).toThrow(/STAFF_INVITATION_OUTBOX_ENABLED must be exactly true/);
+    });
+
+    it('requires a dedicated exact 32-byte staff invitation outbox key', () => {
+        expect(() => validateProductionEnvironment(productionEnv({
+            STAFF_INVITATION_OUTBOX_ENCRYPTION_KEY: '',
+        }))).toThrow(/STAFF_INVITATION_OUTBOX_ENCRYPTION_KEY is required/);
+        expect(() => validateProductionEnvironment(productionEnv({
+            STAFF_INVITATION_OUTBOX_ENCRYPTION_KEY: Buffer.alloc(16, 0x72).toString('base64'),
+        }))).toThrow(/STAFF_INVITATION_OUTBOX_ENCRYPTION_KEY must decode to exactly 32 bytes/);
+
+        const reused = Buffer.alloc(32, 0x71);
+        expect(() => validateProductionEnvironment(productionEnv({
+            AVAILABILITY_IMPORT_ENCRYPTION_KEY: reused.toString('base64'),
+            STAFF_INVITATION_OUTBOX_ENCRYPTION_KEY: reused.toString('hex'),
+        }))).toThrow(/must not reuse AVAILABILITY_IMPORT_ENCRYPTION_KEY/);
+    });
+
+
     it('accepts explicit public production settings', () => {
         expect(() => validateProductionEnvironment({
             NODE_ENV: 'production',
@@ -129,14 +208,35 @@ describe('bootstrap security policy', () => {
             RABBITMQ_URL: 'amqp://lunchlineup:strong-pass@rabbitmq:5672',
             JWT_SECRET: 'a'.repeat(48),
             JWT_REFRESH_SECRET: 'b'.repeat(48),
+        OTP_HMAC_SECRET: 'o'.repeat(48),
             SESSION_SECRET: 'c'.repeat(48),
             MFA_SECRET_ENCRYPTION_KEY_CURRENT: Buffer.alloc(32, 0x44).toString('base64'),
             RESEND_API_KEY: `re_${'e'.repeat(48)}`,
+            RESEND_WEBHOOK_SECRET: `whsec_${'h'.repeat(48)}`,
             EMAIL_FROM: 'LunchLineup <no-reply@lunchlineup.example.com>',
             STRIPE_SECRET_KEY: `sk_live_${'f'.repeat(48)}`,
+            AVAILABILITY_IMPORT_ENCRYPTION_KEY: Buffer.alloc(32, 0x45).toString('base64'),
+            STAFF_INVITATION_OUTBOX_ENABLED: 'true',
+            STAFF_INVITATION_OUTBOX_ENCRYPTION_KEY: Buffer.alloc(32, 0x46).toString('base64'),
             STRIPE_WEBHOOK_SECRET: `whsec_${'g'.repeat(48)}`,
             METRICS_TOKEN: 'd'.repeat(48),
         })).not.toThrow();
+    });
+
+    it('validates configured credit-pack Price IDs and rejects aliases', () => {
+        expect(() => validateProductionEnvironment(productionEnv({
+            MFA_SECRET_ENCRYPTION_KEY_CURRENT: Buffer.alloc(32, 0x55).toString('base64'),
+            STRIPE_PRICE_CREDIT_PACK_100: 'price_credit_pack_100',
+            STRIPE_PRICE_CREDIT_PACK_500: 'price_credit_pack_500',
+            STRIPE_PRICE_CREDIT_PACK_2000: 'price_credit_pack_2000',
+        }))).not.toThrow();
+        expect(() => validateProductionEnvironment(productionEnv({
+            STRIPE_PRICE_CREDIT_PACK_100: 'not-a-price',
+        }))).toThrow(/STRIPE_PRICE_CREDIT_PACK_100/);
+        expect(() => validateProductionEnvironment(productionEnv({
+            STRIPE_PRICE_CREDIT_PACK_100: 'price_credit_shared',
+            STRIPE_PRICE_CREDIT_PACK_500: 'price_credit_shared',
+        }))).toThrow(/must be unique/);
     });
 
     it('rejects invalid production host and OIDC settings', () => {
@@ -152,9 +252,11 @@ describe('bootstrap security policy', () => {
             RABBITMQ_URL: 'amqp://lunchlineup:strong-pass@rabbitmq:5672',
             JWT_SECRET: 'a'.repeat(48),
             JWT_REFRESH_SECRET: 'b'.repeat(48),
+        OTP_HMAC_SECRET: 'o'.repeat(48),
             SESSION_SECRET: 'c'.repeat(48),
             MFA_SECRET_ENCRYPTION_KEY_CURRENT: Buffer.alloc(32, 0x44).toString('base64'),
             RESEND_API_KEY: `re_${'e'.repeat(48)}`,
+            RESEND_WEBHOOK_SECRET: `whsec_${'h'.repeat(48)}`,
             EMAIL_FROM: 'LunchLineup <no-reply@lunchlineup.example.com>',
             STRIPE_SECRET_KEY: `sk_live_${'f'.repeat(48)}`,
             STRIPE_WEBHOOK_SECRET: `whsec_${'g'.repeat(48)}`,
@@ -201,10 +303,15 @@ function productionEnv(overrides: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
         RABBITMQ_URL: 'amqp://lunchlineup:strong-pass@rabbitmq:5672',
         JWT_SECRET: 'a'.repeat(48),
         JWT_REFRESH_SECRET: 'b'.repeat(48),
+        OTP_HMAC_SECRET: 'o'.repeat(48),
         SESSION_SECRET: 'c'.repeat(48),
         RESEND_API_KEY: `re_${'e'.repeat(48)}`,
+        RESEND_WEBHOOK_SECRET: `whsec_${'h'.repeat(48)}`,
         EMAIL_FROM: 'LunchLineup <no-reply@lunchlineup.example.com>',
         STRIPE_SECRET_KEY: `sk_live_${'f'.repeat(48)}`,
+        AVAILABILITY_IMPORT_ENCRYPTION_KEY: Buffer.alloc(32, 0x71).toString('base64'),
+        STAFF_INVITATION_OUTBOX_ENABLED: 'true',
+        STAFF_INVITATION_OUTBOX_ENCRYPTION_KEY: Buffer.alloc(32, 0x72).toString('base64'),
         STRIPE_WEBHOOK_SECRET: `whsec_${'g'.repeat(48)}`,
         METRICS_TOKEN: 'd'.repeat(48),
         ...overrides,

@@ -5,12 +5,20 @@ import { TenantPrismaService, TenantPrismaTransaction } from '../database/tenant
 import { PlanTier, PLAN_CONFIG } from './plans.config';
 import { resolveTenantPlanDefinition } from './plan-definitions';
 import { StripeMeterEventsService } from './stripe-meter-events.service';
+import { stripeErrorLog } from './stripe-error-diagnostic';
 
 const ACTIVE_STAFF_METRIC = 'ACTIVE_STAFF';
 const STRIPE_METER_EVENT_NAME_RE = /^[A-Za-z0-9_.:-]{1,100}$/;
 const MAX_STRIPE_USAGE_ATTEMPTS = 5;
+const STRIPE_USAGE_SEND_LEASE_MS = 2 * 60_000;
 
 export type BillableFeatureSource = 'plan' | 'stripe' | 'credits' | 'manual' | 'disabled';
+
+export type CreditGrantSettlement = {
+    transactionId: string;
+    newBalance: number;
+    replayed: boolean;
+};
 
 @Injectable()
 export class MeteringService {
@@ -31,80 +39,89 @@ export class MeteringService {
     /**
      * Grants usage credits to a tenant and records a ledger transaction.
      */
-    async grantCredits(tenantId: string, amount: number, reason: string, idempotencyKey?: string) {
-        if (amount <= 0) throw new BadRequestException('Amount must be strictly positive');
-
-        // Keep the separate legacy billing route compatible until it adopts a caller key.
-        if (idempotencyKey === undefined) {
-            return this.tenantDb.withTenant(tenantId, async (tx: any) => {
-                const tenant = await tx.tenant.update({
-                    where: { id: tenantId },
-                    data: { usageCredits: { increment: amount } }
-                });
-
-                await tx.creditTransaction.create({
-                    data: { tenantId, amount, reason }
-                });
-
-                return tenant.usageCredits;
-            });
+    async grantCreditsInTransaction(
+        tx: TenantPrismaTransaction,
+        args: { tenantId: string; amount: number; reason: string; idempotencyKey: string },
+    ): Promise<CreditGrantSettlement> {
+        const { tenantId, amount, reason, idempotencyKey } = args;
+        const normalizedTenantId = typeof tenantId === 'string' ? tenantId.trim() : '';
+        const normalizedReason = typeof reason === 'string' ? reason.trim() : '';
+        if (!normalizedTenantId) throw new BadRequestException('tenantId is required');
+        if (!Number.isSafeInteger(amount) || amount <= 0) {
+            throw new BadRequestException('Amount must be a positive whole number');
+        }
+        if (!normalizedReason || normalizedReason.length > 500) {
+            throw new BadRequestException('Reason must be between 1 and 500 characters');
         }
 
         const normalizedKey = this.normalizeCreditGrantIdempotencyKey(idempotencyKey);
-        const transactionId = `admin-credit-grant-${createHash('sha256').update(normalizedKey, 'utf8').digest('hex')}`;
+        const transactionId = `admin-credit-grant-${createHash('sha256')
+            .update(`${normalizedTenantId}:${normalizedKey}`, 'utf8')
+            .digest('hex')}`;
 
-        try {
-            return await this.tenantDb.withTenant(tenantId, async (tx: any) => {
-                const existing = await tx.creditTransaction.findUnique({ where: { id: transactionId } });
-                if (existing) {
-                    return this.replayCreditGrant(tx, existing, tenantId, amount, reason);
-                }
-
-                // Reserve the unique ledger id first so a racing duplicate cannot increment.
-                await tx.creditTransaction.create({
-                    data: { id: transactionId, tenantId, amount, reason }
-                });
-
-                const tenant = await tx.tenant.update({
-                    where: { id: tenantId },
-                    data: { usageCredits: { increment: amount } }
-                });
-
-                return tenant.usageCredits;
-            });
-        } catch (error) {
-            if (!this.isUniqueConstraintError(error)) throw error;
-
-            return this.tenantDb.withTenant(tenantId, async (tx: any) => {
-                const existing = await tx.creditTransaction.findUnique({ where: { id: transactionId } });
-                if (!existing) {
-                    throw new ConflictException('Idempotency-Key was already used for another credit grant.');
-                }
-                return this.replayCreditGrant(tx, existing, tenantId, amount, reason);
-            });
+        await this.lockCreditSettlementTables(tx);
+        await tx.$queryRaw`SELECT "id" FROM "Tenant" WHERE "id" = ${normalizedTenantId} FOR UPDATE`;
+        const existing = await tx.creditTransaction.findUnique({
+            where: { id: transactionId },
+            select: { id: true, tenantId: true, amount: true, reason: true, balanceAfter: true },
+        });
+        if (existing) {
+            return this.replayCreditGrant(
+                existing,
+                normalizedTenantId,
+                amount,
+                normalizedReason,
+                transactionId,
+            );
         }
+
+        const tenant = await tx.tenant.update({
+            where: { id: normalizedTenantId },
+            data: { usageCredits: { increment: amount } },
+            select: { usageCredits: true },
+        });
+        const newBalance = this.requireStoredBalanceAfter(
+            tenant.usageCredits,
+            'Credit grant settlement produced an invalid wallet balance.',
+        );
+
+        await tx.creditTransaction.create({
+            data: {
+                id: transactionId,
+                tenantId: normalizedTenantId,
+                amount,
+                reason: normalizedReason,
+                balanceAfter: newBalance,
+            },
+            select: { id: true },
+        });
+
+        return { transactionId, newBalance, replayed: false };
     }
 
-    private async replayCreditGrant(
-        tx: any,
-        existing: { tenantId: string; amount: number; reason: string },
+    private replayCreditGrant(
+        existing: { tenantId: string; amount: number; reason: string; balanceAfter: number | null },
         tenantId: string,
         amount: number,
         reason: string,
-    ): Promise<number> {
+        transactionId: string,
+    ): CreditGrantSettlement {
         if (existing.tenantId !== tenantId || existing.amount !== amount || existing.reason !== reason) {
             throw new ConflictException('Idempotency-Key was already used with a different credit grant request.');
         }
 
-        const tenant = await tx.tenant.findUniqueOrThrow({
-            where: { id: tenantId },
-            select: { usageCredits: true },
-        });
-        return tenant.usageCredits;
+        return {
+            transactionId,
+            newBalance: this.requireStoredBalanceAfter(
+                existing.balanceAfter,
+                'Existing credit grant is missing its immutable settlement balance.',
+            ),
+            replayed: true,
+        };
     }
 
-    private normalizeCreditGrantIdempotencyKey(value: string): string {
-        if (!value.trim()) {
+    private normalizeCreditGrantIdempotencyKey(value: unknown): string {
+        if (typeof value !== 'string' || !value.trim()) {
             throw new BadRequestException('Idempotency-Key is required for idempotent credit grants.');
         }
         const key = value.trim();
@@ -114,66 +131,11 @@ export class MeteringService {
         return key;
     }
 
-    private isUniqueConstraintError(error: unknown): boolean {
-        return typeof error === 'object'
-            && error !== null
-            && 'code' in error
-            && (error as { code?: unknown }).code === 'P2002';
-    }
-
-    /**
-     * Deducts usage credits securely.
-     * Throws an error if insufficient credits.
-     */
-    async consumeCredits(tenantId: string, amount: number, reason: string) {
-        if (amount <= 0) throw new BadRequestException('Amount must be strictly positive');
-
-        return this.tenantDb.withTenant(tenantId, async (tx: any) => {
-            const debit = await tx.tenant.updateMany({
-                where: {
-                    id: tenantId,
-                    usageCredits: { gte: amount },
-                },
-                data: { usageCredits: { decrement: amount } },
-            });
-
-            if (debit.count !== 1) {
-                throw new ForbiddenException('Insufficient usage credits balance.');
-            }
-
-            const updated = await tx.tenant.findUniqueOrThrow({
-                where: { id: tenantId },
-                select: { usageCredits: true },
-            });
-
-            await tx.creditTransaction.create({
-                data: { tenantId, amount: -amount, reason }
-            });
-
-            return updated.usageCredits;
-        });
-    }
-
-    /**
-     * Records included usage for paid monthly plans without decrementing wallet credits.
-     * Keeps credit-balance semantics intact while preserving usage telemetry.
-     */
-    async trackIncludedUsage(tenantId: string, amount: number, reason: string) {
-        if (amount <= 0) throw new BadRequestException('Amount must be strictly positive');
-
-        return this.tenantDb.withTenant(tenantId, async (tx: any) => {
-            const tenant = await tx.tenant.findUniqueOrThrow({ where: { id: tenantId } });
-
-            await tx.creditTransaction.create({
-                data: {
-                    tenantId,
-                    amount: 0,
-                    reason: `Included usage (${amount} credit): ${reason}`,
-                },
-            });
-
-            return tenant.usageCredits;
-        });
+    private requireStoredBalanceAfter(value: unknown, message: string): number {
+        if (!Number.isSafeInteger(value) || Number(value) < 0) {
+            throw new ConflictException(message);
+        }
+        return Number(value);
     }
 
     async recordFeatureUsageInTransaction(
@@ -186,45 +148,71 @@ export class MeteringService {
             operationId: string;
         },
     ): Promise<{ consumedCredits: number; newBalance: number | null }> {
-        if (!Number.isInteger(args.cost) || args.cost < 0) {
-            throw new BadRequestException('Feature credit cost must be a non-negative whole number');
+        if (args.source !== 'credits') {
+            throw new ForbiddenException('Billable feature usage requires wallet credits.');
         }
-        if (args.cost === 0) {
-            const tenant = await tx.tenant.findUniqueOrThrow({
-                where: { id: args.tenantId },
-                select: { usageCredits: true },
-            });
-            return { consumedCredits: 0, newBalance: tenant.usageCredits };
+        if (!Number.isSafeInteger(args.cost) || args.cost <= 0) {
+            throw new BadRequestException('Feature credit cost must be a positive whole number');
         }
 
         const ledgerId = `feature-usage-${args.operationId}`;
-        if (args.source === 'credits' || args.source === 'plan' || args.source === 'stripe' || args.source === 'manual') {
-            await tx.creditTransaction.create({
-                data: {
-                    id: ledgerId,
-                    tenantId: args.tenantId,
-                    amount: -args.cost,
-                    reason: args.reason,
-                },
-            });
-            const debit = await tx.tenant.updateMany({
-                where: {
-                    id: args.tenantId,
-                    usageCredits: { gte: args.cost },
-                },
-                data: { usageCredits: { decrement: args.cost } },
-            });
-            if (debit.count !== 1) {
-                throw new ForbiddenException('Insufficient usage credits balance.');
+        await this.lockCreditSettlementTables(tx);
+        await tx.$queryRaw`SELECT "id" FROM "Tenant" WHERE "id" = ${args.tenantId} FOR UPDATE`;
+        const existing = await tx.creditTransaction.findUnique({
+            where: { id: ledgerId },
+            select: { id: true, tenantId: true, amount: true, reason: true, balanceAfter: true },
+        });
+        if (existing) {
+            if (
+                existing.tenantId !== args.tenantId
+                || existing.amount !== -args.cost
+                || existing.reason !== args.reason
+            ) {
+                throw new ConflictException('Feature usage operation was already recorded with different billing details.');
             }
-            const tenant = await tx.tenant.findUniqueOrThrow({
-                where: { id: args.tenantId },
-                select: { usageCredits: true },
-            });
-            return { consumedCredits: args.cost, newBalance: tenant.usageCredits };
+            return {
+                consumedCredits: args.cost,
+                newBalance: this.requireStoredBalanceAfter(
+                    existing.balanceAfter,
+                    'Existing feature usage is missing its immutable settlement balance.',
+                ),
+            };
         }
 
-        throw new ForbiddenException('Feature is not enabled for billable usage.');
+        const debit = await tx.tenant.updateMany({
+            where: {
+                id: args.tenantId,
+                usageCredits: { gte: args.cost },
+            },
+            data: { usageCredits: { decrement: args.cost } },
+        });
+        if (debit.count !== 1) {
+            throw new ForbiddenException('Insufficient usage credits balance.');
+        }
+        const tenant = await tx.tenant.findUniqueOrThrow({
+            where: { id: args.tenantId },
+            select: { usageCredits: true },
+        });
+        const newBalance = this.requireStoredBalanceAfter(
+            tenant.usageCredits,
+            'Feature usage settlement produced an invalid wallet balance.',
+        );
+        await tx.creditTransaction.create({
+            data: {
+                id: ledgerId,
+                tenantId: args.tenantId,
+                amount: -args.cost,
+                reason: args.reason,
+                balanceAfter: newBalance,
+            },
+        });
+        return { consumedCredits: args.cost, newBalance };
+    }
+
+    private async lockCreditSettlementTables(tx: TenantPrismaTransaction): Promise<void> {
+        await tx.$executeRaw`
+            LOCK TABLE "Tenant", "CreditTransaction" IN ROW EXCLUSIVE MODE
+        `;
     }
 
     async checkLimits(tenantId: string, tier: string) {
@@ -286,21 +274,6 @@ export class MeteringService {
                 },
             });
             const identity = this.buildUsageIdentity(normalizedTenantId, ACTIVE_STAFF_METRIC, window.periodStart);
-            const existing = await tx.stripeUsageEvent.findUnique({
-                where: {
-                    tenantId_metric_periodStart_periodEnd: {
-                        tenantId: normalizedTenantId,
-                        metric: ACTIVE_STAFF_METRIC,
-                        periodStart: window.periodStart,
-                        periodEnd: window.periodEnd,
-                    },
-                },
-            });
-
-            if (existing?.status === 'SENT') {
-                return existing;
-            }
-
             const data = {
                 tenantId: normalizedTenantId,
                 metric: ACTIVE_STAFF_METRIC,
@@ -320,27 +293,18 @@ export class MeteringService {
                 },
             };
 
-            if (existing) {
-                return tx.stripeUsageEvent.update({
-                    where: { id: existing.id },
-                    data: {
-                        quantity: data.quantity,
-                        eventName: data.eventName,
-                        stripeCustomerId: data.stripeCustomerId,
-                        status: data.status,
-                        nextAttemptAt: data.nextAttemptAt,
-                        lastError: data.lastError,
-                        metadata: {
-                            ...(existing.metadata && typeof existing.metadata === 'object' && !Array.isArray(existing.metadata)
-                                ? existing.metadata
-                                : {}),
-                            ...data.metadata,
-                        },
+            return tx.stripeUsageEvent.upsert({
+                where: {
+                    tenantId_metric_periodStart_periodEnd: {
+                        tenantId: normalizedTenantId,
+                        metric: ACTIVE_STAFF_METRIC,
+                        periodStart: window.periodStart,
+                        periodEnd: window.periodEnd,
                     },
-                });
-            }
-
-            return tx.stripeUsageEvent.create({ data });
+                },
+                create: data,
+                update: {},
+            });
         });
 
         if (prepared.status === 'SENT') {
@@ -352,18 +316,54 @@ export class MeteringService {
 
     private async sendPersistedUsageEvent(tenantId: string, usageEventId: string) {
         const submittedAt = new Date();
-        const claimed: any = await this.tenantDb.withTenant(tenantId, (tx: any) => tx.stripeUsageEvent.update({
-            where: { id: usageEventId },
+        const staleLeaseBefore = new Date(submittedAt.getTime() - STRIPE_USAGE_SEND_LEASE_MS);
+        const leaseExpiresAt = new Date(submittedAt.getTime() + STRIPE_USAGE_SEND_LEASE_MS);
+        const claim = await this.tenantDb.withTenant<{ count: number }>(tenantId, (tx: any) => tx.stripeUsageEvent.updateMany({
+            where: {
+                id: usageEventId,
+                tenantId,
+                OR: [
+                    {
+                        status: 'PENDING',
+                        nextAttemptAt: { lte: submittedAt },
+                    },
+                    {
+                        status: 'FAILED',
+                        attempts: { lt: MAX_STRIPE_USAGE_ATTEMPTS },
+                        nextAttemptAt: { lte: submittedAt },
+                    },
+                    {
+                        status: 'SENDING',
+                        submittedAt: { lte: staleLeaseBefore },
+                    },
+                ],
+            },
             data: {
                 status: 'SENDING',
                 attempts: { increment: 1 },
                 submittedAt,
+                nextAttemptAt: leaseExpiresAt,
                 lastError: null,
             },
         }));
 
+        if (claim.count !== 1) {
+            const observed = await this.findUsageEvent(tenantId, usageEventId);
+            return this.serializeUsageEvent(observed);
+        }
+
+        const claimed: any = await this.findUsageEvent(tenantId, usageEventId);
+        if (
+            claimed.status !== 'SENDING'
+            || !(claimed.submittedAt instanceof Date)
+            || claimed.submittedAt.getTime() !== submittedAt.getTime()
+        ) {
+            throw new ServiceUnavailableException('Stripe metered usage send lease was lost');
+        }
+
+        let result: { id: string | null; requestId: string | null };
         try {
-            const result = await this.getStripeMeterEvents().createMeterEvent({
+            result = await this.getStripeMeterEvents().createMeterEvent({
                 eventName: claimed.eventName,
                 stripeCustomerId: claimed.stripeCustomerId,
                 value: claimed.quantity,
@@ -371,34 +371,67 @@ export class MeteringService {
                 timestamp: claimed.periodStart,
                 idempotencyKey: claimed.idempotencyKey,
             });
-
-            const sent = await this.tenantDb.withTenant(tenantId, (tx: any) => tx.stripeUsageEvent.update({
-                where: { id: claimed.id },
-                data: {
-                    status: 'SENT',
-                    sentAt: new Date(),
-                    stripeObjectId: result.id,
-                    stripeRequestId: result.requestId,
-                    lastError: null,
-                },
-            }));
-
-            return this.serializeUsageEvent(sent);
         } catch (err) {
             const status = claimed.attempts >= MAX_STRIPE_USAGE_ATTEMPTS ? 'DEAD_LETTERED' : 'FAILED';
             const nextAttemptAt = this.nextStripeUsageAttemptAt(claimed.attempts);
-            const message = (err as Error).message || 'Stripe metered usage request failed';
-            await this.tenantDb.withTenant(tenantId, (tx: any) => tx.stripeUsageEvent.update({
-                where: { id: claimed.id },
+            const diagnostic = stripeErrorLog('billing.meter_usage_send_failed', err);
+            const failedTransition = await this.tenantDb.withTenant<{ count: number }>(tenantId, (tx: any) => tx.stripeUsageEvent.updateMany({
+                where: {
+                    id: claimed.id,
+                    tenantId,
+                    status: 'SENDING',
+                    submittedAt,
+                    identifier: claimed.identifier,
+                    idempotencyKey: claimed.idempotencyKey,
+                },
                 data: {
                     status,
                     nextAttemptAt,
-                    lastError: message.slice(0, 1000),
+                    lastError: diagnostic,
                 },
             }));
-            this.logger.warn(`Stripe metered usage event ${claimed.id} failed: ${message}`);
+            if (failedTransition.count !== 1) {
+                const observed = await this.findUsageEvent(tenantId, claimed.id);
+                if (observed.status === 'SENT') {
+                    return this.serializeUsageEvent(observed);
+                }
+            }
+            this.logger.warn(diagnostic);
             throw new ServiceUnavailableException('Stripe metered usage reporting failed');
         }
+
+        const sentTransition = await this.tenantDb.withTenant<{ count: number }>(tenantId, (tx: any) => tx.stripeUsageEvent.updateMany({
+            where: {
+                id: claimed.id,
+                tenantId,
+                status: 'SENDING',
+                submittedAt,
+                identifier: claimed.identifier,
+                idempotencyKey: claimed.idempotencyKey,
+            },
+            data: {
+                status: 'SENT',
+                sentAt: new Date(),
+                stripeObjectId: result.id,
+                stripeRequestId: result.requestId,
+                lastError: null,
+            },
+        }));
+        const observed = await this.findUsageEvent(tenantId, claimed.id);
+        if (sentTransition.count !== 1 && observed.status !== 'SENT') {
+            throw new ServiceUnavailableException('Stripe metered usage send lease was lost');
+        }
+        return this.serializeUsageEvent(observed);
+    }
+
+    private async findUsageEvent(tenantId: string, usageEventId: string): Promise<any> {
+        const usageEvent = await this.tenantDb.withTenant(tenantId, (tx: any) => tx.stripeUsageEvent.findUnique({
+            where: { id: usageEventId },
+        }));
+        if (!usageEvent) {
+            throw new ServiceUnavailableException('Stripe metered usage event was not found');
+        }
+        return usageEvent;
     }
 
     private getStripeMeterEvents(): Pick<StripeMeterEventsService, 'createMeterEvent'> {

@@ -11,6 +11,24 @@ export const LUNCH_BREAK_READ_PERMISSIONS = [
   'locations:read',
 ] as const;
 
+export const PAYROLL_PERMISSIONS = {
+  read: 'payroll:read',
+  policyWrite: 'payroll:policy_write',
+  lock: 'payroll:lock',
+  decide: 'time_cards:approve',
+  export: 'payroll:export',
+  reconcile: 'payroll:reconcile',
+} as const;
+
+export type PayrollCapabilities = {
+  canReadPayroll: boolean;
+  canWritePayrollPolicy: boolean;
+  canLockPayroll: boolean;
+  canApprovePayrollTimeCards: boolean;
+  canExportPayroll: boolean;
+  canReconcilePayroll: boolean;
+};
+
 export type WorkspaceCapabilities = {
   hasAdminPortal: boolean;
   canReadScheduling: boolean;
@@ -31,6 +49,12 @@ export type WorkspaceCapabilities = {
   canManageAccountLifecycle: boolean;
   canReadTimeCards: boolean;
   canWriteTimeCards: boolean;
+  canReadPayroll: boolean;
+  canWritePayrollPolicy: boolean;
+  canLockPayroll: boolean;
+  canApprovePayrollTimeCards: boolean;
+  canExportPayroll: boolean;
+  canReconcilePayroll: boolean;
 };
 
 export function hasPermission(permissions: PermissionList, permission: string): boolean {
@@ -49,8 +73,20 @@ export function hasLunchBreakReadAccess(permissions: PermissionList): boolean {
   return LUNCH_BREAK_READ_PERMISSIONS.every((permission) => hasPermission(permissions, permission));
 }
 
+export function getPayrollCapabilities(permissions: PermissionList): PayrollCapabilities {
+  return {
+    canReadPayroll: hasPermission(permissions, PAYROLL_PERMISSIONS.read),
+    canWritePayrollPolicy: hasPermission(permissions, PAYROLL_PERMISSIONS.policyWrite),
+    canLockPayroll: hasPermission(permissions, PAYROLL_PERMISSIONS.lock),
+    canApprovePayrollTimeCards: hasPermission(permissions, PAYROLL_PERMISSIONS.decide),
+    canExportPayroll: hasPermission(permissions, PAYROLL_PERMISSIONS.export),
+    canReconcilePayroll: hasPermission(permissions, PAYROLL_PERMISSIONS.reconcile),
+  };
+}
+
 export function getWorkspaceCapabilities(permissions: PermissionList): WorkspaceCapabilities {
   const hasAdminPortal = hasPermission(permissions, 'admin_portal:access');
+  const payroll = getPayrollCapabilities(permissions);
 
   return {
     hasAdminPortal,
@@ -72,5 +108,6 @@ export function getWorkspaceCapabilities(permissions: PermissionList): Workspace
     canManageAccountLifecycle: hasPermission(permissions, 'tenant_account:lifecycle'),
     canReadTimeCards: hasPermission(permissions, 'time_cards:read'),
     canWriteTimeCards: hasPermission(permissions, 'time_cards:write'),
+    ...payroll,
   };
 }

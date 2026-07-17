@@ -45,6 +45,7 @@
             },
             "targets": [
                 {
+                    "refId": "A",
                     "expr": "sum(rate(http_requests_total{job=\"api\"}[1m]))",
                     "legendFormat": "requests"
                 }
@@ -66,6 +67,7 @@
             },
             "targets": [
                 {
+                    "refId": "A",
                     "expr": "histogram_quantile(0.99, sum by (le) (rate(http_request_duration_ms_bucket{job=\"api\"}[5m])))",
                     "legendFormat": "p99"
                 }
@@ -87,6 +89,7 @@
             },
             "targets": [
                 {
+                    "refId": "A",
                     "expr": "lunchlineup_active_tenants_total",
                     "legendFormat": "Tenants"
                 }
@@ -108,6 +111,7 @@
             },
             "targets": [
                 {
+                    "refId": "A",
                     "expr": "lunchlineup_solver_queue_depth",
                     "legendFormat": "Queue"
                 }
@@ -129,6 +133,7 @@
             },
             "targets": [
                 {
+                    "refId": "A",
                     "expr": "sum by (method, route) (rate(http_requests_total{job=\"api\"}[1m]))",
                     "legendFormat": "{{method}} {{route}}"
                 }
@@ -150,6 +155,7 @@
             },
             "targets": [
                 {
+                    "refId": "A",
                     "expr": "sum(rate(http_requests_total{job=\"api\",status=~\"5..\"}[5m])) / clamp_min(sum(rate(http_requests_total{job=\"api\"}[5m])), 0.001)",
                     "legendFormat": "5xx ratio"
                 }
@@ -179,10 +185,12 @@
             },
             "targets": [
                 {
+                    "refId": "A",
                     "expr": "histogram_quantile(0.95, sum by (le) (rate(lunchlineup_solver_duration_seconds_bucket[5m])))",
                     "legendFormat": "p95"
                 },
                 {
+                    "refId": "B",
                     "expr": "histogram_quantile(0.50, sum by (le) (rate(lunchlineup_solver_duration_seconds_bucket[5m])))",
                     "legendFormat": "p50"
                 }
@@ -204,6 +212,7 @@
             },
             "targets": [
                 {
+                    "refId": "A",
                     "expr": "{job=\"lunchlineup\"} |= ``",
                     "legendFormat": ""
                 }
@@ -232,6 +241,7 @@
             },
             "targets": [
                 {
+                    "refId": "A",
                     "expr": "sum by (type, status) (rate(lunchlineup_worker_jobs_total{status=~\"failed|non_retryable\"}[5m]))",
                     "legendFormat": "{{type}} {{status}}"
                 }
@@ -253,6 +263,7 @@
             },
             "targets": [
                 {
+                    "refId": "A",
                     "expr": "up{job=~\"api|engine|worker|control|node\"}",
                     "legendFormat": "{{job}}"
                 }
@@ -274,6 +285,7 @@
             },
             "targets": [
                 {
+                    "refId": "A",
                     "expr": "(time() - lunchlineup_backup_last_success_timestamp_seconds) / 3600",
                     "legendFormat": "hours since backup"
                 }
@@ -316,6 +328,7 @@
             },
             "targets": [
                 {
+                    "refId": "A",
                     "expr": "100 * node_filesystem_avail_bytes{job=\"node\",fstype!~\"tmpfs|overlay|squashfs|aufs\"} / node_filesystem_size_bytes{job=\"node\",fstype!~\"tmpfs|overlay|squashfs|aufs\"}",
                     "legendFormat": "{{mountpoint}}"
                 }
@@ -325,6 +338,371 @@
                 "w": 12,
                 "x": 12,
                 "y": 28
+            }
+        },
+        {
+            "id": 13,
+            "type": "stat",
+            "title": "API Availability SLO (30d)",
+            "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+            },
+            "targets": [
+                {
+                    "refId": "A",
+                    "expr": "100 * (1 - sum(increase(http_requests_total{job=\"api\",status=~\"5..\",route!~\"/(health|live|metrics)\"}[30d])) / clamp_min(sum(increase(http_requests_total{job=\"api\",route!~\"/(health|live|metrics)\"}[30d])), 1))",
+                    "legendFormat": "availability"
+                }
+            ],
+            "fieldConfig": {
+                "defaults": {
+                    "unit": "percent",
+                    "thresholds": {
+                        "mode": "absolute",
+                        "steps": [
+                            {
+                                "color": "red",
+                                "value": null
+                            },
+                            {
+                                "color": "yellow",
+                                "value": 99.5
+                            },
+                            {
+                                "color": "green",
+                                "value": 99.9
+                            }
+                        ]
+                    }
+                }
+            },
+            "gridPos": {
+                "h": 5,
+                "w": 12,
+                "x": 0,
+                "y": 36
+            }
+        },
+        {
+            "id": 14,
+            "type": "stat",
+            "title": "Public Web Availability SLO (30d)",
+            "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+            },
+            "targets": [
+                {
+                    "refId": "A",
+                    "expr": "100 * avg_over_time(lunchlineup_public_web_probe_success{job=\"node\"}[30d])",
+                    "legendFormat": "availability"
+                }
+            ],
+            "fieldConfig": {
+                "defaults": {
+                    "unit": "percent",
+                    "thresholds": {
+                        "mode": "absolute",
+                        "steps": [
+                            {
+                                "color": "red",
+                                "value": null
+                            },
+                            {
+                                "color": "yellow",
+                                "value": 99.5
+                            },
+                            {
+                                "color": "green",
+                                "value": 99.9
+                            }
+                        ]
+                    }
+                }
+            },
+            "gridPos": {
+                "h": 5,
+                "w": 12,
+                "x": 12,
+                "y": 36
+            }
+        },
+        {
+            "id": 15,
+            "type": "stat",
+            "title": "Availability PDF Parser Readiness",
+            "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+            },
+            "targets": [
+                {
+                    "refId": "A",
+                    "expr": "min(lunchlineup_pdf_parser_ready{job=\"worker\"})",
+                    "legendFormat": "ready"
+                }
+            ],
+            "fieldConfig": {
+                "defaults": {
+                    "min": 0,
+                    "max": 1,
+                    "thresholds": {
+                        "mode": "absolute",
+                        "steps": [
+                            {
+                                "color": "red",
+                                "value": null
+                            },
+                            {
+                                "color": "green",
+                                "value": 1
+                            }
+                        ]
+                    }
+                }
+            },
+            "gridPos": {
+                "h": 5,
+                "w": 12,
+                "x": 0,
+                "y": 41
+            }
+        },
+        {
+            "id": 16,
+            "type": "stat",
+            "title": "Staff Invitation Dead Letters",
+            "description": "Terminal rows require cause triage and a fresh business invitation; encrypted payloads are intentionally erased.",
+            "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+            },
+            "targets": [
+                {
+                    "refId": "A",
+                    "expr": "sum(increase(lunchlineup_staff_invitation_outbox_total{job=\"worker\",status=\"dead_lettered\"}[15m]))",
+                    "legendFormat": "recent dead letters"
+                }
+            ],
+            "fieldConfig": {
+                "defaults": {
+                    "min": 0,
+                    "max": 1,
+                    "thresholds": {
+                        "mode": "absolute",
+                        "steps": [
+                            {
+                                "color": "green",
+                                "value": null
+                            },
+                            {
+                                "color": "red",
+                                "value": 1
+                            }
+                        ]
+                    }
+                }
+            },
+            "gridPos": {
+                "h": 5,
+                "w": 12,
+                "x": 12,
+                "y": 41
+            }
+        },
+        {
+            "id": 17,
+            "type": "stat",
+            "title": "Staff Invitation Provider Failure",
+            "description": "A value of 1 fails worker readiness; verify provider status, credentials, and egress.",
+            "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+            },
+            "targets": [
+                {
+                    "refId": "A",
+                    "expr": "max(lunchlineup_staff_invitation_systemic_provider_failure{job=\"worker\"})",
+                    "legendFormat": "systemic failure"
+                }
+            ],
+            "fieldConfig": {
+                "defaults": {
+                    "min": 0,
+                    "max": 1,
+                    "thresholds": {
+                        "mode": "absolute",
+                        "steps": [
+                            {
+                                "color": "green",
+                                "value": null
+                            },
+                            {
+                                "color": "red",
+                                "value": 1
+                            }
+                        ]
+                    }
+                }
+            },
+            "gridPos": {
+                "h": 5,
+                "w": 12,
+                "x": 0,
+                "y": 46
+            }
+        },
+        {
+            "id": 18,
+            "type": "stat",
+            "title": "Staff Invitation Sweep Age",
+            "description": "Compare the last healthy sweep age with the configured maximum freshness bound.",
+            "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+            },
+            "targets": [
+                {
+                    "refId": "A",
+                    "expr": "time() - max(lunchlineup_staff_invitation_sweep_last_success_unixtime{job=\"worker\"})",
+                    "legendFormat": "seconds"
+                }
+            ],
+            "fieldConfig": {
+                "defaults": {
+                    "unit": "s",
+                    "min": 0
+                }
+            },
+            "gridPos": {
+                "h": 5,
+                "w": 12,
+                "x": 12,
+                "y": 46
+            }
+        },
+        {
+            "id": 19,
+            "type": "stat",
+            "title": "Staff Invitation Sweep Ready",
+            "description": "A value of 0 means the enabled sweep's latest cycle failed or detected systemic provider failure.",
+            "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+            },
+            "targets": [
+                {
+                    "refId": "A",
+                    "expr": "min(lunchlineup_staff_invitation_sweep_ready{job=\"worker\"}) * ((time() - max(lunchlineup_staff_invitation_sweep_last_success_unixtime{job=\"worker\"})) <= bool max(lunchlineup_staff_invitation_sweep_max_staleness_seconds{job=\"worker\"}))",
+                    "legendFormat": "ready"
+                }
+            ],
+            "fieldConfig": {
+                "defaults": {
+                    "min": 0,
+                    "max": 1,
+                    "thresholds": {
+                        "mode": "absolute",
+                        "steps": [
+                            {
+                                "color": "red",
+                                "value": null
+                            },
+                            {
+                                "color": "green",
+                                "value": 1
+                            }
+                        ]
+                    }
+                }
+            },
+            "gridPos": {
+                "h": 6,
+                "w": 12,
+                "x": 0,
+                "y": 51
+            }
+        },
+        {
+            "id": 20,
+            "type": "timeseries",
+            "title": "Staff Invitation Backlog",
+            "description": "Due work should drain, expired leases should remain zero, and recent provider failures should stay below the configured outage threshold.",
+            "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+            },
+            "targets": [
+                {
+                    "refId": "A",
+                    "expr": "max(lunchlineup_staff_invitation_due{job=\"worker\"})",
+                    "legendFormat": "due"
+                },
+                {
+                    "refId": "B",
+                    "expr": "max(lunchlineup_staff_invitation_expired_leases{job=\"worker\"})",
+                    "legendFormat": "expired leases"
+                },
+                {
+                    "refId": "C",
+                    "expr": "max(lunchlineup_staff_invitation_recent_provider_failures{job=\"worker\"})",
+                    "legendFormat": "recent provider failures"
+                }
+            ],
+            "fieldConfig": {
+                "defaults": {
+                    "min": 0,
+                    "unit": "short"
+                }
+            },
+            "gridPos": {
+                "h": 6,
+                "w": 12,
+                "x": 12,
+                "y": 51
+            }
+        },
+        {
+            "id": 21,
+            "type": "stat",
+            "title": "Application Data Retention Execution Age",
+            "description": "Age of the automatic confirmed application_data execution. Retained-record dry runs are intentionally excluded.",
+            "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+            },
+            "targets": [
+                {
+                    "refId": "A",
+                    "expr": "time() - max(lunchlineup_retention_purge_last_attempt_timestamp_seconds{mode=\"execute\",stage=\"application_data\"})",
+                    "legendFormat": "seconds"
+                }
+            ],
+            "fieldConfig": {
+                "defaults": {
+                    "unit": "s",
+                    "min": 0,
+                    "thresholds": {
+                        "mode": "absolute",
+                        "steps": [
+                            {
+                                "color": "green",
+                                "value": null
+                            },
+                            {
+                                "color": "red",
+                                "value": 93600
+                            }
+                        ]
+                    }
+                }
+            },
+            "gridPos": {
+                "h": 5,
+                "w": 24,
+                "x": 0,
+                "y": 57
             }
         }
     ],

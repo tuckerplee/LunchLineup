@@ -1,5 +1,7 @@
 import { Body, Controller, Get, Headers, Param, Post, Put, Query, Req, SetMetadata } from '@nestjs/common';
 import { normalizeLunchBreakGenerationIdempotencyKey } from './lunch-break-generation-idempotency';
+import { normalizeShiftBreakUpdateIdempotencyKey } from './shift-break-update-idempotency';
+import { normalizeSetupShiftsIdempotencyKey } from './setup-shifts-idempotency';
 import {
     GenerateLunchBreaksRequest,
     LunchBreakPolicy,
@@ -23,6 +25,8 @@ export class LunchBreaksController {
         @Query('shiftIds') shiftIdsCsv?: string,
         @Query('startDate') startDate?: string,
         @Query('endDate') endDate?: string,
+        @Query('limit') limit?: string,
+        @Query('cursor') cursor?: string,
     ) {
         const shiftIds = shiftIdsCsv
             ? shiftIdsCsv.split(',').map((value) => value.trim()).filter(Boolean)
@@ -34,6 +38,8 @@ export class LunchBreaksController {
             shiftIds,
             startDate,
             endDate,
+            limit,
+            cursor,
         }, req.user);
     }
 
@@ -62,8 +68,13 @@ export class LunchBreaksController {
 
     @Post('setup-shifts')
     @Permission(['lunch_breaks:write', 'shifts:write'])
-    async persistSetupShifts(@Req() req: any, @Body() body: PersistSetupShiftsRequest) {
-        return this.lunchBreaksService.persistSetupShifts(req.user.tenantId, body ?? {});
+    async persistSetupShifts(
+        @Req() req: any,
+        @Body() body: PersistSetupShiftsRequest,
+        @Headers('idempotency-key') idempotencyKey?: string,
+    ) {
+        const attemptKey = normalizeSetupShiftsIdempotencyKey(idempotencyKey);
+        return this.lunchBreaksService.persistSetupShifts(req.user.tenantId, body ?? {}, attemptKey, req.user);
     }
 
     @Put('shift/:shiftId')
@@ -72,7 +83,9 @@ export class LunchBreaksController {
         @Req() req: any,
         @Param('shiftId') shiftId: string,
         @Body() body: UpdateShiftLunchBreaksRequest,
+        @Headers('idempotency-key') idempotencyKey?: string,
     ) {
-        return this.lunchBreaksService.updateShiftBreaks(req.user.tenantId, shiftId, body ?? {});
+        const attemptKey = normalizeShiftBreakUpdateIdempotencyKey(idempotencyKey);
+        return this.lunchBreaksService.updateShiftBreaks(req.user.tenantId, shiftId, body ?? {}, attemptKey, req.user);
     }
 }

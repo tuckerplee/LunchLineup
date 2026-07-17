@@ -7,12 +7,13 @@ import { tmpdir } from 'node:os';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { buildDeploymentContract } from '../../scripts/write-deployment-contract.mjs';
+import { deriveProductionImageInventory } from '../../scripts/production-image-inventory.mjs';
+import { buildReleaseImageReportEvidence } from '../../scripts/write-release-image-report-evidence.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const immutableImageRefPattern = /@sha256:[a-f0-9]{64}$/i;
 const publicBuildConfigKeys = [
   'NEXT_PUBLIC_API_URL',
-  'NEXT_PUBLIC_WS_URL',
   'NEXT_PUBLIC_OIDC_ENABLED',
   'NEXT_PUBLIC_SIGNUP_MODE',
   'NEXT_PUBLIC_TURNSTILE_SITE_KEY',
@@ -25,7 +26,6 @@ const publicBuildConfigKeys = [
 ];
 const publicBuildConfigValues = {
   NEXT_PUBLIC_API_URL: '/api/v1',
-  NEXT_PUBLIC_WS_URL: 'wss://lunchlineup.com',
   NEXT_PUBLIC_OIDC_ENABLED: 'false',
   NEXT_PUBLIC_SIGNUP_MODE: 'closed_beta',
   NEXT_PUBLIC_TURNSTILE_SITE_KEY: '',
@@ -41,6 +41,61 @@ test('Compose requires a non-empty APP_ORIGIN for API startup', () => {
   const api = serviceBlock(read('docker-compose.yml'), 'api');
   assert.match(api, /APP_ORIGIN=\$\{APP_ORIGIN:\?Set public HTTPS APP_ORIGIN in \.env\}/);
   assert.doesNotMatch(api, /APP_ORIGIN=\$\{APP_ORIGIN:-\}/);
+});
+
+test('Compose fail-closes staff invitation delivery and passes the canonical origin to the worker', () => {
+  const compose = read('docker-compose.yml');
+  const api = serviceBlock(compose, 'api');
+  const worker = serviceBlock(compose, 'worker');
+  const envExample = read('.env.example');
+
+  for (const block of [api, worker]) {
+    assert.ok(block.includes(
+      '- STAFF_INVITATION_OUTBOX_ENABLED=${STAFF_INVITATION_OUTBOX_ENABLED:?Set STAFF_INVITATION_OUTBOX_ENABLED=true in .env}',
+    ));
+    assert.ok(block.includes(
+      '- STAFF_INVITATION_OUTBOX_ENCRYPTION_KEY=${STAFF_INVITATION_OUTBOX_ENCRYPTION_KEY:?Set STAFF_INVITATION_OUTBOX_ENCRYPTION_KEY in .env}',
+    ));
+    assert.doesNotMatch(block, /STAFF_INVITATION_OUTBOX_ENABLED=\$\{STAFF_INVITATION_OUTBOX_ENABLED:-/);
+    assert.ok(block.includes(
+      '- STAFF_INVITATION_MAX_ATTEMPTS=${STAFF_INVITATION_MAX_ATTEMPTS:-8}',
+    ));
+  }
+  for (const block of [api, worker]) {
+    assert.ok(block.includes(
+      '- APP_ORIGIN=${APP_ORIGIN:?Set public HTTPS APP_ORIGIN in .env}',
+    ));
+  }
+  assert.ok(worker.includes(
+    '- STAFF_INVITATION_SWEEP_INTERVAL_SECONDS=${STAFF_INVITATION_SWEEP_INTERVAL_SECONDS:-10}',
+  ));
+  assert.ok(worker.includes(
+    '- STAFF_INVITATION_PROVIDER_FAILURE_THRESHOLD=${STAFF_INVITATION_PROVIDER_FAILURE_THRESHOLD:-3}',
+  ));
+  assert.ok(worker.includes(
+    '- STAFF_INVITATION_RETRY_BASE_SECONDS=${STAFF_INVITATION_RETRY_BASE_SECONDS:-15}',
+  ));
+  assert.ok(worker.includes(
+    '- STAFF_INVITATION_RETRY_MAX_SECONDS=${STAFF_INVITATION_RETRY_MAX_SECONDS:-3600}',
+  ));
+  assert.ok(worker.includes(
+    '- STAFF_INVITATION_RETRY_JITTER_RATIO=${STAFF_INVITATION_RETRY_JITTER_RATIO:-0.25}',
+  ));
+  assert.ok(worker.includes(
+    '- STAFF_INVITATION_DIAGNOSTICS_COUNT_CAP=${STAFF_INVITATION_DIAGNOSTICS_COUNT_CAP:-1000}',
+  ));
+  assert.ok(worker.includes(
+    '- STAFF_INVITATION_SWEEP_MAX_STALENESS_SECONDS=${STAFF_INVITATION_SWEEP_MAX_STALENESS_SECONDS:-60}',
+  ));
+  assert.match(envExample, /^STAFF_INVITATION_OUTBOX_ENABLED=false$/m);
+  assert.match(envExample, /^STAFF_INVITATION_OUTBOX_ENCRYPTION_KEY=$/m);
+  assert.match(envExample, /^STAFF_INVITATION_SWEEP_INTERVAL_SECONDS=10$/m);
+  assert.match(envExample, /^STAFF_INVITATION_PROVIDER_FAILURE_THRESHOLD=3$/m);
+  assert.match(envExample, /^STAFF_INVITATION_RETRY_BASE_SECONDS=15$/m);
+  assert.match(envExample, /^STAFF_INVITATION_RETRY_MAX_SECONDS=3600$/m);
+  assert.match(envExample, /^STAFF_INVITATION_RETRY_JITTER_RATIO=0\.25$/m);
+  assert.match(envExample, /^STAFF_INVITATION_DIAGNOSTICS_COUNT_CAP=1000$/m);
+  assert.match(envExample, /^STAFF_INVITATION_SWEEP_MAX_STALENESS_SECONDS=60$/m);
 });
 
 test('Compose keeps a production API fallback and propagates launch-critical delivery config', () => {
@@ -64,6 +119,51 @@ test('Compose keeps a production API fallback and propagates launch-critical del
 
 function read(path) {
   return readFileSync(join(root, path), 'utf8');
+}
+
+function assertCanonicalProductionComposeCommands(markdown, file) {
+  const canonicalPrefix = 'docker compose --project-name lunchlineup --project-directory /opt/lunchlineup/current --env-file /var/lib/lunchlineup/runtime-env/current -f /opt/lunchlineup/current/docker-compose.yml';
+  const executableFences = [...markdown.matchAll(/^```(?:bash|sh|shell|zsh)[^\r\n]*\r?\n([\s\S]*?)^```[ \t]*$/gim)]
+    .map((match) => match[1]);
+  const inlineCommands = [...markdown.matchAll(/(?<!`)`([^`\r\n]+)`(?!`)/g)]
+    .map((match) => match[1]);
+  const executableSurfaces = [...executableFences, ...inlineCommands];
+  const continued = executableSurfaces
+    .map((surface) => surface.replace(/\\\r?\n[ \t]*/g, ' ').replace(/[ \t]+/g, ' '))
+    .join('\n');
+  const indirections = [
+    [/^\s*alias\s+[^\n=]+=.*(?:docker|compose)/im, 'alias'],
+    [/^\s*(?:export\s+)?[A-Za-z_][A-Za-z0-9_]*\s*=\s*[^\n]*(?:docker(?:\s+compose|-compose)|\bcompose\b)/im, 'variable assignment'],
+    [/^\s*(?:export\s+)?[A-Za-z_][A-Za-z0-9_]*\s*=\s*\([\s\S]{0,1000}?(?:docker(?:\s+compose|-compose)|\bcompose\b)[\s\S]{0,1000}?\)/im, 'multiline array'],
+    [/^\s*(?:export\s+)?[A-Za-z_][A-Za-z0-9_]*\s*=\s*(["'])[\s\S]{0,1000}?(?:docker(?:\s+compose|-compose)|\bcompose\b)[\s\S]{0,1000}?\1/im, 'multiline string'],
+    [/(?:^|\n)\s*(?:function\s+[A-Za-z_][A-Za-z0-9_]*|[A-Za-z_][A-Za-z0-9_]*\s*\(\))\s*\{[\s\S]*?(?:\bdocker\b|\bcompose\b)[\s\S]*?\}/m, 'function'],
+    [/\$\([^)]*docker(?:\s+compose|-compose)\b[^)]*\)/, 'command substitution'],
+    [/\b(?:eval|bash\s+-c|sh\s+-c)\b[^\n]*(?:docker|\bcompose\b)/i, 'shell evaluation'],
+    [/^\s*(?:source|\.)\s+\S+/im, 'sourced shell'],
+    [/^\s*read\b[\s\S]*?^\s*["']?\$\{?[A-Za-z_][A-Za-z0-9_]*\}?/m, 'read-built command'],
+    [/["']?\$\{?[A-Za-z_][A-Za-z0-9_]*\}?["']?\s+compose\s+/i, 'split command variable'],
+    [/["']?\$\{?(?:DOCKER|COMPOSE|DOCKER_COMPOSE|PRODUCTION_COMPOSE)[A-Z0-9_]*\}?["']?\s+(?:config|ps|logs|exec|run|up|down|start|stop|restart|rm|kill|pause|unpause|create|pull|build)\b/i, 'command variable'],
+    [/(?:^|[\n`])\s*[A-Za-z0-9_./-]*compose[A-Za-z0-9_./-]*\s+(?:config|ps|logs|exec|run|up|down|start|stop|restart|rm|kill|pause|unpause|create|pull|build)\b/im, 'Compose helper'],
+  ];
+  for (const [pattern, kind] of indirections) {
+    assert.doesNotMatch(continued, pattern, `${file} must not hide production Compose behind ${kind} indirection`);
+  }
+
+  const composeStarts = [...continued.matchAll(/(?:^|\n)\s*(docker(?:[ \t]+compose|-compose)\b[^\r\n]*)/gi)];
+  assert.ok(composeStarts.length > 0, `${file} must contain executable production Compose commands in shell fences or inline code`);
+  for (const match of composeStarts) {
+    const command = match[1].trim();
+    assert.ok(
+      command.startsWith(canonicalPrefix),
+      `${file} has an unscoped production Compose command: ${command}`,
+    );
+    const suffix = command.slice(canonicalPrefix.length);
+    assert.doesNotMatch(
+      suffix,
+      /(?:^|\s)(?:--project-name|--project-directory|--env-file|-f)(?:=|\s+)/,
+      `${file} must not override canonical production Compose scope flags: ${command}`,
+    );
+  }
 }
 
 function serviceBlock(compose, serviceName) {
@@ -271,7 +371,10 @@ test('Compose services are project-scoped and discover each other by service DNS
 test('RabbitMQ persists broker state on a declared project-scoped named volume', () => {
   const compose = read('docker-compose.yml');
   const rabbit = serviceBlock(compose, 'rabbitmq');
-  const topLevelVolumes = compose.slice(compose.indexOf('\nvolumes:\n'));
+  const volumesHeader = /^volumes:[^\S\r\n]*\r?$/m.exec(compose);
+
+  assert.ok(volumesHeader?.index !== undefined, 'Compose must declare a top-level volumes section');
+  const topLevelVolumes = compose.slice(volumesHeader.index);
 
   assert.match(rabbit, /^\s{4}volumes:\s*\n\s{6}- rabbitmq_data:\/var\/lib\/rabbitmq$/m);
   assert.doesNotMatch(rabbit, /\.\/.*:\/var\/lib\/rabbitmq/);
@@ -289,6 +392,20 @@ test('Compose build services are tagged for release-image smoke checks', () => {
   }
 });
 
+test('production web runtime receives the validated public status health URL', () => {
+  const compose = read('docker-compose.yml');
+  const webBlock = serviceBlock(compose, 'web');
+
+  assert.match(
+    webBlock,
+    /LUNCHLINEUP_STATUS_HEALTH_URL=\$\{LUNCHLINEUP_STATUS_HEALTH_URL:\?Set public HTTPS LUNCHLINEUP_STATUS_HEALTH_URL ending in \/health in \.env\}/,
+  );
+  assert.doesNotMatch(
+    webBlock,
+    /LUNCHLINEUP_STATUS_HEALTH_URL=\$\{LUNCHLINEUP_STATUS_HEALTH_URL:-/,
+  );
+});
+
 test('web image bakes explicit public config at build time', () => {
   const dockerfile = read('infrastructure/docker/Dockerfile.web');
   const compose = read('docker-compose.yml');
@@ -296,7 +413,6 @@ test('web image bakes explicit public config at build time', () => {
   const webBlock = serviceBlock(compose, 'web');
   const publicBuildKeys = [
     'NEXT_PUBLIC_API_URL',
-    'NEXT_PUBLIC_WS_URL',
     'NEXT_PUBLIC_OIDC_ENABLED',
     'NEXT_PUBLIC_SIGNUP_MODE',
     'NEXT_PUBLIC_TURNSTILE_SITE_KEY',
@@ -309,8 +425,7 @@ test('web image bakes explicit public config at build time', () => {
   ];
 
   assert.match(ci, /Verify web public build config/);
-  assert.match(ci, /NEXT_PUBLIC_WS_URL must use wss for main-branch web image builds/);
-  assert.match(ci, /NEXT_PUBLIC_WS_URL must not point at localhost in release images/);
+  assert.doesNotMatch(ci, /NEXT_PUBLIC_WS_URL|CADDY_WEBSOCKET_SOURCE/);
   assert.match(ci, /public_build_config=/);
   assert.match(ci, /"publicBuildConfig": \$\{public_build_config\}/);
 
@@ -380,7 +495,7 @@ test('Compose third-party service images are digest-pinned', () => {
 
 test('CI service containers are digest-pinned', () => {
   const ci = read('.github/workflows/ci.yml');
-  const imageRefs = [...ci.matchAll(/^\s+image:\s*"?([^"\n]+)"?\s*$/gm)].map((match) => match[1]);
+  const imageRefs = [...ci.matchAll(/^ {8}image:\s*"?([^"\r\n]+)"?\s*$/gm)].map((match) => match[1]);
 
   assert.deepEqual(imageRefs.sort(), [
     'postgres:16-alpine@sha256:57c72fd2a128e416c7fcc499958864df5301e940bca0a56f58fddf30ffc07777',
@@ -405,7 +520,10 @@ test('Compose host ports default to loopback and require explicit edge exposure'
   assert.match(serviceBlock(compose, 'api'), /RETENTION_PURGE_SERVICE_TOKEN_FILE=\/run\/secrets\/retention_purge_token/);
   assert.match(serviceBlock(compose, 'api'), /secrets:[\s\S]*- metrics_token[\s\S]*- retention_purge_token/);
   assert.match(compose, /retention_purge_token:[\s\S]*RETENTION_PURGE_SERVICE_TOKEN_SECRET_FILE/);
-  assert.doesNotMatch(serviceBlock(compose, 'alertmanager'), /ports:/);
+  assert.match(
+    serviceBlock(compose, 'alertmanager'),
+    /^ {4}ports:\r?\n {6}- "127\.0\.0\.1:9093:9093"\r?$/m,
+  );
   assert.match(control, /ports:[\s\S]*- "127\.0\.0\.1:3001:3001"/);
   assert.match(control, /CONTROL_PLANE_HOST=0\.0\.0\.0/);
   assert.match(control, /CONTROL_PLANE_DOCKER_STATUS=disabled/);
@@ -423,7 +541,7 @@ test('Alertmanager has dedicated outbound paging egress without public ingress',
   const alertmanager = serviceBlock(compose, 'alertmanager');
 
   assert.match(alertmanager, /networks:\s*\n\s+management:\s*\n\s+alertmanager-egress:\s*\n\s+gw_priority: 1/);
-  assert.doesNotMatch(alertmanager, /ports:/);
+  assert.match(alertmanager, /^ {4}ports:\r?\n {6}- "127\.0\.0\.1:9093:9093"\r?$/m);
   assert.match(
     compose,
     /  alertmanager-egress:\s*\n    driver: bridge\s*\n    internal: false\s*\n    driver_opts:\s*\n      com\.docker\.network\.bridge\.enable_icc: "false"/,
@@ -449,34 +567,109 @@ test('worker metrics endpoint is healthchecked and scraped', () => {
 
   assert.match(workerDockerfile, /apt-get install[\s\S]*\bcurl\b/);
   assert.match(compose, /worker:[\s\S]*WORKER_METRICS_PORT=\$\{WORKER_METRICS_PORT:-3003\}/);
+  assert.match(compose, /worker:[\s\S]*WORKER_SCHEDULE_SOLVE_EXECUTION_LEASE_SECONDS=\$\{WORKER_SCHEDULE_SOLVE_EXECUTION_LEASE_SECONDS:-300\}/);
+  assert.match(compose, /worker:[\s\S]*WORKER_QUEUE_DEPTH_POLL_SECONDS=\$\{WORKER_QUEUE_DEPTH_POLL_SECONDS:-15\}/);
   assert.match(compose, /worker:[\s\S]*curl -fsS http:\/\/127\.0\.0\.1:\$\$\{WORKER_METRICS_PORT:-3003\}\/metrics/);
   assert.match(worker, /PASSWORD_RESET_EMAIL_OUTBOX_ENABLED:-false/);
   assert.ok(worker.includes("lunchlineup_password_reset_email_sweep_running 1(\\.0+)?"));
   assert.ok(worker.includes("lunchlineup_password_reset_email_sweep_ready 1(\\.0+)?"));
+  assert.ok(worker.includes("lunchlineup_password_reset_email_systemic_provider_failure 0(\\.0+)?"));
+  assert.match(worker, /PASSWORD_RESET_EMAIL_PROVIDER_FAILURE_THRESHOLD=\$\{PASSWORD_RESET_EMAIL_PROVIDER_FAILURE_THRESHOLD:-3\}/);
+  assert.match(worker, /PASSWORD_RESET_EMAIL_SWEEP_MAX_STALENESS_SECONDS=\$\{PASSWORD_RESET_EMAIL_SWEEP_MAX_STALENESS_SECONDS:-60\}/);
   assert.match(prometheus, /job_name: 'worker'[\s\S]*targets:\s*\['worker:3003'\]/);
 });
 
-test('worker health fails when enabled password-reset sweep readiness is absent or zero', {
+test('worker health requires parser readiness and enabled password-reset sweep readiness', {
   skip: bash ? false : 'Bash is not available',
 }, () => {
   const worker = serviceBlock(read('docker-compose.yml'), 'worker');
   const command = workerHealthCommand(worker);
   const shell = 'curl() { printf "%s" "$METRICS_FIXTURE"; }\n' + command;
-  const run = (metrics, enabled = 'true') => spawnSync(bash, ['-c', shell], {
-    env: { ...process.env, METRICS_FIXTURE: metrics, PASSWORD_RESET_EMAIL_OUTBOX_ENABLED: enabled },
+  const run = (metrics, enabled = 'true', maxStaleness = '60') => spawnSync(bash, ['-c', shell], {
+    env: {
+      ...process.env,
+      METRICS_FIXTURE: metrics,
+      PASSWORD_RESET_EMAIL_OUTBOX_ENABLED: enabled,
+      PASSWORD_RESET_EMAIL_SWEEP_MAX_STALENESS_SECONDS: maxStaleness,
+    },
     encoding: 'utf8',
   });
 
-  const ready = 'lunchlineup_password_reset_email_sweep_running 1.0\nlunchlineup_password_reset_email_sweep_ready 1.0\n';
-  assert.equal(run(ready).status, 0);
+  const parserReady = 'lunchlineup_pdf_parser_ready 1.0\n';
+  const now = Math.floor(Date.now() / 1000);
+  const passwordResetReady = [
+    'lunchlineup_password_reset_email_sweep_running 1.0',
+    'lunchlineup_password_reset_email_sweep_ready 1.0',
+    'lunchlineup_password_reset_email_systemic_provider_failure 0.0',
+    `lunchlineup_password_reset_email_sweep_last_success_unixtime ${now}.0`,
+    '',
+  ].join('\n');
+  assert.equal(run(parserReady + passwordResetReady).status, 0);
 
-  const missingReady = 'lunchlineup_password_reset_email_sweep_running 1.0\n';
+  const missingReady = parserReady + passwordResetReady.replace('lunchlineup_password_reset_email_sweep_ready 1.0\n', '');
   assert.notEqual(run(missingReady).status, 0);
 
-  const zeroReady = 'lunchlineup_password_reset_email_sweep_running 1.0\nlunchlineup_password_reset_email_sweep_ready 0.0\n';
+  const zeroReady = parserReady + passwordResetReady.replace('sweep_ready 1.0', 'sweep_ready 0.0');
   assert.notEqual(run(zeroReady).status, 0);
+  const systemicFailure = parserReady + passwordResetReady.replace('systemic_provider_failure 0.0', 'systemic_provider_failure 1.0');
+  assert.notEqual(run(systemicFailure).status, 0);
+  const staleSuccess = parserReady + passwordResetReady.replace(`${now}.0`, `${now - 61}.0`);
+  assert.notEqual(run(staleSuccess).status, 0);
+  const missingSuccess = parserReady + passwordResetReady.replace(/^lunchlineup_password_reset_email_sweep_last_success_unixtime.*\n/m, '');
+  assert.notEqual(run(missingSuccess).status, 0);
 
-  assert.equal(run(missingReady, 'false').status, 0);
+  assert.equal(run(parserReady, 'false').status, 0);
+  assert.notEqual(run(passwordResetReady).status, 0);
+  assert.notEqual(run('lunchlineup_pdf_parser_ready 0.0\n' + passwordResetReady).status, 0);
+});
+test('worker health fails closed for an enabled stale or unhealthy staff invitation sweep', {
+  skip: bash ? false : 'Bash is not available',
+}, () => {
+  const worker = serviceBlock(read('docker-compose.yml'), 'worker');
+  const command = workerHealthCommand(worker);
+  const shell = 'curl() { printf "%s" "$METRICS_FIXTURE"; }\n' + command;
+  const run = (metrics, enabled = 'true', maxStaleness = '60') => spawnSync(bash, ['-c', shell], {
+    env: {
+      ...process.env,
+      METRICS_FIXTURE: metrics,
+      PASSWORD_RESET_EMAIL_OUTBOX_ENABLED: 'false',
+      STAFF_INVITATION_OUTBOX_ENABLED: enabled,
+      STAFF_INVITATION_SWEEP_MAX_STALENESS_SECONDS: maxStaleness,
+    },
+    encoding: 'utf8',
+  });
+
+  const parserReady = 'lunchlineup_pdf_parser_ready 1.0\n';
+  const now = Math.floor(Date.now() / 1000);
+  const invitationReady = [
+    'lunchlineup_staff_invitation_sweep_running 1.0',
+    'lunchlineup_staff_invitation_sweep_ready 1.0',
+    'lunchlineup_staff_invitation_systemic_provider_failure 0.0',
+    'lunchlineup_staff_invitation_sweep_last_success_unixtime ' + now + '.0',
+    '',
+  ].join('\n');
+  assert.equal(run(parserReady + invitationReady).status, 0);
+
+  const missingReady = parserReady + invitationReady.replace(
+    'lunchlineup_staff_invitation_sweep_ready 1.0\n',
+    '',
+  );
+  assert.notEqual(run(missingReady).status, 0);
+  assert.notEqual(run(
+    parserReady + invitationReady.replace('sweep_ready 1.0', 'sweep_ready 0.0'),
+  ).status, 0);
+  assert.notEqual(run(
+    parserReady + invitationReady.replace('systemic_provider_failure 0.0', 'systemic_provider_failure 1.0'),
+  ).status, 0);
+  assert.notEqual(run(
+    parserReady + invitationReady.replace(now + '.0', (now - 61) + '.0'),
+  ).status, 0);
+  assert.notEqual(run(
+    parserReady + invitationReady.replace(/^lunchlineup_staff_invitation_sweep_last_success_unixtime.*\n/m, ''),
+  ).status, 0);
+
+  assert.equal(run(parserReady, 'false').status, 0);
+  assert.notEqual(run(invitationReady).status, 0);
 });
 test('engine healthcheck requires the bound and started gRPC scheduling path', () => {
   const compose = read('docker-compose.yml');
@@ -591,6 +784,7 @@ test('webhook replay worker runs from the API image and only consumes opaque ret
   assert.match(replayBlock, /RABBITMQ_URL=\$\{RABBITMQ_URL:\?Set validated percent-encoded RABBITMQ_URL in \.env\}/);
   assert.match(replayBlock, /WEBHOOK_RETRY_WORKER_PREFETCH=\$\{WEBHOOK_RETRY_WORKER_PREFETCH:-5\}/);
   assert.match(replayBlock, /WEBHOOK_REPLAY_METRICS_PORT=\$\{WEBHOOK_REPLAY_METRICS_PORT:-3004\}/);
+  assert.match(replayBlock, /WEBHOOK_REPLAY_SHUTDOWN_TIMEOUT_MS=\$\{WEBHOOK_REPLAY_SHUTDOWN_TIMEOUT_MS:-30000\}/);
   assert.match(replayBlock, /networks:\s*\n\s+app:\s*\n\s+data:\s*\n\s+outbound-egress:\s*\n\s+gw_priority: 1/);
   assert.match(replayBlock, /wget --no-verbose --tries=1 --spider http:\/\/127\.0\.0\.1:\$\$\{WEBHOOK_REPLAY_METRICS_PORT:-3004\}\/health/);
   assert.match(apiPackage, /"start:webhook-replay": "node dist\/webhooks\/webhook-replay\.worker\.js"/);
@@ -633,32 +827,34 @@ test('proxy config is TLS-ready, route-specific, size-limited, and sets browser 
   const caddyTemplate = read('infrastructure/caddy/Caddyfile.template');
 
   assert.match(compose, /CADDY_SITE_ADDRESSES/);
+  assert.doesNotMatch(compose, /NEXT_PUBLIC_WS_URL|CADDY_WEBSOCKET_SOURCE/);
+  assert.match(serviceBlock(compose, 'api'), /http:\/\/127\.0\.0\.1:3000\/live/);
   assert.match(serviceBlock(compose, 'proxy'), /DEPLOY_RELEASE_SHA: "\$\{IMAGE_TAG:-local\}"/);
   assert.match(caddy, /\{\$CADDY_SITE_ADDRESSES:/);
   assert.match(caddy, /X-LunchLineup-Release "\{\$DEPLOY_RELEASE_SHA:local\}"/);
   assert.match(caddy, /handle \/health \{[\s\S]*reverse_proxy api:3000[\s\S]*\}/);
   assert.match(caddy, /handle \/api\/health \{[\s\S]*uri strip_prefix \/api[\s\S]*reverse_proxy api:3000[\s\S]*\}/);
   assert.match(caddy, /handle \/api\/v1\/\* \{[\s\S]*uri strip_prefix \/api[\s\S]*reverse_proxy api:3000[\s\S]*\}/);
-  assert.match(caddy, /handle \/ws\/\* \{[\s\S]*reverse_proxy engine:8000[\s\S]*\}/);
   assert.match(caddy, /handle \{[\s\S]*reverse_proxy web:3000[\s\S]*\}/);
   assert.match(caddy, /request_body[\s\S]*max_size 10MB/);
   assert.match(caddy, /Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"/);
   assert.match(caddy, /Content-Security-Policy/);
+  assert.match(caddy, /connect-src 'self' https:\/\/challenges\.cloudflare\.com;/);
+  assert.doesNotMatch(caddy, /handle \/ws\/\*|CADDY_WEBSOCKET_SOURCE|wss?:\/\//);
   assert.match(caddy, /script-src 'self' https:\/\/challenges\.cloudflare\.com 'unsafe-inline'/);
   assert.match(caddy, /frame-src 'self' https:\/\/challenges\.cloudflare\.com/);
-  assert.match(caddy, /connect-src 'self' https:\/\/challenges\.cloudflare\.com/);
   assert.match(caddy, /X-Content-Type-Options "nosniff"/);
   assert.match(caddy, /X-Frame-Options "DENY"/);
   assert.match(caddy, /Permissions-Policy/);
   assert.match(caddyTemplate, /\{\$CADDY_SITE_ADDRESSES:/);
   assert.match(caddyTemplate, /X-LunchLineup-Release "\{\$DEPLOY_RELEASE_SHA:local\}"/);
   assert.match(caddyTemplate, /handle \/api\/v1\/\* \{[\s\S]*uri strip_prefix \/api[\s\S]*reverse_proxy api:3000[\s\S]*\}/);
-  assert.match(caddyTemplate, /handle \/ws\/\* \{[\s\S]*reverse_proxy engine:8000[\s\S]*\}/);
   assert.match(caddyTemplate, /request_body[\s\S]*max_size 10MB/);
   assert.match(caddyTemplate, /Content-Security-Policy/);
+  assert.match(caddyTemplate, /connect-src 'self' https:\/\/challenges\.cloudflare\.com;/);
+  assert.doesNotMatch(caddyTemplate, /handle \/ws\/\*|CADDY_WEBSOCKET_SOURCE|wss?:\/\//);
   assert.match(caddyTemplate, /script-src 'self' https:\/\/challenges\.cloudflare\.com 'unsafe-inline'/);
   assert.match(caddyTemplate, /frame-src 'self' https:\/\/challenges\.cloudflare\.com/);
-  assert.match(caddyTemplate, /connect-src 'self' https:\/\/challenges\.cloudflare\.com/);
   assert.match(caddyTemplate, /Permissions-Policy/);
   assert.doesNotMatch(caddyTemplate, /\{\{|\}\}/);
   assert.doesNotMatch(caddyTemplate, /X-XSS-Protection/);
@@ -681,6 +877,7 @@ test('example env and deploy helpers do not encode copyable weak secrets', () =>
     'SESSION_SECRET',
     'CSRF_SECRET',
     'RESEND_API_KEY',
+    'RESEND_WEBHOOK_SECRET',
     'EMAIL_FROM',
     'STRIPE_SECRET_KEY',
     'STRIPE_WEBHOOK_SECRET',
@@ -703,7 +900,7 @@ test('CI smoke jobs use the shared smoke environment generator', () => {
   assert.equal((ci.match(/node scripts\/write-smoke-env\.mjs \.env\.smoke/g) ?? []).length, 3);
   assert.equal((ci.match(/docker pull "\$ref"/g) ?? []).length, 3);
   assert.ok((ci.match(/node scripts\/verify-release-artifacts\.mjs \.release\/release-manifest\.json --source-sha "\$GITHUB_SHA"/g) ?? []).length >= 3);
-  assert.equal((ci.match(/actions\/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093/g) ?? []).length, 10);
+  assert.ok((ci.match(/actions\/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093/g) ?? []).length >= 10);
   assert.equal((ci.match(/docker compose --env-file \.env\.smoke up -d --no-build/g) ?? []).length, 3);
   assert.equal((ci.match(/--no-build --pull never/g) ?? []).length, 3);
   assert.equal((ci.match(/docker image inspect "\$\{IMAGE_PREFIX\}\/\$\{service\}:\$\{IMAGE_TAG\}"/g) ?? []).length, 2);
@@ -711,7 +908,7 @@ test('CI smoke jobs use the shared smoke environment generator', () => {
   assert.match(ci, /IMAGE_TAG: \$\{\{ github\.sha \}\}/);
   assert.match(ci, /SMOKE_TARGET_URL: http:\/\/localhost:8080/);
   assert.match(ci, /TARGET_URL: http:\/\/localhost:8080/);
-  assert.equal((ci.match(/docker compose --env-file \.env\.smoke pull proxy pgbouncer postgres redis rabbitmq pitr-tools/g) ?? []).length, 3);
+  assert.equal((ci.match(/docker compose --env-file \.env\.smoke pull proxy pgbouncer postgres redis rabbitmq/g) ?? []).length, 3);
   assert.doesNotMatch(ci, /docker compose up -d --build/);
   assert.doesNotMatch(ci, /cat > \.env/);
   assert.match(smokeWriter, /CADDY_SITE_ADDRESSES/);
@@ -730,6 +927,23 @@ test('CI smoke jobs use the shared smoke environment generator', () => {
 
 test('main branch release jobs fail closed when required deployment variables are missing', () => {
   const ci = read('.github/workflows/ci.yml');
+  const releaseGateStart = ci.indexOf('  validate-release-gates:');
+  const stagingStart = ci.indexOf('  deploy-staging:');
+  const productionStart = ci.indexOf('  deploy-production:');
+  const productionEnd = ci.indexOf('  production-image-inventory:');
+  const releaseGateJob = ci.slice(releaseGateStart, stagingStart);
+  const stagingJob = ci.slice(stagingStart, productionStart);
+  const productionJob = ci.slice(productionStart, productionEnd);
+
+  assert.ok(releaseGateStart >= 0 && stagingStart > releaseGateStart);
+  assert.ok(productionStart > stagingStart && productionEnd > productionStart);
+  assert.doesNotMatch(releaseGateJob, /STAGING_DEPLOY_COMMAND|PRODUCTION_DEPLOY_COMMAND/);
+  assert.match(stagingJob, /environment: staging/);
+  assert.match(stagingJob, /STAGING_DEPLOY_COMMAND: \$\{\{ vars\.STAGING_DEPLOY_COMMAND \}\}/);
+  assert.match(productionJob, /environment: production/);
+  assert.match(productionJob, /Require production release configuration and contract/);
+  assert.match(productionJob, /id: production_smoke[\s\S]*PRODUCTION_POST_DEPLOY_PROOF_COMMAND: \$\{\{ vars\.PRODUCTION_POST_DEPLOY_PROOF_COMMAND \}\}/);
+  assert.match(productionJob, /printf '%s\\n' "\$PRODUCTION_POST_DEPLOY_PROOF_COMMAND" > \/tmp\/lunchlineup-post-deploy-proof\.sh/);
 
   assert.match(ci, /^concurrency:\s*\n\s+group: \$\{\{ github\.workflow \}\}-\$\{\{ github\.ref \}\}\s*\n\s+cancel-in-progress: false/m);
   assert.match(ci, /Write immutable release manifest/);
@@ -747,29 +961,42 @@ test('main branch release jobs fail closed when required deployment variables ar
   assert.match(ci, /Require pushed GitHub source proof/);
   assert.match(ci, /git ls-remote origin refs\/heads\/main/);
   assert.match(ci, /test "\$remote_sha" = "\$GITHUB_SHA"/);
-  assert.match(ci, /Verify immutable release and deploy command contract/);
+  assert.match(ci, /Require production release configuration and contract/);
   assert.match(ci, /productionHealthProof/);
   assert.match(ci, /DOMAIN: \$\{\{ vars\.DOMAIN \}\}/);
   assert.match(ci, /--production-api-health-url-env PRODUCTION_API_HEALTH_URL/);
-  assert.match(ci, /matrix:\s*\n\s+service: \[api, web, engine, worker, migrate, control, backup\]/);
+  assert.match(ci, /production-image-inventory:[\s\S]*production-image-inventory\.mjs --manifest \.release\/release-manifest\.json --github-matrix-output/);
+  assert.equal((ci.match(/matrix: \$\{\{ fromJSON\(needs\.production-image-inventory\.outputs\.matrix\) \}\}/g) ?? []).length, 2);
   assert.match(ci, /scan-type: 'image'/);
   assert.match(ci, /image-ref: \$\{\{ steps\.release_image\.outputs\.ref \}\}/);
   assert.match(ci, /verify-trivy-release-reports\.mjs/);
   assert.match(ci, /pattern: trivy-release-\*/);
+  assert.match(ci, /Generate SBOM \(\$\{\{ matrix\.service \}\}\)/);
+  assert.match(ci, /anchore\/sbom-action@e22c389904149dbc22b58101806040fa8d37a610/);
+  assert.match(ci, /format: spdx-json/);
+  assert.match(ci, /output-file: \.release\/sbom\/\$\{\{ matrix\.service \}\}\.spdx\.json/);
+  assert.match(ci, /verify-sbom-release-reports\.mjs/);
+  assert.match(ci, /pattern: sbom-release-\*/);
   assert.doesNotMatch(ci, /scan-type: 'fs'/);
   assert.match(ci, /--command-env STAGING_DEPLOY_COMMAND/);
-  assert.match(ci, /--command-env PRODUCTION_DEPLOY_COMMAND/);
+  assert.doesNotMatch(productionJob, /--command-env PRODUCTION_DEPLOY_COMMAND/);
   assert.match(ci, /--post-deploy-proof-command-env PRODUCTION_POST_DEPLOY_PROOF_COMMAND/);
   assert.match(ci, /--rollback-command-env PRODUCTION_ROLLBACK_COMMAND/);
   assert.match(ci, /Verify staging release artifact contract/);
   assert.match(ci, /Verify production release artifact contract/);
-  assert.match(ci, /production-rollback:/);
+  assert.doesNotMatch(productionJob, /PRODUCTION_DEPLOY_COMMAND|lunchlineup-deploy-production\.sh/);
+  assert.equal((productionJob.match(/bash scripts\/deploy-vm217-transport\.sh/g) ?? []).length, 2);
+  assert.match(productionJob, /VM217_HOST: \$\{\{ vars\.VM217_HOST \}\}/);
+  assert.match(productionJob, /VM217_USER: \$\{\{ vars\.VM217_USER \}\}/);
+  assert.match(productionJob, /VM217_SSH_PRIVATE_KEY: \$\{\{ secrets\.VM217_SSH_PRIVATE_KEY \}\}/);
+  assert.match(productionJob, /VM217_SSH_KNOWN_HOSTS: \$\{\{ secrets\.VM217_SSH_KNOWN_HOSTS \}\}/);
+  assert.doesNotMatch(ci, /^  production-(?:smoke|rollback):/m);
   assert.match(ci, /name: Arm production rollback[\s\S]*id: arm_production_rollback[\s\S]*armed=true/);
   assert.doesNotMatch(ci, /production_deploy_mutation_started|mutation_started=true/);
   assert.match(ci, /id: production_deploy/);
-  assert.match(ci, /needs: \[deploy-production, production-smoke\]/);
-  assert.match(ci, /needs\.deploy-production\.outputs\.production_rollback_armed == 'true'/);
-  assert.match(ci, /needs\.deploy-production\.result != 'success' \|\| needs\.production-smoke\.result != 'success'/);
+  assert.match(productionJob, /id: same_gate_release_outcome[\s\S]*if: always\(\) && steps\.arm_production_rollback\.outcome == 'success'/);
+  assert.match(productionJob, /id: materialize_automatic_rollback[\s\S]*id: automatic_production_rollback[\s\S]*id: prove_automatic_production_rollback/);
+  assert.match(productionJob, /Require completed automatic rollback after release failure[\s\S]*test "\$ROLLBACK_PROOF_OUTCOME" = success/);
   assert.match(ci, /Rehydrate and verify production runtime secret/);
   assert.match(ci, /PRODUCTION_RUNTIME_SECRET_REFERENCE: \$\{\{ vars\.PRODUCTION_RUNTIME_SECRET_REFERENCE \}\}/);
   assert.match(ci, /PRODUCTION_RUNTIME_SECRET_VERSION: \$\{\{ vars\.PRODUCTION_RUNTIME_SECRET_VERSION \}\}/);
@@ -795,7 +1022,6 @@ test('main branch release jobs fail closed when required deployment variables ar
     'STAGING_DEPLOY_COMMAND',
     'STAGING_API_HEALTH_URL',
     'STAGING_WEB_URL',
-    'PRODUCTION_DEPLOY_COMMAND',
     'PRODUCTION_HEALTH_URL',
     'PRODUCTION_API_HEALTH_URL',
     'PRODUCTION_WEB_URL',
@@ -810,10 +1036,32 @@ test('main branch release jobs fail closed when required deployment variables ar
   assert.doesNotMatch(ci, /vars\.PRODUCTION_HEALTH_URL != ''/);
   assert.match(ci, /verify-external-health-release\.mjs "\$STAGING_API_HEALTH_URL" "\$RELEASE_SOURCE_SHA"/);
   assert.match(ci, /verify-external-health-release\.mjs "\$STAGING_WEB_URL" "\$RELEASE_SOURCE_SHA"/);
+  assert.match(stagingJob, /CF_ACCESS_CLIENT_ID: \$\{\{ secrets\.CF_ACCESS_CLIENT_ID \}\}/);
+  assert.match(stagingJob, /CF_ACCESS_CLIENT_SECRET: \$\{\{ secrets\.CF_ACCESS_CLIENT_SECRET \}\}/);
   assert.match(ci, /node scripts\/verify-external-health-release\.mjs "\$PRODUCTION_API_HEALTH_URL" "\$RELEASE_SOURCE_SHA"/);
   assert.match(ci, /LAUNCH_PROOF_MANIFEST_URI: \$\{\{ secrets\.LAUNCH_PROOF_MANIFEST_URI \}\}/);
   assert.match(ci, /PRODUCTION_POST_DEPLOY_PROOF_COMMAND/);
   assert.match(ci, /bash \/tmp\/lunchlineup-post-deploy-proof\.sh/);
+});
+
+test('private release-image consumers authenticate to GHCR on each fresh runner', () => {
+  const ci = read('.github/workflows/ci.yml');
+  for (const [job, nextJob] of [
+    ['dast', 'e2e-tests'],
+    ['fullstack-e2e', 'load-test'],
+    ['load-test', 'bootstrap-release-registry'],
+  ]) {
+    const start = ci.indexOf('  ' + job + ':');
+    const end = ci.indexOf('  ' + nextJob + ':', start);
+    assert.ok(start >= 0 && end > start, 'missing ' + job + ' workflow block');
+    const block = ci.slice(start, end);
+    assert.match(block, /permissions:\s*\n\s+contents: read\s*\n\s+packages: read/);
+    assert.match(block, /docker\/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9/);
+    assert.match(block, /registry: ghcr\.io/);
+    assert.match(block, /username: \$\{\{ github\.actor \}\}/);
+    assert.match(block, /password: \$\{\{ secrets\.GITHUB_TOKEN \}\}/);
+    assert.ok(block.indexOf('docker/login-action@') < block.indexOf('docker pull "$ref"'));
+  }
 });
 
 test('release artifact verifier accepts pinned manifests and rejects mutable deploy inputs', () => {
@@ -889,8 +1137,6 @@ test('release artifact verifier accepts pinned manifests and rejects mutable dep
         launchProofPath,
         '--command-env',
         'STAGING_DEPLOY_COMMAND',
-        '--command-env',
-        'PRODUCTION_DEPLOY_COMMAND',
         '--post-deploy-proof-command-env',
         'PRODUCTION_POST_DEPLOY_PROOF_COMMAND',
         '--rollback-command-env',
@@ -901,8 +1147,7 @@ test('release artifact verifier accepts pinned manifests and rejects mutable dep
         encoding: 'utf8',
         env: {
           ...process.env,
-          STAGING_DEPLOY_COMMAND: 'scripts/verify-deploy-source.sh "$RELEASE_SOURCE_SHA" && ./deploy-staging --manifest "$RELEASE_MANIFEST_PATH"',
-          PRODUCTION_DEPLOY_COMMAND: 'scripts/verify-deploy-source.sh "$RELEASE_SOURCE_SHA" && test "$(sha256sum "$COMPOSE_SERVICE_ENV_FILE" | awk \'{print $1}\')" = "$PRODUCTION_RUNTIME_ENV_SHA256" && docker compose --env-file "$COMPOSE_SERVICE_ENV_FILE" up -d --no-build --pull never && ./deploy-production --manifest "$RELEASE_MANIFEST_PATH" --proof-sha "$LAUNCH_PROOF_ARTIFACT_SHA256" --proof-max-age "$LAUNCH_PROOF_MAX_AGE_SECONDS" --api-health "$PRODUCTION_API_HEALTH_URL" --web-url "$PRODUCTION_WEB_URL" --launch-proof-uri "$LAUNCH_PROOF_MANIFEST_URI"',
+          STAGING_DEPLOY_COMMAND: 'scripts/verify-deploy-source.sh "$RELEASE_SOURCE_SHA" && docker compose --project-name "$COMPOSE_PROJECT_NAME" --project-directory "$COMPOSE_PROJECT_DIRECTORY" --env-file "$COMPOSE_SERVICE_ENV_FILE" -f "$COMPOSE_FILE" up -d --no-build --pull never && ./deploy-staging --manifest "$RELEASE_MANIFEST_PATH"',
           PRODUCTION_POST_DEPLOY_PROOF_COMMAND: 'DEPLOYED_GIT_SHA="$(cat /opt/lunchlineup/DEPLOYED_GIT_SHA)" && test "$DEPLOYED_GIT_SHA" = "$RELEASE_SOURCE_SHA" && curl -fsS "$PRODUCTION_API_HEALTH_URL" -o /tmp/api-health.json && curl -fsS "$LAUNCH_PROOF_MANIFEST_URI" -o /tmp/launch-proof.json && test "$(sha256sum /tmp/launch-proof.json | awk \'{print $1}\')" = "$LAUNCH_PROOF_ARTIFACT_SHA256" && test "$LAUNCH_PROOF_MAX_AGE_SECONDS" -gt 0 && test "$(stat -c%s /tmp/launch-proof.json)" -gt 0',
           PRODUCTION_ROLLBACK_COMMAND: 'cd "$ROLLBACK_DEPLOYMENT_APP_DIR" && node scripts/verify-release-artifacts.mjs "$PREVIOUS_RELEASE_MANIFEST_PATH" --source-sha "$PREVIOUS_RELEASE_SOURCE_SHA" --post-deploy-proof-command-env PRODUCTION_POST_DEPLOY_PROOF_COMMAND && VM217_DEPLOY_OPERATION=rollback ROLLBACK_SCHEMA_COMPATIBILITY_CONFIRM="verified-compatible-with-current-schema:$PREVIOUS_RELEASE_SOURCE_SHA" ./deploy-production --manifest "$PREVIOUS_RELEASE_MANIFEST_PATH" --source-sha "$PREVIOUS_RELEASE_SOURCE_SHA" && bash /tmp/lunchlineup-post-deploy-proof.sh "$PRODUCTION_API_HEALTH_URL" "$LAUNCH_PROOF_MANIFEST_URI"',
         },
@@ -912,7 +1157,27 @@ test('release artifact verifier accepts pinned manifests and rejects mutable dep
     assert.match(validOutput, /release_artifacts_ok/);
     assert.match(validOutput, /launch_proof=candidate/);
 
-    const unsafeRemoteInputResult = spawnSync(
+    const termIgnoringRollbackCommand = readFileSync(
+      join(root, 'tests', 'deploy', 'term-ignoring-rollback-command.fixture.sh'),
+      'utf8',
+    );
+    const termIgnoringValidatorResult = spawnSync(
+      process.execPath,
+      ['scripts/verify-release-artifacts.mjs', manifestPath, '--source-sha', sourceSha, '--rollback-command-env', 'PRODUCTION_ROLLBACK_COMMAND'],
+      {
+        cwd: root,
+        encoding: 'utf8',
+        env: { ...process.env, PRODUCTION_ROLLBACK_COMMAND: termIgnoringRollbackCommand },
+      },
+    );
+    assert.equal(
+      termIgnoringValidatorResult.status,
+      0,
+      `${termIgnoringValidatorResult.stdout}\n${termIgnoringValidatorResult.stderr}`,
+    );
+    assert.match(termIgnoringRollbackCommand, /trap '' TERM/);
+
+    const arbitraryProductionCommandResult = spawnSync(
       process.execPath,
       ['scripts/verify-release-artifacts.mjs', manifestPath, '--source-sha', sourceSha, '--command-env', 'PRODUCTION_DEPLOY_COMMAND'],
       {
@@ -920,12 +1185,81 @@ test('release artifact verifier accepts pinned manifests and rejects mutable dep
         encoding: 'utf8',
         env: {
           ...process.env,
-          PRODUCTION_DEPLOY_COMMAND: 'scripts/verify-deploy-source.sh "$RELEASE_SOURCE_SHA" && test "$(sha256sum "$COMPOSE_SERVICE_ENV_FILE" | awk \'{print $1}\')" = "$PRODUCTION_RUNTIME_ENV_SHA256" && docker compose --env-file "$COMPOSE_SERVICE_ENV_FILE" up -d --no-build --pull never && ./deploy-production --manifest "$RELEASE_MANIFEST_PATH" --proof-sha "$LAUNCH_PROOF_ARTIFACT_SHA256" --proof-max-age "$LAUNCH_PROOF_MAX_AGE_SECONDS" --api-health "$PRODUCTION_API_HEALTH_URL" --web-url $PRODUCTION_WEB_URL --launch-proof-uri "$LAUNCH_PROOF_MANIFEST_URI"',
+          PRODUCTION_DEPLOY_COMMAND: 'scripts/verify-deploy-source.sh "$RELEASE_SOURCE_SHA" && ./arbitrary-production-helper --manifest "$RELEASE_MANIFEST_PATH"',
         },
       },
     );
-    assert.notEqual(unsafeRemoteInputResult.status, 0);
-    assert.match(`${unsafeRemoteInputResult.stdout}\n${unsafeRemoteInputResult.stderr}`, /safely forward PRODUCTION_WEB_URL/);
+    assert.notEqual(arbitraryProductionCommandResult.status, 0);
+    assert.match(`${arbitraryProductionCommandResult.stdout}\n${arbitraryProductionCommandResult.stderr}`, /PRODUCTION_DEPLOY_COMMAND is forbidden.*deploy-vm217-transport\.sh/);
+
+    for (const [name, replacement] of [
+      ['variable-helper', 'bash "$ARBITRARY_DEPLOY_HELPER"'],
+      ['runner-temp-helper', 'bash /tmp/lunchlineup-deploy-production.sh'],
+    ]) {
+      const workflowPath = join(scratch, `${name}-ci.yml`);
+      writeFileSync(
+        workflowPath,
+        read('.github/workflows/ci.yml').replaceAll('bash scripts/deploy-vm217-transport.sh', replacement),
+      );
+      const helperWorkflowResult = spawnSync(
+        process.execPath,
+        [
+          'scripts/verify-release-artifacts.mjs',
+          manifestPath,
+          '--source-sha',
+          sourceSha,
+          '--launch-proof-file',
+          launchProofPath,
+          '--workflow-file',
+          workflowPath,
+        ],
+        { cwd: root, encoding: 'utf8' },
+      );
+      assert.notEqual(helperWorkflowResult.status, 0, name);
+      assert.match(
+        `${helperWorkflowResult.stdout}\n${helperWorkflowResult.stderr}`,
+        /must not trust mutable command text|invoke the checked-in transport directly|directly invoke scripts\/deploy-vm217-transport\.sh|exact fixed transport orchestration/,
+        name,
+      );
+    }
+
+    const productionWorkflow = read('.github/workflows/ci.yml');
+    for (const [name, insertedExecution] of [
+      ['inserted-bash-c', '          bash -c "$MUTABLE_DEPLOY_COMMAND"'],
+      ['inserted-sh-c', '          sh -c "$MUTABLE_DEPLOY_COMMAND"'],
+      ['inserted-command-variable', '          "$MUTABLE_DEPLOY_COMMAND"'],
+      ['inserted-function', '          mutable_deploy() { "$MUTABLE_DEPLOY_COMMAND"; }\n          mutable_deploy'],
+      ['inserted-source', '          source "$RUNNER_TEMP/mutable-deploy.sh"'],
+      ['inserted-executable', '          node "$RUNNER_TEMP/mutable-deploy.mjs"'],
+    ]) {
+      const workflowPath = join(scratch, `${name}-ci.yml`);
+      const hostileWorkflow = productionWorkflow.replace(
+        '          deploy_status=0',
+        `${insertedExecution}\n          deploy_status=0`,
+      );
+      assert.equal((hostileWorkflow.match(/bash scripts\/deploy-vm217-transport\.sh/g) ?? []).length, 2, name);
+      writeFileSync(workflowPath, hostileWorkflow);
+      const result = spawnSync(
+        process.execPath,
+        [
+          'scripts/verify-release-artifacts.mjs',
+          manifestPath,
+          '--source-sha',
+          sourceSha,
+          '--launch-proof-file',
+          launchProofPath,
+          '--workflow-file',
+          workflowPath,
+        ],
+        { cwd: root, encoding: 'utf8' },
+      );
+      assert.notEqual(result.status, 0, name);
+      assert.match(
+        `${result.stdout}\n${result.stderr}`,
+        /exact fixed transport orchestration.*shell construction, indirection, sourced helpers, and added executable commands are forbidden/,
+        name,
+      );
+    }
 
     const mutableManifestPath = join(scratch, 'mutable-manifest.json');
     const mutableManifest = sampleReleaseManifest(sourceSha);
@@ -988,20 +1322,36 @@ test('release artifact verifier accepts pinned manifests and rejects mutable dep
     assert.notEqual(lateVerifierCommandResult.status, 0);
     assert.match(`${lateVerifierCommandResult.stdout}\n${lateVerifierCommandResult.stderr}`, /must start with verify-deploy-source/);
 
-    const missingRuntimeEnvCommandResult = spawnSync(
-      process.execPath,
-      ['scripts/verify-release-artifacts.mjs', manifestPath, '--source-sha', sourceSha, '--command-env', 'PRODUCTION_DEPLOY_COMMAND'],
-      {
-        cwd: root,
-        encoding: 'utf8',
-        env: {
-          ...process.env,
-          PRODUCTION_DEPLOY_COMMAND: 'scripts/verify-deploy-source.sh "$RELEASE_SOURCE_SHA" && ./deploy-production --manifest "$RELEASE_MANIFEST_PATH"',
+    const composeScopeFlags = [
+      ['--project-name', '--project-name "$COMPOSE_PROJECT_NAME"'],
+      ['--project-directory', '--project-directory "$COMPOSE_PROJECT_DIRECTORY"'],
+      ['--env-file', '--env-file "$COMPOSE_SERVICE_ENV_FILE"'],
+      ['-f', '-f "$COMPOSE_FILE"'],
+    ];
+    for (const [missingFlag] of composeScopeFlags) {
+      const scopedArguments = composeScopeFlags
+        .filter(([flag]) => flag !== missingFlag)
+        .map(([, argument]) => argument)
+        .join(' ');
+      const missingScopeResult = spawnSync(
+        process.execPath,
+        ['scripts/verify-release-artifacts.mjs', manifestPath, '--source-sha', sourceSha, '--command-env', 'STAGING_DEPLOY_COMMAND'],
+        {
+          cwd: root,
+          encoding: 'utf8',
+          env: {
+            ...process.env,
+            STAGING_DEPLOY_COMMAND: `scripts/verify-deploy-source.sh "$RELEASE_SOURCE_SHA" && docker compose ${scopedArguments} up -d --no-build --pull never && echo "$RELEASE_MANIFEST_PATH"`,
+          },
         },
-      },
-    );
-    assert.notEqual(missingRuntimeEnvCommandResult.status, 0);
-    assert.match(`${missingRuntimeEnvCommandResult.stdout}\n${missingRuntimeEnvCommandResult.stderr}`, /production runtime env|PRODUCTION_RUNTIME_ENV_SHA256/);
+      );
+      assert.notEqual(missingScopeResult.status, 0, missingFlag);
+      assert.match(
+        `${missingScopeResult.stdout}\n${missingScopeResult.stderr}`,
+        new RegExp(`without ${missingFlag.replace('-', '\\-')}`),
+        missingFlag,
+      );
+    }
 
     const weakPostDeployProofCommandResult = spawnSync(
       process.execPath,
@@ -1039,21 +1389,6 @@ test('release artifact verifier accepts pinned manifests and rejects mutable dep
     );
     assert.notEqual(weakRollbackCommandResult.status, 0);
     assert.match(`${weakRollbackCommandResult.stdout}\n${weakRollbackCommandResult.stderr}`, /source SHA|post-deploy proof|health and proof/i);
-
-    const unboundComposeEnvCommandResult = spawnSync(
-      process.execPath,
-      ['scripts/verify-release-artifacts.mjs', manifestPath, '--source-sha', sourceSha, '--command-env', 'PRODUCTION_DEPLOY_COMMAND'],
-      {
-        cwd: root,
-        encoding: 'utf8',
-        env: {
-          ...process.env,
-          PRODUCTION_DEPLOY_COMMAND: 'scripts/verify-deploy-source.sh "$RELEASE_SOURCE_SHA" && docker compose up -d --no-build --pull never && echo "$RELEASE_MANIFEST_PATH $COMPOSE_SERVICE_ENV_FILE $PRODUCTION_RUNTIME_ENV_SHA256"',
-        },
-      },
-    );
-    assert.notEqual(unboundComposeEnvCommandResult.status, 0);
-    assert.match(`${unboundComposeEnvCommandResult.stdout}\n${unboundComposeEnvCommandResult.stderr}`, /--env-file.*COMPOSE_SERVICE_ENV_FILE/);
 
     const mismatchedRuntimeEnvPath = join(scratch, 'mismatched-runtime.env');
     const mismatchedRuntimeEnv = publicBuildRuntimeEnv({ NEXT_PUBLIC_APP_URL: 'https://billing.lunchlineup.com' });
@@ -1222,45 +1557,76 @@ test('Trivy release report verifier binds every digest-pinned image and blocks H
   const reportsDir = join(scratch, 'reports');
   const manifest = sampleReleaseManifest();
   const manifestText = `${JSON.stringify(manifest, null, 2)}\n`;
-  const manifestSha256 = createHash('sha256').update(manifestText).digest('hex');
+  let inventory;
+  const certificateIdentity = 'https://github.com/tuckerplee/LunchLineup/.github/workflows/ci.yml@refs/heads/main';
+  const oidcIssuer = 'https://token.actions.githubusercontent.com';
+  const fakeCosign = join(root, 'tests/deploy/fake-cosign-release-report.mjs');
 
   function writeReport(service, vulnerabilities = []) {
+    const image = inventory.images.find(({ name }) => name === service);
+    assert.ok(image, `missing production image ${service}`);
     const reportFile = `${service}.trivy.json`;
     const reportText = `${JSON.stringify({
       SchemaVersion: 2,
-      ArtifactName: manifest.images[service].ref,
+      ArtifactName: image.ref,
       ArtifactType: 'container_image',
       Results: [{ Target: service, Class: 'os-pkgs', Type: 'alpine', Vulnerabilities: vulnerabilities }],
     }, null, 2)}\n`;
     writeFileSync(join(reportsDir, reportFile), reportText);
-    writeFileSync(join(reportsDir, `${service}.trivy-evidence.json`), `${JSON.stringify({
-      version: 1,
-      scanner: 'trivy',
-      sourceSha: manifest.sourceSha,
-      service,
-      imageRef: manifest.images[service].ref,
-      imageDigest: manifest.images[service].digest,
-      releaseManifestSha256: manifestSha256,
-      reportFile,
-      reportSha256: createHash('sha256').update(reportText).digest('hex'),
-      severityGate: ['HIGH', 'CRITICAL'],
-    }, null, 2)}\n`);
+    const evidence = buildReleaseImageReportEvidence({
+      kind: 'trivy',
+      image,
+      manifest,
+      manifestBytes: Buffer.from(manifestText),
+      reportPath: reportFile,
+      reportBytes: Buffer.from(reportText),
+      certificateIdentity,
+      oidcIssuer,
+    });
+    writeFileSync(join(reportsDir, `${service}.trivy-evidence.json`), `${JSON.stringify(evidence, null, 2)}\n`);
+    const evidencePath = join(reportsDir, `${service}.trivy-evidence.json`);
+    writeFileSync(join(reportsDir, `${service}.trivy-evidence.sigstore.json`), `${JSON.stringify({
+      valid: true,
+      artifactSha256: createHash('sha256').update(readFileSync(evidencePath)).digest('hex'),
+      certificateIdentity,
+      oidcIssuer,
+    })}\n`);
   }
 
-  const run = () => spawnSync(
+  const run = (environment = {}) => spawnSync(
     process.execPath,
-    ['scripts/verify-trivy-release-reports.mjs', manifestPath, reportsDir],
-    { cwd: root, encoding: 'utf8' },
+    [
+      'scripts/verify-trivy-release-reports.mjs',
+      manifestPath,
+      reportsDir,
+      '--expected-certificate-identity', certificateIdentity,
+      '--expected-oidc-issuer', oidcIssuer,
+    ],
+    {
+      cwd: root,
+      encoding: 'utf8',
+      env: {
+        ...process.env,
+        COSIGN_BINARY: process.execPath,
+        COSIGN_ARGUMENT_PREFIX_JSON: JSON.stringify([fakeCosign]),
+        FAKE_REPORTS_DIR: reportsDir,
+        FAKE_REPORT_KIND: 'trivy',
+        FAKE_SIGNER_IDENTITY: certificateIdentity,
+        FAKE_SIGNER_ISSUER: oidcIssuer,
+        ...environment,
+      },
+    },
   );
 
   try {
     mkdirSync(reportsDir, { recursive: true });
     writeFileSync(manifestPath, manifestText);
-    for (const service of Object.keys(manifest.images)) writeReport(service);
+    inventory = deriveProductionImageInventory({ manifestPath });
+    for (const { name } of inventory.images) writeReport(name);
 
     const valid = run();
     assert.equal(valid.status, 0, `${valid.stdout}\n${valid.stderr}`);
-    assert.match(valid.stdout, /services=api,web,engine,worker,migrate,control,backup/);
+    assert.match(valid.stdout, new RegExp(`images=${inventory.images.map(({ name }) => name).join(',')}`));
 
     const apiEvidencePath = join(reportsDir, 'api.trivy-evidence.json');
     const apiEvidence = JSON.parse(readFileSync(apiEvidencePath, 'utf8'));
@@ -1270,15 +1636,18 @@ test('Trivy release report verifier binds every digest-pinned image and blocks H
     assert.match(detached.stderr, /releaseManifestSha256 does not match/);
     writeReport('api');
 
-    writeReport('worker', [{ VulnerabilityID: 'CVE-2099-0001', Severity: 'HIGH' }]);
+    const wrongSubject = run({ FAKE_ATTESTATION_FAILURE: 'subject' });
+    assert.notEqual(wrongSubject.status, 0);
+    assert.match(wrongSubject.stderr, /No trusted registry attestation binds/);
+
+    writeReport('proxy', [{ VulnerabilityID: 'CVE-2099-0001', Severity: 'HIGH' }]);
     const vulnerable = run();
     assert.notEqual(vulnerable.status, 0);
-    assert.match(vulnerable.stderr, /CVE-2099-0001:HIGH/);
+    assert.match(vulnerable.stderr, /proxy image contains blocked vulnerabilities: CVE-2099-0001:HIGH/);
   } finally {
     rmSync(scratch, { recursive: true, force: true });
   }
 });
-
 test('launch proof template includes hard-to-fake local evidence fields', () => {
   const template = JSON.parse(read('docs/testing/launch-proof-template.json'));
 
@@ -1336,15 +1705,16 @@ test('smoke environment generator writes the requested env and metrics token fil
       'MFA_SECRET_ENCRYPTION_KEY_CURRENT',
       'WEBHOOK_DELIVERY_ENCRYPTION_KEY_CURRENT',
       'PASSWORD_RESET_OUTBOX_ENCRYPTION_KEY',
+      'AVAILABILITY_IMPORT_ENCRYPTION_KEY',
       'CSRF_SECRET',
       'RESEND_API_KEY',
+      'RESEND_WEBHOOK_SECRET',
       'STRIPE_SECRET_KEY',
       'STRIPE_WEBHOOK_SECRET',
       'STRIPE_METER_AGGREGATION',
       'PASSWORD_RESET_EMAIL_OUTBOX_ENABLED',
       'COOKIE_SECURE',
       'NEXT_PUBLIC_API_URL',
-      'NEXT_PUBLIC_WS_URL',
       'INTERNAL_API_URL',
       'NEXT_PUBLIC_OIDC_ENABLED',
       'PUBLIC_SIGNUP_MODE',
@@ -1375,6 +1745,7 @@ test('smoke environment generator writes the requested env and metrics token fil
     assert.match(env.JWT_SECRET, /^jwt_[A-Za-z0-9_-]{32,}$/);
     assert.equal(Buffer.from(env.WEBHOOK_DELIVERY_ENCRYPTION_KEY_CURRENT, 'base64').length, 32);
     assert.equal(Buffer.from(env.PASSWORD_RESET_OUTBOX_ENCRYPTION_KEY, 'base64').length, 32);
+    assert.equal(Buffer.from(env.AVAILABILITY_IMPORT_ENCRYPTION_KEY, 'base64').length, 32);
 
     for (const value of Object.values(env)) {
       assert.doesNotMatch(value, /change_me|replace_me|guest:guest|password@postgres/i);
@@ -1405,9 +1776,13 @@ test('DAST and load helper scripts execute real smoke tools', () => {
   assert.match(dast, /docker run --rm/);
   assert.doesNotMatch(dast, /DAST scan complete/);
 
-  assert.match(load, /artillery@2 run "\$SCENARIO_PATH"/);
+  assert.match(load, /artilleryio\/artillery:2\.0\.33@sha256:ee382d480f5cb8473c52fe94cb8e1505a9564ce2accbc94114098e0be06dff56/);
+  assert.match(load, /docker run --rm/);
+  assert.match(load, /--volume "\$SOURCE_ROOT:\/workspace:ro"/);
+  assert.match(load, /--volume "\$OUTPUT_DIR:\/output:rw"/);
+  assert.doesNotMatch(load, /\$SOURCE_ROOT:[^"\n]*:rw/);
   assert.match(load, /scripts\/artillery-smoke\.yml/);
-  assert.doesNotMatch(load, /# npx artillery/);
+  assert.doesNotMatch(load, /\bnpx\b|npm exec/);
 });
 
 test('backup restore scripts are encrypted, atomic, telemetry-producing, and fail-closed', () => {
@@ -1453,6 +1828,9 @@ test('Grafana dashboard exposes backup freshness and host filesystem pressure', 
   assert.match(dashboard, /time\(\) - lunchlineup_backup_last_success_timestamp_seconds/);
   assert.match(dashboard, /Host Filesystem Free/);
   assert.match(dashboard, /node_filesystem_avail_bytes/);
+  assert.match(dashboard, /API Availability SLO \(30d\)/);
+  assert.match(dashboard, /Public Web Availability SLO \(30d\)/);
+  assert.match(dashboard, /lunchlineup_public_web_probe_success/);
   assert.match(dashboard, /"id": "tempo"/);
   assert.match(dashboard, /LunchLineup Platform Overview/);
   assert.match(datasources, /name: Prometheus[\s\S]*uid: prometheus/);
@@ -1479,7 +1857,11 @@ test('Prometheus alerts point at checked-in runbooks and cover backup freshness'
     'ServiceDown',
     'HighApiErrorRate',
     'HighApiLatency',
-    'RabbitMQDependencyUnavailable',
+    'ApiAvailabilityBudgetFastBurn',
+    'ApiAvailabilityBudgetSlowBurn',
+    'PublicWebAvailabilityBudgetFastBurn',
+    'PublicWebAvailabilityBudgetSlowBurn',
+    'RequiredApiDependencyUnavailable',
     'WorkerJobFailures',
     'WebhookReplayNotReady',
     'WebhookReplayFailures',
@@ -1500,11 +1882,32 @@ test('Prometheus alerts point at checked-in runbooks and cover backup freshness'
   assert.match(alerts, /lunchlineup_backup_last_success_timestamp_seconds/);
   assert.match(
     alerts,
-    /RabbitMQDependencyUnavailable[\s\S]*lunchlineup_dependency_up\{job="api",dependency="rabbitmq"\}[\s\S]*absent\(lunchlineup_dependency_up/,
+    /RequiredApiDependencyUnavailable[\s\S]*dependency=~"database\|redis\|rabbitmq"[\s\S]*dependency="database"[\s\S]*dependency="redis"[\s\S]*dependency="rabbitmq"/,
   );
+  assert.match(alerts, /ApiAvailabilityBudgetFastBurn[\s\S]*14\.4 \* 0\.001/);
+  assert.match(alerts, /ApiAvailabilityBudgetSlowBurn[\s\S]*6 \* 0\.001/);
+  assert.match(alerts, /PublicWebAvailabilityBudgetFastBurn[\s\S]*avg_over_time/);
   assert.match(alerts, /lunchlineup_retention_purge_last_attempt_timestamp_seconds/);
   assert.match(alerts, /docs\/runbooks\/data-retention-delete-export\.md/);
   assert.doesNotMatch(alerts, /github\.com\/org\/lunchlineup|runbook:\s*"https:\/\/github\.com\/org/i);
+});
+
+test('production smoke verifies canonical public HTML release identity before publishing success evidence', () => {
+  const ci = read('.github/workflows/ci.yml');
+  const smoke = ci.slice(
+    ci.indexOf('  deploy-production:'),
+    ci.indexOf('  production-image-inventory:'),
+  );
+  const apiProbe = smoke.indexOf('verify-external-health-release.mjs "$PRODUCTION_API_HEALTH_URL" "$RELEASE_SOURCE_SHA"');
+  const webProbe = smoke.indexOf('verify-external-health-release.mjs "$PRODUCTION_WEB_URL" "$RELEASE_SOURCE_SHA" --expect-public-html');
+  const proofCommand = smoke.indexOf('bash /tmp/lunchlineup-post-deploy-proof.sh');
+  const publication = smoke.indexOf('name: Publish immutable successful release bundle');
+
+  assert.ok(apiProbe > -1, 'production smoke must verify the API release identity');
+  assert.ok(webProbe > apiProbe, 'production smoke must independently verify PRODUCTION_WEB_URL');
+  assert.ok(proofCommand > webProbe, 'canonical web proof must pass before retained post-deploy proof');
+  assert.ok(publication > proofCommand, 'successful release evidence must publish only after every smoke proof');
+  assert.match(smoke, /curl --fail --silent --show-error --connect-timeout 10 --max-time 30 "\$PRODUCTION_HEALTH_URL"/);
 });
 
 test('production runbooks use project-scoped Compose operations', () => {
@@ -1515,12 +1918,51 @@ test('production runbooks use project-scoped Compose operations', () => {
     'docs/runbooks/disposable-dev-server.md',
     'docs/runbooks/high-cpu.md',
     'docs/runbooks/high-error-rate.md',
+    'docs/runbooks/incident-response.md',
     'docs/runbooks/production-readiness.md',
     'docs/runbooks/security-incident.md',
+    'docs/runbooks/service-level-objectives.md',
   ];
   const runbooks = runbookFiles.map((file) => read(file)).join('\n');
   const productionReadiness = read('docs/runbooks/production-readiness.md');
   const rollbackRunbook = read('docs/runbooks/deployment-rollback.md');
+  const ownedProductionRunbooks = [
+    'docs/runbooks/high-cpu.md',
+    'docs/runbooks/production-readiness.md',
+    'docs/runbooks/security-incident.md',
+  ];
+
+  const canonical = 'docker compose --project-name lunchlineup --project-directory /opt/lunchlineup/current --env-file /var/lib/lunchlineup/runtime-env/current -f /opt/lunchlineup/current/docker-compose.yml';
+  for (const fixture of [
+    '```bash\ndocker compose restart api\n```',
+    'Run `docker compose config` before launch.',
+    '```bash\ndocker compose \\\n  --project-name lunchlineup \\\n  --project-directory /opt/lunchlineup/current \\\n  -f /opt/lunchlineup/current/docker-compose.yml restart api\n```',
+    '```bash\nalias dc="docker compose"\ndc restart api\n```',
+    '```bash\nDOCKER=docker\n"$DOCKER" compose restart api\n```',
+    '```bash\nCOMMAND=(\n  docker compose restart api\n)\n"${COMMAND[@]}"\n```',
+    `\`\`\`bash\nproduction_compose() { ${canonical} restart api; }\nproduction_compose\n\`\`\``,
+    '```bash\nstate="$(docker compose ps)"\n```',
+    '```bash\nread -r docker_word compose_word <<< "docker compose"\n"$docker_word" "$compose_word" --project-name lunchlineup --project-directory /opt/lunchlineup/current --env-file /var/lib/lunchlineup/runtime-env/current -f /opt/lunchlineup/current/docker-compose.yml ps\n```',
+    `Run \`${canonical} --project-name attacker restart api\`.`,
+  ]) {
+    assert.throws(
+      () => assertCanonicalProductionComposeCommands(fixture, 'fixture.md'),
+      /unscoped production Compose command|indirection|override canonical production Compose scope flags/,
+      fixture,
+    );
+  }
+  assertCanonicalProductionComposeCommands(`Run \`${canonical} config\`.`, 'inline-only-fixture.md');
+  assert.throws(
+    () => assertCanonicalProductionComposeCommands(
+      `Do not run raw \`docker compose restart api\`.\n\n\`\`\`bash\n${canonical} ps\n\`\`\``,
+      'prose-inline-separated-fixture.md',
+    ),
+    /unscoped production Compose command/,
+  );
+  assertCanonicalProductionComposeCommands('```bash\ndocker compose \\\n  --project-name lunchlineup \\\n  --project-directory /opt/lunchlineup/current \\\n  --env-file /var/lib/lunchlineup/runtime-env/current \\\n  -f /opt/lunchlineup/current/docker-compose.yml \\\n  ps\n```', 'multiline-valid-fixture.md');
+  for (const file of ownedProductionRunbooks) {
+    assertCanonicalProductionComposeCommands(read(file), file);
+  }
 
   assert.doesNotMatch(runbooks, /lunchlineup-(api|web|engine|worker|postgres|pgbouncer|proxy|control)\b/);
   assert.doesNotMatch(runbooks, /guest:guest|docker service update|generate-secrets\.sh/);
@@ -1532,7 +1974,7 @@ test('production runbooks use project-scoped Compose operations', () => {
   assert.match(rollbackRunbook, /PREVIOUS_RELEASE_SOURCE_SHA/);
   assert.match(rollbackRunbook, /PRODUCTION_POST_DEPLOY_PROOF_COMMAND/);
   assert.match(rollbackRunbook, /post-deploy proof JSON/);
-  assert.match(runbooks, /docker compose exec prometheus/);
+  assert.match(runbooks, /docker compose[\s\S]*exec prometheus/);
   assert.match(runbooks, /verify-deploy-source/);
   assert.match(runbooks, /DEPLOYED_GIT_SHA/);
   assert.match(runbooks, /BACKUP_ENCRYPTION_KEY/);

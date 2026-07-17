@@ -33,8 +33,16 @@ function createGuard() {
             timeToBlockExpire: 0,
         }),
     };
-    const guard = new TestRateLimitsGuard([] as any, storageService as any, new Reflector());
-    return { guard, storageService };
+    const tenantDb = {
+        withTenant: vi.fn().mockRejectedValue(new Error('tenant unavailable')),
+    };
+    const guard = new TestRateLimitsGuard(
+        [] as any,
+        storageService as any,
+        new Reflector(),
+        tenantDb as any,
+    );
+    return { guard, storageService, tenantDb };
 }
 
 describe('RateLimitsGuard', () => {
@@ -96,9 +104,79 @@ describe('RateLimitsGuard', () => {
             generateKey,
         });
 
-        expect(generateKey).toHaveBeenCalledWith(context, 'tenant-1:user-1:session-1', 'auth');
+        const expectedSessionTracker = 'sha256:'
+            + createHash('sha256').update('auth-session:tenant-1:user-1:session-1').digest('hex');
+        expect(generateKey).toHaveBeenCalledWith(context, expectedSessionTracker, 'auth');
         expect(getTracker).not.toHaveBeenCalled();
         expect(storageService.increment).toHaveBeenCalledWith('mfa-key', 900_000, 5, 900_000, 'auth');
+    });
+
+    it('uses verified principals plus a separate tenant ceiling for authenticated API traffic', async () => {
+        const { guard, storageService } = createGuard();
+        (guard as any).tenantDb = {
+            withTenant: vi.fn(async (_tenantId: string, fn: any) => fn({
+                tenant: {
+                    findUnique: vi.fn().mockResolvedValue({
+                        planTier: 'FREE',
+                        status: 'ACTIVE',
+                        stripeSubscriptionId: null,
+                        stripeSubscriptionCurrentPeriodEnd: null,
+                    }),
+                },
+            })),
+        };
+        const handler = function apiRoute() {};
+        const first = createContext(handler, {
+            user: { tenantId: 'tenant-1', sub: 'user-1', sessionId: 'session-1' },
+            headers: {
+                'x-user-id': 'spoofed-user',
+                'x-tenant-id': 'spoofed-tenant',
+                'x-session-id': 'spoofed-session',
+            },
+        });
+        const second = createContext(handler, {
+            user: { tenantId: 'tenant-1', sub: 'user-2', sessionId: 'session-2' },
+        });
+        const getTracker = vi.fn().mockResolvedValue('203.0.113.20');
+        const firstKey = vi.fn((_context, tracker: string, name: string) => name + ':' + tracker);
+        const secondKey = vi.fn((_context, tracker: string, name: string) => name + ':' + tracker);
+
+        for (const [context, generateKey] of [
+            [first.context, firstKey],
+            [second.context, secondKey],
+        ] as const) {
+            await guard.runHandleRequest({
+                context,
+                throttler: { name: 'default' },
+                limit: 100,
+                ttl: 60_000,
+                blockDuration: 60_000,
+                getTracker,
+                generateKey,
+            });
+        }
+
+        const firstPrincipal = 'sha256:'
+            + createHash('sha256').update('api-principal:tenant-1:user-1').digest('hex');
+        const secondPrincipal = 'sha256:'
+            + createHash('sha256').update('api-principal:tenant-1:user-2').digest('hex');
+        const tenantTracker = 'sha256:'
+            + createHash('sha256').update('api-tenant:tenant-1').digest('hex');
+        expect(firstKey).toHaveBeenNthCalledWith(1, first.context, firstPrincipal, 'default');
+        expect(firstKey).toHaveBeenNthCalledWith(2, first.context, tenantTracker, 'tenantCeiling');
+        expect(secondKey).toHaveBeenNthCalledWith(1, second.context, secondPrincipal, 'default');
+        expect(secondKey).toHaveBeenNthCalledWith(2, second.context, tenantTracker, 'tenantCeiling');
+        expect(firstPrincipal).not.toBe(secondPrincipal);
+        expect(firstKey.mock.calls.flat().join(':')).not.toContain('spoofed');
+        expect(getTracker).not.toHaveBeenCalled();
+        expect(storageService.increment).toHaveBeenCalledWith(
+            'default:' + firstPrincipal, 60_000, 60, 60_000, 'default',
+        );
+        expect(storageService.increment).toHaveBeenCalledWith(
+            'tenantCeiling:' + tenantTracker, 60_000, 600, 60_000, 'tenantCeiling',
+        );
+        expect(first.response.header).toHaveBeenCalledWith('X-RateLimit-Limit', 60);
+        expect(first.response.header).toHaveBeenCalledWith('X-RateLimit-Limit-tenantCeiling', 600);
     });
 
     it('separates cross-user NAT budgets while retaining a shared source-IP ceiling', async () => {
@@ -347,6 +425,7 @@ describe('RateLimitsGuard', () => {
                         planTier: 'GROWTH',
                         status: 'PAST_DUE',
                         stripeSubscriptionId: 'sub_123',
+                        stripeSubscriptionCurrentPeriodEnd: new Date('2099-01-01T00:00:00.000Z'),
                     }),
                 },
             })),
@@ -366,20 +445,70 @@ describe('RateLimitsGuard', () => {
         expect(response.header).toHaveBeenCalledWith('X-RateLimit-Limit', 60);
     });
 
-    it('applies paid quotas only for active Stripe-backed tenants', async () => {
+    it.each([
+        ['missing paid-through', {
+            planTier: 'GROWTH',
+            status: 'ACTIVE',
+            stripeSubscriptionId: 'sub_123',
+            stripeSubscriptionCurrentPeriodEnd: null,
+        }],
+        ['expired paid-through', {
+            planTier: 'GROWTH',
+            status: 'ACTIVE',
+            stripeSubscriptionId: 'sub_123',
+            stripeSubscriptionCurrentPeriodEnd: new Date('2000-01-01T00:00:00.000Z'),
+        }],
+        ['blank subscription ID', {
+            planTier: 'GROWTH',
+            status: 'ACTIVE',
+            stripeSubscriptionId: '   ',
+            stripeSubscriptionCurrentPeriodEnd: new Date('2099-01-01T00:00:00.000Z'),
+        }],
+        ['free plan', {
+            planTier: 'FREE',
+            status: 'ACTIVE',
+            stripeSubscriptionId: 'sub_123',
+            stripeSubscriptionCurrentPeriodEnd: new Date('2099-01-01T00:00:00.000Z'),
+        }],
+    ])('fails %s to the free quota', async (_label, tenant) => {
         const { guard, storageService } = createGuard();
         const { context, response } = createContext(function apiRoute() {}, {
             user: { tenantId: 'tenant-1' },
         });
         (guard as any).tenantDb = {
             withTenant: vi.fn(async (_tenantId: string, fn: any) => fn({
-                tenant: {
-                    findUnique: vi.fn().mockResolvedValue({
-                        planTier: 'GROWTH',
-                        status: 'ACTIVE',
-                        stripeSubscriptionId: 'sub_123',
-                    }),
-                },
+                tenant: { findUnique: vi.fn().mockResolvedValue(tenant) },
+            })),
+        };
+
+        await guard.runHandleRequest({
+            context,
+            throttler: { name: 'default' },
+            limit: 100,
+            ttl: 60_000,
+            blockDuration: 60_000,
+            getTracker: vi.fn().mockResolvedValue('ip-1'),
+            generateKey: vi.fn().mockReturnValue('api-key'),
+        });
+
+        expect(storageService.increment).toHaveBeenCalledWith('api-key', 60_000, 60, 60_000, 'default');
+        expect(response.header).toHaveBeenCalledWith('X-RateLimit-Limit', 60);
+    });
+
+    it('applies paid quotas only for active Stripe-backed tenants with future paid-through', async () => {
+        const { guard, storageService } = createGuard();
+        const { context, response } = createContext(function apiRoute() {}, {
+            user: { tenantId: 'tenant-1' },
+        });
+        const findUnique = vi.fn().mockResolvedValue({
+            planTier: 'GROWTH',
+            status: 'ACTIVE',
+            stripeSubscriptionId: 'sub_123',
+            stripeSubscriptionCurrentPeriodEnd: new Date('2099-01-01T00:00:00.000Z'),
+        });
+        (guard as any).tenantDb = {
+            withTenant: vi.fn(async (_tenantId: string, fn: any) => fn({
+                tenant: { findUnique },
             })),
         };
 
@@ -395,5 +524,44 @@ describe('RateLimitsGuard', () => {
 
         expect(storageService.increment).toHaveBeenCalledWith('api-key', 60_000, 1000, 60_000, 'default');
         expect(response.header).toHaveBeenCalledWith('X-RateLimit-Limit', 1000);
+        expect(findUnique).toHaveBeenCalledWith({
+            where: { id: 'tenant-1' },
+            select: {
+                planTier: true,
+                status: true,
+                stripeSubscriptionId: true,
+                stripeSubscriptionCurrentPeriodEnd: true,
+            },
+        });
+    });
+
+    it('does not cache a paid quota beyond its authoritative period end', async () => {
+        vi.useFakeTimers();
+        vi.setSystemTime(new Date('2026-07-16T00:00:00.000Z'));
+        try {
+            const { guard } = createGuard();
+            const withTenant = vi.fn(async (_tenantId: string, fn: any) => fn({
+                tenant: {
+                    findUnique: vi.fn().mockResolvedValue({
+                        planTier: 'GROWTH',
+                        status: 'ACTIVE',
+                        stripeSubscriptionId: 'sub_123',
+                        stripeSubscriptionCurrentPeriodEnd: new Date('2026-07-16T00:00:01.000Z'),
+                    }),
+                },
+            }));
+            (guard as any).tenantDb = { withTenant };
+
+            const paid = await (guard as any).resolveTenantRateLimits('tenant-1');
+            expect(paid.apiReqPerMin).toBe(1000);
+            expect(withTenant).toHaveBeenCalledOnce();
+
+            vi.advanceTimersByTime(2_000);
+            const expired = await (guard as any).resolveTenantRateLimits('tenant-1');
+            expect(expired.apiReqPerMin).toBe(60);
+            expect(withTenant).toHaveBeenCalledTimes(2);
+        } finally {
+            vi.useRealTimers();
+        }
     });
 });

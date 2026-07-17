@@ -14,6 +14,11 @@ describe('Playwright mock harness contract', () => {
     expect(playwrightConfig).toContain("NODE_ENV: 'development'");
   });
 
+  it('supports explicit closed-beta rendering without weakening the default open test harness', () => {
+    expect(playwrightConfig).toContain("const mockSignupMode = process.env.E2E_SIGNUP_MODE?.trim().toLowerCase() || 'open';");
+    expect(playwrightConfig).toContain("!['closed_beta', 'invite_only', 'open'].includes(mockSignupMode)");
+    expect(playwrightConfig).toContain('NEXT_PUBLIC_SIGNUP_MODE: mockSignupMode');
+  });
   it('serializes only mock-state runs and preserves external target detection', () => {
     expect(playwrightConfig).toContain(
       "const useMockApi = process.env.E2E_MOCK_API !== '0' && !runFullStack && !process.env.BASE_URL;",
@@ -23,6 +28,16 @@ describe('Playwright mock harness contract', () => {
     expect(playwrightConfig).toContain('workers: serializeMockApiTests || process.env.CI ? 1 : undefined');
     expect(playwrightConfig).toContain('const webServer = process.env.BASE_URL');
     expect(playwrightConfig).toContain('baseURL: process.env.BASE_URL || localBaseUrl');
+  });
+
+  it('keeps automatic ports inside a browser-safe per-process range', () => {
+    expect(playwrightConfig).toContain('const AUTOMATIC_PORT_BASE = 4300;');
+    expect(playwrightConfig).toContain('const AUTOMATIC_PORT_PAIR_COUNT = 300;');
+    expect(playwrightConfig).toContain('process.pid % AUTOMATIC_PORT_PAIR_COUNT');
+    for (const blockedPort of [5060, 5061, 6000, 6566, 6665, 6669, 6697, 10080]) {
+      expect(playwrightConfig).toContain(String(blockedPort));
+    }
+    expect(playwrightConfig).toContain('BLOCKED_BROWSER_PORTS.has(parsed)');
   });
 
   it('does not run a production web build before the default CI mock suite', () => {

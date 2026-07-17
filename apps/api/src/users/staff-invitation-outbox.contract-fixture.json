@@ -1,0 +1,18 @@
+{
+  "version": 1,
+  "keyHex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+  "tenantId": "tenant-fixture",
+  "outboxId": "outbox-fixture",
+  "userId": "user-fixture",
+  "recipientHash": "e52d861b5f69e8abc1900832f91fbf15be98db360a70dd41f88f08ba9ef79716",
+  "purpose": "STAFF_INVITATION",
+  "payloadVersion": 1,
+  "aadUtf8": "{\"tenantId\":\"tenant-fixture\",\"outboxId\":\"outbox-fixture\",\"userId\":\"user-fixture\",\"recipientHash\":\"e52d861b5f69e8abc1900832f91fbf15be98db360a70dd41f88f08ba9ef79716\",\"purpose\":\"STAFF_INVITATION\",\"payloadVersion\":1}",
+  "nonceBase64": "EBESExQVFhcYGRob",
+  "tagBase64": "EC/hiE5Kvyypwilr9YymfA==",
+  "ciphertextBase64": "BtzqcyqgStqvG3w/NVsPOq8kO3x+7D7fkZCWAjsUMaMxhCdvkIgNgBMUvnP+/X5rf90zFsGxe4HIf1xXrP7KHWyMXlcg0WUWEA==",
+  "expectedPayload": {
+    "recipient": "fixture.invitee@example.com",
+    "template": "staff_invitation"
+  }
+}

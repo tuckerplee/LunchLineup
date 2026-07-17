@@ -2,7 +2,14 @@
 
 import type { CSSProperties } from 'react';
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import {
+    accountDeletionReceiptFromResponse,
+    storeAccountDeletionReceipt,
+    type AccountDeletionReceipt,
+    type AccountDeletionResponse,
+} from '@/app/auth/account-deleted/account-deletion-receipt';
 import { apiPath, fetchJsonWithSession } from '@/lib/client-api';
+import { withRequestTimeout } from '@/lib/http-safety';
 
 type NoticeTone = 'success' | 'error';
 type NoticeStyle = (tone: NoticeTone) => CSSProperties;
@@ -28,8 +35,12 @@ type AccountStatus = {
     status?: string;
     lifecycleStatus?: string;
     cancelledAt?: string | null;
+    cancellationEffectiveAt?: string | null;
     deletionRequestedAt?: string | null;
     applicationDataPurgedAt?: string | null;
+    legalHold?: {
+        placedAt: string;
+    } | null;
     retention?: AccountRetention;
     retainedRecords?: string[];
 };
@@ -120,11 +131,14 @@ export function AccountLifecyclePanel({
     const [cancelConfirmation, setCancelConfirmation] = useState('');
     const [cancelReason, setCancelReason] = useState('');
     const [deleteConfirmation, setDeleteConfirmation] = useState('');
+    const [pendingDeletionReceipt, setPendingDeletionReceipt] = useState<AccountDeletionReceipt | null>(null);
     const [exportJob, setExportJob] = useState<AccountExportJob | null>(null);
     const [recoveringExport, setRecoveringExport] = useState(false);
     const [exportError, setExportError] = useState<string | null>(null);
 
     const tenantSlug = status?.slug ?? '';
+    const deletionRecorded = pendingDeletionReceipt !== null;
+    const cancellationScheduled = status?.lifecycleStatus === 'CANCELLATION_SCHEDULED';
     const retentionRows = useMemo(() => {
         const retention = status?.retention ?? null;
         return [
@@ -155,7 +169,7 @@ export function AccountLifecyclePanel({
     }, [loadStatus]);
 
     const recoverExport = useCallback(async () => {
-        if (!canExportAccount) {
+        if (!canExportAccount || deletionRecorded) {
             setExportJob(null);
             return;
         }
@@ -170,7 +184,7 @@ export function AccountLifecyclePanel({
         } finally {
             setRecoveringExport(false);
         }
-    }, [canExportAccount]);
+    }, [canExportAccount, deletionRecorded]);
 
     useEffect(() => {
         void recoverExport();
@@ -181,7 +195,7 @@ export function AccountLifecyclePanel({
     const exportIsActive = isActiveExportJob(exportJob);
 
     useEffect(() => {
-        if (!canExportAccount || !exportIsActive || !exportJobId || !exportStatusPath) return;
+        if (deletionRecorded || !canExportAccount || !exportIsActive || !exportJobId || !exportStatusPath) return;
 
         let disposed = false;
         let timeoutId: number | undefined;
@@ -213,7 +227,7 @@ export function AccountLifecyclePanel({
             disposed = true;
             if (timeoutId !== undefined) window.clearTimeout(timeoutId);
         };
-    }, [canExportAccount, exportIsActive, exportJobId, exportStatusPath]);
+    }, [canExportAccount, deletionRecorded, exportIsActive, exportJobId, exportStatusPath]);
 
     const exportAccount = useCallback(async () => {
         if (!canExportAccount) {
@@ -273,6 +287,11 @@ export function AccountLifecyclePanel({
             });
             setCancelConfirmation('');
             setCancelReason('');
+            setStatus((current) => ({
+                ...(current ?? {}),
+                lifecycleStatus: 'CANCELLATION_SCHEDULED',
+                cancellationEffectiveAt: result.cancellationEffectiveAt ?? null,
+            }));
             await loadStatus();
             const effectiveAt = result.cancellationEffectiveAt
                 ? ` Access remains available through ${formatDate(result.cancellationEffectiveAt)}.`
@@ -285,7 +304,42 @@ export function AccountLifecyclePanel({
         }
     }, [canManageAccountLifecycle, cancelConfirmation, cancelReason, loadStatus, tenantSlug]);
 
+    const finishDeletion = useCallback(async (receipt: AccountDeletionReceipt) => {
+        storeAccountDeletionReceipt(window.sessionStorage, receipt);
+        const response = await withRequestTimeout(
+            (signal) => fetch('/auth/logout', {
+                method: 'POST',
+                headers: { 'x-account-deletion-complete': '1' },
+                credentials: 'same-origin',
+                cache: 'no-store',
+                redirect: 'error',
+                signal,
+            }),
+            15_000,
+        );
+        if (!response.ok) {
+            throw new Error('Browser session cleanup failed.');
+        }
+        window.location.replace('/auth/account-deleted');
+    }, []);
+
     const requestDeletion = useCallback(async () => {
+        if (pendingDeletionReceipt) {
+            setAction('delete');
+            setNotice(null);
+            try {
+                await finishDeletion(pendingDeletionReceipt);
+            } catch {
+                setNotice({
+                    tone: 'error',
+                    text: 'Account deletion was recorded, but browser sign-out did not complete. Continue to retry.',
+                });
+            } finally {
+                setAction(null);
+            }
+            return;
+        }
+
         if (!canManageAccountLifecycle) {
             setNotice({ tone: 'error', text: 'Account deletion requires tenant lifecycle access.' });
             return;
@@ -298,20 +352,34 @@ export function AccountLifecyclePanel({
         setAction('delete');
         setNotice(null);
         try {
-            await fetchJsonWithSession('/admin/account', {
+            const result = await fetchJsonWithSession<AccountDeletionResponse>('/admin/account', {
                 method: 'DELETE',
                 headers: jsonHeaders(),
                 body: JSON.stringify({ confirmation: deleteConfirmation }),
             });
+            const receipt = accountDeletionReceiptFromResponse(result);
             setDeleteConfirmation('');
-            await loadStatus();
-            setNotice({ tone: 'success', text: 'Account deletion request recorded.' });
+            setPendingDeletionReceipt(receipt);
+            try {
+                await finishDeletion(receipt);
+            } catch {
+                setNotice({
+                    tone: 'error',
+                    text: 'Account deletion was recorded, but browser sign-out did not complete. Continue to retry.',
+                });
+            }
         } catch (error) {
             setNotice({ tone: 'error', text: error instanceof Error ? error.message : 'Unable to request deletion.' });
         } finally {
             setAction(null);
         }
-    }, [canManageAccountLifecycle, deleteConfirmation, loadStatus, tenantSlug]);
+    }, [
+        canManageAccountLifecycle,
+        deleteConfirmation,
+        finishDeletion,
+        pendingDeletionReceipt,
+        tenantSlug,
+    ]);
 
     return (
         <div style={{ display: 'grid', gap: '1rem' }}>
@@ -328,11 +396,18 @@ export function AccountLifecyclePanel({
                 </div>
             ) : null}
 
+            {status?.legalHold ? (
+                <div className="surface-muted" style={{ padding: '0.85rem' }} role="status">
+                    Retention hold active; deletion timelines are paused.
+                </div>
+            ) : null}
+
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(170px, 1fr))', gap: '0.75rem' }}>
                 {[
                     { label: 'Workspace slug', value: tenantSlug || 'Unknown' },
                     { label: 'Tenant status', value: formatStatus(status?.status) },
                     { label: 'Lifecycle', value: formatStatus(status?.lifecycleStatus) },
+                    { label: 'Cancellation effective', value: formatDate(status?.cancellationEffectiveAt) },
                     { label: 'Cancelled at', value: formatDate(status?.cancelledAt) },
                 ].map((item) => (
                     <div key={item.label} className="surface-muted" style={{ padding: '0.85rem', display: 'grid', gap: 3 }}>
@@ -370,7 +445,7 @@ export function AccountLifecyclePanel({
                                 className="btn btn-secondary"
                                 type="button"
                                 onClick={downloadExport}
-                                disabled={loading || action !== null || !canExportAccount}
+                                disabled={loading || action !== null || !canExportAccount || deletionRecorded}
                             >
                                 Download export
                             </button>
@@ -379,7 +454,7 @@ export function AccountLifecyclePanel({
                             className="btn btn-secondary"
                             type="button"
                             onClick={() => void exportAccount()}
-                            disabled={loading || recoveringExport || action !== null || !canExportAccount || exportIsActive}
+                            disabled={loading || recoveringExport || action !== null || !canExportAccount || exportIsActive || deletionRecorded}
                         >
                             {recoveringExport
                                 ? 'Checking exports...'
@@ -415,7 +490,9 @@ export function AccountLifecyclePanel({
                 <div style={{ display: 'grid', gap: 2 }}>
                     <div style={{ fontSize: '0.9rem', fontWeight: 800, color: 'var(--text-primary)' }}>Cancel subscription renewal</div>
                     <div style={{ color: 'var(--text-muted)', fontSize: '0.8rem' }}>
-                        Renewal stops at the end of the current billing period. Workspace access continues through the paid period.
+                        {cancellationScheduled
+                            ? `Renewal cancellation is scheduled for ${formatDate(status?.cancellationEffectiveAt)}. Workspace access continues through the paid period.`
+                            : 'Renewal stops at the end of the current billing period. Workspace access continues through the paid period.'}
                     </div>
                 </div>
                 <label className="form-group">
@@ -425,7 +502,7 @@ export function AccountLifecyclePanel({
                         value={cancelConfirmation}
                         onChange={(event) => setCancelConfirmation(event.target.value)}
                         placeholder={tenantSlug || 'workspace-slug'}
-                        disabled={!canManageAccountLifecycle || loading || action !== null}
+                        disabled={!canManageAccountLifecycle || loading || action !== null || deletionRecorded || cancellationScheduled}
                     />
                 </label>
                 <label className="form-group">
@@ -434,7 +511,7 @@ export function AccountLifecyclePanel({
                         className="form-input"
                         value={cancelReason}
                         onChange={(event) => setCancelReason(event.target.value)}
-                        disabled={!canManageAccountLifecycle || loading || action !== null}
+                        disabled={!canManageAccountLifecycle || loading || action !== null || deletionRecorded || cancellationScheduled}
                     />
                 </label>
                 <div>
@@ -442,9 +519,11 @@ export function AccountLifecyclePanel({
                         className="btn btn-secondary"
                         type="button"
                         onClick={() => void cancelAccount()}
-                        disabled={!canManageAccountLifecycle || loading || action !== null}
+                        disabled={!canManageAccountLifecycle || loading || action !== null || deletionRecorded || cancellationScheduled}
                     >
-                        {action === 'cancel' ? 'Cancelling...' : 'Cancel renewal'}
+                        {action === 'cancel'
+                            ? 'Cancelling...'
+                            : cancellationScheduled ? 'Cancellation scheduled' : 'Cancel renewal'}
                     </button>
                 </div>
             </div>
@@ -463,7 +542,7 @@ export function AccountLifecyclePanel({
                         value={deleteConfirmation}
                         onChange={(event) => setDeleteConfirmation(event.target.value)}
                         placeholder={tenantSlug || 'workspace-slug'}
-                        disabled={!canManageAccountLifecycle || loading || action !== null}
+                        disabled={!canManageAccountLifecycle || loading || action !== null || deletionRecorded}
                     />
                 </label>
                 <div>
@@ -474,12 +553,14 @@ export function AccountLifecyclePanel({
                         disabled={!canManageAccountLifecycle || loading || action !== null}
                         style={{ borderColor: '#ffd0da', color: '#b4233f' }}
                     >
-                        {action === 'delete' ? 'Requesting...' : 'Request deletion'}
+                        {action === 'delete'
+                            ? deletionRecorded ? 'Clearing session...' : 'Requesting...'
+                            : deletionRecorded ? 'Continue to confirmation' : 'Request deletion'}
                     </button>
                 </div>
             </div>
 
-            <button className="btn btn-secondary" type="button" onClick={() => void loadStatus()} disabled={loading || action !== null}>
+            <button className="btn btn-secondary" type="button" onClick={() => void loadStatus()} disabled={loading || action !== null || deletionRecorded}>
                 {loading ? 'Refreshing...' : 'Refresh account status'}
             </button>
         </div>

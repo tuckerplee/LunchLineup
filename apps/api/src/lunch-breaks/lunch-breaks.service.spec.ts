@@ -1,10 +1,14 @@
+import { ForbiddenException } from '@nestjs/common';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { decodeBoundedListCursor } from '../common/bounded-pagination';
 import { TenantPrismaService } from '../database/tenant-prisma.service';
 import { LunchBreaksService } from './lunch-breaks.service';
+import { setupShiftsRequestHash } from './setup-shifts-idempotency';
 
 function buildPrismaMock() {
     const generationRequests = new Map<string, any>();
     const creditTransactions = new Map<string, any>();
+    const auditLogs: any[] = [];
     const state = { usageCredits: 100 };
     const requestKey = (where: any) => {
         const identity = where?.tenantId_requestKeyHash;
@@ -18,6 +22,7 @@ function buildPrismaMock() {
         if (where.requestHash !== undefined && request.requestHash !== where.requestHash) return false;
         if (where.status !== undefined && request.status !== where.status) return false;
         if (where.claimToken !== undefined && request.claimToken !== where.claimToken) return false;
+        if (where.failureStatus !== undefined && request.failureStatus !== where.failureStatus) return false;
         if (where.OR) {
             return where.OR.some((condition: any) => {
                 if (condition.claimExpiresAt === null) return request.claimExpiresAt === null;
@@ -51,7 +56,11 @@ function buildPrismaMock() {
             ? query.strings.join(' ')
             : String(query);
     const tx = {
+        $executeRaw: vi.fn().mockResolvedValue(1),
         $queryRaw: vi.fn(async (query: any, ...values: any[]): Promise<any[]> => {
+            if (sqlText(query).includes('FROM "User"')) {
+                return [{ id: 'user-1' }];
+            }
             if (sqlText(query).includes('UPDATE "Tenant"')) {
                 const cost = Number(values[0]);
                 if (state.usageCredits < cost) return [];
@@ -83,6 +92,7 @@ function buildPrismaMock() {
         break: {
             deleteMany: vi.fn().mockResolvedValue({ count: 0 }),
             createMany: vi.fn().mockResolvedValue({ count: 0 }),
+            updateMany: vi.fn().mockResolvedValue({ count: 1 }),
         },
         lunchBreakGenerationRequest: {
             findUnique: vi.fn(async ({ where }: any) => generationRequests.get(requestKey(where)) ?? null),
@@ -125,18 +135,37 @@ function buildPrismaMock() {
                 return data;
             }),
         },
+        auditLog: {
+            findFirst: vi.fn(async ({ where }: any) => auditLogs.find((entry) => (
+                entry.tenantId === where.tenantId
+                && entry.action === where.action
+                && entry.resource === where.resource
+                && entry.resourceId === where.resourceId
+            )) ? { newValue: auditLogs.find((entry) => (
+                entry.tenantId === where.tenantId
+                && entry.action === where.action
+                && entry.resource === where.resource
+                && entry.resourceId === where.resourceId
+            )).newValue } : null),
+            create: vi.fn(async ({ data }: any) => {
+                auditLogs.push(structuredClone(data));
+                return data;
+            }),
+        },
     };
 
     return {
         $transaction: vi.fn(async (fn: any) => {
             const requestSnapshot = cloneMap(generationRequests);
             const creditSnapshot = cloneMap(creditTransactions);
+            const auditSnapshot = structuredClone(auditLogs);
             const balanceSnapshot = state.usageCredits;
             try {
                 return await fn(tx);
             } catch (error) {
                 restoreMap(generationRequests, requestSnapshot);
                 restoreMap(creditTransactions, creditSnapshot);
+                auditLogs.splice(0, auditLogs.length, ...auditSnapshot);
                 state.usageCredits = balanceSnapshot;
                 throw error;
             }
@@ -164,6 +193,7 @@ function buildPrismaMock() {
         break: {
             deleteMany: vi.fn(),
             createMany: vi.fn(),
+            updateMany: vi.fn(),
         },
         lunchBreakGenerationRequest: {
             findUnique: vi.fn(),
@@ -174,8 +204,13 @@ function buildPrismaMock() {
         creditTransaction: {
             create: vi.fn(),
         },
+        auditLog: {
+            findFirst: vi.fn(),
+            create: vi.fn(),
+        },
         generationRequests,
         creditTransactions,
+        auditLogs,
         state,
         tx,
     };
@@ -183,7 +218,7 @@ function buildPrismaMock() {
 
 function expectTenantContextUsed(prisma: ReturnType<typeof buildPrismaMock>) {
     expect(prisma.$transaction).toHaveBeenCalled();
-    expect(prisma.tx.$queryRaw).toHaveBeenCalled();
+    expect(prisma.tx.$executeRaw).toHaveBeenCalled();
 }
 
 function expectNoDirectTenantPrismaCalls(prisma: ReturnType<typeof buildPrismaMock>) {
@@ -200,11 +235,14 @@ function expectNoDirectTenantPrismaCalls(prisma: ReturnType<typeof buildPrismaMo
         prisma.user.findFirst,
         prisma.break.deleteMany,
         prisma.break.createMany,
+        prisma.break.updateMany,
         prisma.lunchBreakGenerationRequest.findUnique,
         prisma.lunchBreakGenerationRequest.upsert,
         prisma.lunchBreakGenerationRequest.update,
         prisma.lunchBreakGenerationRequest.updateMany,
         prisma.creditTransaction.create,
+        prisma.auditLog.findFirst,
+        prisma.auditLog.create,
     ]) {
         expect(delegate).not.toHaveBeenCalled();
     }
@@ -214,9 +252,12 @@ describe('LunchBreaksService', () => {
     let prisma: ReturnType<typeof buildPrismaMock>;
     let featureAccess: {
         assertFeatureEnabled: ReturnType<typeof vi.fn>;
+        assertFeatureEntitled: ReturnType<typeof vi.fn>;
         resolveTenantFeatures: ReturnType<typeof vi.fn>;
+        lockTenantInTransaction: ReturnType<typeof vi.fn>;
         assertFeatureEnabledInTransaction: ReturnType<typeof vi.fn>;
-        consumeCreditsForFeature: ReturnType<typeof vi.fn>;
+        assertFeatureEntitledInTransaction: ReturnType<typeof vi.fn>;
+        recordFeatureUsageInTransaction: ReturnType<typeof vi.fn>;
     };
     let service: LunchBreaksService;
 
@@ -224,15 +265,14 @@ describe('LunchBreaksService', () => {
         prisma = buildPrismaMock();
         featureAccess = {
             assertFeatureEnabled: vi.fn().mockResolvedValue({ enabled: true }),
+            assertFeatureEntitled: vi.fn().mockResolvedValue({ enabled: true, source: 'credits', creditCost: 2 }),
+            lockTenantInTransaction: vi.fn().mockResolvedValue(undefined),
             assertFeatureEnabledInTransaction: vi.fn().mockResolvedValue({ enabled: true, source: 'credits', creditCost: 2, reason: 'Billable' }),
+            assertFeatureEntitledInTransaction: vi.fn().mockResolvedValue({ enabled: true, source: 'credits', creditCost: 2, reason: 'Entitled' }),
+            recordFeatureUsageInTransaction: vi.fn().mockResolvedValue({ consumedCredits: 2, newBalance: 98 }),
             resolveTenantFeatures: vi.fn().mockResolvedValue({
                 features: { lunch_breaks: { enabled: true, source: 'credits', creditCost: 2 } },
                 usageCredits: 100,
-            }),
-            consumeCreditsForFeature: vi.fn().mockResolvedValue({
-                consumedCredits: 2,
-                newBalance: 98,
-                feature: { enabled: true },
             }),
         };
         service = new LunchBreaksService(
@@ -269,6 +309,74 @@ describe('LunchBreaksService', () => {
         expectTenantContextUsed(prisma);
     });
 
+    it('allows zero-credit active paid tenants to read policy and lunch rows without ledger mutation', async () => {
+        featureAccess.assertFeatureEnabled.mockRejectedValue(new ForbiddenException('Positive wallet required'));
+        prisma.tx.shift.findMany.mockResolvedValue([]);
+
+        await expect(service.getPolicy('tenant-1')).resolves.toEqual(expect.objectContaining({
+            lunchDurationMinutes: 30,
+        }));
+        await expect(service.listLunchBreaks('tenant-1', {})).resolves.toEqual(expect.objectContaining({
+            data: [],
+        }));
+
+        expect(featureAccess.assertFeatureEntitled).toHaveBeenCalledTimes(2);
+        expect(featureAccess.assertFeatureEntitled).toHaveBeenCalledWith('tenant-1', 'lunch_breaks');
+        expect(featureAccess.assertFeatureEnabled).not.toHaveBeenCalled();
+        expect(featureAccess.recordFeatureUsageInTransaction).not.toHaveBeenCalled();
+        expect(prisma.tx.creditTransaction.create).not.toHaveBeenCalled();
+    });
+
+    it('allows a zero-credit active paid tenant to update policy without ledger mutation', async () => {
+        featureAccess.assertFeatureEnabledInTransaction.mockRejectedValue(
+            new ForbiddenException('Positive wallet required'),
+        );
+
+        await expect(service.updatePolicy('tenant-1', { lunchDurationMinutes: 45 }))
+            .resolves.toEqual(expect.objectContaining({ lunchDurationMinutes: 45 }));
+
+        expect(featureAccess.assertFeatureEntitledInTransaction).toHaveBeenCalledWith(
+            prisma.tx,
+            'tenant-1',
+            'lunch_breaks',
+        );
+        expect(featureAccess.assertFeatureEnabledInTransaction).not.toHaveBeenCalled();
+        expect(featureAccess.recordFeatureUsageInTransaction).not.toHaveBeenCalled();
+        expect(prisma.tx.creditTransaction.create).not.toHaveBeenCalled();
+    });
+
+    it.each([
+        {
+            name: 'setup shift persistence',
+            feature: 'scheduling',
+            transactions: 3,
+            mutate: () => service.persistSetupShifts('tenant-1', {
+                locationId: 'location-1',
+                rows: [{
+                    startTime: '2026-03-05T09:00:00.000Z',
+                    endTime: '2026-03-05T17:00:00.000Z',
+                }],
+            }, 'setup-entitlement-loss'),
+        },
+    ])('denies $name from inside its write transaction when entitlement changes', async ({ mutate, feature, transactions }) => {
+        featureAccess.assertFeatureEnabledInTransaction.mockRejectedValue(
+            new ForbiddenException('Subscription inactive or credits exhausted'),
+        );
+
+        await expect(mutate()).rejects.toBeInstanceOf(ForbiddenException);
+
+        expect(featureAccess.assertFeatureEnabledInTransaction).toHaveBeenCalledWith(
+            prisma.tx,
+            'tenant-1',
+            feature,
+        );
+        expect(prisma.$transaction).toHaveBeenCalledTimes(transactions);
+        expect(featureAccess.recordFeatureUsageInTransaction).not.toHaveBeenCalled();
+        expect(prisma.tx.tenantSetting.upsert).not.toHaveBeenCalled();
+        expect(prisma.tx.break.deleteMany).not.toHaveBeenCalled();
+        expect(prisma.tx.shift.create).not.toHaveBeenCalled();
+        expect(prisma.tx.shift.updateMany).not.toHaveBeenCalled();
+    });
     it('generates standalone lunch/breaks from explicit shift payload', async () => {
         const result = await service.generateLunchBreaks('tenant-1', {
             shifts: [
@@ -322,7 +430,142 @@ describe('LunchBreaksService', () => {
         expect(result.creditConsumption).toEqual({ consumedCredits: 2, newBalance: 98, source: 'credits' });
         expect(prisma.state.usageCredits).toBe(98);
         expect(prisma.creditTransactions.size).toBe(1);
-        expect(featureAccess.consumeCreditsForFeature).not.toHaveBeenCalled();
+        expect(Array.from(prisma.creditTransactions.values())[0]).toEqual(expect.objectContaining({
+            amount: -2,
+            reason: expect.stringMatching(/^Lunch\/Break generation \(.+\)$/),
+            balanceAfter: 98,
+        }));
+    });
+
+    it.each([
+        { label: 'plan entitlement', source: 'plan', creditCost: 2 },
+        { label: 'Stripe entitlement', source: 'stripe', creditCost: 2 },
+        { label: 'zero-cost credit entitlement', source: 'credits', creditCost: 0 },
+        { label: 'missing-cost credit entitlement', source: 'credits', creditCost: null },
+    ])('rejects $label without a debit or successful generation', async ({ source, creditCost }) => {
+        featureAccess.assertFeatureEnabledInTransaction.mockResolvedValue({
+            enabled: true,
+            source,
+            creditCost,
+            reason: 'Legacy included usage',
+        });
+
+        await expect(service.generateLunchBreaks('tenant-1', {
+            shifts: [{
+                startTime: '2026-03-05T09:00:00.000Z',
+                endTime: '2026-03-05T17:00:00.000Z',
+                employeeName: 'Alex',
+            }],
+        }, 'invalid-credit-entitlement')).rejects.toThrow(
+            'Lunch/break generation requires an active paid subscription and separately purchased usage credits.',
+        );
+
+        expect(prisma.state.usageCredits).toBe(100);
+        expect(prisma.creditTransactions.size).toBe(0);
+        expect(prisma.tx.creditTransaction.create).not.toHaveBeenCalled();
+        expect(Array.from(prisma.generationRequests.values())[0]).toEqual(expect.objectContaining({
+            status: 'FAILED',
+            response: null,
+            creditConsumption: null,
+        }));
+    });
+
+    it('retries the identical generation intent after a paid subscription is restored', async () => {
+        const input = {
+            shifts: [{
+                startTime: '2026-03-05T09:00:00.000Z',
+                endTime: '2026-03-05T17:00:00.000Z',
+                employeeName: 'Alex',
+            }],
+        };
+        featureAccess.assertFeatureEnabledInTransaction.mockRejectedValueOnce(
+            new ForbiddenException('Paid subscription is inactive.'),
+        );
+
+        await expect(service.generateLunchBreaks('tenant-1', input, 'subscription-restored-intent'))
+            .rejects.toThrow('Paid subscription is inactive.');
+        expect(Array.from(prisma.generationRequests.values())[0]).toEqual(expect.objectContaining({
+            status: 'FAILED',
+            failureStatus: 403,
+            attempts: 1,
+        }));
+
+        const recovered = await service.generateLunchBreaks('tenant-1', input, 'subscription-restored-intent');
+
+        expect(recovered).toEqual(expect.objectContaining({ reused: false }));
+        expect(Array.from(prisma.generationRequests.values())[0]).toEqual(expect.objectContaining({
+            status: 'SUCCEEDED',
+            attempts: 2,
+            failureStatus: null,
+        }));
+        expect(prisma.state.usageCredits).toBe(98);
+        expect(prisma.creditTransactions.size).toBe(1);
+    });
+
+    it('retries the identical generation intent after separately purchased credits are restored', async () => {
+        const input = {
+            shifts: [{
+                startTime: '2026-03-05T09:00:00.000Z',
+                endTime: '2026-03-05T17:00:00.000Z',
+                employeeName: 'Alex',
+            }],
+        };
+        prisma.state.usageCredits = 0;
+
+        await expect(service.generateLunchBreaks('tenant-1', input, 'credits-restored-intent'))
+            .rejects.toThrow('Insufficient usage credits balance.');
+        expect(prisma.creditTransactions.size).toBe(0);
+        expect(Array.from(prisma.generationRequests.values())[0]).toEqual(expect.objectContaining({
+            status: 'FAILED',
+            failureStatus: 403,
+            attempts: 1,
+        }));
+
+        prisma.state.usageCredits = 100;
+        const recovered = await service.generateLunchBreaks('tenant-1', input, 'credits-restored-intent');
+
+        expect(recovered).toEqual(expect.objectContaining({ reused: false }));
+        expect(Array.from(prisma.generationRequests.values())[0]).toEqual(expect.objectContaining({
+            status: 'SUCCEEDED',
+            attempts: 2,
+        }));
+        expect(prisma.state.usageCredits).toBe(98);
+        expect(prisma.creditTransactions.size).toBe(1);
+    });
+
+    it('allows only one caller to reclaim a recoverable failed generation intent', async () => {
+        const input = {
+            shifts: [{
+                startTime: '2026-03-05T09:00:00.000Z',
+                endTime: '2026-03-05T17:00:00.000Z',
+                employeeName: 'Alex',
+            }],
+        };
+        prisma.state.usageCredits = 0;
+        await expect(service.generateLunchBreaks('tenant-1', input, 'failed-two-tab-intent'))
+            .rejects.toThrow('Insufficient usage credits balance.');
+
+        prisma.state.usageCredits = 100;
+        let releasePolicy!: () => void;
+        const policyGate = new Promise<void>((resolve) => {
+            releasePolicy = resolve;
+        });
+        prisma.tx.tenantSetting.findUnique.mockImplementationOnce(async () => {
+            await policyGate;
+            return null;
+        });
+
+        const winner = service.generateLunchBreaks('tenant-1', input, 'failed-two-tab-intent');
+        await vi.waitFor(() => expect(Array.from(prisma.generationRequests.values())[0]).toEqual(
+            expect.objectContaining({ status: 'PENDING', attempts: 2 }),
+        ));
+        await expect(service.generateLunchBreaks('tenant-1', input, 'failed-two-tab-intent'))
+            .rejects.toThrow('already in progress');
+
+        releasePolicy();
+        await expect(winner).resolves.toEqual(expect.objectContaining({ reused: false }));
+        expect(prisma.state.usageCredits).toBe(98);
+        expect(prisma.creditTransactions.size).toBe(1);
     });
 
     it('rejects reuse of an attempt key with a different generation request', async () => {
@@ -415,7 +658,6 @@ describe('LunchBreaksService', () => {
             }],
         }, 'backward-attempt-1')).rejects.toThrow('Shift end time must be after start time.');
 
-        expect(featureAccess.consumeCreditsForFeature).not.toHaveBeenCalled();
     });
 
     it('rejects an empty generation before charging', async () => {
@@ -423,7 +665,6 @@ describe('LunchBreaksService', () => {
             .rejects
             .toThrow('Add at least one valid shift');
 
-        expect(featureAccess.consumeCreditsForFeature).not.toHaveBeenCalled();
     });
 
     it('rejects persisted generation without a location before claiming or charging', async () => {
@@ -521,7 +762,7 @@ describe('LunchBreaksService', () => {
                     {
                         OR: [
                             { userId: null },
-                            { user: { is: { role: { in: ['MANAGER', 'STAFF'] }, deletedAt: null } } },
+                            { user: { is: { role: { in: ['MANAGER', 'STAFF'] }, deletedAt: null, suspendedAt: null } } },
                         ],
                     },
                 ]),
@@ -532,13 +773,16 @@ describe('LunchBreaksService', () => {
         expect(prisma.state.usageCredits).toBe(98);
         expect(prisma.creditTransactions.size).toBe(1);
 
+        featureAccess.assertFeatureEnabledInTransaction.mockRejectedValue(
+            new Error('Subscription is no longer active'),
+        );
         const replay = await service.generateLunchBreaks('tenant-1', {
             locationId: 'location-1',
             persist: true,
         }, 'persist-attempt-1');
         expect(replay.reused).toBe(true);
         expect(replay.data).toEqual(result.data);
-        expect(featureAccess.consumeCreditsForFeature).not.toHaveBeenCalled();
+        expect(featureAccess.assertFeatureEnabledInTransaction).toHaveBeenCalledOnce();
         expect(prisma.tx.break.deleteMany).toHaveBeenCalledOnce();
         expectTenantContextUsed(prisma);
     });
@@ -580,7 +824,7 @@ describe('LunchBreaksService', () => {
                     {
                         OR: [
                             { userId: null },
-                            { user: { is: { role: { in: ['MANAGER', 'STAFF'] }, deletedAt: null } } },
+                            { user: { is: { role: { in: ['MANAGER', 'STAFF'] }, deletedAt: null, suspendedAt: null } } },
                         ],
                     },
                 ]),
@@ -589,6 +833,95 @@ describe('LunchBreaksService', () => {
         expectTenantContextUsed(prisma);
     });
 
+    it('bounds lunch-break rows and applies an ascending continuation cursor', async () => {
+        prisma.tx.shift.findMany
+            .mockResolvedValueOnce([
+                {
+                    id: 'shift-1',
+                    userId: 'user-1',
+                    startTime: new Date('2026-03-05T09:00:00.000Z'),
+                    endTime: new Date('2026-03-05T17:00:00.000Z'),
+                    user: { id: 'user-1', name: 'Alex' },
+                    breaks: [],
+                },
+                {
+                    id: 'shift-2',
+                    userId: 'user-2',
+                    startTime: new Date('2026-03-05T09:00:00.000Z'),
+                    endTime: new Date('2026-03-05T17:00:00.000Z'),
+                    user: { id: 'user-2', name: 'Blair' },
+                    breaks: [],
+                },
+                {
+                    id: 'shift-3',
+                    userId: 'user-3',
+                    startTime: new Date('2026-03-05T10:00:00.000Z'),
+                    endTime: new Date('2026-03-05T18:00:00.000Z'),
+                    user: { id: 'user-3', name: 'Casey' },
+                    breaks: [],
+                },
+            ])
+            .mockResolvedValueOnce([]);
+
+        const firstPage = await service.listLunchBreaks('tenant-1', {
+            startDate: '2026-03-05T00:00:00.000Z',
+            endDate: '2026-03-06T00:00:00.000Z',
+            limit: '2',
+        });
+        const cursor = decodeBoundedListCursor(firstPage.pagination.nextCursor);
+
+        expect(firstPage.data.map((row: any) => row.shiftId)).toEqual(['shift-1', 'shift-2']);
+        expect(firstPage.pagination).toMatchObject({
+            limit: 2,
+            returned: 2,
+            hasMore: true,
+            window: {
+                startDate: '2026-03-05T00:00:00.000Z',
+                endDate: '2026-03-06T00:00:00.000Z',
+            },
+        });
+        expect(cursor).toEqual({
+            timestamp: new Date('2026-03-05T09:00:00.000Z'),
+            id: 'shift-2',
+        });
+        expect(prisma.tx.shift.findMany).toHaveBeenNthCalledWith(1, expect.objectContaining({
+            orderBy: [{ startTime: 'asc' }, { id: 'asc' }],
+            take: 3,
+        }));
+
+        await service.listLunchBreaks('tenant-1', {
+            startDate: '2026-03-05T00:00:00.000Z',
+            endDate: '2026-03-06T00:00:00.000Z',
+            limit: '2',
+            cursor: firstPage.pagination.nextCursor,
+        });
+
+        expect(prisma.tx.shift.findMany).toHaveBeenNthCalledWith(2, expect.objectContaining({
+            where: expect.objectContaining({
+                AND: expect.arrayContaining([{
+                    OR: [
+                        { startTime: { gt: new Date('2026-03-05T09:00:00.000Z') } },
+                        { startTime: new Date('2026-03-05T09:00:00.000Z'), id: { gt: 'shift-2' } },
+                    ],
+                }]),
+            }),
+            orderBy: [{ startTime: 'asc' }, { id: 'asc' }],
+            take: 3,
+        }));
+    });
+
+    it('rejects invalid lunch-break pagination before querying shifts', async () => {
+        await expect(service.listLunchBreaks('tenant-1', {
+            limit: '201',
+        })).rejects.toThrow('Invalid limit');
+
+        await expect(service.listLunchBreaks('tenant-1', {
+            startDate: '2026-03-06T00:00:00.000Z',
+            endDate: '2026-03-05T00:00:00.000Z',
+        })).rejects.toThrow('endDate must be after startDate');
+
+        expect(prisma.tx.shift.findMany).not.toHaveBeenCalled();
+    });
     it('preserves persisted break identity over paid/order fallback', async () => {
         prisma.tx.shift.findMany.mockResolvedValue([
             {
@@ -682,6 +1015,8 @@ describe('LunchBreaksService', () => {
     });
 
     it('updates a shift with manual break edits', async () => {
+        const entitlement = { enabled: true, source: 'credits', creditCost: 2, reason: 'Billable' };
+        featureAccess.assertFeatureEnabledInTransaction.mockResolvedValue(entitlement);
         prisma.tx.shift.findFirst
             .mockResolvedValueOnce({
                 id: 'shift-1',
@@ -718,7 +1053,7 @@ describe('LunchBreaksService', () => {
                 { type: 'lunch', startTime: '2026-03-05T13:30:00.000Z', durationMinutes: 30 },
                 { type: 'break2', skip: true },
             ],
-        });
+        }, 'shift-break-update-1', { sub: 'manager-1' });
 
         expect(prisma.tx.break.deleteMany).toHaveBeenCalledWith({ where: { shiftId: 'shift-1' } });
         expect(prisma.tx.break.createMany).toHaveBeenCalledWith({
@@ -731,8 +1066,194 @@ describe('LunchBreaksService', () => {
             where: { tenantId: 'tenant-1', id: { in: ['schedule-1'] }, status: 'DRAFT', deletedAt: null },
             data: { revision: { increment: 1 } },
         });
+        expect(featureAccess.recordFeatureUsageInTransaction).toHaveBeenCalledOnce();
+        expect(featureAccess.recordFeatureUsageInTransaction).toHaveBeenCalledWith(
+            prisma.tx,
+            'tenant-1',
+            entitlement,
+            expect.stringMatching(/^Lunch\/break shift replacement \([a-f0-9]{64}\)$/),
+            expect.stringMatching(/^[a-f0-9]{64}$/),
+        );
+        expect(prisma.tx.auditLog.create).toHaveBeenCalledWith(expect.objectContaining({
+            data: expect.objectContaining({
+                userId: 'manager-1',
+                action: 'LUNCH_BREAK_SHIFT_REPLACED',
+                resource: 'LunchBreakShiftUpdateRequest',
+            }),
+        }));
         expect(result.breaks.map((entry: any) => entry.type)).toEqual(['break1', 'lunch']);
         expectTenantContextUsed(prisma);
+    });
+
+    it('replays a lost manual-break response without another debit, write, or revision', async () => {
+        prisma.tx.shift.findFirst
+            .mockResolvedValueOnce({
+                id: 'shift-1',
+                userId: 'user-1',
+                startTime: new Date('2026-03-05T09:00:00.000Z'),
+                endTime: new Date('2026-03-05T17:00:00.000Z'),
+                user: { id: 'user-1', name: 'Alex' },
+                schedule: { id: 'schedule-1', status: 'DRAFT' },
+                breaks: [],
+            })
+            .mockResolvedValueOnce({
+                id: 'shift-1',
+                userId: 'user-1',
+                startTime: new Date('2026-03-05T09:00:00.000Z'),
+                endTime: new Date('2026-03-05T17:00:00.000Z'),
+                user: { id: 'user-1', name: 'Alex' },
+                breaks: [{
+                    id: 'break-1',
+                    type: 'LUNCH',
+                    startTime: new Date('2026-03-05T13:30:00.000Z'),
+                    endTime: new Date('2026-03-05T14:00:00.000Z'),
+                    paid: false,
+                }],
+            });
+        const body = {
+            locationId: 'location-1',
+            breaks: [{ type: 'lunch' as const, startTime: '2026-03-05T13:30:00.000Z', durationMinutes: 30 }],
+        };
+
+        const first = await service.updateShiftBreaks('tenant-1', 'shift-1', body, 'break-replay-1');
+        featureAccess.assertFeatureEnabledInTransaction.mockRejectedValue(new ForbiddenException('Credits exhausted'));
+        const replay = await service.updateShiftBreaks('tenant-1', 'shift-1', body, 'break-replay-1');
+
+        expect(replay).toEqual(first);
+        expect(featureAccess.assertFeatureEnabledInTransaction).toHaveBeenCalledOnce();
+        expect(featureAccess.recordFeatureUsageInTransaction).toHaveBeenCalledOnce();
+        expect(prisma.tx.break.deleteMany).toHaveBeenCalledOnce();
+        expect(prisma.tx.schedule.updateMany).toHaveBeenCalledOnce();
+        expect(prisma.tx.auditLog.create).toHaveBeenCalledOnce();
+    });
+
+    it('rejects manual-break request drift on a used key without another debit or write', async () => {
+        prisma.tx.shift.findFirst
+            .mockResolvedValueOnce({
+                id: 'shift-1',
+                userId: 'user-1',
+                startTime: new Date('2026-03-05T09:00:00.000Z'),
+                endTime: new Date('2026-03-05T17:00:00.000Z'),
+                user: { id: 'user-1', name: 'Alex' },
+                schedule: { id: 'schedule-1', status: 'DRAFT' },
+                breaks: [],
+            })
+            .mockResolvedValueOnce({
+                id: 'shift-1',
+                userId: 'user-1',
+                startTime: new Date('2026-03-05T09:00:00.000Z'),
+                endTime: new Date('2026-03-05T17:00:00.000Z'),
+                user: { id: 'user-1', name: 'Alex' },
+                breaks: [{
+                    id: 'break-1',
+                    type: 'LUNCH',
+                    startTime: new Date('2026-03-05T13:30:00.000Z'),
+                    endTime: new Date('2026-03-05T14:00:00.000Z'),
+                    paid: false,
+                }],
+            });
+        const body = {
+            locationId: 'location-1',
+            breaks: [{ type: 'lunch' as const, startTime: '2026-03-05T13:30:00.000Z', durationMinutes: 30 }],
+        };
+        await service.updateShiftBreaks('tenant-1', 'shift-1', body, 'break-drift-1');
+
+        await expect(service.updateShiftBreaks('tenant-1', 'shift-1', {
+            ...body,
+            breaks: [{ ...body.breaks[0], durationMinutes: 45 }],
+        }, 'break-drift-1')).rejects.toThrow('different shift lunch/break request');
+
+        expect(featureAccess.recordFeatureUsageInTransaction).toHaveBeenCalledOnce();
+        expect(prisma.tx.break.deleteMany).toHaveBeenCalledOnce();
+        expect(prisma.tx.schedule.updateMany).toHaveBeenCalledOnce();
+        expect(prisma.tx.auditLog.create).toHaveBeenCalledOnce();
+    });
+
+    it('returns a semantic no-op without entitlement, debit, write, reservation, or revision', async () => {
+        prisma.tx.shift.findFirst.mockResolvedValue({
+            id: 'shift-1',
+            userId: 'user-1',
+            startTime: new Date('2026-03-05T09:00:00.000Z'),
+            endTime: new Date('2026-03-05T17:00:00.000Z'),
+            user: { id: 'user-1', name: 'Alex' },
+            schedule: { id: 'schedule-1', status: 'DRAFT' },
+            breaks: [{
+                id: 'break-1',
+                type: 'LUNCH',
+                startTime: new Date('2026-03-05T13:30:00.000Z'),
+                endTime: new Date('2026-03-05T14:00:00.000Z'),
+                paid: false,
+            }],
+        });
+        featureAccess.assertFeatureEnabledInTransaction.mockRejectedValue(new ForbiddenException('No credits'));
+
+        const result = await service.updateShiftBreaks('tenant-1', 'shift-1', {
+            locationId: 'location-1',
+            breaks: [{ type: 'lunch', startTime: '2026-03-05T13:30:00.000Z', durationMinutes: 30 }],
+        }, 'break-no-op-1');
+
+        expect(result.breaks).toEqual([expect.objectContaining({ type: 'lunch', durationMinutes: 30 })]);
+        expect(featureAccess.assertFeatureEnabledInTransaction).not.toHaveBeenCalled();
+        expect(featureAccess.recordFeatureUsageInTransaction).not.toHaveBeenCalled();
+        expect(prisma.tx.break.deleteMany).not.toHaveBeenCalled();
+        expect(prisma.tx.break.createMany).not.toHaveBeenCalled();
+        expect(prisma.tx.schedule.updateMany).not.toHaveBeenCalled();
+        expect(prisma.tx.auditLog.create).not.toHaveBeenCalled();
+    });
+
+    it('rejects a distinct manual-break value change at zero credits before any write or audit', async () => {
+        prisma.tx.shift.findFirst.mockResolvedValue({
+            id: 'shift-1',
+            userId: 'user-1',
+            startTime: new Date('2026-03-05T09:00:00.000Z'),
+            endTime: new Date('2026-03-05T17:00:00.000Z'),
+            user: { id: 'user-1', name: 'Alex' },
+            schedule: { id: 'schedule-1', status: 'DRAFT' },
+            breaks: [],
+        });
+        featureAccess.assertFeatureEnabledInTransaction.mockRejectedValue(new ForbiddenException('Insufficient usage credits'));
+
+        await expect(service.updateShiftBreaks('tenant-1', 'shift-1', {
+            locationId: 'location-1',
+            breaks: [{ type: 'lunch', startTime: '2026-03-05T13:30:00.000Z', durationMinutes: 30 }],
+        }, 'break-zero-credit-1')).rejects.toMatchObject({
+            status: 403,
+            response: expect.objectContaining({ code: 'SHIFT_BREAKS_ENTITLEMENT_REQUIRED' }),
+        });
+
+        expect(featureAccess.recordFeatureUsageInTransaction).not.toHaveBeenCalled();
+        expect(prisma.tx.break.deleteMany).not.toHaveBeenCalled();
+        expect(prisma.tx.schedule.updateMany).not.toHaveBeenCalled();
+        expect(prisma.tx.auditLog.create).not.toHaveBeenCalled();
+    });
+
+    it('rolls back the manual-break debit when domain persistence fails', async () => {
+        prisma.state.usageCredits = 2;
+        featureAccess.recordFeatureUsageInTransaction.mockImplementation(async () => {
+            prisma.state.usageCredits -= 2;
+            return { consumedCredits: 2, newBalance: prisma.state.usageCredits };
+        });
+        prisma.tx.shift.findFirst.mockResolvedValue({
+            id: 'shift-1',
+            userId: 'user-1',
+            startTime: new Date('2026-03-05T09:00:00.000Z'),
+            endTime: new Date('2026-03-05T17:00:00.000Z'),
+            user: { id: 'user-1', name: 'Alex' },
+            schedule: { id: 'schedule-1', status: 'DRAFT' },
+            breaks: [],
+        });
+        prisma.tx.break.createMany.mockRejectedValue(new Error('break write failed'));
+
+        await expect(service.updateShiftBreaks('tenant-1', 'shift-1', {
+            locationId: 'location-1',
+            breaks: [{ type: 'lunch', startTime: '2026-03-05T13:30:00.000Z', durationMinutes: 30 }],
+        }, 'break-rollback-1')).rejects.toThrow('break write failed');
+
+        expect(prisma.state.usageCredits).toBe(2);
+        expect(featureAccess.recordFeatureUsageInTransaction).toHaveBeenCalledOnce();
+        expect(prisma.tx.schedule.updateMany).not.toHaveBeenCalled();
+        expect(prisma.tx.auditLog.create).not.toHaveBeenCalled();
+        expect(prisma.auditLogs).toHaveLength(0);
     });
 
     it('rejects overlapping manual break edits before replacing persisted breaks', async () => {
@@ -752,7 +1273,7 @@ describe('LunchBreaksService', () => {
                 { type: 'break1', startTime: '2026-03-05T11:30:00.000Z', durationMinutes: 60 },
                 { type: 'lunch', startTime: '2026-03-05T12:00:00.000Z', durationMinutes: 30 },
             ],
-        })).rejects.toThrow('Break windows cannot overlap.');
+        }, 'shift-break-overlap')).rejects.toThrow('Break windows cannot overlap.');
 
         expect(prisma.tx.break.deleteMany).not.toHaveBeenCalled();
         expect(prisma.tx.break.createMany).not.toHaveBeenCalled();
@@ -775,16 +1296,28 @@ describe('LunchBreaksService', () => {
             breaks: [
                 { type: 'lunch', startTime: '03/05/2026 13:30', durationMinutes: 30 },
             ],
-        })).rejects.toThrow('Invalid lunch startTime');
+        }, 'shift-break-invalid-time')).rejects.toThrow('Invalid lunch startTime');
 
         expect(prisma.tx.break.deleteMany).not.toHaveBeenCalled();
         expect(prisma.tx.break.createMany).not.toHaveBeenCalled();
-        expectTenantContextUsed(prisma);
+        expect(prisma.$transaction).not.toHaveBeenCalled();
     });
 
     it('persists setup shifts inside tenant-scoped Prisma context', async () => {
         prisma.tx.shift.findMany.mockResolvedValue([
-            { id: 'shift-1', locationId: 'location-1', schedule: { status: 'DRAFT' } },
+            {
+                id: 'shift-1',
+                locationId: 'location-1',
+                scheduleId: 'schedule-1',
+                userId: 'user-1',
+                startTime: new Date('2026-03-05T08:00:00.000Z'),
+                endTime: new Date('2026-03-05T16:00:00.000Z'),
+                schedule: {
+                    status: 'DRAFT',
+                    startDate: new Date('2026-03-05T00:00:00.000Z'),
+                    endDate: new Date('2026-03-06T00:00:00.000Z'),
+                },
+            },
         ]);
 
         const result = await service.persistSetupShifts('tenant-1', {
@@ -798,21 +1331,45 @@ describe('LunchBreaksService', () => {
                     endTime: '2026-03-05T17:00:00.000Z',
                 },
             ],
-        });
+        }, 'setup-update-1');
 
         expect(result.shiftIds).toEqual(['shift-1']);
-        expect(prisma.tx.user.findFirst).toHaveBeenCalledWith({
-            where: {
-                id: 'user-1',
-                tenantId: 'tenant-1',
-                deletedAt: null,
-                role: { in: ['MANAGER', 'STAFF'] },
-            },
-            select: { id: true },
-        });
+        const schedulableUserQuery = prisma.tx.$queryRaw.mock.calls.find(([query]: any[]) => (
+            Array.from(query as ArrayLike<unknown>).join(' ').includes('FROM "User"')
+        ));
+        expect(schedulableUserQuery).toBeDefined();
+        expect(Array.from(schedulableUserQuery?.[0] as ArrayLike<unknown>).join(' '))
+            .toContain('"suspendedAt" IS NULL');
+        expect(Array.from(schedulableUserQuery?.[0] as ArrayLike<unknown>).join(' '))
+            .toContain('FOR UPDATE');
         expect(prisma.tx.shift.updateMany).toHaveBeenCalledWith(expect.objectContaining({
-            where: { id: 'shift-1', tenantId: 'tenant-1', deletedAt: null },
+            where: expect.objectContaining({
+                id: 'shift-1',
+                tenantId: 'tenant-1',
+                locationId: 'location-1',
+                scheduleId: 'schedule-1',
+                userId: 'user-1',
+                startTime: new Date('2026-03-05T08:00:00.000Z'),
+                endTime: new Date('2026-03-05T16:00:00.000Z'),
+                deletedAt: null,
+            }),
         }));
+        const schedulingLockCall = prisma.tx.$executeRaw.mock.calls.findIndex((call: any[]) => (
+            Array.from(call[0] as ArrayLike<unknown>).join(' ').includes('pg_advisory_xact_lock')
+        ));
+        expect(schedulingLockCall).toBeGreaterThanOrEqual(0);
+        expect(featureAccess.lockTenantInTransaction.mock.invocationCallOrder[0]).toBeLessThan(
+            prisma.tx.$executeRaw.mock.invocationCallOrder[schedulingLockCall],
+        );
+        expect(prisma.tx.schedule.updateMany).toHaveBeenCalledWith({
+            where: {
+                tenantId: 'tenant-1',
+                id: { in: ['schedule-1'] },
+                status: 'DRAFT',
+                deletedAt: null,
+            },
+            data: { revision: { increment: 1 } },
+        });
         expectTenantContextUsed(prisma);
     });
 
@@ -826,7 +1383,7 @@ describe('LunchBreaksService', () => {
                 startTime: '2026-03-05T17:00:00.000Z',
                 endTime: '2026-03-06T01:00:00.000Z',
             }],
-        });
+        }, 'setup-create-1');
 
         expect(result.shiftIds).toEqual(['created-shift-1']);
         expect(prisma.tx.location.findFirst).toHaveBeenCalledWith({
@@ -837,6 +1394,387 @@ describe('LunchBreaksService', () => {
             data: expect.objectContaining({ tenantId: 'tenant-1', locationId: 'location-2' }),
             select: { id: true },
         });
+    });
+
+    it('requires a non-empty bounded setup batch before opening a transaction', async () => {
+        await expect(service.persistSetupShifts('tenant-1', {
+            locationId: 'location-1',
+            rows: [],
+        }, 'setup-empty')).rejects.toThrow('At least one setup shift row is required');
+
+        await expect(service.persistSetupShifts('tenant-1', {
+            locationId: 'location-1',
+            rows: Array.from({ length: 201 }, (_, index) => ({
+                startTime: new Date(Date.UTC(2026, 2, 5 + index, 9)).toISOString(),
+                endTime: new Date(Date.UTC(2026, 2, 5 + index, 17)).toISOString(),
+            })),
+        }, 'setup-too-large')).rejects.toThrow('at most 200 rows');
+
+        expect(prisma.$transaction).not.toHaveBeenCalled();
+    });
+
+    it('rejects setup shifts outside their schedule before debit, write, or audit', async () => {
+        prisma.tx.shift.findMany.mockResolvedValue([{
+            id: 'shift-1',
+            locationId: 'location-1',
+            scheduleId: 'schedule-1',
+            userId: 'user-1',
+            startTime: new Date('2026-03-05T09:00:00.000Z'),
+            endTime: new Date('2026-03-05T17:00:00.000Z'),
+            schedule: {
+                status: 'DRAFT',
+                startDate: new Date('2026-03-05T00:00:00.000Z'),
+                endDate: new Date('2026-03-06T00:00:00.000Z'),
+            },
+        }]);
+
+        await expect(service.persistSetupShifts('tenant-1', {
+            locationId: 'location-1',
+            rows: [{
+                shiftId: 'shift-1',
+                startTime: '2026-03-04T23:30:00.000Z',
+                endTime: '2026-03-05T08:00:00.000Z',
+            }],
+        }, 'setup-schedule-bounds')).rejects.toThrow('schedule window');
+
+        expect(featureAccess.recordFeatureUsageInTransaction).not.toHaveBeenCalled();
+        expect(prisma.tx.shift.updateMany).not.toHaveBeenCalled();
+        expect(prisma.tx.auditLog.create).not.toHaveBeenCalled();
+    });
+
+    it('rejects setup batch and stored-shift overlaps before debit, write, or audit', async () => {
+        const overlappingRows = {
+            locationId: 'location-1',
+            rows: [
+                {
+                    userId: 'user-1',
+                    startTime: '2026-03-05T09:00:00.000Z',
+                    endTime: '2026-03-05T17:00:00.000Z',
+                },
+                {
+                    userId: 'user-1',
+                    startTime: '2026-03-05T16:00:00.000Z',
+                    endTime: '2026-03-05T20:00:00.000Z',
+                },
+            ],
+        };
+        await expect(service.persistSetupShifts('tenant-1', overlappingRows, 'setup-batch-overlap'))
+            .rejects.toThrow('cannot overlap');
+
+        prisma.tx.shift.count.mockResolvedValueOnce(1);
+        await expect(service.persistSetupShifts('tenant-1', {
+            locationId: 'location-1',
+            rows: [overlappingRows.rows[0]],
+        }, 'setup-stored-overlap')).rejects.toThrow('already has a shift');
+
+        expect(featureAccess.recordFeatureUsageInTransaction).not.toHaveBeenCalled();
+        expect(prisma.tx.shift.create).not.toHaveBeenCalled();
+        expect(prisma.tx.auditLog.create).not.toHaveBeenCalled();
+    });
+
+    it('translates dependent breaks before one debit and saves both windows atomically', async () => {
+        prisma.tx.shift.findMany.mockResolvedValue([{
+            id: 'shift-1',
+            locationId: 'location-1',
+            scheduleId: null,
+            userId: 'user-1',
+            startTime: new Date('2026-03-05T09:00:00.000Z'),
+            endTime: new Date('2026-03-05T17:00:00.000Z'),
+            schedule: null,
+        }]);
+        prisma.tx.$queryRaw.mockImplementation(async (query: any) => {
+            const sql = Array.isArray(query)
+                ? query.join(' ')
+                : Array.isArray(query?.strings)
+                    ? query.strings.join(' ')
+                    : String(query);
+            return sql.includes('FROM "Break"')
+                ? [{
+                    id: 'break-1',
+                    startTime: new Date('2026-03-05T12:00:00.000Z'),
+                    endTime: new Date('2026-03-05T12:30:00.000Z'),
+                }]
+                : [];
+        });
+
+        await service.persistSetupShifts('tenant-1', {
+            locationId: 'location-1',
+            rows: [{
+                shiftId: 'shift-1',
+                startTime: '2026-03-05T10:00:00.000Z',
+                endTime: '2026-03-05T18:00:00.000Z',
+            }],
+        }, 'setup-translate-breaks');
+
+        expect(featureAccess.recordFeatureUsageInTransaction).toHaveBeenCalledOnce();
+        expect(prisma.tx.shift.updateMany).toHaveBeenCalledOnce();
+        expect(prisma.tx.break.updateMany).toHaveBeenCalledWith({
+            where: { id: 'break-1', shiftId: 'shift-1' },
+            data: {
+                startTime: new Date('2026-03-05T13:00:00.000Z'),
+                endTime: new Date('2026-03-05T13:30:00.000Z'),
+            },
+        });
+        expect(prisma.tx.auditLog.create).toHaveBeenCalledOnce();
+    });
+
+    it('rejects an unsafe break resize before debit, shift write, or audit', async () => {
+        prisma.tx.shift.findMany.mockResolvedValue([{
+            id: 'shift-1',
+            locationId: 'location-1',
+            scheduleId: null,
+            userId: 'user-1',
+            startTime: new Date('2026-03-05T09:00:00.000Z'),
+            endTime: new Date('2026-03-05T17:00:00.000Z'),
+            schedule: null,
+        }]);
+        prisma.tx.$queryRaw.mockImplementation(async (query: any) => {
+            const sql = Array.isArray(query)
+                ? query.join(' ')
+                : Array.isArray(query?.strings)
+                    ? query.strings.join(' ')
+                    : String(query);
+            return sql.includes('FROM "Break"')
+                ? [{
+                    id: 'break-1',
+                    startTime: new Date('2026-03-05T16:30:00.000Z'),
+                    endTime: new Date('2026-03-05T17:00:00.000Z'),
+                }]
+                : [];
+        });
+
+        await expect(service.persistSetupShifts('tenant-1', {
+            locationId: 'location-1',
+            rows: [{
+                shiftId: 'shift-1',
+                startTime: '2026-03-05T09:00:00.000Z',
+                endTime: '2026-03-05T16:00:00.000Z',
+            }],
+        }, 'setup-unsafe-resize')).rejects.toThrow('existing lunch/break outside');
+
+        expect(featureAccess.recordFeatureUsageInTransaction).not.toHaveBeenCalled();
+        expect(prisma.tx.shift.updateMany).not.toHaveBeenCalled();
+        expect(prisma.tx.auditLog.create).not.toHaveBeenCalled();
+    });
+
+    it('charges setup shift persistence once per operation rather than per row', async () => {
+        prisma.tx.shift.create
+            .mockResolvedValueOnce({ id: 'created-shift-1' })
+            .mockResolvedValueOnce({ id: 'created-shift-2' });
+        const entitlement = { enabled: true, source: 'credits', creditCost: 3, reason: 'Billable' };
+        featureAccess.assertFeatureEnabledInTransaction.mockResolvedValue(entitlement);
+
+        const result = await service.persistSetupShifts('tenant-1', {
+            locationId: 'location-1',
+            rows: [
+                {
+                    userId: 'user-1',
+                    startTime: '2026-03-05T09:00:00.000Z',
+                    endTime: '2026-03-05T17:00:00.000Z',
+                },
+                {
+                    userId: 'user-1',
+                    startTime: '2026-03-06T09:00:00.000Z',
+                    endTime: '2026-03-06T17:00:00.000Z',
+                },
+            ],
+        }, 'setup-two-rows-1');
+
+        expect(result.shiftIds).toEqual(['created-shift-1', 'created-shift-2']);
+        expect(featureAccess.recordFeatureUsageInTransaction).toHaveBeenCalledOnce();
+        expect(featureAccess.recordFeatureUsageInTransaction).toHaveBeenCalledWith(
+            prisma.tx,
+            'tenant-1',
+            entitlement,
+            expect.stringMatching(/^Lunch\/break setup shift persistence \([a-f0-9]{64}\)$/),
+            expect.stringMatching(/^[a-f0-9]{64}$/),
+        );
+        expect(prisma.tx.shift.create).toHaveBeenCalledTimes(2);
+        expect(prisma.tx.auditLog.create).toHaveBeenCalledOnce();
+    });
+
+    it('replays setup shift persistence after subscription loss without another debit or write', async () => {
+        prisma.tx.shift.findMany.mockResolvedValue([
+            {
+                id: 'shift-1',
+                locationId: 'location-1',
+                scheduleId: null,
+                userId: null,
+                startTime: new Date('2026-03-05T08:00:00.000Z'),
+                endTime: new Date('2026-03-05T16:00:00.000Z'),
+                schedule: null,
+            },
+        ]);
+        const body = {
+            locationId: 'location-1',
+            rows: [{
+                shiftId: 'shift-1',
+                userId: 'user-1',
+                startTime: '2026-03-05T09:00:00.000Z',
+                endTime: '2026-03-05T17:00:00.000Z',
+            }],
+        };
+
+        const first = await service.persistSetupShifts('tenant-1', body, 'setup-replay-1');
+        featureAccess.assertFeatureEnabledInTransaction.mockRejectedValue(new ForbiddenException('Subscription inactive'));
+        const replay = await service.persistSetupShifts('tenant-1', body, 'setup-replay-1');
+
+        expect(replay).toEqual(first);
+        expect(featureAccess.assertFeatureEnabledInTransaction).toHaveBeenCalledOnce();
+        expect(featureAccess.recordFeatureUsageInTransaction).toHaveBeenCalledOnce();
+        expect(prisma.tx.shift.updateMany).toHaveBeenCalledOnce();
+        expect(prisma.tx.auditLog.create).toHaveBeenCalledOnce();
+    });
+
+    it('semantically replays omitted-userId setup creation under a different key without a second shift or debit', async () => {
+        prisma.state.usageCredits = 4;
+        featureAccess.recordFeatureUsageInTransaction.mockImplementation(async () => {
+            prisma.state.usageCredits -= 2;
+            return { consumedCredits: 2, newBalance: prisma.state.usageCredits };
+        });
+        const body = {
+            locationId: 'location-1',
+            rows: [{
+                startTime: '2026-03-05T09:00:00.000Z',
+                endTime: '2026-03-05T17:00:00.000Z',
+            }],
+        };
+
+        const first = await service.persistSetupShifts('tenant-1', body, 'setup-unassigned-replay-1');
+        featureAccess.assertFeatureEnabledInTransaction.mockRejectedValue(new ForbiddenException('Subscription inactive'));
+        const replay = await service.persistSetupShifts('tenant-1', {
+            ...body,
+            rows: [{ ...body.rows[0], userId: null }],
+        }, 'setup-unassigned-replay-2');
+
+        expect(first).toEqual({ shiftIds: ['created-shift-1'] });
+        expect(replay).toEqual(first);
+        expect(prisma.state.usageCredits).toBe(2);
+        expect(featureAccess.assertFeatureEnabledInTransaction).toHaveBeenCalledOnce();
+        expect(featureAccess.recordFeatureUsageInTransaction).toHaveBeenCalledOnce();
+        expect(prisma.tx.shift.create).toHaveBeenCalledOnce();
+        expect(prisma.tx.shift.create).toHaveBeenCalledWith({
+            data: expect.objectContaining({ userId: null }),
+            select: { id: true },
+        });
+        expect(prisma.tx.auditLog.create).toHaveBeenCalledTimes(2);
+        expect(prisma.auditLogs.map((entry) => entry.resource)).toEqual([
+            'LunchBreakSetupShiftsRequest',
+            'LunchBreakSetupShiftsSemanticRequest',
+        ]);
+    });
+
+    it('rejects setup shift request drift without charging or writing', async () => {
+        prisma.tx.shift.findMany.mockResolvedValue([
+            {
+                id: 'shift-1',
+                locationId: 'location-1',
+                scheduleId: null,
+                userId: null,
+                startTime: new Date('2026-03-05T08:00:00.000Z'),
+                endTime: new Date('2026-03-05T16:00:00.000Z'),
+                schedule: null,
+            },
+        ]);
+        const firstBody = {
+            locationId: 'location-1',
+            rows: [{
+                shiftId: 'shift-1',
+                startTime: '2026-03-05T09:00:00.000Z',
+                endTime: '2026-03-05T17:00:00.000Z',
+            }],
+        };
+        await service.persistSetupShifts('tenant-1', firstBody, 'setup-drift-1');
+
+        await expect(service.persistSetupShifts('tenant-1', {
+            ...firstBody,
+            rows: [{ ...firstBody.rows[0], endTime: '2026-03-05T18:00:00.000Z' }],
+        }, 'setup-drift-1')).rejects.toThrow('different setup shift request');
+
+        expect(featureAccess.recordFeatureUsageInTransaction).toHaveBeenCalledOnce();
+        expect(prisma.tx.shift.updateMany).toHaveBeenCalledOnce();
+        expect(prisma.tx.auditLog.create).toHaveBeenCalledOnce();
+    });
+
+    it('uses a concurrent setup winner found after the scheduling lock before charging', async () => {
+        const normalizedRequest = {
+            locationId: 'location-1',
+            rows: [{
+                userId: 'user-1',
+                startTime: '2026-03-05T09:00:00.000Z',
+                endTime: '2026-03-05T17:00:00.000Z',
+            }],
+        };
+        const requestHash = setupShiftsRequestHash(normalizedRequest);
+        const response = { shiftIds: ['created-by-winner'] };
+        prisma.tx.auditLog.findFirst
+            .mockResolvedValueOnce(null)
+            .mockResolvedValueOnce(null)
+            .mockResolvedValueOnce({ newValue: { requestHash, response } });
+
+        const result = await service.persistSetupShifts(
+            'tenant-1',
+            normalizedRequest,
+            'setup-concurrent-1',
+        );
+
+        expect(result).toEqual(response);
+        expect(featureAccess.assertFeatureEnabledInTransaction).not.toHaveBeenCalled();
+        expect(featureAccess.recordFeatureUsageInTransaction).not.toHaveBeenCalled();
+        expect(prisma.tx.shift.create).not.toHaveBeenCalled();
+        expect(prisma.tx.shift.updateMany).not.toHaveBeenCalled();
+    });
+
+    it('rolls the setup debit back when any row write fails', async () => {
+        prisma.state.usageCredits = 2;
+        featureAccess.recordFeatureUsageInTransaction.mockImplementation(async () => {
+            prisma.state.usageCredits -= 2;
+            return { consumedCredits: 2, newBalance: prisma.state.usageCredits };
+        });
+        prisma.tx.shift.findMany.mockResolvedValue([
+            {
+                id: 'shift-1',
+                locationId: 'location-1',
+                scheduleId: null,
+                userId: null,
+                startTime: new Date('2026-03-05T08:00:00.000Z'),
+                endTime: new Date('2026-03-05T16:00:00.000Z'),
+                schedule: null,
+            },
+            {
+                id: 'shift-2',
+                locationId: 'location-1',
+                scheduleId: null,
+                userId: null,
+                startTime: new Date('2026-03-06T08:00:00.000Z'),
+                endTime: new Date('2026-03-06T16:00:00.000Z'),
+                schedule: null,
+            },
+        ]);
+        prisma.tx.shift.updateMany
+            .mockResolvedValueOnce({ count: 1 })
+            .mockResolvedValueOnce({ count: 0 });
+
+        await expect(service.persistSetupShifts('tenant-1', {
+            locationId: 'location-1',
+            rows: [
+                {
+                    shiftId: 'shift-1',
+                    startTime: '2026-03-05T09:00:00.000Z',
+                    endTime: '2026-03-05T17:00:00.000Z',
+                },
+                {
+                    shiftId: 'shift-2',
+                    startTime: '2026-03-06T09:00:00.000Z',
+                    endTime: '2026-03-06T17:00:00.000Z',
+                },
+            ],
+        }, 'setup-rollback-1')).rejects.toThrow('changed while it was being saved');
+
+        expect(prisma.state.usageCredits).toBe(2);
+        expect(featureAccess.recordFeatureUsageInTransaction).toHaveBeenCalledOnce();
+        expect(prisma.tx.auditLog.create).not.toHaveBeenCalled();
+        expect(prisma.auditLogs).toHaveLength(0);
     });
 
     it('rejects setup shift updates from a different location', async () => {
@@ -851,7 +1789,7 @@ describe('LunchBreaksService', () => {
                 startTime: '2026-03-05T17:00:00.000Z',
                 endTime: '2026-03-06T01:00:00.000Z',
             }],
-        })).rejects.toThrow('Setup shifts must belong to the selected location');
+        }, 'setup-location-mismatch')).rejects.toThrow('Setup shifts must belong to the selected location');
 
         expect(prisma.tx.shift.updateMany).not.toHaveBeenCalled();
     });
@@ -862,7 +1800,7 @@ describe('LunchBreaksService', () => {
                 startTime: '2026-03-05T17:00:00.000Z',
                 endTime: '2026-03-06T01:00:00.000Z',
             }],
-        })).rejects.toThrow('A location is required');
+        }, 'setup-missing-location')).rejects.toThrow('A location is required');
 
         expect(prisma.$transaction).not.toHaveBeenCalled();
     });
@@ -881,7 +1819,7 @@ describe('LunchBreaksService', () => {
         await expect(service.updateShiftBreaks('tenant-1', 'shift-1', {
             locationId: 'location-1',
             breaks: [{ type: 'lunch', startTime: '2026-03-05T13:30:00.000Z', durationMinutes: 30 }],
-        })).rejects.toThrow('Published schedules are locked');
+        }, 'shift-break-published')).rejects.toThrow('Published schedules are locked');
 
         expect(prisma.tx.break.deleteMany).not.toHaveBeenCalled();
         expectTenantContextUsed(prisma);
@@ -907,7 +1845,7 @@ describe('LunchBreaksService', () => {
         await expect(service.updateShiftBreaks('tenant-1', 'shift-1', {
             locationId: 'location-1',
             breaks: [{ type: 'lunch', startTime: '2026-03-05T13:30:00.000Z', durationMinutes: 30 }],
-        })).rejects.toThrow('Published schedules are locked');
+        }, 'shift-break-publish-race')).rejects.toThrow('Published schedules are locked');
         expect(prisma.tx.break.deleteMany).not.toHaveBeenCalled();
     });
 
@@ -931,7 +1869,6 @@ describe('LunchBreaksService', () => {
             persist: true,
         }, 'published-attempt-1')).rejects.toThrow('Published schedules are locked');
 
-        expect(featureAccess.consumeCreditsForFeature).not.toHaveBeenCalled();
         expect(prisma.tx.break.deleteMany).not.toHaveBeenCalled();
         expectTenantContextUsed(prisma);
     });
@@ -939,14 +1876,14 @@ describe('LunchBreaksService', () => {
     it('requires the selected location and rejects a shift outside it before persistence', async () => {
         await expect(service.updateShiftBreaks('tenant-1', 'shift-1', {
             breaks: [],
-        })).rejects.toThrow('locationId is required');
+        }, 'shift-break-missing-location')).rejects.toThrow('locationId is required');
         expect(prisma.$transaction).not.toHaveBeenCalled();
 
         prisma.tx.shift.findFirst.mockResolvedValue(null);
         await expect(service.updateShiftBreaks('tenant-1', 'shift-1', {
             locationId: 'location-2',
             breaks: [],
-        })).rejects.toThrow('Shift not found for the selected location');
+        }, 'shift-break-location-mismatch')).rejects.toThrow('Shift not found for the selected location');
 
         expect(prisma.tx.shift.findFirst).toHaveBeenCalledWith(expect.objectContaining({
             where: expect.objectContaining({
@@ -1001,42 +1938,33 @@ describe('LunchBreaksService', () => {
         expect(prisma.tx.break.deleteMany).not.toHaveBeenCalled();
         expect(Array.from(prisma.generationRequests.values())[0]).toEqual(expect.objectContaining({
             status: 'FAILED',
+            failureStatus: 409,
             claimToken: null,
             claimExpiresAt: null,
         }));
+
+        await expect(service.generateLunchBreaks('tenant-1', {
+            locationId: 'location-1',
+            persist: true,
+        }, 'stale-snapshot-attempt')).rejects.toThrow('changed after break calculation');
+        expect(prisma.tx.shift.findMany).toHaveBeenCalledTimes(3);
     });
 
-    it('rolls back an atomic wallet debit and reuses the failed outcome when persistence fails', async () => {
+    it('rolls back an atomic wallet debit and retries the identical intent after transient persistence failure', async () => {
         const startTime = new Date('2026-03-05T09:00:00.000Z');
         const endTime = new Date('2026-03-05T17:00:00.000Z');
         const updatedAt = new Date('2026-03-05T08:00:00.000Z');
-        prisma.tx.shift.findMany
-            .mockResolvedValueOnce([{
-                id: 'shift-1',
-                userId: 'user-1',
-                scheduleId: 'schedule-1',
-                startTime,
-                endTime,
-                updatedAt,
-                user: { id: 'user-1', name: 'Alex' },
-            }])
-            .mockResolvedValueOnce([{
-                id: 'shift-1',
-                scheduleId: 'schedule-1',
-                startTime,
-                endTime,
-                updatedAt,
-                schedule: { status: 'DRAFT' },
-            }])
-            .mockResolvedValueOnce([{
-                id: 'shift-1',
-                scheduleId: 'schedule-1',
-                startTime,
-                endTime,
-                updatedAt,
-                schedule: { status: 'DRAFT' },
-            }]);
-        prisma.tx.break.createMany.mockRejectedValue(new Error('database write failed'));
+        prisma.tx.shift.findMany.mockResolvedValue([{
+            id: 'shift-1',
+            userId: 'user-1',
+            scheduleId: 'schedule-1',
+            startTime,
+            endTime,
+            updatedAt,
+            user: { id: 'user-1', name: 'Alex' },
+            schedule: { status: 'DRAFT' },
+        }]);
+        prisma.tx.break.createMany.mockRejectedValueOnce(new Error('database write failed with sk_live_do_not_store'));
 
         await expect(service.generateLunchBreaks('tenant-1', {
             locationId: 'location-1',
@@ -1049,24 +1977,29 @@ describe('LunchBreaksService', () => {
         expect(prisma.tx.creditTransaction.create).toHaveBeenCalledOnce();
         expect(prisma.state.usageCredits).toBe(100);
         expect(prisma.creditTransactions.size).toBe(0);
-        expect(featureAccess.consumeCreditsForFeature).not.toHaveBeenCalled();
         expect(Array.from(prisma.generationRequests.values())[0]).toEqual(expect.objectContaining({
             status: 'FAILED',
-            failureMessage: 'database write failed',
+            failureStatus: 503,
+            failureMessage: 'Lunch/break generation failed.',
             claimToken: null,
             claimExpiresAt: null,
         }));
 
-        await expect(service.generateLunchBreaks('tenant-1', {
+        const recovered = await service.generateLunchBreaks('tenant-1', {
             locationId: 'location-1',
             persist: true,
-        }, 'failed-attempt-1'))
-            .rejects
-            .toThrow('database write failed');
-        expect(featureAccess.consumeCreditsForFeature).not.toHaveBeenCalled();
-        expect(prisma.tx.break.deleteMany).toHaveBeenCalledOnce();
-        expect(prisma.tx.creditTransaction.create).toHaveBeenCalledOnce();
-        expect(prisma.state.usageCredits).toBe(100);
-        expect(prisma.creditTransactions.size).toBe(0);
+        }, 'failed-attempt-1');
+
+        expect(recovered).toEqual(expect.objectContaining({ persisted: true, reused: false }));
+        expect(JSON.stringify(Array.from(prisma.generationRequests.values()))).not.toContain('sk_live_do_not_store');
+        expect(prisma.tx.break.deleteMany).toHaveBeenCalledTimes(2);
+        expect(prisma.tx.creditTransaction.create).toHaveBeenCalledTimes(2);
+        expect(prisma.state.usageCredits).toBe(98);
+        expect(prisma.creditTransactions.size).toBe(1);
+        expect(Array.from(prisma.generationRequests.values())[0]).toEqual(expect.objectContaining({
+            status: 'SUCCEEDED',
+            attempts: 2,
+            failureStatus: null,
+        }));
     });
 });

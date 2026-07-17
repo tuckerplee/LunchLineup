@@ -1,6 +1,5 @@
 import { BadRequestException, Controller, Post, Body, Req, Headers, HttpCode, Get, SetMetadata } from '@nestjs/common';
 import { StripeService } from './stripe.service';
-import { MeteringService } from './metering.service';
 import { Request } from 'express';
 import { RequirePermission } from '../auth/require-permission.decorator';
 import { FeatureAccessService } from './feature-access.service';
@@ -16,7 +15,6 @@ type StripeWebhookRequest = Request & {
 export class BillingController {
     constructor(
         private readonly stripeService: StripeService,
-        private readonly meteringService: MeteringService,
         private readonly featureAccessService: FeatureAccessService,
         private readonly stripeMeterErrorService: StripeMeterErrorService,
     ) { }
@@ -35,6 +33,21 @@ export class BillingController {
     @RequirePermission('billing:read')
     async priceOptions() {
         return { data: this.stripeService.getPriceOptions() };
+    }
+
+    @Get('credit-packs')
+    @RequirePermission('billing:read')
+    async creditPackOptions() {
+        return { data: await this.stripeService.getCreditPackOptions() };
+    }
+
+    @Post('credit-packs/checkout')
+    @RequirePermission('billing:write')
+    async purchaseCreditPack(
+        @Req() req: any,
+        @Body() body: { code: string },
+    ) {
+        return this.stripeService.createCreditPackCheckoutSession(req.user.tenantId, body.code);
     }
 
     @Post('subscribe')
@@ -70,33 +83,6 @@ export class BillingController {
     @RequirePermission('billing:write')
     async resume(@Req() req: any) {
         return this.stripeService.resumeTenantSubscription(req.user.tenantId);
-    }
-
-    @Post('credits/grant')
-    @RequirePermission('admin_portal:access')
-    async grantCredits(
-        @Body() body: { tenantId: string, amount: number, reason: string },
-        @Headers('idempotency-key') idempotencyKey?: string,
-    ) {
-        const { tenantId, amount, reason } = body;
-        const newBalance = await this.meteringService.grantCredits(
-            tenantId,
-            amount,
-            reason,
-            this.normalizeCreditGrantIdempotencyKey(idempotencyKey),
-        );
-        return { success: true, newBalance };
-    }
-
-    private normalizeCreditGrantIdempotencyKey(value: unknown): string {
-        if (typeof value !== 'string' || !value.trim()) {
-            throw new BadRequestException('Idempotency-Key header is required for credit grants.');
-        }
-        const key = value.trim();
-        if (key.length > 255 || /[\u0000-\u001f\u007f]/.test(key)) {
-            throw new BadRequestException('Idempotency-Key must be 255 printable characters or fewer.');
-        }
-        return key;
     }
 
     @Post('webhook')

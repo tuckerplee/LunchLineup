@@ -5,6 +5,371 @@ set -euo pipefail
 IFS=$'\n\t'
 umask 077
 
+provider_cgroup_v2_create() {
+  local cgroup_path cgroup_parent cgroup_domain
+  awk '$5 == "/sys/fs/cgroup" && $0 ~ / - cgroup2 / { found=1 } END { exit !found }' /proc/self/mountinfo 2>/dev/null \
+    || { echo "ERROR: Provider ownership requires cgroup v2 mounted at /sys/fs/cgroup." >&2; return 1; }
+  cgroup_path="$(sed -n 's/^0:://p' /proc/self/cgroup)"
+  case "${cgroup_path}" in /*) ;; *) echo "ERROR: Provider ownership could not resolve the current cgroup v2 path." >&2; return 1 ;; esac
+  cgroup_parent="/sys/fs/cgroup${cgroup_path}"
+  cgroup_domain="$(mktemp -d "${cgroup_parent%/}/lunchlineup-provider.XXXXXX" 2>/dev/null)" \
+    || { echo "ERROR: Provider ownership requires a writable delegated cgroup v2 beneath ${cgroup_parent}." >&2; return 1; }
+  if [ ! -w "${cgroup_domain}/cgroup.procs" ] \
+    || [ ! -w "${cgroup_domain}/cgroup.kill" ] \
+    || ! grep -q '^populated 0$' "${cgroup_domain}/cgroup.events" 2>/dev/null
+  then
+    rmdir -- "${cgroup_domain}" 2>/dev/null || true
+    echo "ERROR: Provider ownership requires delegated cgroup.procs, cgroup.kill, and cgroup.events controls." >&2
+    return 1
+  fi
+  printf '%s' "${cgroup_domain}"
+}
+
+provider_cgroup_v2_populated() {
+  grep -q '^populated 1$' "$1/cgroup.events" 2>/dev/null
+}
+
+provider_cgroup_v2_empty() {
+  grep -q '^populated 0$' "$1/cgroup.events" 2>/dev/null \
+    && [ -z "$(cat "$1/cgroup.procs" 2>/dev/null)" ] \
+    && grep -q '^populated 0$' "$1/cgroup.events" 2>/dev/null
+}
+
+provider_cgroup_v2_signal() {
+  local cgroup_domain="$1"
+  local signal_name="$2"
+  local owned_pid
+  while IFS= read -r owned_pid; do
+    [ -z "${owned_pid}" ] || kill "-${signal_name}" "${owned_pid}" 2>/dev/null || true
+  done <"${cgroup_domain}/cgroup.procs"
+}
+
+provider_cgroup_v2_terminate() {
+  local cgroup_domain="$1"
+  local kill_after_seconds="$2"
+  local empty_checks=0
+  provider_cgroup_v2_signal "${cgroup_domain}" TERM
+  sleep "${kill_after_seconds}"
+  if provider_cgroup_v2_populated "${cgroup_domain}"; then
+    printf '1\n' >"${cgroup_domain}/cgroup.kill" \
+      || { echo "ERROR: Could not KILL the complete provider cgroup v2 ownership domain." >&2; return 1; }
+  fi
+  while ! provider_cgroup_v2_empty "${cgroup_domain}"; do
+    empty_checks=$((empty_checks + 1))
+    [ "${empty_checks}" -le 100 ] \
+      || { echo "ERROR: Provider cgroup v2 ownership domain did not become empty after KILL." >&2; return 1; }
+    sleep 0.05
+  done
+}
+
+provider_cgroup_v2_wait_stopped() {
+  local child_pid="$1"
+  local state=""
+  local checks=0
+  while [ "${checks}" -le 200 ]; do
+    [ -r "/proc/${child_pid}/status" ] || return 1
+    state="$(sed -n 's/^State:[[:space:]]*\([A-Za-z]\).*/\1/p' "/proc/${child_pid}/status")"
+    [ "${state}" != T ] || return 0
+    checks=$((checks + 1))
+    sleep 0.01
+  done
+  return 1
+}
+
+provider_process_snapshot() {
+  local process_dir
+  for process_dir in /proc/[0-9]*; do
+    [ -r "${process_dir}/status" ] || continue
+    printf '%s\n' "${process_dir##*/}"
+  done
+}
+
+provider_container_job_survivors() {
+  local baseline_file="$1"
+  local process_dir process_pid
+  provider_survivor_pids=""
+  for process_dir in /proc/[0-9]*; do
+    [ -r "${process_dir}/status" ] || continue
+    process_pid="${process_dir##*/}"
+    if ! grep -Fxq "${process_pid}" "${baseline_file}"; then
+      provider_survivor_pids="${provider_survivor_pids}${provider_survivor_pids:+ }${process_pid}"
+    fi
+  done
+  [ -z "${provider_survivor_pids}" ]
+}
+
+provider_command_container_job() {
+  local baseline_file="$scratch/process-baseline"
+  local started_at now reason status stdout_bytes stderr_bytes download_bytes deadline
+
+  provider_process_snapshot >"$baseline_file"
+  "$@" >"$stdout_file" 2>"$stderr_file" &
+  child_pid=$!
+  started_at="$(date -u +%s)"
+  deadline=$((started_at + timeout_seconds))
+  (
+    monitor_reason=""
+    sleep 0.1
+    while kill -0 "$child_pid" 2>/dev/null; do
+      stdout_bytes="$(wc -c <"$stdout_file" | tr -d ' ')"
+      stderr_bytes="$(wc -c <"$stderr_file" | tr -d ' ')"
+      if [ $((stdout_bytes + stderr_bytes)) -gt "$max_output_bytes" ]; then
+        monitor_reason="output-cap"
+        break
+      fi
+      if [ -n "$download_path" ] && [ -e "$download_path" ]; then
+        download_bytes="$(wc -c <"$download_path" 2>/dev/null | tr -d ' ' || printf '%s' 0)"
+        if [ "$download_bytes" -gt "$max_download_bytes" ]; then
+          monitor_reason="download-cap"
+          break
+        fi
+      fi
+      now="$(date -u +%s)"
+      if [ "$now" -ge "$deadline" ]; then
+        monitor_reason="timeout"
+        break
+      fi
+      sleep 0.05
+    done
+    if [ -n "$monitor_reason" ]; then
+      printf '%s\n' "$monitor_reason" >"$reason_file"
+      kill -TERM "$child_pid" 2>/dev/null || true
+      sleep "$kill_after_seconds"
+      kill -KILL "$child_pid" 2>/dev/null || true
+    fi
+  ) &
+  monitor_pid=$!
+
+  if wait "$child_pid"; then status=0; else status=$?; fi
+  if [ -s "$reason_file" ]; then
+    wait "$monitor_pid" >/dev/null 2>&1 || true
+  else
+    kill -TERM "$monitor_pid" >/dev/null 2>&1 || true
+    wait "$monitor_pid" >/dev/null 2>&1 || true
+  fi
+
+  if ! provider_container_job_survivors "$baseline_file"; then
+    echo "ERROR: Provider command left descendant processes; aborting the one-shot container ownership domain (pids=${provider_survivor_pids})." >&2
+    exit 70
+  fi
+
+  reason=""
+  [ ! -f "$reason_file" ] || reason="$(head -n 1 "$reason_file")"
+  stdout_bytes="$(wc -c <"$stdout_file" | tr -d ' ')"
+  stderr_bytes="$(wc -c <"$stderr_file" | tr -d ' ')"
+  if [ -z "$reason" ] && [ $((stdout_bytes + stderr_bytes)) -gt "$max_output_bytes" ]; then reason="output-cap"; fi
+  if [ -z "$reason" ] && [ -n "$download_path" ] && [ -e "$download_path" ]; then
+    download_bytes="$(wc -c <"$download_path" 2>/dev/null | tr -d ' ' || printf '%s' 0)"
+    [ "$download_bytes" -le "$max_download_bytes" ] || reason="download-cap"
+  fi
+
+  if [ -z "$reason" ] && [ "$status" -eq 0 ]; then
+    cat "$stdout_file"
+    cat "$stderr_file" >&2
+    rm -rf "$scratch"
+    return 0
+  fi
+
+  if [ "$stderr_bytes" -gt 0 ]; then head -c 4096 "$stderr_file" >&2 || true; fi
+  rm -rf "$scratch"
+  if [ "$operation" = mutation ] && [ "$status" -ne 127 ]; then
+    echo "ERROR: Provider mutation state is unknown; authenticated readback reconciliation is required (reason=${reason:-exit-$status})." >&2
+    return 70
+  fi
+  echo "ERROR: Provider read failed (reason=${reason:-exit-$status})." >&2
+  if [ -z "$reason" ] && [ "$status" -gt 0 ] && [ "$status" -le 255 ]; then
+    return "$status"
+  fi
+  return 69
+}
+
+# This is the single process owner for provider CLIs used by backup.sh and the
+# Node release/launch/secret helpers. It bounds runtime, escalates TERM to KILL,
+# caps captured output and provider-written downloads, and gives mutations an
+# explicit unknown-state exit when completion cannot be proven.
+provider_command_owner() {
+  local operation=""
+  local timeout_seconds=""
+  local kill_after_seconds=""
+  local max_output_bytes=""
+  local download_path=""
+  local max_download_bytes=""
+  local scratch stdout_file stderr_file reason_file owner_error_file child_pid monitor_pid provider_cgroup
+  local started_at now reason status stdout_bytes stderr_bytes download_bytes deadline
+
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --operation) operation="${2:-}"; shift 2 ;;
+      --timeout-seconds) timeout_seconds="${2:-}"; shift 2 ;;
+      --kill-after-seconds) kill_after_seconds="${2:-}"; shift 2 ;;
+      --max-output-bytes) max_output_bytes="${2:-}"; shift 2 ;;
+      --download-path) download_path="${2:-}"; shift 2 ;;
+      --max-download-bytes) max_download_bytes="${2:-}"; shift 2 ;;
+      --) shift; break ;;
+      *) echo "ERROR: Unsupported provider-command option: $1" >&2; return 64 ;;
+    esac
+  done
+  case "$operation" in read | mutation) ;; *) echo "ERROR: Provider operation must be read or mutation." >&2; return 64 ;; esac
+  for value in "$timeout_seconds" "$kill_after_seconds" "$max_output_bytes"; do
+    case "$value" in '' | *[!0-9]* | 0) echo "ERROR: Provider command bounds must be positive integers." >&2; return 64 ;; esac
+  done
+  [ "$timeout_seconds" -le 3600 ] && [ "$kill_after_seconds" -le 60 ] \
+    || { echo "ERROR: Provider command timeout or kill-after exceeds its maximum." >&2; return 64; }
+  [ "$max_output_bytes" -le 104857600 ] \
+    || { echo "ERROR: Provider command output cap exceeds 104857600 bytes." >&2; return 64; }
+  if [ -n "$download_path" ]; then
+    case "$max_download_bytes" in '' | *[!0-9]* | 0) echo "ERROR: Provider download cap must be a positive integer." >&2; return 64 ;; esac
+    [ "$max_download_bytes" -le 1073741824 ] \
+      || { echo "ERROR: Provider download cap exceeds 1073741824 bytes." >&2; return 64; }
+  elif [ -n "$max_download_bytes" ]; then
+    echo "ERROR: --max-download-bytes requires --download-path." >&2
+    return 64
+  fi
+  [ "$#" -gt 0 ] || { echo "ERROR: Provider command is required after --." >&2; return 64; }
+
+  scratch="$(mktemp -d "${TMPDIR:-/tmp}/lunchlineup-provider-command.XXXXXX")" \
+    || { echo "ERROR: Could not create provider-command scratch directory." >&2; return 1; }
+  stdout_file="$scratch/stdout"
+  stderr_file="$scratch/stderr"
+  reason_file="$scratch/reason"
+  owner_error_file="$scratch/owner-error"
+  : >"$stdout_file"
+  : >"$stderr_file"
+
+  case "${BACKUP_PROVIDER_OWNERSHIP_MODE:-cgroup-v2}" in
+    container-job)
+      provider_command_container_job "$@"
+      return $?
+      ;;
+    cgroup-v2) ;;
+    *)
+      rm -rf "$scratch"
+      echo "ERROR: BACKUP_PROVIDER_OWNERSHIP_MODE must be cgroup-v2 or container-job." >&2
+      return 64
+      ;;
+  esac
+
+  provider_cgroup="$(provider_cgroup_v2_create)" || {
+    rm -rf "$scratch"
+    echo "ERROR: Provider command was not started because no safe descendant ownership domain is available." >&2
+    return 78
+  }
+  sh -c 'kill -STOP "$$"; exec "$@"' lunchlineup-provider-owner "$@" >"$stdout_file" 2>"$stderr_file" &
+  child_pid=$!
+  if ! provider_cgroup_v2_wait_stopped "${child_pid}" \
+    || ! printf '%s\n' "${child_pid}" >"${provider_cgroup}/cgroup.procs" \
+    || ! grep -Fxq "${child_pid}" "${provider_cgroup}/cgroup.procs"
+  then
+    kill -KILL "${child_pid}" 2>/dev/null || true
+    wait "${child_pid}" 2>/dev/null || true
+    rmdir -- "${provider_cgroup}" 2>/dev/null || true
+    rm -rf "$scratch"
+    echo "ERROR: Provider command was not started because cgroup v2 ownership could not be established atomically." >&2
+    return 78
+  fi
+  if ! kill -CONT "${child_pid}"; then
+    kill -KILL "${child_pid}" 2>/dev/null || true
+    wait "${child_pid}" 2>/dev/null || true
+    rmdir -- "${provider_cgroup}" 2>/dev/null || true
+    rm -rf "$scratch"
+    echo "ERROR: Provider command was not started because its cgroup v2 owner could not release the launch barrier." >&2
+    return 78
+  fi
+  started_at="$(date -u +%s)"
+  deadline=$((started_at + timeout_seconds))
+  (
+    monitor_reason=""
+    # Give ordinary short provider calls a small fast-path window before the
+    # monitor starts filesystem/accounting probes.
+    sleep 0.1
+    while provider_cgroup_v2_populated "${provider_cgroup}"; do
+      stdout_bytes="$(wc -c <"$stdout_file" | tr -d ' ')"
+      stderr_bytes="$(wc -c <"$stderr_file" | tr -d ' ')"
+      if [ $((stdout_bytes + stderr_bytes)) -gt "$max_output_bytes" ]; then
+        monitor_reason="output-cap"
+        break
+      fi
+      if [ -n "$download_path" ] && [ -e "$download_path" ]; then
+        download_bytes="$(wc -c <"$download_path" 2>/dev/null | tr -d ' ' || printf '%s' 0)"
+        if [ "$download_bytes" -gt "$max_download_bytes" ]; then
+          monitor_reason="download-cap"
+          break
+        fi
+      fi
+      now="$(date -u +%s)"
+      if [ "$now" -ge "$deadline" ]; then
+        monitor_reason="timeout"
+        break
+      fi
+      sleep 0.05
+    done
+    if [ -n "$monitor_reason" ]; then
+      printf '%s\n' "$monitor_reason" >"$reason_file"
+      provider_cgroup_v2_terminate "${provider_cgroup}" "${kill_after_seconds}" \
+        || printf '%s\n' termination-failed >"${owner_error_file}"
+    fi
+  ) &
+  monitor_pid=$!
+
+  if wait "$child_pid"; then status=0; else status=$?; fi
+  if provider_cgroup_v2_populated "${provider_cgroup}"; then
+    if [ -s "$reason_file" ]; then
+      wait "$monitor_pid" >/dev/null 2>&1 || true
+    else
+      kill -TERM "$monitor_pid" >/dev/null 2>&1 || true
+      wait "$monitor_pid" >/dev/null 2>&1 || true
+      printf '%s\n' descendant-survivor >"$reason_file"
+      provider_cgroup_v2_terminate "${provider_cgroup}" "${kill_after_seconds}" \
+        || printf '%s\n' termination-failed >"${owner_error_file}"
+    fi
+  else
+    kill -TERM "$monitor_pid" >/dev/null 2>&1 || true
+    wait "$monitor_pid" >/dev/null 2>&1 || true
+  fi
+  if [ -s "${owner_error_file}" ] || ! provider_cgroup_v2_empty "${provider_cgroup}"; then
+    echo "ERROR: Provider command ownership domain could not be proven empty; output cleanup is unsafe." >&2
+    return 78
+  fi
+  rmdir -- "${provider_cgroup}" || {
+    echo "ERROR: Provider command ownership domain could not be removed after empty proof." >&2
+    return 78
+  }
+  reason=""
+  [ ! -f "$reason_file" ] || reason="$(head -n 1 "$reason_file")"
+  stdout_bytes="$(wc -c <"$stdout_file" | tr -d ' ')"
+  stderr_bytes="$(wc -c <"$stderr_file" | tr -d ' ')"
+  if [ -z "$reason" ] && [ $((stdout_bytes + stderr_bytes)) -gt "$max_output_bytes" ]; then reason="output-cap"; fi
+  if [ -z "$reason" ] && [ -n "$download_path" ] && [ -e "$download_path" ]; then
+    download_bytes="$(wc -c <"$download_path" 2>/dev/null | tr -d ' ' || printf '%s' 0)"
+    [ "$download_bytes" -le "$max_download_bytes" ] || reason="download-cap"
+  fi
+
+  if [ -z "$reason" ] && [ "$status" -eq 0 ]; then
+    cat "$stdout_file"
+    cat "$stderr_file" >&2
+    rm -rf "$scratch"
+    return 0
+  fi
+
+  if [ "$stderr_bytes" -gt 0 ]; then head -c 4096 "$stderr_file" >&2 || true; fi
+  rm -rf "$scratch"
+  if [ "$operation" = mutation ] && [ "$status" -ne 127 ]; then
+    echo "ERROR: Provider mutation state is unknown; authenticated readback reconciliation is required (reason=${reason:-exit-$status})." >&2
+    return 70
+  fi
+  echo "ERROR: Provider read failed (reason=${reason:-exit-$status})." >&2
+  if [ -z "$reason" ] && [ "$status" -gt 0 ] && [ "$status" -le 255 ]; then
+    return "$status"
+  fi
+  return 69
+}
+
+if [ "${1:-}" = "--provider-command" ]; then
+  shift
+  provider_command_owner "$@"
+  exit $?
+fi
+
 fail() {
   echo "ERROR: $*" >&2
   exit 1
@@ -41,10 +406,20 @@ validate_backup_settings() {
   [ "${BACKUP_RETENTION_DAYS}" -ge 1 ] || fail "BACKUP_RETENTION_DAYS must be at least 1."
   is_unsigned_integer "${BACKUP_OFFSITE_RETENTION_DAYS}" || fail "BACKUP_OFFSITE_RETENTION_DAYS must be a positive integer."
   [ "${BACKUP_OFFSITE_RETENTION_DAYS}" -ge 1 ] || fail "BACKUP_OFFSITE_RETENTION_DAYS must be at least 1."
-  case "${BACKUP_OFFSITE_RETENTION_DRY_RUN}" in
-    true | false) ;;
-    *) fail "BACKUP_OFFSITE_RETENTION_DRY_RUN must be true or false." ;;
-  esac
+  [ "${BACKUP_OFFSITE_RETENTION_DRY_RUN}" = "false" ] \
+    || fail "BACKUP_OFFSITE_RETENTION_DRY_RUN is obsolete; immutable offsite expiry must be lifecycle-owned."
+  is_unsigned_integer "${BACKUP_OFFSITE_LIFECYCLE_MAX_DAYS}" \
+    || fail "BACKUP_OFFSITE_LIFECYCLE_MAX_DAYS must be a positive integer."
+  [ "${BACKUP_OFFSITE_LIFECYCLE_MAX_DAYS}" -ge "${BACKUP_OFFSITE_RETENTION_DAYS}" ] \
+    && [ "${BACKUP_OFFSITE_LIFECYCLE_MAX_DAYS}" -le 365 ] \
+    || fail "BACKUP_OFFSITE_LIFECYCLE_MAX_DAYS must cover immutable retention and be no more than 365."
+  for provider_bound in \
+    "${BACKUP_PROVIDER_TIMEOUT_SECONDS}" \
+    "${BACKUP_PROVIDER_KILL_AFTER_SECONDS}" \
+    "${BACKUP_PROVIDER_MAX_OUTPUT_BYTES}"
+  do
+    is_unsigned_integer "${provider_bound}" || fail "Backup provider command bounds must be positive integers."
+  done
 }
 
 read_backup_key() {
@@ -99,93 +474,216 @@ validate_offsite_repository() {
       OFFSITE_S3_PREFIX="${OFFSITE_S3_PREFIX%/}"
       ;;
     rclone:*)
-      target="${offsite_uri#rclone:}"
-      case "${target}" in *'//'*) fail "BACKUP_OFFSITE_URI must use one non-root rclone path." ;; esac
-      [ "${target}" != "${target#*:}" ] || fail "BACKUP_OFFSITE_URI must include an rclone remote and non-root path."
-      [ -n "${target%%:*}" ] && [ -n "${target#*:}" ] || fail "BACKUP_OFFSITE_URI must include an rclone remote and non-root path."
-      OFFSITE_KIND="rclone"
-      OFFSITE_REPOSITORY="${target%/}"
+      fail "Mutable rclone repositories cannot satisfy immutable production logical-backup proof; use versioned Object-Locked s3:// storage."
       ;;
     *)
-      fail "Unsupported BACKUP_OFFSITE_URI. Use s3://... or rclone:<remote:path>."
+      fail "Unsupported BACKUP_OFFSITE_URI. Immutable logical backups require s3://bucket/non-root-prefix."
       ;;
   esac
 }
 
-record_offsite_candidate() {
-  local object_name="$1"
-  local object_uri="$2"
-  local object_timestamp
-
-  case "${object_name}" in
-    "${BACKUP_PREFIX}"-*.sql.zst.gpg) object_timestamp="${object_name#"${BACKUP_PREFIX}"-}"; object_timestamp="${object_timestamp%.sql.zst.gpg}" ;;
-    "${BACKUP_PREFIX}"-*.sql.zst.gpg.sha256) object_timestamp="${object_name#"${BACKUP_PREFIX}"-}"; object_timestamp="${object_timestamp%.sql.zst.gpg.sha256}" ;;
-    *) return 0 ;;
-  esac
-  [[ "${object_timestamp}" =~ ^[0-9]{14}$ ]] || return 0
-
-  [[ "${object_timestamp}" < "${BACKUP_OFFSITE_RETENTION_CUTOFF}" ]] || return 0
-  BACKUP_OFFSITE_RETENTION_CANDIDATES=$((BACKUP_OFFSITE_RETENTION_CANDIDATES + 1))
-  printf 'offsite_retention_candidate mode=%s object=%s\n' "${BACKUP_OFFSITE_RETENTION_MODE}" "${object_uri}"
-
-  [ "${BACKUP_OFFSITE_RETENTION_DRY_RUN}" = "false" ] || return 0
-  case "${OFFSITE_KIND}" in
-    s3) aws s3 rm "${object_uri}" || fail "Failed to delete retained S3 backup object: ${object_uri}" ;;
-    rclone) rclone deletefile "${object_uri}" || fail "Failed to delete retained rclone backup object: ${object_uri}" ;;
-  esac
-  BACKUP_OFFSITE_RETENTION_DELETED=$((BACKUP_OFFSITE_RETENTION_DELETED + 1))
+backup_provider_read() {
+  provider_command_owner \
+    --operation read \
+    --timeout-seconds "${BACKUP_PROVIDER_TIMEOUT_SECONDS}" \
+    --kill-after-seconds "${BACKUP_PROVIDER_KILL_AFTER_SECONDS}" \
+    --max-output-bytes "${BACKUP_PROVIDER_MAX_OUTPUT_BYTES}" \
+    -- "$@"
 }
 
-prune_offsite() {
-  local listing
-  local line
-  local object_key
-  local object_name
-  local expected_prefix
+backup_provider_mutation() {
+  provider_command_owner \
+    --operation mutation \
+    --timeout-seconds "${BACKUP_PROVIDER_TIMEOUT_SECONDS}" \
+    --kill-after-seconds "${BACKUP_PROVIDER_KILL_AFTER_SECONDS}" \
+    --max-output-bytes "${BACKUP_PROVIDER_MAX_OUTPUT_BYTES}" \
+    -- "$@"
+}
 
-  BACKUP_OFFSITE_RETENTION_CANDIDATES=0
-  BACKUP_OFFSITE_RETENTION_DELETED=0
-  BACKUP_OFFSITE_RETENTION_MODE="execute"
-  [ "${BACKUP_OFFSITE_RETENTION_DRY_RUN}" = "false" ] || BACKUP_OFFSITE_RETENTION_MODE="dry_run"
-  BACKUP_OFFSITE_RETENTION_CUTOFF="$(date -u -d "@$(( $(date -u +%s) - BACKUP_OFFSITE_RETENTION_DAYS * 86400 ))" +%Y%m%d%H%M%S)" \
-    || fail "Unable to calculate offsite backup retention cutoff."
+verify_backup_s3_protection() {
+  local versioning_file object_lock_file lifecycle_file policy_file identity_file
+  BACKUP_PROVIDER_SCRATCH="$(mktemp -d "${TMPDIR:-/tmp}/lunchlineup-backup-provider.XXXXXX")"
+  versioning_file="${BACKUP_PROVIDER_SCRATCH}/versioning.json"
+  object_lock_file="${BACKUP_PROVIDER_SCRATCH}/object-lock.json"
+  lifecycle_file="${BACKUP_PROVIDER_SCRATCH}/lifecycle.json"
+  policy_file="${BACKUP_PROVIDER_SCRATCH}/policy.json"
+  identity_file="${BACKUP_PROVIDER_SCRATCH}/identity.json"
 
-  case "${OFFSITE_KIND}" in
-    s3)
-      if ! listing="$(aws s3 ls "${OFFSITE_REPOSITORY}/" --recursive)"; then
-        fail "Failed to list the configured S3 backup repository for retention."
-      fi
-      expected_prefix="${OFFSITE_S3_PREFIX}/"
-      while IFS= read -r line; do
-        [ -n "${line}" ] || continue
-        object_key="$(printf '%s\n' "${line}" | awk '{print $4}')"
-        case "${object_key}" in
-          "${expected_prefix}"*) ;;
-          *) continue ;;
-        esac
-        object_name="${object_key#"${expected_prefix}"}"
-        case "${object_name}" in */*) continue ;; esac
-        record_offsite_candidate "${object_name}" "s3://${OFFSITE_S3_BUCKET}/${object_key}"
-      done <<<"${listing}"
-      ;;
-    rclone)
-      if ! listing="$(rclone lsf "${OFFSITE_REPOSITORY}" --files-only --max-depth 1)"; then
-        fail "Failed to list the configured rclone backup repository for retention."
-      fi
-      while IFS= read -r object_name; do
-        [ -n "${object_name}" ] || continue
-        case "${object_name}" in */*) continue ;; esac
-        record_offsite_candidate "${object_name}" "${OFFSITE_REPOSITORY}/${object_name}"
-      done <<<"${listing}"
-      ;;
-  esac
+  backup_provider_read aws s3api get-bucket-versioning --bucket "${OFFSITE_S3_BUCKET}" --output json >"${versioning_file}"
+  backup_provider_read aws s3api get-object-lock-configuration --bucket "${OFFSITE_S3_BUCKET}" --output json >"${object_lock_file}"
+  backup_provider_read aws s3api get-bucket-lifecycle-configuration --bucket "${OFFSITE_S3_BUCKET}" --output json >"${lifecycle_file}"
+  backup_provider_read aws s3api get-bucket-policy --bucket "${OFFSITE_S3_BUCKET}" --output json >"${policy_file}"
+  backup_provider_read aws sts get-caller-identity --output json >"${identity_file}"
 
-  printf 'offsite_retention_ok mode=%s repository=%s cutoff=%s candidates=%s deleted=%s\n' \
-    "${BACKUP_OFFSITE_RETENTION_MODE}" \
-    "${BACKUP_OFFSITE_PROOF_URI}" \
-    "${BACKUP_OFFSITE_RETENTION_CUTOFF}" \
-    "${BACKUP_OFFSITE_RETENTION_CANDIDATES}" \
-    "${BACKUP_OFFSITE_RETENTION_DELETED}"
+  BACKUP_OFFSITE_PRINCIPAL="$(python3 - \
+    "${versioning_file}" \
+    "${object_lock_file}" \
+    "${lifecycle_file}" \
+    "${policy_file}" \
+    "${identity_file}" \
+    "${OFFSITE_S3_BUCKET}" \
+    "${OFFSITE_S3_PREFIX}" \
+    "${BACKUP_OFFSITE_RETENTION_DAYS}" \
+    "${BACKUP_OFFSITE_LIFECYCLE_MAX_DAYS}" <<'PY'
+import json
+import sys
+
+versioning_path, lock_path, lifecycle_path, policy_path, identity_path, bucket, prefix, minimum_text, maximum_text = sys.argv[1:]
+minimum = int(minimum_text)
+maximum = int(maximum_text)
+load = lambda path: json.load(open(path, encoding='utf-8'))
+versioning = load(versioning_path)
+lock = load(lock_path)
+lifecycle = load(lifecycle_path)
+policy_envelope = load(policy_path)
+identity = load(identity_path)
+if versioning.get('Status') != 'Enabled':
+    raise SystemExit('Backup bucket versioning must be Enabled.')
+configuration = lock.get('ObjectLockConfiguration') or {}
+retention = ((configuration.get('Rule') or {}).get('DefaultRetention') or {})
+if configuration.get('ObjectLockEnabled') != 'Enabled' or retention.get('Mode') != 'COMPLIANCE':
+    raise SystemExit('Backup bucket default Object Lock must be Enabled in COMPLIANCE mode.')
+retention_days = retention.get('Days') or (retention.get('Years') or 0) * 365
+if not isinstance(retention_days, int) or retention_days < minimum or retention_days > maximum:
+    raise SystemExit('Backup bucket Object Lock retention is outside the approved lifecycle bounds.')
+
+current = False
+noncurrent = False
+for rule in lifecycle.get('Rules') or []:
+    if rule.get('Status') != 'Enabled':
+        continue
+    if 'Prefix' in rule and 'Filter' not in rule:
+        rule_prefix = rule.get('Prefix')
+    else:
+        filter_value = rule.get('Filter', {})
+        rule_prefix = filter_value.get('Prefix') if isinstance(filter_value, dict) and set(filter_value) <= {'Prefix'} else None
+    if not isinstance(rule_prefix, str):
+        continue
+    rule_prefix = rule_prefix.strip('/')
+    if rule_prefix and prefix != rule_prefix and not prefix.startswith(rule_prefix + '/'):
+        continue
+    expiration = rule.get('Expiration') or {}
+    if 'Date' in expiration:
+        raise SystemExit('Backup lifecycle must not use an absolute expiry date.')
+    days = expiration.get('Days')
+    if isinstance(days, int) and minimum <= days <= maximum:
+        current = True
+    noncurrent_days = (rule.get('NoncurrentVersionExpiration') or {}).get('NoncurrentDays')
+    if isinstance(noncurrent_days, int) and minimum <= noncurrent_days <= maximum:
+        noncurrent = True
+if not current or not noncurrent:
+    raise SystemExit('Backup lifecycle must bound current and noncurrent expiry for the exact backup prefix.')
+
+try:
+    policy = json.loads(policy_envelope['Policy'])
+except (KeyError, TypeError, json.JSONDecodeError):
+    raise SystemExit('Backup bucket deletion-deny policy is missing or invalid.')
+statements = policy.get('Statement') or []
+if not isinstance(statements, list):
+    statements = [statements]
+denied = set()
+allowed_resources = {
+    f'arn:aws:s3:::{bucket}/*',
+    f'arn:aws:s3:::{bucket}/{prefix}/*',
+}
+for statement in statements:
+    if not isinstance(statement, dict) or statement.get('Effect') != 'Deny' or 'Condition' in statement or 'NotPrincipal' in statement:
+        continue
+    principal = statement.get('Principal')
+    all_principals = principal == '*' or (isinstance(principal, dict) and principal.get('AWS') == '*') or (
+        isinstance(principal, dict) and isinstance(principal.get('AWS'), list) and '*' in principal['AWS']
+    )
+    resources = statement.get('Resource') or []
+    if not isinstance(resources, list):
+        resources = [resources]
+    if not all_principals or not any(resource in allowed_resources for resource in resources):
+        continue
+    actions = statement.get('Action') or []
+    if not isinstance(actions, list):
+        actions = [actions]
+    for action in (str(value).lower() for value in actions):
+        if action in {'s3:*', 's3:delete*', 's3:deleteobject*'}:
+            denied.update({'s3:deleteobject', 's3:deleteobjectversion'})
+        elif action in {'s3:deleteobject', 's3:deleteobjectversion'}:
+            denied.add(action)
+if denied != {'s3:deleteobject', 's3:deleteobjectversion'}:
+    raise SystemExit('Backup bucket policy must unconditionally deny object and version deletion for all identities on the exact prefix.')
+principal = identity.get('Arn')
+if not isinstance(principal, str) or len(principal) < 8 or any(character.isspace() for character in principal):
+    raise SystemExit('Backup provider identity readback is missing an authenticated principal ARN.')
+print(principal, end='')
+PY
+  )" || fail "Immutable logical-backup provider protection preflight failed."
+}
+
+put_immutable_backup_object() {
+  local source_file="$1"
+  local object_name object_key checksum_hex checksum_base64 retain_until put_json version_id head_file expected_bytes
+  object_name="$(basename "${source_file}")"
+  object_key="${OFFSITE_S3_PREFIX}/${object_name}"
+  checksum_hex="$(sha256sum "${source_file}" | awk '{print tolower($1)}')"
+  checksum_base64="$(python3 - "${checksum_hex}" <<'PY'
+import base64
+import sys
+print(base64.b64encode(bytes.fromhex(sys.argv[1])).decode(), end='')
+PY
+  )"
+  retain_until="$(date -u -d "+${BACKUP_OFFSITE_RETENTION_DAYS} days" +%Y-%m-%dT%H:%M:%SZ)" \
+    || fail "Unable to calculate immutable backup retention timestamp."
+  put_json=""
+  if put_json="$(backup_provider_mutation aws s3api put-object \
+    --bucket "${OFFSITE_S3_BUCKET}" \
+    --key "${object_key}" \
+    --body "${source_file}" \
+    --if-none-match '*' \
+    --checksum-algorithm SHA256 \
+    --checksum-sha256 "${checksum_base64}" \
+    --object-lock-mode COMPLIANCE \
+    --object-lock-retain-until-date "${retain_until}" \
+    --output json)"; then
+    version_id="$(printf '%s' "${put_json}" | python3 -c 'import json,sys; value=json.load(sys.stdin).get("VersionId"); print(value if isinstance(value,str) else "", end="")')"
+  else
+    version_id=""
+  fi
+
+  head_file="${BACKUP_PROVIDER_SCRATCH}/head-$(printf '%s' "${object_name}" | tr -c 'A-Za-z0-9._-' '_').json"
+  if [ -n "${version_id}" ] && [ "${version_id}" != null ]; then
+    backup_provider_read aws s3api head-object \
+      --bucket "${OFFSITE_S3_BUCKET}" --key "${object_key}" --version-id "${version_id}" \
+      --checksum-mode ENABLED --output json >"${head_file}"
+  else
+    backup_provider_read aws s3api head-object \
+      --bucket "${OFFSITE_S3_BUCKET}" --key "${object_key}" \
+      --checksum-mode ENABLED --output json >"${head_file}"
+    version_id="$(python3 -c 'import json,sys; value=json.load(open(sys.argv[1])).get("VersionId"); print(value if isinstance(value,str) else "", end="")' "${head_file}")"
+  fi
+  case "${version_id}" in '' | null | latest) fail "Immutable backup provider readback did not return an exact version ID." ;; esac
+  expected_bytes="$(wc -c <"${source_file}" | tr -d ' ')"
+  if ! python3 - "${head_file}" "${version_id}" "${expected_bytes}" "${checksum_base64}" \
+    "${BACKUP_OFFSITE_RETENTION_DAYS}" "${BACKUP_OFFSITE_LIFECYCLE_MAX_DAYS}" <<'PY'
+import datetime
+import json
+import sys
+
+path, version_id, expected_bytes, checksum, minimum_days, maximum_days = sys.argv[1:]
+metadata = json.load(open(path, encoding='utf-8'))
+if metadata.get('VersionId') != version_id or version_id in {'', 'null', 'latest'}:
+    raise SystemExit(1)
+if metadata.get('ContentLength') != int(expected_bytes) or metadata.get('ChecksumSHA256') != checksum:
+    raise SystemExit(1)
+if metadata.get('DeleteMarker') is True or metadata.get('ObjectLockMode') != 'COMPLIANCE':
+    raise SystemExit(1)
+parse = lambda value: datetime.datetime.fromisoformat(str(value).replace('Z', '+00:00'))
+last_modified = parse(metadata.get('LastModified'))
+retain_until = parse(metadata.get('ObjectLockRetainUntilDate'))
+days = (retain_until - last_modified).total_seconds() / 86400
+if days < int(minimum_days) - 0.01 or days > int(maximum_days) + 0.01:
+    raise SystemExit(1)
+PY
+  then
+    fail "Immutable backup provider readback does not match the uploaded object."
+  fi
+  printf '%s' "${version_id}"
 }
 
 sync_offsite() {
@@ -198,37 +696,34 @@ sync_offsite() {
 
   [ -n "${offsite_uri}" ] || return 0
   validate_offsite_repository "${offsite_uri}"
-  if [ "${OFFSITE_KIND}" = "rclone" ]; then
-    BACKUP_OFFSITE_PROOF_URI="rclone:${OFFSITE_REPOSITORY}/"
-  else
-    BACKUP_OFFSITE_PROOF_URI="${OFFSITE_REPOSITORY}/"
-  fi
-
-  case "${OFFSITE_KIND}" in
-    s3)
-      require_command aws
-      [ -r "${AWS_SHARED_CREDENTIALS_FILE:-}" ] || fail "AWS_SHARED_CREDENTIALS_FILE must name a readable dedicated credentials file for s3 backups."
-      aws s3 cp "${BACKUP_FILE}" "${OFFSITE_REPOSITORY}/"
-      aws s3 cp "${BACKUP_FILE}.sha256" "${OFFSITE_REPOSITORY}/"
-      ;;
-    rclone)
-      require_command rclone
-      [ -r "${RCLONE_CONFIG:-}" ] || fail "RCLONE_CONFIG must name a readable dedicated config file for rclone backups."
-      rclone copyto "${BACKUP_FILE}" "${OFFSITE_REPOSITORY}/$(basename "${BACKUP_FILE}")"
-      rclone copyto "${BACKUP_FILE}.sha256" "${OFFSITE_REPOSITORY}/$(basename "${BACKUP_FILE}.sha256")"
-      ;;
-  esac
-
-  prune_offsite
+  BACKUP_OFFSITE_PROOF_URI="${OFFSITE_REPOSITORY}/"
+  require_command aws
+  require_command python3
+  [ -r "${AWS_SHARED_CREDENTIALS_FILE:-}" ] || fail "AWS_SHARED_CREDENTIALS_FILE must name a readable dedicated credentials file for s3 backups."
+  verify_backup_s3_protection
+  BACKUP_OFFSITE_OBJECT_VERSION="$(put_immutable_backup_object "${BACKUP_FILE}")"
+  BACKUP_OFFSITE_CHECKSUM_VERSION="$(put_immutable_backup_object "${BACKUP_FILE}.sha256")"
+  BACKUP_OFFSITE_OBSERVED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  printf 'offsite_retention_ok mode=lifecycle_owned repository=%s immutable_days=%s lifecycle_max_days=%s delete=denied\n' \
+    "${BACKUP_OFFSITE_PROOF_URI}" "${BACKUP_OFFSITE_RETENTION_DAYS}" "${BACKUP_OFFSITE_LIFECYCLE_MAX_DAYS}"
+  printf 'offsite_immutable_ok object_version=%s checksum_version=%s principal=%s observed_at=%s\n' \
+    "${BACKUP_OFFSITE_OBJECT_VERSION}" \
+    "${BACKUP_OFFSITE_CHECKSUM_VERSION}" \
+    "${BACKUP_OFFSITE_PRINCIPAL}" \
+    "${BACKUP_OFFSITE_OBSERVED_AT}"
 }
 
 write_backup_proof() {
-  printf 'backup_ok backup_file=%s checksum_file=%s backup_sha256=%s size_bytes=%s offsite_uri=%s completed_at=%s\n' \
+  printf 'backup_ok backup_file=%s checksum_file=%s backup_sha256=%s size_bytes=%s offsite_uri=%s offsite_version=%s checksum_version=%s provider_principal=%s provider_observed_at=%s expiry_owner=lifecycle completed_at=%s\n' \
     "${BACKUP_FILE}" \
     "${BACKUP_FILE}.sha256" \
     "${BACKUP_SHA256}" \
     "${BACKUP_SIZE_BYTES}" \
     "${BACKUP_OFFSITE_PROOF_URI:-none}" \
+    "${BACKUP_OFFSITE_OBJECT_VERSION:-none}" \
+    "${BACKUP_OFFSITE_CHECKSUM_VERSION:-none}" \
+    "${BACKUP_OFFSITE_PRINCIPAL:-none}" \
+    "${BACKUP_OFFSITE_OBSERVED_AT:-none}" \
     "${BACKUP_COMPLETED_AT}"
 }
 
@@ -237,14 +732,24 @@ BACKUP_PREFIX="${BACKUP_PREFIX:-lunchlineup}"
 BACKUP_RETENTION_DAYS="${BACKUP_RETENTION_DAYS:-35}"
 BACKUP_OFFSITE_RETENTION_DAYS="${BACKUP_OFFSITE_RETENTION_DAYS:-35}"
 BACKUP_OFFSITE_RETENTION_DRY_RUN="${BACKUP_OFFSITE_RETENTION_DRY_RUN:-false}"
+BACKUP_OFFSITE_LIFECYCLE_MAX_DAYS="${BACKUP_OFFSITE_LIFECYCLE_MAX_DAYS:-90}"
+BACKUP_PROVIDER_TIMEOUT_SECONDS="${BACKUP_PROVIDER_TIMEOUT_SECONDS:-120}"
+BACKUP_PROVIDER_KILL_AFTER_SECONDS="${BACKUP_PROVIDER_KILL_AFTER_SECONDS:-5}"
+BACKUP_PROVIDER_MAX_OUTPUT_BYTES="${BACKUP_PROVIDER_MAX_OUTPUT_BYTES:-4194304}"
 POSTGRES_USER="${POSTGRES_USER:-postgres}"
 POSTGRES_HOST="${POSTGRES_HOST:-localhost}"
 POSTGRES_PORT="${POSTGRES_PORT:-5432}"
 POSTGRES_DB="${POSTGRES_DB:-lunchlineup}"
 TIMESTAMP="$(date -u +%Y%m%d%H%M%S)"
 BACKUP_OFFSITE_PROOF_URI=""
+BACKUP_PROVIDER_SCRATCH=""
 
 validate_backup_settings
+if [ -n "${BACKUP_OFFSITE_URI:-}" ]; then
+  validate_offsite_repository "${BACKUP_OFFSITE_URI}"
+elif [ "${BACKUP_OFFSITE_ENABLED:-false}" = "true" ] && [ -n "${BACKUP_S3_BUCKET:-}" ]; then
+  validate_offsite_repository "s3://${BACKUP_S3_BUCKET}/db-backups/"
+fi
 require_command pg_dump
 require_command zstd
 require_command gpg
@@ -258,6 +763,7 @@ BACKUP_KEY="$(read_backup_key)"
 
 cleanup() {
   rm -f "${TMP_BACKUP_FILE}"
+  [ -z "${BACKUP_PROVIDER_SCRATCH}" ] || rm -rf "${BACKUP_PROVIDER_SCRATCH}"
 }
 trap cleanup EXIT
 

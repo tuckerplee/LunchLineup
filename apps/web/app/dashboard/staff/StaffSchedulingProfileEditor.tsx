@@ -6,12 +6,18 @@ import { CalendarClock, Plus, RefreshCw, Save, Trash2, X } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { fetchJsonWithSession } from '@/lib/client-api';
 
+import { AvailabilityPdfImport } from './AvailabilityPdfImport';
+
 type StaffSchedulingProfileEditorProps = {
-    user: { id: string; name: string };
+    user: { id: string; name: string; email: string; username?: string };
     onClose: () => void;
 };
 
 type Location = { id: string; name: string };
+type LocationPage = {
+    data?: Location[];
+    pagination?: { hasMore?: boolean; nextCursor?: string | null };
+};
 type AvailabilityWindow = {
     locationId: string | null;
     dayOfWeek: number;
@@ -44,12 +50,15 @@ export function StaffSchedulingProfileEditor({ user, onClose }: StaffSchedulingP
     const [isProfileHydrated, setIsProfileHydrated] = useState(false);
     const [profileLoadError, setProfileLoadError] = useState<string | null>(null);
     const [isLocationsLoading, setIsLocationsLoading] = useState(true);
+    const [isLoadingMoreLocations, setIsLoadingMoreLocations] = useState(false);
+    const [nextLocationCursor, setNextLocationCursor] = useState<string | null>(null);
     const [locationLoadError, setLocationLoadError] = useState<string | null>(null);
     const [isSaving, setIsSaving] = useState(false);
     const [message, setMessage] = useState<string | null>(null);
     const [error, setError] = useState<string | null>(null);
     const profileLoadRequestRef = useRef(0);
     const locationLoadRequestRef = useRef(0);
+    const saveInFlightRef = useRef(false);
 
     const loadProfile = useCallback(async () => {
         const requestId = ++profileLoadRequestRef.current;
@@ -73,19 +82,36 @@ export function StaffSchedulingProfileEditor({ user, onClose }: StaffSchedulingP
         }
     }, [user.id]);
 
-    const loadLocations = useCallback(async () => {
+    const loadLocations = useCallback(async (cursor?: string) => {
         const requestId = ++locationLoadRequestRef.current;
-        setIsLocationsLoading(true);
+        const append = Boolean(cursor);
+        if (append) setIsLoadingMoreLocations(true);
+        else setIsLocationsLoading(true);
         setLocationLoadError(null);
         try {
-            const payload = await fetchJsonWithSession<{ data?: Location[] }>('/locations');
+            const path = '/locations?limit=200' + (cursor ? '&cursor=' + encodeURIComponent(cursor) : '');
+            const payload = await fetchJsonWithSession<LocationPage>(path);
             if (requestId !== locationLoadRequestRef.current) return;
-            setLocations(payload.data ?? []);
+            const rows = Array.isArray(payload.data) ? payload.data : [];
+            const continuation = payload.pagination?.hasMore === true ? payload.pagination.nextCursor : null;
+            if (payload.pagination?.hasMore === true && (typeof continuation !== 'string' || !continuation)) {
+                throw new Error('Location list did not provide a continuation cursor.');
+            }
+            setLocations((current) => {
+                if (!append) return rows;
+                const byId = new Map(current.map((location) => [location.id, location]));
+                for (const location of rows) byId.set(location.id, location);
+                return [...byId.values()];
+            });
+            setNextLocationCursor(continuation ?? null);
         } catch (loadError) {
             if (requestId !== locationLoadRequestRef.current) return;
             setLocationLoadError((loadError as Error).message);
         } finally {
-            if (requestId === locationLoadRequestRef.current) setIsLocationsLoading(false);
+            if (requestId === locationLoadRequestRef.current) {
+                if (append) setIsLoadingMoreLocations(false);
+                else setIsLocationsLoading(false);
+            }
         }
     }, []);
 
@@ -140,8 +166,12 @@ export function StaffSchedulingProfileEditor({ user, onClose }: StaffSchedulingP
         setMessage(null);
     }, [isProfileHydrated]);
 
-    const save = useCallback(async () => {
-        if (!isProfileHydrated) return;
+    const save = useCallback(async (
+        nextAvailability: AvailabilityWindow[] = availability,
+        successMessage?: string,
+    ): Promise<boolean> => {
+        if (!isProfileHydrated || saveInFlightRef.current) return false;
+        saveInFlightRef.current = true;
         setIsSaving(true);
         setError(null);
         setMessage(null);
@@ -151,20 +181,27 @@ export function StaffSchedulingProfileEditor({ user, onClose }: StaffSchedulingP
                 {
                     method: 'PUT',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ skills, availability }),
+                    body: JSON.stringify({ skills, availability: nextAvailability }),
                 },
             );
             setSkills(profile.skills);
             setAvailability(profile.availability);
-            setMessage(profile.availabilityConfigured
+            setMessage(successMessage ?? (profile.availabilityConfigured
                 ? 'Scheduling profile saved.'
-                : 'Profile saved. This staff member remains unavailable to auto-scheduling.');
+                : 'Profile saved. This staff member remains unavailable to auto-scheduling.'));
+            return true;
         } catch (saveError) {
             setError((saveError as Error).message);
+            return false;
         } finally {
             setIsSaving(false);
+            saveInFlightRef.current = false;
         }
     }, [availability, isProfileHydrated, skills, user.id]);
+
+    const applyImportedAvailability = useCallback((importedAvailability: AvailabilityWindow[]) => (
+        save(importedAvailability, 'Imported availability applied and scheduling profile saved.')
+    ), [save]);
 
     return (
         <section className="surface-card" aria-label={`Scheduling profile for ${user.name}`} style={{ padding: '1rem', display: 'grid', gap: '1rem' }}>
@@ -236,6 +273,14 @@ export function StaffSchedulingProfileEditor({ user, onClose }: StaffSchedulingP
                         </div>
                     </div>
 
+                    <AvailabilityPdfImport
+                        key={user.id}
+                        userId={user.id}
+                        suggestedStaffIdentity={user.username?.trim() || user.email.trim()}
+                        disabled={isSaving || !isProfileHydrated}
+                        onApply={applyImportedAvailability}
+                    />
+
                     <div style={{ display: 'grid', gap: '0.65rem' }}>
                         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '0.75rem' }}>
                             <div style={{ fontSize: '0.78rem', fontWeight: 700 }}>Weekly availability</div>
@@ -257,6 +302,18 @@ export function StaffSchedulingProfileEditor({ user, onClose }: StaffSchedulingP
                                     <RefreshCw aria-hidden="true" size={14} /> Retry locations
                                 </Button>
                             </div>
+                        ) : null}
+                        {nextLocationCursor ? (
+                            <Button
+                                type="button"
+                                size="sm"
+                                variant="outline"
+                                onClick={() => void loadLocations(nextLocationCursor)}
+                                disabled={isLocationsLoading || isLoadingMoreLocations}
+                            >
+                                <RefreshCw aria-hidden="true" size={14} />
+                                {isLoadingMoreLocations ? 'Loading locations...' : 'Load more locations'}
+                            </Button>
                         ) : null}
                         <div style={{ display: 'grid', gap: '0.55rem' }}>
                             {availability.map((window, index) => (

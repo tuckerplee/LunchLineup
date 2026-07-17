@@ -6,7 +6,8 @@ import { fileURLToPath } from 'node:url';
 import { orderMigrationFileNames, shouldApplyMigrationFile } from '../../scripts/apply-db-migrations.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
-const baselineMigration = '20260712_rbac_seed_forward_reconciliation.sql';
+const historicalSeedMigration = '20260712_rbac_seed_forward_reconciliation.sql';
+const baselineMigration = '20260716_rbac_seed_super_admin_forward_reconciliation.sql';
 const lifecycleMigration = '20260713_tenant_account_lifecycle_rbac_reconciliation.sql';
 
 function readMigration(file) {
@@ -17,6 +18,8 @@ test('fresh and upgraded databases apply lifecycle RBAC reconciliation after the
   const baselineSql = readMigration(baselineMigration);
   const lifecycleSql = readMigration(lifecycleMigration);
 
+  assert.equal(shouldApplyMigrationFile(historicalSeedMigration), false);
+  assert.equal(shouldApplyMigrationFile(baselineMigration), true);
   assert.equal(shouldApplyMigrationFile(lifecycleMigration), true);
   assert.deepEqual(
     orderMigrationFileNames([lifecycleMigration, baselineMigration]),

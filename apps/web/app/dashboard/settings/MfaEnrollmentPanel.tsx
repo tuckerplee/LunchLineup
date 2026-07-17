@@ -134,7 +134,7 @@ export function MfaEnrollmentPanel({ tenantMfaRequired }: MfaEnrollmentPanelProp
             setNotice({
                 tone: 'error',
                 text: apiError.status === 404
-                    ? 'MFA enrollment API is not available yet.'
+                    ? 'MFA enrollment is temporarily unavailable.'
                     : apiError.message || 'Unable to load MFA enrollment.',
             });
         } finally {
@@ -268,9 +268,9 @@ export function MfaEnrollmentPanel({ tenantMfaRequired }: MfaEnrollmentPanelProp
 
             {contractUnavailable ? (
                 <div style={{ ...noticeStyle('error'), display: 'grid', gap: '0.35rem' }} role="status">
-                    <strong>Client contract required</strong>
+                    <strong>MFA enrollment unavailable</strong>
                     <span>
-                        Implement GET, POST, PUT, and DELETE /auth/mfa/enrollment with same-origin session credentials.
+                        Refresh this section, or contact your workspace administrator if the issue continues.
                     </span>
                 </div>
             ) : null}

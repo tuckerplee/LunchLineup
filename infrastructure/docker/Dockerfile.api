@@ -30,6 +30,7 @@ RUN if [ -d /app/apps/api/dist ]; then \
 FROM node:22-alpine@sha256:16e22a550f3863206a3f701448c45f7912c6896a62de43add43bb9c86130c3e2 AS runner
 WORKDIR /app
 ENV NODE_ENV=production
+ENV HOME=/home/node TMPDIR=/tmp
 
 # Prisma native engine requires libssl.so.1.1 — install OpenSSL compat
 RUN apk add --no-cache openssl
@@ -47,6 +48,13 @@ COPY --from=builder /app/packages /app/packages
 
 # Ensure runtime Prisma client artifacts are generated in the final image.
 RUN npx prisma generate --schema=/app/packages/db/prisma/schema.prisma
+
+# Seed the named export volume with ownership for the non-root API process.
+RUN mkdir -p /var/lib/lunchlineup/tenant-exports \
+    && chown node:node /var/lib/lunchlineup/tenant-exports \
+    && chmod 0700 /var/lib/lunchlineup/tenant-exports
+
+USER node
 
 EXPOSE 3000
 CMD ["node", "dist/main"]

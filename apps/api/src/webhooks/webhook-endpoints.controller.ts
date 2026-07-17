@@ -66,24 +66,26 @@ export class WebhookEndpointsController {
     @RequirePermission('settings:read')
     async list(@Req() req: any) {
         const tenantId = req.user.tenantId;
-        await this.featureAccessService.assertFeatureEnabled(tenantId, 'webhooks');
-        return this.tenantDb.withTenant(tenantId, (tx) => tx.webhookEndpoint.findMany({
-            where: { tenantId },
-            select: this.publicEndpointSelect(),
-            orderBy: { createdAt: 'asc' },
-        }));
+        return this.tenantDb.withTenant(tenantId, async (tx) => {
+            await this.featureAccessService.assertFeatureEntitledInTransaction(tx, tenantId, 'webhooks');
+            return tx.webhookEndpoint.findMany({
+                where: { tenantId },
+                select: this.publicEndpointSelect(),
+                orderBy: { createdAt: 'asc' },
+            });
+        });
     }
 
     @Post()
     @RequirePermission('settings:write')
     async create(@Body() body: EndpointMutationBody, @Req() req: any) {
         const tenantId = req.user.tenantId;
-        await this.featureAccessService.assertFeatureEnabled(tenantId, 'webhooks');
         const url = this.parseUrl(body?.url);
         const events = this.parseEvents(body?.events);
         const secret = this.generateSecret();
 
         const endpoint = await this.tenantDb.withTenant(tenantId, async (tx) => {
+            await this.featureAccessService.assertFeatureEntitledInTransaction(tx, tenantId, 'webhooks');
             const endpointCount = await tx.webhookEndpoint.count({ where: { tenantId } });
             if (endpointCount >= MAX_ENDPOINTS_PER_TENANT) {
                 throw new BadRequestException(`A tenant may configure at most ${MAX_ENDPOINTS_PER_TENANT} webhook endpoints`);
@@ -118,7 +120,6 @@ export class WebhookEndpointsController {
     @RequirePermission('settings:write')
     async update(@Param('id') id: string, @Body() body: EndpointMutationBody, @Req() req: any) {
         const tenantId = req.user.tenantId;
-        await this.featureAccessService.assertFeatureEnabled(tenantId, 'webhooks');
         const data: { url?: string; events?: WebhookEventType[]; active?: boolean } = {};
         if (body?.url !== undefined) data.url = this.parseUrl(body.url);
         if (body?.events !== undefined) data.events = this.parseEvents(body.events);
@@ -128,6 +129,7 @@ export class WebhookEndpointsController {
         }
 
         return this.tenantDb.withTenant(tenantId, async (tx) => {
+            await this.featureAccessService.assertFeatureEntitledInTransaction(tx, tenantId, 'webhooks');
             const existing = await tx.webhookEndpoint.findFirst({
                 where: { id, tenantId },
                 select: this.publicEndpointSelect(),
@@ -164,9 +166,9 @@ export class WebhookEndpointsController {
     @RequirePermission('settings:write')
     async rotateSecret(@Param('id') id: string, @Req() req: any) {
         const tenantId = req.user.tenantId;
-        await this.featureAccessService.assertFeatureEnabled(tenantId, 'webhooks');
         const secret = this.generateSecret();
         const endpoint = await this.tenantDb.withTenant(tenantId, async (tx) => {
+            await this.featureAccessService.assertFeatureEntitledInTransaction(tx, tenantId, 'webhooks');
             const updated = await tx.webhookEndpoint.updateMany({
                 where: { id, tenantId },
                 data: { secret: this.deliveryCrypto.encryptString(secret) },
@@ -197,8 +199,8 @@ export class WebhookEndpointsController {
     @HttpCode(HttpStatus.NO_CONTENT)
     async deactivate(@Param('id') id: string, @Req() req: any): Promise<void> {
         const tenantId = req.user.tenantId;
-        await this.featureAccessService.assertFeatureEnabled(tenantId, 'webhooks');
         await this.tenantDb.withTenant(tenantId, async (tx) => {
+            await this.featureAccessService.assertFeatureEntitledInTransaction(tx, tenantId, 'webhooks');
             const existing = await tx.webhookEndpoint.findFirst({
                 where: { id, tenantId },
                 select: { id: true, active: true },

@@ -57,6 +57,7 @@ describe('SettingsController', () => {
             auditLog: {
                 create: vi.fn().mockResolvedValue({}),
             },
+            $executeRaw: vi.fn().mockResolvedValue(1),
             $queryRaw: vi.fn().mockResolvedValue([{ set_current_tenant: null }]),
             $transaction: vi.fn(async (cb: any) => cb(prisma)),
         };
@@ -106,7 +107,7 @@ describe('SettingsController', () => {
             select: { name: true, slug: true },
         });
         expect(prisma.$transaction).toHaveBeenCalledOnce();
-        expect(prisma.$queryRaw).toHaveBeenCalledOnce();
+        expect(prisma.$executeRaw).toHaveBeenCalledOnce();
         expect(result).toEqual({
             general: {
                 name: 'Acme Dining',

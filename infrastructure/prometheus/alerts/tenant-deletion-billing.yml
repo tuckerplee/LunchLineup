@@ -1,0 +1,34 @@
+groups:
+  - name: lunchlineup.tenant-deletion-billing
+    interval: 1m
+    rules:
+      - alert: TenantDeletionBillingBacklogSustained
+        expr: |
+          lunchlineup_tenant_deletion_billing_reconciliation_backlog{job="api"} > 0
+          and on(app, job)
+          lunchlineup_tenant_deletion_billing_reconciliation_oldest_pending_age_seconds{job="api"} > 900
+        for: 10m
+        labels:
+          severity: warning
+          team: engineering
+        annotations:
+          summary: "Tenant deletion billing reconciliation backlog is sustained"
+          description: "At least one deletion billing barrier has remained pending for more than 15 minutes; inspect bounded outcome counters and exact-fence retry state."
+          runbook: "docs/runbooks/data-retention-delete-export.md"
+
+      - alert: TenantDeletionBillingSweepStale
+        expr: |
+          (
+            time() - lunchlineup_tenant_deletion_billing_reconciliation_last_success_timestamp_seconds{job="api"}
+            > on(app, job)
+            lunchlineup_tenant_deletion_billing_reconciliation_sweep_max_staleness_seconds{job="api"}
+          )
+          or absent(lunchlineup_tenant_deletion_billing_reconciliation_last_success_timestamp_seconds{job="api"})
+        for: 5m
+        labels:
+          severity: critical
+          team: engineering
+        annotations:
+          summary: "Tenant deletion billing successful sweep is stale"
+          description: "The API has not completed a successful deletion billing reconciliation sweep inside its exported freshness bound; failed sweeps do not refresh this alert."
+          runbook: "docs/runbooks/data-retention-delete-export.md"

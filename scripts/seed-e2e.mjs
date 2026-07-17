@@ -12,6 +12,11 @@ const adminPin = process.env.E2E_ADMIN_PIN ?? '246810';
 const superAdminUsername = process.env.E2E_SUPER_ADMIN_USERNAME ?? 'e2e.superadmin';
 const superAdminPin = process.env.E2E_SUPER_ADMIN_PIN ?? '864200';
 const locationName = process.env.E2E_LOCATION_NAME ?? 'Downtown Diner';
+const staffUsername = process.env.E2E_STAFF_USERNAME ?? 'staff-1';
+const walletCredits = 500;
+const stripeCustomerId = process.env.E2E_STRIPE_CUSTOMER_ID ?? 'cus_e2e_operations_paid';
+const stripeSubscriptionId = process.env.E2E_STRIPE_SUBSCRIPTION_ID ?? 'sub_e2e_operations_active';
+const creditGrantKey = 'e2e-availability-import-load-smoke-v1';
 
 const PERMISSIONS = [
   ['dashboard:access', 'Access dashboard', 'AUTH'],
@@ -247,28 +252,52 @@ async function main() {
         slug: tenantSlug,
         planTier: 'GROWTH',
         status: 'ACTIVE',
-        usageCredits: 500,
+        stripeCustomerId,
+        stripeSubscriptionId,
+        stripeSubscriptionCurrentPeriodEnd: new Date(Date.now() + 365 * 24 * 60 * 60 * 1_000),
+        usageCredits: 0,
       },
     });
   }
 
   await resetTenantData(tenant.id);
-  tenant = await prisma.tenant.update({
-    where: { id: tenant.id },
-    data: {
-      name: tenantName,
-      planTier: 'GROWTH',
-      status: 'ACTIVE',
-      usageCredits: 500,
-      deletedAt: null,
-    },
-  });
+  const creditGrantId = `admin-credit-grant-${crypto.createHash('sha256')
+    .update(`${tenant.id}:${creditGrantKey}`, 'utf8')
+    .digest('hex')}`;
+  [tenant] = await prisma.$transaction([
+    prisma.tenant.update({
+      where: { id: tenant.id },
+      data: {
+        name: tenantName,
+        planTier: 'GROWTH',
+        status: 'ACTIVE',
+        stripeCustomerId,
+        stripeSubscriptionId,
+        stripeSubscriptionCurrentPeriodEnd: new Date(Date.now() + 365 * 24 * 60 * 60 * 1_000),
+        trialEndsAt: null,
+        gracePeriodEndsAt: null,
+        usageCredits: walletCredits,
+        deletedAt: null,
+      },
+    }),
+    prisma.creditTransaction.create({
+      data: {
+        id: creditGrantId,
+        tenantId: tenant.id,
+        amount: walletCredits,
+        reason: 'E2E availability import load smoke admin credit grant',
+        balanceAfter: walletCredits,
+      },
+    }),
+  ]);
 
   const rolesBySlug = await ensureTenantRoles(tenant.id);
   const adminRole = rolesBySlug.get('admin');
   const superAdminRole = rolesBySlug.get('super-admin');
+  const staffRole = rolesBySlug.get('staff');
   if (!adminRole) throw new Error('Admin role was not created.');
   if (!superAdminRole) throw new Error('Super admin role was not created.');
+  if (!staffRole) throw new Error('Staff role was not created.');
 
   const admin = await prisma.user.create({
     data: {
@@ -312,6 +341,25 @@ async function main() {
     },
   });
 
+  const staff = await prisma.user.create({
+    data: {
+      tenantId: tenant.id,
+      email: null,
+      username: staffUsername,
+      name: 'Staff One',
+      role: 'STAFF',
+      pinResetRequired: false,
+    },
+  });
+
+  await prisma.roleAssignment.create({
+    data: {
+      tenantId: tenant.id,
+      userId: staff.id,
+      roleId: staffRole.id,
+    },
+  });
+
   const location = await prisma.location.create({
     data: {
       tenantId: tenant.id,
@@ -326,6 +374,10 @@ async function main() {
     adminPin,
     superAdminUsername,
     superAdminPin,
+    staffUsername,
+    stripeSubscriptionStatus: tenant.status,
+    creditSourceAttestation: 'admin-credit-grant',
+    walletCredits: tenant.usageCredits,
     location: location.name,
   }));
 }

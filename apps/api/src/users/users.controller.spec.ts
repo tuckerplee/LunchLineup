@@ -1,25 +1,42 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { ForbiddenException } from '@nestjs/common';
+import { BadRequestException, ConflictException, ForbiddenException, Logger, ServiceUnavailableException } from '@nestjs/common';
 import { ALLOW_AUTHENTICATED_METADATA_KEY } from '../auth/require-permission.decorator';
 import { PERMISSION_METADATA_KEY } from '../auth/require-permission.decorator';
 import { UsersController } from './users.controller';
+import { decodeBoundedListCursor, encodeBoundedListCursor } from '../common/bounded-pagination';
+import { MAX_ROLES_PER_USER } from '../auth/rbac.service';
+import { ProductionExceptionFilter } from '../common/production-exception.filter';
 
 const mockAuthService = {
     buildPinCredentialData: vi.fn(),
-    setUserPin: vi.fn(),
+    resetUserPinAsAdmin: vi.fn(),
     rotateOwnPin: vi.fn(),
 };
 
 const mockRbacService = {
+    ensureTenantRoles: vi.fn(),
     listPermissions: vi.fn(),
     listRolesForTenant: vi.fn(),
     assignRolesToUser: vi.fn(),
     assignRolesToUserInTransaction: vi.fn(),
     getUserRoleAssignments: vi.fn(),
+    replaceUserRolesAsActor: vi.fn(),
+    authorizeUserAdministrationInTransaction: vi.fn(),
+    authorizeUserInvitationInTransaction: vi.fn(),
     getEffectiveAccess: vi.fn(),
     createRole: vi.fn(),
     updateRole: vi.fn(),
+    deleteRole: vi.fn(),
 };
+const mockStaffInvitationOutbox = {
+    enqueueInTransaction: vi.fn(),
+    statusInTransaction: vi.fn(),
+    retryInTransaction: vi.fn(),
+    reissueInTransaction: vi.fn(),
+    toResponse: vi.fn(),
+    notApplicable: vi.fn(),
+};
+
 
 const INVITE_DELEGATOR_PERMISSIONS = [
     'users:write',
@@ -34,6 +51,7 @@ function inviteRequest(overrides: Record<string, unknown> = {}) {
         user: {
             tenantId: 'tenant-1',
             sub: 'admin-1',
+            sessionId: 'session-1',
             legacyRole: 'ADMIN',
             permissions: INVITE_DELEGATOR_PERMISSIONS,
             roles: [{ legacyRole: 'ADMIN' }],
@@ -54,13 +72,35 @@ function effectiveAccess(
     };
 }
 
+function productionFilterResponse(error: unknown) {
+    const response = {
+        status: vi.fn().mockReturnThis(),
+        json: vi.fn(),
+    };
+    const host = {
+        switchToHttp: () => ({
+            getRequest: () => ({
+                method: 'POST',
+                originalUrl: '/api/v1/users/roles',
+                correlationId: 'role-create-test',
+            }),
+            getResponse: () => response,
+        }),
+    };
+    new ProductionExceptionFilter().catch(error, host as any);
+    return {
+        status: response.status.mock.calls[0][0] as number,
+        body: response.json.mock.calls[0][0] as Record<string, unknown>,
+    };
+}
+
 describe('UsersController', () => {
     let controller: UsersController;
     let prisma: any;
     let tenantDb: any;
 
     beforeEach(() => {
-        vi.clearAllMocks();
+        vi.resetAllMocks();
         mockRbacService.listRolesForTenant.mockResolvedValue([
             {
                 id: 'role-staff',
@@ -92,6 +132,66 @@ describe('UsersController', () => {
         mockRbacService.assignRolesToUser.mockResolvedValue([{ id: 'role-staff', name: 'Staff', permissions: ['auth:login_pin'] }]);
         mockRbacService.assignRolesToUserInTransaction.mockResolvedValue(undefined);
         mockRbacService.getUserRoleAssignments.mockResolvedValue([{ id: 'role-staff', name: 'Staff', permissions: ['auth:login_pin'] }]);
+        mockRbacService.authorizeUserAdministrationInTransaction.mockImplementation(
+            async (_tx: unknown, _tenantId: string, request: any) => ({
+                id: request.targetUserId,
+                role: 'STAFF',
+                username: null,
+                name: 'Target user',
+                email: null,
+                suspendedAt: null,
+            }),
+        );
+        mockRbacService.authorizeUserInvitationInTransaction.mockImplementation(
+            async (_tx: unknown, _tenantId: string, request: any) => {
+                const roles = await mockRbacService.listRolesForTenant('tenant-1');
+                return roles.find((role: any) => request.requestedRoleId
+                    ? role.id === request.requestedRoleId
+                    : role.legacyRole === request.requestedLegacyRole) ?? roles[0];
+            },
+        );
+        mockRbacService.deleteRole.mockResolvedValue(true);
+        mockStaffInvitationOutbox.enqueueInTransaction.mockResolvedValue({
+            id: 'outbox-1',
+            status: 'PENDING',
+            attempts: 0,
+        });
+        mockStaffInvitationOutbox.toResponse.mockReturnValue({
+            status: 'queued',
+            attempts: 0,
+            canRetry: false,
+            canReissue: false,
+        });
+        mockStaffInvitationOutbox.notApplicable.mockReturnValue({
+            status: 'not_applicable',
+            attempts: 0,
+            canRetry: false,
+            canReissue: false,
+        });
+        mockRbacService.replaceUserRolesAsActor.mockImplementation(async (tenantId: string, request: any) => {
+            if (request.legacyRole) {
+                await prisma.user.updateMany({
+                    where: { id: request.targetUserId, tenantId },
+                    data: { role: request.legacyRole },
+                });
+                await mockRbacService.assignRolesToUserInTransaction(
+                    prisma,
+                    request.targetUserId,
+                    tenantId,
+                    [`role-${request.legacyRole.toLowerCase()}`],
+                );
+            } else {
+                await mockRbacService.assignRolesToUser(request.targetUserId, tenantId, request.roleIds ?? []);
+            }
+            return {
+                legacyRole: request.legacyRole ?? 'STAFF',
+                assignedRoles: request.legacyRole
+                    ? [{ id: 'role-staff', name: 'Staff', permissions: ['auth:login_pin'] }]
+                    : (request.roleIds ?? []).map((id: string) => ({ id, name: id, permissions: [] })),
+                changed: true,
+                sessionsRevoked: 1,
+            };
+        });
         prisma = {
             tenant: {
                 findUnique: vi.fn().mockResolvedValue({ planTier: 'FREE' }),
@@ -112,11 +212,35 @@ describe('UsersController', () => {
             },
             passwordResetToken: {
                 updateMany: vi.fn(),
+                deleteMany: vi.fn(),
             },
             passwordResetEmailOutbox: {
                 updateMany: vi.fn(),
+                deleteMany: vi.fn(),
+            },
+            staffInvitationOutbox: {
+                updateMany: vi.fn(),
+            },
+            availabilityImportJob: {
+                updateMany: vi.fn().mockResolvedValue({ count: 0 }),
+            },
+            onboardingSignupAttempt: {
+                deleteMany: vi.fn(),
+            },
+            notificationOutbox: {
+                deleteMany: vi.fn(),
+            },
+            notification: {
+                deleteMany: vi.fn(),
             },
             mfaTotpClaim: {
+                deleteMany: vi.fn(),
+            },
+            roleAssignment: {
+                findMany: vi.fn(),
+                deleteMany: vi.fn(),
+            },
+            refreshTokenReplay: {
                 deleteMany: vi.fn(),
             },
             location: {
@@ -136,6 +260,7 @@ describe('UsersController', () => {
                 updateMany: vi.fn().mockResolvedValue({ count: 1 }),
             },
             $queryRaw: vi.fn().mockResolvedValue([{ id: 'user-8' }]),
+            $executeRaw: vi.fn().mockResolvedValue(0),
             auditLog: {
                 create: vi.fn(),
             },
@@ -174,13 +299,218 @@ describe('UsersController', () => {
             pinLoginAttempts: 0,
             pinLockedUntil: null,
         }));
-        controller = new UsersController(mockAuthService as any, mockRbacService as any, tenantDb);
+        mockAuthService.resetUserPinAsAdmin.mockResolvedValue({ username: 'crewlead' });
+        controller = new UsersController(mockAuthService as any, mockRbacService as any, mockStaffInvitationOutbox as any, tenantDb);
     });
 
     afterEach(() => {
         vi.restoreAllMocks();
     });
 
+    it('loads one user page and its role assignments in bounded tenant detail queries', async () => {
+        prisma.user.findMany.mockResolvedValue([
+            {
+                id: 'user-1',
+                name: 'Ada',
+                email: 'ada@example.test',
+                username: 'ada',
+                role: 'MANAGER',
+                pinHash: 'hash',
+                pinResetRequired: false,
+            },
+            {
+                id: 'user-2',
+                name: 'Grace',
+                email: null,
+                username: 'grace',
+                role: 'STAFF',
+                pinHash: null,
+                pinResetRequired: true,
+            },
+        ]);
+        prisma.roleAssignment.findMany.mockResolvedValue([
+            {
+                userId: 'user-1',
+                role: {
+                    id: 'role-manager',
+                    name: 'Manager\r\nOperations',
+                    description: null,
+                    isSystem: true,
+                    legacyRole: 'MANAGER',
+                    rolePermissions: [
+                        { permission: { key: 'shifts:write' } },
+                        { permission: { key: 'dashboard:access' } },
+                    ],
+                },
+            },
+            {
+                userId: 'user-2',
+                role: {
+                    id: 'role-staff',
+                    name: 'Staff',
+                    description: 'Staff access',
+                    isSystem: true,
+                    legacyRole: 'STAFF',
+                    rolePermissions: [{ permission: { key: 'dashboard:access' } }],
+                },
+            },
+        ]);
+
+        const result = await controller.findAll({ user: { tenantId: 'tenant-1' } });
+
+        expect(mockRbacService.ensureTenantRoles).toHaveBeenCalledWith('tenant-1');
+        expect(prisma.user.findMany).toHaveBeenCalledOnce();
+        expect(prisma.user.findMany).toHaveBeenCalledWith(expect.objectContaining({
+            where: { tenantId: 'tenant-1', deletedAt: null },
+            orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
+            take: 101,
+        }));
+        expect(prisma.roleAssignment.findMany).toHaveBeenCalledOnce();
+        expect(mockRbacService.getUserRoleAssignments).not.toHaveBeenCalled();
+        expect(result.data).toEqual([
+            expect.objectContaining({
+                id: 'user-1',
+                pinEnabled: true,
+                assignedRoles: [expect.objectContaining({
+                    id: 'role-manager',
+                    name: 'Manager Operations',
+                    permissions: ['dashboard:access', 'shifts:write'],
+                })],
+            }),
+            expect.objectContaining({
+                id: 'user-2',
+                pinEnabled: false,
+                pinResetRequired: true,
+                assignedRoles: [expect.objectContaining({
+                    id: 'role-staff',
+                    permissions: ['dashboard:access'],
+                })],
+            }),
+        ]);
+    });
+
+    it('uses a tenant-scoped createdAt/id cursor and loads assignments only for the visible page', async () => {
+        const firstCreatedAt = new Date('2026-07-14T10:00:00.000Z');
+        const secondCreatedAt = new Date('2026-07-14T10:00:01.000Z');
+        const incomingCursor = encodeBoundedListCursor(
+            new Date('2026-07-14T09:59:00.000Z'),
+            'user-before',
+        );
+        prisma.user.findMany.mockResolvedValue([
+            {
+                id: 'user-visible',
+                createdAt: firstCreatedAt,
+                name: 'Visible Person',
+                email: 'visible@example.test',
+                username: 'visible',
+                role: 'STAFF',
+                pinHash: 'sensitive-hash',
+                pinResetRequired: false,
+            },
+            {
+                id: 'user-sentinel',
+                createdAt: secondCreatedAt,
+                name: 'Sentinel Person',
+                email: 'sentinel@example.test',
+                username: null,
+                role: 'MANAGER',
+                pinHash: null,
+                pinResetRequired: false,
+            },
+        ]);
+        prisma.roleAssignment.findMany.mockResolvedValue([]);
+
+        const result = await controller.findAll(
+            { user: { tenantId: 'tenant-1' } },
+            undefined,
+            '1',
+            incomingCursor,
+        );
+
+        expect(prisma.user.findMany).toHaveBeenCalledWith(expect.objectContaining({
+            where: {
+                tenantId: 'tenant-1',
+                deletedAt: null,
+                OR: [
+                    { createdAt: { gt: new Date('2026-07-14T09:59:00.000Z') } },
+                    {
+                        createdAt: new Date('2026-07-14T09:59:00.000Z'),
+                        id: { gt: 'user-before' },
+                    },
+                ],
+            },
+            orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
+            take: 2,
+        }));
+        expect(prisma.roleAssignment.findMany).toHaveBeenCalledWith(expect.objectContaining({
+            where: expect.objectContaining({
+                tenantId: 'tenant-1',
+                userId: { in: ['user-visible'] },
+            }),
+        }));
+        expect(result.data).toHaveLength(1);
+        expect(result.data[0]).not.toHaveProperty('createdAt');
+        expect(result.data[0]).not.toHaveProperty('pinHash');
+        expect(result.pagination).toMatchObject({
+            limit: 1,
+            returned: 1,
+            hasMore: true,
+        });
+        expect(decodeBoundedListCursor(result.pagination.nextCursor)).toEqual({
+            timestamp: firstCreatedAt,
+            id: 'user-visible',
+        });
+        const cursorPayload = Buffer.from(result.pagination.nextCursor ?? '', 'base64url').toString('utf8');
+        expect(cursorPayload).not.toContain('Visible Person');
+        expect(cursorPayload).not.toContain('visible@example.test');
+        expect(cursorPayload).not.toContain('sensitive-hash');
+    });
+
+    it('rejects invalid directory pagination before querying tenant users', async () => {
+        await expect(controller.findAll(
+            { user: { tenantId: 'tenant-1' } },
+            undefined,
+            '0',
+        )).rejects.toThrow('Invalid limit');
+        await expect(controller.findAll(
+            { user: { tenantId: 'tenant-1' } },
+            undefined,
+            '50',
+            'not-a-cursor',
+        )).rejects.toThrow('Invalid cursor');
+        expect(prisma.user.findMany).not.toHaveBeenCalled();
+    });
+
+    it('includes PII-free aggregate totals on the initial bounded directory page', async () => {
+        prisma.user.findMany.mockResolvedValue([]);
+        prisma.$queryRaw.mockResolvedValueOnce([{
+            totalUsers: 24n,
+            staffCount: 20n,
+            managerCount: 4n,
+            privilegedUsers: 3n,
+            pinAccounts: 12n,
+        }]);
+
+        const result = await controller.findAll({
+            user: { tenantId: 'tenant-1' },
+        }, undefined, '1');
+        expect(result.summary).toEqual({
+            totalUsers: 24,
+            staffCount: 20,
+            managerCount: 4,
+            privilegedUsers: 3,
+            pinAccounts: 12,
+        });
+
+        const query = prisma.$queryRaw.mock.calls[0][0];
+        const sql = query.strings.join('?');
+        expect(sql).toContain('user_row."tenantId"');
+        expect(sql).toContain('user_row."deletedAt" IS NULL');
+        expect(sql).toContain('COUNT(*) FILTER');
+        expect(sql).toContain("permission.\"key\" IN ('roles:assign', 'users:admin')");
+        expect(query.values).toEqual(['tenant-1']);
+        expect(Reflect.getMetadata(PERMISSION_METADATA_KEY, controller.findAll)).toBe('users:read');
+    });
     it('marks caller-delegable roles and selects the configured delegable invite default', async () => {
         prisma.tenantSetting.findUnique.mockResolvedValue({ value: { team: { defaultInviteRole: 'MANAGER' } } });
         mockRbacService.listRolesForTenant.mockResolvedValue([
@@ -237,8 +567,6 @@ describe('UsersController', () => {
     });
 
     it('invites username-based staff and provisions a temporary PIN', async () => {
-        vi.spyOn(Math, 'random').mockReturnValue(0);
-
         prisma.user.create.mockResolvedValue({
             id: 'user-1',
             email: null,
@@ -253,14 +581,16 @@ describe('UsersController', () => {
             { name: 'Shift Lead', username: 'shiftlead', role: 'STAFF' },
             inviteRequest(),
         );
+        const generatedPin = mockAuthService.buildPinCredentialData.mock.calls[0]?.[0] as string;
 
-        expect(mockAuthService.buildPinCredentialData).toHaveBeenCalledWith('100000', true, expect.any(Date));
+        expect(generatedPin).toMatch(/^\d{6}$/);
+        expect(mockAuthService.buildPinCredentialData).toHaveBeenCalledWith(generatedPin, true, expect.any(Date));
         expect(prisma.user.create).toHaveBeenCalledWith({
-            data: expect.objectContaining({ pinHash: 'hash:100000', pinResetRequired: true }),
+            data: expect.objectContaining({ pinHash: `hash:${generatedPin}`, pinResetRequired: true }),
         });
-        expect(mockAuthService.setUserPin).not.toHaveBeenCalled();
+        expect(mockAuthService.resetUserPinAsAdmin).not.toHaveBeenCalled();
         expect(result.username).toBe('shiftlead');
-        expect(result.temporaryPin).toBe('100000');
+        expect(result.temporaryPin).toBe(generatedPin);
         expect(result.pinResetRequired).toBe(true);
         expect(mockRbacService.assignRolesToUserInTransaction).toHaveBeenCalledWith(
             prisma,
@@ -268,6 +598,27 @@ describe('UsersController', () => {
             'tenant-1',
             ['role-staff'],
         );
+        expect(mockRbacService.authorizeUserInvitationInTransaction).toHaveBeenCalledWith(
+            prisma,
+            'tenant-1',
+            {
+                actorUserId: 'admin-1',
+                actorSessionId: 'session-1',
+                targetUserId: undefined,
+                requestedRoleId: undefined,
+                requestedLegacyRole: 'STAFF',
+            },
+        );
+        expect(mockRbacService.authorizeUserInvitationInTransaction.mock.invocationCallOrder[0])
+            .toBeLessThan(prisma.user.create.mock.invocationCallOrder[0]);
+        expect(prisma.user.create.mock.invocationCallOrder[0])
+            .toBeLessThan(mockRbacService.assignRolesToUserInTransaction.mock.invocationCallOrder[0]);
+        expect(result.invitationDelivery).toEqual({
+            status: 'not_applicable',
+            attempts: 0,
+            canRetry: false,
+            canReissue: false,
+        });
     });
 
     it('invites email-based manager without PIN provisioning', async () => {
@@ -286,11 +637,217 @@ describe('UsersController', () => {
             inviteRequest(),
         );
 
-        expect(mockAuthService.setUserPin).not.toHaveBeenCalled();
+        expect(mockAuthService.resetUserPinAsAdmin).not.toHaveBeenCalled();
         expect(result.email).toBe('manager@company.com');
         expect(result.temporaryPin).toBe(null);
+        expect(result.invitationDelivery).toEqual({
+            status: 'queued',
+            attempts: 0,
+            canRetry: false,
+            canReissue: false,
+        });
+        expect(mockStaffInvitationOutbox.enqueueInTransaction).toHaveBeenCalledWith(prisma, {
+            tenantId: 'tenant-1',
+            userId: 'user-2',
+            recipient: 'manager@company.com',
+        });
     });
 
+    it('rolls back an email invite when durable delivery intent creation fails', async () => {
+        prisma.user.create.mockResolvedValue({
+            id: 'user-rollback',
+            email: 'rollback@example.com',
+            username: null,
+            name: 'Rollback User',
+            role: 'STAFF',
+            pinHash: null,
+        });
+        mockStaffInvitationOutbox.enqueueInTransaction.mockRejectedValueOnce(
+            new Error('durable outbox unavailable'),
+        );
+
+        await expect(controller.invite(
+            { name: 'Rollback User', email: 'rollback@example.com', role: 'STAFF' },
+            inviteRequest(),
+        )).rejects.toThrow('durable outbox unavailable');
+
+        expect(mockRbacService.assignRolesToUserInTransaction).toHaveBeenCalled();
+        expect(prisma.auditLog.create).not.toHaveBeenCalled();
+        expect(tenantDb.withTenant).toHaveBeenCalledWith(
+            'tenant-1',
+            expect.any(Function),
+            { isolationLevel: 'Serializable' },
+        );
+    });
+
+    it('retries the whole invitation transaction once without duplicating writes or audit', async () => {
+        prisma.user.create.mockResolvedValue({
+            id: 'user-retried',
+            email: 'retried@example.com',
+            username: null,
+            name: 'Retried User',
+            role: 'STAFF',
+            pinHash: null,
+        });
+        tenantDb.withTenant.mockRejectedValueOnce({ code: 'P2034' });
+
+        await expect(controller.invite(
+            { name: 'Retried User', email: 'retried@example.com', role: 'STAFF' },
+            inviteRequest(),
+        )).resolves.toMatchObject({ id: 'user-retried' });
+
+        expect(tenantDb.withTenant).toHaveBeenCalledTimes(2);
+        expect(mockRbacService.authorizeUserInvitationInTransaction).toHaveBeenCalledOnce();
+        expect(prisma.user.create).toHaveBeenCalledOnce();
+        expect(mockRbacService.assignRolesToUserInTransaction).toHaveBeenCalledOnce();
+        expect(mockStaffInvitationOutbox.enqueueInTransaction).toHaveBeenCalledOnce();
+        expect(prisma.auditLog.create).toHaveBeenCalledOnce();
+    });
+
+    it('returns tenant-scoped invitation status and idempotent retry contracts', async () => {
+        mockStaffInvitationOutbox.statusInTransaction.mockResolvedValueOnce({
+            status: 'failed',
+            attempts: 2,
+            canRetry: true,
+            canReissue: false,
+        });
+        mockStaffInvitationOutbox.retryInTransaction.mockResolvedValueOnce({
+            status: 'queued',
+            attempts: 2,
+            canRetry: false,
+            canReissue: false,
+        });
+        mockStaffInvitationOutbox.reissueInTransaction.mockResolvedValueOnce({
+            deliveryId: 'reissued-outbox',
+            status: 'queued',
+            attempts: 0,
+            canRetry: false,
+            canReissue: false,
+        });
+
+        await expect(controller.invitationStatus('user-2', {
+            user: { tenantId: 'tenant-1', sub: 'admin-1', sessionId: 'session-1' },
+        })).resolves.toEqual({
+            invitationDelivery: {
+                status: 'failed',
+                attempts: 2,
+                canRetry: true,
+                canReissue: false,
+            },
+        });
+        await expect(controller.retryInvitation('user-2', {
+            user: { tenantId: 'tenant-1', sub: 'admin-1', sessionId: 'session-1' },
+        })).resolves.toEqual({
+            invitationDelivery: {
+                status: 'queued',
+                attempts: 2,
+                canRetry: false,
+                canReissue: false,
+            },
+        });
+        await expect(controller.reissueInvitation('user-2', {
+            user: { tenantId: 'tenant-1', sub: 'admin-1', sessionId: 'session-1' },
+        }, 'reissue-key-1')).resolves.toEqual({
+            invitationDelivery: {
+                deliveryId: 'reissued-outbox',
+                status: 'queued',
+                attempts: 0,
+                canRetry: false,
+                canReissue: false,
+            },
+        });
+
+        expect(mockStaffInvitationOutbox.statusInTransaction)
+            .toHaveBeenCalledWith(prisma, 'tenant-1', 'user-2');
+        expect(mockRbacService.authorizeUserAdministrationInTransaction).toHaveBeenNthCalledWith(
+            1,
+            prisma,
+            'tenant-1',
+            {
+                actorUserId: 'admin-1',
+                actorSessionId: 'session-1',
+                targetUserId: 'user-2',
+                requiredPermission: 'users:admin',
+                selfMutationMessage: 'You cannot retry your own invitation delivery',
+            },
+        );
+        expect(mockRbacService.authorizeUserAdministrationInTransaction).toHaveBeenNthCalledWith(
+            2,
+            prisma,
+            'tenant-1',
+            {
+                actorUserId: 'admin-1',
+                actorSessionId: 'session-1',
+                targetUserId: 'user-2',
+                requiredPermission: 'users:admin',
+                selfMutationMessage: 'You cannot reissue your own invitation delivery',
+            },
+        );
+        expect(mockStaffInvitationOutbox.retryInTransaction).toHaveBeenCalledWith(prisma, {
+            tenantId: 'tenant-1',
+            userId: 'user-2',
+            actorUserId: 'admin-1',
+        });
+        expect(mockStaffInvitationOutbox.reissueInTransaction).toHaveBeenCalledWith(prisma, {
+            tenantId: 'tenant-1',
+            userId: 'user-2',
+            actorUserId: 'admin-1',
+            idempotencyKey: 'reissue-key-1',
+        });
+        expect(Reflect.getMetadata(PERMISSION_METADATA_KEY, controller.invitationStatus))
+            .toBe('users:admin');
+        expect(Reflect.getMetadata(PERMISSION_METADATA_KEY, controller.retryInvitation))
+            .toBe('users:admin');
+        expect(Reflect.getMetadata(PERMISSION_METADATA_KEY, controller.reissueInvitation))
+            .toBe('users:admin');
+
+    });
+
+    it.each([
+        ['revoked exact session', new ForbiddenException('Administrator session is no longer active')],
+        ['demoted actor', new ForbiddenException('users:admin permission is no longer active for this account')],
+        ['promoted dual-source target', new ForbiddenException('Only system admins can administer system admins')],
+    ])('denies invitation retry and reissue for a %s before outbox or audit writes', async (_label, error) => {
+        mockRbacService.authorizeUserAdministrationInTransaction.mockRejectedValue(error);
+        const request = { user: { tenantId: 'tenant-1', sub: 'admin-1', sessionId: 'session-1' } };
+
+        await expect(controller.retryInvitation('user-2', request)).rejects.toBe(error);
+        await expect(controller.reissueInvitation('user-2', request, 'reissue-key')).rejects.toBe(error);
+
+        expect(mockStaffInvitationOutbox.retryInTransaction).not.toHaveBeenCalled();
+        expect(mockStaffInvitationOutbox.reissueInTransaction).not.toHaveBeenCalled();
+        expect(prisma.auditLog.create).not.toHaveBeenCalled();
+    });
+
+    it.each(['retry', 'reissue'] as const)(
+        'retries one invitation %s conflict and maps two conflicts without duplicate writes',
+        async (operation) => {
+            const request = { user: { tenantId: 'tenant-1', sub: 'admin-1', sessionId: 'session-1' } };
+            tenantDb.withTenant.mockRejectedValueOnce({ code: 'P2034' });
+
+            if (operation === 'retry') {
+                await expect(controller.retryInvitation('user-2', request)).resolves.toBeDefined();
+                expect(mockStaffInvitationOutbox.retryInTransaction).toHaveBeenCalledOnce();
+            } else {
+                await expect(controller.reissueInvitation('user-2', request, 'reissue-key')).resolves.toBeDefined();
+                expect(mockStaffInvitationOutbox.reissueInTransaction).toHaveBeenCalledOnce();
+            }
+            expect(mockRbacService.authorizeUserAdministrationInTransaction).toHaveBeenCalledOnce();
+
+            vi.clearAllMocks();
+            tenantDb.withTenant
+                .mockRejectedValueOnce({ code: 'P2034' })
+                .mockRejectedValueOnce({ code: 'P2034' });
+            const denied = operation === 'retry'
+                ? controller.retryInvitation('user-2', request)
+                : controller.reissueInvitation('user-2', request, 'reissue-key');
+            await expect(denied).rejects.toBeInstanceOf(ConflictException);
+            expect(tenantDb.withTenant).toHaveBeenCalledTimes(2);
+            expect(mockStaffInvitationOutbox.retryInTransaction).not.toHaveBeenCalled();
+            expect(mockStaffInvitationOutbox.reissueInTransaction).not.toHaveBeenCalled();
+            expect(prisma.auditLog.create).not.toHaveBeenCalled();
+        },
+    );
     it('reactivates an email user while invalidating all prior credentials, recovery, and sessions', async () => {
         prisma.user.findFirst.mockResolvedValueOnce({ id: 'archived-user' });
         prisma.user.update.mockResolvedValue({
@@ -405,7 +962,7 @@ describe('UsersController', () => {
             where: { userId: 'archived-pin-user', revokedAt: null },
             data: { revokedAt: expect.any(Date) },
         });
-        expect(mockAuthService.setUserPin).not.toHaveBeenCalled();
+        expect(mockAuthService.resetUserPinAsAdmin).not.toHaveBeenCalled();
         expect(result.temporaryPin).toBe('246810');
     });
     it('rejects email-only invites for password-only roles without credential bootstrap', async () => {
@@ -423,7 +980,7 @@ describe('UsersController', () => {
         )).rejects.toThrow('Email login is not enabled for the selected role');
 
         expect(prisma.user.create).not.toHaveBeenCalled();
-        expect(mockAuthService.setUserPin).not.toHaveBeenCalled();
+        expect(mockAuthService.resetUserPinAsAdmin).not.toHaveBeenCalled();
     });
 
     it('rejects invited email identities that the OTP login endpoint cannot accept', async () => {
@@ -463,7 +1020,7 @@ describe('UsersController', () => {
             }),
         });
         expect(mockAuthService.buildPinCredentialData).toHaveBeenCalledWith('135790', false, expect.any(Date));
-        expect(mockAuthService.setUserPin).not.toHaveBeenCalled();
+        expect(mockAuthService.resetUserPinAsAdmin).not.toHaveBeenCalled();
         expect(result.role).toBe('MANAGER');
     });
 
@@ -612,7 +1169,7 @@ describe('UsersController', () => {
         ).rejects.toThrow(/User limit reached/i);
 
         expect(prisma.user.create).not.toHaveBeenCalled();
-        expect(mockAuthService.setUserPin).not.toHaveBeenCalled();
+        expect(mockAuthService.resetUserPinAsAdmin).not.toHaveBeenCalled();
     });
 
     it('does not commit an invited user when transactional role assignment fails', async () => {
@@ -642,10 +1199,13 @@ describe('UsersController', () => {
 
         expect(committedUsers).toEqual([]);
         expect(prisma.auditLog.create).not.toHaveBeenCalled();
-        expect(mockAuthService.setUserPin).not.toHaveBeenCalled();
+        expect(mockAuthService.resetUserPinAsAdmin).not.toHaveBeenCalled();
     });
 
     it('rejects an invite role containing permissions the caller does not hold', async () => {
+        mockRbacService.authorizeUserInvitationInTransaction.mockRejectedValueOnce(
+            new ForbiddenException('Cannot grant a role with permissions you do not hold'),
+        );
         mockRbacService.listRolesForTenant.mockResolvedValueOnce([{
             id: 'role-billing',
             name: 'Billing Manager',
@@ -667,150 +1227,122 @@ describe('UsersController', () => {
     });
 
     it('allows an admin to reset a lower-rank username account', async () => {
-        vi.spyOn(Math, 'random').mockReturnValue(0);
-
-        prisma.user.findMany.mockResolvedValue([
-            { id: 'admin-1', role: 'ADMIN' },
-            { id: 'user-3', role: 'STAFF' },
-        ]);
-        prisma.user.findFirst.mockResolvedValue({
-            id: 'user-3',
-            username: 'crewlead',
-            role: 'STAFF',
-        });
-        prisma.auditLog.create.mockResolvedValue({});
-
         const result = await controller.resetUserPin(
             'user-3',
             {},
-            { user: { tenantId: 'tenant-1', sub: 'admin-1' } },
+            {
+                user: { tenantId: 'tenant-1', sub: 'admin-1', sessionId: 'session-1' },
+                ip: '203.0.113.61',
+                headers: { 'user-agent': 'Users Controller PIN Reset' },
+            },
         );
+        const generatedPin = mockAuthService.resetUserPinAsAdmin.mock.calls[0]?.[1] as string;
 
-        expect(mockAuthService.setUserPin).toHaveBeenCalledWith('user-3', '100000', true, 'tenant-1');
+        expect(generatedPin).toMatch(/^\d{6}$/);
+        expect(mockAuthService.resetUserPinAsAdmin).toHaveBeenCalledWith(
+            'user-3',
+            generatedPin,
+            'tenant-1',
+            'admin-1',
+            'session-1',
+            { ipAddress: '203.0.113.61', userAgent: 'Users Controller PIN Reset' },
+        );
+        expect(tenantDb.withTenant).not.toHaveBeenCalled();
+        expect(mockRbacService.getEffectiveAccess).not.toHaveBeenCalled();
+        expect(prisma.auditLog.create).not.toHaveBeenCalled();
         expect(result).toEqual({
             id: 'user-3',
             username: 'crewlead',
-            temporaryPin: '100000',
+            temporaryPin: generatedPin,
             pinResetRequired: true,
         });
     });
 
     it.each([
-        ['manager', 'MANAGER', 'ADMIN'],
-        ['admin', 'ADMIN', 'SUPER_ADMIN'],
-        ['same-rank admin', 'ADMIN', 'ADMIN'],
-    ] as const)('blocks %s PIN reset takeover', async (_label, actorRole, targetRole) => {
+        ['manager versus admin'],
+        ['admin versus super admin'],
+        ['same-rank admin'],
+        ['target with an unheld permission'],
+        ['stale super-admin row'],
+    ] as const)('propagates the transaction-owned %s PIN reset denial without a controller preflight', async () => {
         const actorId = 'actor-1';
         const targetId = 'target-1';
-        prisma.user.findMany.mockResolvedValue([
-            { id: actorId, role: actorRole },
-            { id: targetId, role: targetRole },
-        ]);
-        mockRbacService.getEffectiveAccess.mockImplementation(async (userId: string) => userId === actorId
-            ? effectiveAccess(actorRole, ['users:admin', 'auth:login_pin', 'dashboard:access'])
-            : effectiveAccess(targetRole, ['auth:login_pin', 'dashboard:access']));
+        mockAuthService.resetUserPinAsAdmin.mockRejectedValueOnce(
+            new ForbiddenException('Cannot administer an account with equal or greater access'),
+        );
 
         await expect(controller.resetUserPin(
             targetId,
             {},
-            { user: { tenantId: 'tenant-1', sub: actorId } },
+            { user: { tenantId: 'tenant-1', sub: actorId, sessionId: 'session-1' } },
         )).rejects.toBeInstanceOf(ForbiddenException);
 
-        expect(mockAuthService.setUserPin).not.toHaveBeenCalled();
+        expect(mockAuthService.resetUserPinAsAdmin).toHaveBeenCalledOnce();
+        expect(tenantDb.withTenant).not.toHaveBeenCalled();
+        expect(mockRbacService.getEffectiveAccess).not.toHaveBeenCalled();
         expect(prisma.auditLog.create).not.toHaveBeenCalled();
     });
 
-    it('blocks reset of a lower nominal role when the target has an unheld effective permission', async () => {
-        prisma.user.findMany.mockResolvedValue([
-            { id: 'admin-1', role: 'ADMIN' },
-            { id: 'privileged-staff', role: 'STAFF' },
-        ]);
-        mockRbacService.getEffectiveAccess.mockImplementation(async (userId: string) => userId === 'admin-1'
-            ? effectiveAccess('ADMIN', ['users:admin', 'auth:login_pin', 'dashboard:access'])
-            : effectiveAccess('STAFF', ['auth:login_pin', 'dashboard:access', 'billing:write'], false));
-
-        await expect(controller.resetUserPin(
-            'privileged-staff',
-            {},
-            { user: { tenantId: 'tenant-1', sub: 'admin-1' } },
-        )).rejects.toBeInstanceOf(ForbiddenException);
-
-        expect(mockAuthService.setUserPin).not.toHaveBeenCalled();
-    });
-
-    it('does not treat a stale SUPER_ADMIN user row as exceptional authority', async () => {
-        prisma.user.findMany.mockResolvedValue([
-            { id: 'stale-super', role: 'SUPER_ADMIN' },
-            { id: 'target-admin', role: 'ADMIN' },
-        ]);
-        mockRbacService.getEffectiveAccess.mockImplementation(async (userId: string) => userId === 'stale-super'
-            ? effectiveAccess('ADMIN', ['users:admin', 'auth:login_pin', 'dashboard:access'])
-            : effectiveAccess('ADMIN', ['auth:login_pin', 'dashboard:access']));
-
-        await expect(controller.resetUserPin(
-            'target-admin',
-            {},
-            { user: { tenantId: 'tenant-1', sub: 'stale-super' } },
-        )).rejects.toBeInstanceOf(ForbiddenException);
-
-        expect(mockAuthService.setUserPin).not.toHaveBeenCalled();
-    });
-
     it('allows a true system super admin to reset another non-self super admin', async () => {
-        vi.spyOn(Math, 'random').mockReturnValue(0);
-        prisma.user.findMany.mockResolvedValue([
-            { id: 'system-super', role: 'SUPER_ADMIN' },
-            { id: 'target-super', role: 'SUPER_ADMIN' },
-        ]);
-        prisma.user.findFirst.mockResolvedValue({
-            id: 'target-super',
-            username: 'platform.owner',
-            role: 'SUPER_ADMIN',
-            name: 'Platform Owner',
-            email: null,
-        });
-        prisma.auditLog.create.mockResolvedValue({});
-        mockRbacService.getEffectiveAccess.mockImplementation(async (userId: string) => userId === 'system-super'
-            ? effectiveAccess('SUPER_ADMIN', ['users:admin', 'auth:login_pin', 'dashboard:access'])
-            : effectiveAccess('SUPER_ADMIN', ['users:admin', 'auth:login_pin', 'dashboard:access']));
+        mockAuthService.resetUserPinAsAdmin.mockResolvedValueOnce({ username: 'platform.owner' });
 
         await expect(controller.resetUserPin(
             'target-super',
             {},
-            { user: { tenantId: 'tenant-1', sub: 'system-super' } },
+            { user: { tenantId: 'tenant-1', sub: 'system-super', sessionId: 'session-1' } },
         )).resolves.toEqual(expect.objectContaining({
             id: 'target-super',
             pinResetRequired: true,
         }));
+        const generatedPin = mockAuthService.resetUserPinAsAdmin.mock.calls[0]?.[1] as string;
 
-        expect(mockAuthService.setUserPin).toHaveBeenCalledWith(
+        expect(generatedPin).toMatch(/^\d{6}$/);
+        expect(mockAuthService.resetUserPinAsAdmin).toHaveBeenCalledWith(
             'target-super',
-            '100000',
-            true,
+            generatedPin,
             'tenant-1',
+            'system-super',
+            'session-1',
+            { ipAddress: null, userAgent: null },
         );
+        expect(tenantDb.withTenant).not.toHaveBeenCalled();
     });
 
     it('blocks self reset through the admin route', async () => {
+        mockAuthService.resetUserPinAsAdmin.mockRejectedValueOnce(
+            new ForbiddenException('Use the self-service PIN rotation route for your own account'),
+        );
         await expect(controller.resetUserPin(
             'admin-1',
             {},
-            { user: { tenantId: 'tenant-1', sub: 'admin-1' } },
+            { user: { tenantId: 'tenant-1', sub: 'admin-1', sessionId: 'session-1' } },
         )).rejects.toBeInstanceOf(ForbiddenException);
 
         expect(mockRbacService.getEffectiveAccess).not.toHaveBeenCalled();
-        expect(mockAuthService.setUserPin).not.toHaveBeenCalled();
+        expect(mockAuthService.resetUserPinAsAdmin).toHaveBeenCalledOnce();
+        expect(tenantDb.withTenant).not.toHaveBeenCalled();
     });
 
     it('delegates self PIN rotation to AuthService', async () => {
         mockAuthService.rotateOwnPin.mockResolvedValue(undefined);
 
         const result = await controller.rotateOwnPin(
-            { user: { sub: 'user-4', tenantId: 'tenant-1' } },
+            {
+                user: { sub: 'user-4', tenantId: 'tenant-1', sessionId: 'session-1' },
+                ip: '203.0.113.62',
+                headers: { 'user-agent': ['Users Controller PIN Rotation'] },
+            },
             { currentPin: '1234', newPin: '5678' },
         );
 
-        expect(mockAuthService.rotateOwnPin).toHaveBeenCalledWith('user-4', '1234', '5678', 'tenant-1');
+        expect(mockAuthService.rotateOwnPin).toHaveBeenCalledWith(
+            'user-4',
+            '1234',
+            '5678',
+            'tenant-1',
+            'session-1',
+            { ipAddress: '203.0.113.62', userAgent: 'Users Controller PIN Rotation' },
+        );
         expect(result).toEqual({ success: true });
     });
 
@@ -821,6 +1353,9 @@ describe('UsersController', () => {
     });
 
     it('rejects non-system admin invites into system admin access', async () => {
+        mockRbacService.authorizeUserInvitationInTransaction.mockRejectedValueOnce(
+            new ForbiddenException('Only system admins can grant system admin access'),
+        );
         mockRbacService.listRolesForTenant.mockResolvedValueOnce([
             {
                 id: 'role-super',
@@ -834,7 +1369,7 @@ describe('UsersController', () => {
         await expect(
             controller.invite(
                 { name: 'Platform Owner', email: 'owner@company.com', role: 'SUPER_ADMIN' },
-                { user: { tenantId: 'tenant-1', sub: 'admin-1', legacyRole: 'ADMIN', permissions: ['users:write'] } },
+                { user: { tenantId: 'tenant-1', sub: 'admin-1', sessionId: 'session-1', legacyRole: 'ADMIN', permissions: ['users:write'] } },
             ),
         ).rejects.toBeInstanceOf(ForbiddenException);
 
@@ -892,11 +1427,12 @@ describe('UsersController', () => {
     });
 
     it('rejects non-system admin legacy role promotion to SUPER_ADMIN', async () => {
+        mockRbacService.replaceUserRolesAsActor.mockRejectedValueOnce(new ForbiddenException('Only system admins can grant system admin access'));
         await expect(
             controller.updateRole(
                 'user-7',
                 { role: 'SUPER_ADMIN' },
-                { user: { tenantId: 'tenant-1', sub: 'admin-1', legacyRole: 'ADMIN', permissions: ['users:admin'] } },
+                { user: { tenantId: 'tenant-1', sub: 'admin-1', sessionId: 'session-1', legacyRole: 'ADMIN', permissions: ['users:admin'] } },
             ),
         ).rejects.toBeInstanceOf(ForbiddenException);
 
@@ -904,7 +1440,40 @@ describe('UsersController', () => {
         expect(mockRbacService.assignRolesToUser).not.toHaveBeenCalled();
     });
 
+    it('delegates stale SUPER_ADMIN claims to the live transactional authority check', async () => {
+        mockRbacService.replaceUserRolesAsActor.mockRejectedValueOnce(
+            new ForbiddenException('Only system admins can grant system admin access'),
+        );
+        const request = {
+            user: {
+                tenantId: 'tenant-1',
+                sub: 'stale-super',
+                sessionId: 'session-1',
+                legacyRole: 'SUPER_ADMIN',
+                permissions: ['roles:assign', 'admin_portal:access'],
+                roles: [{ isSystem: true, legacyRole: 'SUPER_ADMIN' }],
+            },
+        };
+
+        await expect(controller.updateUserAccess(
+            'lower-user',
+            { roleIds: ['role-super'] },
+            request,
+        )).rejects.toThrow('Only system admins can grant system admin access');
+
+        expect(mockRbacService.replaceUserRolesAsActor).toHaveBeenCalledWith('tenant-1', {
+            actorUserId: 'stale-super',
+            actorSessionId: 'session-1',
+            targetUserId: 'lower-user',
+            roleIds: ['role-super'],
+            requiredPermission: 'roles:assign',
+            selfMutationMessage: 'You cannot change your own access roles',
+            auditAction: 'USER_ACCESS_UPDATED',
+        });
+    });
+
     it('rejects changing the caller own role before resolving or mutating the replacement role', async () => {
+        mockRbacService.replaceUserRolesAsActor.mockRejectedValueOnce(new ForbiddenException('You cannot change your own role'));
         await expect(
             controller.updateRole(
                 'admin-1',
@@ -932,6 +1501,7 @@ describe('UsersController', () => {
             targetAccess: effectiveAccess('STAFF', ['dashboard:access', 'admin_portal:access'], false),
         },
     ])('rejects a tenant admin demoting a $label', async ({ targetId, targetRole, targetAccess }) => {
+        mockRbacService.replaceUserRolesAsActor.mockRejectedValueOnce(new ForbiddenException('Cannot administer an account with equal or greater access'));
         prisma.user.findMany.mockResolvedValueOnce([
             { id: 'admin-1', role: 'ADMIN' },
             { id: targetId, role: targetRole },
@@ -956,6 +1526,7 @@ describe('UsersController', () => {
         { label: 'equal-rank', targetId: 'peer-admin-1', targetRole: 'ADMIN' as const },
         { label: 'higher-rank', targetId: 'owner-1', targetRole: 'SUPER_ADMIN' as const },
     ])('rejects changing an $label target role', async ({ targetId, targetRole }) => {
+        mockRbacService.replaceUserRolesAsActor.mockRejectedValueOnce(new ForbiddenException('Cannot administer an account with equal or greater access'));
         prisma.user.findMany.mockResolvedValueOnce([
             { id: 'admin-1', role: 'ADMIN' },
             { id: targetId, role: targetRole },
@@ -979,6 +1550,7 @@ describe('UsersController', () => {
     });
 
     it('rejects changing a lower-rank target that holds an unheld permission', async () => {
+        mockRbacService.replaceUserRolesAsActor.mockRejectedValueOnce(new ForbiddenException('Cannot administer an account with equal or greater access'));
         mockRbacService.getEffectiveAccess.mockImplementationOnce(async () => (
             effectiveAccess('ADMIN', ['users:admin', 'dashboard:access'])
         )).mockImplementationOnce(async () => (
@@ -1024,6 +1596,7 @@ describe('UsersController', () => {
     });
 
     it('rejects non-system admin assignment of platform access roles', async () => {
+        mockRbacService.replaceUserRolesAsActor.mockRejectedValueOnce(new ForbiddenException('Only system admins can grant system admin access'));
         prisma.user.findFirst.mockResolvedValue({ id: 'user-8' });
         mockRbacService.listRolesForTenant.mockResolvedValueOnce([
             {
@@ -1039,7 +1612,7 @@ describe('UsersController', () => {
             controller.updateUserAccess(
                 'user-8',
                 { roleIds: ['role-platform'] },
-                { user: { tenantId: 'tenant-1', sub: 'admin-1', legacyRole: 'ADMIN', permissions: ['roles:assign'] } },
+                { user: { tenantId: 'tenant-1', sub: 'admin-1', sessionId: 'session-1', legacyRole: 'ADMIN', permissions: ['roles:assign'] } },
             ),
         ).rejects.toBeInstanceOf(ForbiddenException);
 
@@ -1047,6 +1620,7 @@ describe('UsersController', () => {
     });
 
     it('rejects non-system admin assignment of tenant lifecycle roles', async () => {
+        mockRbacService.replaceUserRolesAsActor.mockRejectedValueOnce(new ForbiddenException('Only system admins can grant system admin access'));
         prisma.user.findFirst.mockResolvedValue({ id: 'user-8' });
         mockRbacService.listRolesForTenant.mockResolvedValueOnce([
             {
@@ -1062,7 +1636,7 @@ describe('UsersController', () => {
             controller.updateUserAccess(
                 'user-8',
                 { roleIds: ['role-lifecycle'] },
-                { user: { tenantId: 'tenant-1', sub: 'admin-1', legacyRole: 'ADMIN', permissions: ['roles:assign'] } },
+                { user: { tenantId: 'tenant-1', sub: 'admin-1', sessionId: 'session-1', legacyRole: 'ADMIN', permissions: ['roles:assign'] } },
             ),
         ).rejects.toBeInstanceOf(ForbiddenException);
 
@@ -1070,6 +1644,7 @@ describe('UsersController', () => {
     });
 
     it('rejects role assignment requests with role ids outside the tenant', async () => {
+        mockRbacService.replaceUserRolesAsActor.mockRejectedValueOnce(new Error('One or more roles are invalid for this tenant'));
         prisma.user.findFirst.mockResolvedValue({ id: 'user-8' });
         mockRbacService.listRolesForTenant.mockResolvedValueOnce([
             {
@@ -1085,7 +1660,7 @@ describe('UsersController', () => {
             controller.updateUserAccess(
                 'user-8',
                 { roleIds: ['role-staff', 'role-foreign'] },
-                { user: { tenantId: 'tenant-1', sub: 'admin-1', legacyRole: 'ADMIN', permissions: ['roles:assign'] } },
+                { user: { tenantId: 'tenant-1', sub: 'admin-1', sessionId: 'session-1', legacyRole: 'ADMIN', permissions: ['roles:assign'] } },
             ),
         ).rejects.toThrow('One or more roles are invalid for this tenant');
 
@@ -1093,6 +1668,7 @@ describe('UsersController', () => {
     });
 
     it('rejects role assignment containing permissions the caller does not hold', async () => {
+        mockRbacService.replaceUserRolesAsActor.mockRejectedValueOnce(new ForbiddenException('Cannot grant a role with permissions you do not hold'));
         prisma.user.findFirst.mockResolvedValue({ id: 'user-8' });
         mockRbacService.listRolesForTenant.mockResolvedValueOnce([{
             id: 'role-billing',
@@ -1112,6 +1688,7 @@ describe('UsersController', () => {
                 user: {
                     tenantId: 'tenant-1',
                     sub: 'manager-1',
+                    sessionId: 'session-1',
                     legacyRole: 'MANAGER',
                     permissions: ['roles:assign', 'dashboard:access'],
                     roles: [{ legacyRole: 'MANAGER' }],
@@ -1139,6 +1716,7 @@ describe('UsersController', () => {
                 user: {
                     tenantId: 'tenant-1',
                     sub: 'manager-1',
+                    sessionId: 'session-1',
                     legacyRole: 'MANAGER',
                     permissions: ['roles:assign', 'dashboard:access'],
                     roles: [{ legacyRole: 'MANAGER' }],
@@ -1147,6 +1725,33 @@ describe('UsersController', () => {
         );
 
         expect(mockRbacService.assignRolesToUser).toHaveBeenCalledWith('user-8', 'tenant-1', ['role-staff']);
+    });
+
+    it('passes exactly the supported role assignment maximum to the transactional boundary', async () => {
+        const roleIds = Array.from({ length: MAX_ROLES_PER_USER }, (_, index) => `role-${index + 1}`);
+
+        await controller.updateUserAccess(
+            'user-8',
+            { roleIds },
+            { user: { tenantId: 'tenant-1', sub: 'admin-1', sessionId: 'session-1' } },
+        );
+
+        expect(mockRbacService.replaceUserRolesAsActor).toHaveBeenCalledWith('tenant-1', expect.objectContaining({
+            targetUserId: 'user-8',
+            roleIds,
+        }));
+    });
+
+    it('rejects one role above the supported assignment maximum before the service boundary', async () => {
+        const roleIds = Array.from({ length: MAX_ROLES_PER_USER + 1 }, (_, index) => `role-${index + 1}`);
+
+        await expect(controller.updateUserAccess(
+            'user-8',
+            { roleIds },
+            { user: { tenantId: 'tenant-1', sub: 'admin-1', sessionId: 'session-1' } },
+        )).rejects.toBeInstanceOf(BadRequestException);
+
+        expect(mockRbacService.replaceUserRolesAsActor).not.toHaveBeenCalled();
     });
 
     it('allows an actual system admin to assign protected system-admin access', async () => {
@@ -1166,6 +1771,7 @@ describe('UsersController', () => {
                 user: {
                     tenantId: 'tenant-1',
                     sub: 'owner-1',
+                    sessionId: 'session-1',
                     legacyRole: 'SUPER_ADMIN',
                     permissions: ['roles:assign', 'admin_portal:access'],
                     roles: [{ legacyRole: 'SUPER_ADMIN' }],
@@ -1177,51 +1783,111 @@ describe('UsersController', () => {
     });
 
     it('rejects changing the caller own role assignments', async () => {
+        mockRbacService.replaceUserRolesAsActor.mockRejectedValueOnce(new ForbiddenException('You cannot change your own access roles'));
         await expect(controller.updateUserAccess(
             'admin-1',
             { roleIds: [] },
-            { user: { tenantId: 'tenant-1', sub: 'admin-1' } },
+            { user: { tenantId: 'tenant-1', sub: 'admin-1', sessionId: 'session-1' } },
         )).rejects.toThrow('You cannot change your own access roles');
 
         expect(mockRbacService.assignRolesToUser).not.toHaveBeenCalled();
     });
 
     it('rejects a lower-privilege role administrator changing a tenant owner', async () => {
+        mockRbacService.replaceUserRolesAsActor.mockRejectedValueOnce(new ForbiddenException('Cannot administer an account with equal or greater access'));
         await expect(controller.updateUserAccess(
             'owner-1',
             { roleIds: [] },
-            { user: { tenantId: 'tenant-1', sub: 'manager-1' } },
+            { user: { tenantId: 'tenant-1', sub: 'manager-1', sessionId: 'session-1' } },
         )).rejects.toThrow('Cannot administer an account with equal or greater access');
 
         expect(mockRbacService.assignRolesToUser).not.toHaveBeenCalled();
     });
 
-    it('deactivates only a tenant-owned user before revoking sessions', async () => {
-        prisma.user.findFirst.mockResolvedValue({ id: 'user-9' });
+    it('irreversibly anonymizes a tenant-owned user and invalidates authentication material', async () => {
         prisma.user.updateMany.mockResolvedValue({ count: 1 });
-        prisma.session.updateMany.mockResolvedValue({ count: 2 });
+        prisma.$queryRaw.mockResolvedValue([]);
 
-        await controller.deactivate('user-9', { user: { tenantId: 'tenant-1', sub: 'admin-1' } });
+        await controller.deactivate('user-9', { user: { tenantId: 'tenant-1', sub: 'admin-1', sessionId: 'session-1' } });
 
-        expect(prisma.user.findFirst).toHaveBeenCalledWith({
-            where: { id: 'user-9', tenantId: 'tenant-1', deletedAt: null },
-            select: { id: true },
-        });
-        expect(prisma.session.updateMany).toHaveBeenCalledWith({
-            where: {
-                userId: 'user-9',
-                user: {
-                    tenantId: 'tenant-1',
-                },
+        expect(mockRbacService.authorizeUserAdministrationInTransaction).toHaveBeenCalledWith(
+            prisma,
+            'tenant-1',
+            {
+                actorUserId: 'admin-1',
+                actorSessionId: 'session-1',
+                targetUserId: 'user-9',
+                requiredPermission: 'users:admin',
+                selfMutationMessage: 'You cannot deactivate your own account',
             },
-            data: { revokedAt: expect.any(Date) },
+        );
+        expect(mockRbacService.authorizeUserAdministrationInTransaction.mock.invocationCallOrder[0])
+            .toBeLessThan(prisma.user.updateMany.mock.invocationCallOrder[0]);
+        expect(prisma.user.updateMany).toHaveBeenCalledWith({
+            where: { id: 'user-9', tenantId: 'tenant-1', deletedAt: null },
+            data: expect.objectContaining({
+                name: 'Deleted user',
+                email: null,
+                username: null,
+                phone: null,
+                oidcIssuer: null,
+                oidcSubject: null,
+                passwordHash: null,
+                pinHash: null,
+                mfaEnabled: false,
+                mfaSecret: null,
+                mfaBackupCodes: [],
+                emailDeliverySuppressedAt: null,
+                emailDeliverySuppressionReason: null,
+                emailDeliveryLastEventAt: null,
+                deletedAt: expect.any(Date),
+            }),
+        });
+        expect(prisma.refreshTokenReplay.deleteMany).toHaveBeenCalledWith({
+            where: { session: { userId: 'user-9' } },
+        });
+        expect(prisma.$executeRaw).toHaveBeenCalledTimes(2);
+        expect(prisma.passwordResetEmailOutbox.deleteMany).toHaveBeenCalledWith({
+            where: { tenantId: 'tenant-1', userId: 'user-9' },
+        });
+        expect(prisma.passwordResetToken.deleteMany).toHaveBeenCalledWith({
+            where: { tenantId: 'tenant-1', userId: 'user-9' },
+        });
+        expect(prisma.mfaTotpClaim.deleteMany).toHaveBeenCalledWith({
+            where: { tenantId: 'tenant-1', userId: 'user-9' },
+        });
+        expect(prisma.roleAssignment.deleteMany).toHaveBeenCalledWith({
+            where: { tenantId: 'tenant-1', userId: 'user-9' },
+        });
+        expect(prisma.onboardingSignupAttempt.deleteMany).toHaveBeenCalledWith({
+            where: { tenantId: 'tenant-1', userId: 'user-9' },
+        });
+        expect(prisma.notificationOutbox.deleteMany).toHaveBeenCalledWith({
+            where: { tenantId: 'tenant-1', userId: 'user-9' },
+        });
+        expect(prisma.notification.deleteMany).toHaveBeenCalledWith({
+            where: { tenantId: 'tenant-1', userId: 'user-9' },
+        });
+        expect(prisma.auditLog.create).toHaveBeenCalledWith({
+            data: {
+                tenantId: 'tenant-1',
+                userId: 'admin-1',
+                actorUserId: 'admin-1',
+                actorTenantId: 'tenant-1',
+                action: 'USER_DELETED',
+                resource: 'User',
+                resourceId: 'user-9',
+            },
         });
     });
 
     it('does not revoke sessions when deactivation target is outside the tenant', async () => {
+        mockRbacService.authorizeUserAdministrationInTransaction.mockRejectedValueOnce(
+            new Error('User not found'),
+        );
         await expect(controller.deactivate(
             'user-foreign',
-            { user: { tenantId: 'tenant-1', sub: 'admin-1' } },
+            { user: { tenantId: 'tenant-1', sub: 'admin-1', sessionId: 'session-1' } },
         )).rejects.toThrow('User not found');
 
         expect(prisma.user.updateMany).not.toHaveBeenCalled();
@@ -1229,9 +1895,12 @@ describe('UsersController', () => {
     });
 
     it('rejects self-deactivation before mutating the account', async () => {
+        mockRbacService.authorizeUserAdministrationInTransaction.mockRejectedValueOnce(
+            new ForbiddenException('You cannot deactivate your own account'),
+        );
         await expect(controller.deactivate(
             'admin-1',
-            { user: { tenantId: 'tenant-1', sub: 'admin-1' } },
+            { user: { tenantId: 'tenant-1', sub: 'admin-1', sessionId: 'session-1' } },
         )).rejects.toThrow('You cannot deactivate your own account');
 
         expect(prisma.user.updateMany).not.toHaveBeenCalled();
@@ -1239,24 +1908,71 @@ describe('UsersController', () => {
     });
 
     it('rejects a lower-privilege user administrator deactivating a tenant owner', async () => {
-        mockRbacService.getEffectiveAccess.mockImplementation(async (userId: string) => userId === 'owner-1'
-            ? effectiveAccess('SUPER_ADMIN', ['admin_portal:access', 'users:admin'], true)
-            : effectiveAccess('MANAGER', ['users:admin'], true));
+        mockRbacService.authorizeUserAdministrationInTransaction.mockRejectedValueOnce(
+            new ForbiddenException('Cannot administer an account with equal or greater access'),
+        );
 
         await expect(controller.deactivate(
             'owner-1',
-            { user: { tenantId: 'tenant-1', sub: 'manager-1' } },
+            { user: { tenantId: 'tenant-1', sub: 'manager-1', sessionId: 'session-1' } },
         )).rejects.toThrow('Cannot administer an account with equal or greater access');
 
         expect(prisma.user.updateMany).not.toHaveBeenCalled();
         expect(prisma.session.updateMany).not.toHaveBeenCalled();
     });
 
+    it('retries one deactivation conflict, maps two conflicts, and does not mask unrelated failures', async () => {
+        prisma.$queryRaw.mockResolvedValue([]);
+        prisma.user.updateMany.mockResolvedValue({ count: 1 });
+        tenantDb.withTenant.mockRejectedValueOnce({ code: 'P2010', meta: { code: '40001' } });
+        await expect(controller.deactivate(
+            'user-9',
+            { user: { tenantId: 'tenant-1', sub: 'admin-1', sessionId: 'session-1' } },
+        )).resolves.toBeUndefined();
+        expect(prisma.auditLog.create).toHaveBeenCalledOnce();
+
+        vi.clearAllMocks();
+        tenantDb.withTenant
+            .mockRejectedValueOnce({ code: 'P2034' })
+            .mockRejectedValueOnce({ code: 'P2034' });
+        await expect(controller.deactivate(
+            'user-9',
+            { user: { tenantId: 'tenant-1', sub: 'admin-1', sessionId: 'session-1' } },
+        )).rejects.toBeInstanceOf(ConflictException);
+        expect(tenantDb.withTenant).toHaveBeenCalledTimes(2);
+        expect(prisma.auditLog.create).not.toHaveBeenCalled();
+
+        const unrelated = { code: 'P2002' };
+        tenantDb.withTenant.mockRejectedValueOnce(unrelated);
+        await expect(controller.deactivate(
+            'user-9',
+            { user: { tenantId: 'tenant-1', sub: 'admin-1', sessionId: 'session-1' } },
+        )).rejects.toBe(unrelated);
+    });
+
+    it('carries actor identity into custom-role deletion', async () => {
+        await controller.deleteAccessRole(
+            'role-custom',
+            { user: { tenantId: 'tenant-1', sub: 'admin-1', sessionId: 'session-1' } },
+        );
+
+        expect(mockRbacService.deleteRole).toHaveBeenCalledWith(
+            'tenant-1',
+            'role-custom',
+            {
+                actorUserId: 'admin-1',
+                actorSessionId: 'session-1',
+                ipAddress: null,
+                userAgent: null,
+            },
+        );
+    });
+
     it('rejects non-system admin custom roles with platform admin permissions', async () => {
         await expect(
             controller.createAccessRole(
                 { name: 'Platform Access', permissionKeys: ['admin_portal:access'] },
-                { user: { tenantId: 'tenant-1', sub: 'admin-1', legacyRole: 'ADMIN', permissions: ['roles:write'] } },
+                { user: { tenantId: 'tenant-1', sub: 'admin-1', sessionId: 'session-1', legacyRole: 'ADMIN', permissions: ['roles:write'] } },
             ),
         ).rejects.toBeInstanceOf(ForbiddenException);
 
@@ -1271,7 +1987,7 @@ describe('UsersController', () => {
         await expect(
             controller.createAccessRole(
                 { name: 'Escalated access', permissionKeys: [permissionKey] },
-                { user: { tenantId: 'tenant-1', sub: 'admin-1', legacyRole: 'ADMIN', permissions: ['roles:write'] } },
+                { user: { tenantId: 'tenant-1', sub: 'admin-1', sessionId: 'session-1', legacyRole: 'ADMIN', permissions: ['roles:write'] } },
             ),
         ).rejects.toBeInstanceOf(ForbiddenException);
 
@@ -1289,16 +2005,114 @@ describe('UsersController', () => {
 
         await controller.createAccessRole(
             { name: 'Platform access', permissionKeys: ['  ADMIN_PORTAL:ACCESS  '] },
-            { user: { tenantId: 'tenant-1', sub: 'owner-1', legacyRole: 'SUPER_ADMIN', permissions: ['roles:write'] } },
+            { user: { tenantId: 'tenant-1', sub: 'owner-1', sessionId: 'session-1', legacyRole: 'SUPER_ADMIN', permissions: ['roles:write'], roles: [{ isSystem: true, legacyRole: 'SUPER_ADMIN' }] } },
         );
 
         expect(mockRbacService.createRole).toHaveBeenCalledWith(
             'tenant-1',
             { name: 'Platform access', permissionKeys: ['admin_portal:access'] },
-            { actorUserId: 'owner-1' },
+            {
+                actorUserId: 'owner-1',
+                actorSessionId: 'session-1',
+                ipAddress: null,
+                userAgent: null,
+            },
         );
     });
 
+    it.each([
+        ['unique constraint', { code: 'P2002' }],
+        ['serialization conflict', { code: 'P2034' }],
+        ['domain conflict', new ConflictException('Role changed concurrently')],
+    ])('classifies only recognized %s failures as a safe 409', async (_label, failure) => {
+        mockRbacService.createRole.mockRejectedValue(failure);
+
+        let rejected: unknown;
+        try {
+            await controller.createAccessRole(
+                { name: 'Reader', permissionKeys: ['users:read'] },
+                { user: { tenantId: 'tenant-1', sub: 'admin-1', sessionId: 'session-1', legacyRole: 'ADMIN', permissions: ['roles:write'] } },
+            );
+        } catch (error) {
+            rejected = error;
+        }
+
+        expect(rejected).toBeInstanceOf(ConflictException);
+        expect(productionFilterResponse(rejected)).toMatchObject({
+            status: 409,
+            body: { statusCode: 409, message: 'Conflict' },
+        });
+    });
+
+    it('preserves atomic role rollback and safe 500 classification when its audit fails', async () => {
+        const secret = 'postgres://admin:super-secret@db.internal/lunchlineup';
+        const auditFailure = new Error(`audit unavailable at ${secret}`);
+        const committedRoleIds: string[] = [];
+        mockRbacService.createRole.mockImplementation(async () => {
+            const transactionDraft = [...committedRoleIds, 'role-reader'];
+            await Promise.reject(auditFailure);
+            committedRoleIds.splice(0, committedRoleIds.length, ...transactionDraft);
+        });
+        const logger = vi.spyOn(Logger.prototype, 'error').mockImplementation(() => undefined);
+
+        let rejected: unknown;
+        try {
+            await controller.createAccessRole(
+                { name: 'Reader', permissionKeys: ['users:read'] },
+                { user: { tenantId: 'tenant-1', sub: 'admin-1', sessionId: 'session-1', legacyRole: 'ADMIN', permissions: ['roles:write'] } },
+            );
+        } catch (error) {
+            rejected = error;
+        }
+
+        expect(rejected).toBe(auditFailure);
+        expect(committedRoleIds).toEqual([]);
+        expect(mockRbacService.createRole).toHaveBeenCalledOnce();
+        const filtered = productionFilterResponse(rejected);
+        expect(filtered).toMatchObject({
+            status: 500,
+            body: { statusCode: 500, message: 'Internal server error' },
+        });
+        expect(JSON.stringify(filtered)).not.toContain('super-secret');
+        expect(JSON.stringify(logger.mock.calls)).not.toContain('super-secret');
+    });
+
+    it.each([
+        [
+            'database failure',
+            Object.assign(new Error('database unavailable at postgres://admin:db-secret@db.internal/app'), { code: 'P1001' }),
+            500,
+            'Internal server error',
+        ],
+        [
+            'explicit unavailable failure',
+            new ServiceUnavailableException('private provider detail'),
+            503,
+            'Request failed',
+        ],
+    ])('preserves safe production classification for a raw %s', async (_label, failure, status, message) => {
+        mockRbacService.createRole.mockRejectedValue(failure);
+        vi.spyOn(Logger.prototype, 'error').mockImplementation(() => undefined);
+
+        let rejected: unknown;
+        try {
+            await controller.createAccessRole(
+                { name: 'Reader', permissionKeys: ['users:read'] },
+                { user: { tenantId: 'tenant-1', sub: 'admin-1', sessionId: 'session-1', legacyRole: 'ADMIN', permissions: ['roles:write'] } },
+            );
+        } catch (error) {
+            rejected = error;
+        }
+
+        expect(rejected).toBe(failure);
+        const filtered = productionFilterResponse(rejected);
+        expect(filtered).toMatchObject({
+            status,
+            body: { statusCode: status, message },
+        });
+        expect(JSON.stringify(filtered)).not.toContain('private provider detail');
+        expect(JSON.stringify(filtered)).not.toContain('db-secret');
+    });
     it('passes the live actor identity when updating a custom role', async () => {
         mockRbacService.updateRole.mockResolvedValue({
             id: 'role-reader',
@@ -1312,14 +2126,19 @@ describe('UsersController', () => {
         await controller.updateAccessRole(
             'role-reader',
             { name: 'Reader', permissionKeys: ['users:read'] },
-            { user: { tenantId: 'tenant-1', sub: 'admin-1', legacyRole: 'ADMIN', permissions: ['roles:write'] } },
+            { user: { tenantId: 'tenant-1', sub: 'admin-1', sessionId: 'session-1', legacyRole: 'ADMIN', permissions: ['roles:write'] } },
         );
 
         expect(mockRbacService.updateRole).toHaveBeenCalledWith(
             'tenant-1',
             'role-reader',
             { name: 'Reader', permissionKeys: ['users:read'] },
-            { actorUserId: 'admin-1' },
+            {
+                actorUserId: 'admin-1',
+                actorSessionId: 'session-1',
+                ipAddress: null,
+                userAgent: null,
+            },
         );
     });
 
@@ -1327,7 +2146,7 @@ describe('UsersController', () => {
         await expect(
             controller.createAccessRole(
                 { name: 'Tenant Lifecycle', permissionKeys: ['tenant_account:lifecycle'] },
-                { user: { tenantId: 'tenant-1', sub: 'admin-1', legacyRole: 'ADMIN', permissions: ['roles:write'] } },
+                { user: { tenantId: 'tenant-1', sub: 'admin-1', sessionId: 'session-1', legacyRole: 'ADMIN', permissions: ['roles:write'] } },
             ),
         ).rejects.toBeInstanceOf(ForbiddenException);
 
@@ -1347,7 +2166,13 @@ describe('UsersController', () => {
             availabilityConfigured: false,
         });
         expect(prisma.user.findFirst).toHaveBeenCalledWith(expect.objectContaining({
-            where: { id: 'user-8', tenantId: 'tenant-1', deletedAt: null },
+            where: {
+                id: 'user-8',
+                tenantId: 'tenant-1',
+                deletedAt: null,
+                suspendedAt: null,
+                role: { in: ['MANAGER', 'STAFF'] },
+            },
         }));
         expect(tenantDb.withTenant).toHaveBeenCalledWith('tenant-1', expect.any(Function));
     });
@@ -1358,6 +2183,7 @@ describe('UsersController', () => {
             { skill: 'grill cook' },
         ]);
         prisma.$queryRaw
+            .mockResolvedValueOnce([{ id: 'tenant-1' }])
             .mockResolvedValueOnce([{ id: 'user-8', role: 'STAFF' }])
             .mockResolvedValueOnce([{ id: 'loc-1' }])
             .mockResolvedValueOnce([{ id: 'sch-1' }]);
@@ -1382,7 +2208,7 @@ describe('UsersController', () => {
             availabilityConfigured: true,
         });
 
-        expect(prisma.$queryRaw).toHaveBeenCalledTimes(3);
+        expect(prisma.$queryRaw).toHaveBeenCalledTimes(4);
         expect(prisma.schedule.updateMany).toHaveBeenCalledWith({
             where: {
                 id: { in: ['sch-1'] },
@@ -1396,7 +2222,13 @@ describe('UsersController', () => {
             { tenantId: 'tenant-1', userId: 'user-8', skill: 'expo' },
             { tenantId: 'tenant-1', userId: 'user-8', skill: 'grill cook' },
         ] });
-        const invalidationQuery = prisma.$queryRaw.mock.calls[2][0];
+        const tenantLockQuery = prisma.$queryRaw.mock.calls[0][0];
+        expect(tenantLockQuery.strings.join(' ')).toContain('FROM "Tenant"');
+        expect(tenantLockQuery.strings.join(' ')).toContain('FOR UPDATE');
+        const schedulingLockOrder = prisma.$executeRaw.mock.invocationCallOrder[0];
+        expect(prisma.$queryRaw.mock.invocationCallOrder[0]).toBeLessThan(schedulingLockOrder);
+        expect(schedulingLockOrder).toBeLessThan(prisma.$queryRaw.mock.invocationCallOrder[1]);
+        const invalidationQuery = prisma.$queryRaw.mock.calls[3][0];
         const invalidationSql = invalidationQuery.strings.join(' ');
         expect(invalidationSql).toContain('FROM "Schedule" schedule');
         expect(invalidationSql).toContain('schedule."status" = \'DRAFT\'');
@@ -1423,6 +2255,7 @@ describe('UsersController', () => {
     });
     it('invalidates every tenant draft when a schedulable staff skill changes', async () => {
         prisma.$queryRaw
+            .mockResolvedValueOnce([{ id: 'tenant-1' }])
             .mockResolvedValueOnce([{ id: 'user-8', role: 'MANAGER' }])
             .mockResolvedValueOnce([{ id: 'sch-1' }, { id: 'sch-2' }]);
 
@@ -1431,7 +2264,7 @@ describe('UsersController', () => {
             availability: [],
         }, { user: { tenantId: 'tenant-1' } });
 
-        const invalidationQuery = prisma.$queryRaw.mock.calls[1][0];
+        const invalidationQuery = prisma.$queryRaw.mock.calls[2][0];
         const invalidationSql = invalidationQuery.strings.join(' ');
         expect(invalidationSql).toContain('schedule."tenantId"');
         expect(invalidationSql).toContain('schedule."status" = \'DRAFT\'');
@@ -1455,7 +2288,9 @@ describe('UsersController', () => {
             startTimeMinutes: 540,
             endTimeMinutes: 1020,
         }]);
-        prisma.$queryRaw.mockResolvedValueOnce([{ id: 'user-8', role: 'STAFF' }]);
+        prisma.$queryRaw
+            .mockResolvedValueOnce([{ id: 'tenant-1' }])
+            .mockResolvedValueOnce([{ id: 'user-8', role: 'STAFF' }]);
 
         await controller.replaceSchedulingProfile('user-8', {
             skills: ['EXPO'],
@@ -1467,13 +2302,14 @@ describe('UsersController', () => {
             }],
         }, { user: { tenantId: 'tenant-1' } });
 
-        expect(prisma.$queryRaw).toHaveBeenCalledOnce();
+        expect(prisma.$queryRaw).toHaveBeenCalledTimes(2);
         expect(prisma.schedule.updateMany).not.toHaveBeenCalled();
     });
 
 
     it('rejects inactive or cross-tenant locations before replacing rows', async () => {
         prisma.$queryRaw
+            .mockResolvedValueOnce([{ id: 'tenant-1' }])
             .mockResolvedValueOnce([{ id: 'user-8' }])
             .mockResolvedValueOnce([]);
 
@@ -1488,6 +2324,25 @@ describe('UsersController', () => {
         }, { user: { tenantId: 'tenant-1' } })).rejects.toThrow(
             'Every availability location must be an active tenant location',
         );
+        expect(prisma.staffAvailability.deleteMany).not.toHaveBeenCalled();
+        expect(prisma.staffSkill.deleteMany).not.toHaveBeenCalled();
+    });
+
+    it('rejects a suspended or non-schedulable profile target before replacing rows', async () => {
+        prisma.$queryRaw
+            .mockResolvedValueOnce([{ id: 'tenant-1' }])
+            .mockResolvedValueOnce([]);
+
+        await expect(controller.replaceSchedulingProfile('user-admin', {
+            skills: ['expo'],
+            availability: [],
+        }, { user: { tenantId: 'tenant-1' } })).rejects.toThrow('User not found');
+
+        const userLock = prisma.$queryRaw.mock.calls[1][0];
+        expect(userLock.strings.join(' ')).toContain(
+            '"role" IN (\'MANAGER\'::"UserRole", \'STAFF\'::"UserRole")',
+        );
+        expect(userLock.strings.join(' ')).toContain('"suspendedAt" IS NULL');
         expect(prisma.staffAvailability.deleteMany).not.toHaveBeenCalled();
         expect(prisma.staffSkill.deleteMany).not.toHaveBeenCalled();
     });

@@ -1,6 +1,8 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
+  fetchJsonWithSession,
+  fetchPublicApi,
   fetchWithSession,
   idempotentRequestAttempt,
   withIdempotencyKey,
@@ -11,8 +13,20 @@ function headersFromCall(call: unknown[]): Headers {
   return init.headers as Headers;
 }
 
+async function captureError(promise: Promise<unknown>): Promise<Error> {
+  let captured: unknown;
+  try {
+    await promise;
+  } catch (error) {
+    captured = error;
+  }
+  expect(captured).toBeInstanceOf(Error);
+  return captured as Error;
+}
+
 describe('fetchWithSession', () => {
   afterEach(() => {
+    vi.useRealTimers();
     vi.unstubAllGlobals();
     vi.restoreAllMocks();
   });
@@ -32,6 +46,7 @@ describe('fetchWithSession', () => {
     expect(fetchMock.mock.calls[0][0]).toBe('/api/v1/shifts');
     expect(headersFromCall(fetchMock.mock.calls[0]).get('x-csrf-token')).toBe('csrf-123');
     expect((fetchMock.mock.calls[0][1] as RequestInit).credentials).toBe('include');
+    expect((fetchMock.mock.calls[0][1] as RequestInit).redirect).toBe('error');
   });
 
   it('includes CSRF protection when refreshing an expired session', async () => {
@@ -122,5 +137,150 @@ describe('fetchWithSession', () => {
     expect(replayCalls).toHaveLength(2);
     expect(replayCalls.map((call) => headersFromCall(call).get('Idempotency-Key')).sort()).toEqual(['attempt-1', 'attempt-2']);
     expect(replayCalls.every((call) => (call[1] as RequestInit).body === body)).toBe(true);
+  });
+  it('does not replay an unsafe mutation without an idempotency key after refresh', async () => {
+    const jsonHeaders = { 'content-type': 'application/json' };
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response('{}', { status: 401, headers: jsonHeaders }))
+      .mockResolvedValueOnce(new Response('{}', { status: 200, headers: jsonHeaders }));
+    vi.stubGlobal('fetch', fetchMock);
+    vi.stubGlobal('document', { cookie: 'csrf_token=refresh-csrf' });
+
+    const response = await fetchWithSession('/shifts', {
+      method: 'POST',
+      body: JSON.stringify({ startsAt: '2026-07-14T09:00:00Z' }),
+    });
+
+    expect(response.status).toBe(401);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(fetchMock.mock.calls.map((call) => String(call[0]))).toEqual([
+      '/api/v1/shifts',
+      '/api/v1/auth/refresh',
+    ]);
+  });
+
+  it('replaces raw 5xx and non-JSON transport details before callers can read them', async () => {
+    const secretBody = '<html>postgres.internal token=server-secret Error: stack trace</html>';
+    const fetchMock = vi.fn().mockResolvedValue(new Response(secretBody, {
+      status: 503,
+      headers: {
+        'content-type': 'text/html',
+        'x-internal-host': 'postgres.internal',
+      },
+    }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const response = await fetchWithSession('/health');
+    const serialized = JSON.stringify({
+      body: await response.json(),
+      headers: Object.fromEntries(response.headers.entries()),
+    });
+
+    expect(response.status).toBe(503);
+    expect(serialized).toContain('temporarily unavailable');
+    expect(serialized).not.toContain(secretBody);
+    expect(serialized).not.toContain('postgres.internal');
+    expect(serialized).not.toContain('server-secret');
+  });
+
+  it('normalizes network and successful non-JSON parsing failures without leaking their causes', async () => {
+    const rawFailure = 'https://api.internal/auth?token=secret-token Authorization: Bearer hidden';
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValueOnce(new Error(rawFailure)));
+
+    const networkError = await captureError(fetchWithSession('/auth/me'));
+    expect(networkError.message).toBe('Unable to reach the service. Please try again.');
+    expect(String(networkError)).not.toContain(rawFailure);
+
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValueOnce(new Response(
+      '<html>redis.internal?password=hidden</html>',
+      { status: 200, headers: { 'content-type': 'text/html' } },
+    )));
+    const parsingError = await captureError(fetchJsonWithSession('/auth/me'));
+    expect(parsingError.message).toBe('The service returned an invalid response.');
+    expect(String(parsingError)).not.toContain('redis.internal');
+    expect(String(parsingError)).not.toContain('hidden');
+  });
+
+  it('keeps safe 4xx guidance but rejects secret-bearing API messages', async () => {
+    const headers = { 'content-type': 'application/json' };
+    vi.stubGlobal('fetch', vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ message: 'Select at least one shift.' }), {
+        status: 400,
+        headers,
+      }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        message: 'Failure at https://api.internal?token=server-secret Authorization: Bearer hidden',
+      }), {
+        status: 400,
+        headers,
+      })));
+
+    await expect(fetchJsonWithSession('/shifts')).rejects.toThrow('Select at least one shift.');
+    const unsafeError = await captureError(fetchJsonWithSession('/shifts'));
+    expect(unsafeError.message).toBe('Request failed (400).');
+    expect(String(unsafeError)).not.toContain('server-secret');
+    expect(String(unsafeError)).not.toContain('api.internal');
+  });
+
+  it('removes secret-bearing query state from session-expiry login redirects', async () => {
+    const assign = vi.fn();
+    const jsonHeaders = { 'content-type': 'application/json' };
+    vi.stubGlobal('window', {
+      location: {
+        pathname: '/dashboard/scheduling',
+        search: '?date=2026-07-14&token=secret-token&return=https%3A%2F%2Fevil.example',
+        assign,
+      },
+    });
+    vi.stubGlobal('document', { cookie: 'csrf_token=refresh-csrf' });
+    vi.stubGlobal('fetch', vi.fn()
+      .mockResolvedValueOnce(new Response('{}', { status: 401, headers: jsonHeaders }))
+      .mockResolvedValueOnce(new Response('{}', { status: 401, headers: jsonHeaders })));
+
+    await fetchWithSession('/auth/me');
+
+    const target = String(assign.mock.calls[0]?.[0] ?? '');
+    expect(target).toContain(encodeURIComponent('/dashboard/scheduling?date=2026-07-14'));
+    expect(target).not.toContain('secret-token');
+    expect(target).not.toContain('evil.example');
+  });
+  it('aborts public browser requests at the shared deadline', async () => {
+    vi.useFakeTimers();
+    vi.stubGlobal('fetch', vi.fn((_input: RequestInfo | URL, init?: RequestInit) => new Promise<Response>((_resolve, reject) => {
+      init?.signal?.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')), { once: true });
+    })));
+
+    const request = fetchPublicApi('/auth/login/resolve');
+    const assertion = expect(request).rejects.toThrow('The request timed out. Please try again.');
+    await vi.advanceTimersByTimeAsync(15_000);
+    await assertion;
+  });
+
+  it('rejects successful JSON responses above the shared byte ceiling', async () => {
+    const oversized = JSON.stringify({ data: 'x'.repeat(1024 * 1024) });
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(oversized, {
+      status: 200,
+      headers: {
+        'content-length': String(oversized.length),
+        'content-type': 'application/json',
+      },
+    })));
+
+    await expect(fetchJsonWithSession('/admin/stats')).rejects.toThrow('The service returned an invalid response.');
+  });
+
+  it('sanitizes unsafe 4xx bodies even for callers that inspect Response directly', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      message: 'Failure at https://api.internal?token=server-secret Authorization: Bearer hidden',
+    }), {
+      status: 400,
+      headers: { 'content-type': 'application/json' },
+    })));
+
+    const response = await fetchPublicApi('/auth/login/resolve');
+    const serialized = JSON.stringify(await response.json());
+    expect(serialized).toContain('Request failed (400).');
+    expect(serialized).not.toContain('server-secret');
+    expect(serialized).not.toContain('api.internal');
   });
 });

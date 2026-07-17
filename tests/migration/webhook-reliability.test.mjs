@@ -67,14 +67,15 @@ test('RabbitMQ-only loss can reclaim aged confirmed webhook rows without touchin
   assert.doesNotMatch(store, /"status"\s+IN\s+\([^)]*'DELIVERED'/);
 });
 
-test('tenant webhook lifecycle delivers for ACTIVE and TRIAL, pauses recoverable states, and terminalizes only PURGED', () => {
+test('tenant webhook lifecycle requires subscription plus credits, pauses recoverable states, and terminalizes only PURGED', () => {
   const migration = read('packages/db/prisma/migrations/20260710_tenant_webhook_lifecycle.sql');
   const store = read('apps/api/src/webhooks/webhook-delivery.store.ts');
 
-  assert.match(store, /WEBHOOK_DELIVERY_ELIGIBLE_TENANT_STATUSES = \['ACTIVE', 'TRIAL'\]/);
-  assert.match(store, /tenant\."status" = 'ACTIVE'::"TenantStatus"[\s\S]*tenant\."status" = 'TRIAL'::"TenantStatus"[\s\S]*tenant\."trialEndsAt" > /);
+  assert.match(store, /status: 'ACTIVE'[\s\S]*stripeSubscriptionId: \{ not: null \}/);
+  assert.match(store, /tenant\."status" = 'ACTIVE'::"TenantStatus"[\s\S]*BTRIM\(tenant\."stripeSubscriptionId"\)/);
+  assert.match(store, /feature-usage-webhook-delivery:[\s\S]*CreditTransaction[\s\S]*credit\."tenantId" = delivery\."tenantId"/);
   assert.match(store, /status: 'FAILED' satisfies WebhookDeliveryStatus,[\s\S]*Tenant webhook delivery is paused/);
-  assert.doesNotMatch(store, /WEBHOOK_DELIVERY_ELIGIBLE_TENANT_STATUSES = [^\n]*PAST_DUE/);
+  assert.doesNotMatch(store, /status: 'TRIAL'|tenant\."status" = 'TRIAL'/);
 
   assert.match(migration, /IF NEW\."status" = 'PURGED'::"TenantStatus" THEN/);
   assert.match(migration, /WHEN \(NEW\."status" = 'PURGED'::"TenantStatus"\)/);
@@ -82,4 +83,17 @@ test('tenant webhook lifecycle delivers for ACTIVE and TRIAL, pauses recoverable
   assert.doesNotMatch(migration, /NEW\."status" <> 'ACTIVE'/);
   assert.doesNotMatch(migration, /tenant\."status" <> 'ACTIVE'/);
   assert.doesNotMatch(migration, /PAST_DUE[\s\S]*DEAD_LETTERED|DEAD_LETTERED[\s\S]*PAST_DUE/);
+});
+
+test('runtime shutdown drains API and webhook replay resources', () => {
+  const apiMain = read('apps/api/src/main.ts');
+  const replayWorker = read('apps/api/src/webhooks/webhook-replay.worker.ts');
+
+  assert.match(apiMain, /enableShutdownHooks\(\['SIGINT', 'SIGTERM'\]\)/);
+  assert.match(replayWorker, /consumerTag = consumer\.consumerTag/);
+  assert.match(replayWorker, /const deadlineAtMs = Date\.now\(\) \+ shutdownTimeoutMs/);
+  assert.match(replayWorker, /channel\.cancel\(consumerTag\)[\s\S]*deadlineAtMs[\s\S]*runtime\.waitForIdle\(Math\.max\(1, deadlineAtMs - Date\.now\(\)\)\)/);
+  assert.match(replayWorker, /beforeShutdownDeadline\(closeOperation\(\), deadlineAtMs, label\)/);
+  assert.match(replayWorker, /registerWebhookReplayShutdown/);
+  assert.doesNotMatch(replayWorker, /process\.exit\(/);
 });

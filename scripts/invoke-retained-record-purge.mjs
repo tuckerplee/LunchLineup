@@ -75,6 +75,10 @@ try {
       `http_status=${result.httpStatus}`,
       `candidate_tenants=${result.candidateTenantCount}`,
       `deleted_records=${result.deletedRecordCount}`,
+      `eligible_sessions=${result.sessionEligibleCount}`,
+      `purged_sessions=${result.sessionPurgedCount}`,
+      `eligible_password_reset_tokens=${result.passwordResetTokenEligibleCount}`,
+      `purged_password_reset_tokens=${result.passwordResetTokenPurgedCount}`,
       `failed_tenants=${result.failedTenantCount}`,
       `skipped_tenants=${result.skippedTenantCount}`,
       proofFile ? `proof_file=${proofFile}` : null,
@@ -266,6 +270,8 @@ function buildResult({
     ? createHash("sha256").update(responseText).digest("hex")
     : null;
   const candidateSchedule = extractCandidateSchedule(responsePayload);
+  const passwordResetTokenRetention = extractPasswordResetTokenRetention(responsePayload);
+  const sessionRetention = extractSessionRetention(responsePayload);
 
   return {
     version: 1,
@@ -288,6 +294,12 @@ function buildResult({
       numeric(responsePayload?.candidateTenantCount) ||
       numeric(responsePayload?.candidateCount),
     deletedRecordCount: deletedRecordCount(responsePayload),
+    passwordResetTokenRetention,
+    passwordResetTokenEligibleCount: passwordResetTokenRetention?.eligibleCount ?? 0,
+    passwordResetTokenPurgedCount: passwordResetTokenRetention?.purgedCount ?? 0,
+    sessionRetention,
+    sessionEligibleCount: sessionRetention?.eligibleCount ?? 0,
+    sessionPurgedCount: sessionRetention?.purgedCount ?? 0,
     processedTenantCount:
       numeric(responsePayload?.processedTenantCount) ||
       firstArray(
@@ -348,6 +360,26 @@ function combinePageResults(results, maxPages, continuation = null) {
       (sum, result) => sum + result.deletedRecordCount,
       0,
     ),
+    passwordResetTokenRetention:
+      results.find((result) => result.passwordResetTokenRetention)?.passwordResetTokenRetention ?? null,
+    passwordResetTokenEligibleCount: results.reduce(
+      (sum, result) => sum + result.passwordResetTokenEligibleCount,
+      0,
+    ),
+    passwordResetTokenPurgedCount: results.reduce(
+      (sum, result) => sum + result.passwordResetTokenPurgedCount,
+      0,
+    ),
+    sessionRetention:
+      results.find((result) => result.sessionRetention)?.sessionRetention ?? null,
+    sessionEligibleCount: results.reduce(
+      (sum, result) => sum + result.sessionEligibleCount,
+      0,
+    ),
+    sessionPurgedCount: results.reduce(
+      (sum, result) => sum + result.sessionPurgedCount,
+      0,
+    ),
     processedTenantCount: results.reduce(
       (sum, result) => sum + result.processedTenantCount,
       0,
@@ -385,6 +417,12 @@ function failureResult(error) {
     responseKeys: [],
     candidateTenantCount: 0,
     deletedRecordCount: 0,
+    passwordResetTokenRetention: null,
+    passwordResetTokenEligibleCount: 0,
+    passwordResetTokenPurgedCount: 0,
+    sessionRetention: null,
+    sessionEligibleCount: 0,
+    sessionPurgedCount: 0,
     processedTenantCount: 0,
     failedTenantCount: 0,
     skippedTenantCount: 0,
@@ -428,6 +466,32 @@ function extractCandidateSchedule(payload) {
         candidate.deletionRequestedAt ||
         candidate.eligibleAt,
     );
+}
+
+function extractPasswordResetTokenRetention(payload) {
+  const value = payload?.passwordResetTokenRetention;
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  return {
+    terminalGraceHours: numeric(value.terminalGraceHours),
+    batchLimit: numeric(value.batchLimit),
+    terminalBefore: stringValue(value.terminalBefore),
+    eligibleCount: numeric(value.eligibleCount),
+    purgedCount: numeric(value.purgedCount),
+  };
+}
+
+function extractSessionRetention(payload) {
+  const value = payload?.sessionRetention;
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  return {
+    expiredGraceHours: numeric(value.expiredGraceHours),
+    revokedRetentionDays: numeric(value.revokedRetentionDays),
+    batchLimit: numeric(value.batchLimit),
+    expiredBefore: stringValue(value.expiredBefore),
+    revokedBefore: stringValue(value.revokedBefore),
+    eligibleCount: numeric(value.eligibleCount),
+    purgedCount: numeric(value.purgedCount),
+  };
 }
 
 function deletedRecordCount(payload) {
@@ -496,16 +560,16 @@ function writeOutputs({ result, status, error }) {
 }
 
 function retentionMetrics(result) {
-  const label = `{mode="${result.mode}"}`;
+  const label = `{mode="${result.mode}",stage="${result.stage}"}`;
   const success = result.status === "ok" ? 1 : 0;
   const timestamp = Math.floor(Date.parse(result.completedAt) / 1000);
   const duration = Math.max(result.durationMs, 0) / 1000;
 
   return [
-    "# HELP lunchlineup_retention_purge_last_attempt_timestamp_seconds Last retained-record purge invocation attempt time.",
+    "# HELP lunchlineup_retention_purge_last_attempt_timestamp_seconds Last retention invocation attempt time by mode and stage.",
     "# TYPE lunchlineup_retention_purge_last_attempt_timestamp_seconds gauge",
     `lunchlineup_retention_purge_last_attempt_timestamp_seconds${label} ${timestamp}`,
-    "# HELP lunchlineup_retention_purge_last_success Whether the last retained-record purge invocation succeeded.",
+    "# HELP lunchlineup_retention_purge_last_success Whether the last retention invocation succeeded by mode and stage.",
     "# TYPE lunchlineup_retention_purge_last_success gauge",
     `lunchlineup_retention_purge_last_success${label} ${success}`,
     "# HELP lunchlineup_retention_purge_last_duration_seconds Duration of the last retained-record purge invocation.",
@@ -520,6 +584,18 @@ function retentionMetrics(result) {
     "# HELP lunchlineup_retention_purge_last_deleted_records Deleted database records from the last retained-record purge execution.",
     "# TYPE lunchlineup_retention_purge_last_deleted_records gauge",
     `lunchlineup_retention_purge_last_deleted_records${label} ${numeric(result.deletedRecordCount)}`,
+    "# HELP lunchlineup_retention_purge_last_eligible_sessions Dormant expired or revoked sessions eligible at the last application-data retention boundary.",
+    "# TYPE lunchlineup_retention_purge_last_eligible_sessions gauge",
+    `lunchlineup_retention_purge_last_eligible_sessions${label} ${numeric(result.sessionEligibleCount)}`,
+    "# HELP lunchlineup_retention_purge_last_purged_sessions Dormant expired or revoked sessions deleted by the last application-data retention run.",
+    "# TYPE lunchlineup_retention_purge_last_purged_sessions gauge",
+    `lunchlineup_retention_purge_last_purged_sessions${label} ${numeric(result.sessionPurgedCount)}`,
+    "# HELP lunchlineup_retention_purge_last_eligible_password_reset_tokens Expired or consumed password-reset token hashes eligible after the terminal grace period.",
+    "# TYPE lunchlineup_retention_purge_last_eligible_password_reset_tokens gauge",
+    `lunchlineup_retention_purge_last_eligible_password_reset_tokens${label} ${numeric(result.passwordResetTokenEligibleCount)}`,
+    "# HELP lunchlineup_retention_purge_last_purged_password_reset_tokens Terminal password-reset token hashes deleted by the last application-data retention run.",
+    "# TYPE lunchlineup_retention_purge_last_purged_password_reset_tokens gauge",
+    `lunchlineup_retention_purge_last_purged_password_reset_tokens${label} ${numeric(result.passwordResetTokenPurgedCount)}`,
     "# HELP lunchlineup_retention_purge_last_processed_tenants Successfully processed tenants in the last bounded invocation.",
     "# TYPE lunchlineup_retention_purge_last_processed_tenants gauge",
     `lunchlineup_retention_purge_last_processed_tenants${label} ${numeric(result.processedTenantCount)}`,

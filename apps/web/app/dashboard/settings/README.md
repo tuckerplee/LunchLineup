@@ -4,12 +4,14 @@ Tenant settings route for organization defaults, team policy, billing status, an
 
 ## Files
 
-- `AccountLifecyclePanel.tsx`: account status, requester-scoped export recovery across long runs and reloads, period-end renewal cancellation, and deletion-request controls for tenant admins.
-- `BillingSettingsPanel.tsx`: render-only billing tab panel for plan state, feature access, Checkout, capacity-checked plan changes, Stripe-confirmed paused-subscription resume, and portal delinquency recovery controls.
-- `billing-settings-contract.ts`: pure billing feature-response normalization, management-mode, explicit recovery-action, and HTTPS Stripe redirect contract helpers.
+- `AccountLifecyclePanel.tsx`: account status with authoritative scheduled-cancellation/effective-date reload projection, requester-scoped export recovery, duplicate-safe renewal cancellation, and deletion flow that preserves finalized or pending DELETE receipts, stops authenticated polling, clears browser cookies locally, and opens the public confirmation page.
+- `BillingSettingsPanel.tsx`: render-only billing panel for subscription state, feature access, fixed 100/500/2000 credit packs with pack-specific accessible purchase names, Stripe-authoritative pricing, capacity-checked plan changes, and recovery controls.
+- `billing-settings-contract.ts`: pure billing/credit-pack normalization, active-paid gating, currency-aware price formatting, checkout-return parsing, recovery-action, and HTTPS Stripe redirect helpers.
 - `MfaEnrollmentPanel.tsx`: personal MFA enrollment, verification, recovery-code display, and disable controls.
 - `README.md`: this settings folder guide.
-- `SettingsWorkspace.tsx`: client settings workspace with fail-closed settings hydration and retry, general, team, account lifecycle, permission-aware Checkout, safe billing portal, plan-change, hosted resumption-payment redirect, and security actions.
+- `SettingsWorkspace.tsx`: client settings workspace composing fail-closed general, team, account lifecycle, billing, and security state with keyboard-operable ARIA tabs.
+- `settings-tabs.ts`: pure tab identifiers and ArrowLeft/ArrowRight/Home/End navigation resolution for the settings tablist.
+- `use-billing-settings.ts`: owns independent subscription and pack loading, billing mutations, pending credit-checkout state, sanitized return handling, and bounded post-return balance refresh.
 - `mfa-enrollment-contract.ts`: pure MFA enrollment/status/setup/recovery-code client contract normalizers.
 - `page.tsx`: dashboard settings route entry that requires `settings:read` and passes settings, billing, tenant export, and account lifecycle capabilities.
 

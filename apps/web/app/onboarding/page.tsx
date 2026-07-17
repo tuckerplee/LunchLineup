@@ -1,22 +1,31 @@
 'use client';
 
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { type FormEvent, useCallback, useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { LunchLineupMark } from '@/components/branding/LunchLineupMark';
-import { buildOnboardingOtpPayload, normalizePublicSignupMode, shouldUseOpenSignupChallenge } from './challenge';
+import { fetchPublicApi } from '@/lib/client-api';
+import { safeInternalNavigationPath } from '@/lib/safe-navigation';
+import {
+    buildOnboardingOtpPayload,
+    normalizePublicSignupMode,
+    onboardingApiErrorMessage,
+    onboardingRequestErrorMessage,
+    shouldUseOpenSignupChallenge,
+} from './challenge';
 import {
     clearPendingFirstLocation,
     readPendingFirstLocation,
     savePendingFirstLocation,
     type PendingFirstLocation,
 } from './first-location-recovery';
+import { provisionPendingFirstLocation } from './first-location-transport';
 import { TurnstileChallenge } from './TurnstileChallenge';
 import { rememberWorkspaceSlug } from '@/lib/workspace-slug';
 
-const API = '/api/v1';
 const PUBLIC_SIGNUP_MODE = normalizePublicSignupMode(process.env.NEXT_PUBLIC_SIGNUP_MODE);
 const TURNSTILE_SITE_KEY = process.env.NEXT_PUBLIC_TURNSTILE_SITE_KEY?.trim() ?? '';
+const SUPPORT_EMAIL = process.env.NEXT_PUBLIC_SUPPORT_CONTACT_EMAIL?.trim() ?? '';
 const FIRST_LOCATION_RESUME_PATH = '/onboarding?resume=first-location';
 
 const STEPS = [
@@ -26,29 +35,29 @@ const STEPS = [
     { id: 4, label: 'Verify' },
 ];
 
-function getCsrfTokenFromCookie(): string {
-    const pair = document.cookie.split('; ').find((entry) => entry.startsWith('csrf_token='));
-    return pair ? decodeURIComponent(pair.split('=')[1] ?? '') : '';
-}
 
 function isValidEmail(email: string): boolean {
     return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
 }
 
 function mfaResumePath(redirectTo: unknown): string {
-    if (typeof redirectTo === 'string' && redirectTo.startsWith('/mfa?')) return redirectTo;
-    return `/mfa?next=${encodeURIComponent(FIRST_LOCATION_RESUME_PATH)}`;
+    const fallback = `/mfa?next=${encodeURIComponent(FIRST_LOCATION_RESUME_PATH)}`;
+    if (typeof redirectTo !== 'string') return fallback;
+    const target = safeInternalNavigationPath(redirectTo, fallback);
+    return target === '/mfa' || target.startsWith('/mfa?') ? target : fallback;
 }
 
 export default function OnboardingPage() {
     const router = useRouter();
     const resumeAttemptedRef = useRef(false);
+    const errorRef = useRef<HTMLDivElement>(null);
     const [step, setStep] = useState(1);
     const [isSendingOtp, setIsSendingOtp] = useState(false);
     const [isSubmitting, setIsSubmitting] = useState(false);
     const [resendCountdown, setResendCountdown] = useState(0);
     const [otpSent, setOtpSent] = useState(false);
     const [error, setError] = useState<string | null>(null);
+    const [notice, setNotice] = useState<string | null>(null);
     const [onboardingChallengeToken, setOnboardingChallengeToken] = useState('');
     const [turnstileToken, setTurnstileToken] = useState('');
     const [turnstileUnavailable, setTurnstileUnavailable] = useState(false);
@@ -73,6 +82,10 @@ export default function OnboardingPage() {
     const challengeCannotSubmit = signupUsesChallenge && !turnstileToken;
     const legalAssentComplete = termsAccepted && privacyAccepted;
 
+    useEffect(() => {
+        if (error) errorRef.current?.focus();
+    }, [error]);
+
     const handleTurnstileTokenChange = useCallback((token: string) => {
         setTurnstileToken(token);
     }, []);
@@ -90,6 +103,7 @@ export default function OnboardingPage() {
     useEffect(() => {
         setOtpSent(false);
         setOtp('');
+        setNotice(null);
         setOnboardingChallengeToken('');
         setResendCountdown(0);
         setTurnstileToken('');
@@ -118,28 +132,28 @@ export default function OnboardingPage() {
     const provisionFirstLocation = useCallback(async (pending: PendingFirstLocation) => {
         savePendingFirstLocation(window.sessionStorage, pending);
         setPendingFirstLocation(pending);
-        const csrfToken = getCsrfTokenFromCookie();
-        const provisionRes = await fetch(`${API}/locations`, {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-                'Idempotency-Key': pending.requestKey,
-                ...(csrfToken ? { 'x-csrf-token': csrfToken } : {}),
-            },
-            credentials: 'include',
-            body: JSON.stringify({
-                name: pending.firstLocationName,
-                tenantName: pending.tenantName,
-                timezone: pending.timezone,
-            }),
-        });
+        let provisionRes: Response;
+        try {
+            provisionRes = await provisionPendingFirstLocation(pending);
+        } catch (requestError) {
+            throw new Error(onboardingRequestErrorMessage(
+                requestError,
+                'Unable to reach the location service. Your workspace is saved; retry this same request when the connection recovers.',
+            ));
+        }
         const data = await provisionRes.json().catch(() => ({}));
         if (!provisionRes.ok) {
+            if (provisionRes.status >= 500) {
+                throw new Error('Location service is temporarily unavailable.');
+            }
             if (provisionRes.status === 403 && /mfa/i.test(String(data.message ?? data.error ?? ''))) {
                 router.push(mfaResumePath(undefined));
                 return;
             }
-            throw new Error(data.message || 'Your workspace is saved, but the first location could not be created. Retry when the service is available.');
+            throw new Error(onboardingApiErrorMessage(
+                data,
+                'Your workspace is saved, but the first location could not be created. Retry when the service is available.',
+            ));
         }
 
         clearPendingFirstLocation(window.sessionStorage);
@@ -147,6 +161,7 @@ export default function OnboardingPage() {
         const workspaceSlug = rememberWorkspaceSlug(window.localStorage, pending.workspaceSlug);
         if (!workspaceSlug) throw new Error('Workspace setup completed without a valid sign-in slug. Contact support.');
         setLaunchedWorkspaceSlug(workspaceSlug);
+        setNotice(null);
         setIsSubmitting(false);
     }, [router]);
 
@@ -166,7 +181,10 @@ export default function OnboardingPage() {
         setStep(4);
         setIsSubmitting(true);
         void provisionFirstLocation(pending).catch((err) => {
-            setError((err as Error).message);
+            setError(onboardingRequestErrorMessage(
+                err,
+                'Unable to resume first-location setup. Retry when the connection recovers.',
+            ));
             setIsSubmitting(false);
         });
     }, [provisionFirstLocation]);
@@ -176,7 +194,10 @@ export default function OnboardingPage() {
         setIsSubmitting(true);
         setError(null);
         void provisionFirstLocation(pendingFirstLocation).catch((err) => {
-            setError((err as Error).message);
+            setError(onboardingRequestErrorMessage(
+                err,
+                'Unable to retry first-location setup. Retry when the connection recovers.',
+            ));
             setIsSubmitting(false);
         });
     };
@@ -208,10 +229,13 @@ export default function OnboardingPage() {
         const challengeToken = getTurnstileTokenForRequest('Complete the security check before requesting a code.');
         if (challengeToken === null) return false;
 
+        const wasResend = otpSent;
+        let responseStatus: number | null = null;
         setIsSendingOtp(true);
         setError(null);
+        setNotice(null);
         try {
-            const res = await fetch(`${API}/auth/email/send-otp`, {
+            const res = await fetchPublicApi('/auth/email/send-otp', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 credentials: 'include',
@@ -224,21 +248,29 @@ export default function OnboardingPage() {
                     privacyAccepted,
                 })),
             });
+            responseStatus = res.status;
             const data = await res.json().catch(() => ({}));
             if (!res.ok || !data.success) {
-                throw new Error(data.error || 'Failed to send verification code.');
+                throw new Error(onboardingApiErrorMessage(data, 'Failed to send verification code.'));
             }
             if (typeof data.onboardingChallengeToken !== 'string' || !data.onboardingChallengeToken.trim()) {
                 throw new Error('Verification challenge was not created. Request a new code.');
             }
             setOnboardingChallengeToken(data.onboardingChallengeToken.trim());
             setOtpSent(true);
+            setNotice(wasResend ? 'A new verification code was sent.' : 'Verification code sent.');
             setResendCountdown(60);
             resetOpenSignupChallenge();
             return true;
         } catch (err) {
             resetOpenSignupChallenge();
-            setError((err as Error).message);
+            if (responseStatus === null || responseStatus === 429 || responseStatus >= 500) {
+                setResendCountdown(60);
+            }
+            setError(onboardingRequestErrorMessage(
+                err,
+                'Unable to confirm code delivery. Wait briefly, then request a new code.',
+            ));
             return false;
         } finally {
             setIsSendingOtp(false);
@@ -301,6 +333,7 @@ export default function OnboardingPage() {
         try {
             setIsSubmitting(true);
             setError(null);
+            setNotice(null);
             const signupCode = formData.signupCode.trim();
             const challengeToken = getTurnstileTokenForRequest('Complete the security check before verifying your code.');
             if (challengeToken === null) {
@@ -308,7 +341,7 @@ export default function OnboardingPage() {
                 return;
             }
 
-            const verifyRes = await fetch(`${API}/auth/email/verify-otp?next=${encodeURIComponent(FIRST_LOCATION_RESUME_PATH)}`, {
+            const verifyRes = await fetchPublicApi(`/auth/email/verify-otp?next=${encodeURIComponent(FIRST_LOCATION_RESUME_PATH)}`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 credentials: 'include',
@@ -325,7 +358,10 @@ export default function OnboardingPage() {
             });
             const verifyData = await verifyRes.json().catch(() => ({}));
             if (!verifyRes.ok || !verifyData.success) {
-                throw new Error(verifyData.message || verifyData.error || 'Invalid or expired verification code.');
+                throw new Error(onboardingApiErrorMessage(
+                    verifyData,
+                    'Invalid or expired verification code.',
+                ));
             }
             const workspaceSlug = rememberWorkspaceSlug(window.localStorage, String(verifyData.workspaceSlug ?? ''));
             if (!workspaceSlug) {
@@ -351,9 +387,21 @@ export default function OnboardingPage() {
             await provisionFirstLocation(pending);
         } catch (err) {
             resetOpenSignupChallenge();
-            setError((err as Error).message);
+            setError(onboardingRequestErrorMessage(
+                err,
+                'We could not confirm workspace creation. Retry with the same code; this will not create a duplicate workspace.',
+            ));
             setIsSubmitting(false);
         }
+    };
+
+    const handleStepSubmit = (event: FormEvent<HTMLFormElement>) => {
+        event.preventDefault();
+        if (step === 4) {
+            void handleComplete();
+            return;
+        }
+        nextStep();
     };
 
     return (
@@ -482,7 +530,7 @@ export default function OnboardingPage() {
                                         <strong>Location:</strong> {pendingFirstLocation.firstLocationName}
                                     </div>
                                 </div>
-                                {error ? <div className="onb-card__error">{error}</div> : null}
+                                {error ? <div ref={errorRef} className="onb-card__error" role="alert" aria-live="assertive" tabIndex={-1}>{error}</div> : null}
                                 <button
                                     type="button"
                                     onClick={retryFirstLocation}
@@ -494,7 +542,7 @@ export default function OnboardingPage() {
                                 </button>
                             </div>
                         ) : (
-                        <>
+                        <form onSubmit={handleStepSubmit} noValidate>
                         <div className="onb-steps" role="list" aria-label="Onboarding progress">
                             {STEPS.map((s) => (
                                 <React.Fragment key={s.id}>
@@ -507,36 +555,48 @@ export default function OnboardingPage() {
                         </div>
 
                         {error ? (
-                            <div className="onb-card__error">{error}</div>
+                            <div ref={errorRef} className="onb-card__error" role="alert" aria-live="assertive" tabIndex={-1}>{error}</div>
                         ) : null}
 
                         {step === 1 && (
-                            <div style={{ display: 'grid', gap: '0.65rem' }}>
-                                <h2 className="onb-card__title">Start your LunchLineup workspace</h2>
-                                <p className="onb-card__subtitle">
-                                    {signupClosed ? 'Public signup is currently closed.' : 'Create your account in under a minute.'}
-                                </p>
-                                <label className="form-group">
-                                    <span className="form-label">Work email</span>
-                                    <input className="form-input" value={formData.email} onChange={(e) => setFormData({ ...formData, email: e.target.value })} placeholder="name@company.com" autoComplete="email" autoFocus disabled={signupClosed} />
-                                </label>
-                                {signupRequiresInvite ? (
+                            signupClosed ? (
+                                <div style={{ display: 'grid', gap: '0.65rem' }}>
+                                    <h2 className="onb-card__title">Closed beta access</h2>
+                                    <p className="onb-card__subtitle">
+                                        New workspace registration is not available on this site. Existing beta members can sign in with their workspace details.
+                                    </p>
+                                    {SUPPORT_EMAIL ? (
+                                        <a href={`mailto:${SUPPORT_EMAIL}`} className="btn onb-btn-primary" style={{ width: '100%' }}>
+                                            Request beta access
+                                        </a>
+                                    ) : null}
+                                </div>
+                            ) : (
+                                <div style={{ display: 'grid', gap: '0.65rem' }}>
+                                    <h2 className="onb-card__title">Start your LunchLineup workspace</h2>
+                                    <p className="onb-card__subtitle">Create your account in under a minute.</p>
                                     <label className="form-group">
-                                        <span className="form-label">Invite code</span>
-                                        <input
-                                            className="form-input"
-                                            value={formData.signupCode}
-                                            onChange={(e) => setFormData({ ...formData, signupCode: e.target.value })}
-                                            placeholder="Invite code"
-                                            autoComplete="one-time-code"
-                                        />
+                                        <span className="form-label">Work email</span>
+                                        <input className="form-input" value={formData.email} onChange={(e) => setFormData({ ...formData, email: e.target.value })} placeholder="name@company.com" autoComplete="email" autoFocus />
                                     </label>
-                                ) : null}
-                                <button onClick={nextStep} className="btn onb-btn-primary" style={{ width: '100%' }} disabled={signupClosed}>
-                                    Continue setup
-                                </button>
-                                <p className="onb-card__trust">Secure email verification · No passwords required</p>
-                            </div>
+                                    {signupRequiresInvite ? (
+                                        <label className="form-group">
+                                            <span className="form-label">Invite code</span>
+                                            <input
+                                                className="form-input"
+                                                value={formData.signupCode}
+                                                onChange={(e) => setFormData({ ...formData, signupCode: e.target.value })}
+                                                placeholder="Invite code"
+                                                autoComplete="one-time-code"
+                                            />
+                                        </label>
+                                    ) : null}
+                                    <button type="submit" className="btn onb-btn-primary" style={{ width: '100%' }}>
+                                        Continue setup
+                                    </button>
+                                    <p className="onb-card__trust">Secure email verification · No passwords required</p>
+                                </div>
+                            )
                         )}
 
                         {step === 2 && (
@@ -548,10 +608,10 @@ export default function OnboardingPage() {
                                     <input className="form-input" value={formData.tenantName} onChange={(e) => setFormData({ ...formData, tenantName: e.target.value })} placeholder="e.g. Harbor View Group" autoFocus />
                                 </label>
                                 <div style={{ display: 'flex', gap: '0.55rem' }}>
-                                    <button onClick={prevStep} className="btn btn-secondary" style={{ minWidth: 120 }}>
+                                    <button type="button" onClick={prevStep} className="btn btn-secondary" style={{ minWidth: 120 }}>
                                         Back
                                     </button>
-                                    <button onClick={nextStep} className="btn onb-btn-primary" style={{ flex: 1 }}>
+                                    <button type="submit" className="btn onb-btn-primary" style={{ flex: 1 }}>
                                         Continue
                                     </button>
                                 </div>
@@ -567,10 +627,10 @@ export default function OnboardingPage() {
                                     <input className="form-input" value={formData.firstLocationName} onChange={(e) => setFormData({ ...formData, firstLocationName: e.target.value })} placeholder="e.g. Downtown Bistro" autoFocus />
                                 </label>
                                 <div style={{ display: 'flex', gap: '0.55rem' }}>
-                                    <button onClick={prevStep} className="btn btn-secondary" style={{ minWidth: 120 }}>
+                                    <button type="button" onClick={prevStep} className="btn btn-secondary" style={{ minWidth: 120 }}>
                                         Back
                                     </button>
-                                    <button onClick={nextStep} className="btn onb-btn-primary" style={{ flex: 1 }}>
+                                    <button type="submit" className="btn onb-btn-primary" style={{ flex: 1 }}>
                                         Continue
                                     </button>
                                 </div>
@@ -591,6 +651,11 @@ export default function OnboardingPage() {
                                             ? 'Complete the security check to send your verification code.'
                                             : `Sending a 6-digit code to ${formData.email}.`}
                                 </p>
+                                {notice ? (
+                                    <div className="surface-muted" role="status" aria-live="polite" style={{ padding: '0.65rem 0.7rem', fontSize: '0.82rem', fontWeight: 650 }}>
+                                        {notice}
+                                    </div>
+                                ) : null}
 
                                 <div className="surface-muted" style={{ padding: '0.7rem' }}>
                                     <div style={{ fontSize: '0.8rem', marginBottom: 4 }}><strong>Email:</strong> {formData.email}</div>
@@ -622,10 +687,10 @@ export default function OnboardingPage() {
                                 </label>
 
                                 <div style={{ display: 'flex', gap: '0.55rem' }}>
-                                    <button onClick={prevStep} className="btn btn-secondary" style={{ minWidth: 120 }} disabled={isSubmitting}>
+                                    <button type="button" onClick={prevStep} className="btn btn-secondary" style={{ minWidth: 120 }} disabled={isSubmitting}>
                                         Back
                                     </button>
-                                    <button onClick={handleComplete} className="btn onb-btn-primary" style={{ flex: 1 }} disabled={isSubmitting || challengeCannotSubmit || !legalAssentComplete}>
+                                    <button type="submit" className="btn onb-btn-primary" style={{ flex: 1 }} disabled={isSubmitting || isSendingOtp || !otpSent || !onboardingChallengeToken || challengeCannotSubmit || !legalAssentComplete}>
                                         {isSubmitting ? 'Finalizing...' : 'Verify code and launch'}
                                     </button>
                                 </div>
@@ -641,7 +706,7 @@ export default function OnboardingPage() {
                             <span>Already have an account?</span>
                             <Link href="/auth/login">Sign in</Link>
                         </div>
-                        </>
+                        </form>
                         )}
                     </div>
                 </section>
@@ -709,7 +774,7 @@ export default function OnboardingPage() {
                 .onb-context__title {
                     font-size: clamp(2rem, 5vw, 3.25rem);
                     line-height: 1.02;
-                    letter-spacing: -0.035em;
+                    letter-spacing: 0;
                     color: var(--text-primary);
                     margin-bottom: 0.06rem;
                     max-width: 16ch;
@@ -996,7 +1061,7 @@ export default function OnboardingPage() {
                     font-size: 1.32rem;
                     color: var(--text-primary);
                     margin-bottom: 0.18rem;
-                    letter-spacing: -0.02em;
+                    letter-spacing: 0;
                 }
 
                 .onb-card__subtitle {

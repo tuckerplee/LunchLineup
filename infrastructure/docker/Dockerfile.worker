@@ -1,10 +1,17 @@
 FROM python:3.11-slim@sha256:e031123e3d85762b141ad1cbc56452ba69c6e722ebf2f042cc0dc86c47c0d8b3
+ENV HOME=/home/lunchlineup TMPDIR=/tmp PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
+RUN groupadd --gid 10001 lunchlineup \
+    && useradd --uid 10001 --gid lunchlineup --create-home --home-dir /home/lunchlineup --shell /usr/sbin/nologin lunchlineup
 WORKDIR /app
 COPY apps/worker/requirements.txt .
 RUN apt-get update && apt-get install -y --no-install-recommends build-essential curl && rm -rf /var/lib/apt/lists/*
 RUN pip install --no-cache-dir -r requirements.txt
+RUN apt-get purge -y --auto-remove build-essential && rm -rf /var/lib/apt/lists/*
 COPY apps/worker/ .
 COPY packages/shared-types/proto/solver.proto .
 RUN python -m grpc_tools.protoc -I. --python_out=. --grpc_python_out=. solver.proto
+RUN mkdir -p /app/uploads /run/lunchlineup-parser && chown -R lunchlineup:lunchlineup /app /run/lunchlineup-parser && chmod 0700 /run/lunchlineup-parser
+USER lunchlineup:lunchlineup
+
 EXPOSE 3003
 CMD ["python", "main.py"]

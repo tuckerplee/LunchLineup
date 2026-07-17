@@ -6,6 +6,7 @@ This document maps the first rebuild test layer. It covers SaaS behavior, legacy
 
 - `dependency-audit.md`: production npm audit gate and Next/PostCSS advisory triage.
 - `launch-proof-template.json`: fill-in template for retained public-launch proof manifests.
+- `security-automation.md`: CodeQL, Semgrep SARIF, Dependabot, permissions, and required GitHub control contracts.
 - `README.md`: this testing and migration control map.
 
 ## Test Commands
@@ -130,6 +131,10 @@ Main-branch CI writes `.release/release-manifest.json` from the Docker build dig
 ```bash
 node scripts/verify-release-artifacts.mjs .release/release-manifest.json --source-sha "$GITHUB_SHA" --launch-proof-file .release/launch-proof.json
 ```
+
+SBOM and Trivy matrices are not a separate seven-service list. `production-image-inventory.mjs` derives every unique image from production `docker-compose.yml`, resolves first-party references through the release manifest, and includes all digest-pinned third-party runtime images such as Caddy, PgBouncer, PostgreSQL, Redis, RabbitMQ, MinIO client tools, Autoheal, Prometheus, Alertmanager, Node Exporter, Grafana, Loki, Promtail, OpenTelemetry Collector, and Tempo. Shared image references are scanned once while evidence records every consuming Compose service.
+
+Every derived image must produce signed SBOM and Trivy evidence before aggregate release verification. First-party evidence also requires an exact OCI digest attestation in the writable GHCR repository; third-party evidence is keylessly signed and digest-bound because the release workflow cannot write vendor registries. A missing report, image/report digest mismatch, untrusted signer, or any HIGH/CRITICAL result from either a first- or third-party image fails the aggregate gate and prevents immutable evidence publication.
 
 Deploy command variables must call `verify-deploy-source.sh` or `verify-deploy-source.ps1` with `RELEASE_SOURCE_SHA`, consume `RELEASE_MANIFEST_PATH`, and avoid mutable tags or local builds. Public launch requires fresh predeploy runtime, Stripe meter, DAST, load, logical DR, PITR, and alert-route evidence tied to the candidate `sourceSha`. Predeploy proof must not claim external health: after stack mutation, the public health endpoint must serve `X-LunchLineup-Release` equal to the candidate SHA before release pointers advance.
 

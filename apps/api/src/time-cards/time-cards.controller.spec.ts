@@ -1,6 +1,10 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { BadRequestException, ConflictException, ForbiddenException } from '@nestjs/common';
 import { TimeCardsController } from './time-cards.controller';
+import {
+    timeCardClockInOperationId,
+    timeCardClockInRequestHash,
+} from './time-card-idempotency';
 
 describe('TimeCardsController', () => {
     let controller: TimeCardsController;
@@ -8,7 +12,9 @@ describe('TimeCardsController', () => {
     let tenantDb: { withTenant: ReturnType<typeof vi.fn> };
     let featureAccess: {
         assertFeatureEnabled: ReturnType<typeof vi.fn>;
+        assertFeatureEntitled: ReturnType<typeof vi.fn>;
         assertFeatureEnabledInTransaction: ReturnType<typeof vi.fn>;
+        assertFeatureEntitledInTransaction: ReturnType<typeof vi.fn>;
         recordFeatureUsageInTransaction: ReturnType<typeof vi.fn>;
     };
 
@@ -25,19 +31,31 @@ describe('TimeCardsController', () => {
         breakMinutes: 0,
         status: 'OPEN',
         notes: null,
+        payrollPeriodId: null,
+        workTimeZone: 'America/Los_Angeles',
+        revision: 1,
         deletedAt: null,
+        updatedAt: new Date('2026-07-08T15:00:00.000Z'),
         user: { id: 'staff-1', name: 'Jordan Shift', username: 'jordan.shift', role: 'STAFF' },
-        location: { id: 'loc-1', name: 'Downtown Diner' },
+        location: { id: 'loc-1', name: 'Downtown Diner', timezone: 'America/Los_Angeles' },
         shift: null,
+        breaks: [],
     };
 
     beforeEach(() => {
         featureAccess = {
-            assertFeatureEnabled: vi.fn().mockResolvedValue({ enabled: true, source: 'plan', reason: 'Included', creditCost: 1 }),
+            assertFeatureEnabled: vi.fn().mockResolvedValue({ enabled: true, source: 'credits', reason: 'Billable', creditCost: 1 }),
+            assertFeatureEntitled: vi.fn().mockResolvedValue({ enabled: true, source: 'credits', reason: 'Entitled control', creditCost: 1 }),
             assertFeatureEnabledInTransaction: vi.fn().mockResolvedValue({ enabled: true, source: 'credits', reason: 'Billable', creditCost: 1 }),
+            assertFeatureEntitledInTransaction: vi.fn().mockResolvedValue({ enabled: true, source: 'credits', reason: 'Entitled control', creditCost: 1 }),
             recordFeatureUsageInTransaction: vi.fn().mockResolvedValue({ consumedCredits: 1, newBalance: 10 }),
         };
         prisma = {
+            $executeRaw: vi.fn().mockResolvedValue(0),
+            $queryRaw: vi.fn().mockImplementation(async (query: TemplateStringsArray) => {
+                const sql = Array.from(query).join(' ');
+                return sql.includes('FROM "User"') ? [{ id: 'staff-1' }] : [];
+            }),
             timeCard: {
                 findMany: vi.fn(),
                 findFirst: vi.fn(),
@@ -45,6 +63,16 @@ describe('TimeCardsController', () => {
                 create: vi.fn(),
                 update: vi.fn(),
                 updateMany: vi.fn(),
+            },
+            timeCardBreak: {
+                deleteMany: vi.fn().mockResolvedValue({ count: 0 }),
+                createMany: vi.fn().mockResolvedValue({ count: 0 }),
+            },
+            payrollPeriod: {
+                findFirst: vi.fn().mockResolvedValue(null),
+            },
+            payrollPolicyVersion: {
+                findMany: vi.fn().mockResolvedValue([]),
             },
             user: {
                 findFirst: vi.fn(),
@@ -109,10 +137,52 @@ describe('TimeCardsController', () => {
                 tenantId: 'tenant-1',
                 deletedAt: null,
             }),
-            orderBy: { clockInAt: 'desc' },
+            orderBy: [{ clockInAt: 'desc' }, { id: 'desc' }],
+            take: 101,
         }));
         expect(result.tenantId).toBe('tenant-1');
         expect(result.data[0].id).toBe('card-1');
+        expect(result.nextCursor).toBeNull();
+    });
+
+    it('paginates history with a bounded cursor query and returns the next cursor', async () => {
+        prisma.timeCard.findMany.mockResolvedValue([
+            { ...baseCard, id: 'card-3' },
+            { ...baseCard, id: 'card-2' },
+            { ...baseCard, id: 'card-1' },
+        ]);
+
+        const result = await controller.findAll(
+            adminReq,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            '2',
+            'card-4',
+        );
+
+        expect(prisma.timeCard.findMany).toHaveBeenCalledWith(expect.objectContaining({
+            take: 3,
+            cursor: { id: 'card-4' },
+            skip: 1,
+            orderBy: [{ clockInAt: 'desc' }, { id: 'desc' }],
+        }));
+        expect(result.data.map((card) => card.id)).toEqual(['card-3', 'card-2']);
+        expect(result.nextCursor).toBe('card-2');
+    });
+
+    it('rejects invalid page bounds before opening a tenant transaction', async () => {
+        await expect(controller.findAll(
+            adminReq,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            '251',
+        )).rejects.toBeInstanceOf(BadRequestException);
+
+        expect(tenantDb.withTenant).not.toHaveBeenCalled();
     });
 
     it('keeps active-card recovery available after entitlement is lost', async () => {
@@ -128,6 +198,19 @@ describe('TimeCardsController', () => {
         }));
     });
 
+    it('denies a cross-tenant time-card lookup without exposing the foreign record', async () => {
+        prisma.timeCard.findFirst.mockResolvedValue(null);
+
+        await expect(controller.findOne('foreign-card', adminReq)).rejects.toThrow('Time card not found');
+
+        expect(prisma.timeCard.findFirst).toHaveBeenCalledWith(expect.objectContaining({
+            where: expect.objectContaining({
+                id: 'foreign-card',
+                tenantId: 'tenant-1',
+                deletedAt: null,
+            }),
+        }));
+    });
     it('grants team reads to a custom role with the effective team permissions', async () => {
         prisma.timeCard.findMany.mockResolvedValue([baseCard]);
 
@@ -167,9 +250,27 @@ describe('TimeCardsController', () => {
         expect(prisma.auditLog.create).not.toHaveBeenCalled();
     });
 
+    it.each(['suspended', 'non-staff'])(
+        'rejects a %s target before creating or charging a time card',
+        async () => {
+            prisma.$queryRaw.mockResolvedValueOnce([]);
+
+            await expect(
+                controller.clockIn({ userId: 'staff-1' }, adminReq, 'clock-in-ineligible'),
+            ).rejects.toThrow('not available for time tracking');
+
+            expect(prisma.timeCard.findFirst).not.toHaveBeenCalledWith(expect.objectContaining({
+                where: expect.objectContaining({ status: 'OPEN' }),
+            }));
+            expect(prisma.timeCard.create).not.toHaveBeenCalled();
+            expect(featureAccess.recordFeatureUsageInTransaction).not.toHaveBeenCalled();
+            expect(prisma.auditLog.create).not.toHaveBeenCalled();
+        },
+    );
+
     it('creates an open time card for a manager-selected employee', async () => {
         prisma.user.findFirst.mockResolvedValue({ id: 'staff-1' });
-        prisma.location.findFirst.mockResolvedValue({ id: 'loc-1' });
+        prisma.location.findFirst.mockResolvedValue({ id: 'loc-1', timezone: 'America/Los_Angeles' });
         prisma.timeCard.findFirst.mockResolvedValue(null);
         prisma.timeCard.create.mockResolvedValue(baseCard);
 
@@ -206,6 +307,7 @@ describe('TimeCardsController', () => {
                     clockInAt: '2026-07-08T15:00:00.000Z',
                     clockOutAt: null,
                     breakMinutes: 0,
+                    breakIntervals: [],
                     status: 'OPEN',
                 },
             },
@@ -287,6 +389,7 @@ describe('TimeCardsController', () => {
         };
         prisma.timeCard.findFirst
             .mockResolvedValueOnce(baseCard)
+            .mockResolvedValueOnce(baseCard)
             .mockResolvedValueOnce(closedCard);
         prisma.timeCard.updateMany.mockResolvedValue({ count: 1 });
 
@@ -296,7 +399,10 @@ describe('TimeCardsController', () => {
             adminReq,
         );
 
-        expect(tenantDb.withTenant).toHaveBeenCalledWith('tenant-1', expect.any(Function));
+        expect(tenantDb.withTenant).toHaveBeenCalledWith('tenant-1', expect.any(Function), {
+            maxWait: 5_000,
+            timeout: 10_000,
+        });
         expect(prisma.timeCard.updateMany).toHaveBeenCalledWith(expect.objectContaining({
             where: expect.objectContaining({
                 id: 'card-1',
@@ -323,6 +429,7 @@ describe('TimeCardsController', () => {
                     clockInAt: '2026-07-08T15:00:00.000Z',
                     clockOutAt: null,
                     breakMinutes: 0,
+                    breakIntervals: [],
                     status: 'OPEN',
                 },
                 newValue: {
@@ -332,6 +439,7 @@ describe('TimeCardsController', () => {
                     clockInAt: '2026-07-08T15:00:00.000Z',
                     clockOutAt: '2026-07-08T23:00:00.000Z',
                     breakMinutes: 30,
+                    breakIntervals: [],
                     status: 'CLOSED',
                 },
             },
@@ -348,6 +456,7 @@ describe('TimeCardsController', () => {
             status: 'CLOSED',
         };
         prisma.timeCard.findFirst
+            .mockResolvedValueOnce(baseCard)
             .mockResolvedValueOnce(baseCard)
             .mockResolvedValueOnce(closedCard);
         prisma.timeCard.updateMany.mockResolvedValue({ count: 1 });
@@ -366,6 +475,30 @@ describe('TimeCardsController', () => {
         }));
         expect(result.status).toBe('CLOSED');
         expect(result.workedMinutes).toBe(0);
+    });
+
+    it('rejects clock-out after the assigned payroll period cutoff before closing the card', async () => {
+        const payrollCard = { ...baseCard, payrollPeriodId: 'period-1' };
+        prisma.timeCard.findFirst
+            .mockResolvedValueOnce(payrollCard)
+            .mockResolvedValueOnce(payrollCard);
+        prisma.$queryRaw
+            .mockResolvedValueOnce([{
+                id: 'period-1',
+                status: 'OPEN',
+                startsAt: new Date('2026-07-01T00:00:00.000Z'),
+                endsAt: new Date('2026-07-09T00:00:00.000Z'),
+            }])
+            .mockResolvedValue([]);
+
+        await expect(controller.clockOut(
+            'card-1',
+            { clockOutAt: '2026-07-09T00:00:00.001Z', breakMinutes: 0 },
+            adminReq,
+        )).rejects.toThrow('cannot cross');
+
+        expect(prisma.timeCard.updateMany).not.toHaveBeenCalled();
+        expect(prisma.auditLog.create).not.toHaveBeenCalled();
     });
 
     it('rejects a losing concurrent clock-out without overwriting or auditing', async () => {
@@ -450,14 +583,21 @@ describe('TimeCardsController', () => {
         );
     });
 
-    it('records included usage once for a subscription-backed clock-in', async () => {
+    it('fails closed if a non-credit resolution reaches clock-in metering', async () => {
         const planResolution = { enabled: true, source: 'plan', reason: 'Included', creditCost: 1 };
         featureAccess.assertFeatureEnabledInTransaction.mockResolvedValue(planResolution);
+        featureAccess.recordFeatureUsageInTransaction.mockRejectedValue(
+            new ForbiddenException('Billable feature usage requires separately purchased credits.'),
+        );
         prisma.user.findFirst.mockResolvedValue({ id: 'staff-1' });
         prisma.timeCard.findFirst.mockResolvedValue(null);
         prisma.timeCard.create.mockResolvedValue(baseCard);
 
-        await controller.clockIn({ userId: 'staff-1' }, adminReq, 'included-clock-in');
+        await expect(controller.clockIn(
+            { userId: 'staff-1' },
+            adminReq,
+            'invalid-plan-clock-in',
+        )).rejects.toThrow('separately purchased credits');
 
         expect(featureAccess.recordFeatureUsageInTransaction).toHaveBeenCalledOnce();
         expect(featureAccess.recordFeatureUsageInTransaction).toHaveBeenCalledWith(
@@ -467,6 +607,7 @@ describe('TimeCardsController', () => {
             'Time card clock-in (card-1)',
             expect.any(String),
         );
+        expect(prisma.auditLog.create).not.toHaveBeenCalled();
     });
 
     it('replays a committed clock-in without creating or charging twice', async () => {
@@ -488,6 +629,58 @@ describe('TimeCardsController', () => {
         expect(prisma.timeCard.create).toHaveBeenCalledOnce();
         expect(featureAccess.recordFeatureUsageInTransaction).toHaveBeenCalledOnce();
         expect(prisma.auditLog.create).toHaveBeenCalledOnce();
+    });
+
+    it('returns an exact committed replay after a concurrent attempt observes the open card', async () => {
+        const operationId = timeCardClockInOperationId('tenant-1', 'concurrent-retry');
+        const requestHash = timeCardClockInRequestHash({
+            actorUserId: 'admin-1',
+            targetUserId: 'staff-1',
+            locationId: null,
+            shiftId: null,
+            clockInAt: null,
+            notes: null,
+        });
+        const committed = {
+            ...baseCard,
+            clockInOperationId: operationId,
+            clockInRequestHash: requestHash,
+        };
+        prisma.user.findFirst.mockResolvedValue({ id: 'staff-1' });
+        prisma.timeCard.findUnique
+            .mockResolvedValueOnce(null)
+            .mockResolvedValueOnce(null)
+            .mockResolvedValueOnce(committed);
+        prisma.timeCard.findFirst.mockResolvedValue({ id: 'card-1' });
+
+        let result: any;
+        try {
+            result = await controller.clockIn({ userId: 'staff-1' }, adminReq, 'concurrent-retry');
+        } catch (error) {
+            throw error;
+        }
+
+        expect(result.id).toBe(baseCard.id);
+        expect(prisma.timeCard.create).not.toHaveBeenCalled();
+        expect(featureAccess.recordFeatureUsageInTransaction).not.toHaveBeenCalled();
+        expect(prisma.auditLog.create).not.toHaveBeenCalled();
+    });
+
+    it('rejects reuse of a committed clock-in key with a different request', async () => {
+        prisma.user.findFirst.mockResolvedValue({ id: 'staff-1' });
+        prisma.timeCard.findFirst.mockResolvedValue(null);
+        prisma.timeCard.create.mockImplementation(async ({ data }: any) => ({ ...baseCard, ...data }));
+
+        await controller.clockIn({ userId: 'staff-1' }, adminReq, 'different-payload');
+        const created = prisma.timeCard.create.mock.calls[0][0].data;
+        prisma.timeCard.findUnique.mockResolvedValue({ ...baseCard, ...created });
+
+        await expect(controller.clockIn(
+            { userId: 'staff-1', notes: 'different' },
+            adminReq,
+            'different-payload',
+        )).rejects.toThrow('different clock-in request');
+        expect(featureAccess.recordFeatureUsageInTransaction).toHaveBeenCalledOnce();
     });
 
     it('allows only one concurrent clock-in across distinct request keys', async () => {
@@ -531,6 +724,7 @@ describe('TimeCardsController', () => {
             status: 'CLOSED',
         };
         prisma.timeCard.findFirst
+            .mockResolvedValueOnce(baseCard)
             .mockResolvedValueOnce(baseCard)
             .mockResolvedValueOnce(closedCard);
         prisma.timeCard.updateMany.mockResolvedValue({ count: 1 });
@@ -583,5 +777,262 @@ describe('TimeCardsController', () => {
         expect(closed.status).toBe('CLOSED');
         expect(featureAccess.assertFeatureEnabled).not.toHaveBeenCalled();
         expect(featureAccess.recordFeatureUsageInTransaction).toHaveBeenCalledOnce();
+    });
+    it('returns each card with its location timezone for browser-independent display', async () => {
+        prisma.timeCard.findMany.mockResolvedValue([baseCard]);
+
+        const result = await controller.findAll(adminReq);
+
+        expect(result.data[0].location.timezone).toBe('America/Los_Angeles');
+        expect(result.data[0].displayTimeZone).toBe('America/Los_Angeles');
+        expect(prisma.timeCard.findMany).toHaveBeenCalledWith(expect.objectContaining({
+            include: expect.objectContaining({
+                location: { select: { id: true, name: true, timezone: true } },
+            }),
+        }));
+    });
+
+    it('keeps historical display on the captured work timezone after a location timezone change', async () => {
+        prisma.timeCard.findMany.mockResolvedValue([{
+            ...baseCard,
+            workTimeZone: 'America/Los_Angeles',
+            location: { ...baseCard.location, timezone: 'America/Denver' },
+        }]);
+
+        const result = await controller.findAll(adminReq);
+
+        expect(result.data[0].displayTimeZone).toBe('America/Los_Angeles');
+    });
+
+    it('rejects staff corrections before tenant database access', async () => {
+        await expect(controller.correct('card-1', {
+            clockOutAt: '2026-07-08T23:00:00.000Z',
+            expectedUpdatedAt: '2026-07-08T15:00:00.000Z',
+            reason: 'Forgotten clock out.',
+        }, staffReq)).rejects.toBeInstanceOf(ForbiddenException);
+
+        expect(tenantDb.withTenant).not.toHaveBeenCalled();
+        expect(prisma.timeCard.updateMany).not.toHaveBeenCalled();
+        expect(prisma.auditLog.create).not.toHaveBeenCalled();
+    });
+
+    it('rechecks correction entitlement under the tenant lock and rolls back a PAST_DUE transition', async () => {
+        featureAccess.assertFeatureEntitledInTransaction.mockRejectedValue(
+            new ForbiddenException('Billable features require a current active paid subscription.'),
+        );
+
+        await expect(controller.correct('card-1', {
+            clockOutAt: '2026-07-08T23:00:00.000Z',
+            expectedUpdatedAt: '2026-07-08T15:00:00.000Z',
+            reason: 'Forgotten clock out.',
+        }, adminReq)).rejects.toThrow(/active paid subscription/i);
+
+        expect(featureAccess.assertFeatureEntitled).not.toHaveBeenCalled();
+        expect(featureAccess.assertFeatureEntitledInTransaction).toHaveBeenCalledWith(
+            prisma,
+            'tenant-1',
+            'time_cards',
+        );
+        expect(prisma.timeCard.findFirst).not.toHaveBeenCalled();
+        expect(prisma.timeCard.updateMany).not.toHaveBeenCalled();
+        expect(prisma.timeCardBreak.deleteMany).not.toHaveBeenCalled();
+        expect(prisma.auditLog.create).not.toHaveBeenCalled();
+    });
+
+    it('atomically corrects punches and break intervals with an immutable reason', async () => {
+        const corrected = {
+            ...baseCard,
+            clockInAt: new Date('2026-07-08T14:00:00.000Z'),
+            clockOutAt: new Date('2026-07-08T23:00:00.000Z'),
+            breakMinutes: 30,
+            status: 'CLOSED',
+            updatedAt: new Date('2026-07-08T23:05:00.000Z'),
+            breaks: [{
+                id: 'break-1',
+                startAt: new Date('2026-07-08T18:00:00.000Z'),
+                endAt: new Date('2026-07-08T18:30:00.000Z'),
+            }],
+        };
+        prisma.timeCard.findFirst
+            .mockResolvedValueOnce(baseCard)
+            .mockResolvedValueOnce(baseCard)
+            .mockResolvedValueOnce(null)
+            .mockResolvedValueOnce(corrected);
+        prisma.timeCard.updateMany.mockResolvedValue({ count: 1 });
+        prisma.timeCardBreak.deleteMany.mockResolvedValue({ count: 0 });
+        prisma.timeCardBreak.createMany.mockResolvedValue({ count: 1 });
+
+        const result = await controller.correct('card-1', {
+            clockInAt: '2026-07-08T14:00:00.000Z',
+            clockOutAt: '2026-07-08T23:00:00.000Z',
+            breakIntervals: [{
+                startAt: '2026-07-08T18:00:00.000Z',
+                endAt: '2026-07-08T18:30:00.000Z',
+            }],
+            expectedUpdatedAt: '2026-07-08T15:00:00.000Z',
+            reason: ' Employee confirmed forgotten punches. ',
+        }, adminReq);
+
+        expect(featureAccess.assertFeatureEntitledInTransaction).toHaveBeenCalledWith(
+            prisma,
+            'tenant-1',
+            'time_cards',
+        );
+
+        expect(prisma.timeCard.findFirst).toHaveBeenNthCalledWith(1, expect.objectContaining({
+            where: expect.objectContaining({ id: 'card-1', tenantId: 'tenant-1' }),
+        }));
+        expect(prisma.timeCard.updateMany).toHaveBeenCalledWith({
+            where: {
+                id: 'card-1',
+                tenantId: 'tenant-1',
+                deletedAt: null,
+                updatedAt: new Date('2026-07-08T15:00:00.000Z'),
+                revision: 1,
+            },
+            data: {
+                clockInAt: new Date('2026-07-08T14:00:00.000Z'),
+                clockOutAt: new Date('2026-07-08T23:00:00.000Z'),
+                breakMinutes: 30,
+                status: 'CLOSED',
+                payrollPeriodId: null,
+                workTimeZone: 'America/Los_Angeles',
+                revision: { increment: 1 },
+            },
+        });
+        expect(prisma.timeCardBreak.deleteMany).toHaveBeenCalledWith({
+            where: { tenantId: 'tenant-1', timeCardId: 'card-1' },
+        });
+        expect(prisma.timeCardBreak.createMany).toHaveBeenCalledWith({
+            data: [{
+                tenantId: 'tenant-1',
+                timeCardId: 'card-1',
+                startAt: new Date('2026-07-08T18:00:00.000Z'),
+                endAt: new Date('2026-07-08T18:30:00.000Z'),
+            }],
+        });
+        expect(prisma.auditLog.create).toHaveBeenCalledWith({
+            data: expect.objectContaining({
+                tenantId: 'tenant-1',
+                userId: 'admin-1',
+                action: 'TIME_CARD_CORRECTED',
+                resource: 'TimeCard',
+                resourceId: 'card-1',
+                oldValue: expect.objectContaining({
+                    clockInAt: '2026-07-08T15:00:00.000Z',
+                    breakIntervals: [],
+                }),
+                newValue: expect.objectContaining({
+                    clockInAt: '2026-07-08T14:00:00.000Z',
+                    clockOutAt: '2026-07-08T23:00:00.000Z',
+                    breakIntervals: [{
+                        startAt: '2026-07-08T18:00:00.000Z',
+                        endAt: '2026-07-08T18:30:00.000Z',
+                    }],
+                    correctionReason: 'Employee confirmed forgotten punches.',
+                }),
+            }),
+        });
+        expect(result.workedMinutes).toBe(510);
+        expect(result.displayTimeZone).toBe('America/Los_Angeles');
+    });
+
+    it('rolls back a correction whose closed card crosses its reassigned payroll cutoff', async () => {
+        const payrollPeriod = {
+            id: 'period-1',
+            startsAt: new Date('2026-07-08T00:00:00.000Z'),
+            endsAt: new Date('2026-07-09T00:00:00.000Z'),
+            status: 'OPEN',
+        };
+        const corrected = {
+            ...baseCard,
+            payrollPeriodId: payrollPeriod.id,
+            clockOutAt: new Date('2026-07-09T00:00:00.001Z'),
+            status: 'CLOSED',
+            updatedAt: new Date('2026-07-08T23:05:00.000Z'),
+        };
+        prisma.payrollPolicyVersion.findMany.mockResolvedValue([{
+            id: 'policy-1',
+            version: 1,
+            timeZone: 'UTC',
+            effectiveFrom: new Date('2026-07-01T00:00:00.000Z'),
+        }]);
+        prisma.payrollPeriod.findFirst.mockResolvedValue(payrollPeriod);
+        prisma.timeCard.findFirst
+            .mockResolvedValueOnce(baseCard)
+            .mockResolvedValueOnce(baseCard)
+            .mockResolvedValueOnce(null)
+            .mockResolvedValueOnce(corrected);
+        prisma.timeCard.updateMany.mockResolvedValue({ count: 1 });
+        prisma.$queryRaw
+            .mockResolvedValueOnce([{ id: payrollPeriod.id }])
+            .mockResolvedValueOnce([payrollPeriod])
+            .mockResolvedValueOnce([{ id: baseCard.id }])
+            .mockResolvedValueOnce([])
+            .mockResolvedValueOnce([payrollPeriod])
+            .mockResolvedValueOnce([{ id: baseCard.id }])
+            .mockResolvedValueOnce([]);
+
+        await expect(controller.correct('card-1', {
+            clockOutAt: corrected.clockOutAt.toISOString(),
+            expectedUpdatedAt: baseCard.updatedAt.toISOString(),
+            reason: 'Corrected punch crossed the payroll cutoff.',
+        }, adminReq)).rejects.toThrow('cannot cross the assigned payroll period cutoff');
+
+        expect(prisma.timeCard.updateMany).toHaveBeenCalledOnce();
+        expect(prisma.auditLog.create).toHaveBeenCalledOnce();
+        expect(tenantDb.withTenant).toHaveBeenCalledOnce();
+    });
+
+    it('rejects a correction that overlaps another tenant-scoped card', async () => {
+        prisma.timeCard.findFirst
+            .mockResolvedValueOnce(baseCard)
+            .mockResolvedValueOnce(baseCard)
+            .mockResolvedValueOnce({ id: 'card-2' });
+
+        await expect(controller.correct('card-1', {
+            clockOutAt: '2026-07-08T23:00:00.000Z',
+            expectedUpdatedAt: '2026-07-08T15:00:00.000Z',
+            reason: 'Forgotten clock out.',
+        }, adminReq)).rejects.toThrow('cannot overlap another card');
+
+        expect(prisma.timeCard.findFirst).toHaveBeenNthCalledWith(3, expect.objectContaining({
+            where: expect.objectContaining({
+                tenantId: 'tenant-1',
+                userId: 'staff-1',
+                id: { not: 'card-1' },
+            }),
+        }));
+        expect(prisma.timeCard.updateMany).not.toHaveBeenCalled();
+        expect(prisma.auditLog.create).not.toHaveBeenCalled();
+    });
+
+    it('maps a deferred database overlap race to a correction conflict', async () => {
+        tenantDb.withTenant.mockRejectedValueOnce(
+            new Error('constraint TimeCard_employee_no_overlap violated'),
+        );
+
+        await expect(controller.correct('card-1', {
+            clockOutAt: '2026-07-08T23:00:00.000Z',
+            expectedUpdatedAt: '2026-07-08T15:00:00.000Z',
+            reason: 'Forgotten clock out.',
+        }, adminReq)).rejects.toBeInstanceOf(ConflictException);
+    });
+    it('rejects stale correction versions without replacing breaks or auditing', async () => {
+        prisma.timeCard.findFirst
+            .mockResolvedValueOnce(baseCard)
+            .mockResolvedValueOnce(baseCard)
+            .mockResolvedValueOnce(null);
+        prisma.timeCard.updateMany.mockResolvedValue({ count: 0 });
+
+        await expect(controller.correct('card-1', {
+            clockOutAt: '2026-07-08T23:00:00.000Z',
+            breakIntervals: [],
+            expectedUpdatedAt: '2026-07-08T15:00:00.000Z',
+            reason: 'Forgotten clock out.',
+        }, adminReq)).rejects.toBeInstanceOf(ConflictException);
+
+        expect(prisma.timeCardBreak.deleteMany).not.toHaveBeenCalled();
+        expect(prisma.auditLog.create).not.toHaveBeenCalled();
     });
 });

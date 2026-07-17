@@ -5,10 +5,10 @@
 - `.gitignore`: blocks local Terraform state, plans, backend configuration, and working data from Git.
 - `.terraform.lock.hcl`: pins verified provider package checksums for reproducible CI and operator initialization.
 - `cloud-init.yaml.tftpl`: role-specific, secret-free cloud-init template that verifies an immutable bootstrap artifact.
-- `compute.tf`: provider-managed app/data VMs, cloned boot disks, persistent protected data disk, and cloud-init attachment.
+- `compute.tf`: the protected provider-managed VM217 app host, cloned boot disk, and cloud-init attachment.
 - `dns.tf`: conditional Cloudflare A record with explicit external-owner fallback.
-- `firewall.tf`: default-drop VM firewall options and bounded app/data ingress rules.
-- `infrastructure-outputs.tf`: provisioned VM, bootstrap, DNS ownership, and persistent-disk outputs.
+- `firewall.tf`: default-drop VM217 firewall options and bounded administration/edge ingress rules; data-service ports are not host-exposed.
+- `infrastructure-outputs.tf`: provisioned VM217, bootstrap, DNS ownership, and authoritative Compose-topology outputs.
 - `infrastructure-variables.tf`: exact Proxmox, template, network, bootstrap, and DNS input contracts.
 - `README.md`: this production Terraform folder guide.
 - `main.tf`: production input contract, service contract metadata, and readiness gate.
@@ -26,8 +26,8 @@
 - `production_apply_enabled = true`
 - `domain_name` with a real public production hostname, not `localhost`, `example`, or other placeholder text.
 - immutable `image_digests` for `api`, `web`, `engine`, `worker`, `control`, and `migrate`.
-- `vm_targets` with at least `app` and `data` roles, non-empty SSH users, non-empty data volumes, and real hostnames or IP addresses.
-- `network_cidr` that is a valid RFC1918 private IPv4 production network (`10.0.0.0/8`, `172.16.0.0/12`, or `192.168.0.0/16`), not `0.0.0.0/0`, `::/0`, or a public CIDR. It must equal `proxmox_network.private_cidr`, and each app/data `vm_targets` name/address must match `proxmox_vms`.
+- exactly one `vm_targets` entry with role `app`, identifying VM217 with a non-empty SSH user, data volume, and real hostname or IP address; `proxmox_vms.app.vm_id` must be exactly `217`, and every other ID is rejected.
+- `network_cidr` that is a valid RFC1918 private IPv4 production network (`10.0.0.0/8`, `172.16.0.0/12`, or `192.168.0.0/16`), not `0.0.0.0/0`, `::/0`, or a public CIDR. It must equal `proxmox_network.private_cidr`, and the app target name/address must match `proxmox_vms.app`.
 - `secrets_backend` using an approved managed backend URI such as `vault://`, `op://`, `aws-secretsmanager://`, `gcp-secretmanager://`, `azure-keyvault://`, `sops://`, `age://`, `bitwarden://`, `doppler://`, or `infisical://`.
 - `backup_repository` using a `backup.sh`-supported off-host repository: `s3://...` or `rclone:<remote:path>`.
 - `backup_metrics_collector` using `node-exporter-textfile:/absolute/path/lunchlineup_backup.prom` or `authenticated-metrics:https://...` so backup freshness cannot be left uncollected.
@@ -37,6 +37,14 @@
 Until those inputs are supplied, `terraform plan` fails at `terraform_data.production_readiness_gate` and reports the missing fields.
 
 Use `docs/runbooks/production-readiness.md` as the default `operator_runbook_url` for public SaaS launch readiness.
+
+## Authoritative Production Topology
+
+The current topology is `vm217-compose-v1`. Terraform owns one protected VM217 host plus its network, firewall, bootstrap, and DNS contract. The production `docker-compose.yml` on VM217 is the sole data-plane owner: PgBouncer, PostgreSQL, Redis, and RabbitMQ run on its private Compose networks, and no Terraform data VM or data-service firewall ingress exists.
+
+Both application database URLs must resolve to `postgres:5432/POSTGRES_DB`. The logical backup and PITR base-backup jobs also use `POSTGRES_HOST=postgres`, so runtime traffic, backup, WAL archiving, and restore evidence cover the same authoritative PostgreSQL service and named volume.
+
+A future external data plane is a migration, not a parallel Terraform toggle. It requires a separately reviewed topology version, replicated data and queue cutover plan, new DSN/backup/PITR contracts, restore proof from the new owner, rollback proof, and removal of the VM217 Compose data services in the same promotion. Do not add a second data VM or expose ports 5432, 6379, or 5672 while `vm217-compose-v1` is active.
 
 ## Remote Backend
 
@@ -65,7 +73,7 @@ terraform test
 node --test production-contract.test.mjs
 ```
 
-`-backend=false` is allowed only for backend-independent `validate` and mocked `test` execution in CI or a disposable local checkout. It must never precede a production plan or apply. `terraform test` uses mocked providers, plan-only runs, reserved `.test` domains, and documentation-only addresses. It does not apply infrastructure or contact Proxmox, Cloudflare, DNS, or VM217. The Node test lexically checks every `.tf` and `.tftest.hcl` file for unterminated strings/comments and unbalanced delimiters, so truncated HCL fails even when Terraform is unavailable.
+`-backend=false` is allowed only for backend-independent `validate` and mocked `test` execution in CI or a disposable local checkout. It must never precede a production plan or apply. `terraform test` uses mocked providers, plan-only runs, reserved `.test` domains, and documentation-only addresses. Its fixture accepts exact VM ID 217 and proves a different ID is rejected, but it does not apply infrastructure or contact Proxmox, Cloudflare, DNS, or VM217. The Node test lexically checks every `.tf` and `.tftest.hcl` file for unterminated strings/comments and unbalanced delimiters, so truncated HCL fails even when Terraform is unavailable.
 
 ## Production Plan
 

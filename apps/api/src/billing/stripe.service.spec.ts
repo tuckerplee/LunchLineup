@@ -1,16 +1,41 @@
 import { BadRequestException, ServiceUnavailableException } from '@nestjs/common';
 import { TenantStatus } from '@lunchlineup/db';
+import { createHash } from 'node:crypto';
+import { createServer } from 'node:http';
+import type { AddressInfo } from 'node:net';
+import Stripe from 'stripe';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import {
+    type PreparedTenantCancellationIntent,
+    TenantCancellationLifecycleService,
+    type TenantCancellationOutcome,
+} from '../admin/tenant-cancellation-lifecycle.service';
 import { TenantPrismaService } from '../database/tenant-prisma.service';
 import { StripeService } from './stripe.service';
 
 const originalNodeEnv = process.env.NODE_ENV;
+const purgeOperationId = 'tenant-deletion-audit-1';
+
+function buildPurgeOptions(operationId = purgeOperationId) {
+    return {
+        operationId,
+        signal: new AbortController().signal,
+        providerDeadlineAtMs: Date.now() + 60_000,
+    };
+}
+
+function expectedPurgeIdempotencyKey(mutation: string, resourceId: string): string {
+    return createHash('sha256')
+        .update(`tenant-deletion-${mutation}:${resourceId}:${purgeOperationId}`)
+        .digest('hex');
+}
 
 function buildConfig(values: Record<string, string | undefined> = {}) {
     const defaults = {
         STRIPE_SECRET_KEY: 'sk_test_123',
         STRIPE_WEBHOOK_SECRET: 'whsec_123',
         STRIPE_PRICE_STARTER: 'price_123',
+        STRIPE_PRICE_CREDIT_PACK_100: 'price_credit_100',
     };
 
     return {
@@ -36,10 +61,17 @@ function buildPrismaMock() {
     const tenantUpdate = vi.fn();
     const tenantUpdateMany = vi.fn().mockResolvedValue({ count: 1 });
     const tx = {
-        $queryRaw: vi.fn().mockResolvedValue([{ set_current_tenant: null }]),
+        $executeRaw: vi.fn().mockResolvedValue(1),
+        $queryRaw: vi.fn().mockResolvedValue([{
+            set_current_tenant: null,
+            acquired: true,
+        }]),
         billingEvent: {
             create: vi.fn().mockResolvedValue({}),
             findMany: vi.fn().mockResolvedValue([]),
+        },
+        creditTransaction: {
+            create: vi.fn().mockResolvedValue({}),
         },
         tenant: {
             findUnique: tenantFindUnique,
@@ -47,6 +79,9 @@ function buildPrismaMock() {
             findMany: tenantFindMany,
             update: tenantUpdate,
             updateMany: tenantUpdateMany,
+        },
+        tenantSetting: {
+            findUnique: vi.fn().mockResolvedValue(null),
         },
         user: {
             count: vi.fn().mockResolvedValue(0),
@@ -70,7 +105,11 @@ function buildPrismaMock() {
 
     return {
         tx,
-        $queryRaw: vi.fn().mockResolvedValue([{ set_current_tenant: null }]),
+        $executeRaw: vi.fn().mockResolvedValue(1),
+        $queryRaw: vi.fn().mockResolvedValue([{
+            set_current_tenant: null,
+            acquired: true,
+        }]),
         tenant: {
             findUnique: tenantFindUnique,
             findFirst: tenantFindFirst,
@@ -95,14 +134,43 @@ function buildService(options: {
     const stripe = {
         customers: {
             create: vi.fn(),
+            del: vi.fn().mockResolvedValue({
+                id: 'cus_123',
+                deleted: true,
+            }),
+            retrieve: vi.fn().mockResolvedValue({
+                id: 'cus_123',
+                deleted: false,
+                metadata: { tenantId: 'tenant-1' },
+            }),
         },
         checkout: {
             sessions: {
                 create: vi.fn(),
                 list: vi.fn().mockResolvedValue({ data: [] }),
                 expire: vi.fn().mockResolvedValue({ status: 'expired' }),
+                listLineItems: vi.fn().mockResolvedValue({
+                    data: [{
+                        id: 'li_credit_100',
+                        price: { id: 'price_credit_100' },
+                        quantity: 1,
+                        amount_subtotal: 1200,
+                        amount_total: 1200,
+                        currency: 'usd',
+                    }],
+                    has_more: false,
+                }),
                 retrieve: vi.fn(),
             },
+        },
+        prices: {
+            retrieve: vi.fn().mockImplementation(async (priceId: string) => ({
+                id: priceId,
+                active: true,
+                type: 'one_time',
+                unit_amount: priceId === 'price_credit_100' ? 1200 : 5000,
+                currency: 'usd',
+            })),
         },
         billingPortal: {
             configurations: {
@@ -301,6 +369,7 @@ describe('StripeService - subscription creation', () => {
             status: TenantStatus.TRIAL,
             stripeCustomerId: 'cus_existing',
             stripeSubscriptionId: null,
+            stripeSubscriptionCurrentPeriodEnd: null,
         });
         const { service, stripe } = buildService({
             prisma,
@@ -370,10 +439,13 @@ describe('StripeService - subscription creation', () => {
             }),
             expect.objectContaining({ idempotencyKey: expect.any(String) }),
         );
-        const billingLockCall = prisma.tx.$queryRaw.mock.calls.find((call: any[]) =>
-            call.includes('billing-checkout:tenant-1'));
-        expect(billingLockCall).toBeDefined();
-        expect(prisma.tx.$queryRaw.mock.invocationCallOrder[1])
+        const billingLockIndex = prisma.tx.$executeRaw.mock.calls.findIndex(([query, lockKey]: any[]) => {
+            const sql = Array.isArray(query) ? query.join(' ') : String(query);
+            return sql.includes('SELECT pg_advisory_xact_lock')
+                && lockKey === 'billing-checkout:tenant-1';
+        });
+        expect(billingLockIndex).toBeGreaterThanOrEqual(0);
+        expect(prisma.tx.$executeRaw.mock.invocationCallOrder[billingLockIndex])
             .toBeLessThan(stripe.checkout.sessions.list.mock.invocationCallOrder[0]);
     });
 
@@ -401,12 +473,17 @@ describe('StripeService - subscription creation', () => {
             });
             const tx = {
                 ...prisma.tx,
-                $queryRaw: vi.fn(async (...args: any[]) => {
-                    if (args.includes('billing-checkout:tenant-1')) {
+                $executeRaw: vi.fn(async (query: unknown, ...values: unknown[]) => {
+                    const sql = Array.isArray(query) ? query.join(' ') : String(query);
+                    if (
+                        sql.includes('SELECT pg_advisory_xact_lock')
+                        && values.includes('billing-checkout:tenant-1')
+                    ) {
                         await previousLock;
                     }
-                    return [];
+                    return 1;
                 }),
+                $queryRaw: vi.fn().mockResolvedValue([]),
             };
 
             try {
@@ -647,6 +724,7 @@ describe('StripeService - subscription creation', () => {
             data: {
                 status: TenantStatus.ACTIVE,
                 stripeSubscriptionId: 'sub_123',
+                stripeSubscriptionCurrentPeriodEnd: null,
                 planTier: 'STARTER',
             },
         });
@@ -803,7 +881,11 @@ describe('StripeService - subscription creation', () => {
         expect(subscription.id).toBe('sub_123');
         expect(prisma.tx.tenant.update).toHaveBeenCalledWith({
             where: { id: 'tenant-1' },
-            data: { stripeSubscriptionId: 'sub_123', planTier: 'STARTER' },
+            data: {
+                stripeSubscriptionId: 'sub_123',
+                stripeSubscriptionCurrentPeriodEnd: null,
+                planTier: 'STARTER',
+            },
         });
         expect(prisma.tx.tenant.update.mock.calls[0][0].data).not.toHaveProperty('status');
     });
@@ -820,7 +902,7 @@ describe('StripeService - subscription creation', () => {
     });
 
     it('schedules tenant subscription cancellation at the current period end', async () => {
-        const { service, stripe } = buildService();
+        const { service, stripe, prisma } = buildService();
         stripe.subscriptions.retrieve.mockResolvedValue({
             id: 'sub_123',
             status: 'active',
@@ -834,11 +916,32 @@ describe('StripeService - subscription creation', () => {
             current_period_end: 1800000000,
         });
 
-        const result = await service.cancelTenantSubscriptionAtPeriodEnd('tenant-1', 'sub_123');
+        const result = await service.cancelTenantSubscriptionAtPeriodEnd(
+            'tenant-1',
+            'sub_123',
+            'operation-123',
+        );
 
         expect(stripe.subscriptions.retrieve).toHaveBeenCalledWith('sub_123');
-        expect(stripe.subscriptions.update).toHaveBeenCalledWith('sub_123', {
-            cancel_at_period_end: true,
+        expect(stripe.subscriptions.update).toHaveBeenCalledWith(
+            'sub_123',
+            {
+                cancel_at_period_end: true,
+                metadata: {
+                    lunchlineupCancellationOperationId: 'operation-123',
+                },
+            },
+            { idempotencyKey: expect.stringMatching(/^[a-f0-9]{64}$/) },
+        );
+        expect(prisma.tx.tenant.updateMany).toHaveBeenCalledWith({
+            where: {
+                id: 'tenant-1',
+                stripeSubscriptionId: 'sub_123',
+            },
+            data: {
+                stripeSubscriptionCurrentPeriodEnd:
+                    new Date('2027-01-15T08:00:00.000Z'),
+            },
         });
         expect(result).toEqual({
             action: 'scheduled',
@@ -849,7 +952,564 @@ describe('StripeService - subscription creation', () => {
             cancelAt: null,
             canceledAt: null,
             cancellationBehavior: 'cancel_at_period_end',
+            providerMutationOwned: true,
         });
+    });
+
+    it('recovers operation ownership from provider metadata after post-provider persistence loss', async () => {
+        const { service, stripe } = buildService();
+        stripe.subscriptions.retrieve.mockResolvedValue({
+            id: 'sub_123',
+            status: 'active',
+            cancel_at_period_end: true,
+            metadata: {
+                lunchlineupCancellationOperationId: 'operation-123',
+            },
+        });
+
+        const result = await service.cancelTenantSubscriptionAtPeriodEnd(
+            'tenant-1',
+            'sub_123',
+            'operation-123',
+        );
+
+        expect(result).toMatchObject({
+            action: 'already_scheduled',
+            providerMutationOwned: true,
+        });
+        expect(stripe.subscriptions.update).not.toHaveBeenCalled();
+    });
+
+    it('makes a later explicit customer cancellation authoritative over a platform marker', async () => {
+        const { service, stripe } = buildService();
+        let providerSubscription = {
+            id: 'sub_123',
+            status: 'active',
+            cancel_at_period_end: true,
+            current_period_end: 1_800_000_000,
+            metadata: {
+                lunchlineupCancellationOperationId: 'platform-operation-a',
+            },
+        };
+        stripe.subscriptions.retrieve.mockImplementation(async () => ({
+            ...providerSubscription,
+            metadata: { ...providerSubscription.metadata },
+        }));
+        stripe.subscriptions.update.mockImplementation(async (
+            _subscriptionId: string,
+            update: {
+                cancel_at_period_end: boolean;
+                metadata?: Record<string, string>;
+            },
+        ) => {
+            providerSubscription = {
+                ...providerSubscription,
+                cancel_at_period_end: update.cancel_at_period_end,
+                metadata: {
+                    ...providerSubscription.metadata,
+                    ...update.metadata,
+                },
+            };
+            return {
+                ...providerSubscription,
+                metadata: { ...providerSubscription.metadata },
+            };
+        });
+
+        const customer = await service.cancelTenantSubscriptionAtPeriodEnd(
+            'tenant-1',
+            'sub_123',
+            'customer-operation-b',
+            { authoritativeCustomerCancellation: true },
+        );
+        const replay = await service.cancelTenantSubscriptionAtPeriodEnd(
+            'tenant-1',
+            'sub_123',
+            'customer-operation-b',
+            { authoritativeCustomerCancellation: true },
+        );
+        const stalePlatformCompensation =
+            await service.compensateTenantSubscriptionCancellation(
+                'tenant-1',
+                'sub_123',
+                'platform-operation-a',
+            );
+
+        expect(customer).toMatchObject({
+            action: 'already_scheduled',
+            cancelAtPeriodEnd: true,
+            providerMutationOwned: true,
+        });
+        expect(replay).toMatchObject({
+            action: 'already_scheduled',
+            cancelAtPeriodEnd: true,
+            providerMutationOwned: true,
+        });
+        expect(stalePlatformCompensation).toEqual({
+            action: 'not_owned',
+            cancelAtPeriodEnd: true,
+        });
+        expect(stripe.subscriptions.update).toHaveBeenCalledOnce();
+        expect(stripe.subscriptions.update).toHaveBeenCalledWith(
+            'sub_123',
+            {
+                cancel_at_period_end: true,
+                metadata: {
+                    lunchlineupCancellationOperationId: 'customer-operation-b',
+                },
+            },
+            {
+                idempotencyKey: createHash('sha256')
+                    .update('tenant-cancellation:customer-operation-b')
+                    .digest('hex'),
+            },
+        );
+        expect(providerSubscription).toMatchObject({
+            cancel_at_period_end: true,
+            metadata: {
+                lunchlineupCancellationOperationId: 'customer-operation-b',
+            },
+        });
+    });
+
+    it('repairs a stale platform compensation that races customer marker adoption and response-loss retry', async () => {
+        const prisma = buildPrismaMock();
+        const customerIntent = {
+            kind: 'CUSTOMER_CANCELLATION',
+            state: 'PENDING_PROVIDER',
+            operationId: 'customer-operation-b',
+            providerSubscriptionId: 'sub_123',
+        };
+        prisma.tx.tenantSetting.findUnique
+            .mockResolvedValueOnce(null)
+            .mockResolvedValue({ value: customerIntent });
+        const { service, stripe } = buildService({ prisma });
+        let providerSubscription = {
+            id: 'sub_123',
+            status: 'active',
+            cancel_at_period_end: true,
+            metadata: {
+                lunchlineupCancellationOperationId: 'platform-operation-a',
+            },
+        };
+        let releaseStaleCompensation!: () => void;
+        let markStaleCompensationEntered!: () => void;
+        const staleCompensationRelease = new Promise<void>((resolve) => {
+            releaseStaleCompensation = resolve;
+        });
+        const staleCompensationEntered = new Promise<void>((resolve) => {
+            markStaleCompensationEntered = resolve;
+        });
+        let loseCustomerResponse = true;
+        const providerUpdates: Array<{
+            cancelAtPeriodEnd: boolean;
+            idempotencyKey: string;
+            marker: string | undefined;
+        }> = [];
+        stripe.subscriptions.retrieve.mockImplementation(async () => ({
+            ...providerSubscription,
+            metadata: { ...providerSubscription.metadata },
+        }));
+        stripe.subscriptions.update.mockImplementation(async (
+            _subscriptionId: string,
+            update: {
+                cancel_at_period_end: boolean;
+                metadata?: Record<string, string>;
+            },
+            options: { idempotencyKey: string },
+        ) => {
+            providerUpdates.push({
+                cancelAtPeriodEnd: update.cancel_at_period_end,
+                idempotencyKey: options.idempotencyKey,
+                marker: update.metadata?.lunchlineupCancellationOperationId,
+            });
+            if (update.cancel_at_period_end === false) {
+                markStaleCompensationEntered();
+                await staleCompensationRelease;
+            }
+            providerSubscription = {
+                ...providerSubscription,
+                cancel_at_period_end: update.cancel_at_period_end,
+                metadata: {
+                    ...providerSubscription.metadata,
+                    ...update.metadata,
+                },
+            };
+            if (
+                update.metadata?.lunchlineupCancellationOperationId
+                    === 'customer-operation-b'
+                && loseCustomerResponse
+            ) {
+                loseCustomerResponse = false;
+                throw new Error('injected customer response loss');
+            }
+            return {
+                ...providerSubscription,
+                metadata: { ...providerSubscription.metadata },
+            };
+        });
+
+        const staleCompensation = service.compensateTenantSubscriptionCancellation(
+            'tenant-1',
+            'sub_123',
+            'platform-operation-a',
+        );
+        await staleCompensationEntered;
+        await expect(service.cancelTenantSubscriptionAtPeriodEnd(
+            'tenant-1',
+            'sub_123',
+            'customer-operation-b',
+            { authoritativeCustomerCancellation: true },
+        )).rejects.toThrow('injected customer response loss');
+        await expect(service.cancelTenantSubscriptionAtPeriodEnd(
+            'tenant-1',
+            'sub_123',
+            'customer-operation-b',
+            { authoritativeCustomerCancellation: true },
+        )).resolves.toMatchObject({
+            action: 'already_scheduled',
+            providerMutationOwned: true,
+        });
+        releaseStaleCompensation();
+
+        await expect(staleCompensation).resolves.toEqual({
+            action: 'not_owned',
+            cancelAtPeriodEnd: true,
+        });
+        expect(providerSubscription).toMatchObject({
+            cancel_at_period_end: true,
+            metadata: {
+                lunchlineupCancellationOperationId: 'customer-operation-b',
+            },
+        });
+        expect(providerUpdates.map((update) => ({
+            cancelAtPeriodEnd: update.cancelAtPeriodEnd,
+            marker: update.marker,
+        }))).toEqual([
+            { cancelAtPeriodEnd: false, marker: '' },
+            { cancelAtPeriodEnd: true, marker: 'customer-operation-b' },
+            { cancelAtPeriodEnd: true, marker: 'customer-operation-b' },
+        ]);
+        expect(new Set(
+            providerUpdates.map(({ idempotencyKey }) => idempotencyKey),
+        ).size).toBe(3);
+    });
+
+    it('fences stale compensation while customer provider success is pending local persistence', async () => {
+        const prisma = buildPrismaMock();
+        let customerPrepared: PreparedTenantCancellationIntent = {
+            tenant: {
+                id: 'tenant-1',
+                slug: 'acme-dining',
+                status: TenantStatus.ACTIVE,
+                deletedAt: null,
+                retentionLegalHoldAt: null,
+                stripeSubscriptionId: 'sub_123',
+            },
+            intent: {
+                tenantId: 'tenant-1',
+                kind: 'CUSTOMER_CANCELLATION',
+                operationId: 'customer-operation-b',
+                state: 'PENDING_PROVIDER',
+                actorUserId: 'user-1',
+                actorTenantId: 'tenant-1',
+                ipAddress: null,
+                userAgent: null,
+                reason: null,
+                providerSubscriptionId: 'sub_123',
+                subscriptionFingerprint: 'fingerprint-b',
+                providerLeaseOwner: 'customer-owner-b',
+                providerLeaseExpiresAt: new Date(Date.now() + 60_000),
+                providerAttempts: 1,
+                providerMutationOwned: null,
+                providerResult: null,
+                compensationResult: null,
+                terminalReason: null,
+                terminalizedAt: null,
+            },
+            providerLeaseOwner: 'customer-owner-b',
+        };
+        prisma.tx.tenantSetting.findUnique
+            .mockResolvedValueOnce(null)
+            .mockImplementation(async () => ({
+                value: {
+                    ...customerPrepared.intent,
+                    providerLeaseExpiresAt:
+                        customerPrepared.intent.providerLeaseExpiresAt?.toISOString() ?? null,
+                },
+            }));
+        const { service, stripe } = buildService({ prisma });
+        let providerSubscription = {
+            id: 'sub_123',
+            status: 'active',
+            cancel_at_period_end: true,
+            current_period_end: 1_800_000_000,
+            metadata: {
+                lunchlineupCancellationOperationId: 'platform-operation-a',
+            },
+        };
+        let markStaleCompensationEntered!: () => void;
+        let releaseStaleCompensation!: () => void;
+        const staleCompensationEntered = new Promise<void>((resolve) => {
+            markStaleCompensationEntered = resolve;
+        });
+        const staleCompensationRelease = new Promise<void>((resolve) => {
+            releaseStaleCompensation = resolve;
+        });
+        let markCustomerPersistenceEntered!: () => void;
+        let releaseCustomerPersistence!: () => void;
+        const customerPersistenceEntered = new Promise<void>((resolve) => {
+            markCustomerPersistenceEntered = resolve;
+        });
+        const customerPersistenceRelease = new Promise<void>((resolve) => {
+            releaseCustomerPersistence = resolve;
+        });
+        stripe.subscriptions.retrieve.mockImplementation(async () => ({
+            ...providerSubscription,
+            metadata: { ...providerSubscription.metadata },
+        }));
+        stripe.subscriptions.update.mockImplementation(async (
+            _subscriptionId: string,
+            update: {
+                cancel_at_period_end: boolean;
+                metadata?: Record<string, string>;
+            },
+        ) => {
+            if (update.cancel_at_period_end === false) {
+                markStaleCompensationEntered();
+                await staleCompensationRelease;
+            }
+            providerSubscription = {
+                ...providerSubscription,
+                cancel_at_period_end: update.cancel_at_period_end,
+                metadata: {
+                    ...providerSubscription.metadata,
+                    ...update.metadata,
+                },
+            };
+            return {
+                ...providerSubscription,
+                metadata: { ...providerSubscription.metadata },
+            };
+        });
+        const customerStore = {
+            prepare: vi.fn(async () => customerPrepared),
+            renewProviderClaim: vi.fn(async () => customerPrepared),
+            providerLeaseRenewalIntervalMs: () => 60_000,
+            markProviderApplied: vi.fn(async (
+                prepared: typeof customerPrepared,
+                outcome: TenantCancellationOutcome,
+                providerMutationOwned: boolean,
+            ) => {
+                markCustomerPersistenceEntered();
+                await customerPersistenceRelease;
+                customerPrepared = {
+                    ...prepared,
+                    intent: {
+                        ...prepared.intent,
+                        state: 'PROVIDER_APPLIED',
+                        providerMutationOwned,
+                        providerResult: outcome,
+                    },
+                };
+                return customerPrepared;
+            }),
+            finalize: vi.fn(async (prepared: typeof customerPrepared) => {
+                customerPrepared = {
+                    ...prepared,
+                    intent: {
+                        ...prepared.intent,
+                        state: 'FINALIZED',
+                        providerLeaseOwner: null,
+                        providerLeaseExpiresAt: null,
+                    },
+                    providerLeaseOwner: null,
+                };
+                return customerPrepared;
+            }),
+            markCompensated: vi.fn(),
+            releaseProviderClaim: vi.fn(),
+        };
+        const customerLifecycle = new TenantCancellationLifecycleService(
+            {} as any,
+            () => service,
+            customerStore as any,
+        );
+
+        const staleCompensation = service.compensateTenantSubscriptionCancellation(
+            'tenant-1',
+            'sub_123',
+            'platform-operation-a',
+        );
+        await staleCompensationEntered;
+        const customerCancellation = customerLifecycle.cancelCustomer({
+            tenantId: 'tenant-1',
+            userId: 'user-1',
+            ipAddress: null,
+            userAgent: null,
+        }, { confirmation: 'acme-dining' });
+        await customerPersistenceEntered;
+
+        expect(customerPrepared.intent.state).toBe('PENDING_PROVIDER');
+        expect(providerSubscription).toMatchObject({
+            cancel_at_period_end: true,
+            metadata: {
+                lunchlineupCancellationOperationId: 'customer-operation-b',
+            },
+        });
+        releaseStaleCompensation();
+        await expect(staleCompensation).resolves.toEqual({
+            action: 'not_owned',
+            cancelAtPeriodEnd: true,
+        });
+        expect(providerSubscription).toMatchObject({
+            cancel_at_period_end: true,
+            metadata: {
+                lunchlineupCancellationOperationId: 'customer-operation-b',
+            },
+        });
+
+        releaseCustomerPersistence();
+        await expect(customerCancellation).resolves.toMatchObject({
+            status: TenantStatus.ACTIVE,
+            billingCancellation: {
+                action: 'already_scheduled',
+                cancelAtPeriodEnd: true,
+            },
+        });
+        expect(customerPrepared.intent).toMatchObject({
+            state: 'FINALIZED',
+            operationId: 'customer-operation-b',
+            providerMutationOwned: true,
+            providerResult: { action: 'already_scheduled' },
+        });
+    });
+
+    it('treats a terminal subscription carrying a customer marker as not owned before terminal compensation', async () => {
+        const { service, stripe } = buildService();
+        stripe.subscriptions.retrieve.mockResolvedValue({
+            id: 'sub_123',
+            status: 'canceled',
+            cancel_at_period_end: false,
+            metadata: {
+                lunchlineupCancellationOperationId: 'customer-operation-b',
+            },
+        });
+
+        await expect(service.compensateTenantSubscriptionCancellation(
+            'tenant-1',
+            'sub_123',
+            'platform-operation-a',
+        )).resolves.toEqual({
+            action: 'not_owned',
+            cancelAtPeriodEnd: false,
+        });
+        expect(stripe.subscriptions.update).not.toHaveBeenCalled();
+    });
+
+    it('performs an unscheduled provider readback without creating a cancellation', async () => {
+        const { service, stripe } = buildService();
+        stripe.subscriptions.retrieve.mockResolvedValue({
+            id: 'sub_123',
+            status: 'active',
+            cancel_at_period_end: false,
+            current_period_end: 1_800_000_000,
+        });
+
+        const result = await service.cancelTenantSubscriptionAtPeriodEnd(
+            'tenant-1',
+            'sub_123',
+            'operation-123',
+            { providerReadbackOnly: true },
+        );
+
+        expect(result).toMatchObject({
+            action: 'none',
+            cancelAtPeriodEnd: false,
+            providerMutationOwned: false,
+        });
+        expect(stripe.subscriptions.retrieve).toHaveBeenCalledWith('sub_123');
+        expect(stripe.subscriptions.update).not.toHaveBeenCalled();
+    });
+
+    it('does not claim or compensate a cancellation marked for another operation', async () => {
+        const { service, stripe } = buildService();
+        stripe.subscriptions.retrieve.mockResolvedValue({
+            id: 'sub_123',
+            status: 'active',
+            cancel_at_period_end: true,
+            metadata: {
+                lunchlineupCancellationOperationId: 'customer-operation',
+            },
+        });
+
+        await expect(service.cancelTenantSubscriptionAtPeriodEnd(
+            'tenant-1',
+            'sub_123',
+            'platform-operation',
+        )).resolves.toMatchObject({
+            action: 'already_scheduled',
+            providerMutationOwned: false,
+        });
+        await expect(service.compensateTenantSubscriptionCancellation(
+            'tenant-1',
+            'sub_123',
+            'platform-operation',
+        )).resolves.toEqual({
+            action: 'not_owned',
+            cancelAtPeriodEnd: true,
+        });
+        expect(stripe.subscriptions.update).not.toHaveBeenCalled();
+    });
+
+    it('uses stable distinct Stripe keys for cancellation and legal-hold compensation', async () => {
+        const { service, stripe } = buildService();
+        stripe.subscriptions.retrieve
+            .mockResolvedValueOnce({
+                id: 'sub_123',
+                status: 'active',
+                cancel_at_period_end: false,
+            })
+            .mockResolvedValue({
+                id: 'sub_123',
+                status: 'active',
+                cancel_at_period_end: true,
+            });
+        stripe.subscriptions.update
+            .mockResolvedValueOnce({
+                id: 'sub_123',
+                status: 'active',
+                cancel_at_period_end: true,
+            })
+            .mockResolvedValue({
+                id: 'sub_123',
+                status: 'active',
+                cancel_at_period_end: false,
+            });
+
+        await service.cancelTenantSubscriptionAtPeriodEnd(
+            'tenant-1',
+            'sub_123',
+            'operation-123',
+        );
+
+        await service.compensateTenantSubscriptionCancellation(
+            'tenant-1',
+            'sub_123',
+            'operation-123',
+        );
+        await service.compensateTenantSubscriptionCancellation(
+            'tenant-1',
+            'sub_123',
+            'operation-123',
+        );
+
+        const cancellationKey = stripe.subscriptions.update.mock.calls[0][2].idempotencyKey;
+        const firstCompensationKey = stripe.subscriptions.update.mock.calls[1][2].idempotencyKey;
+        const secondCompensationKey = stripe.subscriptions.update.mock.calls[2][2].idempotencyKey;
+        expect(firstCompensationKey).toMatch(/^[a-f0-9]{64}$/);
+        expect(secondCompensationKey).toBe(firstCompensationKey);
+        expect(firstCompensationKey).not.toBe(cancellationKey);
     });
 
     it('accepts restore only when the stored Stripe subscription is active and owned', async () => {
@@ -863,6 +1523,17 @@ describe('StripeService - subscription creation', () => {
         await expect(service.assertTenantSubscriptionActive('tenant-1', 'sub_123')).resolves.toBeUndefined();
     });
 
+    it('rejects restore when the stored Stripe subscription is trialing', async () => {
+        const { service, stripe } = buildService();
+        stripe.subscriptions.retrieve.mockResolvedValue({
+            id: 'sub_123',
+            status: 'trialing',
+            metadata: { tenantId: 'tenant-1' },
+        });
+
+        await expect(service.assertTenantSubscriptionActive('tenant-1', 'sub_123'))
+            .rejects.toBeInstanceOf(BadRequestException);
+    });
     it('rejects restore for a terminal or cross-tenant Stripe subscription', async () => {
         const { service, stripe } = buildService();
         stripe.subscriptions.retrieve.mockResolvedValue({
@@ -900,6 +1571,178 @@ describe('StripeService - subscription creation', () => {
         expect(result.action).toBe('none');
     });
 
+    it.each(['checkout_expire', 'subscription_cancel', 'customer_delete'] as const)(
+        'keeps purge active until blocked %s transport is terminated by the SDK timeout',
+        async (blockedMutation) => {
+            const prisma = buildPrismaMock();
+            prisma.tx.tenant.findUnique.mockResolvedValue({
+                id: 'tenant-1',
+                status: TenantStatus.SUSPENDED,
+                deletedAt: null,
+                stripeCustomerId: 'cus_123',
+                stripeSubscriptionId: blockedMutation === 'subscription_cancel'
+                    ? 'sub_123'
+                    : null,
+            });
+            const { service } = buildService({
+                prisma,
+                configValues: { STRIPE_PURGE_REQUEST_TIMEOUT_MS: '100' },
+            });
+            let mutationEnteredResolve!: () => void;
+            const mutationEntered = new Promise<void>((resolve) => {
+                mutationEnteredResolve = resolve;
+            });
+            let transportTerminatedResolve!: () => void;
+            const transportTerminated = new Promise<void>((resolve) => {
+                transportTerminatedResolve = resolve;
+            });
+            const mutationRequests: Array<{
+                idempotencyKey: string | undefined;
+                method: string | undefined;
+                path: string;
+            }> = [];
+            const server = createServer((request, response) => {
+                const url = new URL(request.url ?? '/', 'http://127.0.0.1');
+                const mutation = (
+                    blockedMutation === 'checkout_expire'
+                    && request.method === 'POST'
+                    && url.pathname === '/v1/checkout/sessions/cs_blocked/expire'
+                ) || (
+                    blockedMutation === 'subscription_cancel'
+                    && request.method === 'DELETE'
+                    && url.pathname === '/v1/subscriptions/sub_123'
+                ) || (
+                    blockedMutation === 'customer_delete'
+                    && request.method === 'DELETE'
+                    && url.pathname === '/v1/customers/cus_123'
+                );
+                if (mutation) {
+                    mutationRequests.push({
+                        idempotencyKey: request.headers['idempotency-key'] as string | undefined,
+                        method: request.method,
+                        path: url.pathname,
+                    });
+                    response.once('close', transportTerminatedResolve);
+                    mutationEnteredResolve();
+                    return;
+                }
+
+                let body: Record<string, unknown>;
+                if (request.method === 'GET' && url.pathname === '/v1/customers/cus_123') {
+                    body = {
+                        id: 'cus_123',
+                        object: 'customer',
+                        metadata: { tenantId: 'tenant-1' },
+                    };
+                } else if (
+                    request.method === 'GET'
+                    && url.pathname === '/v1/checkout/sessions'
+                ) {
+                    body = {
+                        object: 'list',
+                        data: blockedMutation === 'checkout_expire'
+                            ? [{
+                                id: 'cs_blocked',
+                                object: 'checkout.session',
+                                status: 'open',
+                                mode: 'subscription',
+                                customer: 'cus_123',
+                                client_reference_id: 'tenant-1',
+                                metadata: { tenantId: 'tenant-1' },
+                            }]
+                            : [],
+                        has_more: false,
+                        url: '/v1/checkout/sessions',
+                    };
+                } else if (
+                    request.method === 'GET'
+                    && url.pathname === '/v1/subscriptions'
+                ) {
+                    body = {
+                        object: 'list',
+                        data: blockedMutation === 'subscription_cancel'
+                            ? [{
+                                id: 'sub_123',
+                                object: 'subscription',
+                                status: 'active',
+                                customer: 'cus_123',
+                                metadata: { tenantId: 'tenant-1' },
+                            }]
+                            : [],
+                        has_more: false,
+                        url: '/v1/subscriptions',
+                    };
+                } else {
+                    response.writeHead(404, { 'content-type': 'application/json' });
+                    response.end(JSON.stringify({ error: { message: 'unexpected probe route' } }));
+                    return;
+                }
+                response.writeHead(200, {
+                    'content-type': 'application/json',
+                    'request-id': `req_${blockedMutation}`,
+                });
+                response.end(JSON.stringify(body));
+            });
+            await new Promise<void>((resolve, reject) => {
+                server.once('error', reject);
+                server.listen(0, '127.0.0.1', resolve);
+            });
+            const address = server.address() as AddressInfo;
+            (service as any).stripe = new Stripe('sk_test_transport_probe', {
+                apiVersion: '2024-04-10' as any,
+                host: '127.0.0.1',
+                httpClient: Stripe.createNodeHttpClient(),
+                maxNetworkRetries: 0,
+                port: address.port,
+                protocol: 'http',
+            });
+            const controller = new AbortController();
+            const abortReason = new Error(`stop-${blockedMutation}`);
+            let purgeSettled = false;
+            const purgeOutcome = service.finalizeTenantBillingForPurge(
+                'tenant-1',
+                {
+                    operationId: purgeOperationId,
+                    signal: controller.signal,
+                    providerDeadlineAtMs: Date.now() + 5_000,
+                },
+            ).then(
+                (value) => ({ value, error: null }),
+                (error) => ({ value: null, error }),
+            ).finally(() => { purgeSettled = true; });
+
+            try {
+                await mutationEntered;
+                controller.abort(abortReason);
+                await new Promise((resolve) => setTimeout(resolve, 20));
+                expect(purgeSettled).toBe(false);
+                await transportTerminated;
+                const outcome = await purgeOutcome;
+
+                expect(outcome.error).toBe(abortReason);
+                expect(outcome.value).toBeNull();
+                expect(mutationRequests).toEqual([expect.objectContaining({
+                    idempotencyKey: expectedPurgeIdempotencyKey(
+                        blockedMutation === 'checkout_expire'
+                            ? 'checkout-expire'
+                            : blockedMutation === 'subscription_cancel'
+                                ? 'subscription-cancel'
+                                : 'customer-delete',
+                        blockedMutation === 'checkout_expire'
+                            ? 'cs_blocked'
+                            : blockedMutation === 'subscription_cancel'
+                                ? 'sub_123'
+                                : 'cus_123',
+                    ),
+                })]);
+                expect(prisma.tx.tenant.updateMany).not.toHaveBeenCalled();
+            } finally {
+                server.closeAllConnections();
+                await new Promise<void>((resolve) => server.close(() => resolve()));
+            }
+        },
+    );
+
     it('snapshots a suspended tenant before expiring Checkout sessions and canceling subscriptions', async () => {
         const prisma = buildPrismaMock();
         prisma.tx.tenant.findUnique.mockResolvedValue({
@@ -928,6 +1771,18 @@ describe('StripeService - subscription creation', () => {
                     customer: 'cus_123',
                     client_reference_id: 'tenant-1',
                     metadata: { tenantId: 'tenant-1' },
+                }, {
+                    id: 'cs_credit_open',
+                    mode: 'payment',
+                    customer: 'cus_123',
+                    client_reference_id: 'tenant-1',
+                    metadata: { tenantId: 'tenant-1', purchaseType: 'credit_pack' },
+                }, {
+                    id: 'cs_unrelated_payment',
+                    mode: 'payment',
+                    customer: 'cus_123',
+                    client_reference_id: 'tenant-1',
+                    metadata: { tenantId: 'tenant-1', purchaseType: 'external_payment' },
                 }],
             };
         });
@@ -946,20 +1801,76 @@ describe('StripeService - subscription creation', () => {
             metadata: { tenantId: 'tenant-1' },
         });
 
-        const result = await service.finalizeTenantBillingForPurge('tenant-1');
+        const result = await service.finalizeTenantBillingForPurge(
+            'tenant-1',
+            buildPurgeOptions(),
+        );
 
-        expect(stripe.checkout.sessions.expire).toHaveBeenCalledWith('cs_open');
-        expect(stripe.subscriptions.cancel).toHaveBeenCalledWith('sub_123');
+        expect(stripe.checkout.sessions.expire.mock.calls).toEqual([
+            ['cs_open', expect.objectContaining({
+                idempotencyKey: expectedPurgeIdempotencyKey('checkout-expire', 'cs_open'),
+                maxNetworkRetries: 0,
+                timeout: expect.any(Number),
+            })],
+            ['cs_credit_open', expect.objectContaining({
+                idempotencyKey: expectedPurgeIdempotencyKey('checkout-expire', 'cs_credit_open'),
+                maxNetworkRetries: 0,
+                timeout: expect.any(Number),
+            })],
+        ]);
+        expect(stripe.subscriptions.cancel).toHaveBeenCalledWith('sub_123', expect.objectContaining({
+            idempotencyKey: expectedPurgeIdempotencyKey('subscription-cancel', 'sub_123'),
+            maxNetworkRetries: 0,
+            timeout: expect.any(Number),
+        }));
+        expect(stripe.customers.del).toHaveBeenCalledWith('cus_123', expect.objectContaining({
+            idempotencyKey: expectedPurgeIdempotencyKey('customer-delete', 'cus_123'),
+            maxNetworkRetries: 0,
+            timeout: expect.any(Number),
+        }));
+        expect(prisma.tx.tenant.updateMany).toHaveBeenCalledWith({
+            where: {
+                id: 'tenant-1',
+                status: { in: [TenantStatus.SUSPENDED, TenantStatus.PURGED] },
+                stripeCustomerId: 'cus_123',
+            },
+            data: {
+                stripeCustomerId: null,
+                stripeSubscriptionId: null,
+                stripeSubscriptionCurrentPeriodEnd: null,
+            },
+        });
         expect(result).toEqual({
-            expiredCheckoutSessionIds: ['cs_open'],
+            expiredCheckoutSessionIds: ['cs_open', 'cs_credit_open'],
             canceledSubscriptionIds: ['sub_123'],
             alreadyTerminalSubscriptionIds: [],
         });
-        const billingLockCall = prisma.tx.$queryRaw.mock.calls.find((call: any[]) =>
-            call.includes('billing-checkout:tenant-1'));
-        expect(billingLockCall).toBeDefined();
-        expect(prisma.tx.$queryRaw.mock.invocationCallOrder.at(-1))
+        const billingLockIndex = prisma.tx.$executeRaw.mock.calls.findIndex(([query, lockKey]: any[]) => {
+            const sql = Array.isArray(query) ? query.join(' ') : String(query);
+            return sql.includes('SELECT pg_advisory_xact_lock')
+                && lockKey === 'billing-checkout:tenant-1';
+        });
+        expect(billingLockIndex).toBeGreaterThanOrEqual(0);
+        expect(prisma.tx.$executeRaw.mock.invocationCallOrder[billingLockIndex])
             .toBeLessThan(stripe.checkout.sessions.list.mock.invocationCallOrder[0]);
+    });
+
+    it('honors an aborted deletion fence before database or Stripe work starts', async () => {
+        const controller = new AbortController();
+        const abortReason = new Error('deletion attempt fence expired');
+        controller.abort(abortReason);
+        const { service, prisma, stripe } = buildService();
+
+        await expect(service.finalizeTenantBillingForPurge('tenant-1', {
+            operationId: purgeOperationId,
+            signal: controller.signal,
+            providerDeadlineAtMs: Date.now() + 60_000,
+        })).rejects.toBe(abortReason);
+
+        expect(prisma.$transaction).not.toHaveBeenCalled();
+        expect(stripe.customers.retrieve).not.toHaveBeenCalled();
+        expect(stripe.subscriptions.cancel).not.toHaveBeenCalled();
+        expect(stripe.customers.del).not.toHaveBeenCalled();
     });
 
     it('rejects billing cleanup before the durable suspension barrier is committed', async () => {
@@ -973,11 +1884,89 @@ describe('StripeService - subscription creation', () => {
         });
         const { service, stripe } = buildService({ prisma });
 
-        await expect(service.finalizeTenantBillingForPurge('tenant-1'))
+        await expect(service.finalizeTenantBillingForPurge('tenant-1', buildPurgeOptions()))
             .rejects.toThrow('requires a suspended deletion barrier');
 
         expect(stripe.checkout.sessions.list).not.toHaveBeenCalled();
         expect(stripe.subscriptions.list).not.toHaveBeenCalled();
+    });
+
+    it('fails closed before provider mutation when Stripe Customer ownership is not authoritative', async () => {
+        const prisma = buildPrismaMock();
+        prisma.tx.tenant.findUnique.mockResolvedValue({
+            id: 'tenant-1',
+            status: TenantStatus.SUSPENDED,
+            deletedAt: null,
+            stripeCustomerId: 'cus_123',
+            stripeSubscriptionId: 'sub_123',
+        });
+        const { service, stripe } = buildService({ prisma });
+        stripe.customers.retrieve.mockResolvedValue({
+            id: 'cus_123',
+            deleted: false,
+            metadata: { tenantId: 'tenant-other' },
+        });
+
+        await expect(service.finalizeTenantBillingForPurge('tenant-1', buildPurgeOptions()))
+            .rejects.toThrow('customer ownership is not authoritative');
+
+        expect(stripe.checkout.sessions.list).not.toHaveBeenCalled();
+        expect(stripe.subscriptions.cancel).not.toHaveBeenCalled();
+        expect(stripe.customers.del).not.toHaveBeenCalled();
+        expect(prisma.tx.tenant.updateMany).not.toHaveBeenCalled();
+    });
+
+    it('does not clear local billing bindings when Stripe Customer deletion fails', async () => {
+        const prisma = buildPrismaMock();
+        prisma.tx.tenant.findUnique.mockResolvedValue({
+            id: 'tenant-1',
+            status: TenantStatus.SUSPENDED,
+            deletedAt: null,
+            stripeCustomerId: 'cus_123',
+            stripeSubscriptionId: null,
+        });
+        const { service, stripe } = buildService({ prisma });
+        stripe.customers.del.mockRejectedValue(new Error('Stripe unavailable'));
+
+        await expect(service.finalizeTenantBillingForPurge('tenant-1', buildPurgeOptions()))
+            .rejects.toThrow('Stripe unavailable');
+
+        expect(prisma.tx.tenant.updateMany).not.toHaveBeenCalled();
+    });
+
+    it('retries local binding cleanup without deleting an already-deleted Stripe Customer twice', async () => {
+        const prisma = buildPrismaMock();
+        prisma.tx.tenant.findUnique.mockResolvedValue({
+            id: 'tenant-1',
+            status: TenantStatus.SUSPENDED,
+            deletedAt: null,
+            stripeCustomerId: 'cus_123',
+            stripeSubscriptionId: null,
+        });
+        prisma.tx.tenant.updateMany
+            .mockRejectedValueOnce(new Error('database unavailable'))
+            .mockResolvedValueOnce({ count: 1 });
+        const { service, stripe } = buildService({ prisma });
+        let customerDeleted = false;
+        stripe.customers.retrieve.mockImplementation(async () => customerDeleted
+            ? { id: 'cus_123', deleted: true }
+            : { id: 'cus_123', deleted: false, metadata: { tenantId: 'tenant-1' } });
+        stripe.customers.del.mockImplementation(async () => {
+            customerDeleted = true;
+            return { id: 'cus_123', deleted: true };
+        });
+
+        await expect(service.finalizeTenantBillingForPurge('tenant-1', buildPurgeOptions()))
+            .rejects.toThrow('database unavailable');
+        await expect(service.finalizeTenantBillingForPurge('tenant-1', buildPurgeOptions()))
+            .resolves.toEqual({
+                expiredCheckoutSessionIds: [],
+                canceledSubscriptionIds: [],
+                alreadyTerminalSubscriptionIds: [],
+            });
+
+        expect(stripe.customers.del).toHaveBeenCalledOnce();
+        expect(prisma.tx.tenant.updateMany).toHaveBeenCalledTimes(2);
     });
 
     it('accepts already-terminal Stripe state after concurrent cleanup errors', async () => {
@@ -1024,7 +2013,10 @@ describe('StripeService - subscription creation', () => {
             metadata: { tenantId: 'tenant-1' },
         });
 
-        const result = await service.finalizeTenantBillingForPurge('tenant-1');
+        const result = await service.finalizeTenantBillingForPurge(
+            'tenant-1',
+            buildPurgeOptions(),
+        );
 
         expect(result).toEqual({
             expiredCheckoutSessionIds: ['cs_race'],
@@ -1033,6 +2025,7 @@ describe('StripeService - subscription creation', () => {
         });
     });
 });
+
 
 describe('StripeService - webhook safety', () => {
     const invoicePaidEvent = {
@@ -1082,6 +2075,54 @@ describe('StripeService - webhook safety', () => {
         expect(prisma.tx.tenant.updateMany).not.toHaveBeenCalled();
     });
 
+    it('dispatches delayed payment-mode Checkout success to credit-purchase compensation', async () => {
+        const event = {
+            id: 'evt_credit_delayed',
+            type: 'checkout.session.async_payment_succeeded',
+            data: {
+                object: {
+                    object: 'checkout.session',
+                    id: 'cs_credit_delayed',
+                    mode: 'payment',
+                },
+            },
+        };
+        const { service } = buildService({ event });
+        const handleCheckoutSessionCompleted = vi.fn().mockResolvedValue(undefined);
+        (service as any).creditPurchases = { handleCheckoutSessionCompleted };
+
+        await service.handleWebhook(Buffer.from('{\"id\":\"evt_credit_delayed\"}'), 'sig_123');
+
+        expect(handleCheckoutSessionCompleted).toHaveBeenCalledWith(event);
+    });
+
+    it.each(['refund.created', 'refund.updated', 'refund.failed'])(
+        'dispatches %s for a credit purchase to durable refund reconciliation',
+        async (type) => {
+            const event = {
+                id: `evt_${type}`,
+                type,
+                data: {
+                    object: {
+                        id: 're_credit_1',
+                        metadata: {
+                            purchaseType: 'credit_pack',
+                            tenantId: 'tenant-1',
+                            checkoutSessionId: 'cs_credit_1',
+                        },
+                    },
+                },
+            };
+            const { service } = buildService({ event });
+            const handleRefundLifecycleEvent = vi.fn().mockResolvedValue(undefined);
+            (service as any).creditPurchases = { handleRefundLifecycleEvent };
+
+            await service.handleWebhook(Buffer.from(`{"id":"evt_${type}"}`), 'sig_123');
+
+            expect(handleRefundLifecycleEvent).toHaveBeenCalledWith(event);
+        },
+    );
+
     it('cancels a verified subscription created after tenant purge without restoring entitlement', async () => {
         vi.stubEnv('PLATFORM_ADMIN_DB_CONTEXT_SECRET', 'test-capability');
         const prisma = buildPrismaMock();
@@ -1125,7 +2166,10 @@ describe('StripeService - webhook safety', () => {
         expect(prisma.tx.tenant.update).not.toHaveBeenCalled();
         expect(prisma.tx.tenant.updateMany).toHaveBeenCalledWith({
             where: { id: 'tenant-1', status: TenantStatus.PURGED },
-            data: { stripeSubscriptionId: null },
+            data: {
+                stripeSubscriptionId: null,
+                stripeSubscriptionCurrentPeriodEnd: null,
+            },
         });
         expect(prisma.tx.billingEvent.create).toHaveBeenCalledWith({
             data: expect.objectContaining({
@@ -1222,6 +2266,7 @@ describe('StripeService - webhook safety', () => {
             data: {
                 status: TenantStatus.ACTIVE,
                 stripeSubscriptionId: 'sub_123',
+                stripeSubscriptionCurrentPeriodEnd: null,
                 planTier: 'STARTER',
             },
         });
@@ -1303,7 +2348,10 @@ describe('StripeService - webhook safety', () => {
                 stripeCustomerId: 'cus_123',
                 stripeSubscriptionId: null,
             },
-            data: { stripeSubscriptionId: 'sub_123' },
+            data: {
+                stripeSubscriptionId: 'sub_123',
+                stripeSubscriptionCurrentPeriodEnd: null,
+            },
         });
 
         const storedInvoice = prisma.tx.billingEvent.create.mock.calls[0][0].data;
@@ -1433,6 +2481,7 @@ describe('StripeService - webhook safety', () => {
             data: {
                 status: TenantStatus.ACTIVE,
                 stripeSubscriptionId: 'sub_123',
+                stripeSubscriptionCurrentPeriodEnd: null,
                 planTier: 'STARTER',
             },
         });
@@ -1570,6 +2619,7 @@ describe('StripeService - webhook safety', () => {
             data: {
                 status: expectedTenantStatus,
                 stripeSubscriptionId: 'sub_123',
+                stripeSubscriptionCurrentPeriodEnd: null,
                 planTier: 'STARTER',
             },
         });
@@ -1654,6 +2704,7 @@ describe('StripeService - webhook safety', () => {
             data: {
                 status: TenantStatus.ACTIVE,
                 stripeSubscriptionId: 'sub_123',
+                stripeSubscriptionCurrentPeriodEnd: null,
                 planTier: 'GROWTH',
             },
         });
@@ -1710,6 +2761,7 @@ describe('StripeService - webhook safety', () => {
             data: {
                 status: TenantStatus.ACTIVE,
                 stripeSubscriptionId: 'sub_123',
+                stripeSubscriptionCurrentPeriodEnd: null,
                 planTier: 'GROWTH',
             },
         });
@@ -1764,6 +2816,7 @@ describe('StripeService - webhook safety', () => {
             data: {
                 status: expectedTenantStatus,
                 stripeSubscriptionId: 'sub_123',
+                stripeSubscriptionCurrentPeriodEnd: null,
                 planTier: 'STARTER',
             },
         });
@@ -1909,11 +2962,46 @@ describe('StripeService - webhook safety', () => {
             data: {
                 status: TenantStatus.ACTIVE,
                 stripeSubscriptionId: 'sub_123',
+                stripeSubscriptionCurrentPeriodEnd: null,
                 planTier: 'GROWTH',
             },
         });
     });
 
+    it('synchronizes Stripe trialing to a distinct non-paid local trial state', async () => {
+        const prisma = buildPrismaMock();
+        const event = {
+            id: 'evt_sub_trialing',
+            type: 'customer.subscription.updated',
+            data: {
+                object: {
+                    object: 'subscription',
+                    id: 'sub_123',
+                    customer: 'cus_123',
+                    status: 'trialing',
+                    metadata: { tenantId: 'tenant-1' },
+                    items: { data: [{ price: { id: 'price_growth' } }] },
+                },
+            },
+        };
+        const { service } = buildService({
+            prisma,
+            event,
+            configValues: { STRIPE_PRICE_GROWTH: 'price_growth' },
+        });
+
+        await service.handleWebhook(Buffer.from('{}'), 'sig_123');
+
+        expect(prisma.tx.tenant.update).toHaveBeenCalledWith({
+            where: { id: 'tenant-1' },
+            data: {
+                status: TenantStatus.TRIAL,
+                stripeSubscriptionId: 'sub_123',
+                stripeSubscriptionCurrentPeriodEnd: null,
+                planTier: 'GROWTH',
+            },
+        });
+    });
     it('clears incomplete_expired subscription IDs and leaves checkout recovery available', async () => {
         const prisma = buildPrismaMock();
         const event = {
@@ -1940,6 +3028,7 @@ describe('StripeService - webhook safety', () => {
             data: {
                 status: TenantStatus.CANCELLED,
                 stripeSubscriptionId: null,
+                stripeSubscriptionCurrentPeriodEnd: null,
                 planTier: 'STARTER',
             },
         });
@@ -1970,6 +3059,7 @@ describe('StripeService - webhook safety', () => {
             data: {
                 status: TenantStatus.PAST_DUE,
                 stripeSubscriptionId: 'sub_123',
+                stripeSubscriptionCurrentPeriodEnd: null,
                 planTier: 'STARTER',
             },
         });
@@ -2006,6 +3096,7 @@ describe('StripeService - webhook safety', () => {
             data: {
                 status: TenantStatus.ACTIVE,
                 stripeSubscriptionId: 'sub_123',
+                stripeSubscriptionCurrentPeriodEnd: null,
                 planTier: 'STARTER',
             },
         });
@@ -2038,6 +3129,7 @@ describe('StripeService - webhook safety', () => {
             data: {
                 status: TenantStatus.PAST_DUE,
                 stripeSubscriptionId: 'sub_123',
+                stripeSubscriptionCurrentPeriodEnd: null,
                 planTier: 'STARTER',
             },
         });
@@ -2070,6 +3162,7 @@ describe('StripeService - webhook safety', () => {
             data: {
                 status: TenantStatus.PAST_DUE,
                 stripeSubscriptionId: 'sub_123',
+                stripeSubscriptionCurrentPeriodEnd: null,
                 planTier: 'STARTER',
             },
         });
@@ -2105,6 +3198,7 @@ describe('StripeService - webhook safety', () => {
             data: {
                 status: TenantStatus.ACTIVE,
                 stripeSubscriptionId: 'sub_123',
+                stripeSubscriptionCurrentPeriodEnd: null,
                 planTier: 'STARTER',
             },
         });
@@ -2144,6 +3238,7 @@ describe('StripeService - webhook safety', () => {
             data: {
                 status: TenantStatus.PAST_DUE,
                 stripeSubscriptionId: 'sub_123',
+                stripeSubscriptionCurrentPeriodEnd: null,
                 planTier: 'STARTER',
             },
         });
@@ -2199,9 +3294,12 @@ describe('StripeService - webhook safety', () => {
     it('retrieves canonical subscription state only after billing locks and chronology checks', async () => {
         const prisma = buildPrismaMock();
         const calls: string[] = [];
-        prisma.tx.$queryRaw.mockImplementation(async () => {
-            calls.push('lock');
-            return [{ locked: true }];
+        prisma.tx.$executeRaw.mockImplementation(async (query: unknown) => {
+            const sql = Array.isArray(query) ? query.join(' ') : String(query);
+            if (sql.includes('SELECT pg_advisory_xact_lock')) {
+                calls.push('lock');
+            }
+            return 1;
         });
         prisma.tx.billingEvent.findMany.mockImplementation(async () => {
             calls.push('high-water');
@@ -2281,6 +3379,7 @@ describe('StripeService - webhook safety', () => {
             data: {
                 status: TenantStatus.ACTIVE,
                 stripeSubscriptionId: 'sub_123',
+                stripeSubscriptionCurrentPeriodEnd: null,
                 planTier: 'STARTER',
             },
         });
@@ -2357,6 +3456,7 @@ describe('StripeService - webhook safety', () => {
             data: {
                 status: TenantStatus.CANCELLED,
                 stripeSubscriptionId: null,
+                stripeSubscriptionCurrentPeriodEnd: null,
                 planTier: 'STARTER',
             },
         });
@@ -2466,6 +3566,7 @@ describe('StripeService - webhook safety', () => {
             data: {
                 status: TenantStatus.ACTIVE,
                 stripeSubscriptionId: 'sub_123',
+                stripeSubscriptionCurrentPeriodEnd: new Date('2027-01-15T08:00:00.000Z'),
                 planTier: 'STARTER',
             },
         });
@@ -2522,6 +3623,268 @@ describe('StripeService - webhook safety', () => {
             data: {
                 status: TenantStatus.CANCELLED,
                 stripeSubscriptionId: null,
+                stripeSubscriptionCurrentPeriodEnd: null,
+            },
+        });
+    });
+
+    it('accepts a late deleted replay only through an exact finalized customer cancellation binding', async () => {
+        const prisma = buildPrismaMock();
+        prisma.tenant.findMany.mockImplementation((args: any) => {
+            if (args.where?.stripeSubscriptionId === 'sub_123') return Promise.resolve([]);
+            if (args.where?.stripeCustomerId === 'cus_123') return Promise.resolve([{ id: 'tenant-1' }]);
+            return Promise.resolve([]);
+        });
+        prisma.tx.tenant.findUnique.mockResolvedValue({
+            id: 'tenant-1',
+            status: TenantStatus.CANCELLED,
+            deletedAt: null,
+            retentionLegalHoldAt: null,
+            stripeCustomerId: 'cus_123',
+            stripeSubscriptionId: null,
+            stripeSubscriptionCurrentPeriodEnd: null,
+        });
+        prisma.tx.tenantSetting.findUnique.mockResolvedValue({
+            value: {
+                tenantId: 'tenant-1',
+                kind: 'CUSTOMER_CANCELLATION',
+                state: 'FINALIZED',
+                providerSubscriptionId: 'sub_123',
+                providerResult: { action: 'already_canceled' },
+            },
+        });
+        const event = {
+            id: 'evt_deleted_after_reconciliation',
+            created: 200,
+            type: 'customer.subscription.deleted',
+            data: {
+                object: {
+                    object: 'subscription',
+                    id: 'sub_123',
+                    customer: 'cus_123',
+                    status: 'canceled',
+                    metadata: { tenantId: 'tenant-1' },
+                },
+            },
+        };
+        const { service } = buildService({ prisma, event });
+
+        await service.handleWebhook(Buffer.from('{}'), 'sig_123');
+
+        expect(prisma.tx.billingEvent.create).toHaveBeenCalledWith(expect.objectContaining({
+            data: expect.objectContaining({
+                stripeEventId: 'evt_deleted_after_reconciliation',
+                tenantId: 'tenant-1',
+            }),
+        }));
+        expect(prisma.tx.tenant.update).toHaveBeenCalledWith({
+            where: { id: 'tenant-1' },
+            data: {
+                status: TenantStatus.CANCELLED,
+                stripeSubscriptionId: null,
+                stripeSubscriptionCurrentPeriodEnd: null,
+            },
+        });
+    });
+
+    it('revalidates a finalized subscription binding inside the billing transaction', async () => {
+        const prisma = buildPrismaMock();
+        prisma.tenant.findMany.mockImplementation((args: any) => {
+            if (args.where?.stripeSubscriptionId === 'sub_old') return Promise.resolve([]);
+            if (args.where?.stripeCustomerId === 'cus_123') return Promise.resolve([]);
+            return Promise.resolve([]);
+        });
+        const finalizedTenant = {
+            id: 'tenant-1',
+            status: TenantStatus.CANCELLED,
+            deletedAt: null,
+            retentionLegalHoldAt: null,
+            stripeCustomerId: 'cus_123',
+            stripeSubscriptionId: null,
+            stripeSubscriptionCurrentPeriodEnd: null,
+        };
+        prisma.tx.tenant.findUnique
+            .mockResolvedValueOnce(finalizedTenant)
+            .mockResolvedValueOnce(finalizedTenant)
+            .mockResolvedValueOnce({
+                ...finalizedTenant,
+                status: TenantStatus.ACTIVE,
+                stripeSubscriptionId: 'sub_replacement',
+            });
+        prisma.tx.tenantSetting.findUnique.mockResolvedValue({
+            value: {
+                tenantId: 'tenant-1',
+                kind: 'CUSTOMER_CANCELLATION',
+                state: 'FINALIZED',
+                providerSubscriptionId: 'sub_old',
+                providerResult: { action: 'already_canceled' },
+            },
+        });
+        const event = {
+            id: 'evt_paused_old_after_replacement',
+            created: 201,
+            type: 'customer.subscription.paused',
+            data: {
+                object: {
+                    object: 'subscription',
+                    id: 'sub_old',
+                    customer: 'cus_123',
+                    status: 'paused',
+                    metadata: { tenantId: 'tenant-1' },
+                },
+            },
+        };
+        const { service, stripe } = buildService({ prisma, event });
+
+        await service.handleWebhook(Buffer.from('{}'), 'sig_123');
+
+        expect(prisma.tx.billingEvent.create).toHaveBeenCalledWith(expect.objectContaining({
+            data: expect.objectContaining({
+                stripeEventId: 'evt_paused_old_after_replacement',
+                metadata: expect.objectContaining({
+                    sideEffectDisposition: 'skipped_unverified_subscription',
+                }),
+            }),
+        }));
+        expect(prisma.tx.tenant.update).not.toHaveBeenCalled();
+        expect(stripe.subscriptions.retrieve).not.toHaveBeenCalled();
+    });
+
+    it('revalidates a resolved deleted subscription even without a pre-transaction finalized marker', async () => {
+        const prisma = buildPrismaMock();
+        prisma.tx.tenant.findUnique.mockResolvedValue({
+            id: 'tenant-1',
+            status: TenantStatus.ACTIVE,
+            deletedAt: null,
+            retentionLegalHoldAt: null,
+            stripeCustomerId: 'cus_123',
+            stripeSubscriptionId: 'sub_replacement',
+        });
+        const event = {
+            id: 'evt_deleted_resolved_before_replacement',
+            created: 202,
+            type: 'customer.subscription.deleted',
+            data: {
+                object: {
+                    object: 'subscription',
+                    id: 'sub_123',
+                    customer: 'cus_123',
+                    status: 'canceled',
+                    metadata: { tenantId: 'tenant-1' },
+                },
+            },
+        };
+        const { service, stripe } = buildService({ prisma, event });
+
+        await service.handleWebhook(Buffer.from('{}'), 'sig_123');
+
+        expect(prisma.tx.billingEvent.create).toHaveBeenCalledWith(expect.objectContaining({
+            data: expect.objectContaining({
+                stripeEventId: 'evt_deleted_resolved_before_replacement',
+                metadata: expect.objectContaining({
+                    sideEffectDisposition: 'skipped_unverified_subscription',
+                }),
+            }),
+        }));
+        expect(prisma.tx.tenant.update).not.toHaveBeenCalled();
+        expect(stripe.subscriptions.retrieve).not.toHaveBeenCalled();
+        expect(prisma.tx.tenantSetting.findUnique).not.toHaveBeenCalled();
+    });
+
+    it('fences a terminal subscription webhook behind a committed winning legal hold', async () => {
+        const prisma = buildPrismaMock();
+        prisma.tx.tenant.findUnique.mockResolvedValue({
+            id: 'tenant-1',
+            status: TenantStatus.ACTIVE,
+            deletedAt: null,
+            retentionLegalHoldAt: new Date('2026-07-16T20:00:00.000Z'),
+            stripeCustomerId: 'cus_123',
+            stripeSubscriptionId: 'sub_123',
+        });
+        prisma.tx.tenantSetting.findUnique.mockResolvedValue({
+            value: {
+                kind: 'PLATFORM_ARCHIVE',
+                state: 'COMPENSATION_PENDING',
+                providerAttempts: 1,
+                providerMutationOwned: true,
+                providerResult: { action: 'scheduled' },
+            },
+        });
+        const event = {
+            id: 'evt_deleted_during_archive_hold',
+            type: 'customer.subscription.deleted',
+            data: {
+                object: {
+                    object: 'subscription',
+                    id: 'sub_123',
+                    customer: 'cus_123',
+                    status: 'canceled',
+                    metadata: { tenantId: 'tenant-1' },
+                },
+            },
+        };
+        const { service } = buildService({ prisma, event });
+
+        await service.handleWebhook(
+            Buffer.from('{"id":"evt_deleted_during_archive_hold"}'),
+            'sig_123',
+        );
+
+        expect(prisma.tx.tenant.update).toHaveBeenCalledWith({
+            where: { id: 'tenant-1' },
+            data: {
+                status: TenantStatus.PAST_DUE,
+                stripeSubscriptionId: null,
+                stripeSubscriptionCurrentPeriodEnd: null,
+            },
+        });
+        expect(prisma.tx.tenant.update).not.toHaveBeenCalledWith(expect.objectContaining({
+            data: expect.objectContaining({ status: TenantStatus.CANCELLED }),
+        }));
+    });
+
+    it('does not treat a crash-before-provider attempt as compensation ownership', async () => {
+        const prisma = buildPrismaMock();
+        prisma.tx.tenant.findUnique.mockResolvedValue({
+            id: 'tenant-1',
+            status: TenantStatus.ACTIVE,
+            deletedAt: null,
+            retentionLegalHoldAt: new Date('2026-07-16T20:00:00.000Z'),
+            stripeCustomerId: 'cus_123',
+            stripeSubscriptionId: 'sub_123',
+        });
+        prisma.tx.tenantSetting.findUnique.mockResolvedValue({
+            value: {
+                kind: 'PLATFORM_ARCHIVE',
+                state: 'PENDING_PROVIDER',
+                providerAttempts: 1,
+                providerMutationOwned: null,
+                providerResult: null,
+            },
+        });
+        const event = {
+            id: 'evt_customer_deleted_after_archive_crash',
+            type: 'customer.subscription.deleted',
+            data: {
+                object: {
+                    object: 'subscription',
+                    id: 'sub_123',
+                    customer: 'cus_123',
+                    status: 'canceled',
+                    metadata: { tenantId: 'tenant-1' },
+                },
+            },
+        };
+        const { service } = buildService({ prisma, event });
+
+        await service.handleWebhook(Buffer.from('{}'), 'sig_123');
+
+        expect(prisma.tx.tenant.update).toHaveBeenCalledWith({
+            where: { id: 'tenant-1' },
+            data: {
+                status: TenantStatus.CANCELLED,
+                stripeSubscriptionId: null,
+                stripeSubscriptionCurrentPeriodEnd: null,
             },
         });
     });
@@ -2533,6 +3896,7 @@ describe('StripeService - webhook safety', () => {
             status: TenantStatus.CANCELLED,
             stripeCustomerId: 'cus_123',
             stripeSubscriptionId: null,
+            stripeSubscriptionCurrentPeriodEnd: null,
         });
         const { service } = buildService({ prisma, event: invoicePaidEvent });
 
@@ -2604,6 +3968,7 @@ describe('StripeService - webhook safety', () => {
             data: {
                 status: TenantStatus.PAST_DUE,
                 stripeSubscriptionId: 'sub_123',
+                stripeSubscriptionCurrentPeriodEnd: null,
                 planTier: 'GROWTH',
             },
         });
@@ -2640,6 +4005,7 @@ describe('StripeService - webhook safety', () => {
             data: {
                 status: TenantStatus.ACTIVE,
                 stripeSubscriptionId: 'sub_123',
+                stripeSubscriptionCurrentPeriodEnd: null,
                 planTier: 'STARTER',
             },
         });

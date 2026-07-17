@@ -3,7 +3,8 @@ import { LocationsWorkspace } from './LocationsWorkspace';
 
 export default async function LocationsPage() {
     const user = await requirePermission('locations:read');
-    const canAdd = canPermission(user, 'locations:write');
+    const canWrite = canPermission(user, 'locations:write');
+    const canDelete = canPermission(user, 'locations:delete');
 
-    return <LocationsWorkspace canAdd={canAdd} />;
+    return <LocationsWorkspace canWrite={canWrite} canDelete={canDelete} />;
 }

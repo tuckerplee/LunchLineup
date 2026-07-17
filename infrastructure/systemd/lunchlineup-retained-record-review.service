@@ -1,0 +1,22 @@
+[Unit]
+Description=LunchLineup seven-year retained-record eligibility review
+Documentation=file:/opt/lunchlineup/current/docs/runbooks/data-retention-delete-export.md
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=lunchlineup
+Group=lunchlineup
+WorkingDirectory=/opt/lunchlineup/current
+EnvironmentFile=/etc/lunchlineup/retention-purge.env
+StateDirectory=lunchlineup
+RuntimeDirectory=lunchlineup
+ReadWritePaths=/var/lib/lunchlineup /var/lib/node_exporter/textfile_collector /run/lunchlineup
+ExecStart=/usr/bin/env RETENTION_PURGE_STAGE=retained_records RETENTION_PURGE_DRY_RUN=true RETENTION_PURGE_PROOF_FILE=/var/lib/lunchlineup/proofs/retained-record-review-latest.json RETENTION_PURGE_METRICS_FILE=/var/lib/node_exporter/textfile_collector/lunchlineup_retained_record_review.prom RETENTION_PURGE_LOCK_FILE=/run/lunchlineup/retained-record-review.lock /usr/bin/node /opt/lunchlineup/current/scripts/invoke-retained-record-purge.mjs
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+RestrictSUIDSGID=true
+LockPersonality=true

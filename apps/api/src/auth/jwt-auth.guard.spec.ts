@@ -4,12 +4,12 @@ import { JwtAuthGuard } from './jwt-auth.guard';
 
 const originalEnv = { ...process.env };
 
-function makeContext(request: any) {
+function makeContext(request: any, response: any = { cookie: vi.fn() }) {
     return {
         getHandler: vi.fn(),
         switchToHttp: () => ({
             getRequest: () => request,
-            getResponse: () => ({ cookie: vi.fn() }),
+            getResponse: () => response,
         }),
     } as any;
 }
@@ -26,7 +26,6 @@ describe('JwtAuthGuard service-token routes', () => {
         const guard = new JwtAuthGuard(
             jwtService as any,
             { validateAccessSession: vi.fn() } as any,
-            { getEffectiveAccess: vi.fn() } as any,
             { get: vi.fn().mockReturnValue(false) } as any,
         );
         const request: any = {
@@ -52,7 +51,6 @@ describe('JwtAuthGuard service-token routes', () => {
         const guard = new JwtAuthGuard(
             { verifyAccessToken: vi.fn(() => { throw new Error('not a jwt'); }) } as any,
             { validateAccessSession: vi.fn() } as any,
-            { getEffectiveAccess: vi.fn() } as any,
             { get: vi.fn().mockReturnValue(false) } as any,
         );
         const request = {
@@ -68,8 +66,13 @@ describe('JwtAuthGuard service-token routes', () => {
     it('allows an MFA-required session to read enrollment state before verification', async () => {
         const guard = new JwtAuthGuard(
             { verifyAccessToken: vi.fn().mockReturnValue({ sub: 'u1', tenantId: 't1' }) } as any,
-            { validateAccessSession: vi.fn().mockResolvedValue({ mfaRequired: true, mfaVerified: false }) } as any,
-            { getEffectiveAccess: vi.fn().mockResolvedValue({ permissions: ['settings:write'], roles: [], primaryRole: 'ADMIN' }) } as any,
+            {
+                validateAccessSession: vi.fn().mockResolvedValue({
+                    mfaRequired: true,
+                    mfaVerified: false,
+                    access: { permissions: ['settings:write'], roles: [], primaryRole: 'ADMIN' },
+                }),
+            } as any,
             { get: vi.fn().mockReturnValue(false) } as any,
         );
         const request = {
@@ -85,8 +88,13 @@ describe('JwtAuthGuard service-token routes', () => {
     it('keeps non-MFA routes blocked until required MFA is verified', async () => {
         const guard = new JwtAuthGuard(
             { verifyAccessToken: vi.fn().mockReturnValue({ sub: 'u1', tenantId: 't1' }) } as any,
-            { validateAccessSession: vi.fn().mockResolvedValue({ mfaRequired: true, mfaVerified: false }) } as any,
-            { getEffectiveAccess: vi.fn().mockResolvedValue({ permissions: ['settings:write'], roles: [], primaryRole: 'ADMIN' }) } as any,
+            {
+                validateAccessSession: vi.fn().mockResolvedValue({
+                    mfaRequired: true,
+                    mfaVerified: false,
+                    access: { permissions: ['settings:write'], roles: [], primaryRole: 'ADMIN' },
+                }),
+            } as any,
             { get: vi.fn().mockReturnValue(false) } as any,
         );
         const request = {
@@ -111,9 +119,9 @@ describe('JwtAuthGuard service-token routes', () => {
                     mfaVerified: false,
                     pinResetRequired: true,
                     legacyRole: 'ADMIN',
+                    access: { permissions: ['users:admin'], roles: [], primaryRole: 'ADMIN' },
                 }),
             } as any,
-            { getEffectiveAccess: vi.fn().mockResolvedValue({ permissions: ['users:admin'], roles: [], primaryRole: 'ADMIN' }) } as any,
             { get: vi.fn().mockReturnValue(false) } as any,
         );
         const request = {
@@ -135,9 +143,9 @@ describe('JwtAuthGuard service-token routes', () => {
                     mfaVerified: false,
                     pinResetRequired: true,
                     legacyRole: 'ADMIN',
+                    access: { permissions: ['users:admin'], roles: [], primaryRole: 'ADMIN' },
                 }),
             } as any,
-            { getEffectiveAccess: vi.fn().mockResolvedValue({ permissions: ['users:admin'], roles: [], primaryRole: 'ADMIN' }) } as any,
             { get: vi.fn().mockReturnValue(false) } as any,
         );
         const request = {
@@ -165,13 +173,11 @@ describe('JwtAuthGuard service-token routes', () => {
                     mfaRequired: false,
                     mfaVerified: true,
                     legacyRole: 'STAFF',
-                }),
-            } as any,
-            {
-                getEffectiveAccess: vi.fn().mockResolvedValue({
-                    permissions: ['dashboard:access'],
-                    roles: [{ id: 'role-staff', name: 'Staff' }],
-                    primaryRole: 'Staff',
+                    access: {
+                        permissions: ['dashboard:access'],
+                        roles: [{ id: 'role-staff', name: 'Staff' }],
+                        primaryRole: 'Staff',
+                    },
                 }),
             } as any,
             { get: vi.fn().mockReturnValue(false) } as any,
@@ -187,5 +193,60 @@ describe('JwtAuthGuard service-token routes', () => {
 
         expect(request.user.legacyRole).toBe('STAFF');
         expect(request.user.legacyRole).not.toBe('SUPER_ADMIN');
+        expect(request.user.permissions).toEqual(['dashboard:access']);
     });
+    it('logs token rotation failures without provider messages or unsafe correlation values', async () => {
+        const secret = 'redis://default:rotation-secret@private-cache.internal:6379';
+        const jwtService = {
+            verifyAccessToken: vi.fn().mockReturnValue({
+                sub: 'u1',
+                tenantId: 't1',
+                sessionId: 's1',
+                role: 'ADMIN',
+            }),
+            generateAccessToken: vi.fn().mockReturnValue('rotated-token'),
+        };
+        const guard = new JwtAuthGuard(
+            jwtService as any,
+            {
+                validateAccessSession: vi.fn().mockResolvedValue({
+                    mfaRequired: false,
+                    mfaVerified: true,
+                    legacyRole: 'ADMIN',
+                    accessTokenMaxAgeMs: 60_000,
+                    access: {
+                        permissions: ['dashboard:access'],
+                        roles: [],
+                        primaryRole: 'ADMIN',
+                    },
+                }),
+            } as any,
+            { get: vi.fn().mockReturnValue(false) } as any,
+        );
+        const warn = vi.spyOn((guard as any).logger, 'warn').mockImplementation(() => undefined);
+        const request = {
+            method: 'GET',
+            path: '/api/v1/dashboard',
+            headers: {
+                'x-request-id': 'unsafe request secret=' + secret,
+            },
+            cookies: { access_token: 'access-token' },
+        };
+        const response = {
+            cookie: vi.fn(() => {
+                throw Object.assign(new Error('rotation failed for ' + secret), { code: 'ECONNREFUSED' });
+            }),
+        };
+
+        await expect(guard.canActivate(makeContext(request, response))).resolves.toBe(true);
+
+        const logged = JSON.stringify(warn.mock.calls);
+        expect(logged).toContain('auth.access_token_rotation_skipped');
+        expect(logged).toContain('connectivity');
+        expect(logged).toContain('ECONNREFUSED');
+        expect(logged).not.toContain(secret);
+        expect(logged).not.toContain('rotation failed');
+        expect(logged).not.toContain('unsafe request');
+    });
+
 });

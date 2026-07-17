@@ -1,12 +1,14 @@
-import { Injectable, Logger, UnauthorizedException, BadRequestException } from '@nestjs/common';
+import { Injectable, Logger, OnModuleDestroy, UnauthorizedException, BadRequestException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import * as crypto from 'crypto';
 import Redis from 'ioredis';
+import { operationalErrorLog } from './operational-error';
 
 const OTP_TTL_SECONDS = 600; // 10 minutes
 const OTP_RATE_LIMIT_SECONDS = 60; // 1 OTP per minute per email
 const OTP_MAX_FAILED_ATTEMPTS = 5;
 const OTP_LOCK_SECONDS = 600;
+const OTP_HMAC_SECRET_ENV = 'OTP_HMAC_SECRET';
 const KEY_OTP = (scope: string) => `otp:${scope}`;
 const KEY_RATE = (scope: string) => `otp_rate:${scope}`;
 const KEY_ATTEMPTS = (scope: string) => `otp_attempts:${scope}`;
@@ -58,15 +60,32 @@ export type OtpScopeOptions = {
 };
 
 @Injectable()
-export class OtpService {
+export class OtpService implements OnModuleDestroy {
     private readonly logger = new Logger(OtpService.name);
-    private readonly redis: Redis;
+    private redis?: Redis;
+    private readonly hmacSecret: string;
 
     constructor(private configService: ConfigService) {
-        this.redis = new Redis(
-            this.configService.get<string>('REDIS_URL', 'redis://localhost:6379'),
-        );
-        this.redis.on('error', (err) => this.logger.error(`Redis error: ${err instanceof Error ? err.message : 'unknown_error'}`));
+        const configuredSecret = this.configService.get<string>(OTP_HMAC_SECRET_ENV)?.trim();
+        const production = (this.configService.get<string>('NODE_ENV') ?? process.env.NODE_ENV) === 'production';
+        if (production && (!configuredSecret || configuredSecret.length < 32)) {
+            throw new Error(OTP_HMAC_SECRET_ENV + ' must contain at least 32 characters in production.');
+        }
+        this.hmacSecret = configuredSecret || 'local-development-otp-hmac-secret-v1';
+    }
+
+    onModuleDestroy(): void {
+        this.redis?.disconnect(false);
+    }
+
+    private getRedis(): Redis {
+        if (!this.redis) {
+            this.redis = new Redis(
+                this.configService.get<string>('REDIS_URL', 'redis://localhost:6379'),
+            );
+            this.redis.on('error', (err) => this.logger.error(operationalErrorLog('auth.otp_redis_client_error', err)));
+        }
+        return this.redis;
     }
 
     /**
@@ -81,14 +100,14 @@ export class OtpService {
         const attemptsKey = KEY_ATTEMPTS(scope);
         const lockKey = KEY_LOCK(scope);
         const code = crypto.randomInt(0, 1_000_000).toString().padStart(6, '0');
-        const generated = Number(await this.redis.eval(
+        const generated = Number(await this.getRedis().eval(
             GENERATE_OTP_SCRIPT,
             4,
             otpKey,
             rateKey,
             attemptsKey,
             lockKey,
-            code,
+            this.hashOtp(scope, code),
             String(OTP_TTL_SECONDS),
             String(OTP_RATE_LIMIT_SECONDS),
             String(OTP_MAX_FAILED_ATTEMPTS),
@@ -112,13 +131,13 @@ export class OtpService {
         const attemptsKey = KEY_ATTEMPTS(scope);
         const lockKey = KEY_LOCK(scope);
         const normalizedCode = code.trim();
-        const result = Number(await this.redis.eval(
+        const result = Number(await this.getRedis().eval(
             VERIFY_OTP_SCRIPT,
             3,
             otpKey,
             attemptsKey,
             lockKey,
-            normalizedCode,
+            this.hashOtp(scope, normalizedCode),
             String(OTP_MAX_FAILED_ATTEMPTS),
             String(OTP_LOCK_SECONDS),
         ));
@@ -136,6 +155,14 @@ export class OtpService {
         if (tenantSlug) return `tenant:${tenantSlug}:${normalizedEmail}`;
         if (options.onboarding === true) return `onboarding:${this.onboardingTenantHash(options.tenantName)}:${normalizedEmail}`;
         throw new BadRequestException('Workspace is required');
+    }
+
+    private hashOtp(scope: string, code: string): string {
+        return crypto.createHmac('sha256', this.hmacSecret)
+            .update(scope)
+            .update('\0')
+            .update(code)
+            .digest('hex');
     }
 
     private onboardingTenantHash(value?: string): string {

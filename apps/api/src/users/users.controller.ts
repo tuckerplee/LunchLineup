@@ -1,28 +1,49 @@
-import { Controller, Get, Post, Put, Delete, Param, Body, Req, UseGuards, SetMetadata, Query, HttpCode, HttpStatus, NotFoundException, BadRequestException, ConflictException, ForbiddenException, Optional } from '@nestjs/common';
+import { Controller, Get, Post, Put, Delete, Param, Body, Req, UseGuards, SetMetadata, Query, Headers, HttpCode, HttpStatus, HttpException, NotFoundException, BadRequestException, ConflictException, ForbiddenException, Optional } from '@nestjs/common';
+import { randomInt } from 'node:crypto';
 import { Prisma } from '@prisma/client';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { RbacGuard } from '../auth/rbac.guard';
-import { AuthService } from '../auth/auth.service';
+import { AuthService, type SessionRequestAudit } from '../auth/auth.service';
 import { AllowAuthenticated } from '../auth/require-permission.decorator';
 import { assertTenantCanAddActiveUser } from '../billing/user-capacity';
-import { canonicalPermissionKey, PROTECTED_PERMISSION_KEYS, RbacService } from '../auth/rbac.service';
+import {
+    canonicalPermissionKey,
+    MAX_ROLES_PER_USER,
+    migrationSafeRoleName,
+    PROTECTED_PERMISSION_KEYS,
+    RbacService,
+} from '../auth/rbac.service';
 import { TenantPrismaService, TenantPrismaTransaction } from '../database/tenant-prisma.service';
+import {
+    isPrismaUniqueConstraintConflict,
+    isSerializableTransactionConflict,
+} from '../database/transaction-error';
+import { runSerializableMutationWithRetry } from '../auth/serializable-mutation';
+import {
+    buildBoundedListPage,
+    decodeBoundedListCursor,
+    parseBoundedListLimit,
+} from '../common/bounded-pagination';
+import {
+    ACTIVE_SCHEDULABLE_USER_FILTER,
+    lockTenantSchedulingMutations,
+} from '../common/schedulable-user';
 import {
     normalizeStaffSchedulingProfile,
     NormalizedStaffSchedulingProfile,
     StaffSchedulingProfileInput,
 } from './staff-scheduling-profile';
+import { deleteAvailabilityImportStorageKeys } from '../availability-imports/availability-imports.service';
+import { anonymizeDeletedUser } from './user-deletion';
+import { StaffInvitationOutboxService } from './staff-invitation-outbox.service';
 
 const Permission = (perm: string) => SetMetadata('permission', perm);
 type UserRoleValue = 'SUPER_ADMIN' | 'ADMIN' | 'MANAGER' | 'STAFF';
 type AccessRole = {
     id: string;
+    isSystem?: boolean;
     legacyRole?: string | null;
     rolePermissions: Array<{ permission: { key: string } }>;
-};
-type EffectiveUserAccess = {
-    roles: Array<{ isSystem?: boolean; legacyRole?: string | null }>;
-    permissions: string[];
 };
 type LockedSchedulingProfileUser = { id: string; role: UserRoleValue };
 type SchedulingAvailabilityWindow = NormalizedStaffSchedulingProfile['availability'][number];
@@ -32,12 +53,6 @@ const USER_ROLE: Record<UserRoleValue, UserRoleValue> = {
     ADMIN: 'ADMIN',
     MANAGER: 'MANAGER',
     STAFF: 'STAFF',
-};
-const USER_ROLE_RANK: Record<UserRoleValue, number> = {
-    STAFF: 1,
-    MANAGER: 2,
-    ADMIN: 3,
-    SUPER_ADMIN: 4,
 };
 
 @Controller({ path: 'users', version: '1' })
@@ -53,6 +68,7 @@ export class UsersController {
     constructor(
         private readonly authService: AuthService,
         private readonly rbacService: RbacService,
+        private readonly staffInvitationOutbox: StaffInvitationOutboxService,
         @Optional() tenantDb?: TenantPrismaService,
     ) {
         this.tenantDb = tenantDb ?? new TenantPrismaService();
@@ -87,12 +103,16 @@ export class UsersController {
         if (!Array.isArray(value)) {
             throw new BadRequestException('roleIds must be an array');
         }
-        return Array.from(new Set(value.map((roleId) => {
+        const roleIds = Array.from(new Set(value.map((roleId) => {
             if (typeof roleId !== 'string' || !roleId.trim()) {
                 throw new BadRequestException('roleIds must only contain non-empty strings');
             }
             return roleId.trim();
         })));
+        if (roleIds.length > MAX_ROLES_PER_USER) {
+            throw new BadRequestException(`A user may be assigned at most ${MAX_ROLES_PER_USER} roles`);
+        }
+        return roleIds;
     }
 
     private normalizePermissionKeys(value: unknown): string[] {
@@ -107,32 +127,41 @@ export class UsersController {
         })));
     }
 
-    private usernameFromName(name: string): string {
-        const base = name
-            .toLowerCase()
-            .replace(/[^a-z0-9]+/g, '.')
-            .replace(/^\.+|\.+$/g, '')
-            .slice(0, 28);
-        if (!base) return 'staff.user';
-        return base.length < 3 ? `${base}.usr` : base;
-    }
-
-    private async generateUniqueUsername(tx: TenantPrismaTransaction, tenantId: string, name: string): Promise<string> {
-        const seed = this.usernameFromName(name);
-        let candidate = seed;
-        for (let i = 0; i < 20; i += 1) {
-            const taken = await tx.user.findFirst({
-                where: { tenantId, username: candidate, deletedAt: null },
-                select: { id: true },
-            });
-            if (!taken) return candidate;
-            candidate = `${seed.slice(0, 24)}.${Math.floor(1000 + Math.random() * 9000)}`;
-        }
-        return `${seed.slice(0, 20)}.${Date.now().toString().slice(-6)}`;
-    }
-
     private createTemporaryPin(): string {
-        return Math.floor(100000 + Math.random() * 900000).toString();
+        return randomInt(100_000, 1_000_000).toString();
+    }
+
+    private requestAudit(req: any): SessionRequestAudit {
+        const userAgentHeader = req?.headers?.['user-agent'];
+        return {
+            ipAddress: typeof req?.ip === 'string' ? req.ip : null,
+            userAgent: Array.isArray(userAgentHeader)
+                ? userAgentHeader[0] ?? null
+                : typeof userAgentHeader === 'string'
+                    ? userAgentHeader
+                    : null,
+        };
+    }
+
+    private requestSessionId(req: any): string {
+        const sessionId = typeof req?.user?.sessionId === 'string' ? req.user.sessionId.trim() : '';
+        if (!sessionId) throw new ForbiddenException('A live administrator session is required');
+        return sessionId;
+    }
+
+    private async withActorAuthorizedSerializableMutation<T>(
+        tenantId: string,
+        operation: (tx: TenantPrismaTransaction) => Promise<T>,
+        conflictMessage = 'Authorization or invitation state changed concurrently; retry the request',
+    ): Promise<T> {
+        return runSerializableMutationWithRetry(
+            () => this.tenantDb.withTenant(
+                tenantId,
+                operation,
+                { isolationLevel: 'Serializable' },
+            ),
+            { conflictMessage },
+        );
     }
 
     private async resolveInviteRole(tx: TenantPrismaTransaction, tenantId: string, requestedRole?: UserRoleValue): Promise<UserRoleValue> {
@@ -165,8 +194,9 @@ export class UsersController {
 
     private isSystemAdminRequest(req: any): boolean {
         return req.user?.legacyRole === USER_ROLE.SUPER_ADMIN
-            || (Array.isArray(req.user?.roles)
-                && req.user.roles.some((role: { legacyRole?: string | null }) => role.legacyRole === USER_ROLE.SUPER_ADMIN));
+            && Array.isArray(req.user?.roles)
+            && req.user.roles.some((role: { isSystem?: boolean; legacyRole?: string | null }) =>
+                role.isSystem === true && role.legacyRole === USER_ROLE.SUPER_ADMIN);
     }
 
     private assertCanDelegateRoles(req: any, roles: AccessRole[]): void {
@@ -197,89 +227,11 @@ export class UsersController {
             && permissionKeys.every((key) => actorPermissions.has(key));
     }
 
-    private assertCanGrantLegacyRole(req: any, role: UserRoleValue): void {
-        if (role !== USER_ROLE.SUPER_ADMIN || this.isSystemAdminRequest(req)) return;
-        throw new ForbiddenException('Only system admins can grant system admin access');
-    }
-
     private assertCanUsePermissionKeys(req: any, permissionKeys: string[]): void {
         if (this.isSystemAdminRequest(req)) return;
         if (permissionKeys.some((key) => PROTECTED_PERMISSION_KEYS.has(key))) {
             throw new ForbiddenException('Only system admins can grant protected admin permissions');
         }
-    }
-
-    private highestRoleRank(userRole: UserRoleValue, access: EffectiveUserAccess, includeUserRole = true): number {
-        const assignedRanks = access.roles
-            .map((role) => role.legacyRole)
-            .filter((role): role is UserRoleValue => this.isUserRole(role))
-            .map((role) => USER_ROLE_RANK[role]);
-        return Math.max(includeUserRole ? USER_ROLE_RANK[userRole] : 0, ...assignedRanks, 0);
-    }
-
-    private isTrueSuperAdmin(userRole: UserRoleValue, access: EffectiveUserAccess): boolean {
-        return userRole === USER_ROLE.SUPER_ADMIN
-            && access.roles.some((role) => role.isSystem === true && role.legacyRole === USER_ROLE.SUPER_ADMIN);
-    }
-
-    private async assertCanAdministerUser(
-        req: any,
-        targetId: string,
-        requiredPermission: string,
-        selfMessage: string,
-    ): Promise<void> {
-        const tenantId = req.user.tenantId;
-        const actorId = req.user.sub;
-        if (actorId === targetId) {
-            throw new ForbiddenException(selfMessage);
-        }
-
-        const users = await this.tenantDb.withTenant(tenantId, (tx) => tx.user.findMany({
-            where: {
-                tenantId,
-                id: { in: [actorId, targetId] },
-                deletedAt: null,
-            },
-            select: { id: true, role: true },
-        }));
-        const actor = users.find((user) => user.id === actorId);
-        const target = users.find((user) => user.id === targetId);
-        if (!target) throw new NotFoundException('User not found');
-        if (!actor) throw new ForbiddenException('Administrator account is inactive');
-
-        const [actorAccess, targetAccess] = await Promise.all([
-            this.rbacService.getEffectiveAccess(actor.id, tenantId),
-            this.rbacService.getEffectiveAccess(target.id, tenantId),
-        ]);
-        const actorPermissions = new Set(actorAccess.permissions.map(canonicalPermissionKey));
-        const targetPermissions = new Set(targetAccess.permissions.map(canonicalPermissionKey));
-        if (!actorPermissions.has(requiredPermission)) {
-            throw new ForbiddenException(`${requiredPermission} permission is no longer active for this account`);
-        }
-        if (this.isTrueSuperAdmin(actor.role, actorAccess)) return;
-
-        const actorRank = this.highestRoleRank(
-            actor.role,
-            actorAccess,
-            actor.role !== USER_ROLE.SUPER_ADMIN,
-        );
-        const targetRank = this.highestRoleRank(target.role, targetAccess);
-        const targetHasUnheldPermission = Array.from(targetPermissions)
-            .some((permission) => !actorPermissions.has(permission));
-        const sameEffectivePermissions = actorPermissions.size === targetPermissions.size
-            && !targetHasUnheldPermission;
-        if (actorRank <= targetRank || targetHasUnheldPermission || sameEffectivePermissions) {
-            throw new ForbiddenException('Cannot administer an account with equal or greater access');
-        }
-    }
-
-    private assertCanResetUserPin(req: any, targetId: string): Promise<void> {
-        return this.assertCanAdministerUser(
-            req,
-            targetId,
-            'users:admin',
-            'Use the self-service PIN rotation route for your own account',
-        );
     }
 
     private async lockActiveSchedulingProfileScope(
@@ -293,7 +245,9 @@ export class UsersController {
             FROM "User"
             WHERE "id" = ${userId}
               AND "tenantId" = ${tenantId}
+              AND "role" IN ('MANAGER'::"UserRole", 'STAFF'::"UserRole")
               AND "deletedAt" IS NULL
+              AND "suspendedAt" IS NULL
             FOR UPDATE
         `);
         if (users.length !== 1) throw new NotFoundException('User not found');
@@ -412,33 +366,152 @@ export class UsersController {
 
     @Get()
     @Permission('users:read')
-    async findAll(@Req() req: any, @Query('locationId') _locationId?: string) {
+    async findAll(
+        @Req() req: any,
+        @Query('locationId') _locationId?: string,
+        @Query('limit') limitValue?: string,
+        @Query('cursor') cursorValue?: string,
+    ) {
         const tenantId = req.user.tenantId;
+        const limit = parseBoundedListLimit(limitValue);
+        const cursor = decodeBoundedListCursor(cursorValue);
         await this.rbacService.ensureTenantRoles(tenantId);
-        const users = await this.tenantDb.withTenant(tenantId, (tx) => tx.user.findMany({
-            where: { tenantId, deletedAt: null },
-            orderBy: { createdAt: 'asc' },
-        }));
-
-        const roleAssignments = await Promise.all(
-            users.map((user) => this.rbacService.getUserRoleAssignments(user.id, tenantId)),
-        );
+        const { page, roleAssignmentsByUser, summary } = await this.tenantDb.withTenant(tenantId, async (tx) => {
+            const where: Prisma.UserWhereInput = { tenantId, deletedAt: null };
+            if (cursor) {
+                where.OR = [
+                    { createdAt: { gt: cursor.timestamp } },
+                    { createdAt: cursor.timestamp, id: { gt: cursor.id } },
+                ];
+            }
+            const summary = cursor ? undefined : await this.userDirectorySummary(tx, tenantId);
+            const rows = await tx.user.findMany({
+                where,
+                orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
+                take: limit + 1,
+                select: {
+                    id: true,
+                    createdAt: true,
+                    name: true,
+                    email: true,
+                    username: true,
+                    role: true,
+                    pinHash: true,
+                    pinResetRequired: true,
+                },
+            });
+            const page = buildBoundedListPage(rows, limit, (user) => user.createdAt, {});
+            const assignments = page.data.length === 0
+                ? []
+                : await tx.roleAssignment.findMany({
+                    where: {
+                        tenantId,
+                        userId: { in: page.data.map((user) => user.id) },
+                        role: { tenantId, deletedAt: null },
+                    },
+                    orderBy: [{ userId: 'asc' }, { roleId: 'asc' }],
+                    select: {
+                        userId: true,
+                        role: {
+                            select: {
+                                id: true,
+                                name: true,
+                                description: true,
+                                isSystem: true,
+                                legacyRole: true,
+                                rolePermissions: {
+                                    select: { permission: { select: { key: true } } },
+                                },
+                            },
+                        },
+                    },
+                });
+            const roleAssignmentsByUser = new Map<string, Array<{
+                id: string;
+                name: string;
+                description: string | null;
+                isSystem: boolean;
+                legacyRole: UserRoleValue | null;
+                permissions: string[];
+            }>>();
+            for (const assignment of assignments) {
+                const roles = roleAssignmentsByUser.get(assignment.userId) ?? [];
+                roles.push({
+                    id: assignment.role.id,
+                    name: migrationSafeRoleName(assignment.role.name),
+                    description: assignment.role.description,
+                    isSystem: assignment.role.isSystem,
+                    legacyRole: assignment.role.legacyRole,
+                    permissions: assignment.role.rolePermissions
+                        .map((item) => item.permission.key)
+                        .sort(),
+                });
+                roleAssignmentsByUser.set(assignment.userId, roles);
+            }
+            return { page, roleAssignmentsByUser, summary };
+        });
 
         return {
-            data: users.map((u: any, index: number) => ({
-                id: u.id,
-                name: u.name,
-                email: this.sanitizeEmailForResponse(u.email),
-                username: u.username ?? '',
-                role: u.role,
-                pinEnabled: Boolean(u.pinHash),
-                pinResetRequired: Boolean(u.pinResetRequired),
-                assignedRoles: roleAssignments[index] ?? [],
+            ...page,
+            data: page.data.map((user) => ({
+                id: user.id,
+                name: user.name,
+                email: this.sanitizeEmailForResponse(user.email),
+                username: user.username ?? '',
+                role: user.role,
+                pinEnabled: Boolean(user.pinHash),
+                pinResetRequired: Boolean(user.pinResetRequired),
+                assignedRoles: roleAssignmentsByUser.get(user.id) ?? [],
             })),
             tenantId,
+            ...(summary ? { summary } : {}),
         };
     }
 
+    private async userDirectorySummary(tx: TenantPrismaTransaction, tenantId: string) {
+        const [summary] = await tx.$queryRaw<Array<{
+            totalUsers: number | bigint;
+            staffCount: number | bigint;
+            managerCount: number | bigint;
+            privilegedUsers: number | bigint;
+            pinAccounts: number | bigint;
+        }>>(Prisma.sql`
+            SELECT
+                COUNT(*)::int AS "totalUsers",
+                COUNT(*) FILTER (WHERE user_row."role" IN ('MANAGER', 'STAFF'))::int AS "staffCount",
+                COUNT(*) FILTER (WHERE user_row."role" = 'MANAGER')::int AS "managerCount",
+                COUNT(*) FILTER (
+                    WHERE user_row."role" IN ('SUPER_ADMIN', 'ADMIN')
+                       OR EXISTS (
+                            SELECT 1
+                            FROM "RoleAssignment" assignment
+                            JOIN "Role" role
+                              ON role."id" = assignment."roleId"
+                             AND role."tenantId" = assignment."tenantId"
+                             AND role."deletedAt" IS NULL
+                            JOIN "RolePermission" role_permission
+                              ON role_permission."roleId" = role."id"
+                            JOIN "Permission" permission
+                              ON permission."id" = role_permission."permissionId"
+                            WHERE assignment."tenantId" = user_row."tenantId"
+                              AND assignment."userId" = user_row."id"
+                              AND permission."key" IN ('roles:assign', 'users:admin')
+                       )
+                )::int AS "privilegedUsers",
+                COUNT(*) FILTER (WHERE user_row."username" IS NOT NULL)::int AS "pinAccounts"
+            FROM "User" user_row
+            WHERE user_row."tenantId" = ${tenantId}
+              AND user_row."deletedAt" IS NULL
+        `);
+
+        return {
+            totalUsers: Number(summary?.totalUsers ?? 0),
+            staffCount: Number(summary?.staffCount ?? 0),
+            managerCount: Number(summary?.managerCount ?? 0),
+            privilegedUsers: Number(summary?.privilegedUsers ?? 0),
+            pinAccounts: Number(summary?.pinAccounts ?? 0),
+        };
+    }
     @Get('access/catalog')
     @Permission('roles:read')
     async accessCatalog(@Req() req: any) {
@@ -482,7 +555,7 @@ export class UsersController {
         const tenantId = req.user.tenantId;
         return this.tenantDb.withTenant(tenantId, async (tx) => {
             const user = await tx.user.findFirst({
-                where: { id, tenantId, deletedAt: null },
+                where: { id, tenantId, ...ACTIVE_SCHEDULABLE_USER_FILTER },
                 select: { id: true, name: true },
             });
             if (!user) throw new NotFoundException('User not found');
@@ -533,7 +606,8 @@ export class UsersController {
         ));
 
         return this.tenantDb.withTenant(tenantId, async (tx) => {
-            const user = await this.lockActiveSchedulingProfileScope(tx, tenantId, id, locationIds);
+            await lockTenantSchedulingMutations(tx, tenantId);
+            await this.lockActiveSchedulingProfileScope(tx, tenantId, id, locationIds);
             const [existingSkills, existingAvailability] = await Promise.all([
                 tx.staffSkill.findMany({
                     where: { tenantId, userId: id },
@@ -550,23 +624,21 @@ export class UsersController {
                     },
                 }),
             ]);
-            if (user.role === USER_ROLE.MANAGER || user.role === USER_ROLE.STAFF) {
-                const previousSkills = existingSkills.map((entry) => entry.skill).sort();
-                const changedSkills = Array.from(new Set([
-                    ...previousSkills.filter((skill) => !profile.skills.includes(skill)),
-                    ...profile.skills.filter((skill) => !previousSkills.includes(skill)),
-                ])).sort();
-                const availabilityScopes = this.changedAvailabilityScopes(
-                    existingAvailability,
-                    profile.availability,
-                );
-                await this.invalidateAffectedDraftSchedules(
-                    tx,
-                    tenantId,
-                    changedSkills,
-                    availabilityScopes,
-                );
-            }
+            const previousSkills = existingSkills.map((entry) => entry.skill).sort();
+            const changedSkills = Array.from(new Set([
+                ...previousSkills.filter((skill) => !profile.skills.includes(skill)),
+                ...profile.skills.filter((skill) => !previousSkills.includes(skill)),
+            ])).sort();
+            const availabilityScopes = this.changedAvailabilityScopes(
+                existingAvailability,
+                profile.availability,
+            );
+            await this.invalidateAffectedDraftSchedules(
+                tx,
+                tenantId,
+                changedSkills,
+                availabilityScopes,
+            );
             await tx.staffAvailability.deleteMany({ where: { tenantId, userId: id } });
             await tx.staffSkill.deleteMany({ where: { tenantId, userId: id } });
             if (profile.skills.length > 0) {
@@ -677,20 +749,35 @@ export class UsersController {
         const tenantId = req.user.tenantId;
 
         const requestedRoleId = (body.roleId || '').trim();
-        const availableRoles = await this.rbacService.listRolesForTenant(tenantId);
-        const { user, temporaryPin } = await this.tenantDb.withTenant(tenantId, async (tx) => {
+        const actorSessionId = this.requestSessionId(req);
+        const { user, temporaryPin, invitationDelivery } = await this.withActorAuthorizedSerializableMutation(
+            tenantId,
+            async (tx) => {
             await assertTenantCanAddActiveUser(tx as any, tenantId);
             const requestedLegacyRole = requestedRoleId
                 ? null
                 : await this.resolveInviteRole(tx, tenantId, body.role);
-            const selectedRole = requestedRoleId
-                ? availableRoles.find((role) => role.id === requestedRoleId)
-                : availableRoles.find((role) => role.legacyRole === requestedLegacyRole);
-
-            if (!selectedRole) {
-                throw new BadRequestException('Selected role is invalid for this tenant');
-            }
-            this.assertCanDelegateRoles(req, [selectedRole]);
+            const archivedUser = await tx.user.findFirst({
+                where: {
+                    tenantId,
+                    deletedAt: { not: null },
+                    ...(normalizedEmail
+                        ? { email: normalizedEmail }
+                        : { username: normalizedUsername }),
+                },
+                select: { id: true },
+            });
+            const selectedRole = await this.rbacService.authorizeUserInvitationInTransaction(
+                tx,
+                tenantId,
+                {
+                    actorUserId: req.user.sub,
+                    actorSessionId,
+                    targetUserId: archivedUser?.id,
+                    requestedRoleId: requestedRoleId || undefined,
+                    requestedLegacyRole: requestedLegacyRole ?? undefined,
+                },
+            );
 
             const selectedPermissions = selectedRole.rolePermissions.map((item) => item.permission.key);
             const allowsEmail = selectedPermissions.includes('auth:login_email');
@@ -706,16 +793,6 @@ export class UsersController {
                 throw new BadRequestException('Username and PIN login is not enabled for the selected role');
             }
 
-            const archivedUser = await tx.user.findFirst({
-                where: {
-                    tenantId,
-                    deletedAt: { not: null },
-                    ...(normalizedEmail
-                        ? { email: normalizedEmail }
-                        : { username: normalizedUsername }),
-                },
-                select: { id: true },
-            });
             const identityData = {
                 email: normalizedEmail || null,
                 username: normalizedUsername,
@@ -769,19 +846,31 @@ export class UsersController {
             if (archivedUser) {
                 await this.invalidateArchivedUserAuthState(tx, tenantId, user.id, now);
             }
+            const invitationDelivery = normalizedEmail
+                ? this.staffInvitationOutbox.toResponse(
+                    await this.staffInvitationOutbox.enqueueInTransaction(tx, {
+                        tenantId,
+                        userId: user.id,
+                        recipient: normalizedEmail,
+                    }),
+                )
+                : this.staffInvitationOutbox.notApplicable();
 
             await tx.auditLog.create({
                 data: {
                     tenantId,
                     userId: req.user.sub,
+                    actorUserId: req.user.sub,
+                    actorTenantId: tenantId,
                     action: archivedUser ? 'USER_REACTIVATED' : 'USER_INVITED',
                     resource: 'User',
                     resourceId: user.id
                 }
             });
 
-            return { user, temporaryPin };
-        });
+            return { user, temporaryPin, invitationDelivery };
+            },
+        );
 
 
         return {
@@ -793,8 +882,78 @@ export class UsersController {
             pinEnabled: Boolean(user.pinHash) || Boolean(normalizedUsername),
             pinResetRequired: Boolean(normalizedUsername) && !normalizedPin,
             temporaryPin,
+            invitationDelivery,
             assignedRoles: await this.rbacService.getUserRoleAssignments(user.id, tenantId),
             status: 'INVITED',
+        };
+    }
+
+    @Get(':id/invitation')
+    @Permission('users:admin')
+    async invitationStatus(@Param('id') id: string, @Req() req: any) {
+        const tenantId = req.user.tenantId;
+        return {
+            invitationDelivery: await this.tenantDb.withTenant(
+                tenantId,
+                (tx) => this.staffInvitationOutbox.statusInTransaction(tx, tenantId, id),
+            ),
+        };
+    }
+
+    @Post(':id/invitation/retry')
+    @Permission('users:admin')
+    async retryInvitation(@Param('id') id: string, @Req() req: any) {
+        const tenantId = req.user.tenantId;
+        const actorSessionId = this.requestSessionId(req);
+        return {
+            invitationDelivery: await this.withActorAuthorizedSerializableMutation(
+                tenantId,
+                async (tx) => {
+                    await this.rbacService.authorizeUserAdministrationInTransaction(tx, tenantId, {
+                        actorUserId: req.user.sub,
+                        actorSessionId,
+                        targetUserId: id,
+                        requiredPermission: 'users:admin',
+                        selfMutationMessage: 'You cannot retry your own invitation delivery',
+                    });
+                    return this.staffInvitationOutbox.retryInTransaction(tx, {
+                        tenantId,
+                        userId: id,
+                        actorUserId: req.user.sub,
+                    });
+                },
+            ),
+        };
+    }
+
+    @Post(':id/invitation/reissue')
+    @Permission('users:admin')
+    async reissueInvitation(
+        @Param('id') id: string,
+        @Req() req: any,
+        @Headers('idempotency-key') idempotencyKey?: string,
+    ) {
+        const tenantId = req.user.tenantId;
+        const actorSessionId = this.requestSessionId(req);
+        return {
+            invitationDelivery: await this.withActorAuthorizedSerializableMutation(
+                tenantId,
+                async (tx) => {
+                    await this.rbacService.authorizeUserAdministrationInTransaction(tx, tenantId, {
+                        actorUserId: req.user.sub,
+                        actorSessionId,
+                        targetUserId: id,
+                        requiredPermission: 'users:admin',
+                        selfMutationMessage: 'You cannot reissue your own invitation delivery',
+                    });
+                    return this.staffInvitationOutbox.reissueInTransaction(tx, {
+                        tenantId,
+                        userId: id,
+                        actorUserId: req.user.sub,
+                        idempotencyKey,
+                    });
+                },
+            ),
         };
     }
 
@@ -802,83 +961,54 @@ export class UsersController {
     @Permission('users:admin')
     async updateRole(@Param('id') id: string, @Body() body: { role: UserRoleValue }, @Req() req: any) {
         const role = this.parseUserRole(body.role);
-        this.assertCanGrantLegacyRole(req, role);
         const tenantId = req.user.tenantId;
-        await this.assertCanAdministerUser(
-            req,
-            id,
-            'users:admin',
-            'You cannot change your own role',
-        );
-        const selectedRole = (await this.rbacService.listRolesForTenant(tenantId))
-            .find((tenantRole) => tenantRole.legacyRole === role);
-        if (!selectedRole) throw new BadRequestException('Selected role is invalid for this tenant');
-        this.assertCanDelegateRoles(req, [selectedRole]);
-
-        await this.tenantDb.withTenant(tenantId, async (tx) => {
-            const updated = await tx.user.updateMany({
-                where: { id, tenantId },
-                data: { role },
-            });
-            if (updated.count === 0) throw new NotFoundException('User not found');
-            await this.rbacService.assignRolesToUserInTransaction(tx, id, tenantId, [selectedRole.id]);
+        const replacement = await this.rbacService.replaceUserRolesAsActor(tenantId, {
+            actorUserId: req.user.sub,
+            actorSessionId: this.requestSessionId(req),
+            targetUserId: id,
+            legacyRole: role,
+            requiredPermission: 'users:admin',
+            selfMutationMessage: 'You cannot change your own role',
+            auditAction: 'USER_ROLE_UPDATED',
         });
         return {
             id,
-            role,
-            assignedRoles: await this.rbacService.getUserRoleAssignments(id, req.user.tenantId),
+            role: replacement.legacyRole,
+            assignedRoles: replacement.assignedRoles,
         };
     }
 
     @Post(':id/pin/reset')
     @Permission('users:admin')
-    async resetUserPin(@Param('id') id: string, @Body() body: { pin?: string }, @Req() req: any) {
+    async resetUserPin(@Param('id') id: string, @Body() body: { pin?: unknown }, @Req() req: any) {
         const tenantId = req.user.tenantId;
-        await this.assertCanResetUserPin(req, id);
-        const { user, username } = await this.tenantDb.withTenant(tenantId, async (tx) => {
-            const user = await tx.user.findFirst({
-                where: { id, tenantId, deletedAt: null },
-                select: { id: true, username: true, role: true, name: true, email: true },
-            });
-            if (!user) throw new NotFoundException('User not found');
+        const requestedPin = typeof body?.pin === 'string' ? body.pin.trim() : body?.pin;
+        const newPin = requestedPin === undefined || requestedPin === ''
+            ? this.createTemporaryPin()
+            : requestedPin;
+        const reset = await this.authService.resetUserPinAsAdmin(
+            id,
+            newPin,
+            tenantId,
+            req.user.sub,
+            this.requestSessionId(req),
+            this.requestAudit(req),
+        );
 
-            let username = user.username;
-            if (!username) {
-                const canBootstrapUsername = !user.email || this.isSystemGeneratedEmail(user.email);
-                if (!canBootstrapUsername) {
-                    throw new BadRequestException('PIN reset is only available for username accounts');
-                }
-
-                username = await this.generateUniqueUsername(tx, tenantId, user.name);
-                await tx.user.update({
-                    where: { id: user.id },
-                    data: { username },
-                });
-            }
-
-            await tx.auditLog.create({
-                data: {
-                    tenantId,
-                    userId: req.user.sub,
-                    action: 'USER_PIN_RESET',
-                    resource: 'User',
-                    resourceId: user.id,
-                },
-            });
-
-            return { user, username };
-        });
-
-        const newPin = (body.pin || '').trim() || this.createTemporaryPin();
-        await this.authService.setUserPin(user.id, newPin, true, tenantId);
-
-        return { id: user.id, username, temporaryPin: newPin, pinResetRequired: true };
+        return { id, username: reset.username, temporaryPin: newPin, pinResetRequired: true };
     }
 
     @Put('me/pin')
     @AllowAuthenticated()
     async rotateOwnPin(@Req() req: any, @Body() body: { currentPin: string; newPin: string }) {
-        await this.authService.rotateOwnPin(req.user.sub, body.currentPin, body.newPin, req.user.tenantId);
+        await this.authService.rotateOwnPin(
+            req.user.sub,
+            body.currentPin,
+            body.newPin,
+            req.user.tenantId,
+            this.requestSessionId(req),
+            this.requestAudit(req),
+        );
         return { success: true };
     }
 
@@ -887,33 +1017,45 @@ export class UsersController {
     @HttpCode(HttpStatus.NO_CONTENT)
     async deactivate(@Param('id') id: string, @Req() req: any) {
         const tenantId = req.user.tenantId;
-        await this.assertCanAdministerUser(
-            req,
-            id,
-            'users:admin',
-            'You cannot deactivate your own account',
-        );
-        await this.tenantDb.withTenant(tenantId, async (tx) => {
-            const user = await tx.user.findFirst({
-                where: { id, tenantId, deletedAt: null },
-                select: { id: true },
-            });
-            if (!user) throw new NotFoundException('User not found');
-
-            await tx.user.updateMany({
-                where: { id: user.id, tenantId },
-                data: { deletedAt: new Date() }
-            });
-            await tx.session.updateMany({
-                where: {
-                    userId: user.id,
-                    user: {
-                        tenantId,
+        const actorSessionId = this.requestSessionId(req);
+        const storageKeys = await this.withActorAuthorizedSerializableMutation(
+            tenantId,
+            async (tx) => {
+                await tx.$queryRaw(Prisma.sql`
+                    SELECT "id"
+                    FROM "Tenant"
+                    WHERE "id" = ${tenantId}
+                    FOR UPDATE
+                `);
+                const user = await this.rbacService.authorizeUserAdministrationInTransaction(
+                    tx,
+                    tenantId,
+                    {
+                        actorUserId: req.user.sub,
+                        actorSessionId,
+                        targetUserId: id,
+                        requiredPermission: 'users:admin',
+                        selfMutationMessage: 'You cannot deactivate your own account',
                     },
-                },
-                data: { revokedAt: new Date() }
-            });
-        });
+                );
+                const deletedAt = new Date();
+                const cleanup = await anonymizeDeletedUser(tx, tenantId, user.id, deletedAt);
+                await tx.auditLog.create({
+                    data: {
+                        tenantId,
+                        userId: req.user.sub,
+                        actorUserId: req.user.sub,
+                        actorTenantId: tenantId,
+                        action: 'USER_DELETED',
+                        resource: 'User',
+                        resourceId: user.id,
+                    },
+                });
+                return cleanup.availabilityImportStorageKeys;
+            },
+            'Authorization changed during user deactivation; retry the request',
+        );
+        await deleteAvailabilityImportStorageKeys(storageKeys);
     }
 
     @Get(':id/access')
@@ -934,30 +1076,17 @@ export class UsersController {
     @Permission('roles:assign')
     async updateUserAccess(@Param('id') id: string, @Body() body: { roleIds: string[] }, @Req() req: any) {
         const tenantId = req.user.tenantId;
-        await this.assertCanAdministerUser(
-            req,
-            id,
-            'roles:assign',
-            'You cannot change your own access roles',
-        );
-        const user = await this.tenantDb.withTenant(tenantId, (tx) => tx.user.findFirst({
-            where: { id, tenantId, deletedAt: null },
-            select: { id: true },
-        }));
-        if (!user) throw new NotFoundException('User not found');
-
         const requestedRoleIds = this.normalizeRoleIds(body.roleIds);
-        if (requestedRoleIds.length > 0) {
-            const requestedRoles = (await this.rbacService.listRolesForTenant(tenantId))
-                .filter((role) => requestedRoleIds.includes(role.id));
-            if (requestedRoles.length !== requestedRoleIds.length) {
-                throw new BadRequestException('One or more roles are invalid for this tenant');
-            }
-            this.assertCanDelegateRoles(req, requestedRoles);
-        }
-
-        const assignedRoles = await this.rbacService.assignRolesToUser(id, tenantId, requestedRoleIds);
-        return { id, assignedRoles };
+        const replacement = await this.rbacService.replaceUserRolesAsActor(tenantId, {
+            actorUserId: req.user.sub,
+            actorSessionId: this.requestSessionId(req),
+            targetUserId: id,
+            roleIds: requestedRoleIds,
+            requiredPermission: 'roles:assign',
+            selfMutationMessage: 'You cannot change your own access roles',
+            auditAction: 'USER_ACCESS_UPDATED',
+        });
+        return { id, assignedRoles: replacement.assignedRoles };
     }
 
     @Post('roles')
@@ -968,11 +1097,16 @@ export class UsersController {
     ) {
         const permissionKeys = this.normalizePermissionKeys(body.permissionKeys);
         this.assertCanUsePermissionKeys(req, permissionKeys);
+        const requestAudit = this.requestAudit(req);
         try {
             const role = await this.rbacService.createRole(
                 req.user.tenantId,
                 { ...body, permissionKeys },
-                { actorUserId: req.user.sub },
+                {
+                    actorUserId: req.user.sub,
+                    actorSessionId: this.requestSessionId(req),
+                    ...requestAudit,
+                },
             );
             return {
                 id: role.id,
@@ -982,8 +1116,11 @@ export class UsersController {
                 permissions: role.rolePermissions.map((item) => item.permission.key).sort(),
             };
         } catch (error) {
-            if (error instanceof BadRequestException || error instanceof ForbiddenException) throw error;
-            throw new ConflictException(error instanceof Error ? error.message : 'Unable to create role');
+            if (error instanceof HttpException) throw error;
+            if (isPrismaUniqueConstraintConflict(error) || isSerializableTransactionConflict(error)) {
+                throw new ConflictException('Unable to create role');
+            }
+            throw error;
         }
     }
 
@@ -996,11 +1133,16 @@ export class UsersController {
     ) {
         const permissionKeys = this.normalizePermissionKeys(body.permissionKeys);
         this.assertCanUsePermissionKeys(req, permissionKeys);
+        const requestAudit = this.requestAudit(req);
         const role = await this.rbacService.updateRole(
             req.user.tenantId,
             roleId,
             { ...body, permissionKeys },
-            { actorUserId: req.user.sub },
+            {
+                actorUserId: req.user.sub,
+                actorSessionId: this.requestSessionId(req),
+                ...requestAudit,
+            },
         );
         if (!role) throw new NotFoundException('Role not found');
         return {
@@ -1017,7 +1159,16 @@ export class UsersController {
     @Permission('roles:write')
     @HttpCode(HttpStatus.NO_CONTENT)
     async deleteAccessRole(@Param('roleId') roleId: string, @Req() req: any) {
-        const deleted = await this.rbacService.deleteRole(req.user.tenantId, roleId);
+        const requestAudit = this.requestAudit(req);
+        const deleted = await this.rbacService.deleteRole(
+            req.user.tenantId,
+            roleId,
+            {
+                actorUserId: req.user.sub,
+                actorSessionId: this.requestSessionId(req),
+                ...requestAudit,
+            },
+        );
         if (!deleted) {
             throw new NotFoundException('Role not found or cannot be deleted');
         }

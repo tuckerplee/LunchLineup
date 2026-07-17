@@ -1,5 +1,5 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { BadRequestException, ConflictException, ServiceUnavailableException } from '@nestjs/common';
+import { describe, it, expect, vi, afterEach } from 'vitest';
+import { BadRequestException, ConflictException } from '@nestjs/common';
 import { TenantPrismaService } from '../database/tenant-prisma.service';
 import { MeteringService } from './metering.service';
 import { PlanTier } from './plans.config';
@@ -7,6 +7,7 @@ import { PlanTier } from './plans.config';
 // Utility to build a spy Prisma mock
 function buildPrismaMock(overrides: Record<string, any> = {}) {
     const prisma = {
+        $executeRaw: vi.fn().mockResolvedValue(1),
         $queryRaw: vi.fn().mockResolvedValue([{ set_current_tenant: null }]),
         $transaction: vi.fn(),
         tenant: {
@@ -45,384 +46,215 @@ afterEach(() => {
     vi.useRealTimers();
 });
 
-describe('MeteringService â€“ grantCredits', () => {
-    let service: MeteringService;
-    let prisma: ReturnType<typeof buildPrismaMock>;
-    let balance: number;
-    let ledger: any;
-
-    beforeEach(() => {
-        balance = 0;
-        ledger = null;
-        prisma = buildPrismaMock({
-            tx: {
-                $queryRaw: vi.fn().mockResolvedValue([{ set_current_tenant: null }]),
-                tenant: {
-                    update: vi.fn(async ({ data }: any) => {
-                        balance += data.usageCredits.increment;
-                        return { usageCredits: balance };
-                    }),
-                    findUniqueOrThrow: vi.fn(async () => ({ usageCredits: balance })),
-                },
-                creditTransaction: {
-                    findUnique: vi.fn(async ({ where }: any) => ledger?.id === where.id ? ledger : null),
-                    create: vi.fn(async ({ data }: any) => {
-                        ledger = data;
-                        return ledger;
-                    }),
-                },
+describe('MeteringService - credit grants', () => {
+    function buildGrantHarness(existing: any = null) {
+        const tx = {
+            $executeRaw: vi.fn().mockResolvedValue(0),
+            $queryRaw: vi.fn().mockResolvedValue([{ id: 'tenant-1' }]),
+            creditTransaction: {
+                findUnique: vi.fn().mockResolvedValue(existing),
+                create: vi.fn().mockResolvedValue({}),
             },
+            tenant: {
+                update: vi.fn().mockResolvedValue({ usageCredits: 15 }),
+            },
+        };
+        return {
+            tx,
+            service: new MeteringService(new TenantPrismaService(buildPrismaMock() as any)),
+        };
+    }
+
+    it('locks the tenant and stores the exact post-grant balance in the ledger', async () => {
+        const h = buildGrantHarness();
+
+        await expect(h.service.grantCreditsInTransaction(h.tx as any, {
+            tenantId: ' tenant-1 ',
+            amount: 5,
+            reason: ' Correction grant ',
+            idempotencyKey: ' grant-request-1 ',
+        })).resolves.toEqual({
+            transactionId: expect.stringMatching(/^admin-credit-grant-[a-f0-9]{64}$/),
+            newBalance: 15,
+            replayed: false,
         });
 
-        // Wire the $transaction to call the function with the tx overrides
-        prisma.$transaction = vi.fn(async (fn: any) => fn((prisma as any).tx));
-
-        service = new MeteringService(new TenantPrismaService(prisma as any));
-    });
-
-    it('should reject non-positive amounts', async () => {
-        await expect(service.grantCredits('tenant-1', 0, 'test')).rejects.toBeInstanceOf(BadRequestException);
-        await expect(service.grantCredits('tenant-1', -5, 'test')).rejects.toBeInstanceOf(BadRequestException);
-    });
-
-    it('should increment tenant usageCredits and create a ledger entry', async () => {
-        const result = await service.grantCredits('tenant-1', 100, 'Beta Signup Bonus', 'grant-1');
-        expect(result).toBe(100);
-        expect((prisma as any).tx.tenant.update).toHaveBeenCalledWith({
-            where: { id: 'tenant-1' },
-            data: { usageCredits: { increment: 100 } }
-        });
-        expect((prisma as any).tx.creditTransaction.create).toHaveBeenCalledWith({
+        expect(h.tx.creditTransaction.create).toHaveBeenCalledWith({
             data: {
                 id: expect.stringMatching(/^admin-credit-grant-[a-f0-9]{64}$/),
                 tenantId: 'tenant-1',
-                amount: 100,
-                reason: 'Beta Signup Bonus',
-            }
+                amount: 5,
+                reason: 'Correction grant',
+                balanceAfter: 15,
+            },
+            select: { id: true },
         });
-        expect((prisma as any).tx.creditTransaction.create.mock.invocationCallOrder[0]).toBeLessThan(
-            (prisma as any).tx.tenant.update.mock.invocationCallOrder[0],
-        );
-    });
-
-    it('replays a committed grant without incrementing credits twice', async () => {
-        await expect(service.grantCredits('tenant-1', 100, 'Beta Signup Bonus', 'lost-response-1')).resolves.toBe(100);
-        await expect(service.grantCredits('tenant-1', 100, 'Beta Signup Bonus', 'lost-response-1')).resolves.toBe(100);
-
-        expect((prisma as any).tx.creditTransaction.create).toHaveBeenCalledTimes(1);
-        expect((prisma as any).tx.tenant.update).toHaveBeenCalledTimes(1);
-        expect((prisma as any).tx.tenant.findUniqueOrThrow).toHaveBeenCalledWith({
+        expect(h.tx.tenant.update).toHaveBeenCalledWith({
             where: { id: 'tenant-1' },
+            data: { usageCredits: { increment: 5 } },
             select: { usageCredits: true },
         });
-    });
-
-    it('rejects reuse of a key with a different grant payload', async () => {
-        await service.grantCredits('tenant-1', 100, 'Beta Signup Bonus', 'conflict-1');
-
-        await expect(
-            service.grantCredits('tenant-1', 50, 'Correction', 'conflict-1'),
-        ).rejects.toBeInstanceOf(ConflictException);
-
-        expect((prisma as any).tx.creditTransaction.create).toHaveBeenCalledTimes(1);
-        expect((prisma as any).tx.tenant.update).toHaveBeenCalledTimes(1);
-    });
-
-    it('recovers a duplicate-key race by replaying the committed ledger row', async () => {
-        const tx = (prisma as any).tx;
-        const committed = {
-            id: 'admin-credit-grant-race',
-            tenantId: 'tenant-1',
-            amount: 100,
-            reason: 'Beta Signup Bonus',
-        };
-        tx.creditTransaction.findUnique
-            .mockResolvedValueOnce(null)
-            .mockResolvedValueOnce(committed);
-        tx.creditTransaction.create.mockRejectedValueOnce({ code: 'P2002' });
-
-        await expect(
-            service.grantCredits('tenant-1', 100, 'Beta Signup Bonus', 'race-1'),
-        ).resolves.toBe(0);
-
-        expect(tx.tenant.update).not.toHaveBeenCalled();
-        expect(tx.tenant.findUniqueOrThrow).toHaveBeenCalledTimes(1);
-    });
-});
-
-describe('MeteringService - reportUsageToStripe', () => {
-    it('requires a tenant id before reporting usage', async () => {
-        const service = new MeteringService(new TenantPrismaService(buildPrismaMock() as any));
-
-        await expect(service.reportUsageToStripe('')).rejects.toBeInstanceOf(BadRequestException);
-    });
-
-    it('fails closed when Stripe metered usage is disabled', async () => {
-        const service = new MeteringService(new TenantPrismaService(buildPrismaMock() as any));
-
-        await expect(service.reportUsageToStripe('tenant-1')).rejects.toBeInstanceOf(ServiceUnavailableException);
-    });
-
-    it('persists active-staff usage before posting an idempotent Stripe meter event', async () => {
-        vi.useFakeTimers();
-        vi.setSystemTime(new Date('2026-07-09T12:30:00.000Z'));
-        process.env.STRIPE_METERED_USAGE_ENABLED = 'true';
-        process.env.STRIPE_METER_EVENT_NAME = 'll.active_staff';
-
-        let usageEvent: any;
-        const tx = {
-            $queryRaw: vi.fn().mockResolvedValue([{ set_current_tenant: null }]),
-            tenant: {
-                findUnique: vi.fn().mockResolvedValue({ id: 'tenant-1', stripeCustomerId: 'cus_live_123' }),
-            },
-            user: {
-                count: vi.fn().mockResolvedValue(7),
-            },
-            stripeUsageEvent: {
-                findUnique: vi.fn().mockResolvedValue(null),
-                create: vi.fn(async ({ data }: any) => {
-                    usageEvent = { id: 'usage-1', attempts: 0, sentAt: null, ...data };
-                    return usageEvent;
-                }),
-                update: vi.fn(async ({ data }: any) => {
-                    usageEvent = {
-                        ...usageEvent,
-                        ...data,
-                        attempts: typeof data.attempts === 'object' ? usageEvent.attempts + data.attempts.increment : usageEvent.attempts,
-                    };
-                    return usageEvent;
-                }),
-            },
-        };
-        const prisma = buildPrismaMock({ tx });
-        prisma.$transaction = vi.fn(async (fn: any) => fn(tx));
-        const stripeMeterEvents = {
-            createMeterEvent: vi.fn().mockResolvedValue({ id: 'mtr_evt_123', requestId: 'req_123' }),
-        };
-        const service = new MeteringService(new TenantPrismaService(prisma as any), stripeMeterEvents as any);
-
-        const result = await service.reportUsageToStripe('tenant-1');
-
-        expect(tx.stripeUsageEvent.findUnique).toHaveBeenCalledWith({
-            where: {
-                tenantId_metric_periodStart_periodEnd: {
-                    tenantId: 'tenant-1',
-                    metric: 'ACTIVE_STAFF',
-                    periodStart: new Date('2026-07-09T00:00:00.000Z'),
-                    periodEnd: new Date('2026-07-10T00:00:00.000Z'),
-                },
-            },
-        });
-
-        expect(tx.stripeUsageEvent.create).toHaveBeenCalledWith({
-            data: expect.objectContaining({
-                tenantId: 'tenant-1',
-                metric: 'ACTIVE_STAFF',
-                quantity: 7,
-                eventName: 'll.active_staff',
-                stripeCustomerId: 'cus_live_123',
-                status: 'PENDING',
-            }),
-        });
-        expect(tx.stripeUsageEvent.create.mock.invocationCallOrder[0]).toBeLessThan(
-            stripeMeterEvents.createMeterEvent.mock.invocationCallOrder[0],
+        expect(h.tx.$queryRaw).toHaveBeenCalledOnce();
+        expect(h.tx.$executeRaw).toHaveBeenCalledOnce();
+        expect(Array.from(h.tx.$executeRaw.mock.calls[0][0] as TemplateStringsArray).join(' ')).toContain(
+            'LOCK TABLE "Tenant", "CreditTransaction" IN ROW EXCLUSIVE MODE',
         );
-        expect(stripeMeterEvents.createMeterEvent).toHaveBeenCalledWith(expect.objectContaining({
-            eventName: 'll.active_staff',
-            stripeCustomerId: 'cus_live_123',
-            value: 7,
-            identifier: expect.stringMatching(/^ll_active_staff_20260709_[a-f0-9]{24}$/),
-            idempotencyKey: expect.stringMatching(/^stripe_usage_ll_active_staff_20260709_[a-f0-9]{24}$/),
-        }));
-        expect(result).toEqual(expect.objectContaining({
-            id: 'usage-1',
-            status: 'SENT',
-            quantity: 7,
-            stripeObjectId: 'mtr_evt_123',
-            stripeRequestId: 'req_123',
-        }));
+        expect(h.tx.$executeRaw.mock.invocationCallOrder[0])
+            .toBeLessThan(h.tx.$queryRaw.mock.invocationCallOrder[0]);
+        expect(h.tx.$queryRaw.mock.invocationCallOrder[0])
+            .toBeLessThan(h.tx.tenant.update.mock.invocationCallOrder[0]);
+        expect(h.tx.tenant.update.mock.invocationCallOrder[0])
+            .toBeLessThan(h.tx.creditTransaction.create.mock.invocationCallOrder[0]);
     });
 
-    it('keeps a failed outbox row retryable when Stripe rejects the meter event', async () => {
-        vi.useFakeTimers();
-        vi.setSystemTime(new Date('2026-07-09T12:30:00.000Z'));
-        process.env.STRIPE_METERED_USAGE_ENABLED = 'true';
-        process.env.STRIPE_METER_EVENT_NAME = 'll.active_staff';
-
-        let usageEvent: any;
-        const tx = {
-            $queryRaw: vi.fn().mockResolvedValue([{ set_current_tenant: null }]),
-            tenant: {
-                findUnique: vi.fn().mockResolvedValue({ id: 'tenant-1', stripeCustomerId: 'cus_live_123' }),
-            },
-            user: {
-                count: vi.fn().mockResolvedValue(7),
-            },
-            stripeUsageEvent: {
-                findUnique: vi.fn().mockResolvedValue(null),
-                create: vi.fn(async ({ data }: any) => {
-                    usageEvent = { id: 'usage-1', attempts: 0, sentAt: null, ...data };
-                    return usageEvent;
-                }),
-                update: vi.fn(async ({ data }: any) => {
-                    usageEvent = {
-                        ...usageEvent,
-                        ...data,
-                        attempts: typeof data.attempts === 'object' ? usageEvent.attempts + data.attempts.increment : usageEvent.attempts,
-                    };
-                    return usageEvent;
-                }),
-            },
-        };
-        const prisma = buildPrismaMock({ tx });
-        prisma.$transaction = vi.fn(async (fn: any) => fn(tx));
-        const stripeMeterEvents = {
-            createMeterEvent: vi.fn().mockRejectedValue(new Error('stripe timeout')),
-        };
-        const service = new MeteringService(new TenantPrismaService(prisma as any), stripeMeterEvents as any);
-
-        await expect(service.reportUsageToStripe('tenant-1')).rejects.toBeInstanceOf(ServiceUnavailableException);
-
-        expect(tx.stripeUsageEvent.update).toHaveBeenCalledWith(expect.objectContaining({
-            where: { id: 'usage-1' },
-            data: expect.objectContaining({
-                status: 'FAILED',
-                lastError: 'stripe timeout',
-            }),
-        }));
-    });
-
-    it('retries one logical snapshot with rotated transport identities and retained rejection metadata', async () => {
-        vi.useFakeTimers();
-        vi.setSystemTime(new Date('2026-07-09T12:30:00.000Z'));
-        process.env.STRIPE_METERED_USAGE_ENABLED = 'true';
-        process.env.STRIPE_METER_EVENT_NAME = 'll.active_staff';
-
-        let usageEvent: any = {
-            id: 'usage-rotated',
+    it('replays the stored original grant balance after intervening wallet changes', async () => {
+        const h = buildGrantHarness({
             tenantId: 'tenant-1',
-            metric: 'ACTIVE_STAFF',
-            periodStart: new Date('2026-07-09T00:00:00.000Z'),
-            periodEnd: new Date('2026-07-10T00:00:00.000Z'),
-            quantity: 6,
-            eventName: 'll.active_staff',
-            stripeCustomerId: 'cus_live_123',
-            identifier: 'll_async_0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
-            idempotencyKey: 'stripe_usage_async_abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789',
-            status: 'FAILED',
-            attempts: 1,
-            submittedAt: new Date('2026-07-09T12:29:00.000Z'),
-            metadata: {
-                source: 'worker.billing_usage',
-                stripeAsyncError: { eventId: 'evt_meter_error_123' },
-            },
-        };
-        const tx = {
-            $queryRaw: vi.fn().mockResolvedValue([{ set_current_tenant: null }]),
-            tenant: {
-                findUnique: vi.fn().mockResolvedValue({ id: 'tenant-1', stripeCustomerId: 'cus_live_123' }),
-            },
-            user: { count: vi.fn().mockResolvedValue(8) },
-            stripeUsageEvent: {
-                findUnique: vi.fn().mockResolvedValue(usageEvent),
-                create: vi.fn(),
-                update: vi.fn(async ({ data }: any) => {
-                    usageEvent = {
-                        ...usageEvent,
-                        ...data,
-                        attempts: typeof data.attempts === 'object'
-                            ? usageEvent.attempts + data.attempts.increment
-                            : usageEvent.attempts,
-                    };
-                    return usageEvent;
-                }),
-            },
-        };
-        const prisma = buildPrismaMock({ tx });
-        prisma.$transaction = vi.fn(async (fn: any) => fn(tx));
-        const stripeMeterEvents = {
-            createMeterEvent: vi.fn().mockResolvedValue({ id: 'mtr_evt_retry', requestId: 'req_retry' }),
-        };
-        const service = new MeteringService(new TenantPrismaService(prisma as any), stripeMeterEvents as any);
+            amount: 5,
+            reason: 'Correction grant',
+            balanceAfter: 15,
+        });
 
-        const result = await service.reportUsageToStripe('tenant-1');
+        await expect(h.service.grantCreditsInTransaction(h.tx as any, {
+            tenantId: 'tenant-1',
+            amount: 5,
+            reason: 'Correction grant',
+            idempotencyKey: 'grant-request-1',
+        })).resolves.toMatchObject({ newBalance: 15, replayed: true });
 
-        expect(tx.stripeUsageEvent.create).not.toHaveBeenCalled();
-        expect(stripeMeterEvents.createMeterEvent).toHaveBeenCalledWith(expect.objectContaining({
-            value: 8,
-            identifier: usageEvent.identifier,
-            idempotencyKey: usageEvent.idempotencyKey,
-        }));
-        expect(usageEvent.metadata.stripeAsyncError.eventId).toBe('evt_meter_error_123');
-        expect(result).toEqual(expect.objectContaining({
-            id: 'usage-rotated',
-            status: 'SENT',
-            attempts: 2,
-        }));
+        expect(h.tx.creditTransaction.create).not.toHaveBeenCalled();
+        expect(h.tx.tenant.update).not.toHaveBeenCalled();
+        expect(h.tx.$queryRaw).toHaveBeenCalledOnce();
+    });
+
+    it('derives different ledger identities for the same key in different tenants', async () => {
+        const h = buildGrantHarness();
+
+        await h.service.grantCreditsInTransaction(h.tx as any, {
+            tenantId: 'tenant-1', amount: 5, reason: 'Correction grant', idempotencyKey: 'shared-key',
+        });
+        await h.service.grantCreditsInTransaction(h.tx as any, {
+            tenantId: 'tenant-2', amount: 5, reason: 'Correction grant', idempotencyKey: 'shared-key',
+        });
+
+        const firstId = h.tx.creditTransaction.create.mock.calls[0][0].data.id;
+        const secondId = h.tx.creditTransaction.create.mock.calls[1][0].data.id;
+        expect(firstId).not.toBe(secondId);
+    });
+
+    it.each([
+        ['missing tenant', undefined, 5, 'Correction grant', 'request-1'],
+        ['blank tenant', ' ', 5, 'Correction grant', 'request-1'],
+        ['zero amount', 'tenant-1', 0, 'Correction grant', 'request-1'],
+        ['fractional amount', 'tenant-1', 1.5, 'Correction grant', 'request-1'],
+        ['missing reason', 'tenant-1', 5, undefined, 'request-1'],
+        ['blank reason', 'tenant-1', 5, ' ', 'request-1'],
+        ['missing idempotency key', 'tenant-1', 5, 'Correction grant', undefined],
+    ])('rejects %s before locking or mutating the tenant', async (
+        _case,
+        tenantId,
+        amount,
+        reason,
+        idempotencyKey,
+    ) => {
+        const h = buildGrantHarness();
+
+        await expect(h.service.grantCreditsInTransaction(h.tx as any, {
+            tenantId: tenantId as any,
+            amount,
+            reason: reason as any,
+            idempotencyKey: idempotencyKey as any,
+        })).rejects.toBeInstanceOf(BadRequestException);
+
+        expect(h.tx.$queryRaw).not.toHaveBeenCalled();
+        expect(h.tx.tenant.update).not.toHaveBeenCalled();
+    });
+
+    it('rejects idempotency-key reuse with different tenant billing details', async () => {
+        const h = buildGrantHarness({
+            tenantId: 'tenant-1',
+            amount: 4,
+            reason: 'Different grant',
+            balanceAfter: 14,
+        });
+
+        await expect(h.service.grantCreditsInTransaction(h.tx as any, {
+            tenantId: 'tenant-1',
+            amount: 5,
+            reason: 'Correction grant',
+            idempotencyKey: 'grant-request-1',
+        })).rejects.toBeInstanceOf(ConflictException);
+
+        expect(h.tx.creditTransaction.create).not.toHaveBeenCalled();
+        expect(h.tx.tenant.update).not.toHaveBeenCalled();
+    });
+
+    it.each([null, -1, 1.5])('rejects malformed legacy settlement balance %#', async (balanceAfter) => {
+        const h = buildGrantHarness({
+            tenantId: 'tenant-1',
+            amount: 5,
+            reason: 'Correction grant',
+            balanceAfter,
+        });
+
+        await expect(h.service.grantCreditsInTransaction(h.tx as any, {
+            tenantId: 'tenant-1',
+            amount: 5,
+            reason: 'Correction grant',
+            idempotencyKey: 'grant-request-1',
+        })).rejects.toThrow(/immutable settlement balance/i);
+
+        expect(h.tx.tenant.update).not.toHaveBeenCalled();
+        expect(h.tx.creditTransaction.create).not.toHaveBeenCalled();
     });
 });
-
-describe('MeteringService â€“ consumeCredits', () => {
-    const setupWithBalance = (credits: number) => {
-        const tx = {
-            $queryRaw: vi.fn().mockResolvedValue([{ set_current_tenant: null }]),
-            tenant: {
-                findUniqueOrThrow: vi.fn().mockResolvedValue({ id: 'tenant-1', usageCredits: credits - 10 }),
-                updateMany: vi.fn().mockResolvedValue({ count: credits >= 10 ? 1 : 0 }),
-            },
-            creditTransaction: {
-                create: vi.fn().mockResolvedValue({}),
-            },
-        };
-
-        const mock = buildPrismaMock({ tx });
-        mock.$transaction = vi.fn(async (fn: any) => fn(tx));
-        return { service: new MeteringService(new TenantPrismaService(mock as any)), tx, prisma: mock };
-    };
-
-    it('should reject non-positive amounts', async () => {
-        const { service } = setupWithBalance(100);
-        await expect(service.consumeCredits('tenant-1', -1, 'test')).rejects.toBeInstanceOf(BadRequestException);
-    });
-
-    it('should throw if tenant has insufficient credits', async () => {
-        const { service, tx } = setupWithBalance(5);
-        await expect(service.consumeCredits('tenant-1', 10, 'Schedule Generation')).rejects.toThrow('Insufficient usage credits balance.');
-        expect(tx.tenant.findUniqueOrThrow).not.toHaveBeenCalled();
-        expect(tx.creditTransaction.create).not.toHaveBeenCalled();
-    });
-
-    it('should decrement credits and log a negative CreditTransaction', async () => {
-        const { service, tx } = setupWithBalance(100);
-        const newBalance = await service.consumeCredits('tenant-1', 10, 'Schedule Generation');
-
-        expect(tx.tenant.updateMany).toHaveBeenCalledWith({
-            where: {
-                id: 'tenant-1',
-                usageCredits: { gte: 10 },
-            },
-            data: { usageCredits: { decrement: 10 } }
-        });
-        expect(tx.tenant.findUniqueOrThrow).toHaveBeenCalledWith({
-            where: { id: 'tenant-1' },
-            select: { usageCredits: true },
-        });
-        expect(tx.creditTransaction.create).toHaveBeenCalledWith({
-            data: { tenantId: 'tenant-1', amount: -10, reason: 'Schedule Generation' }
-        });
-        expect(newBalance).toBe(90);
-    });
-});
-
 describe('MeteringService - transactional feature usage', () => {
+    it('does not expose the obsolete included-usage bypass', () => {
+        const service = new MeteringService(new TenantPrismaService(buildPrismaMock() as any));
+
+        expect(service).not.toHaveProperty('trackIncludedUsage');
+    });
+
+    it.each([0, -1, 1.5, Number.NaN])(
+        'rejects invalid feature credit cost %s before touching the ledger',
+        async (cost) => {
+            const tx: any = {
+                $executeRaw: vi.fn(),
+                $queryRaw: vi.fn(),
+                tenant: {
+                    updateMany: vi.fn(),
+                    findUniqueOrThrow: vi.fn(),
+                },
+                creditTransaction: {
+                    create: vi.fn(),
+                    findUnique: vi.fn(),
+                },
+            };
+            const service = new MeteringService(new TenantPrismaService(buildPrismaMock() as any));
+
+            await expect(service.recordFeatureUsageInTransaction(tx, {
+                tenantId: 'tenant-1',
+                source: 'credits',
+                cost,
+                reason: 'Time card clock-in (card-1)',
+                operationId: 'clock-in-op',
+            })).rejects.toBeInstanceOf(BadRequestException);
+            expect(tx.creditTransaction.findUnique).not.toHaveBeenCalled();
+            expect(tx.creditTransaction.create).not.toHaveBeenCalled();
+            expect(tx.tenant.updateMany).not.toHaveBeenCalled();
+        },
+    );
     it('atomically records and debits one credit-backed unit', async () => {
         const tx: any = {
+            $executeRaw: vi.fn().mockResolvedValue(0),
+            $queryRaw: vi.fn(),
             tenant: {
                 updateMany: vi.fn().mockResolvedValue({ count: 1 }),
                 findUniqueOrThrow: vi.fn().mockResolvedValue({ usageCredits: 4 }),
             },
             creditTransaction: {
                 create: vi.fn().mockResolvedValue({}),
+                findUnique: vi.fn().mockResolvedValue(null),
             },
         };
         const service = new MeteringService(new TenantPrismaService(buildPrismaMock() as any));
@@ -441,55 +273,131 @@ describe('MeteringService - transactional feature usage', () => {
                 tenantId: 'tenant-1',
                 amount: -1,
                 reason: 'Time card clock-in (card-1)',
+                balanceAfter: 4,
             },
         });
         expect(tx.tenant.updateMany).toHaveBeenCalledWith({
             where: { id: 'tenant-1', usageCredits: { gte: 1 } },
             data: { usageCredits: { decrement: 1 } },
         });
+        expect(tx.$queryRaw.mock.invocationCallOrder[0]).toBeLessThan(
+            tx.tenant.updateMany.mock.invocationCallOrder[0],
+        );
+        expect(tx.$executeRaw.mock.invocationCallOrder[0]).toBeLessThan(
+            tx.$queryRaw.mock.invocationCallOrder[0],
+        );
+        expect(tx.tenant.updateMany.mock.invocationCallOrder[0]).toBeLessThan(
+            tx.creditTransaction.create.mock.invocationCallOrder[0],
+        );
         expect(result).toEqual({ consumedCredits: 1, newBalance: 4 });
     });
 
-    it('debits subscription-backed feature usage', async () => {
+    it.each(['plan', 'stripe', 'manual'] as const)('rejects legacy %s usage bypasses', async (source) => {
         const tx: any = {
+            $executeRaw: vi.fn(),
+            $queryRaw: vi.fn(),
             tenant: {
-                updateMany: vi.fn().mockResolvedValue({ count: 1 }),
-                findUniqueOrThrow: vi.fn().mockResolvedValue({ usageCredits: 9 }),
+                updateMany: vi.fn(),
+                findUniqueOrThrow: vi.fn(),
             },
             creditTransaction: {
-                create: vi.fn().mockResolvedValue({}),
+                findUnique: vi.fn(),
+                create: vi.fn(),
             },
         };
         const service = new MeteringService(new TenantPrismaService(buildPrismaMock() as any));
 
-        const result = await service.recordFeatureUsageInTransaction(tx, {
+        await expect(service.recordFeatureUsageInTransaction(tx, {
             tenantId: 'tenant-1',
-            source: 'plan',
+            source,
             cost: 1,
             reason: 'Time card clock-in (card-1)',
             operationId: 'clock-in-op',
-        });
+        })).rejects.toThrow('Billable feature usage requires wallet credits.');
 
-        expect(tx.creditTransaction.create).toHaveBeenCalledWith({
-            data: {
-                id: 'feature-usage-clock-in-op',
-                tenantId: 'tenant-1',
-                amount: -1,
-                reason: 'Time card clock-in (card-1)',
+        expect(tx.creditTransaction.findUnique).not.toHaveBeenCalled();
+        expect(tx.creditTransaction.create).not.toHaveBeenCalled();
+        expect(tx.tenant.updateMany).not.toHaveBeenCalled();
+    });
+
+    it('recovers an already charged operation without debiting again', async () => {
+        const tx: any = {
+            $executeRaw: vi.fn().mockResolvedValue(0),
+            $queryRaw: vi.fn(),
+            tenant: {
+                updateMany: vi.fn(),
+                findUniqueOrThrow: vi.fn().mockResolvedValue({ usageCredits: 4 }),
             },
-        });
-        expect(tx.tenant.updateMany).toHaveBeenCalledWith({ where: { id: 'tenant-1', usageCredits: { gte: 1 } }, data: { usageCredits: { decrement: 1 } } });
-        expect(result).toEqual({ consumedCredits: 1, newBalance: 9 });
+            creditTransaction: {
+                findUnique: vi.fn().mockResolvedValue({
+                    id: 'feature-usage-clock-in-op',
+                    tenantId: 'tenant-1',
+                    amount: -1,
+                    reason: 'Time card clock-in (card-1)',
+                    balanceAfter: 4,
+                }),
+                create: vi.fn(),
+            },
+        };
+        const service = new MeteringService(new TenantPrismaService(buildPrismaMock() as any));
+
+        await expect(service.recordFeatureUsageInTransaction(tx, {
+            tenantId: 'tenant-1',
+            source: 'credits',
+            cost: 1,
+            reason: 'Time card clock-in (card-1)',
+            operationId: 'clock-in-op',
+        })).resolves.toEqual({ consumedCredits: 1, newBalance: 4 });
+
+        expect(tx.creditTransaction.create).not.toHaveBeenCalled();
+        expect(tx.tenant.updateMany).not.toHaveBeenCalled();
+        expect(tx.tenant.findUniqueOrThrow).not.toHaveBeenCalled();
+    });
+
+    it('rejects operation id reuse with different billing details', async () => {
+        const tx: any = {
+            $executeRaw: vi.fn().mockResolvedValue(0),
+            $queryRaw: vi.fn(),
+            tenant: {
+                updateMany: vi.fn(),
+                findUniqueOrThrow: vi.fn(),
+            },
+            creditTransaction: {
+                findUnique: vi.fn().mockResolvedValue({
+                    id: 'feature-usage-clock-in-op',
+                    tenantId: 'tenant-1',
+                    amount: -2,
+                    reason: 'Different charge',
+                    balanceAfter: 3,
+                }),
+                create: vi.fn(),
+            },
+        };
+        const service = new MeteringService(new TenantPrismaService(buildPrismaMock() as any));
+
+        await expect(service.recordFeatureUsageInTransaction(tx, {
+            tenantId: 'tenant-1',
+            source: 'credits',
+            cost: 1,
+            reason: 'Time card clock-in (card-1)',
+            operationId: 'clock-in-op',
+        })).rejects.toBeInstanceOf(ConflictException);
+
+        expect(tx.creditTransaction.create).not.toHaveBeenCalled();
+        expect(tx.tenant.updateMany).not.toHaveBeenCalled();
     });
 
     it('fails insufficient credit usage before returning a free unit', async () => {
         const tx: any = {
+            $executeRaw: vi.fn().mockResolvedValue(0),
+            $queryRaw: vi.fn(),
             tenant: {
                 updateMany: vi.fn().mockResolvedValue({ count: 0 }),
                 findUniqueOrThrow: vi.fn(),
             },
             creditTransaction: {
                 create: vi.fn().mockResolvedValue({}),
+                findUnique: vi.fn().mockResolvedValue(null),
             },
         };
         const service = new MeteringService(new TenantPrismaService(buildPrismaMock() as any));
@@ -503,9 +411,43 @@ describe('MeteringService - transactional feature usage', () => {
         })).rejects.toThrow('Insufficient usage credits balance.');
 
         expect(tx.tenant.findUniqueOrThrow).not.toHaveBeenCalled();
+        expect(tx.creditTransaction.create).not.toHaveBeenCalled();
+    });
+
+    it.each([null, -1, 1.5])('rejects malformed feature replay balance %#', async (balanceAfter) => {
+        const tx: any = {
+            $executeRaw: vi.fn().mockResolvedValue(0),
+            $queryRaw: vi.fn(),
+            tenant: {
+                updateMany: vi.fn(),
+                findUniqueOrThrow: vi.fn(),
+            },
+            creditTransaction: {
+                findUnique: vi.fn().mockResolvedValue({
+                    id: 'feature-usage-clock-in-op',
+                    tenantId: 'tenant-1',
+                    amount: -1,
+                    reason: 'Time card clock-in (card-1)',
+                    balanceAfter,
+                }),
+                create: vi.fn(),
+            },
+        };
+        const service = new MeteringService(new TenantPrismaService(buildPrismaMock() as any));
+
+        await expect(service.recordFeatureUsageInTransaction(tx, {
+            tenantId: 'tenant-1',
+            source: 'credits',
+            cost: 1,
+            reason: 'Time card clock-in (card-1)',
+            operationId: 'clock-in-op',
+        })).rejects.toThrow(/immutable settlement balance/i);
+
+        expect(tx.tenant.updateMany).not.toHaveBeenCalled();
+        expect(tx.creditTransaction.create).not.toHaveBeenCalled();
     });
 });
-describe('MeteringService â€“ checkLimits', () => {
+describe('MeteringService - checkLimits', () => {
     it('should throw when location count exceeds the plan limits', async () => {
         const prisma = buildPrismaMock({
             location: { count: vi.fn().mockResolvedValue(5) },
@@ -539,5 +481,57 @@ describe('MeteringService â€“ checkLimits', () => {
         expect(planDefinitionFindUnique).toHaveBeenCalledWith({
             where: { code: 'MYSTERY-TIER' },
         });
+    });
+});
+describe('MeteringService - Stripe operational diagnostics', () => {
+    it('persists and logs an allowlisted diagnostic without raw provider text', async () => {
+        const secret = 'sk_live_super_secret https://private.example.test/path?token=leak';
+        const providerError = Object.assign(new Error(secret), {
+            name: 'StripeConnectionError',
+            code: 'ECONNRESET',
+            requestId: 'req_ABC12345',
+        });
+        const updateMany = vi.fn().mockResolvedValue({ count: 1 });
+        const findUnique = vi.fn(async () => ({
+            id: 'usage-1',
+            tenantId: 'tenant-1',
+            status: 'SENDING',
+            submittedAt: updateMany.mock.calls[0][0].data.submittedAt,
+            eventName: 'active_staff',
+            stripeCustomerId: 'cus_123',
+            quantity: 5,
+            identifier: 'usage_identifier',
+            periodStart: new Date('2026-07-14T00:00:00.000Z'),
+            idempotencyKey: 'usage-idempotency',
+            attempts: 1,
+        }));
+        const tenantDb = {
+            withTenant: vi.fn(async (_tenantId: string, operation: (tx: any) => Promise<unknown>) => (
+                operation({ stripeUsageEvent: { updateMany, findUnique } })
+            )),
+        };
+        const stripeMeterEvents = {
+            createMeterEvent: vi.fn().mockRejectedValue(providerError),
+        };
+        const service = new MeteringService(tenantDb as any, stripeMeterEvents as any);
+        const warn = vi.fn();
+        (service as any).logger = { warn };
+
+        await expect((service as any).sendPersistedUsageEvent('tenant-1', 'usage-1'))
+            .rejects.toThrow('Stripe metered usage reporting failed');
+
+        const diagnostic = updateMany.mock.calls[1][0].data.lastError;
+        expect(JSON.parse(diagnostic)).toEqual({
+            event: 'billing.meter_usage_send_failed',
+            errorClass: 'StripeConnectionError',
+            category: 'connectivity',
+            code: 'ECONNRESET',
+            requestRef: 'req_ABC12345',
+        });
+        expect(diagnostic).not.toContain(secret);
+        expect(diagnostic).not.toContain('sk_live');
+        expect(diagnostic).not.toContain('private.example.test');
+        expect(warn).toHaveBeenCalledWith(diagnostic);
+        expect(warn.mock.calls.flat().join(' ')).not.toContain(secret);
     });
 });

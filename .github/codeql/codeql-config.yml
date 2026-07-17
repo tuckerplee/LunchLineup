@@ -1,0 +1,16 @@
+name: LunchLineup security analysis
+
+queries:
+  - uses: security-extended
+
+paths:
+  - apps
+  - packages
+  - scripts
+  - infrastructure
+
+paths-ignore:
+  - "**/node_modules"
+  - "**/.next"
+  - "**/coverage"
+  - old

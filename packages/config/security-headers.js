@@ -28,7 +28,7 @@ function buildSecurityHeaders(config) {
             styleSrc: ["'self'", "'unsafe-inline'", ...config.security.cspExtraStyleSrc],
             imgSrc: ["'self'", 'data:', ...config.security.cspExtraImgSrc],
             fontSrc: ["'self'", ...config.security.cspExtraFontSrc],
-            connectSrc: ["'self'", `wss://${config.domain}`, ...config.security.cspExtraConnectSrc],
+            connectSrc: ["'self'", ...config.security.cspExtraConnectSrc],
             frameAncestors: config.security.allowIframeEmbedding
                 ? config.security.iframeAllowedOrigins
                 : ["'none'"],

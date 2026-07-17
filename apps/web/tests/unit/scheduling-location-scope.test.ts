@@ -36,6 +36,7 @@ import {
 } from '../../app/dashboard/scheduling/break-generation-recovery';
 import {
   assertBreakGenerationResponseScope,
+  buildLocationScheduleQuery,
   buildLocationShiftQuery,
   locationShiftScopeMatches,
   resolveTenantVisibleLocation,
@@ -49,16 +50,20 @@ const shifts = [
 ];
 
 describe('scheduling location shift scope', () => {
-  it('always includes the active location in range refresh queries', () => {
-    const query = buildLocationShiftQuery({
+  it('always bounds schedule and shift refreshes to the active location and range', () => {
+    const range = {
       start: '2026-07-09T07:00:00.000Z',
       end: '2026-07-10T07:00:00.000Z',
-    }, 'loc-uptown');
-    const url = new URL(query, 'https://lunchlineup.test');
+    };
+    const shiftUrl = new URL(buildLocationShiftQuery(range, 'loc-uptown'), 'https://lunchlineup.test');
+    const scheduleUrl = new URL(buildLocationScheduleQuery(range, 'loc-uptown'), 'https://lunchlineup.test');
 
-    expect(url.searchParams.get('locationId')).toBe('loc-uptown');
-    expect(url.searchParams.get('startDate')).toBe('2026-07-09T07:00:00.000Z');
-    expect(url.searchParams.get('endDate')).toBe('2026-07-10T07:00:00.000Z');
+    for (const url of [shiftUrl, scheduleUrl]) {
+      expect(url.searchParams.get('locationId')).toBe('loc-uptown');
+      expect(url.searchParams.get('startDate')).toBe('2026-07-09T07:00:00.000Z');
+      expect(url.searchParams.get('endDate')).toBe('2026-07-10T07:00:00.000Z');
+      expect(url.searchParams.get('limit')).toBe('200');
+    }
   });
 
   it('refuses unscoped shift loads', () => {

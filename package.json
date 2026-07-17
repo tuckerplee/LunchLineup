@@ -13,7 +13,7 @@
     "postinstall": "npm run generate --workspace @lunchlineup/db",
     "test": "turbo run test",
     "test:migration": "node --test tests/deploy/*.test.mjs tests/hygiene/*.test.mjs tests/migration/*.test.mjs infrastructure/terraform/production/*.test.mjs",
-    "test:integration": "node --test tests/integration/*.test.mjs",
+    "test:integration": "node --test --test-concurrency=1 tests/integration/*.test.mjs",
     "audit:prod": "node scripts/audit-prod.mjs",
     "seed:e2e": "node scripts/seed-e2e.mjs",
     "typecheck": "npm run typecheck --workspaces --if-present",
@@ -30,6 +30,7 @@
     "ajv": "^8.18.0",
     "eslint": "^10.4.1",
     "file-type": "^21.3.1",
+    "license-checker": "25.0.1",
     "postcss": "^8.5.15",
     "qs": "^6.15.3",
     "turbo": "latest",
@@ -44,5 +45,8 @@
     "@next/swc-linux-x64-musl": "^16.2.7",
     "@next/swc-win32-arm64-msvc": "^16.2.7",
     "@next/swc-win32-x64-msvc": "^16.2.7"
+  },
+  "dependencies": {
+    "pg": "8.16.3"
   }
 }

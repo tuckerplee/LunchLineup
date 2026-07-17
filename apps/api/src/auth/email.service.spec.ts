@@ -8,25 +8,33 @@ const originalNodeEnv = process.env.NODE_ENV;
 describe('EmailService', () => {
   afterEach(() => {
     process.env.NODE_ENV = originalNodeEnv;
+    vi.useRealTimers();
     vi.restoreAllMocks();
   });
 
-  it('allows local development OTP logging without a provider key', async () => {
+  it('never writes OTP secrets to local development logs', async () => {
     process.env.NODE_ENV = 'development';
     const service = new EmailService(config({}));
+    const logger = vi.spyOn((service as any).logger, 'log').mockImplementation(() => undefined);
 
-    await expect(service.sendOtp('manager@example.com', '123456')).resolves.toBeUndefined();
+    await expect(service.sendOtp('manager@example.com', '123456')).rejects.toThrow('Email delivery is not configured');
+    expect(JSON.stringify(logger.mock.calls)).not.toContain('manager@example.com');
+    expect(JSON.stringify(logger.mock.calls)).not.toContain('example.com');
+    expect(JSON.stringify(logger.mock.calls)).not.toContain('123456');
   });
 
-  it('allows local development password reset logging without a provider key', async () => {
+  it('never writes password-reset secrets to local development logs', async () => {
     process.env.NODE_ENV = 'development';
     const service = new EmailService(config({}));
+    const logger = vi.spyOn((service as any).logger, 'log').mockImplementation(() => undefined);
 
     await expect(service.sendPasswordReset(
       'manager@example.com',
       'http://localhost:3000/auth/reset-password?token=dev-token',
       new Date(Date.now() + 60_000),
-    )).resolves.toBeUndefined();
+    )).rejects.toThrow('Email delivery is not configured');
+    expect(JSON.stringify(logger.mock.calls)).not.toContain('manager@example.com');
+    expect(JSON.stringify(logger.mock.calls)).not.toContain('dev-token');
   });
 
   it('fails startup outside development when email delivery is not configured', () => {
@@ -35,7 +43,7 @@ describe('EmailService', () => {
     expect(() => new EmailService(config({}))).toThrow('RESEND_API_KEY');
   });
 
-  it('masks recipient addresses in provider failure logs', async () => {
+  it('omits recipient and provider text from failure logs', async () => {
     process.env.NODE_ENV = 'production';
     const logger = vi.spyOn(Logger.prototype, 'error').mockImplementation(() => undefined);
     const service = new EmailService(config({
@@ -46,8 +54,8 @@ describe('EmailService', () => {
       emails: {
         send: vi.fn().mockResolvedValue({
           error: {
-            name: 'validation_error',
-            message: 'manager@example.com rejected',
+            name: 'validation_error\r\nAuthorization: Bearer secret',
+            message: 'manager@example.com rejected token=secret',
           },
         }),
       },
@@ -56,10 +64,68 @@ describe('EmailService', () => {
     await expect(service.sendOtp('manager@example.com', '123456')).rejects.toThrow('Email delivery failed');
 
     const logBody = JSON.stringify(logger.mock.calls);
-    expect(logBody).toContain('ma***@example.com');
-    expect(logBody).toContain('validation_error');
+    expect(logBody).toContain('auth.otp_email_delivery_failed');
+    expect(logBody).not.toContain('validation_error');
     expect(logBody).not.toContain('manager@example.com');
+    expect(logBody).not.toContain('Authorization');
+    expect(logBody).not.toContain('secret');
     expect(logBody).not.toContain('123456');
+  });
+
+  it('blocks provider handoff for a suppressed recipient without logging the address', async () => {
+    process.env.NODE_ENV = 'production';
+    const logger = vi.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
+    const deliveryFeedback = { isSuppressed: vi.fn().mockResolvedValue(true) };
+    const service = new EmailService(config({
+      RESEND_API_KEY: 're_test_key',
+      EMAIL_FROM: 'LunchLineup <no-reply@example.com>',
+    }), deliveryFeedback as any);
+    const send = vi.fn();
+    (service as any).resend = { emails: { send } };
+
+    await expect(service.sendOtp('manager@example.com', '123456')).rejects.toThrow('Email delivery failed');
+
+    expect(deliveryFeedback.isSuppressed).toHaveBeenCalledWith('manager@example.com');
+    expect(send).not.toHaveBeenCalled();
+    expect(JSON.stringify(logger.mock.calls)).toContain('reason=provider_feedback');
+    expect(JSON.stringify(logger.mock.calls)).not.toContain('manager@example.com');
+    expect(JSON.stringify(logger.mock.calls)).not.toContain('123456');
+  });
+
+  it('uses one bounded total deadline and aborts the OTP provider request', async () => {
+    vi.useFakeTimers();
+    process.env.NODE_ENV = 'production';
+    const deliveryFeedback = {
+      isSuppressed: vi.fn().mockImplementation(
+        () => new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 60)),
+      ),
+    };
+    const service = new EmailService(config({
+      RESEND_API_KEY: 're_test_key',
+      EMAIL_FROM: 'LunchLineup <no-reply@example.com>',
+      EMAIL_OTP_DELIVERY_DEADLINE_MS: '100',
+    }), deliveryFeedback as any);
+    let providerRequestAborted = false;
+    const send = vi.fn().mockImplementation((
+      _payload: unknown,
+      options: { signal: AbortSignal },
+    ) => new Promise((_resolve, reject) => {
+      options.signal.addEventListener('abort', () => {
+        providerRequestAborted = true;
+        reject(options.signal.reason);
+      }, { once: true });
+    }));
+    (service as any).resend = { emails: { send } };
+
+    const delivery = service.sendOtp('manager@example.com', '123456');
+    const rejection = expect(delivery).rejects.toThrow('Email delivery deadline exceeded');
+
+    await vi.advanceTimersByTimeAsync(60);
+    expect(send).toHaveBeenCalledOnce();
+    await vi.advanceTimersByTimeAsync(40);
+    await rejection;
+    expect(providerRequestAborted).toBe(true);
+    expect(send.mock.calls[0][1].signal.aborted).toBe(true);
   });
 
   it('escapes dynamic OTP email HTML values before provider handoff', async () => {

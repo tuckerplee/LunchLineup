@@ -1,4 +1,10 @@
-import { BadRequestException, Injectable, Optional, ServiceUnavailableException } from '@nestjs/common';
+import {
+    BadRequestException,
+    Injectable,
+    type OnModuleDestroy,
+    Optional,
+    ServiceUnavailableException,
+} from '@nestjs/common';
 import { Prisma, PrismaClient } from '@prisma/client';
 
 export type TenantPrismaTransaction = Prisma.TransactionClient;
@@ -9,7 +15,7 @@ export type TenantPrismaTransactionOptions = {
 };
 
 @Injectable()
-export class TenantPrismaService {
+export class TenantPrismaService implements OnModuleDestroy {
     private readonly prisma: PrismaClient;
 
     constructor(@Optional() prisma?: PrismaClient) {
@@ -18,6 +24,10 @@ export class TenantPrismaService {
 
     get client(): PrismaClient {
         return this.prisma;
+    }
+
+    async onModuleDestroy(): Promise<void> {
+        await this.prisma.$disconnect();
     }
 
     async withTenant<T>(
@@ -43,7 +53,7 @@ export class TenantPrismaService {
     }
 
     private async setTenantContext(tx: TenantPrismaTransaction, tenantId: string): Promise<void> {
-        await tx.$queryRaw`SELECT set_current_tenant(${tenantId})`;
+        await tx.$executeRaw`SELECT set_current_tenant(${tenantId})`;
     }
 
     private async setPlatformAdminContext(tx: TenantPrismaTransaction): Promise<void> {
@@ -51,7 +61,7 @@ export class TenantPrismaService {
         if (!capability) {
             throw new ServiceUnavailableException('Platform admin database capability is not configured');
         }
-        await tx.$queryRaw`SELECT set_current_platform_admin(true, ${capability})`;
+        await tx.$executeRaw`SELECT set_current_platform_admin(true, ${capability})`;
     }
 
     private assertTenantId(tenantId: string): void {

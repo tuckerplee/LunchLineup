@@ -37,6 +37,21 @@ describe('dashboard navigation helpers', () => {
     expect(canOpenDashboardAccountSettings(['admin_portal:access'])).toBe(false);
   });
 
+  it('shows payroll from payroll permission without relying on a legacy role name', () => {
+    expect(labelsFor(['dashboard:access', 'payroll:read'])).toEqual(['Overview', 'Payroll']);
+  });
+
+  it('does not fabricate navigation badges without authoritative counts', () => {
+    const items = getVisibleDashboardNavItems([
+      'schedules:read',
+      'shifts:read',
+      'locations:read',
+      'lunch_breaks:read',
+    ]);
+
+    expect(items.every((item) => !('badge' in item))).toBe(true);
+  });
+
   it('hides lunch and breaks unless the custom role can also read locations', () => {
     expect(labelsFor(['lunch_breaks:read'])).toEqual(['Overview']);
     expect(labelsFor(['locations:read'])).toEqual(['Overview', 'Locations']);

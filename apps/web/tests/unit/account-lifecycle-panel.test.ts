@@ -30,3 +30,58 @@ describe('AccountLifecyclePanel export recovery contract', () => {
         expect(panelSource).toContain('Generate new export');
     });
 });
+
+describe('AccountLifecyclePanel deletion terminal flow', () => {
+    it('uses the DELETE response as the receipt without an authenticated status reload', () => {
+        const start = panelSource.indexOf('const finishDeletion = useCallback');
+        const end = panelSource.indexOf('return (', start);
+        const deletionFlow = panelSource.slice(start, end);
+
+        expect(start).toBeGreaterThan(-1);
+        expect(end).toBeGreaterThan(start);
+        expect(deletionFlow).toContain("fetchJsonWithSession<AccountDeletionResponse>('/admin/account'");
+        expect(deletionFlow).toContain('accountDeletionReceiptFromResponse(result)');
+        expect(deletionFlow).toContain("fetch('/auth/logout'");
+        expect(deletionFlow).toContain("window.location.replace('/auth/account-deleted')");
+        expect(deletionFlow).not.toContain('loadStatus');
+        expect(deletionFlow).not.toContain('/admin/account/status');
+    });
+});
+
+describe('AccountLifecyclePanel scheduled cancellation API contract', () => {
+    it('renders the projected effective date and disables duplicate cancellation after status reload', () => {
+        expect(panelSource).toContain('cancellationEffectiveAt?: string | null');
+        expect(panelSource).toContain(
+            "const cancellationScheduled = status?.lifecycleStatus === 'CANCELLATION_SCHEDULED';",
+        );
+        expect(panelSource).toContain(
+            "{ label: 'Cancellation effective', value: formatDate(status?.cancellationEffectiveAt) }",
+        );
+        expect(panelSource).toContain('Renewal cancellation is scheduled for');
+        expect(panelSource).toContain("cancellationScheduled ? 'Cancellation scheduled' : 'Cancel renewal'");
+        expect(panelSource.match(/deletionRecorded \|\| cancellationScheduled/g)).toHaveLength(3);
+    });
+
+    it('preserves the scheduled projection across the POST response and authoritative status refresh', () => {
+        const start = panelSource.indexOf('const cancelAccount = useCallback');
+        const end = panelSource.indexOf('const finishDeletion = useCallback', start);
+        const cancellationFlow = panelSource.slice(start, end);
+
+        expect(start).toBeGreaterThan(-1);
+        expect(end).toBeGreaterThan(start);
+        expect(cancellationFlow).toContain("lifecycleStatus: 'CANCELLATION_SCHEDULED'");
+        expect(cancellationFlow).toContain(
+            'cancellationEffectiveAt: result.cancellationEffectiveAt ?? null',
+        );
+        expect(cancellationFlow).toContain('await loadStatus()');
+    });
+});
+
+describe('AccountLifecyclePanel legal-hold privacy contract', () => {
+    it('renders only customer-safe hold state', () => {
+        expect(panelSource).toContain('legalHold?: {');
+        expect(panelSource).toContain('Retention hold active; deletion timelines are paused.');
+        expect(panelSource).not.toContain('placedByUserId');
+        expect(panelSource).not.toContain('legalHold.reason');
+    });
+});

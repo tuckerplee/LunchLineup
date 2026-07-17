@@ -1,0 +1,418 @@
+.workspace {
+  display: grid;
+  gap: 1rem;
+  min-width: 0;
+}
+
+.pageHeader,
+.sectionHeading,
+.tableHeader,
+.actionRow,
+.bulkBar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+}
+
+.pageHeader h1 {
+  margin: 0.2rem 0 0;
+  color: var(--text-primary);
+  font-size: clamp(1.45rem, 3vw, 2rem);
+}
+
+.pageHeader p,
+.helpText,
+.confirmation p {
+  margin: 0.35rem 0 0;
+  color: var(--text-secondary);
+  font-size: 0.84rem;
+  line-height: 1.5;
+}
+
+.panel,
+.confirmation,
+.loading {
+  padding: 1rem;
+  min-width: 0;
+}
+
+.detailStack {
+  display: grid;
+  gap: 1rem;
+  min-width: 0;
+}
+
+.sectionTitle,
+.confirmationTitle {
+  margin: 0.15rem 0 0;
+  color: var(--text-primary);
+  font-size: 1rem;
+  line-height: 1.35;
+}
+
+.meta,
+.fieldHelp,
+.loadedLabel {
+  color: var(--text-muted);
+  font-size: 0.74rem;
+  font-weight: 650;
+}
+
+.fieldError,
+.inlineError {
+  color: #a1263d;
+  font-size: 0.76rem;
+  font-weight: 650;
+}
+
+.policyGrid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(150px, 1fr));
+  gap: 0.8rem;
+  align-items: start;
+  margin-top: 0.9rem;
+}
+
+.policyTimeline {
+  display: grid;
+  gap: 0.55rem;
+  padding: 0;
+  margin: 0.85rem 0;
+  list-style: none;
+}
+
+.policyTimeline li,
+.evidenceRow {
+  display: grid;
+  grid-template-columns: minmax(100px, 0.5fr) repeat(3, minmax(140px, 1fr));
+  gap: 0.65rem;
+  align-items: center;
+  padding: 0.65rem;
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  color: var(--text-secondary);
+  font-size: 0.76rem;
+}
+
+.policyVersionForm,
+.amendmentForm,
+.reconciliationForm {
+  display: grid;
+  gap: 0.8rem;
+  margin-top: 1rem;
+  padding-top: 1rem;
+  border-top: 1px solid var(--border);
+}
+
+.formHeading {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+}
+
+.formHeading div,
+.evidenceRow > div:first-child {
+  display: grid;
+  gap: 0.15rem;
+}
+
+.formHeading span,
+.evidenceRow span {
+  color: var(--text-muted);
+  font-size: 0.73rem;
+}
+
+.formGrid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(160px, 1fr));
+  gap: 0.75rem;
+}
+
+.sourceNotice,
+.partialNotice,
+.errorBanner,
+.noticeBanner {
+  padding: 0.72rem 0.85rem;
+  border-radius: var(--r-md);
+  font-size: 0.8rem;
+  font-weight: 650;
+  line-height: 1.45;
+}
+
+.sourceNotice,
+.partialNotice {
+  color: #34496c;
+  background: #f4f7fc;
+  border: 1px solid #cad6e8;
+}
+
+.errorBanner {
+  color: #8f231a;
+  background: #fff5f4;
+  border: 1px solid #f0b4ae;
+}
+
+.noticeBanner {
+  color: #11623d;
+  background: #effaf4;
+  border: 1px solid #a9dfc2;
+}
+
+.periodControls {
+  display: grid;
+  grid-template-columns: minmax(260px, 1.4fr) minmax(280px, 1fr);
+  gap: 1rem;
+  align-items: start;
+  margin: 0.85rem 0;
+}
+
+.createPeriodForm {
+  display: grid;
+  grid-template-columns: minmax(160px, 1fr) auto;
+  align-items: end;
+  gap: 0.65rem;
+}
+
+.stats {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(92px, 1fr));
+  gap: 0.65rem;
+  margin: 0.9rem 0;
+}
+
+.stats div,
+.exportDetails div {
+  min-width: 0;
+  padding: 0.65rem;
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  background: var(--surface-soft);
+}
+
+.stats dt,
+.exportDetails dt {
+  color: var(--text-muted);
+  font-size: 0.68rem;
+  font-weight: 750;
+  text-transform: uppercase;
+}
+
+.stats dd,
+.exportDetails dd {
+  margin: 0.2rem 0 0;
+  color: var(--text-primary);
+  font-size: 0.87rem;
+  font-weight: 750;
+  overflow-wrap: anywhere;
+}
+
+.statusBadge {
+  padding: 0.28rem 0.5rem;
+  border-radius: 999px;
+  font-size: 0.7rem;
+  font-weight: 800;
+  border: 1px solid currentColor;
+}
+
+.statusOPEN { color: #2456bd; background: #eef4ff; }
+.statusREVIEW { color: #76510a; background: #fff8e8; }
+.statusLOCKED { color: #76510a; background: #fff8e8; }
+
+.confirmation {
+  border-color: #e8b04d;
+  background: #fffdf7;
+}
+
+.iconButton {
+  width: 34px;
+  height: 34px;
+  display: inline-grid;
+  place-items: center;
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  color: var(--text-secondary);
+  background: var(--surface);
+  cursor: pointer;
+}
+
+.tablePanel {
+  min-width: 0;
+  overflow: hidden;
+}
+
+.tableHeader,
+.bulkBar {
+  padding: 0.85rem 1rem;
+  border-bottom: 1px solid var(--border);
+}
+
+.partialNotice {
+  margin: 0.75rem 1rem;
+}
+
+.bulkBar {
+  background: var(--surface-soft);
+}
+
+.checkboxLabel,
+.approved,
+.loadedLabel {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.checkboxLabel {
+  color: var(--text-secondary);
+  font-size: 0.78rem;
+  font-weight: 700;
+}
+
+.tableRegion {
+  max-width: 100%;
+  overflow-x: auto;
+  overscroll-behavior-inline: contain;
+}
+
+.table {
+  width: 100%;
+  min-width: 920px;
+  border-collapse: collapse;
+  color: var(--text-secondary);
+  font-size: 0.76rem;
+}
+
+.table th,
+.table td {
+  padding: 0.7rem 0.75rem;
+  text-align: left;
+  vertical-align: middle;
+  border-bottom: 1px solid var(--border);
+}
+
+.table thead th {
+  color: var(--text-muted);
+  background: var(--surface-soft);
+  font-size: 0.68rem;
+  text-transform: uppercase;
+}
+
+.table tbody th span {
+  display: block;
+  margin-top: 0.1rem;
+  color: var(--text-muted);
+  font-weight: 600;
+}
+
+.approved { color: #11623d; font-weight: 750; }
+.emptyCell { text-align: center !important; color: var(--text-muted); }
+
+.exportDetails {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.65rem;
+  margin: 0.85rem 0;
+}
+
+.lockEvidence,
+.reconciliationSummary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.6rem 1rem;
+  padding: 0.7rem;
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  color: var(--text-secondary);
+  background: var(--surface-soft);
+  font-size: 0.76rem;
+}
+
+.lockEvidence code {
+  overflow-wrap: anywhere;
+}
+
+.amendmentList,
+.decisionBox {
+  display: grid;
+  gap: 0.75rem;
+  margin-top: 0.85rem;
+}
+
+.evidenceRow {
+  grid-template-columns: minmax(180px, 1fr) minmax(240px, 1.4fr);
+}
+
+.replayNotice {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding: 0.75rem;
+  margin-top: 0.8rem;
+  border: 1px solid #e8b04d;
+  border-radius: var(--r-sm);
+  color: #6f4a00;
+  background: #fff8e8;
+  font-size: 0.78rem;
+}
+
+.visuallyHidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+@media (max-width: 900px) {
+  .policyGrid,
+  .periodControls,
+  .formGrid,
+  .stats {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .policyTimeline li { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+
+@media (max-width: 640px) {
+  .pageHeader,
+  .sectionHeading,
+  .tableHeader,
+  .bulkBar {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .policyGrid,
+  .periodControls,
+  .createPeriodForm,
+  .stats,
+  .exportDetails,
+  .formGrid,
+  .policyTimeline li,
+  .evidenceRow {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .actionRow > button,
+  .bulkBar > button,
+  .createPeriodForm > button {
+    width: 100%;
+  }
+
+  .tableRegion {
+    border-top: 1px solid var(--border);
+  }
+
+  .replayNotice {
+    align-items: stretch;
+    flex-direction: column;
+  }
+}

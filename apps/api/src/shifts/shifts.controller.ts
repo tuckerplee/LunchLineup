@@ -1,4 +1,4 @@
-import { Controller, Get, Post, Put, Delete, Param, Body, Req, UseGuards, SetMetadata, Query, HttpCode, HttpStatus, NotFoundException, BadRequestException, ConflictException, Optional } from '@nestjs/common';
+import { Controller, Get, Post, Put, Delete, Param, Body, Req, UseGuards, SetMetadata, Query, Headers, HttpCode, HttpStatus, NotFoundException, BadRequestException, ConflictException, Optional } from '@nestjs/common';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { RbacGuard } from '../auth/rbac.guard';
 import { Prisma, UserRole } from '@prisma/client';
@@ -10,15 +10,54 @@ import {
     nextLocalDateBoundaryUtc,
     normalizeTimeZone,
 } from '../common/location-timezone';
+import {
+    normalizeShiftCreationIdempotencyKey,
+    shiftCreationOperationId,
+    shiftCreationRequestHash,
+} from './shift-creation-idempotency';
+import {
+    normalizeShiftBulkAssignmentIdempotencyKey,
+    shiftBulkAssignmentOperationId,
+    shiftBulkAssignmentRequestHash,
+} from './shift-bulk-assignment-idempotency';
+import {
+    normalizeShiftUpdateIdempotencyKey,
+    shiftUpdateOperationId,
+    shiftUpdateRequestHash,
+    type ShiftUpdateIdentity,
+} from './shift-update-idempotency';
+import {
+    assertShiftUpdateWindow,
+    assertShiftUpdateWithinSchedule,
+    mapShiftUpdateInvariantError,
+    translateShiftBreakWindows,
+} from './shift-update-invariants';
+import {
+    assertBoundedListWindow,
+    buildBoundedListPage,
+    decodeBoundedListCursor,
+    parseBoundedListLimit,
+    parseOptionalBoundedDate,
+} from '../common/bounded-pagination';
+import {
+    ACTIVE_SCHEDULABLE_USER_FILTER,
+    lockActiveSchedulableUser,
+    SCHEDULABLE_USER_ROLES,
+} from '../common/schedulable-user';
 
 const Permission = (perm: string) => SetMetadata('permission', perm);
 const UTC_INSTANT_RE = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2})(?:\.\d{1,3})?)?Z$/;
-const SCHEDULABLE_USER_ROLES = [UserRole.MANAGER, UserRole.STAFF];
 const MAX_BULK_ASSIGNMENTS = 500;
+const SHIFT_CREATE_ACTION = 'SHIFT_CREATED';
+const SHIFT_CREATE_IDEMPOTENCY_RESOURCE = 'ShiftCreationRequest';
+const SHIFT_UPDATE_ACTION = 'SHIFT_UPDATED';
+const SHIFT_UPDATE_IDEMPOTENCY_RESOURCE = 'ShiftUpdateRequest';
+const SHIFT_BULK_ASSIGN_ACTION = 'SHIFT_BULK_ASSIGNED';
+const SHIFT_BULK_ASSIGN_IDEMPOTENCY_RESOURCE = 'ShiftBulkAssignmentRequest';
 const schedulableShiftUserFilter = {
     OR: [
         { userId: null },
-        { user: { is: { role: { in: SCHEDULABLE_USER_ROLES }, deletedAt: null } } },
+        { user: { is: ACTIVE_SCHEDULABLE_USER_FILTER } },
     ],
 };
 
@@ -33,6 +72,12 @@ type ShiftScheduleWindow = {
 type LockedActiveLocationRow = {
     id: string;
     timezone: string;
+};
+
+type LockedShiftBreakRow = {
+    id: string;
+    startTime: Date;
+    endTime: Date;
 };
 
 @Controller({ path: 'shifts', version: '1' })
@@ -55,8 +100,17 @@ export class ShiftsController {
         @Query('scheduleId') scheduleId?: string,
         @Query('startDate') startDate?: string,
         @Query('endDate') endDate?: string,
+        @Query('limit') limitValue?: string,
+        @Query('cursor') cursorValue?: string,
     ) {
         const tenantId = req.user.tenantId;
+        const window = {
+            startDate: parseOptionalBoundedDate(startDate, 'startDate'),
+            endDate: parseOptionalBoundedDate(endDate, 'endDate'),
+        };
+        assertBoundedListWindow(window);
+        const limit = parseBoundedListLimit(limitValue);
+        const cursor = decodeBoundedListCursor(cursorValue);
         const where: any = {
             tenantId,
             deletedAt: null,
@@ -69,21 +123,31 @@ export class ShiftsController {
         }
         if (locationId) where.locationId = locationId;
         if (scheduleId) where.scheduleId = scheduleId;
-        if (startDate || endDate) {
-            if (startDate) and.push({ endTime: { gt: this.parseShiftDate(startDate, 'startDate') } });
-            if (endDate) and.push({ startTime: { lt: this.parseShiftDate(endDate, 'endDate') } });
+        if (window.startDate) and.push({ endTime: { gt: window.startDate } });
+        if (window.endDate) and.push({ startTime: { lt: window.endDate } });
+        if (cursor) {
+            and.push({
+                OR: [
+                    { startTime: { gt: cursor.timestamp } },
+                    { startTime: cursor.timestamp, id: { gt: cursor.id } },
+                ],
+            });
         }
         where.AND = and;
 
-        const shifts = await this.tenantDb.withTenant(tenantId, (tx) => tx.shift.findMany({
+        const rows = await this.tenantDb.withTenant(tenantId, (tx) => tx.shift.findMany({
             where,
-            orderBy: { startTime: 'asc' },
+            orderBy: [{ startTime: 'asc' }, { id: 'asc' }],
+            take: limit + 1,
             include: {
                 user: { select: { id: true, name: true, role: true } },
                 breaks: { orderBy: { startTime: 'asc' } },
             },
         }));
-        return { data: shifts, tenantId };
+        return {
+            ...buildBoundedListPage(rows, limit, (shift) => shift.startTime, window),
+            tenantId,
+        };
     }
 
     /**
@@ -92,26 +156,39 @@ export class ShiftsController {
      */
     @Get('staff-roster')
     @Permission('shifts:read')
-    async staffRoster(@Req() req: any) {
+    async staffRoster(
+        @Req() req: any,
+        @Query('limit') limitValue?: string,
+        @Query('cursor') cursorValue?: string,
+    ) {
         const tenantId = req.user.tenantId;
+        const limit = parseBoundedListLimit(limitValue);
+        const cursor = decodeBoundedListCursor(cursorValue);
         const where: any = {
             tenantId,
             deletedAt: null,
+            suspendedAt: null,
             role: { in: SCHEDULABLE_USER_ROLES },
         };
         if (this.isStaffUser(req)) where.id = this.actorUserId(req);
+        if (cursor) {
+            where.AND = [{ id: { gt: cursor.id } }];
+        }
         const users = await this.tenantDb.withTenant(tenantId, (tx) => tx.user.findMany({
             where,
-            orderBy: { name: 'asc' },
+            orderBy: { id: 'asc' },
+            take: limit + 1,
             select: {
                 id: true,
                 name: true,
                 role: true,
             },
         }));
+        const page = buildBoundedListPage(users, limit, () => new Date(0), {});
 
         return {
-            data: users.map((user) => ({
+            ...page,
+            data: page.data.map((user) => ({
                 id: user.id,
                 name: user.name || 'Unnamed',
                 role: user.role,
@@ -137,113 +214,227 @@ export class ShiftsController {
         startTime: string;
         endTime: string;
         role?: string;
-    }, @Req() req: any) {
+    }, @Req() req: any, @Headers('idempotency-key') idempotencyKey?: string) {
         const tenantId = req.user.tenantId;
         const startTime = this.parseShiftDate(body.startTime, 'startTime');
         const endTime = this.parseShiftDate(body.endTime, 'endTime');
         this.assertShiftWindow(startTime, endTime);
-        await this.assertSchedulingFeature(tenantId);
-
-        const shift = await this.tenantDb.withTenant(tenantId, async (tx) => {
-            await this.lockTenantSchedulingMutations(tx, tenantId);
-            const location = await this.assertLocationInTenant(tx, body.locationId, tenantId);
-            if (body.userId) {
-                await this.assertUserInTenant(tx, body.userId, tenantId);
-            }
-
-            const schedule = body.scheduleId
-                ? await this.assertScheduleInTenant(tx, body.scheduleId, tenantId, body.locationId)
-                : await this.findOrCreateContainingDraftSchedule(
-                    tx,
-                    tenantId,
-                    body.locationId,
-                    startTime,
-                    endTime,
-                    location.timezone,
-                );
-            this.assertShiftWithinSchedule(startTime, endTime, schedule);
-            await this.assertNoShiftOverlap(tx, tenantId, body.userId ?? null, startTime, endTime);
-
-            const shift = await tx.shift.create({
-                data: {
-                    tenantId,
-                    locationId: body.locationId,
-                    scheduleId: schedule.id,
-                    userId: body.userId,
-                    startTime,
-                    endTime,
-                    role: this.normalizeShiftRole(body.role),
-                },
-            });
-            return shift;
+        const role = this.normalizeShiftRole(body.role);
+        const operationId = shiftCreationOperationId(
+            tenantId,
+            normalizeShiftCreationIdempotencyKey(idempotencyKey),
+        );
+        const requestHash = shiftCreationRequestHash({
+            locationId: body.locationId,
+            scheduleId: body.scheduleId || null,
+            userId: body.userId || null,
+            startTime: startTime.toISOString(),
+            endTime: endTime.toISOString(),
+            role,
         });
 
-        return shift;
+        const replay = await this.tenantDb.withTenant(tenantId, (tx) => this.findShiftCreationReplay(
+            tx,
+            tenantId,
+            operationId,
+            requestHash,
+        ));
+        if (replay) return replay;
+
+        try {
+            return await this.tenantDb.withTenant(tenantId, async (tx) => {
+                const lockedReplay = await this.findShiftCreationReplay(tx, tenantId, operationId, requestHash);
+                if (lockedReplay) return lockedReplay;
+                const entitlement = await this.featureAccessService.assertFeatureEnabledInTransaction(tx, tenantId, 'scheduling');
+                await this.lockTenantSchedulingMutations(tx, tenantId);
+                const serializedReplay = await this.findShiftCreationReplay(tx, tenantId, operationId, requestHash);
+                if (serializedReplay) return serializedReplay;
+                const location = await this.assertLocationInTenant(tx, body.locationId, tenantId);
+                if (body.userId) {
+                    await this.assertUserInTenant(tx, body.userId, tenantId);
+                }
+
+                const schedule = body.scheduleId
+                    ? await this.assertScheduleInTenant(tx, body.scheduleId, tenantId, body.locationId)
+                    : await this.findOrCreateContainingDraftSchedule(
+                        tx,
+                        tenantId,
+                        body.locationId,
+                        startTime,
+                        endTime,
+                        location.timezone,
+                    );
+                this.assertShiftWithinSchedule(startTime, endTime, schedule);
+                await this.assertNoShiftOverlap(tx, tenantId, body.userId ?? null, startTime, endTime);
+                await this.featureAccessService.recordFeatureUsageInTransaction(
+                    tx,
+                    tenantId,
+                    entitlement,
+                    `Manual shift creation (${operationId})`,
+                    operationId,
+                );
+
+                const shift = await tx.shift.create({
+                    data: {
+                        tenantId,
+                        locationId: body.locationId,
+                        scheduleId: schedule.id,
+                        userId: body.userId,
+                        startTime,
+                        endTime,
+                        role,
+                    },
+                });
+                await this.incrementScheduleRevisions(tx, tenantId, [schedule.id]);
+                const response = this.serializeShiftCreationResponse(shift);
+                await this.createShiftMutationAudit(tx, {
+                    tenantId,
+                    actorUserId: this.actorUserId(req) ?? null,
+                    action: SHIFT_CREATE_ACTION,
+                    resource: SHIFT_CREATE_IDEMPOTENCY_RESOURCE,
+                    operationId,
+                    requestHash,
+                    response,
+                });
+                return response;
+            });
+        } catch (error) {
+            return this.replayShiftCreationAfterFailure(tenantId, operationId, requestHash, error);
+        }
     }
 
     @Put(':id')
     @Permission('shifts:write')
-    async update(@Param('id') id: string, @Body() body: any, @Req() req: any) {
+    async update(
+        @Param('id') id: string,
+        @Body() body: unknown,
+        @Req() req: any,
+        @Headers('idempotency-key') idempotencyKey?: string,
+    ) {
         const tenantId = req.user.tenantId;
-        await this.assertSchedulingFeature(tenantId);
-        const updatedShift = await this.tenantDb.withTenant(tenantId, async (tx) => {
-            await this.lockTenantSchedulingMutations(tx, tenantId);
-            const existingShift = await tx.shift.findFirst({
-                where: { id, tenantId, deletedAt: null },
-                select: {
-                    id: true,
-                    scheduleId: true,
-                    locationId: true,
-                    userId: true,
-                    startTime: true,
-                    endTime: true,
-                    role: true,
-                    location: { select: { timezone: true } },
-                    schedule: { select: { id: true, locationId: true, status: true, startDate: true, endDate: true } },
-                },
-            });
-            if (!existingShift) throw new NotFoundException('Shift not found');
-            if (Object.prototype.hasOwnProperty.call(body, 'userId')) {
-                await this.assertLocationInTenant(tx, existingShift.locationId, tenantId);
-            }
-            await this.lockScheduleRowsForMutation(tx, tenantId, [existingShift.scheduleId]);
-            if (existingShift.schedule?.status === 'PUBLISHED') {
-                throw new BadRequestException('Published schedules are locked. Create a new draft before changing shifts.');
-            }
+        const normalizedUpdate = this.normalizeShiftUpdate(body);
+        const operationId = shiftUpdateOperationId(
+            tenantId,
+            normalizeShiftUpdateIdempotencyKey(idempotencyKey),
+        );
+        const requestHash = shiftUpdateRequestHash({ shiftId: id, ...normalizedUpdate });
+        const replay = await this.tenantDb.withTenant(tenantId, (tx) => this.findShiftUpdateReplay(
+            tx,
+            tenantId,
+            operationId,
+            requestHash,
+        ));
+        if (replay) return replay;
 
-            const data: any = {};
-            if (Object.prototype.hasOwnProperty.call(body, 'userId')) {
-                if (body.userId) {
-                    await this.assertUserInTenant(tx, body.userId, tenantId);
+        try {
+            return await this.tenantDb.withTenant(tenantId, async (tx) => {
+                const lockedReplay = await this.findShiftUpdateReplay(tx, tenantId, operationId, requestHash);
+                if (lockedReplay) return lockedReplay;
+                await this.lockTenantSchedulingMutations(tx, tenantId);
+                const serializedReplay = await this.findShiftUpdateReplay(tx, tenantId, operationId, requestHash);
+                if (serializedReplay) return serializedReplay;
+                const existingShift = await tx.shift.findFirst({
+                    where: { id, tenantId, deletedAt: null },
+                    select: {
+                        id: true,
+                        scheduleId: true,
+                        locationId: true,
+                        userId: true,
+                        startTime: true,
+                        endTime: true,
+                        role: true,
+                        location: { select: { timezone: true } },
+                        schedule: { select: { id: true, locationId: true, status: true, startDate: true, endDate: true } },
+                    },
+                });
+                if (!existingShift) throw new NotFoundException('Shift not found');
+                await this.lockScheduleRowsForMutation(tx, tenantId, [existingShift.scheduleId]);
+                if (existingShift.schedule && existingShift.schedule.status !== 'DRAFT') {
+                    throw new BadRequestException('Published or archived schedules are locked. Create a new draft before changing shifts.');
                 }
-                data.userId = body.userId ?? null;
-            }
-            const hasStartTime = Object.prototype.hasOwnProperty.call(body, 'startTime');
-            const hasEndTime = Object.prototype.hasOwnProperty.call(body, 'endTime');
-            const nextStartTime = hasStartTime ? this.parseShiftDate(body.startTime, 'startTime') : existingShift.startTime;
-            const nextEndTime = hasEndTime ? this.parseShiftDate(body.endTime, 'endTime') : existingShift.endTime;
-            const nextUserId = Object.prototype.hasOwnProperty.call(body, 'userId') ? body.userId ?? null : existingShift.userId;
-            this.assertShiftWindow(nextStartTime, nextEndTime);
-            if (existingShift.schedule) {
-                this.assertShiftWithinSchedule(nextStartTime, nextEndTime, existingShift.schedule);
-            }
-            await this.assertNoShiftOverlap(tx, tenantId, nextUserId, nextStartTime, nextEndTime, [id]);
-            if (hasStartTime) data.startTime = nextStartTime;
-            if (hasEndTime) data.endTime = nextEndTime;
-            if (Object.prototype.hasOwnProperty.call(body, 'role')) data.role = this.normalizeShiftRole(body.role);
+                if (!this.hasShiftUpdateValueChanges(existingShift, normalizedUpdate)) {
+                    const currentShift = await this.findShiftById(tx, id, tenantId);
+                    if (!currentShift) throw new NotFoundException('Shift not found');
+                    return this.serializeShiftCreationResponse(currentShift);
+                }
 
-            const updateResult = await tx.shift.updateMany({
-                where: { id, tenantId },
-                data
+                if (normalizedUpdate.userId !== undefined) {
+                    await this.assertLocationInTenant(tx, existingShift.locationId, tenantId);
+                }
+
+                const data: Prisma.ShiftUncheckedUpdateManyInput = {};
+                if (normalizedUpdate.userId !== undefined) {
+                    if (normalizedUpdate.userId) {
+                        await this.assertUserInTenant(tx, normalizedUpdate.userId, tenantId);
+                    }
+                    data.userId = normalizedUpdate.userId;
+                }
+                const nextStartTime = normalizedUpdate.startTime
+                    ? new Date(normalizedUpdate.startTime)
+                    : existingShift.startTime;
+                const nextEndTime = normalizedUpdate.endTime
+                    ? new Date(normalizedUpdate.endTime)
+                    : existingShift.endTime;
+                const nextUserId = normalizedUpdate.userId === undefined
+                    ? existingShift.userId
+                    : normalizedUpdate.userId;
+                assertShiftUpdateWindow(nextStartTime, nextEndTime);
+                if (existingShift.schedule) {
+                    assertShiftUpdateWithinSchedule(nextStartTime, nextEndTime, existingShift.schedule);
+                }
+                const translatedBreaks = await this.lockAndPlanShiftBreakTranslation(
+                    tx, id, existingShift.startTime, nextStartTime, nextEndTime,
+                );
+                await this.assertNoShiftOverlap(tx, tenantId, nextUserId, nextStartTime, nextEndTime, [id], true);
+                const entitlement = await this.featureAccessService.assertFeatureEnabledInTransaction(tx, tenantId, 'scheduling');
+                if (normalizedUpdate.startTime) data.startTime = nextStartTime;
+                if (normalizedUpdate.endTime) data.endTime = nextEndTime;
+                if (normalizedUpdate.role !== undefined) data.role = normalizedUpdate.role;
+
+                await this.featureAccessService.recordFeatureUsageInTransaction(
+                    tx,
+                    tenantId,
+                    entitlement,
+                    `Manual shift update (${operationId})`,
+                    operationId,
+                );
+                const updateResult = await tx.shift.updateMany({
+                    where: { id, tenantId, deletedAt: null },
+                    data,
+                });
+                if (updateResult.count === 0) throw new NotFoundException('Shift not found');
+                for (const shiftBreak of translatedBreaks) {
+                    const breakUpdate = await tx.break.updateMany({
+                        where: { id: shiftBreak.id, shiftId: id },
+                        data: { startTime: shiftBreak.startTime, endTime: shiftBreak.endTime },
+                    });
+                    if (breakUpdate.count !== 1) {
+                        throw new ConflictException('A dependent lunch/break changed during the shift move. Refresh and retry.');
+                    }
+                }
+                await this.incrementScheduleRevisions(tx, tenantId, [existingShift.scheduleId]);
+                const updatedShift = await this.findShiftById(tx, id, tenantId);
+                if (!updatedShift) throw new NotFoundException('Shift not found');
+                const response = this.serializeShiftCreationResponse(updatedShift);
+                await this.createShiftMutationAudit(tx, {
+                    tenantId,
+                    actorUserId: this.actorUserId(req) ?? null,
+                    action: SHIFT_UPDATE_ACTION,
+                    resource: SHIFT_UPDATE_IDEMPOTENCY_RESOURCE,
+                    operationId,
+                    requestHash,
+                    response,
+                });
+                return response;
             });
-
-            if (updateResult.count === 0) throw new NotFoundException('Shift not found');
-            const updatedShift = await this.findShiftById(tx, id, tenantId);
-            if (!updatedShift) throw new NotFoundException('Shift not found');
-            return updatedShift;
-        });
-
-        return updatedShift;
+        } catch (error) {
+            return this.replayShiftUpdateAfterFailure(
+                tenantId,
+                operationId,
+                requestHash,
+                mapShiftUpdateInvariantError(error),
+            );
+        }
     }
 
     @Delete(':id')
@@ -251,8 +442,9 @@ export class ShiftsController {
     @HttpCode(HttpStatus.NO_CONTENT)
     async remove(@Param('id') id: string, @Req() req: any) {
         const tenantId = req.user.tenantId;
-        await this.assertSchedulingFeature(tenantId);
+
         await this.tenantDb.withTenant(tenantId, async (tx) => {
+            await this.featureAccessService.assertFeatureEntitledInTransaction(tx, tenantId, 'scheduling');
             await this.lockTenantSchedulingMutations(tx, tenantId);
             const shift = await tx.shift.findFirst({
                 where: { id, tenantId, deletedAt: null },
@@ -264,10 +456,12 @@ export class ShiftsController {
                 throw new BadRequestException('Published schedules are locked. Create a new draft before deleting shifts.');
             }
 
-            await tx.shift.updateMany({
-                where: { id, tenantId },
+            const deleted = await tx.shift.updateMany({
+                where: { id, tenantId, deletedAt: null },
                 data: { deletedAt: new Date() }
             });
+            if (deleted.count !== 1) throw new NotFoundException('Shift not found');
+            await this.incrementScheduleRevisions(tx, tenantId, [shift.scheduleId]);
         });
     }
 
@@ -277,115 +471,339 @@ export class ShiftsController {
      */
     @Post('bulk-assign')
     @Permission('shifts:write')
-    async bulkAssign(@Body() body: { assignments: Array<{ shiftId: string; userId?: string | null }> }, @Req() req: any) {
+    async bulkAssign(
+        @Body() body: { assignments: Array<{ shiftId: string; userId?: string | null }> },
+        @Req() req: any,
+        @Headers('idempotency-key') idempotencyKey?: string,
+    ) {
         const assignments = this.normalizeBulkAssignments(body);
         const tenantId = req.user.tenantId;
-        await this.assertSchedulingFeature(tenantId);
-        const shiftIds = Array.from(new Set(assignments.map((assignment) => assignment.shiftId).filter(Boolean)));
-        const updated = await this.tenantDb.withTenant(tenantId, async (tx) => {
-            await this.lockTenantSchedulingMutations(tx, tenantId);
-            const discoveredShifts = await tx.shift.findMany({
-                where: {
-                    tenantId,
-                    id: { in: shiftIds },
-                    deletedAt: null,
-                },
-                select: { id: true, scheduleId: true },
-            });
-            if (discoveredShifts.length !== shiftIds.length || discoveredShifts.some((shift) => !shift.scheduleId)) {
-                throw new BadRequestException('One or more shifts are not available for this tenant.');
-            }
-            const discoveredScheduleByShiftId = new Map(
-                discoveredShifts.map((shift) => [shift.id, shift.scheduleId]),
-            );
-            await this.lockScheduleRowsForMutation(
-                tx,
-                tenantId,
-                discoveredShifts.map((shift) => shift.scheduleId),
-            );
+        const operationId = shiftBulkAssignmentOperationId(
+            tenantId,
+            normalizeShiftBulkAssignmentIdempotencyKey(idempotencyKey),
+        );
+        const requestHash = shiftBulkAssignmentRequestHash({ assignments });
+        const replay = await this.tenantDb.withTenant(tenantId, (tx) => this.findShiftBulkAssignmentReplay(
+            tx,
+            tenantId,
+            operationId,
+            requestHash,
+        ));
+        if (replay) return replay;
 
-            const targetShifts = await tx.shift.findMany({
-                where: {
-                    tenantId,
-                    id: { in: shiftIds },
-                    deletedAt: null,
-                },
-                select: {
-                    id: true,
-                    scheduleId: true,
-                    locationId: true,
-                    startTime: true,
-                    endTime: true,
-                    location: { select: { timezone: true } },
-                    schedule: { select: { status: true } },
-                },
-            });
-            if (targetShifts.length !== shiftIds.length) {
-                throw new BadRequestException('One or more shifts are not available for this tenant.');
-            }
-            if (targetShifts.some((shift) => discoveredScheduleByShiftId.get(shift.id) !== shift.scheduleId)) {
-                throw new ConflictException('Shift assignments changed while this request was being validated. Retry the assignment.');
-            }
-            const locationIds = Array.from(new Set(targetShifts.map((shift) => shift.locationId))).sort();
-            for (const locationId of locationIds) {
-                await this.assertLocationInTenant(tx, locationId, tenantId);
-            }
-            if (targetShifts.some((shift) => shift.schedule?.status === 'PUBLISHED')) {
-                throw new BadRequestException('Published schedules are locked. Create a new draft before assigning shifts.');
-            }
-
-            const shiftsById = new Map(targetShifts.map((shift) => [shift.id, shift]));
-            const userIds = Array.from(new Set(assignments.map((assignment) => assignment.userId).filter(Boolean)));
-            for (const userId of userIds) {
-                await this.assertUserInTenant(tx, userId as string, tenantId);
-            }
-
-            const nextAssignments = assignments.map((assignment) => {
-                const shift = shiftsById.get(assignment.shiftId);
-                if (!shift) throw new BadRequestException('One or more shifts are not available for this tenant.');
-                return {
-                    shiftId: assignment.shiftId,
-                    userId: assignment.userId ?? null,
-                    startTime: shift.startTime,
-                    endTime: shift.endTime,
-                };
-            });
-            this.assertNoBatchOverlaps(nextAssignments);
-            for (const assignment of nextAssignments) {
-                await this.assertNoShiftOverlap(
-                    tx,
-                    tenantId,
-                    assignment.userId,
-                    assignment.startTime,
-                    assignment.endTime,
-                    shiftIds,
-                );
-            }
-
-            for (const assignment of assignments) {
-                const targetShift = shiftsById.get(assignment.shiftId);
-                const result = await tx.shift.updateMany({
+        const shiftIds = assignments.map((assignment) => assignment.shiftId);
+        try {
+            return await this.tenantDb.withTenant(tenantId, async (tx) => {
+                const lockedReplay = await this.findShiftBulkAssignmentReplay(tx, tenantId, operationId, requestHash);
+                if (lockedReplay) return lockedReplay;
+                await this.lockTenantSchedulingMutations(tx, tenantId);
+                const serializedReplay = await this.findShiftBulkAssignmentReplay(tx, tenantId, operationId, requestHash);
+                if (serializedReplay) return serializedReplay;
+                const discoveredShifts = await tx.shift.findMany({
                     where: {
-                        id: assignment.shiftId,
                         tenantId,
-                        scheduleId: targetShift?.scheduleId,
+                        id: { in: shiftIds },
                         deletedAt: null,
                     },
-                    data: { userId: assignment.userId ?? null },
+                    select: { id: true, scheduleId: true },
                 });
-                if (result.count !== 1) {
-                    throw new ConflictException('Shift assignments changed while this request was being applied. Retry the assignment.');
+                if (discoveredShifts.length !== shiftIds.length || discoveredShifts.some((shift) => !shift.scheduleId)) {
+                    throw new BadRequestException('One or more shifts are not available for this tenant.');
                 }
-            }
+                const discoveredScheduleByShiftId = new Map(
+                    discoveredShifts.map((shift) => [shift.id, shift.scheduleId]),
+                );
+                await this.lockScheduleRowsForMutation(
+                    tx,
+                    tenantId,
+                    discoveredShifts.map((shift) => shift.scheduleId),
+                );
 
-            return assignments.length;
+                const targetShifts = await tx.shift.findMany({
+                    where: {
+                        tenantId,
+                        id: { in: shiftIds },
+                        deletedAt: null,
+                    },
+                    select: {
+                        id: true,
+                        scheduleId: true,
+                        locationId: true,
+                        userId: true,
+                        startTime: true,
+                        endTime: true,
+                        location: { select: { timezone: true } },
+                        schedule: { select: { status: true } },
+                    },
+                });
+                if (targetShifts.length !== shiftIds.length) {
+                    throw new BadRequestException('One or more shifts are not available for this tenant.');
+                }
+                if (targetShifts.some((shift) => discoveredScheduleByShiftId.get(shift.id) !== shift.scheduleId)) {
+                    throw new ConflictException('Shift assignments changed while this request was being validated. Retry the assignment.');
+                }
+                const locationIds = Array.from(new Set(targetShifts.map((shift) => shift.locationId))).sort();
+                for (const locationId of locationIds) {
+                    await this.assertLocationInTenant(tx, locationId, tenantId);
+                }
+                if (targetShifts.some((shift) => shift.schedule?.status === 'PUBLISHED')) {
+                    throw new BadRequestException('Published schedules are locked. Create a new draft before assigning shifts.');
+                }
+
+                const shiftsById = new Map(targetShifts.map((shift) => [shift.id, shift]));
+                const userIds = Array.from(new Set(assignments.map((assignment) => assignment.userId).filter(Boolean)));
+                for (const userId of userIds) {
+                    await this.assertUserInTenant(tx, userId as string, tenantId);
+                }
+
+                const nextAssignments = assignments.map((assignment) => {
+                    const shift = shiftsById.get(assignment.shiftId);
+                    if (!shift) throw new BadRequestException('One or more shifts are not available for this tenant.');
+                    return {
+                        shiftId: assignment.shiftId,
+                        userId: assignment.userId ?? null,
+                        startTime: shift.startTime,
+                        endTime: shift.endTime,
+                    };
+                });
+                this.assertNoBatchOverlaps(nextAssignments);
+                for (const assignment of nextAssignments) {
+                    await this.assertNoShiftOverlap(
+                        tx,
+                        tenantId,
+                        assignment.userId,
+                        assignment.startTime,
+                        assignment.endTime,
+                        shiftIds,
+                    );
+                }
+                const changedAssignments = assignments.filter((assignment) => (
+                    shiftsById.get(assignment.shiftId)?.userId !== assignment.userId
+                ));
+                if (changedAssignments.length === 0) {
+                    return { updated: 0 };
+                }
+
+                const entitlement = await this.featureAccessService.assertFeatureEnabledInTransaction(tx, tenantId, 'scheduling');
+                await this.featureAccessService.recordFeatureUsageInTransaction(
+                    tx,
+                    tenantId,
+                    entitlement,
+                    `Manual shift bulk assignment (${operationId})`,
+                    operationId,
+                );
+
+                for (const assignment of changedAssignments) {
+                    const targetShift = shiftsById.get(assignment.shiftId);
+                    const result = await tx.shift.updateMany({
+                        where: {
+                            id: assignment.shiftId,
+                            tenantId,
+                            scheduleId: targetShift?.scheduleId,
+                            userId: targetShift?.userId ?? null,
+                            deletedAt: null,
+                        },
+                        data: { userId: assignment.userId ?? null },
+                    });
+                    if (result.count !== 1) {
+                        throw new ConflictException('Shift assignments changed while this request was being applied. Retry the assignment.');
+                    }
+                }
+                await this.incrementScheduleRevisions(
+                    tx,
+                    tenantId,
+                    changedAssignments.map((assignment) => shiftsById.get(assignment.shiftId)?.scheduleId),
+                );
+
+                const response = { updated: changedAssignments.length };
+                await this.createShiftMutationAudit(tx, {
+                    tenantId,
+                    actorUserId: this.actorUserId(req) ?? null,
+                    action: SHIFT_BULK_ASSIGN_ACTION,
+                    resource: SHIFT_BULK_ASSIGN_IDEMPOTENCY_RESOURCE,
+                    operationId,
+                    requestHash,
+                    response,
+                });
+                return response;
+            });
+        } catch (error) {
+            return this.replayShiftBulkAssignmentAfterFailure(tenantId, operationId, requestHash, error);
+        }
+    }
+    private async findShiftCreationReplay(
+        tx: TenantPrismaTransaction,
+        tenantId: string,
+        operationId: string,
+        requestHash: string,
+    ): Promise<Record<string, unknown> | null> {
+        const stored = await tx.auditLog.findFirst({
+            where: {
+                tenantId,
+                action: SHIFT_CREATE_ACTION,
+                resource: SHIFT_CREATE_IDEMPOTENCY_RESOURCE,
+                resourceId: operationId,
+            },
+            orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
+            select: { newValue: true },
         });
-
-        return { updated };
+        if (!stored) return null;
+        if (!this.isRecord(stored.newValue) || typeof stored.newValue.requestHash !== 'string') {
+            throw new ConflictException('The stored shift creation outcome is unavailable. Use a new Idempotency-Key.');
+        }
+        if (stored.newValue.requestHash !== requestHash) {
+            throw new ConflictException('Idempotency-Key was already used with a different shift creation request.');
+        }
+        if (!this.isRecord(stored.newValue.response)) {
+            throw new ConflictException('The stored shift creation outcome is unavailable. Use a new Idempotency-Key.');
+        }
+        return stored.newValue.response;
     }
 
-    private async assertSchedulingFeature(tenantId: string): Promise<void> {
-        await this.featureAccessService.assertFeatureEnabled(tenantId, 'scheduling');
+    private async findShiftBulkAssignmentReplay(
+        tx: TenantPrismaTransaction,
+        tenantId: string,
+        operationId: string,
+        requestHash: string,
+    ): Promise<Record<string, unknown> | null> {
+        const stored = await tx.auditLog.findFirst({
+            where: {
+                tenantId,
+                action: SHIFT_BULK_ASSIGN_ACTION,
+                resource: SHIFT_BULK_ASSIGN_IDEMPOTENCY_RESOURCE,
+                resourceId: operationId,
+            },
+            orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
+            select: { newValue: true },
+        });
+        if (!stored) return null;
+        if (!this.isRecord(stored.newValue) || typeof stored.newValue.requestHash !== 'string') {
+            throw new ConflictException('The stored bulk shift assignment outcome is unavailable. Use a new Idempotency-Key.');
+        }
+        if (stored.newValue.requestHash !== requestHash) {
+            throw new ConflictException('Idempotency-Key was already used with a different bulk shift assignment request.');
+        }
+        if (!this.isRecord(stored.newValue.response)) {
+            throw new ConflictException('The stored bulk shift assignment outcome is unavailable. Use a new Idempotency-Key.');
+        }
+        return stored.newValue.response;
+    }
+
+    private async findShiftUpdateReplay(
+        tx: TenantPrismaTransaction,
+        tenantId: string,
+        operationId: string,
+        requestHash: string,
+    ): Promise<Record<string, unknown> | null> {
+        const stored = await tx.auditLog.findFirst({
+            where: {
+                tenantId,
+                action: SHIFT_UPDATE_ACTION,
+                resource: SHIFT_UPDATE_IDEMPOTENCY_RESOURCE,
+                resourceId: operationId,
+            },
+            orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
+            select: { newValue: true },
+        });
+        if (!stored) return null;
+        if (!this.isRecord(stored.newValue) || typeof stored.newValue.requestHash !== 'string') {
+            throw new ConflictException('The stored shift update outcome is unavailable. Use a new Idempotency-Key.');
+        }
+        if (stored.newValue.requestHash !== requestHash) {
+            throw new ConflictException('Idempotency-Key was already used with a different shift update request.');
+        }
+        if (!this.isRecord(stored.newValue.response)) {
+            throw new ConflictException('The stored shift update outcome is unavailable. Use a new Idempotency-Key.');
+        }
+        return stored.newValue.response;
+    }
+
+    private async createShiftMutationAudit(
+        tx: TenantPrismaTransaction,
+        args: {
+            tenantId: string;
+            actorUserId: string | null;
+            action: string;
+            resource: string;
+            operationId: string;
+            requestHash: string;
+            response: Prisma.InputJsonObject;
+        },
+    ): Promise<void> {
+        await tx.auditLog.create({
+            data: {
+                tenantId: args.tenantId,
+                userId: args.actorUserId,
+                actorUserId: args.actorUserId,
+                actorTenantId: args.tenantId,
+                action: args.action,
+                resource: args.resource,
+                resourceId: args.operationId,
+                newValue: {
+                    requestHash: args.requestHash,
+                    response: args.response,
+                },
+            },
+        });
+    }
+
+    private async replayShiftCreationAfterFailure(
+        tenantId: string,
+        operationId: string,
+        requestHash: string,
+        error: unknown,
+    ): Promise<Record<string, unknown>> {
+        const replay = await this.tenantDb.withTenant(tenantId, (tx) => this.findShiftCreationReplay(
+            tx,
+            tenantId,
+            operationId,
+            requestHash,
+        ));
+        if (replay) return replay;
+        throw error;
+    }
+
+    private async replayShiftBulkAssignmentAfterFailure(
+        tenantId: string,
+        operationId: string,
+        requestHash: string,
+        error: unknown,
+    ): Promise<Record<string, unknown>> {
+        const replay = await this.tenantDb.withTenant(tenantId, (tx) => this.findShiftBulkAssignmentReplay(
+            tx,
+            tenantId,
+            operationId,
+            requestHash,
+        ));
+        if (replay) return replay;
+        throw error;
+    }
+
+    private async replayShiftUpdateAfterFailure(
+        tenantId: string,
+        operationId: string,
+        requestHash: string,
+        error: unknown,
+    ): Promise<Record<string, unknown>> {
+        const replay = await this.tenantDb.withTenant(tenantId, (tx) => this.findShiftUpdateReplay(
+            tx,
+            tenantId,
+            operationId,
+            requestHash,
+        ));
+        if (replay) return replay;
+        throw error;
+    }
+    private serializeShiftCreationResponse(value: unknown): Prisma.InputJsonObject {
+        const serialized = JSON.parse(JSON.stringify(value)) as unknown;
+        if (!this.isRecord(serialized)) {
+            throw new ConflictException('The created shift response could not be persisted safely.');
+        }
+        return serialized as Prisma.InputJsonObject;
+    }
+
+    private isRecord(value: unknown): value is Record<string, unknown> {
+        return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
     }
 
     private async assertLocationInTenant(tx: TenantPrismaTransaction, locationId: string | undefined, tenantId: string) {
@@ -425,10 +843,7 @@ export class ShiftsController {
     }
 
     private async assertUserInTenant(tx: TenantPrismaTransaction, userId: string, tenantId: string) {
-        const user = await tx.user.findFirst({
-            where: { id: userId, tenantId, deletedAt: null, role: { in: SCHEDULABLE_USER_ROLES } },
-            select: { id: true },
-        });
+        const user = await lockActiveSchedulableUser(tx, tenantId, userId);
         if (!user) throw new BadRequestException('User is not available for scheduling in this tenant.');
     }
 
@@ -475,6 +890,23 @@ export class ShiftsController {
         }
     }
 
+    private async lockAndPlanShiftBreakTranslation(
+        tx: TenantPrismaTransaction,
+        shiftId: string,
+        previousStartTime: Date,
+        nextStartTime: Date,
+        nextEndTime: Date,
+    ): Promise<LockedShiftBreakRow[]> {
+        const rows = await tx.$queryRaw<LockedShiftBreakRow[]>`
+            SELECT "id", "startTime", "endTime"
+            FROM "Break"
+            WHERE "shiftId" = ${shiftId}
+            ORDER BY "startTime", "id"
+            FOR UPDATE
+        `;
+        return translateShiftBreakWindows(rows, previousStartTime, nextStartTime, nextEndTime);
+    }
+
     private normalizeShiftRole(value: unknown): string | null {
         if (value === undefined || value === null || value === '') return null;
         if (typeof value !== 'string') {
@@ -488,7 +920,47 @@ export class ShiftsController {
         return role;
     }
 
-    private normalizeBulkAssignments(body: unknown): Array<{ shiftId: string; userId?: string | null }> {
+    private normalizeShiftUpdate(body: unknown): Omit<ShiftUpdateIdentity, 'shiftId'> {
+        if (!body || typeof body !== 'object' || Array.isArray(body)) {
+            throw new BadRequestException('Shift update body must be an object.');
+        }
+        const input = body as Record<string, unknown>;
+        const normalized: Omit<ShiftUpdateIdentity, 'shiftId'> = {};
+        if (Object.prototype.hasOwnProperty.call(input, 'userId')) {
+            if (input.userId === null || input.userId === '') {
+                normalized.userId = null;
+            } else if (typeof input.userId === 'string' && input.userId.trim()) {
+                normalized.userId = input.userId.trim();
+            } else {
+                throw new BadRequestException('userId must be a non-empty string or null.');
+            }
+        }
+        if (Object.prototype.hasOwnProperty.call(input, 'startTime')) {
+            normalized.startTime = this.parseShiftDate(input.startTime as string | undefined, 'startTime').toISOString();
+        }
+        if (Object.prototype.hasOwnProperty.call(input, 'endTime')) {
+            normalized.endTime = this.parseShiftDate(input.endTime as string | undefined, 'endTime').toISOString();
+        }
+        if (Object.prototype.hasOwnProperty.call(input, 'role')) {
+            normalized.role = this.normalizeShiftRole(input.role);
+        }
+        if (Object.keys(normalized).length === 0) {
+            throw new BadRequestException('Shift update requires userId, startTime, endTime, or role.');
+        }
+        return normalized;
+    }
+
+    private hasShiftUpdateValueChanges(
+        existing: { userId: string | null; startTime: Date; endTime: Date; role: string | null },
+        update: Omit<ShiftUpdateIdentity, 'shiftId'>,
+    ): boolean {
+        return (update.userId !== undefined && update.userId !== existing.userId)
+            || (update.startTime !== undefined && update.startTime !== existing.startTime.toISOString())
+            || (update.endTime !== undefined && update.endTime !== existing.endTime.toISOString())
+            || (update.role !== undefined && update.role !== existing.role);
+    }
+
+    private normalizeBulkAssignments(body: unknown): Array<{ shiftId: string; userId: string | null }> {
         if (!body || typeof body !== 'object' || Array.isArray(body)) {
             throw new BadRequestException('Bulk assignment body must be an object.');
         }
@@ -533,6 +1005,7 @@ export class ShiftsController {
         startTime: Date,
         endTime: Date,
         excludeShiftIds: string[] = [],
+        conflictOnOverlap = false,
     ) {
         if (!userId) return;
         const where: any = {
@@ -547,7 +1020,9 @@ export class ShiftsController {
         }
         const overlapCount = await tx.shift.count({ where });
         if (overlapCount > 0) {
-            throw new BadRequestException('User already has a shift that overlaps this time window.');
+            const message = 'User already has a shift that overlaps this time window.';
+            if (conflictOnOverlap) throw new ConflictException(message);
+            throw new BadRequestException(message);
         }
     }
 
@@ -676,9 +1151,27 @@ export class ShiftsController {
         tx: TenantPrismaTransaction,
         tenantId: string,
     ): Promise<void> {
-        await tx.$queryRaw`
+        await this.featureAccessService.lockTenantInTransaction(tx, tenantId);
+        await tx.$executeRaw`
             SELECT pg_advisory_xact_lock(hashtextextended(${`lunchlineup:scheduling:${tenantId}`}, 0))
         `;
+    }
+
+    private async incrementScheduleRevisions(
+        tx: TenantPrismaTransaction,
+        tenantId: string,
+        scheduleIds: Array<string | null | undefined>,
+    ): Promise<void> {
+        const ids = Array.from(new Set(scheduleIds.filter((id): id is string => Boolean(id))));
+        if (ids.length === 0) return;
+
+        const updated = await tx.schedule.updateMany({
+            where: { tenantId, id: { in: ids }, status: 'DRAFT', deletedAt: null },
+            data: { revision: { increment: 1 } },
+        });
+        if (updated.count !== ids.length) {
+            throw new ConflictException('Schedule changed before shift edits could be saved. Retry the request.');
+        }
     }
 
     private actorUserId(req: any): string {

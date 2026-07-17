@@ -6,7 +6,43 @@ export type DailyWindowSegment = {
   durationHours: number;
 };
 
+export type SchedulerTimelineViewMode = 'day' | 'threeDay' | 'week';
+
+export type SchedulerTimelineLayout = {
+  hourWidth: number;
+  timelineWidth: number;
+  allowsHorizontalScroll: boolean;
+};
+
+export const SCHEDULER_DESKTOP_FIT_MIN_WIDTH = 640;
+
+const SCROLL_HOUR_WIDTH: Record<SchedulerTimelineViewMode, number> = {
+  day: 70,
+  threeDay: 48,
+  week: 24,
+};
+
 const HOUR_MS = 3_600_000;
+
+export function resolveSchedulerTimelineLayout(
+  viewMode: SchedulerTimelineViewMode,
+  viewportWidth: number,
+  totalHours: number,
+): SchedulerTimelineLayout {
+  const usableViewportWidth = Number.isFinite(viewportWidth) ? Math.max(0, viewportWidth) : 0;
+  const usableTotalHours = Number.isFinite(totalHours) ? Math.max(1, totalHours) : 1;
+  const fitsDesktopViewport = viewMode !== 'week'
+    && usableViewportWidth >= SCHEDULER_DESKTOP_FIT_MIN_WIDTH;
+  const hourWidth = fitsDesktopViewport
+    ? usableViewportWidth / usableTotalHours
+    : SCROLL_HOUR_WIDTH[viewMode];
+
+  return {
+    hourWidth,
+    timelineWidth: fitsDesktopViewport ? usableViewportWidth : usableTotalHours * hourWidth,
+    allowsHorizontalScroll: !fitsDesktopViewport,
+  };
+}
 
 function sameLocalDate(a: Date, b: Date): boolean {
   return a.getFullYear() === b.getFullYear()

@@ -5,7 +5,9 @@ import { formatTimeInTimeZone, instantToWallClockDate, wallClockDateToIso } from
 import {
     dateForTimelineOffset,
     projectIntervalIntoDailyWindows,
+    resolveSchedulerTimelineLayout,
     timelineOffsetForDate,
+    type SchedulerTimelineViewMode,
 } from './scheduler-projection';
 
 interface StaffResource {
@@ -25,7 +27,7 @@ export interface StaffScheduleEvent {
     extendedProps: { role: string; kind?: 'shift' | 'lunch' | 'break'; conflict?: string };
 }
 
-export type SchedulerViewMode = 'day' | 'threeDay' | 'week';
+export type SchedulerViewMode = SchedulerTimelineViewMode;
 
 type CoverageTone = 'healthy' | 'risk' | 'critical';
 
@@ -61,6 +63,7 @@ interface StaffSchedulerProps {
     onEventSelect?: (event: StaffScheduleEvent) => void;
     onEventDelete?: (event: StaffScheduleEvent) => void;
     onSlotSelect?: (slot: StaffScheduleSlotSelection) => void;
+    onTimeSelectionError?: (message: string) => void;
 }
 
 const ROLE_PALETTE: Record<string, { bg: string; border: string; text: string }> = {
@@ -97,7 +100,7 @@ function clamp(n: number, min: number, max: number): number {
     return Math.max(min, Math.min(max, n));
 }
 
-export function StaffScheduler({ resources, events, viewMode, initialDate, timeZone, compactWindow = true, onEventChange, onEventSelect, onEventDelete, onSlotSelect }: StaffSchedulerProps) {
+export function StaffScheduler({ resources, events, viewMode, initialDate, timeZone, compactWindow = true, onEventChange, onEventSelect, onEventDelete, onSlotSelect, onTimeSelectionError }: StaffSchedulerProps) {
     const [drag, setDrag] = useState<DragState | null>(null);
     const [dragDeltaHours, setDragDeltaHours] = useState(0);
     const [shiftAction, setShiftAction] = useState<ShiftActionState | null>(null);
@@ -127,9 +130,11 @@ export function StaffScheduler({ resources, events, viewMode, initialDate, timeZ
     }, [dayCount, rangeStart]);
 
     const totalHours = dayCount * hoursPerDay;
-    const fitViewport = viewMode !== 'week' && viewportWidth > 0;
-    const hourWidth = fitViewport ? viewportWidth / totalHours : viewMode === 'day' ? 70 : viewMode === 'threeDay' ? 48 : 24;
-    const timelineWidth = fitViewport ? viewportWidth : totalHours * hourWidth;
+    const {
+        hourWidth,
+        timelineWidth,
+        allowsHorizontalScroll,
+    } = resolveSchedulerTimelineLayout(viewMode, viewportWidth, totalHours);
     const labelEvery = viewMode === 'week' ? 3 : hourWidth < 22 ? 3 : 2;
 
     useEffect(() => {
@@ -266,9 +271,16 @@ export function StaffScheduler({ resources, events, viewMode, initialDate, timeZ
                 ? new Date(drag.originalStart.getTime() + dragDeltaHours * 3600000)
                 : dateForTimelineOffset(originalOffset + dragDeltaHours, dayStarts, minHour, maxHour);
             const deltaMs = newStart.getTime() - drag.originalStart.getTime();
-            const newEnd = new Date(drag.originalEnd.getTime() + deltaMs);            const event = events.find((ev) => ev.id === drag.eventId);
+            const newEnd = new Date(drag.originalEnd.getTime() + deltaMs);
+            const event = events.find((ev) => ev.id === drag.eventId);
             if (event) {
-                onEventChange?.(event.id, wallClockDateToIso(newStart, timeZone), wallClockDateToIso(newEnd, timeZone), newResourceId ?? event.resourceId);
+                try {
+                    const startIso = wallClockDateToIso(newStart, timeZone);
+                    const endIso = wallClockDateToIso(newEnd, timeZone);
+                    onEventChange?.(event.id, startIso, endIso, newResourceId ?? event.resourceId);
+                } catch (error) {
+                    onTimeSelectionError?.((error as Error).message);
+                }
             }
         } else if (newResourceId) {
             const event = events.find((ev) => ev.id === drag.eventId);
@@ -311,7 +323,8 @@ export function StaffScheduler({ resources, events, viewMode, initialDate, timeZ
         const start = dateForTimelineOffset(hourOffset, dayStarts, minHour, maxHour);
         const dayIndex = Math.min(dayStarts.length - 1, Math.floor(hourOffset / hoursPerDay));
         const dayStart = new Date(dayStarts[dayIndex]);
-        dayStart.setHours(minHour, 0, 0, 0);        const dayEnd = new Date(dayStart);
+        dayStart.setHours(minHour, 0, 0, 0);
+        const dayEnd = new Date(dayStart);
         dayEnd.setHours(maxHour, 0, 0, 0);
         const end = new Date(start);
         end.setHours(end.getHours() + 8);
@@ -319,7 +332,13 @@ export function StaffScheduler({ resources, events, viewMode, initialDate, timeZ
         if (end <= start) end.setHours(start.getHours() + 1);
         setShiftAction(null);
         setPendingDeleteEventId(null);
-        onSlotSelect({ resourceId, start: wallClockDateToIso(start, timeZone), end: wallClockDateToIso(end, timeZone) });
+        try {
+            const startIso = wallClockDateToIso(start, timeZone);
+            const endIso = wallClockDateToIso(end, timeZone);
+            onSlotSelect({ resourceId, start: startIso, end: endIso });
+        } catch (error) {
+            onTimeSelectionError?.((error as Error).message);
+        }
     };
 
     const formatActionTime = (dateIso: string) =>
@@ -328,7 +347,7 @@ export function StaffScheduler({ resources, events, viewMode, initialDate, timeZ
     return (
         <div className="scheduler-root" onMouseMove={handleMouseMove} onMouseUp={handleMouseUp} onMouseLeave={handleMouseUp}>
             <div className="scheduler-status">
-                <span>{dragHint}</span>
+                <span id="scheduler-timeline-instructions">{dragHint}</span>
                 <span>{currentLabel}</span>
             </div>
 
@@ -346,12 +365,12 @@ export function StaffScheduler({ resources, events, viewMode, initialDate, timeZ
             </div>
 
             <div className="timeline-workspace">
-                <div className="resource-column">
+                <div className="resource-column" role="region" aria-label="Team members">
                     <div className="resource-column-header">Team</div>
-                    <div className="resource-list" ref={resourceListRef}>
+                    <div className="resource-list" ref={resourceListRef} role="list" aria-label="Scheduled team members">
                         {resources.map((r) => (
-                            <div key={r.id} className="resource-row-name">
-                                <div className="avatar" style={{ background: `hsl(${r.hue}, 92%, 96%)`, borderColor: `hsl(${r.hue}, 72%, 78%)`, color: `hsl(${r.hue}, 76%, 34%)` }}>
+                            <div key={r.id} className="resource-row-name" role="listitem" aria-label={r.title + ', ' + r.role}>
+                                <div className="avatar" style={{ background: `hsl(${r.hue}, 92%, 96%)`, borderColor: `hsl(${r.hue}, 72%, 78%)`, color: '#1f2d49' }}>
                                     {r.avatarInitials}
                                 </div>
                                 <div>
@@ -366,8 +385,12 @@ export function StaffScheduler({ resources, events, viewMode, initialDate, timeZ
                 <div
                     className="timeline-scroll"
                     ref={timelineScrollRef}
+                    role="region"
+                    aria-label={currentLabel + ' staff schedule timeline'}
+                    aria-describedby="scheduler-timeline-instructions"
+                    tabIndex={0}
                     onScroll={handleTimelineScroll}
-                    style={{ overflowX: viewMode === 'week' ? 'auto' : 'hidden' }}
+                    style={{ overflowX: allowsHorizontalScroll ? 'auto' : 'hidden' }}
                 >
                     <div className="timeline-canvas" style={{ width: timelineWidth }}>
                         <div className="timeline-header sticky">
@@ -387,7 +410,7 @@ export function StaffScheduler({ resources, events, viewMode, initialDate, timeZ
                             })}
                         </div>
 
-                        <div className="timeline-body">
+                        <div className="timeline-body" role="list" aria-label="Staff schedule rows">
                             {resources.map((resource) => {
                                 const resourceEvents = positionedShifts.filter((e) => e.resourceId === resource.id);
                                 return (
@@ -396,7 +419,8 @@ export function StaffScheduler({ resources, events, viewMode, initialDate, timeZ
                                         className="timeline-row"
                                         data-resource-id={resource.id}
                                         data-resource-title={resource.title}
-                                        aria-label={`${resource.title} timeline row`}
+                                        role="listitem"
+                                        aria-label={resource.title + ', ' + resource.role + ', schedule timeline'}
                                         onClick={(ev) => handleSlotClick(ev, resource.id)}
                                     >
                                         <div
@@ -550,7 +574,7 @@ export function StaffScheduler({ resources, events, viewMode, initialDate, timeZ
                     text-transform: uppercase;
                     color: #637499;
                     margin-bottom: 3px;
-                    letter-spacing: 0.05em;
+                    letter-spacing: 0;
                 }
 
                 .coverage-bins {
@@ -597,8 +621,8 @@ export function StaffScheduler({ resources, events, viewMode, initialDate, timeZ
                     font-size: 0.72rem;
                     font-weight: 700;
                     text-transform: uppercase;
-                    letter-spacing: 0.05em;
-                    color: #647595;
+                    letter-spacing: 0;
+                    color: #526381;
                     border-bottom: 1px solid #dce4f1;
                     background: #f7f9ff;
                 }
@@ -640,8 +664,8 @@ export function StaffScheduler({ resources, events, viewMode, initialDate, timeZ
                     font-size: 0.56rem;
                     font-weight: 700;
                     text-transform: uppercase;
-                    letter-spacing: 0.05em;
-                    color: #6f80a4;
+                    letter-spacing: 0;
+                    color: #526381;
                 }
 
                 .timeline-scroll {
@@ -687,7 +711,7 @@ export function StaffScheduler({ resources, events, viewMode, initialDate, timeZ
                     align-items: center;
                     justify-content: center;
                     font-size: 0.58rem;
-                    color: #7688ad;
+                    color: #526381;
                     border-right: 1px solid #eef2fb;
                 }
 
@@ -762,7 +786,7 @@ export function StaffScheduler({ resources, events, viewMode, initialDate, timeZ
 
                 .shift-action-popover span {
                     font-size: 0.68rem;
-                    color: #647595;
+                    color: #526381;
                     font-weight: 700;
                 }
 
@@ -807,7 +831,7 @@ export function StaffScheduler({ resources, events, viewMode, initialDate, timeZ
                 .shift-role {
                     font-size: 0.54rem;
                     text-transform: uppercase;
-                    letter-spacing: 0.04em;
+                    letter-spacing: 0;
                     opacity: 0.85;
                     white-space: nowrap;
                 }
@@ -848,6 +872,35 @@ export function StaffScheduler({ resources, events, viewMode, initialDate, timeZ
                     background: #ffe7ea;
                     border-color: #ef8a98;
                     color: #8f2e3b;
+                }
+
+                @media (max-width: 700px) {
+                    .timeline-workspace {
+                        grid-template-columns: 112px minmax(0, 1fr);
+                    }
+
+                    .resource-column-header,
+                    .resource-row-name {
+                        padding-left: 6px;
+                        padding-right: 6px;
+                    }
+
+                    .resource-row-name {
+                        gap: 6px;
+                    }
+
+                    .avatar {
+                        width: 24px;
+                        height: 24px;
+                        flex: 0 0 24px;
+                    }
+
+                    .resource-name,
+                    .resource-role {
+                        overflow: hidden;
+                        text-overflow: ellipsis;
+                        white-space: nowrap;
+                    }
                 }
             `}</style>
         </div>

@@ -7,6 +7,7 @@ import { Throttle } from '@nestjs/throttler';
 import { Response, Request } from 'express';
 import { Res } from '@nestjs/common';
 import { AllowAuthenticated } from './require-permission.decorator';
+import { operationalErrorDiagnostics, type OperationalErrorCategory } from './operational-error';
 
 const Public = () => SetMetadata('isPublic', true);
 const ACCESS_TOKEN_COOKIE_MAX_AGE_MS = 30 * 60 * 1000;
@@ -25,6 +26,52 @@ const MAX_ONBOARDING_TENANT_NAME_LENGTH = 80;
 const HTML_SIGNIFICANT_EMAIL_CHARS = /[<>&"']/;
 const OTP_EMAIL_PATTERN = /^[a-z0-9.!#$%*+/=?^_`{|}~-]+@[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$/;
 
+type AuthDebugEvent =
+    | 'refresh_start'
+    | 'refresh_success'
+    | 'send_otp_invalid_email'
+    | 'send_otp_start'
+    | 'send_otp_success'
+    | 'send_otp_suppressed'
+    | 'verify_otp_failed'
+    | 'verify_otp_start'
+    | 'verify_otp_success';
+
+type AuthDebugDetails = {
+    maskedEmail?: string;
+    redirectMode?: boolean;
+    hasNext?: boolean;
+    hasRedirect?: boolean;
+    hasRefreshToken?: boolean;
+    hasAccessToken?: boolean;
+    role?: string;
+    errorClass?: string;
+    errorCategory?: OperationalErrorCategory;
+    errorCode?: string;
+};
+
+const AUTH_DEBUG_ROLES = new Set(['SUPER_ADMIN', 'ADMIN', 'MANAGER', 'STAFF']);
+const AUTH_DEBUG_ERROR_CLASSES = new Set([
+    'AbortError',
+    'Error',
+    'MaxRetriesPerRequestError',
+    'NonErrorThrow',
+    'RangeError',
+    'ReferenceError',
+    'ReplyError',
+    'SyntaxError',
+    'TimeoutError',
+    'TypeError',
+]);
+const AUTH_DEBUG_ERROR_CATEGORIES = new Set<OperationalErrorCategory>([
+    'authentication',
+    'connectivity',
+    'rate_limit',
+    'timeout',
+    'unavailable',
+    'unknown',
+]);
+
 type EmailOtpBody = {
     email: string;
     code?: string;
@@ -39,6 +86,8 @@ type EmailOtpBody = {
     onboardingChallengeToken?: string;
     termsAccepted?: boolean;
     privacyAccepted?: boolean;
+    termsVersion?: string;
+    privacyVersion?: string;
 };
 
 type PasswordResetRequestBody = {
@@ -67,7 +116,8 @@ export class AuthController {
     ) { }
 
     private isAuthDebugEnabled(): boolean {
-        return ['1', 'true', 'yes', 'on'].includes((process.env.AUTH_DEBUG ?? '').toLowerCase());
+        return process.env.NODE_ENV !== 'production'
+            && ['1', 'true', 'yes', 'on'].includes((process.env.AUTH_DEBUG ?? '').toLowerCase());
     }
 
     private maskEmail(email: string): string {
@@ -85,9 +135,30 @@ export class AuthController {
         return OTP_EMAIL_PATTERN.test(email) ? email : null;
     }
 
-    private authDebug(event: string, details: Record<string, unknown> = {}) {
+    private authDebug(event: AuthDebugEvent, details: AuthDebugDetails = {}) {
         if (!this.isAuthDebugEnabled()) return;
-        this.logger.log(`[auth-debug] ${JSON.stringify({ scope: 'api.auth', event, ...details })}`);
+        const safeDetails = {
+            ...(details.maskedEmail === 'invalid_email'
+                || (typeof details.maskedEmail === 'string' && details.maskedEmail.includes('*') && details.maskedEmail.length <= 254)
+                ? { maskedEmail: details.maskedEmail }
+                : {}),
+            ...(typeof details.redirectMode === 'boolean' ? { redirectMode: details.redirectMode } : {}),
+            ...(typeof details.hasNext === 'boolean' ? { hasNext: details.hasNext } : {}),
+            ...(typeof details.hasRedirect === 'boolean' ? { hasRedirect: details.hasRedirect } : {}),
+            ...(typeof details.hasRefreshToken === 'boolean' ? { hasRefreshToken: details.hasRefreshToken } : {}),
+            ...(typeof details.hasAccessToken === 'boolean' ? { hasAccessToken: details.hasAccessToken } : {}),
+            ...(typeof details.role === 'string' && AUTH_DEBUG_ROLES.has(details.role) ? { role: details.role } : {}),
+            ...(typeof details.errorClass === 'string' && AUTH_DEBUG_ERROR_CLASSES.has(details.errorClass)
+                ? { errorClass: details.errorClass }
+                : {}),
+            ...(details.errorCategory && AUTH_DEBUG_ERROR_CATEGORIES.has(details.errorCategory)
+                ? { errorCategory: details.errorCategory }
+                : {}),
+            ...(typeof details.errorCode === 'string' && /^[A-Z0-9_]{1,40}$/.test(details.errorCode)
+                ? { errorCode: details.errorCode }
+                : {}),
+        };
+        this.logger.log('[auth-debug] ' + JSON.stringify({ scope: 'api.auth', event, ...safeDetails }));
     }
 
     private useSecureCookies(): boolean {
@@ -192,12 +263,22 @@ export class AuthController {
         return tenantName;
     }
 
-    private onboardingLegalAssent(body: EmailOtpBody): { termsAccepted: true; privacyAccepted: true } | undefined {
+    private onboardingLegalAssent(body: EmailOtpBody): {
+        termsAccepted: true;
+        privacyAccepted: true;
+        termsVersion: string | undefined;
+        privacyVersion: string | undefined;
+    } | undefined {
         if (body.onboarding !== true) return undefined;
         if (body.termsAccepted !== true || body.privacyAccepted !== true) {
             throw new BadRequestException('Terms and Privacy assent is required to create a workspace');
         }
-        return { termsAccepted: true, privacyAccepted: true };
+        return {
+            termsAccepted: true,
+            privacyAccepted: true,
+            termsVersion: body.termsVersion,
+            privacyVersion: body.privacyVersion,
+        };
     }
 
     private signupChallengeToken(body: EmailOtpBody): string | undefined {
@@ -214,10 +295,9 @@ export class AuthController {
     }
 
     private sessionRequestAudit(req: Request): SessionRequestAudit {
-        const forwardedFor = this.headerValue(req, 'x-forwarded-for')?.split(',')[0]?.trim();
         const remoteAddress = typeof req.socket?.remoteAddress === 'string' ? req.socket.remoteAddress.trim() : '';
         return {
-            ipAddress: forwardedFor || (typeof req.ip === 'string' ? req.ip.trim() : '') || remoteAddress || null,
+            ipAddress: (typeof req.ip === 'string' ? req.ip.trim() : '') || remoteAddress || null,
             userAgent: this.headerValue(req, 'user-agent') ?? null,
         };
     }
@@ -290,7 +370,7 @@ export class AuthController {
             success: true,
             flow: result.flow,
             identifier: result.normalizedIdentifier,
-            pinResetRequired: result.flow === 'USERNAME_PIN' ? result.pinResetRequired : false,
+            pinResetRequired: false,
         };
     }
 
@@ -307,7 +387,7 @@ export class AuthController {
         @Res() res: Response,
     ) {
         this.assertSameOriginRequest(req);
-        const identifier = body.identifier.toLowerCase().trim();
+        const identifier = typeof body?.identifier === 'string' ? body.identifier.toLowerCase().trim() : '';
         const redirectMode = String((req.query as any)?.redirect || '') === '1';
         const nextPath = String((req.query as any)?.next || '');
         const safeNext = this.safeInternalPath(nextPath);
@@ -316,18 +396,19 @@ export class AuthController {
             const result = await this.authService.loginWithUsernamePassword(identifier, body.password, body.tenantSlug, this.sessionRequestAudit(req));
             this.setSessionCookies(res, result.accessToken, result.refreshToken, result.csrfToken, result.sessionMaxAgeMs);
 
-            const redirectTo = result.requiresMfa ? this.mfaRedirect(safeNext) : safeNext ?? '/dashboard';
+            const pinResetRequired = result.pinResetRequired === true;
+            const redirectTo = pinResetRequired
+                ? this.pinResetRedirect(safeNext)
+                : result.requiresMfa
+                    ? this.mfaRedirect(safeNext)
+                    : safeNext ?? '/dashboard';
             if (redirectMode) {
                 return res.redirect(302, redirectTo);
             }
-            return res.json({ success: true, redirectTo, requiresMfa: result.requiresMfa });
+            return res.json({ success: true, redirectTo, pinResetRequired, requiresMfa: result.requiresMfa });
         } catch (err) {
             if (redirectMode && err instanceof UnauthorizedException) {
-                const params = new URLSearchParams({
-                    step: 'password',
-                    identifier,
-                    error: 'invalid',
-                });
+                const params = new URLSearchParams({ error: 'invalid' });
                 if (body.tenantSlug) params.set('tenantSlug', body.tenantSlug);
                 if (safeNext) params.set('next', safeNext);
                 return res.redirect(302, `/auth/login?${params.toString()}`);
@@ -361,7 +442,7 @@ export class AuthController {
     @HttpCode(HttpStatus.OK)
     async confirmPasswordReset(@Body() body: PasswordResetConfirmBody, @Req() req: Request) {
         this.assertSameOriginRequest(req);
-        await this.authService.resetPasswordWithToken(body.token, body.password);
+        await this.authService.resetPasswordWithToken(body.token, body.password, this.sessionRequestAudit(req));
         return { success: true };
     }
 
@@ -453,7 +534,7 @@ export class AuthController {
             : undefined;
         const signupChallengeToken = this.signupChallengeToken(body);
         const signupChallengeRemoteIp = this.signupChallengeRemoteIp(req);
-        this.authDebug('send_otp_start', { email: this.maskEmail(normalizedEmail) });
+        this.authDebug('send_otp_start', { maskedEmail: this.maskEmail(normalizedEmail) });
         let onboardingChallengeToken: string | undefined;
         try {
             let code: string;
@@ -473,7 +554,7 @@ export class AuthController {
                     tenantSlug: body.tenantSlug,
                 });
                 if (!recipientEligible) {
-                    this.authDebug('send_otp_suppressed', { email: this.maskEmail(normalizedEmail) });
+                    this.authDebug('send_otp_suppressed', { maskedEmail: this.maskEmail(normalizedEmail) });
                     return { success: true };
                 }
                 code = await this.otpService.generateOtp(normalizedEmail, {
@@ -499,7 +580,7 @@ export class AuthController {
             );
             throw new ServiceUnavailableException('Unable to send login code right now. Please try again shortly.');
         }
-        this.authDebug('send_otp_success', { email: this.maskEmail(normalizedEmail) });
+        this.authDebug('send_otp_success', { maskedEmail: this.maskEmail(normalizedEmail) });
         return onboardingChallengeToken
             ? { success: true, onboardingChallengeToken }
             : { success: true };
@@ -532,7 +613,7 @@ export class AuthController {
         const nextPath = String((req.query as any)?.next || '');
         const safeNext = this.safeInternalPath(nextPath);
         this.authDebug('verify_otp_start', {
-            email: this.maskEmail(email),
+            maskedEmail: this.maskEmail(email),
             redirectMode,
             hasNext: Boolean(safeNext),
         });
@@ -557,9 +638,9 @@ export class AuthController {
             const roleRedirect = '/dashboard';
             const redirectTo = result.requiresMfa ? this.mfaRedirect(safeNext) : safeNext ?? roleRedirect;
             this.authDebug('verify_otp_success', {
-                email: this.maskEmail(email),
+                maskedEmail: this.maskEmail(email),
                 role: result.user.role,
-                redirectTo,
+                hasRedirect: Boolean(redirectTo),
                 redirectMode,
             });
 
@@ -573,17 +654,16 @@ export class AuthController {
                 workspaceSlug: result.workspaceSlug,
             });
         } catch (err) {
+            const diagnostic = operationalErrorDiagnostics('auth.verify_otp_failed', err);
             this.authDebug('verify_otp_failed', {
-                email: this.maskEmail(email),
+                maskedEmail: this.maskEmail(email),
                 redirectMode,
-                error: err instanceof Error ? err.message : 'unknown_error',
+                errorClass: diagnostic.errorClass,
+                errorCategory: diagnostic.category,
+                errorCode: diagnostic.code,
             });
             if (redirectMode && err instanceof UnauthorizedException) {
-                const params = new URLSearchParams({
-                    step: 'otp',
-                    email,
-                    error: 'invalid',
-                });
+                const params = new URLSearchParams({ error: 'invalid' });
                 if (body.tenantSlug) params.set('tenantSlug', body.tenantSlug);
                 if (safeNext) params.set('next', safeNext);
                 return res.redirect(302, `/auth/login?${params.toString()}`);
@@ -605,7 +685,7 @@ export class AuthController {
         @Res() res: Response,
     ) {
         this.assertSameOriginRequest(req);
-        const identifier = body.identifier.toLowerCase().trim();
+        const identifier = typeof body?.identifier === 'string' ? body.identifier.toLowerCase().trim() : '';
         const redirectMode = String((req.query as any)?.redirect || '') === '1';
         const nextPath = String((req.query as any)?.next || '');
         const safeNext = this.safeInternalPath(nextPath);
@@ -631,11 +711,7 @@ export class AuthController {
             });
         } catch (err) {
             if (redirectMode && err instanceof UnauthorizedException) {
-                const params = new URLSearchParams({
-                    step: 'pin',
-                    identifier,
-                    error: 'invalid',
-                });
+                const params = new URLSearchParams({ error: 'invalid' });
                 if (body.tenantSlug) params.set('tenantSlug', body.tenantSlug);
                 if (safeNext) params.set('next', safeNext);
                 return res.redirect(302, `/auth/login?${params.toString()}`);
@@ -711,7 +787,12 @@ export class AuthController {
     @Post('mfa/enroll/confirm')
     @HttpCode(HttpStatus.OK)
     async confirmMfaEnrollment(@Req() req: any, @Body() body: { code: string }, @Res() res: Response) {
-        const result = await this.authService.confirmMfaEnrollment(req.user.sub, body.code, req.user);
+        const result = await this.authService.confirmMfaEnrollment(
+            req.user.sub,
+            body.code,
+            req.user,
+            this.sessionRequestAudit(req),
+        );
         if (result.accessToken) {
             res.cookie('access_token', result.accessToken, {
                 httpOnly: true,
@@ -767,7 +848,7 @@ export class AuthController {
     @Post('mfa/disable')
     @HttpCode(HttpStatus.OK)
     async disableMfa(@Req() req: any, @Body() body: { code: string }) {
-        return this.authService.disableMfa(req.user.sub, body.code, req.user);
+        return this.authService.disableMfa(req.user.sub, body.code, req.user, this.sessionRequestAudit(req));
     }
 
     @UseGuards(JwtAuthGuard)

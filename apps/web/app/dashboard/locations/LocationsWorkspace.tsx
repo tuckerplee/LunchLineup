@@ -1,11 +1,15 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
-import { fetchWithSession } from '@/lib/client-api';
+import { fetchWithSession, idempotentRequestAttempt, withIdempotencyKey, type IdempotentRequestAttempt } from '@/lib/client-api';
+import { LocationLifecycleActions } from './LocationLifecycleActions';
+import { LocationTimeZoneInput } from './LocationTimeZoneInput';
+import { buildLocationCreatePayload, resolveBrowserIanaTimeZone } from './location-form';
 
 type LocationsWorkspaceProps = {
-    canAdd: boolean;
+    canWrite: boolean;
+    canDelete: boolean;
 };
 
 type ApiLocation = {
@@ -14,6 +18,24 @@ type ApiLocation = {
     address?: string | null;
     timezone?: string | null;
 };
+
+type LocationListResponse = {
+    data?: ApiLocation[];
+    pagination?: {
+        hasMore?: boolean;
+        nextCursor?: string | null;
+    };
+};
+
+const LOCATION_PAGE_SIZE = 100;
+
+function mergeLocationRows(current: ApiLocation[], incoming: ApiLocation[]): ApiLocation[] {
+    const byId = new Map(current.map((location) => [location.id, location]));
+    for (const location of incoming) byId.set(location.id, location);
+    return [...byId.values()].sort((left, right) => (
+        left.name.localeCompare(right.name) || left.id.localeCompare(right.id)
+    ));
+}
 
 function getCsrfTokenFromCookie(): string {
     if (typeof document === 'undefined') return '';
@@ -36,34 +58,50 @@ function createJsonWriteInit(payload: unknown): RequestInit {
     };
 }
 
-export function LocationsWorkspace({ canAdd }: LocationsWorkspaceProps) {
+export function LocationsWorkspace({ canWrite, canDelete }: LocationsWorkspaceProps) {
     const [locations, setLocations] = useState<ApiLocation[]>([]);
     const [isLoading, setIsLoading] = useState(true);
+    const [isLoadingMore, setIsLoadingMore] = useState(false);
+    const [nextCursor, setNextCursor] = useState<string | null>(null);
     const [isCreating, setIsCreating] = useState(false);
     const [showCreate, setShowCreate] = useState(false);
     const [error, setError] = useState<string | null>(null);
     const [notice, setNotice] = useState<string | null>(null);
+    const createAttemptRef = useRef<IdempotentRequestAttempt | null>(null);
 
     const [name, setName] = useState('');
     const [address, setAddress] = useState('');
     const [timezone, setTimezone] = useState('');
 
-    const loadLocations = useCallback(async () => {
-        setIsLoading(true);
+    const loadLocations = useCallback(async (cursor?: string) => {
+        const append = Boolean(cursor);
+        if (append) setIsLoadingMore(true);
+        else setIsLoading(true);
         setError(null);
         try {
-            const res = await fetchWithSession('/locations');
+            const params = new URLSearchParams({ limit: String(LOCATION_PAGE_SIZE) });
+            if (cursor) params.set('cursor', cursor);
+            const res = await fetchWithSession('/locations?' + params.toString());
             if (!res.ok) {
                 const payload = (await res.json().catch(() => ({}))) as { message?: unknown };
                 const message = typeof payload.message === 'string' ? payload.message : 'Unable to load locations.';
                 throw new Error(message);
             }
-            const payload = (await res.json()) as { data?: ApiLocation[] };
-            setLocations(Array.isArray(payload.data) ? payload.data : []);
+            const payload = (await res.json()) as LocationListResponse;
+            const rows = Array.isArray(payload.data) ? payload.data : [];
+            const continuation = payload.pagination?.hasMore === true
+                ? payload.pagination.nextCursor
+                : null;
+            if (payload.pagination?.hasMore === true && (typeof continuation !== 'string' || !continuation)) {
+                throw new Error('Location list did not provide a continuation cursor.');
+            }
+            setLocations((current) => append ? mergeLocationRows(current, rows) : rows);
+            setNextCursor(continuation ?? null);
         } catch (err) {
             setError(err instanceof Error ? err.message : 'Unable to load locations.');
         } finally {
-            setIsLoading(false);
+            if (append) setIsLoadingMore(false);
+            else setIsLoading(false);
         }
     }, []);
 
@@ -72,22 +110,25 @@ export function LocationsWorkspace({ canAdd }: LocationsWorkspaceProps) {
     }, [loadLocations]);
 
     const submitCreate = useCallback(async () => {
-        if (!canAdd) return;
-        const trimmedName = name.trim();
-        if (!trimmedName) {
-            setError('Location name is required.');
+        if (!canWrite) return;
+        let payload;
+        try {
+            payload = buildLocationCreatePayload({ name, address, timezone });
+        } catch (err) {
+            setError(err instanceof Error ? err.message : 'Enter valid location details.');
             return;
         }
 
+        const attempt = idempotentRequestAttempt(payload, createAttemptRef.current);
+        createAttemptRef.current = attempt;
         setIsCreating(true);
         setError(null);
         setNotice(null);
         try {
-            const res = await fetchWithSession('/locations', createJsonWriteInit({
-                name: trimmedName,
-                address: address.trim() || undefined,
-                timezone: timezone.trim() || undefined,
-            }));
+            const res = await fetchWithSession(
+                '/locations',
+                withIdempotencyKey(createJsonWriteInit(payload), attempt.key),
+            );
 
             if (!res.ok) {
                 const payload = (await res.json().catch(() => ({}))) as { message?: unknown };
@@ -96,43 +137,50 @@ export function LocationsWorkspace({ canAdd }: LocationsWorkspaceProps) {
             }
 
             const created = (await res.json()) as ApiLocation;
-            setLocations((prev) => [created, ...prev]);
+            setLocations((current) => mergeLocationRows(current, [created]));
             setNotice('Location added.');
             setShowCreate(false);
             setName('');
             setAddress('');
             setTimezone('');
+            createAttemptRef.current = null;
         } catch (err) {
             setError(err instanceof Error ? err.message : 'Unable to add location.');
         } finally {
             setIsCreating(false);
         }
-    }, [address, canAdd, name, timezone]);
+    }, [address, canWrite, name, timezone]);
 
     const total = useMemo(() => locations.length, [locations.length]);
 
     return (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem', maxWidth: 1280 }}>
-            <section className="surface-card" style={{ padding: '1rem' }}>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem', width: '100%', maxWidth: 1280, minWidth: 0 }}>
+            <section className="surface-card" style={{ padding: '1rem', minWidth: 0 }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: '0.8rem', flexWrap: 'wrap' }}>
                     <div>
                         <div className="workspace-kicker">Location workspace</div>
                         <h1 className="workspace-title" style={{ fontSize: '1.55rem', marginBottom: 2 }}>
                             Locations
                         </h1>
-                        <p className="workspace-subtitle">{isLoading ? 'Loading locations...' : `${total} active location${total === 1 ? '' : 's'}`}</p>
+                        <p className="workspace-subtitle">{isLoading ? 'Loading locations...' : total + ' active location' + (total === 1 ? '' : 's') + (nextCursor ? ' loaded' : '')}</p>
                     </div>
 
-                    <div style={{ display: 'flex', gap: '0.5rem' }}>
-                        <button className="btn btn-secondary" onClick={() => void loadLocations()} disabled={isLoading || isCreating}>
+                    <div style={{ display: 'flex', gap: '0.5rem', maxWidth: '100%', flexWrap: 'wrap' }}>
+                        <button className="btn btn-secondary" onClick={() => void loadLocations()} disabled={isLoading || isLoadingMore || isCreating}>
                             Refresh
                         </button>
-                        {canAdd ? (
+                        {canWrite ? (
                             <button
+                                type="button"
                                 className="btn btn-primary"
+                                aria-expanded={showCreate}
+                                aria-controls="create-location-form"
                                 onClick={() => {
                                     setError(null);
                                     setNotice(null);
+                                    if (!showCreate && !timezone) {
+                                        setTimezone(resolveBrowserIanaTimeZone());
+                                    }
                                     setShowCreate((prev) => !prev);
                                 }}
                                 disabled={isCreating}
@@ -144,47 +192,58 @@ export function LocationsWorkspace({ canAdd }: LocationsWorkspaceProps) {
                 </div>
 
                 {error ? (
-                    <div style={{ marginTop: '0.8rem', fontSize: '0.83rem', color: '#cb3653' }}>
+                    <div style={{ marginTop: '0.8rem', fontSize: '0.83rem', color: '#cb3653' }} role="alert">
                         {error}
                     </div>
                 ) : null}
                 {notice ? (
-                    <div style={{ marginTop: '0.8rem', fontSize: '0.83rem', color: '#0f8c52' }}>
+                    <div style={{ marginTop: '0.8rem', fontSize: '0.83rem', color: '#0f8c52' }} role="status">
                         {notice}
                     </div>
                 ) : null}
 
                 {showCreate ? (
-                    <div className="surface-muted" style={{ marginTop: '0.8rem', padding: '0.8rem', display: 'grid', gap: '0.6rem' }}>
+                    <form
+                        id="create-location-form"
+                        aria-label="Create location"
+                        className="surface-muted"
+                        style={{ marginTop: '0.8rem', padding: '0.8rem', display: 'grid', gap: '0.6rem', width: '100%', maxWidth: '100%', minWidth: 0, boxSizing: 'border-box' }}
+                        onSubmit={(event) => {
+                            event.preventDefault();
+                            void submitCreate();
+                        }}
+                    >
                         <div style={{ fontSize: '0.82rem', fontWeight: 700, color: 'var(--text-primary)' }}>Create location</div>
-                        <div style={{ display: 'grid', gridTemplateColumns: 'minmax(160px, 1fr) minmax(220px, 1fr) minmax(190px, 1fr) auto', gap: '0.5rem' }}>
+                        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(190px, 100%), 1fr))', gap: '0.5rem', width: '100%', minWidth: 0 }}>
                             <input
                                 value={name}
                                 onChange={(event) => setName(event.target.value)}
+                                aria-label="Location name"
                                 placeholder="Location name"
-                                style={{ border: '1px solid var(--border)', borderRadius: 8, padding: '0.45rem 0.5rem', background: '#fff', color: 'var(--text-primary)' }}
+                                style={{ border: '1px solid var(--border)', borderRadius: 8, padding: '0.45rem 0.5rem', background: '#fff', color: 'var(--text-primary)', width: '100%', minWidth: 0, boxSizing: 'border-box' }}
                             />
                             <input
                                 value={address}
                                 onChange={(event) => setAddress(event.target.value)}
+                                aria-label="Address"
                                 placeholder="Address (optional)"
-                                style={{ border: '1px solid var(--border)', borderRadius: 8, padding: '0.45rem 0.5rem', background: '#fff', color: 'var(--text-primary)' }}
+                                style={{ border: '1px solid var(--border)', borderRadius: 8, padding: '0.45rem 0.5rem', background: '#fff', color: 'var(--text-primary)', width: '100%', minWidth: 0, boxSizing: 'border-box' }}
                             />
-                            <input
+                            <LocationTimeZoneInput
+                                id="create-location-timezone"
                                 value={timezone}
-                                onChange={(event) => setTimezone(event.target.value)}
-                                placeholder="Timezone (optional)"
-                                style={{ border: '1px solid var(--border)', borderRadius: 8, padding: '0.45rem 0.5rem', background: '#fff', color: 'var(--text-primary)' }}
+                                onChange={setTimezone}
+                                style={{ border: '1px solid var(--border)', borderRadius: 8, padding: '0.45rem 0.5rem', background: '#fff', color: 'var(--text-primary)', width: '100%', minWidth: 0, boxSizing: 'border-box' }}
                             />
-                            <button className="btn btn-primary" onClick={() => void submitCreate()} disabled={isCreating}>
+                            <button type="submit" className="btn btn-primary" disabled={isCreating}>
                                 {isCreating ? 'Saving...' : 'Save'}
                             </button>
                         </div>
-                    </div>
+                    </form>
                 ) : null}
             </section>
 
-            <section style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: '0.8rem' }}>
+            <section aria-label="Active locations" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(280px, 100%), 1fr))', gap: '0.8rem' }}>
                 {!isLoading && locations.length === 0 ? (
                     <article className="surface-card" style={{ padding: '1rem' }}>
                         <div style={{ color: 'var(--text-secondary)', fontSize: '0.88rem' }}>No locations yet.</div>
@@ -202,14 +261,40 @@ export function LocationsWorkspace({ canAdd }: LocationsWorkspaceProps) {
                             Timezone: {location.timezone || 'Not set'}
                         </div>
 
-                        <div style={{ display: 'flex', gap: '0.5rem', paddingTop: '0.2rem' }}>
-                            <Link href={`/dashboard/scheduling?location=${location.id}`} className="btn btn-secondary" style={{ flex: 1 }}>
-                                View Schedule
+                        <div style={{ display: 'flex', gap: '0.5rem', paddingTop: '0.2rem', flexWrap: 'wrap' }}>
+                            <Link href={`/dashboard/scheduling?location=${location.id}`} className="btn btn-secondary">
+                                View schedule
                             </Link>
+                            <LocationLifecycleActions
+                                location={location}
+                                canWrite={canWrite}
+                                canDelete={canDelete}
+                                onUpdated={(updated) => setLocations((current) => current.map((candidate) => (
+                                    candidate.id === updated.id ? updated : candidate
+                                )))}
+                                onDeactivated={(locationId) => setLocations((current) => current.filter((candidate) => candidate.id !== locationId))}
+                                onError={(message) => setError(message || null)}
+                                onNotice={(message) => {
+                                    setError(null);
+                                    setNotice(message);
+                                }}
+                            />
                         </div>
                     </article>
                 ))}
             </section>
+            {nextCursor ? (
+                <div style={{ display: 'flex', justifyContent: 'center' }}>
+                    <button
+                        type="button"
+                        className="btn btn-secondary"
+                        onClick={() => void loadLocations(nextCursor)}
+                        disabled={isLoading || isLoadingMore || isCreating}
+                    >
+                        {isLoadingMore ? 'Loading...' : 'Load more locations'}
+                    </button>
+                </div>
+            ) : null}
         </div>
     );
 }

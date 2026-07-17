@@ -9,10 +9,12 @@ describe('TenantPrismaService', () => {
     beforeEach(() => {
         vi.stubEnv('PLATFORM_ADMIN_DB_CONTEXT_SECRET', 'unit-test-platform-admin-capability');
         tx = {
-            $queryRaw: vi.fn().mockResolvedValue([{ set_current_tenant: null }]),
+            $executeRaw: vi.fn().mockResolvedValue(1),
+            $queryRaw: vi.fn(),
         };
         prisma = {
             $transaction: vi.fn(async (callback: (txClient: any) => Promise<unknown>) => callback(tx)),
+            $disconnect: vi.fn().mockResolvedValue(undefined),
         };
     });
 
@@ -28,9 +30,12 @@ describe('TenantPrismaService', () => {
 
         expect(result).toBe('ok');
         expect(prisma.$transaction).toHaveBeenCalledOnce();
-        expect(tx.$queryRaw).toHaveBeenCalledOnce();
+        expect(tx.$executeRaw).toHaveBeenCalledOnce();
+        expect(tx.$executeRaw.mock.calls[0]?.[0]).toEqual(['SELECT set_current_tenant(', ')']);
+        expect(tx.$executeRaw.mock.calls[0]?.[1]).toBe('tenant-1');
+        expect(tx.$queryRaw).not.toHaveBeenCalled();
         expect(operation).toHaveBeenCalledWith(tx);
-        expect(tx.$queryRaw.mock.invocationCallOrder[0]).toBeLessThan(operation.mock.invocationCallOrder[0]);
+        expect(tx.$executeRaw.mock.invocationCallOrder[0]).toBeLessThan(operation.mock.invocationCallOrder[0]);
     });
 
     it('sets the platform admin context before running cross-tenant work', async () => {
@@ -41,9 +46,15 @@ describe('TenantPrismaService', () => {
 
         expect(result).toBe('ok');
         expect(prisma.$transaction).toHaveBeenCalledOnce();
-        expect(tx.$queryRaw).toHaveBeenCalledOnce();
+        expect(tx.$executeRaw).toHaveBeenCalledOnce();
+        expect(tx.$executeRaw.mock.calls[0]?.[0]).toEqual([
+            'SELECT set_current_platform_admin(true, ',
+            ')',
+        ]);
+        expect(tx.$executeRaw.mock.calls[0]?.[1]).toBe('unit-test-platform-admin-capability');
+        expect(tx.$queryRaw).not.toHaveBeenCalled();
         expect(operation).toHaveBeenCalledWith(tx);
-        expect(tx.$queryRaw.mock.invocationCallOrder[0]).toBeLessThan(operation.mock.invocationCallOrder[0]);
+        expect(tx.$executeRaw.mock.invocationCallOrder[0]).toBeLessThan(operation.mock.invocationCallOrder[0]);
     });
 
     it('forwards explicit interactive transaction bounds', async () => {
@@ -61,5 +72,13 @@ describe('TenantPrismaService', () => {
         await expect(service.withTenant('   ', vi.fn())).rejects.toBeInstanceOf(BadRequestException);
 
         expect(prisma.$transaction).not.toHaveBeenCalled();
+    });
+
+    it('disconnects its Prisma client during Nest module shutdown', async () => {
+        const service = new TenantPrismaService(prisma);
+
+        await service.onModuleDestroy();
+
+        expect(prisma.$disconnect).toHaveBeenCalledOnce();
     });
 });

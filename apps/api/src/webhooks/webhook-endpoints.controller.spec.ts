@@ -23,6 +23,7 @@ const endpointAfterUpdate = {
 function harness() {
     let transactionCommitted = false;
     const tx = {
+        $executeRaw: vi.fn().mockResolvedValue(1),
         $queryRaw: vi.fn().mockResolvedValue([{ set_current_tenant: null }]),
         auditLog: {
             create: vi.fn().mockResolvedValue({}),
@@ -50,6 +51,9 @@ function harness() {
     };
     const featureAccess = {
         assertFeatureEnabled: vi.fn().mockResolvedValue(undefined),
+        assertFeatureEnabledInTransaction: vi.fn().mockResolvedValue(undefined),
+        assertFeatureEntitledInTransaction: vi.fn().mockResolvedValue(undefined),
+        recordFeatureUsageInTransaction: vi.fn().mockResolvedValue(undefined),
     };
     const deliveryCrypto = new WebhookDeliveryCrypto({
         get: vi.fn((key: string) => key === 'WEBHOOK_DELIVERY_ENCRYPTION_KEY_CURRENT' ? encryptionKey : undefined),
@@ -91,7 +95,9 @@ describe('WebhookEndpointsController', () => {
         }, h.req);
 
         const persistedSecret = h.tx.webhookEndpoint.create.mock.calls[0][0].data.secret;
-        expect(h.featureAccess.assertFeatureEnabled).toHaveBeenCalledWith('tenant-1', 'webhooks');
+        expect(h.featureAccess.assertFeatureEntitledInTransaction).toHaveBeenCalledWith(h.tx, 'tenant-1', 'webhooks');
+        expect(h.featureAccess.assertFeatureEnabled).not.toHaveBeenCalled();
+        expect(h.featureAccess.recordFeatureUsageInTransaction).not.toHaveBeenCalled();
         expect(persistedSecret).not.toContain(result.signingSecret);
         expect(h.deliveryCrypto.decryptString(persistedSecret)).toBe(result.signingSecret);
         expect(result).not.toHaveProperty('secret');
@@ -242,17 +248,49 @@ describe('WebhookEndpointsController', () => {
         }));
     });
 
-    it('blocks endpoint configuration when the paid feature is unavailable', async () => {
+    it('allows zero-credit paid endpoint controls without settling the credit ledger', async () => {
         const h = harness();
-        h.featureAccess.assertFeatureEnabled.mockRejectedValue(new ForbiddenException('Upgrade required'));
+        h.featureAccess.assertFeatureEnabledInTransaction.mockRejectedValue(
+            new ForbiddenException('Insufficient usage credits balance.'),
+        );
 
-        await expect(h.controller.create({
-            url: 'https://hooks.example.com/lunchlineup',
-            events: ['schedule.published'],
-        }, h.req)).rejects.toBeInstanceOf(ForbiddenException);
+        await expect(h.controller.list(h.req)).resolves.toEqual([]);
 
-        expect(h.prisma.$transaction).not.toHaveBeenCalled();
+        expect(h.featureAccess.assertFeatureEntitledInTransaction).toHaveBeenCalledWith(
+            h.tx,
+            'tenant-1',
+            'webhooks',
+        );
+        expect(h.featureAccess.assertFeatureEnabledInTransaction).not.toHaveBeenCalled();
+        expect(h.featureAccess.recordFeatureUsageInTransaction).not.toHaveBeenCalled();
+        expect(h.tx.auditLog.create).not.toHaveBeenCalled();
+    });
+
+    it('denies cross-tenant endpoint updates before mutation or audit', async () => {
+        const h = harness();
+        h.tx.webhookEndpoint.findFirst.mockResolvedValue(null);
+
+        await expect(h.controller.update('foreign-endpoint', {
+            active: false,
+        }, h.req)).rejects.toThrow('Webhook endpoint not found');
+
+        expect(h.tx.webhookEndpoint.findFirst).toHaveBeenCalledWith(expect.objectContaining({
+            where: { id: 'foreign-endpoint', tenantId: 'tenant-1' },
+        }));
+        expect(h.tx.webhookEndpoint.updateMany).not.toHaveBeenCalled();
+        expect(h.tx.auditLog.create).not.toHaveBeenCalled();
+    });
+    it.each(auditedMutations)('blocks %s inside its write transaction when the paid feature is unavailable', async (_name, mutate) => {
+        const h = harness();
+        h.featureAccess.assertFeatureEntitledInTransaction.mockRejectedValue(new ForbiddenException('Upgrade required'));
+
+        await expect(mutate(h)).rejects.toBeInstanceOf(ForbiddenException);
+
+        expect(h.featureAccess.assertFeatureEntitledInTransaction).toHaveBeenCalledWith(h.tx, 'tenant-1', 'webhooks');
+        expect(h.featureAccess.assertFeatureEnabled).not.toHaveBeenCalled();
+        expect(h.prisma.$transaction).toHaveBeenCalledTimes(1);
         expect(h.tx.webhookEndpoint.create).not.toHaveBeenCalled();
+        expect(h.tx.webhookEndpoint.updateMany).not.toHaveBeenCalled();
         expect(h.tx.auditLog.create).not.toHaveBeenCalled();
     });
 

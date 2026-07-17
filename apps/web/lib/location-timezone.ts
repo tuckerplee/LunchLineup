@@ -32,6 +32,17 @@ export function localDateTimeToIso(dateValue: string, timeValue: string, timeZon
   return zonedDateTimeToUtc({ year, month, day, hour, minute, second: 0 }, safeTimeZone(timeZoneValue)).toISOString();
 }
 
+export function unambiguousLocalDateTimeToIso(dateValue: string, timeValue: string, timeZoneValue: unknown): string {
+  const timeZone = safeTimeZone(timeZoneValue);
+  const iso = localDateTimeToIso(dateValue, timeValue, timeZone);
+  const instant = new Date(iso);
+  const target = zonedParts(instant, timeZone);
+  if (hasEquivalentWallClockInstant(instant, target, timeZone)) {
+    throw new Error('Local date/time is ambiguous during the daylight-saving fallback. Choose a different time.');
+  }
+  return iso;
+}
+
 export function localDateRange(dateValue: string, days: number, timeZoneValue: unknown) {
   return {
     start: localDateTimeToIso(dateValue, '00:00', timeZoneValue),
@@ -73,14 +84,33 @@ export function instantToWallClockDate(value: Date | string, timeZoneValue: unkn
 }
 
 export function wallClockDateToIso(value: Date, timeZoneValue: unknown): string {
-  return zonedDateTimeToUtc({
+  const timeZone = safeTimeZone(timeZoneValue);
+  const target = {
     year: value.getFullYear(),
     month: value.getMonth() + 1,
     day: value.getDate(),
     hour: value.getHours(),
     minute: value.getMinutes(),
     second: value.getSeconds(),
-  }, safeTimeZone(timeZoneValue)).toISOString();
+  };
+  const instant = zonedDateTimeToUtc(target, timeZone);
+  if (hasEquivalentWallClockInstant(instant, target, timeZone)) {
+    throw new Error('Local date/time is ambiguous during the daylight-saving fallback. Choose a different time.');
+  }
+  return instant.toISOString();
+}
+
+function hasEquivalentWallClockInstant(instant: Date, target: ZonedParts, timeZone: string): boolean {
+  for (let minutes = 15; minutes <= 180; minutes += 15) {
+    for (const direction of [-1, 1]) {
+      const candidate = new Date(instant.getTime() + direction * minutes * 60_000);
+      const actual = zonedParts(candidate, timeZone);
+      if (Object.keys(target).every((key) => actual[key as keyof ZonedParts] === target[key as keyof ZonedParts])) {
+        return true;
+      }
+    }
+  }
+  return false;
 }
 
 function zonedDateTimeToUtc(target: ZonedParts, timeZone: string): Date {

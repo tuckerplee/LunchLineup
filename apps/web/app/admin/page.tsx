@@ -39,9 +39,9 @@ type HealthPayload = {
 };
 
 const ROLE_COLORS: Record<string, string> = {
-    SUPER_ADMIN: '#cb3653',
-    ADMIN: '#2f63ff',
-    MANAGER: '#0f8c52',
+    SUPER_ADMIN: '#b4233f',
+    ADMIN: '#1d4ed8',
+    MANAGER: '#166534',
     STAFF: '#4c5f85',
 };
 
@@ -58,10 +58,10 @@ function relativeTime(value: string): string {
 }
 
 function statusColor(status: HealthItem['status']) {
-    if (status === 'online') return '#17b26a';
-    if (status === 'degraded') return '#f59e0b';
+    if (status === 'online') return '#166534';
+    if (status === 'degraded') return '#7c4a03';
     if (status === 'offline') return '#e74867';
-    return '#6f80a4';
+    return '#475569';
 }
 
 const WORKSPACE_ACTIONS = [
@@ -96,10 +96,10 @@ export default function AdminOverviewPage() {
 
     const platformStats = useMemo(
         () => [
-            { label: 'Total Tenants', value: stats?.totalTenants ?? '-', delta: 'live orgs', icon: 'T', color: '#2f63ff', bg: '#edf3ff' },
-            { label: 'Total Users', value: stats?.totalUsers ?? '-', delta: 'all accounts', icon: 'U', color: '#17b26a', bg: '#e9fbf1' },
-            { label: 'Active Sessions', value: stats?.activeSessions ?? '-', delta: 'right now', icon: 'S', color: '#f59e0b', bg: '#fff4e2' },
-            { label: 'Solver Queue', value: stats?.solverQueue ?? '-', delta: 'pending jobs', icon: 'Q', color: '#22b8cf', bg: '#e9fafe' },
+            { label: 'Total Tenants', value: stats?.totalTenants ?? '-', delta: 'live orgs', icon: 'T', color: '#1d4ed8', bg: '#edf3ff' },
+            { label: 'Total Users', value: stats?.totalUsers ?? '-', delta: 'all accounts', icon: 'U', color: '#166534', bg: '#e9fbf1' },
+            { label: 'Active Sessions', value: stats?.activeSessions ?? '-', delta: 'right now', icon: 'S', color: '#7c4a03', bg: '#fff4e2' },
+            { label: 'Solver Queue', value: stats?.solverQueue ?? '-', delta: 'pending jobs', icon: 'Q', color: '#0e5f6b', bg: '#e9fafe' },
         ],
         [stats],
     );
@@ -114,7 +114,7 @@ export default function AdminOverviewPage() {
                         'radial-gradient(36rem 16rem at 0% 0%, rgba(231,72,103,0.12), transparent 60%), radial-gradient(34rem 17rem at 100% 100%, rgba(79,121,255,0.12), transparent 60%), #ffffff',
                 }}
             >
-                <div className="workspace-kicker" style={{ color: '#cb3653' }}>
+                <div className="workspace-kicker" style={{ color: '#b4233f' }}>
                     Platform health
                 </div>
                 <h1 className="workspace-title" style={{ fontSize: '1.65rem', marginBottom: 2 }}>
@@ -142,7 +142,7 @@ export default function AdminOverviewPage() {
                         borderRadius: 12,
                         border: '1px solid #ffd0da',
                         background: '#fff1f4',
-                        color: '#cb3653',
+                        color: '#b4233f',
                         fontWeight: 600,
                         fontSize: '0.86rem',
                     }}
@@ -171,7 +171,7 @@ export default function AdminOverviewPage() {
                                 {card.icon}
                             </span>
                         </div>
-                        <div style={{ fontSize: '1.9rem', fontWeight: 800, letterSpacing: '-0.03em', color: 'var(--text-primary)' }}>{card.value}</div>
+                        <div style={{ fontSize: '1.9rem', fontWeight: 800, letterSpacing: 0, color: 'var(--text-primary)' }}>{card.value}</div>
                         <div style={{ fontSize: '0.72rem', fontWeight: 700, color: card.color }}>{card.delta}</div>
                     </article>
                 ))}
@@ -181,12 +181,17 @@ export default function AdminOverviewPage() {
                 <article className="surface-card" style={{ padding: '1rem' }}>
                     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.8rem' }}>
                         <h2 style={{ fontSize: '1rem', fontWeight: 760, color: 'var(--text-primary)' }}>Recent Audit Log</h2>
-                        <span className="badge" style={{ background: '#edf3ff', borderColor: '#c9d9ff', color: '#2f63ff' }}>
+                        <span className="badge" style={{ background: '#edf3ff', borderColor: '#c9d9ff', color: '#1d4ed8' }}>
                             Last 20 events
                         </span>
                     </div>
 
-                    <div style={{ overflowX: 'auto' }}>
+                    <div
+                        role="region"
+                        aria-label="Recent audit log table"
+                        tabIndex={0}
+                        style={{ overflowX: 'auto' }}
+                    >
                         <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 620 }}>
                             <thead>
                                 <tr style={{ borderBottom: '1px solid var(--border)' }}>

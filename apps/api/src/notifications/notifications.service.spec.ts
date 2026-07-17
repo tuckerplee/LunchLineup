@@ -5,6 +5,8 @@ describe('NotificationsService', () => {
     let service: NotificationsService;
     let tx: any;
     let tenantDb: { withTenant: ReturnType<typeof vi.fn> };
+    let metrics: any;
+    let moduleRef: any;
 
     beforeEach(() => {
         tx = {
@@ -18,7 +20,28 @@ describe('NotificationsService', () => {
         tenantDb = {
             withTenant: vi.fn(async (_tenantId: string, operation: (tx: any) => Promise<unknown>) => operation(tx)),
         };
-        service = new NotificationsService({ get: vi.fn().mockReturnValue(undefined) } as any, tenantDb as any);
+        metrics = {
+            notificationOutboxDeliveriesTotal: { inc: vi.fn() },
+            notificationOutboxDeadLettered: { set: vi.fn() },
+        };
+        moduleRef = { get: vi.fn().mockReturnValue(metrics) };
+        service = new NotificationsService(
+            { get: vi.fn().mockReturnValue(undefined) } as any,
+            moduleRef,
+            tenantDb as any,
+        );
+    });
+
+    it('starts and stops durable outbox recovery with the API lifecycle', async () => {
+        const start = vi.spyOn((service as any).outbox, 'start').mockImplementation(() => undefined);
+        const stop = vi.spyOn((service as any).outbox, 'stop').mockResolvedValue(undefined);
+
+        service.onModuleInit();
+        await service.onModuleDestroy();
+
+        expect(moduleRef.get).toHaveBeenCalledWith(expect.any(Function), { strict: false });
+        expect(start).toHaveBeenCalledOnce();
+        expect(stop).toHaveBeenCalledOnce();
     });
 
     it('creates notifications inside tenant context', async () => {
@@ -31,6 +54,7 @@ describe('NotificationsService', () => {
             body: 'You have a new shift.',
         });
 
+        const log = vi.spyOn((service as any).logger, 'log').mockImplementation(() => undefined);
         const result = await service.send(
             'tenant-1',
             'user-1',
@@ -50,6 +74,30 @@ describe('NotificationsService', () => {
             },
         });
         expect(result.id).toBe('notification-1');
+        expect(JSON.stringify(log.mock.calls)).not.toContain('Shift assigned');
+        expect(JSON.stringify(log.mock.calls)).not.toContain('You have a new shift.');
+    });
+
+    it('redacts Redis channels, notification payloads, and error text from publish failures', async () => {
+        const warn = vi.spyOn((service as any).logger, 'warn').mockImplementation(() => undefined);
+        (service as any).redis = {
+            publish: vi.fn().mockRejectedValue(new Error('redis://secret@host notification body')),
+        };
+
+        await (service as any).publishExisting({
+            id: 'notification-1',
+            tenantId: 'tenant-1',
+            userId: 'user-1',
+            type: NotificationType.SHIFT_ASSIGNED,
+            title: 'Private title',
+            body: 'Private body',
+        });
+
+        const logs = JSON.stringify(warn.mock.calls);
+        expect(logs).toContain('category=unknown class=Error');
+        expect(logs).not.toContain('user-1');
+        expect(logs).not.toContain('Private title');
+        expect(logs).not.toContain('secret@host');
     });
 
     it('reads and counts notifications inside tenant context', async () => {

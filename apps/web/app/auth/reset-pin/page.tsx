@@ -4,8 +4,7 @@ import Link from 'next/link';
 import { useState } from 'react';
 import { KeyRound } from 'lucide-react';
 import { LunchLineupMark } from '@/components/branding/LunchLineupMark';
-
-const API = process.env.NEXT_PUBLIC_API_URL ?? '/api/v1';
+import { fetchPublicApi } from '@/lib/client-api';
 
 function getCsrfToken(): string {
     if (typeof document === 'undefined') return '';
@@ -47,7 +46,7 @@ function ResetPinContent() {
         setIsLoading(true);
         try {
             const csrfToken = getCsrfToken();
-            const rotateResponse = await fetch(`${API}/users/me/pin`, {
+            const rotateResponse = await fetchPublicApi('/users/me/pin', {
                 method: 'PUT',
                 headers: {
                     'Content-Type': 'application/json',

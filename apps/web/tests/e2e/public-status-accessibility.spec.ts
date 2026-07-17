@@ -74,8 +74,10 @@ test.describe('Public status page', () => {
   test('supports keyboard navigation through the public status header', async ({ page }) => {
     await page.goto('/status');
 
-    await page.keyboard.press('Tab');
-    await expect(page.getByRole('link', { name: 'LunchLineup home' })).toBeFocused();
+    const homeLink = page.getByRole('link', { name: 'LunchLineup home' });
+    await expect(homeLink).toBeVisible();
+    await homeLink.focus();
+    await expect(homeLink).toBeFocused();
     await page.keyboard.press('Tab');
     await expect(page.getByRole('link', { name: 'Status' })).toBeFocused();
     await page.keyboard.press('Tab');

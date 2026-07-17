@@ -95,8 +95,9 @@ test.describe('Public SaaS entrypoints', () => {
         body: route.request().postData(),
       });
       await route.fulfill({
-        status: 303,
-        headers: { location: '/dashboard' },
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({ success: true, redirectTo: '/status' }),
       });
     });
 
@@ -115,11 +116,12 @@ test.describe('Public SaaS entrypoints', () => {
 
     const pinSubmission = await pinSubmissionPromise;
     const submissionUrl = new URL(pinSubmission.url);
-    const submissionBody = new URLSearchParams(pinSubmission.body ?? '');
+    const submissionBody = JSON.parse(pinSubmission.body ?? '{}') as Record<string, string>;
     expect(submissionUrl.searchParams.get('next')).toBe('/dashboard');
-    expect(submissionBody.get('identifier')).toBe('e2e.admin');
-    expect(submissionBody.get('tenantSlug')).toBe('e2e-operations');
-    expect(submissionBody.get('pin')).toBe('246810');
+    expect(submissionUrl.searchParams.has('redirect')).toBe(false);
+    expect(submissionBody.identifier).toBe('e2e.admin');
+    expect(submissionBody.tenantSlug).toBe('e2e-operations');
+    expect(submissionBody.pin).toBe('246810');
   });
 
   test('login resolves email OTP flow and submits the requested workspace redirect', async ({ page }) => {
@@ -154,8 +156,9 @@ test.describe('Public SaaS entrypoints', () => {
         body: route.request().postData(),
       });
       await route.fulfill({
-        status: 303,
-        headers: { location: '/dashboard/scheduling' },
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({ success: true, redirectTo: '/status' }),
       });
     });
 
@@ -168,18 +171,20 @@ test.describe('Public SaaS entrypoints', () => {
     await expect(page.getByText('Enter the 6-digit code sent to manager@example.com.')).toBeVisible();
     expect(sentOtpEmail).toBe('manager@example.com');
 
+    await page.getByLabel('Digit 1').fill('123456');
     await Promise.all([
       otpSubmissionPromise,
-      page.getByLabel('Digit 1').fill('123456'),
+      page.getByRole('button', { name: 'Verify and continue' }).click(),
     ]);
 
     const otpSubmission = await otpSubmissionPromise;
     const submissionUrl = new URL(otpSubmission.url);
-    const submissionBody = new URLSearchParams(otpSubmission.body ?? '');
+    const submissionBody = JSON.parse(otpSubmission.body ?? '{}') as Record<string, string>;
     expect(submissionUrl.searchParams.get('next')).toBe('/dashboard/scheduling');
-    expect(submissionBody.get('email')).toBe('manager@example.com');
-    expect(submissionBody.get('tenantSlug')).toBe('e2e-operations');
-    expect(submissionBody.get('code')).toBe('123456');
+    expect(submissionUrl.searchParams.has('redirect')).toBe(false);
+    expect(submissionBody.email).toBe('manager@example.com');
+    expect(submissionBody.tenantSlug).toBe('e2e-operations');
+    expect(submissionBody.code).toBe('123456');
   });
 
   test('MFA page gives unauthenticated users a recovery path', async ({ page }) => {

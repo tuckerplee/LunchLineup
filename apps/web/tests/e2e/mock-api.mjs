@@ -21,6 +21,116 @@ const unenrolledMfaPin = process.env.E2E_UNENROLLED_MFA_PIN ?? '975310';
 const csrfToken = 'mock-e2e-csrf';
 const mockMfaSecret = 'JBSWY3DPEHPK3PXP';
 const mockMfaRecoveryCodes = ['LL-4F8K-92HD', 'LL-73QW-1PZM', 'LL-8T2N-6YKC'];
+const creditPackOptions = [
+  { code: 'CREDITS_100', credits: 100, configured: true, amount: 1200, currency: 'usd' },
+  { code: 'CREDITS_500', credits: 500, configured: true, amount: 5000, currency: 'usd' },
+  { code: 'CREDITS_2000', credits: 2000, configured: true, amount: 18000, currency: 'usd' },
+];
+
+const payrollPolicy = {
+  id: 'payroll-policy-1',
+  version: 1,
+  timeZone: 'America/Los_Angeles',
+  cadence: 'WEEKLY',
+  anchorDate: '2026-07-06',
+  effectiveFrom: '2026-07-06',
+  createdByUserId: 'user-admin',
+  createdAt: '2026-07-06T16:00:00.000Z',
+};
+
+function payrollExportBatch(newBalance) {
+  return {
+    id: 'payroll-batch-1',
+    periodId: 'payroll-period-1',
+    formatVersion: 1,
+    status: 'GENERATED',
+    contentSha256: 'b'.repeat(64),
+    rowCount: 1,
+    totalPayableMinutes: 450,
+    settlement: { consumedCredits: 1, newBalance },
+    createdAt: '2026-07-16T17:00:00.000Z',
+    downloadedAt: null,
+    reconciledAt: null,
+    lines: [{
+      id: 'payroll-line-1',
+      lineNumber: 1,
+      lockedEntryId: 'payroll-entry-1',
+      employeeId: 'user-mock-staff',
+      payableMinutes: 450,
+      canonicalSha256: 'c'.repeat(64),
+      reconciliationStatus: 'PENDING',
+      reconciliationReason: null,
+    }],
+    nextLineCursor: null,
+    reconciliation: {
+      acceptedCount: 0,
+      rejectedCount: 0,
+      pendingCount: 1,
+      providerTotalMinutes: null,
+      latestProvider: null,
+      latestProviderEventId: null,
+    },
+  };
+}
+
+function payrollPeriod(exportCreated, newBalance) {
+  return {
+    id: 'payroll-period-1',
+    policyVersionId: payrollPolicy.id,
+    localStartDate: '2026-07-06',
+    localEndDateExclusive: '2026-07-13',
+    startsAt: '2026-07-06T07:00:00.000Z',
+    endsAt: '2026-07-13T07:00:00.000Z',
+    timeZone: payrollPolicy.timeZone,
+    cadence: payrollPolicy.cadence,
+    status: 'LOCKED',
+    revision: 2,
+    reviewStartedAt: '2026-07-14T16:00:00.000Z',
+    lockedAt: '2026-07-15T16:00:00.000Z',
+    lockedEntrySha256: 'a'.repeat(64),
+    lockedEntryCount: 1,
+    totalPayableMinutes: 450,
+    summary: {
+      cardCount: 1,
+      closedCardCount: 1,
+      approvedCardCount: 1,
+      rejectedCardCount: 0,
+      pendingCardCount: 0,
+      amendmentCount: 0,
+      pendingAmendmentCount: 0,
+      approvedAmendmentCount: 0,
+      lockedEntryCount: 1,
+    },
+    exportBatch: exportCreated ? payrollExportBatch(newBalance) : null,
+  };
+}
+
+function payrollPeriodDetail(exportCreated, newBalance) {
+  return {
+    period: payrollPeriod(exportCreated, newBalance),
+    cards: [],
+    nextCardCursor: null,
+    lockedEntries: [{
+      id: 'payroll-entry-1',
+      sequence: 0,
+      sourceType: 'TIME_CARD',
+      sourceId: 'time-card-1',
+      sourceRevision: 3,
+      employeeId: 'user-mock-staff',
+      employeeName: 'Mock Staff',
+      locationId: 'loc-downtown',
+      workTimeZone: payrollPolicy.timeZone,
+      clockInAt: '2026-07-08T16:00:00.000Z',
+      clockOutAt: '2026-07-09T00:00:00.000Z',
+      breakMinutes: 30,
+      payableMinutes: 450,
+      approvedAt: '2026-07-14T17:00:00.000Z',
+      approvedByUserId: 'user-admin',
+      canonicalSha256: 'd'.repeat(64),
+    }],
+    amendments: [],
+  };
+}
 
 const permissions = [
   'dashboard:access',
@@ -45,6 +155,12 @@ const permissions = [
   'lunch_breaks:delete',
   'time_cards:read',
   'time_cards:write',
+  'time_cards:approve',
+  'payroll:read',
+  'payroll:policy_write',
+  'payroll:lock',
+  'payroll:export',
+  'payroll:reconcile',
   'notifications:read',
   'notifications:write',
   'billing:read',
@@ -64,7 +180,7 @@ function resetState() {
     id: 'tenant-e2e',
     name: tenantName,
     slug: tenantSlug,
-    planTier: 'ENTERPRISE',
+    planTier: 'GROWTH',
     status: 'ACTIVE',
   };
   const admin = {
@@ -75,7 +191,8 @@ function resetState() {
     email: null,
     username: adminUsername,
     name: 'E2E Admin',
-    role: 'ADMIN',
+    role: 'Admin',
+    legacyRole: 'ADMIN',
     permissions,
     roles: [{ id: 'role-admin', name: 'Admin' }],
     tenantName,
@@ -87,7 +204,8 @@ function resetState() {
     sessionId: 'session-super-admin',
     username: superAdminUsername,
     name: 'E2E Super Admin',
-    role: 'SUPER_ADMIN',
+    role: 'System Admin',
+    legacyRole: 'SUPER_ADMIN',
     permissions: [...permissions, 'admin_portal:access'],
     roles: [{ id: 'role-super-admin', name: 'System Admin' }],
   };
@@ -98,8 +216,13 @@ function resetState() {
     sessionId: 'session-manager',
     username: managerUsername,
     name: 'E2E Manager',
-    role: 'MANAGER',
-    permissions: permissions.filter((permission) => permission !== 'users:admin' && !permission.startsWith('roles:')),
+    role: 'Manager',
+    legacyRole: 'MANAGER',
+    permissions: permissions.filter((permission) => (
+      permission !== 'users:admin'
+      && !permission.startsWith('roles:')
+      && (!permission.startsWith('payroll:') || permission === 'payroll:read')
+    )),
     roles: [{ id: 'role-manager', name: 'Manager' }],
   };
   const mfaAdmin = {
@@ -143,7 +266,7 @@ function resetState() {
     name: account.name,
     email: account.email,
     username: account.username,
-    role: account.role,
+    role: account.legacyRole,
     createdAt: now.toISOString(),
     lastLoginAt: now.toISOString(),
     lockedUntil: null,
@@ -218,11 +341,97 @@ function resetState() {
         createdAt: new Date(now.getTime() - 5 * 60000).toISOString(),
       },
     ],
+    billing: {
+      planTier: 'GROWTH',
+      effectivePlanTier: 'GROWTH',
+      status: 'ACTIVE',
+      trialEndsAt: null,
+      stripeSubscriptionActive: true,
+      stripeSubscriptionPresent: true,
+      subscriptionRecoveryAction: null,
+      usageCredits: 500,
+    },
     schedules: [],
     demandWindowsBySchedule: new Map(),
     scheduleJobs: [],
+    schedulePublishRequests: new Map(),
     lunchBreakGenerationRequests: new Map(),
+    shiftUpdateRequests: new Map(),
+    payroll: {
+      exportCreated: false,
+      exportRequests: new Map(),
+    },
   };
+}
+
+function hasActivePaidSubscription() {
+  const tier = state.billing.effectivePlanTier.trim().toUpperCase();
+  return state.billing.status === 'ACTIVE'
+    && state.billing.stripeSubscriptionActive
+    && state.billing.stripeSubscriptionPresent
+    && tier !== 'FREE'
+    && tier !== 'UNKNOWN';
+}
+
+function billableFeatureResolution() {
+  if (!hasActivePaidSubscription()) {
+    return {
+      enabled: false,
+      source: 'disabled',
+      reason: 'An active paid subscription is required for billable actions.',
+      creditCost: 1,
+    };
+  }
+  if (state.billing.usageCredits <= 0) {
+    return {
+      enabled: false,
+      source: 'disabled',
+      reason: 'Separately purchased or granted usage credits are required for billable actions.',
+      creditCost: 1,
+    };
+  }
+  return {
+    enabled: true,
+    source: 'credits',
+    reason: 'Active paid subscription and separately purchased credits authorize this billable feature.',
+    creditCost: 1,
+  };
+}
+
+function requireBillableAccess(res) {
+  const resolution = billableFeatureResolution();
+  if (resolution.enabled) return true;
+  sendJson(res, 403, { message: resolution.reason });
+  return false;
+}
+
+function consumeMockUsageCredit() {
+  state.billing.usageCredits -= 1;
+  return { consumedCredits: 1, newBalance: state.billing.usageCredits, source: 'credits' };
+}
+
+function schedulePublishPreflight(schedule) {
+  const acceptedContract = {
+    version: schedule.revision ?? 0,
+    totalConfiguredCost: 1,
+    scheduleCost: 1,
+    matchingWebhookDeliveryCount: 0,
+    matchingWebhookDeliveryUnitCost: 0,
+    matchingWebhookDeliveryCost: 0,
+  };
+  return {
+    scheduleId: schedule.id,
+    ...acceptedContract,
+    acceptedContract,
+    availableCredits: state.billing.usageCredits,
+    sufficientCredits: state.billing.usageCredits >= acceptedContract.totalConfiguredCost,
+  };
+}
+
+function schedulePublishContractMatches(accepted, current) {
+  return accepted
+    && Object.keys(current).every((key) => accepted[key] === current[key])
+    && Object.keys(accepted).length === Object.keys(current).length;
 }
 
 function mockQrCodeDataUrl() {
@@ -539,7 +748,11 @@ const server = http.createServer(async (req, res) => {
       const identifier = String(body.identifier ?? body.email ?? adminUsername).trim().toLowerCase();
       const account = state.usersByUsername.get(identifier);
       if (!account || body.tenantSlug !== tenantSlug || (body.pin && body.pin !== account.pin)) {
-        sendText(res, 303, '', { location: `/auth/login?tenantSlug=${tenantSlug}&step=pin&error=invalid` });
+        if (url.searchParams.get('redirect') === '1') {
+          sendText(res, 303, '', { location: `/auth/login?tenantSlug=${tenantSlug}&step=pin&error=invalid` });
+        } else {
+          sendJson(res, 401, { success: false, message: 'Invalid username or PIN. Please try again.' });
+        }
         return;
       }
       const next = url.searchParams.get('next') || '/dashboard';
@@ -547,7 +760,7 @@ const server = http.createServer(async (req, res) => {
         sendText(res, 303, '', { location: next, 'set-cookie': authCookies(account.token) });
         return;
       }
-      sendJson(res, 200, { success: true, user: account.user }, { 'set-cookie': authCookies(account.token) });
+      sendJson(res, 200, { success: true, user: account.user, redirectTo: next }, { 'set-cookie': authCookies(account.token) });
       return;
     }
 
@@ -772,8 +985,29 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
+    if (pathname === '/v1/users/directory-summary' && req.method === 'GET') {
+      const directoryUsers = [{ role: user.role }, ...state.staff];
+      sendJson(res, 200, {
+        totalUsers: directoryUsers.length,
+        staffCount: directoryUsers.filter((candidate) => candidate.role === 'STAFF' || candidate.role === 'MANAGER').length,
+        managerCount: directoryUsers.filter((candidate) => candidate.role === 'MANAGER').length,
+        privilegedUsers: directoryUsers.filter((candidate) => candidate.role === 'SUPER_ADMIN' || candidate.role === 'ADMIN').length,
+        pinAccounts: directoryUsers.length,
+      });
+      return;
+    }
     if (pathname === '/v1/users' && req.method === 'GET') {
-      sendJson(res, 200, { data: [{ id: user.id, name: user.name, username: user.username, role: user.role }, ...state.staff] });
+      const directoryUsers = [{ id: user.id, name: user.name, username: user.username, role: user.role }, ...state.staff];
+      sendJson(res, 200, {
+        data: directoryUsers,
+        summary: {
+          totalUsers: directoryUsers.length,
+          staffCount: directoryUsers.filter((candidate) => candidate.role === 'STAFF' || candidate.role === 'MANAGER').length,
+          managerCount: directoryUsers.filter((candidate) => candidate.role === 'MANAGER').length,
+          privilegedUsers: directoryUsers.filter((candidate) => candidate.role === 'SUPER_ADMIN' || candidate.role === 'ADMIN').length,
+          pinAccounts: directoryUsers.length,
+        },
+      });
       return;
     }
     if (pathname === '/v1/users/access/catalog' && req.method === 'GET') {
@@ -815,8 +1049,40 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
+    if (pathname === '/v1/locations/summary' && req.method === 'GET') {
+      sendJson(res, 200, { count: state.locations.length });
+      return;
+    }
+    const locationReadMatch = new RegExp('^/v1/locations/([^/]+)$').exec(pathname);
+    if (locationReadMatch && req.method === 'GET') {
+      const location = state.locations.find((candidate) => candidate.id === decodeURIComponent(locationReadMatch[1]));
+      if (!location) {
+        sendJson(res, 404, { message: 'Location not found.' });
+        return;
+      }
+      sendJson(res, 200, location);
+      return;
+    }
     if (pathname === '/v1/locations' && req.method === 'GET') {
-      sendJson(res, 200, { data: state.locations });
+      const requestedLimit = Number.parseInt(url.searchParams.get('limit') ?? '100', 10);
+      const limit = Number.isSafeInteger(requestedLimit) ? Math.min(200, Math.max(1, requestedLimit)) : 100;
+      const requestedOffset = Number.parseInt(url.searchParams.get('cursor') ?? '0', 10);
+      const offset = Number.isSafeInteger(requestedOffset) && requestedOffset >= 0 ? requestedOffset : 0;
+      const ordered = state.locations.slice().sort((left, right) => (
+        left.name.localeCompare(right.name) || left.id.localeCompare(right.id)
+      ));
+      const data = ordered.slice(offset, offset + limit);
+      const hasMore = offset + data.length < ordered.length;
+      sendJson(res, 200, {
+        data,
+        pagination: {
+          limit,
+          maxLimit: 200,
+          returned: data.length,
+          hasMore,
+          nextCursor: hasMore ? String(offset + data.length) : null,
+        },
+      });
       return;
     }
 
@@ -833,6 +1099,7 @@ const server = http.createServer(async (req, res) => {
         startDate: new Date(`${body.startDate}T00:00:00.000Z`).toISOString(),
         endDate: new Date(`${body.endDate}T00:00:00.000Z`).toISOString(),
         status: 'DRAFT',
+        revision: 0,
         publishedAt: null,
       };
       state.schedules.push(schedule);
@@ -880,6 +1147,8 @@ const server = http.createServer(async (req, res) => {
         sendJson(res, 400, { message: 'Configure at least one demand window before auto-scheduling.' });
         return;
       }
+      if (!requireBillableAccess(res)) return;
+      const creditConsumption = consumeMockUsageCredit();
       const job = {
         jobId: `job-${crypto.randomUUID()}`,
         scheduleId: schedule.id,
@@ -888,6 +1157,7 @@ const server = http.createServer(async (req, res) => {
         statusReason: null,
         retryCount: 0,
         resultShiftCount: state.shifts.filter((shift) => shift.scheduleId === schedule.id).length,
+        creditConsumption,
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
         completedAt: new Date().toISOString(),
@@ -910,8 +1180,47 @@ const server = http.createServer(async (req, res) => {
       sendJson(res, 200, job);
       return;
     }
+    const schedulePublishPreflightMatch = /^\/v1\/schedules\/([^/]+)\/publish\/preflight$/.exec(pathname);
+    if (schedulePublishPreflightMatch && req.method === 'GET') {
+      const schedule = state.schedules.find((candidate) => candidate.id === schedulePublishPreflightMatch[1]);
+      if (!schedule || schedule.status !== 'DRAFT') {
+        sendJson(res, 404, { message: 'Draft schedule not found.' });
+        return;
+      }
+      if (!hasActivePaidSubscription()) {
+        sendJson(res, 403, { message: 'An active paid subscription is required for schedule publication.' });
+        return;
+      }
+      sendJson(res, 200, schedulePublishPreflight(schedule));
+      return;
+    }
+
     const schedulePublishMatch = /^\/v1\/schedules\/([^/]+)\/publish$/.exec(pathname);
     if (schedulePublishMatch && req.method === 'POST') {
+      const idempotencyKey = typeof req.headers['idempotency-key'] === 'string'
+        ? req.headers['idempotency-key'].trim()
+        : '';
+      if (!idempotencyKey) {
+        sendJson(res, 400, { message: 'Idempotency-Key header is required for schedule publication.' });
+        return;
+      }
+      const body = await readBody(req);
+      const requestHash = crypto.createHash('sha256')
+        .update(JSON.stringify({
+          action: 'schedule.publish',
+          scheduleId: schedulePublishMatch[1],
+          acceptedContract: body.acceptedContract,
+        }))
+        .digest('hex');
+      const existingRequest = state.schedulePublishRequests.get(idempotencyKey);
+      if (existingRequest) {
+        if (existingRequest.requestHash !== requestHash) {
+          sendJson(res, 409, { message: 'Idempotency-Key was already used with a different schedule publish request.' });
+          return;
+        }
+        sendJson(res, 200, existingRequest.response);
+        return;
+      }
       const schedule = state.schedules.find((candidate) => candidate.id === schedulePublishMatch[1]);
       if (!schedule || schedule.status !== 'DRAFT') {
         sendJson(res, 400, { message: 'Only draft schedules can be published.' });
@@ -921,14 +1230,46 @@ const server = http.createServer(async (req, res) => {
         sendJson(res, 400, { message: 'Add at least one shift before publishing this schedule.' });
         return;
       }
+      if (!hasActivePaidSubscription()) {
+        sendJson(res, 403, { message: 'An active paid subscription is required for schedule publication.' });
+        return;
+      }
+      const preflight = schedulePublishPreflight(schedule);
+      if (!schedulePublishContractMatches(body.acceptedContract, preflight.acceptedContract)) {
+        sendJson(res, 409, {
+          message: 'Schedule or configured publish cost changed after confirmation. Review and confirm the current preflight.',
+          preflight,
+        });
+        return;
+      }
+      if (!preflight.sufficientCredits) {
+        sendJson(res, 403, {
+          message: 'Insufficient usage credits balance for schedule publication and matching webhook deliveries.',
+          preflight,
+        });
+        return;
+      }
+      const creditConsumption = consumeMockUsageCredit();
       schedule.status = 'PUBLISHED';
       schedule.publishedAt = new Date().toISOString();
-      sendJson(res, 200, {
+      const response = {
         id: schedule.id,
         status: schedule.status,
         publishedAt: schedule.publishedAt,
-        notifications: { status: 'DELIVERED', delivered: 1, failed: 0 },
-      });
+        settlement: {
+          ...preflight.acceptedContract,
+          acceptedContract: preflight.acceptedContract,
+          creditsConsumed: preflight.totalConfiguredCost,
+          newBalance: creditConsumption.newBalance,
+          ledgerIdentities: {
+            schedule: `feature-usage-schedule-publish:${requestHash}`,
+            webhookDeliveries: [],
+          },
+        },
+        notifications: { status: 'DELIVERED', delivered: 1, pending: 0, failed: 0 },
+      };
+      state.schedulePublishRequests.set(idempotencyKey, { requestHash, response });
+      sendJson(res, 200, response);
       return;
     }
 
@@ -976,14 +1317,37 @@ const server = http.createServer(async (req, res) => {
     }
     const shiftMatch = /^\/v1\/shifts\/([^/]+)$/.exec(pathname);
     if (shiftMatch && req.method === 'PUT') {
+      const idempotencyKey = typeof req.headers['idempotency-key'] === 'string'
+        ? req.headers['idempotency-key'].trim()
+        : '';
+      if (!idempotencyKey) {
+        sendJson(res, 400, { message: 'Idempotency-Key header is required for shift updates.' });
+        return;
+      }
       const body = await readBody(req);
+      const requestHash = crypto.createHash('sha256')
+        .update(JSON.stringify({ shiftId: shiftMatch[1], ...body }))
+        .digest('hex');
+      const existingRequest = state.shiftUpdateRequests.get(idempotencyKey);
+      if (existingRequest) {
+        if (existingRequest.requestHash !== requestHash) {
+          sendJson(res, 409, { message: 'Idempotency-Key was already used with a different shift update request.' });
+          return;
+        }
+        sendJson(res, 200, existingRequest.response);
+        return;
+      }
       const index = state.shifts.findIndex((shift) => shift.id === shiftMatch[1]);
       if (index === -1) {
         sendJson(res, 404, { message: 'Shift not found.' });
         return;
       }
+      if (!requireBillableAccess(res)) return;
       state.shifts[index] = { ...state.shifts[index], ...body };
-      sendJson(res, 200, decorateShift(state.shifts[index]));
+      consumeMockUsageCredit();
+      const response = decorateShift(state.shifts[index]);
+      state.shiftUpdateRequests.set(idempotencyKey, { requestHash, response });
+      sendJson(res, 200, response);
       return;
     }
     if (shiftMatch && req.method === 'DELETE') {
@@ -1029,11 +1393,12 @@ const server = http.createServer(async (req, res) => {
         return;
       }
       const ids = Array.isArray(body.shiftIds) ? body.shiftIds : [];
+      if (!requireBillableAccess(res)) return;
       state.shifts = state.shifts.map((shift) => ids.includes(shift.id) ? { ...shift, breaks: shiftBreaks(shift) } : shift);
       const response = {
         source: 'shared_schedule',
         persisted: true,
-        creditConsumption: { consumedCredits: 0, newBalance: 500 },
+        creditConsumption: consumeMockUsageCredit(),
         data: lunchRows().filter((row) => ids.includes(row.shiftId)),
         reused: false,
       };
@@ -1043,14 +1408,13 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (pathname === '/v1/billing/features' && req.method === 'GET') {
+      const billableFeature = billableFeatureResolution();
       sendJson(res, 200, {
-        planTier: 'GROWTH',
-        status: 'ACTIVE',
-        stripeSubscriptionActive: true,
-        usageCredits: 500,
+        ...state.billing,
         features: {
-          scheduling: { enabled: true, source: 'plan', reason: 'Mock readiness plan includes scheduling.', creditCost: null },
-          lunch_breaks: { enabled: true, source: 'plan', reason: 'Mock readiness plan includes lunch breaks.', creditCost: 0 },
+          scheduling: billableFeature,
+          lunch_breaks: billableFeature,
+          time_cards: billableFeature,
         },
       });
       return;
@@ -1065,11 +1429,119 @@ const server = http.createServer(async (req, res) => {
       });
       return;
     }
+    if (pathname === '/v1/billing/credit-packs' && req.method === 'GET') {
+      sendJson(res, 200, { data: creditPackOptions });
+      return;
+    }
+    if (pathname === '/v1/billing/credit-packs/checkout' && req.method === 'POST') {
+      if (!hasActivePaidSubscription()) {
+        sendJson(res, 403, { message: 'An active paid subscription is required to purchase credits.' });
+        return;
+      }
+      const body = await readBody(req);
+      const option = creditPackOptions.find((candidate) => candidate.code === body.code);
+      if (!option?.configured) {
+        sendJson(res, 400, { message: 'Credit pack is not available.' });
+        return;
+      }
+      sendJson(res, 200, {
+        sessionId: 'cs_test_mock_credit_pack',
+        checkoutUrl: 'https://checkout.stripe.com/mock-credit-pack',
+      });
+      return;
+    }
     if (pathname === '/v1/billing/subscribe' && req.method === 'POST') {
       sendJson(res, 200, {
         sessionId: 'cs_test_mock',
         checkoutUrl: 'https://checkout.stripe.com/mock-session',
       });
+      return;
+    }
+
+    if (pathname === '/v1/payroll/export-entitlement' && req.method === 'GET') {
+      const resolution = billableFeatureResolution();
+      sendJson(res, 200, {
+        enabled: resolution.enabled && user.permissions.includes('payroll:export'),
+        creditCost: resolution.creditCost,
+        usageCredits: state.billing.usageCredits,
+      });
+      return;
+    }
+    if (pathname === '/v1/payroll/policy' && req.method === 'GET') {
+      sendJson(res, 200, payrollPolicy);
+      return;
+    }
+    if (pathname === '/v1/payroll/policies' && req.method === 'GET') {
+      sendJson(res, 200, { data: [payrollPolicy], nextCursor: null });
+      return;
+    }
+    if (pathname === '/v1/payroll/periods' && req.method === 'GET') {
+      sendJson(res, 200, {
+        data: [payrollPeriod(state.payroll.exportCreated, state.billing.usageCredits)],
+        nextCursor: null,
+      });
+      return;
+    }
+    if (pathname === '/v1/payroll/periods/payroll-period-1' && req.method === 'GET') {
+      sendJson(res, 200, payrollPeriodDetail(state.payroll.exportCreated, state.billing.usageCredits));
+      return;
+    }
+    if (pathname === '/v1/payroll/periods/payroll-period-1/exports' && req.method === 'POST') {
+      if (!user.permissions.includes('payroll:export')) {
+        sendJson(res, 403, { message: 'Payroll export permission is required.' });
+        return;
+      }
+      if (!requireBillableAccess(res)) return;
+      const body = await readBody(req);
+      if (body.expectedCreditCost !== 1) {
+        sendJson(res, 409, { message: 'Payroll export credit cost changed.' });
+        return;
+      }
+      const idempotencyKey = String(req.headers['idempotency-key'] ?? '');
+      if (!idempotencyKey) {
+        sendJson(res, 400, { message: 'Idempotency-Key is required.' });
+        return;
+      }
+      const replay = state.payroll.exportRequests.get(idempotencyKey);
+      if (replay) {
+        sendJson(res, 200, replay);
+        return;
+      }
+      if (!state.payroll.exportCreated) {
+        consumeMockUsageCredit();
+        state.payroll.exportCreated = true;
+      }
+      const batch = payrollExportBatch(state.billing.usageCredits);
+      state.payroll.exportRequests.set(idempotencyKey, batch);
+      sendJson(res, 201, batch);
+      return;
+    }
+    if (pathname === '/v1/payroll/exports/payroll-batch-1' && req.method === 'GET') {
+      if (!state.payroll.exportCreated) {
+        sendJson(res, 404, { message: 'Payroll export not found.' });
+        return;
+      }
+      sendJson(res, 200, payrollExportBatch(state.billing.usageCredits));
+      return;
+    }
+    if (pathname === '/v1/payroll/exports/payroll-batch-1/download' && req.method === 'GET') {
+      if (!state.payroll.exportCreated) {
+        sendJson(res, 404, { message: 'Payroll export not found.' });
+        return;
+      }
+      sendText(res, 200, 'employee_id,payable_minutes\nuser-mock-staff,450\n', {
+        'content-type': 'text/csv; charset=utf-8',
+        'content-disposition': 'attachment; filename="payroll-period-1.csv"',
+      });
+      return;
+    }
+    if (pathname === '/v1/payroll/exports/payroll-batch-1/reconciliation' && req.method === 'POST') {
+      if (!user.permissions.includes('payroll:reconcile')) {
+        sendJson(res, 403, { message: 'Payroll reconciliation permission is required.' });
+        return;
+      }
+      await readBody(req);
+      sendJson(res, 200, { recorded: true });
       return;
     }
 
@@ -1092,6 +1564,7 @@ const server = http.createServer(async (req, res) => {
         sendJson(res, 400, { message: 'Idempotency-Key header is required.' });
         return;
       }
+      if (!requireBillableAccess(res)) return;
       const body = await readBody(req);
       const card = {
         id: `time-card-${crypto.randomUUID()}`,
@@ -1104,6 +1577,7 @@ const server = http.createServer(async (req, res) => {
         notes: body.notes ?? null,
       };
       state.timeCards.push(card);
+      consumeMockUsageCredit();
       sendJson(res, 201, { data: toTimeCard(card) });
       return;
     }
@@ -1120,9 +1594,11 @@ const server = http.createServer(async (req, res) => {
         sendJson(res, 400, { message: 'Break minutes must be less than worked minutes.' });
         return;
       }
+      if (!requireBillableAccess(res)) return;
       card.clockOutAt = new Date().toISOString();
       card.breakMinutes = Number.isFinite(breakMinutes) ? breakMinutes : 0;
       card.status = 'CLOSED';
+      consumeMockUsageCredit();
       sendJson(res, 200, { data: toTimeCard(card) });
       return;
     }

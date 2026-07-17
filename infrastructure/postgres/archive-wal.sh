@@ -11,14 +11,14 @@ ARCHIVE_NAME="$2"
 [ -f "${SOURCE_PATH}" ] || pitr_fail "WAL source file does not exist: ${SOURCE_PATH}"
 ARCHIVE_KIND="$(pitr_archive_kind "${ARCHIVE_NAME}")" || pitr_fail "Unexpected WAL archive filename."
 
-# Development can opt out explicitly. The production launch gate requires true.
-if [ "${PITR_ENABLED:-false}" != "true" ]; then
-  exit 0
-fi
+[ "${PITR_ENABLED:-false}" = "true" ] \
+  || pitr_fail "archive-wal.sh cannot acknowledge WAL unless PITR_ENABLED=true."
 
 PITR_MC_CONFIG_DIR=""
-VERIFY_FILE=""
 PITR_WAL_METRICS_FILE="${PITR_WAL_METRICS_FILE:-}"
+PITR_WAL_PROVIDER_URL="${PITR_WAL_PROVIDER_URL:-http://pitr-wal-provider:8080}"
+PITR_WAL_PROVIDER_CLIENT_TIMEOUT_SECONDS="${PITR_WAL_PROVIDER_CLIENT_TIMEOUT_SECONDS:-930}"
+PITR_WAL_PROVIDER_RESPONSE="$(mktemp "${TMPDIR:-/tmp}/lunchlineup-pitr-wal-provider.XXXXXX")"
 
 metric_value() {
   metric_name="$1"
@@ -55,25 +55,42 @@ cleanup() {
   else
     write_wal_metrics failure || true
   fi
-  [ -z "${VERIFY_FILE}" ] || rm -f "${VERIFY_FILE}"
-  pitr_close_object_store
+  rm -f "${PITR_WAL_PROVIDER_RESPONSE}"
 }
 trap cleanup EXIT HUP INT TERM
 
-pitr_open_object_store
-case "${ARCHIVE_KIND}" in
-  history) REMOTE_PATH="${PITR_REMOTE_ROOT}/history/${ARCHIVE_NAME}" ;;
-  backup) REMOTE_PATH="${PITR_REMOTE_ROOT}/metadata/${ARCHIVE_NAME}" ;;
-  wal) REMOTE_PATH="${PITR_REMOTE_ROOT}/wal/${ARCHIVE_NAME}" ;;
-esac
+[ "${PITR_WAL_PROVIDER_URL}" = "http://pitr-wal-provider:8080" ] \
+  || pitr_fail "PITR_WAL_PROVIDER_URL must name the private Compose WAL provider."
+pitr_is_bounded_positive_integer "${PITR_WAL_PROVIDER_CLIENT_TIMEOUT_SECONDS}" 1200 \
+  || pitr_fail "PITR_WAL_PROVIDER_CLIENT_TIMEOUT_SECONDS must be an integer from 1 through 1200."
+command -v wget >/dev/null 2>&1 || pitr_fail "Required command is missing: wget"
 
-if pitr_mc stat "${REMOTE_PATH}" >/dev/null 2>&1; then
-  VERIFY_FILE="$(mktemp "${TMPDIR:-/tmp}/lunchlineup-wal-verify.XXXXXX")"
-  pitr_mc cp "${REMOTE_PATH}" "${VERIFY_FILE}" >/dev/null
-  cmp -s "${SOURCE_PATH}" "${VERIFY_FILE}" || pitr_fail "Remote WAL object exists with different bytes: ${ARCHIVE_NAME}"
-  exit 0
+if ! wget \
+  --quiet \
+  --output-document="${PITR_WAL_PROVIDER_RESPONSE}" \
+  --timeout="${PITR_WAL_PROVIDER_CLIENT_TIMEOUT_SECONDS}" \
+  --tries=1 \
+  --post-file="${SOURCE_PATH}" \
+  "${PITR_WAL_PROVIDER_URL}/archive/${ARCHIVE_NAME}"
+then
+  pitr_fail "Request-scoped WAL provider did not confirm remote durability."
 fi
 
-pitr_upload_encrypted "${SOURCE_PATH}" "${REMOTE_PATH}" >/dev/null
-pitr_mc stat "${REMOTE_PATH}" >/dev/null
-printf 'pitr_wal_archived name=%s target=%s\n' "${ARCHIVE_NAME}" "${REMOTE_PATH}"
+provider_line_count="$(wc -l <"${PITR_WAL_PROVIDER_RESPONSE}" | tr -d ' ')"
+[ "${provider_line_count}" -eq 1 ] || pitr_fail "WAL provider returned malformed durability proof."
+IFS=' ' read -r provider_marker provider_name provider_version provider_conditional provider_extra \
+  <"${PITR_WAL_PROVIDER_RESPONSE}"
+[ "${provider_marker}" = "pitr_wal_provider_uploaded" ] \
+  && [ "${provider_name}" = "name=${ARCHIVE_NAME}" ] \
+  && [ "${provider_conditional}" = "conditional_create=true" ] \
+  && [ -z "${provider_extra}" ] \
+  || pitr_fail "WAL provider returned mismatched durability proof."
+ARCHIVE_VERSION="${provider_version#version_id=}"
+[ "${provider_version}" = "version_id=${ARCHIVE_VERSION}" ] \
+  || pitr_fail "WAL provider proof has no version identity."
+case "${ARCHIVE_VERSION}" in
+  '' | *[!A-Za-z0-9._+=:/-]*) pitr_fail "WAL provider proof has an invalid version identity." ;;
+esac
+
+printf 'pitr_wal_archived name=%s provider=pitr-wal-provider version_id=%s conditional_create=true\n' \
+  "${ARCHIVE_NAME}" "${ARCHIVE_VERSION}"

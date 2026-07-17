@@ -2,11 +2,29 @@ import { getNodeAutoInstrumentations } from '@opentelemetry/auto-instrumentation
 import { OTLPTraceExporter } from '@opentelemetry/exporter-trace-otlp-proto';
 import { resourceFromAttributes } from '@opentelemetry/resources';
 import { NodeSDK } from '@opentelemetry/sdk-node';
+import { redactUrlForLog } from './sensitive-redaction';
 
 export interface TelemetryConfig {
     endpoint: string;
     serviceName: string;
     environment: string;
+}
+
+export function querySafeHttpSpanAttributes(request: { path?: string | null; url?: string | null }): Record<string, string> {
+    const rawUrl = typeof request.url === 'string'
+        ? request.url
+        : typeof request.path === 'string'
+            ? request.path
+            : '/';
+    const queryIndex = rawUrl.indexOf('?');
+    const sanitizedUrl = redactUrlForLog(rawUrl) || '/';
+
+    return {
+        'http.target': sanitizedUrl,
+        'http.url': sanitizedUrl,
+        'url.full': sanitizedUrl,
+        'url.query': queryIndex >= 0 ? '[REDACTED]' : '',
+    };
 }
 
 export function resolveTelemetryConfig(env: NodeJS.ProcessEnv = process.env): TelemetryConfig | null {
@@ -53,7 +71,14 @@ export function startApiTracing(env: NodeJS.ProcessEnv = process.env): boolean {
             getNodeAutoInstrumentations({
                 '@opentelemetry/instrumentation-dns': { enabled: false },
                 '@opentelemetry/instrumentation-fs': { enabled: false },
+                '@opentelemetry/instrumentation-http': {
+                    startIncomingSpanHook: querySafeHttpSpanAttributes,
+                    startOutgoingSpanHook: querySafeHttpSpanAttributes,
+                },
                 '@opentelemetry/instrumentation-net': { enabled: false },
+                '@opentelemetry/instrumentation-undici': {
+                    startSpanHook: querySafeHttpSpanAttributes,
+                },
             }),
         ],
     });

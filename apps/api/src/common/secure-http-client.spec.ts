@@ -30,6 +30,7 @@ describe('secureHttpRequest', () => {
 
     afterEach(() => {
         process.env.NODE_ENV = originalNodeEnv;
+        vi.useRealTimers();
     });
 
     it('rejects unsupported protocols before outbound requests', async () => {
@@ -59,6 +60,20 @@ describe('secureHttpRequest', () => {
 
         await expect(secureHttpRequest('https://hooks.example.com/webhook')).rejects.toThrow('IPv6 destination');
 
+        expect(httpsRequestMock).not.toHaveBeenCalled();
+    });
+
+    it('includes DNS resolution in the total deadline so shutdown-facing handlers settle', async () => {
+        vi.useFakeTimers();
+        lookupMock.mockImplementation(() => new Promise(() => undefined));
+
+        const request = secureHttpRequest('https://hooks.example.com/webhook', {
+            timeoutMs: 25,
+        });
+        const rejection = expect(request).rejects.toThrow('Outbound request timed out');
+
+        await vi.advanceTimersByTimeAsync(25);
+        await rejection;
         expect(httpsRequestMock).not.toHaveBeenCalled();
     });
 

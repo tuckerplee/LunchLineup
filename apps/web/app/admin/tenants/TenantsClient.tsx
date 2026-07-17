@@ -1,8 +1,15 @@
 'use client';
 
+import Link from 'next/link';
 import type { FormEvent } from 'react';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { fetchJsonWithSession, fetchWithSession } from '@/lib/client-api';
+import {
+    EMPTY_ADMIN_LIST_PAGINATION,
+    buildAdminListPath,
+    mergeAdminListPage,
+    parseAdminListPagination,
+} from '../admin-list-pagination';
 import {
     buildBulkTenantDeleteConfirmation,
     buildTenantLifecycleConfirmation,
@@ -10,7 +17,10 @@ import {
     type TenantLifecycleAction,
 } from './tenant-lifecycle-confirmation';
 import {
+    buildTenantCreatePayload,
     buildTenantEditPayload,
+    TENANT_CREATE_CREDIT_GUIDANCE,
+    TENANT_CREDIT_EDIT_GUIDANCE,
     TENANT_PLAN_EDIT_GUIDANCE,
     TENANT_STATUS_EDIT_GUIDANCE,
 } from './tenant-edit-contract';
@@ -36,12 +46,12 @@ type TenantRecord = {
 
 type TenantListResponse = {
     data?: TenantRecord[];
+    pagination?: unknown;
 };
 
 type TenantFormState = {
     name: string;
     slug: string;
-    usageCredits: string;
 };
 
 type TenantCreateFormState = TenantFormState & {
@@ -62,25 +72,25 @@ const PLAN_OPTIONS: Array<{ value: PlanTier; label: string }> = [
 
 const PLAN_COLORS: Record<string, { color: string; bg: string; border: string }> = {
     FREE: { color: '#4c5f85', bg: '#eef2f9', border: '#d3ddeb' },
-    STARTER: { color: '#2f63ff', bg: '#edf3ff', border: '#c9d9ff' },
-    GROWTH: { color: '#0f8c52', bg: '#e9fbf1', border: '#bdeed4' },
-    ENTERPRISE: { color: '#cc7f06', bg: '#fff4e2', border: '#ffe1a6' },
+    STARTER: { color: '#1d4ed8', bg: '#edf3ff', border: '#c9d9ff' },
+    GROWTH: { color: '#166534', bg: '#e9fbf1', border: '#bdeed4' },
+    ENTERPRISE: { color: '#7c4a03', bg: '#fff4e2', border: '#ffe1a6' },
 };
 
 const STATUS_COLORS: Record<string, { color: string; bg: string; border: string }> = {
-    TRIAL: { color: '#cc7f06', bg: '#fff4e2', border: '#ffe1a6' },
-    ACTIVE: { color: '#0f8c52', bg: '#e9fbf1', border: '#bdeed4' },
-    SUSPENDED: { color: '#cb3653', bg: '#ffeef2', border: '#ffd0da' },
-    PAST_DUE: { color: '#cb3653', bg: '#ffeef2', border: '#ffd0da' },
-    CANCELLED: { color: '#6f80a4', bg: '#eef2f9', border: '#d3ddeb' },
-    PURGED: { color: '#6f80a4', bg: '#eef2f9', border: '#d3ddeb' },
+    TRIAL: { color: '#7c4a03', bg: '#fff4e2', border: '#ffe1a6' },
+    ACTIVE: { color: '#166534', bg: '#e9fbf1', border: '#bdeed4' },
+    SUSPENDED: { color: '#b4233f', bg: '#ffeef2', border: '#ffd0da' },
+    PAST_DUE: { color: '#b4233f', bg: '#ffeef2', border: '#ffd0da' },
+    CANCELLED: { color: '#475569', bg: '#eef2f9', border: '#d3ddeb' },
+    PURGED: { color: '#475569', bg: '#eef2f9', border: '#d3ddeb' },
 };
 
 const SUMMARY_COLORS = [
-    { color: '#2f63ff', bg: '#edf3ff', border: '#c9d9ff', title: 'Total tenants' },
-    { color: '#0f8c52', bg: '#e9fbf1', border: '#bdeed4', title: 'Active tenants' },
-    { color: '#cb3653', bg: '#ffeef2', border: '#ffd0da', title: 'Suspended or archived' },
-    { color: '#cc7f06', bg: '#fff4e2', border: '#ffe1a6', title: 'Usage credits' },
+    { color: '#1d4ed8', bg: '#edf3ff', border: '#c9d9ff', title: 'Total tenants' },
+    { color: '#166534', bg: '#e9fbf1', border: '#bdeed4', title: 'Active tenants' },
+    { color: '#b4233f', bg: '#ffeef2', border: '#ffd0da', title: 'Suspended or archived' },
+    { color: '#7c4a03', bg: '#fff4e2', border: '#ffe1a6', title: 'Usage credits' },
 ];
 
 function formatDate(value: string | null | undefined) {
@@ -97,16 +107,10 @@ function formatDateTime(value: string | null | undefined) {
     return new Intl.DateTimeFormat('en-US', { month: 'short', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit' }).format(date);
 }
 
-function toNumber(value: string) {
-    const parsed = Number(value);
-    return Number.isFinite(parsed) ? parsed : NaN;
-}
-
 function normalizeForm(tenant?: TenantRecord | null): TenantFormState {
     return {
         name: tenant?.name ?? '',
         slug: tenant?.slug ?? '',
-        usageCredits: tenant ? String(tenant.usageCredits) : '0',
     };
 }
 
@@ -123,15 +127,15 @@ function badgeStyle(color: string, bg: string, border: string) {
 
 function actionButtonStyle(kind: 'neutral' | 'positive' | 'warn' | 'danger') {
     if (kind === 'positive') {
-        return { background: '#e9fbf1', color: '#0f8c52', borderColor: '#bdeed4' };
+        return { background: '#e9fbf1', color: '#166534', borderColor: '#bdeed4' };
     }
     if (kind === 'warn') {
-        return { background: '#fff4e2', color: '#cc7f06', borderColor: '#ffe1a6' };
+        return { background: '#fff4e2', color: '#7c4a03', borderColor: '#ffe1a6' };
     }
     if (kind === 'danger') {
-        return { background: '#ffeef2', color: '#cb3653', borderColor: '#ffd0da' };
+        return { background: '#ffeef2', color: '#b4233f', borderColor: '#ffd0da' };
     }
-    return { background: '#edf3ff', color: '#2f63ff', borderColor: '#c9d9ff' };
+    return { background: '#edf3ff', color: '#1d4ed8', borderColor: '#c9d9ff' };
 }
 
 function getCsrfHeaders(): Record<string, string> {
@@ -198,6 +202,8 @@ export function TenantsClient() {
     const [error, setError] = useState<string | null>(null);
     const [notice, setNotice] = useState<string | null>(null);
     const [query, setQuery] = useState('');
+    const [appliedQuery, setAppliedQuery] = useState('');
+    const [pagination, setPagination] = useState(EMPTY_ADMIN_LIST_PAGINATION);
     const [selectedTenantId, setSelectedTenantId] = useState<string | null>(null);
     const [createForm, setCreateForm] = useState<TenantCreateFormState>(normalizeCreateForm);
     const [editForm, setEditForm] = useState<TenantFormState>(() => normalizeForm(null));
@@ -208,52 +214,57 @@ export function TenantsClient() {
     );
 
     const loadTenants = useCallback(
-        async (preferredSelectedId?: string) => {
+        async (options: {
+            preferredSelectedId?: string;
+            cursor?: string | null;
+            append?: boolean;
+            search?: string;
+        } = {}) => {
+            const operation = options.append ? 'load-more' : 'load';
             setError(null);
-            setSaving('load');
+            setSaving(operation);
+            if (!options.append) setLoading(true);
             try {
-                const payload = await fetchJsonWithSession<TenantListResponse>('/admin/tenants');
-                const nextTenants = Array.isArray(payload.data) ? payload.data : [];
-                setTenants(nextTenants);
-                setSelectedTenantId((current) => {
-                    if (preferredSelectedId && nextTenants.some((tenant) => tenant.id === preferredSelectedId)) {
-                        return preferredSelectedId;
-                    }
-                    if (current && nextTenants.some((tenant) => tenant.id === current)) {
-                        return current;
-                    }
-                    return nextTenants[0]?.id ?? null;
+                const path = buildAdminListPath('/admin/tenants', {
+                    limit: 50,
+                    cursor: options.cursor,
+                    q: options.search,
                 });
+                const payload = await fetchJsonWithSession<TenantListResponse>(path);
+                const nextTenants = Array.isArray(payload.data) ? payload.data : [];
+                setPagination(parseAdminListPagination(payload.pagination));
+                if (options.append) {
+                    setTenants((current) => mergeAdminListPage(current, nextTenants, true));
+                } else {
+                    setTenants(nextTenants);
+                    setSelectedTenantId((current) => {
+                        if (options.preferredSelectedId && nextTenants.some((tenant) => tenant.id === options.preferredSelectedId)) {
+                            return options.preferredSelectedId;
+                        }
+                        if (current && nextTenants.some((tenant) => tenant.id === current)) {
+                            return current;
+                        }
+                        return nextTenants[0]?.id ?? null;
+                    });
+                }
             } catch (err) {
                 setError(err instanceof Error ? err.message : 'Failed to load tenants');
             } finally {
-                setLoading(false);
-                setSaving((current) => (current === 'load' ? null : current));
+                if (!options.append) setLoading(false);
+                setSaving((current) => (current === operation ? null : current));
             }
         },
         [],
     );
 
     useEffect(() => {
-        void loadTenants();
-    }, [loadTenants]);
+        void loadTenants({ search: appliedQuery });
+    }, [appliedQuery, loadTenants]);
 
     useEffect(() => {
         setEditForm(normalizeForm(selectedTenant));
     }, [selectedTenant]);
 
-    const filteredTenants = useMemo(() => {
-        const normalized = query.trim().toLowerCase();
-        if (!normalized) return tenants;
-        return tenants.filter((tenant) => {
-            return (
-                tenant.name.toLowerCase().includes(normalized) ||
-                tenant.slug.toLowerCase().includes(normalized) ||
-                tenant.planTier.toLowerCase().includes(normalized) ||
-                tenant.status.toLowerCase().includes(normalized)
-            );
-        });
-    }, [query, tenants]);
 
     const summary = useMemo(() => {
         const archivedCount = tenants.filter((tenant) => Boolean(tenant.deletedAt) || tenant.status === 'CANCELLED' || tenant.status === 'PURGED').length;
@@ -262,10 +273,10 @@ export function TenantsClient() {
         const totalCredits = tenants.reduce((sum, tenant) => sum + tenant.usageCredits, 0);
 
         return [
-            { value: tenants.length, subtitle: 'registered organizations' },
-            { value: activeCount, subtitle: 'currently active' },
-            { value: suspendedCount + archivedCount, subtitle: 'requires attention' },
-            { value: totalCredits.toLocaleString(), subtitle: 'across all tenants' },
+            { value: tenants.length, subtitle: 'organizations loaded' },
+            { value: activeCount, subtitle: 'active in loaded rows' },
+            { value: suspendedCount + archivedCount, subtitle: 'attention in loaded rows' },
+            { value: totalCredits.toLocaleString(), subtitle: 'credits in loaded rows' },
         ];
     }, [tenants]);
 
@@ -275,7 +286,17 @@ export function TenantsClient() {
     );
 
     async function refresh(preferredSelectedId?: string) {
-        await loadTenants(preferredSelectedId);
+        await loadTenants({ preferredSelectedId, search: appliedQuery });
+    }
+
+    function applySearch(event: FormEvent<HTMLFormElement>) {
+        event.preventDefault();
+        const nextQuery = query.trim();
+        if (nextQuery === appliedQuery) {
+            void loadTenants({ search: nextQuery });
+        } else {
+            setAppliedQuery(nextQuery);
+        }
     }
 
     async function createTenant(event: FormEvent<HTMLFormElement>) {
@@ -299,21 +320,14 @@ export function TenantsClient() {
             return;
         }
 
-        const credits = toNumber(createForm.usageCredits);
-        if (!Number.isInteger(credits)) {
-            setError('Usage credits must be an integer.');
-            return;
-        }
-
-        const payload = {
+        const payload = buildTenantCreatePayload({
             name,
             slug: createForm.slug.trim() || undefined,
             planTier: createForm.planTier,
             status: createForm.status,
-            usageCredits: credits,
             ownerName,
             ownerEmail,
-        };
+        });
 
         setSaving('create');
         try {
@@ -349,12 +363,6 @@ export function TenantsClient() {
             return;
         }
 
-        const credits = toNumber(editForm.usageCredits);
-        if (!Number.isInteger(credits)) {
-            setError('Usage credits must be an integer.');
-            return;
-        }
-
         setSaving(`update:${selectedTenant.id}`);
         try {
             await writeJson<{ id: string; updated: boolean }>(
@@ -363,7 +371,6 @@ export function TenantsClient() {
                 buildTenantEditPayload({
                     name,
                     slug: editForm.slug.trim(),
-                    usageCredits: credits,
                 }),
             );
             setNotice(`${selectedTenant.name} updated.`);
@@ -477,26 +484,32 @@ export function TenantsClient() {
             <section className="surface-card" style={{ padding: '1rem' }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', gap: '0.85rem', alignItems: 'flex-start', flexWrap: 'wrap' }}>
                     <div>
-                        <div className="workspace-kicker" style={{ color: '#cb3653' }}>
+                        <div className="workspace-kicker" style={{ color: '#b4233f' }}>
                             Organization control
                         </div>
                         <h1 className="workspace-title" style={{ fontSize: '1.6rem', marginBottom: 2 }}>
                             Tenants
                         </h1>
                         <p className="workspace-subtitle">
-                            Live tenant management through the admin API · {loading ? 'Loading...' : `${tenants.length} organizations synced`}
+                            Live tenant management through the admin API - {loading ? 'Loading...' : tenants.length + ' organizations loaded' + (pagination.hasMore ? ' - more available' : '')}
                         </p>
                     </div>
 
-                    <label className="form-group" style={{ minWidth: 280, flex: '1 1 320px' }}>
-                        <span className="form-label">Search</span>
-                        <input
-                            className="form-input"
-                            value={query}
-                            onChange={(event) => setQuery(event.target.value)}
-                            placeholder="Filter by name, slug, plan, or status"
-                        />
-                    </label>
+                    <form onSubmit={applySearch} style={{ minWidth: 280, flex: '1 1 360px', display: 'flex', gap: '0.45rem', alignItems: 'flex-end' }}>
+                        <label className="form-group" style={{ flex: 1 }}>
+                            <span className="form-label">Search</span>
+                            <input
+                                className="form-input"
+                                value={query}
+                                onChange={(event) => setQuery(event.target.value)}
+                                placeholder="Search by tenant name or slug"
+                                maxLength={100}
+                            />
+                        </label>
+                        <button className="btn btn-sm btn-secondary" type="submit" disabled={saving === 'load'}>
+                            Search
+                        </button>
+                    </form>
                 </div>
             </section>
 
@@ -522,7 +535,7 @@ export function TenantsClient() {
                                     {index === 0 ? '🏢' : index === 1 ? '✅' : index === 2 ? '⚠️' : '💳'}
                                 </span>
                             </div>
-                            <div style={{ fontSize: '1.9rem', fontWeight: 800, letterSpacing: '-0.03em', color: 'var(--text-primary)' }}>{item.value}</div>
+                            <div style={{ fontSize: '1.9rem', fontWeight: 800, letterSpacing: 0, color: 'var(--text-primary)' }}>{item.value}</div>
                             <div style={{ fontSize: '0.72rem', fontWeight: 700, color: palette.color }}>{item.subtitle}</div>
                         </article>
                     );
@@ -536,7 +549,7 @@ export function TenantsClient() {
                         borderRadius: 12,
                         border: '1px solid #ffd0da',
                         background: '#fff1f4',
-                        color: '#cb3653',
+                        color: '#b4233f',
                         fontWeight: 600,
                         fontSize: '0.86rem',
                     }}
@@ -552,7 +565,7 @@ export function TenantsClient() {
                         borderRadius: 12,
                         border: '1px solid #c9d9ff',
                         background: '#edf3ff',
-                        color: '#2f63ff',
+                        color: '#1d4ed8',
                         fontWeight: 600,
                         fontSize: '0.86rem',
                     }}
@@ -562,7 +575,12 @@ export function TenantsClient() {
             ) : null}
 
             <section style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1.3fr) minmax(320px, 0.7fr)', gap: '0.85rem', alignItems: 'start' }}>
-                <article className="surface-card" style={{ overflowX: 'auto' }}>
+                <article
+                    className="surface-card"
+                    aria-label="Tenant directory table"
+                    tabIndex={0}
+                    style={{ overflowX: 'auto' }}
+                >
                     <div style={{ padding: '0.95rem 1rem 0.55rem', display: 'flex', justifyContent: 'space-between', gap: '0.75rem', alignItems: 'center', flexWrap: 'wrap' }}>
                         <div>
                             <h2 style={{ fontSize: '0.98rem', fontWeight: 760, color: 'var(--text-primary)' }}>Tenant Directory</h2>
@@ -612,7 +630,7 @@ export function TenantsClient() {
                             </tr>
                         </thead>
                         <tbody>
-                            {filteredTenants.map((tenant, index) => {
+                            {tenants.map((tenant, index) => {
                                 const isSelected = tenant.id === selectedTenantId;
                                 const isArchived = Boolean(tenant.deletedAt) || tenant.status === 'CANCELLED' || tenant.status === 'PURGED';
                                 const statusLabel = isArchived ? 'ARCHIVED' : tenant.status;
@@ -623,7 +641,7 @@ export function TenantsClient() {
                                     <tr
                                         key={tenant.id}
                                         style={{
-                                            borderBottom: index < filteredTenants.length - 1 ? '1px solid var(--border)' : 'none',
+                                            borderBottom: index < tenants.length - 1 ? '1px solid var(--border)' : 'none',
                                             background: isSelected ? '#f8faff' : 'transparent',
                                         }}
                                     >
@@ -655,7 +673,7 @@ export function TenantsClient() {
                                         </td>
                                         <td style={{ padding: '0.9rem 1rem' }}>
                                             <div style={{ display: 'inline-flex', alignItems: 'baseline', gap: '0.35rem' }}>
-                                                <span style={{ fontSize: '0.88rem', color: '#cc7f06', fontWeight: 800 }}>{tenant.usageCredits.toLocaleString()}</span>
+                                                <span style={{ fontSize: '0.88rem', color: '#7c4a03', fontWeight: 800 }}>{tenant.usageCredits.toLocaleString()}</span>
                                                 <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>credits</span>
                                             </div>
                                         </td>
@@ -728,7 +746,7 @@ export function TenantsClient() {
                                 );
                             })}
 
-                            {!loading && filteredTenants.length === 0 ? (
+                            {!loading && tenants.length === 0 ? (
                                 <tr>
                                     <td colSpan={7} style={{ padding: '1rem', fontSize: '0.84rem', color: 'var(--text-muted)' }}>
                                         No tenants match the current filter.
@@ -737,6 +755,22 @@ export function TenantsClient() {
                             ) : null}
                         </tbody>
                     </table>
+                    {pagination.hasMore ? (
+                        <div style={{ padding: '0.8rem 1rem', borderTop: '1px solid var(--border)', display: 'flex', justifyContent: 'center' }}>
+                            <button
+                                className="btn btn-sm btn-secondary"
+                                type="button"
+                                disabled={saving === 'load-more' || !pagination.nextCursor}
+                                onClick={() => void loadTenants({
+                                    cursor: pagination.nextCursor,
+                                    append: true,
+                                    search: appliedQuery,
+                                })}
+                            >
+                                {saving === 'load-more' ? 'Loading...' : 'Load more tenants'}
+                            </button>
+                        </div>
+                    ) : null}
                 </article>
 
                 <div style={{ display: 'grid', gap: '0.85rem' }}>
@@ -746,7 +780,7 @@ export function TenantsClient() {
                                 <h2 style={{ fontSize: '0.98rem', fontWeight: 760, color: 'var(--text-primary)' }}>Create tenant</h2>
                                 <div style={{ fontSize: '0.76rem', color: 'var(--text-muted)', marginTop: 2 }}>Provision a new organization directly from the admin API.</div>
                             </div>
-                            <span className="badge" style={badgeStyle('#2f63ff', '#edf3ff', '#c9d9ff')}>
+                            <span className="badge" style={badgeStyle('#1d4ed8', '#edf3ff', '#c9d9ff')}>
                                 POST /admin/tenants
                             </span>
                         </div>
@@ -839,17 +873,13 @@ export function TenantsClient() {
                                 {tenantProvisioningDescription(createForm.planTier)}
                             </div>
 
-                            <label className="form-group">
-                                <span className="form-label">Usage credits</span>
-                                <input
-                                    className="form-input"
-                                    type="number"
-                                    value={createForm.usageCredits}
-                                    onChange={(event) => setCreateForm((current) => ({ ...current, usageCredits: event.target.value }))}
-                                    min={0}
-                                    step={1}
-                                />
-                            </label>
+                            <div
+                                id="tenant-create-credit-note"
+                                className="surface-muted"
+                                style={{ padding: '0.55rem 0.65rem', fontSize: '0.75rem', color: 'var(--text-muted)' }}
+                            >
+                                {TENANT_CREATE_CREDIT_GUIDANCE}
+                            </div>
 
                             <button className="btn" type="submit" disabled={saving === 'create'}>
                                 {saving === 'create' ? 'Creating...' : 'Create Tenant'}
@@ -866,7 +896,7 @@ export function TenantsClient() {
                                 </div>
                             </div>
                             {tenantToEdit ? (
-                                <span className="badge" style={badgeStyle('#cb3653', '#ffeef2', '#ffd0da')}>
+                                <span className="badge" style={badgeStyle('#b4233f', '#ffeef2', '#ffd0da')}>
                                     {tenantToEdit.deletedAt ? 'Archived' : tenantToEdit.status}
                                 </span>
                             ) : null}
@@ -919,17 +949,30 @@ export function TenantsClient() {
                                     <div id="tenant-status-lifecycle-note">{TENANT_STATUS_EDIT_GUIDANCE}</div>
                                 </div>
 
-                                <label className="form-group">
-                                    <span className="form-label">Usage credits</span>
-                                    <input
-                                        className="form-input"
-                                        type="number"
-                                        value={editForm.usageCredits}
-                                        onChange={(event) => setEditForm((current) => ({ ...current, usageCredits: event.target.value }))}
-                                        min={0}
-                                        step={1}
-                                    />
-                                </label>
+                                <div
+                                    className="surface-muted"
+                                    style={{ padding: '0.7rem 0.75rem', display: 'grid', gap: '0.55rem' }}
+                                >
+                                    <div style={{ display: 'flex', gap: '0.65rem', alignItems: 'flex-end', flexWrap: 'wrap' }}>
+                                        <div className="form-group" style={{ flex: '1 1 12rem' }}>
+                                            <span className="form-label">Wallet balance</span>
+                                            <output
+                                                className="form-input"
+                                                aria-describedby="tenant-credit-management-note"
+                                            >
+                                                {tenantToEdit.usageCredits.toLocaleString()} credits
+                                            </output>
+                                        </div>
+                                        <Link
+                                            className="btn btn-sm btn-secondary"
+                                            href="/admin/credits"
+                                            style={{ alignSelf: 'flex-end' }}
+                                        >
+                                            Open Admin Credits
+                                        </Link>
+                                    </div>
+                                    <div id="tenant-credit-management-note">{TENANT_CREDIT_EDIT_GUIDANCE}</div>
+                                </div>
 
                                 <div
                                     className="surface-muted"

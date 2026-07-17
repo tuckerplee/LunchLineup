@@ -58,7 +58,7 @@ variable "proxmox_cloud_init" {
 }
 
 variable "proxmox_vms" {
-  description = "Exact app and data VM definitions supplied by the estate owner."
+  description = "Exact VM217 app definition supplied by the estate owner. Compose on this VM is the current production data-plane owner."
   type = map(object({
     node_name      = string
     vm_id          = number
@@ -67,34 +67,30 @@ variable "proxmox_vms" {
     cores          = number
     memory_mb      = number
     boot_disk_gb   = number
-    data_disk_gb   = number
     boot_datastore = string
-    data_datastore = string
   }))
 
   validation {
     condition = (
-      toset(keys(var.proxmox_vms)) == toset(["app", "data"]) &&
+      toset(keys(var.proxmox_vms)) == toset(["app"]) &&
       alltrue([
-        for role, target in var.proxmox_vms :
+        for target in values(var.proxmox_vms) :
         trimspace(target.node_name) != "" &&
-        target.vm_id >= 100 &&
+        target.vm_id == 217 &&
         can(regex("^[a-z0-9][a-z0-9-]*[a-z0-9]$", target.name)) &&
         can(cidrhost(target.ipv4_cidr, 0)) &&
         target.cores >= 2 &&
         target.memory_mb >= 2048 &&
         target.boot_disk_gb >= 16 &&
-        target.data_disk_gb >= (role == "data" ? 16 : 0) &&
-        trimspace(target.boot_datastore) != "" &&
-        trimspace(target.data_datastore) != ""
+        trimspace(target.boot_datastore) != ""
       ])
     )
-    error_message = "proxmox_vms must contain exact app/data definitions and minimum resource bounds."
+    error_message = "proxmox_vms must contain only the exact production app definition with VM ID 217 and minimum resource bounds."
   }
 }
 
 variable "proxmox_network" {
-  description = "Private VLAN, gateway, and source boundaries for the production VMs."
+  description = "Private VLAN, gateway, and source boundaries for the production VM217 host."
   type = object({
     bridge             = string
     vlan_id            = number

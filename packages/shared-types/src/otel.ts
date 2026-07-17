@@ -22,7 +22,7 @@ export function initOTEL(serviceName: string) {
     process.on('SIGTERM', () => {
         sdk.shutdown()
             .then(() => console.log('Tracing terminated'))
-            .catch((error) => console.log('Error terminating tracing', error))
+            .catch(() => console.error('Tracing shutdown failed category=unknown'))
             .finally(() => process.exit(0));
     });
 }

@@ -2,19 +2,60 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { ConflictException, ForbiddenException } from '@nestjs/common';
 import { ShiftsController } from './shifts.controller';
 import { TenantPrismaService } from '../database/tenant-prisma.service';
+import { decodeBoundedListCursor } from '../common/bounded-pagination';
+import { shiftUpdateRequestHash } from './shift-update-idempotency';
 
 describe('ShiftsController', () => {
     let controller: ShiftsController;
     let prisma: any;
     let featureAccessService: any;
     let activeLocation: { id: string; timezone: string } | null;
+    let lockedBreaks: Array<{ id: string; startTime: Date; endTime: Date }>;
+
+    function createShift(body: any, req: any, idempotencyKey = 'shift-create-test-key') {
+        return controller.create(body, req, idempotencyKey);
+    }
+
+    function bulkAssign(body: any, req: any, idempotencyKey = 'shift-bulk-test-key') {
+        return controller.bulkAssign(body, req, idempotencyKey);
+    }
+
+    function updateShift(id: string, body: any, req: any, idempotencyKey = 'shift-update-test-key') {
+        return controller.update(id, body, req, idempotencyKey);
+    }
+
+    function bulkTarget(overrides: Record<string, unknown> = {}) {
+        return {
+            id: 'shift-1',
+            scheduleId: 'schedule-1',
+            locationId: 'loc-1',
+            userId: null,
+            startTime: new Date('2026-03-10T17:00:00.000Z'),
+            endTime: new Date('2026-03-10T21:00:00.000Z'),
+            schedule: { status: 'DRAFT' },
+            ...overrides,
+        };
+    }
 
     beforeEach(() => {
         featureAccessService = {
-            assertFeatureEnabled: vi.fn().mockResolvedValue(undefined),
+            lockTenantInTransaction: vi.fn().mockResolvedValue(undefined),
+            assertFeatureEntitledInTransaction: vi.fn().mockResolvedValue({
+                enabled: true,
+                source: 'credits',
+                creditCost: 1,
+            }),
+            assertFeatureEnabledInTransaction: vi.fn().mockResolvedValue({
+                enabled: true,
+                source: 'credits',
+                creditCost: 1,
+            }),
+            recordFeatureUsageInTransaction: vi.fn().mockResolvedValue({ consumedCredits: 1, newBalance: 9 }),
         };
         activeLocation = { id: 'loc-1', timezone: 'America/New_York' };
+        lockedBreaks = [];
         prisma = {
+            $executeRaw: vi.fn().mockResolvedValue(1),
             $queryRaw: vi.fn(async (query: any) => {
                 const sql = Array.isArray(query) ? query.join(' ') : String(query);
                 if (sql.includes('FROM "Location"') && sql.includes('FOR UPDATE')) {
@@ -23,6 +64,7 @@ describe('ShiftsController', () => {
                 if (sql.includes('FROM "Schedule"') && sql.includes('FOR UPDATE')) {
                     return [{ id: 'schedule-1', status: 'DRAFT' }];
                 }
+                if (sql.includes('FROM "Break"') && sql.includes('FOR UPDATE')) return lockedBreaks;
                 return [{ set_current_tenant: null }];
             }),
             user: {
@@ -39,8 +81,16 @@ describe('ShiftsController', () => {
                 findMany: vi.fn(),
                 count: vi.fn(),
             },
+            break: {
+                updateMany: vi.fn().mockResolvedValue({ count: 1 }),
+            },
             schedule: {
                 findFirst: vi.fn(),
+                create: vi.fn(),
+                updateMany: vi.fn().mockResolvedValue({ count: 1 }),
+            },
+            auditLog: {
+                findFirst: vi.fn().mockResolvedValue(null),
                 create: vi.fn(),
             },
             $transaction: vi.fn(async (callback: (txClient: any) => Promise<unknown>) => callback(prisma)),
@@ -59,47 +109,69 @@ describe('ShiftsController', () => {
             endDate: new Date('2026-03-11T04:00:00.000Z'),
         });
         prisma.shift.count.mockResolvedValue(0);
+        prisma.shift.updateMany.mockResolvedValue({ count: 1 });
     });
 
-    it('blocks shift creation when scheduling is not entitled', async () => {
-        featureAccessService.assertFeatureEnabled.mockRejectedValue(new ForbiddenException('Upgrade plan or add credits to enable'));
-
-        await expect(controller.create(
-            {
+    it.each([
+        {
+            name: 'shift creation',
+            transactions: 3,
+            mutate: () => createShift({
                 locationId: 'loc-1',
                 userId: 'user-1',
                 startTime: '2026-03-10T17:00:00.000Z',
                 endTime: '2026-03-10T21:00:00.000Z',
+            }, { user: { tenantId: 'tenant-1' } }),
+        },
+        {
+            name: 'shift update',
+            transactions: 3,
+            mutate: () => {
+                prisma.shift.findFirst.mockResolvedValue({
+                    id: 'shift-1',
+                    scheduleId: 'schedule-1',
+                    locationId: 'loc-1',
+                    userId: 'user-1',
+                    role: 'STAFF',
+                    startTime: new Date('2026-03-10T17:00:00.000Z'),
+                    endTime: new Date('2026-03-10T21:00:00.000Z'),
+                    schedule: {
+                        status: 'DRAFT',
+                        startDate: new Date('2026-03-10T04:00:00.000Z'),
+                        endDate: new Date('2026-03-11T04:00:00.000Z'),
+                    },
+                });
+                return updateShift('shift-1', { endTime: '2026-03-10T22:00:00.000Z' }, { user: { tenantId: 'tenant-1' } });
             },
-            { user: { tenantId: 'tenant-1' } },
-        )).rejects.toBeInstanceOf(ForbiddenException);
+        },
+        {
+            name: 'bulk assignment',
+            transactions: 3,
+            mutate: () => {
+                prisma.shift.findMany.mockResolvedValue([bulkTarget()]);
+                return bulkAssign(
+                    { assignments: [{ shiftId: 'shift-1', userId: 'user-1' }] },
+                    { user: { tenantId: 'tenant-1' } },
+                );
+            },
+        },
+    ])('denies $name from inside its write transaction when entitlement changes', async ({ mutate, transactions }) => {
+        featureAccessService.assertFeatureEnabledInTransaction.mockRejectedValue(
+            new ForbiddenException('Subscription inactive or credits exhausted'),
+        );
 
-        expect(featureAccessService.assertFeatureEnabled).toHaveBeenCalledWith('tenant-1', 'scheduling');
-        expect(prisma.$transaction).not.toHaveBeenCalled();
+        await expect(mutate()).rejects.toBeInstanceOf(ForbiddenException);
+
+        expect(featureAccessService.assertFeatureEnabledInTransaction).toHaveBeenCalledWith(
+            prisma,
+            'tenant-1',
+            'scheduling',
+        );
+        expect(prisma.$transaction).toHaveBeenCalledTimes(transactions);
         expect(prisma.shift.create).not.toHaveBeenCalled();
-    });
-
-    it('blocks shift updates, deletes, and bulk assignment when scheduling is not entitled', async () => {
-        featureAccessService.assertFeatureEnabled.mockRejectedValue(new ForbiddenException('Upgrade plan or add credits to enable'));
-
-        await expect(controller.update(
-            'shift-1',
-            { endTime: '2026-03-10T22:00:00.000Z' },
-            { user: { tenantId: 'tenant-1' } },
-        )).rejects.toBeInstanceOf(ForbiddenException);
-        await expect(controller.remove('shift-1', { user: { tenantId: 'tenant-1' } }))
-            .rejects
-            .toBeInstanceOf(ForbiddenException);
-        await expect(controller.bulkAssign(
-            { assignments: [{ shiftId: 'shift-1', userId: 'user-1' }] },
-            { user: { tenantId: 'tenant-1' } },
-        )).rejects.toBeInstanceOf(ForbiddenException);
-
-        expect(featureAccessService.assertFeatureEnabled).toHaveBeenCalledTimes(3);
-        expect(prisma.$transaction).not.toHaveBeenCalled();
         expect(prisma.shift.updateMany).not.toHaveBeenCalled();
+        expect(prisma.auditLog.create).not.toHaveBeenCalled();
     });
-
     it('creates an assigned draft shift without sending an assignment notification', async () => {
         prisma.shift.create.mockResolvedValue({
             id: 'shift-1',
@@ -108,7 +180,7 @@ describe('ShiftsController', () => {
             endTime: new Date('2026-03-10T21:00:00.000Z'),
         });
 
-        await controller.create(
+        await createShift(
             {
                 locationId: 'loc-1',
                 userId: 'user-1',
@@ -131,13 +203,156 @@ describe('ShiftsController', () => {
         ));
         expect(locationLockCall).toBeDefined();
         expect(Array.from(locationLockCall[0]).join(' ')).toContain('FOR UPDATE');
+        const schedulingLockCall = prisma.$executeRaw.mock.calls.findIndex((call: any[]) => (
+            Array.from(call[0] as ArrayLike<unknown>).join(' ').includes('pg_advisory_xact_lock')
+        ));
+        expect(schedulingLockCall).toBeGreaterThanOrEqual(0);
+        expect(featureAccessService.lockTenantInTransaction.mock.invocationCallOrder[0]).toBeLessThan(
+            prisma.$executeRaw.mock.invocationCallOrder[schedulingLockCall],
+        );
         expect(prisma.$queryRaw.mock.invocationCallOrder[1]).toBeLessThan(prisma.shift.create.mock.invocationCallOrder[0]);
+        expect(prisma.schedule.updateMany).toHaveBeenCalledWith({
+            where: {
+                tenantId: 'tenant-1',
+                id: { in: ['schedule-1'] },
+                status: 'DRAFT',
+                deletedAt: null,
+            },
+            data: { revision: { increment: 1 } },
+        });
+    });
+
+    it('requires an idempotency key before entitlement or tenant database work', async () => {
+        await expect(controller.create(
+            {
+                locationId: 'loc-1',
+                startTime: '2026-03-10T17:00:00.000Z',
+                endTime: '2026-03-10T21:00:00.000Z',
+            },
+            { user: { tenantId: 'tenant-1' } },
+            undefined,
+        )).rejects.toThrow('Idempotency-Key header is required');
+
+        expect(featureAccessService.assertFeatureEnabledInTransaction).not.toHaveBeenCalled();
+        expect(prisma.$transaction).not.toHaveBeenCalled();
+        expect(prisma.shift.create).not.toHaveBeenCalled();
+    });
+
+    it('replays an unassigned shift create without inserting a duplicate', async () => {
+        const createdShift = {
+            id: 'shift-unassigned-1',
+            tenantId: 'tenant-1',
+            locationId: 'loc-1',
+            scheduleId: 'schedule-1',
+            userId: null,
+            role: 'CASHIER',
+            startTime: new Date('2026-03-10T17:00:00.000Z'),
+            endTime: new Date('2026-03-10T21:00:00.000Z'),
+        };
+        prisma.shift.create.mockResolvedValue(createdShift);
+        const body = {
+            locationId: 'loc-1',
+            startTime: '2026-03-10T17:00:00.000Z',
+            endTime: '2026-03-10T21:00:00.000Z',
+            role: 'CASHIER',
+        };
+        const req = { user: { tenantId: 'tenant-1', sub: 'manager-1' } };
+
+        const first = await createShift(body, req, 'unassigned-attempt-1');
+        const storedOutcome = prisma.auditLog.create.mock.calls[0][0].data.newValue;
+        prisma.auditLog.findFirst.mockResolvedValue({ newValue: storedOutcome });
+        featureAccessService.assertFeatureEnabledInTransaction.mockRejectedValue(new ForbiddenException('Subscription inactive'));
+
+        const replay = await createShift(body, req, 'unassigned-attempt-1');
+
+        expect(replay).toEqual(first);
+        expect(prisma.shift.create).toHaveBeenCalledOnce();
+        expect(prisma.schedule.updateMany).toHaveBeenCalledOnce();
+        expect(prisma.auditLog.create).toHaveBeenCalledOnce();
+        expect(featureAccessService.assertFeatureEnabledInTransaction).toHaveBeenCalledOnce();
+        expect(prisma.auditLog.create).toHaveBeenCalledWith({
+            data: expect.objectContaining({
+                tenantId: 'tenant-1',
+                resource: 'ShiftCreationRequest',
+                resourceId: expect.stringMatching(/^[a-f0-9]{64}$/),
+                newValue: expect.objectContaining({
+                    requestHash: expect.stringMatching(/^[a-f0-9]{64}$/),
+                    response: expect.objectContaining({ id: 'shift-unassigned-1' }),
+                }),
+            }),
+        });
+        expect(prisma.auditLog.create.mock.calls[0][0].data.resourceId).not.toContain('unassigned-attempt-1');
+    });
+
+    it('charges the authoritative positive scheduling cost once for a created shift', async () => {
+        const entitlement = { enabled: true, source: 'credits', creditCost: 3 };
+        featureAccessService.assertFeatureEnabledInTransaction.mockResolvedValue(entitlement);
+        prisma.shift.create.mockResolvedValue({ id: 'shift-billed-1' });
+
+        await createShift(
+            {
+                locationId: 'loc-1',
+                startTime: '2026-03-10T17:00:00.000Z',
+                endTime: '2026-03-10T21:00:00.000Z',
+            },
+            { user: { tenantId: 'tenant-1' } },
+            'shift-credit-cost-3',
+        );
+
+        expect(featureAccessService.recordFeatureUsageInTransaction).toHaveBeenCalledOnce();
+        expect(featureAccessService.recordFeatureUsageInTransaction).toHaveBeenCalledWith(
+            prisma,
+            'tenant-1',
+            entitlement,
+            expect.stringMatching(/^Manual shift creation \([a-f0-9]{64}\)$/),
+            expect.stringMatching(/^[a-f0-9]{64}$/),
+        );
+        expect(prisma.auditLog.create).toHaveBeenCalledOnce();
+    });
+    it('rejects reuse of a shift creation key with a different payload', async () => {
+        prisma.auditLog.findFirst.mockResolvedValue({
+            newValue: {
+                requestHash: 'different-request-hash',
+                response: { id: 'shift-unassigned-1' },
+            },
+        });
+
+        await expect(createShift(
+            {
+                locationId: 'loc-1',
+                startTime: '2026-03-10T17:00:00.000Z',
+                endTime: '2026-03-10T21:00:00.000Z',
+            },
+            { user: { tenantId: 'tenant-1' } },
+            'reused-key',
+        )).rejects.toThrow('different shift creation request');
+
+        expect(featureAccessService.assertFeatureEnabledInTransaction).not.toHaveBeenCalled();
+        expect(prisma.shift.create).not.toHaveBeenCalled();
+    });
+
+    it('allows intentional identical unassigned shifts when each request has a distinct key', async () => {
+        prisma.shift.create
+            .mockResolvedValueOnce({ id: 'shift-unassigned-1' })
+            .mockResolvedValueOnce({ id: 'shift-unassigned-2' });
+        const body = {
+            locationId: 'loc-1',
+            startTime: '2026-03-10T17:00:00.000Z',
+            endTime: '2026-03-10T21:00:00.000Z',
+        };
+        const req = { user: { tenantId: 'tenant-1' } };
+
+        await createShift(body, req, 'headcount-slot-1');
+        await createShift(body, req, 'headcount-slot-2');
+
+        expect(prisma.shift.create).toHaveBeenCalledTimes(2);
+        expect(prisma.auditLog.create).toHaveBeenCalledTimes(2);
     });
 
     it('does not create after a concurrent location deletion wins the row lock', async () => {
         activeLocation = null;
 
-        await expect(controller.create(
+        await expect(createShift(
             {
                 locationId: 'loc-1',
                 userId: 'user-1',
@@ -166,7 +381,7 @@ describe('ShiftsController', () => {
             endTime: new Date('2026-03-10T21:00:00.000Z'),
         });
 
-        await controller.create(
+        await createShift(
             {
                 locationId: 'loc-1',
                 scheduleId: 'schedule-2',
@@ -191,7 +406,7 @@ describe('ShiftsController', () => {
     it('rejects an explicit soft-deleted schedule before creating a shift', async () => {
         prisma.schedule.findFirst.mockResolvedValue(null);
 
-        await expect(controller.create(
+        await expect(createShift(
             {
                 locationId: 'loc-1',
                 scheduleId: 'schedule-deleted',
@@ -210,7 +425,7 @@ describe('ShiftsController', () => {
     it('rejects an explicit schedule from another location', async () => {
         prisma.schedule.findFirst.mockResolvedValue({ id: 'schedule-2', locationId: 'loc-2', status: 'DRAFT' });
 
-        await expect(controller.create(
+        await expect(createShift(
             {
                 locationId: 'loc-1',
                 scheduleId: 'schedule-2',
@@ -226,7 +441,7 @@ describe('ShiftsController', () => {
     it('rejects an explicit schedule that has already been published', async () => {
         prisma.schedule.findFirst.mockResolvedValue({ id: 'schedule-2', locationId: 'loc-1', status: 'PUBLISHED' });
 
-        await expect(controller.create(
+        await expect(createShift(
             {
                 locationId: 'loc-1',
                 scheduleId: 'schedule-2',
@@ -248,7 +463,7 @@ describe('ShiftsController', () => {
             endDate: new Date('2026-03-09T07:00:00.000Z'),
         });
 
-        await expect(controller.create(
+        await expect(createShift(
             {
                 locationId: 'loc-1',
                 scheduleId: 'schedule-dst',
@@ -261,7 +476,9 @@ describe('ShiftsController', () => {
         expect(prisma.shift.create).not.toHaveBeenCalled();
     });
 
-    it('updates an assigned draft shift without sending a change notification', async () => {
+    it('updates an assigned draft shift and charges one operation', async () => {
+        const entitlement = { enabled: true, source: 'credits', creditCost: 4 };
+        featureAccessService.assertFeatureEnabledInTransaction.mockResolvedValue(entitlement);
         prisma.shift.findFirst
             .mockResolvedValueOnce({
                 id: 'shift-1',
@@ -281,13 +498,357 @@ describe('ShiftsController', () => {
             });
         prisma.shift.updateMany.mockResolvedValue({ count: 1 });
 
-        await controller.update(
+        await updateShift(
             'shift-1',
             { startTime: '2026-03-10T18:00:00.000Z', endTime: '2026-03-10T22:00:00.000Z' },
             { user: { tenantId: 'tenant-1' } },
         );
 
+        expect(prisma.shift.findFirst).toHaveBeenNthCalledWith(1, expect.objectContaining({
+            where: { id: 'shift-1', tenantId: 'tenant-1', deletedAt: null },
+        }));
+        expect(prisma.shift.updateMany).toHaveBeenCalledWith(expect.objectContaining({
+            where: { id: 'shift-1', tenantId: 'tenant-1', deletedAt: null },
+        }));
+        expect(featureAccessService.recordFeatureUsageInTransaction).toHaveBeenCalledWith(
+            prisma,
+            'tenant-1',
+            entitlement,
+            expect.stringMatching(/^Manual shift update \([a-f0-9]{64}\)$/),
+            expect.stringMatching(/^[a-f0-9]{64}$/),
+        );
+    });
+
+    it('requires an idempotency key before starting a shift update transaction', async () => {
+        await expect(controller.update(
+            'shift-1',
+            { endTime: '2026-03-10T22:00:00.000Z' },
+            { user: { tenantId: 'tenant-1' } },
+            undefined,
+        )).rejects.toThrow('Idempotency-Key header is required for shift updates');
+
+        expect(prisma.$transaction).not.toHaveBeenCalled();
+        expect(featureAccessService.assertFeatureEnabledInTransaction).not.toHaveBeenCalled();
+        expect(featureAccessService.recordFeatureUsageInTransaction).not.toHaveBeenCalled();
+    });
+
+    it('returns the current shift for a fresh semantic no-op without entitlement, debit, writes, or audit', async () => {
+        const existing = {
+            id: 'shift-1',
+            scheduleId: 'schedule-1',
+            locationId: 'loc-1',
+            userId: 'user-1',
+            role: 'STAFF',
+            startTime: new Date('2026-03-10T17:00:00.000Z'),
+            endTime: new Date('2026-03-10T21:00:00.000Z'),
+            schedule: {
+                id: 'schedule-1',
+                locationId: 'loc-1',
+                status: 'DRAFT',
+                startDate: new Date('2026-03-10T04:00:00.000Z'),
+                endDate: new Date('2026-03-11T04:00:00.000Z'),
+            },
+            breaks: [{
+                id: 'break-1',
+                startTime: new Date('2026-03-10T18:00:00.000Z'),
+                endTime: new Date('2026-03-10T18:30:00.000Z'),
+            }],
+        };
+        prisma.shift.findFirst.mockResolvedValue(existing);
+        const body = {
+            userId: 'user-1',
+            startTime: '2026-03-10T17:00:00.000Z',
+            endTime: '2026-03-10T21:00:00.000Z',
+            role: 'STAFF',
+        };
+        const req = { user: { tenantId: 'tenant-1' } };
+
+        const first = await updateShift('shift-1', body, req, 'fresh-no-op-key');
+        const retry = await updateShift('shift-1', body, req, 'fresh-no-op-key');
+
+        expect(first).toEqual(JSON.parse(JSON.stringify(existing)));
+        expect(retry).toEqual(first);
+        expect(featureAccessService.assertFeatureEnabledInTransaction).not.toHaveBeenCalled();
+        expect(featureAccessService.recordFeatureUsageInTransaction).not.toHaveBeenCalled();
+        expect(prisma.shift.updateMany).not.toHaveBeenCalled();
+        expect(prisma.break.updateMany).not.toHaveBeenCalled();
+        expect(prisma.auditLog.create).not.toHaveBeenCalled();
+        expect(prisma.schedule.updateMany).not.toHaveBeenCalled();
+    });
+
+    it('durably replays a shift update after entitlement loss without charging twice', async () => {
+        const existing = {
+            id: 'shift-1',
+            scheduleId: 'schedule-1',
+            locationId: 'loc-1',
+            userId: 'user-1',
+            role: 'STAFF',
+            startTime: new Date('2026-03-10T17:00:00.000Z'),
+            endTime: new Date('2026-03-10T21:00:00.000Z'),
+            schedule: {
+                id: 'schedule-1',
+                locationId: 'loc-1',
+                status: 'DRAFT',
+                startDate: new Date('2026-03-10T04:00:00.000Z'),
+                endDate: new Date('2026-03-11T04:00:00.000Z'),
+            },
+        };
+        const updated = { ...existing, endTime: new Date('2026-03-10T22:00:00.000Z'), breaks: [] };
+        lockedBreaks = [{ id: 'break-1', startTime: new Date('2026-03-10T18:00:00.000Z'), endTime: new Date('2026-03-10T18:30:00.000Z') }];
+        prisma.shift.findFirst.mockResolvedValueOnce(existing).mockResolvedValueOnce(updated);
+        const body = { endTime: '2026-03-10T22:00:00.000Z' };
+        const req = { user: { tenantId: 'tenant-1', sub: 'manager-1' } };
+
+        const first = await updateShift('shift-1', body, req, 'shift-update-replay-1');
+        const storedOutcome = prisma.auditLog.create.mock.calls[0][0].data.newValue;
+        prisma.auditLog.findFirst.mockResolvedValue({ newValue: storedOutcome });
+        featureAccessService.assertFeatureEnabledInTransaction.mockRejectedValue(new ForbiddenException('Subscription inactive'));
+
+        const replay = await updateShift('shift-1', body, req, 'shift-update-replay-1');
+
+        expect(replay).toEqual(first);
+        expect(featureAccessService.recordFeatureUsageInTransaction).toHaveBeenCalledOnce();
         expect(prisma.shift.updateMany).toHaveBeenCalledOnce();
+        expect(prisma.break.updateMany).toHaveBeenCalledOnce();
+        expect(prisma.schedule.updateMany).toHaveBeenCalledOnce();
+        expect(prisma.auditLog.create).toHaveBeenCalledOnce();
+    });
+
+    it('recovers the committed shift result after a lost transaction response without charging twice', async () => {
+        const existing = {
+            id: 'shift-1', scheduleId: 'schedule-1', locationId: 'loc-1', userId: 'user-1', role: 'STAFF',
+            startTime: new Date('2026-03-10T17:00:00.000Z'), endTime: new Date('2026-03-10T21:00:00.000Z'),
+            schedule: { status: 'DRAFT', startDate: new Date('2026-03-10T04:00:00.000Z'), endDate: new Date('2026-03-11T04:00:00.000Z') },
+        };
+        const updated = { ...existing, startTime: new Date('2026-03-10T18:00:00.000Z'), endTime: new Date('2026-03-10T22:00:00.000Z'), breaks: [] };
+        lockedBreaks = [{ id: 'break-1', startTime: new Date('2026-03-10T18:00:00.000Z'), endTime: new Date('2026-03-10T18:30:00.000Z') }];
+        prisma.shift.findFirst.mockResolvedValueOnce(existing).mockResolvedValueOnce(updated);
+        let transactionCount = 0;
+        prisma.$transaction.mockImplementation(async (callback: (txClient: any) => Promise<unknown>) => {
+            const result = await callback(prisma);
+            transactionCount += 1;
+            if (transactionCount === 2) {
+                prisma.auditLog.findFirst.mockResolvedValue({
+                    newValue: prisma.auditLog.create.mock.calls[0][0].data.newValue,
+                });
+                throw new Error('Committed transaction response was lost');
+            }
+            return result;
+        });
+
+        const result = await updateShift(
+            'shift-1',
+            { startTime: '2026-03-10T18:00:00.000Z', endTime: '2026-03-10T22:00:00.000Z' },
+            { user: { tenantId: 'tenant-1' } },
+            'shift-update-lost-response-1',
+        );
+
+        expect(result).toEqual(JSON.parse(JSON.stringify(updated)));
+        expect(featureAccessService.recordFeatureUsageInTransaction).toHaveBeenCalledOnce();
+        expect(prisma.shift.updateMany).toHaveBeenCalledOnce();
+        expect(prisma.break.updateMany).toHaveBeenCalledOnce();
+        expect(prisma.auditLog.create).toHaveBeenCalledOnce();
+    });
+
+    it.each([
+        ['same-duration move', { startTime: '2026-03-10T18:00:00.000Z', endTime: '2026-03-10T22:00:00.000Z' }, '2026-03-10T19:00:00.000Z'],
+        ['safe resize', { endTime: '2026-03-10T20:00:00.000Z' }, '2026-03-10T18:00:00.000Z'],
+    ])('translates dependent breaks for a %s', async (_name, body, expectedBreakStart) => {
+        const existing = {
+            id: 'shift-1', scheduleId: 'schedule-1', locationId: 'loc-1', userId: 'user-1', role: 'STAFF',
+            startTime: new Date('2026-03-10T17:00:00.000Z'), endTime: new Date('2026-03-10T21:00:00.000Z'),
+            schedule: { status: 'DRAFT', startDate: new Date('2026-03-10T04:00:00.000Z'), endDate: new Date('2026-03-11T04:00:00.000Z') },
+        };
+        lockedBreaks = [{ id: 'break-1', startTime: new Date('2026-03-10T18:00:00.000Z'), endTime: new Date('2026-03-10T18:30:00.000Z') }];
+        prisma.shift.findFirst.mockResolvedValueOnce(existing).mockResolvedValueOnce({ ...existing, ...body, breaks: [] });
+
+        await updateShift('shift-1', body, { user: { tenantId: 'tenant-1' } }, `translate-${_name}`);
+
+        expect(prisma.break.updateMany).toHaveBeenCalledWith(expect.objectContaining({
+            data: expect.objectContaining({ startTime: new Date(expectedBreakStart) }),
+        }));
+        expect(featureAccessService.recordFeatureUsageInTransaction).toHaveBeenCalledOnce();
+    });
+
+    it('rejects an unsafe resize before debit or mutation', async () => {
+        prisma.shift.findFirst.mockResolvedValue({
+            id: 'shift-1', scheduleId: 'schedule-1', locationId: 'loc-1', userId: 'user-1', role: 'STAFF',
+            startTime: new Date('2026-03-10T17:00:00.000Z'), endTime: new Date('2026-03-10T21:00:00.000Z'),
+            schedule: { status: 'DRAFT', startDate: new Date('2026-03-10T04:00:00.000Z'), endDate: new Date('2026-03-11T04:00:00.000Z') },
+        });
+        lockedBreaks = [{ id: 'break-1', startTime: new Date('2026-03-10T20:00:00.000Z'), endTime: new Date('2026-03-10T20:30:00.000Z') }];
+        await expect(updateShift('shift-1', { endTime: '2026-03-10T20:15:00.000Z' }, { user: { tenantId: 'tenant-1' } }, 'unsafe-resize'))
+            .rejects.toThrow('Move the breaks first');
+        expect(featureAccessService.recordFeatureUsageInTransaction).not.toHaveBeenCalled();
+        expect(prisma.shift.updateMany).not.toHaveBeenCalled();
+        expect(prisma.break.updateMany).not.toHaveBeenCalled();
+    });
+
+    it('rejects shift update request drift without charging', async () => {
+        prisma.auditLog.findFirst.mockResolvedValue({
+            newValue: {
+                requestHash: 'different-request-hash',
+                response: { id: 'shift-1' },
+            },
+        });
+
+        await expect(updateShift(
+            'shift-1',
+            { endTime: '2026-03-10T22:00:00.000Z' },
+            { user: { tenantId: 'tenant-1' } },
+            'shift-update-drift-1',
+        )).rejects.toThrow('different shift update request');
+
+        expect(featureAccessService.recordFeatureUsageInTransaction).not.toHaveBeenCalled();
+        expect(prisma.shift.updateMany).not.toHaveBeenCalled();
+    });
+
+    it('uses the post-lock replay from a concurrent winner before charging', async () => {
+        const requestHash = shiftUpdateRequestHash({
+            shiftId: 'shift-1',
+            endTime: '2026-03-10T22:00:00.000Z',
+        });
+        const response = { id: 'shift-1', endTime: '2026-03-10T22:00:00.000Z' };
+        prisma.auditLog.findFirst
+            .mockResolvedValueOnce(null)
+            .mockResolvedValueOnce(null)
+            .mockResolvedValueOnce({ newValue: { requestHash, response } });
+
+        const result = await updateShift(
+            'shift-1',
+            { endTime: '2026-03-10T22:00:00.000Z' },
+            { user: { tenantId: 'tenant-1' } },
+            'shift-update-concurrent-1',
+        );
+
+        expect(result).toEqual(response);
+        expect(featureAccessService.assertFeatureEnabledInTransaction).not.toHaveBeenCalled();
+        expect(featureAccessService.recordFeatureUsageInTransaction).not.toHaveBeenCalled();
+        expect(prisma.shift.updateMany).not.toHaveBeenCalled();
+    });
+
+    it('rolls billing back with the shift update when the guarded write fails', async () => {
+        let balance = 1;
+        prisma.$transaction.mockImplementation(async (callback: (txClient: any) => Promise<unknown>) => {
+            const startingBalance = balance;
+            try {
+                return await callback(prisma);
+            } catch (error) {
+                balance = startingBalance;
+                throw error;
+            }
+        });
+        featureAccessService.recordFeatureUsageInTransaction.mockImplementation(async () => {
+            balance -= 1;
+            return { consumedCredits: 1, newBalance: balance };
+        });
+        prisma.shift.findFirst.mockResolvedValue({
+            id: 'shift-1',
+            scheduleId: 'schedule-1',
+            locationId: 'loc-1',
+            userId: 'user-1',
+            role: 'STAFF',
+            startTime: new Date('2026-03-10T17:00:00.000Z'),
+            endTime: new Date('2026-03-10T21:00:00.000Z'),
+            schedule: {
+                status: 'DRAFT',
+                startDate: new Date('2026-03-10T04:00:00.000Z'),
+                endDate: new Date('2026-03-11T04:00:00.000Z'),
+            },
+        });
+        prisma.shift.updateMany.mockResolvedValue({ count: 0 });
+
+        await expect(updateShift(
+            'shift-1',
+            { endTime: '2026-03-10T22:00:00.000Z' },
+            { user: { tenantId: 'tenant-1' } },
+            'shift-update-rollback-1',
+        )).rejects.toThrow('Shift not found');
+
+        expect(balance).toBe(1);
+        expect(featureAccessService.recordFeatureUsageInTransaction).toHaveBeenCalledOnce();
+        expect(prisma.auditLog.create).not.toHaveBeenCalled();
+    });
+
+    it('rolls the debit and shift move back when a locked break write misses', async () => {
+        let balance = 2;
+        let persistedShiftStart = new Date('2026-03-10T17:00:00.000Z');
+        const persistedBreakStart = new Date('2026-03-10T18:00:00.000Z');
+        prisma.$transaction.mockImplementation(async (callback: (txClient: any) => Promise<unknown>) => {
+            const startingBalance = balance;
+            const startingShiftStart = persistedShiftStart;
+            try {
+                return await callback(prisma);
+            } catch (error) {
+                balance = startingBalance;
+                persistedShiftStart = startingShiftStart;
+                throw error;
+            }
+        });
+        featureAccessService.recordFeatureUsageInTransaction.mockImplementation(async () => {
+            balance -= 1;
+            return { consumedCredits: 1, newBalance: balance };
+        });
+        prisma.shift.findFirst.mockResolvedValue({
+            id: 'shift-1', scheduleId: 'schedule-1', locationId: 'loc-1', userId: 'user-1', role: 'STAFF',
+            startTime: persistedShiftStart, endTime: new Date('2026-03-10T21:00:00.000Z'),
+            schedule: { status: 'DRAFT', startDate: new Date('2026-03-10T04:00:00.000Z'), endDate: new Date('2026-03-11T04:00:00.000Z') },
+        });
+        lockedBreaks = [{ id: 'break-1', startTime: persistedBreakStart, endTime: new Date('2026-03-10T18:30:00.000Z') }];
+        prisma.shift.updateMany.mockImplementation(async ({ data }: any) => {
+            persistedShiftStart = data.startTime;
+            return { count: 1 };
+        });
+        prisma.break.updateMany.mockResolvedValue({ count: 0 });
+
+        const error = await updateShift(
+            'shift-1',
+            { startTime: '2026-03-10T18:00:00.000Z', endTime: '2026-03-10T22:00:00.000Z' },
+            { user: { tenantId: 'tenant-1' } },
+            'shift-update-break-miss-1',
+        ).catch((caught) => caught);
+
+        expect(error).toBeInstanceOf(ConflictException);
+        expect(error.getStatus()).toBe(409);
+        expect(balance).toBe(2);
+        expect(persistedShiftStart).toEqual(new Date('2026-03-10T17:00:00.000Z'));
+        expect(persistedBreakStart).toEqual(new Date('2026-03-10T18:00:00.000Z'));
+        expect(prisma.auditLog.create).not.toHaveBeenCalled();
+    });
+
+    it('lets a zero-credit active paid tenant delete a draft shift as a non-billable correction', async () => {
+        prisma.shift.findFirst.mockResolvedValue({
+            id: 'shift-1',
+            scheduleId: 'schedule-1',
+            schedule: { status: 'DRAFT' },
+        });
+        featureAccessService.assertFeatureEnabledInTransaction.mockRejectedValue(
+            new ForbiddenException('Positive wallet required'),
+        );
+
+        await controller.remove('shift-1', { user: { tenantId: 'tenant-1' } });
+
+        expect(prisma.shift.updateMany).toHaveBeenCalledWith({
+            where: { id: 'shift-1', tenantId: 'tenant-1', deletedAt: null },
+            data: { deletedAt: expect.any(Date) },
+        });
+        expect(prisma.schedule.updateMany).toHaveBeenCalledWith({
+            where: {
+                tenantId: 'tenant-1',
+                id: { in: ['schedule-1'] },
+                status: 'DRAFT',
+                deletedAt: null,
+            },
+            data: { revision: { increment: 1 } },
+        });
+        expect(featureAccessService.assertFeatureEntitledInTransaction).toHaveBeenCalledWith(
+            prisma,
+            'tenant-1',
+            'scheduling',
+        );
+        expect(featureAccessService.assertFeatureEnabledInTransaction).not.toHaveBeenCalled();
+        expect(featureAccessService.recordFeatureUsageInTransaction).not.toHaveBeenCalled();
+        expect(prisma.auditLog.create).not.toHaveBeenCalled();
     });
 
     it('reuses a containing weekly draft for an overnight shift when scheduleId is omitted', async () => {
@@ -308,7 +869,7 @@ describe('ShiftsController', () => {
             endTime: new Date('2026-03-11T06:00:00.000Z'),
         });
 
-        await controller.create(
+        await createShift(
             {
                 locationId: 'loc-1',
                 startTime: '2026-03-11T02:00:00.000Z',
@@ -347,7 +908,7 @@ describe('ShiftsController', () => {
             endTime: new Date('2026-03-11T06:00:00.000Z'),
         });
 
-        await controller.create(
+        await createShift(
             {
                 locationId: 'loc-1',
                 startTime: '2026-03-11T02:00:00.000Z',
@@ -400,7 +961,7 @@ describe('ShiftsController', () => {
             .mockResolvedValueOnce(null)
             .mockResolvedValueOnce({ id: 'schedule-day', status: 'DRAFT' });
 
-        await expect(controller.create(
+        await expect(createShift(
             {
                 locationId: 'loc-1',
                 startTime: '2026-03-11T02:00:00.000Z',
@@ -418,7 +979,7 @@ describe('ShiftsController', () => {
             .mockResolvedValueOnce(null)
             .mockResolvedValueOnce({ id: 'schedule-published', status: 'PUBLISHED' });
 
-        await expect(controller.create(
+        await expect(createShift(
             {
                 locationId: 'loc-1',
                 startTime: '2026-03-10T17:00:00.000Z',
@@ -432,7 +993,7 @@ describe('ShiftsController', () => {
     });
 
     it('rejects ambiguous shift dates before tenant database work', async () => {
-        await expect(controller.create(
+        await expect(createShift(
             {
                 locationId: 'loc-1',
                 userId: 'user-1',
@@ -447,7 +1008,7 @@ describe('ShiftsController', () => {
     });
 
     it('rejects invalid calendar shift dates before tenant database work', async () => {
-        await expect(controller.create(
+        await expect(createShift(
             {
                 locationId: 'loc-1',
                 userId: 'user-1',
@@ -462,7 +1023,7 @@ describe('ShiftsController', () => {
     });
 
     it('rejects created shifts whose end time is not after start time', async () => {
-        await expect(controller.create(
+        await expect(createShift(
             {
                 locationId: 'loc-1',
                 userId: 'user-1',
@@ -478,7 +1039,7 @@ describe('ShiftsController', () => {
     it('rejects created assigned shifts that overlap an existing shift for the user', async () => {
         prisma.shift.count.mockResolvedValue(1);
 
-        await expect(controller.create(
+        await expect(createShift(
             {
                 locationId: 'loc-1',
                 userId: 'user-1',
@@ -500,7 +1061,7 @@ describe('ShiftsController', () => {
             endTime: new Date('2026-03-10T21:00:00.000Z'),
         });
 
-        await expect(controller.update(
+        await expect(updateShift(
             'shift-1',
             { endTime: '2026-03-10T16:00:00.000Z' },
             { user: { tenantId: 'tenant-1' } },
@@ -519,13 +1080,21 @@ describe('ShiftsController', () => {
         });
         prisma.shift.count.mockResolvedValue(1);
 
-        await expect(controller.update(
+        const error = await updateShift(
             'shift-1',
             { startTime: '2026-03-10T18:00:00.000Z', endTime: '2026-03-10T22:00:00.000Z' },
             { user: { tenantId: 'tenant-1' } },
-        )).rejects.toThrow('User already has a shift that overlaps this time window.');
+        ).catch((caught) => caught);
 
+        expect(error).toBeInstanceOf(ConflictException);
+        expect(error.getStatus()).toBe(409);
+        expect(error.message).toContain('User already has a shift that overlaps this time window.');
+        expect(featureAccessService.assertFeatureEnabledInTransaction).not.toHaveBeenCalled();
+        expect(featureAccessService.recordFeatureUsageInTransaction).not.toHaveBeenCalled();
         expect(prisma.shift.updateMany).not.toHaveBeenCalled();
+        expect(prisma.break.updateMany).not.toHaveBeenCalled();
+        expect(prisma.auditLog.create).not.toHaveBeenCalled();
+        expect(prisma.schedule.updateMany).not.toHaveBeenCalled();
     });
 
     it('rejects moving a shift past its stored schedule end', async () => {
@@ -545,7 +1114,7 @@ describe('ShiftsController', () => {
             },
         });
 
-        await expect(controller.update(
+        await expect(updateShift(
             'shift-1',
             { endTime: '2026-03-11T04:00:01.000Z' },
             { user: { tenantId: 'tenant-1' } },
@@ -564,13 +1133,38 @@ describe('ShiftsController', () => {
             schedule: { status: 'PUBLISHED' },
         });
 
-        await expect(controller.update(
+        await expect(updateShift(
             'shift-1',
             { endTime: '2026-03-10T22:00:00.000Z' },
             { user: { tenantId: 'tenant-1' } },
-        )).rejects.toThrow('Published schedules are locked');
+        )).rejects.toThrow('Published or archived schedules are locked');
 
         expect(prisma.shift.updateMany).not.toHaveBeenCalled();
+    });
+
+    it('rejects updates to shifts on an archived schedule without billing or mutation', async () => {
+        prisma.shift.findFirst.mockResolvedValue({
+            id: 'shift-1',
+            scheduleId: 'schedule-1',
+            locationId: 'loc-1',
+            userId: 'user-1',
+            role: 'STAFF',
+            startTime: new Date('2026-03-10T17:00:00.000Z'),
+            endTime: new Date('2026-03-10T21:00:00.000Z'),
+            schedule: { status: 'ARCHIVED' },
+        });
+
+        await expect(updateShift(
+            'shift-1',
+            { endTime: '2026-03-10T22:00:00.000Z' },
+            { user: { tenantId: 'tenant-1' } },
+        )).rejects.toThrow('Published or archived schedules are locked');
+
+        expect(featureAccessService.assertFeatureEnabledInTransaction).not.toHaveBeenCalled();
+        expect(featureAccessService.recordFeatureUsageInTransaction).not.toHaveBeenCalled();
+        expect(prisma.shift.updateMany).not.toHaveBeenCalled();
+        expect(prisma.break.updateMany).not.toHaveBeenCalled();
+        expect(prisma.auditLog.create).not.toHaveBeenCalled();
     });
 
     it('rejects deletes from shifts on a published schedule', async () => {
@@ -593,6 +1187,7 @@ describe('ShiftsController', () => {
                 id: 'shift-1',
                 scheduleId: 'schedule-1',
                 locationId: 'loc-1',
+                userId: 'user-1',
                 startTime: new Date('2026-03-10T17:00:00.000Z'),
                 endTime: new Date('2026-03-10T21:00:00.000Z'),
             },
@@ -605,7 +1200,7 @@ describe('ShiftsController', () => {
             },
         ]);
 
-        await expect(controller.bulkAssign(
+        await expect(bulkAssign(
             {
                 assignments: [
                     { shiftId: 'shift-1', userId: 'user-1' },
@@ -629,7 +1224,7 @@ describe('ShiftsController', () => {
             schedule: { status: 'DRAFT' },
         }]);
 
-        await expect(controller.bulkAssign(
+        await expect(bulkAssign(
             { assignments: [{ shiftId: 'shift-1', userId: 'user-1' }] },
             { user: { tenantId: 'tenant-1' } },
         )).rejects.toThrow('Location is not available for this tenant.');
@@ -644,18 +1239,35 @@ describe('ShiftsController', () => {
                 id: 'shift-1',
                 scheduleId: 'schedule-1',
                 locationId: 'loc-1',
+                userId: 'user-1',
                 startTime: new Date('2026-03-10T17:00:00.000Z'),
                 endTime: new Date('2026-03-10T21:00:00.000Z'),
                 schedule: { status: 'PUBLISHED' },
             },
         ]);
 
-        await expect(controller.bulkAssign(
+        await expect(bulkAssign(
             { assignments: [{ shiftId: 'shift-1', userId: 'user-1' }] },
             { user: { tenantId: 'tenant-1' } },
         )).rejects.toThrow('Published schedules are locked');
 
+        expect(featureAccessService.assertFeatureEnabledInTransaction).not.toHaveBeenCalled();
+        expect(featureAccessService.recordFeatureUsageInTransaction).not.toHaveBeenCalled();
         expect(prisma.shift.updateMany).not.toHaveBeenCalled();
+    });
+
+    it('rejects cross-tenant bulk assignment targets before entitlement or mutation', async () => {
+        prisma.shift.findMany.mockResolvedValue([]);
+
+        await expect(bulkAssign(
+            { assignments: [{ shiftId: 'other-tenant-shift', userId: 'user-1' }] },
+            { user: { tenantId: 'tenant-1' } },
+        )).rejects.toThrow('One or more shifts are not available for this tenant.');
+
+        expect(featureAccessService.assertFeatureEnabledInTransaction).not.toHaveBeenCalled();
+        expect(featureAccessService.recordFeatureUsageInTransaction).not.toHaveBeenCalled();
+        expect(prisma.shift.updateMany).not.toHaveBeenCalled();
+        expect(prisma.auditLog.create).not.toHaveBeenCalled();
     });
 
     it('re-reads bulk assignment targets after locking when the solver replaces shifts', async () => {
@@ -670,7 +1282,7 @@ describe('ShiftsController', () => {
                 schedule: { status: 'DRAFT' },
             }]);
 
-        await expect(controller.bulkAssign(
+        await expect(bulkAssign(
             { assignments: [{ shiftId: 'shift-1', userId: 'user-1' }] },
             { user: { tenantId: 'tenant-1' } },
         )).rejects.toBeInstanceOf(ConflictException);
@@ -703,7 +1315,7 @@ describe('ShiftsController', () => {
             }]);
         prisma.shift.updateMany.mockResolvedValue({ count: 0 });
 
-        await expect(controller.bulkAssign(
+        await expect(bulkAssign(
             { assignments: [{ shiftId: 'shift-1', userId: 'user-1' }] },
             { user: { tenantId: 'tenant-1' } },
         )).rejects.toBeInstanceOf(ConflictException);
@@ -713,6 +1325,7 @@ describe('ShiftsController', () => {
                 id: 'shift-1',
                 tenantId: 'tenant-1',
                 scheduleId: 'schedule-1',
+                userId: null,
                 deletedAt: null,
             },
             data: { userId: 'user-1' },
@@ -735,12 +1348,78 @@ describe('ShiftsController', () => {
                 : [{ set_current_tenant: null }];
         });
 
-        await expect(controller.update(
+        await expect(updateShift(
             'shift-1',
             { endTime: '2026-03-10T22:00:00.000Z' },
             { user: { tenantId: 'tenant-1' } },
         )).rejects.toThrow('Published schedules are locked');
         expect(prisma.shift.updateMany).not.toHaveBeenCalled();
+    });
+
+    it('bounds overlapping shift windows and continues with an ascending keyset cursor', async () => {
+        const rows = [
+            { id: 'shift-1', startTime: new Date('2026-03-09T16:00:00.000Z') },
+            { id: 'shift-2', startTime: new Date('2026-03-09T17:00:00.000Z') },
+            { id: 'shift-3', startTime: new Date('2026-03-09T18:00:00.000Z') },
+        ];
+        prisma.shift.findMany.mockResolvedValueOnce(rows);
+
+        const firstPage = await controller.findAll(
+            { user: { tenantId: 'tenant-1', role: 'MANAGER' } },
+            'loc-1',
+            'schedule-1',
+            '2026-03-09T07:00:00.000Z',
+            '2026-03-10T07:00:00.000Z',
+            '2',
+        );
+
+        expect(prisma.shift.findMany).toHaveBeenLastCalledWith(expect.objectContaining({
+            where: expect.objectContaining({
+                tenantId: 'tenant-1',
+                locationId: 'loc-1',
+                scheduleId: 'schedule-1',
+                AND: expect.arrayContaining([
+                    { endTime: { gt: new Date('2026-03-09T07:00:00.000Z') } },
+                    { startTime: { lt: new Date('2026-03-10T07:00:00.000Z') } },
+                ]),
+            }),
+            orderBy: [{ startTime: 'asc' }, { id: 'asc' }],
+            take: 3,
+        }));
+        expect(firstPage.data.map((shift) => shift.id)).toEqual(['shift-1', 'shift-2']);
+        expect(firstPage.pagination).toEqual(expect.objectContaining({
+            limit: 2,
+            maxLimit: 200,
+            returned: 2,
+            hasMore: true,
+            nextCursor: expect.any(String),
+        }));
+        expect(decodeBoundedListCursor(firstPage.pagination.nextCursor)).toEqual({
+            timestamp: rows[1].startTime,
+            id: 'shift-2',
+        });
+
+        prisma.shift.findMany.mockResolvedValueOnce([]);
+        await controller.findAll(
+            { user: { tenantId: 'tenant-1', role: 'MANAGER' } },
+            'loc-1',
+            'schedule-1',
+            '2026-03-09T07:00:00.000Z',
+            '2026-03-10T07:00:00.000Z',
+            '2',
+            firstPage.pagination.nextCursor ?? undefined,
+        );
+        expect(prisma.shift.findMany).toHaveBeenLastCalledWith(expect.objectContaining({
+            where: expect.objectContaining({
+                AND: expect.arrayContaining([{
+                    OR: [
+                        { startTime: { gt: rows[1].startTime } },
+                        { startTime: rows[1].startTime, id: { gt: 'shift-2' } },
+                    ],
+                }]),
+            }),
+            take: 3,
+        }));
     });
 
     it('scopes staff shift list reads to their own assigned shifts', async () => {
@@ -808,21 +1487,65 @@ describe('ShiftsController', () => {
             where: {
                 tenantId: 'tenant-1',
                 deletedAt: null,
+                suspendedAt: null,
                 role: { in: ['MANAGER', 'STAFF'] },
             },
-            orderBy: { name: 'asc' },
+            orderBy: { id: 'asc' },
+            take: 101,
             select: {
                 id: true,
                 name: true,
                 role: true,
             },
         });
-        expect(result).toEqual({
-            data: [
-                { id: 'u2', name: 'Test Manager', role: 'MANAGER' },
-                { id: 'u3', name: 'Test Staff', role: 'STAFF' },
-            ],
+        expect(result.data).toEqual([
+            { id: 'u2', name: 'Test Manager', role: 'MANAGER' },
+            { id: 'u3', name: 'Test Staff', role: 'STAFF' },
+        ]);
+        expect(result.pagination).toEqual(expect.objectContaining({
+            limit: 100,
+            maxLimit: 200,
+            returned: 2,
+            hasMore: false,
+            nextCursor: null,
+        }));
+    });
+
+    it('continues bounded staff-roster pages without dropping planner users', async () => {
+        const rows = [
+            { id: 'u1', name: 'Zed', role: 'STAFF' },
+            { id: 'u2', name: 'Amy', role: 'MANAGER' },
+            { id: 'u3', name: 'Kai', role: 'STAFF' },
+        ];
+        prisma.user.findMany.mockResolvedValueOnce(rows);
+
+        const firstPage = await controller.staffRoster(
+            { user: { tenantId: 'tenant-1', role: 'MANAGER' } },
+            '2',
+        );
+
+        expect(prisma.user.findMany).toHaveBeenLastCalledWith(expect.objectContaining({
+            orderBy: { id: 'asc' },
+            take: 3,
+        }));
+        expect(firstPage.data.map((user) => user.id)).toEqual(['u1', 'u2']);
+        expect(decodeBoundedListCursor(firstPage.pagination.nextCursor)).toEqual({
+            timestamp: new Date(0),
+            id: 'u2',
         });
+
+        prisma.user.findMany.mockResolvedValueOnce([]);
+        await controller.staffRoster(
+            { user: { tenantId: 'tenant-1', role: 'MANAGER' } },
+            '2',
+            firstPage.pagination.nextCursor ?? undefined,
+        );
+        expect(prisma.user.findMany).toHaveBeenLastCalledWith(expect.objectContaining({
+            where: expect.objectContaining({
+                AND: [{ id: { gt: 'u2' } }],
+            }),
+            take: 3,
+        }));
     });
 
     it('scopes staff roster reads to the current staff member', async () => {
@@ -838,10 +1561,12 @@ describe('ShiftsController', () => {
             where: {
                 tenantId: 'tenant-1',
                 deletedAt: null,
+                suspendedAt: null,
                 role: { in: ['MANAGER', 'STAFF'] },
                 id: 'staff-1',
             },
-            orderBy: { name: 'asc' },
+            orderBy: { id: 'asc' },
+            take: 101,
             select: {
                 id: true,
                 name: true,
@@ -851,5 +1576,201 @@ describe('ShiftsController', () => {
         expect(result.data).toEqual([
             { id: 'staff-1', name: 'Test Staff', role: 'STAFF' },
         ]);
+    });
+    it('requires an idempotency key before starting a bulk assignment transaction', async () => {
+        await expect(controller.bulkAssign(
+            { assignments: [{ shiftId: 'shift-1', userId: 'user-1' }] },
+            { user: { tenantId: 'tenant-1' } },
+            undefined,
+        )).rejects.toThrow('Idempotency-Key header is required for bulk shift assignment');
+
+        expect(featureAccessService.assertFeatureEnabledInTransaction).not.toHaveBeenCalled();
+        expect(featureAccessService.recordFeatureUsageInTransaction).not.toHaveBeenCalled();
+        expect(prisma.$transaction).not.toHaveBeenCalled();
+    });
+
+    it('returns an all-no-op bulk assignment without entitlement, debit, writes, audit, or key reservation', async () => {
+        const target = bulkTarget({ userId: 'user-1' });
+        prisma.shift.findMany.mockResolvedValue([target]);
+        const body = { assignments: [{ shiftId: 'shift-1', userId: 'user-1' }] };
+        const req = { user: { tenantId: 'tenant-1', sub: 'manager-1' } };
+
+        const first = await bulkAssign(body, req, 'bulk-fresh-no-op');
+        const retry = await bulkAssign(body, req, 'bulk-fresh-no-op');
+
+        expect(first).toEqual({ updated: 0 });
+        expect(retry).toEqual(first);
+        expect(featureAccessService.assertFeatureEnabledInTransaction).not.toHaveBeenCalled();
+        expect(featureAccessService.recordFeatureUsageInTransaction).not.toHaveBeenCalled();
+        expect(prisma.shift.updateMany).not.toHaveBeenCalled();
+        expect(prisma.auditLog.create).not.toHaveBeenCalled();
+        expect(prisma.shift.findMany).toHaveBeenCalledTimes(4);
+    });
+
+    it('reuses a fresh bulk no-op key when later state makes the request distinct', async () => {
+        const target = bulkTarget({ userId: 'user-1' });
+        prisma.shift.findMany.mockResolvedValue([target]);
+        const body = { assignments: [{ shiftId: 'shift-1', userId: 'user-1' }] };
+        const req = { user: { tenantId: 'tenant-1', sub: 'manager-1' } };
+
+        const noOp = await bulkAssign(body, req, 'bulk-reusable-no-op');
+        expect(noOp).toEqual({ updated: 0 });
+        expect(prisma.auditLog.create).not.toHaveBeenCalled();
+
+        target.userId = null;
+        const applied = await bulkAssign(body, req, 'bulk-reusable-no-op');
+        const storedOutcome = prisma.auditLog.create.mock.calls[0][0].data.newValue;
+        prisma.auditLog.findFirst.mockResolvedValue({ newValue: storedOutcome });
+        const replay = await bulkAssign(body, req, 'bulk-reusable-no-op');
+
+        expect(applied).toEqual({ updated: 1 });
+        expect(replay).toEqual(applied);
+        expect(featureAccessService.recordFeatureUsageInTransaction).toHaveBeenCalledOnce();
+        expect(prisma.shift.updateMany).toHaveBeenCalledOnce();
+        expect(prisma.auditLog.create).toHaveBeenCalledOnce();
+        expect(prisma.schedule.updateMany).toHaveBeenCalledOnce();
+    });
+
+    it('charges a mixed batch once and writes only assignments changed after locking', async () => {
+        const unchanged = bulkTarget({
+            id: 'shift-unchanged',
+            userId: 'user-1',
+            endTime: new Date('2026-03-10T19:00:00.000Z'),
+        });
+        const changed = bulkTarget({
+            id: 'shift-changed',
+            userId: null,
+            startTime: new Date('2026-03-10T19:00:00.000Z'),
+        });
+        const entitlement = { enabled: true, source: 'credits', creditCost: 3 };
+        featureAccessService.assertFeatureEnabledInTransaction.mockResolvedValue(entitlement);
+        prisma.shift.findMany.mockResolvedValue([unchanged, changed]);
+
+        const response = await bulkAssign({
+            assignments: [
+                { shiftId: 'shift-unchanged', userId: 'user-1' },
+                { shiftId: 'shift-changed', userId: 'user-1' },
+            ],
+        }, { user: { tenantId: 'tenant-1', sub: 'manager-1' } }, 'bulk-mixed-cost-3');
+
+        expect(response).toEqual({ updated: 1 });
+        expect(prisma.shift.findMany).toHaveBeenNthCalledWith(2, expect.objectContaining({
+            select: expect.objectContaining({ userId: true }),
+        }));
+        expect(featureAccessService.assertFeatureEnabledInTransaction).toHaveBeenCalledOnce();
+        expect(featureAccessService.recordFeatureUsageInTransaction).toHaveBeenCalledOnce();
+        expect(featureAccessService.recordFeatureUsageInTransaction).toHaveBeenCalledWith(
+            prisma,
+            'tenant-1',
+            entitlement,
+            expect.stringMatching(/^Manual shift bulk assignment \([a-f0-9]{64}\)$/),
+            expect.stringMatching(/^[a-f0-9]{64}$/),
+        );
+        expect(prisma.shift.updateMany).toHaveBeenCalledOnce();
+        expect(prisma.shift.updateMany).toHaveBeenCalledWith({
+            where: {
+                id: 'shift-changed',
+                tenantId: 'tenant-1',
+                scheduleId: 'schedule-1',
+                userId: null,
+                deletedAt: null,
+            },
+            data: { userId: 'user-1' },
+        });
+        expect(prisma.auditLog.create).toHaveBeenCalledOnce();
+    });
+
+    it('rejects a distinct bulk assignment at zero credit without debit, write, or audit', async () => {
+        prisma.shift.findMany.mockResolvedValue([bulkTarget()]);
+        featureAccessService.assertFeatureEnabledInTransaction.mockRejectedValue(
+            new ForbiddenException('Feature requires 1 separately purchased usage credit.'),
+        );
+
+        await expect(bulkAssign(
+            { assignments: [{ shiftId: 'shift-1', userId: 'user-1' }] },
+            { user: { tenantId: 'tenant-1', sub: 'manager-1' } },
+            'bulk-zero-credit-change',
+        )).rejects.toBeInstanceOf(ForbiddenException);
+
+        expect(featureAccessService.recordFeatureUsageInTransaction).not.toHaveBeenCalled();
+        expect(prisma.shift.updateMany).not.toHaveBeenCalled();
+        expect(prisma.auditLog.create).not.toHaveBeenCalled();
+    });
+
+    it('charges and durably replays a bulk assignment without charging twice', async () => {
+        const target = {
+            id: 'shift-1',
+            scheduleId: 'schedule-1',
+            locationId: 'loc-1',
+            userId: null,
+            startTime: new Date('2026-03-10T17:00:00.000Z'),
+            endTime: new Date('2026-03-10T21:00:00.000Z'),
+            schedule: { status: 'DRAFT' },
+        };
+        const entitlement = { enabled: true, source: 'credits', creditCost: 3 };
+        featureAccessService.assertFeatureEnabledInTransaction.mockResolvedValue(entitlement);
+        prisma.shift.findMany.mockResolvedValue([target]);
+        const body = { assignments: [{ shiftId: 'shift-1', userId: 'user-1' }] };
+        const req = { user: { tenantId: 'tenant-1', sub: 'manager-1' } };
+
+        const first = await bulkAssign(body, req, 'bulk-credit-cost-3');
+        const storedOutcome = prisma.auditLog.create.mock.calls[0][0].data.newValue;
+        prisma.auditLog.findFirst.mockResolvedValue({ newValue: storedOutcome });
+
+        const replay = await bulkAssign(body, req, 'bulk-credit-cost-3');
+
+        expect(first).toEqual({ updated: 1 });
+        expect(replay).toEqual(first);
+        expect(featureAccessService.recordFeatureUsageInTransaction).toHaveBeenCalledOnce();
+        expect(featureAccessService.recordFeatureUsageInTransaction).toHaveBeenCalledWith(
+            prisma,
+            'tenant-1',
+            entitlement,
+            expect.stringMatching(/^Manual shift bulk assignment \([a-f0-9]{64}\)$/),
+            expect.stringMatching(/^[a-f0-9]{64}$/),
+        );
+        expect(prisma.shift.updateMany).toHaveBeenCalledOnce();
+        expect(prisma.schedule.updateMany).toHaveBeenCalledOnce();
+        expect(prisma.auditLog.create).toHaveBeenCalledOnce();
+    });
+
+    it('rejects bulk idempotency-key request drift without charging', async () => {
+        prisma.auditLog.findFirst.mockResolvedValue({
+            newValue: {
+                requestHash: 'different-request-hash',
+                response: { updated: 1 },
+            },
+        });
+
+        await expect(bulkAssign(
+            { assignments: [{ shiftId: 'shift-1', userId: 'user-1' }] },
+            { user: { tenantId: 'tenant-1' } },
+            'bulk-reused-key',
+        )).rejects.toThrow('different bulk shift assignment request');
+
+        expect(featureAccessService.recordFeatureUsageInTransaction).not.toHaveBeenCalled();
+        expect(prisma.shift.updateMany).not.toHaveBeenCalled();
+    });
+
+    it('does not write an audit result when a bulk assignment update fails after billing is reserved', async () => {
+        const target = {
+            id: 'shift-1',
+            scheduleId: 'schedule-1',
+            locationId: 'loc-1',
+            startTime: new Date('2026-03-10T17:00:00.000Z'),
+            endTime: new Date('2026-03-10T21:00:00.000Z'),
+            schedule: { status: 'DRAFT' },
+        };
+        prisma.shift.findMany.mockResolvedValue([target]);
+        prisma.shift.updateMany.mockResolvedValue({ count: 0 });
+
+        await expect(bulkAssign(
+            { assignments: [{ shiftId: 'shift-1', userId: 'user-1' }] },
+            { user: { tenantId: 'tenant-1' } },
+            'bulk-guarded-update-failure',
+        )).rejects.toBeInstanceOf(ConflictException);
+
+        expect(featureAccessService.recordFeatureUsageInTransaction).toHaveBeenCalledOnce();
+        expect(prisma.auditLog.create).not.toHaveBeenCalled();
     });
 });

@@ -264,9 +264,13 @@ test('disposable VM107 restore is documented and tied to GitHub deploy proof', (
   assert.match(script, /DEPLOYED_GIT_SHA/);
   assert.match(script, /BACKUP_FILE/);
   assert.match(script, /dev\.lunchlineup\.com/);
+  assert.match(script, /current production VM217/);
+  assert.match(script, /VM106 identifies.*historical legacy PHP source/s);
   assert.match(runbook, /15 minutes/i);
   assert.match(runbook, /GitHub/i);
   assert.match(runbook, /DEPLOYED_GIT_SHA/);
+  assert.match(runbook, /current production VM217/);
+  assert.match(runbook, /VM106 is the historical legacy PHP source identity/);
   assert.match(runbooksReadme, /disposable-dev-server\.md/);
   assert.match(scriptsReadme, /bootstrap-vm107-dev\.sh/);
 });

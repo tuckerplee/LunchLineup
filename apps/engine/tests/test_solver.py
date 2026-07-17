@@ -625,6 +625,107 @@ class TestConstraintSolver:
             for assignment in result["assignments"]
         )
 
+    def test_touching_availability_windows_cover_one_continuous_demand_window(self):
+        result = self.solver.solve(
+            staff_ids=["alice"],
+            start_date="2026-03-09T00:00:00Z",
+            end_date="2026-03-10T00:00:00Z",
+            constraints={
+                "availability": {
+                    "alice": [
+                        {"day_of_week": "monday", "start_time": "09:00", "end_time": "12:00"},
+                        {"day_of_week": "monday", "start_time": "12:00", "end_time": "17:00"},
+                    ],
+                },
+                "break_rules": {
+                    "min_shift_for_break": 24,
+                    "min_shift_for_second_break": 24,
+                },
+                "demand_windows": [{
+                    "start_time": "2026-03-09T09:00:00Z",
+                    "end_time": "2026-03-09T17:00:00Z",
+                    "required_staff": 1,
+                }],
+            },
+        )
+
+        assert result["feasible"] is True
+        assert result["assignments"] == [{
+            "staff_id": "alice",
+            "date": "2026-03-09",
+            "start_time": "2026-03-09T09:00:00+00:00",
+            "end_time": "2026-03-09T17:00:00+00:00",
+            "role": "STAFF",
+            "breaks": [],
+        }]
+
+    def test_gap_between_availability_windows_rejects_continuous_demand(self):
+        result = self.solver.solve(
+            staff_ids=["alice"],
+            start_date="2026-03-09T00:00:00Z",
+            end_date="2026-03-10T00:00:00Z",
+            constraints={
+                "availability": {
+                    "alice": [
+                        {"day_of_week": "monday", "start_time": "09:00", "end_time": "12:00"},
+                        {"day_of_week": "monday", "start_time": "12:01", "end_time": "17:00"},
+                    ],
+                },
+                "break_rules": {
+                    "min_shift_for_break": 24,
+                    "min_shift_for_second_break": 24,
+                },
+                "demand_windows": [{
+                    "start_time": "2026-03-09T09:00:00Z",
+                    "end_time": "2026-03-09T17:00:00Z",
+                    "required_staff": 1,
+                }],
+            },
+        )
+
+        assert result["feasible"] is False
+        assert result["assignments"] == []
+
+    def test_break_crossing_skill_boundary_stays_inside_one_shift_fragment(self):
+        result = self.solver.solve(
+            staff_ids=["alice", "bob"],
+            start_date="2026-03-09T00:00:00Z",
+            end_date="2026-03-10T00:00:00Z",
+            constraints={
+                "staff_skills": {
+                    "alice": ["cashier"],
+                    "bob": ["cashier"],
+                },
+                "demand_windows": [
+                    {
+                        "start_time": "2026-03-09T09:00:00Z",
+                        "end_time": "2026-03-09T17:00:00Z",
+                        "required_staff": 1,
+                    },
+                    {
+                        "start_time": "2026-03-09T13:15:00Z",
+                        "end_time": "2026-03-09T14:00:00Z",
+                        "required_staff": 1,
+                        "skill": "cashier",
+                    },
+                ],
+            },
+        )
+
+        assert result["feasible"] is True
+        assert any(
+            assignment["staff_id"] == "alice"
+            and assignment["start_time"] == "2026-03-09T09:00:00+00:00"
+            and assignment["end_time"] == "2026-03-09T14:00:00+00:00"
+            for assignment in result["assignments"]
+        )
+        for assignment in result["assignments"]:
+            shift_start = datetime.fromisoformat(assignment["start_time"])
+            shift_end = datetime.fromisoformat(assignment["end_time"])
+            for item in assignment["breaks"]:
+                assert shift_start <= datetime.fromisoformat(item["start_time"])
+
+
     def test_demand_window_is_infeasible_when_only_worker_must_take_a_break(self):
         result = self.solver.solve(
             staff_ids=["alice"],

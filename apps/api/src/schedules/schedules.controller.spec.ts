@@ -5,6 +5,20 @@ import { SchedulesController } from "./schedules.controller";
 import { NotificationType } from "../notifications/notifications.service";
 import { TenantPrismaService } from "../database/tenant-prisma.service";
 import { autoScheduleRequestHash } from "./auto-schedule-idempotency";
+import { schedulePublishOperationId, schedulePublishRequestHash } from "./schedule-publish-idempotency";
+import { decodeBoundedListCursor } from "../common/bounded-pagination";
+
+const publishBody = (overrides: Record<string, number> = {}) => ({
+  acceptedContract: {
+    version: 0,
+    totalConfiguredCost: 1,
+    scheduleCost: 1,
+    matchingWebhookDeliveryCount: 0,
+    matchingWebhookDeliveryUnitCost: 0,
+    matchingWebhookDeliveryCost: 0,
+    ...overrides,
+  },
+});
 
 describe("SchedulesController", () => {
   let controller: SchedulesController;
@@ -20,18 +34,30 @@ describe("SchedulesController", () => {
   let persistedDraftShiftRows: any[];
   let persistedExistingShiftRows: any[];
   let persistedSolveJobRows: any[];
+  let persistedSolveDebitRows: any[];
   let lockedScheduleStatus: string | null;
+  let lockedScheduleRevision: number;
   let activeLocation: { id: string; timezone: string } | null;
   let autoDemandFallbackEnabled: boolean;
 
   beforeEach(() => {
     notificationsService = {
+      enqueueInTransaction: vi.fn().mockResolvedValue(undefined),
+      deliverPendingNow: vi.fn().mockResolvedValue({
+        status: "DELIVERED",
+        delivered: 2,
+        pending: 0,
+        failed: 0,
+      }),
       send: vi.fn().mockResolvedValue({ id: "notification-1" }),
       sendMany: vi.fn().mockResolvedValue([]),
     };
     featureAccessService = {
       assertFeatureEnabled: vi.fn().mockResolvedValue(undefined),
       assertFeatureEnabledInTransaction: vi.fn().mockResolvedValue({ enabled: true, source: "credits", creditCost: 1, reason: "Billable" }),
+      assertFeatureEntitledInTransaction: vi.fn().mockResolvedValue({ enabled: true, source: "credits", creditCost: 1, reason: "Billable" }),
+      lockTenantInTransaction: vi.fn().mockResolvedValue(undefined),
+      recordFeatureUsageInTransaction: vi.fn().mockResolvedValue({ consumedCredits: 1, newBalance: 0 }),
       resolveTenantFeatures: vi.fn().mockResolvedValue({
         usageCredits: 1,
         features: {
@@ -43,15 +69,26 @@ describe("SchedulesController", () => {
           },
         },
       }),
-      consumeCreditsForFeature: vi
-        .fn()
-        .mockResolvedValue({ consumedCredits: 1, newBalance: 0 }),
     };
     meteringService = {
       grantCredits: vi.fn().mockResolvedValue(1),
     };
     webhooksService = {
-      enqueueEventInTransaction: vi.fn().mockResolvedValue(0),
+      preflightEventInTransaction: vi.fn().mockResolvedValue({
+        tenantId: "tenant-1",
+        eventType: "schedule.published",
+        matchingDeliveryCount: 0,
+        unitCost: 0,
+        totalConfiguredCost: 0,
+        entitlement: null,
+        endpoints: [],
+      }),
+      enqueueEventInTransaction: vi.fn().mockResolvedValue({
+        matchingDeliveryCount: 0,
+        unitCost: 0,
+        totalConfiguredCost: 0,
+        deliveries: [],
+      }),
     };
     persistedAvailabilityRows = [];
     persistedSkillRows = [];
@@ -59,7 +96,9 @@ describe("SchedulesController", () => {
     persistedDraftShiftRows = [];
     persistedExistingShiftRows = [];
     persistedSolveJobRows = [];
+    persistedSolveDebitRows = [];
     lockedScheduleStatus = "DRAFT";
+    lockedScheduleRevision = 0;
     activeLocation = { id: "loc-1", timezone: "America/Los_Angeles" };
     autoDemandFallbackEnabled = true;
     tx = {
@@ -74,6 +113,7 @@ describe("SchedulesController", () => {
                 {
                   id: "sch-1",
                   status: lockedScheduleStatus,
+                  revision: lockedScheduleRevision,
                   locationId: "loc-1",
                   timezone: "America/Los_Angeles",
                   startDate: new Date("2026-03-10T07:00:00.000Z"),
@@ -91,6 +131,9 @@ describe("SchedulesController", () => {
                   ),
               )
             : persistedSolveJobRows;
+        }
+        if (sql.includes('FROM "CreditTransaction"') && sql.includes("FOR UPDATE")) {
+          return persistedSolveDebitRows;
         }
         if (
           sql.includes('UPDATE "Tenant"') &&
@@ -159,6 +202,16 @@ describe("SchedulesController", () => {
       creditTransaction: {
         create: vi.fn().mockResolvedValue({ id: "credit-1" }),
       },
+      tenant: {
+        findUniqueOrThrow: vi.fn().mockResolvedValue({ usageCredits: 1 }),
+      },
+      webhookEndpoint: {
+        findMany: vi.fn().mockResolvedValue([]),
+      },
+      auditLog: {
+        findFirst: vi.fn().mockResolvedValue(null),
+        create: vi.fn().mockResolvedValue({ id: "audit-1" }),
+      },
     };
     prisma = {
       schedule: {
@@ -209,47 +262,73 @@ describe("SchedulesController", () => {
     expect(stop).toHaveBeenCalledOnce();
   });
 
-  it("blocks schedule creation when scheduling is not entitled", async () => {
-    featureAccessService.assertFeatureEnabled.mockRejectedValue(
-      new ForbiddenException("Upgrade plan or add credits to enable"),
-    );
+  it.each([
+    {
+      name: "schedule creation",
+      mutate: () => controller.create({
+        locationId: "loc-1",
+        startDate: "2026-03-10T00:00:00.000Z",
+        endDate: "2026-03-17T00:00:00.000Z",
+      }, { user: { tenantId: "tenant-1" } }),
+    },
+    {
+      name: "demand-window replacement",
+      mutate: () => controller.replaceDemandWindows("sch-1", { windows: [] }, { user: { tenantId: "tenant-1" } }),
+    },
+    {
+      name: "schedule deletion",
+      mutate: () => controller.remove("sch-1", { user: { tenantId: "tenant-1" } }),
+    },
+    {
+      name: "schedule publication",
+      mutate: () => controller.publish("sch-1", { user: { tenantId: "tenant-1" } }, "schedule-publish-test", publishBody()),
+    },
+    {
+      name: "schedule reopen",
+      mutate: () => controller.reopen("sch-1", { user: { tenantId: "tenant-1" } }),
+    },
+  ])("denies $name from inside its write transaction when entitlement changes", async ({ name, mutate }) => {
+    const rejection = new ForbiddenException("Subscription inactive or credits exhausted");
+    featureAccessService.assertFeatureEnabledInTransaction.mockRejectedValue(rejection);
+    featureAccessService.assertFeatureEntitledInTransaction.mockRejectedValue(rejection);
 
-    await expect(
-      controller.create(
-        {
-          locationId: "loc-1",
-          startDate: "2026-03-10T00:00:00.000Z",
-          endDate: "2026-03-17T00:00:00.000Z",
-        },
-        { user: { tenantId: "tenant-1" } },
-      ),
-    ).rejects.toBeInstanceOf(ForbiddenException);
+    await expect(mutate()).rejects.toBeInstanceOf(ForbiddenException);
 
-    expect(featureAccessService.assertFeatureEnabled).toHaveBeenCalledWith(
+    expect(featureAccessService.assertFeatureEntitledInTransaction).toHaveBeenCalledWith(
+      tx,
       "tenant-1",
       "scheduling",
     );
-    expect(prisma.$transaction).not.toHaveBeenCalled();
+    expect(featureAccessService.assertFeatureEnabled).not.toHaveBeenCalled();
+    expect(prisma.$transaction).toHaveBeenCalledTimes(name === "schedule publication" ? 2 : 1);
     expect(tx.schedule.create).not.toHaveBeenCalled();
+    expect(tx.schedule.updateMany).not.toHaveBeenCalled();
+    expect(tx.schedule.deleteMany).not.toHaveBeenCalled();
+    expect(tx.scheduleDemandWindow.deleteMany).not.toHaveBeenCalled();
+    expect(notificationsService.enqueueInTransaction).not.toHaveBeenCalled();
   });
 
-  it("blocks schedule deletion and publish when scheduling is not entitled", async () => {
-    featureAccessService.assertFeatureEnabled.mockRejectedValue(
-      new ForbiddenException("Upgrade plan or add credits to enable"),
+  it("allows a zero-credit paid tenant to reopen a schedule without ledger mutation", async () => {
+    lockedScheduleStatus = "PUBLISHED";
+    tx.schedule.updateMany.mockResolvedValue({ count: 1 });
+    featureAccessService.assertFeatureEnabledInTransaction.mockRejectedValue(
+      new ForbiddenException("Insufficient usage credits balance."),
     );
 
-    await expect(
-      controller.remove("sch-1", { user: { tenantId: "tenant-1" } }),
-    ).rejects.toBeInstanceOf(ForbiddenException);
-    await expect(
-      controller.publish("sch-1", { user: { tenantId: "tenant-1" } }),
-    ).rejects.toBeInstanceOf(ForbiddenException);
+    await expect(controller.reopen(
+      "sch-1",
+      { user: { tenantId: "tenant-1" } },
+    )).resolves.toEqual({ id: "sch-1", status: "DRAFT", publishedAt: null });
 
-    expect(featureAccessService.assertFeatureEnabled).toHaveBeenCalledTimes(2);
-    expect(prisma.$transaction).not.toHaveBeenCalled();
-    expect(notificationsService.send).not.toHaveBeenCalled();
+    expect(featureAccessService.assertFeatureEntitledInTransaction).toHaveBeenCalledWith(
+      tx,
+      "tenant-1",
+      "scheduling",
+    );
+    expect(featureAccessService.assertFeatureEnabledInTransaction).not.toHaveBeenCalled();
+    expect(featureAccessService.recordFeatureUsageInTransaction).not.toHaveBeenCalled();
+    expect(tx.creditTransaction.create).not.toHaveBeenCalled();
   });
-
   it("blocks auto-schedule before queueing when scheduling is not entitled", async () => {
     featureAccessService.assertFeatureEnabledInTransaction.mockRejectedValue(
       new ForbiddenException("Upgrade plan or add credits to enable"),
@@ -273,10 +352,40 @@ describe("SchedulesController", () => {
       "scheduling",
     );
     expect(prisma.$transaction).toHaveBeenCalledOnce();
+    expect(tx.schedule.findFirst).not.toHaveBeenCalled();
+    expect(tx.shift.count).not.toHaveBeenCalled();
+    expect(tx.user.findMany).not.toHaveBeenCalled();
     expect(enqueueSolveJob).not.toHaveBeenCalled();
-    expect(
-      featureAccessService.consumeCreditsForFeature,
-    ).not.toHaveBeenCalled();
+  });
+
+  it("rejects 'zero-cost credit entitlement' before creating billable auto-schedule work", async () => {
+    featureAccessService.assertFeatureEnabledInTransaction.mockResolvedValue({
+      enabled: true, source: "credits", creditCost: 0, reason: "invalid",
+    });
+    const enqueueSolveJob = vi.spyOn(controller as any, "enqueueSolveJob");
+    await expect(controller.autoSchedule(
+      "sch-1", { user: { tenantId: "tenant-1" } }, undefined, "request-zero-cost",
+    )).rejects.toThrow(
+      "Auto-scheduling requires an active paid subscription and separately purchased usage credits.",
+    );
+    expect(tx.$executeRaw).toHaveBeenCalledOnce();
+    expect(tx.creditTransaction.create).not.toHaveBeenCalled();
+    expect(enqueueSolveJob).not.toHaveBeenCalled();
+  });
+
+  it("rejects 'missing-cost credit entitlement' before creating billable auto-schedule work", async () => {
+    featureAccessService.assertFeatureEnabledInTransaction.mockResolvedValue({
+      enabled: true, source: "credits", reason: "invalid",
+    });
+    const enqueueSolveJob = vi.spyOn(controller as any, "enqueueSolveJob");
+    await expect(controller.autoSchedule(
+      "sch-1", { user: { tenantId: "tenant-1" } }, undefined, "request-missing-cost",
+    )).rejects.toThrow(
+      "Auto-scheduling requires an active paid subscription and separately purchased usage credits.",
+    );
+    expect(tx.$executeRaw).toHaveBeenCalledOnce();
+    expect(tx.creditTransaction.create).not.toHaveBeenCalled();
+    expect(enqueueSolveJob).not.toHaveBeenCalled();
   });
 
   it("scopes staff schedule list reads to schedules containing their shifts", async () => {
@@ -287,6 +396,8 @@ describe("SchedulesController", () => {
     });
 
     expect(tx.schedule.findMany).toHaveBeenCalledWith({
+      orderBy: [{ startDate: "desc" }, { id: "desc" }],
+      take: 101,
       where: {
         tenantId: "tenant-1",
         deletedAt: null,
@@ -312,11 +423,81 @@ describe("SchedulesController", () => {
     });
 
     expect(tx.schedule.findMany).toHaveBeenCalledWith({
+      orderBy: [{ startDate: "desc" }, { id: "desc" }],
+      take: 101,
       where: expect.objectContaining({
         status: "PUBLISHED",
         shifts: { some: expect.objectContaining({ userId: "staff-1" }) },
       }),
     });
+  });
+
+  it("bounds overlapping schedule windows and continues with a descending keyset cursor", async () => {
+    const rows = [
+      { id: "sch-3", startDate: new Date("2026-03-11T07:00:00.000Z") },
+      { id: "sch-2", startDate: new Date("2026-03-10T07:00:00.000Z") },
+      { id: "sch-1", startDate: new Date("2026-03-09T07:00:00.000Z") },
+    ];
+    tx.schedule.findMany.mockResolvedValueOnce(rows);
+
+    const firstPage = await controller.findAll(
+      { user: { tenantId: "tenant-1", role: "MANAGER" } },
+      {
+        locationId: "loc-1",
+        startDate: "2026-03-09T07:00:00.000Z",
+        endDate: "2026-03-17T07:00:00.000Z",
+        limit: "2",
+      },
+    );
+
+    expect(tx.schedule.findMany).toHaveBeenLastCalledWith({
+      where: {
+        tenantId: "tenant-1",
+        deletedAt: null,
+        location: { is: { deletedAt: null } },
+        locationId: "loc-1",
+        AND: [
+          { endDate: { gt: new Date("2026-03-09T07:00:00.000Z") } },
+          { startDate: { lt: new Date("2026-03-17T07:00:00.000Z") } },
+        ],
+      },
+      orderBy: [{ startDate: "desc" }, { id: "desc" }],
+      take: 3,
+    });
+    expect(firstPage.data.map((schedule: any) => schedule.id)).toEqual(["sch-3", "sch-2"]);
+    expect(firstPage.pagination).toEqual(expect.objectContaining({
+      limit: 2,
+      maxLimit: 200,
+      returned: 2,
+      hasMore: true,
+      nextCursor: expect.any(String),
+    }));
+    expect(decodeBoundedListCursor(firstPage.pagination.nextCursor)).toEqual({
+      timestamp: rows[1].startDate,
+      id: "sch-2",
+    });
+
+    tx.schedule.findMany.mockResolvedValueOnce([]);
+    await controller.findAll(
+      { user: { tenantId: "tenant-1", role: "MANAGER" } },
+      {
+        startDate: "2026-03-09T07:00:00.000Z",
+        endDate: "2026-03-17T07:00:00.000Z",
+        limit: "2",
+        cursor: firstPage.pagination.nextCursor,
+      },
+    );
+    expect(tx.schedule.findMany).toHaveBeenLastCalledWith(expect.objectContaining({
+      where: expect.objectContaining({
+        AND: expect.arrayContaining([{
+          OR: [
+            { startDate: { lt: rows[1].startDate } },
+            { startDate: rows[1].startDate, id: { lt: "sch-2" } },
+          ],
+        }]),
+      }),
+      take: 3,
+    }));
   });
 
   it("scopes staff single-schedule reads to schedules containing their shifts", async () => {
@@ -373,10 +554,10 @@ describe("SchedulesController", () => {
 
     const result = await controller.publish("sch-1", {
       user: { tenantId: "tenant-1" },
-    });
+    }, "schedule-publish-test", publishBody());
 
-    expect(prisma.$transaction).toHaveBeenCalledOnce();
-    expect(tx.$queryRaw).toHaveBeenCalledTimes(8);
+    expect(prisma.$transaction).toHaveBeenCalledTimes(2);
+    expect(tx.$queryRaw).toHaveBeenCalledTimes(6);
     expect(tx.schedule.updateMany).toHaveBeenCalledWith({
       where: {
         id: "sch-1",
@@ -386,54 +567,234 @@ describe("SchedulesController", () => {
       },
       data: { status: "PUBLISHED", publishedAt: expect.any(Date) },
     });
-    expect(notificationsService.send).toHaveBeenNthCalledWith(
-      1,
-      "tenant-1",
-      "u1",
-      NotificationType.SCHEDULE_PUBLISHED,
-      "Schedule published",
-      "Downtown Bistro: Mar 10, 2026 to Mar 16, 2026",
+    expect(notificationsService.enqueueInTransaction).toHaveBeenCalledWith(
+      tx,
+      [
+        {
+          tenantId: "tenant-1",
+          userId: "u1",
+          dedupeKey: "schedule-published:sch-1:revision-0:u1",
+          type: NotificationType.SCHEDULE_PUBLISHED,
+          title: "Schedule published",
+          body: "Downtown Bistro: Mar 10, 2026 to Mar 16, 2026",
+        },
+        {
+          tenantId: "tenant-1",
+          userId: "u2",
+          dedupeKey: "schedule-published:sch-1:revision-0:u2",
+          type: NotificationType.SCHEDULE_PUBLISHED,
+          title: "Schedule published",
+          body: "Downtown Bistro: Mar 10, 2026 to Mar 16, 2026",
+        },
+      ],
     );
-    expect(notificationsService.send).toHaveBeenNthCalledWith(
-      2,
+    expect(notificationsService.deliverPendingNow).toHaveBeenCalledWith(
       "tenant-1",
-      "u2",
-      NotificationType.SCHEDULE_PUBLISHED,
-      "Schedule published",
-      "Downtown Bistro: Mar 10, 2026 to Mar 16, 2026",
+      [
+        "schedule-published:sch-1:revision-0:u1",
+        "schedule-published:sch-1:revision-0:u2",
+      ],
     );
+    expect(notificationsService.send).not.toHaveBeenCalled();
     expect(result.status).toBe("PUBLISHED");
+    expect(result.settlement).toEqual({
+      totalConfiguredCost: 1,
+      scheduleCost: 1,
+      matchingWebhookDeliveryCount: 0,
+      matchingWebhookDeliveryUnitCost: 0,
+      matchingWebhookDeliveryCost: 0,
+      acceptedContract: publishBody().acceptedContract,
+      creditsConsumed: 1,
+      newBalance: 0,
+      ledgerIdentities: {
+        schedule: expect.stringMatching(/^feature-usage-schedule-publish:/),
+        webhookDeliveries: [],
+      },
+    });
     expect(result.notifications).toEqual({
       status: "DELIVERED",
       delivered: 2,
+      pending: 0,
       failed: 0,
     });
+  });
+
+  it("requires Idempotency-Key before opening a publish transaction", async () => {
+    await expect(
+      controller.publish("sch-1", { user: { tenantId: "tenant-1" } }, undefined, publishBody()),
+    ).rejects.toThrow("Idempotency-Key header is required");
+
+    expect(prisma.$transaction).not.toHaveBeenCalled();
+    expect(featureAccessService.assertFeatureEnabledInTransaction).not.toHaveBeenCalled();
+  });
+
+  it("binds the accepted schedule version and aggregate cost plan into the request hash", () => {
+    const original = publishBody().acceptedContract;
+    const originalHash = schedulePublishRequestHash("tenant-1", "sch-1", original);
+
+    for (const changed of [
+      { ...original, version: 1 },
+      {
+        ...original,
+        totalConfiguredCost: 2,
+        matchingWebhookDeliveryCount: 1,
+        matchingWebhookDeliveryUnitCost: 1,
+        matchingWebhookDeliveryCost: 1,
+      },
+    ]) {
+      expect(schedulePublishRequestHash("tenant-1", "sch-1", changed)).not.toBe(originalHash);
+    }
+  });
+
+  it("replays a committed schedule publish without another debit or durable enqueue", async () => {
+    persistedAvailabilityRows = [
+      { userId: "u1", dayOfWeek: 2, startTimeMinutes: 0, endTimeMinutes: 1439 },
+    ];
+    tx.schedule.updateMany.mockResolvedValue({ count: 1 });
+    tx.schedule.findFirst.mockResolvedValue({
+      id: "sch-1",
+      revision: 0,
+      startDate: new Date("2026-03-10T07:00:00.000Z"),
+      endDate: new Date("2026-03-17T07:00:00.000Z"),
+      location: { name: "Downtown Bistro", timezone: "America/Los_Angeles" },
+    });
+    tx.shift.findMany.mockResolvedValue([{
+      id: "shift-1",
+      userId: "u1",
+      startTime: new Date("2026-03-10T17:00:00.000Z"),
+      endTime: new Date("2026-03-10T21:00:00.000Z"),
+    }]);
+    const req = { user: { tenantId: "tenant-1", sub: "manager-1" } };
+    const key = "schedule-publish-retry-1";
+
+    const first = await controller.publish("sch-1", req, key, publishBody());
+    const stored = tx.auditLog.create.mock.calls[0][0].data.newValue;
+    tx.auditLog.findFirst.mockResolvedValue({ newValue: stored });
+
+    const replay = await controller.publish("sch-1", req, key, publishBody());
+
+    expect(replay).toEqual(first);
+    expect(featureAccessService.recordFeatureUsageInTransaction).toHaveBeenCalledOnce();
+    expect(webhooksService.enqueueEventInTransaction).toHaveBeenCalledOnce();
+    expect(notificationsService.enqueueInTransaction).toHaveBeenCalledOnce();
+    expect(tx.schedule.updateMany).toHaveBeenCalledOnce();
+    expect(tx.auditLog.create).toHaveBeenCalledOnce();
+    expect(tx.auditLog.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        action: "SCHEDULE_PUBLISH",
+        resource: "SchedulePublishRequest",
+        resourceId: schedulePublishOperationId("tenant-1", "sch-1", key),
+        newValue: expect.objectContaining({
+          requestHash: schedulePublishRequestHash("tenant-1", "sch-1", publishBody().acceptedContract),
+          acceptedContract: publishBody().acceptedContract,
+          response: expect.objectContaining({
+            settlement: first.settlement,
+          }),
+        }),
+      }),
+    });
+  });
+
+  it("does not enqueue webhook, notification, or audit records when the publish debit fails", async () => {
+    persistedAvailabilityRows = [
+      { userId: "u1", dayOfWeek: 2, startTimeMinutes: 0, endTimeMinutes: 1439 },
+    ];
+    tx.schedule.updateMany.mockResolvedValue({ count: 1 });
+    tx.schedule.findFirst.mockResolvedValue({
+      id: "sch-1",
+      revision: 0,
+      startDate: new Date("2026-03-10T07:00:00.000Z"),
+      endDate: new Date("2026-03-17T07:00:00.000Z"),
+      location: { name: "Downtown Bistro", timezone: "America/Los_Angeles" },
+    });
+    tx.shift.findMany.mockResolvedValue([{
+      id: "shift-1",
+      userId: "u1",
+      startTime: new Date("2026-03-10T17:00:00.000Z"),
+      endTime: new Date("2026-03-10T21:00:00.000Z"),
+    }]);
+    featureAccessService.recordFeatureUsageInTransaction.mockRejectedValue(new Error("debit failed"));
+
+    await expect(
+      controller.publish("sch-1", { user: { tenantId: "tenant-1" } }, "schedule-publish-debit-failure", publishBody()),
+    ).rejects.toThrow("debit failed");
+
+    expect(tx.schedule.updateMany).not.toHaveBeenCalled();
+    expect(webhooksService.enqueueEventInTransaction).not.toHaveBeenCalled();
+    expect(notificationsService.enqueueInTransaction).not.toHaveBeenCalled();
+    expect(tx.auditLog.create).not.toHaveBeenCalled();
+  });
+  it("uses a new notification identity when a corrected schedule is reopened and republished", async () => {
+    persistedAvailabilityRows = [
+      { userId: "u1", dayOfWeek: 2, startTimeMinutes: 0, endTimeMinutes: 1439 },
+    ];
+    tx.schedule.updateMany.mockResolvedValue({ count: 1 });
+    tx.schedule.findFirst.mockResolvedValue({
+      id: "sch-1",
+      startDate: new Date("2026-03-10T07:00:00.000Z"),
+      endDate: new Date("2026-03-17T07:00:00.000Z"),
+      location: { name: "Downtown Bistro", timezone: "America/Los_Angeles" },
+    });
+    tx.shift.findMany.mockResolvedValue([{
+      id: "shift-1",
+      userId: "u1",
+      startTime: new Date("2026-03-10T17:00:00.000Z"),
+      endTime: new Date("2026-03-10T21:00:00.000Z"),
+    }]);
+    await controller.publish("sch-1", { user: { tenantId: "tenant-1" } }, "schedule-publish-test", publishBody());
+    lockedScheduleStatus = "PUBLISHED";
+    await controller.reopen("sch-1", { user: { tenantId: "tenant-1" } });
+    lockedScheduleStatus = "DRAFT";
+    lockedScheduleRevision = 1;
+    await controller.publish("sch-1", { user: { tenantId: "tenant-1" } }, "schedule-publish-test", publishBody({ version: 1 }));
+    const publicationKeys = notificationsService.enqueueInTransaction.mock.calls
+      .map((call: any[]) => call[1][0].dedupeKey);
+    expect(publicationKeys).toEqual([
+      "schedule-published:sch-1:revision-0:u1",
+      "schedule-published:sch-1:revision-1:u1",
+    ]);
+    expect(new Set(publicationKeys).size).toBe(2);
   });
 
   it("transactionally enqueues schedule.published for entitled tenant endpoints", async () => {
     persistedAvailabilityRows = [
       { userId: "u1", dayOfWeek: 2, startTimeMinutes: 0, endTimeMinutes: 1439 },
     ];
-    featureAccessService.resolveTenantFeatures.mockResolvedValue({
-      usageCredits: 0,
-      features: {
-        scheduling: {
-          enabled: true,
-          source: "plan",
-          creditCost: 1,
-          reason: "included",
-        },
-        webhooks: {
-          enabled: true,
-          source: "plan",
-          creditCost: null,
-          reason: "included",
-        },
-      },
+    const webhookEntitlement = {
+      enabled: true,
+      source: "credits",
+      creditCost: 1,
+      reason: "Credit available",
+    };
+    const webhookCostPlan = {
+      tenantId: "tenant-1",
+      eventType: "schedule.published",
+      matchingDeliveryCount: 2,
+      unitCost: 1,
+      totalConfiguredCost: 2,
+      entitlement: webhookEntitlement,
+      endpoints: [
+        { id: "endpoint-1", url: "https://one.example.com/events" },
+        { id: "endpoint-2", url: "https://two.example.com/events" },
+      ],
+    };
+    featureAccessService.assertFeatureEntitledInTransaction.mockResolvedValue(webhookEntitlement);
+    tx.webhookEndpoint.findMany.mockResolvedValue(webhookCostPlan.endpoints);
+    webhooksService.enqueueEventInTransaction.mockResolvedValue({
+      matchingDeliveryCount: 2,
+      unitCost: 1,
+      totalConfiguredCost: 2,
+      deliveries: [
+        { deliveryId: "delivery-1", consumedCredits: 1, newBalance: 3 },
+        { deliveryId: "delivery-2", consumedCredits: 1, newBalance: 2 },
+      ],
     });
+    tx.tenant.findUniqueOrThrow.mockResolvedValue({ usageCredits: 5 });
+    featureAccessService.recordFeatureUsageInTransaction.mockResolvedValue({ consumedCredits: 1, newBalance: 4 });
     tx.schedule.updateMany.mockResolvedValue({ count: 1 });
     tx.schedule.findFirst.mockResolvedValue({
       id: "sch-1",
+      revision: 0,
       startDate: new Date("2026-03-10T07:00:00.000Z"),
       endDate: new Date("2026-03-17T07:00:00.000Z"),
       location: { name: "Downtown Bistro", timezone: "America/Los_Angeles" },
@@ -447,7 +808,30 @@ describe("SchedulesController", () => {
       },
     ]);
 
-    await controller.publish("sch-1", { user: { tenantId: "tenant-1" } });
+    const preflight = await controller.publishPreflight("sch-1", { user: { tenantId: "tenant-1" } });
+    const result = await controller.publish("sch-1", { user: { tenantId: "tenant-1" } }, "schedule-publish-test", publishBody({
+      totalConfiguredCost: 3,
+      matchingWebhookDeliveryCount: 2,
+      matchingWebhookDeliveryUnitCost: 1,
+      matchingWebhookDeliveryCost: 2,
+    }));
+
+    expect(preflight).toEqual({
+      scheduleId: "sch-1",
+      totalConfiguredCost: 3,
+      scheduleCost: 1,
+      matchingWebhookDeliveryCount: 2,
+      matchingWebhookDeliveryUnitCost: 1,
+      matchingWebhookDeliveryCost: 2,
+      acceptedContract: publishBody({
+        totalConfiguredCost: 3,
+        matchingWebhookDeliveryCount: 2,
+        matchingWebhookDeliveryUnitCost: 1,
+        matchingWebhookDeliveryCost: 2,
+      }).acceptedContract,
+      availableCredits: 5,
+      sufficientCredits: true,
+    });
 
     expect(webhooksService.enqueueEventInTransaction).toHaveBeenCalledWith(
       tx,
@@ -461,7 +845,153 @@ describe("SchedulesController", () => {
           assignedShiftCount: 1,
         }),
       }),
+      webhookCostPlan,
     );
+    expect(result.settlement).toEqual({
+      totalConfiguredCost: 3,
+      scheduleCost: 1,
+      matchingWebhookDeliveryCount: 2,
+      matchingWebhookDeliveryUnitCost: 1,
+      matchingWebhookDeliveryCost: 2,
+      acceptedContract: publishBody({
+        totalConfiguredCost: 3,
+        matchingWebhookDeliveryCount: 2,
+        matchingWebhookDeliveryUnitCost: 1,
+        matchingWebhookDeliveryCost: 2,
+      }).acceptedContract,
+      creditsConsumed: 3,
+      newBalance: 2,
+      ledgerIdentities: {
+        schedule: expect.stringMatching(/^feature-usage-schedule-publish:/),
+        webhookDeliveries: [
+          { deliveryId: "delivery-1", ledgerId: "feature-usage-webhook-delivery:delivery-1" },
+          { deliveryId: "delivery-2", ledgerId: "feature-usage-webhook-delivery:delivery-2" },
+        ],
+      },
+    });
+  });
+
+  it("returns a complete publish preflight for a zero-credit paid tenant", async () => {
+    tx.schedule.findFirst.mockResolvedValue({ id: "sch-1", revision: 7 });
+    tx.tenant.findUniqueOrThrow.mockResolvedValue({ usageCredits: 0 });
+
+    await expect(controller.publishPreflight("sch-1", {
+      user: { tenantId: "tenant-1" },
+    })).resolves.toEqual({
+      scheduleId: "sch-1",
+      totalConfiguredCost: 1,
+      scheduleCost: 1,
+      matchingWebhookDeliveryCount: 0,
+      matchingWebhookDeliveryUnitCost: 0,
+      matchingWebhookDeliveryCost: 0,
+      acceptedContract: publishBody({ version: 7 }).acceptedContract,
+      availableCredits: 0,
+      sufficientCredits: false,
+    });
+
+    expect(featureAccessService.assertFeatureEntitledInTransaction).toHaveBeenCalledWith(
+      tx,
+      "tenant-1",
+      "scheduling",
+    );
+    expect(featureAccessService.recordFeatureUsageInTransaction).not.toHaveBeenCalled();
+    expect(tx.schedule.updateMany).not.toHaveBeenCalled();
+  });
+
+  it("requires reconfirmation on version or aggregate-cost drift before any debit or write", async () => {
+    persistedAvailabilityRows = [
+      { userId: "u1", dayOfWeek: 2, startTimeMinutes: 0, endTimeMinutes: 1439 },
+    ];
+    lockedScheduleRevision = 1;
+    tx.tenant.findUniqueOrThrow.mockResolvedValue({ usageCredits: 10 });
+    tx.webhookEndpoint.findMany.mockResolvedValue([
+      { id: "endpoint-1", url: "https://one.example.com/events" },
+    ]);
+    tx.schedule.findFirst.mockResolvedValue({
+      id: "sch-1",
+      revision: 1,
+      startDate: new Date("2026-03-10T07:00:00.000Z"),
+      endDate: new Date("2026-03-17T07:00:00.000Z"),
+      location: { name: "Downtown Bistro", timezone: "America/Los_Angeles" },
+    });
+    tx.shift.findMany.mockResolvedValue([{
+      id: "shift-1",
+      userId: "u1",
+      startTime: new Date("2026-03-10T17:00:00.000Z"),
+      endTime: new Date("2026-03-10T21:00:00.000Z"),
+    }]);
+
+    await expect(controller.publish(
+      "sch-1",
+      { user: { tenantId: "tenant-1" } },
+      "schedule-publish-stale-contract",
+      publishBody(),
+    )).rejects.toMatchObject({
+      response: expect.objectContaining({
+        message: expect.stringContaining("changed after confirmation"),
+        preflight: expect.objectContaining({
+          scheduleId: "sch-1",
+          acceptedContract: expect.objectContaining({
+            version: 1,
+            totalConfiguredCost: 2,
+            matchingWebhookDeliveryCount: 1,
+          }),
+        }),
+      }),
+    });
+
+    expect(featureAccessService.recordFeatureUsageInTransaction).not.toHaveBeenCalled();
+    expect(webhooksService.enqueueEventInTransaction).not.toHaveBeenCalled();
+    expect(tx.schedule.updateMany).not.toHaveBeenCalled();
+    expect(notificationsService.enqueueInTransaction).not.toHaveBeenCalled();
+    expect(tx.auditLog.create).not.toHaveBeenCalled();
+  });
+
+  it("rejects insufficient aggregate publish credits before mutation or settlement", async () => {
+    persistedAvailabilityRows = [
+      { userId: "u1", dayOfWeek: 2, startTimeMinutes: 0, endTimeMinutes: 1439 },
+    ];
+    tx.tenant.findUniqueOrThrow.mockResolvedValue({ usageCredits: 2 });
+    tx.webhookEndpoint.findMany.mockResolvedValue([
+      { id: "endpoint-1", url: "https://one.example.com/events" },
+      { id: "endpoint-2", url: "https://two.example.com/events" },
+    ]);
+    tx.schedule.findFirst.mockResolvedValue({
+      id: "sch-1",
+      revision: 0,
+      startDate: new Date("2026-03-10T07:00:00.000Z"),
+      endDate: new Date("2026-03-17T07:00:00.000Z"),
+      location: { name: "Downtown Bistro", timezone: "America/Los_Angeles" },
+    });
+    tx.shift.findMany.mockResolvedValue([{
+      id: "shift-1",
+      userId: "u1",
+      startTime: new Date("2026-03-10T17:00:00.000Z"),
+      endTime: new Date("2026-03-10T21:00:00.000Z"),
+    }]);
+
+    await expect(
+      controller.publish("sch-1", { user: { tenantId: "tenant-1" } }, "stacked-cost-insufficient", publishBody({
+        totalConfiguredCost: 3,
+        matchingWebhookDeliveryCount: 2,
+        matchingWebhookDeliveryUnitCost: 1,
+        matchingWebhookDeliveryCost: 2,
+      })),
+    ).rejects.toMatchObject({
+      response: expect.objectContaining({
+        preflight: expect.objectContaining({
+          totalConfiguredCost: 3,
+          availableCredits: 2,
+          sufficientCredits: false,
+        }),
+      }),
+    });
+
+    expect(featureAccessService.recordFeatureUsageInTransaction).not.toHaveBeenCalled();
+    expect(webhooksService.enqueueEventInTransaction).not.toHaveBeenCalled();
+    expect(tx.schedule.updateMany).not.toHaveBeenCalled();
+    expect(notificationsService.enqueueInTransaction).not.toHaveBeenCalled();
+    expect(tx.auditLog.create).not.toHaveBeenCalled();
   });
 
   it("rolls back schedule publication when the transactional webhook outbox insert fails", async () => {
@@ -469,19 +999,19 @@ describe("SchedulesController", () => {
       { userId: "u1", dayOfWeek: 2, startTimeMinutes: 0, endTimeMinutes: 1439 },
     ];
     featureAccessService.resolveTenantFeatures.mockResolvedValue({
-      usageCredits: 0,
+      usageCredits: 5,
       features: {
         scheduling: {
           enabled: true,
-          source: "plan",
+          source: "credits",
           creditCost: 1,
-          reason: "included",
+          reason: "Credit available",
         },
         webhooks: {
           enabled: true,
-          source: "plan",
-          creditCost: null,
-          reason: "included",
+          source: "credits",
+          creditCost: 1,
+          reason: "Credit available",
         },
       },
     });
@@ -505,10 +1035,39 @@ describe("SchedulesController", () => {
     );
 
     await expect(
-      controller.publish("sch-1", { user: { tenantId: "tenant-1" } }),
+      controller.publish("sch-1", { user: { tenantId: "tenant-1" } }, "schedule-publish-test", publishBody()),
     ).rejects.toThrow("outbox unavailable");
 
+    expect(tx.schedule.updateMany).not.toHaveBeenCalled();
+    expect(featureAccessService.recordFeatureUsageInTransaction).toHaveBeenCalledOnce();
+    expect(notificationsService.send).not.toHaveBeenCalled();
+  });
+
+  it("rolls back publication when notification intents cannot commit", async () => {
+    persistedAvailabilityRows = [
+      { userId: "u1", dayOfWeek: 2, startTimeMinutes: 0, endTimeMinutes: 1439 },
+    ];
+    tx.schedule.updateMany.mockResolvedValue({ count: 1 });
+    tx.schedule.findFirst.mockResolvedValue({
+      id: "sch-1",
+      startDate: new Date("2026-03-10T07:00:00.000Z"),
+      endDate: new Date("2026-03-17T07:00:00.000Z"),
+      location: { name: "Downtown Bistro", timezone: "America/Los_Angeles" },
+    });
+    tx.shift.findMany.mockResolvedValue([{
+      id: "shift-1",
+      userId: "u1",
+      startTime: new Date("2026-03-10T17:00:00.000Z"),
+      endTime: new Date("2026-03-10T21:00:00.000Z"),
+    }]);
+    notificationsService.enqueueInTransaction.mockRejectedValue(
+      new Error("notification outbox unavailable"),
+    );
+    await expect(
+      controller.publish("sch-1", { user: { tenantId: "tenant-1" } }, "schedule-publish-test", publishBody()),
+    ).rejects.toThrow("notification outbox unavailable");
     expect(tx.schedule.updateMany).toHaveBeenCalledOnce();
+    expect(notificationsService.deliverPendingNow).not.toHaveBeenCalled();
     expect(notificationsService.send).not.toHaveBeenCalled();
   });
 
@@ -538,19 +1097,22 @@ describe("SchedulesController", () => {
         endTime: new Date("2026-03-11T01:00:00.000Z"),
       },
     ]);
-    notificationsService.send
-      .mockResolvedValueOnce({ id: "notification-1" })
-      .mockRejectedValueOnce(new Error("database unavailable"));
+    notificationsService.deliverPendingNow.mockResolvedValue({
+      status: "PARTIAL",
+      delivered: 1,
+      pending: 0,
+      failed: 1,
+    });
 
     const result = await controller.publish("sch-1", {
       user: { tenantId: "tenant-1" },
-    });
+    }, "schedule-publish-test", publishBody());
 
     expect(tx.schedule.updateMany).toHaveBeenCalledOnce();
     expect(result).toEqual(
       expect.objectContaining({
         status: "PUBLISHED",
-        notifications: { status: "PARTIAL", delivered: 1, failed: 1 },
+        notifications: { status: "PARTIAL", delivered: 1, pending: 0, failed: 1 },
       }),
     );
   });
@@ -579,7 +1141,11 @@ describe("SchedulesController", () => {
         status: "PUBLISHED",
         deletedAt: null,
       },
-      data: { status: "DRAFT", publishedAt: null },
+      data: {
+        status: "DRAFT",
+        publishedAt: null,
+        revision: { increment: 1 },
+      },
     });
     expect(
       Array.from(tx.$queryRaw.mock.calls.at(-1)?.[0] ?? []).join(" "),
@@ -606,12 +1172,12 @@ describe("SchedulesController", () => {
     );
 
     expect(prisma.$transaction).toHaveBeenCalledOnce();
-    expect(tx.$queryRaw).toHaveBeenCalledTimes(2);
-    const locationLockSql = Array.from(tx.$queryRaw.mock.calls[1][0]).join(" ");
+    expect(tx.$queryRaw).toHaveBeenCalledOnce();
+    const locationLockSql = Array.from(tx.$queryRaw.mock.calls[0][0]).join(" ");
     expect(locationLockSql).toContain('FROM "Location"');
     expect(locationLockSql).toContain('"deletedAt" IS NULL');
     expect(locationLockSql).toContain("FOR UPDATE");
-    expect(tx.$queryRaw.mock.invocationCallOrder[1]).toBeLessThan(
+    expect(tx.$queryRaw.mock.invocationCallOrder[0]).toBeLessThan(
       tx.schedule.count.mock.invocationCallOrder[0],
     );
     expect(tx.schedule.count.mock.invocationCallOrder[0]).toBeLessThan(
@@ -655,6 +1221,8 @@ describe("SchedulesController", () => {
     });
 
     expect(tx.schedule.findMany).toHaveBeenCalledWith({
+      orderBy: [{ startDate: "desc" }, { id: "desc" }],
+      take: 101,
       where: {
         tenantId: "tenant-1",
         deletedAt: null,
@@ -780,7 +1348,7 @@ describe("SchedulesController", () => {
     await controller.remove("sch-1", { user: { tenantId: "tenant-1" } });
 
     expect(prisma.$transaction).toHaveBeenCalledOnce();
-    expect(tx.$queryRaw).toHaveBeenCalledTimes(3);
+    expect(tx.$queryRaw).toHaveBeenCalledTimes(2);
     expect(tx.shift.updateMany).toHaveBeenCalledWith({
       where: { tenantId: "tenant-1", scheduleId: "sch-1", deletedAt: null },
       data: { deletedAt: expect.any(Date) },
@@ -835,7 +1403,7 @@ describe("SchedulesController", () => {
     tx.shift.findMany.mockResolvedValue([]);
 
     await expect(
-      controller.publish("sch-1", { user: { tenantId: "tenant-1" } }),
+      controller.publish("sch-1", { user: { tenantId: "tenant-1" } }, "schedule-publish-test", publishBody()),
     ).rejects.toThrow(
       "Add at least one shift before publishing this schedule.",
     );
@@ -911,7 +1479,7 @@ describe("SchedulesController", () => {
     persistedSolveJobRows = [{ id: "job-active", status: "RUNNING" }];
 
     await expect(
-      controller.publish("sch-1", { user: { tenantId: "tenant-1" } }),
+      controller.publish("sch-1", { user: { tenantId: "tenant-1" } }, "schedule-publish-test", publishBody()),
     ).rejects.toThrow(
       "Wait for active auto-schedule jobs to finish before publishing this draft.",
     );
@@ -948,7 +1516,7 @@ describe("SchedulesController", () => {
     ]);
 
     await expect(
-      controller.publish("sch-1", { user: { tenantId: "tenant-1" } }),
+      controller.publish("sch-1", { user: { tenantId: "tenant-1" } }, "schedule-publish-test", publishBody()),
     ).rejects.toThrow(
       "Shift shift-inactive-user is assigned to an inactive staff member.",
     );
@@ -968,15 +1536,12 @@ describe("SchedulesController", () => {
   });
 
   it("rejects publishing a non-draft schedule before reading shifts", async () => {
-    tx.$queryRaw
-      .mockResolvedValueOnce([{ set_current_tenant: null }])
-      .mockResolvedValueOnce([{ pg_advisory_xact_lock: null }])
-      .mockResolvedValueOnce([
+    tx.$queryRaw.mockResolvedValueOnce([
         { id: "sch-1", status: "PUBLISHED", locationId: "loc-1" },
       ]);
 
     await expect(
-      controller.publish("sch-1", { user: { tenantId: "tenant-1" } }),
+      controller.publish("sch-1", { user: { tenantId: "tenant-1" } }, "schedule-publish-test", publishBody()),
     ).rejects.toThrow("Only draft schedules can be published.");
 
     expect(tx.shift.findMany).not.toHaveBeenCalled();
@@ -1000,7 +1565,7 @@ describe("SchedulesController", () => {
     ]);
 
     await expect(
-      controller.publish("sch-1", { user: { tenantId: "tenant-1" } }),
+      controller.publish("sch-1", { user: { tenantId: "tenant-1" } }, "schedule-publish-test", publishBody()),
     ).rejects.toThrow(
       "Resolve overlapping assigned shifts before publishing this schedule.",
     );
@@ -1020,7 +1585,7 @@ describe("SchedulesController", () => {
     ]);
 
     await expect(
-      controller.publish("sch-1", { user: { tenantId: "tenant-1" } }),
+      controller.publish("sch-1", { user: { tenantId: "tenant-1" } }, "schedule-publish-test", publishBody()),
     ).rejects.toThrow(
       "Shift shift-before-local-day must stay within its schedule window before publishing.",
     );
@@ -1048,7 +1613,7 @@ describe("SchedulesController", () => {
     ]);
 
     await expect(
-      controller.publish("sch-1", { user: { tenantId: "tenant-1" } }),
+      controller.publish("sch-1", { user: { tenantId: "tenant-1" } }, "schedule-publish-test", publishBody()),
     ).rejects.toThrow(
       "Demand window demand-1 needs 2 assigned staff before publishing.",
     );
@@ -1082,7 +1647,7 @@ describe("SchedulesController", () => {
     ]);
 
     await expect(
-      controller.publish("sch-1", { user: { tenantId: "tenant-1" } }),
+      controller.publish("sch-1", { user: { tenantId: "tenant-1" } }, "schedule-publish-test", publishBody()),
     ).rejects.toThrow(
       "Demand window demand-break-gap needs 1 assigned staff before publishing.",
     );
@@ -1111,7 +1676,7 @@ describe("SchedulesController", () => {
     ]);
 
     await expect(
-      controller.publish("sch-1", { user: { tenantId: "tenant-1" } }),
+      controller.publish("sch-1", { user: { tenantId: "tenant-1" } }, "schedule-publish-test", publishBody()),
     ).rejects.toThrow(
       "Demand window demand-1 needs 1 assigned staff with expo before publishing.",
     );
@@ -1138,12 +1703,30 @@ describe("SchedulesController", () => {
     ]);
 
     await expect(
-      controller.publish("sch-1", { user: { tenantId: "tenant-1" } }),
+      controller.publish("sch-1", { user: { tenantId: "tenant-1" } }, "schedule-publish-test", publishBody()),
     ).rejects.toThrow(
       "Shift shift-1 is outside configured staff availability.",
     );
 
     expect(tx.schedule.updateMany).not.toHaveBeenCalled();
+  });
+
+  it("accepts touching and overlapping availability windows as continuous publish coverage", async () => {
+    persistedAvailabilityRows = [
+      { userId: "u1", dayOfWeek: 1, startTimeMinutes: 9 * 60, endTimeMinutes: 12 * 60 },
+      { userId: "u1", dayOfWeek: 1, startTimeMinutes: 12 * 60, endTimeMinutes: 14 * 60 },
+      { userId: "u1", dayOfWeek: 1, startTimeMinutes: 13 * 60, endTimeMinutes: 17 * 60 },
+    ];
+    await expect((controller as any).assertAssignedShiftsWithinAvailability(
+      tx, "tenant-1", "loc-1", "America/Los_Angeles",
+      [{
+        id: "continuous-availability-1",
+        userId: "u1",
+        startTime: new Date("2026-03-09T16:00:00.000Z"),
+        endTime: new Date("2026-03-10T00:00:00.000Z"),
+        breaks: [],
+      }],
+    )).resolves.toBeUndefined();
   });
 
   it("accepts Monday overnight availability through Tuesday 02:00 during publish validation", async () => {
@@ -1237,27 +1820,39 @@ describe("SchedulesController", () => {
       "tenant-1",
       "scheduling",
     );
-    expect(
-      featureAccessService.consumeCreditsForFeature,
-    ).not.toHaveBeenCalled();
     expect(tx.creditTransaction.create).toHaveBeenCalledWith({
       data: expect.objectContaining({
         id: `schedule-credit-${result.jobId}`,
         tenantId: "tenant-1",
         amount: -1,
+        balanceAfter: 0,
       }),
     });
-    expect(tx.$executeRaw).toHaveBeenCalledTimes(2);
     const scheduleLockQueryIndex = tx.$queryRaw.mock.calls.findIndex(
       ([query]: [unknown]) => {
         const sql = Array.isArray(query) ? query.join(" ") : String(query);
         return sql.includes('FROM "Schedule"') && sql.includes("FOR UPDATE");
       },
     );
+    const solveJobInsertIndex = tx.$executeRaw.mock.calls.findIndex(
+      ([query]: [unknown]) => {
+        const sql = Array.isArray(query) ? query.join(" ") : String(query);
+        return sql.includes('INSERT INTO "ScheduleSolveJob"');
+      },
+    );
+    const creditConsumptionUpdateIndex = tx.$executeRaw.mock.calls.findIndex(
+      ([query]: [unknown]) => {
+        const sql = Array.isArray(query) ? query.join(" ") : String(query);
+        return sql.includes('UPDATE "ScheduleSolveJob"')
+          && sql.includes('"creditConsumption"');
+      },
+    );
     expect(scheduleLockQueryIndex).toBeGreaterThanOrEqual(0);
+    expect(solveJobInsertIndex).toBeGreaterThanOrEqual(0);
+    expect(creditConsumptionUpdateIndex).toBeGreaterThanOrEqual(0);
     expect(
       tx.$queryRaw.mock.invocationCallOrder[scheduleLockQueryIndex],
-    ).toBeLessThan(tx.$executeRaw.mock.invocationCallOrder[0]);
+    ).toBeLessThan(tx.$executeRaw.mock.invocationCallOrder[solveJobInsertIndex]);
     expect(enqueueSolveJob).toHaveBeenCalledWith(
       expect.objectContaining({
         type: "schedule.solve",
@@ -1371,9 +1966,6 @@ describe("SchedulesController", () => {
     ).rejects.toThrow("Idempotency-Key header is required");
 
     expect(prisma.$transaction).not.toHaveBeenCalled();
-    expect(
-      featureAccessService.consumeCreditsForFeature,
-    ).not.toHaveBeenCalled();
   });
 
   it("canonicalizes auto-schedule request hashes independent of object key order", () => {
@@ -1421,6 +2013,12 @@ describe("SchedulesController", () => {
     const requestHash = autoScheduleRequestHash(body.constraints, false);
     tx.$queryRaw.mockImplementation(async (query: any) => {
       const sql = Array.isArray(query) ? query.join(" ") : String(query);
+      if (sql.includes('FROM "Schedule"') && sql.includes("FOR UPDATE")) {
+        return [{ id: "sch-1", status: "DRAFT" }];
+      }
+      if (sql.includes('FROM "ScheduleSolveJob"') && sql.includes('"status" NOT IN')) {
+        return [];
+      }
       if (sql.includes('FROM "ScheduleSolveJob"')) {
         return [
           {
@@ -1444,6 +2042,15 @@ describe("SchedulesController", () => {
           },
         ];
       }
+      if (sql.includes('FROM "CreditTransaction"')) {
+        return [{
+          id: `schedule-credit-${first.jobId}`,
+          tenantId: "tenant-1",
+          amount: -1,
+          reason: `Schedule generation (${first.jobId})`,
+          balanceAfter: 0,
+        }];
+      }
       return [{ set_current_tenant: null }];
     });
 
@@ -1462,9 +2069,6 @@ describe("SchedulesController", () => {
         reused: true,
       }),
     );
-    expect(
-      featureAccessService.consumeCreditsForFeature,
-    ).not.toHaveBeenCalled();
     expect(tx.creditTransaction.create).toHaveBeenCalledOnce();
     expect(enqueueSolveJob).toHaveBeenCalledOnce();
 
@@ -1476,9 +2080,6 @@ describe("SchedulesController", () => {
         "lost-response-request",
       ),
     ).rejects.toThrow("Idempotency-Key was already used with a different");
-    expect(
-      featureAccessService.consumeCreditsForFeature,
-    ).not.toHaveBeenCalled();
     expect(tx.creditTransaction.create).toHaveBeenCalledOnce();
     expect(enqueueSolveJob).toHaveBeenCalledOnce();
   });
@@ -1508,9 +2109,6 @@ describe("SchedulesController", () => {
     ).rejects.toThrow("Confirm replacement");
 
     expect(enqueueSolveJob).not.toHaveBeenCalled();
-    expect(
-      featureAccessService.consumeCreditsForFeature,
-    ).not.toHaveBeenCalled();
   });
 
   it("snapshots persisted scheduler inputs and sends availability to the worker", async () => {
@@ -1612,10 +2210,12 @@ describe("SchedulesController", () => {
         }),
       }),
     );
-    const insertCall = tx.$executeRaw.mock.calls[0];
-    expect(Array.from(insertCall[0]).join(" ")).toContain('"staffSnapshot"');
-    expect(Array.from(insertCall[0]).join(" ")).toContain('"demandSnapshot"');
-    const parsedJsonParams = insertCall
+    const insertCall = tx.$executeRaw.mock.calls.find(([query]: [unknown]) =>
+      Array.from(query as readonly string[]).join(" ").includes('"staffSnapshot"'),
+    );
+    expect(insertCall).toBeTruthy();
+    expect(Array.from(insertCall![0]).join(" ")).toContain('"demandSnapshot"');
+    const parsedJsonParams = insertCall!
       .slice(1)
       .filter(
         (value: unknown): value is string =>
@@ -1734,7 +2334,7 @@ describe("SchedulesController", () => {
     expect(lockedHoursQuery).toBeTruthy();
   });
 
-  it("reuses a different-key nonterminal schedule job before charging", async () => {
+  it("reuses a different-key nonterminal job with an exact reserved debit after paid entitlement revalidation", async () => {
     const activeJob = {
       id: "job-active",
       scheduleId: "sch-1",
@@ -1748,7 +2348,7 @@ describe("SchedulesController", () => {
       requestedConstraints: {},
       staffSnapshot: { staff: [] },
       demandSnapshot: { demand_windows: [] },
-      creditConsumption: { consumedCredits: 1, newBalance: 4 },
+      creditConsumption: { consumedCredits: 1, newBalance: 4, source: "credits" },
       publicationStatus: "PUBLISHED",
       publishAttempts: 1,
       nextPublishAt: new Date("2026-03-10T00:00:00.000Z"),
@@ -1766,8 +2366,20 @@ describe("SchedulesController", () => {
       }
       if (sql.includes('FROM "ScheduleSolveJob"') && sql.includes('"requestKeyHash" =')) return [];
       if (sql.includes('FROM "ScheduleSolveJob"') && sql.includes('"status" NOT IN')) return [activeJob];
+      if (sql.includes('FROM "CreditTransaction"')) {
+        return [{
+          id: "schedule-credit-job-active",
+          tenantId: "tenant-1",
+          amount: -1,
+          reason: "Schedule generation (job-active)",
+          balanceAfter: 4,
+        }];
+      }
       return [{ set_current_tenant: null }];
     });
+    featureAccessService.assertFeatureEnabledInTransaction.mockRejectedValue(
+      new ForbiddenException("Insufficient usage credits balance."),
+    );
     const enqueueSolveJob = vi.spyOn(controller as any, "enqueueSolveJob").mockResolvedValue(undefined);
 
     const result = await controller.autoSchedule(
@@ -1782,9 +2394,281 @@ describe("SchedulesController", () => {
       status: "RUNNING",
       reused: true,
     }));
-    expect(tx.$executeRaw).not.toHaveBeenCalled();
+    expect(tx.$executeRaw).toHaveBeenCalledOnce();
+    expect(featureAccessService.lockTenantInTransaction).toHaveBeenCalledWith(tx, "tenant-1");
+    const scheduleLockQueryIndex = tx.$queryRaw.mock.calls.findIndex(([query]: [unknown]) => {
+      const sql = Array.isArray(query) ? query.join(" ") : String(query);
+      return sql.includes('FROM "Schedule"') && sql.includes("FOR UPDATE");
+    });
+    const activeJobQueryIndex = tx.$queryRaw.mock.calls.findIndex(([query]: [unknown]) => {
+      const sql = Array.isArray(query) ? query.join(" ") : String(query);
+      return sql.includes('FROM "ScheduleSolveJob"') && sql.includes('"status" NOT IN');
+    });
+    const debitQueryIndex = tx.$queryRaw.mock.calls.findIndex(([query]: [unknown]) => {
+      const sql = Array.isArray(query) ? query.join(" ") : String(query);
+      return sql.includes('FROM "CreditTransaction"') && sql.includes("FOR UPDATE");
+    });
+    expect(scheduleLockQueryIndex).toBeGreaterThanOrEqual(0);
+    expect(featureAccessService.lockTenantInTransaction.mock.invocationCallOrder[0])
+      .toBeLessThan(tx.$queryRaw.mock.invocationCallOrder[scheduleLockQueryIndex]);
+    expect(activeJobQueryIndex).toBeGreaterThan(scheduleLockQueryIndex);
+    expect(debitQueryIndex).toBeGreaterThan(activeJobQueryIndex);
+    const activeJobQuery = tx.$queryRaw.mock.calls[activeJobQueryIndex][0];
+    const activeJobSql = Array.isArray(activeJobQuery) ? activeJobQuery.join(" ") : String(activeJobQuery);
+    expect(activeJobSql).not.toContain("LIMIT 1");
+    expect(featureAccessService.assertFeatureEntitledInTransaction).toHaveBeenCalledWith(
+      tx,
+      "tenant-1",
+      "scheduling",
+    );
+    expect(featureAccessService.assertFeatureEnabledInTransaction).not.toHaveBeenCalled();
+    expect(tx.schedule.findFirst).not.toHaveBeenCalled();
+    expect(tx.user.findMany).not.toHaveBeenCalled();
     expect(tx.creditTransaction.create).not.toHaveBeenCalled();
     expect(enqueueSolveJob).not.toHaveBeenCalled();
+  });
+
+  it.each(["FREE plan", "null paid-through", "past paid-through"])(
+    "rejects a nonterminal paid reservation after %s entitlement loss",
+    async () => {
+      persistedSolveJobRows = [{
+        id: "job-active",
+        scheduleId: "sch-1",
+        locationId: "loc-1",
+        requestKeyHash: "other-key",
+        requestHash: "other-request",
+        status: "RUNNING",
+        creditConsumption: { consumedCredits: 1, newBalance: 0, source: "credits" },
+      }];
+      vi.spyOn(controller as any, "findScheduleSolveJobByRequestKey").mockResolvedValue(null);
+      featureAccessService.assertFeatureEntitledInTransaction.mockRejectedValue(
+        new ForbiddenException("Billable features require a current active paid subscription."),
+      );
+
+      await expect(controller.autoSchedule(
+        "sch-1",
+        { user: { tenantId: "tenant-1" } },
+        { constraints: {} },
+        "recovery-after-entitlement-loss",
+      )).rejects.toBeInstanceOf(ForbiddenException);
+
+      expect(featureAccessService.assertFeatureEnabledInTransaction).not.toHaveBeenCalled();
+      expect(tx.schedule.findFirst).not.toHaveBeenCalled();
+      expect(tx.shift.count).not.toHaveBeenCalled();
+      expect(tx.creditTransaction.create).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each([
+    ["missing debit", []],
+    ["mismatched debit", [{
+      id: "schedule-credit-job-active",
+      tenantId: "tenant-1",
+      amount: -2,
+      reason: "Schedule generation (job-active)",
+      balanceAfter: 0,
+    }]],
+    ["duplicate debit", [{
+      id: "schedule-credit-job-active",
+      tenantId: "tenant-1",
+      amount: -1,
+      reason: "Schedule generation (job-active)",
+      balanceAfter: 0,
+    }, {
+      id: "schedule-credit-job-active",
+      tenantId: "tenant-1",
+      amount: -1,
+      reason: "Schedule generation (job-active)",
+      balanceAfter: 0,
+    }]],
+    ["wrong debit reason", [{
+      id: "schedule-credit-job-active",
+      tenantId: "tenant-1",
+      amount: -1,
+      reason: "Schedule generation",
+      balanceAfter: 0,
+    }]],
+    ["mismatched debit settlement balance", [{
+      id: "schedule-credit-job-active",
+      tenantId: "tenant-1",
+      amount: -1,
+      reason: "Schedule generation (job-active)",
+      balanceAfter: 1,
+    }]],
+    ["debit and deterministic refund", [{
+      id: "schedule-credit-job-active",
+      tenantId: "tenant-1",
+      amount: -1,
+      reason: "Schedule generation (job-active)",
+      balanceAfter: 0,
+    }, {
+      id: "schedule-credit-refund-job-active",
+      tenantId: "tenant-1",
+      amount: 1,
+      reason: "Schedule generation refund (job-active)",
+      balanceAfter: 1,
+    }]],
+  ])("fails closed when active recovery has a %s", async (_label, debitRows) => {
+    persistedSolveJobRows = [{
+      id: "job-active",
+      scheduleId: "sch-1",
+      locationId: "loc-1",
+      requestKeyHash: "other-key",
+      requestHash: "other-request",
+      status: "QUEUED",
+      statusReason: null,
+      retryCount: 0,
+      resultShiftCount: null,
+      requestedConstraints: {},
+      staffSnapshot: { staff: [] },
+      demandSnapshot: { demand_windows: [] },
+      creditConsumption: { consumedCredits: 1, newBalance: 0, source: "credits" },
+      publicationStatus: "PENDING",
+      publishAttempts: 0,
+      nextPublishAt: new Date(),
+      publishedAt: null,
+      publishLastError: null,
+      startedAt: null,
+      completedAt: null,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    }];
+    persistedSolveDebitRows = debitRows;
+    vi.spyOn(controller as any, "findScheduleSolveJobByRequestKey").mockResolvedValue(null);
+
+    await expect(controller.autoSchedule(
+      "sch-1",
+      { user: { tenantId: "tenant-1" } },
+      { constraints: {} },
+      "recovery-attempt",
+    )).rejects.toThrow(/paid reservation is invalid/i);
+
+    expect(featureAccessService.assertFeatureEnabledInTransaction).not.toHaveBeenCalled();
+    expect(tx.creditTransaction.create).not.toHaveBeenCalled();
+  });
+
+  it("rejects malformed active recovery balance metadata", async () => {
+    persistedSolveJobRows = [{
+      id: "job-active",
+      scheduleId: "sch-1",
+      locationId: "loc-1",
+      requestKeyHash: "other-key",
+      requestHash: "other-request",
+      status: "RUNNING",
+      creditConsumption: { consumedCredits: 1, newBalance: -1, source: "credits" },
+    }];
+    persistedSolveDebitRows = [{
+      id: "schedule-credit-job-active",
+      tenantId: "tenant-1",
+      amount: -1,
+      reason: "Schedule generation (job-active)",
+      balanceAfter: 0,
+    }];
+    vi.spyOn(controller as any, "findScheduleSolveJobByRequestKey").mockResolvedValue(null);
+
+    await expect(controller.autoSchedule(
+      "sch-1",
+      { user: { tenantId: "tenant-1" } },
+      { constraints: {} },
+      "recovery-attempt",
+    )).rejects.toThrow(/paid reservation is invalid/i);
+
+    expect(featureAccessService.assertFeatureEnabledInTransaction).not.toHaveBeenCalled();
+  });
+
+  it("validates exact terminal provenance before replaying a completed request", async () => {
+    const terminalJob = {
+      id: "job-terminal",
+      scheduleId: "sch-1",
+      locationId: "loc-1",
+      requestKeyHash: "terminal-key",
+      requestHash: autoScheduleRequestHash({}, false),
+      status: "FAILED",
+      creditConsumption: { consumedCredits: 1, newBalance: 0, source: "credits" },
+    };
+    vi.spyOn(controller as any, "findScheduleSolveJobByRequestKey").mockResolvedValue(terminalJob);
+    featureAccessService.assertFeatureEntitledInTransaction.mockRejectedValue(
+      new ForbiddenException("Paid entitlement was lost."),
+    );
+    persistedSolveDebitRows = [{
+      id: "schedule-credit-job-terminal",
+      tenantId: "tenant-1",
+      amount: -1,
+      reason: "Schedule generation (job-terminal)",
+      balanceAfter: 0,
+    }, {
+      id: "schedule-credit-refund-job-terminal",
+      tenantId: "tenant-1",
+      amount: 1,
+      reason: "Schedule generation refund (job-terminal)",
+      balanceAfter: 1,
+    }];
+
+    await expect(controller.autoSchedule(
+      "sch-1",
+      { user: { tenantId: "tenant-1" } },
+      { constraints: {} },
+      "terminal-replay",
+    )).resolves.toEqual(expect.objectContaining({ jobId: "job-terminal", status: "FAILED", reused: true }));
+    expect(featureAccessService.assertFeatureEntitledInTransaction).not.toHaveBeenCalled();
+
+    persistedSolveDebitRows[1] = {
+      ...persistedSolveDebitRows[1],
+      reason: "Wrong refund reason",
+    };
+    await expect(controller.autoSchedule(
+      "sch-1",
+      { user: { tenantId: "tenant-1" } },
+      { constraints: {} },
+      "terminal-replay",
+    )).rejects.toThrow(/paid reservation is invalid/i);
+
+    persistedSolveDebitRows[1] = {
+      ...persistedSolveDebitRows[1],
+      reason: "Schedule generation refund (job-terminal)",
+      balanceAfter: 9,
+    };
+    await expect(controller.autoSchedule(
+      "sch-1",
+      { user: { tenantId: "tenant-1" } },
+      { constraints: {} },
+      "terminal-replay-after-intervening-grant",
+    )).resolves.toEqual(expect.objectContaining({ jobId: "job-terminal", status: "FAILED", reused: true }));
+
+    persistedSolveDebitRows[1] = {
+      ...persistedSolveDebitRows[1],
+      balanceAfter: null,
+    };
+    await expect(controller.autoSchedule(
+      "sch-1",
+      { user: { tenantId: "tenant-1" } },
+      { constraints: {} },
+      "terminal-replay",
+    )).rejects.toThrow(/paid reservation is invalid/i);
+  });
+
+  it("fails closed after locking every duplicate active recovery candidate", async () => {
+    persistedSolveJobRows = [
+      { id: "job-active-1", status: "QUEUED" },
+      { id: "job-active-2", status: "RUNNING" },
+    ];
+    vi.spyOn(controller as any, "findScheduleSolveJobByRequestKey").mockResolvedValue(null);
+
+    await expect(controller.autoSchedule(
+      "sch-1",
+      { user: { tenantId: "tenant-1" } },
+      { constraints: {} },
+      "duplicate-active-attempt",
+    )).rejects.toThrow(/ownership is ambiguous/i);
+
+    const activeQuery = tx.$queryRaw.mock.calls.find(([query]: [unknown]) => {
+      const sql = Array.isArray(query) ? query.join(" ") : String(query);
+      return sql.includes('FROM "ScheduleSolveJob"') && sql.includes('"status" NOT IN');
+    });
+    const sql = Array.isArray(activeQuery?.[0]) ? activeQuery[0].join(" ") : String(activeQuery?.[0]);
+    expect(sql).toContain("FOR UPDATE");
+    expect(sql).not.toContain("LIMIT 1");
+    expect(tx.creditTransaction.create).not.toHaveBeenCalled();
   });
 
   it("includes cross-location existing hours from the full local calendar week for a midweek solve", async () => {
@@ -1842,16 +2726,14 @@ describe("SchedulesController", () => {
     );
   });
 
-  it("returns tenant-scoped auto-schedule job status", async () => {
-    tx.$queryRaw
-      .mockResolvedValueOnce([{ set_current_tenant: null }])
-      .mockResolvedValueOnce([
+  it("returns tenant-scoped job status without persisted failure details", async () => {
+    tx.$queryRaw.mockResolvedValueOnce([
         {
           id: "job-1",
           scheduleId: "sch-1",
           locationId: "loc-1",
-          status: "SUCCEEDED",
-          statusReason: null,
+          status: "FAILED",
+          statusReason: "DATABASE_URL=postgresql://user:db-secret@private-db/app",
           retryCount: 1,
           resultShiftCount: 12,
           requestedConstraints: { min_floor_coverage: 1 },
@@ -1860,11 +2742,11 @@ describe("SchedulesController", () => {
           },
           demandSnapshot: { demand_windows: [] },
           creditConsumption: { consumedCredits: 1, newBalance: 4 },
-          publicationStatus: "PUBLISHED",
+          publicationStatus: "FAILED",
           publishAttempts: 1,
           nextPublishAt: new Date("2026-03-10T00:00:00.000Z"),
           publishedAt: new Date("2026-03-10T00:00:01.000Z"),
-          publishLastError: null,
+          publishLastError: "Authorization: Bearer publication-secret",
           startedAt: new Date("2026-03-10T00:01:00.000Z"),
           completedAt: new Date("2026-03-10T00:02:00.000Z"),
           createdAt: new Date("2026-03-10T00:00:00.000Z"),
@@ -1880,8 +2762,8 @@ describe("SchedulesController", () => {
       jobId: "job-1",
       scheduleId: "sch-1",
       locationId: "loc-1",
-      status: "SUCCEEDED",
-      statusReason: null,
+      status: "FAILED",
+      statusReason: "Schedule generation failed",
       retryCount: 1,
       resultShiftCount: 12,
       requestedConstraints: { min_floor_coverage: 1 },
@@ -1890,16 +2772,21 @@ describe("SchedulesController", () => {
       },
       demandSnapshot: { demand_windows: [] },
       creditConsumption: { consumedCredits: 1, newBalance: 4 },
-      publicationStatus: "PUBLISHED",
+      publicationStatus: "FAILED",
       publishAttempts: 1,
       nextPublishAt: "2026-03-10T00:00:00.000Z",
       publishedAt: "2026-03-10T00:00:01.000Z",
-      publishLastError: null,
+      publishLastError: "Schedule publication failed",
       startedAt: "2026-03-10T00:01:00.000Z",
       completedAt: "2026-03-10T00:02:00.000Z",
       createdAt: "2026-03-10T00:00:00.000Z",
       updatedAt: "2026-03-10T00:02:00.000Z",
     });
+    const serialized = JSON.stringify(result);
+    expect(serialized).not.toContain("db-secret");
+    expect(serialized).not.toContain("publication-secret");
+    expect(serialized).not.toContain("DATABASE_URL");
+    expect(serialized).not.toContain("Authorization");
   });
 
   it("leaves a committed charged outbox job recoverable when immediate queueing fails", async () => {
@@ -1938,7 +2825,7 @@ describe("SchedulesController", () => {
     expect(publishPendingNow).toHaveBeenCalledWith(result.jobId);
     expect(tx.creditTransaction.create).toHaveBeenCalledOnce();
     expect(meteringService.grantCredits).not.toHaveBeenCalled();
-    expect(tx.$executeRaw).toHaveBeenCalledTimes(2);
+    expect(tx.$executeRaw).toHaveBeenCalledTimes(3);
   });
 
   it("publishes schedule solve jobs with RabbitMQ confirms", () => {
@@ -1954,7 +2841,7 @@ describe("SchedulesController", () => {
     expect(source).toMatch(/waitForConfirms\(\)/);
     expect(source).toMatch(/persistent: true/);
     expect(source).toMatch(/messageId: publication\.id/);
-    expect(source).toMatch(/FOR UPDATE SKIP LOCKED/);
+    expect(source).toMatch(/FOR UPDATE OF job SKIP LOCKED/);
     expect(source).toMatch(/"publishLeaseUntil" <=/);
   });
 
@@ -1981,9 +2868,26 @@ describe("SchedulesController", () => {
     ).rejects.toThrow("Add at least one schedulable staff member");
 
     expect(enqueueSolveJob).not.toHaveBeenCalled();
-    expect(
-      featureAccessService.consumeCreditsForFeature,
-    ).not.toHaveBeenCalled();
+  });
+
+  it("requires schedule write permission to read persisted demand inputs", () => {
+    const source = readFileSync(
+      __filename.replace(/schedules\.controller\.spec\.ts$/, "schedules.controller.ts"),
+      "utf8",
+    );
+    expect(source).toMatch(
+      /@Get\(":id\/demand-windows"\)\s+@Permission\("schedules:write"\)/,
+    );
+  });
+
+  it("requires schedule write permission to read auto-schedule job state", () => {
+    const source = readFileSync(
+      __filename.replace(/schedules\.controller\.spec\.ts$/, "schedules.controller.ts"),
+      "utf8",
+    );
+    expect(source).toMatch(
+      /@Get\(":id\/auto-schedule\/jobs\/:jobId"\)\s+@Permission\("schedules:write"\)/,
+    );
   });
 
   it("rejects auto-schedule for published schedules before enqueueing", async () => {
@@ -2008,8 +2912,5 @@ describe("SchedulesController", () => {
     ).rejects.toThrow("Only draft schedules can be auto-scheduled.");
 
     expect(enqueueSolveJob).not.toHaveBeenCalled();
-    expect(
-      featureAccessService.consumeCreditsForFeature,
-    ).not.toHaveBeenCalled();
   });
 });

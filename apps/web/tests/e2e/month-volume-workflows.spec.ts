@@ -45,7 +45,7 @@ test.describe.serial('Month-volume schedule and lunch/break workflows', () => {
           role: user.role,
           startTime: window.startTime,
           endTime: window.endTime,
-        });
+        }, undefined, { 'Idempotency-Key': `month-shift--` });
         createdShiftIds.push(shift.id);
       }
     }
@@ -125,8 +125,9 @@ test.describe.serial('Month-volume schedule and lunch/break workflows', () => {
       ...shiftWindow(2026, 7, 3, index),
     }));
     const setupResult = await apiJson<{ shiftIds: string[] }>(page, 'POST', '/api/v1/lunch-breaks/setup-shifts', {
+      locationId: location.id,
       rows: setupRows,
-    });
+    }, undefined, { 'Idempotency-Key': 'month-setup-shifts-1' });
     expect(setupResult.shiftIds).toHaveLength(10);
 
     const secondPlan = await apiJson<LunchBreakResponse>(page, 'POST', '/api/v1/lunch-breaks/generate', {

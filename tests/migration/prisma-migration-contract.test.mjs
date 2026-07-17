@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { readdirSync, readFileSync } from 'node:fs';
-import { basename, dirname, join, resolve } from 'node:path';
+import { basename, dirname, join, relative, resolve } from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 import yaml from 'js-yaml';
@@ -18,6 +18,40 @@ function migrationSqlFiles() {
     .filter((file) => file.endsWith('.sql'))
     .map((file) => join(migrationsRoot, file));
 }
+
+function filesUnder(relativeDirectory) {
+  const files = [];
+  const walk = (directory) => {
+    for (const entry of readdirSync(directory, { withFileTypes: true })) {
+      const path = join(directory, entry.name);
+      if (entry.isDirectory()) {
+        walk(path);
+      } else if (entry.isFile()) {
+        files.push(path);
+      }
+    }
+  };
+  walk(join(root, relativeDirectory));
+  return files;
+}
+
+test('PostgreSQL void advisory locks execute without Prisma row deserialization', () => {
+  const rawReadPattern = /\$queryRaw(?:<[^>]+>)?\s*\x60\s*SELECT\s+pg_advisory_xact_lock\b/;
+  const unsafeRawReadPattern = /\$queryRawUnsafe\s*\(\s*['"\x60]\s*SELECT\s+pg_advisory_xact_lock\b/;
+  const offenders = filesUnder('apps/api/src')
+    .filter((path) => path.endsWith('.ts') && !path.endsWith('.spec.ts'))
+    .filter((path) => {
+      const source = readFileSync(path, 'utf8');
+      return rawReadPattern.test(source) || unsafeRawReadPattern.test(source);
+    })
+    .map((path) => relative(root, path).replaceAll('\\', '/'));
+
+  assert.deepEqual(
+    offenders,
+    [],
+    'pg_advisory_xact_lock returns void and must use parameterized $executeRaw',
+  );
+});
 
 function parseSqlStatements(sql) {
   const statements = [];
@@ -123,7 +157,6 @@ test('RLS and audit migrations use Prisma quoted identifiers', () => {
 test('RLS covers direct tenant-owned tables and checks writes', () => {
   const sql = read('packages/db/prisma/migrations/20260712_core_rls_audit_forward_reconciliation.sql');
   const tenantContextSql = read('packages/db/prisma/migrations/20260712_tenant_context_helpers.sql');
-  const rbacSeedSql = read('packages/db/prisma/migrations/20260712_rbac_seed_forward_reconciliation.sql');
   for (const table of [
     'Tenant',
     'User',
@@ -328,19 +361,18 @@ test('public SaaS data hardening migration enforces tenant integrity and time-ca
   }
 });
 
-test('audit log retention purge has a scoped trigger bypass', () => {
-  const sql = read('packages/db/prisma/migrations/20260709_audit_log_retention_purge.sql');
+test('audit log retention purge is restricted to the platform-admin owner function', () => {
+  const sql = read('packages/db/prisma/migrations/20260713_audit_log_retention_authorization.sql');
   const migrationsReadme = read('packages/db/prisma/migrations/README.md');
 
-  assert.match(migrationsReadme, /20260709_audit_log_retention_purge\.sql/);
-  assert.match(sql, /CREATE OR REPLACE FUNCTION block_audit_log_modification\(\)/);
-  assert.match(sql, /TG_OP = 'DELETE'/);
-  assert.match(sql, /current_setting\('app\.allow_audit_log_delete', true\) = 'retention_expired'/);
-  assert.match(sql, /RETURN OLD/);
-  assert.match(sql, /RAISE EXCEPTION 'Audit logs are append-only and cannot be modified or deleted\.'/);
-  assert.doesNotMatch(sql, /TG_OP = 'UPDATE'[\s\S]*RETURN OLD/);
+  assert.match(migrationsReadme, /20260713_audit_log_retention_authorization\.sql/);
+  assert.match(sql, /CREATE OR REPLACE FUNCTION public\.purge_expired_audit_logs\(target_tenant_id TEXT\)/);
+  assert.match(sql, /IF NOT public\.is_current_platform_admin\(\)/);
+  assert.match(sql, /SECURITY DEFINER SET search_path = pg_catalog, public/);
+  assert.match(sql, /CURRENT_USER = \(/);
+  assert.match(sql, /app\.audit_log_retention_txid/);
+  assert.doesNotMatch(sql, /app\.allow_audit_log_delete/);
 });
-
 test('Stripe tenant identifiers are unique when present without rejecting null tenants', () => {
   const schema = read('packages/db/prisma/schema.prisma');
   const sql = read('packages/db/prisma/migrations/20260709_stripe_identifier_uniqueness.sql');
@@ -469,13 +501,13 @@ test('RBAC and plan migrations converge fresh and upgraded databases to time-car
 });
 
 test('schedule integrity constraints run after public SaaS data hardening prerequisites', () => {
-  const migrationScript = read('scripts/apply-db-migrations.mjs');
+  const migrationInventory = read('scripts/raw-migration-inventory.mjs');
   const hardeningFile = '20260709_public_saas_data_hardening.sql';
   const scheduleIntegrityFile = '20260709_schedule_integrity_constraints.sql';
   const hardeningMigration = read(`packages/db/prisma/migrations/${hardeningFile}`);
   const scheduleIntegrityMigration = read(`packages/db/prisma/migrations/${scheduleIntegrityFile}`);
 
-  assert.match(migrationScript, /left\.localeCompare\(right\)/);
+  assert.match(migrationInventory, /left\.localeCompare\(right\)/);
   assert.ok(
     hardeningFile.localeCompare(scheduleIntegrityFile) < 0,
     'schedule integrity FKs depend on hardening indexes and must sort after hardening',
@@ -510,12 +542,15 @@ test('deployment applies raw SQL migrations after Postgres starts', () => {
   assert.match(migrationDockerfile, /scripts\/apply-db-migrations\.mjs/);
   assert.match(ci, /node scripts\/apply-db-migrations\.mjs/);
   assert.doesNotMatch(ci, /prisma migrate deploy/);
-  assert.match(migrationScript, /function preMigrationFiles\(\)/);
+  assert.match(migrationScript, /buildRawMigrationInventory/);
+  assert.match(migrationScript, /RawMigrationLedgerSession/);
   assert.match(migrationScript, /const prismaCli = join\(root, 'node_modules\/prisma\/build\/index\.js'\)/);
-  assert.match(migrationScript, /execFileSync\(node, \[prismaCli, \.\.\.args\]/);
+  assert.match(migrationScript, /runBoundedProcess\(node, \[prismaCli, \.\.\.args\]/);
+  assert.match(migrationScript, /timeoutMs: PRISMA_COMMAND_TIMEOUT_MS/);
   assert.doesNotMatch(migrationScript, /npx(?:\.cmd)?/);
-  assert.match(migrationScript, /file\.startsWith\('pre_'\)/);
-  assert.match(migrationScript, /for \(const migrationFile of preMigrationFiles\(\)\)[\s\S]*db', 'execute'[\s\S]*\['db', 'push', '--schema', schemaPath, '--skip-generate'\]/);
+  assert.match(migrationScript, /applyPreMigrations: \(\) => ledger\.applyAll\(inventory\.pre\)/);
+  assert.match(migrationScript, /applyRawMigrations: \(\) => ledger\.applyAll\(inventory\.post\)/);
+  assert.doesNotMatch(migrationScript, /db', 'execute'/);
   assert.match(migrationScript, /\['db', 'push', '--schema', schemaPath, '--skip-generate'\]/);
   assert.doesNotMatch(migrationScript, /--accept-data-loss|--force-reset|migrate\s+reset/);
   assert.match(migrationScript, /bootstrap-production-admin\.mjs/);
@@ -525,10 +560,14 @@ test('deployment applies raw SQL migrations after Postgres starts', () => {
   assert.match(adminBootstrap, /super-admin/);
   assert.match(adminBootstrap, /roleAssignment\.createMany/);
   assert.match(adminBootstrap, /account:data_export/);
-  assert.match(adminBootstrap, /const adminCreated = !user;[\s\S]*if \(!user\)[\s\S]*tx\.user\.create[\s\S]*roleAssignment\.createMany/);
+  assert.match(adminBootstrap, /--preflight-only/);
+  assert.match(adminBootstrap, /active non-designated account has legacy SUPER_ADMIN or a super-admin RBAC assignment/);
+  assert.match(adminBootstrap, /const adminCreated = !user;[\s\S]*if \(!user\)[\s\S]*tx\.user\.create[\s\S]*else[\s\S]*data: \{ role: 'SUPER_ADMIN' \}[\s\S]*roleAssignment\.createMany/);
   assert.doesNotMatch(adminBootstrap, /tx\.user\.upsert/);
   assert.match(adminBootstrap, /tenant\.deletedAt \|\| tenant\.status !== 'ACTIVE'/);
   assert.match(adminBootstrap, /set_current_platform_admin\(true, \$\{capability\}\)/);
+  assert.match(migrationScript, /productionAdminBootstrapPath, '--preflight-only'/);
+  assert.match(migrationScript, /preflightProductionAdmin[\s\S]*verifyWebhookEndpointSecrets/);
 });
 
 test('existing solve jobs receive request hashes before Prisma enforces required columns', () => {
@@ -541,14 +580,14 @@ test('existing solve jobs receive request hashes before Prisma enforces required
   );
   const schema = read('packages/db/prisma/schema.prisma');
 
-  const preLoop = migrationScript.indexOf('for (const migrationFile of preMigrationFiles())');
-  const schemaPush = migrationScript.indexOf("runPrisma(['db', 'push'");
-  const finalLoop = migrationScript.indexOf('for (const migrationFile of migrationFiles())');
+  const preApply = migrationScript.indexOf('await operations.applyPreMigrations()');
+  const schemaPush = migrationScript.indexOf('await operations.pushSchema()');
+  const finalApply = migrationScript.indexOf('await operations.applyRawMigrations()');
 
-  assert.ok(preLoop >= 0 && preLoop < schemaPush, 'pre-migrations must run before Prisma schema push');
-  assert.ok(schemaPush < finalLoop, 'forward migrations must run after Prisma schema push');
-  assert.match(migrationScript, /file\.startsWith\('pre_'\)/);
-  assert.match(migrationScript, /!file\.startsWith\('pre_'\)/);
+  assert.ok(preApply >= 0 && preApply < schemaPush, 'pre-migrations must run before Prisma schema push');
+  assert.ok(schemaPush < finalApply, 'forward migrations must run after Prisma schema push');
+  assert.match(migrationScript, /applyPreMigrations: \(\) => ledger\.applyAll\(inventory\.pre\)/);
+  assert.match(migrationScript, /applyRawMigrations: \(\) => ledger\.applyAll\(inventory\.post\)/);
 
   assert.match(preMigration, /to_regclass\('"ScheduleSolveJob"'\) IS NULL/);
   const addNullableColumns = preMigration.indexOf('ADD COLUMN IF NOT EXISTS "requestKeyHash" TEXT');
@@ -571,15 +610,15 @@ test('existing solve jobs receive request hashes before Prisma enforces required
 test('migration runner installs RLS helper functions before dependent policy migrations', () => {
   const migrationScript = read('scripts/apply-db-migrations.mjs');
   const tenantContextSql = read('packages/db/prisma/migrations/20260712_tenant_context_helpers.sql');
-  const rbacSeedSql = read('packages/db/prisma/migrations/20260712_rbac_seed_forward_reconciliation.sql');
+  const rbacSeedSql = read('packages/db/prisma/migrations/20260716_rbac_seed_super_admin_forward_reconciliation.sql');
   const platformAdminSql = read('packages/db/prisma/migrations/20260709_platform_admin_rls.sql');
   const coreReconciliationSql = read('packages/db/prisma/migrations/20260712_core_rls_audit_forward_reconciliation.sql');
   const relationHardeningSql = read('packages/db/prisma/migrations/rls_relation_hardening.sql');
-  const retentionSql = read('packages/db/prisma/migrations/20260709_audit_log_retention_purge.sql');
+  const retentionSql = read('packages/db/prisma/migrations/20260713_audit_log_retention_authorization.sql');
   const ordered = orderMigrationFileNames([
     '20260712_core_rls_audit_forward_reconciliation.sql',
     '20260709_platform_admin_rls.sql',
-    '20260712_rbac_seed_forward_reconciliation.sql',
+    '20260716_rbac_seed_super_admin_forward_reconciliation.sql',
     '20260712_tenant_context_helpers.sql',
   ]);
 
@@ -588,7 +627,7 @@ test('migration runner installs RLS helper functions before dependent policy mig
   assert.deepEqual(ordered, [
     '20260712_tenant_context_helpers.sql',
     '20260709_platform_admin_rls.sql',
-    '20260712_rbac_seed_forward_reconciliation.sql',
+    '20260716_rbac_seed_super_admin_forward_reconciliation.sql',
     '20260712_core_rls_audit_forward_reconciliation.sql',
   ]);
   assert.match(tenantContextSql, /CREATE OR REPLACE FUNCTION set_current_tenant/);
@@ -598,7 +637,8 @@ test('migration runner installs RLS helper functions before dependent policy mig
   assert.match(rbacSeedSql, /INSERT INTO "RoleAssignment" \("tenantId", "userId", "roleId", "createdAt"\)/);
   assert.doesNotMatch(coreReconciliationSql, /CREATE OR REPLACE FUNCTION (?:set|get)_current_tenant/);
   assert.match(relationHardeningSql, /is_current_platform_admin\(\)/);
-  assert.match(retentionSql, /app\.allow_audit_log_delete/);
+  assert.match(retentionSql, /purge_expired_audit_logs/);
+  assert.doesNotMatch(retentionSql, /app\.allow_audit_log_delete/);
 });
 test('runner excludes the schema-superseded username migration from raw replay', () => {
   const schema = read('packages/db/prisma/schema.prisma');
@@ -614,17 +654,19 @@ test('runner excludes the schema-superseded username migration from raw replay',
 });
 
 test('runner replaces historical RBAC replay with assignment-safe, least-privilege seed data', () => {
-  const seed = read('packages/db/prisma/migrations/20260712_rbac_seed_forward_reconciliation.sql');
+  const seed = read('packages/db/prisma/migrations/20260716_rbac_seed_super_admin_forward_reconciliation.sql');
   const migrationsReadme = read('packages/db/prisma/migrations/README.md');
 
   assert.equal(shouldApplyMigrationFile('20260325_rbac_roles_permissions.sql'), false);
-  assert.equal(shouldApplyMigrationFile('20260712_rbac_seed_forward_reconciliation.sql'), true);
+  assert.equal(shouldApplyMigrationFile('20260712_rbac_seed_forward_reconciliation.sql'), false);
+  assert.equal(shouldApplyMigrationFile('20260716_rbac_seed_super_admin_forward_reconciliation.sql'), true);
   assert.match(seed, /INSERT INTO "Permission"/);
   assert.match(seed, /INSERT INTO "Role"/);
   assert.match(seed, /INSERT INTO "RolePermission"/);
   assert.match(seed, /INSERT INTO "RoleAssignment" \("tenantId", "userId", "roleId", "createdAt"\)/);
   assert.match(seed, /SELECT\s+u\."tenantId",\s+u\."id",\s+r\."id"/);
   assert.match(seed, /r\."tenantId" = u\."tenantId"/);
+  assert.match(seed, /u\."role" <> 'SUPER_ADMIN'::"UserRole"/);
 
   const staffPermissionBranch = seed.match(
     /OR \(r\."slug" = 'staff' AND p\."key" IN \(([\s\S]*?)\n  \)\)/,
@@ -646,7 +688,8 @@ test('runner replaces historical RBAC replay with assignment-safe, least-privile
   assert.match(noAssignmentsClause[1], /existing_ra\."userId" = u\."id"/);
   assert.doesNotMatch(noAssignmentsClause[1], /existing_ra\."(?:tenantId|roleId)"/);
 
-  assert.match(migrationsReadme, /20260712_rbac_seed_forward_reconciliation\.sql/);
+  assert.match(migrationsReadme, /20260716_rbac_seed_super_admin_forward_reconciliation\.sql/);
+  assert.match(migrationsReadme, /excludes legacy `SUPER_ADMIN`/);
   assert.match(migrationsReadme, /zero role assignments/);
   assert.match(migrationsReadme, /Staff never retains `lunch_breaks:write`/);
 });
@@ -745,7 +788,7 @@ test('deduplicates Stripe usage before Prisma enforces logical identity', () => 
   );
   const migrationsReadme = read('packages/db/prisma/migrations/README.md');
 
-  assert.match(migrationScript, /for \(const migrationFile of preMigrationFiles\(\)\)[\s\S]*\['db', 'push'/);
+  assert.match(migrationScript, /applyPreMigrations: \(\) => ledger\.applyAll\(inventory\.pre\)[\s\S]*\['db', 'push'/);
   assert.match(preMigration, /to_regclass\('"StripeUsageEvent"'\) IS NULL/);
   assert.match(preMigration, /ADD COLUMN IF NOT EXISTS "submittedAt" TIMESTAMP\(3\)/);
   assert.match(preMigration, /ROW_NUMBER\(\) OVER logical_rows/);

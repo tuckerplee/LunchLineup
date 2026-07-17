@@ -1,30 +1,28 @@
 import { defineConfig, devices } from '@playwright/test';
 
-const perRunPortBase = 4300 + (process.pid % 2000) * 2;
-const RESERVED_BROWSER_PORTS = new Set([5060, 5061]);
-
-function firstUsablePort(port: number): number {
-    let candidate = port;
-    while (RESERVED_BROWSER_PORTS.has(candidate) || RESERVED_BROWSER_PORTS.has(candidate + 1)) {
-        candidate += 2;
-    }
-    return candidate;
-}
+const AUTOMATIC_PORT_BASE = 4300;
+const AUTOMATIC_PORT_PAIR_COUNT = 300;
+const perRunPortBase = AUTOMATIC_PORT_BASE + (process.pid % AUTOMATIC_PORT_PAIR_COUNT) * 2;
+const BLOCKED_BROWSER_PORTS = new Set([
+    2049, 3659, 4045, 4190, 5060, 5061, 6000, 6566, 6665, 6666, 6667, 6668, 6669, 6697, 10080,
+]);
 
 function configuredPort(name: 'PLAYWRIGHT_PORT' | 'PLAYWRIGHT_API_PORT', fallback: number): string {
     const configured = process.env[name];
     if (!configured) {
-        const resolved = firstUsablePort(fallback);
-        process.env[name] = String(resolved);
-        return String(resolved);
+        process.env[name] = String(fallback);
+        return String(fallback);
     }
 
     if (!/^\d+$/.test(configured)) {
         throw new Error(`${name} must be a TCP port number, received ${JSON.stringify(configured)}.`);
     }
     const parsed = Number.parseInt(configured, 10);
-    if (!Number.isInteger(parsed) || parsed < 1 || parsed > 65535) {
-        throw new Error(`${name} must be a TCP port number, received ${JSON.stringify(configured)}.`);
+    if (!Number.isInteger(parsed) || parsed < 1024 || parsed > 65535) {
+        throw new Error(`${name} must be an unprivileged TCP port number, received ${JSON.stringify(configured)}.`);
+    }
+    if (BLOCKED_BROWSER_PORTS.has(parsed)) {
+        throw new Error(`${name} uses a browser-blocked TCP port: ${parsed}.`);
     }
     return String(parsed);
 }
@@ -40,6 +38,10 @@ if (useMockApi && e2ePort === mockApiPort) {
 }
 const useNextDevServer = useMockApi || process.env.E2E_USE_NEXT_DEV === '1';
 const serializeMockApiTests = useMockApi;
+const mockSignupMode = process.env.E2E_SIGNUP_MODE?.trim().toLowerCase() || 'open';
+if (!['closed_beta', 'invite_only', 'open'].includes(mockSignupMode)) {
+    throw new Error(`E2E_SIGNUP_MODE must be closed_beta, invite_only, or open; received ${JSON.stringify(mockSignupMode)}.`);
+}
 const webCommand = process.env.E2E_WEB_COMMAND
     ?? (useNextDevServer
         ? `npm run dev -- -H 127.0.0.1 -p ${e2ePort}`
@@ -67,7 +69,7 @@ const webServer = process.env.BASE_URL
                     NODE_ENV: 'development',
                     INTERNAL_API_URL: `${mockApiBaseUrl}/v1`,
                     NEXT_PUBLIC_API_URL: '/api/v1',
-                    NEXT_PUBLIC_SIGNUP_MODE: 'open',
+                    NEXT_PUBLIC_SIGNUP_MODE: mockSignupMode,
                     NEXT_PUBLIC_SUPPORT_CONTACT_EMAIL: 'support@lunchlineup.test',
                 }
                 : undefined,

@@ -66,3 +66,41 @@ export function availabilityWindowCoversLocalSegment(
         && segmentStartMinutes >= 0
         && end >= segmentEndMinutes;
 }
+
+export function availabilityWindowsCoverLocalSegment(
+    windows: PersistedAvailabilityWindow[],
+    weekday: string,
+    segmentStartMinutes: number,
+    segmentEndMinutes: number,
+): boolean {
+    if (
+        !Number.isInteger(segmentStartMinutes)
+        || !Number.isInteger(segmentEndMinutes)
+        || segmentStartMinutes < 0
+        || segmentEndMinutes > 1440
+        || segmentEndMinutes <= segmentStartMinutes
+    ) {
+        throw new BadRequestException('Invalid local availability segment.');
+    }
+
+    const intervals = windows.flatMap((window) => {
+        assertAvailabilityWindow(window);
+        const day = Number(window.dayOfWeek);
+        const start = Number(window.startTimeMinutes);
+        const end = Number(window.endTimeMinutes);
+        if (end > start) {
+            return availabilityDayName(day) === weekday ? [[start, end] as const] : [];
+        }
+        if (availabilityDayName(day) === weekday) return [[start, 1440] as const];
+        return availabilityDayName((day + 1) % 7) === weekday ? [[0, end] as const] : [];
+    }).sort((left, right) => left[0] - right[0] || left[1] - right[1]);
+
+    let coveredUntil = segmentStartMinutes;
+    for (const [start, end] of intervals) {
+        if (end <= coveredUntil) continue;
+        if (start > coveredUntil) return false;
+        coveredUntil = end;
+        if (coveredUntil >= segmentEndMinutes) return true;
+    }
+    return false;
+}

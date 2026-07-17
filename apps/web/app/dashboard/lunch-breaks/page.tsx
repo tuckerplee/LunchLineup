@@ -4,11 +4,11 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
 import { Button } from '@/components/ui/button';
 import {
+  apiPath,
   fetchWithSession,
-  idempotentRequestAttempt,
   withIdempotencyKey,
-  type IdempotentRequestAttempt,
 } from '@/lib/client-api';
+import { fetchAllBoundedPages, type BoundedPage } from '@/lib/bounded-pagination';
 import { getWorkspaceCapabilities, hasLunchBreakReadAccess, hasPermission } from '@/lib/permissions';
 import { dateValueInTimeZone, safeTimeZone } from '@/lib/location-timezone';
 import {
@@ -18,7 +18,39 @@ import {
   lunchBreakTimeValue,
   resolveLunchBreakInstant,
 } from './lunch-break-time';
-import { lunchBreakDayScopeMatches, type LunchBreakDayScope } from './lunch-break-scope';
+import {
+  claimLunchBreakDayLoadRequest,
+  claimLunchBreakMutationBusyOwner,
+  lunchBreakMutationBusyOwnerOwnsScope,
+  releaseLunchBreakMutationBusyOwner,
+  type LunchBreakMutationBusyOwner,
+} from './lunch-break-load-ownership';
+import {
+  createLunchBreakGenerationSubmissionState,
+  submitLunchBreakGeneration,
+} from './lunch-break-generation-recovery';
+import {
+  commitLunchBreakDayScope,
+  lunchBreakDaySelectionMatches,
+  lunchBreakDayScopeMatches,
+  nextLunchBreakDayScope,
+  type LunchBreakDayScope,
+} from './lunch-break-scope';
+import {
+  createSetupShiftsSubmissionState,
+  readSetupShiftsResponse,
+  SetupShiftsRequestError,
+  submitSetupShifts,
+  type SetupShiftsPublicErrorCode,
+  type SetupShiftsRequestBody,
+} from './setup-shifts-recovery';
+import {
+  createShiftBreakUpdateSubmissionState,
+  readShiftBreakUpdateResponse,
+  ShiftBreakUpdateRequestError,
+  submitShiftBreakUpdate,
+  type ShiftBreakUpdateRequestBody,
+} from './shift-break-update-recovery';
 
 type FeatureResolution = {
   enabled: boolean;
@@ -33,6 +65,12 @@ type FeatureMatrixResponse = {
     scheduling: FeatureResolution;
     lunch_breaks: FeatureResolution;
   };
+};
+
+type SessionIdentity = {
+  tenantId: string;
+  userId: string;
+  sessionId: string;
 };
 
 type GeneratedBreak = {
@@ -192,6 +230,10 @@ const DEFAULT_POLICY: LunchBreakPolicy = {
 };
 
 type LocationItem = { id: string; name: string; timezone: string };
+type LocationPage = {
+  data?: LocationItem[];
+  pagination?: { hasMore?: boolean; nextCursor?: string | null };
+};
 
 const HIDDEN_BILLING_FEATURES: FeatureMatrixResponse = {
   usageCredits: 0,
@@ -338,6 +380,26 @@ function jsonWriteInit(method: 'POST' | 'PUT', payload: unknown): RequestInit {
   };
 }
 
+async function fetchLunchBreakMutation(path: string, init: RequestInit): Promise<Response> {
+  const controller = new AbortController();
+  const timeout = globalThis.setTimeout(() => controller.abort(), 15_000);
+  try {
+    return await fetch(apiPath(path), {
+      ...init,
+      credentials: 'include',
+      redirect: 'error',
+      signal: controller.signal,
+    });
+  } catch (error) {
+    if (error instanceof Error && error.name === 'AbortError') {
+      throw new Error('The lunch/break save timed out. Retry unchanged values to recover the original attempt.');
+    }
+    throw error;
+  } finally {
+    globalThis.clearTimeout(timeout);
+  }
+}
+
 function readLunchBreakSession(): Record<string, LunchBreakDaySession> {
   if (typeof window === 'undefined') return {};
   try {
@@ -379,8 +441,8 @@ export default function LunchBreaksPage() {
   const [isLoading, setIsLoading] = useState(true);
   const [isDayLoading, setIsDayLoading] = useState(false);
   const [isSavingPolicy, setIsSavingPolicy] = useState(false);
-  const [isGeneratingDay, setIsGeneratingDay] = useState(false);
-  const [isGeneratingManual, setIsGeneratingManual] = useState(false);
+  const [scheduledGenerationBusyOwner, setScheduledGenerationBusyOwner] = useState<LunchBreakMutationBusyOwner | null>(null);
+  const [manualGenerationBusyOwner, setManualGenerationBusyOwner] = useState<LunchBreakMutationBusyOwner | null>(null);
   const [manualShifts, setManualShifts] = useState<ManualShiftRow[]>(defaultManualShifts());
   const [plannerMode, setPlannerMode] = useState<'auto' | 'manual' | null>(null);
   const [autoGuideStep, setAutoGuideStep] = useState<1 | 2 | 3 | 4 | 5>(1);
@@ -388,34 +450,56 @@ export default function LunchBreaksPage() {
   const [selectedAutoEmployeeIds, setSelectedAutoEmployeeIds] = useState<string[]>([]);
   const [setupShiftRows, setSetupShiftRows] = useState<SetupShiftRow[]>([]);
   const [setupDrag, setSetupDrag] = useState<SetupDragState | null>(null);
+  const [setupShiftsBusyOwner, setSetupShiftsBusyOwner] = useState<LunchBreakMutationBusyOwner | null>(null);
+  const [setupShiftError, setSetupShiftError] = useState<{
+    message: string;
+    status: number | null;
+    code: SetupShiftsPublicErrorCode | null;
+    remediation: string | null;
+  } | null>(null);
   const [isLoadingEmployees, setIsLoadingEmployees] = useState(false);
   const [hasTriedScheduleImport, setHasTriedScheduleImport] = useState(false);
   const [locations, setLocations] = useState<LocationItem[]>([]);
+  const [nextLocationCursor, setNextLocationCursor] = useState<string | null>(null);
+  const [isLoadingMoreLocations, setIsLoadingMoreLocations] = useState(false);
   const [selectedLocationId, setSelectedLocationId] = useState('');
   const [loadedDayScope, setLoadedDayScope] = useState<LunchBreakDayScope | null>(null);
+  const [dayReadError, setDayReadError] = useState<string | null>(null);
   const [permissions, setPermissions] = useState<string[]>([]);
+  const [sessionIdentity, setSessionIdentity] = useState<SessionIdentity | null>(null);
   const [error, setError] = useState<string | null>(null);
   const initialSelectedDateRef = useRef(selectedDate);
-  const desiredDayScopeRef = useRef<LunchBreakDayScope>({ locationId: selectedLocationId, dateValue: selectedDate });
+  const desiredDayScopeRef = useRef<LunchBreakDayScope>({
+    locationId: selectedLocationId,
+    dateValue: selectedDate,
+    epoch: 0,
+  });
   const dayLoadRequestRef = useRef(0);
-  const generationAttemptsRef = useRef<{
-    scheduled?: IdempotentRequestAttempt;
-    manual?: IdempotentRequestAttempt;
-  }>({});
+  const mutationBusyRequestRef = useRef(0);
+  const bootstrapStartedRef = useRef(false);
+  const generationSubmissionRef = useRef(createLunchBreakGenerationSubmissionState());
+  const setupShiftSubmissionRef = useRef(createSetupShiftsSubmissionState());
+  const shiftBreakUpdateSubmissionRef = useRef(createShiftBreakUpdateSubmissionState());
+  const setupSubmitButtonRef = useRef<HTMLButtonElement>(null);
+  const shiftBreakSaveButtonRef = useRef<HTMLButtonElement>(null);
   const capabilities = useMemo(() => getWorkspaceCapabilities(permissions), [permissions]);
   const canWriteLunchBreaks = capabilities.canWriteLunchBreaks;
   const activeLocation = useMemo(
     () => locations.find((location) => location.id === selectedLocationId) ?? null,
     [locations, selectedLocationId],
   );
+  const activeLocationLabel = activeLocation?.name.trim()
+    || (selectedLocationId ? 'Location name unavailable' : 'No location selected');
   const activeTimeZone = safeTimeZone(activeLocation?.timezone);
-  const desiredDayScope = useMemo<LunchBreakDayScope>(
-    () => ({ locationId: selectedLocationId, dateValue: selectedDate }),
-    [selectedDate, selectedLocationId],
-  );
-  desiredDayScopeRef.current = desiredDayScope;
+  const desiredDayScope = desiredDayScopeRef.current;
   const isLoadedDayScopeCurrent = lunchBreakDayScopeMatches(loadedDayScope, desiredDayScope);
   const canWriteLoadedDay = canWriteLunchBreaks && isLoadedDayScopeCurrent && !isDayLoading;
+  const isGeneratingDay = lunchBreakMutationBusyOwnerOwnsScope(scheduledGenerationBusyOwner, desiredDayScope);
+  const isGeneratingManual = lunchBreakMutationBusyOwnerOwnsScope(manualGenerationBusyOwner, desiredDayScope);
+  const isApplyingSetupShifts = lunchBreakMutationBusyOwnerOwnsScope(setupShiftsBusyOwner, desiredDayScope);
+  const commitActiveDayScope = useCallback((requestScope: LunchBreakDayScope, commit: () => void) => (
+    commitLunchBreakDayScope(requestScope, desiredDayScopeRef.current, commit)
+  ), []);
 
   const updateDaySession = useCallback((changes: Partial<LunchBreakDaySession>) => {
     const currentMap = readLunchBreakSession();
@@ -430,11 +514,30 @@ export default function LunchBreaksPage() {
     writeLunchBreakSession(currentMap);
   }, [selectedDate, selectedLocationId]);
 
-  const loadSessionPermissions = useCallback(async (): Promise<string[]> => {
+  const loadSessionContext = useCallback(async (): Promise<{ identity: SessionIdentity; permissions: string[] }> => {
     const res = await fetchWithSession('/auth/me');
-    if (!res.ok) return [];
-    const payload = (await res.json().catch(() => ({}))) as { user?: { permissions?: string[] } };
-    return Array.isArray(payload.user?.permissions) ? payload.user.permissions : [];
+    if (!res.ok) throw new Error('Unable to verify the active lunch/break session.');
+    const payload = (await res.json().catch(() => ({}))) as {
+      user?: {
+        id?: string;
+        sub?: string;
+        tenantId?: string;
+        sessionId?: string;
+        permissions?: string[];
+      };
+    };
+    const userId = payload.user?.sub ?? payload.user?.id;
+    if (!userId || !payload.user?.tenantId || !payload.user.sessionId) {
+      throw new Error('Unable to bind lunch/break recovery to the active session.');
+    }
+    return {
+      identity: {
+        tenantId: payload.user.tenantId,
+        userId,
+        sessionId: payload.user.sessionId,
+      },
+      permissions: Array.isArray(payload.user.permissions) ? payload.user.permissions : [],
+    };
   }, []);
 
   const loadFeatures = useCallback(async (nextPermissions: string[]): Promise<FeatureMatrixResponse> => {
@@ -456,11 +559,11 @@ export default function LunchBreaksPage() {
     return parsed;
   }, []);
 
-  const loadLocations = useCallback(async (): Promise<LocationItem[]> => {
-    const res = await fetchWithSession('/locations');
+  const loadLocations = useCallback(async (cursor?: string): Promise<LocationPage> => {
+    const path = '/locations?limit=200' + (cursor ? '&cursor=' + encodeURIComponent(cursor) : '');
+    const res = await fetchWithSession(path);
     if (!res.ok) throw new Error('Unable to load locations for lunch/break planning.');
-    const payload = (await res.json()) as { data?: LocationItem[] };
-    return Array.isArray(payload.data) ? payload.data : [];
+    return (await res.json()) as LocationPage;
   }, []);
 
   const loadPolicy = useCallback(async (): Promise<LunchBreakPolicy> => {
@@ -470,18 +573,46 @@ export default function LunchBreaksPage() {
     return { ...DEFAULT_POLICY, ...payload };
   }, []);
 
+  const clearDayRows = useCallback(() => {
+    setDayRows([]);
+    setBaselines({});
+    setLoadedDayScope(null);
+    setSelectedShiftId(null);
+    setDayReadError(null);
+  }, []);
+
+  const clearScopedDisplayState = useCallback(() => {
+    setLastRun(null);
+    setPlannerMode(null);
+    setAutoGuideStep(1);
+    setAvailableEmployees([]);
+    setSelectedAutoEmployeeIds([]);
+    setSetupShiftRows([]);
+    setSetupDrag(null);
+    setSetupShiftError(null);
+    setIsLoadingEmployees(false);
+    setHasTriedScheduleImport(false);
+    setIsSavingPolicy(false);
+  }, []);
+
   const loadDayRows = useCallback(async (
-    dateValue: string,
+    requestScope: LunchBreakDayScope,
     policyValue: LunchBreakPolicy,
-    locationId: string,
     timeZone: string,
+    options: { resetScopeDisplay?: boolean } = {},
   ): Promise<DayShiftRow[]> => {
-    const requestScope = { locationId, dateValue };
-    const requestId = ++dayLoadRequestRef.current;
+    const { dateValue, locationId } = requestScope;
+    const requestId = claimLunchBreakDayLoadRequest(
+      requestScope,
+      desiredDayScopeRef.current,
+      dayLoadRequestRef.current,
+    );
+    if (requestId === null) return [];
+    dayLoadRequestRef.current = requestId;
+    clearDayRows();
+    if (options.resetScopeDisplay) clearScopedDisplayState();
     if (!locationId) {
-      setDayRows([]);
-      setBaselines({});
-      setLoadedDayScope(null);
+      setIsDayLoading(false);
       return [];
     }
     const { startIso, endIso } = lunchBreakDayWindow(dateValue, timeZone);
@@ -493,16 +624,23 @@ export default function LunchBreaksPage() {
 
     setIsDayLoading(true);
     try {
-      const res = await fetchWithSession(`/lunch-breaks?${query.toString()}`);
-      if (!res.ok) {
-        throw new Error('Unable to load lunch/break grid for selected day.');
-      }
-
-      const payload = (await res.json()) as { data: GeneratedShiftBreaks[] };
-      const rows = (Array.isArray(payload.data) ? payload.data : [])
+      query.set('limit', '200');
+      const pageRows = await fetchAllBoundedPages(
+        `/lunch-breaks?${query.toString()}`,
+        async (path) => {
+          if (requestId !== dayLoadRequestRef.current || !lunchBreakDayScopeMatches(requestScope, desiredDayScopeRef.current)) {
+            throw new Error('Lunch/break day request was superseded.');
+          }
+          const res = await fetchWithSession(path);
+          if (!res.ok) {
+            throw new Error('Unable to load lunch/break grid for selected day.');
+          }
+          return res.json() as Promise<BoundedPage<GeneratedShiftBreaks>>;
+        },
+      );
+      const rows = pageRows
         .map((entry) => toDayShiftRow(entry, policyValue, timeZone))
         .filter((entry): entry is DayShiftRow => entry !== null);
-
       const baselineMap: Record<string, DayShiftRow> = {};
       for (const row of rows) {
         baselineMap[row.shiftId] = cloneRow(row);
@@ -516,56 +654,105 @@ export default function LunchBreaksPage() {
       setBaselines(baselineMap);
       setLoadedDayScope(requestScope);
       return rows;
+    } catch (loadError) {
+      if (requestId !== dayLoadRequestRef.current || !lunchBreakDayScopeMatches(requestScope, desiredDayScopeRef.current)) {
+        return [];
+      }
+      clearScopedDisplayState();
+      setDayReadError(loadError instanceof Error ? loadError.message : 'Lunch/break data is unavailable for the selected day.');
+      throw loadError;
     } finally {
       if (requestId === dayLoadRequestRef.current) setIsDayLoading(false);
     }
-  }, []);
+  }, [clearDayRows, clearScopedDisplayState]);
 
   const bootstrap = useCallback(async () => {
     setIsLoading(true);
     setError(null);
     try {
-      const [serverNow, sessionPermissions] = await Promise.all([
+      const [serverNow, sessionContext] = await Promise.all([
         loadServerNow(),
-        loadSessionPermissions(),
+        loadSessionContext(),
       ]);
+      const sessionPermissions = sessionContext.permissions;
       if (!hasLunchBreakReadAccess(sessionPermissions)) {
         throw new Error('Lunch and break planning requires lunch/break and location read access.');
       }
-      const [policyData, locationData] = await Promise.all([
+      const [policyData, locationPage] = await Promise.all([
         loadPolicy(),
         loadLocations(),
       ]);
       const featureData = await loadFeatures(sessionPermissions);
+      const locationData = Array.isArray(locationPage.data) ? locationPage.data : [];
+      const locationContinuation = locationPage.pagination?.hasMore === true ? locationPage.pagination.nextCursor : null;
+      if (locationPage.pagination?.hasMore === true && (typeof locationContinuation !== 'string' || !locationContinuation)) {
+        throw new Error('Location list did not provide a continuation cursor.');
+      }
       const primaryLocation = locationData[0] ?? null;
       const primaryTimeZone = safeTimeZone(primaryLocation?.timezone);
       const locationToday = serverNow ? dateValueInTimeZone(serverNow, primaryTimeZone) : initialSelectedDateRef.current;
       setPermissions(sessionPermissions);
+      setSessionIdentity(sessionContext.identity);
       setLocations(locationData);
+      setNextLocationCursor(locationContinuation ?? null);
       setSelectedLocationId(primaryLocation?.id ?? '');
       setServerToday(locationToday);
       setSelectedDate(locationToday);
       initialSelectedDateRef.current = locationToday;
-      desiredDayScopeRef.current = { locationId: primaryLocation?.id ?? '', dateValue: locationToday };
+      const bootstrapScope = nextLunchBreakDayScope(desiredDayScopeRef.current, {
+        locationId: primaryLocation?.id ?? '',
+        dateValue: locationToday,
+      });
+      desiredDayScopeRef.current = bootstrapScope;
 
       setFeatures(featureData);
       setPolicy(policyData);
       setPolicyLoaded(policyData);
 
       if (featureData.features.lunch_breaks.enabled) {
-        await loadDayRows(locationToday, policyData, primaryLocation?.id ?? '', primaryTimeZone);
+        await loadDayRows(
+          bootstrapScope,
+          policyData,
+          primaryTimeZone,
+          { resetScopeDisplay: true },
+        );
       } else {
-        setDayRows([]);
-        setBaselines({});
+        clearDayRows();
+        clearScopedDisplayState();
       }
     } catch (err) {
       setError((err as Error).message);
     } finally {
       setIsLoading(false);
     }
-  }, [loadFeatures, loadLocations, loadPolicy, loadDayRows, loadServerNow, loadSessionPermissions]);
+  }, [clearDayRows, clearScopedDisplayState, loadFeatures, loadLocations, loadPolicy, loadDayRows, loadServerNow, loadSessionContext]);
+  const loadMoreLocations = useCallback(async () => {
+    if (!nextLocationCursor) return;
+    setIsLoadingMoreLocations(true);
+    setError(null);
+    try {
+      const page = await loadLocations(nextLocationCursor);
+      const rows = Array.isArray(page.data) ? page.data : [];
+      const continuation = page.pagination?.hasMore === true ? page.pagination.nextCursor : null;
+      if (page.pagination?.hasMore === true && (typeof continuation !== 'string' || !continuation)) {
+        throw new Error('Location list did not provide a continuation cursor.');
+      }
+      setLocations((current) => {
+        const byId = new Map(current.map((location) => [location.id, location]));
+        for (const location of rows) byId.set(location.id, location);
+        return [...byId.values()];
+      });
+      setNextLocationCursor(continuation ?? null);
+    } catch (loadError) {
+      setError(loadError instanceof Error ? loadError.message : 'Unable to load more locations.');
+    } finally {
+      setIsLoadingMoreLocations(false);
+    }
+  }, [loadLocations, nextLocationCursor]);
 
   useEffect(() => {
+    if (bootstrapStartedRef.current) return;
+    bootstrapStartedRef.current = true;
     void bootstrap();
   }, [bootstrap]);
 
@@ -573,21 +760,54 @@ export default function LunchBreaksPage() {
   const schedulingFeature = features?.features.scheduling;
   const hasSchedulingEnabled = Boolean(schedulingFeature?.enabled);
   const hasSharedScheduleData = Boolean(hasSchedulingEnabled && dayRows.length > 0);
+  const setupShiftsCreditCost = typeof schedulingFeature?.creditCost === 'number'
+    && Number.isSafeInteger(schedulingFeature.creditCost)
+    && schedulingFeature.creditCost > 0
+    ? schedulingFeature.creditCost
+    : null;
+  const setupShiftsBillingBlockReason = capabilities.canReadBilling && (
+    !schedulingFeature?.enabled
+    || schedulingFeature.source !== 'credits'
+    || setupShiftsCreditCost === null
+    || (features?.usageCredits ?? 0) < setupShiftsCreditCost
+  )
+    ? schedulingFeature?.reason || 'Setup shifts require an active paid subscription and configured usage credits.'
+    : null;
 
-  useEffect(() => {
-    if (!lunchBreakFeature?.enabled) return;
-    if (isLoading) return;
+  const selectDayScope = useCallback((dateValue: string, locationId: string) => {
+    if (lunchBreakDaySelectionMatches({ locationId, dateValue }, desiredDayScopeRef.current)) return;
+    const nextScope = nextLunchBreakDayScope(desiredDayScopeRef.current, { locationId, dateValue });
 
-    void loadDayRows(selectedDate, policyLoaded, selectedLocationId, activeTimeZone).catch((err) => {
-      setError((err as Error).message);
+    desiredDayScopeRef.current = nextScope;
+    setSelectedDate(dateValue);
+    setSelectedLocationId(locationId);
+    setError(null);
+    const nextLocation = locations.find((location) => location.id === locationId) ?? null;
+    if (!lunchBreakFeature?.enabled) {
+      clearDayRows();
+      clearScopedDisplayState();
+      return;
+    }
+    void loadDayRows(
+      nextScope,
+      policyLoaded,
+      safeTimeZone(nextLocation?.timezone),
+      { resetScopeDisplay: true },
+    ).catch(() => {
+      // The current scoped-read owner renders the unavailable state.
     });
-  }, [activeTimeZone, isLoading, loadDayRows, lunchBreakFeature?.enabled, policyLoaded, selectedDate, selectedLocationId]);
+  }, [clearDayRows, clearScopedDisplayState, loadDayRows, locations, lunchBreakFeature?.enabled, policyLoaded]);
+
+  const retryDayRows = useCallback(() => {
+    setError(null);
+    void loadDayRows(desiredDayScopeRef.current, policyLoaded, activeTimeZone).catch(() => {
+      // The current scoped-read owner renders the unavailable state.
+    });
+  }, [activeTimeZone, loadDayRows, policyLoaded]);
 
   useEffect(() => {
-    setHasTriedScheduleImport(false);
-    setSetupShiftRows([]);
-    setSelectedAutoEmployeeIds([]);
-  }, [selectedDate, selectedLocationId]);
+    setSetupShiftError(null);
+  }, [selectedDate, selectedLocationId, setupShiftRows]);
 
   const updateBreak = useCallback((shiftId: string, key: BreakEditorKey, next: Partial<EditableBreak>) => {
     if (!canWriteLoadedDay) return;
@@ -616,6 +836,8 @@ export default function LunchBreaksPage() {
       setError('You have read-only lunch/break access.');
       return;
     }
+    const mutationScope = desiredDayScopeRef.current;
+    const mutationTimeZone = activeTimeZone;
     setIsSavingPolicy(true);
     setError(null);
     try {
@@ -625,15 +847,17 @@ export default function LunchBreaksPage() {
       if (!res.ok) throw new Error('Failed to save lunch/break policy.');
       const payload = (await res.json()) as Partial<LunchBreakPolicy>;
       const merged = { ...DEFAULT_POLICY, ...payload };
-      setPolicy(merged);
-      setPolicyLoaded(merged);
-      await loadDayRows(selectedDate, merged, selectedLocationId, activeTimeZone);
+      if (!commitActiveDayScope(mutationScope, () => {
+        setPolicy(merged);
+        setPolicyLoaded(merged);
+      })) return;
+      await loadDayRows(mutationScope, merged, mutationTimeZone);
     } catch (err) {
-      setError((err as Error).message);
+      commitActiveDayScope(mutationScope, () => setError((err as Error).message));
     } finally {
-      setIsSavingPolicy(false);
+      commitActiveDayScope(mutationScope, () => setIsSavingPolicy(false));
     }
-  }, [activeTimeZone, canWriteLunchBreaks, loadDayRows, policy, selectedDate, selectedLocationId]);
+  }, [activeTimeZone, canWriteLunchBreaks, commitActiveDayScope, loadDayRows, policy]);
 
   const saveRow = useCallback(
     async (shiftId: string): Promise<boolean> => {
@@ -643,18 +867,23 @@ export default function LunchBreaksPage() {
         setError('You have read-only lunch/break access.');
         return false;
       }
+      if (!sessionIdentity) {
+        setError('Unable to verify the active lunch/break session. Refresh and try again.');
+        return false;
+      }
       const writeScope = desiredDayScopeRef.current;
       if (!lunchBreakDayScopeMatches(loadedDayScope, writeScope)) {
         setError('Wait for the selected location and day to finish loading before saving.');
         return false;
       }
 
+      setError(null);
       setDayRows((prev) =>
         prev.map((candidate) => (candidate.shiftId === shiftId ? { ...candidate, saving: true } : candidate)),
       );
 
       try {
-        const breaks = BREAK_KEYS.map((key) => {
+        const breaks: ShiftBreakUpdateRequestBody['breaks'] = BREAK_KEYS.map((key) => {
           const current = row[key];
           if (current.skipped) {
             return { type: key, skip: true };
@@ -673,34 +902,64 @@ export default function LunchBreaksPage() {
           };
         });
 
-        const res = await fetchWithSession(`/lunch-breaks/shift/${shiftId}`, {
-          ...jsonWriteInit('PUT', { locationId: writeScope.locationId, breaks }),
-        });
-        if (!res.ok) throw new Error(`Failed to save row for ${row.employeeName}.`);
-
-        const payload = (await res.json()) as GeneratedShiftBreaks;
+        const requestBody: ShiftBreakUpdateRequestBody = { locationId: writeScope.locationId, breaks };
+        const submitted = await submitShiftBreakUpdate(
+          shiftBreakUpdateSubmissionRef.current,
+          {
+            shiftId,
+            dateValue: writeScope.dateValue,
+            locationId: writeScope.locationId,
+            tenantId: sessionIdentity.tenantId,
+            userId: sessionIdentity.userId,
+            sessionId: sessionIdentity.sessionId,
+          },
+          requestBody,
+          window.localStorage,
+          async (retainedBody, idempotencyKey) => {
+            const response = await fetchLunchBreakMutation(`/lunch-breaks/shift/${shiftId}`, {
+              ...withIdempotencyKey(jsonWriteInit('PUT', retainedBody), idempotencyKey),
+            });
+            return readShiftBreakUpdateResponse<GeneratedShiftBreaks>(response);
+          },
+        );
+        if (!submitted.submitted) {
+          commitActiveDayScope(writeScope, () => {
+            setDayRows((prev) => prev.map((candidate) => (
+              candidate.shiftId === shiftId ? { ...candidate, saving: false } : candidate
+            )));
+          });
+          return false;
+        }
+        const payload = submitted.value;
         const mapped = toDayShiftRow(payload, policyLoaded, activeTimeZone);
         if (!mapped) throw new Error('Saved row did not include a shift id.');
 
-        setDayRows((prev) =>
-          prev.map((candidate) =>
-            candidate.shiftId === shiftId ? { ...mapped, dirty: false, saving: false } : candidate,
-          ),
-        );
-        setBaselines((prev) => ({
-          ...prev,
-          [shiftId]: { ...mapped, dirty: false, saving: false },
-        }));
-        return true;
+        return commitActiveDayScope(writeScope, () => {
+          setDayRows((prev) =>
+            prev.map((candidate) =>
+              candidate.shiftId === shiftId ? { ...mapped, dirty: false, saving: false } : candidate,
+            ),
+          );
+          setBaselines((prev) => ({
+            ...prev,
+            [shiftId]: { ...mapped, dirty: false, saving: false },
+          }));
+        });
       } catch (err) {
-        setDayRows((prev) =>
-          prev.map((candidate) => (candidate.shiftId === shiftId ? { ...candidate, saving: false } : candidate)),
-        );
-        setError((err as Error).message);
+        const message = err instanceof ShiftBreakUpdateRequestError
+          ? `${err.code ? `${err.code}: ` : ''}${err.message}${err.remediation ? ` ${err.remediation}` : ''}`
+          : (err as Error).message;
+        commitActiveDayScope(writeScope, () => {
+          setDayRows((prev) =>
+            prev.map((candidate) => (candidate.shiftId === shiftId ? { ...candidate, saving: false } : candidate)),
+          );
+          setError(message);
+          window.requestAnimationFrame(() => shiftBreakSaveButtonRef.current?.focus());
+        });
         return false;
       }
     },
-    [activeTimeZone, canWriteLunchBreaks, dayRows, loadedDayScope, policyLoaded],
+    [activeTimeZone, canWriteLunchBreaks, commitActiveDayScope, dayRows, loadedDayScope, policyLoaded, sessionIdentity],
   );
 
   const saveAllDirtyRows = useCallback(async () => {
@@ -727,6 +986,10 @@ export default function LunchBreaksPage() {
       setError('Wait for the selected location and day to finish loading before generating.');
       return;
     }
+    if (!sessionIdentity) {
+      setError('Unable to bind generation recovery to the active session. Refresh and retry.');
+      return;
+    }
     if (dayRows.length === 0) {
       setError(
         hasSchedulingEnabled
@@ -744,36 +1007,56 @@ export default function LunchBreaksPage() {
       return;
     }
 
-    setIsGeneratingDay(true);
+    const mutationScope = desiredDayScopeRef.current;
+    const mutationTimeZone = activeTimeZone;
+    const busyOwner = claimLunchBreakMutationBusyOwner(mutationScope, mutationBusyRequestRef.current);
+    mutationBusyRequestRef.current = busyOwner.requestId;
+    setScheduledGenerationBusyOwner(busyOwner);
     setError(null);
     try {
       const requestBody = {
-        locationId: selectedLocationId,
+        locationId: mutationScope.locationId,
         shiftIds: selectedRows.map((row) => row.shiftId),
         persist: true,
         policy,
       };
-      const requestAttempt = idempotentRequestAttempt(
+      const result = await submitLunchBreakGeneration(
+        generationSubmissionRef.current,
+        {
+          mode: 'scheduled',
+          dateValue: mutationScope.dateValue,
+          locationId: mutationScope.locationId,
+          tenantId: sessionIdentity.tenantId,
+          userId: sessionIdentity.userId,
+          sessionId: sessionIdentity.sessionId,
+        },
         requestBody,
-        generationAttemptsRef.current.scheduled,
+        window.localStorage,
+        async (retainedBody, idempotencyKey) => {
+          const response = await fetchLunchBreakMutation('/lunch-breaks/generate', {
+            ...withIdempotencyKey(jsonWriteInit('POST', retainedBody), idempotencyKey),
+          });
+          if (!response.ok) throw new Error('Failed to generate lunch/break assignments for this day.');
+          return response.json() as Promise<GenerateResponse>;
+        },
       );
-      generationAttemptsRef.current.scheduled = requestAttempt;
-      const res = await fetchWithSession('/lunch-breaks/generate', {
-        ...withIdempotencyKey(jsonWriteInit('POST', requestBody), requestAttempt.key),
+      if (!result.submitted) return;
+      const payload = result.value;
+      if (!commitActiveDayScope(mutationScope, () => {
+        updateDaySession({ mode: 'auto', autoSetupComplete: true, lastShiftId: selectedShiftId ?? null });
+      })) return;
+      await loadDayRows(mutationScope, policyLoaded, mutationTimeZone);
+      commitActiveDayScope(mutationScope, () => {
+        setLastRun(payload);
       });
-      if (!res.ok) throw new Error('Failed to generate lunch/break assignments for this day.');
-
-      const payload = (await res.json()) as GenerateResponse;
-      setLastRun(payload);
-      updateDaySession({ mode: 'auto', autoSetupComplete: true, lastShiftId: selectedShiftId ?? null });
-      await loadDayRows(selectedDate, policyLoaded, selectedLocationId, activeTimeZone);
-      delete generationAttemptsRef.current.scheduled;
     } catch (err) {
-      setError((err as Error).message);
+      commitActiveDayScope(mutationScope, () => setError((err as Error).message));
     } finally {
-      setIsGeneratingDay(false);
+      setScheduledGenerationBusyOwner((currentOwner) => (
+        releaseLunchBreakMutationBusyOwner(currentOwner, busyOwner)
+      ));
     }
-  }, [activeTimeZone, canWriteLoadedDay, canWriteLunchBreaks, dayRows, hasSchedulingEnabled, loadDayRows, policy, policyLoaded, selectedAutoEmployeeIds, selectedDate, selectedLocationId, selectedShiftId, updateDaySession]);
+  }, [activeTimeZone, canWriteLoadedDay, canWriteLunchBreaks, commitActiveDayScope, dayRows, hasSchedulingEnabled, loadDayRows, policy, policyLoaded, selectedAutoEmployeeIds, selectedShiftId, sessionIdentity, updateDaySession]);
 
   const addManualShift = useCallback(() => {
     if (!canWriteLunchBreaks) return;
@@ -804,11 +1087,23 @@ export default function LunchBreaksPage() {
       setError('You need lunch/break write access to generate a plan.');
       return;
     }
-    setIsGeneratingManual(true);
+    if (!canWriteLoadedDay) {
+      setError('Wait for the selected location and day to finish loading before generating.');
+      return;
+    }
+    if (!sessionIdentity) {
+      setError('Unable to bind generation recovery to the active session. Refresh and retry.');
+      return;
+    }
+    const mutationScope = desiredDayScopeRef.current;
+    const mutationTimeZone = activeTimeZone;
+    const busyOwner = claimLunchBreakMutationBusyOwner(mutationScope, mutationBusyRequestRef.current);
+    mutationBusyRequestRef.current = busyOwner.requestId;
+    setManualGenerationBusyOwner(busyOwner);
     setError(null);
     try {
       const shifts = manualShifts.map((row) => {
-        const range = lunchBreakShiftRange(selectedDate, row.startTime, row.endTime, activeTimeZone);
+        const range = lunchBreakShiftRange(mutationScope.dateValue, row.startTime, row.endTime, mutationTimeZone);
         if (!range) {
           throw new Error(`Invalid shift time for ${row.employeeName || 'employee'}.`);
         }
@@ -828,24 +1123,39 @@ export default function LunchBreaksPage() {
         persist: false,
         policy,
       };
-      const requestAttempt = idempotentRequestAttempt(
+      const result = await submitLunchBreakGeneration(
+        generationSubmissionRef.current,
+        {
+          mode: 'manual',
+          dateValue: mutationScope.dateValue,
+          locationId: mutationScope.locationId,
+          tenantId: sessionIdentity.tenantId,
+          userId: sessionIdentity.userId,
+          sessionId: sessionIdentity.sessionId,
+        },
         requestBody,
-        generationAttemptsRef.current.manual,
+        window.localStorage,
+        async (retainedBody, idempotencyKey) => {
+          const response = await fetchLunchBreakMutation('/lunch-breaks/generate', {
+            ...withIdempotencyKey(jsonWriteInit('POST', retainedBody), idempotencyKey),
+          });
+          if (!response.ok) throw new Error('Failed to generate lunch/breaks from manual shifts.');
+          return response.json() as Promise<GenerateResponse>;
+        },
       );
-      generationAttemptsRef.current.manual = requestAttempt;
-      const res = await fetchWithSession('/lunch-breaks/generate', {
-        ...withIdempotencyKey(jsonWriteInit('POST', requestBody), requestAttempt.key),
+      if (!result.submitted) return;
+      const payload = result.value;
+      commitActiveDayScope(mutationScope, () => {
+        setLastRun(payload);
       });
-      if (!res.ok) throw new Error('Failed to generate lunch/breaks from manual shifts.');
-      const payload = (await res.json()) as GenerateResponse;
-      setLastRun(payload);
-      delete generationAttemptsRef.current.manual;
     } catch (err) {
-      setError((err as Error).message);
+      commitActiveDayScope(mutationScope, () => setError((err as Error).message));
     } finally {
-      setIsGeneratingManual(false);
+      setManualGenerationBusyOwner((currentOwner) => (
+        releaseLunchBreakMutationBusyOwner(currentOwner, busyOwner)
+      ));
     }
-  }, [activeTimeZone, canWriteLunchBreaks, manualShifts, policy, selectedDate]);
+  }, [activeTimeZone, canWriteLoadedDay, canWriteLunchBreaks, commitActiveDayScope, manualShifts, policy, sessionIdentity]);
 
   useEffect(() => {
     setSelectedShiftId((current) => {
@@ -988,35 +1298,6 @@ export default function LunchBreaksPage() {
     updateDaySession({ lastShiftId: selectedShiftId ?? null });
   }, [autoGuideStep, canWriteLunchBreaks, plannerMode, selectedShiftId, updateDaySession]);
 
-  useEffect(() => {
-    if (!canWriteLunchBreaks) return;
-    if (!(plannerMode === 'auto' && autoGuideStep >= 5)) return;
-    if (!lunchBreakFeature?.enabled) return;
-    if (isDayLoading || isGeneratingDay) return;
-    if (dayRows.some((row) => row.dirty || row.saving)) return;
-
-    const interval = window.setInterval(() => {
-      void loadDayRows(selectedDate, policyLoaded, selectedLocationId, activeTimeZone).catch(() => {
-        // keep polling silent; explicit errors are surfaced on direct user actions
-      });
-    }, 8000);
-
-    return () => window.clearInterval(interval);
-  }, [
-    autoGuideStep,
-    canWriteLunchBreaks,
-    dayRows,
-    isDayLoading,
-    isGeneratingDay,
-    activeTimeZone,
-    loadDayRows,
-    lunchBreakFeature?.enabled,
-    plannerMode,
-    policyLoaded,
-    selectedDate,
-    selectedLocationId,
-  ]);
-
   const standalonePreview = useMemo(
     () => (lastRun?.source === 'standalone' ? lastRun.data : []),
     [lastRun],
@@ -1090,6 +1371,10 @@ export default function LunchBreaksPage() {
   const effectivePlannerMode = canWriteLunchBreaks ? plannerMode : 'auto';
   const isAutoMode = effectivePlannerMode === 'auto';
   const isManualMode = effectivePlannerMode === 'manual';
+  const focusGuideStepHeading = useCallback((node: HTMLHeadingElement | null) => {
+    if (node && isAutoMode && autoGuideStep >= 2) node.focus();
+  }, [autoGuideStep, isAutoMode]);
+
   const isGeneratingPrimary = isAutoMode ? isGeneratingDay : isManualMode ? isGeneratingManual : false;
   const statusShiftsCount = isAutoMode ? dayRows.length : standalonePreview.length;
   const statusMealsAssigned = isAutoMode
@@ -1209,19 +1494,44 @@ export default function LunchBreaksPage() {
       setError('You have read-only lunch/break access.');
       return;
     }
+    if (!capabilities.canWriteShifts) {
+      setError('You need shift write access to persist setup shifts.');
+      return;
+    }
     if (!canWriteLoadedDay) {
       setError('Wait for the selected location and day to finish loading before changing setup shifts.');
+      return;
+    }
+    if (!sessionIdentity) {
+      setError('Unable to bind setup-shift recovery to the active session. Refresh and retry.');
+      return;
+    }
+    if (setupShiftsBillingBlockReason) {
+      setSetupShiftError({
+        message: setupShiftsBillingBlockReason,
+        status: 403,
+        code: 'SETUP_SHIFTS_ENTITLEMENT_REQUIRED',
+        remediation: 'Activate a paid subscription or add usage credits, then retry the unchanged setup.',
+      });
+      setError(setupShiftsBillingBlockReason);
       return;
     }
     const persistedUserIds = new Set<string>([
       ...availableEmployees.map((employee) => employee.id),
       ...dayRows.map((row) => row.userId).filter((value): value is string => Boolean(value)),
     ]);
+    const mutationScope = desiredDayScopeRef.current;
+    const mutationTimeZone = activeTimeZone;
+    const busyOwner = claimLunchBreakMutationBusyOwner(mutationScope, mutationBusyRequestRef.current);
+    mutationBusyRequestRef.current = busyOwner.requestId;
 
+    let setupWasPersisted = false;
+    setSetupShiftsBusyOwner(busyOwner);
     try {
       setError(null);
-      const rows = setupShiftRows.map((setupRow) => {
-        const range = lunchBreakShiftRange(selectedDate, setupRow.startTime, setupRow.endTime, activeTimeZone);
+      setSetupShiftError(null);
+      const rows: SetupShiftsRequestBody['rows'] = setupShiftRows.map((setupRow) => {
+        const range = lunchBreakShiftRange(mutationScope.dateValue, setupRow.startTime, setupRow.endTime, mutationTimeZone);
         if (!range) {
           throw new Error(`Invalid shift time for ${setupRow.employeeName}.`);
         }
@@ -1234,38 +1544,78 @@ export default function LunchBreaksPage() {
       });
 
       if (rows.length > 0) {
-        const res = await fetchWithSession('/lunch-breaks/setup-shifts', {
-          ...jsonWriteInit('POST', { locationId: selectedLocationId, rows }),
-        });
-        if (!res.ok) {
-          throw new Error('Failed to persist setup shifts for this day.');
-        }
+        const requestBody = { locationId: mutationScope.locationId, rows };
+        const result = await submitSetupShifts(
+          setupShiftSubmissionRef.current,
+          {
+            dateValue: mutationScope.dateValue,
+            tenantId: sessionIdentity.tenantId,
+            userId: sessionIdentity.userId,
+            sessionId: sessionIdentity.sessionId,
+            locationId: mutationScope.locationId,
+            rows: setupShiftRows.map((row) => ({
+              employeeId: row.employeeId,
+              startTime: row.startTime,
+              endTime: row.endTime,
+            })),
+          },
+          requestBody,
+          window.localStorage,
+          async (retainedRequestBody, idempotencyKey) => {
+            const res = await fetchLunchBreakMutation('/lunch-breaks/setup-shifts', {
+              ...withIdempotencyKey(jsonWriteInit('POST', retainedRequestBody), idempotencyKey),
+            });
+            return readSetupShiftsResponse(res);
+          },
+        );
+        if (!result.submitted) return;
+        setupWasPersisted = true;
       }
 
-      await loadDayRows(selectedDate, policyLoaded, selectedLocationId, activeTimeZone);
-      setPlannerMode('auto');
-      updateDaySession({ mode: 'auto', autoSetupComplete: true, lastShiftId: selectedShiftId ?? null });
-      setAutoGuideStep(5);
+      if (!commitActiveDayScope(mutationScope, () => {
+        setPlannerMode('auto');
+        updateDaySession({ mode: 'auto', autoSetupComplete: true, lastShiftId: selectedShiftId ?? null });
+        setAutoGuideStep(5);
+      })) return;
+      await loadDayRows(mutationScope, policyLoaded, mutationTimeZone);
     } catch (err) {
-      setError((err as Error).message);
+      commitActiveDayScope(mutationScope, () => {
+        if (setupWasPersisted) {
+          setError('Setup shifts were saved, but the refreshed day could not be loaded. Refresh to reconcile the saved shifts.');
+        } else {
+          const message = err instanceof Error ? err.message : 'Unable to persist setup shifts.';
+          const status = err instanceof SetupShiftsRequestError ? err.status : null;
+          const code = err instanceof SetupShiftsRequestError ? err.code : null;
+          const remediation = err instanceof SetupShiftsRequestError ? err.remediation : null;
+          setSetupShiftError({ message, status, code, remediation });
+          setError(message);
+          window.requestAnimationFrame(() => setupSubmitButtonRef.current?.focus());
+        }
+      });
+    } finally {
+      setSetupShiftsBusyOwner((currentOwner) => (
+        releaseLunchBreakMutationBusyOwner(currentOwner, busyOwner)
+      ));
     }
   }, [
     activeTimeZone,
     availableEmployees,
+    capabilities.canWriteShifts,
     canWriteLunchBreaks,
     canWriteLoadedDay,
+    commitActiveDayScope,
     dayRows,
     loadDayRows,
     policyLoaded,
-    selectedDate,
-    selectedLocationId,
     selectedShiftId,
+    sessionIdentity,
+    setupShiftsBillingBlockReason,
     setupShiftRows,
     updateDaySession,
   ]);
 
-  const startSetupDrag = useCallback((event: { clientX: number; currentTarget: EventTarget & HTMLSpanElement }, row: SetupShiftRow) => {
-    if (!canWriteLunchBreaks) return;
+  const startSetupDrag = useCallback((event: { clientX: number; currentTarget: EventTarget & HTMLButtonElement }, row: SetupShiftRow) => {
+    if (!canWriteLunchBreaks || isApplyingSetupShifts) return;
     const trackEl = (event.currentTarget.parentElement as HTMLElement | null);
     if (!trackEl) return;
     const trackBounds = trackEl.getBoundingClientRect();
@@ -1279,10 +1629,10 @@ export default function LunchBreaksPage() {
       originalStartMinutes: startMinutes,
       durationMinutes,
     });
-  }, [canWriteLunchBreaks]);
+  }, [canWriteLunchBreaks, isApplyingSetupShifts]);
 
   const onSetupDragMove = useCallback((event: { clientX: number }) => {
-    if (!canWriteLunchBreaks) return;
+    if (!canWriteLunchBreaks || isApplyingSetupShifts) return;
     if (!setupDrag) return;
     const deltaPx = event.clientX - setupDrag.startX;
     const deltaMinutesRaw = (deltaPx / setupDrag.trackWidth) * setupTimelineWindow;
@@ -1303,7 +1653,7 @@ export default function LunchBreaksPage() {
           : row,
       ),
     );
-  }, [canWriteLunchBreaks, setupDrag, setupTimelineWindow]);
+  }, [canWriteLunchBreaks, isApplyingSetupShifts, setupDrag, setupTimelineWindow]);
 
   const endSetupDrag = useCallback(() => {
     if (!canWriteLunchBreaks) return;
@@ -1313,27 +1663,35 @@ export default function LunchBreaksPage() {
 
   useEffect(() => {
     if (!(isAutoMode && autoGuideStep === 3)) return;
+    if (!isLoadedDayScopeCurrent || isDayLoading || dayReadError) return;
     if (scheduledEmployees.length > 0) return;
     if (availableEmployees.length > 0) return;
 
     let isActive = true;
     setIsLoadingEmployees(true);
-    void fetchWithSession('/shifts/staff-roster')
-      .then(async (res) => {
-        if (!res.ok) return;
-        const payload = (await res.json()) as { data?: Array<{ id: string; name: string; role?: string }> };
+    void fetchAllBoundedPages(
+      '/shifts/staff-roster?limit=200',
+      async (path) => {
+        const res = await fetchWithSession(path);
+        if (!res.ok) throw new Error('Unable to load staff.');
+        return res.json() as Promise<BoundedPage<{ id: string; name: string; role?: string }>>;
+      },
+    )
+      .then((rows) => {
         if (!isActive) return;
-        const list = Array.isArray(payload.data)
-          ? payload.data
-              .filter((user) => user.role !== 'ADMIN' && user.role !== 'SUPER_ADMIN')
-              .map((user) => ({
-                id: user.id,
-                name: user.name || 'Unnamed',
-                role: user.role,
-                source: 'available' as const,
-              }))
-          : [];
+        const list = rows
+          .filter((user) => user.role !== 'ADMIN' && user.role !== 'SUPER_ADMIN')
+          .map((user) => ({
+            id: user.id,
+            name: user.name || 'Unnamed',
+            role: user.role,
+            source: 'available' as const,
+          }))
+          .sort((left, right) => left.name.localeCompare(right.name) || left.id.localeCompare(right.id));
         setAvailableEmployees(list);
+      })
+      .catch(() => {
+        if (isActive) setAvailableEmployees([]);
       })
       .finally(() => {
         if (isActive) setIsLoadingEmployees(false);
@@ -1342,7 +1700,7 @@ export default function LunchBreaksPage() {
     return () => {
       isActive = false;
     };
-  }, [autoGuideStep, availableEmployees.length, isAutoMode, scheduledEmployees.length]);
+  }, [autoGuideStep, availableEmployees.length, dayReadError, isAutoMode, isDayLoading, isLoadedDayScopeCurrent, scheduledEmployees.length]);
 
   const previousPickerDate = useMemo(() => shiftDate(serverToday, -1), [serverToday]);
   const futurePickerDays = useMemo(
@@ -1360,12 +1718,12 @@ export default function LunchBreaksPage() {
     setError(null);
     setHasTriedScheduleImport(true);
     try {
-      return await loadDayRows(selectedDate, policyLoaded, selectedLocationId, activeTimeZone);
+      return await loadDayRows(desiredDayScopeRef.current, policyLoaded, activeTimeZone);
     } catch (err) {
       setError((err as Error).message);
       return [];
     }
-  }, [activeTimeZone, loadDayRows, policyLoaded, selectedDate, selectedLocationId]);
+  }, [activeTimeZone, loadDayRows, policyLoaded]);
 
   const autoPrimaryTitle = useMemo(() => {
     if (!hasSchedulingEnabled) return 'Setup Breaks';
@@ -1397,10 +1755,7 @@ export default function LunchBreaksPage() {
           Location
           <select
             value={selectedLocationId}
-            onChange={(event) => {
-              setLoadedDayScope(null);
-              setSelectedLocationId(event.target.value);
-            }}
+            onChange={(event) => selectDayScope(selectedDate, event.target.value)}
             disabled={locations.length === 0}
             style={{
               border: '1px solid var(--border)',
@@ -1416,11 +1771,49 @@ export default function LunchBreaksPage() {
               <option key={location.id} value={location.id}>{location.name}</option>
             ))}
           </select>
+          {nextLocationCursor ? (
+            <button
+              type="button"
+              className="btn btn-secondary"
+              onClick={() => void loadMoreLocations()}
+              disabled={isLoadingMoreLocations}
+            >
+              {isLoadingMoreLocations ? 'Loading...' : 'Load more locations'}
+            </button>
+          ) : null}
           {activeLocation ? (
             <span style={{ color: 'var(--text-muted)', fontWeight: 600 }}>{activeTimeZone}</span>
           ) : null}
         </label>
       </section>
+      {!isLoading && dayReadError ? (
+        <section
+          role="alert"
+          className="surface-card"
+          style={{
+            padding: '0.85rem 1rem',
+            border: '1px solid rgba(190, 24, 93, 0.28)',
+            background: '#fff7fa',
+            color: '#831843',
+            display: 'grid',
+            gap: 6,
+          }}
+        >
+          <strong>Lunch/break data unavailable for {activeLocationLabel}</strong>
+          <span>{dayReadError}</span>
+          <span>No employees or counts from another location or day are shown. Planning changes remain disabled until this day loads.</span>
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            onClick={retryDayRows}
+            disabled={isDayLoading}
+            style={{ justifySelf: 'start' }}
+          >
+            {isDayLoading ? 'Retrying selected day...' : 'Retry selected day'}
+          </Button>
+        </section>
+      ) : null}
       {!showGuidedWindow ? (
         <section
           className="surface-card"
@@ -1436,9 +1829,15 @@ export default function LunchBreaksPage() {
         >
           <div>
             <div className="workspace-kicker">Lunch & breaks workspace</div>
-            <h1 className="workspace-title" style={{ fontSize: '1.58rem', marginBottom: 2 }}>
-              Lunch & Break Planner
-            </h1>
+            {lunchBreakFeature?.enabled ? (
+              <h2 className="workspace-title" style={{ fontSize: '1.58rem', marginBottom: 2 }}>
+                Lunch & Break Planner
+              </h2>
+            ) : (
+              <h1 className="workspace-title" style={{ fontSize: '1.58rem', marginBottom: 2 }}>
+                Lunch & Break Planner
+              </h1>
+            )}
             <p className="workspace-subtitle">Generate compliant lunches and staggered breaks for the selected day.</p>
             <div style={{ marginTop: 4, fontSize: '0.78rem', color: 'var(--text-muted)', fontWeight: 700 }}>
               {selectedDateLabel} break plan
@@ -1452,14 +1851,12 @@ export default function LunchBreaksPage() {
 
           <div style={{ display: 'flex', flexDirection: 'column', gap: 8, alignItems: 'flex-end' }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
-              <Button variant="outline" size="sm" onClick={() => setSelectedDate(shiftDate(selectedDate, -1))}>Prev Day</Button>
+              <Button variant="outline" size="sm" onClick={() => selectDayScope(shiftDate(selectedDate, -1), selectedLocationId)}>Prev Day</Button>
               <input
                 type="date"
+                aria-label="Lunch and break plan date"
                 value={selectedDate}
-                onChange={(event) => {
-                  setLoadedDayScope(null);
-                  setSelectedDate(event.target.value);
-                }}
+                onChange={(event) => selectDayScope(event.target.value, selectedLocationId)}
                 style={{
                   border: '1px solid var(--border)',
                   borderRadius: 8,
@@ -1469,8 +1866,8 @@ export default function LunchBreaksPage() {
                   fontSize: '0.8rem',
                 }}
               />
-              <Button variant="outline" size="sm" onClick={() => setSelectedDate(serverToday)}>Today</Button>
-              <Button variant="outline" size="sm" onClick={() => setSelectedDate(shiftDate(selectedDate, 1))}>Next Day</Button>
+              <Button variant="outline" size="sm" onClick={() => selectDayScope(serverToday, selectedLocationId)}>Today</Button>
+              <Button variant="outline" size="sm" onClick={() => selectDayScope(shiftDate(selectedDate, 1), selectedLocationId)}>Next Day</Button>
             </div>
             <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
               {canWriteLunchBreaks ? (
@@ -1495,7 +1892,7 @@ export default function LunchBreaksPage() {
                       isLoading ||
                       !lunchBreakFeature?.enabled ||
                       plannerMode === null ||
-                      (plannerMode === 'auto' && !canWriteLoadedDay)
+                      !canWriteLoadedDay
                     }
                     style={{ minWidth: 250 }}
                   >
@@ -1608,17 +2005,17 @@ export default function LunchBreaksPage() {
               {plannerMode === null ? (
                 <motion.div
                   key="guide-step-1"
-                  initial={{ opacity: 0, y: 12 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  exit={{ opacity: 0, y: -8 }}
+                  initial={{ y: 12 }}
+                  animate={{ y: 0 }}
+                  exit={{ y: -8 }}
                   transition={{ duration: 0.22 }}
                   style={{ display: 'grid', gap: 14 }}
                 >
                   <div style={{ textAlign: 'center', display: 'grid', gap: 6 }}>
                     <div className="workspace-kicker">Lunch & breaks</div>
-                    <h2 className="workspace-title" style={{ margin: 0, fontSize: '1.45rem' }}>
+                    <h1 className="workspace-title" style={{ margin: 0, fontSize: '1.45rem' }}>
                       Choose how to start today&apos;s plan
-                    </h2>
+                    </h1>
                     <p className="workspace-subtitle" style={{ margin: 0 }}>
                       Select one workflow to continue.
                     </p>
@@ -1670,9 +2067,9 @@ export default function LunchBreaksPage() {
               {isAutoMode && autoGuideStep === 2 ? (
                 <motion.div
                   key="guide-step-2"
-                  initial={{ opacity: 0, y: 12 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  exit={{ opacity: 0, y: -8 }}
+                  initial={{ y: 12 }}
+                  animate={{ y: 0 }}
+                  exit={{ y: -8 }}
                   transition={{ duration: 0.22 }}
                   style={{
                     width: 'min(640px, 100%)',
@@ -1686,16 +2083,20 @@ export default function LunchBreaksPage() {
                   }}
                 >
                   <div className="workspace-kicker">Auto break setup</div>
-                  <h2 style={{ margin: 0, fontSize: '1.2rem', color: 'var(--text-primary)' }}>
+                  <h1
+                    ref={focusGuideStepHeading}
+                    tabIndex={-1}
+                    style={{ margin: 0, fontSize: '1.2rem', color: 'var(--text-primary)', borderRadius: 6 }}
+                  >
                     Start with today&apos;s plan.
-                  </h2>
+                  </h1>
                   <p style={{ margin: 0, fontSize: '0.84rem', color: 'var(--text-secondary)' }}>
                     Today stays front and center. Yesterday is secondary, and future dates sit together below.
                   </p>
                   <div className="surface-muted" style={{ borderRadius: 12, padding: '0.85rem', display: 'grid', gap: 12 }}>
                     <button
                       type="button"
-                      onClick={() => setSelectedDate(serverToday)}
+                      onClick={() => selectDayScope(serverToday, selectedLocationId)}
                       style={{
                         display: 'grid',
                         gridTemplateColumns: 'minmax(0, 1fr) auto',
@@ -1749,7 +2150,7 @@ export default function LunchBreaksPage() {
                       </div>
                       <button
                         type="button"
-                        onClick={() => setSelectedDate(previousPickerDate)}
+                        onClick={() => selectDayScope(previousPickerDate, selectedLocationId)}
                         style={{
                           width: '100%',
                           textAlign: 'left',
@@ -1791,7 +2192,7 @@ export default function LunchBreaksPage() {
                             <button
                               key={`future-pick-${dateValue}`}
                               type="button"
-                              onClick={() => setSelectedDate(dateValue)}
+                              onClick={() => selectDayScope(dateValue, selectedLocationId)}
                               style={{
                                 border: isActive ? '1px solid #83a8ff' : '1px solid var(--border)',
                                 background: isActive ? '#edf3ff' : '#ffffff',
@@ -1816,7 +2217,7 @@ export default function LunchBreaksPage() {
 
                     <div style={{ textAlign: 'center', display: 'grid', gap: 3 }}>
                       <div style={{ fontSize: '0.9rem', fontWeight: 800, color: 'var(--text-primary)' }}>{selectedDateLabel}</div>
-                      <div style={{ fontSize: '0.78rem', color: 'var(--text-secondary)' }}>Downtown Bistro</div>
+                      <div style={{ fontSize: '0.78rem', color: 'var(--text-secondary)' }}>{activeLocationLabel}</div>
                       <div style={{ fontSize: '0.75rem', color: dayRows.length > 0 ? '#166534' : '#b45309' }}>
                         {dayRows.length > 0
                           ? `${dayRows.length} shifts available for this day`
@@ -1840,9 +2241,9 @@ export default function LunchBreaksPage() {
               {isAutoMode && autoGuideStep === 3 ? (
                 <motion.div
                   key="guide-step-3"
-                  initial={{ opacity: 0, y: 12 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  exit={{ opacity: 0, y: -8 }}
+                  initial={{ y: 12 }}
+                  animate={{ y: 0 }}
+                  exit={{ y: -8 }}
                   transition={{ duration: 0.22 }}
                   style={{
                     width: 'min(640px, 100%)',
@@ -1856,9 +2257,13 @@ export default function LunchBreaksPage() {
                   }}
                 >
                   <div className="workspace-kicker">Auto break setup</div>
-                  <h2 style={{ margin: 0, fontSize: '1.2rem', color: 'var(--text-primary)' }}>
+                  <h1
+                    ref={focusGuideStepHeading}
+                    tabIndex={-1}
+                    style={{ margin: 0, fontSize: '1.2rem', color: 'var(--text-primary)', borderRadius: 6 }}
+                  >
                     Ready to create today&apos;s schedule
-                  </h2>
+                  </h1>
                   <p style={{ margin: 0, fontSize: '0.84rem', color: 'var(--text-secondary)' }}>
                     {hasSchedulingEnabled
                       ? `We'll use schedule data when available for ${selectedDateLabel} and guide break placement in the planner.`
@@ -1874,27 +2279,18 @@ export default function LunchBreaksPage() {
                     {isLoadingEmployees ? (
                       <div style={{ fontSize: '0.78rem', color: 'var(--text-secondary)' }}>Loading employees...</div>
                     ) : (
-                      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(6, minmax(0, 1fr))', gap: 6 }}>
+                      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(96px, 1fr))', gap: 6 }}>
                         {step3EmployeePool.slice(0, 24).map((employee) => {
                           const isSelected = selectedAutoEmployeeIds.includes(employee.id);
                           return (
-                            <div
+                            <button
+                              type="button"
                               key={`step3-emp-${employee.id}`}
-                              role="button"
-                              tabIndex={0}
                               aria-pressed={isSelected}
                               onClick={() => {
                                 setSelectedAutoEmployeeIds((prev) =>
                                   prev.includes(employee.id) ? prev.filter((id) => id !== employee.id) : [...prev, employee.id],
                                 );
-                              }}
-                              onKeyDown={(event) => {
-                                if (event.key === 'Enter' || event.key === ' ') {
-                                  event.preventDefault();
-                                  setSelectedAutoEmployeeIds((prev) =>
-                                    prev.includes(employee.id) ? prev.filter((id) => id !== employee.id) : [...prev, employee.id],
-                                  );
-                                }
                               }}
                               style={{
                                 border: isSelected ? '1px solid #5b87f7' : '1px solid var(--border)',
@@ -1931,7 +2327,7 @@ export default function LunchBreaksPage() {
                               <div style={{ fontSize: '0.62rem', color: 'var(--text-muted)' }}>
                                 {employee.role ?? (employee.source === 'scheduled' ? 'Scheduled' : 'Available')}
                               </div>
-                            </div>
+                            </button>
                           );
                         })}
                       </div>
@@ -1967,9 +2363,9 @@ export default function LunchBreaksPage() {
               {isAutoMode && autoGuideStep === 4 ? (
                 <motion.div
                   key="guide-step-4"
-                  initial={{ opacity: 0, y: 12 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  exit={{ opacity: 0, y: -8 }}
+                  initial={{ y: 12 }}
+                  animate={{ y: 0 }}
+                  exit={{ y: -8 }}
                   transition={{ duration: 0.22 }}
                   style={{
                     width: 'min(980px, 100%)',
@@ -1983,9 +2379,13 @@ export default function LunchBreaksPage() {
                   }}
                 >
                   <div className="workspace-kicker">Auto break setup</div>
-                  <h2 style={{ margin: 0, fontSize: '1.2rem', color: 'var(--text-primary)' }}>
+                  <h1
+                    ref={focusGuideStepHeading}
+                    tabIndex={-1}
+                    style={{ margin: 0, fontSize: '1.2rem', color: 'var(--text-primary)', borderRadius: 6 }}
+                  >
                     Adjust who works when
-                  </h2>
+                  </h1>
                   <p style={{ margin: 0, fontSize: '0.84rem', color: 'var(--text-secondary)' }}>
                     Fine-tune shifts before planning breaks. Drag blocks to move times, or edit names and times manually.
                   </p>
@@ -1999,7 +2399,9 @@ export default function LunchBreaksPage() {
                   >
                     <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, alignItems: 'center' }}>
                       <div style={{ fontSize: '0.8rem', fontWeight: 800, color: 'var(--text-primary)' }}>Shift preview</div>
-                      <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>Drag blocks to adjust start/end windows</div>
+                      <div id="setup-shift-preview-help" style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>
+                        Drag blocks, or focus one and use Left, Right, Home, or End to move its shift window.
+                      </div>
                     </div>
 
                     <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr 1fr', fontSize: '0.66rem', color: 'var(--text-muted)', fontWeight: 700 }}>
@@ -2020,7 +2422,16 @@ export default function LunchBreaksPage() {
                           const leftPct = ((clampedStart - setupTimelineStart) / setupTimelineWindow) * 100;
                           const widthPct = (duration / setupTimelineWindow) * 100;
                           return (
-                            <div key={row.id} style={{ display: 'grid', gridTemplateColumns: '180px minmax(0, 1fr)', gap: 8, alignItems: 'center' }}>
+                            <div
+                              key={row.id}
+                              style={{
+                                display: 'grid',
+                                gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))',
+                                gap: 8,
+                                alignItems: 'center',
+                                minWidth: 0,
+                              }}
+                            >
                               <div style={{ minWidth: 0 }}>
                                 <div style={{ fontSize: '0.75rem', fontWeight: 700, color: 'var(--text-primary)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
                                   {row.employeeName}
@@ -2028,16 +2439,30 @@ export default function LunchBreaksPage() {
                                 <div style={{ fontSize: '0.66rem', color: 'var(--text-muted)' }}>{row.role}</div>
                               </div>
                               <div style={{ position: 'relative', height: 32, borderRadius: 10, border: '1px solid #d6e0f3', background: '#ffffff' }}>
-                                <span
-                                  role="button"
-                                  tabIndex={0}
-                                  aria-label={`Shift for ${row.employeeName}`}
+                                <button
+                                  type="button"
+                                  role="slider"
+                                  disabled={isApplyingSetupShifts}
+                                  aria-label={`Shift window for ${row.employeeName}`}
+                                  aria-describedby="setup-shift-preview-help"
+                                  aria-valuemin={setupTimelineStart}
+                                  aria-valuemax={setupTimelineEnd - duration}
+                                  aria-valuenow={clampedStart}
+                                  aria-valuetext={`${minutesToTimeValue(clampedStart)} to ${minutesToTimeValue(clampedEnd)}`}
                                   onMouseDown={(event) => startSetupDrag(event, row)}
                                   onKeyDown={(event) => {
-                                    if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return;
+                                    if (isApplyingSetupShifts) return;
+                                    if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
                                     event.preventDefault();
-                                    const delta = event.key === 'ArrowRight' ? 15 : -15;
-                                    const nextStart = clamp(clampedStart + delta, setupTimelineStart, setupTimelineEnd - duration);
+                                    const nextStart = event.key === 'Home'
+                                      ? setupTimelineStart
+                                      : event.key === 'End'
+                                        ? setupTimelineEnd - duration
+                                        : clamp(
+                                            clampedStart + (event.key === 'ArrowRight' ? 15 : -15),
+                                            setupTimelineStart,
+                                            setupTimelineEnd - duration,
+                                          );
                                     const nextEnd = nextStart + duration;
                                     setSetupShiftRows((prev) =>
                                       prev.map((candidate) =>
@@ -2063,10 +2488,11 @@ export default function LunchBreaksPage() {
                                     fontSize: '0.66rem',
                                     fontWeight: 700,
                                     userSelect: 'none',
+                                    padding: 0,
                                   }}
                                 >
                                   {minutesToTimeValue(clampedStart)}-{minutesToTimeValue(clampedEnd)}
-                                </span>
+                                </button>
                               </div>
                             </div>
                           );
@@ -2081,71 +2507,154 @@ export default function LunchBreaksPage() {
 
                   <div className="surface-muted" style={{ borderRadius: 12, padding: '0.75rem', display: 'grid', gap: 8 }}>
                     <div style={{ fontSize: '0.8rem', fontWeight: 800, color: 'var(--text-primary)' }}>Manual edit</div>
-                    <div style={{ display: 'grid', gap: 8 }}>
+                    <div style={{ display: 'grid', gap: 8, minWidth: 0 }}>
                       {setupShiftRows.map((row) => (
-                        <div key={`manual-${row.id}`} style={{ display: 'grid', gridTemplateColumns: 'minmax(180px, 1fr) 130px 130px', gap: 8, alignItems: 'center' }}>
-                          <div style={{ fontSize: '0.76rem', fontWeight: 700, color: 'var(--text-primary)' }}>{row.employeeName}</div>
-                          <input
-                            type="time"
-                            value={row.startTime}
-                            onChange={(event) =>
-                              setSetupShiftRows((prev) =>
-                                prev.map((candidate) => {
-                                  if (candidate.id !== row.id) return candidate;
-                                  const nextStart = event.target.value;
-                                  const nextStartMin = timeValueToMinutes(nextStart);
-                                  const currentEndMin = timeValueToMinutes(candidate.endTime);
-                                  const nextEnd = currentEndMin <= nextStartMin ? minutesToTimeValue(nextStartMin + 30) : candidate.endTime;
-                                  return { ...candidate, startTime: nextStart, endTime: nextEnd };
-                                }),
-                              )
-                            }
-                            style={{
-                              border: '1px solid var(--border)',
-                              borderRadius: 8,
-                              background: '#ffffff',
-                              color: 'var(--text-primary)',
-                              padding: '0.36rem 0.45rem',
-                              fontSize: '0.78rem',
-                            }}
-                          />
-                          <input
-                            type="time"
-                            value={row.endTime}
-                            onChange={(event) =>
-                              setSetupShiftRows((prev) =>
-                                prev.map((candidate) => {
-                                  if (candidate.id !== row.id) return candidate;
-                                  const nextEnd = event.target.value;
-                                  const startMin = timeValueToMinutes(candidate.startTime);
-                                  const endMin = timeValueToMinutes(nextEnd);
-                                  return {
-                                    ...candidate,
-                                    endTime: endMin <= startMin ? minutesToTimeValue(startMin + 30) : nextEnd,
-                                  };
-                                }),
-                              )
-                            }
-                            style={{
-                              border: '1px solid var(--border)',
-                              borderRadius: 8,
-                              background: '#ffffff',
-                              color: 'var(--text-primary)',
-                              padding: '0.36rem 0.45rem',
-                              fontSize: '0.78rem',
-                            }}
-                          />
-                        </div>
+                        <fieldset
+                          key={`manual-${row.id}`}
+                          style={{
+                            border: 0,
+                            padding: 0,
+                            margin: 0,
+                            display: 'grid',
+                            gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))',
+                            gap: 8,
+                            alignItems: 'end',
+                            minWidth: 0,
+                          }}
+                        >
+                          <legend style={{ width: '100%', marginBottom: 4, fontSize: '0.76rem', fontWeight: 700, color: 'var(--text-primary)' }}>
+                            {row.employeeName}
+                          </legend>
+                          <label style={{ display: 'grid', gap: 4, minWidth: 0, fontSize: '0.7rem', fontWeight: 700, color: 'var(--text-secondary)' }}>
+                            Start time
+                            <input
+                              type="time"
+                              aria-label={`Start time for ${row.employeeName}`}
+                              value={row.startTime}
+                              disabled={isApplyingSetupShifts}
+                              onChange={(event) =>
+                                setSetupShiftRows((prev) =>
+                                  prev.map((candidate) => {
+                                    if (candidate.id !== row.id) return candidate;
+                                    const nextStart = event.target.value;
+                                    const nextStartMin = timeValueToMinutes(nextStart);
+                                    const currentEndMin = timeValueToMinutes(candidate.endTime);
+                                    const nextEnd = currentEndMin <= nextStartMin ? minutesToTimeValue(nextStartMin + 30) : candidate.endTime;
+                                    return { ...candidate, startTime: nextStart, endTime: nextEnd };
+                                  }),
+                                )
+                              }
+                              style={{
+                                minWidth: 0,
+                                width: '100%',
+                                border: '1px solid var(--border)',
+                                borderRadius: 8,
+                                background: '#ffffff',
+                                color: 'var(--text-primary)',
+                                padding: '0.36rem 0.45rem',
+                                fontSize: '0.78rem',
+                              }}
+                            />
+                          </label>
+                          <label style={{ display: 'grid', gap: 4, minWidth: 0, fontSize: '0.7rem', fontWeight: 700, color: 'var(--text-secondary)' }}>
+                            End time
+                            <input
+                              type="time"
+                              aria-label={`End time for ${row.employeeName}`}
+                              value={row.endTime}
+                              disabled={isApplyingSetupShifts}
+                              onChange={(event) =>
+                                setSetupShiftRows((prev) =>
+                                  prev.map((candidate) => {
+                                    if (candidate.id !== row.id) return candidate;
+                                    const nextEnd = event.target.value;
+                                    const startMin = timeValueToMinutes(candidate.startTime);
+                                    const endMin = timeValueToMinutes(nextEnd);
+                                    return {
+                                      ...candidate,
+                                      endTime: endMin <= startMin ? minutesToTimeValue(startMin + 30) : nextEnd,
+                                    };
+                                  }),
+                                )
+                              }
+                              style={{
+                                minWidth: 0,
+                                width: '100%',
+                                border: '1px solid var(--border)',
+                                borderRadius: 8,
+                                background: '#ffffff',
+                                color: 'var(--text-primary)',
+                                padding: '0.36rem 0.45rem',
+                                fontSize: '0.78rem',
+                              }}
+                            />
+                          </label>
+                        </fieldset>
                       ))}
                     </div>
                   </div>
 
-                  <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, alignItems: 'center' }}>
-                    <Button variant="outline" size="sm" onClick={() => setAutoGuideStep(3)}>
+                  <div
+                    id="setup-shifts-billing-requirement"
+                    className="surface-muted"
+                    style={{
+                      borderRadius: 10,
+                      padding: '0.65rem 0.75rem',
+                      color: setupShiftsBillingBlockReason ? '#b45309' : 'var(--text-secondary)',
+                      fontSize: '0.76rem',
+                      fontWeight: 650,
+                    }}
+                  >
+                    {setupShiftsBillingBlockReason
+                      ?? (setupShiftsCreditCost
+                        ? `Saving setup shifts uses ${setupShiftsCreditCost} separately purchased usage credit${setupShiftsCreditCost === 1 ? '' : 's'} and requires an active paid subscription. Unchanged retries recover the same attempt.`
+                        : 'Saving setup shifts is billable and requires an active paid subscription plus separately purchased usage credits. Unchanged retries recover the same attempt.')}
+                  </div>
+
+                  {setupShiftError ? (
+                    <div
+                      role="alert"
+                      style={{
+                        border: '1px solid rgba(244,63,94,0.35)',
+                        borderRadius: 10,
+                        background: 'rgba(244,63,94,0.08)',
+                        color: '#be123c',
+                        padding: '0.65rem 0.75rem',
+                        fontSize: '0.78rem',
+                      }}
+                    >
+                      <strong>
+                        {setupShiftError.code === 'SETUP_SHIFTS_ENTITLEMENT_REQUIRED'
+                          ? 'Subscription and credits required'
+                          : setupShiftError.code === 'SETUP_SHIFTS_CONFLICT' || setupShiftError.status === 409
+                            ? 'Setup request conflict'
+                            : 'Setup shifts were not saved'}
+                      </strong>
+                      <div style={{ marginTop: 3 }}>{setupShiftError.message}</div>
+                      {setupShiftError.remediation ? (
+                        <div style={{ marginTop: 3 }}>{setupShiftError.remediation}</div>
+                      ) : null}
+                    </div>
+                  ) : null}
+
+                  <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                    <Button variant="outline" size="sm" onClick={() => setAutoGuideStep(3)} disabled={isApplyingSetupShifts}>
                       Back
                     </Button>
-                    <Button size="sm" onClick={applySetupShifts} disabled={setupShiftRows.length === 0}>
-                      Continue to planner
+                    <Button
+                      ref={setupSubmitButtonRef}
+                      size="sm"
+                      onClick={applySetupShifts}
+                      aria-describedby="setup-shifts-billing-requirement"
+                      disabled={
+                        setupShiftRows.length === 0
+                        || isApplyingSetupShifts
+                        || !canWriteLoadedDay
+                        || !capabilities.canWriteShifts
+                        || Boolean(setupShiftsBillingBlockReason)
+                      }
+                    >
+                      {isApplyingSetupShifts ? 'Saving setup shifts...' : 'Continue to planner'}
                     </Button>
                   </div>
                 </motion.div>
@@ -2191,7 +2700,12 @@ export default function LunchBreaksPage() {
             <div className="planner-header" style={{ padding: '0 0.1rem' }}>
               <div style={{ minWidth: 0, display: 'grid', gap: 6 }}>
                 <div className="workspace-kicker">Planner flow</div>
-                <h1 className="workspace-title" style={{ fontSize: '1.55rem', margin: 0 }}>
+                <h1
+                  ref={isAutoMode ? focusGuideStepHeading : undefined}
+                  tabIndex={isAutoMode ? -1 : undefined}
+                  className="workspace-title"
+                  style={{ fontSize: '1.55rem', margin: 0, borderRadius: 6 }}
+                >
                   Lunch & break canvas for {selectedDateLabel}
                 </h1>
                 <p className="workspace-subtitle" style={{ margin: 0 }}>
@@ -2564,6 +3078,7 @@ export default function LunchBreaksPage() {
                           <div style={{ display: 'grid', gridTemplateColumns: '1fr 90px', gap: 6 }}>
                             <input
                               type="time"
+                              aria-label={`${info.label} time for ${selectedRow.employeeName}`}
                               value={current.time}
                               disabled={!canWriteLoadedDay || current.skipped || selectedRow.saving}
                               onChange={(event) => updateBreak(selectedRow.shiftId, key, { time: event.target.value })}
@@ -2578,6 +3093,7 @@ export default function LunchBreaksPage() {
                             />
                             <input
                               type="number"
+                              aria-label={`${info.label} duration for ${selectedRow.employeeName}`}
                               min={info.minimumDuration}
                               value={current.durationMinutes}
                               disabled={!canWriteLoadedDay || current.skipped || selectedRow.saving}
@@ -2602,13 +3118,27 @@ export default function LunchBreaksPage() {
                   </div>
 
                   {canWriteLunchBreaks ? (
-                    <div style={{ display: 'flex', gap: 6 }}>
-                      <Button size="sm" onClick={() => void saveRow(selectedRow.shiftId)} disabled={!selectedRow.dirty || selectedRow.saving || !canWriteLoadedDay}>
-                        {selectedRow.saving ? 'Saving...' : 'Save shift'}
-                      </Button>
-                      <Button size="sm" variant="outline" onClick={() => resetRow(selectedRow.shiftId)} disabled={!selectedRow.dirty || selectedRow.saving || !canWriteLoadedDay}>
-                        Reset
-                      </Button>
+                    <div style={{ display: 'grid', gap: 6 }}>
+                      <div
+                        id={`shift-break-save-cost-${selectedRow.shiftId}`}
+                        style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}
+                      >
+                        A value-changing save uses {lunchBreakFeature.creditCost ?? 'the configured number of'} credit(s). Safe replay and unchanged values do not charge again.
+                      </div>
+                      <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                        <Button
+                          ref={shiftBreakSaveButtonRef}
+                          size="sm"
+                          aria-describedby={`shift-break-save-cost-${selectedRow.shiftId}`}
+                          onClick={() => void saveRow(selectedRow.shiftId)}
+                          disabled={!selectedRow.dirty || selectedRow.saving || !canWriteLoadedDay}
+                        >
+                          {selectedRow.saving ? 'Saving...' : 'Save shift'}
+                        </Button>
+                        <Button size="sm" variant="outline" onClick={() => resetRow(selectedRow.shiftId)} disabled={!selectedRow.dirty || selectedRow.saving || !canWriteLoadedDay}>
+                          Reset
+                        </Button>
+                      </div>
                     </div>
                   ) : null}
                 </>
@@ -2700,7 +3230,7 @@ export default function LunchBreaksPage() {
                     </div>
 
                     <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-                      <Button size="sm" onClick={() => void generateFromManualShifts()} disabled={isGeneratingManual}>
+                      <Button size="sm" onClick={() => void generateFromManualShifts()} disabled={isGeneratingManual || !canWriteLoadedDay}>
                         {isGeneratingManual ? 'Generating...' : 'Generate Lunch & Break Plan'}
                       </Button>
                       <Button variant="outline" size="sm" onClick={addManualShift}>
@@ -2788,6 +3318,7 @@ export default function LunchBreaksPage() {
 
       {error ? (
         <div
+          role="alert"
           style={{
             padding: '0.8rem 0.9rem',
             borderRadius: 10,

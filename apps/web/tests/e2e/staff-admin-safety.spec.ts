@@ -18,7 +18,7 @@ test.describe('Staff and platform admin safety controls', () => {
     let resetRequests = 0;
     let removeRequests = 0;
 
-    await page.route('**/api/v1/users', async (route) => {
+    await page.route('**/api/v1/users?*', async (route) => {
       await route.fulfill({
         status: 200,
         contentType: 'application/json',
@@ -28,6 +28,13 @@ test.describe('Staff and platform admin safety controls', () => {
             { id: 'user-reset', name: 'Reset Candidate', username: 'reset.candidate', email: '', role: 'STAFF', assignedRoles: [] },
             { id: 'user-remove', name: 'Remove Candidate', username: 'remove.candidate', email: '', role: 'STAFF', assignedRoles: [] },
           ],
+          summary: {
+            totalUsers: 3,
+            staffCount: 2,
+            managerCount: 0,
+            privilegedUsers: 1,
+            pinAccounts: 3,
+          },
         }),
       });
     });
@@ -98,6 +105,125 @@ test.describe('Staff and platform admin safety controls', () => {
     await expect(reopened.getByLabel(/End/)).toHaveValue('02:00');
   });
 
+  test('reviews and explicitly applies a PDF import with one stable paid attempt', async ({ page }) => {
+    const idempotencyKeys: string[] = [];
+    const csrfHeaders: string[] = [];
+    let uploadRequests = 0;
+    let statusRequests = 0;
+    let profileWrites = 0;
+    let appliedProfile: { skills?: string[]; availability?: unknown[] } | null = null;
+
+    await page.route('**/api/v1/billing/features', async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          features: { scheduling: { creditCost: 3 } },
+        }),
+      });
+    });
+    await page.route('**/api/v1/availability-imports/users/user-mock-staff', async (route) => {
+      uploadRequests += 1;
+      idempotencyKeys.push(route.request().headers()['idempotency-key'] ?? '');
+      csrfHeaders.push(route.request().headers()['x-csrf-token'] ?? '');
+      if (uploadRequests === 1) {
+        await route.fulfill({
+          status: 503,
+          contentType: 'application/json',
+          body: JSON.stringify({ message: 'Temporary import handoff failure.' }),
+        });
+        return;
+      }
+      await route.fulfill({
+        status: 202,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          id: 'availability-import-1',
+          userId: 'user-mock-staff',
+          status: 'PENDING',
+          parsedAvailability: null,
+          settlement: { chargedCredits: 3, refundedCredits: 0, pending: true },
+        }),
+      });
+    });
+    await page.route('**/api/v1/availability-imports/availability-import-1', async (route) => {
+      statusRequests += 1;
+      const succeeded = statusRequests >= 2;
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          id: 'availability-import-1',
+          userId: 'user-mock-staff',
+          status: succeeded ? 'SUCCEEDED' : 'RUNNING',
+          parsedAvailability: succeeded ? [{
+            locationId: null,
+            dayOfWeek: 1,
+            startTimeMinutes: 540,
+            endTimeMinutes: 1020,
+          }] : null,
+          settlement: { chargedCredits: 3, refundedCredits: 0, pending: true },
+        }),
+      });
+    });
+    await page.route('**/api/v1/users/user-mock-staff/scheduling-profile', async (route) => {
+      if (route.request().method() !== 'PUT') {
+        await route.continue();
+        return;
+      }
+      profileWrites += 1;
+      appliedProfile = route.request().postDataJSON();
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          skills: appliedProfile?.skills ?? [],
+          availability: appliedProfile?.availability ?? [],
+          availabilityConfigured: true,
+        }),
+      });
+    });
+
+    await page.setViewportSize({ width: 375, height: 812 });
+    await loginAsSeedManager(page, '/dashboard/staff');
+    const staffRow = page.getByRole('row').filter({ hasText: 'Mock Staff' });
+    await staffRow.getByRole('button', { name: 'Edit schedule profile' }).click();
+    const editor = page.getByRole('region', { name: 'Scheduling profile for Mock Staff' });
+
+    await expect(editor.getByText('PDF only, up to 5 MiB. This import costs 3 paid credits.')).toBeVisible();
+    await editor.locator('#availability-pdf-file').setInputFiles({
+      name: 'availability.pdf',
+      mimeType: 'application/pdf',
+      buffer: Buffer.from('%PDF-1.4 availability'),
+    });
+    await editor.getByRole('button', { name: 'Upload PDF' }).click();
+    await expect(editor.getByRole('button', { name: 'Retry upload' })).toBeVisible();
+    expect(profileWrites).toBe(0);
+
+    await editor.getByRole('button', { name: 'Retry upload' }).click();
+    await expect(editor.getByText('Succeeded')).toBeVisible({ timeout: 10_000 });
+    await expect(editor.getByText('3 paid credits were charged for this completed import.')).toBeVisible();
+    await expect(editor.getByText('Monday')).toBeVisible();
+    await expect(editor.getByText('9:00 AM to 5:00 PM')).toBeVisible();
+    expect(profileWrites).toBe(0);
+    expect(uploadRequests).toBe(2);
+    expect(idempotencyKeys[0]).toBeTruthy();
+    expect(new Set(idempotencyKeys).size).toBe(1);
+    expect(csrfHeaders.every(Boolean)).toBe(true);
+
+    await editor.getByRole('button', { name: 'Apply imported availability' }).click();
+    await expect(editor.getByText('Imported availability applied and scheduling profile saved.')).toBeVisible();
+    expect(profileWrites).toBe(1);
+    expect(appliedProfile).toEqual({
+      skills: [],
+      availability: [{
+        locationId: null,
+        dayOfWeek: 1,
+        startTimeMinutes: 540,
+        endTimeMinutes: 1020,
+      }],
+    });
+  });
   test('defaults tenant admin invites to Staff and hides non-delegable Admin', async ({ page }) => {
     let invitedRoleId = '';
     await page.route('**/api/v1/users/access/catalog', async (route) => {
@@ -120,12 +246,12 @@ test.describe('Staff and platform admin safety controls', () => {
     });
 
     await loginAsSeedAdmin(page, '/dashboard/staff');
-    const roleSelector = page.getByLabel('Role');
+    const roleSelector = page.getByLabel('Role', { exact: true });
     await expect(roleSelector).toHaveValue('role-staff');
     await expect(roleSelector.getByRole('option', { name: 'Staff' })).toHaveCount(1);
     await expect(roleSelector.getByRole('option', { name: 'Admin' })).toHaveCount(0);
-    await page.getByPlaceholder('Full name').fill('Launch Staff');
-    await page.getByPlaceholder('username (lowercase)').fill('launch.staff');
+    await page.getByLabel('Full name').fill('Launch Staff');
+    await page.getByLabel('Username').fill('launch.staff');
     await page.getByRole('button', { name: 'Invite' }).click();
     await expect.poll(() => invitedRoleId).toBe('role-staff');
   });

@@ -1,4 +1,4 @@
-import { ArgumentsHost, ForbiddenException, Logger } from '@nestjs/common';
+import { ArgumentsHost, ConflictException, ForbiddenException, Logger } from '@nestjs/common';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ProductionExceptionFilter } from './production-exception.filter';
 
@@ -26,7 +26,7 @@ describe('ProductionExceptionFilter', () => {
         expect(responseBody).not.toContain('super-secret');
         expect(logBody).not.toContain('super-secret');
         expect(logBody).not.toContain('abc123');
-        expect(logBody).toContain('[REDACTED]');
+        expect(logBody).toContain('category=unknown class=Error');
     });
 
     it('sanitizes HttpException messages in production responses', () => {
@@ -45,6 +45,60 @@ describe('ProductionExceptionFilter', () => {
         expect(JSON.stringify(response.json.mock.calls[0][0])).not.toContain('tenant secret detail');
     });
 
+    it.each([
+        [
+            new ForbiddenException({ code: 'SETUP_SHIFTS_ENTITLEMENT_REQUIRED', message: 'private billing detail' }),
+            403,
+            'SETUP_SHIFTS_ENTITLEMENT_REQUIRED',
+            /paid subscription/i,
+        ],
+        [
+            new ConflictException({ code: 'SETUP_SHIFTS_CONFLICT', message: 'private constraint detail' }),
+            409,
+            'SETUP_SHIFTS_CONFLICT',
+            /refresh the selected date/i,
+        ],
+        [
+            new ForbiddenException({ code: 'SHIFT_BREAKS_ENTITLEMENT_REQUIRED', message: 'private wallet detail' }),
+            403,
+            'SHIFT_BREAKS_ENTITLEMENT_REQUIRED',
+            /paid subscription/i,
+        ],
+        [
+            new ConflictException({ code: 'SHIFT_BREAKS_CONFLICT', message: 'private shift detail' }),
+            409,
+            'SHIFT_BREAKS_CONFLICT',
+            /review the shift and breaks/i,
+        ],
+    ])('emits an allowlisted public code and remediation without exception details', (exception, status, code, remediation) => {
+        const response = mockResponse();
+        const filter = new ProductionExceptionFilter();
+
+        filter.catch(exception, mockHost(response, '/v1/lunch-breaks/setup-shifts'));
+
+        expect(response.status).toHaveBeenCalledWith(status);
+        expect(response.json).toHaveBeenCalledWith(expect.objectContaining({
+            statusCode: status,
+            code,
+            remediation: expect.stringMatching(remediation),
+        }));
+        expect(JSON.stringify(response.json.mock.calls[0][0])).not.toContain('private');
+    });
+
+    it('does not reflect unknown public error codes', () => {
+        const response = mockResponse();
+        const filter = new ProductionExceptionFilter();
+
+        filter.catch(new ConflictException({ code: 'DATABASE_CONSTRAINT_NAME', message: 'private detail' }), mockHost(response));
+
+        expect(response.json).toHaveBeenCalledWith(expect.objectContaining({
+            statusCode: 409,
+            message: 'Conflict',
+        }));
+        expect(response.json.mock.calls[0][0]).not.toHaveProperty('code');
+        expect(response.json.mock.calls[0][0]).not.toHaveProperty('remediation');
+    });
+
     it('redacts OAuth callback query secrets from logs and response path', () => {
         const logger = vi.spyOn(Logger.prototype, 'error').mockImplementation(() => undefined);
         const response = mockResponse();
@@ -59,8 +113,11 @@ describe('ProductionExceptionFilter', () => {
         expect(responseBody).not.toContain('super-secret-state');
         expect(logBody).not.toContain('super-secret-code');
         expect(logBody).not.toContain('super-secret-state');
-        expect(responseBody).toContain('[REDACTED]');
-        expect(responseBody).toContain('next=/dashboard');
+        expect(logBody).not.toContain('/api/v1/auth/callback');
+        expect(response.json).toHaveBeenCalledWith(expect.objectContaining({
+            path: '/api/v1/auth/callback',
+        }));
+        expect(responseBody).not.toContain('next=/dashboard');
     });
 });
 

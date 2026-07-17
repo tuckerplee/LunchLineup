@@ -2,12 +2,13 @@ import { BadRequestException, ServiceUnavailableException } from '@nestjs/common
 import { resolveEffectiveTenantEntitlement, resolveTenantPlanDefinition } from './plan-definitions';
 
 type PrismaLike = {
-    $queryRaw?: (strings: TemplateStringsArray, ...values: any[]) => Promise<unknown>;
+    $executeRaw?: (strings: TemplateStringsArray, ...values: any[]) => Promise<unknown>;
     tenant: {
         findUnique?: (args: any) => Promise<{
             planTier: string;
             status?: string;
             stripeSubscriptionId?: string | null;
+            stripeSubscriptionCurrentPeriodEnd?: Date | null;
             trialEndsAt?: Date | null;
         } | null>;
         findMany?: (args: any) => Promise<Array<{ id: string }>>;
@@ -28,7 +29,13 @@ export async function assertTenantCanAddActiveUser(prisma: PrismaLike, tenantId:
     await lockTenantCapacity(prisma, tenantId);
     const tenant = await prisma.tenant.findUnique?.({
         where: { id: tenantId },
-        select: { planTier: true, status: true, stripeSubscriptionId: true, trialEndsAt: true },
+        select: {
+            planTier: true,
+            status: true,
+            stripeSubscriptionId: true,
+            stripeSubscriptionCurrentPeriodEnd: true,
+            trialEndsAt: true,
+        },
     });
 
     if (!tenant) {
@@ -49,6 +56,7 @@ export async function assertTenantCanAddActiveUser(prisma: PrismaLike, tenantId:
         where: {
             tenantId,
             deletedAt: null,
+            suspendedAt: null,
         },
     });
 
@@ -72,6 +80,7 @@ export async function assertTenantActiveUserCountWithinPlan(prisma: PrismaLike, 
         where: {
             tenantId,
             deletedAt: null,
+            suspendedAt: null,
         },
     });
 
@@ -127,6 +136,7 @@ export async function assertPlanUserLimitChangeAllowsExistingTenants(
             where: {
                 tenantId: tenant.id,
                 deletedAt: null,
+                suspendedAt: null,
             },
         });
         if ((activeUserCount ?? 0) > userLimit) {
@@ -136,7 +146,7 @@ export async function assertPlanUserLimitChangeAllowsExistingTenants(
 }
 
 async function lockTenantCapacity(prisma: PrismaLike, tenantId: string): Promise<void> {
-    if (prisma.$queryRaw) {
-        await prisma.$queryRaw`SELECT pg_advisory_xact_lock(hashtextextended(${tenantId}, 0))`;
+    if (prisma.$executeRaw) {
+        await prisma.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${tenantId}, 0))`;
     }
 }

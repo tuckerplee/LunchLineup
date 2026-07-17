@@ -4,9 +4,16 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { CalendarClock, RotateCcw, Trash2, UserMinus } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { fetchWithSession } from '@/lib/client-api';
+import {
+    continuationCursor,
+    type UserDirectoryPageMetadata,
+    userDirectoryPagePath,
+} from '@/lib/user-directory-pagination';
 import { buildStaffActionConfirmation, type StaffAction } from './staff-action-confirmation';
 import { buildRoleDeletionConfirmation, canConfirmRoleDeletion } from './role-deletion-confirmation';
+import { InvitationDeliveryStatus } from './InvitationDeliveryStatus';
 import { StaffSchedulingProfileEditor } from './StaffSchedulingProfileEditor';
+import { useInvitationDelivery } from './use-invitation-delivery';
 
 type StaffWorkspaceProps = {
     currentUserId: string;
@@ -60,6 +67,20 @@ type RoleCatalogItem = {
 
 type StaffUser = ApiUser & { status: 'active' | 'inactive' };
 
+type UserDirectorySummary = {
+    totalUsers: number;
+    staffCount: number;
+    managerCount: number;
+    privilegedUsers: number;
+    pinAccounts: number;
+};
+
+type UserDirectoryPage = {
+    data?: ApiUser[];
+    summary?: UserDirectorySummary;
+    pagination?: UserDirectoryPageMetadata;
+};
+
 type PendingStaffAction = {
     action: StaffAction;
     user: StaffUser;
@@ -103,8 +124,34 @@ function byCategory(items: PermissionCatalogItem[]): Record<string, PermissionCa
     }, {});
 }
 
+function toStaffUsers(users: ApiUser[]): StaffUser[] {
+    return users.map((user) => ({
+        ...user,
+        assignedRoles: user.assignedRoles ?? [],
+        status: 'active' as const,
+    }));
+}
+
+function parseDirectorySummary(value: unknown): UserDirectorySummary {
+    if (!value || typeof value !== 'object') throw new Error('Unable to load staff totals.');
+    const payload = value as Record<string, unknown>;
+    const fields = ['totalUsers', 'staffCount', 'managerCount', 'privilegedUsers', 'pinAccounts'] as const;
+    for (const field of fields) {
+        if (!Number.isSafeInteger(payload[field]) || Number(payload[field]) < 0) {
+            throw new Error('Unable to load staff totals.');
+        }
+    }
+    return payload as UserDirectorySummary;
+}
+
 export function StaffWorkspace({ currentUserId, canInvite, canAdminister, canReadRoles, canAssignRoles, canManageRoles, canManageSchedulingProfiles }: StaffWorkspaceProps) {
     const [users, setUsers] = useState<StaffUser[]>([]);
+    const [directorySummary, setDirectorySummary] = useState<UserDirectorySummary | null>(null);
+    const [nextCursor, setNextCursor] = useState<string | null>(null);
+    const [hasMoreUsers, setHasMoreUsers] = useState(false);
+    const [isChangingUserPage, setIsChangingUserPage] = useState(false);
+    const [userPageIndex, setUserPageIndex] = useState(0);
+    const [userPageCursors, setUserPageCursors] = useState<Array<string | null>>([null]);
     const [roles, setRoles] = useState<RoleCatalogItem[]>([]);
     const [permissions, setPermissions] = useState<PermissionCatalogItem[]>([]);
     const [isLoading, setIsLoading] = useState(true);
@@ -123,34 +170,47 @@ export function StaffWorkspace({ currentUserId, canInvite, canAdminister, canRea
     const [inviteLoginType, setInviteLoginType] = useState<'email' | 'username'>('username');
     const [isInviting, setIsInviting] = useState(false);
     const [lastTemporaryPin, setLastTemporaryPin] = useState<string | null>(null);
+    const [lastInvitationUserId, setLastInvitationUserId] = useState<string | null>(null);
 
     const [editorRoleId, setEditorRoleId] = useState<string | null>(null);
     const [editorName, setEditorName] = useState('');
     const [editorDescription, setEditorDescription] = useState('');
     const [editorPermissionKeys, setEditorPermissionKeys] = useState<string[]>([]);
+    const {
+        states: invitationDeliveries,
+        retryingUserIds: retryingInvitationIds,
+        recordResponse: recordInvitationResponse,
+        refreshStatus: refreshInvitationStatus,
+        refreshStatuses: refreshInvitationStatuses,
+        retry: retryInvitation,
+    } = useInvitationDelivery({ canAdminister, users });
 
     const loadWorkspace = useCallback(async () => {
         setIsLoading(true);
         setError(null);
         try {
             const [usersRes, accessRes] = await Promise.all([
-                fetchWithSession('/users'),
+                fetchWithSession(userDirectoryPagePath()),
                 canReadRoles ? fetchWithSession('/users/access/catalog') : Promise.resolve(null),
             ]);
 
             if (!usersRes.ok) throw new Error('Unable to load staff.');
             if (accessRes && !accessRes.ok) throw new Error('Unable to load roles and permissions.');
 
-            const usersPayload = (await usersRes.json()) as { data?: ApiUser[] };
+            const usersPayload = (await usersRes.json()) as UserDirectoryPage;
+            const summaryPayload = parseDirectorySummary(usersPayload.summary);
             const accessPayload = accessRes
                 ? (await accessRes.json()) as { roles?: RoleCatalogItem[]; permissions?: PermissionCatalogItem[]; defaultInviteRoleId?: string | null }
                 : { roles: [], permissions: [] };
+            const cursor = continuationCursor(usersPayload.pagination);
 
-            setUsers((usersPayload.data ?? []).map((user) => ({
-                ...user,
-                assignedRoles: user.assignedRoles ?? [],
-                status: 'active' as const,
-            })));
+            const staffUsers = toStaffUsers(usersPayload.data ?? []);
+            setUsers(staffUsers);
+            setDirectorySummary(summaryPayload);
+            setNextCursor(cursor);
+            setHasMoreUsers(Boolean(cursor));
+            setUserPageIndex(0);
+            setUserPageCursors([null]);
             setRoles(accessPayload.roles ?? []);
             setPermissions(accessPayload.permissions ?? []);
 
@@ -161,26 +221,53 @@ export function StaffWorkspace({ currentUserId, canInvite, canAdminister, canRea
             if (defaultInviteRole) {
                 setInviteRoleId((current) => current || defaultInviteRole.id);
             }
+            void refreshInvitationStatuses(staffUsers);
         } catch (err) {
             setError((err as Error).message);
         } finally {
             setIsLoading(false);
         }
-    }, [canReadRoles]);
+    }, [canReadRoles, refreshInvitationStatuses]);
 
     useEffect(() => {
         void loadWorkspace();
     }, [loadWorkspace]);
 
+    const loadDirectoryPage = useCallback(async (cursor: string | null, targetPageIndex: number) => {
+        setIsChangingUserPage(true);
+        setError(null);
+        try {
+            const response = await fetchWithSession(userDirectoryPagePath(cursor));
+            if (!response.ok) throw new Error('Unable to load staff page.');
+            const payload = (await response.json()) as UserDirectoryPage;
+            const followingCursor = continuationCursor(payload.pagination);
+
+            setUsers(toStaffUsers(payload.data ?? []));
+            setNextCursor(followingCursor);
+            setHasMoreUsers(Boolean(followingCursor));
+            setUserPageIndex(targetPageIndex);
+            setUserPageCursors((current) => {
+                const next = current.slice(0, targetPageIndex);
+                next[targetPageIndex] = cursor;
+                return next;
+            });
+            void refreshInvitationStatuses(toStaffUsers(payload.data ?? []));
+        } catch (err) {
+            setError((err as Error).message);
+        } finally {
+            setIsChangingUserPage(false);
+        }
+    }, [refreshInvitationStatuses]);
     const permissionGroups = useMemo(() => byCategory(permissions), [permissions]);
     const delegableRoles = useMemo(() => roles.filter((role) => role.canDelegate), [roles]);
 
-    const stats = useMemo(() => {
-        const total = users.length;
-        const privileged = users.filter((user) => user.assignedRoles.some((role) => role.permissions.includes('roles:assign') || role.permissions.includes('users:admin'))).length;
-        const pinUsers = users.filter((user) => user.username).length;
-        return { total, privileged, pinUsers };
-    }, [users]);
+    const stats = directorySummary ?? {
+        totalUsers: 0,
+        staffCount: 0,
+        managerCount: 0,
+        privilegedUsers: 0,
+        pinAccounts: 0,
+    };
 
     const resetRoleEditor = useCallback(() => {
         setEditorRoleId(null);
@@ -209,6 +296,8 @@ export function StaffWorkspace({ currentUserId, canInvite, canAdminister, canRea
 
         setIsInviting(true);
         setError(null);
+        setLastTemporaryPin(null);
+        setLastInvitationUserId(null);
         try {
             const res = await fetchWithSession('/users/invite', jsonWriteInit('POST', {
                 name: inviteName.trim(),
@@ -217,8 +306,19 @@ export function StaffWorkspace({ currentUserId, canInvite, canAdminister, canRea
                 pin: inviteLoginType === 'username' ? invitePin.trim() || undefined : undefined,
                 ...(inviteRoleId ? { roleId: inviteRoleId } : {}),
             }));
-            const payload = (await res.json().catch(() => ({}))) as { temporaryPin?: string; message?: string };
+            const payload = (await res.json().catch(() => ({}))) as {
+                id?: unknown;
+                temporaryPin?: string;
+                message?: string;
+                invitationDelivery?: unknown;
+            };
             if (!res.ok) throw new Error(payload.message ?? 'Failed to create staff member.');
+
+            const invitedUserId = typeof payload.id === 'string' && payload.id ? payload.id : null;
+            if (invitedUserId) {
+                setLastInvitationUserId(invitedUserId);
+                recordInvitationResponse(invitedUserId, payload);
+            }
 
             setInviteName('');
             setInviteEmail('');
@@ -232,7 +332,7 @@ export function StaffWorkspace({ currentUserId, canInvite, canAdminister, canRea
         } finally {
             setIsInviting(false);
         }
-    }, [canReadRoles, inviteEmail, inviteLoginType, inviteName, invitePin, inviteRoleId, inviteUsername, loadWorkspace]);
+    }, [canReadRoles, inviteEmail, inviteLoginType, inviteName, invitePin, inviteRoleId, inviteUsername, loadWorkspace, recordInvitationResponse]);
 
     const updateUserRoles = useCallback(async (userId: string, roleIds: string[]) => {
         setIsSaving(userId);
@@ -341,14 +441,14 @@ export function StaffWorkspace({ currentUserId, canInvite, canAdminister, canRea
     }, [editorRoleId, loadWorkspace, resetRoleEditor]);
 
     return (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem', maxWidth: 1320 }}>
+        <div className="staff-workspace" style={{ display: 'flex', flexDirection: 'column', gap: '1rem', maxWidth: 1320 }}>
             <section className="surface-card" style={{ padding: '1rem', display: 'grid', gap: '0.9rem' }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', flexWrap: 'wrap', gap: '0.8rem' }}>
                     <div>
                         <div className="workspace-kicker">People workspace</div>
                         <h1 className="workspace-title" style={{ fontSize: '1.55rem', marginBottom: 2 }}>Staff & Access</h1>
                         <p className="workspace-subtitle">
-                            {isLoading ? 'Loading team access...' : `${stats.total} people, ${roles.length} roles`}
+                            {isLoading ? 'Loading team access...' : `${stats.totalUsers} people, ${roles.length} roles`}
                         </p>
                     </div>
                     <Button variant="outline" size="sm" onClick={() => void loadWorkspace()} disabled={isLoading}>
@@ -359,23 +459,32 @@ export function StaffWorkspace({ currentUserId, canInvite, canAdminister, canRea
                 <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, minmax(0, 1fr))', gap: '0.6rem' }}>
                     <div className="surface-muted" style={{ padding: '0.7rem' }}>
                         <div style={{ fontSize: '0.74rem', color: 'var(--text-muted)' }}>Total staff</div>
-                        <div style={{ fontSize: '1.4rem', fontWeight: 800, color: 'var(--text-primary)' }}>{stats.total}</div>
+                        <div style={{ fontSize: '1.4rem', fontWeight: 800, color: 'var(--text-primary)' }}>{stats.totalUsers}</div>
                     </div>
                     <div className="surface-muted" style={{ padding: '0.7rem' }}>
                         <div style={{ fontSize: '0.74rem', color: 'var(--text-muted)' }}>Privileged users</div>
-                        <div style={{ fontSize: '1.4rem', fontWeight: 800, color: '#0f8c52' }}>{stats.privileged}</div>
+                        <div style={{ fontSize: '1.4rem', fontWeight: 800, color: '#0f8c52' }}>{stats.privilegedUsers}</div>
                     </div>
                     <div className="surface-muted" style={{ padding: '0.7rem' }}>
                         <div style={{ fontSize: '0.74rem', color: 'var(--text-muted)' }}>PIN accounts</div>
-                        <div style={{ fontSize: '1.4rem', fontWeight: 800, color: '#4c5f85' }}>{stats.pinUsers}</div>
+                        <div style={{ fontSize: '1.4rem', fontWeight: 800, color: '#4c5f85' }}>{stats.pinAccounts}</div>
                     </div>
                 </div>
 
                 {canInvite ? (
                     <div className="surface-muted" style={{ padding: '0.8rem', display: 'grid', gap: '0.6rem' }}>
                         <div style={{ fontSize: '0.82rem', fontWeight: 700, color: 'var(--text-primary)' }}>Invite team member</div>
-                        <div style={{ display: 'grid', gridTemplateColumns: '140px minmax(0, 1fr) minmax(0, 1fr) 140px 160px auto', gap: '0.5rem' }}>
+                        <form
+                            className="staff-invite-form"
+                            aria-label="Invite team member"
+                            onSubmit={(event) => {
+                                event.preventDefault();
+                                void inviteUser();
+                            }}
+                            style={{ display: 'grid', gridTemplateColumns: '140px minmax(0, 1fr) minmax(0, 1fr) 140px 160px auto', gap: '0.5rem' }}
+                        >
                             <select
+                                aria-label="Login method"
                                 value={inviteLoginType}
                                 onChange={(e) => setInviteLoginType(e.target.value as 'email' | 'username')}
                                 style={{ border: '1px solid var(--border)', borderRadius: 8, padding: '0.42rem 0.5rem', background: '#fff', color: 'var(--text-primary)' }}
@@ -387,7 +496,7 @@ export function StaffWorkspace({ currentUserId, canInvite, canAdminister, canRea
                                 type="text"
                                 value={inviteName}
                                 onChange={(e) => setInviteName(e.target.value)}
-                                placeholder="Full name"
+                                aria-label="Full name"
                                 style={{ border: '1px solid var(--border)', borderRadius: 8, padding: '0.42rem 0.5rem', background: '#fff', color: 'var(--text-primary)' }}
                             />
                             {inviteLoginType === 'email' ? (
@@ -395,7 +504,7 @@ export function StaffWorkspace({ currentUserId, canInvite, canAdminister, canRea
                                     type="email"
                                     value={inviteEmail}
                                     onChange={(e) => setInviteEmail(e.target.value)}
-                                    placeholder="name@company.com"
+                                    aria-label="Work email"
                                     style={{ border: '1px solid var(--border)', borderRadius: 8, padding: '0.42rem 0.5rem', background: '#fff', color: 'var(--text-primary)' }}
                                 />
                             ) : (
@@ -403,7 +512,7 @@ export function StaffWorkspace({ currentUserId, canInvite, canAdminister, canRea
                                     type="text"
                                     value={inviteUsername}
                                     onChange={(e) => setInviteUsername(e.target.value)}
-                                    placeholder="username (lowercase)"
+                                    aria-label="Username"
                                     style={{ border: '1px solid var(--border)', borderRadius: 8, padding: '0.42rem 0.5rem', background: '#fff', color: 'var(--text-primary)' }}
                                 />
                             )}
@@ -411,7 +520,7 @@ export function StaffWorkspace({ currentUserId, canInvite, canAdminister, canRea
                                 type="text"
                                 value={invitePin}
                                 onChange={(e) => setInvitePin(e.target.value.replace(/\D/g, '').slice(0, 8))}
-                                placeholder="PIN (optional)"
+                                aria-label="Temporary PIN"
                                 disabled={inviteLoginType !== 'username'}
                                 style={{ border: '1px solid var(--border)', borderRadius: 8, padding: '0.42rem 0.5rem', background: '#fff', color: 'var(--text-primary)' }}
                             />
@@ -427,24 +536,48 @@ export function StaffWorkspace({ currentUserId, canInvite, canAdminister, canRea
                                     ))}
                                 </select>
                             ) : null}
-                            <Button size="sm" onClick={() => void inviteUser()} disabled={isInviting}>
+                            <Button type="submit" size="sm" disabled={isInviting || isLoading}>
                                 {isInviting ? 'Creating...' : 'Invite'}
                             </Button>
-                        </div>
+                        </form>
                         {lastTemporaryPin ? (
-                            <div style={{ fontSize: '0.78rem', color: '#7a2e14' }}>
+                            <div style={{ fontSize: '0.78rem', color: '#7a2e14' }} role="status">
                                 Temporary PIN: <strong>{lastTemporaryPin}</strong> (share securely; require reset after first sign-in)
+                            </div>
+                        ) : null}
+                        {lastInvitationUserId && invitationDeliveries[lastInvitationUserId] ? (
+                            <div style={{ borderTop: '1px solid var(--border)', paddingTop: '0.65rem', display: 'grid', gap: '0.35rem' }}>
+                                <div style={{ fontSize: '0.76rem', fontWeight: 800, color: 'var(--text-primary)' }}>
+                                    Invitation delivery
+                                </div>
+                                <InvitationDeliveryStatus
+                                    state={invitationDeliveries[lastInvitationUserId]}
+                                    isRetrying={retryingInvitationIds.has(lastInvitationUserId)}
+                                    onRefresh={canAdminister ? () => void refreshInvitationStatus(lastInvitationUserId) : undefined}
+                                    onRetry={canAdminister ? () => void retryInvitation(lastInvitationUserId) : undefined}
+                                />
                             </div>
                         ) : null}
                     </div>
                 ) : null}
             </section>
 
-            <section className="surface-card" style={{ overflowX: 'auto' }}>
+            <section
+                className="surface-card staff-table-scroll"
+                aria-label="Staff directory table"
+                tabIndex={0}
+                style={{ overflowX: 'auto' }}
+            >
                 <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 980 }}>
                     <thead>
                         <tr style={{ background: '#f8faff', borderBottom: '1px solid var(--border)' }}>
-                            {['Member', 'Login', 'Assigned roles', ...(canAdminister || canManageSchedulingProfiles ? ['Actions'] : [])].map((h) => (
+                            {[
+                                'Member',
+                                'Login',
+                                ...(canAdminister ? ['Invitation'] : []),
+                                'Assigned roles',
+                                ...(canAdminister || canManageSchedulingProfiles ? ['Actions'] : []),
+                            ].map((h) => (
                                 <th
                                     key={h}
                                     style={{
@@ -488,6 +621,20 @@ export function StaffWorkspace({ currentUserId, canInvite, canAdminister, canRea
                                         </div>
                                     )}
                                 </td>
+                                {canAdminister ? (
+                                    <td style={{ padding: '0.86rem 1rem', verticalAlign: 'top' }}>
+                                        <InvitationDeliveryStatus
+                                            state={invitationDeliveries[user.id] ?? {
+                                                delivery: null,
+                                                isLoading: true,
+                                                error: null,
+                                            }}
+                                            isRetrying={retryingInvitationIds.has(user.id)}
+                                            onRefresh={() => void refreshInvitationStatus(user.id)}
+                                            onRetry={() => void retryInvitation(user.id)}
+                                        />
+                                    </td>
+                                ) : null}
                                 <td style={{ padding: '0.86rem 1rem' }}>
                                     <div style={{ display: 'grid', gap: '0.45rem' }}>
                                         <div style={{ display: 'flex', gap: '0.4rem', flexWrap: 'wrap' }}>
@@ -500,6 +647,7 @@ export function StaffWorkspace({ currentUserId, canInvite, canAdminister, canRea
                                         {canAssignRoles && canReadRoles && user.id !== currentUserId ? (
                                             <select
                                                 multiple
+                                                aria-label={`Assigned roles for ${user.name}`}
                                                 value={user.assignedRoles.map((role) => role.id)}
                                                 onChange={(event) => {
                                                     const nextRoleIds = Array.from(event.currentTarget.selectedOptions).map((option) => option.value);
@@ -543,14 +691,36 @@ export function StaffWorkspace({ currentUserId, canInvite, canAdminister, canRea
                         ))}
                         {!isLoading && users.length === 0 ? (
                             <tr>
-                                <td colSpan={canAdminister || canManageSchedulingProfiles ? 4 : 3} style={{ padding: '1rem', fontSize: '0.84rem', color: 'var(--text-muted)' }}>
+                                <td colSpan={3 + (canAdminister ? 1 : 0) + (canAdminister || canManageSchedulingProfiles ? 1 : 0)} style={{ padding: '1rem', fontSize: '0.84rem', color: 'var(--text-muted)' }}>
                                     No staff members found.
                                 </td>
                             </tr>
                         ) : null}
                     </tbody>
                 </table>
-            </section>
+                <div style={{ borderTop: '1px solid var(--border)', padding: '0.75rem 1rem', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '0.75rem', flexWrap: 'wrap' }}>
+                    <span style={{ fontSize: '0.78rem', color: 'var(--text-muted)' }}>
+                        Page {userPageIndex + 1} · {users.length} shown · {stats.totalUsers} total
+                    </span>
+                    <div style={{ display: 'flex', gap: '0.5rem' }}>
+                        <Button
+                            variant="outline"
+                            size="sm"
+                            onClick={() => void loadDirectoryPage(userPageCursors[userPageIndex - 1] ?? null, userPageIndex - 1)}
+                            disabled={userPageIndex === 0 || isChangingUserPage}
+                        >
+                            Previous
+                        </Button>
+                        <Button
+                            variant="outline"
+                            size="sm"
+                            onClick={() => void loadDirectoryPage(nextCursor, userPageIndex + 1)}
+                            disabled={!hasMoreUsers || !nextCursor || isChangingUserPage}
+                        >
+                            {isChangingUserPage ? 'Loading...' : 'Next'}
+                        </Button>
+                    </div>
+                </div>            </section>
 
             {schedulingProfileUser ? (
                 <StaffSchedulingProfileEditor
@@ -782,7 +952,7 @@ export function StaffWorkspace({ currentUserId, canInvite, canAdminister, canRea
             })() : null}
 
             {error ? (
-                <div style={{ padding: '0.7rem 0.8rem', borderRadius: 10, border: '1px solid rgba(244,63,94,0.35)', color: '#fda4af', background: 'rgba(244,63,94,0.06)' }}>
+                <div style={{ padding: '0.7rem 0.8rem', borderRadius: 10, border: '1px solid rgba(244,63,94,0.35)', color: '#fda4af', background: 'rgba(244,63,94,0.06)' }} role="alert">
                     {error}
                 </div>
             ) : null}

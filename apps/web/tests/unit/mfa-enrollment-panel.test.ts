@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 
 import {
@@ -7,6 +9,19 @@ import {
 } from '../../app/dashboard/settings/mfa-enrollment-contract';
 
 describe('MFA enrollment contract normalizers', () => {
+  it('keeps the unavailable state customer-facing and actionable', () => {
+    const panelSource = readFileSync(fileURLToPath(new URL(
+      '../../app/dashboard/settings/MfaEnrollmentPanel.tsx',
+      import.meta.url,
+    )), 'utf8');
+
+    expect(panelSource).toContain('MFA enrollment unavailable');
+    expect(panelSource).toContain('MFA enrollment is temporarily unavailable');
+    expect(panelSource).toContain('contact your workspace administrator if the issue continues');
+    expect(panelSource).not.toContain('MFA enrollment API is not available yet');
+    expect(panelSource).not.toContain('Implement GET, POST, PUT, and DELETE');
+  });
+
   it('normalizes enrollment status payload variants', () => {
     expect(normalizeMfaEnrollmentState({
       data: {

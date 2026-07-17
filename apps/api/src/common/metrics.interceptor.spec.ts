@@ -51,8 +51,27 @@ describe('MetricsInterceptor', () => {
 
         expect(metricsService.recordHttpRequest).toHaveBeenCalledWith(
             'GET',
-            '/api/v1/tenants/:id',
+            '/unmatched',
             503,
+            expect.any(Number),
+        );
+    });
+    it('never promotes unmatched request paths into metric labels', async () => {
+        const metricsService = { recordHttpRequest: vi.fn() };
+        const interceptor = new MetricsInterceptor(metricsService as any);
+
+        await lastValueFrom(interceptor.intercept(
+            createContext({
+                method: 'GET',
+                path: '/not-found/customer@example.com/private-token',
+            }, { statusCode: 404 }),
+            { handle: () => of({ ok: false }) } as any,
+        ));
+
+        expect(metricsService.recordHttpRequest).toHaveBeenCalledWith(
+            'GET',
+            '/unmatched',
+            404,
             expect.any(Number),
         );
     });

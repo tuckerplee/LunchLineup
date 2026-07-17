@@ -56,8 +56,17 @@ if (!rollbackManifestPath || !candidateManifestPath) {
 const rollbackFiles = inventory(readJson(rollbackManifestPath, 'rollback manifest'), 'rollback manifest');
 const candidateFiles = inventory(readJson(candidateManifestPath, 'candidate manifest'), 'candidate manifest');
 const policy = readJson(policyPath, 'raw migration rollback policy');
-if (policy.version !== 1 || policy.compatibilityClass !== 'backward-compatible-additive-v1' || !policy.migrations || typeof policy.migrations !== 'object') {
-  fail('policy must be version 1 with compatibilityClass backward-compatible-additive-v1 and a migrations object.');
+if (
+  policy.version !== 2
+  || !/^[a-f0-9]{40}$/.test(policy.historicalBaselineSourceSha ?? '')
+  || !policy.historicalMigrations
+  || typeof policy.historicalMigrations !== 'object'
+  || Array.isArray(policy.historicalMigrations)
+  || policy.compatibilityClass !== 'backward-compatible-additive-v1'
+  || !policy.migrations
+  || typeof policy.migrations !== 'object'
+) {
+  fail('policy must be version 2 with exact historical migration digests, compatibilityClass backward-compatible-additive-v1, and a migrations object.');
 }
 
 const changed = Object.entries(candidateFiles).filter(([path, digest]) => rollbackFiles[path] !== digest);

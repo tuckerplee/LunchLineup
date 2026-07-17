@@ -5,10 +5,10 @@ import { Suspense, useCallback, useEffect, useState } from 'react';
 import { useSearchParams } from 'next/navigation';
 import { Copy, Printer } from 'lucide-react';
 import { LunchLineupMark } from '@/components/branding/LunchLineupMark';
+import { fetchPublicApi } from '@/lib/client-api';
+import { safeInternalNavigationPath } from '@/lib/safe-navigation';
 import { legalContacts } from '../legal-config';
 import { readOneTimeRecoveryCodes, recoveryCodesAsText } from './recovery-codes';
-
-const API = process.env.NEXT_PUBLIC_API_URL ?? '/api/v1';
 
 type MfaMode = 'checking' | 'verify' | 'setup' | 'recovery-codes' | 'recovery';
 
@@ -23,13 +23,6 @@ function getCsrfToken(): string {
     if (typeof document === 'undefined') return '';
     const pair = document.cookie.split('; ').find((entry) => entry.startsWith('csrf_token='));
     return pair ? decodeURIComponent(pair.split('=')[1] ?? '') : '';
-}
-
-function safeInternalPath(value: string | null): string {
-    if (!value) return '/dashboard';
-    if (!value.startsWith('/') || value.startsWith('//') || value.includes('\\')) return '/dashboard';
-    if (value === '/mfa' || value.startsWith('/mfa?')) return '/dashboard';
-    return value;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -104,7 +97,10 @@ function PrivilegedAccountRecovery() {
 
 function MfaContent() {
     const searchParams = useSearchParams();
-    const nextPath = safeInternalPath(searchParams.get('next'));
+    const requestedNextPath = safeInternalNavigationPath(searchParams.get('next'));
+    const nextPath = requestedNextPath === '/mfa' || requestedNextPath.startsWith('/mfa?')
+        ? '/dashboard'
+        : requestedNextPath;
     const [mode, setMode] = useState<MfaMode>('checking');
     const [setup, setSetup] = useState<MfaSetup | null>(null);
     const [code, setCode] = useState('');
@@ -113,13 +109,18 @@ function MfaContent() {
     const [recoveryCodesAcknowledged, setRecoveryCodesAcknowledged] = useState(false);
     const [copyStatus, setCopyStatus] = useState<string | null>(null);
     const [recoveryMessage, setRecoveryMessage] = useState('Contact your workspace administrator to finish MFA setup, then sign in again.');
+    const [isHydrated, setIsHydrated] = useState(false);
     const [isLoading, setIsLoading] = useState(false);
+
+    useEffect(() => {
+        setIsHydrated(true);
+    }, []);
 
     const beginEnrollment = useCallback(async () => {
         setIsLoading(true);
         setError(null);
         try {
-            const res = await fetch(`${API}/auth/mfa/enrollment`, {
+            const res = await fetchPublicApi('/auth/mfa/enrollment', {
                 method: 'POST',
                 headers: csrfHeaders(),
                 credentials: 'include',
@@ -155,7 +156,7 @@ function MfaContent() {
 
         async function loadEnrollmentState() {
             try {
-                const res = await fetch(`${API}/auth/mfa/enrollment`, {
+                const res = await fetchPublicApi('/auth/mfa/enrollment', {
                     method: 'GET',
                     credentials: 'include',
                     cache: 'no-store',
@@ -210,7 +211,7 @@ function MfaContent() {
         setIsLoading(true);
         setError(null);
         try {
-            const res = await fetch(`${API}/auth/mfa/verify`, {
+            const res = await fetchPublicApi('/auth/mfa/verify', {
                 method: 'POST',
                 headers: csrfHeaders(),
                 credentials: 'include',
@@ -243,7 +244,7 @@ function MfaContent() {
         setIsLoading(true);
         setError(null);
         try {
-            const res = await fetch(`${API}/auth/mfa/enrollment`, {
+            const res = await fetchPublicApi('/auth/mfa/enrollment', {
                 method: 'PUT',
                 headers: csrfHeaders(),
                 credentials: 'include',
@@ -288,6 +289,8 @@ function MfaContent() {
         setCopyStatus(null);
         window.location.assign(nextPath);
     };
+
+    if (!isHydrated) return <MfaLoadingFallback />;
 
     return (
         <main className="mfa-shell">
@@ -646,9 +649,21 @@ function MfaContent() {
     );
 }
 
+function MfaLoadingFallback() {
+    return (
+        <main style={{ minHeight: '100vh', display: 'grid', placeItems: 'center', padding: 24, background: '#f6f8fc', color: '#12213a' }}>
+            <div role="status" aria-live="polite" style={{ display: 'grid', justifyItems: 'center', gap: 12, fontWeight: 800 }}>
+                <LunchLineupMark size={42} />
+                <span style={{ fontSize: 20 }}>LunchLineup</span>
+                <span style={{ color: '#58708f', fontSize: 14 }}>Loading secure verification...</span>
+            </div>
+        </main>
+    );
+}
+
 export default function MfaPage() {
     return (
-        <Suspense fallback={<div style={{ minHeight: '100vh' }} />}>
+        <Suspense fallback={<MfaLoadingFallback />}>
             <MfaContent />
         </Suspense>
     );

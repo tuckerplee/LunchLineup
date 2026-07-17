@@ -13,7 +13,6 @@ type PlanRecord = {
     status: PlanStatus;
     maxLocations: number | null;
     maxUsers: number | null;
-    creditsLimit: number | null;
     priceMonthly: number | null;
 };
 
@@ -28,8 +27,6 @@ type PlanFormState = {
     status: PlanStatus;
     maxLocations: string;
     maxUsers: string;
-    unlimitedCredits: boolean;
-    creditsLimit: string;
     priceMonthly: string;
 };
 
@@ -39,15 +36,15 @@ type Banner = {
 } | null;
 
 const STATUS_META: Record<PlanStatus, { label: string; color: string; bg: string; border: string }> = {
-    ACTIVE: { label: 'Active', color: '#0f8c52', bg: '#e9fbf1', border: '#bdeed4' },
-    INACTIVE: { label: 'Inactive', color: '#6f80a4', bg: '#eef2f9', border: '#d3ddeb' },
+    ACTIVE: { label: 'Active', color: '#166534', bg: '#e9fbf1', border: '#bdeed4' },
+    INACTIVE: { label: 'Inactive', color: '#475569', bg: '#eef2f9', border: '#d3ddeb' },
 };
 
 const SUMMARY_META = [
-    { title: 'Live plans', icon: '📦', color: '#2f63ff', bg: '#edf3ff' },
-    { title: 'Active catalog', icon: '✅', color: '#0f8c52', bg: '#e9fbf1' },
-    { title: 'Unlimited credits', icon: '∞', color: '#cb3653', bg: '#ffeef2' },
-    { title: 'Price coverage', icon: '💳', color: '#cc7f06', bg: '#fff4e2' },
+    { title: 'Live plans', icon: '📦', color: '#1d4ed8', bg: '#edf3ff' },
+    { title: 'Active catalog', icon: '✅', color: '#166534', bg: '#e9fbf1' },
+    { title: 'Priced plans', icon: '$', color: '#b4233f', bg: '#ffeef2' },
+    { title: 'Price coverage', icon: '💳', color: '#7c4a03', bg: '#fff4e2' },
 ];
 
 const CODE_REGEX = /^[a-z0-9][a-z0-9._-]{1,47}$/;
@@ -130,9 +127,9 @@ function badgeStyle(color: string, bg: string, border: string) {
 
 function actionButtonStyle(kind: 'neutral' | 'danger') {
     if (kind === 'danger') {
-        return { background: '#ffeef2', color: '#cb3653', borderColor: '#ffd0da' };
+        return { background: '#ffeef2', color: '#b4233f', borderColor: '#ffd0da' };
     }
-    return { background: '#edf3ff', color: '#2f63ff', borderColor: '#c9d9ff' };
+    return { background: '#edf3ff', color: '#1d4ed8', borderColor: '#c9d9ff' };
 }
 
 function parsePlanRecord(value: unknown): PlanRecord | null {
@@ -157,11 +154,6 @@ function parsePlanRecord(value: unknown): PlanRecord | null {
         : typeof plan.userLimit === 'number'
             ? plan.userLimit
             : null;
-    const creditsLimit = typeof plan.creditsLimit === 'number'
-        ? plan.creditsLimit
-        : typeof plan.creditQuotaLimit === 'number'
-            ? plan.creditQuotaLimit
-            : null;
     const priceMonthly = typeof plan.priceMonthly === 'number'
         ? plan.priceMonthly
         : typeof plan.monthlyPriceCents === 'number'
@@ -175,7 +167,6 @@ function parsePlanRecord(value: unknown): PlanRecord | null {
         status,
         maxLocations,
         maxUsers,
-        creditsLimit,
         priceMonthly,
     };
 }
@@ -202,8 +193,6 @@ function normalizeForm(plan?: PlanRecord | null): PlanFormState {
         status: plan?.status ?? 'ACTIVE',
         maxLocations: plan ? String(plan.maxLocations ?? '') : '1',
         maxUsers: plan ? String(plan.maxUsers ?? '') : '10',
-        unlimitedCredits: plan ? plan.creditsLimit === null : true,
-        creditsLimit: plan?.creditsLimit === null ? '' : String(plan?.creditsLimit ?? 0),
         priceMonthly: plan?.priceMonthly === null || plan?.priceMonthly === undefined ? '' : String(plan.priceMonthly),
     };
 }
@@ -215,8 +204,6 @@ function emptyForm(): PlanFormState {
         status: 'ACTIVE',
         maxLocations: '1',
         maxUsers: '10',
-        unlimitedCredits: true,
-        creditsLimit: '',
         priceMonthly: '',
     };
 }
@@ -285,7 +272,6 @@ export function AdminPlansWorkspace() {
                 plan.status,
                 String(plan.maxLocations),
                 String(plan.maxUsers),
-                plan.creditsLimit === null ? 'unlimited' : String(plan.creditsLimit),
                 plan.priceMonthly === null ? '' : String(plan.priceMonthly),
             ]
                 .join(' ')
@@ -296,14 +282,13 @@ export function AdminPlansWorkspace() {
 
     const summary = useMemo(() => {
         const activeCount = plans.filter((plan) => plan.status === 'ACTIVE').length;
-        const unlimitedCount = plans.filter((plan) => plan.creditsLimit === null).length;
         const pricedPlans = plans.filter((plan) => plan.priceMonthly !== null);
         const highestPrice = pricedPlans.length > 0 ? Math.max(...pricedPlans.map((plan) => plan.priceMonthly ?? 0)) : null;
 
         return [
             { value: plans.length, subtitle: 'pricing records', icon: SUMMARY_META[0].icon, color: SUMMARY_META[0].color, bg: SUMMARY_META[0].bg },
             { value: activeCount, subtitle: 'eligible for checkout', icon: SUMMARY_META[1].icon, color: SUMMARY_META[1].color, bg: SUMMARY_META[1].bg },
-            { value: unlimitedCount, subtitle: 'credits unlimited', icon: SUMMARY_META[2].icon, color: SUMMARY_META[2].color, bg: SUMMARY_META[2].bg },
+            { value: pricedPlans.length, subtitle: 'priced subscriptions', icon: SUMMARY_META[2].icon, color: SUMMARY_META[2].color, bg: SUMMARY_META[2].bg },
             {
                 value: highestPrice === null ? '—' : CURRENCY_FORMAT.format(highestPrice),
                 subtitle: 'highest monthly rate',
@@ -349,16 +334,6 @@ export function AdminPlansWorkspace() {
             return;
         }
 
-        let creditsLimit: number | null = null;
-        if (!createForm.unlimitedCredits) {
-            const parsedCredits = toInteger(createForm.creditsLimit);
-            if (!Number.isInteger(parsedCredits) || parsedCredits < 0) {
-                setError('Credits limit must be a non-negative integer.');
-                return;
-            }
-            creditsLimit = parsedCredits;
-        }
-
         const priceMonthly = toOptionalPrice(createForm.priceMonthly);
         if (Number.isNaN(priceMonthly)) {
             setError('Monthly price must be a valid number.');
@@ -373,7 +348,6 @@ export function AdminPlansWorkspace() {
                 status: createForm.status,
                 locationLimit: maxLocations,
                 userLimit: maxUsers,
-                creditQuotaLimit: creditsLimit,
                 priceMonthly,
             });
             setCreateForm(emptyForm());
@@ -429,16 +403,6 @@ export function AdminPlansWorkspace() {
             maxUsers = parsed;
         }
 
-        let creditsLimit: number | null = null;
-        if (!editForm.unlimitedCredits) {
-            const parsedCredits = toInteger(editForm.creditsLimit);
-            if (!Number.isInteger(parsedCredits) || parsedCredits < 0) {
-                setError('Credits limit must be a non-negative integer.');
-                return;
-            }
-            creditsLimit = parsedCredits;
-        }
-
         const priceMonthly = toOptionalPrice(editForm.priceMonthly);
         if (Number.isNaN(priceMonthly)) {
             setError('Monthly price must be a valid number.');
@@ -451,7 +415,6 @@ export function AdminPlansWorkspace() {
                 code,
                 name,
                 status: editForm.status,
-                creditQuotaLimit: creditsLimit,
                 priceMonthly,
             };
             if (maxLocations !== undefined) payload.locationLimit = maxLocations;
@@ -493,7 +456,6 @@ export function AdminPlansWorkspace() {
         return [
             { label: 'Store/location limit', value: formatLimit(selectedPlan.maxLocations) },
             { label: 'User limit', value: formatLimit(selectedPlan.maxUsers) },
-            { label: 'Credits limit', value: selectedPlan.creditsLimit === null ? 'Unlimited' : formatLimit(selectedPlan.creditsLimit) },
             { label: 'Price / month', value: formatCurrency(selectedPlan.priceMonthly) },
         ];
     }, [selectedPlan]);
@@ -510,7 +472,7 @@ export function AdminPlansWorkspace() {
             >
                 <div style={{ display: 'flex', justifyContent: 'space-between', gap: '0.85rem', alignItems: 'flex-start', flexWrap: 'wrap' }}>
                     <div>
-                        <div className="workspace-kicker" style={{ color: '#cb3653' }}>
+                        <div className="workspace-kicker" style={{ color: '#b4233f' }}>
                             Billing controls
                         </div>
                         <h1 className="workspace-title" style={{ fontSize: '1.6rem', marginBottom: 2 }}>
@@ -553,7 +515,7 @@ export function AdminPlansWorkspace() {
                                 {item.icon}
                             </span>
                         </div>
-                        <div style={{ fontSize: '1.9rem', fontWeight: 800, letterSpacing: '-0.03em', color: 'var(--text-primary)' }}>{item.value}</div>
+                        <div style={{ fontSize: '1.9rem', fontWeight: 800, letterSpacing: 0, color: 'var(--text-primary)' }}>{item.value}</div>
                         <div style={{ fontSize: '0.72rem', fontWeight: 700, color: item.color }}>Pricing governance</div>
                     </article>
                 ))}
@@ -566,7 +528,7 @@ export function AdminPlansWorkspace() {
                         borderRadius: 12,
                         border: '1px solid #ffd0da',
                         background: '#fff1f4',
-                        color: '#cb3653',
+                        color: '#b4233f',
                         fontWeight: 600,
                         fontSize: '0.86rem',
                     }}
@@ -582,7 +544,7 @@ export function AdminPlansWorkspace() {
                         borderRadius: 12,
                         border: '1px solid #c9d9ff',
                         background: '#edf3ff',
-                        color: '#2f63ff',
+                        color: '#1d4ed8',
                         fontWeight: 600,
                         fontSize: '0.86rem',
                     }}
@@ -592,7 +554,12 @@ export function AdminPlansWorkspace() {
             ) : null}
 
             <section style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1.35fr) minmax(320px, 0.65fr)', gap: '0.85rem', alignItems: 'start' }}>
-                <article className="surface-card" style={{ overflowX: 'auto' }}>
+                <article
+                    className="surface-card"
+                    aria-label="Plan catalog table"
+                    tabIndex={0}
+                    style={{ overflowX: 'auto' }}
+                >
                     <div style={{ padding: '0.95rem 1rem 0.55rem', display: 'flex', justifyContent: 'space-between', gap: '0.75rem', alignItems: 'center', flexWrap: 'wrap' }}>
                         <div>
                             <h2 style={{ fontSize: '0.98rem', fontWeight: 760, color: 'var(--text-primary)' }}>Plan catalog</h2>
@@ -652,7 +619,7 @@ export function AdminPlansWorkspace() {
                                         <td style={{ padding: '0.9rem 1rem' }}>
                                             <div style={{ fontWeight: 700, fontSize: '0.88rem', color: 'var(--text-primary)', marginBottom: 2 }}>{plan.name}</div>
                                             <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>
-                                                {plan.creditsLimit === null ? 'Usage tracked on unlimited credits' : 'Finite usage credits included'}
+                                                Subscription eligibility only; usage requires separately purchased credits.
                                             </div>
                                         </td>
                                         <td style={{ padding: '0.9rem 1rem' }}>
@@ -663,16 +630,11 @@ export function AdminPlansWorkspace() {
                                         <td style={{ padding: '0.9rem 1rem' }}>
                                             <div style={{ display: 'grid', gap: '0.34rem' }}>
                                                 <div style={{ display: 'flex', gap: '0.42rem', alignItems: 'center', flexWrap: 'wrap' }}>
-                                                    <span className="badge" style={badgeStyle('#2f63ff', '#edf3ff', '#c9d9ff')}>
+                                                    <span className="badge" style={badgeStyle('#1d4ed8', '#edf3ff', '#c9d9ff')}>
                                                         {plan.maxLocations === null ? 'Unlimited locations' : `${formatLimit(plan.maxLocations)} locations`}
                                                     </span>
-                                                    <span className="badge" style={badgeStyle('#0f8c52', '#e9fbf1', '#bdeed4')}>
+                                                    <span className="badge" style={badgeStyle('#166534', '#e9fbf1', '#bdeed4')}>
                                                         {plan.maxUsers === null ? 'Unlimited users' : `${formatLimit(plan.maxUsers)} users`}
-                                                    </span>
-                                                </div>
-                                                <div style={{ display: 'flex', gap: '0.42rem', alignItems: 'center', flexWrap: 'wrap' }}>
-                                                    <span className="badge" style={badgeStyle(plan.creditsLimit === null ? '#cb3653' : '#cc7f06', plan.creditsLimit === null ? '#ffeef2' : '#fff4e2', plan.creditsLimit === null ? '#ffd0da' : '#ffe1a6')}>
-                                                        {plan.creditsLimit === null ? 'Unlimited credits' : `${formatLimit(plan.creditsLimit)} credits`}
                                                     </span>
                                                 </div>
                                             </div>
@@ -724,7 +686,7 @@ export function AdminPlansWorkspace() {
                                     Publish a new pricing plan from the admin API.
                                 </div>
                             </div>
-                            <span className="badge" style={badgeStyle('#2f63ff', '#edf3ff', '#c9d9ff')}>
+                            <span className="badge" style={badgeStyle('#1d4ed8', '#edf3ff', '#c9d9ff')}>
                                 POST /admin/plans
                             </span>
                         </div>
@@ -805,43 +767,6 @@ export function AdminPlansWorkspace() {
                                         onChange={(event) => setCreateForm((current) => ({ ...current, maxUsers: event.target.value }))}
                                     />
                                 </label>
-                            </div>
-
-                            <div className="surface-muted" style={{ padding: '0.85rem', display: 'grid', gap: '0.7rem' }}>
-                                <label style={{ display: 'flex', alignItems: 'center', gap: '0.7rem', cursor: 'pointer' }}>
-                                    <input
-                                        type="checkbox"
-                                        checked={createForm.unlimitedCredits}
-                                        onChange={(event) =>
-                                            setCreateForm((current) => ({
-                                                ...current,
-                                                unlimitedCredits: event.target.checked,
-                                                creditsLimit: event.target.checked ? '' : current.creditsLimit || '1000',
-                                            }))
-                                        }
-                                    />
-                                    <span style={{ fontSize: '0.84rem', fontWeight: 650, color: 'var(--text-primary)' }}>
-                                        Unlimited credits
-                                    </span>
-                                </label>
-
-                                <label className="form-group">
-                                    <span className="form-label">Credits limit</span>
-                                    <input
-                                        className="form-input"
-                                        type="number"
-                                        min="0"
-                                        step="1"
-                                        value={createForm.creditsLimit}
-                                        onChange={(event) => setCreateForm((current) => ({ ...current, creditsLimit: event.target.value }))}
-                                        disabled={createForm.unlimitedCredits}
-                                        placeholder="1000"
-                                    />
-                                </label>
-
-                                <div style={{ fontSize: '0.76rem', color: 'var(--text-muted)', lineHeight: 1.45 }}>
-                                    Unlimited plans still track usage for reporting, forecasting, and support escalation.
-                                </div>
                             </div>
 
                             <button className="btn" type="submit" disabled={saving === 'create'}>
@@ -937,43 +862,6 @@ export function AdminPlansWorkspace() {
                                             onChange={(event) => setEditForm((current) => ({ ...current, maxUsers: event.target.value }))}
                                         />
                                     </label>
-                                </div>
-
-                                <div className="surface-muted" style={{ padding: '0.85rem', display: 'grid', gap: '0.7rem' }}>
-                                    <label style={{ display: 'flex', alignItems: 'center', gap: '0.7rem', cursor: 'pointer' }}>
-                                        <input
-                                            type="checkbox"
-                                            checked={editForm.unlimitedCredits}
-                                            onChange={(event) =>
-                                                setEditForm((current) => ({
-                                                    ...current,
-                                                    unlimitedCredits: event.target.checked,
-                                                    creditsLimit: event.target.checked ? '' : current.creditsLimit || '1000',
-                                                }))
-                                            }
-                                        />
-                                        <span style={{ fontSize: '0.84rem', fontWeight: 650, color: 'var(--text-primary)' }}>
-                                            Unlimited credits
-                                        </span>
-                                    </label>
-
-                                    <label className="form-group">
-                                        <span className="form-label">Credits limit</span>
-                                        <input
-                                            className="form-input"
-                                            type="number"
-                                            min="0"
-                                            step="1"
-                                            value={editForm.creditsLimit}
-                                            onChange={(event) => setEditForm((current) => ({ ...current, creditsLimit: event.target.value }))}
-                                            disabled={editForm.unlimitedCredits}
-                                            placeholder="1000"
-                                        />
-                                    </label>
-
-                                    <div style={{ fontSize: '0.76rem', color: 'var(--text-muted)', lineHeight: 1.45 }}>
-                                        Unlimited plans still track usage for reporting, forecasting, and support escalation.
-                                    </div>
                                 </div>
 
                                 {selectedPrices ? (

@@ -34,17 +34,26 @@ export function resolveTenantVisibleLocation<T extends TenantVisibleLocation>(
 }
 
 export function buildLocationShiftQuery(range: ShiftRange, locationId: string): string {
+  return buildLocationRangeQuery('/shifts', range, locationId);
+}
+
+export function buildLocationScheduleQuery(range: ShiftRange, locationId: string): string {
+  return buildLocationRangeQuery('/schedules', range, locationId);
+}
+
+function buildLocationRangeQuery(path: '/schedules' | '/shifts', range: ShiftRange, locationId: string): string {
   const normalizedLocationId = locationId.trim();
   if (!normalizedLocationId) {
-    throw new Error('locationId is required to load shifts.');
+    throw new Error('locationId is required to load scheduling data.');
   }
 
   const params = new URLSearchParams({
     startDate: range.start,
     endDate: range.end,
     locationId: normalizedLocationId,
+    limit: '200',
   });
-  return `/shifts?${params.toString()}`;
+  return `${path}?${params.toString()}`;
 }
 
 export function shiftsForLocation<T extends LocationShift>(shifts: T[], locationId: string): T[] {

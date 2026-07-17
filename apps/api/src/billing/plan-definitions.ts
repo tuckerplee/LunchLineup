@@ -3,12 +3,20 @@ import { Prisma } from '@prisma/client';
 export const FEATURE_KEYS = ['scheduling', 'lunch_breaks', 'time_cards', 'webhooks'] as const;
 export type FeatureKey = (typeof FEATURE_KEYS)[number];
 
+export const FEATURE_CREDIT_COST = {
+    scheduling: 1,
+    lunch_breaks: 1,
+    time_cards: 1,
+    webhooks: 1,
+} as const satisfies Record<FeatureKey, number>;
+
 export type TenantPlanCode = 'FREE' | 'STARTER' | 'GROWTH' | 'ENTERPRISE';
 
 export type TenantEntitlementSnapshot = {
     planTier: string;
     status?: string | null;
     stripeSubscriptionId?: string | null;
+    stripeSubscriptionCurrentPeriodEnd?: Date | string | null;
     trialEndsAt?: Date | string | null;
 };
 
@@ -135,6 +143,24 @@ export function normalizePlanCode(value: string): string {
     return value.trim().toUpperCase();
 }
 
+export function hasNonBlankStripeSubscriptionId(value: unknown): value is string {
+    return typeof value === 'string' && value.trim().length > 0;
+}
+
+export function hasFutureStripeSubscriptionCurrentPeriodEnd(
+    value: unknown,
+    now = new Date(),
+): boolean {
+    const periodEnd = value instanceof Date
+        ? value
+        : typeof value === 'string'
+            ? new Date(value)
+            : null;
+    return periodEnd !== null
+        && Number.isFinite(periodEnd.getTime())
+        && periodEnd.getTime() > now.getTime();
+}
+
 export function resolveEffectiveTenantEntitlement(
     tenant: TenantEntitlementSnapshot,
     now = new Date(),
@@ -146,7 +172,12 @@ export function resolveEffectiveTenantEntitlement(
     }
 
     const status = String(tenant.status ?? '').toUpperCase();
-    if (status === 'ACTIVE' && Boolean(tenant.stripeSubscriptionId)) {
+    if (status === 'ACTIVE'
+        && hasNonBlankStripeSubscriptionId(tenant.stripeSubscriptionId)
+        && hasFutureStripeSubscriptionCurrentPeriodEnd(
+            tenant.stripeSubscriptionCurrentPeriodEnd,
+            now,
+        )) {
         return { planCode, source: 'paid_subscription' };
     }
 
@@ -166,16 +197,21 @@ export function resolveEffectiveTenantEntitlement(
 }
 
 export function coercePlanFeatureKeys(metadata: Prisma.JsonValue | null | undefined, fallbackCode: TenantPlanCode): FeatureKey[] {
-    const raw = metadata && typeof metadata === 'object' && !Array.isArray(metadata)
-        ? (metadata as Record<string, unknown>).features
-        : undefined;
+    const metadataRecord = metadata && typeof metadata === 'object' && !Array.isArray(metadata)
+        ? metadata as Record<string, unknown>
+        : null;
+    if (!metadataRecord || !Object.prototype.hasOwnProperty.call(metadataRecord, 'features')) {
+        return DEFAULT_PLAN_FEATURES[fallbackCode];
+    }
+
+    const raw = metadataRecord.features;
     const featureKeys = new Set<string>(FEATURE_KEYS);
+    if (!Array.isArray(raw)
+        || raw.some((item) => typeof item !== 'string' || !featureKeys.has(item))) {
+        return [];
+    }
 
-    const features = Array.isArray(raw)
-        ? raw.filter((item): item is FeatureKey => typeof item === 'string' && featureKeys.has(item))
-        : [];
-
-    return features.length > 0 ? features : DEFAULT_PLAN_FEATURES[fallbackCode];
+    return Array.from(new Set(raw as FeatureKey[]));
 }
 
 export function planDefinitionToResponse(plan: PlanDefinitionRecord): PlanDefinitionResponse {

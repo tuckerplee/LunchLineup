@@ -49,7 +49,7 @@ LunchLineup utilizes a **Turborepo** monorepo structure, orchestrating a suite o
 
 ```text
 lunchlineup/
-├── .github/               # CI/CD workflows and CODEOWNERS
+├── .github/               # CI/CD, CodeQL, and Dependabot automation
 ├── apps/
 │   ├── web/               # Next.js user-facing frontend
 │   ├── api/               # NestJS API Gateway
@@ -76,7 +76,7 @@ lunchlineup/
 - `.zap-rules.tsv`: OWASP ZAP baseline scan rule severity configuration.
 - `README.md`: this project overview and repository map.
 - `apps/`: application workspaces for web, API, engine, worker, and control-plane services.
-- `docker-compose.yml`: local and deployment service topology, including the one-shot `ops` backup job.
+- `docker-compose.yml`: local and deployment service topology, including project-scoped persistent Postgres, Redis, and RabbitMQ volumes, loopback-only Alertmanager access, and the one-shot `ops` backup job.
 - `docs/`: architecture, testing, and runbook documentation.
 - `eslint.config.mjs`: repository ESLint configuration.
 - `infrastructure/`: deployment infrastructure templates and service configuration.
@@ -85,7 +85,7 @@ lunchlineup/
 - `package.json`: root workspace scripts and dependency metadata.
 - `packages/`: shared database, configuration, RBAC, type, and UI packages.
 - `scripts/`: operational, migration, deploy, and recovery scripts.
-- `task.md`: current rebuild task notes.
+- `task.md`: historical 12-month rebuild roadmap; current launch gates live in `docs/runbooks/production-readiness.md`.
 - `tests/`: repository-level deploy, hygiene, integration, and migration tests.
 - `tsconfig.base.json`: shared TypeScript compiler baseline.
 - `turbo.json`: Turborepo pipeline configuration.
@@ -167,7 +167,7 @@ From the root directory, you can utilize the following `turbo` commands:
 
 Our CI pipeline enforces a strict testing hierarchy before any image is tagged for deployment:
 
-1.  **Static Analysis**: ESLint, Prettier, Pyright, and SAST scanning (Semgrep).
+1.  **Static Analysis**: ESLint, type checking, Semgrep SARIF, and CodeQL for JavaScript/TypeScript and Python.
 2.  **Unit Tests (Fast-fail)**: Vitest and PyTest (`npm run test`). 90%+ coverage required.
 3.  **Integration & E2E**: Ephemeral Docker Compose stacks are spun up in GitHub Actions. Playwright tests execute critical paths against live, networked containers.
 4.  **Load Testing**: Artillery smoke tests to ensure `p99` latencies remain within acceptable bounds under load.
@@ -180,10 +180,11 @@ Deployments are entirely automated—no human manually runs migrations or builds
 
 1.  **Continuous Integration**: Every push triggers the full testing suite.
 2.  **Artifact Generation**: Successful builds create immutable Docker images tagged with the exact Git SHA, pushed to our private registry, and verified against digest-pinned Docker bases plus Compose third-party service images.
-3.  **Zero-Downtime Deployment**: 
+3.  **Guarded In-Place Deployment**:
     *   The `lunchlineup-migrations` container applies DB schema changes with `MIGRATION_DATABASE_URL`, then creates or repairs the restricted application role and its grants.
-    *   New application containers are rolled out incrementally. Caddy drains traffic from old containers to new ones only after health checks pass.
-4.  **Automated Rollbacks**: If post-deployment smoke tests fail, the system automatically replaces the containers with the previous known-good Git SHA within 60 seconds.
+    *   Compose replaces application containers from immutable release images after pre-mutation compatibility, backup, and release-proof gates pass.
+    *   Each signed release retains a bounded secret-free version-2 source archive with exact package/lock/workspace manifests, schema/migrations, integration owners, rollback scripts, Compose/infrastructure inputs, and systemd units; materialization rejects missing, extra, or one-byte-drifted content.
+4.  **Automated Rollbacks**: If post-deployment smoke tests fail, the system restores the retained previous release inputs. INT/TERM after rollback mutation begins triggers one bounded authenticated reconciliation before staging cleanup; activation is not blindly retried. Recovery time is measured during drills and is not assumed to be sub-minute.
 
 ---
 
@@ -191,6 +192,7 @@ Deployments are entirely automated—no human manually runs migrations or builds
 
 *   **Row-Level Security (RLS)**: Enforced directly inside PostgreSQL. An application bug cannot expose another tenant's data. Everything is tenant-scoped by default.
 *   **Network Isolation**: Data containers (DB, Redis, RabbitMQ) cannot route to the public internet. Only the Caddy reverse proxy faces external traffic.
+*   **Container Runtime**: Production services deny privilege escalation and use read-only root filesystems. Application and stateless services drop all Linux capabilities, with only Caddy retaining `NET_BIND_SERVICE`; writable state, caches, uploads, and temp space are explicit volumes or bounded `noexec,nosuid,nodev` tmpfs mounts.
 *   **Dependency Sovereignty**: Supply chain attacks are mitigated via strict lockfiles (`npm ci`), npm audits, digest-pinned container images, and our internal asset-vendoring policy (`scripts/vendor-assets.sh`). External CDNs are used for speed but fall back to local copies verified by SRI hashes if tampered with or offline.
 *   **Configuration over Code**: CSPs, HSTS, CORS, and Rate Limits are configured dynamically, not hard-coded.
 

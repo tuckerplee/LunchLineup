@@ -1,6 +1,7 @@
 import {
   CalendarDays,
   Clock3,
+  HandCoins,
   LayoutGrid,
   MapPin,
   Settings,
@@ -18,7 +19,6 @@ export type DashboardNavItem = {
   icon: LucideIcon;
   exact: boolean;
   priority?: 'strong';
-  badge?: number;
 };
 
 type DashboardProfileSummary = {
@@ -29,9 +29,10 @@ type DashboardProfileSummary = {
 
 const NAV_ITEMS: DashboardNavItem[] = [
   { href: '/dashboard', label: 'Overview', icon: LayoutGrid, exact: true },
-  { href: '/dashboard/scheduling', label: 'Calendar', icon: CalendarDays, exact: false, priority: 'strong', badge: 3 },
-  { href: '/dashboard/lunch-breaks', label: 'Lunch & Breaks', icon: UtensilsCrossed, exact: false, badge: 1 },
+  { href: '/dashboard/scheduling', label: 'Calendar', icon: CalendarDays, exact: false, priority: 'strong' },
+  { href: '/dashboard/lunch-breaks', label: 'Lunch & Breaks', icon: UtensilsCrossed, exact: false },
   { href: '/dashboard/time-cards', label: 'Time Cards', icon: Clock3, exact: false },
+  { href: '/dashboard/payroll', label: 'Payroll', icon: HandCoins, exact: false },
   { href: '/dashboard/staff', label: 'Staff', icon: Users, exact: false },
   { href: '/dashboard/locations', label: 'Locations', icon: MapPin, exact: false },
   { href: '/dashboard/settings', label: 'Settings', icon: Settings, exact: false },
@@ -46,6 +47,7 @@ export function getVisibleDashboardNavItems(permissions: PermissionList): Dashbo
     if (item.href === '/dashboard/lunch-breaks') return capabilities.canReadLunchBreaks;
     if (item.href === '/dashboard/staff') return capabilities.canReadUsers;
     if (item.href === '/dashboard/time-cards') return capabilities.canReadTimeCards;
+    if (item.href === '/dashboard/payroll') return capabilities.canReadPayroll;
     if (item.href === '/dashboard/locations') return capabilities.canReadLocations;
     if (item.href === '/dashboard/settings') return capabilities.canReadSettings;
     return true;

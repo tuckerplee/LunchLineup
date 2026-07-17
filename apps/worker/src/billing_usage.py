@@ -32,6 +32,14 @@ class NonRetryableBillingError(RuntimeError):
     pass
 
 
+def billing_usage_failure_code(exc: Exception, dead_lettered: bool) -> str:
+    if isinstance(exc, NonRetryableBillingError):
+        return "STRIPE_USAGE_NON_RETRYABLE"
+    if dead_lettered:
+        return "STRIPE_USAGE_RETRIES_EXHAUSTED"
+    return "STRIPE_USAGE_RETRYABLE"
+
+
 @dataclass(frozen=True)
 class UsageEvent:
     id: str
@@ -535,10 +543,11 @@ async def dispatch_usage(
     except (RetryableBillingError, NonRetryableBillingError) as exc:
         max_attempts = int_env("STRIPE_USAGE_MAX_ATTEMPTS", 5, 1, 20)
         dead_lettered = isinstance(exc, NonRetryableBillingError) or event.attempts >= max_attempts
-        await asyncio.to_thread(store.mark_failed, event, str(exc), dead_lettered)
+        failure_code = billing_usage_failure_code(exc, dead_lettered)
+        await asyncio.to_thread(store.mark_failed, event, failure_code, dead_lettered)
         if dead_lettered:
             raise NonRetryableBillingError("Stripe usage event was dead-lettered") from exc
-        raise
+        raise RetryableBillingError("Stripe usage event will retry") from exc
 
 
 async def run_billing_usage_cycle(store: UsageStore | None = None, client: MeterClient | None = None) -> dict[str, int]:

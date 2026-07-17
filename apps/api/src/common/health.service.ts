@@ -1,11 +1,14 @@
-import { Injectable } from "@nestjs/common";
+import { Inject, Injectable, Optional } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
+import { getStorageToken, type ThrottlerStorage } from "@nestjs/throttler";
 import * as amqp from "amqplib";
 import Redis from "ioredis";
 import { TenantPrismaService } from "../database/tenant-prisma.service";
 import { MetricsService } from "./metrics.service";
 
 export const RABBITMQ_HEALTH_TIMEOUT_MS = 1000;
+export const DEPENDENCY_HEALTH_TIMEOUT_MS = 1000;
+export const HEALTH_REPORT_CACHE_TTL_MS = 5000;
 
 type DependencyStatus = "online" | "offline";
 type OverallHealth = "ok" | "degraded";
@@ -25,13 +28,40 @@ export interface HealthReport {
 
 @Injectable()
 export class HealthService {
+  private cachedReport: { expiresAt: number; report: HealthReport } | null = null;
+  private inFlightCheck: Promise<HealthReport> | null = null;
+
   constructor(
     private readonly configService: ConfigService,
     private readonly tenantDb: TenantPrismaService,
     private readonly metricsService: MetricsService,
+    @Optional()
+    @Inject(getStorageToken())
+    private readonly rateLimitStorage?: ThrottlerStorage,
   ) {}
 
   async check(): Promise<HealthReport> {
+    const now = Date.now();
+    if (this.cachedReport && this.cachedReport.expiresAt > now) {
+      return this.cachedReport.report;
+    }
+    if (this.inFlightCheck) return this.inFlightCheck;
+
+    const check = this.checkDependencies();
+    this.inFlightCheck = check;
+    try {
+      const report = await check;
+      this.cachedReport = {
+        expiresAt: Date.now() + HEALTH_REPORT_CACHE_TTL_MS,
+        report,
+      };
+      return report;
+    } finally {
+      if (this.inFlightCheck === check) this.inFlightCheck = null;
+    }
+  }
+
+  private async checkDependencies(): Promise<HealthReport> {
     const checks = await Promise.all([
       this.checkDatabase(),
       this.checkRedis(),
@@ -56,7 +86,10 @@ export class HealthService {
 
   private async checkDatabase(): Promise<DependencyCheck> {
     const result = await this.timeCheck(async () => {
-      await this.tenantDb.client.$queryRaw`SELECT 1`;
+      await this.withTimeout(
+        this.tenantDb.client.$queryRaw`SELECT 1`,
+        DEPENDENCY_HEALTH_TIMEOUT_MS,
+      );
     });
 
     return {
@@ -81,13 +114,17 @@ export class HealthService {
 
     const redis = this.createRedisClient(redisUrl);
     try {
-      const result = await this.timeCheck(async () => {
+      const operation = (async () => {
         await redis.connect();
         const pong = await redis.ping();
         if (pong !== "PONG") {
           throw new Error("unexpected Redis PING response");
         }
-      });
+        await this.checkRateLimitStorageReadiness();
+      })();
+      const result = await this.timeCheck(() =>
+        this.withTimeout(operation, DEPENDENCY_HEALTH_TIMEOUT_MS),
+      );
 
       return {
         name: "redis",
@@ -107,6 +144,19 @@ export class HealthService {
       connectTimeout: 1000,
       enableOfflineQueue: false,
     });
+  }
+
+  private async checkRateLimitStorageReadiness(): Promise<void> {
+    const storage = this.rateLimitStorage as
+      | (ThrottlerStorage & { assertReady?: () => Promise<void> })
+      | undefined;
+    if (typeof storage?.assertReady === "function") {
+      await storage.assertReady();
+      return;
+    }
+    if ((process.env.NODE_ENV ?? "").trim().toLowerCase() === "production") {
+      throw new Error("shared rate-limit storage readiness is unavailable");
+    }
   }
 
   private async checkRabbitMq(): Promise<DependencyCheck> {

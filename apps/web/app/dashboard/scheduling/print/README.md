@@ -3,7 +3,7 @@
 ## Files
 
 - `README.md`: this print route guide.
-- `page.tsx`: authenticated browser-print schedule view using the legacy landscape layout.
+- `page.tsx`: authenticated browser-print schedule view that resolves one exact requested location (or one bounded fallback) before loading the selected day.
 - `print-schedule-scope.ts`: pure date/location request-scope helpers used to gate printable data and actions.
 
 ## Notes

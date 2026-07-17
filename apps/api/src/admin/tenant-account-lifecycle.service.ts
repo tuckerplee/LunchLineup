@@ -1,15 +1,12 @@
-import { BadRequestException } from '@nestjs/common';
+import { BadRequestException, ConflictException, NotFoundException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { TenantStatus } from '@prisma/client';
-import {
-    StripeService,
-    type TenantSubscriptionCancellationResult,
-} from '../billing/stripe.service';
+import { Prisma, TenantStatus } from '@prisma/client';
+import { StripeService } from '../billing/stripe.service';
 import { TenantPrismaService } from '../database/tenant-prisma.service';
+import { TenantCancellationLifecycleService } from './tenant-cancellation-lifecycle.service';
 import { TenantDeletionBillingService } from './tenant-deletion-billing.service';
 import {
-    assertTenantSlugConfirmation,
-    normalizeTenantConfirmation,
+    TENANT_CUSTOMER_CANCELLATION_INTENT_SETTING_KEY,
     serializeTenantLifecycleStatus,
     isTenantReadyForApplicationDataPurge,
     isTenantReadyForRetentionPurge,
@@ -25,6 +22,9 @@ export type TenantRetentionCandidate = {
     status: TenantStatus | string;
     deletedAt: Date | null;
     applicationDataPurgedAt?: Date | null;
+    retentionLegalHoldAt?: Date | null;
+    retentionLegalHoldReason?: string | null;
+    retentionLegalHoldByUserId?: string | null;
 };
 
 export type TenantRetentionPurgeAttempt =
@@ -37,6 +37,13 @@ export type TenantLifecycleActor = {
     userId?: string;
     ipAddress: any;
     userAgent: any;
+};
+
+export type TenantRetentionLegalHoldActor = {
+    userId: string;
+    tenantId: string;
+    ipAddress: string | null;
+    userAgent: string | null;
 };
 
 type CancelTenantAccountBody = {
@@ -57,81 +64,183 @@ export class TenantAccountLifecycleService {
     static readonly RETENTION_TRANSACTION_OPTIONS = { maxWait: 5_000, timeout: 60_000 } as const;
 
     private readonly tenantDeletionBilling: TenantDeletionBillingService;
+    private readonly tenantCancellationLifecycle: TenantCancellationLifecycleService;
 
     constructor(
         private readonly tenantDb: TenantPrismaService,
         private stripeBilling?: TenantSubscriptionCanceller,
+        tenantCancellationLifecycle?: TenantCancellationLifecycleService,
     ) {
         this.tenantDeletionBilling = new TenantDeletionBillingService(
             this.tenantDb,
             () => this.getStripeBilling(),
         );
+        this.tenantCancellationLifecycle = tenantCancellationLifecycle
+            ?? new TenantCancellationLifecycleService(
+                this.tenantDb,
+                () => this.getStripeBilling(),
+            );
     }
 
     async cancelTenant(actor: TenantLifecycleActor, body: CancelTenantAccountBody) {
-        const confirmation = normalizeTenantConfirmation(body?.confirmation);
-        const reason = typeof body?.reason === 'string' && body.reason.trim()
-            ? body.reason.trim().slice(0, 500)
-            : null;
-        const tenantToCancel = await this.tenantDb.withTenant(actor.tenantId, async (tx) => {
+        return this.tenantCancellationLifecycle.cancelCustomer(actor, body);
+    }
+
+    async archiveTenant(
+        tenantId: string,
+        actor: TenantRetentionLegalHoldActor,
+    ) {
+        return this.tenantCancellationLifecycle.archivePlatform(actor, tenantId);
+    }
+
+    async getStatus(actor: TenantLifecycleActor) {
+        const statusSource = await this.tenantDb.withTenant(actor.tenantId, async (tx) => {
             const tenant = await tx.tenant.findUniqueOrThrow({
                 where: { id: actor.tenantId },
-                select: { id: true, slug: true, status: true, deletedAt: true, stripeSubscriptionId: true },
+                select: {
+                    id: true,
+                    slug: true,
+                    status: true,
+                    deletedAt: true,
+                    applicationDataPurgedAt: true,
+                    retentionLegalHoldAt: true,
+                },
             });
-            assertTenantSlugConfirmation(confirmation, tenant.slug);
-
-            if (tenant.status === TenantStatus.PURGED) {
-                throw new BadRequestException('Tenant deletion has already been requested.');
-            }
-
-            return tenant;
+            const customerCancellationIntent = await tx.tenantSetting.findUnique({
+                where: {
+                    tenantId_key: {
+                        tenantId: actor.tenantId,
+                        key: TENANT_CUSTOMER_CANCELLATION_INTENT_SETTING_KEY,
+                    },
+                },
+                select: { value: true },
+            });
+            return { tenant, customerCancellationIntent };
         });
-        const billingCancellation = await this.cancelTenantBillingAtPeriodEnd(
-            actor.tenantId,
-            tenantToCancel.stripeSubscriptionId,
+
+        return serializeTenantLifecycleStatus(
+            statusSource.tenant,
+            statusSource.customerCancellationIntent?.value,
         );
+    }
 
-        const tenant = await this.tenantDb.withTenant(actor.tenantId, async (tx) => {
-            const tenant = await tx.tenant.findUniqueOrThrow({
-                where: { id: actor.tenantId },
-                select: { id: true, slug: true, status: true, deletedAt: true },
+    async placeRetentionLegalHold(
+        tenantId: string,
+        actor: TenantRetentionLegalHoldActor,
+        body: { reason?: unknown },
+    ) {
+        const reason = this.normalizeLegalHoldReason(body?.reason);
+        const placedAt = new Date();
+
+        return this.tenantDb.withPlatformAdmin(async (tx) => {
+            await this.lockTenantRetentionTransaction(tx, tenantId);
+            const tenant = await tx.tenant.findUnique({
+                where: { id: tenantId },
+                select: { id: true, retentionLegalHoldAt: true },
             });
-
-            if (tenant.status === TenantStatus.PURGED) {
-                throw new BadRequestException('Tenant deletion has already been requested.');
+            if (!tenant) throw new NotFoundException('Tenant not found.');
+            if (tenant.retentionLegalHoldAt) {
+                throw new ConflictException('Tenant already has an active retention legal hold.');
             }
 
+            const updated = await tx.tenant.updateMany({
+                where: { id: tenantId, retentionLegalHoldAt: null },
+                data: {
+                    retentionLegalHoldAt: placedAt,
+                    retentionLegalHoldReason: reason,
+                    retentionLegalHoldByUserId: actor.userId,
+                },
+            });
+            if (updated.count !== 1) {
+                throw new ConflictException('Tenant retention legal hold changed before it could be placed.');
+            }
             await tx.auditLog.create({
                 data: {
-                    tenantId: actor.tenantId,
-                    userId: actor.userId,
-                    action: 'TENANT_CANCELLATION_SCHEDULED_BY_CUSTOMER',
+                    tenantId,
+                    userId: actor.tenantId === tenantId ? actor.userId : null,
+                    actorUserId: actor.userId,
+                    actorTenantId: actor.tenantId,
+                    action: 'TENANT_RETENTION_LEGAL_HOLD_PLACED',
                     resource: 'Tenant',
-                    resourceId: actor.tenantId,
-                    newValue: this.buildBillingCancellationAuditValue(billingCancellation, reason),
+                    resourceId: tenantId,
+                    oldValue: { legalHold: null },
+                    newValue: {
+                        legalHold: {
+                            placedAt: placedAt.toISOString(),
+                            reason,
+                            placedByUserId: actor.userId,
+                        },
+                    },
                     ipAddress: actor.ipAddress,
                     userAgent: actor.userAgent,
                 },
             });
-            return tenant;
-        });
 
-        return {
-            id: tenant.id,
-            slug: tenant.slug,
-            status: tenant.status,
-            cancellationEffectiveAt: billingCancellation.currentPeriodEnd,
-            billingCancellation,
-        };
+            return {
+                id: tenantId,
+                legalHold: { placedAt, reason, placedByUserId: actor.userId },
+            };
+        }, TenantAccountLifecycleService.RETENTION_TRANSACTION_OPTIONS);
     }
 
-    async getStatus(actor: TenantLifecycleActor) {
-        const tenant = await this.tenantDb.withTenant(actor.tenantId, (tx) => tx.tenant.findUniqueOrThrow({
-            where: { id: actor.tenantId },
-            select: { id: true, slug: true, status: true, deletedAt: true, applicationDataPurgedAt: true },
-        }));
+    async releaseRetentionLegalHold(
+        tenantId: string,
+        actor: TenantRetentionLegalHoldActor,
+        body: { reason?: unknown },
+    ) {
+        const releaseReason = this.normalizeLegalHoldReason(body?.reason);
 
-        return serializeTenantLifecycleStatus(tenant);
+        return this.tenantDb.withPlatformAdmin(async (tx) => {
+            await this.lockTenantRetentionTransaction(tx, tenantId);
+            const tenant = await tx.tenant.findUnique({
+                where: { id: tenantId },
+                select: {
+                    id: true,
+                    retentionLegalHoldAt: true,
+                    retentionLegalHoldReason: true,
+                    retentionLegalHoldByUserId: true,
+                },
+            });
+            if (!tenant) throw new NotFoundException('Tenant not found.');
+            if (!tenant.retentionLegalHoldAt) {
+                throw new ConflictException('Tenant does not have an active retention legal hold.');
+            }
+
+            const updated = await tx.tenant.updateMany({
+                where: { id: tenantId, retentionLegalHoldAt: tenant.retentionLegalHoldAt },
+                data: {
+                    retentionLegalHoldAt: null,
+                    retentionLegalHoldReason: null,
+                    retentionLegalHoldByUserId: null,
+                },
+            });
+            if (updated.count !== 1) {
+                throw new ConflictException('Tenant retention legal hold changed before it could be released.');
+            }
+            await tx.auditLog.create({
+                data: {
+                    tenantId,
+                    userId: actor.tenantId === tenantId ? actor.userId : null,
+                    actorUserId: actor.userId,
+                    actorTenantId: actor.tenantId,
+                    action: 'TENANT_RETENTION_LEGAL_HOLD_RELEASED',
+                    resource: 'Tenant',
+                    resourceId: tenantId,
+                    oldValue: {
+                        legalHold: {
+                            placedAt: tenant.retentionLegalHoldAt.toISOString(),
+                            reason: tenant.retentionLegalHoldReason,
+                            placedByUserId: tenant.retentionLegalHoldByUserId,
+                        },
+                    },
+                    newValue: { legalHold: null, releaseReason },
+                    ipAddress: actor.ipAddress,
+                    userAgent: actor.userAgent,
+                },
+            });
+
+            return { id: tenantId, legalHold: null, releaseReason };
+        }, TenantAccountLifecycleService.RETENTION_TRANSACTION_OPTIONS);
     }
 
     async purgeRetentionCandidate(
@@ -150,10 +259,22 @@ export class TenantAccountLifecycleService {
 
                 const tenant = await tx.tenant.findUnique({
                     where: { id: candidate.id },
-                    select: { id: true, slug: true, status: true, deletedAt: true, applicationDataPurgedAt: true },
+                    select: {
+                        id: true,
+                        slug: true,
+                        status: true,
+                        deletedAt: true,
+                        applicationDataPurgedAt: true,
+                        retentionLegalHoldAt: true,
+                        retentionLegalHoldReason: true,
+                        retentionLegalHoldByUserId: true,
+                    },
                 });
                 if (!tenant) {
                     return { outcome: 'skipped', tenantId: candidate.id, reason: 'Tenant no longer exists.' };
+                }
+                if (tenant.retentionLegalHoldAt) {
+                    return { outcome: 'skipped', tenantId: candidate.id, reason: 'Tenant retention legal hold is active.' };
                 }
 
                 const eligible = stage === 'application_data'
@@ -168,11 +289,11 @@ export class TenantAccountLifecycleService {
                     : await purgeExpiredTenantRecords(tx, tenant, { asOf });
                 return { outcome: 'processed', tenantId: candidate.id, result };
             }, TenantAccountLifecycleService.RETENTION_TRANSACTION_OPTIONS);
-        } catch (error) {
+        } catch {
             return {
                 outcome: 'failed',
                 tenantId: candidate.id,
-                error: error instanceof Error ? error.message : 'Unknown tenant purge failure.',
+                error: 'Tenant purge failed.',
             };
         }
     }
@@ -189,28 +310,24 @@ export class TenantAccountLifecycleService {
         return this.tenantDeletionBilling.requestDeletion(actor, body);
     }
 
-    private async cancelTenantBillingAtPeriodEnd(
-        tenantId: string,
-        stripeSubscriptionId?: string | null,
-    ): Promise<TenantSubscriptionCancellationResult> {
-        const normalizedSubscriptionId = typeof stripeSubscriptionId === 'string' && stripeSubscriptionId.trim()
-            ? stripeSubscriptionId.trim()
-            : null;
-
-        if (!normalizedSubscriptionId) {
-            return {
-                action: 'none',
-                stripeSubscriptionId: null,
-                stripeStatus: null,
-                cancelAtPeriodEnd: false,
-                currentPeriodEnd: null,
-                cancelAt: null,
-                canceledAt: null,
-                cancellationBehavior: 'cancel_at_period_end',
-            };
+    private normalizeLegalHoldReason(value: unknown): string {
+        if (typeof value !== 'string') {
+            throw new BadRequestException('reason must be a string from 10 to 500 characters.');
         }
+        const reason = value.trim();
+        if (reason.length < 10 || reason.length > 500) {
+            throw new BadRequestException('reason must be a string from 10 to 500 characters.');
+        }
+        return reason;
+    }
 
-        return this.getStripeBilling().cancelTenantSubscriptionAtPeriodEnd(tenantId, normalizedSubscriptionId);
+    private async lockTenantRetentionTransaction(
+        tx: Prisma.TransactionClient,
+        tenantId: string,
+    ): Promise<void> {
+        await tx.$executeRaw`
+            SELECT public.lock_tenant_lifecycle(${tenantId})
+        `;
     }
 
     private getStripeBilling(): TenantSubscriptionCanceller {
@@ -220,13 +337,4 @@ export class TenantAccountLifecycleService {
         return this.stripeBilling;
     }
 
-    private buildBillingCancellationAuditValue(
-        billingCancellation: TenantSubscriptionCancellationResult,
-        reason?: string | null,
-    ) {
-        return {
-            ...(reason ? { reason } : {}),
-            billingCancellation,
-        };
-    }
 }

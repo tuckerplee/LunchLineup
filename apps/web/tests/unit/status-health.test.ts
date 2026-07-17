@@ -1,11 +1,19 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('@/components/branding/LunchLineupMark', () => ({
   LunchLineupMark: () => null,
 }));
 
 import { deriveIncidentState } from '../../app/status/page';
-import { resolveApiHealthUrl, type HealthProbe } from '../../app/status/health';
+import {
+  readApiHealth,
+  resolveApiHealthUrl,
+  type HealthProbe,
+} from '../../app/status/health';
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+});
 
 function probe(status: HealthProbe['status']): HealthProbe {
   return {
@@ -38,13 +46,67 @@ describe('status health URL resolution', () => {
   it('keeps proxy prefixes while dropping only the URI-version suffix', () => {
     expect(resolveApiHealthUrl({ INTERNAL_API_URL: 'http://proxy/api/v1/' })).toBe('http://proxy/api/health');
   });
+
+  it('does not substitute an internal endpoint when production configuration is missing', () => {
+    expect(resolveApiHealthUrl({
+      NODE_ENV: 'production',
+      INTERNAL_API_URL: 'http://api:3000/v1',
+    })).toBeNull();
+  });
+
+  it('returns a neutral production configuration signal without fetching', async () => {
+    const fetch = vi.fn();
+    vi.stubGlobal('fetch', fetch);
+
+    const result = await readApiHealth({
+      NODE_ENV: 'production',
+      INTERNAL_API_URL: 'http://api:3000/v1',
+    });
+
+    expect(result).toMatchObject({
+      status: 'not_configured',
+      label: 'API health not configured',
+      latencyMs: null,
+      httpStatus: null,
+    });
+    expect(fetch).not.toHaveBeenCalled();
+  });
+});
+describe('status health response validation', () => {
+  it.each([200, 401, 403, 404, 429])(
+    'treats malformed HTTP %i health responses as degraded',
+    async (status) => {
+      vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(
+        status === 200 ? JSON.stringify({ status: 'ok' }) : 'blocked',
+        {
+          status,
+          headers: {
+            'content-type': status === 200 ? 'application/json' : 'text/plain',
+          },
+        },
+      )));
+
+      const result = await readApiHealth();
+
+      expect(result).toMatchObject({
+        status: 'degraded',
+        label: 'API health degraded',
+        httpStatus: status,
+        payload: null,
+      });
+      expect(deriveIncidentState(result)).toMatchObject({
+        activeCount: 0,
+        heading: 'No active incidents',
+      });
+    },
+  );
 });
 describe('status incident derivation', () => {
   it('keeps the healthy incident-history message when checks pass', () => {
     expect(deriveIncidentState(probe('ok'))).toEqual({
       activeCount: 0,
       heading: 'No active incidents',
-      detail: 'Automated web/API health signals added to the public beta status page.',
+      detail: 'Automated health signals are shown separately; incident history is published only from the reviewed incident log.',
       detectedAt: null,
     });
   });
@@ -56,14 +118,11 @@ describe('status incident derivation', () => {
     });
   });
 
-  it.each(['degraded', 'unavailable'] as const)('reports %s health as an active incident', (status) => {
-    const healthProbe = probe(status);
-
-    expect(deriveIncidentState(healthProbe)).toEqual({
-      activeCount: 1,
-      heading: healthProbe.label,
-      detail: healthProbe.detail,
-      detectedAt: healthProbe.checkedAt,
+  it.each(['degraded', 'unavailable'] as const)('keeps %s automated health separate from incident history', (status) => {
+    expect(deriveIncidentState(probe(status))).toMatchObject({
+      activeCount: 0,
+      heading: 'No active incidents',
+      detectedAt: null,
     });
   });
 });

@@ -1,4 +1,5 @@
 import type { Metadata } from 'next';
+import { PUBLIC_LEGAL_MANIFEST } from '@lunchlineup/config';
 import { LEGAL_LAST_UPDATED, legalContacts, selfServiceTermsReadiness } from '../legal-config';
 import { LegalContactLink, LegalPage } from '../legal-page';
 
@@ -13,6 +14,7 @@ export default function TermsPage() {
       title="Terms"
       eyebrow="Service agreement"
       updated={LEGAL_LAST_UPDATED}
+      version={PUBLIC_LEGAL_MANIFEST.documents.terms.version}
       summary="This checked-in beta draft is not counsel-approved and is not approved for invite-only or open self-service signup."
       sections={[
         {
@@ -68,8 +70,9 @@ export default function TermsPage() {
           body: (
             <p>
               Public beta features may change as operational controls, integrations, and pricing mature. The status page reports current
-              service health. LunchLineup may suspend access when needed to protect customers, investigate abuse, comply with legal
-              obligations, or prevent service harm.
+              service health. Time cards are operational records, not payroll-final records; customer payroll systems remain authoritative
+              for wages, taxes, and filings. LunchLineup may suspend access when needed to protect customers, investigate abuse, comply
+              with legal obligations, or prevent service harm.
             </p>
           ),
         },

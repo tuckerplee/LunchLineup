@@ -1,6 +1,6 @@
 [Unit]
 Description=LunchLineup 30-day application-data purge
-Documentation=file:/opt/lunchlineup/docs/runbooks/data-retention-delete-export.md
+Documentation=file:/opt/lunchlineup/current/docs/runbooks/data-retention-delete-export.md
 Wants=network-online.target
 After=network-online.target
 
@@ -8,12 +8,12 @@ After=network-online.target
 Type=oneshot
 User=lunchlineup
 Group=lunchlineup
-WorkingDirectory=/opt/lunchlineup
+WorkingDirectory=/opt/lunchlineup/current
 EnvironmentFile=/etc/lunchlineup/retention-purge.env
 StateDirectory=lunchlineup
 RuntimeDirectory=lunchlineup
 ReadWritePaths=/var/lib/lunchlineup /var/lib/node_exporter/textfile_collector /run/lunchlineup
-ExecStart=/usr/bin/env RETENTION_PURGE_STAGE=application_data RETENTION_PURGE_DRY_RUN=false RETENTION_PURGE_EXECUTE_CONFIRM=purge-expired-application-data /usr/bin/node /opt/lunchlineup/scripts/invoke-retained-record-purge.mjs
+ExecStart=/usr/bin/env RETENTION_PURGE_STAGE=application_data RETENTION_PURGE_DRY_RUN=false RETENTION_PURGE_EXECUTE_CONFIRM=purge-expired-application-data /usr/bin/node /opt/lunchlineup/current/scripts/invoke-retained-record-purge.mjs
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectHome=true

@@ -1,408 +1,322 @@
 {
-  "version": 1,
+  "version": 2,
+  "historicalBaselineSourceSha": "e4238e590c5ef32c536f361968be0a0b6d351df6",
+  "historicalMigrations": {
+    "packages/db/prisma/migrations/20260310_username_pin_auth.sql": "32f18951edf3af310662fc2d274ad786481df78e21942cd7ee5339efc223a122",
+    "packages/db/prisma/migrations/20260321_plan_definitions.sql": "7032f69f54798963a5a94c21bf2235d5c9442ad26236863a5603f224b1c0c927",
+    "packages/db/prisma/migrations/20260325_rbac_roles_permissions.sql": "7e2b813654328d78fa688bfcec38ed795cc54ef1f5e7af1294b5f2c68e8d87a1",
+    "packages/db/prisma/migrations/20260603_admin_pin_login.sql": "1c18046a034bf00ecb49439c560df261fd3086d94ebd275d4a72dfcf54443ff2",
+    "packages/db/prisma/migrations/20260708_break_type_identity.sql": "720fa57cdfc617902ca7bf696306bcc4c5710857a75b8a82aa9bc7a8a5f9ed85",
+    "packages/db/prisma/migrations/20260708_time_card.sql": "8a5fa481f1970f5958d2407a9c637389ab30381b3e326e60a651efafadf21f5b",
+    "packages/db/prisma/migrations/20260709_audit_log_retention_purge.sql": "d2507ad2236c88c17a7a321e0f6686e48146f5a2532a9304b46a5e360ea7154c",
+    "packages/db/prisma/migrations/20260709_auth_rbac_p1_hardening.sql": "e56ec8464fcb63b6b12c3c197cf9a7455f6e439817fe39e742cc3a450baf8681",
+    "packages/db/prisma/migrations/20260709_lunch_break_generation_idempotency.sql": "f00e7fe39bd846576722765e4ac84b4c089126ed31d4ebdf1f33af931d2085d5",
+    "packages/db/prisma/migrations/20260709_oidc_identity_binding.sql": "1f131d8bd3586165f06713ebf82be81c3044b636d38c04028d6bb02153bfce82",
+    "packages/db/prisma/migrations/20260709_password_reset_tokens.sql": "1b0f6bf5f1f0e7667dfd2371c0f8cad22019b27330e57fd9257e3a94d3af325d",
+    "packages/db/prisma/migrations/20260709_permission_category_time_cards.sql": "1df1a817e3b4e28240f6c9f6f6bf0c631019d1dc3ae23ecf94f2f6600d0e78c8",
+    "packages/db/prisma/migrations/20260709_platform_admin_rls.sql": "66f750539d954a2547dfa0670b72e85fd186c4c4872490fbcc048571a06d8287",
+    "packages/db/prisma/migrations/20260709_public_saas_data_hardening.sql": "adef026c4a18245bc65a247c89563183e6520177ac8b425c56a0adff5ed486e8",
+    "packages/db/prisma/migrations/20260709_role_assignment_tenant_integrity.sql": "e6d65542ff6851802dda52814cac042c113b36c179df5fccde38c3228b9f977b",
+    "packages/db/prisma/migrations/20260709_schedule_integrity_constraints.sql": "b825eaa4e8818ded96988cb1667fca1e41b54332da535ad4d76712ad791c49db",
+    "packages/db/prisma/migrations/20260709_schedule_solve_jobs.sql": "8a22444098e76dc70939d542829736ad86a57a1f4996bc664da7397634f09fac",
+    "packages/db/prisma/migrations/20260709_schedule_solve_persisted_inputs.sql": "365a0344778969a47a0d45e0f8abadf300d6825e7122b72cd0f3a4377d6573e4",
+    "packages/db/prisma/migrations/20260709_schedule_solve_publication_outbox.sql": "b26b86d217acca7410eb80392aca21b00fce6aec52b003bbdc4e9d6adafe304c",
+    "packages/db/prisma/migrations/20260709_schedule_solve_request_idempotency.sql": "63a2fc2c4025a484346b515e5ecbff2257b1af4e19e415621c3cdf85d2249dea",
+    "packages/db/prisma/migrations/20260709_shift_overlap_constraints.sql": "34632e234ca15a7d76a4b704c32bcc13d83c9d86d5f955dda0fefa0086ea0363",
+    "packages/db/prisma/migrations/20260709_shift_schedule_window_enforcement.sql": "07b3b9b371f38822323cb922e09fc5c9b02a0927296046d763312b565cdd03ba",
+    "packages/db/prisma/migrations/20260709_stripe_identifier_uniqueness.sql": "ad5152d5ae336db4400f25627778babd8013fb20f132ceb4a63eec9e8311bf54",
+    "packages/db/prisma/migrations/20260709_stripe_usage_events.sql": "56f196ab3fef5bee15aa3782763c8f0c561ca5cccf9ae2e7f8e59898ea0e9c1a",
+    "packages/db/prisma/migrations/20260709_webhook_delivery_outbox.sql": "575a8c4886d0562cf85c1fb79027c82926a58a409bcf09f45d6b5ed93bf77bcf",
+    "packages/db/prisma/migrations/20260709_webhook_delivery_terminal_state.sql": "6cf9bf0bef69bd0df13fc858cd93d7b084dd922deb9799135017490514254e3d",
+    "packages/db/prisma/migrations/20260709_webhook_first_delivery_outbox.sql": "872e1e2f0647d04d15f2dc537263b7de9472deb9618816400ce1ee7ae74cbe9e",
+    "packages/db/prisma/migrations/20260709_zz_broker_loss_outbox_recovery.sql": "3d6bd4b5ba2f5d2032977ece35ca7feee078419dff04a5bab68fde01ad4a86a4",
+    "packages/db/prisma/migrations/20260709_zzz_schedule_break_recovery_hardening.sql": "27c881de06224e68e6a75a14bf72f5b2e718afedab1e27b3d115d0a5064f1bac",
+    "packages/db/prisma/migrations/20260709_zzzz_webhook_endpoint_secret_encryption.sql": "7def70be22ae13ac6a36907bbfd2f8320cbc8d5084f0915cb9dcbd1e091a0d8b",
+    "packages/db/prisma/migrations/20260709_zzzzz_schedule_soft_delete_overlap.sql": "d2bacda72b1597c65edded2c80a70f262efd8c0519779d3d58a8340d798b3315",
+    "packages/db/prisma/migrations/20260709_zzzzzz_schedule_solve_credit_refunds.sql": "1a21916ebd17dbf5474a6b13a820267a494ed61c50537e460250dc32c65183fd",
+    "packages/db/prisma/migrations/20260709_zzzzzzz_platform_admin_capability.sql": "45dd9055a0dc0b474f4abd422eef886081ba892ee6efc253f208fb5d9c82e4a1",
+    "packages/db/prisma/migrations/20260710_first_location_idempotency.sql": "55ec6707cb59af5ee2ece54b3a9eb3247d4bfa92931f5f462f23a6362303cbea",
+    "packages/db/prisma/migrations/20260710_oidc_identity_binding_tenant_scope.sql": "9683d0a6806f62e111cb310360658e127b6ae49b58a5511f2fe8506638bf2124",
+    "packages/db/prisma/migrations/20260710_schedule_draft_revision.sql": "2423e4763716c09b74e5ffeb1c1553f752431ac22fefb5c9b7b346e310ed031b",
+    "packages/db/prisma/migrations/20260710_tenant_webhook_lifecycle.sql": "b166d789d6319e37244b4cc26e0ee9f0c96c7142839574c8a770654cf16fb9e8",
+    "packages/db/prisma/migrations/20260711_staff_availability_overnight.sql": "3cadb3e5cc43c5a17d2be602ba5de628314df4c548b6dea285e12a030fea9641",
+    "packages/db/prisma/migrations/20260711_stripe_usage_submission_window.sql": "c70c34ec21c048cff6be0ba7a54fa04ae2ae072a92080a8ff6a8a0031e609cc2",
+    "packages/db/prisma/migrations/20260711_tenant_application_data_purge.sql": "b18637d0087f6ab85797bff77d26622714b18449df273c0c5be941fbad699e89",
+    "packages/db/prisma/migrations/20260711_zz_audit_log_user_redaction.sql": "377e857b24615e606bf61af47e19ddd0db3e50d83d7a0930afc424398fb863dd",
+    "packages/db/prisma/migrations/20260712_auth_session_selector_totp_replay.sql": "61df3b3921d82ee8b488f9d1164d3abcdb7bc8699306b0affcb8a1d44d945dc6",
+    "packages/db/prisma/migrations/20260712_core_rls_audit_forward_reconciliation.sql": "c96459de52f490e462b1750a7028ddd0c37f7f84bfd923f1116dec7dd7b61893",
+    "packages/db/prisma/migrations/20260712_historical_forward_reconciliation.sql": "4ecafd14f716232eb89abe3021c1d0e7fb83fe18b1a5aca367b64dcc0be98899",
+    "packages/db/prisma/migrations/20260712_onboarding_signup_attempt_recovery.sql": "447f5004813602b1193c25d6627d668c43f518144375981d6891f4c5dc5751ea",
+    "packages/db/prisma/migrations/20260712_password_reset_email_outbox.sql": "b47c27d85bdf9bfaae300e84969465a7a15a3d738439eb943da52a8928199601",
+    "packages/db/prisma/migrations/20260712_platform_admin_audit_actor_attribution.sql": "12260e75b39569a5a071178f40578bd917d4d2b758dd6fe13d9775437027a6fa",
+    "packages/db/prisma/migrations/20260712_rbac_seed_forward_reconciliation.sql": "45b31af1f5bba36d79e06c7e5c91cdc60c4c4639911f9347d9645a4d4103fbe7",
+    "packages/db/prisma/migrations/20260712_stripe_usage_logical_identity.sql": "dd0d28dd15b00e838aeae75d319843a04f36966990877071ee6f8b0c47028be5",
+    "packages/db/prisma/migrations/20260712_tenant_context_helpers.sql": "fbf55295fd26f294ad5f68ab7278e6133ae922b73c34b4cf56a428d6831a1047",
+    "packages/db/prisma/migrations/20260712_tenant_export_jobs.sql": "d6f2dbbc271361a34ae46b63d622191cca609ada2ca181a094bccc4e8ff6bda6",
+    "packages/db/prisma/migrations/20260712_time_card_billable_clock_in.sql": "327f39a56b0594ba942436dfdc7cad645111e737b69d5f7559d70c39f52f1c7e",
+    "packages/db/prisma/migrations/20260713_tenant_account_lifecycle_rbac_reconciliation.sql": "54ee6da46493e5a29b1380ebf2fa6f9207510dd6bddf16d2671bd27eabca1cf9",
+    "packages/db/prisma/migrations/audit_log.sql": "010f96d7a75f1c85e5ae1ebdc1b1d31d434c5cb2ab8d2916b6877f59a0373ff8",
+    "packages/db/prisma/migrations/init_rls.sql": "3f37909542d3d29a4ae118dab1c6abcb97a5a78b8e5e74a522385c19af5163dd",
+    "packages/db/prisma/migrations/pre_20260709_role_assignment_tenant_integrity.sql": "fce80545ddd0f791fbafe7a4e5c1bc1ea1e34a18207e4b328c7fc53b11c19c5d",
+    "packages/db/prisma/migrations/pre_20260709_schedule_solve_request_idempotency.sql": "3cba16e755a4cd5373136d5e32d6820b59458c9d0227e3cf4fe965d60a023ac6",
+    "packages/db/prisma/migrations/pre_20260712_stripe_usage_logical_identity.sql": "f7c7312b5c5030cc7ec9d85716c7786f51c21034b3c78c31739c60be655bb41a",
+    "packages/db/prisma/migrations/rls_relation_hardening.sql": "54bb4140811e903346e3cfb17201c6491dce724bee0443f5dfbb2f7b09659420"
+  },
   "compatibilityClass": "backward-compatible-additive-v1",
   "migrations": {
-    "packages/db/prisma/migrations/20260709_webhook_first_delivery_outbox.sql": {
-      "sha256": "872e1e2f0647d04d15f2dc537263b7de9472deb9618816400ce1ee7ae74cbe9e",
-      "compatibility": "backward-compatible-additive-v1"
-    },
-    "packages/db/prisma/migrations/20260709_zzz_schedule_break_recovery_hardening.sql": {
-      "sha256": "27c881de06224e68e6a75a14bf72f5b2e718afedab1e27b3d115d0a5064f1bac",
-      "compatibility": "backward-compatible-additive-v1"
-    },
-    "packages/db/prisma/migrations/20260710_schedule_draft_revision.sql": {
-      "sha256": "2423e4763716c09b74e5ffeb1c1553f752431ac22fefb5c9b7b346e310ed031b",
-      "compatibility": "backward-compatible-additive-v1"
-    },
-    "packages/db/prisma/migrations/20260711_tenant_application_data_purge.sql": {
-      "sha256": "b18637d0087f6ab85797bff77d26622714b18449df273c0c5be941fbad699e89",
+    "packages/db/prisma/migrations/20260714_saas_hot_path_indexes.sql": {
+      "sha256": "bae36838ae3b9c907339d65885859b6d98519d937de6b00ca24da975e5f99bc0",
       "compatibility": "backward-compatible-additive-v1"
     }
   },
   "expandContract": {
-    "packages/db/prisma/migrations/20260708_break_type_identity.sql": {
-      "sha256": "720fa57cdfc617902ca7bf696306bcc4c5710857a75b8a82aa9bc7a8a5f9ed85",
-      "phase": "expand",
+    "packages/db/prisma/migrations/20260709_yyyyyy_schedule_solve_credit_refund_provenance_guard.sql": {
+      "sha256": "051b3460cfcabe00a4eacf5289d4b8b89703f4f945deaa489b9242e7674f74ff",
+      "phase": "expand-contract",
       "rollbackSchema": "retain",
-      "contractPhase": "after-rollback-window",
+      "contractPhase": "compatibility-proven-inline",
       "requiresOldReleaseProof": true,
-      "rationale": "schema expansion remains in the candidate schema during rollback; isolated old-release smoke proof is mandatory before production mutation."
+      "rationale": "credit-ledger provenance validation and exact refund settlement run before the retained historical backfill and remain during rollback; isolated old-release smoke proof is mandatory before production mutation."
     },
-    "packages/db/prisma/migrations/20260708_time_card.sql": {
-      "sha256": "8a5fa481f1970f5958d2407a9c637389ab30381b3e326e60a651efafadf21f5b",
-      "phase": "expand",
+    "packages/db/prisma/migrations/20260713_audit_log_retention_authorization.sql": {
+      "sha256": "f9f26221e8281946a24ab71a4c7fb44d9bd7edfa8e94d6fb841a750b50fc3252",
+      "phase": "expand-contract",
       "rollbackSchema": "retain",
-      "contractPhase": "after-rollback-window",
-      "requiresOldReleaseProof": true,
-      "rationale": "data backfill, constraint transition, schema expansion remains in the candidate schema during rollback; isolated old-release smoke proof is mandatory before production mutation."
-    },
-    "packages/db/prisma/migrations/20260709_audit_log_retention_purge.sql": {
-      "sha256": "d2507ad2236c88c17a7a321e0f6686e48146f5a2532a9304b46a5e360ea7154c",
-      "phase": "expand",
-      "rollbackSchema": "retain",
-      "contractPhase": "after-rollback-window",
+      "contractPhase": "compatibility-proven-inline",
       "requiresOldReleaseProof": true,
       "rationale": "data backfill, database enforcement remains in the candidate schema during rollback; isolated old-release smoke proof is mandatory before production mutation."
     },
-    "packages/db/prisma/migrations/20260709_auth_rbac_p1_hardening.sql": {
-      "sha256": "e56ec8464fcb63b6b12c3c197cf9a7455f6e439817fe39e742cc3a450baf8681",
-      "phase": "expand",
-      "rollbackSchema": "retain",
-      "contractPhase": "after-rollback-window",
-      "requiresOldReleaseProof": true,
-      "rationale": "data backfill remains in the candidate schema during rollback; isolated old-release smoke proof is mandatory before production mutation."
-    },
-    "packages/db/prisma/migrations/20260709_lunch_break_generation_idempotency.sql": {
-      "sha256": "f00e7fe39bd846576722765e4ac84b4c089126ed31d4ebdf1f33af931d2085d5",
+    "packages/db/prisma/migrations/20260713_refresh_token_family_replay.sql": {
+      "sha256": "167b64ac49446e542384447ff91a0af39b62f4157b5ceb164283b5aab784ac69",
       "phase": "expand-contract",
       "rollbackSchema": "retain",
       "contractPhase": "compatibility-proven-inline",
       "requiresOldReleaseProof": true,
       "rationale": "data backfill, constraint transition, database enforcement, schema expansion remains in the candidate schema during rollback; isolated old-release smoke proof is mandatory before production mutation."
     },
-    "packages/db/prisma/migrations/20260709_oidc_identity_binding.sql": {
-      "sha256": "1f131d8bd3586165f06713ebf82be81c3044b636d38c04028d6bb02153bfce82",
-      "phase": "expand",
-      "rollbackSchema": "retain",
-      "contractPhase": "after-rollback-window",
-      "requiresOldReleaseProof": true,
-      "rationale": "constraint transition, schema expansion remains in the candidate schema during rollback; isolated old-release smoke proof is mandatory before production mutation."
-    },
-    "packages/db/prisma/migrations/20260709_password_reset_tokens.sql": {
-      "sha256": "1b0f6bf5f1f0e7667dfd2371c0f8cad22019b27330e57fd9257e3a94d3af325d",
+    "packages/db/prisma/migrations/20260713_schedule_solve_execution_lease.sql": {
+      "sha256": "20527d3faf9b501ee75683c5aafce921699fbfc4ffcd0fbdd49a1eb2f01e9012",
       "phase": "expand-contract",
       "rollbackSchema": "retain",
       "contractPhase": "compatibility-proven-inline",
       "requiresOldReleaseProof": true,
       "rationale": "data backfill, constraint transition, database enforcement, schema expansion remains in the candidate schema during rollback; isolated old-release smoke proof is mandatory before production mutation."
     },
-    "packages/db/prisma/migrations/20260709_permission_category_time_cards.sql": {
-      "sha256": "1df1a817e3b4e28240f6c9f6f6bf0c631019d1dc3ae23ecf94f2f6600d0e78c8",
-      "phase": "expand",
-      "rollbackSchema": "retain",
-      "contractPhase": "after-rollback-window",
-      "requiresOldReleaseProof": true,
-      "rationale": "schema expansion remains in the candidate schema during rollback; isolated old-release smoke proof is mandatory before production mutation."
-    },
-    "packages/db/prisma/migrations/20260709_platform_admin_rls.sql": {
-      "sha256": "66f750539d954a2547dfa0670b72e85fd186c4c4872490fbcc048571a06d8287",
-      "phase": "expand-contract",
-      "rollbackSchema": "retain",
-      "contractPhase": "compatibility-proven-inline",
-      "requiresOldReleaseProof": true,
-      "rationale": "data backfill, constraint transition, database enforcement, schema expansion remains in the candidate schema during rollback; isolated old-release smoke proof is mandatory before production mutation."
-    },
-    "packages/db/prisma/migrations/20260709_public_saas_data_hardening.sql": {
-      "sha256": "adef026c4a18245bc65a247c89563183e6520177ac8b425c56a0adff5ed486e8",
-      "phase": "expand",
-      "rollbackSchema": "retain",
-      "contractPhase": "after-rollback-window",
-      "requiresOldReleaseProof": true,
-      "rationale": "data backfill, constraint transition remains in the candidate schema during rollback; isolated old-release smoke proof is mandatory before production mutation."
-    },
-    "packages/db/prisma/migrations/20260709_role_assignment_tenant_integrity.sql": {
-      "sha256": "e6d65542ff6851802dda52814cac042c113b36c179df5fccde38c3228b9f977b",
-      "phase": "expand",
-      "rollbackSchema": "retain",
-      "contractPhase": "after-rollback-window",
-      "requiresOldReleaseProof": true,
-      "rationale": "data backfill, constraint transition, schema expansion remains in the candidate schema during rollback; isolated old-release smoke proof is mandatory before production mutation."
-    },
-    "packages/db/prisma/migrations/20260709_schedule_integrity_constraints.sql": {
-      "sha256": "b825eaa4e8818ded96988cb1667fca1e41b54332da535ad4d76712ad791c49db",
+    "packages/db/prisma/migrations/20260713_terminal_encrypted_payload_erasure.sql": {
+      "sha256": "a927f74f8c905d323b9a0329ecb7b7cc3e57964fdadd52ce9617334dde15353e",
       "phase": "expand-contract",
       "rollbackSchema": "retain",
       "contractPhase": "compatibility-proven-inline",
       "requiresOldReleaseProof": true,
       "rationale": "data backfill, constraint transition, database enforcement remains in the candidate schema during rollback; isolated old-release smoke proof is mandatory before production mutation."
     },
-    "packages/db/prisma/migrations/20260709_schedule_solve_jobs.sql": {
-      "sha256": "8a22444098e76dc70939d542829736ad86a57a1f4996bc664da7397634f09fac",
+    "packages/db/prisma/migrations/20260713_time_card_corrections.sql": {
+      "sha256": "920746b3d9ecf93ca4fe6231c01c10d696c85dcd8704d4eac376b24e6babefe7",
       "phase": "expand-contract",
       "rollbackSchema": "retain",
       "contractPhase": "compatibility-proven-inline",
       "requiresOldReleaseProof": true,
       "rationale": "data backfill, constraint transition, database enforcement, schema expansion remains in the candidate schema during rollback; isolated old-release smoke proof is mandatory before production mutation."
     },
-    "packages/db/prisma/migrations/20260709_schedule_solve_persisted_inputs.sql": {
-      "sha256": "365a0344778969a47a0d45e0f8abadf300d6825e7122b72cd0f3a4377d6573e4",
-      "phase": "expand-contract",
-      "rollbackSchema": "retain",
-      "contractPhase": "compatibility-proven-inline",
-      "requiresOldReleaseProof": true,
-      "rationale": "data backfill, constraint transition, database enforcement, schema expansion remains in the candidate schema during rollback; isolated old-release smoke proof is mandatory before production mutation."
-    },
-    "packages/db/prisma/migrations/20260709_schedule_solve_publication_outbox.sql": {
-      "sha256": "b26b86d217acca7410eb80392aca21b00fce6aec52b003bbdc4e9d6adafe304c",
-      "phase": "expand",
-      "rollbackSchema": "retain",
-      "contractPhase": "after-rollback-window",
-      "requiresOldReleaseProof": true,
-      "rationale": "constraint transition, schema expansion remains in the candidate schema during rollback; isolated old-release smoke proof is mandatory before production mutation."
-    },
-    "packages/db/prisma/migrations/20260709_schedule_solve_request_idempotency.sql": {
-      "sha256": "63a2fc2c4025a484346b515e5ecbff2257b1af4e19e415621c3cdf85d2249dea",
-      "phase": "expand",
-      "rollbackSchema": "retain",
-      "contractPhase": "after-rollback-window",
-      "requiresOldReleaseProof": true,
-      "rationale": "data backfill, constraint transition, schema expansion remains in the candidate schema during rollback; isolated old-release smoke proof is mandatory before production mutation."
-    },
-    "packages/db/prisma/migrations/20260709_shift_overlap_constraints.sql": {
-      "sha256": "34632e234ca15a7d76a4b704c32bcc13d83c9d86d5f955dda0fefa0086ea0363",
-      "phase": "expand",
-      "rollbackSchema": "retain",
-      "contractPhase": "after-rollback-window",
-      "requiresOldReleaseProof": true,
-      "rationale": "data backfill, constraint transition remains in the candidate schema during rollback; isolated old-release smoke proof is mandatory before production mutation."
-    },
-    "packages/db/prisma/migrations/20260709_shift_schedule_window_enforcement.sql": {
-      "sha256": "07b3b9b371f38822323cb922e09fc5c9b02a0927296046d763312b565cdd03ba",
+    "packages/db/prisma/migrations/20260713_user_deletion_anonymization.sql": {
+      "sha256": "6e6a420b92725879f5e08126e9503c9335d431b1363ceac3302df295fc47a13e",
       "phase": "expand-contract",
       "rollbackSchema": "retain",
       "contractPhase": "compatibility-proven-inline",
       "requiresOldReleaseProof": true,
       "rationale": "data backfill, database enforcement remains in the candidate schema during rollback; isolated old-release smoke proof is mandatory before production mutation."
     },
-    "packages/db/prisma/migrations/20260709_stripe_identifier_uniqueness.sql": {
-      "sha256": "ad5152d5ae336db4400f25627778babd8013fb20f132ceb4a63eec9e8311bf54",
+    "packages/db/prisma/migrations/20260714_availability_import_enums.sql": {
+      "sha256": "4caf9480d6701dd3d2871ff752f468db7f4fba025a2da0bfe1737c3ea3992dc4",
       "phase": "expand",
       "rollbackSchema": "retain",
       "contractPhase": "after-rollback-window",
       "requiresOldReleaseProof": true,
-      "rationale": "constraint transition remains in the candidate schema during rollback; isolated old-release smoke proof is mandatory before production mutation."
+      "rationale": "availability import enum expansion remains during rollback; isolated old-release proof is required before production mutation."
     },
-    "packages/db/prisma/migrations/20260709_stripe_usage_events.sql": {
-      "sha256": "56f196ab3fef5bee15aa3782763c8f0c561ca5cccf9ae2e7f8e59898ea0e9c1a",
+    "packages/db/prisma/migrations/20260714_availability_import_jobs.sql": {
+      "sha256": "d08caa5a413539f26ed6588ed8307070aa7d3a8d64a7bffedfad8cb82976a4db",
       "phase": "expand-contract",
       "rollbackSchema": "retain",
       "contractPhase": "compatibility-proven-inline",
       "requiresOldReleaseProof": true,
       "rationale": "data backfill, constraint transition, database enforcement, schema expansion remains in the candidate schema during rollback; isolated old-release smoke proof is mandatory before production mutation."
     },
-    "packages/db/prisma/migrations/20260709_webhook_delivery_outbox.sql": {
-      "sha256": "575a8c4886d0562cf85c1fb79027c82926a58a409bcf09f45d6b5ed93bf77bcf",
+    "packages/db/prisma/migrations/20260714_email_delivery_feedback.sql": {
+      "sha256": "dc2c5a9ba87c25ecee63893a8114cab794df279bc9ce853f587a19080c025e52",
+      "phase": "expand-contract",
+      "rollbackSchema": "retain",
+      "contractPhase": "compatibility-proven-inline",
+      "requiresOldReleaseProof": true,
+      "rationale": "data backfill, database enforcement, schema expansion remains in the candidate schema during rollback; isolated old-release smoke proof is mandatory before production mutation."
+    },
+    "packages/db/prisma/migrations/20260714_notification_delivery_enums.sql": {
+      "sha256": "0743b9a11ddfa51df54c1280ca723e721678e5723bf80ed2cdc4f6b896f0c8f3",
+      "phase": "expand",
+      "rollbackSchema": "retain",
+      "contractPhase": "after-rollback-window",
+      "requiresOldReleaseProof": true,
+      "rationale": "notification delivery enum expansion remains during rollback; isolated old-release proof is required before production mutation."
+    },
+    "packages/db/prisma/migrations/20260714_notification_delivery_outbox.sql": {
+      "sha256": "19c62805cbfc422775b392b5543784b8bced89da31d6a5135974c0e35aa57cd5",
       "phase": "expand-contract",
       "rollbackSchema": "retain",
       "contractPhase": "compatibility-proven-inline",
       "requiresOldReleaseProof": true,
       "rationale": "data backfill, constraint transition, database enforcement, schema expansion remains in the candidate schema during rollback; isolated old-release smoke proof is mandatory before production mutation."
     },
-    "packages/db/prisma/migrations/20260709_webhook_delivery_terminal_state.sql": {
-      "sha256": "6cf9bf0bef69bd0df13fc858cd93d7b084dd922deb9799135017490514254e3d",
+    "packages/db/prisma/migrations/20260714_notification_terminal_payload_erasure.sql": {
+      "sha256": "f3497423bcca189bc8238a25eb2348d9deafacd131b4a887263775b879d6414c",
+      "phase": "expand-contract",
+      "rollbackSchema": "retain",
+      "contractPhase": "compatibility-proven-inline",
+      "requiresOldReleaseProof": true,
+      "rationale": "data backfill, constraint transition, database enforcement remains in the candidate schema during rollback; isolated old-release smoke proof is mandatory before production mutation."
+    },
+    "packages/db/prisma/migrations/20260714_onboarding_signup_attempt_retention.sql": {
+      "sha256": "0c7365e643fa288ec9433292a4ecb569dfda7c44ab74a74147490da932c40da3",
+      "phase": "expand",
+      "rollbackSchema": "retain",
+      "contractPhase": "after-rollback-window",
+      "requiresOldReleaseProof": true,
+      "rationale": "data backfill, database enforcement remains in the candidate schema during rollback; isolated old-release smoke proof is mandatory before production mutation."
+    },
+    "packages/db/prisma/migrations/20260714_password_reset_token_retention.sql": {
+      "sha256": "be65856aa06f10d7a5dfab570fdc33c607076e4cf576404d76e965f8534d302a",
+      "phase": "expand",
+      "rollbackSchema": "retain",
+      "contractPhase": "after-rollback-window",
+      "requiresOldReleaseProof": true,
+      "rationale": "data backfill, database enforcement remains in the candidate schema during rollback; isolated old-release smoke proof is mandatory before production mutation."
+    },
+    "packages/db/prisma/migrations/20260714_session_retention.sql": {
+      "sha256": "a1cebd5eef62c57fe6eb3cd51ec8017b9fe49e695a31dfd71a044905d7db477c",
+      "phase": "expand",
+      "rollbackSchema": "retain",
+      "contractPhase": "after-rollback-window",
+      "requiresOldReleaseProof": true,
+      "rationale": "data backfill, database enforcement remains in the candidate schema during rollback; isolated old-release smoke proof is mandatory before production mutation."
+    },
+    "packages/db/prisma/migrations/20260714_subscription_credit_invariants.sql": {
+      "sha256": "6d2d5afe483c5d67abfa10c07a8a11376cd439fc574f0dfe36c879415f6ca97e",
+      "phase": "expand-contract",
+      "rollbackSchema": "retain",
+      "contractPhase": "compatibility-proven-inline",
+      "requiresOldReleaseProof": true,
+      "rationale": "data backfill, constraint transition remains in the candidate schema during rollback; isolated old-release smoke proof is mandatory before production mutation."
+    },
+    "packages/db/prisma/migrations/20260715_availability_import_encrypted_source.sql": {
+      "sha256": "ebfd14bed2f80a59f3415b69fc3d81616e85a2c1bbed29c342cbcf054a035634",
+      "phase": "expand-contract",
+      "rollbackSchema": "retain",
+      "contractPhase": "compatibility-proven-inline",
+      "requiresOldReleaseProof": true,
+      "rationale": "nullable encrypted source expansion plus terminal-erasure enforcement remains during rollback; isolated old-release smoke proof is mandatory before production mutation."
+    },
+    "packages/db/prisma/migrations/20260715_availability_import_lifecycle.sql": {
+      "sha256": "47d017797c0589f266dcf176671d7100585d0702b44f1d6f901d9c6b17c86ca4",
+      "phase": "expand-contract",
+      "rollbackSchema": "retain",
+      "contractPhase": "compatibility-proven-inline",
+      "requiresOldReleaseProof": true,
+      "rationale": "data backfill, constraint transition, database enforcement, schema expansion remains in the candidate schema during rollback; isolated old-release smoke proof is mandatory before production mutation."
+    },
+    "packages/db/prisma/migrations/20260715_staff_invitation_outbox.sql": {
+      "sha256": "f7505c694ac34890de839c0e3cd8a68194e699527030eb13bc88a05540bdc865",
+      "phase": "expand-contract",
+      "rollbackSchema": "retain",
+      "contractPhase": "compatibility-proven-inline",
+      "requiresOldReleaseProof": true,
+      "rationale": "data backfill, constraint transition, database enforcement, schema expansion remains in the candidate schema during rollback; isolated old-release smoke proof is mandatory before production mutation."
+    },
+    "packages/db/prisma/migrations/20260715_user_suspension_lifecycle.sql": {
+      "sha256": "5192a6428dee08044683fa6a23257277bc7cd9b59d969d7d41416eaa21f665b2",
+      "phase": "expand-contract",
+      "rollbackSchema": "retain",
+      "contractPhase": "compatibility-proven-inline",
+      "requiresOldReleaseProof": true,
+      "rationale": "data backfill, constraint transition, database enforcement, schema expansion remains in the candidate schema during rollback; isolated old-release smoke proof is mandatory before production mutation."
+    },
+    "packages/db/prisma/migrations/20260716_legacy_unbacked_credit_cleanup.sql": {
+      "sha256": "1a5caa2adc40eb3d7566b7c31ac21aefa4025a7488ccb5dea7fed0bb5679e3f8",
+      "phase": "expand-contract",
+      "rollbackSchema": "retain",
+      "contractPhase": "compatibility-proven-inline",
+      "requiresOldReleaseProof": true,
+      "rationale": "the locked repeatable legacy wallet reconciliation and per-tenant import/reconciliation provenance remain during rollback; isolated old-release proof is required before production mutation."
+    },
+    "packages/db/prisma/migrations/20260716_location_timezone_drop_default.sql": {
+      "sha256": "1fbf5fff4eb735c312d666e0afe243783062b8839e4f96db1abccc92197c3522",
       "phase": "expand",
       "rollbackSchema": "retain",
       "contractPhase": "after-rollback-window",
       "requiresOldReleaseProof": true,
       "rationale": "operational schema transition remains in the candidate schema during rollback; isolated old-release smoke proof is mandatory before production mutation."
     },
-    "packages/db/prisma/migrations/20260709_zz_broker_loss_outbox_recovery.sql": {
-      "sha256": "3d6bd4b5ba2f5d2032977ece35ca7feee078419dff04a5bab68fde01ad4a86a4",
-      "phase": "expand",
-      "rollbackSchema": "retain",
-      "contractPhase": "after-rollback-window",
-      "requiresOldReleaseProof": true,
-      "rationale": "data backfill remains in the candidate schema during rollback; isolated old-release smoke proof is mandatory before production mutation."
-    },
-    "packages/db/prisma/migrations/20260709_zzzz_webhook_endpoint_secret_encryption.sql": {
-      "sha256": "efeee55ae4839b5a0b9bf586215a9b4d84733e4f2d43d0c595d0bc5842493b6f",
-      "phase": "expand",
-      "rollbackSchema": "retain",
-      "contractPhase": "after-rollback-window",
-      "requiresOldReleaseProof": true,
-      "rationale": "operational schema transition remains in the candidate schema during rollback; isolated old-release smoke proof is mandatory before production mutation."
-    },
-    "packages/db/prisma/migrations/20260709_zzzzz_schedule_soft_delete_overlap.sql": {
-      "sha256": "d2bacda72b1597c65edded2c80a70f262efd8c0519779d3d58a8340d798b3315",
+    "packages/db/prisma/migrations/20260716_payroll_controls.sql": {
+      "sha256": "a49b5eb2947ca54c3948cbb14ec2a72315f0c4341dc9f0158fcc0d70e69499e3",
       "phase": "expand-contract",
       "rollbackSchema": "retain",
       "contractPhase": "compatibility-proven-inline",
       "requiresOldReleaseProof": true,
-      "rationale": "data backfill, constraint transition remains in the candidate schema during rollback; isolated old-release smoke proof is mandatory before production mutation."
+      "rationale": "payroll data backfill, tenant isolation, terminal-state enforcement, retained evidence, and capability-gated purge controls remain during rollback; isolated old-release smoke proof is mandatory before production mutation."
     },
-    "packages/db/prisma/migrations/20260709_zzzzzz_schedule_solve_credit_refunds.sql": {
-      "sha256": "1a21916ebd17dbf5474a6b13a820267a494ed61c50537e460250dc32c65183fd",
-      "phase": "expand",
-      "rollbackSchema": "retain",
-      "contractPhase": "after-rollback-window",
-      "requiresOldReleaseProof": true,
-      "rationale": "data backfill remains in the candidate schema during rollback; isolated old-release smoke proof is mandatory before production mutation."
-    },
-    "packages/db/prisma/migrations/20260709_zzzzzzz_platform_admin_capability.sql": {
-      "sha256": "45dd9055a0dc0b474f4abd422eef886081ba892ee6efc253f208fb5d9c82e4a1",
-      "phase": "expand",
-      "rollbackSchema": "retain",
-      "contractPhase": "after-rollback-window",
-      "requiresOldReleaseProof": true,
-      "rationale": "data backfill, constraint transition, database enforcement, schema expansion remains in the candidate schema during rollback; isolated old-release smoke proof is mandatory before production mutation."
-    },
-    "packages/db/prisma/migrations/20260710_first_location_idempotency.sql": {
-      "sha256": "55ec6707cb59af5ee2ece54b3a9eb3247d4bfa92931f5f462f23a6362303cbea",
+    "packages/db/prisma/migrations/20260716_rbac_seed_super_admin_forward_reconciliation.sql": {
+      "sha256": "ab4ed927ff4b5217411830ef10056fcce86a62bf8f71ec3ee1ec4720308e1498",
       "phase": "expand-contract",
       "rollbackSchema": "retain",
       "contractPhase": "compatibility-proven-inline",
       "requiresOldReleaseProof": true,
-      "rationale": "constraint transition, schema expansion remains in the candidate schema during rollback; isolated old-release smoke proof is mandatory before production mutation."
+      "rationale": "least-privilege RBAC seed reconciliation and legacy assignment exclusion remain during rollback; isolated old-release proof is required before production mutation."
     },
-    "packages/db/prisma/migrations/20260710_oidc_identity_binding_tenant_scope.sql": {
-      "sha256": "9683d0a6806f62e111cb310360658e127b6ae49b58a5511f2fe8506638bf2124",
+    "packages/db/prisma/migrations/20260716_zzzz_tenant_data_governance_p1.sql": {
+      "sha256": "5930910feff6b2803d37f01a8d4322ccc40eb460091b15348f248af2a3f18338",
       "phase": "expand-contract",
       "rollbackSchema": "retain",
       "contractPhase": "compatibility-proven-inline",
       "requiresOldReleaseProof": true,
-      "rationale": "constraint transition remains in the candidate schema during rollback; isolated old-release smoke proof is mandatory before production mutation."
+      "rationale": "canonical tenant lifecycle locks, trigger enforcement, and durable export cleanup ownership remain during rollback; isolated old-release proof is required before production mutation."
     },
-    "packages/db/prisma/migrations/20260710_tenant_webhook_lifecycle.sql": {
-      "sha256": "b166d789d6319e37244b4cc26e0ee9f0c96c7142839574c8a770654cf16fb9e8",
+    "packages/db/prisma/migrations/20260716_zzzzz_tenant_deletion_billing_reconciliation.sql": {
+      "sha256": "491016c9025f2dacf893edd0edc486e255c0487029b2c5c0eda0489b28685c55",
       "phase": "expand-contract",
       "rollbackSchema": "retain",
       "contractPhase": "compatibility-proven-inline",
       "requiresOldReleaseProof": true,
-      "rationale": "data backfill, constraint transition, database enforcement remains in the candidate schema during rollback; isolated old-release smoke proof is mandatory before production mutation."
+      "rationale": "durable tenant deletion billing reconciliation state, leases, fencing tokens, and tenant isolation remain during rollback; isolated old-release proof is required before production mutation."
     },
-    "packages/db/prisma/migrations/20260711_staff_availability_overnight.sql": {
-      "sha256": "3cadb3e5cc43c5a17d2be602ba5de628314df4c548b6dea285e12a030fea9641",
+    "packages/db/prisma/migrations/20260716_zzzzzz_billing_exact_once.sql": {
+      "sha256": "51e2399d9fc053b588afd388494d59e3120790766136a640980605e59e645863",
       "phase": "expand-contract",
       "rollbackSchema": "retain",
       "contractPhase": "compatibility-proven-inline",
       "requiresOldReleaseProof": true,
-      "rationale": "constraint transition remains in the candidate schema during rollback; isolated old-release smoke proof is mandatory before production mutation."
+      "rationale": "paid-through entitlement binding, settled wallet balances, and immutable ledger balance enforcement remain during rollback; isolated old-release proof is required before production mutation."
     },
-    "packages/db/prisma/migrations/20260711_stripe_usage_submission_window.sql": {
-      "sha256": "c70c34ec21c048cff6be0ba7a54fa04ae2ae072a92080a8ff6a8a0031e609cc2",
+    "packages/db/prisma/migrations/pre_20260715_availability_import_lifecycle.sql": {
+      "sha256": "1563895292cca5540c95b88ffa22c99b82923a5f2ea295886f779f550367e70f",
       "phase": "expand",
       "rollbackSchema": "retain",
       "contractPhase": "after-rollback-window",
       "requiresOldReleaseProof": true,
       "rationale": "data backfill, schema expansion remains in the candidate schema during rollback; isolated old-release smoke proof is mandatory before production mutation."
     },
-    "packages/db/prisma/migrations/20260711_zz_audit_log_user_redaction.sql": {
-      "sha256": "377e857b24615e606bf61af47e19ddd0db3e50d83d7a0930afc424398fb863dd",
+    "packages/db/prisma/migrations/pre_20260715_staff_invitation_outbox.sql": {
+      "sha256": "6e2335f25167acd5cd09b01e5a0bf9b06d2193f95316ed98a48329272773fd52",
       "phase": "expand",
       "rollbackSchema": "retain",
       "contractPhase": "after-rollback-window",
       "requiresOldReleaseProof": true,
-      "rationale": "data backfill, database enforcement remains in the candidate schema during rollback; isolated old-release smoke proof is mandatory before production mutation."
+      "rationale": "constraint transition remains in the candidate schema during rollback; isolated old-release smoke proof is mandatory before production mutation."
     },
-    "packages/db/prisma/migrations/20260712_auth_session_selector_totp_replay.sql": {
-      "sha256": "61df3b3921d82ee8b488f9d1164d3abcdb7bc8699306b0affcb8a1d44d945dc6",
-      "phase": "expand-contract",
-      "rollbackSchema": "retain",
-      "contractPhase": "compatibility-proven-inline",
-      "requiresOldReleaseProof": true,
-      "rationale": "data backfill, constraint transition, database enforcement, schema expansion remains in the candidate schema during rollback; isolated old-release smoke proof is mandatory before production mutation."
-    },
-    "packages/db/prisma/migrations/20260712_core_rls_audit_forward_reconciliation.sql": {
-      "sha256": "da5a45961d10979ebebf41016c3d62ce5d818764fe1b4af17e2f6d35037a2209",
-      "phase": "expand-contract",
-      "rollbackSchema": "retain",
-      "contractPhase": "compatibility-proven-inline",
-      "requiresOldReleaseProof": true,
-      "rationale": "data backfill, constraint transition, database enforcement, schema expansion remains in the candidate schema during rollback; isolated old-release smoke proof is mandatory before production mutation."
-    },
-    "packages/db/prisma/migrations/20260712_historical_forward_reconciliation.sql": {
-      "sha256": "4ecafd14f716232eb89abe3021c1d0e7fb83fe18b1a5aca367b64dcc0be98899",
+    "packages/db/prisma/migrations/pre_20260716_payroll_controls.sql": {
+      "sha256": "e8009f8f86d1d0f999066e48028b9d3f1f9fc84b078223d2a711a78769479ec5",
       "phase": "expand",
       "rollbackSchema": "retain",
       "contractPhase": "after-rollback-window",
       "requiresOldReleaseProof": true,
-      "rationale": "data backfill, constraint transition remains in the candidate schema during rollback; isolated old-release smoke proof is mandatory before production mutation."
-    },
-    "packages/db/prisma/migrations/20260712_onboarding_signup_attempt_recovery.sql": {
-      "sha256": "9c2b082886ad5fd6094bdecf85e0d87e750eb9bef1f40b1ee599b9989a7885d2",
-      "phase": "expand-contract",
-      "rollbackSchema": "retain",
-      "contractPhase": "compatibility-proven-inline",
-      "requiresOldReleaseProof": true,
-      "rationale": "data backfill, constraint transition, database enforcement, schema expansion remains in the candidate schema during rollback; isolated old-release smoke proof is mandatory before production mutation."
-    },
-    "packages/db/prisma/migrations/20260712_password_reset_email_outbox.sql": {
-      "sha256": "b47c27d85bdf9bfaae300e84969465a7a15a3d738439eb943da52a8928199601",
-      "phase": "expand-contract",
-      "rollbackSchema": "retain",
-      "contractPhase": "compatibility-proven-inline",
-      "requiresOldReleaseProof": true,
-      "rationale": "data backfill, constraint transition, database enforcement, schema expansion remains in the candidate schema during rollback; isolated old-release smoke proof is mandatory before production mutation."
-    },
-    "packages/db/prisma/migrations/20260712_platform_admin_audit_actor_attribution.sql": {
-      "sha256": "12260e75b39569a5a071178f40578bd917d4d2b758dd6fe13d9775437027a6fa",
-      "phase": "expand-contract",
-      "rollbackSchema": "retain",
-      "contractPhase": "compatibility-proven-inline",
-      "requiresOldReleaseProof": true,
-      "rationale": "data backfill, constraint transition, database enforcement, schema expansion remains in the candidate schema during rollback; isolated old-release smoke proof is mandatory before production mutation."
-    },
-    "packages/db/prisma/migrations/20260712_rbac_seed_forward_reconciliation.sql": {
-      "sha256": "73093ca1908ee9982b62f38152451503720e51edaef1ec2b877b770077bb9ed7",
-      "phase": "expand",
-      "rollbackSchema": "retain",
-      "contractPhase": "after-rollback-window",
-      "requiresOldReleaseProof": true,
-      "rationale": "data backfill remains in the candidate schema during rollback; isolated old-release smoke proof is mandatory before production mutation."
-    },
-    "packages/db/prisma/migrations/20260712_stripe_usage_logical_identity.sql": {
-      "sha256": "dd0d28dd15b00e838aeae75d319843a04f36966990877071ee6f8b0c47028be5",
-      "phase": "expand-contract",
-      "rollbackSchema": "retain",
-      "contractPhase": "compatibility-proven-inline",
-      "requiresOldReleaseProof": true,
-      "rationale": "data backfill, constraint transition remains in the candidate schema during rollback; isolated old-release smoke proof is mandatory before production mutation."
-    },
-    "packages/db/prisma/migrations/20260712_tenant_context_helpers.sql": {
-      "sha256": "5b542927ee535d41518798c4bba5e450be604002250bb387eae050bddd1d9358",
-      "phase": "expand",
-      "rollbackSchema": "retain",
-      "contractPhase": "after-rollback-window",
-      "requiresOldReleaseProof": true,
-      "rationale": "database enforcement remains in the candidate schema during rollback; isolated old-release smoke proof is mandatory before production mutation."
-    },
-    "packages/db/prisma/migrations/20260712_tenant_export_jobs.sql": {
-      "sha256": "d6f2dbbc271361a34ae46b63d622191cca609ada2ca181a094bccc4e8ff6bda6",
-      "phase": "expand-contract",
-      "rollbackSchema": "retain",
-      "contractPhase": "compatibility-proven-inline",
-      "requiresOldReleaseProof": true,
-      "rationale": "data backfill, constraint transition, database enforcement, schema expansion remains in the candidate schema during rollback; isolated old-release smoke proof is mandatory before production mutation."
-    },
-    "packages/db/prisma/migrations/20260712_time_card_billable_clock_in.sql": {
-      "sha256": "327f39a56b0594ba942436dfdc7cad645111e737b69d5f7559d70c39f52f1c7e",
-      "phase": "expand",
-      "rollbackSchema": "retain",
-      "contractPhase": "after-rollback-window",
-      "requiresOldReleaseProof": true,
-      "rationale": "constraint transition, schema expansion remains in the candidate schema during rollback; isolated old-release smoke proof is mandatory before production mutation."
-    },
-    "packages/db/prisma/migrations/pre_20260709_role_assignment_tenant_integrity.sql": {
-      "sha256": "fce80545ddd0f791fbafe7a4e5c1bc1ea1e34a18207e4b328c7fc53b11c19c5d",
-      "phase": "expand",
-      "rollbackSchema": "retain",
-      "contractPhase": "after-rollback-window",
-      "requiresOldReleaseProof": true,
-      "rationale": "data backfill, constraint transition, schema expansion remains in the candidate schema during rollback; isolated old-release smoke proof is mandatory before production mutation."
-    },
-    "packages/db/prisma/migrations/pre_20260709_schedule_solve_request_idempotency.sql": {
-      "sha256": "3cba16e755a4cd5373136d5e32d6820b59458c9d0227e3cf4fe965d60a023ac6",
-      "phase": "expand",
-      "rollbackSchema": "retain",
-      "contractPhase": "after-rollback-window",
-      "requiresOldReleaseProof": true,
-      "rationale": "data backfill, schema expansion remains in the candidate schema during rollback; isolated old-release smoke proof is mandatory before production mutation."
-    },
-    "packages/db/prisma/migrations/pre_20260712_stripe_usage_logical_identity.sql": {
-      "sha256": "9a551cfd24646f4fd406c105ea2afbf6c80ba9cc292fb4cd5473cd906e3020f6",
-      "phase": "expand-contract",
-      "rollbackSchema": "retain",
-      "contractPhase": "compatibility-proven-inline",
-      "requiresOldReleaseProof": true,
-      "rationale": "data backfill, constraint transition, schema expansion remains in the candidate schema during rollback; isolated old-release smoke proof is mandatory before production mutation."
-    },
-    "packages/db/prisma/migrations/rls_relation_hardening.sql": {
-      "sha256": "54bb4140811e903346e3cfb17201c6491dce724bee0443f5dfbb2f7b09659420",
-      "phase": "expand-contract",
-      "rollbackSchema": "retain",
-      "contractPhase": "compatibility-proven-inline",
-      "requiresOldReleaseProof": true,
-      "rationale": "data backfill, constraint transition, database enforcement remains in the candidate schema during rollback; isolated old-release smoke proof is mandatory before production mutation."
+      "rationale": "payroll enum and nullable time-card context expansion remains in the candidate schema during rollback; isolated old-release smoke proof is mandatory before production mutation."
     }
   }
 }

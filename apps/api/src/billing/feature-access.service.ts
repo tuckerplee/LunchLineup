@@ -5,7 +5,9 @@ import { MeteringService } from './metering.service';
 import {
     coercePlanFeatureKeys,
     FeatureKey,
+    FEATURE_CREDIT_COST,
     FEATURE_KEYS,
+    hasNonBlankStripeSubscriptionId,
     resolveEffectiveTenantEntitlement,
     TenantFeatureConfig,
     TenantPlanCode,
@@ -31,19 +33,12 @@ export type FeatureMatrix = {
     trialEndsAt: Date | null;
     stripeSubscriptionActive: boolean;
     stripeSubscriptionPresent: boolean;
+    stripeSubscriptionCurrentPeriodEnd: Date | null;
     usageCredits: number;
     features: Record<FeatureKey, FeatureResolution>;
 };
 
-const FEATURE_COST: Record<FeatureKey, number | null> = {
-    scheduling: 1,
-    lunch_breaks: 1,
-    time_cards: 1,
-    webhooks: 1,
-};
-
 const TENANT_FEATURE_CONFIG_KEY = 'feature_access';
-const FEATURE_START_TENANT_STATUSES = new Set<TenantStatusValue>(['TRIAL', 'ACTIVE']);
 
 @Injectable()
 export class FeatureAccessService {
@@ -74,6 +69,7 @@ export class FeatureAccessService {
                         trialEndsAt: true,
                         usageCredits: true,
                         stripeSubscriptionId: true,
+                        stripeSubscriptionCurrentPeriodEnd: true,
                     },
                 }),
                 this.loadTenantFeatureConfig(tx, tenantId),
@@ -96,8 +92,9 @@ export class FeatureAccessService {
             effectivePlanTier: planCode as TenantPlanTier,
             status: tenant.status,
             trialEndsAt: tenant.trialEndsAt,
-            stripeSubscriptionActive: tenant.status === 'ACTIVE' && Boolean(tenant.stripeSubscriptionId),
-            stripeSubscriptionPresent: Boolean(tenant.stripeSubscriptionId),
+            stripeSubscriptionActive: effectiveEntitlement.source === 'paid_subscription',
+            stripeSubscriptionPresent: hasNonBlankStripeSubscriptionId(tenant.stripeSubscriptionId),
+            stripeSubscriptionCurrentPeriodEnd: tenant.stripeSubscriptionCurrentPeriodEnd,
             usageCredits: tenant.usageCredits,
             features,
         };
@@ -112,12 +109,46 @@ export class FeatureAccessService {
         return resolution;
     }
 
+    /**
+     * Authorize a zero-settlement control, read, or recovery operation.
+     * Value-producing work must use assertFeatureEnabledInTransaction instead.
+     */
+    async assertFeatureEntitled(tenantId: string, feature: FeatureKey): Promise<FeatureResolution> {
+        return this.tenantDb.withTenant(tenantId, (tx) => (
+            this.assertFeatureEntitledInTransaction(tx, tenantId, feature)
+        ));
+    }
+
     async assertFeatureEnabledInTransaction(
         tx: TenantPrismaTransaction,
         tenantId: string,
         feature: FeatureKey,
     ): Promise<FeatureResolution> {
+        return this.assertFeaturePolicyInTransaction(tx, tenantId, feature, true);
+    }
+
+    async assertFeatureEntitledInTransaction(
+        tx: TenantPrismaTransaction,
+        tenantId: string,
+        feature: FeatureKey,
+    ): Promise<FeatureResolution> {
+        return this.assertFeaturePolicyInTransaction(tx, tenantId, feature, false);
+    }
+
+    async lockTenantInTransaction(
+        tx: TenantPrismaTransaction,
+        tenantId: string,
+    ): Promise<void> {
         await tx.$queryRaw`SELECT "id" FROM "Tenant" WHERE "id" = ${tenantId} FOR UPDATE`;
+    }
+
+    private async assertFeaturePolicyInTransaction(
+        tx: TenantPrismaTransaction,
+        tenantId: string,
+        feature: FeatureKey,
+        requireBillableCredits: boolean,
+    ): Promise<FeatureResolution> {
+        await this.lockTenantInTransaction(tx, tenantId);
         const [tenant, featureConfig] = await Promise.all([
             tx.tenant.findUniqueOrThrow({
                 where: { id: tenantId },
@@ -128,13 +159,20 @@ export class FeatureAccessService {
                     trialEndsAt: true,
                     usageCredits: true,
                     stripeSubscriptionId: true,
+                    stripeSubscriptionCurrentPeriodEnd: true,
                 },
             }),
             this.loadTenantFeatureConfig(tx, tenantId),
         ]);
         const effectiveEntitlement = resolveEffectiveTenantEntitlement(tenant);
         const plan = await resolveTenantPlanDefinition(tx, effectiveEntitlement.planCode);
-        const resolution = this.resolveFeature(tenant, feature, featureConfig, plan);
+        const resolution = this.resolveFeature(
+            tenant,
+            feature,
+            featureConfig,
+            plan,
+            requireBillableCredits,
+        );
         if (!resolution.enabled) {
             throw new ForbiddenException(resolution.reason);
         }
@@ -150,40 +188,21 @@ export class FeatureAccessService {
         if (!resolution.enabled) {
             throw new ForbiddenException(resolution.reason);
         }
+        const creditCost = resolution.creditCost;
+        if (resolution.source !== 'credits'
+            || typeof creditCost !== 'number'
+            || !Number.isSafeInteger(creditCost)
+            || creditCost <= 0) {
+            throw new ForbiddenException('Billable feature usage requires a positive separately purchased credit cost.');
+        }
         return this.meteringService.recordFeatureUsageInTransaction(tx, {
             tenantId,
             source: resolution.source,
-            cost: resolution.creditCost ?? 0,
+            cost: creditCost,
             reason,
             operationId,
         });
     }
-
-    async consumeCreditsForFeature(
-        tenantId: string,
-        feature: FeatureKey,
-        reason: string,
-    ): Promise<{ consumedCredits: number; newBalance: number | null }> {
-        const matrix = await this.getFeatureMatrix(tenantId);
-        const resolution = matrix.features[feature];
-        if (!resolution.enabled) {
-            throw new ForbiddenException(resolution.reason);
-        }
-
-        const cost = resolution.creditCost ?? 0;
-        if (resolution.source === 'credits' && cost > 0) {
-            const newBalance = await this.meteringService.consumeCredits(tenantId, cost, reason);
-            return { consumedCredits: cost, newBalance };
-        }
-
-        if ((resolution.source === 'plan' || resolution.source === 'stripe') && cost > 0) {
-            const newBalance = await this.meteringService.trackIncludedUsage(tenantId, cost, reason);
-            return { consumedCredits: cost, newBalance };
-        }
-
-        return { consumedCredits: 0, newBalance: matrix.usageCredits };
-    }
-
     private async loadTenantFeatureConfig(tx: TenantPrismaTransaction, tenantId: string): Promise<TenantFeatureConfig | null> {
         const tenantSetting = await tx.tenantSetting?.findUnique?.({
             where: {
@@ -210,27 +229,25 @@ export class FeatureAccessService {
     }
 
     private resolveFeature(
-        tenant: { planTier: TenantPlanTier; status: TenantStatusValue; trialEndsAt: Date | null; usageCredits: number; stripeSubscriptionId: string | null },
+        tenant: {
+            planTier: TenantPlanTier;
+            status: TenantStatusValue;
+            trialEndsAt: Date | null;
+            usageCredits: number;
+            stripeSubscriptionId: string | null;
+            stripeSubscriptionCurrentPeriodEnd: Date | null;
+        },
         feature: FeatureKey,
         featureConfig: TenantFeatureConfig | null,
         plan: Awaited<ReturnType<typeof resolveTenantPlanDefinition>> | null,
+        requireBillableCredits = true,
     ): FeatureResolution {
-        const creditCost = FEATURE_COST[feature];
+        const creditCost = FEATURE_CREDIT_COST[feature];
         const effectiveEntitlement = resolveEffectiveTenantEntitlement(tenant);
         const includedByPlan = coercePlanFeatureKeys(plan?.metadata ?? null, effectiveEntitlement.planCode).includes(feature);
         const paidSubscriptionActive = effectiveEntitlement.source === 'paid_subscription';
-        const subscriptionEntitled = paidSubscriptionActive || effectiveEntitlement.source === 'trial';
-        const creditEligible = creditCost !== null && creditCost > 0;
         const override = featureConfig?.features?.[feature];
 
-        if (!FEATURE_START_TENANT_STATUSES.has(tenant.status)) {
-            return {
-                enabled: false,
-                source: 'disabled',
-                reason: 'Feature starts require a trial or active tenant.',
-                creditCost,
-            };
-        }
         if (override?.source === 'disabled' || override?.enabled === false) {
             return {
                 enabled: false,
@@ -240,34 +257,51 @@ export class FeatureAccessService {
             };
         }
 
-        const overrideEnabled = override?.enabled === true
-            && (override.source === 'manual' || override.source === 'stripe' || override.source === 'credits');
-        const entitlementSourceAllowed = override?.source === 'stripe'
-            ? paidSubscriptionActive
-            : subscriptionEntitled;
-        const subscriptionIncludesFeature = entitlementSourceAllowed && (includedByPlan || overrideEnabled);
-        if (!subscriptionIncludesFeature) {
+        if (!paidSubscriptionActive) {
             return {
                 enabled: false,
                 source: 'disabled',
-                reason: 'Feature requires an active subscription that includes this feature.',
+                reason: 'Billable features require a current active paid subscription.',
                 creditCost,
             };
         }
 
-        if (!creditEligible) {
+        const overrideEnabled = override?.enabled === true
+            && (override.source === 'manual' || override.source === 'stripe' || override.source === 'credits');
+        if (!includedByPlan && !overrideEnabled) {
             return {
                 enabled: false,
                 source: 'disabled',
-                reason: `Feature ${feature} does not have a valid credit cost configured.`,
+                reason: 'Feature requires an active paid subscription that includes this feature.',
                 creditCost,
             };
+        }
+
+        if (requireBillableCredits) {
+            if (creditCost === null || !Number.isSafeInteger(creditCost) || creditCost <= 0) {
+                return {
+                    enabled: false,
+                    source: 'disabled',
+                    reason: `Feature ${feature} does not have a valid credit cost configured.`,
+                    creditCost,
+                };
+            }
+            if (tenant.usageCredits < creditCost) {
+                return {
+                    enabled: false,
+                    source: 'disabled',
+                    reason: `Feature requires ${creditCost} separately purchased usage credit${creditCost === 1 ? '' : 's'}.`,
+                    creditCost,
+                };
+            }
         }
 
         return {
             enabled: true,
             source: 'credits',
-            reason: `Enabled by ${effectiveEntitlement.source === 'trial' ? 'unexpired trial' : 'active subscription'} (${creditCost} credit per billable use).`,
+            reason: requireBillableCredits
+                ? `Enabled by active paid subscription and separately purchased credits (${creditCost} credit per billable use).`
+                : 'Entitled by active paid subscription for a zero-settlement control, read, or recovery operation.',
             creditCost,
         };
     }

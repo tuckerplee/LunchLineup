@@ -36,7 +36,7 @@ export default async function AdminLayout({ children }: { children: React.ReactN
                                 <LunchLineupMark size={34} />
                             </div>
                             <div>
-                                <div style={{ fontWeight: 800, letterSpacing: '-0.02em', color: 'var(--text-primary)' }}>LunchLineup</div>
+                                <div style={{ fontWeight: 800, letterSpacing: 0, color: 'var(--text-primary)' }}>LunchLineup</div>
                                 <div className="workspace-kicker">Platform Admin</div>
                             </div>
                         </div>
@@ -48,7 +48,7 @@ export default async function AdminLayout({ children }: { children: React.ReactN
                                 textTransform: 'uppercase',
                                 letterSpacing: '0.08em',
                                 background: '#ffeef2',
-                                color: '#cb3653',
+                                color: '#b4233f',
                                 borderColor: '#ffcfda',
                             }}
                         >
@@ -65,7 +65,7 @@ export default async function AdminLayout({ children }: { children: React.ReactN
                         <Link
                             href="/auth/logout"
                             className="workspace-nav-link"
-                            style={{ color: '#cb3653', borderColor: '#ffd5df', background: '#fff6f8' }}
+                            style={{ color: '#b4233f', borderColor: '#ffd5df', background: '#fff6f8' }}
                         >
                             <span aria-hidden="true">↩</span>
                             Sign out
@@ -84,7 +84,7 @@ export default async function AdminLayout({ children }: { children: React.ReactN
                     }}
                 >
                     <div>
-                        <div className="workspace-kicker" style={{ color: '#cb3653' }}>
+                        <div className="workspace-kicker" style={{ color: '#b4233f' }}>
                             Internal Console
                         </div>
                         <div style={{ fontSize: '1rem', fontWeight: 700, color: 'var(--text-primary)' }}>System Administration</div>
@@ -100,7 +100,7 @@ export default async function AdminLayout({ children }: { children: React.ReactN
                             <LogOut aria-hidden="true" size={16} />
                             <span className="workspace-mobile-signout-label">Sign out</span>
                         </Link>
-                        <span className="badge" style={{ background: '#ffeef2', borderColor: '#ffcfda', color: '#cb3653' }}>
+                        <span className="badge" style={{ background: '#ffeef2', borderColor: '#ffcfda', color: '#b4233f' }}>
                             {environment}
                         </span>
                         <span

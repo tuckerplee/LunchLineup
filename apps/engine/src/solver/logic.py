@@ -819,10 +819,22 @@ class ConstraintSolver:
                 break_calculator.calculate_breaks(run_start, run_end, stagger_index=stagger_index)
             )
 
+            run_break_intervals = [
+                (
+                    parse_schedule_datetime(item["start_time"], "break start_time"),
+                    parse_schedule_datetime(item["end_time"], "break end_time"),
+                )
+                for item in run_breaks
+            ]
             merged_run: List[Dict[str, Any]] = []
             for assignment in run:
                 boundary = parse_schedule_datetime(assignment["start_time"], "assignment start_time")
-                if merged_run and boundary not in protected_boundaries:
+                break_crosses_boundary = any(
+                    break_start < boundary < break_end
+                    for break_start, break_end in run_break_intervals
+                )
+                preserve_boundary = boundary in protected_boundaries and not break_crosses_boundary
+                if merged_run and not preserve_boundary:
                     current = merged_run[-1]
                     current["end_time"] = assignment["end_time"]
                     if current.get("role") != assignment.get("role"):
@@ -1284,9 +1296,41 @@ class ConstraintSolver:
             return False
         del current_date
         for weekday, start_minute, end_minute in self._availability_segments(shift_start, shift_end):
-            if not any(self._availability_rule_covers(rule, weekday, start_minute, end_minute) for rule in rules):
+            if not self._availability_rules_cover(rules, weekday, start_minute, end_minute):
                 return False
         return True
+
+    def _availability_rules_cover(
+        self,
+        rules: List[Dict[str, Any]],
+        weekday: int,
+        start_minute: int,
+        end_minute: int,
+    ) -> bool:
+        intervals = []
+        for rule in rules:
+            rule_day = rule["day_of_week"]
+            rule_start = rule["start_minute"]
+            rule_end = rule["end_minute"]
+            if rule_end > rule_start:
+                if rule_day == weekday:
+                    intervals.append((rule_start, rule_end))
+                continue
+            if rule_day == weekday:
+                intervals.append((rule_start, 1440))
+            elif (rule_day + 1) % 7 == weekday:
+                intervals.append((0, rule_end))
+
+        covered_until = start_minute
+        for interval_start, interval_end in sorted(intervals):
+            if interval_end <= covered_until:
+                continue
+            if interval_start > covered_until:
+                return False
+            covered_until = interval_end
+            if covered_until >= end_minute:
+                return True
+        return False
 
     def _availability_segments(
         self,
@@ -1303,19 +1347,3 @@ class ConstraintSolver:
                 1440 if segment_end == next_midnight else segment_end.hour * 60 + segment_end.minute,
             )
             cursor = segment_end
-
-    def _availability_rule_covers(
-        self,
-        rule: Dict[str, Any],
-        weekday: int,
-        start_minute: int,
-        end_minute: int,
-    ) -> bool:
-        rule_day = rule["day_of_week"]
-        rule_start = rule["start_minute"]
-        rule_end = rule["end_minute"]
-        if rule_end > rule_start:
-            return rule_day == weekday and rule_start <= start_minute and rule_end >= end_minute
-        if rule_day == weekday:
-            return rule_start <= start_minute and end_minute <= 1440
-        return (rule_day + 1) % 7 == weekday and start_minute >= 0 and rule_end >= end_minute

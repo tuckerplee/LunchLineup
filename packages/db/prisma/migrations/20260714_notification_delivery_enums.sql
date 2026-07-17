@@ -1,0 +1,19 @@
+DO $$
+BEGIN
+  CREATE TYPE "NotificationOutboxStatus" AS ENUM (
+    'PENDING',
+    'PROCESSING',
+    'DELIVERED',
+    'FAILED',
+    'DEAD_LETTERED'
+  );
+EXCEPTION
+  WHEN duplicate_object THEN NULL;
+END
+$$;
+
+ALTER TYPE "NotificationOutboxStatus" ADD VALUE IF NOT EXISTS 'PENDING';
+ALTER TYPE "NotificationOutboxStatus" ADD VALUE IF NOT EXISTS 'PROCESSING';
+ALTER TYPE "NotificationOutboxStatus" ADD VALUE IF NOT EXISTS 'DELIVERED';
+ALTER TYPE "NotificationOutboxStatus" ADD VALUE IF NOT EXISTS 'FAILED';
+ALTER TYPE "NotificationOutboxStatus" ADD VALUE IF NOT EXISTS 'DEAD_LETTERED';

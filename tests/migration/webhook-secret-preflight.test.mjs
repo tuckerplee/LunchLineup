@@ -16,6 +16,28 @@ const migrationPath = join(
   'packages/db/prisma/migrations/20260709_zzzz_webhook_endpoint_secret_encryption.sql',
 );
 const preflightSql = readFileSync(migrationPath, 'utf8');
+const rotationScript = readFileSync(join(root, 'scripts/rotate-webhook-endpoint-secrets.mjs'), 'utf8');
+const migrationRunner = readFileSync(join(root, 'scripts/apply-db-migrations.mjs'), 'utf8');
+
+test('webhook preflight bounds database lock waits and its migration child process', () => {
+  assert.match(rotationScript, /SET LOCAL lock_timeout = '10s'/);
+  assert.match(rotationScript, /SET LOCAL statement_timeout = '110s'/);
+  assert.match(migrationRunner, /WEBHOOK_ROTATION_TIMEOUT_MS = 150_000/);
+  assert.match(migrationRunner, /timeoutMs: WEBHOOK_ROTATION_TIMEOUT_MS/);
+  assert.match(migrationRunner, /runBoundedProcess/);
+  assert.match(rotationScript, /error_class=\$\{errorClass\} error_code=\$\{errorCode\}/);
+  assert.doesNotMatch(rotationScript, /console\.error\(error(?:\?\.message|\.message)?\)/);
+});
+
+test('every migration subprocess class has a fail-closed execution deadline', () => {
+  assert.match(migrationRunner, /PRISMA_COMMAND_TIMEOUT_MS = 600_000/);
+  assert.match(migrationRunner, /BOOTSTRAP_COMMAND_TIMEOUT_MS = 120_000/);
+  assert.match(migrationRunner, /APP_ROLE_PROVISION_TIMEOUT_MS = 120_000/);
+  assert.match(migrationRunner, /timeoutMs: PRISMA_COMMAND_TIMEOUT_MS/);
+  assert.match(migrationRunner, /timeoutMs: BOOTSTRAP_COMMAND_TIMEOUT_MS/);
+  assert.match(migrationRunner, /timeoutMs: APP_ROLE_PROVISION_TIMEOUT_MS/);
+  assert.equal((migrationRunner.match(/runBoundedProcess\(/g) ?? []).length, 5);
+});
 
 test('webhook secret preflight preserves credential material in an application-key envelope', () => {
   const plaintext = 'recoverable-signing-credential';

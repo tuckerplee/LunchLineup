@@ -69,6 +69,7 @@ export interface SecureRequestOptions {
 }
 
 export async function secureHttpRequest(url: string, options: SecureRequestOptions = {}): Promise<Response> {
+    const deadlineAtMs = Date.now() + normalizeTimeout(options.timeoutMs);
     const parsed = new URL(url);
     const allowedProtocols = options.allowedProtocols ?? defaultAllowedProtocols();
     if (!allowedProtocols.includes(parsed.protocol as AllowedProtocol)) {
@@ -88,7 +89,7 @@ export async function secureHttpRequest(url: string, options: SecureRequestOptio
         throw new Error('SSRF blocked: cloud metadata endpoint');
     }
 
-    const resolved = await resolveHostname(hostname);
+    const resolved = await beforeDeadline(resolveHostname(hostname), deadlineAtMs);
     if (resolved.length === 0) {
         throw new Error(`DNS resolution failed for ${parsed.hostname}`);
     }
@@ -106,7 +107,7 @@ export async function secureHttpRequest(url: string, options: SecureRequestOptio
         throw new Error('Only HTTPS is allowed for outbound requests in production');
     }
 
-    return requestPinnedAddress(parsed, hostname, resolved[0].address, options);
+    return requestPinnedAddress(parsed, hostname, resolved[0].address, options, deadlineAtMs);
 }
 
 function defaultAllowedProtocols(): AllowedProtocol[] {
@@ -135,16 +136,41 @@ async function resolveHostname(hostname: string): Promise<ResolvedAddress[]> {
     }
 }
 
+async function beforeDeadline<T>(operation: Promise<T>, deadlineAtMs: number): Promise<T> {
+    const remainingMs = deadlineAtMs - Date.now();
+    if (remainingMs <= 0) {
+        throw new Error('Outbound request timed out');
+    }
+    let timeout: NodeJS.Timeout | undefined;
+    try {
+        return await Promise.race([
+            operation,
+            new Promise<never>((_resolve, reject) => {
+                timeout = setTimeout(
+                    () => reject(new Error('Outbound request timed out')),
+                    remainingMs,
+                );
+            }),
+        ]);
+    } finally {
+        if (timeout) clearTimeout(timeout);
+    }
+}
+
 function requestPinnedAddress(
     parsed: URL,
     normalizedHostname: string,
     address: string,
     options: SecureRequestOptions,
+    deadlineAtMs: number,
 ): Promise<Response> {
-    const timeoutMs = normalizeTimeout(options.timeoutMs);
+    const remainingMs = deadlineAtMs - Date.now();
+    if (remainingMs <= 0) {
+        return Promise.reject(new Error('Outbound request timed out'));
+    }
     const maxResponseBytes = normalizeMaxResponseBytes(options.maxResponseBytes);
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), timeoutMs);
+    const timeout = setTimeout(() => controller.abort(), remainingMs);
     const transport = parsed.protocol === 'https:' ? https : http;
     const requestOptions: http.RequestOptions & https.RequestOptions = {
         protocol: parsed.protocol,
@@ -167,6 +193,20 @@ function requestPinnedAddress(
             if (redirectMode === 'error' && status >= 300 && status < 400) {
                 res.resume();
                 reject(new Error('Outbound redirects are disabled'));
+                return;
+            }
+
+            let declaredResponseBytes: number | null;
+            try {
+                declaredResponseBytes = parseContentLength(res.headers['content-length']);
+            } catch (error) {
+                res.resume();
+                reject(error);
+                return;
+            }
+            if (declaredResponseBytes !== null && declaredResponseBytes > maxResponseBytes) {
+                res.resume();
+                reject(new Error('Outbound response exceeded size limit'));
                 return;
             }
 
@@ -239,6 +279,24 @@ function responseHeaders(headers: http.IncomingHttpHeaders): Record<string, stri
     }
 
     return responseHeaderMap;
+}
+
+function parseContentLength(value: string | string[] | undefined): number | null {
+    if (value === undefined) {
+        return null;
+    }
+
+    const normalized = Array.isArray(value) ? value.join(',') : value.trim();
+    if (!/^\d+$/.test(normalized)) {
+        throw new Error('Outbound response content length is invalid');
+    }
+
+    const parsed = Number(normalized);
+    if (!Number.isSafeInteger(parsed)) {
+        throw new Error('Outbound response content length is invalid');
+    }
+
+    return parsed;
 }
 
 function canHaveResponseBody(status: number): boolean {

@@ -1,20 +1,42 @@
 'use client';
 
 import Link from 'next/link';
-import { Suspense, useMemo, useState } from 'react';
+import { Suspense, useEffect, useRef, useState } from 'react';
 import { useSearchParams } from 'next/navigation';
 import { LunchLineupMark } from '@/components/branding/LunchLineupMark';
-
-const API = process.env.NEXT_PUBLIC_API_URL ?? '/api/v1';
+import { fetchPublicApi } from '@/lib/client-api';
 const GENERIC_REQUEST_MESSAGE = 'If a matching account exists, a password reset email will be sent shortly.';
+const RESET_TOKEN_COOKIE = 'll_password_reset_token';
 
 function normalizeWorkspaceSlug(value: string): string {
     return value.trim().toLowerCase().replace(/[^a-z0-9-]/g, '');
 }
 
+function readResetTokenCookie(): string {
+    const pair = document.cookie.split('; ').find((entry) => entry.startsWith(`${RESET_TOKEN_COOKIE}=`));
+    if (!pair) return '';
+    try {
+        return decodeURIComponent(pair.slice(pair.indexOf('=') + 1));
+    } catch {
+        return '';
+    }
+}
+
+function clearResetTokenCookie() {
+    const secure = window.location.protocol === 'https:' ? '; Secure' : '';
+    document.cookie = `${RESET_TOKEN_COOKIE}=; Path=/auth/reset-password; Max-Age=0; SameSite=Strict${secure}`;
+}
+
+export function resetConfirmationErrorMessage(status: number): string {
+    if (status === 429) return 'Too many reset attempts. Wait a moment, then try again.';
+    if (status >= 500) return 'Password reset is temporarily unavailable. Please try again.';
+    if (status >= 400 && status < 500) return 'Reset link is invalid or expired.';
+    return 'Unable to reset password. Please try again.';
+}
+
 function ResetPasswordContent() {
     const searchParams = useSearchParams();
-    const token = useMemo(() => searchParams.get('token') ?? '', [searchParams]);
+    const [token, setToken] = useState<string | null>(null);
     const [workspaceSlug, setWorkspaceSlug] = useState(normalizeWorkspaceSlug(searchParams.get('tenantSlug') ?? ''));
     const [identifier, setIdentifier] = useState(searchParams.get('identifier') ?? '');
     const [password, setPassword] = useState('');
@@ -22,6 +44,28 @@ function ResetPasswordContent() {
     const [message, setMessage] = useState<string | null>(null);
     const [error, setError] = useState<string | null>(null);
     const [isLoading, setIsLoading] = useState(false);
+    const feedbackRef = useRef<HTMLDivElement>(null);
+
+    useEffect(() => {
+        const tokenFromUrl = searchParams.get('token') ?? '';
+        const cookieToken = readResetTokenCookie();
+
+        if (tokenFromUrl) {
+            const cleanUrl = new URL(window.location.href);
+            cleanUrl.searchParams.delete('token');
+            window.history.replaceState(
+                window.history.state,
+                '',
+                `${cleanUrl.pathname}${cleanUrl.search}${cleanUrl.hash}`,
+            );
+        }
+        if (cookieToken) clearResetTokenCookie();
+        setToken(cookieToken || tokenFromUrl);
+    }, [searchParams]);
+
+    useEffect(() => {
+        if (error || message) feedbackRef.current?.focus();
+    }, [error, message]);
 
     const requestReset = async (event: React.FormEvent) => {
         event.preventDefault();
@@ -38,7 +82,7 @@ function ResetPasswordContent() {
         setWorkspaceSlug(normalizedWorkspace);
         setIsLoading(true);
         try {
-            await fetch(`${API}/auth/password/reset/request`, {
+            await fetchPublicApi('/auth/password/reset/request', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 credentials: 'include',
@@ -71,14 +115,15 @@ function ResetPasswordContent() {
 
         setIsLoading(true);
         try {
-            const response = await fetch(`${API}/auth/password/reset/confirm`, {
+            const response = await fetchPublicApi('/auth/password/reset/confirm', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 credentials: 'include',
                 body: JSON.stringify({ token, password }),
             });
             if (!response.ok) {
-                throw new Error('Reset link is invalid or expired.');
+                setError(resetConfirmationErrorMessage(response.status));
+                return;
             }
             setPassword('');
             setConfirmPassword('');
@@ -97,12 +142,18 @@ function ResetPasswordContent() {
                     <LunchLineupMark size={38} />
                     <span>LunchLineup</span>
                 </div>
-                <h1 id="reset-title">{token ? 'Set new password' : 'Reset password'}</h1>
+                <h1 id="reset-title">{token ? 'Set new password' : token === null ? 'Password recovery' : 'Reset password'}</h1>
                 <p className="reset-subtitle">
-                    {token ? 'Choose a new password for your migrated LunchLineup account.' : 'Enter your workspace and username or email.'}
+                    {token
+                        ? 'Choose a new password for your migrated LunchLineup account.'
+                        : token === null
+                            ? 'Preparing the secure password recovery form.'
+                            : 'Enter your workspace and username or email.'}
                 </p>
 
-                {token ? (
+                {token === null ? (
+                    <p role="status" aria-live="polite" className="reset-loading">Loading password recovery...</p>
+                ) : token ? (
                     <form onSubmit={confirmReset} className="reset-form">
                         <label className="reset-field">
                             <span>New password</span>
@@ -126,8 +177,8 @@ function ResetPasswordContent() {
                                 required
                             />
                         </label>
-                        {error ? <div className="reset-error">{error}</div> : null}
-                        {message ? <div className="reset-success">{message}</div> : null}
+                        {error ? <div ref={feedbackRef} className="reset-error" role="alert" tabIndex={-1}>{error}</div> : null}
+                        {message ? <div ref={feedbackRef} className="reset-success" role="status" tabIndex={-1}>{message}</div> : null}
                         <button type="submit" disabled={isLoading || !password || !confirmPassword}>
                             {isLoading ? 'Updating...' : 'Update password'}
                         </button>
@@ -154,8 +205,8 @@ function ResetPasswordContent() {
                                 required
                             />
                         </label>
-                        {error ? <div className="reset-error">{error}</div> : null}
-                        {message ? <div className="reset-success">{message}</div> : null}
+                        {error ? <div ref={feedbackRef} className="reset-error" role="alert" tabIndex={-1}>{error}</div> : null}
+                        {message ? <div ref={feedbackRef} className="reset-success" role="status" tabIndex={-1}>{message}</div> : null}
                         <button type="submit" disabled={isLoading || !workspaceSlug || !identifier}>
                             {isLoading ? 'Sending...' : 'Send reset link'}
                         </button>
@@ -207,6 +258,13 @@ function ResetPasswordContent() {
                     color: #94a3b8;
                     font-size: 14px;
                     line-height: 1.55;
+                }
+
+                .reset-loading {
+                    margin: 0;
+                    color: #bae6fd;
+                    font-size: 14px;
+                    font-weight: 800;
                 }
 
                 .reset-form {
@@ -300,7 +358,17 @@ function ResetPasswordContent() {
 
 export default function ResetPasswordPage() {
     return (
-        <Suspense fallback={null}>
+        <Suspense fallback={(
+            <main
+                style={{ minHeight: '100vh', display: 'grid', placeItems: 'center', padding: 24, background: '#08111f', color: '#f8fafc' }}
+            >
+                <div role="status" aria-live="polite" style={{ display: 'grid', justifyItems: 'center', gap: 12, fontWeight: 800 }}>
+                    <LunchLineupMark size={42} />
+                    <span style={{ fontSize: 20 }}>LunchLineup</span>
+                    <span>Loading password recovery...</span>
+                </div>
+            </main>
+        )}>
             <ResetPasswordContent />
         </Suspense>
     );

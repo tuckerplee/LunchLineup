@@ -19,21 +19,41 @@ P2 degraded performance. Escalate to P1 if coupled with a critical error-rate al
 Identify the saturated service:
 
 ```bash
-docker compose ps
+docker compose \
+  --project-name lunchlineup \
+  --project-directory /opt/lunchlineup/current \
+  --env-file /var/lib/lunchlineup/runtime-env/current \
+  -f /opt/lunchlineup/current/docker-compose.yml \
+  ps
 docker stats --no-stream --format "table {{.Name}}\t{{.CPUPerc}}\t{{.MemUsage}}"
 ```
 
 Check solver and worker pressure:
 
 ```bash
-docker compose exec prometheus wget -qO- 'http://localhost:9090/api/v1/query?query=lunchlineup_solver_queue_depth'
-docker compose exec prometheus wget -qO- 'http://localhost:9090/api/v1/query?query=sum(rate(lunchlineup_worker_jobs_total{status=~"failed|non_retryable"}[5m]))'
+docker compose \
+  --project-name lunchlineup \
+  --project-directory /opt/lunchlineup/current \
+  --env-file /var/lib/lunchlineup/runtime-env/current \
+  -f /opt/lunchlineup/current/docker-compose.yml \
+  exec prometheus wget -qO- 'http://localhost:9090/api/v1/query?query=lunchlineup_solver_queue_depth'
+docker compose \
+  --project-name lunchlineup \
+  --project-directory /opt/lunchlineup/current \
+  --env-file /var/lib/lunchlineup/runtime-env/current \
+  -f /opt/lunchlineup/current/docker-compose.yml \
+  exec prometheus wget -qO- 'http://localhost:9090/api/v1/query?query=sum(rate(lunchlineup_worker_jobs_total{status=~"failed|non_retryable"}[5m]))'
 ```
 
 Check long-running database queries:
 
 ```bash
-docker compose exec postgres psql -U "${POSTGRES_USER}" -d "${POSTGRES_DB}" -c \
+docker compose \
+  --project-name lunchlineup \
+  --project-directory /opt/lunchlineup/current \
+  --env-file /var/lib/lunchlineup/runtime-env/current \
+  -f /opt/lunchlineup/current/docker-compose.yml \
+  exec postgres psql -U "${POSTGRES_USER}" -d "${POSTGRES_DB}" -c \
   "SELECT pid, now() - pg_stat_activity.query_start AS duration, query, state
    FROM pg_stat_activity
    WHERE (now() - pg_stat_activity.query_start) > interval '5 seconds'
@@ -43,7 +63,12 @@ docker compose exec postgres psql -U "${POSTGRES_USER}" -d "${POSTGRES_DB}" -c \
 Check application logs:
 
 ```bash
-docker compose logs --tail=200 api worker engine | grep -E "SLOW|ERROR|timeout"
+docker compose \
+  --project-name lunchlineup \
+  --project-directory /opt/lunchlineup/current \
+  --env-file /var/lib/lunchlineup/runtime-env/current \
+  -f /opt/lunchlineup/current/docker-compose.yml \
+  logs --tail=200 api worker engine | grep -E "SLOW|ERROR|timeout"
 ```
 
 ## Mitigation
@@ -51,26 +76,46 @@ docker compose logs --tail=200 api worker engine | grep -E "SLOW|ERROR|timeout"
 Scale the affected service if capacity is the issue:
 
 ```bash
-docker compose up -d --scale api=3
+docker compose \
+  --project-name lunchlineup \
+  --project-directory /opt/lunchlineup/current \
+  --env-file /var/lib/lunchlineup/runtime-env/current \
+  -f /opt/lunchlineup/current/docker-compose.yml \
+  up -d --scale api=3
 ```
 
 Terminate a confirmed runaway database query:
 
 ```bash
-docker compose exec postgres psql -U "${POSTGRES_USER}" -d "${POSTGRES_DB}" -c \
+docker compose \
+  --project-name lunchlineup \
+  --project-directory /opt/lunchlineup/current \
+  --env-file /var/lib/lunchlineup/runtime-env/current \
+  -f /opt/lunchlineup/current/docker-compose.yml \
+  exec postgres psql -U "${POSTGRES_USER}" -d "${POSTGRES_DB}" -c \
   "SELECT pg_terminate_backend(<pid>);"
 ```
 
 Restart only the saturated service if it is wedged:
 
 ```bash
-docker compose restart engine
+docker compose \
+  --project-name lunchlineup \
+  --project-directory /opt/lunchlineup/current \
+  --env-file /var/lib/lunchlineup/runtime-env/current \
+  -f /opt/lunchlineup/current/docker-compose.yml \
+  restart engine
 ```
 
 Reduce solver concurrency if backlog is harming interactive traffic:
 
 ```bash
-docker compose restart worker
+docker compose \
+  --project-name lunchlineup \
+  --project-directory /opt/lunchlineup/current \
+  --env-file /var/lib/lunchlineup/runtime-env/current \
+  -f /opt/lunchlineup/current/docker-compose.yml \
+  restart worker
 ```
 
 Record the temporary concurrency setting and revert after the incident.

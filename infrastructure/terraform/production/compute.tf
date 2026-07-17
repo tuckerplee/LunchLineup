@@ -11,6 +11,8 @@ locals {
       secrets_backend_uri  = var.secrets_backend
       runtime_env_path     = var.bootstrap_provisioning.runtime_env_path
       image_digests        = var.image_digests
+      production_topology  = "vm217-compose-v1"
+      data_plane_owner     = "docker-compose"
     }
   }
 }
@@ -34,12 +36,12 @@ resource "proxmox_virtual_environment_file" "cloud_init" {
   }
 }
 
-resource "proxmox_virtual_environment_vm" "data" {
-  name        = var.proxmox_vms["data"].name
-  description = "LunchLineUp production data; template ${var.proxmox_template.revision}; release ${var.bootstrap_provisioning.release_source_sha}"
-  node_name   = var.proxmox_vms["data"].node_name
-  vm_id       = var.proxmox_vms["data"].vm_id
-  tags        = ["data", "lunchlineup", "production", "terraform"]
+resource "proxmox_virtual_environment_vm" "app" {
+  name        = var.proxmox_vms["app"].name
+  description = "LunchLineUp VM217 production app and Compose data plane; template ${var.proxmox_template.revision}; release ${var.bootstrap_provisioning.release_source_sha}"
+  node_name   = var.proxmox_vms["app"].node_name
+  vm_id       = var.proxmox_vms["app"].vm_id
+  tags        = ["app", "data-plane", "lunchlineup", "production", "terraform"]
 
   started                              = true
   on_boot                              = true
@@ -51,123 +53,6 @@ resource "proxmox_virtual_environment_vm" "data" {
 
   startup {
     order      = 1
-    up_delay   = 30
-    down_delay = 60
-  }
-
-  agent {
-    enabled = true
-    trim    = true
-  }
-
-  clone {
-    node_name    = var.proxmox_template.node_name
-    vm_id        = var.proxmox_template.vm_id
-    datastore_id = var.proxmox_vms["data"].boot_datastore
-    full         = true
-    retries      = 3
-  }
-
-  cpu {
-    cores = var.proxmox_vms["data"].cores
-    type  = "x86-64-v2-AES"
-  }
-
-  memory {
-    dedicated = var.proxmox_vms["data"].memory_mb
-    floating  = var.proxmox_vms["data"].memory_mb
-  }
-
-  disk {
-    datastore_id = var.proxmox_vms["data"].boot_datastore
-    interface    = "scsi0"
-    size         = var.proxmox_vms["data"].boot_disk_gb
-    backup       = true
-    discard      = "on"
-    iothread     = true
-    replicate    = true
-    ssd          = true
-  }
-
-  disk {
-    datastore_id = var.proxmox_vms["data"].data_datastore
-    interface    = "scsi1"
-    size         = var.proxmox_vms["data"].data_disk_gb
-    backup       = true
-    discard      = "on"
-    iothread     = true
-    replicate    = true
-    ssd          = true
-    serial       = "LL-PROD-DATA"
-  }
-
-  initialization {
-    datastore_id = var.proxmox_cloud_init.datastore_id
-    upgrade      = false
-
-    dns {
-      servers = var.proxmox_cloud_init.dns_servers
-    }
-
-    ip_config {
-      ipv4 {
-        address = var.proxmox_vms["data"].ipv4_cidr
-        gateway = var.proxmox_network.gateway
-      }
-    }
-
-    user_data_file_id = proxmox_virtual_environment_file.cloud_init["data"].id
-  }
-
-  network_device {
-    bridge   = var.proxmox_network.bridge
-    firewall = true
-    model    = "virtio"
-    vlan_id  = var.proxmox_network.vlan_id
-  }
-
-  operating_system {
-    type = "l26"
-  }
-
-  serial_device {
-    device = "socket"
-  }
-
-  lifecycle {
-    prevent_destroy = true
-
-    precondition {
-      condition     = local.infrastructure_inputs_ready && length(local.missing_required_inputs) == 0
-      error_message = "Production data VM planning is blocked by incomplete infrastructure/readiness inputs."
-    }
-
-    precondition {
-      condition     = var.proxmox_vms["data"].data_disk_gb > 0
-      error_message = "The data VM requires a persistent scsi1 disk."
-    }
-  }
-
-  depends_on = [terraform_data.production_readiness_gate]
-}
-
-resource "proxmox_virtual_environment_vm" "app" {
-  name        = var.proxmox_vms["app"].name
-  description = "LunchLineUp production app; template ${var.proxmox_template.revision}; release ${var.bootstrap_provisioning.release_source_sha}"
-  node_name   = var.proxmox_vms["app"].node_name
-  vm_id       = var.proxmox_vms["app"].vm_id
-  tags        = ["app", "lunchlineup", "production", "terraform"]
-
-  started                              = true
-  on_boot                              = true
-  protection                           = false
-  stop_on_destroy                      = true
-  purge_on_destroy                     = false
-  delete_unreferenced_disks_on_destroy = false
-  scsi_hardware                        = "virtio-scsi-single"
-
-  startup {
-    order      = 2
     up_delay   = 30
     down_delay = 30
   }
@@ -240,6 +125,8 @@ resource "proxmox_virtual_environment_vm" "app" {
   }
 
   lifecycle {
+    prevent_destroy = true
+
     precondition {
       condition     = local.infrastructure_inputs_ready && length(local.missing_required_inputs) == 0
       error_message = "Production app VM planning is blocked by incomplete infrastructure/readiness inputs."

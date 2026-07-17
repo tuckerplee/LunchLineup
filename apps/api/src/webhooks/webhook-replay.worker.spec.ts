@@ -1,7 +1,9 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { ConfirmChannel, ConsumeMessage } from 'amqplib';
+import { EventEmitter } from 'node:events';
 import {
     handleReplayMessage,
+    registerWebhookReplayShutdown,
     startWebhookReplayWorker,
     startWebhookReplayRuntimeServer,
     WebhookReplayRuntime,
@@ -46,6 +48,46 @@ function channelMock() {
     };
 }
 
+function supervisedTransport(consumerTag = 'consumer-1') {
+    let consumerCallback: ((message: ConsumeMessage | null) => unknown) | undefined;
+    const channel = Object.assign(new EventEmitter(), {
+        assertQueue: vi.fn().mockResolvedValue(undefined),
+        prefetch: vi.fn().mockResolvedValue(undefined),
+        consume: vi.fn().mockImplementation(async (
+            _queue: string,
+            callback: (message: ConsumeMessage | null) => unknown,
+        ) => {
+            consumerCallback = callback;
+            return { consumerTag };
+        }),
+        cancel: vi.fn().mockResolvedValue(undefined),
+        close: vi.fn().mockResolvedValue(undefined),
+    });
+    const connection = Object.assign(new EventEmitter(), {
+        createConfirmChannel: vi.fn().mockResolvedValue(channel),
+        close: vi.fn().mockResolvedValue(undefined),
+    });
+    return {
+        channel,
+        connection,
+        cancelConsumer() {
+            if (!consumerCallback) {
+                throw new Error('consumer callback was not registered');
+            }
+            consumerCallback(null);
+        },
+    };
+}
+
+function workerConfig() {
+    return {
+        get: vi.fn((key: string) => ({
+            RABBITMQ_URL: 'amqp://rabbit',
+            WEBHOOK_PENDING_RECOVERY_INTERVAL_MS: '60000',
+        }[key])),
+    } as any;
+}
+
 describe('webhook retry queue helpers', () => {
     it('parses only opaque delivery-id retry messages', () => {
         expect(parseWebhookRetryMessage(Buffer.from(JSON.stringify({ deliveryId: 'delivery-1' })))).toEqual({
@@ -82,27 +124,13 @@ describe('webhook retry queue helpers', () => {
 describe('startWebhookReplayWorker', () => {
     it('consumes and publishes on a confirm channel', async () => {
         const consoleLog = vi.spyOn(console, 'log').mockImplementation(() => undefined);
-        const channel = {
-            assertQueue: vi.fn().mockResolvedValue(undefined),
-            prefetch: vi.fn().mockResolvedValue(undefined),
-            consume: vi.fn().mockResolvedValue({ consumerTag: 'consumer-1' }),
-            close: vi.fn().mockResolvedValue(undefined),
-        };
-        const connection = {
-            createConfirmChannel: vi.fn().mockResolvedValue(channel),
-            close: vi.fn().mockResolvedValue(undefined),
-        };
+        const { channel, connection } = supervisedTransport();
         const service = {
             claimRecoverableRetries: vi.fn().mockResolvedValue([]),
         };
 
         const worker = await startWebhookReplayWorker({
-            configService: {
-                get: vi.fn((key: string) => ({
-                    RABBITMQ_URL: 'amqp://rabbit',
-                    WEBHOOK_PENDING_RECOVERY_INTERVAL_MS: '60000',
-                }[key])),
-            } as any,
+            configService: workerConfig(),
             webhooksService: service as any,
             connect: vi.fn().mockResolvedValue(connection) as any,
             startRuntimeServer: false,
@@ -111,9 +139,160 @@ describe('startWebhookReplayWorker', () => {
         expect(connection.createConfirmChannel).toHaveBeenCalledOnce();
         expect(channel.consume).toHaveBeenCalledOnce();
         await worker.close();
+        expect(channel.cancel).toHaveBeenCalledWith('consumer-1');
+        expect(channel.close).toHaveBeenCalledOnce();
+        expect(connection.close).toHaveBeenCalledOnce();
+        expect(channel.listenerCount('close')).toBe(0);
+        expect(channel.listenerCount('error')).toBe(0);
+        expect(connection.listenerCount('close')).toBe(0);
+        expect(connection.listenerCount('error')).toBe(0);
+        consoleLog.mockRestore();
+    });
+
+    it('cancels consumption and drains in-flight work before closing transports', async () => {
+        const consoleLog = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+        const runtime = new WebhookReplayRuntime();
+        const startedAtMs = runtime.beginMessage();
+        const { channel, connection } = supervisedTransport('consumer-drain');
+        const worker = await startWebhookReplayWorker({
+            configService: {
+                get: vi.fn((key: string) => ({
+                    RABBITMQ_URL: 'amqp://rabbit',
+                    WEBHOOK_PENDING_RECOVERY_INTERVAL_MS: '60000',
+                    WEBHOOK_REPLAY_SHUTDOWN_TIMEOUT_MS: '1000',
+                }[key])),
+            } as any,
+            webhooksService: { claimRecoverableRetries: vi.fn().mockResolvedValue([]) } as any,
+            connect: vi.fn().mockResolvedValue(connection) as any,
+            runtime,
+            startRuntimeServer: false,
+        });
+
+        const closing = worker.close();
+        await vi.waitFor(() => expect(channel.cancel).toHaveBeenCalledWith('consumer-drain'));
+        expect(channel.close).not.toHaveBeenCalled();
+
+        runtime.finishMessage('delivered', startedAtMs);
+        await closing;
+
         expect(channel.close).toHaveBeenCalledOnce();
         expect(connection.close).toHaveBeenCalledOnce();
         consoleLog.mockRestore();
+    });
+
+    it('bounds hung transport close and force-destroys the Rabbit socket', async () => {
+        const consoleLog = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+        const destroy = vi.fn();
+        const { channel, connection } = supervisedTransport('consumer-hung-close');
+        channel.close.mockImplementation(() => new Promise(() => undefined));
+        (connection as any).connection = { stream: { destroy } };
+        const worker = await startWebhookReplayWorker({
+            configService: {
+                get: vi.fn((key: string) => ({
+                    RABBITMQ_URL: 'amqp://rabbit',
+                    WEBHOOK_PENDING_RECOVERY_INTERVAL_MS: '60000',
+                    WEBHOOK_REPLAY_SHUTDOWN_TIMEOUT_MS: '1000',
+                }[key])),
+            } as any,
+            webhooksService: { claimRecoverableRetries: vi.fn().mockResolvedValue([]) } as any,
+            connect: vi.fn().mockResolvedValue(connection) as any,
+            startRuntimeServer: false,
+        });
+
+        const startedAt = Date.now();
+        await expect(worker.close()).rejects.toThrow(/shutdown deadline exceeded during channel close/);
+        expect(Date.now() - startedAt).toBeLessThan(1_500);
+        expect(destroy).toHaveBeenCalled();
+        consoleLog.mockRestore();
+    });
+
+    it.each([
+        ['connection close', 'connection', 'close', 'connection_close'],
+        ['connection error', 'connection', 'error', 'connection_error'],
+        ['channel close', 'channel', 'close', 'channel_close'],
+        ['channel error', 'channel', 'error', 'channel_error'],
+    ] as const)(
+        'fails health and closes exactly once on %s',
+        async (_label, target, event, reason) => {
+            const consoleLog = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+            const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+            const transport = supervisedTransport();
+            const worker = await startWebhookReplayWorker({
+                configService: workerConfig(),
+                webhooksService: { claimRecoverableRetries: vi.fn().mockResolvedValue([]) } as any,
+                connect: vi.fn().mockResolvedValue(transport.connection) as any,
+                startRuntimeServer: false,
+            });
+
+            transport[target].emit(event, new Error('RABBITMQ_PASSWORD=secret'));
+
+            expect(worker.runtime.health()).toMatchObject({
+                status: 'unhealthy',
+                ready: false,
+                deliveryLossReason: reason,
+            });
+            await expect(worker.failure).resolves.toBe(reason);
+            await vi.waitFor(() => expect(transport.connection.close).toHaveBeenCalledOnce());
+
+            expect(transport.channel.consume).toHaveBeenCalledOnce();
+            expect(transport.channel.cancel).toHaveBeenCalledOnce();
+            expect(transport.channel.close).toHaveBeenCalledOnce();
+            expect(transport.connection.listenerCount('close')).toBe(0);
+            expect(transport.connection.listenerCount('error')).toBe(0);
+            expect(transport.channel.listenerCount('close')).toBe(0);
+            expect(transport.channel.listenerCount('error')).toBe(0);
+            expect(JSON.stringify(consoleError.mock.calls)).not.toContain('secret');
+            const metrics = await worker.runtime.metrics();
+            expect(metrics).toContain(`reason="${reason}"`);
+            consoleLog.mockRestore();
+            consoleError.mockRestore();
+        },
+    );
+
+    it('fails health immediately when RabbitMQ cancels the consumer', async () => {
+        const consoleLog = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+        const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+        const transport = supervisedTransport('consumer-cancelled');
+        const worker = await startWebhookReplayWorker({
+            configService: workerConfig(),
+            webhooksService: { claimRecoverableRetries: vi.fn().mockResolvedValue([]) } as any,
+            connect: vi.fn().mockResolvedValue(transport.connection) as any,
+            startRuntimeServer: false,
+        });
+
+        transport.cancelConsumer();
+
+        expect(worker.runtime.health()).toMatchObject({
+            status: 'unhealthy',
+            ready: false,
+            deliveryLossReason: 'consumer_cancel',
+        });
+        await expect(worker.failure).resolves.toBe('consumer_cancel');
+        await vi.waitFor(() => expect(transport.connection.close).toHaveBeenCalledOnce());
+        expect(transport.channel.consume).toHaveBeenCalledOnce();
+        expect(transport.channel.cancel).toHaveBeenCalledWith('consumer-cancelled');
+        consoleLog.mockRestore();
+        consoleError.mockRestore();
+    });
+
+    it('registers idempotent SIGINT and SIGTERM closure', async () => {
+        const listeners = new Map<string, () => void>();
+        const runtimeProcess = {
+            exitCode: undefined as number | undefined,
+            once: vi.fn((signal: string, listener: () => void) => listeners.set(signal, listener)),
+            off: vi.fn((signal: string) => listeners.delete(signal)),
+        };
+        const close = vi.fn().mockResolvedValue(undefined);
+        const registration = registerWebhookReplayShutdown({ close }, runtimeProcess);
+
+        listeners.get('SIGTERM')?.();
+        await registration.shutdown();
+        await registration.shutdown();
+
+        expect(close).toHaveBeenCalledOnce();
+        expect(runtimeProcess.off).toHaveBeenCalledWith('SIGINT', expect.any(Function));
+        expect(runtimeProcess.off).toHaveBeenCalledWith('SIGTERM', expect.any(Function));
+        expect(runtimeProcess.exitCode).toBeUndefined();
     });
 });
 

@@ -6,6 +6,7 @@ import { ArrowLeft, Printer, RefreshCw } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { fetchJsonWithSession } from '@/lib/client-api';
 import { createLatestRequestGate } from '@/lib/latest-request';
+import { fetchAllBoundedPages, type BoundedPage } from '@/lib/bounded-pagination';
 import { formatTimeInTimeZone, localDateRange, safeTimeZone } from '@/lib/location-timezone';
 import {
   createPrintScheduleScope,
@@ -110,18 +111,25 @@ function PrintScheduleView() {
     setLoadedScope(null);
     setShifts([]);
     try {
-      const locationsPayload = await fetchJsonWithSession<{ data: LocationItem[] }>('/locations');
-      const location = locationsPayload.data?.find((item) => item.id === requestedLocationId) ?? locationsPayload.data?.[0];
+      const location = requestedLocationId
+        ? await fetchJsonWithSession<LocationItem>('/locations/' + encodeURIComponent(requestedLocationId))
+        : (await fetchJsonWithSession<{ data: LocationItem[] }>('/locations?limit=1')).data?.[0];
       const nextTimeZone = safeTimeZone(location?.timezone);
       const range = localDateRange(dateValue, 1, nextTimeZone);
-      const locationQuery = location?.id ? `&locationId=${encodeURIComponent(location.id)}` : '';
+      const params = new URLSearchParams({
+        startDate: range.start,
+        endDate: range.end,
+        limit: '200',
+      });
+      if (location?.id) params.set('locationId', location.id);
       if (!scheduleRequestGate.current.isLatest(ticket)) return;
-      const payload = await fetchJsonWithSession<{ data: ShiftRecord[] }>(
-        `/shifts?startDate=${encodeURIComponent(range.start)}&endDate=${encodeURIComponent(range.end)}${locationQuery}`,
+      const rows = await fetchAllBoundedPages(
+        `/shifts?${params.toString()}`,
+        (path) => fetchJsonWithSession<BoundedPage<ShiftRecord>>(path),
       );
       if (!scheduleRequestGate.current.isLatest(ticket)) return;
       setTimeZone(nextTimeZone);
-      setShifts(payload.data ?? []);
+      setShifts(rows);
       setLoadedScope(requestScope);
     } catch (err) {
       if (scheduleRequestGate.current.isLatest(ticket)) {

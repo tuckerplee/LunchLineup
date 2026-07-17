@@ -1,14 +1,33 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, Optional } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { Resend } from 'resend';
+import {
+  type CreateEmailOptions,
+  type CreateEmailResponse,
+  Resend,
+} from 'resend';
+import { EmailDeliveryFeedbackService } from '../email-delivery/email-delivery-feedback.service';
+import { operationalErrorLog } from './operational-error';
+
+const DEFAULT_OTP_DELIVERY_DEADLINE_MS = 10_000;
+const MIN_OTP_DELIVERY_DEADLINE_MS = 100;
+const MAX_OTP_DELIVERY_DEADLINE_MS = 30_000;
+
+type AbortableEmailSend = (
+  payload: CreateEmailOptions,
+  options: { signal: AbortSignal },
+) => Promise<CreateEmailResponse>;
 
 @Injectable()
 export class EmailService {
   private readonly logger = new Logger(EmailService.name);
   private readonly resend: Resend | null;
   private readonly from: string;
+  private readonly otpDeliveryDeadlineMs: number;
 
-  constructor(private configService: ConfigService) {
+  constructor(
+    private configService: ConfigService,
+    @Optional() private readonly deliveryFeedback?: EmailDeliveryFeedbackService,
+  ) {
     const apiKey = this.configService.get<string>('RESEND_API_KEY');
     if (!apiKey && process.env.NODE_ENV !== 'development') {
       throw new Error('RESEND_API_KEY must be configured outside local development.');
@@ -16,28 +35,26 @@ export class EmailService {
 
     this.resend = apiKey ? new Resend(apiKey) : null;
     this.from = this.configService.get('EMAIL_FROM', 'LunchLineup Beta <no-reply@beta.lunchlineup.com>');
+    this.otpDeliveryDeadlineMs = this.resolveOtpDeliveryDeadlineMs();
   }
 
   async sendOtp(email: string, code: string): Promise<void> {
-    const maskedEmail = this.maskEmail(email);
     const htmlEmail = this.escapeHtml(email);
     const htmlCode = this.escapeHtml(code);
-    if (process.env.NODE_ENV === 'development') {
-      this.logger.log('[LOCAL DEV START] ================================');
-      this.logger.log(`OTP Code for ${email}: ${code}`);
-      this.logger.log('[LOCAL DEV END] ==================================');
-      return;
-    }
 
-    if (!this.resend) {
-      throw new Error('Email delivery is not configured.');
-    }
+    const { error } = await this.beforeOtpDeliveryDeadline(async (signal) => {
+      await this.assertRecipientDeliverable(email);
 
-    const { error } = await this.resend.emails.send({
-      from: this.from,
-      to: email,
-      subject: `${code} - your LunchLineup login code`,
-      html: `
+      if (!this.resend) {
+        throw new Error('Email delivery is not configured.');
+      }
+
+      const send = this.resend.emails.send as unknown as AbortableEmailSend;
+      return send.call(this.resend.emails, {
+        from: this.from,
+        to: email,
+        subject: `${code} - your LunchLineup login code`,
+        html: `
                 <!DOCTYPE html>
                 <html>
                 <head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head>
@@ -71,29 +88,25 @@ export class EmailService {
                 </body>
                 </html>
             `,
+      }, { signal });
     });
 
     if (error) {
-      this.logger.error(`Failed to send OTP to ${maskedEmail}: ${this.providerErrorCode(error)}`);
+      this.logger.error(operationalErrorLog('auth.otp_email_delivery_failed', error));
       throw new Error('Email delivery failed');
     }
 
-    this.logger.log(`OTP sent to ${maskedEmail}`);
+    this.logger.log('OTP delivery accepted');
   }
 
   async sendPasswordReset(email: string, resetUrl: string, expiresAt: Date): Promise<void> {
-    const maskedEmail = this.maskEmail(email);
     const htmlEmail = this.escapeHtml(email);
     const htmlResetUrl = this.escapeHtml(resetUrl);
     const textResetUrl = resetUrl;
     const expiryMinutes = Math.max(1, Math.ceil((expiresAt.getTime() - Date.now()) / 60000));
 
-    if (process.env.NODE_ENV === 'development') {
-      this.logger.log('[LOCAL DEV START] ================================');
-      this.logger.log(`Password reset link for ${email}: ${resetUrl}`);
-      this.logger.log('[LOCAL DEV END] ==================================');
-      return;
-    }
+
+    await this.assertRecipientDeliverable(email);
 
     if (!this.resend) {
       throw new Error('Email delivery is not configured.');
@@ -136,18 +149,62 @@ export class EmailService {
     });
 
     if (error) {
-      this.logger.error(`Failed to send password reset to ${maskedEmail}: ${this.providerErrorCode(error)}`);
+      this.logger.error(operationalErrorLog('auth.password_reset_email_delivery_failed', error));
       throw new Error('Email delivery failed');
     }
 
-    this.logger.log(`Password reset sent to ${maskedEmail}`);
+    this.logger.log('Password reset delivery accepted');
   }
 
-  private maskEmail(email: string): string {
-    const [localPart, domain] = email.split('@');
-    if (!domain) return 'invalid_email';
-    const safeLocal = localPart.length <= 2 ? `${localPart[0] ?? '*'}*` : `${localPart.slice(0, 2)}***`;
-    return `${safeLocal}@${domain}`;
+  private async assertRecipientDeliverable(email: string): Promise<void> {
+    if (await this.deliveryFeedback?.isSuppressed(email)) {
+      this.logger.warn('Email delivery suppressed reason=provider_feedback');
+      throw new Error('Email delivery failed');
+    }
+  }
+
+  private async beforeOtpDeliveryDeadline<T>(
+    operation: (signal: AbortSignal) => Promise<T>,
+  ): Promise<T> {
+    const deadlineError = new Error('Email delivery deadline exceeded');
+    const controller = new AbortController();
+    let deadlineExceeded = false;
+    let timer: NodeJS.Timeout | undefined;
+    try {
+      return await Promise.race([
+        operation(controller.signal),
+        new Promise<never>((_resolve, reject) => {
+          timer = setTimeout(() => {
+            deadlineExceeded = true;
+            controller.abort(deadlineError);
+            reject(deadlineError);
+          }, this.otpDeliveryDeadlineMs);
+        }),
+      ]);
+    } catch (error) {
+      if (deadlineExceeded) throw deadlineError;
+      throw error;
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+  }
+
+  private resolveOtpDeliveryDeadlineMs(): number {
+    const configured = this.configService.get<string | number>(
+      'EMAIL_OTP_DELIVERY_DEADLINE_MS',
+      DEFAULT_OTP_DELIVERY_DEADLINE_MS,
+    );
+    const parsed = Number(configured);
+    if (
+      !Number.isSafeInteger(parsed)
+      || parsed < MIN_OTP_DELIVERY_DEADLINE_MS
+      || parsed > MAX_OTP_DELIVERY_DEADLINE_MS
+    ) {
+      throw new Error(
+        `EMAIL_OTP_DELIVERY_DEADLINE_MS must be an integer between ${MIN_OTP_DELIVERY_DEADLINE_MS} and ${MAX_OTP_DELIVERY_DEADLINE_MS}`,
+      );
+    }
+    return parsed;
   }
 
   private escapeHtml(value: string): string {
@@ -169,10 +226,4 @@ export class EmailService {
     });
   }
 
-  private providerErrorCode(error: unknown): string {
-    if (error && typeof error === 'object' && 'name' in error && typeof (error as { name?: unknown }).name === 'string') {
-      return (error as { name: string }).name;
-    }
-    return 'provider_error';
-  }
 }

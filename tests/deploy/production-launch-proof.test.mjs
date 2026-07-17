@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { dirname, join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -12,7 +12,6 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const sourceSha = '0123456789abcdef0123456789abcdef01234567';
 const publicBuildConfigKeys = [
   'NEXT_PUBLIC_API_URL',
-  'NEXT_PUBLIC_WS_URL',
   'NEXT_PUBLIC_OIDC_ENABLED',
   'NEXT_PUBLIC_SIGNUP_MODE',
   'NEXT_PUBLIC_TURNSTILE_SITE_KEY',
@@ -25,7 +24,6 @@ const publicBuildConfigKeys = [
 ];
 const publicBuildConfigValues = {
   NEXT_PUBLIC_API_URL: '/api/v1',
-  NEXT_PUBLIC_WS_URL: 'wss://lunchlineup.com',
   NEXT_PUBLIC_OIDC_ENABLED: 'false',
   NEXT_PUBLIC_SIGNUP_MODE: 'closed_beta',
   NEXT_PUBLIC_TURNSTILE_SITE_KEY: '',
@@ -39,6 +37,16 @@ const publicBuildConfigValues = {
 
 function read(path) {
   return readFileSync(join(root, path), 'utf8');
+}
+
+function bashPath(path) {
+  if (process.platform !== 'win32') return path;
+  return path.replace(/^([A-Za-z]):\\/, (_, drive) => `/${drive.toLowerCase()}/`).replaceAll('\\', '/');
+}
+
+function writeExecutable(path, contents) {
+  writeFileSync(path, contents);
+  chmodSync(path, 0o755);
 }
 
 function samplePublicBuildConfig() {
@@ -176,7 +184,7 @@ function writePolicyFixture(scratch) {
   );
   writeFileSync(
     workflowPath,
-    'jobs:\n  integration:\n    services:\n      redis:\n        image: redis:7-alpine@sha256:6ab0b6e7381779332f97b8ca76193e45b0756f38d4c0dcda72dbb3c32061ab99\n',
+    read('.github/workflows/ci.yml'),
   );
 
   return ['--dockerfile-dir', dockerfileDir, '--compose-file', composePath, '--workflow-file', workflowPath];
@@ -205,12 +213,8 @@ test('production launch proof verifier accepts retained proof and rejects missin
       proofPath,
       '--source-sha',
       sourceSha,
-      '--command-env',
-      'PRODUCTION_DEPLOY_COMMAND',
       ...policyArgs,
-    ], {
-      PRODUCTION_DEPLOY_COMMAND: 'scripts/verify-deploy-source.sh "$RELEASE_SOURCE_SHA" && test "$(sha256sum "$COMPOSE_SERVICE_ENV_FILE" | awk \'{print $1}\')" = "$PRODUCTION_RUNTIME_ENV_SHA256" && docker compose --env-file "$COMPOSE_SERVICE_ENV_FILE" up -d --no-build --pull never && ./deploy-production --manifest "$RELEASE_MANIFEST_PATH" --proof-sha "$LAUNCH_PROOF_ARTIFACT_SHA256" --proof-max-age "$LAUNCH_PROOF_MAX_AGE_SECONDS" --api-health "$PRODUCTION_API_HEALTH_URL" --web-url "$PRODUCTION_WEB_URL" --launch-proof-uri "$LAUNCH_PROOF_MANIFEST_URI"',
-    });
+    ]);
     assert.equal(valid.status, 0, `${valid.stdout}\n${valid.stderr}`);
     assert.match(valid.stdout, /release_artifacts_ok/);
     assert.match(valid.stdout, /production_launch_proof_ok/);
@@ -336,10 +340,73 @@ test('production launch proof verifier rejects stale and future evidence', () =>
   }
 });
 
+test('production launch proof keeps the recovery bearer out of provider argv and child environment', () => {
+  const scratch = mkdtempSync(join(tmpdir(), 'll-production-proof-bearer-'));
+  const fakeBin = join(scratch, 'bin');
+  const manifestPath = join(scratch, 'release-manifest.json');
+  const proofPath = join(scratch, 'launch-proof.json');
+  const argvLog = join(scratch, 'curl-argv.log');
+  const channelProof = join(scratch, 'curl-channel-ok');
+  const providerEnvironment = join(scratch, 'provider-environment.sh');
+  const bearer = 'RECOVERY-BEARER-ARGV-SENTINEL-7f4f9d';
+
+  try {
+    mkdirSync(fakeBin);
+    writeFileSync(manifestPath, `${JSON.stringify(sampleReleaseManifest(), null, 2)}\n`);
+    writeFileSync(proofPath, `${JSON.stringify(sampleLaunchProof(), null, 2)}\n`);
+    writeFileSync(providerEnvironment, `PATH='${bashPath(fakeBin)}':$PATH\nexport PATH\n`);
+    const policyArgs = writePolicyFixture(scratch);
+    writeExecutable(join(fakeBin, 'curl'), `#!/usr/bin/env bash
+set -euo pipefail
+printf 'started\\n' >'${bashPath(channelProof)}'
+if [[ -r /proc/$$/cmdline ]]; then
+  tr '\\000' '\\n' </proc/$$/cmdline >'${bashPath(argvLog)}'
+else
+  printf '%s\\n' "$@" >'${bashPath(argvLog)}'
+fi
+[[ -z "\${LAUNCH_PROOF_HTTP_BEARER_TOKEN:-}" ]]
+printf 'env-ok\\n' >'${bashPath(channelProof)}'
+config=''
+while (( $# > 0 )); do
+  if [[ "$1" == '--config' ]]; then config="$2"; shift 2; else shift; fi
+done
+[[ -n "$config" ]]
+printf 'config-ok\\n' >'${bashPath(channelProof)}'
+if command -v cygpath >/dev/null 2>&1; then config="$(cygpath -u "$config")"; fi
+${process.platform === 'win32' ? ':' : '[[ "$(stat -c \'%a\' "$config")" == \'600\' ]]'}
+grep -Fq 'Authorization: Bearer ${bearer}' "$config"
+printf 'ok\\n' >'${bashPath(channelProof)}'
+exit 79
+`);
+
+    const result = runVerifier([
+      manifestPath,
+      proofPath,
+      '--fetch-evidence',
+      '--source-sha',
+      sourceSha,
+      ...policyArgs,
+    ], {
+      LAUNCH_PROOF_HTTP_BEARER_TOKEN: bearer,
+      BASH_ENV: bashPath(providerEnvironment),
+    });
+    assert.notEqual(result.status, 0);
+    assert.match(`${result.stdout}\n${result.stderr}`, /Unable to retrieve launchProof\.evidence\.runtimeEnv\.uri/);
+    assert.equal(readFileSync(channelProof, 'utf8'), 'ok\n');
+    const childArgv = readFileSync(argvLog, 'utf8');
+    assert.doesNotMatch(childArgv, new RegExp(bearer));
+    assert.doesNotMatch(childArgv, /Authorization: Bearer/);
+    assert.match(childArgv, /--config/);
+    assert.match(read('scripts/verify-production-launch-proof.mjs'), /writeFileSync\(curlConfigPath,[\s\S]*mode: 0o600/);
+  } finally {
+    rmSync(scratch, { recursive: true, force: true });
+  }
+});
+
 test('production workflow requires launch proof before production deploy mutation', () => {
   const ci = read('.github/workflows/ci.yml');
   const proofGateIndex = ci.indexOf('Verify production launch proof artifact');
-  const deployIndex = ci.indexOf('name: "17. Blue/Green deploy"');
+  const deployIndex = ci.indexOf('name: "17. Guarded production deploy;');
 
   assert.notEqual(proofGateIndex, -1);
   assert.notEqual(deployIndex, -1);
@@ -350,12 +417,20 @@ test('production workflow requires launch proof before production deploy mutatio
   assert.match(ci, /node scripts\/verify-production-launch-proof\.mjs \.release\/release-manifest\.json "\$launch_proof"/);
   assert.match(ci, /--fetch-evidence/);
   assert.match(ci, /LAUNCH_PROOF_HTTP_BEARER_TOKEN/);
-  assert.match(ci, /--command-env PRODUCTION_DEPLOY_COMMAND/);
-  assert.equal((ci.match(/--launch-proof-mode rollback/g) ?? []).length, 2);
+  assert.doesNotMatch(ci, /--command-env PRODUCTION_DEPLOY_COMMAND|PRODUCTION_DEPLOY_COMMAND:/);
+  assert.equal((ci.match(/bash scripts\/deploy-vm217-transport\.sh/g) ?? []).length >= 2, true);
+  const automaticProduction = ci.slice(
+    ci.indexOf('  deploy-production:'),
+    ci.indexOf('  # --- SBOM Generation ---'),
+  );
+  assert.equal((automaticProduction.match(/--launch-proof-mode rollback/g) ?? []).length, 2);
   const verifier = read('scripts/verify-production-launch-proof.mjs');
   assert.match(verifier, /fetchEvidenceBytes/);
   assert.match(verifier, /artifactSha256 does not match the retrieved evidence bytes/);
   assert.match(verifier, /artifactBytes does not match the retrieved evidence size/);
+  assert.doesNotMatch(verifier, /commandArgs\.push\('--header'/);
+  assert.match(verifier, /delete providerEnv\.LAUNCH_PROOF_HTTP_BEARER_TOKEN/);
+  assert.match(verifier, /cleanup_container_id_absent/);
   assert.match(read('scripts/launch-proof-evidence.mjs'), /key === 'pitrDrill'/);
 });
 

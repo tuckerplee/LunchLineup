@@ -6,11 +6,15 @@ import { useSearchParams } from 'next/navigation';
 import { Button } from '@/components/ui/button';
 import { CalendarDays, CheckCircle2, Plus, Printer, RefreshCw, RotateCcw, Send, Settings2, WandSparkles } from 'lucide-react';
 import {
+  ApiRequestError,
   fetchJsonWithSession,
   fetchWithSession,
+  idempotentRequestAttempt,
   withIdempotencyKey,
+  type IdempotentRequestAttempt,
 } from '@/lib/client-api';
 import { getWorkspaceCapabilities, hasSchedulingReadAccess } from '@/lib/permissions';
+import { fetchAllBoundedPages, type BoundedPage } from '@/lib/bounded-pagination';
 import {
   addLocalDays,
   dateValueInTimeZone,
@@ -20,7 +24,18 @@ import {
   timeValueInTimeZone,
 } from '@/lib/location-timezone';
 import type { SchedulerViewMode, StaffScheduleEvent, StaffScheduleSlotSelection } from '@/components/scheduling/StaffScheduler';
-import { publishNotificationOutcome, type PublishNotificationResult } from './publish-result';
+import { publishNotificationOutcome } from './publish-result';
+import { schedulePublishAttempt } from './publish-attempt';
+import {
+  creditCount,
+  parseSchedulePublishPreflight,
+  parseSchedulePublishResponse,
+  publishPreflightSummary,
+  publishSettlementSummary,
+  schedulePublishCostMatches,
+  schedulePublishFailure,
+  type SchedulePublishPreflight,
+} from './publish-settlement';
 import {
   executeBreakGenerationWithRecovery,
   type BreakGenerationAttempt,
@@ -28,6 +43,7 @@ import {
 } from './break-generation-recovery';
 import {
   assertBreakGenerationResponseScope,
+  buildLocationScheduleQuery,
   buildLocationShiftQuery,
   locationShiftScopeMatches,
   resolveTenantVisibleLocation,
@@ -44,6 +60,10 @@ import {
   readAutoScheduleRecoveries,
   saveAutoScheduleRecovery,
 } from './auto-schedule-recovery';
+import {
+  beginShiftUpdateAttempt,
+  clearShiftUpdateAttempt,
+} from './shift-update-recovery';
 
 const StaffScheduler = dynamic(
   () => import('@/components/scheduling/StaffScheduler').then((m) => m.StaffScheduler),
@@ -61,6 +81,10 @@ const StaffScheduler = dynamic(
 type StaffRole = 'SUPER_ADMIN' | 'ADMIN' | 'MANAGER' | 'STAFF';
 type StaffRosterItem = { id: string; name: string; role: StaffRole };
 type LocationItem = { id: string; name: string; timezone: string };
+type LocationPage = {
+  data?: LocationItem[];
+  pagination?: { hasMore?: boolean; nextCursor?: string | null };
+};
 type BreakItem = { startTime: string; endTime: string; paid: boolean };
 type ScheduleRecordStatus = 'DRAFT' | 'PUBLISHED' | 'ARCHIVED';
 type ScheduleRecord = {
@@ -70,12 +94,6 @@ type ScheduleRecord = {
   endDate: string;
   status: ScheduleRecordStatus;
   publishedAt?: string | null;
-};
-type PublishScheduleResponse = {
-  id: string;
-  status: ScheduleRecordStatus;
-  publishedAt: string;
-  notifications: PublishNotificationResult;
 };
 type AutoScheduleResponse = {
   jobId: string;
@@ -192,12 +210,12 @@ function shiftRange(dateValue: string, startTime: string, endTime: string, timeZ
   return serializeLocalTimeWindow({ date: dateValue, startTime, endTime }, timeZone);
 }
 
-function isValidShiftWindow(dateValue: string, startTime: string, endTime: string, timeZone: string): boolean {
+function shiftWindowError(dateValue: string, startTime: string, endTime: string, timeZone: string): string | null {
   try {
     shiftRange(dateValue, startTime, endTime, timeZone);
-    return true;
-  } catch {
-    return false;
+    return null;
+  } catch (error) {
+    return (error as Error).message;
   }
 }
 
@@ -361,12 +379,17 @@ function SchedulingContent() {
   const [selectedDate, setSelectedDate] = useState(initialDateValue);
   const [staff, setStaff] = useState<StaffRosterItem[]>([]);
   const [locations, setLocations] = useState<LocationItem[]>([]);
+  const [nextLocationCursor, setNextLocationCursor] = useState<string | null>(null);
+  const [isLoadingMoreLocations, setIsLoadingMoreLocations] = useState(false);
   const [schedules, setSchedules] = useState<ScheduleRecord[]>([]);
   const [shifts, setShifts] = useState<ShiftRecord[]>([]);
   const [showShiftForm, setShowShiftForm] = useState(false);
   const [editingShiftId, setEditingShiftId] = useState<string | null>(null);
   const [confirmDeleteShiftId, setConfirmDeleteShiftId] = useState<string | null>(null);
   const [confirmPublishScheduleId, setConfirmPublishScheduleId] = useState<string | null>(null);
+  const [publishReview, setPublishReview] = useState<SchedulePublishPreflight | null>(null);
+  const [publishRetryByScheduleId, setPublishRetryByScheduleId] = useState<Record<string, boolean>>({});
+  const [publishSettlementByScheduleId, setPublishSettlementByScheduleId] = useState<Record<string, string>>({});
   const [confirmReopenScheduleId, setConfirmReopenScheduleId] = useState<string | null>(null);
   const [confirmReplaceScheduleId, setConfirmReplaceScheduleId] = useState<string | null>(null);
   const [isPublishing, setIsPublishing] = useState(false);
@@ -376,6 +399,10 @@ function SchedulingContent() {
   const autoScheduleAttemptsRef = useRef<Record<string, AutoScheduleRequestAttempt>>({});
   const solveRecoveryStartedRef = useRef(new Set<string>());
   const breakGenerationAttemptRef = useRef<BreakGenerationAttempt | null>(null);
+  const shiftCreateAttemptRef = useRef<IdempotentRequestAttempt | null>(null);
+  const shiftUpdateAttemptsRef = useRef<Record<string, IdempotentRequestAttempt>>({});
+  const publishAttemptsRef = useRef<Record<string, IdempotentRequestAttempt>>({});
+  const publishingScheduleIdRef = useRef<string | null>(null);
   const latestLoadRequestRef = useRef(0);
   const solveGenerationRef = useRef(0);
   const selectedLocationRef = useRef(initialLocationId);
@@ -415,6 +442,22 @@ function SchedulingContent() {
     });
     return payload.data ?? [];
   }, []);
+  const loadAllShiftsForSchedule = useCallback((scheduleId: string) => (
+    fetchAllBoundedPages(
+      `/shifts?scheduleId=${encodeURIComponent(scheduleId)}&limit=200`,
+      (path) => fetchJsonWithSession<BoundedPage<ShiftRecord>>(path),
+    )
+  ), []);
+  const loadSchedulePublishReview = useCallback(async (scheduleId: string) => {
+    const [scheduleShifts, preflightPayload] = await Promise.all([
+      loadAllShiftsForSchedule(scheduleId),
+      fetchJsonWithSession<unknown>(`/schedules/${scheduleId}/publish/preflight`),
+    ]);
+    return {
+      blocker: publishBlockerForShifts(scheduleShifts),
+      preflight: parseSchedulePublishPreflight(scheduleId, preflightPayload),
+    };
+  }, [loadAllShiftsForSchedule]);
 
   const loadSchedule = useCallback(async (dateValue: string, mode: SchedulerViewMode, requestedLocationId?: string) => {
     const requestId = ++latestLoadRequestRef.current;
@@ -428,31 +471,55 @@ function SchedulingContent() {
       if (!hasSchedulingReadAccess(effectivePermissions)) {
         throw new Error('You do not have access to all data required by the scheduling calendar.');
       }
-      const [staffPayload, locationsPayload, schedulesPayload] = await Promise.all([
-        fetchJsonWithSession<{ data: StaffRosterItem[] }>('/shifts/staff-roster'),
-        fetchJsonWithSession<{ data: LocationItem[] }>('/locations'),
-        fetchJsonWithSession<{ data: ScheduleRecord[] }>('/schedules'),
+      const [staffRows, locationsPayload, requestedLocation] = await Promise.all([
+        fetchAllBoundedPages(
+          '/shifts/staff-roster?limit=200',
+          (path) => fetchJsonWithSession<BoundedPage<StaffRosterItem>>(path),
+        ),
+        fetchJsonWithSession<LocationPage>('/locations?limit=200'),
+        requestedLocationId ? fetchJsonWithSession<LocationItem>('/locations/' + encodeURIComponent(requestedLocationId)) : Promise.resolve(null),
       ]);
-      const primaryLocation = resolveTenantVisibleLocation(locationsPayload.data ?? [], requestedLocationId);
+      const locationRows = Array.isArray(locationsPayload.data) ? locationsPayload.data : [];
+      if (requestedLocation && !locationRows.some((location) => location.id === requestedLocation.id)) {
+        locationRows.push(requestedLocation);
+        locationRows.sort((left, right) => left.name.localeCompare(right.name) || left.id.localeCompare(right.id));
+      }
+      const locationContinuation = locationsPayload.pagination?.hasMore === true
+        ? locationsPayload.pagination.nextCursor
+        : null;
+      if (locationsPayload.pagination?.hasMore === true && (typeof locationContinuation !== 'string' || !locationContinuation)) {
+        throw new Error('Location list did not provide a continuation cursor.');
+      }
+      const primaryLocation = resolveTenantVisibleLocation(locationRows, requestedLocationId);
       const range = viewRange(dateValue, mode, safeTimeZone(primaryLocation?.timezone));
-      const shiftsPayload = primaryLocation?.id
-        ? await fetchJsonWithSession<{ data: ShiftRecord[] }>(
-          buildLocationShiftQuery(range, primaryLocation.id),
-        )
-        : { data: [] };
+      const [scheduleRows, shiftRows] = primaryLocation?.id
+        ? await Promise.all([
+          fetchAllBoundedPages(
+            buildLocationScheduleQuery(range, primaryLocation.id),
+            (path) => fetchJsonWithSession<BoundedPage<ScheduleRecord>>(path),
+          ),
+          fetchAllBoundedPages(
+            buildLocationShiftQuery(range, primaryLocation.id),
+            (path) => fetchJsonWithSession<BoundedPage<ShiftRecord>>(path),
+          ),
+        ])
+        : [[], []];
       if (requestId !== latestLoadRequestRef.current) return;
       selectedLocationRef.current = primaryLocation?.id ?? '';
       setPermissions(effectivePermissions);
-      setStaff(staffPayload.data ?? []);
-      setLocations(locationsPayload.data ?? []);
-      setSchedules(schedulesPayload.data ?? []);
+      setStaff(staffRows.slice().sort((left, right) =>
+        left.name.localeCompare(right.name) || left.id.localeCompare(right.id)
+      ));
+      setLocations(locationRows);
+      setNextLocationCursor(locationContinuation ?? null);
+      setSchedules(scheduleRows);
       setShiftDraft((current) => (
         primaryLocation?.id && current.locationId !== primaryLocation.id
           ? { ...current, locationId: primaryLocation.id }
           : current
       ));
       const locationShifts = primaryLocation?.id
-        ? shiftsForLocation(shiftsPayload.data ?? [], primaryLocation.id)
+        ? shiftsForLocation(shiftRows, primaryLocation.id)
         : [];
       setShifts(locationShifts);
       setLoadedShiftScope(primaryLocation?.id ? { locationId: primaryLocation.id, dateValue, viewMode: mode } : null);
@@ -466,6 +533,7 @@ function SchedulingContent() {
       setError((err as Error).message);
       setStaff([]);
       setLocations([]);
+      setNextLocationCursor(null);
       setSchedules([]);
       setShifts([]);
       setLoadedShiftScope(null);
@@ -474,6 +542,32 @@ function SchedulingContent() {
       if (requestId === latestLoadRequestRef.current) setIsLoading(false);
     }
   }, []);
+
+  const loadMoreLocations = useCallback(async () => {
+    if (!nextLocationCursor) return;
+    setIsLoadingMoreLocations(true);
+    setError(null);
+    try {
+      const payload = await fetchJsonWithSession<LocationPage>(
+        '/locations?limit=200&cursor=' + encodeURIComponent(nextLocationCursor),
+      );
+      const rows = Array.isArray(payload.data) ? payload.data : [];
+      const continuation = payload.pagination?.hasMore === true ? payload.pagination.nextCursor : null;
+      if (payload.pagination?.hasMore === true && (typeof continuation !== 'string' || !continuation)) {
+        throw new Error('Location list did not provide a continuation cursor.');
+      }
+      setLocations((current) => {
+        const byId = new Map(current.map((location) => [location.id, location]));
+        for (const location of rows) byId.set(location.id, location);
+        return [...byId.values()].sort((left, right) => left.name.localeCompare(right.name) || left.id.localeCompare(right.id));
+      });
+      setNextLocationCursor(continuation ?? null);
+    } catch (loadError) {
+      setError(loadError instanceof Error ? loadError.message : 'Unable to load more locations.');
+    } finally {
+      setIsLoadingMoreLocations(false);
+    }
+  }, [nextLocationCursor]);
 
   useEffect(() => {
     void loadSchedule(selectedDate, viewMode, shiftDraft.locationId || initialLocationId || undefined);
@@ -616,7 +710,8 @@ function SchedulingContent() {
     if (!locations.length) return 'Add a location before saving shifts.';
     if (!schedulableStaff.length) return 'Add a staff member or manager before saving shifts.';
     if (!shiftDraft.userId || !schedulableStaff.some((person) => person.id === shiftDraft.userId)) return 'Select a schedulable staff member.';
-    if (!isValidShiftWindow(shiftDraft.shiftDate, shiftDraft.startTime, shiftDraft.endTime, locationTimeZone(shiftDraft.locationId))) return 'Shift end time must be after start time.';
+    const windowError = shiftWindowError(shiftDraft.shiftDate, shiftDraft.startTime, shiftDraft.endTime, locationTimeZone(shiftDraft.locationId));
+    if (windowError) return windowError;
     return null;
   }, [locationTimeZone, locations.length, schedulableStaff, shiftDraft]);
 
@@ -647,8 +742,9 @@ function SchedulingContent() {
     }
     const writeScope = loadedShiftScope;
     const draftTimeZone = locationTimeZone(locationId);
-    if (!isValidShiftWindow(shiftDraft.shiftDate, shiftDraft.startTime, shiftDraft.endTime, draftTimeZone)) {
-      setError('Shift end time must be after start time.');
+    const windowError = shiftWindowError(shiftDraft.shiftDate, shiftDraft.startTime, shiftDraft.endTime, draftTimeZone);
+    if (windowError) {
+      setError(windowError);
       return;
     }
     const lockedSchedule = publishedScheduleForDraft(locationId, shiftDraft.shiftDate);
@@ -669,27 +765,44 @@ function SchedulingContent() {
     setScheduleStatus({ tone: 'saving', message: editingShiftId ? 'Saving shift changes...' : 'Creating and saving shift...' });
     try {
       if (editingShiftId) {
-        const updated = await fetchJsonWithSession<ShiftRecord>(`/shifts/${editingShiftId}`, {
-          ...jsonWriteInit('PUT', {
-            startTime: range.startTime,
-            endTime: range.endTime,
-            userId: selectedStaff.id,
-            role: nextRole,
-          }),
-        });
+        const updateRequest = {
+          startTime: range.startTime,
+          endTime: range.endTime,
+          userId: selectedStaff.id,
+          role: nextRole,
+        };
+        const updateAttempt = beginShiftUpdateAttempt(
+          window.sessionStorage,
+          editingShiftId,
+          updateRequest,
+          shiftUpdateAttemptsRef.current[editingShiftId],
+        );
+        shiftUpdateAttemptsRef.current[editingShiftId] = updateAttempt;
+        const updated = await fetchJsonWithSession<ShiftRecord>(
+          `/shifts/${editingShiftId}`,
+          withIdempotencyKey(jsonWriteInit('PUT', updateRequest), updateAttempt.key),
+        );
+        clearShiftUpdateAttempt(window.sessionStorage, editingShiftId, updateAttempt.key);
+        if (shiftUpdateAttemptsRef.current[editingShiftId]?.key === updateAttempt.key) {
+          delete shiftUpdateAttemptsRef.current[editingShiftId];
+        }
         if (!scopeIsStillSelected(writeScope)) return;
         setShifts((current) => current.map((shift) => (shift.id === editingShiftId ? updated : shift)));
         setScheduleStatus({ tone: 'saved', message: `Shift changes saved at ${formatStatusTime(new Date())}.` });
       } else {
-        const created = await fetchJsonWithSession<ShiftRecord>('/shifts', {
-          ...jsonWriteInit('POST', {
-            locationId,
-            scheduleId: containingDraft?.id,
-            userId: selectedStaff.id,
-            role: nextRole,
-            ...range,
-          }),
-        });
+        const createRequest = {
+          locationId,
+          scheduleId: containingDraft?.id,
+          userId: selectedStaff.id,
+          role: nextRole,
+          ...range,
+        };
+        const createAttempt = idempotentRequestAttempt(createRequest, shiftCreateAttemptRef.current);
+        shiftCreateAttemptRef.current = createAttempt;
+        const created = await fetchJsonWithSession<ShiftRecord>(
+          '/shifts',
+          withIdempotencyKey(jsonWriteInit('POST', createRequest), createAttempt.key),
+        );
         if (!scopeIsStillSelected(writeScope)) return;
         setShifts((current) => [...current, created]);
         if (created.scheduleId) {
@@ -708,6 +821,7 @@ function SchedulingContent() {
               },
             ]);
         }
+        shiftCreateAttemptRef.current = null;
         setScheduleStatus({ tone: 'saved', message: `Shift created and saved at ${formatStatusTime(new Date())}.` });
       }
       setShowShiftForm(false);
@@ -882,53 +996,149 @@ function SchedulingContent() {
   };
 
   const publishSchedule = async (scheduleId: string) => {
+    if (publishingScheduleIdRef.current) return;
     if (!capabilities.canPublishSchedules) {
       setError('You need schedule publish access to finalize schedules.');
       return;
     }
     const schedule = schedules.find((item) => item.id === scheduleId);
     if (!schedule || schedule.status !== 'DRAFT') return;
+    publishingScheduleIdRef.current = scheduleId;
     setIsPublishing(true);
     setError(null);
-    setScheduleStatus({ tone: 'saving', message: 'Reviewing full schedule before publish...' });
+    const replayingOriginalAttempt = publishRetryByScheduleId[scheduleId] === true;
+    let publishRequestStarted = false;
+    setScheduleStatus({
+      tone: 'saving',
+      message: replayingOriginalAttempt
+        ? 'Replaying the original publish attempt...'
+        : 'Reviewing schedule readiness and configured credit cost...',
+    });
     try {
-      const scheduleShiftsPayload = await fetchJsonWithSession<{ data: ShiftRecord[] }>(
-        `/shifts?scheduleId=${encodeURIComponent(scheduleId)}`,
-      );
-      const blocker = publishBlockerForShifts(scheduleShiftsPayload.data ?? []);
-      if (blocker) {
-        setConfirmPublishScheduleId(null);
-        setError(blocker);
-        setScheduleStatus({ tone: 'warning', message: 'Schedule needs cleanup before publish.' });
-        return;
-      }
-      if (confirmPublishScheduleId !== scheduleId) {
+      const reviewIsConfirmed = confirmPublishScheduleId === scheduleId
+        && publishReview?.scheduleId === scheduleId
+        && publishReview.sufficientCredits;
+      if (!replayingOriginalAttempt && !reviewIsConfirmed) {
+        const { blocker, preflight } = await loadSchedulePublishReview(scheduleId);
+        if (blocker) {
+          setConfirmPublishScheduleId(null);
+          setPublishReview(null);
+          setError(blocker);
+          setScheduleStatus({ tone: 'warning', message: 'Schedule needs cleanup before publish.' });
+          return;
+        }
+        setPublishReview(preflight);
+        if (!preflight.sufficientCredits) {
+          setConfirmPublishScheduleId(null);
+          setScheduleStatus({
+            tone: 'warning',
+            message: `${publishPreflightSummary(preflight)} Publishing remains blocked until the wallet has enough credits.`,
+          });
+          return;
+        }
         setConfirmPublishScheduleId(scheduleId);
-        setScheduleStatus({ tone: 'warning', message: `Review complete. Confirm publish for ${scheduleWindowLabel(schedule, locationTimeZone(schedule.locationId))}.` });
+        setScheduleStatus({
+          tone: 'warning',
+          message: `${publishPreflightSummary(preflight)} Confirm publish for ${scheduleWindowLabel(schedule, locationTimeZone(schedule.locationId))}.`,
+        });
         return;
       }
 
-      const published = await fetchJsonWithSession<PublishScheduleResponse>(`/schedules/${scheduleId}/publish`, {
-        ...jsonWriteInit('POST', {}),
-      });
+      if (!replayingOriginalAttempt && publishReview) {
+        const { blocker, preflight: latestPreflight } = await loadSchedulePublishReview(scheduleId);
+        if (blocker) {
+          setConfirmPublishScheduleId(null);
+          setPublishReview(null);
+          setError(blocker);
+          setScheduleStatus({ tone: 'warning', message: 'Schedule changed and needs cleanup before publish.' });
+          return;
+        }
+        setPublishReview(latestPreflight);
+        if (!latestPreflight.sufficientCredits) {
+          setConfirmPublishScheduleId(null);
+          setScheduleStatus({
+            tone: 'warning',
+            message: `${publishPreflightSummary(latestPreflight)} Publishing remains blocked until the wallet has enough credits.`,
+          });
+          return;
+        }
+        if (!schedulePublishCostMatches(publishReview, latestPreflight)) {
+          setScheduleStatus({
+            tone: 'warning',
+            message: `${publishPreflightSummary(latestPreflight)} The configured total changed; confirm the updated cost.`,
+          });
+          return;
+        }
+      }
+
+      const publishAttempt = schedulePublishAttempt(
+        scheduleId,
+        publishReview!.acceptedContract,
+        publishAttemptsRef.current[scheduleId],
+      );
+      publishAttemptsRef.current[scheduleId] = publishAttempt;
+      publishRequestStarted = true;
+      const publishedPayload = await fetchJsonWithSession<unknown>(
+        `/schedules/${scheduleId}/publish`,
+        withIdempotencyKey(jsonWriteInit('POST', {
+          acceptedContract: publishReview!.acceptedContract,
+        }), publishAttempt.key),
+      );
+      const published = parseSchedulePublishResponse(scheduleId, publishedPayload);
       setSchedules((current) => current.map((item) => item.id === scheduleId
         ? { ...item, status: published.status, publishedAt: published.publishedAt }
         : item));
+      delete publishAttemptsRef.current[scheduleId];
+      setPublishRetryByScheduleId((current) => {
+        const next = { ...current };
+        delete next[scheduleId];
+        return next;
+      });
+      setPublishReview((current) => current?.scheduleId === scheduleId ? null : current);
       setConfirmPublishScheduleId(null);
       setConfirmReopenScheduleId(null);
       setShowShiftForm(false);
       setEditingShiftId(null);
       setConfirmDeleteShiftId(null);
+      const settlementOutcome = publishSettlementSummary(published.settlement);
+      setPublishSettlementByScheduleId((current) => ({
+        ...current,
+        [scheduleId]: settlementOutcome,
+      }));
       const notificationOutcome = publishNotificationOutcome(published.notifications);
-      setScheduleStatus(notificationOutcome ?? {
-        tone: 'saved',
-        message: `Schedule published at ${formatStatusTime(new Date())}.`,
+      setScheduleStatus({
+        tone: notificationOutcome?.tone ?? 'saved',
+        message: notificationOutcome
+          ? `${settlementOutcome} ${notificationOutcome.message}`
+          : `${settlementOutcome} Confirmed at ${formatStatusTime(new Date(published.publishedAt))}.`,
       });
     } catch (err) {
-      setConfirmPublishScheduleId(null);
-      setError((err as Error).message);
-      setScheduleStatus({ tone: 'error', message: 'Schedule publish failed. Draft schedule was not changed.' });
+      const error = err instanceof Error ? err : new Error('Schedule publication failed.');
+      const status = err instanceof ApiRequestError ? err.status : null;
+      const failure = schedulePublishFailure(status, error.message);
+      if (!publishRequestStarted) {
+        setConfirmPublishScheduleId(null);
+        setScheduleStatus({
+          tone: 'error',
+          message: status === 402 || status === 403
+            ? failure.message
+            : 'Publish preflight could not be confirmed. No publish request was sent or settled.',
+        });
+        setError(error.message);
+        return;
+      }
+      if (failure.resetAttempt) delete publishAttemptsRef.current[scheduleId];
+      setPublishRetryByScheduleId((current) => {
+        const next = { ...current };
+        if (failure.retryMode === 'replay') next[scheduleId] = true;
+        else delete next[scheduleId];
+        return next;
+      });
+      if (failure.retryMode === 'review') setConfirmPublishScheduleId(null);
+      setError(status === 409 && error.message ? `${failure.message} ${error.message}` : failure.message);
+      setScheduleStatus({ tone: failure.retryMode === 'replay' ? 'warning' : 'error', message: failure.message });
     } finally {
+      publishingScheduleIdRef.current = null;
       setIsPublishing(false);
     }
   };
@@ -960,6 +1170,12 @@ function SchedulingContent() {
       setSchedules((current) => current.map((item) => item.id === scheduleId
         ? { ...item, status: 'DRAFT', publishedAt: null }
         : item));
+      setPublishSettlementByScheduleId((current) => {
+        const next = { ...current };
+        delete next[scheduleId];
+        return next;
+      });
+      setPublishReview((current) => current?.scheduleId === scheduleId ? null : current);
       setConfirmReopenScheduleId(null);
       setConfirmPublishScheduleId(null);
       setShowShiftForm(false);
@@ -994,17 +1210,15 @@ function SchedulingContent() {
       setScheduleStatus({ tone: 'error', message: 'Demand setup could not be checked before auto-scheduling.' });
       return;
     }
-    let scheduleShiftsPayload: { data: ShiftRecord[] };
+    let scheduleShifts: ShiftRecord[];
     try {
-      scheduleShiftsPayload = await fetchJsonWithSession<{ data: ShiftRecord[] }>(
-        `/shifts?scheduleId=${encodeURIComponent(scheduleId)}`,
-      );
+      scheduleShifts = await loadAllShiftsForSchedule(scheduleId);
     } catch (err) {
       setError((err as Error).message);
       setScheduleStatus({ tone: 'error', message: 'Draft shifts could not be checked before auto-scheduling.' });
       return;
     }
-    const replacingNonblankDraft = (scheduleShiftsPayload.data?.length ?? 0) > 0;
+    const replacingNonblankDraft = scheduleShifts.length > 0;
     const existingAttempt = autoScheduleAttemptsRef.current[scheduleId];
     if (!existingAttempt && replacingNonblankDraft && confirmReplaceScheduleId !== scheduleId) {
       setConfirmReplaceScheduleId(scheduleId);
@@ -1227,13 +1441,26 @@ function SchedulingContent() {
       previous.map((shift) => (shift.id === id ? applyStaffToShift({ ...shift, startTime: start, endTime: end }, selectedStaff) : shift)),
     );
     try {
-      const updated = await fetchJsonWithSession<ShiftRecord>(`/shifts/${id}`, {
-        ...jsonWriteInit('PUT', {
-          startTime: start,
-          endTime: end,
-          userId: nextUserId,
-        }),
-      });
+      const updateRequest = {
+        startTime: start,
+        endTime: end,
+        userId: nextUserId,
+      };
+      const updateAttempt = beginShiftUpdateAttempt(
+        window.sessionStorage,
+        id,
+        updateRequest,
+        shiftUpdateAttemptsRef.current[id],
+      );
+      shiftUpdateAttemptsRef.current[id] = updateAttempt;
+      const updated = await fetchJsonWithSession<ShiftRecord>(
+        `/shifts/${id}`,
+        withIdempotencyKey(jsonWriteInit('PUT', updateRequest), updateAttempt.key),
+      );
+      clearShiftUpdateAttempt(window.sessionStorage, id, updateAttempt.key);
+      if (shiftUpdateAttemptsRef.current[id]?.key === updateAttempt.key) {
+        delete shiftUpdateAttemptsRef.current[id];
+      }
       if (!scopeIsStillSelected(writeScope)) return;
       setShifts((previous) => previous.map((shift) => (shift.id === id ? updated : shift)));
       setScheduleStatus({ tone: 'saved', message: `Board change saved at ${formatStatusTime(new Date())}.` });
@@ -1299,7 +1526,7 @@ function SchedulingContent() {
           <div className="scheduler-topbar__controls">
             <label className="scheduler-day-picker">
               <CalendarDays size={15} />
-              <input type="date" value={selectedDate} onChange={(event) => selectScheduleDate(event.target.value)} />
+              <input aria-label="Schedule date" type="date" suppressHydrationWarning value={selectedDate} onChange={(event) => selectScheduleDate(event.target.value)} />
             </label>
 
             <div className="scheduler-view-toggle" role="group" aria-label="Scheduler view">
@@ -1314,6 +1541,12 @@ function SchedulingContent() {
                 </button>
               ))}
             </div>
+
+            {nextLocationCursor ? (
+              <Button variant="outline" onClick={() => void loadMoreLocations()} disabled={isLoadingMoreLocations}>
+                {isLoadingMoreLocations ? 'Loading locations...' : 'Load more locations'}
+              </Button>
+            ) : null}
 
             <Button variant="secondary" onClick={handleRefresh} disabled={isLoading || isRefreshing}>
               {isLoading || isRefreshing ? 'Reloading...' : 'Reload'}
@@ -1382,6 +1615,9 @@ function SchedulingContent() {
                 const canSolve = capabilities.canWriteSchedules && schedule.status === 'DRAFT';
                 const isSolving = solvingScheduleId === schedule.id;
                 const isConfirmingReopen = confirmReopenScheduleId === schedule.id;
+                const preflight = publishReview?.scheduleId === schedule.id ? publishReview : null;
+                const publishSettlement = publishSettlementByScheduleId[schedule.id];
+                const isRetryingPublish = publishRetryByScheduleId[schedule.id] === true;
                 return (
                   <div key={schedule.id} className={`scheduler-publish-row scheduler-publish-row--${schedule.status.toLowerCase()}`}>
                     <div className="scheduler-publish-row__main">
@@ -1413,9 +1649,18 @@ function SchedulingContent() {
                           variant={isConfirming ? 'default' : 'secondary'}
                           onClick={() => void publishSchedule(schedule.id)}
                           disabled={isPublishing || Boolean(solvingScheduleId)}
+                          aria-describedby={preflight ? `publish-cost-${schedule.id}` : undefined}
                         >
                           <Send size={14} />
-                          {isConfirming ? 'Confirm publish' : 'Publish'}
+                          {isPublishing && publishingScheduleIdRef.current === schedule.id
+                            ? 'Checking...'
+                            : isRetryingPublish
+                              ? 'Retry publish'
+                              : isConfirming && preflight
+                                ? `Confirm - ${creditCount(preflight.totalConfiguredCost)}`
+                                : preflight && !preflight.sufficientCredits
+                                  ? 'Recheck credits'
+                                  : 'Publish'}
                         </Button>
                       ) : null}
                       {canReopen ? (
@@ -1436,6 +1681,35 @@ function SchedulingContent() {
                       </p>
                     ) : null}
                     {blocker && !isPublished ? <p className="scheduler-publish-row__blocker">{blocker}</p> : null}
+                    {preflight && !isPublished ? (
+                      <div
+                        id={`publish-cost-${schedule.id}`}
+                        className={`scheduler-publish-row__cost${preflight.sufficientCredits ? '' : ' scheduler-publish-row__cost--blocked'}`}
+                        role="status"
+                        aria-live="polite"
+                      >
+                        <strong>Configured total: {creditCount(preflight.totalConfiguredCost)}</strong>
+                        <span>
+                          Schedule {creditCount(preflight.scheduleCost)}; matching webhooks{' '}
+                          {preflight.matchingWebhookDeliveryCount === 0
+                            ? 'none'
+                            : `${preflight.matchingWebhookDeliveryCount} x ${creditCount(preflight.matchingWebhookDeliveryUnitCost)} = ${creditCount(preflight.matchingWebhookDeliveryCost)}`}.
+                        </span>
+                        <span>
+                          Wallet balance: {creditCount(preflight.availableCredits)}.{' '}
+                          {preflight.sufficientCredits
+                            ? `${creditCount(preflight.availableCredits - preflight.totalConfiguredCost)} will remain.`
+                            : `${creditCount(preflight.totalConfiguredCost - preflight.availableCredits)} more required.`}
+                        </span>
+                        <span>Requires an active paid subscription and credits purchased separately or granted by an administrator.</span>
+                      </div>
+                    ) : null}
+                    {isRetryingPublish && !isPublished ? (
+                      <p className="scheduler-publish-row__retry">Retry uses the original Idempotency-Key and settlement attempt.</p>
+                    ) : null}
+                    {publishSettlement && isPublished ? (
+                      <p className="scheduler-publish-row__settlement" role="status">{publishSettlement}</p>
+                    ) : null}
                     {!isPublished && canSolve ? (
                       <DemandWindowEditor
                         scheduleId={schedule.id}
@@ -1494,6 +1768,10 @@ function SchedulingContent() {
                 onEventSelect={capabilities.canWriteShifts && locationDataCurrent ? editShiftFromBoard : undefined}
                 onEventDelete={capabilities.canDeleteShifts && locationDataCurrent ? (event) => void deleteShift(event.id) : undefined}
                 onSlotSelect={capabilities.canWriteShifts && locationDataCurrent ? prepareShiftFromBoardSlot : undefined}
+                onTimeSelectionError={(message) => {
+                  setError(message);
+                  setScheduleStatus({ tone: 'warning', message: 'Choose a different time before saving the shift.' });
+                }}
               />
             </div>
           ) : (
@@ -1869,6 +2147,44 @@ function SchedulingContent() {
           color: #9a3412;
           font-size: 12px;
           font-weight: 750;
+        }
+
+        .scheduler-publish-row__cost {
+          grid-column: 1 / -1;
+          border: 1px solid #bfdbfe;
+          border-radius: var(--r-sm);
+          background: #eff6ff;
+          padding: 9px 10px;
+          display: grid;
+          gap: 3px;
+          color: #1e3a8a;
+          font-size: 12px;
+        }
+
+        .scheduler-publish-row__cost strong {
+          font-size: 13px;
+        }
+
+        .scheduler-publish-row__cost--blocked {
+          border-color: #fed7aa;
+          background: #fff7ed;
+          color: #9a3412;
+        }
+
+        .scheduler-publish-row__retry,
+        .scheduler-publish-row__settlement {
+          grid-column: 1 / -1;
+          margin: 0;
+          font-size: 12px;
+          font-weight: 750;
+        }
+
+        .scheduler-publish-row__retry {
+          color: #9a3412;
+        }
+
+        .scheduler-publish-row__settlement {
+          color: #166534;
         }
 
         .scheduler-publish-row__job {

@@ -1,9 +1,12 @@
 #!/usr/bin/env node
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { appendFileSync, readFileSync, writeFileSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { appendFileSync, existsSync, readFileSync, statSync, writeFileSync } from 'node:fs';
+import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+
+const scriptDir = dirname(fileURLToPath(import.meta.url));
+const providerOwnerPath = resolve(scriptDir, 'backup.sh');
 
 function fail(message) { throw new Error(message); }
 function option(name, required = true) {
@@ -20,6 +23,120 @@ function singleLine(value, label) {
   return value;
 }
 
+function boundedProviderInteger(value, fallback, minimum, maximum, label) {
+  const number = Number(value ?? fallback);
+  if (!Number.isSafeInteger(number) || number < minimum || number > maximum) {
+    fail(`${label} must be an integer from ${minimum} through ${maximum}.`);
+  }
+  return number;
+}
+
+export function runBoundedProviderCommand(command, args, options = {}) {
+  if (typeof command !== 'string' || !command || !Array.isArray(args) || args.some((value) => typeof value !== 'string')) {
+    fail('Provider command and arguments must be explicit strings.');
+  }
+  const operation = options.operation ?? 'read';
+  if (!['read', 'mutation'].includes(operation)) fail('Provider operation must be read or mutation.');
+  const timeoutMs = boundedProviderInteger(
+    options.timeoutMs,
+    process.env.PROVIDER_COMMAND_TIMEOUT_MS ?? 120_000,
+    1_000,
+    3_600_000,
+    'Provider command timeout',
+  );
+  const killAfterMs = boundedProviderInteger(
+    options.killAfterMs,
+    process.env.PROVIDER_COMMAND_KILL_AFTER_MS ?? 5_000,
+    1_000,
+    60_000,
+    'Provider command kill-after',
+  );
+  const maxOutputBytes = boundedProviderInteger(
+    options.maxOutputBytes,
+    process.env.PROVIDER_COMMAND_MAX_OUTPUT_BYTES ?? 4 * 1024 * 1024,
+    1_024,
+    100 * 1024 * 1024,
+    'Provider command output cap',
+  );
+  const maxDownloadBytes = options.downloadPath
+    ? boundedProviderInteger(
+      options.maxDownloadBytes,
+      process.env.PROVIDER_COMMAND_MAX_DOWNLOAD_BYTES ?? 64 * 1024 * 1024,
+      1_024,
+      1024 * 1024 * 1024,
+      'Provider command download cap',
+    )
+    : undefined;
+  if (
+    process.env.ALLOW_DIRECT_PROVIDER_COMMANDS_FOR_TESTS === 'true'
+    && process.env.NODE_ENV === 'test'
+  ) {
+    const encoding = options.encoding === null ? null : (options.encoding ?? 'utf8');
+    const result = spawnSync(command, args, {
+      cwd: options.cwd,
+      env: options.env ?? process.env,
+      encoding,
+      maxBuffer: maxOutputBytes + 64 * 1024,
+      timeout: timeoutMs,
+      windowsHide: true,
+    });
+    if (
+      options.downloadPath
+      && existsSync(options.downloadPath)
+      && statSync(options.downloadPath).size > maxDownloadBytes
+    ) {
+      return {
+        ...result,
+        status: operation === 'mutation' ? 70 : 1,
+        stderr: 'Provider command exceeded the bounded download cap.',
+      };
+    }
+    if (result.error && operation === 'mutation') {
+      return {
+        ...result,
+        status: 70,
+        stderr: 'Provider mutation state is unknown and requires authenticated readback reconciliation.',
+      };
+    }
+    return result;
+  }
+  const wrapperArgs = [
+    providerOwnerPath,
+    '--provider-command',
+    '--operation', operation,
+    '--timeout-seconds', String(Math.ceil(timeoutMs / 1_000)),
+    '--kill-after-seconds', String(Math.ceil(killAfterMs / 1_000)),
+    '--max-output-bytes', String(maxOutputBytes),
+  ];
+  if (options.downloadPath) {
+    wrapperArgs.push('--download-path', resolve(options.downloadPath), '--max-download-bytes', String(maxDownloadBytes));
+  }
+  wrapperArgs.push('--', command, ...args);
+
+  const defaultWindowsBash = 'C:\\Program Files\\Git\\bin\\bash.exe';
+  const shell = process.env.PROVIDER_COMMAND_SHELL
+    || (process.platform === 'win32' && existsSync(defaultWindowsBash) ? defaultWindowsBash : 'bash');
+  const encoding = options.encoding === null ? null : (options.encoding ?? 'utf8');
+  const result = spawnSync(shell, wrapperArgs, {
+    cwd: options.cwd,
+    env: options.env ?? process.env,
+    encoding,
+    maxBuffer: maxOutputBytes + 64 * 1024,
+    windowsHide: true,
+  });
+  if (options.allowFailure === true) return result;
+  if (result.error || result.status !== 0) {
+    const stderr = result.stderr ? Buffer.from(result.stderr).toString('utf8').trim().slice(-4096) : '';
+    const unknown = result.status === 70 || /mutation state is unknown/i.test(stderr);
+    fail(
+      unknown
+        ? 'Provider mutation state is unknown and requires authenticated readback reconciliation.'
+        : `${options.label ?? 'Provider command'} failed within the bounded command owner.${stderr ? ` ${stderr}` : ''}`,
+    );
+  }
+  return result;
+}
+
 export function validateRuntimeSecretDescriptor(value) {
   if (!value || typeof value !== 'object' || Array.isArray(value) || value.version !== 1) fail('Runtime secret descriptor must be a version 1 object.');
   if (value.provider !== 'aws-secretsmanager') fail('Runtime secret provider must be aws-secretsmanager.');
@@ -32,8 +149,17 @@ export function validateRuntimeSecretDescriptor(value) {
 }
 
 function fetchAwsSecret(reference, version) {
-  const result = spawnSync('aws', ['secretsmanager', 'get-secret-value', '--secret-id', reference, '--version-id', version, '--output', 'json'], { encoding: 'utf8', maxBuffer: 16 * 1024 * 1024 });
-  if (result.error || result.status !== 0) fail('AWS Secrets Manager fetch failed.');
+  const result = runBoundedProviderCommand(
+    process.env.RUNTIME_SECRET_AWS_BINARY || 'aws',
+    ['secretsmanager', 'get-secret-value', '--secret-id', reference, '--version-id', version, '--output', 'json'],
+    {
+      operation: 'read',
+      timeoutMs: process.env.RUNTIME_SECRET_PROVIDER_TIMEOUT_MS ?? 60_000,
+      maxOutputBytes: process.env.RUNTIME_SECRET_PROVIDER_MAX_BYTES ?? 256 * 1024,
+      encoding: 'utf8',
+      label: 'AWS Secrets Manager fetch',
+    },
+  );
   let response;
   try { response = JSON.parse(result.stdout); } catch { fail('AWS Secrets Manager returned invalid JSON.'); }
   if (response.VersionId !== version) fail('AWS Secrets Manager returned a different secret version.');

@@ -12,6 +12,8 @@ This folder contains repo-level tests for the LunchLineup rebuild. These tests r
 - `deploy/production-compose.test.mjs`: verifies Compose isolation, public port exposure, proxy hardening, smoke CI env generation, and fail-fast example secrets.
 - `integration/README.md`: explains service-backed integration smoke tests and their runtime requirements.
 - `integration/ephemeral-stack.test.mjs`: checks ephemeral Postgres and Redis availability plus Prisma schema sync in CI.
+- `integration/lunch-break-generation-recovery.test.mjs`: proves recoverable generation failures reclaim the unchanged intent exactly once in real PostgreSQL.
+- `integration/schedule-revision-fencing.test.mjs`: proves all scheduled-shift mutation paths invalidate stale publish preflights without publish settlement side effects.
 
 ## Command
 

@@ -20,11 +20,20 @@ export class MetricsService implements OnModuleInit {
   public readonly httpRequestsTotal: Counter<string>;
   public readonly httpRequestDurationMs: Histogram<string>;
   public readonly activeTenants: Gauge<string>;
-  public readonly solverQueueDepth: Gauge<string>;
   public readonly solverDurationSeconds: Histogram<string>;
   public readonly dependencyUp: Gauge<"dependency">;
   public readonly retentionPurgeTenantsTotal: Counter<"stage" | "outcome">;
   public readonly tenantExportsTotal: Counter<"outcome">;
+  public readonly notificationOutboxDeliveriesTotal: Counter<"status">;
+  public readonly notificationOutboxDeadLettered: Gauge<string>;
+  public readonly tenantCancellationReconciliationsTotal: Counter<"outcome">;
+  public readonly tenantCancellationReconciliationBacklog: Gauge<string>;
+  public readonly tenantDeletionBillingReconciliationsTotal: Counter<"outcome">;
+  public readonly tenantDeletionBillingReconciliationBacklog: Gauge<string>;
+  public readonly tenantDeletionBillingReconciliationOldestPendingAgeSeconds: Gauge<string>;
+  public readonly tenantDeletionBillingReconciliationLastSweepTimestampSeconds: Gauge<string>;
+  public readonly tenantDeletionBillingReconciliationLastSuccessTimestampSeconds: Gauge<string>;
+  public readonly tenantDeletionBillingReconciliationSweepMaxStalenessSeconds: Gauge<string>;
 
   constructor() {
     this.registry = new Registry();
@@ -56,12 +65,6 @@ export class MetricsService implements OnModuleInit {
       registers: [this.registry],
     });
 
-    this.solverQueueDepth = new Gauge({
-      name: "lunchlineup_solver_queue_depth",
-      help: "Number of pending schedule solve requests in queue",
-      registers: [this.registry],
-    });
-
     this.solverDurationSeconds = new Histogram({
       name: "lunchlineup_solver_duration_seconds",
       help: "Time taken by the scheduling solver in seconds",
@@ -87,6 +90,69 @@ export class MetricsService implements OnModuleInit {
       name: "lunchlineup_tenant_exports_total",
       help: "Tenant export artifact jobs by outcome",
       labelNames: ["outcome"],
+      registers: [this.registry],
+    });
+
+    this.notificationOutboxDeliveriesTotal = new Counter({
+      name: "lunchlineup_notification_outbox_total",
+      help: "Notification outbox delivery transitions by outcome",
+      labelNames: ["status"],
+      registers: [this.registry],
+    });
+
+    this.notificationOutboxDeadLettered = new Gauge({
+      name: "lunchlineup_notification_outbox_dead_lettered",
+      help: "Notification outbox rows requiring operator attention",
+      registers: [this.registry],
+    });
+
+    this.tenantCancellationReconciliationsTotal = new Counter({
+      name: "lunchlineup_tenant_cancellation_reconciliations_total",
+      help: "Tenant cancellation reconciliation attempts by bounded outcome",
+      labelNames: ["outcome"],
+      registers: [this.registry],
+    });
+
+    this.tenantCancellationReconciliationBacklog = new Gauge({
+      name: "lunchlineup_tenant_cancellation_reconciliation_backlog",
+      help: "Nonterminal tenant cancellation intents awaiting reconciliation",
+      registers: [this.registry],
+    });
+
+    this.tenantDeletionBillingReconciliationsTotal = new Counter({
+      name: "lunchlineup_tenant_deletion_billing_reconciliations_total",
+      help: "Tenant deletion billing reconciliation attempts by bounded outcome",
+      labelNames: ["outcome"],
+      registers: [this.registry],
+    });
+
+    this.tenantDeletionBillingReconciliationBacklog = new Gauge({
+      name: "lunchlineup_tenant_deletion_billing_reconciliation_backlog",
+      help: "Pending tenant deletion billing barriers awaiting reconciliation",
+      registers: [this.registry],
+    });
+
+    this.tenantDeletionBillingReconciliationOldestPendingAgeSeconds = new Gauge({
+      name: "lunchlineup_tenant_deletion_billing_reconciliation_oldest_pending_age_seconds",
+      help: "Age in seconds of the oldest pending tenant deletion billing barrier",
+      registers: [this.registry],
+    });
+
+    this.tenantDeletionBillingReconciliationLastSweepTimestampSeconds = new Gauge({
+      name: "lunchlineup_tenant_deletion_billing_reconciliation_last_sweep_timestamp_seconds",
+      help: "Unix timestamp of the latest completed tenant deletion billing reconciliation sweep",
+      registers: [this.registry],
+    });
+
+    this.tenantDeletionBillingReconciliationLastSuccessTimestampSeconds = new Gauge({
+      name: "lunchlineup_tenant_deletion_billing_reconciliation_last_success_timestamp_seconds",
+      help: "Unix timestamp of the latest healthy tenant deletion billing reconciliation sweep",
+      registers: [this.registry],
+    });
+
+    this.tenantDeletionBillingReconciliationSweepMaxStalenessSeconds = new Gauge({
+      name: "lunchlineup_tenant_deletion_billing_reconciliation_sweep_max_staleness_seconds",
+      help: "Maximum expected age in seconds of tenant deletion billing reconciliation sweep telemetry",
       registers: [this.registry],
     });
   }

@@ -10,7 +10,6 @@ const ONBOARDING_OTP_RATE_LIMIT_MS = 60 * 1000;
 const ONBOARDING_RECOVERY_TTL_MS = 30 * 60 * 1000;
 const ONBOARDING_OTP_MAX_FAILED_ATTEMPTS = 5;
 const PUBLIC_SIGNUP_TRIAL_DAYS = 14;
-export const PUBLIC_SIGNUP_TRIAL_CREDITS = 25;
 
 export type OnboardingChallenge = {
     challengeToken: string;
@@ -167,15 +166,7 @@ export class OnboardingSignupService {
                     planTier: PlanTier.STARTER,
                     status: TenantStatus.TRIAL,
                     trialEndsAt: new Date(now.getTime() + PUBLIC_SIGNUP_TRIAL_DAYS * 24 * 60 * 60 * 1000),
-                    usageCredits: PUBLIC_SIGNUP_TRIAL_CREDITS,
-                },
-            });
-            await tx.creditTransaction.create({
-                data: {
-                    id: `public-trial-credit-${tenant.id}`,
-                    tenantId: tenant.id,
-                    amount: PUBLIC_SIGNUP_TRIAL_CREDITS,
-                    reason: 'Public signup Starter trial credits',
+                    usageCredits: 0,
                 },
             });
             await assertTenantCanAddActiveUser(tx as any, tenant.id);
@@ -270,7 +261,7 @@ export class OnboardingSignupService {
         tx: TenantPrismaTransaction,
         identityOrganizationHash: string,
     ): Promise<void> {
-        await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtextextended(${identityOrganizationHash}, 0))`;
+        await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${identityOrganizationHash}, 0))`;
     }
 
     private normalizeOrganization(value: string): string {

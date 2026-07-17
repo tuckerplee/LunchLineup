@@ -197,27 +197,41 @@ class BillingUsageTests(unittest.IsolatedAsyncioTestCase):
         second = usage_event(attempts=2)
         store = FakeStore([first, second])
         client = FakeClient([
-            billing_usage.RetryableBillingError("temporary"),
+            # Secret-bearing provider text must never reach durable failure state.
+            billing_usage.RetryableBillingError("sk_live_secret https://private.example.test?token=leak"),
             billing_usage.StripeMeterResult("meter-event-1", "req_456"),
         ])
-
-        with self.assertRaises(billing_usage.RetryableBillingError):
+        with self.assertRaisesRegex(billing_usage.RetryableBillingError, "Stripe usage event will retry"):
             await billing_usage.dispatch_usage({"tenant_id": "tenant-1"}, store=store, client=client)
         result = await billing_usage.dispatch_usage({"tenant_id": "tenant-1"}, store=store, client=client)
 
         self.assertFalse(store.failed[0][2])
+        self.assertEqual(store.failed[0][1], "STRIPE_USAGE_RETRYABLE")
         self.assertTrue(result["sent"])
         self.assertEqual(client.events[0].identifier, client.events[1].identifier)
         self.assertEqual(client.events[0].idempotency_key, client.events[1].idempotency_key)
 
     async def test_non_retryable_failure_dead_letters_the_durable_event(self):
         store = FakeStore([usage_event()])
-        client = FakeClient([billing_usage.NonRetryableBillingError("invalid request")])
+        client = FakeClient([billing_usage.NonRetryableBillingError("api_key=secret https://private.example.test")])
 
         with self.assertRaises(billing_usage.NonRetryableBillingError):
             await billing_usage.dispatch_usage({"tenant_id": "tenant-1"}, store=store, client=client)
 
         self.assertTrue(store.failed[0][2])
+        self.assertEqual(store.failed[0][1], "STRIPE_USAGE_NON_RETRYABLE")
+
+    async def test_retryable_final_attempt_uses_exhausted_failure_code(self):
+        secret = "sk_live_secret https://private.example.test?token=leak"
+        store = FakeStore([usage_event(attempts=5)])
+        client = FakeClient([billing_usage.RetryableBillingError(secret)])
+
+        with self.assertRaisesRegex(billing_usage.NonRetryableBillingError, "was dead-lettered"):
+            await billing_usage.dispatch_usage({"tenant_id": "tenant-1"}, store=store, client=client)
+
+        self.assertTrue(store.failed[0][2])
+        self.assertEqual(store.failed[0][1], "STRIPE_USAGE_RETRIES_EXHAUSTED")
+        self.assertNotIn(secret, store.failed[0][1])
 
     async def test_duplicate_or_not_due_event_is_skipped_without_calling_stripe(self):
         store = FakeStore([None])

@@ -7,6 +7,8 @@ describe('BillingController - Stripe webhook', () => {
     let stripeService: {
         handleWebhook: ReturnType<typeof vi.fn>;
         getPriceOptions: ReturnType<typeof vi.fn>;
+        getCreditPackOptions: ReturnType<typeof vi.fn>;
+        createCreditPackCheckoutSession: ReturnType<typeof vi.fn>;
         createSubscriptionCheckoutSession: ReturnType<typeof vi.fn>;
         createBillingPortalSession: ReturnType<typeof vi.fn>;
         changeTenantSubscriptionPlan: ReturnType<typeof vi.fn>;
@@ -14,7 +16,6 @@ describe('BillingController - Stripe webhook', () => {
         getTenantSubscriptionRecoveryAction: ReturnType<typeof vi.fn>;
     };
     let featureAccessService: { getFeatureMatrix: ReturnType<typeof vi.fn> };
-    let meteringService: { grantCredits: ReturnType<typeof vi.fn> };
     let stripeMeterErrorService: { handleWebhook: ReturnType<typeof vi.fn> };
     let controller: BillingController;
 
@@ -24,6 +25,13 @@ describe('BillingController - Stripe webhook', () => {
             getPriceOptions: vi.fn().mockReturnValue([
                 { code: 'STARTER', label: 'Starter', priceId: 'price_starter', configured: true },
             ]),
+            getCreditPackOptions: vi.fn().mockResolvedValue([
+                { code: 'CREDITS_100', credits: 100, configured: true, amount: 1200, currency: 'usd' },
+            ]),
+            createCreditPackCheckoutSession: vi.fn().mockResolvedValue({
+                sessionId: 'cs_credit_123',
+                checkoutUrl: 'https://checkout.stripe.com/cs_credit_123',
+            }),
             createSubscriptionCheckoutSession: vi.fn().mockResolvedValue({
                 sessionId: 'cs_test_123',
                 checkoutUrl: 'https://checkout.stripe.com/cs_test_123',
@@ -52,16 +60,12 @@ describe('BillingController - Stripe webhook', () => {
                 stripeSubscriptionPresent: true,
             }),
         };
-        meteringService = {
-            grantCredits: vi.fn().mockResolvedValue(125),
-        };
         stripeMeterErrorService = {
             handleWebhook: vi.fn().mockResolvedValue({ matched: 1, transitioned: 1 }),
         };
 
         controller = new BillingController(
             stripeService as any,
-            meteringService as any,
             featureAccessService as any,
             stripeMeterErrorService as any,
         );
@@ -117,43 +121,6 @@ describe('BillingController - Stripe webhook', () => {
         expect(stripeService.createBillingPortalSession).toHaveBeenCalledWith('tenant-1');
     });
 
-    it('keeps credit grants behind platform admin access', () => {
-        expect(Reflect.getMetadata('permission', controller.grantCredits)).toBe('admin_portal:access');
-    });
-
-    it('requires a valid Idempotency-Key before granting credits', async () => {
-        await expect(controller.grantCredits({
-            tenantId: 'tenant-1',
-            amount: 25,
-            reason: 'Correction',
-        }, undefined)).rejects.toBeInstanceOf(BadRequestException);
-        await expect(controller.grantCredits({
-            tenantId: 'tenant-1',
-            amount: 25,
-            reason: 'Correction',
-        }, '   ')).rejects.toBeInstanceOf(BadRequestException);
-
-        expect(meteringService.grantCredits).not.toHaveBeenCalled();
-    });
-
-    it('forwards the normalized idempotency key and reuses the metering result', async () => {
-        await expect(controller.grantCredits({
-            tenantId: 'tenant-1',
-            amount: 25,
-            reason: 'Correction',
-        }, ' grant-20260709 ')).resolves.toEqual({
-            success: true,
-            newBalance: 125,
-        });
-
-        expect(meteringService.grantCredits).toHaveBeenCalledWith(
-            'tenant-1',
-            25,
-            'Correction',
-            'grant-20260709',
-        );
-    });
-
     it('keeps plan changes and paused recovery behind billing write permission', async () => {
         expect(Reflect.getMetadata('permission', controller.changePlan)).toBe('billing:write');
         expect(Reflect.getMetadata('permission', controller.resume)).toBe('billing:write');
@@ -171,6 +138,26 @@ describe('BillingController - Stripe webhook', () => {
         await expect(controller.priceOptions()).resolves.toEqual({
             data: [{ code: 'STARTER', label: 'Starter', priceId: 'price_starter', configured: true }],
         });
+    });
+
+    it('keeps credit-pack discovery and Checkout tenant-scoped and separate from admin grants', async () => {
+        expect(Reflect.getMetadata('permission', controller.creditPackOptions)).toBe('billing:read');
+        expect(Reflect.getMetadata('permission', controller.purchaseCreditPack)).toBe('billing:write');
+
+        await expect(controller.creditPackOptions()).resolves.toEqual({
+            data: [{ code: 'CREDITS_100', credits: 100, configured: true, amount: 1200, currency: 'usd' }],
+        });
+        await expect(controller.purchaseCreditPack(
+            { user: { tenantId: 'tenant-1' } } as any,
+            { code: 'CREDITS_100' },
+        )).resolves.toEqual({
+            sessionId: 'cs_credit_123',
+            checkoutUrl: 'https://checkout.stripe.com/cs_credit_123',
+        });
+        expect(stripeService.createCreditPackCheckoutSession).toHaveBeenCalledWith(
+            'tenant-1',
+            'CREDITS_100',
+        );
     });
 
     it('passes the preserved raw request body to Stripe signature verification', async () => {

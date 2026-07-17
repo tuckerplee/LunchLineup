@@ -6,11 +6,11 @@ import { useEffect, useMemo, useState } from 'react';
 import { LunchLineupMark } from '@/components/branding/LunchLineupMark';
 import { fetchJsonWithSession, fetchWithSession } from '@/lib/client-api';
 import {
-  Bell,
   LogOut,
   Settings,
   Store,
 } from 'lucide-react';
+import { NotificationsMenu, type DashboardNotification } from './NotificationsMenu';
 import {
   canOpenDashboardAccountSettings,
   getDashboardCurrentPage,
@@ -19,7 +19,6 @@ import {
 } from './dashboard-navigation';
 
 type DashboardRole = 'SUPER_ADMIN' | 'ADMIN' | 'MANAGER' | 'STAFF';
-type NotificationType = 'INFO' | 'SUCCESS' | 'WARNING' | 'ERROR' | 'SCHEDULE_PUBLISHED' | 'SHIFT_ASSIGNED' | 'SHIFT_CHANGED';
 type DashboardUser = {
   sub: string;
   role: DashboardRole;
@@ -31,14 +30,6 @@ type DashboardUser = {
   name?: string | null;
   tenantName?: string | null;
 };
-type DashboardNotification = {
-  id: string;
-  type: NotificationType;
-  title: string;
-  body: string;
-  readAt: string | null;
-  createdAt: string;
-};
 
 export default function DashboardLayout({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
@@ -47,30 +38,10 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
   const [notifications, setNotifications] = useState<DashboardNotification[]>([]);
   const [unreadCount, setUnreadCount] = useState(0);
 
-  const toneByType: Record<NotificationType, string> = {
-    INFO: 'var(--text-muted)',
-    SUCCESS: 'var(--teal)',
-    WARNING: 'var(--amber)',
-    ERROR: 'var(--rose)',
-    SCHEDULE_PUBLISHED: '#2f63ff',
-    SHIFT_ASSIGNED: '#2f63ff',
-    SHIFT_CHANGED: 'var(--amber)',
-  };
-
   function getCsrfToken(): string {
     if (typeof document === 'undefined') return '';
     const pair = document.cookie.split('; ').find((entry) => entry.startsWith('csrf_token='));
     return pair ? decodeURIComponent(pair.split('=')[1] ?? '') : '';
-  }
-
-  function formatRelative(timestamp: string): string {
-    const ms = Date.now() - new Date(timestamp).getTime();
-    const minutes = Math.max(1, Math.floor(ms / 60000));
-    if (minutes < 60) return `${minutes}m ago`;
-    const hours = Math.floor(minutes / 60);
-    if (hours < 24) return `${hours}h ago`;
-    const days = Math.floor(hours / 24);
-    return `${days}d ago`;
   }
 
   useEffect(() => {
@@ -180,7 +151,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
                 <LunchLineupMark size={34} />
               </div>
               <div>
-                <div style={{ fontWeight: 800, letterSpacing: '-0.02em', color: 'var(--text-primary)' }}>LunchLineup</div>
+                <div style={{ fontWeight: 800, letterSpacing: 0, color: 'var(--text-primary)' }}>LunchLineup</div>
                 <div className="workspace-kicker">Workforce Ops</div>
               </div>
             </div>
@@ -242,26 +213,6 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
                     <Icon size={16} />
                   </span>
                   {item.label}
-                  {item.badge ? (
-                    <span
-                      style={{
-                        marginLeft: 'auto',
-                        minWidth: 18,
-                        height: 18,
-                        padding: '0 5px',
-                        borderRadius: 999,
-                        display: 'inline-grid',
-                        placeItems: 'center',
-                        fontSize: '0.64rem',
-                        fontWeight: 800,
-                        color: isActive ? '#ffffff' : '#2f63ff',
-                        background: isActive ? 'linear-gradient(180deg, #4171ff, #2f63ff)' : '#e3edff',
-                        border: '1px solid #c9d9ff',
-                      }}
-                    >
-                      {item.badge}
-                    </span>
-                  ) : null}
                   {isActive ? (
                     <span
                       className="status-dot"
@@ -296,122 +247,18 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
               prefetch={false}
               className="workspace-mobile-signout btn btn-secondary btn-sm"
               aria-label="Sign out"
+              title="Sign out"
             >
-              <LogOut size={16} />
-              Sign out
+              <LogOut size={16} aria-hidden="true" />
             </Link>
-            <div style={{ position: 'relative' }}>
-              <button
-                id="notification-bell"
-                type="button"
-                aria-label="Notifications"
-                aria-expanded={notificationsOpen}
-                aria-haspopup="dialog"
-                onClick={() => setNotificationsOpen((open) => !open)}
-                style={{
-                  position: 'relative',
-                  width: 38,
-                  height: 38,
-                  borderRadius: 12,
-                  border: '1px solid var(--border)',
-                  background: '#ffffff',
-                  color: 'var(--text-secondary)',
-                  display: 'grid',
-                  placeItems: 'center',
-                  cursor: 'pointer',
-                }}
-              >
-                <Bell size={17} />
-                {unreadCount > 0 ? (
-                  <span
-                    style={{
-                      position: 'absolute',
-                      top: -4,
-                      right: -4,
-                      minWidth: 19,
-                      height: 19,
-                      padding: '0 5px',
-                      borderRadius: 999,
-                      background: 'var(--rose)',
-                      color: 'white',
-                      fontWeight: 700,
-                      fontSize: '0.66rem',
-                      display: 'grid',
-                      placeItems: 'center',
-                      border: '2px solid #f4f7fd',
-                    }}
-                  >
-                    {unreadCount}
-                  </span>
-                ) : null}
-              </button>
-              {notificationsOpen ? (
-                <div
-                  className="surface-card"
-                  role="dialog"
-                  aria-label="Notifications"
-                  style={{
-                    position: 'absolute',
-                    top: '2.8rem',
-                    right: 0,
-                    width: 320,
-                    zIndex: 30,
-                    padding: '0.75rem',
-                    display: 'grid',
-                    gap: '0.55rem',
-                  }}
-                >
-                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '0.6rem' }}>
-                    <div style={{ fontSize: '0.86rem', fontWeight: 750, color: 'var(--text-primary)' }}>Notifications</div>
-                    <button
-                      type="button"
-                      onClick={() => void markAllAsRead()}
-                      disabled={unreadCount === 0}
-                      style={{
-                        border: 'none',
-                        background: 'transparent',
-                        color: unreadCount === 0 ? 'var(--text-muted)' : '#2f63ff',
-                        fontWeight: 700,
-                        fontSize: '0.72rem',
-                        cursor: unreadCount === 0 ? 'default' : 'pointer',
-                      }}
-                    >
-                      Mark all read
-                    </button>
-                  </div>
-                  {notifications.map((item) => (
-                    <button
-                      key={item.id}
-                      type="button"
-                      onClick={() => void markOneAsRead(item.id)}
-                      className="surface-muted"
-                      style={{
-                        padding: '0.55rem',
-                        display: 'flex',
-                        gap: '0.45rem',
-                        alignItems: 'flex-start',
-                        border: '1px solid var(--border)',
-                        textAlign: 'left',
-                        background: item.readAt ? '#ffffff' : '#f8fbff',
-                        cursor: item.readAt ? 'default' : 'pointer',
-                      }}
-                    >
-                      <span className="status-dot" style={{ marginTop: 6, background: toneByType[item.type] ?? 'var(--text-muted)' }} />
-                      <span style={{ display: 'grid', gap: 3 }}>
-                        <span style={{ fontSize: '0.76rem', color: 'var(--text-primary)', fontWeight: 750 }}>{item.title}</span>
-                        <span style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', fontWeight: 600 }}>{item.body}</span>
-                        <span style={{ fontSize: '0.68rem', color: 'var(--text-muted)', fontWeight: 700 }}>{formatRelative(item.createdAt)}</span>
-                      </span>
-                    </button>
-                  ))}
-                  {notifications.length === 0 ? (
-                    <div className="surface-muted" style={{ padding: '0.65rem', fontSize: '0.75rem', color: 'var(--text-muted)', fontWeight: 600 }}>
-                      No notifications yet.
-                    </div>
-                  ) : null}
-                </div>
-              ) : null}
-            </div>
+            <NotificationsMenu
+              notificationsOpen={notificationsOpen}
+              notifications={notifications}
+              unreadCount={unreadCount}
+              onOpenChange={setNotificationsOpen}
+              onMarkOneAsRead={markOneAsRead}
+              onMarkAllAsRead={markAllAsRead}
+            />
 
             {canOpenAccountSettings ? (
               <Link

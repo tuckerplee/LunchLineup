@@ -3,6 +3,10 @@ import { BadRequestException, ForbiddenException, UnauthorizedException } from '
 import { AuthController } from './auth.controller';
 import { JwtAuthGuard } from './jwt-auth.guard';
 import { ALLOW_AUTHENTICATED_METADATA_KEY } from './require-permission.decorator';
+import { PUBLIC_LEGAL_MANIFEST } from '@lunchlineup/config';
+
+const CURRENT_TERMS_VERSION = PUBLIC_LEGAL_MANIFEST.documents.terms.version;
+const CURRENT_PRIVACY_VERSION = PUBLIC_LEGAL_MANIFEST.documents.privacy.version;
 
 function createResponseMock() {
     return {
@@ -65,9 +69,8 @@ describe('AuthController', () => {
 
     it('resolves login flow for identifier', async () => {
         authService.resolveLoginMethod.mockResolvedValue({
-            flow: 'USERNAME_PIN',
+            flow: 'USERNAME_PASSWORD',
             normalizedIdentifier: 'shiftlead',
-            pinResetRequired: true,
         });
 
         const result = await controller.resolveLoginFlow({ identifier: 'ShiftLead', tenantSlug: 'demo' }, createRequestMock());
@@ -75,9 +78,9 @@ describe('AuthController', () => {
         expect(authService.resolveLoginMethod).toHaveBeenCalledWith('ShiftLead', 'demo');
         expect(result).toEqual({
             success: true,
-            flow: 'USERNAME_PIN',
+            flow: 'USERNAME_PASSWORD',
             identifier: 'shiftlead',
-            pinResetRequired: true,
+            pinResetRequired: false,
         });
     });
 
@@ -266,7 +269,7 @@ describe('AuthController', () => {
         await controller.verifyPin({ identifier: 'ShiftLead', pin: '1234', tenantSlug: 'demo' }, req, res);
 
         expect(authService.loginWithUsernamePin).toHaveBeenCalledWith('shiftlead', '1234', 'demo', {
-            ipAddress: '203.0.113.20',
+            ipAddress: '198.51.100.10',
             userAgent: 'Vitest Browser',
         });
         expect(res.cookie).toHaveBeenCalledTimes(3);
@@ -319,7 +322,7 @@ describe('AuthController', () => {
 
         await controller.verifyPin({ identifier: 'ShiftLead', pin: '0000', tenantSlug: 'demo' }, req, res);
 
-        const expected = '/auth/login?step=pin&identifier=shiftlead&error=invalid&tenantSlug=demo&next=%2Fdashboard%2Fstaff';
+        const expected = '/auth/login?error=invalid&tenantSlug=demo&next=%2Fdashboard%2Fstaff';
         expect(res.redirect).toHaveBeenCalledWith(302, expected);
     });
 
@@ -388,8 +391,30 @@ describe('AuthController', () => {
         expect(res.json).toHaveBeenCalledWith({
             success: true,
             redirectTo: '/dashboard',
+            pinResetRequired: false,
             requiresMfa: false,
         });
+    });
+
+    it('preserves a temporary PIN reset boundary through the generic username credential path', async () => {
+        const res = createResponseMock();
+        const req = createRequestMock({ query: { redirect: '1', next: '/dashboard/staff' } });
+        authService.loginWithUsernamePassword.mockResolvedValue({
+            accessToken: 'a',
+            refreshToken: 'r',
+            csrfToken: 'c',
+            requiresMfa: false,
+            pinResetRequired: true,
+            user: { id: 'u1', role: 'STAFF' },
+        });
+
+        await controller.verifyPassword({
+            identifier: 'ShiftLead',
+            password: '123456',
+            tenantSlug: 'demo',
+        }, req, res);
+
+        expect(res.redirect).toHaveBeenCalledWith(302, '/auth/reset-pin?next=%2Fdashboard%2Fstaff');
     });
 
     it('redirects to login with error on invalid password in redirect mode', async () => {
@@ -399,7 +424,7 @@ describe('AuthController', () => {
 
         await controller.verifyPassword({ identifier: 'ShiftLead', password: 'bad', tenantSlug: 'demo' }, req, res);
 
-        const expected = '/auth/login?step=password&identifier=shiftlead&error=invalid&tenantSlug=demo&next=%2Fdashboard%2Fstaff';
+        const expected = '/auth/login?error=invalid&tenantSlug=demo&next=%2Fdashboard%2Fstaff';
         expect(res.redirect).toHaveBeenCalledWith(302, expected);
     });
 
@@ -449,14 +474,19 @@ describe('AuthController', () => {
     });
 
     it('confirms password reset tokens through the auth service', async () => {
+        const request = createRequestMock({
+            ip: '198.51.100.25',
+            headers: { 'user-agent': 'Vitest Password Reset' },
+        });
         await expect(controller.confirmPasswordReset({
             token: 'reset_token_123456789012345678901234',
             password: 'new-password-1',
-        }, createRequestMock())).resolves.toEqual({ success: true });
+        }, request)).resolves.toEqual({ success: true });
 
         expect(authService.resetPasswordWithToken).toHaveBeenCalledWith(
             'reset_token_123456789012345678901234',
             'new-password-1',
+            { ipAddress: '198.51.100.25', userAgent: 'Vitest Password Reset' },
         );
     });
 
@@ -540,6 +570,8 @@ describe('AuthController', () => {
             signupCode: 'invite-123',
             termsAccepted: true,
             privacyAccepted: true,
+            termsVersion: CURRENT_TERMS_VERSION,
+            privacyVersion: CURRENT_PRIVACY_VERSION,
         }, createRequestMock())).resolves.toEqual({ success: true, onboardingChallengeToken: 'challenge-token' });
 
         expect(authService.createOnboardingSignupChallenge).toHaveBeenCalledWith('owner@example.com', {
@@ -547,6 +579,8 @@ describe('AuthController', () => {
             provisionTenantName: 'Acme Dining',
             termsAccepted: true,
             privacyAccepted: true,
+            termsVersion: CURRENT_TERMS_VERSION,
+            privacyVersion: CURRENT_PRIVACY_VERSION,
             signupCode: 'invite-123',
         });
         expect(otpService.generateOtp).not.toHaveBeenCalled();
@@ -562,6 +596,8 @@ describe('AuthController', () => {
             turnstileToken: 'turnstile-token',
             termsAccepted: true,
             privacyAccepted: true,
+            termsVersion: CURRENT_TERMS_VERSION,
+            privacyVersion: CURRENT_PRIVACY_VERSION,
         }, createRequestMock({ ip: '203.0.113.10' }))).resolves.toEqual({ success: true, onboardingChallengeToken: 'challenge-token' });
 
         expect(authService.createOnboardingSignupChallenge).toHaveBeenCalledWith('owner@example.com', {
@@ -569,6 +605,8 @@ describe('AuthController', () => {
             provisionTenantName: 'Acme Dining',
             termsAccepted: true,
             privacyAccepted: true,
+            termsVersion: CURRENT_TERMS_VERSION,
+            privacyVersion: CURRENT_PRIVACY_VERSION,
             signupChallengeToken: 'turnstile-token',
             signupChallengeRemoteIp: '203.0.113.10',
         });
@@ -582,6 +620,43 @@ describe('AuthController', () => {
 
         expect(authService.assertEmailOtpAllowed).not.toHaveBeenCalled();
         expect(otpService.generateOtp).not.toHaveBeenCalled();
+    });
+
+    it('keeps provider details and the submitted OTP out of authDebug failure logs', async () => {
+        const previousNodeEnv = process.env.NODE_ENV;
+        const previousAuthDebug = process.env.AUTH_DEBUG;
+        const secret = 'postgres://owner:db-secret@private-db.internal/auth';
+        const submittedOtp = '654321';
+        process.env.NODE_ENV = 'test';
+        process.env.AUTH_DEBUG = 'true';
+        otpService.verifyOtp.mockRejectedValue(
+            Object.assign(new Error('verification query failed for ' + secret + ' otp=' + submittedOtp), {
+                code: 'ECONNREFUSED',
+            }),
+        );
+        const log = vi.spyOn((controller as any).logger, 'log').mockImplementation(() => undefined);
+
+        try {
+            await expect(controller.verifyOtp({
+                email: 'owner@example.com',
+                code: submittedOtp,
+                tenantSlug: 'demo',
+            }, createRequestMock(), createResponseMock())).rejects.toThrow('verification query failed');
+
+            const logged = JSON.stringify(log.mock.calls);
+            expect(logged).toContain('verify_otp_failed');
+            expect(logged).toContain('connectivity');
+            expect(logged).toContain('ECONNREFUSED');
+            expect(logged).toContain('ow***@example.com');
+            expect(logged).not.toContain(secret);
+            expect(logged).not.toContain(submittedOtp);
+            expect(logged).not.toContain('verification query failed');
+        } finally {
+            if (previousNodeEnv === undefined) delete process.env.NODE_ENV;
+            else process.env.NODE_ENV = previousNodeEnv;
+            if (previousAuthDebug === undefined) delete process.env.AUTH_DEBUG;
+            else process.env.AUTH_DEBUG = previousAuthDebug;
+        }
     });
 
     it('binds onboarding OTP verification and provisioning to the submitted organization name', async () => {
@@ -604,6 +679,8 @@ describe('AuthController', () => {
             onboardingChallengeToken: 'challenge-token',
             termsAccepted: true,
             privacyAccepted: true,
+            termsVersion: CURRENT_TERMS_VERSION,
+            privacyVersion: CURRENT_PRIVACY_VERSION,
         }, createRequestMock(), res);
 
         expect(otpService.verifyOtp).not.toHaveBeenCalled();
@@ -615,6 +692,8 @@ describe('AuthController', () => {
                 provisionTenantName: 'Acme Dining',
                 termsAccepted: true,
                 privacyAccepted: true,
+                termsVersion: CURRENT_TERMS_VERSION,
+                privacyVersion: CURRENT_PRIVACY_VERSION,
                 signupCode: 'invite-123',
                 onboardingChallengeToken: 'challenge-token',
                 onboardingOtpCode: '123456',
@@ -667,6 +746,8 @@ describe('AuthController', () => {
             tenantName: 'Acme Dining',
             termsAccepted: true,
             privacyAccepted: true,
+            termsVersion: CURRENT_TERMS_VERSION,
+            privacyVersion: CURRENT_PRIVACY_VERSION,
         }, createRequestMock({ query: { next: '/onboarding?resume=first-location' } }), res);
 
         expect(res.json).toHaveBeenCalledWith({
@@ -822,7 +903,9 @@ describe('AuthController', () => {
 
         await controller.confirmMfaEnrollment(req, { code: '123456' }, res);
 
-        expect(authService.confirmMfaEnrollment).toHaveBeenCalledWith('u-1', '123456', req.user);
+        expect(authService.confirmMfaEnrollment).toHaveBeenCalledWith(
+            'u-1', '123456', req.user, { ipAddress: null, userAgent: null },
+        );
         expect(res.cookie).toHaveBeenCalledWith('access_token', 'verified-token', expect.objectContaining({
             httpOnly: true,
             maxAge: 25_000,
@@ -846,8 +929,12 @@ describe('AuthController', () => {
         await expect(controller.disableMfaAlias(req, { code: '123456' })).resolves.toEqual({ success: true, mfaEnabled: false });
 
         expect(authService.beginMfaEnrollment).toHaveBeenCalledWith('u-1', req.user);
-        expect(authService.confirmMfaEnrollment).toHaveBeenCalledWith('u-1', '123456', req.user);
-        expect(authService.disableMfa).toHaveBeenCalledWith('u-1', '123456', req.user);
+        expect(authService.confirmMfaEnrollment).toHaveBeenCalledWith(
+            'u-1', '123456', req.user, { ipAddress: null, userAgent: null },
+        );
+        expect(authService.disableMfa).toHaveBeenCalledWith(
+            'u-1', '123456', req.user, { ipAddress: null, userAgent: null },
+        );
     });
 
     it('disables voluntary MFA through the authenticated session', async () => {
@@ -858,7 +945,9 @@ describe('AuthController', () => {
             success: true,
             mfaEnabled: false,
         });
-        expect(authService.disableMfa).toHaveBeenCalledWith('u-1', '123456', req.user);
+        expect(authService.disableMfa).toHaveBeenCalledWith(
+            'u-1', '123456', req.user, { ipAddress: null, userAgent: null },
+        );
     });
 });
 
@@ -875,7 +964,6 @@ describe('JwtAuthGuard MFA boundary', () => {
 
     let jwtService: any;
     let authService: any;
-    let rbacService: any;
     let reflector: any;
     let guard: JwtAuthGuard;
 
@@ -895,19 +983,17 @@ describe('JwtAuthGuard MFA boundary', () => {
                 mfaRequired: true,
                 mfaVerified: false,
                 accessTokenMaxAgeMs: 30_000,
-            }),
-        };
-        rbacService = {
-            getEffectiveAccess: vi.fn().mockResolvedValue({
-                primaryRole: 'STAFF',
-                roles: [],
-                permissions: ['dashboard:access'],
+                access: {
+                    primaryRole: 'STAFF',
+                    roles: [],
+                    permissions: ['dashboard:access'],
+                },
             }),
         };
         reflector = {
             get: vi.fn().mockReturnValue(false),
         };
-        guard = new JwtAuthGuard(jwtService, authService, rbacService, reflector);
+        guard = new JwtAuthGuard(jwtService, authService, reflector);
     });
 
     it('blocks protected routes for unverified MFA sessions', async () => {

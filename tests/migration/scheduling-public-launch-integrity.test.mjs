@@ -78,15 +78,21 @@ test('confirmed incomplete schedule publications are age-leased for broker-loss 
 
 test('terminal schedule solve failures refund consumed wallet credits exactly once', () => {
   const worker = read('apps/worker/main.py');
-  const migration = read('packages/db/prisma/migrations/20260709_zzzzzz_schedule_solve_credit_refunds.sql');
+  const migration = read('packages/db/prisma/migrations/20260709_yyyyyy_schedule_solve_credit_refund_provenance_guard.sql');
 
   for (const source of [worker, migration]) {
     assert.match(source, /schedule-credit-refund-/);
+    assert.match(source, /schedule-credit-/);
     assert.match(source, /INSERT INTO "CreditTransaction"/);
-    assert.match(source, /ON CONFLICT \("id"\) DO NOTHING/);
     assert.match(source, /UPDATE "Tenant"/);
     assert.match(source, /"creditConsumption"->>'source' = 'credits'/);
+    assert.match(source, /debit\."amount"/);
   }
+  assert.match(migration, /ON CONFLICT \("id"\) DO NOTHING/);
+  assert.match(worker, /FOR UPDATE/);
+  assert.match(worker, /\(SELECT COUNT\(\*\) FROM refund_rows\) = 0/);
+  assert.match(worker, /job\."status" NOT IN \('SUCCEEDED', 'FAILED', 'DEAD_LETTERED'\)/);
+  assert.match(worker, /FROM updated_wallet wallet/);
   assert.match(worker, /status in \{"FAILED", "DEAD_LETTERED"\}/);
 });
 
@@ -100,10 +106,46 @@ test('permanent schedule publication failure terminalizes and refunds atomically
     assert.match(compose, new RegExp(setting));
     assert.match(publisher, new RegExp(setting));
   }
-  assert.match(publisher, /WITH terminalized_job AS/);
+  assert.match(publisher, /WITH locked_job AS MATERIALIZED/);
+  assert.match(publisher, /debit\."amount" = -job\."configuredAmount"/);
+  assert.match(publisher, /-provenance\."debitAmount"/);
   assert.match(publisher, /"status" = 'FAILED'/);
   assert.match(publisher, /"status" NOT IN \('SUCCEEDED', 'FAILED', 'DEAD_LETTERED'\)/);
   assert.match(publisher, /schedule-credit-refund-/);
   assert.match(publisher, /ON CONFLICT \("id"\) DO NOTHING/);
   assert.match(publisher, /FROM inserted_refund/);
+});
+
+test('schedule solve execution uses a durable single-owner lease', () => {
+  const schema = read('packages/db/prisma/schema.prisma');
+  const migration = read('packages/db/prisma/migrations/20260713_schedule_solve_execution_lease.sql');
+  const worker = read('apps/worker/main.py');
+
+  assert.match(schema, /executionToken\s+String\?/);
+  assert.match(schema, /executionLeaseUntil\s+DateTime\?/);
+  assert.match(migration, /ScheduleSolveJob_execution_owner_pair_check/);
+  assert.match(migration, /ScheduleSolveJob_executionLeaseUntil_idx/);
+  assert.match(worker, /"executionLeaseUntil" > CURRENT_TIMESTAMP/);
+  assert.match(worker, /"executionToken" = %s/);
+  assert.match(worker, /ScheduleJobBusyError/);
+  assert.match(worker, /ScheduleJobOwnershipLostError/);
+});
+
+test('terminal schedule solve rows erase queue payloads and execution claims', () => {
+  const migration = read('packages/db/prisma/migrations/20260713_schedule_solve_execution_lease.sql');
+
+  assert.match(migration, /scrub_terminal_schedule_solve_payload/);
+  assert.match(migration, /ScheduleSolveJob_terminal_payload_erasure/);
+  assert.match(migration, /ScheduleSolveJob_terminal_payload_erased_check/);
+  assert.match(migration, /"status" IN \('SUCCEEDED', 'FAILED', 'DEAD_LETTERED'\)/);
+  for (const field of [
+    'queuePayload',
+    'publishLeaseUntil',
+    'publishLastError',
+    'executionToken',
+    'executionLeaseUntil',
+  ]) {
+    assert.match(migration, new RegExp(`NEW\\."${field}" := NULL`));
+    assert.match(migration, new RegExp(`"${field}" IS NULL`));
+  }
 });

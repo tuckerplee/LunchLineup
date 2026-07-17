@@ -9,6 +9,8 @@ const mainTf = readFileSync(join(here, 'main.tf'), 'utf8');
 const versionsTf = readFileSync(join(here, 'versions.tf'), 'utf8');
 const readme = readFileSync(join(here, 'README.md'), 'utf8');
 const runbook = readFileSync(join(here, '..', '..', '..', 'docs', 'runbooks', 'production-readiness.md'), 'utf8');
+const compose = readFileSync(join(here, '..', '..', '..', 'docker-compose.yml'), 'utf8');
+const productionDataPolicy = readFileSync(join(here, '..', '..', '..', 'scripts', 'production-launch-policy-provider-billing.mjs'), 'utf8');
 const localIgnore = readFileSync(join(here, '.gitignore'), 'utf8');
 const terraformFiles = readdirSync(here)
   .filter((name) => name.endsWith('.tf'))
@@ -81,7 +83,7 @@ test('every Terraform source and mocked test has complete lexical structure', ()
   }
 });
 
-test('production Terraform contains provider-backed rebuild resources', () => {
+test('production Terraform contains only the provider-backed VM217 rebuild resource', () => {
   assert.doesNotMatch(allTf, /Architecture Part IX|docker_container|:latest/i);
   assert.match(mainTf, /variable "image_digests"/);
   assert.match(mainTf, /variable "vm_targets"/);
@@ -90,17 +92,40 @@ test('production Terraform contains provider-backed rebuild resources', () => {
   assert.match(mainTf, /variable "secrets_backend"/);
   assert.match(allTf, /source\s*=\s*"bpg\/proxmox"/);
   assert.match(allTf, /resource "proxmox_virtual_environment_vm" "app"/);
-  assert.match(allTf, /resource "proxmox_virtual_environment_vm" "data"/);
+  assert.doesNotMatch(allTf, /resource "proxmox_virtual_environment_vm" "data"/);
   assert.match(allTf, /resource "proxmox_virtual_environment_file" "cloud_init"/);
   assert.match(allTf, /resource "proxmox_virtual_environment_firewall_options" "app"/);
-  assert.match(allTf, /resource "proxmox_virtual_environment_firewall_rules" "data"/);
+  assert.doesNotMatch(allTf, /resource "proxmox_virtual_environment_firewall_(?:options|rules)" "data"/);
   assert.match(allTf, /resource "cloudflare_dns_record" "production"/);
   assert.match(allTf, /prevent_destroy\s*=\s*true/);
-  assert.match(allTf, /interface\s*=\s*"scsi1"/);
+  assert.match(allTf, /target[.]vm_id\s*==\s*217/);
+  assert.doesNotMatch(allTf, /target[.]vm_id\s*>=\s*100/);
+  assert.doesNotMatch(allTf, /proxmox_vms\["data"\]|interface\s*=\s*"scsi1"/);
 
   for (const service of ['api', 'web', 'engine', 'worker', 'control', 'migrate']) {
     assert.match(mainTf, new RegExp(`"${service}"`));
   }
+});
+
+test('VM217 Compose is the sole production data plane and aligns DSNs, backup, and PITR', () => {
+  assert.match(allTf, /version\s*=\s*"vm217-compose-v1"/);
+  assert.match(allTf, /runtime_owner\s*=\s*"docker-compose"/);
+  assert.match(allTf, /external_data_vm\s*=\s*"disabled"/);
+  assert.match(allTf, /database_dsn_host\s*=\s*"postgres"/);
+  assert.match(allTf, /backup_target_host\s*=\s*"postgres"/);
+  assert.match(allTf, /pitr_target_host\s*=\s*"postgres"/);
+  assert.doesNotMatch(allTf, /dport\s*=\s*"5432,6379,5672"/);
+
+  for (const service of ['pgbouncer', 'postgres', 'redis', 'rabbitmq']) {
+    assert.match(compose, new RegExp(`^  ${service}:\\r?\\n[\\s\\S]*?^    image:`, 'm'));
+  }
+  assert.match(compose, /DATABASE_URL=\$\{DATABASE_URL:\?Set validated percent-encoded DATABASE_URL in \.env\}/);
+  assert.match(compose, /MIGRATION_DATABASE_URL=\$\{MIGRATION_DATABASE_URL:\?Set validated percent-encoded MIGRATION_DATABASE_URL in \.env\}/);
+  assert.match(compose, /backup:[\s\S]*POSTGRES_HOST=postgres[\s\S]*depends_on:[\s\S]*postgres:[\s\S]*condition: service_healthy/);
+  assert.match(compose, /pitr-base-backup:[\s\S]*POSTGRES_HOST=postgres[\s\S]*depends_on:[\s\S]*postgres:[\s\S]*condition: service_healthy/);
+  assert.match(productionDataPolicy, /runtimeUrl\.hostname !== 'postgres'/);
+  assert.match(productionDataPolicy, /migrationUrl\.hostname !== 'postgres'/);
+  assert.match(productionDataPolicy, /Compose service postgres:5432\/POSTGRES_DB so logical backup and PITR protect the authoritative database/);
 });
 
 test('production Terraform blocks plan until real readiness inputs exist', () => {
@@ -120,7 +145,8 @@ test('mocked Terraform tests remain plan-only and use reserved fixture values', 
     assert.doesNotMatch(source, /command\s*=\s*apply/, `${name} must never apply`);
     assert.match(source, /[.]terraform[.]test/, `${name} must use reserved test domains`);
     assert.match(source, /192[.]0[.]2[.][0-9]+/, `${name} must use a documentation-only public address`);
-    assert.doesNotMatch(source, /(?:^|[^0-9])217(?:[^0-9]|$)/, `${name} must not reference VM217`);
+    assert.match(source, /vm_id\s*=\s*217/, `${name} must exercise the exact production VM ID`);
+    assert.match(source, /run "reject_non_217_production_vm_id"[\s\S]*vm_id\s*=\s*107[\s\S]*expect_failures\s*=\s*\[var[.]proxmox_vms\]/, `${name} must reject a non-217 VM ID`);
   }
 });
 
@@ -174,8 +200,6 @@ test('production Terraform rejects local-only or vague production controls', () 
   }
 
   assert.match(allTf, /input_policy\s*=\s*"DROP"/);
-  assert.match(allTf, /source\s*=\s*split\("\/", var\.proxmox_vms\["app"\]\.ipv4_cidr\)\[0\]/);
-  assert.match(allTf, /dport\s*=\s*"5432,6379,5672"/);
   assert.match(allTf, /CLOUDFLARE_API_TOKEN/);
   assert.match(allTf, /PROXMOX_VE_API_TOKEN/);
   assert.doesNotMatch(allTf, /variable "(api_token|password|private_key|cloudflare_api_token)"/);

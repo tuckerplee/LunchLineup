@@ -7,7 +7,6 @@ import { buildDeploymentContract } from './write-deployment-contract.mjs';
 const requiredServices = ['api', 'web', 'engine', 'worker', 'migrate', 'control', 'backup'];
 const publicBuildConfigKeys = [
   'NEXT_PUBLIC_API_URL',
-  'NEXT_PUBLIC_WS_URL',
   'NEXT_PUBLIC_OIDC_ENABLED',
   'NEXT_PUBLIC_SIGNUP_MODE',
   'NEXT_PUBLIC_TURNSTILE_SITE_KEY',
@@ -474,18 +473,6 @@ function verifyPublicBuildConfig(config) {
     verifyPublicBuildHttpsUrl(values, 'NEXT_PUBLIC_API_URL');
   }
 
-  const wsUrl = requirePublicBuildValue(values, 'NEXT_PUBLIC_WS_URL');
-  if (wsUrl) {
-    try {
-      const url = new URL(wsUrl);
-      if (url.protocol !== 'wss:' || !isPublicProofHostname(url.hostname)) {
-        fail('publicBuildConfig.values.NEXT_PUBLIC_WS_URL must use wss and a real public hostname.');
-      }
-    } catch {
-      fail('publicBuildConfig.values.NEXT_PUBLIC_WS_URL must be a valid wss URL.');
-    }
-  }
-
   const oidcEnabled = requirePublicBuildValue(values, 'NEXT_PUBLIC_OIDC_ENABLED').toLowerCase();
   if (!['true', 'false'].includes(oidcEnabled)) {
     fail('publicBuildConfig.values.NEXT_PUBLIC_OIDC_ENABLED must be true or false.');
@@ -816,7 +803,7 @@ function verifyWorkflowServiceImages(workflowFile) {
   let checkedImages = 0;
 
   for (const [index, line] of lines.entries()) {
-    const imageMatch = line.match(/^\s+image:\s*(.+?)\s*$/);
+    const imageMatch = line.match(/^ {8}image:\s*(.+?)\s*$/);
     if (!imageMatch) {
       continue;
     }
@@ -827,6 +814,173 @@ function verifyWorkflowServiceImages(workflowFile) {
 
   if (checkedImages === 0) {
     fail(`${workflowFile} did not contain any CI service images to verify.`);
+  }
+}
+
+const fixedProductionAggregateLines = Object.freeze([
+  'set -euo pipefail',
+  'test -n "$VM217_HOST"',
+  'test -n "$VM217_USER"',
+  'test -n "$VM217_SSH_PRIVATE_KEY"',
+  'test -n "$VM217_SSH_KNOWN_HOSTS"',
+  'private_key="$RUNNER_TEMP/lunchlineup-vm217-private-key"',
+  'known_hosts="$RUNNER_TEMP/lunchlineup-vm217-known-hosts"',
+  'launch_proof="$RUNNER_TEMP/lunchlineup-deployed-inputs/launch-proof.json"',
+  'rm -f "$private_key" "$known_hosts"',
+  'install -m 600 /dev/null "$private_key"',
+  'install -m 600 /dev/null "$known_hosts"',
+  'printf \'%s\\n\' "$VM217_SSH_PRIVATE_KEY" > "$private_key"',
+  'printf \'%s\\n\' "$VM217_SSH_KNOWN_HOSTS" > "$known_hosts"',
+  'unset VM217_SSH_PRIVATE_KEY VM217_SSH_KNOWN_HOSTS',
+  'test -s "$launch_proof"',
+  'deploy_status=0',
+  'mutation_seconds="$(node scripts/validate-production-deploy-deadlines.mjs remaining --phase mutation --maximum-seconds "$VM217_MUTATION_BUDGET_SECONDS")" || deploy_status=$?',
+  'if [ "$deploy_status" -eq 0 ]; then',
+  'timeout --signal=TERM --kill-after="${PRODUCTION_DEPLOY_TIMEOUT_KILL_RESERVE_SECONDS}s" "${mutation_seconds}s" env VM217_MUTATION_BUDGET_SECONDS="$mutation_seconds" VM217_SSH_COMMAND_TIMEOUT_SECONDS="$mutation_seconds" PRODUCTION_API_HEALTH_URL="$PRODUCTION_API_HEALTH_URL" PRODUCTION_WEB_URL="$PRODUCTION_WEB_URL" LAUNCH_PROOF_MANIFEST_URI="$LAUNCH_PROOF_MANIFEST_URI" EXPECTED_CURRENT_RELEASE_SHA="$EXPECTED_CURRENT_RELEASE_SHA" bash scripts/deploy-vm217-transport.sh --host "$VM217_HOST" --user "$VM217_USER" --private-key "$private_key" --known-hosts "$known_hosts" --release-manifest "$RELEASE_MANIFEST_PATH" --runtime-env "$PRODUCTION_RUNTIME_ENV_PATH" --launch-proof "$launch_proof" --source-sha "$RELEASE_SOURCE_SHA" || deploy_status=$?',
+  'fi',
+  'reconcile_status=0',
+  'reconciliation_seconds="$(node scripts/validate-production-deploy-deadlines.mjs remaining --phase reconciliation --maximum-seconds "$PRODUCTION_DEPLOY_RECONCILIATION_RESERVE_SECONDS")" || reconcile_status=$?',
+  'if [ "$reconcile_status" -eq 0 ]; then',
+  'timeout --signal=TERM --kill-after="${PRODUCTION_DEPLOY_TIMEOUT_KILL_RESERVE_SECONDS}s" "${reconciliation_seconds}s" env VM217_RECONCILE_ONLY=true env VM217_SSH_RECONCILE_TIMEOUT_SECONDS="$reconciliation_seconds" PRODUCTION_API_HEALTH_URL="$PRODUCTION_API_HEALTH_URL" PRODUCTION_WEB_URL="$PRODUCTION_WEB_URL" LAUNCH_PROOF_MANIFEST_URI="$LAUNCH_PROOF_MANIFEST_URI" EXPECTED_CURRENT_RELEASE_SHA="$EXPECTED_CURRENT_RELEASE_SHA" bash scripts/deploy-vm217-transport.sh --host "$VM217_HOST" --user "$VM217_USER" --private-key "$private_key" --known-hosts "$known_hosts" --release-manifest "$RELEASE_MANIFEST_PATH" --runtime-env "$PRODUCTION_RUNTIME_ENV_PATH" --launch-proof "$launch_proof" --source-sha "$RELEASE_SOURCE_SHA" || reconcile_status=$?',
+  'fi',
+  'cleanup_status=0',
+  'clone_driver="$RUNNER_TEMP/lunchlineup-compatibility-clone-driver.sh"',
+  'clone_env="$RUNNER_TEMP/lunchlineup-compatibility-clone.env"',
+  'clone_suffix="$(printf \'%s\' "deploy:$GITHUB_RUN_ID:$GITHUB_RUN_ATTEMPT" | sha256sum | cut -c1-12)"',
+  'clone_id="llc-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT-$clone_suffix"',
+  'if [ -f "$clone_driver" ]; then',
+  'cleanup_seconds="$(node scripts/validate-production-deploy-deadlines.mjs remaining --phase cleanup --maximum-seconds "$PRODUCTION_DEPLOY_CLEANUP_RESERVE_SECONDS")" || cleanup_status=$?',
+  'if [ "$cleanup_status" -eq 0 ]; then',
+  'timeout --signal=TERM --kill-after="${PRODUCTION_DEPLOY_TIMEOUT_KILL_RESERVE_SECONDS}s" "${cleanup_seconds}s" bash scripts/destroy-old-release-compatibility-clone.sh --driver "$clone_driver" --clone-env "$clone_env" --clone-id "$clone_id" --production-runtime-env "${PRODUCTION_RUNTIME_ENV_PATH:-}" --timeout-seconds "$cleanup_seconds" || cleanup_status=$?',
+  'fi',
+  'fi',
+  'rm -f "$private_key" "$known_hosts"',
+  'rm -rf "$RUNNER_TEMP/old-release-compatibility-evidence"',
+  'rm -f "$RUNNER_TEMP/lunchlineup-runtime.env" "$RUNNER_TEMP/lunchlineup-previous-runtime.env"',
+  'if [ -n "${PREVIOUS_RELEASE_MANIFEST_PATH:-}" ]; then',
+  'rm -rf "$(dirname "$PREVIOUS_RELEASE_MANIFEST_PATH")"',
+  'fi',
+  'if [ "$deploy_status" -ne 0 ]; then exit "$deploy_status"; fi',
+  'if [ "$reconcile_status" -ne 0 ]; then exit "$reconcile_status"; fi',
+  'exit "$cleanup_status"',
+]);
+
+function normalizedWorkflowShellLines(source) {
+  return source
+    .replace(/\\\r?\n[ \t]*/g, ' ')
+    .split(/\r?\n/)
+    .map((line) => line.trim().replace(/[ \t]+/g, ' '))
+    .filter(Boolean);
+}
+
+function verifyFixedProductionAggregate(aggregate, workflowFile) {
+  const actualLines = normalizedWorkflowShellLines(aggregate.slice(aggregate.indexOf('run: |') + 'run: |'.length));
+  if (actualLines.length !== fixedProductionAggregateLines.length
+    || actualLines.some((line, index) => line !== fixedProductionAggregateLines[index])) {
+    fail(`${workflowFile} normal production deploy must contain only the exact fixed transport orchestration; shell construction, indirection, sourced helpers, and added executable commands are forbidden.`);
+  }
+}
+
+function verifyProductionDeployDeadlineOwner(workflowFile) {
+  const workflow = readText(workflowFile, 'workflow file');
+  const jobStart = workflow.indexOf('\n  deploy-production:');
+  const jobEnd = workflow.indexOf('\n  production-image-inventory:', jobStart);
+  if (jobStart < 0 || jobEnd <= jobStart) {
+    fail(`${workflowFile} must contain the normal production release transaction job.`);
+  }
+  const job = workflow.slice(jobStart, jobEnd);
+  if (/\n  production-(?:smoke|rollback):/.test(workflow)) {
+    fail(`${workflowFile} normal production deploy, smoke, publication, and automatic rollback must share one protected production job.`);
+  }
+  if (/PRODUCTION_DEPLOY_COMMAND|lunchlineup-deploy-production\.sh/.test(job)) {
+    fail(`${workflowFile} normal production deploy must not trust mutable command text or a runner-temporary deploy helper.`);
+  }
+  const requiredPatterns = [
+    [/timeout-minutes:\s*180\b/, 'reserve one bounded outer window for deploy, smoke, publication, and automatic rollback'],
+    [/environment:\s*production\b/, 'use one protected production environment approval for the complete release transaction'],
+    [/PRODUCTION_RELEASE_TRANSACTION_TIMEOUT_SECONDS:\s*'10800'/, 'declare the exact release transaction deadline in seconds'],
+    [/PRODUCTION_DEPLOY_PHASE_TIMEOUT_SECONDS:\s*'5400'/, 'declare the exact deploy phase deadline in seconds'],
+    [/PRODUCTION_AUTOMATIC_ROLLBACK_POST_MUTATION_RESERVE_SECONDS:\s*'900'/, 'reserve time after automatic rollback mutation for proof and cleanup'],
+    [/PRODUCTION_DEPLOY_COMPATIBILITY_PREFLIGHT_TIMEOUT_SECONDS:\s*'120'/, 'bound the distinct compatibility preflight'],
+    [/Capture production deploy runner deadline origin[\s\S]*date \+%s/, 'capture its deadline origin before checkout and setup'],
+    [/validate-production-deploy-deadlines\.mjs start --github-env "\$GITHUB_ENV"/, 'start the checked-in aggregate deadline owner'],
+    [/id:\s*production_deploy[\s\S]*if:\s*\$\{\{ !cancelled\(\) && steps\.arm_production_rollback\.outcome == 'success' \}\}/, 'refuse to start candidate mutation after workflow cancellation'],
+    [/validate-production-deploy-deadlines\.mjs remaining[\s\S]*--phase "\$1"[\s\S]*--maximum-seconds "\$2"/, 'debit elapsed setup and preflight time from each phase'],
+    [/timeout[\s\S]*--signal=TERM[\s\S]*--kill-after="\$\{PRODUCTION_DEPLOY_TIMEOUT_KILL_RESERVE_SECONDS\}s"/, 'hard-kill TERM-ignoring phase commands'],
+    [/VM217_HOST:\s*\$\{\{ vars\.VM217_HOST \}\}[\s\S]*VM217_USER:\s*\$\{\{ vars\.VM217_USER \}\}[\s\S]*VM217_SSH_PRIVATE_KEY:\s*\$\{\{ secrets\.VM217_SSH_PRIVATE_KEY \}\}[\s\S]*VM217_SSH_KNOWN_HOSTS:\s*\$\{\{ secrets\.VM217_SSH_KNOWN_HOSTS \}\}/, 'bind explicit protected host, user, private-key, and pinned known-host inputs'],
+    [/phase_seconds compatibility "\$PRODUCTION_DEPLOY_CLONE_PROVISION_TIMEOUT_SECONDS"/, 'derive compatibility clone provisioning from the remaining absolute deadline'],
+    [/phase_seconds compatibility "\$PRODUCTION_DEPLOY_COMPATIBILITY_PREFLIGHT_TIMEOUT_SECONDS"/, 'derive compatibility preflight from the remaining absolute deadline'],
+    [/phase_seconds compatibility "\$PRODUCTION_DEPLOY_COMPATIBILITY_PROVIDER_TIMEOUT_SECONDS"/, 'derive compatibility provider execution from the remaining absolute deadline'],
+    [/cleanup_compatibility_clone\(\)[\s\S]*phase_seconds compatibility-cleanup[\s\S]*trap cleanup_compatibility_clone EXIT/, 'reserve an always-run compatibility clone cleanup deadline'],
+    [/destroy-old-release-compatibility-clone\.sh[\s\S]*--timeout-seconds "\$cleanup_seconds"/, 'run bounded clone cleanup before returning from the aggregate step'],
+    [/--phase runner-cleanup[\s\S]*--maximum-seconds "\$PRODUCTION_DEPLOY_RUNNER_RESERVE_SECONDS"/, 'retain an absolute runner-cutoff cleanup fallback for preflight failures'],
+    [/id:\s*production_smoke[\s\S]*id:\s*publish_release[\s\S]*id:\s*same_gate_release_outcome/, 'run smoke, publication, and release-outcome ownership after the deploy in the same protected job'],
+    [/id:\s*same_gate_release_outcome[\s\S]*if:\s*always\(\) && steps\.arm_production_rollback\.outcome == 'success'/, 'evaluate every post-arm release outcome even after a failed step'],
+    [/id:\s*materialize_automatic_rollback[\s\S]*steps\.same_gate_release_outcome\.outcome != 'success'[\s\S]*id:\s*automatic_production_rollback[\s\S]*id:\s*prove_automatic_production_rollback/, 'fail closed into materialization, rollback, and independent rollback proof'],
+    [/automatic-rollback-cutoff[\s\S]*export VM217_MUTATION_NOT_AFTER_EPOCH_SECONDS="\$rollback_mutation_not_after"[\s\S]*rollback-vm217-transport\.sh/, 'replace the deploy cutoff with a transaction-bounded automatic rollback cutoff'],
+    [/Require completed automatic rollback after release failure[\s\S]*ROLLBACK_PROOF_OUTCOME[\s\S]*test "\$ROLLBACK_PROOF_OUTCOME" = success/, 'require every automatic rollback phase to complete successfully'],
+  ];
+  for (const [pattern, requirement] of requiredPatterns) {
+    if (!pattern.test(job)) fail(`${workflowFile} normal production deploy must ${requirement}.`);
+  }
+  const aggregateStart = job.indexOf('17. Guarded production deploy; Reconcile exact VM217');
+  const aggregateEnd = job.indexOf('\n      - name: Verify deployed release inputs remain exact', aggregateStart);
+  const aggregate = job.slice(aggregateStart, aggregateEnd);
+  if (aggregateStart < 0 || aggregateEnd <= aggregateStart || aggregate.includes('--foreground')) {
+    fail(`${workflowFile} normal production deploy timeout must own the external command process group.`);
+  }
+  verifyFixedProductionAggregate(aggregate, workflowFile);
+
+  const compatibilityStart = job.indexOf('Execute previous release against candidate schema clone');
+  const compatibilityEnd = job.indexOf('\n      - name: Retain executable old-release compatibility evidence', compatibilityStart);
+  const compatibility = job.slice(compatibilityStart, compatibilityEnd);
+  const cleanupTrap = compatibility.indexOf('trap cleanup_compatibility_clone EXIT');
+  const preflight = compatibility.indexOf('node scripts/old-release-compatibility-harness.mjs preflight');
+  const run = compatibility.indexOf('node scripts/old-release-compatibility-harness.mjs run');
+  if (compatibilityStart < 0 || compatibilityEnd <= compatibilityStart
+    || cleanupTrap < 0 || preflight <= cleanupTrap || run <= preflight
+    || (compatibility.match(/old-release-compatibility-harness\.mjs preflight/g) ?? []).length !== 1
+    || (compatibility.match(/old-release-compatibility-harness\.mjs run/g) ?? []).length !== 1
+    || !/"\$\{preflight_seconds\}s"[\s\S]*node scripts\/old-release-compatibility-harness\.mjs preflight/.test(compatibility)) {
+    fail(`${workflowFile} normal production compatibility must run one bounded preflight after clone cleanup is armed and before provider execution.`);
+  }
+  const normalizedAggregate = aggregate
+    .replace(/\\\r?\n\s*/g, ' ')
+    .replace(/[ \t]+/g, ' ');
+  const fixedTransportInvocations = normalizedAggregate.match(
+    /bash scripts\/deploy-vm217-transport\.sh --host "\$VM217_HOST" --user "\$VM217_USER" --private-key "\$private_key" --known-hosts "\$known_hosts" --release-manifest "\$RELEASE_MANIFEST_PATH" --runtime-env "\$PRODUCTION_RUNTIME_ENV_PATH" --launch-proof "\$launch_proof" --source-sha "\$RELEASE_SOURCE_SHA" (?=\|\|)/g,
+  ) ?? [];
+  if (fixedTransportInvocations.length !== 2
+    || (normalizedAggregate.match(/deploy-vm217-transport\.sh/g) ?? []).length !== 2) {
+    fail(`${workflowFile} normal production deploy must directly invoke scripts/deploy-vm217-transport.sh twice with every explicit protected and release input.`);
+  }
+  if (!/VM217_MUTATION_BUDGET_SECONDS="\$mutation_seconds"[\s\S]*bash scripts\/deploy-vm217-transport\.sh/.test(aggregate)) {
+    fail(`${workflowFile} normal production mutation must run the fixed transport under the remaining mutation deadline.`);
+  }
+  if (!/VM217_RECONCILE_ONLY=true[\s\S]*bash scripts\/deploy-vm217-transport\.sh/.test(aggregate)) {
+    fail(`${workflowFile} normal production reconciliation must run the fixed transport in exact-state reconcile mode.`);
+  }
+
+  const capture = job.indexOf('Capture production deploy runner deadline origin');
+  const checkout = job.indexOf('actions/checkout@');
+  const owner = job.indexOf('Start production deploy aggregate deadline');
+  const setup = job.indexOf('actions/setup-node@');
+  const mutation = job.indexOf('VM217_MUTATION_BUDGET_SECONDS="$mutation_seconds"');
+  const reconciliation = job.indexOf('VM217_RECONCILE_ONLY=true');
+  const cleanup = job.indexOf('destroy-old-release-compatibility-clone.sh', reconciliation);
+  if (!(capture < checkout && checkout < owner && owner < setup
+    && setup < mutation && mutation < reconciliation && reconciliation < cleanup)) {
+    fail(`${workflowFile} normal production deploy deadline, mutation, reconciliation, and cleanup order is unsafe.`);
+  }
+  const smoke = job.indexOf('id: production_smoke');
+  const publish = job.indexOf('id: publish_release');
+  const outcome = job.indexOf('id: same_gate_release_outcome');
+  const rollback = job.indexOf('id: automatic_production_rollback');
+  const rollbackProof = job.indexOf('id: prove_automatic_production_rollback');
+  const rollbackRequirement = job.indexOf('Require completed automatic rollback after release failure');
+  if (!(cleanup < smoke && smoke < publish && publish < outcome
+    && outcome < rollback && rollback < rollbackProof && rollbackProof < rollbackRequirement)) {
+    fail(`${workflowFile} normal production release transaction step order is unsafe.`);
   }
 }
 
@@ -905,6 +1059,23 @@ function verifyNoMutableCommand(command, label) {
     }
   }
 
+  for (const invocation of composeInvocations(command)) {
+    for (const [flag, pattern] of [
+      ['--project-name', /(^|\s)--project-name(?:=|\s+)(?:"[^"]+"|'[^']+'|(?!-)\S+)/i],
+      ['--project-directory', /(^|\s)--project-directory(?:=|\s+)(?:"[^"]+"|'[^']+'|(?!-)\S+)/i],
+      ['--env-file', /(^|\s)--env-file(?:=|\s+)(?:"[^"]+"|'[^']+'|(?!-)\S+)/i],
+      ['-f', /(^|\s)-f(?:=|\s+)(?:"[^"]+"|'[^']+'|(?!-)\S+)/i],
+    ]) {
+      const occurrences = invocation.match(new RegExp(pattern.source, 'gi')) ?? [];
+      if (occurrences.length === 0) {
+        fail(`${label} uses docker compose without ${flag}.`);
+      }
+      if (occurrences.length !== 1) {
+        fail(`${label} must use docker compose scope flag ${flag} exactly once.`);
+      }
+    }
+  }
+
   for (const invocation of composeUpInvocations(command)) {
     if (!/(^|\s)--no-build(\s|$)/i.test(invocation)) {
       fail(`${label} uses docker compose up without --no-build.`);
@@ -916,22 +1087,23 @@ function verifyNoMutableCommand(command, label) {
   }
 }
 
+function composeInvocations(command) {
+  const normalized = command
+    .replace(/\\\r?\n\s*/g, ' ')
+    .replace(/\r?\n/g, ' ');
+  return normalized.match(/\bdocker(?:\s+compose|-compose)\b[^;&|]*/gi) ?? [];
+}
+
 function composeUpInvocations(command) {
-  return (command.match(/\bdocker(?:\s+compose|-compose)\b[^\n;&|]*/gi) ?? [])
+  return composeInvocations(command)
     .filter((invocation) => /\bup\b/i.test(invocation));
-}
-
-function hasComposeEnvFileBinding(command) {
-  const envFileValuePattern = /--env-file(?:=|\s+)(?:"\$(?:\{COMPOSE_SERVICE_ENV_FILE\}|COMPOSE_SERVICE_ENV_FILE)"|'\$(?:\{COMPOSE_SERVICE_ENV_FILE\}|COMPOSE_SERVICE_ENV_FILE)'|\$\{COMPOSE_SERVICE_ENV_FILE\}|\$COMPOSE_SERVICE_ENV_FILE|\$env:COMPOSE_SERVICE_ENV_FILE|%COMPOSE_SERVICE_ENV_FILE%)/i;
-  return composeUpInvocations(command).some((invocation) => envFileValuePattern.test(invocation));
-}
-
-function hasDoubleQuotedVariable(command, name) {
-  return new RegExp(`"\\$(?:${name}|\\{${name}\\})"`).test(command);
 }
 
 function verifyDeployCommand(command, name, manifestPath) {
   const label = `${name} deploy command`;
+  if (name === 'PRODUCTION_DEPLOY_COMMAND') {
+    fail('PRODUCTION_DEPLOY_COMMAND is forbidden; normal production mutation must invoke checked-in scripts/deploy-vm217-transport.sh directly.');
+  }
   const manifestName = basename(manifestPath);
   const normalizedCommand = command
     .trim()
@@ -955,32 +1127,6 @@ function verifyDeployCommand(command, name, manifestPath) {
     fail(`${label} must consume RELEASE_MANIFEST_PATH or ${manifestName}.`);
   }
 
-  if (name === 'PRODUCTION_DEPLOY_COMMAND') {
-    if (!/(?:PRODUCTION_RUNTIME_ENV_PATH|COMPOSE_SERVICE_ENV_FILE)/.test(command)) {
-      fail(`${label} must consume the validated production runtime env via PRODUCTION_RUNTIME_ENV_PATH or COMPOSE_SERVICE_ENV_FILE.`);
-    }
-    if (!command.includes('PRODUCTION_RUNTIME_ENV_SHA256')) {
-      fail(`${label} must consume PRODUCTION_RUNTIME_ENV_SHA256 so deploy can bind the validated env to the server mutation.`);
-    }
-    if (!hasComposeEnvFileBinding(command)) {
-      fail(`${label} must start docker compose with --env-file \"$COMPOSE_SERVICE_ENV_FILE\" so the SHA-checked production env is bound to the server mutation.`);
-    }
-    if (!command.includes('LAUNCH_PROOF_ARTIFACT_SHA256')) {
-      fail(`${label} must pass LAUNCH_PROOF_ARTIFACT_SHA256 so VM217 verifies the exact proof bytes approved by CI.`);
-    }
-    if (!command.includes('LAUNCH_PROOF_MAX_AGE_SECONDS')) {
-      fail(`${label} must pass LAUNCH_PROOF_MAX_AGE_SECONDS so VM217 enforces the CI proof-freshness bound.`);
-    }
-    for (const requiredInput of [
-      'PRODUCTION_API_HEALTH_URL',
-      'PRODUCTION_WEB_URL',
-      'LAUNCH_PROOF_MANIFEST_URI',
-    ]) {
-      if (!hasDoubleQuotedVariable(command, requiredInput)) {
-        fail(`${label} must safely forward ${requiredInput} as a double-quoted variable to the remote deploy.`);
-      }
-    }
-  }
 }
 
 function verifyRollbackCommand(command, name) {
@@ -1052,6 +1198,7 @@ const { sourceSha, productionHealthProof } = verifyManifest(manifest, options.so
 verifyDockerfileBaseImages(options.dockerfileDir);
 verifyComposeThirdPartyImages(options.composeFile);
 verifyWorkflowServiceImages(options.workflowFile);
+if (options.launchProofMode === 'candidate') verifyProductionDeployDeadlineOwner(options.workflowFile);
 if (options.launchProofFile) {
   verifyLaunchProofFile(
     options.launchProofFile,

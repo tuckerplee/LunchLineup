@@ -2,11 +2,17 @@ import { Injectable, Optional, ServiceUnavailableException } from '@nestjs/commo
 import { ConfigService } from '@nestjs/config';
 import { Prisma } from '@prisma/client';
 import crypto from 'crypto';
-import { redactSensitiveText } from '../common/sensitive-redaction';
+import { FEATURE_CREDIT_COST } from '../billing/plan-definitions';
+import { runtimeErrorText } from '../common/runtime-error-diagnostic';
 import { TenantPrismaService, type TenantPrismaTransaction } from '../database/tenant-prisma.service';
 import { WebhookDeliveryCrypto } from './webhook-delivery.crypto';
 
 const MAX_LAST_ERROR_LENGTH = 1000;
+const TERMINAL_DELIVERY_ERASURE = {
+    encryptedUrl: '',
+    encryptedPayload: '',
+    encryptionKeyRef: 'erased-v1',
+} as const;
 const REPLAYABLE_DELIVERY_STATUSES: WebhookDeliveryStatus[] = ['PENDING', 'QUEUED', 'FAILED'];
 const MAX_REPLAY_BACKOFF_MS = 5 * 60 * 1000;
 const DEFAULT_REPLAY_LEASE_MS = 60_000;
@@ -22,15 +28,15 @@ const MAX_CONFIRMED_QUEUE_RECOVERY_AGE_MS = 24 * 60 * 60_000;
 const DEFAULT_INITIAL_DELIVERY_LEASE_MS = 60_000;
 const MIN_INITIAL_DELIVERY_LEASE_MS = 10_000;
 const MAX_INITIAL_DELIVERY_LEASE_MS = 5 * 60_000;
-const WEBHOOK_DELIVERY_ELIGIBLE_TENANT_STATUSES = ['ACTIVE', 'TRIAL'] as const;
-
-function deliveryEligibleTenantWhere(now: Date) {
+const WEBHOOK_CREDIT_COST = FEATURE_CREDIT_COST.webhooks;
+function deliveryEligibleTenantWhere(now = new Date()) {
     return {
         deletedAt: null,
-        OR: [
-            { status: 'ACTIVE' },
-            { status: 'TRIAL', trialEndsAt: { gt: now } },
-        ],
+        status: 'ACTIVE',
+        planTier: { not: 'FREE' },
+        stripeSubscriptionId: { not: null },
+        NOT: { stripeSubscriptionId: '' },
+        stripeSubscriptionCurrentPeriodEnd: { gt: now },
     };
 }
 
@@ -125,6 +131,7 @@ export class WebhookDeliveryStore {
     async claimInitialDelivery(tenantId: string, deliveryId: string): Promise<boolean> {
         return this.tenantDb.withTenant(tenantId, async (tx) => {
             const now = new Date();
+            if (!await this.hasExactPaidDeliveryAuthority(tx, deliveryId, tenantId)) return false;
             const claimed = await (tx as any).webhookDelivery.updateMany({
                 where: {
                     id: deliveryId,
@@ -238,14 +245,21 @@ export class WebhookDeliveryStore {
                         ON endpoint."id" = delivery."endpointId"
                        AND endpoint."tenantId" = delivery."tenantId"
                     WHERE tenant."deletedAt" IS NULL
-                      AND (
-                          tenant."status" = 'ACTIVE'::"TenantStatus"
-                          OR (
-                              tenant."status" = 'TRIAL'::"TenantStatus"
-                              AND tenant."trialEndsAt" > ${now}
-                          )
-                      )
+                      AND tenant."status" = 'ACTIVE'::"TenantStatus"
+                      AND tenant."planTier" <> 'FREE'::"PlanTier"
+                      AND NULLIF(BTRIM(tenant."stripeSubscriptionId"), '') IS NOT NULL
+                      AND tenant."stripeSubscriptionCurrentPeriodEnd" > CURRENT_TIMESTAMP
                       AND endpoint."active" = true
+                      AND EXISTS (
+                          SELECT 1
+                          FROM "CreditTransaction" AS credit
+                          WHERE credit."id" = 'feature-usage-webhook-delivery:' || delivery."id"
+                            AND credit."tenantId" = delivery."tenantId"
+                            AND credit."amount" = ${-WEBHOOK_CREDIT_COST}
+                            AND credit."reason" = 'Webhook delivery (' || delivery."id" || ')'
+                            AND credit."balanceAfter" IS NOT NULL
+                            AND credit."balanceAfter" >= 0
+                      )
                       AND ((delivery."status" IN (
                             'PENDING'::"WebhookDeliveryStatus",
                             'QUEUED'::"WebhookDeliveryStatus",
@@ -316,6 +330,9 @@ export class WebhookDeliveryStore {
             const now = new Date();
             const leaseMs = this.resolveReplayLeaseMs();
             const staleBefore = new Date(now.getTime() - leaseMs);
+            if (!await this.hasExactPaidDeliveryAuthority(tx, deliveryId)) {
+                return { status: 'not_found' };
+            }
             const claimed = await (tx as any).webhookDelivery.updateMany({
                 where: {
                     id: deliveryId,
@@ -348,9 +365,6 @@ export class WebhookDeliveryStore {
                 const current = await (tx as any).webhookDelivery.findFirst({
                     where: {
                         id: deliveryId,
-                        tenant: {
-                            is: deliveryEligibleTenantWhere(now),
-                        },
                     },
                     select: {
                         status: true,
@@ -376,9 +390,6 @@ export class WebhookDeliveryStore {
                 where: {
                     id: deliveryId,
                     status: 'SENDING' satisfies WebhookDeliveryStatus,
-                    tenant: {
-                        is: deliveryEligibleTenantWhere(now),
-                    },
                 },
                 select: {
                     id: true,
@@ -415,6 +426,7 @@ export class WebhookDeliveryStore {
                         status: 'DEAD_LETTERED',
                         nextAttemptAt: null,
                         lastError: 'Webhook endpoint is not active',
+                        ...TERMINAL_DELIVERY_ERASURE,
                     },
                 });
                 return { status: 'not_found' };
@@ -447,8 +459,20 @@ export class WebhookDeliveryStore {
             const leaseState = await (tx as any).$queryRaw(Prisma.sql`
                 SELECT tenant."status" AS "tenantStatus",
                     tenant."deletedAt" AS "tenantDeletedAt",
-                    tenant."trialEndsAt" AS "tenantTrialEndsAt",
-                    endpoint."active" AS "endpointActive"
+                    tenant."planTier"::text AS "tenantPlanTier",
+                    tenant."stripeSubscriptionId" AS "tenantStripeSubscriptionId",
+                    tenant."stripeSubscriptionCurrentPeriodEnd" AS "tenantPaidThrough",
+                    endpoint."active" AS "endpointActive",
+                    EXISTS (
+                        SELECT 1
+                        FROM "CreditTransaction" AS credit
+                        WHERE credit."id" = 'feature-usage-webhook-delivery:' || delivery."id"
+                          AND credit."tenantId" = delivery."tenantId"
+                          AND credit."amount" = ${-WEBHOOK_CREDIT_COST}
+                          AND credit."reason" = 'Webhook delivery (' || delivery."id" || ')'
+                          AND credit."balanceAfter" IS NOT NULL
+                          AND credit."balanceAfter" >= 0
+                    ) AS "hasExactCreditReservation"
                 FROM "WebhookDelivery" AS delivery
                 INNER JOIN "Tenant" AS tenant ON tenant."id" = delivery."tenantId"
                 INNER JOIN "WebhookEndpoint" AS endpoint
@@ -461,8 +485,11 @@ export class WebhookDeliveryStore {
             `) as Array<{
                 tenantStatus: string;
                 tenantDeletedAt: Date | null;
-                tenantTrialEndsAt: Date | null;
+                tenantPlanTier: string;
+                tenantStripeSubscriptionId: string | null;
+                tenantPaidThrough: Date | null;
                 endpointActive: boolean;
+                hasExactCreditReservation: boolean;
             }>;
 
             const current = leaseState[0];
@@ -470,10 +497,12 @@ export class WebhookDeliveryStore {
             const deliveryEligible = current
                 && current.endpointActive
                 && current.tenantDeletedAt === null
-                && (current.tenantStatus === WEBHOOK_DELIVERY_ELIGIBLE_TENANT_STATUSES[0]
-                    || (current.tenantStatus === WEBHOOK_DELIVERY_ELIGIBLE_TENANT_STATUSES[1]
-                        && current.tenantTrialEndsAt !== null
-                        && current.tenantTrialEndsAt > now));
+                && current.tenantStatus === 'ACTIVE'
+                && current.tenantPlanTier !== 'FREE'
+                && Boolean(current.tenantStripeSubscriptionId?.trim())
+                && current.tenantPaidThrough instanceof Date
+                && current.tenantPaidThrough.getTime() > now.getTime()
+                && current.hasExactCreditReservation;
             if (!deliveryEligible) {
                 const terminal = !current?.endpointActive || current?.tenantStatus === 'PURGED';
                 await (tx as any).webhookDelivery.updateMany({
@@ -483,6 +512,7 @@ export class WebhookDeliveryStore {
                             status: 'DEAD_LETTERED' satisfies WebhookDeliveryStatus,
                             nextAttemptAt: null,
                             lastError: 'Tenant was purged or webhook endpoint was deactivated',
+                            ...TERMINAL_DELIVERY_ERASURE,
                         }
                         : {
                             status: 'FAILED' satisfies WebhookDeliveryStatus,
@@ -495,6 +525,41 @@ export class WebhookDeliveryStore {
 
             return operation();
         });
+    }
+
+    private async hasExactPaidDeliveryAuthority(
+        tx: TenantPrismaTransaction,
+        deliveryId: string,
+        tenantId?: string,
+    ): Promise<boolean> {
+        const rows = await (tx as any).$queryRaw(Prisma.sql`
+            SELECT delivery."id"
+            FROM "WebhookDelivery" delivery
+            JOIN "Tenant" tenant ON tenant."id" = delivery."tenantId"
+            JOIN "WebhookEndpoint" endpoint
+              ON endpoint."id" = delivery."endpointId"
+             AND endpoint."tenantId" = delivery."tenantId"
+            WHERE delivery."id" = ${deliveryId}
+              AND (${tenantId ?? null}::text IS NULL OR delivery."tenantId" = ${tenantId ?? null})
+              AND tenant."deletedAt" IS NULL
+              AND tenant."status" = 'ACTIVE'::"TenantStatus"
+              AND tenant."planTier" <> 'FREE'::"PlanTier"
+              AND NULLIF(BTRIM(tenant."stripeSubscriptionId"), '') IS NOT NULL
+              AND tenant."stripeSubscriptionCurrentPeriodEnd" > CURRENT_TIMESTAMP
+              AND endpoint."active" = TRUE
+              AND EXISTS (
+                  SELECT 1
+                  FROM "CreditTransaction" credit
+                  WHERE credit."id" = 'feature-usage-webhook-delivery:' || delivery."id"
+                    AND credit."tenantId" = delivery."tenantId"
+                    AND credit."amount" = ${-WEBHOOK_CREDIT_COST}
+                    AND credit."reason" = 'Webhook delivery (' || delivery."id" || ')'
+                    AND credit."balanceAfter" IS NOT NULL
+                    AND credit."balanceAfter" >= 0
+              )
+            FOR SHARE OF tenant, endpoint
+        `) as Array<{ id: string }>;
+        return rows.length === 1;
     }
 
     async markDelivered(tenantId: string, deliveryId: string): Promise<WebhookDeliveryReplayState> {
@@ -510,6 +575,7 @@ export class WebhookDeliveryStore {
                     deliveredAt: new Date(),
                     nextAttemptAt: null,
                     lastError: null,
+                    ...TERMINAL_DELIVERY_ERASURE,
                 },
             });
             return this.loadTransitionedState(tx, tenantId, deliveryId, transitioned.count, 'DELIVERED');
@@ -556,6 +622,7 @@ export class WebhookDeliveryStore {
                     status: 'DEAD_LETTERED' satisfies WebhookDeliveryStatus,
                     nextAttemptAt: null,
                     lastError: this.redactLastError(failureReason),
+                    ...TERMINAL_DELIVERY_ERASURE,
                     ...(attempts === undefined ? {} : { attempts }),
                 },
             });
@@ -592,8 +659,7 @@ export class WebhookDeliveryStore {
             return null;
         }
 
-        const message = error instanceof Error ? error.stack ?? error.message : error;
-        return redactSensitiveText(message).slice(0, MAX_LAST_ERROR_LENGTH);
+        return runtimeErrorText(error).slice(0, MAX_LAST_ERROR_LENGTH);
     }
 
     private nextRetryAt(attempts: number): Date {

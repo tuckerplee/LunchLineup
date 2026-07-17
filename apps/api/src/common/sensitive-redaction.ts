@@ -3,8 +3,6 @@ const SECRET_QUERY_RE = /([?&][^=&#\s]*(?:code|key|password|secret|signature|sta
 const BEARER_RE = /\b(Bearer\s+)[A-Za-z0-9._~+/=-]+/gi;
 const URL_CREDENTIAL_RE = /\b((?:amqps?|postgres(?:ql)?|mysql|redis|https?):\/\/[^:\s/@]+:)[^@\s]+@/gi;
 
-const SENSITIVE_QUERY_KEYS = /(?:code|key|password|secret|signature|state|token)/i;
-
 export function redactSensitiveText(value: unknown): string {
     return String(value ?? '')
         .replace(URL_CREDENTIAL_RE, '$1[REDACTED]@')
@@ -15,18 +13,14 @@ export function redactSensitiveText(value: unknown): string {
 
 export function redactUrlForLog(value: string): string {
     try {
-        const parsed = new URL(value);
-        if (parsed.username) parsed.username = 'redacted';
-        if (parsed.password) parsed.password = 'redacted';
-
-        for (const key of Array.from(parsed.searchParams.keys())) {
-            if (SENSITIVE_QUERY_KEYS.test(key)) {
-                parsed.searchParams.set(key, '[REDACTED]');
-            }
-        }
-
-        return parsed.toString();
+        const absolute = /^[a-z][a-z0-9+.-]*:\/\//i.test(value);
+        const parsed = new URL(value, 'http://redaction.invalid');
+        parsed.username = '';
+        parsed.password = '';
+        parsed.search = '';
+        parsed.hash = '';
+        return absolute ? parsed.toString() : parsed.pathname || '/';
     } catch {
-        return redactSensitiveText(value);
+        return redactSensitiveText(value.split(/[?#]/, 1)[0]);
     }
 }

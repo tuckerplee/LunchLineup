@@ -1,6 +1,6 @@
 [Unit]
 Description=LunchLineup encrypted offsite database backup
-Documentation=file:/opt/lunchlineup/docs/runbooks/production-readiness.md
+Documentation=file:/opt/lunchlineup/current/docs/runbooks/production-readiness.md
 Wants=network-online.target docker.service
 After=network-online.target docker.service
 Requires=docker.service
@@ -9,12 +9,13 @@ Requires=docker.service
 Type=oneshot
 User=lunchlineup
 Group=lunchlineup
-WorkingDirectory=/opt/lunchlineup
+WorkingDirectory=/
 EnvironmentFile=/etc/lunchlineup/backup.env
 EnvironmentFile=/var/lib/lunchlineup/backup-release.env
+Environment=CANDIDATE_RELEASE_ROOT=/opt/lunchlineup/releases
 StateDirectory=lunchlineup
 ReadWritePaths=/var/lib/lunchlineup /run/docker.sock
-ExecStart=/usr/bin/docker compose --project-directory /opt/lunchlineup --profile ops --env-file ${COMPOSE_SERVICE_ENV_FILE} run --rm --no-deps --pull never backup
+ExecStart=/bin/bash -ec 'exec /bin/bash "/opt/lunchlineup/releases/${IMAGE_TAG}/scripts/pitr-run-candidate-job.sh" lunchlineup-backup.service'
 TimeoutStartSec=2h
 NoNewPrivileges=true
 PrivateTmp=true

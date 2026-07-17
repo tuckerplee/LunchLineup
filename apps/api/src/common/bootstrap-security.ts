@@ -23,6 +23,12 @@ const MIN_SECRET_LENGTH = 32;
 const PLACEHOLDER_RE = /(change_me|generate_with|replace_me|example|secret|password)/i;
 const EMAIL_FROM_RE = /^(?:[^<>@\r\n]+<)?[^<>\s@]+@[^<>\s@]+\.[^<>\s@]+>?$/;
 const INTERNAL_PRODUCTION_HOSTS = new Set(['api', 'web', 'proxy']);
+const CREDIT_PACK_PRICE_KEYS = [
+    'STRIPE_PRICE_CREDIT_PACK_100',
+    'STRIPE_PRICE_CREDIT_PACK_500',
+    'STRIPE_PRICE_CREDIT_PACK_2000',
+] as const;
+const STRIPE_PRICE_ID_RE = /^price_[A-Za-z0-9_]+$/;
 
 export function isProduction(env: NodeJS.ProcessEnv = process.env): boolean {
     return env.NODE_ENV === 'production';
@@ -47,7 +53,7 @@ export function normalizeOrigin(value: string): string {
         }
         return parsed.origin;
     } catch {
-        throw new Error(`Invalid ALLOWED_ORIGINS entry: ${value}`);
+        throw new Error('Invalid ALLOWED_ORIGINS entry.');
     }
 }
 
@@ -162,14 +168,14 @@ export function normalizeAllowedHost(value: string): string {
         host.includes('@') ||
         host.includes('*')
     ) {
-        throw new Error(`Invalid host entry: ${value}`);
+        throw new Error('Invalid host entry.');
     }
 
     try {
         new URL(`http://${host}`);
         return host;
     } catch {
-        throw new Error(`Invalid host entry: ${value}`);
+        throw new Error('Invalid host entry.');
     }
 }
 
@@ -180,8 +186,8 @@ export function validateProductionEnvironment(env: NodeJS.ProcessEnv = process.e
 
     try {
         resolvePublicAppOrigin(env);
-    } catch (error) {
-        errors.push(error instanceof Error ? error.message : 'APP_ORIGIN is invalid.');
+    } catch {
+        errors.push('APP_ORIGIN is invalid.');
     }
 
     try {
@@ -190,8 +196,8 @@ export function validateProductionEnvironment(env: NodeJS.ProcessEnv = process.e
         if (insecureOrigins.length > 0) {
             errors.push(`ALLOWED_ORIGINS must use https in production: ${insecureOrigins.join(', ')}`);
         }
-    } catch (error) {
-        errors.push(error instanceof Error ? error.message : 'ALLOWED_ORIGINS is invalid.');
+    } catch {
+        errors.push('ALLOWED_ORIGINS is invalid.');
     }
 
     if (!env.DOMAIN || env.DOMAIN.trim().toLowerCase() === 'localhost') {
@@ -203,15 +209,15 @@ export function validateProductionEnvironment(env: NodeJS.ProcessEnv = process.e
             if (isUnsafePublicHostname(hostname) || INTERNAL_PRODUCTION_HOSTS.has(hostname)) {
                 errors.push('DOMAIN must be set to the public hostname in production.');
             }
-        } catch (error) {
-            errors.push(error instanceof Error ? error.message : 'DOMAIN is invalid.');
+        } catch {
+            errors.push('DOMAIN is invalid.');
         }
     }
 
     try {
         readCsv(env.ALLOWED_HOSTS).forEach(normalizeAllowedHost);
-    } catch (error) {
-        errors.push(error instanceof Error ? error.message : 'ALLOWED_HOSTS is invalid.');
+    } catch {
+        errors.push('ALLOWED_HOSTS is invalid.');
     }
 
     const trustProxy = env.TRUST_PROXY?.trim().toLowerCase();
@@ -223,7 +229,11 @@ export function validateProductionEnvironment(env: NodeJS.ProcessEnv = process.e
         errors.push('COOKIE_SECURE cannot be false in production.');
     }
 
-    for (const key of ['JWT_SECRET', 'JWT_REFRESH_SECRET', 'SESSION_SECRET']) {
+    if (['1', 'true', 'yes', 'on'].includes((env.AUTH_DEBUG ?? '').trim().toLowerCase())) {
+        errors.push('AUTH_DEBUG cannot be enabled in production.');
+    }
+
+    for (const key of ['JWT_SECRET', 'JWT_REFRESH_SECRET', 'SESSION_SECRET', 'OTP_HMAC_SECRET']) {
         const value = env[key];
         if (!value || value.length < MIN_SECRET_LENGTH || PLACEHOLDER_RE.test(value)) {
             errors.push(`${key} must be a non-placeholder secret with at least ${MIN_SECRET_LENGTH} characters.`);
@@ -231,6 +241,11 @@ export function validateProductionEnvironment(env: NodeJS.ProcessEnv = process.e
     }
 
     validateMfaEncryptionKeys(env, errors);
+    validateAvailabilityImportEncryptionKey(env, errors);
+    if ((env.STAFF_INVITATION_OUTBOX_ENABLED ?? '').trim().toLowerCase() !== 'true') {
+        errors.push('STAFF_INVITATION_OUTBOX_ENABLED must be exactly true in production.');
+    }
+    validateStaffInvitationOutboxEncryptionKey(env, errors);
 
     for (const key of ['DATABASE_URL', 'REDIS_URL', 'RABBITMQ_URL']) {
         const value = env[key]?.trim();
@@ -248,6 +263,11 @@ export function validateProductionEnvironment(env: NodeJS.ProcessEnv = process.e
         errors.push('RESEND_API_KEY must be a non-placeholder provider key with at least 32 characters.');
     }
 
+    const resendWebhookSecret = env.RESEND_WEBHOOK_SECRET?.trim();
+    if (!resendWebhookSecret || resendWebhookSecret.length < MIN_SECRET_LENGTH || PLACEHOLDER_RE.test(resendWebhookSecret)) {
+        errors.push('RESEND_WEBHOOK_SECRET must be a non-placeholder signing secret with at least 32 characters.');
+    }
+
     const emailFrom = env.EMAIL_FROM?.trim();
     if (!emailFrom || !EMAIL_FROM_RE.test(emailFrom)) {
         errors.push('EMAIL_FROM must be configured with a valid sender address in production.');
@@ -259,6 +279,7 @@ export function validateProductionEnvironment(env: NodeJS.ProcessEnv = process.e
             errors.push(`${key} must be a non-placeholder Stripe value with at least ${MIN_SECRET_LENGTH} characters.`);
         }
     }
+    validateCreditPackPriceConfiguration(env, errors);
 
     const metricsToken = env.METRICS_TOKEN?.trim();
     const metricsTokenFile = env.METRICS_TOKEN_FILE?.trim();
@@ -363,14 +384,28 @@ function validateOidcConfiguration(env: NodeJS.ProcessEnv, errors: string[]): vo
 }
 
 
+function validateCreditPackPriceConfiguration(env: NodeJS.ProcessEnv, errors: string[]): void {
+    const configured = CREDIT_PACK_PRICE_KEYS
+        .map((key) => ({ key, value: env[key]?.trim() }))
+        .filter((entry): entry is { key: typeof CREDIT_PACK_PRICE_KEYS[number]; value: string } => Boolean(entry.value));
+    for (const { key, value } of configured) {
+        if (!STRIPE_PRICE_ID_RE.test(value)) {
+            errors.push(`${key} must be a Stripe Price ID when configured.`);
+        }
+    }
+    if (new Set(configured.map(({ value }) => value)).size !== configured.length) {
+        errors.push('Stripe credit pack Price IDs must be unique.');
+    }
+}
+
 function validateMfaEncryptionKeys(env: NodeJS.ProcessEnv, errors: string[]): void {
     const current = decodeMfaManagedKey(env.MFA_SECRET_ENCRYPTION_KEY_CURRENT, 'MFA_SECRET_ENCRYPTION_KEY_CURRENT', errors, true);
     const previous = decodeMfaManagedKey(env.MFA_SECRET_ENCRYPTION_KEY_PREVIOUS, 'MFA_SECRET_ENCRYPTION_KEY_PREVIOUS', errors);
     const legacyValue = env.MFA_SECRET_ENCRYPTION_KEY?.trim();
     let legacy: Buffer | null = null;
 
-    if (env.MFA_SECRET_ENCRYPTION_KEY !== undefined) {
-        if (!legacyValue || legacyValue.length < MIN_SECRET_LENGTH || PLACEHOLDER_RE.test(legacyValue)) {
+    if (legacyValue) {
+        if (legacyValue.length < MIN_SECRET_LENGTH || PLACEHOLDER_RE.test(legacyValue)) {
             errors.push(`MFA_SECRET_ENCRYPTION_KEY must be a non-placeholder legacy overlap secret with at least ${MIN_SECRET_LENGTH} characters when configured.`);
         } else {
             legacy = crypto.createHash('sha256').update(legacyValue).digest();
@@ -406,6 +441,55 @@ function validateMfaEncryptionKeys(env: NodeJS.ProcessEnv, errors: string[]): vo
     }
 }
 
+function validateAvailabilityImportEncryptionKey(env: NodeJS.ProcessEnv, errors: string[]): void {
+    const source = decodeMfaManagedKey(
+        env.AVAILABILITY_IMPORT_ENCRYPTION_KEY,
+        'AVAILABILITY_IMPORT_ENCRYPTION_KEY',
+        errors,
+        true,
+    );
+    if (!source) return;
+
+    for (const [name, configured] of [
+        ['MFA_SECRET_ENCRYPTION_KEY_CURRENT', env.MFA_SECRET_ENCRYPTION_KEY_CURRENT],
+        ['MFA_SECRET_ENCRYPTION_KEY_PREVIOUS', env.MFA_SECRET_ENCRYPTION_KEY_PREVIOUS],
+        ['WEBHOOK_DELIVERY_ENCRYPTION_KEY_CURRENT', env.WEBHOOK_DELIVERY_ENCRYPTION_KEY_CURRENT],
+        ['WEBHOOK_DELIVERY_ENCRYPTION_KEY_PREVIOUS', env.WEBHOOK_DELIVERY_ENCRYPTION_KEY_PREVIOUS],
+        ['PASSWORD_RESET_OUTBOX_ENCRYPTION_KEY', env.PASSWORD_RESET_OUTBOX_ENCRYPTION_KEY],
+    ] as const) {
+        if (!configured?.trim()) continue;
+        const candidate = decodeMfaManagedKey(configured, name, errors);
+        if (candidate?.equals(source)) {
+            errors.push(`AVAILABILITY_IMPORT_ENCRYPTION_KEY must not reuse ${name}.`);
+        }
+    }
+}
+function validateStaffInvitationOutboxEncryptionKey(env: NodeJS.ProcessEnv, errors: string[]): void {
+    const invitation = decodeMfaManagedKey(
+        env.STAFF_INVITATION_OUTBOX_ENCRYPTION_KEY,
+        'STAFF_INVITATION_OUTBOX_ENCRYPTION_KEY',
+        errors,
+        true,
+    );
+    if (!invitation) return;
+
+    for (const [name, configured] of [
+        ['MFA_SECRET_ENCRYPTION_KEY_CURRENT', env.MFA_SECRET_ENCRYPTION_KEY_CURRENT],
+        ['MFA_SECRET_ENCRYPTION_KEY_PREVIOUS', env.MFA_SECRET_ENCRYPTION_KEY_PREVIOUS],
+        ['WEBHOOK_DELIVERY_ENCRYPTION_KEY_CURRENT', env.WEBHOOK_DELIVERY_ENCRYPTION_KEY_CURRENT],
+        ['WEBHOOK_DELIVERY_ENCRYPTION_KEY_PREVIOUS', env.WEBHOOK_DELIVERY_ENCRYPTION_KEY_PREVIOUS],
+        ['PASSWORD_RESET_OUTBOX_ENCRYPTION_KEY', env.PASSWORD_RESET_OUTBOX_ENCRYPTION_KEY],
+        ['AVAILABILITY_IMPORT_ENCRYPTION_KEY', env.AVAILABILITY_IMPORT_ENCRYPTION_KEY],
+    ] as const) {
+        if (!configured?.trim()) continue;
+        const candidate = decodeMfaManagedKey(configured, name, errors);
+        if (candidate?.equals(invitation)) {
+            errors.push(`STAFF_INVITATION_OUTBOX_ENCRYPTION_KEY must not reuse ${name}.`);
+        }
+    }
+}
+
+
 function decodeMfaManagedKey(
     configured: string | undefined,
     envName: string,
@@ -415,7 +499,6 @@ function decodeMfaManagedKey(
     const value = configured?.trim();
     if (!value) {
         if (required) errors.push(`${envName} is required in production and must decode to exactly 32 bytes.`);
-        else if (configured !== undefined) errors.push(`${envName} must decode to exactly 32 bytes when configured.`);
         return null;
     }
 

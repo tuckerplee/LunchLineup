@@ -1,11 +1,12 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
 import { CalendarDays, Clock3, MapPin, Plus, Users, UserPlus } from 'lucide-react';
 import { LunchLineupMark } from '@/components/branding/LunchLineupMark';
 import { fetchWithSession } from '@/lib/client-api';
 import { getWorkspaceCapabilities } from '@/lib/permissions';
+import { fetchAllBoundedPages, type BoundedPage } from '@/lib/bounded-pagination';
 
 type DashboardProfile = {
     name?: string | null;
@@ -13,12 +14,14 @@ type DashboardProfile = {
     permissions?: string[];
 };
 
-type ApiUser = {
-    role: 'SUPER_ADMIN' | 'ADMIN' | 'MANAGER' | 'STAFF';
+type ApiUserDirectoryResponse = {
+    summary?: {
+        staffCount?: number;
+        managerCount?: number;
+    };
 };
-
-type ApiLocation = {
-    id: string;
+type ApiLocationSummary = {
+    count?: number;
 };
 
 type ApiSchedule = {
@@ -42,11 +45,9 @@ type ApiFeatureMatrix = {
     };
 };
 
-type ApiLunchBreaks = {
-    data?: Array<{
-        breaks?: Array<{
-            type?: 'break1' | 'lunch' | 'break2';
-        }>;
+type ApiLunchBreak = {
+    breaks?: Array<{
+        type?: 'break1' | 'lunch' | 'break2';
     }>;
 };
 
@@ -74,23 +75,25 @@ type ActivityItem = {
 
 type OverviewSnapshot = {
     profile: DashboardProfile | null;
-    staffCount: number;
-    managerCount: number;
-    locationCount: number;
-    scheduleCount: number;
-    publishedScheduleCount: number;
-    totalShiftCount: number;
-    openShiftCount: number;
-    coveragePercent: number;
-    breakCompliancePercent: number;
-    lunchBreaksEnabled: boolean;
-    schedulingEnabled: boolean;
-    usageCredits: number;
-    latestScheduleLabel: string;
-    lunchPlanCount: number;
-    coverageDays: CoverageDay[];
-    activityItems: ActivityItem[];
+    staffCount: number | null;
+    managerCount: number | null;
+    locationCount: number | null;
+    scheduleCount: number | null;
+    publishedScheduleCount: number | null;
+    totalShiftCount: number | null;
+    openShiftCount: number | null;
+    coveragePercent: number | null;
+    breakCompliancePercent: number | null;
+    lunchBreaksEnabled: boolean | null;
+    latestScheduleLabel: string | null;
+    lunchPlanCount: number | null;
+    coverageDays: CoverageDay[] | null;
+    activityItems: ActivityItem[] | null;
 };
+
+type FetchResult<T> =
+    | { ok: true; data: T }
+    | { ok: false };
 
 type ActionIcon = typeof CalendarDays | typeof LunchLineupMark;
 
@@ -154,10 +157,41 @@ function formatScheduleLabel(schedule: ApiSchedule | null): string {
     return `${schedule.status.toLowerCase()} · ${formatter.format(start)} - ${formatter.format(end)}`;
 }
 
-async function fetchJsonOrNull<T>(path: string): Promise<T | null> {
-    const response = await fetchWithSession(path);
-    if (!response.ok) return null;
-    return response.json() as Promise<T>;
+async function fetchJsonResult<T>(path: string): Promise<FetchResult<T>> {
+    try {
+        const response = await fetchWithSession(path);
+        if (!response.ok) return { ok: false };
+        return { ok: true, data: await response.json() as T };
+    } catch {
+        return { ok: false };
+    }
+}
+
+function dashboardWindowPath(path: '/schedules' | '/shifts' | '/lunch-breaks', startOffsetDays: number, endOffsetDays: number): string {
+    const today = new Date();
+    const start = new Date(today.getFullYear(), today.getMonth(), today.getDate());
+    const end = new Date(start);
+    start.setDate(start.getDate() + startOffsetDays);
+    end.setDate(end.getDate() + endOffsetDays);
+    const params = new URLSearchParams({
+        startDate: start.toISOString(),
+        endDate: end.toISOString(),
+        limit: '200',
+    });
+    return `${path}?${params.toString()}`;
+}
+
+async function fetchBoundedJsonResult<T>(path: string): Promise<FetchResult<{ data: T[] }>> {
+    try {
+        const data = await fetchAllBoundedPages(path, async (nextPath) => {
+            const page = await fetchJsonResult<BoundedPage<T>>(nextPath);
+            if (!page.ok) throw new Error('Bounded list request failed.');
+            return page.data;
+        });
+        return { ok: true, data: { data } };
+    } catch {
+        return { ok: false };
+    }
 }
 
 function categoryForNotification(type: string): string {
@@ -226,6 +260,7 @@ export function DashboardWorkspace() {
     const [overview, setOverview] = useState<OverviewSnapshot | null>(null);
     const [isLoading, setIsLoading] = useState(true);
     const [error, setError] = useState<string | null>(null);
+    const loadGenerationRef = useRef(0);
 
     useEffect(() => {
         setTodayLabel(
@@ -238,78 +273,111 @@ export function DashboardWorkspace() {
     }, []);
 
     const loadOverview = useCallback(async () => {
+        const loadGeneration = loadGenerationRef.current + 1;
+        loadGenerationRef.current = loadGeneration;
         setIsLoading(true);
         setError(null);
 
-        try {
-            const [profile, users, locations, schedules, shifts, features, lunchBreaks, notifications] = await Promise.all([
-                fetchJsonOrNull<{ user?: DashboardProfile }>('/auth/me'),
-                fetchJsonOrNull<{ data?: ApiUser[] }>('/users'),
-                fetchJsonOrNull<{ data?: ApiLocation[] }>('/locations'),
-                fetchJsonOrNull<{ data?: ApiSchedule[] }>('/schedules'),
-                fetchJsonOrNull<{ data?: ApiShift[] }>('/shifts'),
-                fetchJsonOrNull<ApiFeatureMatrix>('/billing/features'),
-                fetchJsonOrNull<ApiLunchBreaks>('/lunch-breaks'),
-                fetchJsonOrNull<{ data?: ApiNotification[] }>('/notifications?status=all&limit=5'),
-            ]);
+        const schedulePath = dashboardWindowPath('/schedules', -7, 90);
+        const shiftPath = dashboardWindowPath('/shifts', 0, 7);
+        const lunchBreakPath = dashboardWindowPath('/lunch-breaks', 0, 7);
+        const [profile, userDirectory, locationSummary, schedules, shifts, features, lunchBreaks, notifications] = await Promise.all([
+            fetchJsonResult<{ user?: DashboardProfile }>('/auth/me'),
+            fetchJsonResult<ApiUserDirectoryResponse>('/users?limit=1'),
+            fetchJsonResult<ApiLocationSummary>('/locations/summary'),
+            fetchBoundedJsonResult<ApiSchedule>(schedulePath),
+            fetchBoundedJsonResult<ApiShift>(shiftPath),
+            fetchJsonResult<ApiFeatureMatrix>('/billing/features'),
+            fetchBoundedJsonResult<ApiLunchBreak>(lunchBreakPath),
+            fetchJsonResult<{ data?: ApiNotification[] }>('/notifications?status=all&limit=5'),
+        ]);
 
-            const profileData = profile?.user ?? null;
-            const userRows = users?.data ?? [];
-            const locationRows = locations?.data ?? [];
-            const scheduleRows = schedules?.data ?? [];
-            const shiftRows = shifts?.data ?? [];
-            const featureMatrix = features ?? { usageCredits: 0, features: {} };
-            const lunchBreakRows = lunchBreaks?.data ?? [];
-            const notificationRows = notifications?.data ?? [];
+        const profileData = profile.ok && profile.data.user ? profile.data.user : null;
+        const loadedCapabilities = getWorkspaceCapabilities(profileData?.permissions ?? []);
+        const userSummary = userDirectory.ok ? userDirectory.data.summary : undefined;
+        const validStaffSummary = Number.isSafeInteger(userSummary?.staffCount)
+            && Number.isSafeInteger(userSummary?.managerCount);
+        const staffCount = loadedCapabilities.canReadUsers && validStaffSummary
+            ? Number(userSummary?.staffCount)
+            : null;
+        const managerCount = loadedCapabilities.canReadUsers && validStaffSummary
+            ? Number(userSummary?.managerCount)
+            : null;
+        const locationCount = loadedCapabilities.canReadLocations
+            && locationSummary.ok
+            && Number.isSafeInteger(locationSummary.data.count)
+            ? Number(locationSummary.data.count)
+            : null;
+        const scheduleRows = loadedCapabilities.canReadScheduling && schedules.ok ? schedules.data.data : null;
+        const shiftRows = loadedCapabilities.canReadScheduling && shifts.ok ? shifts.data.data : null;
+        const lunchBreakRows = loadedCapabilities.canReadLunchBreaks && lunchBreaks.ok ? lunchBreaks.data.data : null;
+        const notificationRows = notifications.ok && Array.isArray(notifications.data.data)
+            ? notifications.data.data
+            : null;
 
-            const staffRows = userRows.filter((user) => user.role === 'MANAGER' || user.role === 'STAFF');
-            const managerCount = staffRows.filter((user) => user.role === 'MANAGER').length;
-            const totalShiftCount = shiftRows.length;
-            const openShiftCount = shiftRows.filter((shift) => !shift.userId).length;
-            const staffedShiftCount = Math.max(0, totalShiftCount - openShiftCount);
-            const coveragePercent = totalShiftCount > 0 ? Math.round((staffedShiftCount / totalShiftCount) * 100) : 0;
-
-            const lunchPlanCount = lunchBreakRows.filter((row) => (
+        const totalShiftCount = shiftRows?.length ?? null;
+        const openShiftCount = shiftRows
+            ? shiftRows.filter((shift) => !shift.userId).length
+            : null;
+        const coveragePercent = totalShiftCount === null || openShiftCount === null
+            ? null
+            : totalShiftCount > 0
+                ? Math.round(((totalShiftCount - openShiftCount) / totalShiftCount) * 100)
+                : 0;
+        const lunchPlanCount = lunchBreakRows
+            ? lunchBreakRows.filter((row) => (
                 Array.isArray(row.breaks) && row.breaks.some((entry) => entry.type === 'lunch')
-            )).length;
-            const breakCompliancePercent = totalShiftCount > 0 ? Math.round((lunchPlanCount / totalShiftCount) * 100) : 0;
-            const latestSchedule = scheduleRows
+            )).length
+            : null;
+        const breakCompliancePercent = totalShiftCount === null || lunchPlanCount === null
+            ? null
+            : totalShiftCount > 0
+                ? Math.round((lunchPlanCount / totalShiftCount) * 100)
+                : 0;
+        const latestSchedule = scheduleRows
+            ? scheduleRows
                 .slice()
-                .sort((left, right) => new Date(right.startDate).getTime() - new Date(left.startDate).getTime())[0] ?? null;
-            const coverageDays = buildCoverageDays(shiftRows);
-            const activityItems = notificationRows.map((entry) => ({
-                category: categoryForNotification(entry.type),
-                title: entry.title || 'Update',
-                detail: entry.body || 'Recent activity',
-                time: relativeTimeLabel(entry.createdAt),
-                tone: toneForNotification(entry.type),
-            }));
+                .sort((left, right) => new Date(right.startDate).getTime() - new Date(left.startDate).getTime())[0] ?? null
+            : null;
+        const activityItems = notificationRows?.map((entry) => ({
+            category: categoryForNotification(entry.type),
+            title: entry.title || 'Update',
+            detail: entry.body || 'Recent activity',
+            time: relativeTimeLabel(entry.createdAt),
+            tone: toneForNotification(entry.type),
+        })) ?? null;
 
-            setOverview({
-                profile: profileData,
-                staffCount: staffRows.length,
-                managerCount,
-                locationCount: locationRows.length,
-                scheduleCount: scheduleRows.length,
-                publishedScheduleCount: scheduleRows.filter((schedule) => schedule.status === 'PUBLISHED').length,
-                totalShiftCount,
-                openShiftCount,
-                coveragePercent,
-                breakCompliancePercent,
-                lunchBreaksEnabled: Boolean(featureMatrix.features.lunch_breaks?.enabled),
-                schedulingEnabled: Boolean(featureMatrix.features.scheduling?.enabled),
-                usageCredits: featureMatrix.usageCredits ?? 0,
-                latestScheduleLabel: formatScheduleLabel(latestSchedule),
-                lunchPlanCount,
-                coverageDays,
-                activityItems,
-            });
-        } catch (err) {
-            setError(err instanceof Error ? err.message : 'Unable to load dashboard overview.');
-            setOverview(null);
-        } finally {
-            setIsLoading(false);
-        }
+        const nextOverview: OverviewSnapshot = {
+            profile: profileData,
+            staffCount,
+            managerCount,
+            locationCount,
+            scheduleCount: scheduleRows?.length ?? null,
+            publishedScheduleCount: scheduleRows
+                ? scheduleRows.filter((schedule) => schedule.status === 'PUBLISHED').length
+                : null,
+            totalShiftCount,
+            openShiftCount,
+            coveragePercent,
+            breakCompliancePercent,
+            lunchBreaksEnabled: features.ok ? Boolean(features.data.features?.lunch_breaks?.enabled) : null,
+            latestScheduleLabel: scheduleRows ? formatScheduleLabel(latestSchedule) : null,
+            lunchPlanCount,
+            coverageDays: shiftRows ? buildCoverageDays(shiftRows) : null,
+            activityItems,
+        };
+        const hasUnavailableData = !profileData
+            || (loadedCapabilities.canReadUsers && (staffCount === null || managerCount === null))
+            || (loadedCapabilities.canReadLocations && locationCount === null)
+            || (loadedCapabilities.canReadScheduling && (scheduleRows === null || shiftRows === null))
+            || (loadedCapabilities.canReadLunchBreaks && lunchBreakRows === null)
+            || !features.ok
+            || notificationRows === null;
+
+        if (loadGeneration !== loadGenerationRef.current) return;
+        setOverview(nextOverview);
+        setError(hasUnavailableData ? 'Some dashboard data is unavailable. Retry to refresh affected widgets.' : null);
+        setIsLoading(false);
     }, []);
 
     useEffect(() => {
@@ -317,78 +385,85 @@ export function DashboardWorkspace() {
     }, [loadOverview]);
 
     const summaryCards = useMemo(() => {
-        const data = overview ?? {
-            staffCount: 0,
-            managerCount: 0,
-            locationCount: 0,
-            scheduleCount: 0,
-            publishedScheduleCount: 0,
-            totalShiftCount: 0,
-            openShiftCount: 0,
-            coveragePercent: 0,
-            breakCompliancePercent: 0,
-            lunchBreaksEnabled: false,
-            schedulingEnabled: false,
-            usageCredits: 0,
-            latestScheduleLabel: 'No schedules yet',
-            lunchPlanCount: 0,
-            coverageDays: [],
-            activityItems: [],
-        };
+        const data = overview;
+        const staffUnavailable = !isLoading && (data?.staffCount == null || data.managerCount == null);
+        const coverageUnavailable = !isLoading && (data?.coveragePercent == null || data.openShiftCount == null);
+        const breaksUnavailable = !isLoading && (
+            data?.breakCompliancePercent == null
+            || data.lunchPlanCount == null
+            || data.lunchBreaksEnabled == null
+        );
+        const locationsUnavailable = !isLoading && (
+            data?.locationCount == null
+            || data.scheduleCount == null
+            || data.latestScheduleLabel == null
+        );
 
         return [
             {
                 label: 'Active staff',
-                value: isLoading ? '—' : String(data.staffCount),
+                value: isLoading ? '—' : staffUnavailable ? 'Unavailable' : String(data?.staffCount),
                 delta: isLoading
                     ? 'Loading staff counts...'
-                    : `${formatCount(data.managerCount, 'manager')} active`,
+                    : staffUnavailable
+                        ? 'Staff totals could not be loaded.'
+                        : formatCount(data?.managerCount ?? 0, 'manager') + ' active',
                 tone: '#2f63ff',
                 bg: 'linear-gradient(145deg, #edf3ff, #f7f9ff)',
                 icon: Users,
+                unavailable: staffUnavailable,
             },
             {
                 label: "This week's coverage",
-                value: isLoading ? '—' : `${data.coveragePercent}%`,
+                value: isLoading ? '—' : coverageUnavailable ? 'Unavailable' : `${data?.coveragePercent}%`,
                 delta: isLoading
                     ? 'Loading shift coverage...'
-                    : data.openShiftCount > 0
-                        ? `${formatCount(data.openShiftCount, 'open shift')} remaining`
-                        : 'All shifts are assigned',
+                    : coverageUnavailable
+                        ? 'Shift coverage could not be loaded.'
+                        : (data?.openShiftCount ?? 0) > 0
+                            ? `${formatCount(data?.openShiftCount ?? 0, 'open shift')} remaining`
+                            : 'All shifts are assigned',
                 tone: '#17b26a',
                 bg: 'linear-gradient(145deg, #e9fbf1, #f7fffb)',
                 icon: CalendarDays,
+                unavailable: coverageUnavailable,
             },
             {
                 label: 'Break compliance',
-                value: isLoading ? '—' : `${data.breakCompliancePercent}%`,
+                value: isLoading ? '—' : breaksUnavailable ? 'Unavailable' : `${data?.breakCompliancePercent}%`,
                 delta: isLoading
                     ? 'Loading lunch data...'
-                    : data.lunchBreaksEnabled
-                        ? `${formatCount(data.lunchPlanCount, 'shift')} with lunch plans`
-                        : 'Lunch breaks are locked on the current plan',
+                    : breaksUnavailable
+                        ? 'Lunch coverage could not be loaded.'
+                        : data?.lunchBreaksEnabled
+                            ? `${formatCount(data.lunchPlanCount ?? 0, 'shift')} with lunch plans`
+                            : 'Lunch breaks require an active paid subscription and usage credits',
                 tone: '#f59e0b',
                 bg: 'linear-gradient(145deg, #fff6e7, #fffaf1)',
                 icon: Clock3,
+                unavailable: breaksUnavailable,
             },
             {
                 label: 'Locations online',
-                value: isLoading ? '—' : String(data.locationCount),
+                value: isLoading ? '—' : locationsUnavailable ? 'Unavailable' : String(data?.locationCount),
                 delta: isLoading
                     ? 'Loading locations...'
-                    : data.scheduleCount > 0
-                        ? `${data.latestScheduleLabel}`
-                        : 'No schedules created yet',
+                    : locationsUnavailable
+                        ? 'Location or schedule data could not be loaded.'
+                        : (data?.scheduleCount ?? 0) > 0
+                            ? `${data?.latestScheduleLabel}`
+                            : 'No schedules created yet',
                 tone: '#22b8cf',
                 bg: 'linear-gradient(145deg, #e9fafe, #f6fdff)',
                 icon: MapPin,
+                unavailable: locationsUnavailable,
             },
         ];
     }, [isLoading, overview]);
 
     const liveItems = useMemo(() => {
         const data = overview;
-        if (!data) {
+        if (!data || data.activityItems === null) {
             return [];
         }
         if (data.activityItems.length > 0) {
@@ -407,9 +482,20 @@ export function DashboardWorkspace() {
         () => getWorkspaceCapabilities(overview?.profile?.permissions ?? []),
         [overview?.profile?.permissions],
     );
+    const needsFirstLocation = !isLoading
+        && overview !== null
+        && overview.locationCount === 0
+        && capabilities.canWriteLocations;
 
     const heroActions = useMemo(() => {
         const actions: Array<{ href: string; label: string; className: string }> = [];
+        if (needsFirstLocation) {
+            return [{
+                href: '/dashboard/locations',
+                label: 'Add First Location',
+                className: 'btn btn-primary',
+            }];
+        }
         if (capabilities.canWriteShifts) {
             actions.push({ href: '/dashboard/scheduling?focus=open', label: 'Assign Open Shifts', className: 'btn btn-primary' });
         }
@@ -424,10 +510,18 @@ export function DashboardWorkspace() {
             actions.push({ href: '/dashboard/time-cards', label: 'Open Time Cards', className: 'btn btn-primary' });
         }
         return actions;
-    }, [capabilities]);
+    }, [capabilities, needsFirstLocation]);
 
     const quickActions = useMemo(() => {
         const actions: typeof QUICK_ACTIONS = [];
+        if (needsFirstLocation) {
+            return [{
+                ...QUICK_ACTIONS[3],
+                label: 'Set Up First Location',
+                desc: 'Add the timezone and operating location for this workspace',
+                tier: 'primary',
+            }];
+        }
         if (capabilities.canWriteShifts) {
             actions.push(QUICK_ACTIONS[0]);
         } else if (capabilities.canReadScheduling) {
@@ -483,15 +577,18 @@ export function DashboardWorkspace() {
         }
 
         return actions;
-    }, [capabilities]);
+    }, [capabilities, needsFirstLocation]);
 
     return (
         <div style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem', maxWidth: 1420 }}>
             {error ? (
-                <section className="surface-card" style={{ padding: '0.95rem 1rem', border: '1px solid #ffd0da', background: 'linear-gradient(145deg, #fff1f4, #fff8fa)' }}>
+                <section aria-live="polite" style={{ padding: '0.95rem 1rem', border: '1px solid #ffd0da', background: '#fff8fa', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '0.75rem', flexWrap: 'wrap' }}>
                     <div style={{ fontSize: '0.88rem', color: '#b8334d', fontWeight: 700 }}>
                         {error}
                     </div>
+                    <button type="button" className="btn btn-secondary" onClick={() => void loadOverview()} disabled={isLoading}>
+                        {isLoading ? 'Retrying...' : 'Retry'}
+                    </button>
                 </section>
             ) : null}
 
@@ -506,7 +603,9 @@ export function DashboardWorkspace() {
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: '1rem', flexWrap: 'wrap' }}>
                     <div style={{ maxWidth: 720, display: 'grid', gap: '0.32rem' }}>
                         <h1 className="workspace-title" style={{ marginBottom: '0.35rem' }}>
-                            Welcome back, {firstName(overview?.profile?.name)}
+                            {needsFirstLocation
+                                ? 'Complete workspace setup'
+                                : `Welcome back, ${firstName(overview?.profile?.name)}`}
                         </h1>
                         <p className="workspace-subtitle">
                             {todayLabel} - {overview?.profile?.tenantName ?? 'Live dashboard'}
@@ -514,7 +613,11 @@ export function DashboardWorkspace() {
                         <p style={{ color: 'var(--text-primary)', fontSize: '0.95rem', fontWeight: 650 }}>
                             {isLoading
                                 ? 'Loading live overview data...'
-                                : `${formatCount(overview?.openShiftCount ?? 0, 'open shift')} need assignment. ${overview?.lunchBreaksEnabled ? 'Lunch coverage is available.' : 'Lunch coverage is locked by plan.'}`}
+                                : needsFirstLocation
+                                    ? 'Add the first location before creating schedules or inviting the wider team.'
+                                    : overview?.openShiftCount == null
+                                        ? 'Shift coverage is unavailable. Retry the affected dashboard widgets.'
+                                        : `${formatCount(overview.openShiftCount, 'open shift')} need assignment. ${overview.lunchBreaksEnabled === null ? 'Lunch feature access is unavailable.' : overview.lunchBreaksEnabled ? 'Lunch coverage is available.' : 'Lunch coverage requires an active paid subscription and usage credits.'}`}
                         </p>
                     </div>
 
@@ -543,15 +646,23 @@ export function DashboardWorkspace() {
                             <p style={{ fontSize: '0.88rem', color: '#b8324a', fontWeight: 700 }}>
                                 {isLoading
                                     ? 'Loading open shift data...'
-                                    : `${formatCount(overview?.openShiftCount ?? 0, 'shift')} need assignment before the next planning cycle`}
+                                    : overview?.openShiftCount == null
+                                        ? 'Open shift data is unavailable.'
+                                        : `${formatCount(overview.openShiftCount, 'shift')} need assignment before the next planning cycle`}
                             </p>
                             <p style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>
                                 {isLoading
                                     ? 'Loading schedule details...'
-                                    : `${overview?.coveragePercent ?? 0}% staffed across the current shift set`}
+                                    : overview?.coveragePercent == null
+                                        ? 'Coverage data is unavailable.'
+                                        : `${overview.coveragePercent}% staffed across the current shift set`}
                             </p>
                         </div>
-                        {capabilities.canReadScheduling ? (
+                        {!isLoading && overview?.openShiftCount == null ? (
+                            <button type="button" className="btn btn-secondary" onClick={() => void loadOverview()}>
+                                Retry
+                            </button>
+                        ) : capabilities.canReadScheduling ? (
                             <div style={{ display: 'flex', gap: '0.55rem', flexWrap: 'wrap' }}>
                                 {capabilities.canWriteShifts ? (
                                     <Link href="/dashboard/scheduling?focus=open" className="btn btn-primary">
@@ -595,10 +706,15 @@ export function DashboardWorkspace() {
                                     <Icon size={16} />
                                 </span>
                             </div>
-                            <div style={{ fontSize: '1.85rem', fontWeight: 800, letterSpacing: '-0.03em', color: 'var(--text-primary)' }}>
+                            <div style={{ fontSize: '1.85rem', fontWeight: 800, letterSpacing: 0, color: 'var(--text-primary)' }}>
                                 {card.value}
                             </div>
                             <div style={{ fontSize: '0.78rem', color: card.tone, fontWeight: 700 }}>{card.delta}</div>
+                            {card.unavailable ? (
+                                <button type="button" className="btn btn-secondary" onClick={() => void loadOverview()} style={{ marginTop: '0.65rem' }}>
+                                    Retry
+                                </button>
+                            ) : null}
                         </article>
                     );
                 })}
@@ -617,23 +733,36 @@ export function DashboardWorkspace() {
                         <div style={{ display: 'grid', gap: '0.2rem' }}>
                             <h2 style={{ fontSize: '1rem', fontWeight: 800, color: 'var(--text-primary)' }}>Today&apos;s break status</h2>
                             <div style={{ display: 'grid', gap: '0.15rem', fontSize: '0.82rem', color: 'var(--text-secondary)', fontWeight: 600 }}>
-                                <p>{isLoading ? 'Loading break plans...' : `${formatCount(overview?.lunchPlanCount ?? 0, 'shift')} have lunch plans`}</p>
-                                <p>{isLoading ? 'Loading schedule counts...' : `${formatCount(overview?.publishedScheduleCount ?? 0, 'published schedule')}`}</p>
+                                <p>{isLoading ? 'Loading break plans...' : overview?.lunchPlanCount == null ? 'Break plan data is unavailable.' : `${formatCount(overview.lunchPlanCount, 'shift')} have lunch plans`}</p>
+                                <p>{isLoading ? 'Loading schedule counts...' : overview?.publishedScheduleCount == null ? 'Schedule data is unavailable.' : `${formatCount(overview.publishedScheduleCount, 'published schedule')}`}</p>
                                 <p style={{ color: '#b55f00' }}>
                                     {isLoading
                                         ? 'Loading feature access...'
-                                        : overview?.lunchBreaksEnabled
-                                            ? `${overview.breakCompliancePercent}% lunch compliance`
-                                            : 'Lunch breaks are not enabled on the current plan'}
+                                        : overview?.lunchBreaksEnabled == null || overview.breakCompliancePercent == null
+                                            ? 'Lunch compliance is unavailable.'
+                                            : overview.lunchBreaksEnabled
+                                                ? `${overview.breakCompliancePercent}% lunch compliance`
+                                                : 'Lunch breaks require an active paid subscription and usage credits'}
                                 </p>
                                 <p style={{ color: '#148f56' }}>
                                     {isLoading
                                         ? 'Loading coverage status...'
-                                        : `${overview?.coveragePercent ?? 0}% coverage across current shifts`}
+                                        : overview?.coveragePercent == null
+                                            ? 'Coverage status is unavailable.'
+                                            : `${overview.coveragePercent}% coverage across current shifts`}
                                 </p>
                             </div>
                         </div>
-                        {capabilities.canReadLunchBreaks ? (
+                        {!isLoading && (
+                            overview?.lunchPlanCount == null
+                            || overview.publishedScheduleCount == null
+                            || overview.lunchBreaksEnabled == null
+                            || overview.coveragePercent == null
+                        ) ? (
+                            <button type="button" className="btn btn-secondary" onClick={() => void loadOverview()}>
+                                Retry
+                            </button>
+                        ) : capabilities.canReadLunchBreaks ? (
                             <Link href="/dashboard/lunch-breaks" className="btn btn-secondary">
                                 {capabilities.canWriteLunchBreaks ? 'Open Lunch Plan' : 'Review Lunch Plan'}
                             </Link>
@@ -653,8 +782,16 @@ export function DashboardWorkspace() {
                         ) : null}
                     </div>
 
+                    {isLoading ? (
+                        <p role="status" style={{ color: 'var(--text-secondary)', fontSize: '0.84rem' }}>Loading weekly coverage...</p>
+                    ) : overview?.coverageDays == null ? (
+                        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '0.75rem', flexWrap: 'wrap' }}>
+                            <p style={{ color: 'var(--text-secondary)', fontSize: '0.84rem' }}>Weekly coverage is unavailable.</p>
+                            <button type="button" className="btn btn-secondary" onClick={() => void loadOverview()}>Retry</button>
+                        </div>
+                    ) : (
                     <div style={{ display: 'grid', gap: '0.52rem' }}>
-                        {(overview?.coverageDays ?? []).map((d) => {
+                        {overview.coverageDays.map((d) => {
                             const tone =
                                 d.tone === 'healthy'
                                     ? { chip: '#e9fbf1', dot: '#17b26a', text: '#148f56' }
@@ -691,6 +828,7 @@ export function DashboardWorkspace() {
                             );
                         })}
                     </div>
+                    )}
                 </article>
             </section>
 
@@ -775,6 +913,14 @@ export function DashboardWorkspace() {
                     <h2 style={{ fontSize: '1rem', fontWeight: 750, color: 'var(--text-primary)', marginBottom: '1rem' }}>
                         Recent changes
                     </h2>
+                    {isLoading ? (
+                        <p role="status" style={{ color: 'var(--text-secondary)', fontSize: '0.84rem' }}>Loading recent changes...</p>
+                    ) : overview?.activityItems == null ? (
+                        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '0.75rem', flexWrap: 'wrap' }}>
+                            <p style={{ color: 'var(--text-secondary)', fontSize: '0.84rem' }}>Recent changes are unavailable.</p>
+                            <button type="button" className="btn btn-secondary" onClick={() => void loadOverview()}>Retry</button>
+                        </div>
+                    ) : (
                     <div style={{ display: 'flex', flexDirection: 'column', gap: '0.85rem' }}>
                         {liveItems.map((item) => (
                             <div key={`${item.category}-${item.title}`} style={{ display: 'flex', gap: '0.6rem', alignItems: 'flex-start' }}>
@@ -804,6 +950,7 @@ export function DashboardWorkspace() {
                             </div>
                         ))}
                     </div>
+                    )}
                 </article>
             </section>
         </div>

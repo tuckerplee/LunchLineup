@@ -1,81 +1,35 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { fetchWithSession } from '@/lib/client-api';
 import { createLatestRequestGate } from '@/lib/latest-request';
-import { formatTimeCardDuration } from './time-card-format';
+import {
+    clockInTimeCard,
+    clockOutTimeCard,
+    fetchEarlierTimeCards,
+    fetchLocationPage,
+    fetchStaffRoster,
+    fetchTimeCardSnapshot,
+    locationContinuation,
+} from './time-card-api';
+import { formatTimeCardTimestamp } from './time-card-format';
 import { ClockInRequestKey, isTimeCardForEmployee } from './time-card-request';
+import { TimeCardCorrectionPanel } from './TimeCardCorrectionPanel';
+import { TimeCardHistory } from './TimeCardHistory';
+import type { StaffMember, TimeCard, TimeCardLocation, TimeCardPage, TimeCardsWorkspaceProps } from './time-card-types';
 
-type TimeCardsWorkspaceProps = {
-    canManageTeam: boolean;
-    canReadLocations: boolean;
-    canWriteTimeCards: boolean;
-    currentUserId: string;
-};
-
-type StaffMember = {
-    id: string;
-    name: string;
-    role: string;
-};
-
-type Location = {
-    id: string;
-    name: string;
-};
-
-type TimeCard = {
-    id: string;
-    userId: string;
-    locationId?: string | null;
-    clockInAt: string;
-    clockOutAt?: string | null;
-    breakMinutes: number;
-    status: 'OPEN' | 'CLOSED' | 'VOID';
-    grossMinutes: number;
-    workedMinutes: number;
-    notes?: string | null;
-    user?: { id: string; name: string; username?: string | null; role: string };
-    location?: { id: string; name: string } | null;
-};
-
-function getCsrfToken(): string {
-    if (typeof document === 'undefined') return '';
-    const pair = document.cookie.split('; ').find((entry) => entry.startsWith('csrf_token='));
-    return pair ? decodeURIComponent(pair.split('=')[1] ?? '') : '';
-}
-
-function jsonWriteInit(method: 'POST' | 'PUT', payload: unknown, extraHeaders: Record<string, string> = {}): RequestInit {
-    const csrf = getCsrfToken();
-    return {
-        method,
-        credentials: 'include',
-        headers: {
-            'Content-Type': 'application/json',
-            ...(csrf ? { 'x-csrf-token': csrf } : {}),
-            ...extraHeaders,
-        },
-        body: JSON.stringify(payload),
-    };
-}
-
-function formatTime(value?: string | null): string {
-    if (!value) return 'Open';
-    return new Date(value).toLocaleString([], {
-        month: 'short',
-        day: 'numeric',
-        hour: 'numeric',
-        minute: '2-digit',
-    });
-}
 
 export function TimeCardsWorkspace({ canManageTeam, canReadLocations, canWriteTimeCards, currentUserId }: TimeCardsWorkspaceProps) {
     const [staff, setStaff] = useState<StaffMember[]>([]);
-    const [locations, setLocations] = useState<Location[]>([]);
+    const [locations, setLocations] = useState<TimeCardLocation[]>([]);
+    const [nextLocationCursor, setNextLocationCursor] = useState<string | null>(null);
+    const [isLoadingMoreLocations, setIsLoadingMoreLocations] = useState(false);
     const [selectedUserId, setSelectedUserId] = useState(currentUserId);
     const [selectedLocationId, setSelectedLocationId] = useState('');
     const [activeCard, setActiveCard] = useState<TimeCard | null>(null);
     const [cards, setCards] = useState<TimeCard[]>([]);
+    const [nextCardsCursor, setNextCardsCursor] = useState<string | null>(null);
+    const [isMoreCardsLoading, setIsMoreCardsLoading] = useState(false);
+    const [correctingCard, setCorrectingCard] = useState<TimeCard | null>(null);
     const [breakMinutes, setBreakMinutes] = useState('30');
     const [notes, setNotes] = useState('');
     const [isReferenceLoading, setIsReferenceLoading] = useState(true);
@@ -97,27 +51,43 @@ export function TimeCardsWorkspace({ canManageTeam, canReadLocations, canWriteTi
     }, [selectedUserId, staff]);
 
     const loadReferenceData = useCallback(async () => {
-        const [staffRes, locationRes] = await Promise.all([
-            canManageTeam ? fetchWithSession('/shifts/staff-roster') : Promise.resolve(null),
-            canReadLocations ? fetchWithSession('/locations') : Promise.resolve(null),
+        const [staffRows, locationPage] = await Promise.all([
+            canManageTeam ? fetchStaffRoster() : Promise.resolve(null),
+            canReadLocations ? fetchLocationPage() : Promise.resolve(null),
         ]);
-
-        if (staffRes && !staffRes.ok) throw new Error('Unable to load staff.');
-        if (locationRes && !locationRes.ok) throw new Error('Unable to load locations.');
-
-        const staffPayload = staffRes ? (await staffRes.json()) as { data?: StaffMember[] } : { data: [] };
-        const locationPayload = locationRes ? (await locationRes.json()) as { data?: Location[] } : { data: [] };
-        const nextStaff = Array.isArray(staffPayload.data) ? staffPayload.data : [];
-        const nextLocations = Array.isArray(locationPayload.data) ? locationPayload.data : [];
+        const nextStaff = (staffRows ?? [])
+            .slice()
+            .sort((left, right) => left.name.localeCompare(right.name) || left.id.localeCompare(right.id));
+        const nextLocations = Array.isArray(locationPage?.data) ? locationPage.data : [];
 
         setStaff(nextStaff);
         setLocations(nextLocations);
-        setSelectedLocationId((prev) => prev || nextLocations[0]?.id || '');
+        setNextLocationCursor(locationPage ? locationContinuation(locationPage) : null);
+        setSelectedLocationId((previous) => previous || nextLocations[0]?.id || '');
         if (canManageTeam && nextStaff[0]?.id) {
             setSelectedUserId((previousUserId) => previousUserId === currentUserId ? nextStaff[0].id : previousUserId);
         }
     }, [canManageTeam, canReadLocations, currentUserId]);
 
+    const loadMoreLocations = useCallback(async () => {
+        if (!nextLocationCursor) return;
+        setIsLoadingMoreLocations(true);
+        setError(null);
+        try {
+            const page = await fetchLocationPage(nextLocationCursor);
+            const rows = Array.isArray(page.data) ? page.data : [];
+            setLocations((current) => {
+                const byId = new Map(current.map((location) => [location.id, location]));
+                for (const location of rows) byId.set(location.id, location);
+                return [...byId.values()];
+            });
+            setNextLocationCursor(locationContinuation(page));
+        } catch (loadError) {
+            setError(loadError instanceof Error ? loadError.message : 'Unable to load more locations.');
+        } finally {
+            setIsLoadingMoreLocations(false);
+        }
+    }, [nextLocationCursor]);
     const loadCards = useCallback(async (userId: string) => {
         const ticket = cardsRequestGate.current.begin(userId);
         setIsCardsLoading(true);
@@ -125,41 +95,64 @@ export function TimeCardsWorkspace({ canManageTeam, canReadLocations, canWriteTi
         setCanStartNewTimeCard(false);
         setActiveCard(null);
         setCards([]);
+        setNextCardsCursor(null);
+        setIsMoreCardsLoading(false);
+        setCorrectingCard(null);
         setError(null);
-        const query = new URLSearchParams();
-        if (canManageTeam && userId) query.set('userId', userId);
 
         try {
-            const [activeRes, cardsRes] = await Promise.all([
-                fetchWithSession(`/time-cards/active${query.toString() ? `?${query}` : ''}`),
-                fetchWithSession(`/time-cards${query.toString() ? `?${query}` : ''}`),
-            ]);
-
-            if (!activeRes.ok) throw new Error('Unable to load active time card.');
-
-            const activePayload = (await activeRes.json()) as { data?: TimeCard | null };
+            const snapshot = await fetchTimeCardSnapshot(userId, canManageTeam);
             if (!cardsRequestGate.current.isLatest(ticket)) return;
 
-            const nextActiveCard = activePayload.data ?? null;
-            setActiveCard(isTimeCardForEmployee(nextActiveCard, userId) ? nextActiveCard : null);
+            setActiveCard(isTimeCardForEmployee(snapshot.activeCard, userId) ? snapshot.activeCard : null);
             setLoadedUserId(userId);
-            setCanStartNewTimeCard(cardsRes.ok);
-            if (cardsRes.ok) {
-                const cardsPayload = (await cardsRes.json()) as { data?: TimeCard[] };
+            setCanStartNewTimeCard(snapshot.historyResponse.ok);
+            if (snapshot.historyResponse.ok) {
+                const page = (await snapshot.historyResponse.json()) as TimeCardPage;
                 if (!cardsRequestGate.current.isLatest(ticket)) return;
-                setCards(Array.isArray(cardsPayload.data) ? cardsPayload.data.filter((card) => card.userId === userId) : []);
+                setCards(Array.isArray(page.data) ? page.data.filter((card) => card.userId === userId) : []);
+                setNextCardsCursor(page.nextCursor ?? null);
             } else {
                 setCards([]);
                 setError('Time card history and new clock-ins are unavailable. You can still clock out an open card.');
             }
-        } catch (err) {
+        } catch (loadError) {
             if (cardsRequestGate.current.isLatest(ticket)) {
-                setError(err instanceof Error ? err.message : 'Unable to load time cards.');
+                setError(loadError instanceof Error ? loadError.message : 'Unable to load time cards.');
             }
         } finally {
             if (cardsRequestGate.current.isLatest(ticket)) setIsCardsLoading(false);
         }
     }, [canManageTeam]);
+
+    const loadEarlierCards = useCallback(async () => {
+        const cursor = nextCardsCursor;
+        const userId = selectedUserId;
+        if (!cursor || isMoreCardsLoading) return;
+
+        const ticket = cardsRequestGate.current.begin(userId);
+        setIsMoreCardsLoading(true);
+        setError(null);
+        try {
+            const page = await fetchEarlierTimeCards(userId, canManageTeam, cursor);
+            if (!cardsRequestGate.current.isLatest(ticket)) return;
+
+            const additionalCards = Array.isArray(page.data)
+                ? page.data.filter((card) => card.userId === userId)
+                : [];
+            setCards((current) => {
+                const knownIds = new Set(current.map((card) => card.id));
+                return [...current, ...additionalCards.filter((card) => !knownIds.has(card.id))];
+            });
+            setNextCardsCursor(page.nextCursor ?? null);
+        } catch (loadError) {
+            if (cardsRequestGate.current.isLatest(ticket)) {
+                setError(loadError instanceof Error ? loadError.message : 'Unable to load earlier time cards.');
+            }
+        } finally {
+            if (cardsRequestGate.current.isLatest(ticket)) setIsMoreCardsLoading(false);
+        }
+    }, [canManageTeam, isMoreCardsLoading, nextCardsCursor, selectedUserId]);
 
     useEffect(() => {
         let cancelled = false;
@@ -217,18 +210,13 @@ export function TimeCardsWorkspace({ canManageTeam, canReadLocations, canWriteTi
                 ...(selectedLocationId ? { locationId: selectedLocationId } : {}),
                 notes: notes.trim() || undefined,
             };
-            const requestKey = clockInRequestKey.current.current();
-            const res = await fetchWithSession('/time-cards/clock-in', jsonWriteInit('POST', payload, {
-                'Idempotency-Key': requestKey,
-            }));
-            const body = (await res.json().catch(() => ({}))) as { message?: string };
-            if (!res.ok) throw new Error(body.message ?? 'Unable to clock in.');
+            await clockInTimeCard(payload, clockInRequestKey.current.current());
             clockInRequestKey.current.reset();
             setNotice('Clocked in.');
             setNotes('');
             await loadCards(selectedUserId);
-        } catch (err) {
-            setError(err instanceof Error ? err.message : 'Unable to clock in.');
+        } catch (saveError) {
+            setError(saveError instanceof Error ? saveError.message : 'Unable to clock in.');
         } finally {
             setIsSaving(false);
         }
@@ -245,17 +233,15 @@ export function TimeCardsWorkspace({ canManageTeam, canReadLocations, canWriteTi
         setNotice(null);
         try {
             const parsedBreakMinutes = Number.parseInt(breakMinutes, 10);
-            const res = await fetchWithSession(`/time-cards/${activeCardForSelectedUser.id}/clock-out`, jsonWriteInit('POST', {
+            await clockOutTimeCard(activeCardForSelectedUser.id, {
                 breakMinutes: Number.isFinite(parsedBreakMinutes) ? parsedBreakMinutes : 0,
                 notes: notes.trim() || undefined,
-            }));
-            const body = (await res.json().catch(() => ({}))) as { message?: string };
-            if (!res.ok) throw new Error(body.message ?? 'Unable to clock out.');
+            });
             setNotice('Clocked out.');
             setNotes('');
             await loadCards(selectedUserId);
-        } catch (err) {
-            setError(err instanceof Error ? err.message : 'Unable to clock out.');
+        } catch (saveError) {
+            setError(saveError instanceof Error ? saveError.message : 'Unable to clock out.');
         } finally {
             setIsSaving(false);
         }
@@ -273,6 +259,14 @@ export function TimeCardsWorkspace({ canManageTeam, canReadLocations, canWriteTi
                     <button className="btn btn-secondary" onClick={() => void loadCards(selectedUserId)} disabled={isLoading || isSaving}>
                         Refresh
                     </button>
+                </div>
+
+                <div
+                    role="note"
+                    className="surface-muted"
+                    style={{ padding: '0.7rem 0.8rem', color: 'var(--text-secondary)', fontSize: '0.83rem', fontWeight: 650 }}
+                >
+                    Operational time records only. Your payroll system remains the source of truth for wages, taxes, and filings.
                 </div>
 
                 {error ? <div style={{ fontSize: '0.83rem', color: '#cb3653' }}>{error}</div> : null}
@@ -314,6 +308,16 @@ export function TimeCardsWorkspace({ canManageTeam, canReadLocations, canWriteTi
                             ))}
                         </select>
                     </label> : null}
+                    {canReadLocations && nextLocationCursor ? (
+                        <button
+                            type="button"
+                            className="btn btn-secondary"
+                            onClick={() => void loadMoreLocations()}
+                            disabled={isSaving || isLoadingMoreLocations}
+                        >
+                            {isLoadingMoreLocations ? 'Loading...' : 'Load more locations'}
+                        </button>
+                    ) : null}
 
                     <label style={{ display: 'grid', gap: 5, fontSize: '0.78rem', fontWeight: 700, color: 'var(--text-primary)' }}>
                         Break minutes
@@ -344,7 +348,9 @@ export function TimeCardsWorkspace({ canManageTeam, canReadLocations, canWriteTi
                     <div className="surface-muted" style={{ padding: '0.8rem' }}>
                         <div style={{ fontSize: '0.74rem', color: 'var(--text-muted)', textTransform: 'uppercase', fontWeight: 800 }}>Current status</div>
                         <div style={{ marginTop: 4, fontSize: '1rem', fontWeight: 800, color: activeCardForSelectedUser ? '#166534' : 'var(--text-primary)' }}>
-                            {!hasCurrentCards ? 'Loading status...' : activeCardForSelectedUser ? `Clocked in at ${formatTime(activeCardForSelectedUser.clockInAt)}` : 'Not clocked in'}
+                            {!hasCurrentCards ? 'Loading status...' : activeCardForSelectedUser
+                                ? `Clocked in at ${formatTimeCardTimestamp(activeCardForSelectedUser.clockInAt, activeCardForSelectedUser.displayTimeZone)}`
+                                : 'Not clocked in'}
                         </div>
                         {activeCardForSelectedUser?.location ? (
                             <div style={{ marginTop: 2, fontSize: '0.78rem', color: 'var(--text-secondary)' }}>{activeCardForSelectedUser.location.name}</div>
@@ -365,49 +371,33 @@ export function TimeCardsWorkspace({ canManageTeam, canReadLocations, canWriteTi
                 </div>
             </section>
 
-            <section className="surface-card" style={{ padding: '1rem', overflowX: 'auto' }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', gap: '0.8rem', alignItems: 'center', marginBottom: '0.75rem' }}>
-                    <div>
-                        <div className="workspace-kicker">History</div>
-                        <h2 style={{ margin: 0, color: 'var(--text-primary)', fontSize: '1rem' }}>Time card records</h2>
-                    </div>
-                    <div style={{ fontSize: '0.78rem', color: 'var(--text-secondary)' }}>{cards.filter((card) => card.status === 'OPEN').length} open</div>
-                </div>
+            {correctingCard ? (
+                <TimeCardCorrectionPanel
+                    key={correctingCard.id + correctingCard.updatedAt}
+                    card={correctingCard}
+                    onCancel={() => setCorrectingCard(null)}
+                    onSaved={async () => {
+                        setNotice('Time card corrected.');
+                        setCorrectingCard(null);
+                        await loadCards(selectedUserId);
+                    }}
+                />
+            ) : null}
 
-                <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 760 }}>
-                    <thead>
-                        <tr style={{ borderBottom: '1px solid var(--border)' }}>
-                            <th style={{ textAlign: 'left', padding: '0.55rem', fontSize: '0.72rem', color: 'var(--text-muted)' }}>Employee</th>
-                            <th style={{ textAlign: 'left', padding: '0.55rem', fontSize: '0.72rem', color: 'var(--text-muted)' }}>Location</th>
-                            <th style={{ textAlign: 'left', padding: '0.55rem', fontSize: '0.72rem', color: 'var(--text-muted)' }}>Clock in</th>
-                            <th style={{ textAlign: 'left', padding: '0.55rem', fontSize: '0.72rem', color: 'var(--text-muted)' }}>Clock out</th>
-                            <th style={{ textAlign: 'left', padding: '0.55rem', fontSize: '0.72rem', color: 'var(--text-muted)' }}>Break</th>
-                            <th style={{ textAlign: 'left', padding: '0.55rem', fontSize: '0.72rem', color: 'var(--text-muted)' }}>Worked</th>
-                            <th style={{ textAlign: 'left', padding: '0.55rem', fontSize: '0.72rem', color: 'var(--text-muted)' }}>Status</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        {cards.length === 0 ? (
-                            <tr>
-                                <td colSpan={7} style={{ padding: '0.85rem 0.55rem', color: 'var(--text-secondary)', fontSize: '0.86rem' }}>
-                                    No time cards yet.
-                                </td>
-                            </tr>
-                        ) : null}
-                        {cards.map((card) => (
-                            <tr key={card.id} style={{ borderBottom: '1px solid var(--border)' }}>
-                                <td style={{ padding: '0.55rem', color: 'var(--text-primary)', fontWeight: 700 }}>{card.user?.name ?? selectedStaffName}</td>
-                                <td style={{ padding: '0.55rem', color: 'var(--text-secondary)' }}>{card.location?.name ?? 'No location'}</td>
-                                <td style={{ padding: '0.55rem', color: 'var(--text-secondary)' }}>{formatTime(card.clockInAt)}</td>
-                                <td style={{ padding: '0.55rem', color: 'var(--text-secondary)' }}>{formatTime(card.clockOutAt)}</td>
-                                <td style={{ padding: '0.55rem', color: 'var(--text-secondary)' }}>{formatTimeCardDuration(card.breakMinutes)}</td>
-                                <td style={{ padding: '0.55rem', color: 'var(--text-primary)', fontWeight: 800 }}>{formatTimeCardDuration(card.workedMinutes)}</td>
-                                <td style={{ padding: '0.55rem', color: card.status === 'OPEN' ? '#166534' : 'var(--text-secondary)', fontWeight: 800 }}>{card.status}</td>
-                            </tr>
-                        ))}
-                    </tbody>
-                </table>
-            </section>
+            <TimeCardHistory
+                cards={cards}
+                canManageTeam={canManageTeam}
+                canWriteTimeCards={canWriteTimeCards}
+                isMoreCardsLoading={isMoreCardsLoading}
+                nextCardsCursor={nextCardsCursor}
+                selectedStaffName={selectedStaffName}
+                onCorrect={(card) => {
+                    setError(null);
+                    setNotice(null);
+                    setCorrectingCard(card);
+                }}
+                onLoadEarlier={() => void loadEarlierCards()}
+            />
         </div>
     );
 }

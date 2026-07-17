@@ -2,12 +2,13 @@
 
 import Link from 'next/link';
 import { Suspense, useEffect, useRef, useState } from 'react';
-import { useSearchParams } from 'next/navigation';
+import { useRouter, useSearchParams } from 'next/navigation';
 import { LunchLineupMark } from '@/components/branding/LunchLineupMark';
+import { apiPath, fetchPublicApi } from '@/lib/client-api';
+import { safeInternalNavigationPath } from '@/lib/safe-navigation';
 import { normalizeWorkspaceSlug, readRememberedWorkspaceSlug, rememberWorkspaceSlug } from '@/lib/workspace-slug';
 import { isSelfServiceSignupAvailable } from '../../onboarding/challenge';
 
-const API = process.env.NEXT_PUBLIC_API_URL ?? '/api/v1';
 const OIDC_ENABLED = (process.env.NEXT_PUBLIC_OIDC_ENABLED ?? '').toLowerCase() === 'true';
 const SELF_SERVICE_SIGNUP_AVAILABLE = isSelfServiceSignupAvailable(process.env.NEXT_PUBLIC_SIGNUP_MODE);
 
@@ -23,19 +24,14 @@ function LoginError({ message }: { message: string | null }) {
     );
 }
 
-function safeInternalPath(value: string | null): string {
-    if (!value) return '/dashboard';
-    if (!value.startsWith('/') || value.startsWith('//') || value.includes('\\')) return '/dashboard';
-    return value;
-}
-
 function LoginContent() {
+    const router = useRouter();
     const searchParams = useSearchParams();
     const prefillIdentifier = searchParams.get('identifier') ?? searchParams.get('email') ?? '';
     const prefillWorkspace = searchParams.get('tenantSlug') ?? searchParams.get('workspace') ?? '';
     const stepParam = searchParams.get('step');
     const errorParam = searchParams.get('error');
-    const nextPath = safeInternalPath(searchParams.get('next'));
+    const nextPath = safeInternalNavigationPath(searchParams.get('next'));
 
     const [step, setStep] = useState<Step>('identifier');
     const [identifier, setIdentifier] = useState('');
@@ -45,12 +41,17 @@ function LoginContent() {
     const [otp, setOtp] = useState(['', '', '', '', '', '']);
     const [pin, setPin] = useState('');
     const [password, setPassword] = useState('');
+    const [isHydrated, setIsHydrated] = useState(false);
     const [isLoading, setIsLoading] = useState(false);
     const [error, setError] = useState<string | null>(null);
     const [resendCountdown, setResendCountdown] = useState(0);
 
     const otpRefs = useRef<(HTMLInputElement | null)[]>([]);
     const verifyInFlightRef = useRef(false);
+
+    useEffect(() => {
+        setIsHydrated(true);
+    }, []);
 
     useEffect(() => {
         if (prefillIdentifier) {
@@ -85,7 +86,7 @@ function LoginContent() {
     }, [resendCountdown]);
 
     const sendOtpForEmail = async (normalizedEmail: string, normalizedWorkspaceSlug: string) => {
-        const res = await fetch(`${API}/auth/email/send-otp`, {
+        const res = await fetchPublicApi('/auth/email/send-otp', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ email: normalizedEmail, tenantSlug: normalizedWorkspaceSlug }),
@@ -116,7 +117,7 @@ function LoginContent() {
 
         setIsLoading(true);
         try {
-            const res = await fetch(`${API}/auth/login/resolve`, {
+            const res = await fetchPublicApi('/auth/login/resolve', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ identifier: normalizedIdentifier, tenantSlug: normalizedWorkspaceSlug }),
@@ -209,46 +210,71 @@ function LoginContent() {
         }
     };
 
-    const handleVerifyOtp = (e?: React.FormEvent, forcedCode?: string) => {
-        e?.preventDefault();
+    const submitLoginVerification = async (
+        endpoint: '/auth/email/verify-otp' | '/auth/pin/verify' | '/auth/password/verify',
+        payload: Record<string, string>,
+        fallbackError: string,
+    ) => {
         if (verifyInFlightRef.current) return;
 
-        const code = forcedCode ?? otp.join('');
+        const safeNext = safeInternalNavigationPath(nextPath);
+        verifyInFlightRef.current = true;
+        setIsLoading(true);
+        setError(null);
+
+        try {
+            const response = await fetchPublicApi(`${endpoint}?next=${encodeURIComponent(safeNext)}`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                credentials: 'include',
+                body: JSON.stringify(payload),
+            });
+            const data = await response.json().catch(() => ({})) as {
+                success?: unknown;
+                redirectTo?: unknown;
+                message?: unknown;
+                error?: unknown;
+            };
+            if (!response.ok || data.success !== true) {
+                const message = typeof data.message === 'string'
+                    ? data.message
+                    : typeof data.error === 'string'
+                        ? data.error
+                        : fallbackError;
+                setError(message);
+                return;
+            }
+
+            const redirectTo = safeInternalNavigationPath(
+                typeof data.redirectTo === 'string' ? data.redirectTo : null,
+                safeNext,
+            );
+            router.push(redirectTo);
+        } catch (err) {
+            setError(err instanceof Error ? err.message : 'Unable to sign in. Please try again.');
+        } finally {
+            verifyInFlightRef.current = false;
+            setIsLoading(false);
+        }
+    };
+
+    const handleVerifyOtp = async (e?: React.FormEvent) => {
+        e?.preventDefault();
+
+        const code = otp.join('');
         if (code.length !== 6) {
             setError('Enter all 6 digits.');
             return;
         }
 
-        setError(null);
-        verifyInFlightRef.current = true;
-        setIsLoading(true);
-
-        const safeNext = safeInternalPath(nextPath);
-        const form = document.createElement('form');
-        form.method = 'POST';
-        form.action = `${API}/auth/email/verify-otp?redirect=1&next=${encodeURIComponent(safeNext)}`;
-        form.style.display = 'none';
-
-        const emailInput = document.createElement('input');
-        emailInput.name = 'email';
-        emailInput.value = email.trim().toLowerCase();
-        form.appendChild(emailInput);
-
-        const tenantInput = document.createElement('input');
-        tenantInput.name = 'tenantSlug';
-        tenantInput.value = normalizeWorkspaceSlug(workspaceSlug);
-        form.appendChild(tenantInput);
-
-        const codeInput = document.createElement('input');
-        codeInput.name = 'code';
-        codeInput.value = code;
-        form.appendChild(codeInput);
-
-        document.body.appendChild(form);
-        form.submit();
+        await submitLoginVerification('/auth/email/verify-otp', {
+            email: email.trim().toLowerCase(),
+            tenantSlug: normalizeWorkspaceSlug(workspaceSlug),
+            code,
+        }, 'Invalid or expired code. Please try again.');
     };
 
-    const handleVerifyPin = (e?: React.FormEvent) => {
+    const handleVerifyPin = async (e?: React.FormEvent) => {
         e?.preventDefault();
         const normalizedPin = pin.replace(/\D/g, '');
         if (normalizedPin.length < 4 || normalizedPin.length > 8) {
@@ -256,76 +282,26 @@ function LoginContent() {
             return;
         }
 
-        setError(null);
-        setIsLoading(true);
-
-        const safeNext = safeInternalPath(nextPath);
-        const form = document.createElement('form');
-        form.method = 'POST';
-        form.action = `${API}/auth/pin/verify?redirect=1&next=${encodeURIComponent(safeNext)}`;
-        form.style.display = 'none';
-
-        const identifierInput = document.createElement('input');
-        identifierInput.name = 'identifier';
-        identifierInput.value = username.trim().toLowerCase();
-        form.appendChild(identifierInput);
-
-        const tenantInput = document.createElement('input');
-        tenantInput.name = 'tenantSlug';
-        tenantInput.value = normalizeWorkspaceSlug(workspaceSlug);
-        form.appendChild(tenantInput);
-
-        const pinInput = document.createElement('input');
-        pinInput.name = 'pin';
-        pinInput.value = normalizedPin;
-        form.appendChild(pinInput);
-
-        document.body.appendChild(form);
-        form.submit();
+        await submitLoginVerification('/auth/pin/verify', {
+            identifier: username.trim().toLowerCase(),
+            tenantSlug: normalizeWorkspaceSlug(workspaceSlug),
+            pin: normalizedPin,
+        }, 'Invalid username or PIN. Please try again.');
     };
 
-    const handleVerifyPassword = (e?: React.FormEvent) => {
+    const handleVerifyPassword = async (e?: React.FormEvent) => {
         e?.preventDefault();
         if (!password) {
             setError('Enter your password.');
             return;
         }
 
-        setError(null);
-        setIsLoading(true);
-
-        const safeNext = safeInternalPath(nextPath);
-        const form = document.createElement('form');
-        form.method = 'POST';
-        form.action = `${API}/auth/password/verify?redirect=1&next=${encodeURIComponent(safeNext)}`;
-        form.style.display = 'none';
-
-        const identifierInput = document.createElement('input');
-        identifierInput.name = 'identifier';
-        identifierInput.value = username.trim().toLowerCase();
-        form.appendChild(identifierInput);
-
-        const tenantInput = document.createElement('input');
-        tenantInput.name = 'tenantSlug';
-        tenantInput.value = normalizeWorkspaceSlug(workspaceSlug);
-        form.appendChild(tenantInput);
-
-        const passwordInput = document.createElement('input');
-        passwordInput.name = 'password';
-        passwordInput.value = password;
-        form.appendChild(passwordInput);
-
-        document.body.appendChild(form);
-        form.submit();
+        await submitLoginVerification('/auth/password/verify', {
+            identifier: username.trim().toLowerCase(),
+            tenantSlug: normalizeWorkspaceSlug(workspaceSlug),
+            password,
+        }, 'Invalid username or password. Please try again.');
     };
-
-    useEffect(() => {
-        if (step !== 'otp' || isLoading || verifyInFlightRef.current) return;
-        const code = otp.join('');
-        if (/^\d{6}$/.test(code)) {
-            void handleVerifyOtp(undefined, code);
-        }
-    }, [otp, step, isLoading]);
 
     const handleOidcLogin = () => {
         const normalizedWorkspaceSlug = normalizeWorkspaceSlug(workspaceSlug);
@@ -335,9 +311,11 @@ function LoginContent() {
         }
         setWorkspaceSlug(normalizedWorkspaceSlug);
         rememberWorkspaceSlug(window.localStorage, normalizedWorkspaceSlug);
-        const params = new URLSearchParams({ tenantSlug: normalizedWorkspaceSlug, next: safeInternalPath(nextPath) });
-        window.location.href = `${API}/auth/login?${params.toString()}`;
+        const params = new URLSearchParams({ tenantSlug: normalizedWorkspaceSlug, next: safeInternalNavigationPath(nextPath) });
+        window.location.href = apiPath(`/auth/login?${params.toString()}`);
     };
+
+    if (!isHydrated) return <LoginLoadingFallback />;
 
     return (
         <main className="login-shell">
@@ -649,7 +627,7 @@ function LoginContent() {
                 .login-context__title {
                     font-size: clamp(2rem, 5vw, 3.25rem);
                     line-height: 1.02;
-                    letter-spacing: -0.035em;
+                    letter-spacing: 0;
                     color: var(--text-primary);
                     margin-bottom: 0.75rem;
                     max-width: 16ch;
@@ -697,7 +675,7 @@ function LoginContent() {
                     font-size: 1.32rem;
                     color: var(--text-primary);
                     margin-bottom: 0.18rem;
-                    letter-spacing: -0.02em;
+                    letter-spacing: 0;
                 }
 
                 .login-card__subtitle {
@@ -795,9 +773,21 @@ function LoginContent() {
     );
 }
 
+function LoginLoadingFallback() {
+    return (
+        <main style={{ minHeight: '100vh', display: 'grid', placeItems: 'center', padding: 24, background: '#f6f8fc', color: '#12213a' }}>
+            <div role="status" aria-live="polite" style={{ display: 'grid', justifyItems: 'center', gap: 12, fontWeight: 800 }}>
+                <LunchLineupMark size={42} />
+                <span style={{ fontSize: 20 }}>LunchLineup</span>
+                <span style={{ color: '#58708f', fontSize: 14 }}>Loading secure sign-in...</span>
+            </div>
+        </main>
+    );
+}
+
 export default function LoginPage() {
     return (
-        <Suspense fallback={<div style={{ minHeight: '100vh' }} />}>
+        <Suspense fallback={<LoginLoadingFallback />}>
             <LoginContent />
         </Suspense>
     );

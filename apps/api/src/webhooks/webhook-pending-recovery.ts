@@ -1,6 +1,6 @@
 import { ConfigService } from '@nestjs/config';
 import type { ConfirmChannel } from 'amqplib';
-import { redactSensitiveText } from '../common/sensitive-redaction';
+import { runtimeErrorText } from '../common/runtime-error-diagnostic';
 import {
     publishWebhookRetryAfterDelay,
     publishWebhookRetryNow,
@@ -34,8 +34,7 @@ export async function recoverPendingWebhookDeliveries(
             queued += 1;
         } catch (error) {
             console.error(
-                `Webhook pending recovery failed delivery_id=${delivery.id}`,
-                redactSensitiveText(error instanceof Error ? error.stack ?? error.message : error),
+                `Webhook pending recovery failed ${runtimeErrorText(error)}`,
             );
         }
     }
@@ -61,8 +60,7 @@ export function startPendingRecoveryLoop(
             .then(() => undefined)
             .catch((error) => {
                 console.error(
-                    'Webhook pending recovery sweep failed',
-                    redactSensitiveText(error instanceof Error ? error.stack ?? error.message : error),
+                    `Webhook pending recovery sweep failed ${runtimeErrorText(error)}`,
                 );
             })
             .finally(() => {

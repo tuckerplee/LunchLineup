@@ -4,6 +4,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
+import yaml from 'js-yaml';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const git = process.env.GIT || (existsSync('C:/Program Files/Git/cmd/git.exe') ? 'C:/Program Files/Git/cmd/git.exe' : 'git');
@@ -12,7 +13,8 @@ function trackedFiles() {
   return execFileSync(git, ['ls-files'], { cwd: root, encoding: 'utf8' })
     .split(/\r?\n/)
     .filter(Boolean)
-    .map((file) => file.replaceAll('\\', '/'));
+    .map((file) => file.replaceAll('\\', '/'))
+    .filter((file) => existsSync(join(root, file)));
 }
 
 function untrackedFiles() {
@@ -50,7 +52,11 @@ function isOversizedSourceCandidate(file) {
 }
 
 function lineCount(path) {
-  return read(path).split(/\r?\n/).length;
+  const contents = read(path);
+  if (contents.length === 0) return 0;
+
+  const lineEndings = contents.match(/\r\n|\r|\n/g)?.length ?? 0;
+  return lineEndings + (/\r\n$|\r$|\n$/.test(contents) ? 0 : 1);
 }
 
 function read(path) {
@@ -94,6 +100,13 @@ function entryIsDocumented(entry, tokens) {
   }
 
   return false;
+}
+
+function documentedHotspotLineCounts(markdown) {
+  return [...markdown.matchAll(/^\|\s*`([^`\r\n]+)`\s*\|\s*(\d+)\s*\|/gm)].map((match) => ({
+    file: match[1].replaceAll('\\', '/'),
+    lines: Number.parseInt(match[2], 10),
+  }));
 }
 
 test('repository does not track deploy secrets or local environment files', () => {
@@ -168,14 +181,13 @@ test('CI runs migration hygiene before build and deploy stages', () => {
 
 test('CI gates release images on the worker Python unit suite', () => {
   const ci = read('.github/workflows/ci.yml');
-  const unitJob = ci.indexOf('unit-tests:');
-  const requirements = ci.indexOf('pip install -r apps/worker/requirements.txt', unitJob);
-  const workerTests = ci.indexOf('python -m unittest discover -s apps/worker/tests', unitJob);
-  const buildJob = ci.indexOf('build-images:');
-
-  assert.ok(unitJob >= 0 && requirements > unitJob);
-  assert.ok(workerTests > requirements);
-  assert.ok(buildJob > workerTests);
+  const workflow = yaml.load(ci);
+  const workerStep = workflow.jobs['unit-tests'].steps.find((step) => step.name === 'Run worker unit tests');
+  assert.equal(workerStep['working-directory'], 'apps/worker');
+  assert.equal(
+    workerStep.run.replaceAll('\r\n', '\n').trim(),
+    'pip install -r requirements.txt\npython -m unittest discover -s tests',
+  );
   assert.match(ci, /build-images:[\s\S]*needs: unit-tests/);
 });
 
@@ -197,7 +209,8 @@ test('Caddy applies public SaaS browser and API cache hardening headers', () => 
     assert.match(config, /Content-Security-Policy .*script-src-attr 'none'/);
     assert.match(config, /script-src 'self' https:\/\/challenges\.cloudflare\.com 'unsafe-inline'/);
     assert.match(config, /frame-src 'self' https:\/\/challenges\.cloudflare\.com/);
-    assert.match(config, /connect-src 'self' https:\/\/challenges\.cloudflare\.com/);
+    assert.match(config, /connect-src 'self' https:\/\/challenges\.cloudflare\.com;/);
+    assert.doesNotMatch(config, /NEXT_PUBLIC_WS_URL|CADDY_WEBSOCKET_SOURCE|handle \/ws\/\*|wss?:\/\//);
     assert.match(config, /Cross-Origin-Opener-Policy "same-origin"/);
     assert.match(config, /Cross-Origin-Resource-Policy "same-origin"/);
     assert.match(config, /header \/api\/\* Cache-Control "no-store"/);
@@ -206,7 +219,12 @@ test('Caddy applies public SaaS browser and API cache hardening headers', () => 
 
   assert.match(nextConfig, /script-src 'self' \$\{turnstileOrigin\} 'unsafe-inline'/);
   assert.match(nextConfig, /frame-src 'self' \$\{turnstileOrigin\}/);
-  assert.match(nextConfig, /connect-src 'self' \$\{turnstileOrigin\}/);
+  assert.match(nextConfig, /const connectSources = \[/);
+  assert.match(nextConfig, /browserOrigin\(process\.env\.NEXT_PUBLIC_API_URL\)/);
+  assert.doesNotMatch(nextConfig, /NEXT_PUBLIC_WS_URL|wss?:\/\//);
+  assert.match(nextConfig, /developmentConnectOrigins = isProduction\s*\? \[\]/);
+  assert.match(nextConfig, /connect-src.*new Set\(connectSources\)/);
+  assert.doesNotMatch(nextConfig, /connect-src[^\n]*https: wss:/);
 });
 
 test('example environment avoids unsafe broker defaults', () => {
@@ -267,12 +285,29 @@ test('project README inventories cover tracked and untracked sibling files', () 
 
 test('oversized public SaaS source files are documented as code-organization hotspots', () => {
   const docs = read('docs/code-organization.md');
+  const documentedHotspots = documentedHotspotLineCounts(docs);
+  const documentedPaths = new Set(documentedHotspots.map(({ file }) => file));
+  const countDrift = documentedHotspots
+    .map(({ file, lines }) => ({
+      file,
+      documented: lines,
+      actual: existsSync(join(root, file)) ? lineCount(file) : 'missing',
+    }))
+    .filter(({ documented, actual }) => documented !== actual);
   const oversized = repositoryFiles()
     .filter(isOversizedSourceCandidate)
     .filter((file) => existsSync(join(root, file)))
     .filter((file) => lineCount(file) > 500);
 
-  const undocumented = oversized.filter((file) => !docs.includes(`\`${file}\``));
+  const undocumented = oversized.filter((file) => !documentedPaths.has(file));
+
+  assert.deepEqual(
+    countDrift,
+    [],
+    `Code-organization hotspot line-count drift:\n${countDrift
+      .map(({ file, documented, actual }) => `- ${file}: documented ${documented}, actual ${actual}`)
+      .join('\n')}`,
+  );
 
   assert.deepEqual(
     undocumented,

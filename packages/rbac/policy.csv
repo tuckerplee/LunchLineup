@@ -23,6 +23,12 @@ p, ADMIN, lunch_breaks, write
 p, ADMIN, lunch_breaks, delete
 p, ADMIN, time_cards, read
 p, ADMIN, time_cards, write
+p, ADMIN, time_cards, approve
+p, ADMIN, payroll, read
+p, ADMIN, payroll, policy_write
+p, ADMIN, payroll, lock
+p, ADMIN, payroll, export
+p, ADMIN, payroll, reconcile
 p, ADMIN, notifications, read
 p, ADMIN, notifications, write
 p, ADMIN, billing, read
@@ -49,6 +55,8 @@ p, MANAGER, lunch_breaks, read
 p, MANAGER, lunch_breaks, write
 p, MANAGER, time_cards, read
 p, MANAGER, time_cards, write
+p, MANAGER, time_cards, approve
+p, MANAGER, payroll, read
 p, MANAGER, notifications, read
 p, MANAGER, notifications, write
 

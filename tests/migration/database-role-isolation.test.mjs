@@ -57,14 +57,15 @@ test('role provisioning enforces RLS-capable attributes and complete object gran
     'ON SEQUENCES',
     'ON ROUTINES',
     'lunchlineup_private.platform_admin_capability',
-    "public.digest(platform_admin_capability, 'sha256')",
+    "public.digest(requested_platform_admin_capability, 'sha256')",
   ]) {
     assert.ok(roleProvisionSql.includes(fragment), `missing role provision fragment: ${fragment}`);
   }
 
-  assert.match(roleProvisionSql, /IF NOT EXISTS \(SELECT 1 FROM pg_roles/);
+  assert.match(roleProvisionSql, /role_exists BOOLEAN := EXISTS \(SELECT 1 FROM pg_roles/);
   assert.match(roleProvisionSql, /current_setting\('app\.provision\.app_password', true\)/);
   assert.match(roleProvisionSql, /current_setting\('app\.provision\.platform_admin_capability', true\)/);
+  assert.doesNotMatch(roleProvisionSql, /public\.digest\(platform_admin_capability,/);
   assert.doesNotMatch(roleProvisionSql, /lunchlineup_app|app-testpass/);
 });
 
@@ -104,16 +105,23 @@ test('role provisioning uses repository-local Prisma stdin without host psql', (
   assert.match(provisioner, /node_modules\/prisma\/build\/index\.js/);
   assert.match(provisioner, /'db', 'execute', '--schema', schemaPath, '--stdin'/);
   assert.doesNotMatch(provisioner, /execFileSync\('psql'/);
+  assert.match(provisioner, /runBoundedProcess/);
+  assert.match(provisioner, /runtimeCredentialWorks/);
+  assert.match(provisioner, /rollback-safe credential rotation procedure/);
+  assert.doesNotMatch(roleProvisionSql, /ALTER ROLE %I WITH LOGIN PASSWORD/);
 });
 test('migration runner uses the admin URL for schema work and provisions the RLS capability before admin bootstrap', () => {
   const runner = read('scripts/apply-db-migrations.mjs');
   const switchToAdmin = runner.indexOf('process.env.DATABASE_URL = requireMigrationDatabaseUrl();');
-  const schemaPush = runner.indexOf("runPrisma(['db', 'push'");
-  const provision = runner.lastIndexOf('provisionAppRole(runtimeDatabaseUrl);');
-  const adminBootstrap = runner.lastIndexOf('runProductionAdminBootstrap();');
+  const sequenceInvocation = runner.indexOf('runMigrationSequence({', switchToAdmin);
+  const sequence = runner.match(/export async function runMigrationSequence\(operations\) \{([\s\S]*?)\n\}/)?.[1];
 
-  assert.ok(switchToAdmin >= 0 && switchToAdmin < schemaPush);
-  assert.ok(provision > schemaPush);
+  assert.ok(switchToAdmin >= 0 && switchToAdmin < sequenceInvocation);
+  assert.ok(sequence, 'runMigrationSequence must remain exported');
+  const schemaPush = sequence.indexOf('operations.pushSchema();');
+  const provision = sequence.indexOf('operations.provisionAppRole();');
+  const adminBootstrap = sequence.indexOf('operations.bootstrapProductionAdmin();');
+  assert.ok(schemaPush >= 0 && schemaPush < provision);
   assert.ok(provision < adminBootstrap);
   assert.match(runner, /DATABASE_URL: runtimeDatabaseUrl \?\? ''/);
   assert.match(read('infrastructure/docker/Dockerfile.migrations'), /postgresql-client/);

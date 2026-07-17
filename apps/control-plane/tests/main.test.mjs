@@ -140,6 +140,30 @@ test('health endpoint stays non-sensitive and unauthenticated', async (t) => {
   assert.match(response.body, /"service":"control-plane"/);
 });
 
+test('request failures never log parser messages or secret-bearing request content', async (t) => {
+  const server = await listen(createApp(protectedConfig, fakeDocker));
+  const originalError = console.error;
+  const logs = [];
+  console.error = (...args) => logs.push(args.join(' '));
+  t.after(() => {
+    console.error = originalError;
+    return close(server);
+  });
+
+  const response = await request(
+    server,
+    '/api/status',
+    { 'content-type': 'application/json' },
+    'POST',
+    '{"token":"request-secret"',
+  );
+
+  assert.equal(response.statusCode, 500);
+  assert.doesNotMatch(response.body, /request-secret/);
+  assert.match(logs.join('\n'), /Control plane request failed category=unknown/);
+  assert.doesNotMatch(logs.join('\n'), /request-secret|SyntaxError|stack/i);
+});
+
 function listen(app) {
   const server = createServer(app);
   return new Promise((resolve, reject) => {
@@ -163,7 +187,7 @@ function close(server) {
   });
 }
 
-function request(server, path, headers = {}) {
+function request(server, path, headers = {}, method = 'GET', body) {
   const address = server.address();
   assert.ok(address && typeof address === 'object');
 
@@ -172,7 +196,7 @@ function request(server, path, headers = {}) {
       hostname: '127.0.0.1',
       port: address.port,
       path,
-      method: 'GET',
+      method,
       headers,
     }, (res) => {
       let body = '';
@@ -190,6 +214,9 @@ function request(server, path, headers = {}) {
     });
 
     req.on('error', reject);
+    if (body !== undefined) {
+      req.write(body);
+    }
     req.end();
   });
 }

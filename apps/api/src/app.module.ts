@@ -1,5 +1,5 @@
 import { Module, NestModule, MiddlewareConsumer } from '@nestjs/common';
-import { ConfigModule } from '@nestjs/config';
+import { ConfigModule, ConfigService } from '@nestjs/config';
 import { ThrottlerModule } from '@nestjs/throttler';
 import { APP_GUARD, APP_INTERCEPTOR } from '@nestjs/core';
 
@@ -27,29 +27,33 @@ import { WebhooksModule } from './webhooks/webhooks.module';
 import { BillingModule } from './billing/billing.module';
 import { NotificationsModule } from './notifications/notifications.module';
 import { LunchBreaksModule } from './lunch-breaks/lunch-breaks.module';
+import { AvailabilityImportsModule } from './availability-imports/availability-imports.module';
+import { PayrollModule } from './payroll/payroll.module';
 import { MetricsService } from './common/metrics.service';
 import { MetricsInterceptor } from './common/metrics.interceptor';
 import { HealthService } from './common/health.service';
 import { CorrelationIdMiddleware } from './middleware/correlation-id.middleware';
 import { TenantPrismaService } from './database/tenant-prisma.service';
+import { StaffInvitationOutboxService } from './users/staff-invitation-outbox.service';
+import { createRateLimitThrottlerOptions } from './common/redis-throttler.storage';
+import { TenantCancellationReconcilerService } from './admin/tenant-cancellation-reconciler.processor';
+import { TenantDeletionBillingReconcilerService } from './admin/tenant-deletion-billing-reconciler.processor';
 
 @Module({
     imports: [
         ConfigModule.forRoot({ isGlobal: true }),
-        ThrottlerModule.forRoot([
-            { name: 'default', ttl: 60000, limit: 100 },       // 100 req/min global
-            { name: 'auth', ttl: 900000, limit: 5 },             // 5 auth attempts per 15 min
-            { name: 'authIp', ttl: 900000, limit: 30 },           // NAT-safe pre-auth ceiling per endpoint
-            { name: 'authIdentifier', ttl: 900000, limit: 5 },    // 5 pre-auth attempts per account and endpoint
-            { name: 'refreshIp', ttl: 900000, limit: 100 },        // Shared office NAT ceiling for refresh
-            { name: 'refreshCredential', ttl: 900000, limit: 5 }, // Per-refresh-credential abuse ceiling
-            { name: 'expensive', ttl: 60000, limit: 10 },        // 10 expensive ops/min
-        ]),
+        ThrottlerModule.forRootAsync({
+            imports: [ConfigModule],
+            inject: [ConfigService],
+            useFactory: createRateLimitThrottlerOptions,
+        }),
         AuthModule,
         WebhooksModule,
         BillingModule,
         NotificationsModule,
         LunchBreaksModule,
+        AvailabilityImportsModule,
+        PayrollModule,
     ],
     controllers: [
         AppController,
@@ -69,6 +73,9 @@ import { TenantPrismaService } from './database/tenant-prisma.service';
         { provide: APP_GUARD, useClass: RateLimitsGuard },
         { provide: APP_INTERCEPTOR, useClass: MetricsInterceptor },
         HealthService,
+        StaffInvitationOutboxService,
+        TenantCancellationReconcilerService,
+        TenantDeletionBillingReconcilerService,
         MetricsService,
         TenantPrismaService,
     ],

@@ -25,21 +25,12 @@ type IncidentState = {
 };
 
 export function deriveIncidentState(
-  probe: Pick<HealthProbe, 'status' | 'label' | 'detail' | 'checkedAt'>,
+  _probe: Pick<HealthProbe, 'status' | 'label' | 'detail' | 'checkedAt'>,
 ): IncidentState {
-  if (probe.status === 'degraded' || probe.status === 'unavailable') {
-    return {
-      activeCount: 1,
-      heading: probe.label,
-      detail: probe.detail,
-      detectedAt: probe.checkedAt,
-    };
-  }
-
   return {
     activeCount: 0,
     heading: 'No active incidents',
-    detail: 'Automated web/API health signals added to the public beta status page.',
+    detail: 'Automated health signals are shown separately; incident history is published only from the reviewed incident log.',
     detectedAt: null,
   };
 }

@@ -1,45 +1,325 @@
-// @ts-nocheck
-"use strict";
-var __decorate = (this && this.__decorate) || function (decorators, target, key, desc) {
-    var c = arguments.length, r = c < 3 ? target : desc === null ? desc = Object.getOwnPropertyDescriptor(target, key) : desc, d;
-    if (typeof Reflect === "object" && typeof Reflect.decorate === "function") r = Reflect.decorate(decorators, target, key, desc);
-    else for (var i = decorators.length - 1; i >= 0; i--) if (d = decorators[i]) r = (c < 3 ? d(r) : c > 3 ? d(target, key, r) : d(target, key)) || r;
-    return c > 3 && r && Object.defineProperty(target, key, r), r;
+import {
+    BadRequestException,
+    Body,
+    ConflictException,
+    Controller,
+    Delete,
+    ForbiddenException,
+    Get,
+    Headers,
+    HttpCode,
+    HttpStatus,
+    NotFoundException,
+    type OnModuleDestroy,
+    type OnModuleInit,
+    Optional,
+    Param,
+    Post,
+    Put,
+    Query,
+    Req,
+    ServiceUnavailableException,
+    SetMetadata,
+    UseGuards,
+} from "@nestjs/common";
+import { Prisma, UserRole } from "@prisma/client";
+import { randomUUID } from "crypto";
+import { JwtAuthGuard } from "../auth/jwt-auth.guard";
+import { RbacGuard } from "../auth/rbac.guard";
+import {
+    ACTIVE_SCHEDULABLE_USER_FILTER,
+    SCHEDULABLE_USER_ROLES,
+} from "../common/schedulable-user";
+import { FeatureAccessService, type FeatureResolution } from "../billing/feature-access.service";
+import { MeteringService } from "../billing/metering.service";
+import {
+    assertBoundedListWindow,
+    buildBoundedListPage,
+    decodeBoundedListCursor,
+    parseBoundedListLimit,
+    parseOptionalBoundedDate,
+} from "../common/bounded-pagination";
+import {
+    formatDateInTimeZone,
+    localDateBoundaryUtc,
+    normalizeTimeZone,
+    splitInstantRangeByLocalDay,
+} from "../common/location-timezone";
+import {
+    TenantPrismaService,
+    type TenantPrismaTransaction,
+} from "../database/tenant-prisma.service";
+import { NotificationsService, NotificationType } from "../notifications/notifications.service";
+import {
+    WebhooksService,
+    type TransactionalWebhookCostPlan,
+} from "../webhooks/webhooks.service";
+import {
+    autoScheduleRequestHash,
+    hashAutoScheduleIdempotencyKey,
+    normalizeAutoScheduleIdempotencyKey,
+} from "./auto-schedule-idempotency";
+import {
+    normalizeSchedulePublishIdempotencyKey,
+    schedulePublishOperationId,
+    schedulePublishRequestHash,
+} from "./schedule-publish-idempotency";
+import {
+    assertSchedulePublishCredits,
+    buildSchedulePublishPreflight,
+    buildSchedulePublishSettlement,
+    isSchedulePublishSettlement,
+    parseSchedulePublishAcceptedContract,
+    schedulePublishContractMatches,
+    schedulePublishLedgerId,
+    type SchedulePublishAcceptedContract,
+    type SchedulePublishPreflight,
+    type SchedulePublishSettlement,
+} from "./schedule-publish-settlement";
+import {
+    assertAvailabilityWindow,
+    availabilityDayName,
+    availabilityTime,
+    availabilityWindowsCoverLocalSegment,
+    type PersistedAvailabilityWindow,
+} from "./schedule-availability";
+import {
+    ScheduleSolveOutboxPublisher,
+    type ScheduleSolveQueueJob,
+} from "./schedule-solve-outbox.publisher";
+import {
+    assertScheduleSolveCreditProvenance,
+    ScheduleSolveCreditProvenanceError,
+    summarizeScheduleSolveCreditRows,
+    type ScheduleSolveCreditRow,
+} from "./schedule-solve-credit-provenance";
+import {
+    aggregateExistingWeeklyMinutes,
+    calendarWeekRange,
+    type ExistingShiftRange,
+    type ExistingWeeklyMinutes,
+} from "./schedule-weekly-hours";
+type AuthenticatedUser = {
+    tenantId: string;
+    sub?: string;
+    id?: string;
+    role?: string;
+    legacyRole?: string;
+    roles?: string[];
 };
-var __metadata = (this && this.__metadata) || function (k, v) {
-    if (typeof Reflect === "object" && typeof Reflect.metadata === "function") return Reflect.metadata(k, v);
+
+type AuthenticatedRequest = {
+    user: AuthenticatedUser;
 };
-var __param = (this && this.__param) || function (paramIndex, decorator) {
-    return function (target, key) { decorator(target, key, paramIndex); }
+
+type ScheduleListQuery = {
+    startDate?: string;
+    endDate?: string;
+    locationId?: string;
+    limit?: string | number;
+    cursor?: string | null;
 };
-Object.defineProperty(exports, "__esModule", { value: true });
-exports.SchedulesController = void 0;
-const common_1 = require("@nestjs/common");
-import * as jwt_auth_guard_1 from "../auth/jwt-auth.guard";
-import * as rbac_guard_1 from "../auth/rbac.guard";
-import * as notifications_service_1 from "../notifications/notifications.service";
-import * as feature_access_service_1 from "../billing/feature-access.service";
-import * as metering_service_1 from "../billing/metering.service";
-import * as tenant_prisma_service_1 from "../database/tenant-prisma.service";
-const client_1 = require("@prisma/client");
-const crypto_1 = require("crypto");
-import * as location_timezone_1 from "../common/location-timezone";
-import * as auto_schedule_idempotency_1 from "./auto-schedule-idempotency";
-import * as schedule_solve_outbox_publisher_1 from "./schedule-solve-outbox.publisher";
-import * as schedule_availability_1 from "./schedule-availability";
-import * as webhooks_service_1 from "../webhooks/webhooks.service";
-import * as schedule_weekly_hours_1 from "./schedule-weekly-hours";
-const Permission = (perm) => (0, common_1.SetMetadata)("permission", perm);
+
+type CreateScheduleRequest = {
+    locationId: string;
+    startDate: string;
+    endDate: string;
+};
+
+type ReplaceDemandWindowsRequest = {
+    windows?: unknown[];
+};
+
+type AutoScheduleRequest = {
+    constraints?: unknown;
+    confirmReplace?: boolean;
+};
+
+type SchedulePublishRequest = {
+    acceptedContract?: unknown;
+};
+
+type AutoScheduleConstraints = Record<string, unknown>;
+
+type CreditConsumption = {
+    consumedCredits: number;
+    newBalance: number;
+    source: "credits";
+};
+
+type ScheduleSolveSettlementRow = ScheduleSolveCreditRow & {
+    balanceAfter: number | bigint | null;
+};
+
+type ScheduleSolveJobRow = {
+    id: string;
+    scheduleId: string;
+    locationId: string;
+    requestKeyHash?: string;
+    requestHash?: string;
+    status: string;
+    statusReason: string | null;
+    retryCount: number | bigint | null;
+    resultShiftCount: number | bigint | null;
+    requestedConstraints: Prisma.JsonValue | null;
+    staffSnapshot: Prisma.JsonValue | null;
+    demandSnapshot: Prisma.JsonValue | null;
+    creditConsumption: Prisma.JsonValue | null;
+    publicationStatus: string;
+    publishAttempts: number | bigint | null;
+    nextPublishAt: Date | string | null;
+    publishedAt: Date | string | null;
+    publishLastError: string | null;
+    startedAt: Date | string | null;
+    completedAt: Date | string | null;
+    createdAt: Date | string | null;
+    updatedAt: Date | string | null;
+};
+
+type DemandWindowRow = {
+    id: string;
+    startTime: Date | string;
+    endTime: Date | string;
+    requiredStaff: number | bigint;
+    skill: string | null;
+};
+
+type DemandSchedule = {
+    id: string;
+    status: string;
+    locationId: string;
+    startDate: Date;
+    endDate: Date;
+    timezone: string;
+};
+
+type CreateScheduleSolveJobArgs = {
+    jobId: string;
+    tenantId: string;
+    scheduleId: string;
+    locationId: string;
+    requestKeyHash: string;
+    requestHash: string;
+    constraints: AutoScheduleConstraints;
+    staffSnapshot: StaffSnapshot[];
+    demandSnapshot: DemandSnapshot[];
+    queuePayload: ScheduleSolveQueueJob;
+};
+
+type CreditReservationArgs = {
+    tenantId: string;
+    jobId: string;
+    cost: number;
+};
+
+type StaffAvailabilityPayload = {
+    day_of_week: string;
+    start_time: string;
+    end_time: string;
+};
+
+type StaffSnapshot = {
+    id: string;
+    skills: string[];
+    availabilityConfigured: boolean;
+    availability: StaffAvailabilityPayload[];
+};
+
+type AvailabilityRow = PersistedAvailabilityWindow & {
+    userId: string;
+};
+
+type StaffSkillRow = {
+    userId: string;
+    skill: string | null;
+};
+
+type DemandSnapshot = {
+    id: string;
+    start_time: string;
+    end_time: string;
+    required_staff: number;
+    skill: string | null;
+};
+
+type ExistingShiftRow = ExistingShiftRange & {
+    id: string;
+    locationId: string;
+};
+
+type ExistingSolveShift = {
+    id: string;
+    staff_id: string;
+    location_id: string;
+    start_time: string;
+    end_time: string;
+};
+
+type PersistedScheduleInputs = {
+    staffSnapshot: StaffSnapshot[];
+    demandSnapshot: DemandSnapshot[];
+    availability: Record<string, StaffAvailabilityPayload[]>;
+    availabilityConfigured: Record<string, boolean>;
+    staffSkills: Record<string, string[]>;
+    dailyDemand: Record<string, number>;
+    skillRequirements: Record<string, Record<string, number>>;
+    existingWeeklyMinutes: ExistingWeeklyMinutes;
+    existingShifts: ExistingSolveShift[];
+};
+
+type DraftShiftSnapshotRow = {
+    id: string;
+    updatedAt: Date | string;
+};
+
+type LocationRow = {
+    id: string;
+    timezone: string | null;
+};
+
+type LockedScheduleRow = {
+    id: string;
+    status: string;
+};
+
+type PublishSchedule = {
+    id: string;
+    status: string;
+    locationId: string;
+    startDate: Date;
+    endDate: Date;
+    revision: number;
+    timezone: string;
+};
+
+type PublishShiftBreak = {
+    type: string | null;
+    startTime: Date;
+    endTime: Date;
+};
+
+type PublishShift = {
+    id: string;
+    userId: string | null;
+    startTime: Date;
+    endTime: Date;
+    user: {
+        role?: UserRole | null;
+        deletedAt: Date | null;
+        suspendedAt?: Date | null;
+    } | null;
+    breaks: PublishShiftBreak[];
+};
+const Permission = (perm: string) => SetMetadata("permission", perm);
 const SCHEDULE_STATUS = {
     DRAFT: "DRAFT",
     PUBLISHED: "PUBLISHED",
-};
+} as const;
 const TERMINAL_SCHEDULE_JOB_STATUSES = [
     "SUCCEEDED",
     "FAILED",
     "DEAD_LETTERED",
 ];
-const SCHEDULABLE_USER_ROLES = [client_1.UserRole.MANAGER, client_1.UserRole.STAFF];
 const AUTO_SCHEDULE_CONSTRAINTS = new Set([
     "break_rules",
     "max_hours_per_week",
@@ -53,18 +333,24 @@ const MAX_AUTO_SCHEDULE_AVAILABILITY_RULES_PER_STAFF = 21;
 const MAX_AUTO_SCHEDULE_DEMAND_WINDOWS = 500;
 const MAX_AUTO_SCHEDULE_EXISTING_SHIFTS = 10_000;
 const DEFAULT_MAX_HOURS_PER_WEEK = 40;
-let SchedulesController = class SchedulesController {
-    notificationsService;
-    featureAccessService;
-    webhooksService;
-    tenantDb;
-    scheduleOutbox;
-    constructor(notificationsService, featureAccessService, tenantDb, _meteringService, webhooksService) {
-        this.notificationsService = notificationsService;
-        this.featureAccessService = featureAccessService;
-        this.webhooksService = webhooksService;
-        this.tenantDb = tenantDb ?? new tenant_prisma_service_1.TenantPrismaService();
-        this.scheduleOutbox = new schedule_solve_outbox_publisher_1.ScheduleSolveOutboxPublisher(this.tenantDb);
+const SCHEDULE_PUBLISH_ACTION = "SCHEDULE_PUBLISH";
+const SCHEDULE_PUBLISH_IDEMPOTENCY_RESOURCE = "SchedulePublishRequest";
+
+@Controller({ path: "schedules", version: "1" })
+@UseGuards(JwtAuthGuard, RbacGuard)
+export class SchedulesController implements OnModuleInit, OnModuleDestroy {
+    private readonly tenantDb: TenantPrismaService;
+    private readonly scheduleOutbox: ScheduleSolveOutboxPublisher;
+
+    constructor(
+        private readonly notificationsService: NotificationsService,
+        private readonly featureAccessService: FeatureAccessService,
+        @Optional() tenantDb?: TenantPrismaService,
+        @Optional() _meteringService?: MeteringService,
+        @Optional() private readonly webhooksService?: WebhooksService,
+    ) {
+        this.tenantDb = tenantDb ?? new TenantPrismaService();
+        this.scheduleOutbox = new ScheduleSolveOutboxPublisher(this.tenantDb);
     }
     onModuleInit() {
         this.scheduleOutbox.start();
@@ -72,23 +358,62 @@ let SchedulesController = class SchedulesController {
     async onModuleDestroy() {
         await this.scheduleOutbox.stop();
     }
-    async findAll(req) {
+    @Get()
+    @Permission("schedules:read")
+    async findAll(@Req() req: AuthenticatedRequest, @Query() query: ScheduleListQuery = {}) {
         const tenantId = req.user.tenantId;
-        const schedules = await this.tenantDb.withTenant(tenantId, (tx) => tx.schedule.findMany({
-            where: this.scheduleReadWhere(tenantId, req),
+        const listQuery = query ?? {};
+        const window = {
+            startDate: parseOptionalBoundedDate(listQuery.startDate, "startDate"),
+            endDate: parseOptionalBoundedDate(listQuery.endDate, "endDate"),
+        };
+        assertBoundedListWindow(window);
+        const limit = parseBoundedListLimit(listQuery.limit);
+        const cursor = decodeBoundedListCursor(listQuery.cursor);
+        const where = this.scheduleReadWhere(tenantId, req);
+        const and = [];
+        if (typeof listQuery.locationId === "string" && listQuery.locationId.trim()) {
+            where.locationId = listQuery.locationId.trim();
+        }
+        if (window.startDate)
+            and.push({ endDate: { gt: window.startDate } });
+        if (window.endDate)
+            and.push({ startDate: { lt: window.endDate } });
+        if (cursor) {
+            and.push({
+                OR: [
+                    { startDate: { lt: cursor.timestamp } },
+                    { startDate: cursor.timestamp, id: { lt: cursor.id } },
+                ],
+            });
+        }
+        if (and.length > 0) {
+            where.AND = [...(Array.isArray(where.AND) ? where.AND : []), ...and];
+        }
+        const rows = await this.tenantDb.withTenant(tenantId, (tx) => tx.schedule.findMany({
+            where,
+            orderBy: [{ startDate: "desc" }, { id: "desc" }],
+            take: limit + 1,
         }));
-        return { data: schedules, tenantId };
+        return {
+            ...buildBoundedListPage(rows, limit, (schedule) => schedule.startDate, window),
+            tenantId,
+        };
     }
-    async findOne(id, req) {
+    @Get(":id")
+    @Permission("schedules:read")
+    async findOne(@Param("id") id: string, @Req() req: AuthenticatedRequest) {
         const tenantId = req.user.tenantId;
         const schedule = await this.tenantDb.withTenant(tenantId, (tx) => tx.schedule.findFirst({
             where: { id, ...this.scheduleReadWhere(tenantId, req) },
         }));
         if (!schedule)
-            throw new common_1.NotFoundException("Schedule not found");
+            throw new NotFoundException("Schedule not found");
         return schedule;
     }
-    async findDemandWindows(id, req) {
+    @Get(":id/demand-windows")
+    @Permission("schedules:write")
+    async findDemandWindows(@Param("id") id: string, @Req() req: AuthenticatedRequest) {
         const tenantId = req.user.tenantId;
         return this.tenantDb.withTenant(tenantId, async (tx) => {
             const schedule = await tx.schedule.findFirst({
@@ -96,22 +421,24 @@ let SchedulesController = class SchedulesController {
                 select: { id: true, locationId: true },
             });
             if (!schedule)
-                throw new common_1.NotFoundException("Schedule not found");
+                throw new NotFoundException("Schedule not found");
             const rows = await this.readDemandWindows(tx, tenantId, schedule.id, schedule.locationId);
             return { data: rows.map((row) => this.serializeDemandWindow(row)) };
         });
     }
-    async replaceDemandWindows(id, body, req) {
+    @Put(":id/demand-windows")
+    @Permission("schedules:write")
+    async replaceDemandWindows(@Param("id") id: string, @Body() body: ReplaceDemandWindowsRequest, @Req() req: AuthenticatedRequest) {
         const tenantId = req.user.tenantId;
-        await this.assertSchedulingFeature(tenantId);
         const rawWindows = body?.windows;
         if (!Array.isArray(rawWindows)) {
-            throw new common_1.BadRequestException("windows must be an array");
+            throw new BadRequestException("windows must be an array");
         }
         if (rawWindows.length > MAX_AUTO_SCHEDULE_DEMAND_WINDOWS) {
-            throw new common_1.BadRequestException(`Demand windows cannot exceed ${MAX_AUTO_SCHEDULE_DEMAND_WINDOWS} entries.`);
+            throw new BadRequestException(`Demand windows cannot exceed ${MAX_AUTO_SCHEDULE_DEMAND_WINDOWS} entries.`);
         }
         return this.tenantDb.withTenant(tenantId, async (tx) => {
+            await this.featureAccessService.assertFeatureEntitledInTransaction(tx, tenantId, "scheduling");
             const schedule = await this.lockDraftScheduleForDemand(tx, id, tenantId);
             const windows = rawWindows.map((value, index) => this.normalizeDemandWindowInput(value, index, tenantId, schedule));
             await tx.scheduleDemandWindow.deleteMany({
@@ -134,11 +461,13 @@ let SchedulesController = class SchedulesController {
             return { data: rows.map((row) => this.serializeDemandWindow(row)) };
         });
     }
-    async findAutoScheduleJob(id, jobId, req) {
+    @Get(":id/auto-schedule/jobs/:jobId")
+    @Permission("schedules:write")
+    async findAutoScheduleJob(@Param("id") id: string, @Param("jobId") jobId: string, @Req() req: AuthenticatedRequest) {
         const tenantId = req.user.tenantId;
         const canReadTeam = !this.isStaffUser(req);
         const actorUserId = this.actorUserId(req);
-        const rows = await this.tenantDb.withTenant(tenantId, (tx) => tx.$queryRaw `
+        const rows = await this.tenantDb.withTenant(tenantId, (tx) => tx.$queryRaw<ScheduleSolveJobRow[]>`
             SELECT
                 "id",
                 "scheduleId",
@@ -181,16 +510,18 @@ let SchedulesController = class SchedulesController {
         `);
         const job = rows[0];
         if (!job)
-            throw new common_1.NotFoundException("Auto-schedule job not found");
+            throw new NotFoundException("Auto-schedule job not found");
         return this.serializeScheduleSolveJob(job);
     }
-    async create(body, req) {
+    @Post()
+    @Permission("schedules:write")
+    async create(@Body() body: CreateScheduleRequest, @Req() req: AuthenticatedRequest) {
         const tenantId = req.user.tenantId;
         const syntaxStart = this.parseScheduleDate(body.startDate, "startDate", "UTC");
         const syntaxEnd = this.parseScheduleDate(body.endDate, "endDate", "UTC");
         this.assertScheduleWindow(syntaxStart, syntaxEnd);
-        await this.assertSchedulingFeature(tenantId);
         const schedule = await this.tenantDb.withTenant(tenantId, async (tx) => {
+            await this.featureAccessService.assertFeatureEntitledInTransaction(tx, tenantId, "scheduling");
             const location = await this.assertLocationInTenant(tx, body.locationId, tenantId);
             const startDate = this.parseScheduleDate(body.startDate, "startDate", location.timezone);
             const endDate = this.parseScheduleDate(body.endDate, "endDate", location.timezone);
@@ -208,11 +539,14 @@ let SchedulesController = class SchedulesController {
         });
         return schedule;
     }
-    async remove(id, req) {
+    @Delete(":id")
+    @Permission("schedules:write")
+    @HttpCode(HttpStatus.NO_CONTENT)
+    async remove(@Param("id") id: string, @Req() req: AuthenticatedRequest): Promise<void> {
         const tenantId = req.user.tenantId;
-        await this.assertSchedulingFeature(tenantId);
         await this.tenantDb.withTenant(tenantId, async (tx) => {
-            const lockedRows = await tx.$queryRaw `
+            await this.featureAccessService.assertFeatureEntitledInTransaction(tx, tenantId, "scheduling");
+            const lockedRows = await tx.$queryRaw<LockedScheduleRow[]>`
                 SELECT "id", "status"
                 FROM "Schedule"
                 WHERE "id" = ${id}
@@ -221,21 +555,21 @@ let SchedulesController = class SchedulesController {
                 FOR UPDATE
             `;
             if (!lockedRows[0])
-                throw new common_1.NotFoundException("Schedule not found");
+                throw new NotFoundException("Schedule not found");
             if (lockedRows[0].status !== SCHEDULE_STATUS.DRAFT) {
-                throw new common_1.BadRequestException("Published schedules are locked. Reopen the schedule before deleting it.");
+                throw new BadRequestException("Published schedules are locked. Reopen the schedule before deleting it.");
             }
-            const activeJobs = await tx.$queryRaw `
+            const activeJobs = await tx.$queryRaw<LockedScheduleRow[]>`
                 SELECT "id", "status"
                 FROM "ScheduleSolveJob"
                 WHERE "tenantId" = ${tenantId}
                   AND "scheduleId" = ${id}
-                  AND "status" NOT IN (${client_1.Prisma.join([...TERMINAL_SCHEDULE_JOB_STATUSES])})
+                  AND "status" NOT IN (${Prisma.join([...TERMINAL_SCHEDULE_JOB_STATUSES])})
                 ORDER BY "id" ASC
                 FOR UPDATE
             `;
             if (activeJobs.length > 0) {
-                throw new common_1.ConflictException("Wait for active auto-schedule jobs to finish before deleting this draft.");
+                throw new ConflictException("Wait for active auto-schedule jobs to finish before deleting this draft.");
             }
             const deletedAt = new Date();
             await tx.shift.updateMany({
@@ -247,32 +581,95 @@ let SchedulesController = class SchedulesController {
                 data: { deletedAt },
             });
             if (removed.count !== 1)
-                throw new common_1.ConflictException("Schedule changed before it could be deleted.");
+                throw new ConflictException("Schedule changed before it could be deleted.");
+        });
+    }
+    @Get(":id/publish/preflight")
+    @Permission("schedules:publish")
+    async publishPreflight(@Param("id") id: string, @Req() req: AuthenticatedRequest) {
+        const tenantId = req.user.tenantId;
+        return this.tenantDb.withTenant(tenantId, async (tx) => {
+            const schedule = await tx.schedule.findFirst({
+                where: {
+                    id,
+                    tenantId,
+                    status: SCHEDULE_STATUS.DRAFT,
+                    deletedAt: null,
+                    location: { is: { deletedAt: null } },
+                },
+                select: { id: true, revision: true },
+            });
+            if (!schedule) {
+                throw new NotFoundException("Draft schedule not found");
+            }
+            const schedulingEntitlement = await this.featureAccessService.assertFeatureEntitledInTransaction(
+                tx,
+                tenantId,
+                "scheduling",
+            );
+            const { preflight } = await this.prepareSchedulePublishCost(
+                tx,
+                tenantId,
+                schedulingEntitlement,
+                schedule.revision,
+            );
+            return { scheduleId: id, ...preflight };
         });
     }
     /**
-     * Publish a schedule â€” triggers notification to all affected staff.
+     * Publish a schedule - triggers notification to all affected staff.
      */
-    async publish(id, req) {
+    @Post(":id/publish")
+    @Permission("schedules:publish")
+    @HttpCode(HttpStatus.OK)
+    async publish(
+        @Param("id") id: string,
+        @Req() req: AuthenticatedRequest,
+        @Headers("idempotency-key") idempotencyKey?: string,
+        @Body() body?: SchedulePublishRequest,
+    ) {
         const tenantId = req.user.tenantId;
+        const acceptedContract = parseSchedulePublishAcceptedContract(body?.acceptedContract);
+        const operationId = schedulePublishOperationId(
+            tenantId,
+            id,
+            normalizeSchedulePublishIdempotencyKey(idempotencyKey),
+        );
+        const requestHash = schedulePublishRequestHash(tenantId, id, acceptedContract);
+        const replay = await this.tenantDb.withTenant(tenantId, (tx) => (
+            this.findSchedulePublishReplay(tx, tenantId, operationId, requestHash)
+        ));
+        if (replay) {
+            const notifications = await this.notificationsService.deliverPendingNow(
+                tenantId,
+                replay.notificationDedupeKeys,
+            );
+            return { ...replay.response, notifications };
+        }
         const now = new Date();
-        await this.assertSchedulingFeature(tenantId);
-        const webhookFeatureEnabled = (await this.featureAccessService.resolveTenantFeatures(tenantId)).features
-            .webhooks?.enabled === true;
-        const { publishedSchedule, assignedUserIds } = await this.tenantDb.withTenant(tenantId, async (tx) => {
+        const published = await this.tenantDb.withTenant(tenantId, async (tx) => {
+            const lockedReplay = await this.findSchedulePublishReplay(tx, tenantId, operationId, requestHash);
+            if (lockedReplay) return lockedReplay;
+            const schedulingEntitlement = await this.featureAccessService.assertFeatureEntitledInTransaction(
+                tx,
+                tenantId,
+                "scheduling",
+            );
+            const serializedReplay = await this.findSchedulePublishReplay(tx, tenantId, operationId, requestHash);
+            if (serializedReplay) return serializedReplay;
             await this.lockTenantSchedulingMutations(tx, tenantId);
             const lockedSchedule = await this.lockDraftScheduleForPublish(tx, id, tenantId);
-            const activeSolveJobs = await tx.$queryRaw `
+            const activeSolveJobs = await tx.$queryRaw<LockedScheduleRow[]>`
                 SELECT "id", "status"
                 FROM "ScheduleSolveJob"
                 WHERE "tenantId" = ${tenantId}
                   AND "scheduleId" = ${id}
-                  AND "status" NOT IN (${client_1.Prisma.join([...TERMINAL_SCHEDULE_JOB_STATUSES])})
+                  AND "status" NOT IN (${Prisma.join([...TERMINAL_SCHEDULE_JOB_STATUSES])})
                 ORDER BY "id" ASC
                 FOR UPDATE
             `;
             if (activeSolveJobs.length > 0) {
-                throw new common_1.ConflictException("Wait for active auto-schedule jobs to finish before publishing this draft.");
+                throw new ConflictException("Wait for active auto-schedule jobs to finish before publishing this draft.");
             }
             const shiftsForPublish = await tx.shift.findMany({
                 where: {
@@ -285,7 +682,7 @@ let SchedulesController = class SchedulesController {
                     userId: true,
                     startTime: true,
                     endTime: true,
-                    user: { select: { deletedAt: true } },
+                    user: { select: { role: true, deletedAt: true, suspendedAt: true } },
                     breaks: {
                         select: { type: true, startTime: true, endTime: true },
                         orderBy: { startTime: "asc" },
@@ -295,6 +692,32 @@ let SchedulesController = class SchedulesController {
             });
             this.assertPublishableShifts(shiftsForPublish, lockedSchedule);
             await this.assertPublishReadiness(tx, tenantId, id, lockedSchedule.locationId, lockedSchedule.timezone, shiftsForPublish);
+            const scheduleForPublish = await tx.schedule.findFirst({
+                where: { id, tenantId, deletedAt: null },
+                include: {
+                    location: { select: { name: true, timezone: true } },
+                },
+            });
+            if (!scheduleForPublish) {
+                throw new NotFoundException("Schedule to publish not found");
+            }
+            const settlement = await this.settleSchedulePublishInTransaction(tx, {
+                tenantId,
+                scheduleId: id,
+                operationId,
+                schedulingEntitlement,
+                acceptedContract,
+                scheduleVersion: lockedSchedule.revision,
+                occurredAt: now,
+                eventData: {
+                    scheduleId: scheduleForPublish.id,
+                    locationId: lockedSchedule.locationId,
+                    startDate: scheduleForPublish.startDate.toISOString(),
+                    endDate: scheduleForPublish.endDate.toISOString(),
+                    publishedAt: now.toISOString(),
+                    assignedShiftCount: shiftsForPublish.length,
+                },
+            });
             const schedule = await tx.schedule.updateMany({
                 where: {
                     id,
@@ -305,79 +728,116 @@ let SchedulesController = class SchedulesController {
                 data: { status: SCHEDULE_STATUS.PUBLISHED, publishedAt: now },
             });
             if (schedule.count === 0) {
-                throw new common_1.NotFoundException("Draft schedule not found or already published");
+                throw new NotFoundException("Draft schedule not found or already published");
             }
-            const scheduleAfterPublish = await tx.schedule.findFirst({
-                where: { id, tenantId, deletedAt: null },
-                include: {
-                    location: { select: { name: true, timezone: true } },
+            const assignedUserIds = Array.from(new Set(shiftsForPublish
+                .map((shift) => shift.userId)
+                .filter((userId): userId is string => Boolean(userId))));
+            const notificationBody = `${scheduleForPublish.location.name}: ${formatDateInTimeZone(scheduleForPublish.startDate, scheduleForPublish.location.timezone)} to ${formatDateInTimeZone(new Date(scheduleForPublish.endDate.getTime() - 1), scheduleForPublish.location.timezone)}`;
+            const publicationKey = `revision-${lockedSchedule.revision}`;
+            const notificationDedupeKeys = assignedUserIds.map((userId) => `schedule-published:${id}:${publicationKey}:${userId}`);
+            await this.notificationsService.enqueueInTransaction(tx, assignedUserIds.map((userId, index) => ({
+                tenantId,
+                userId,
+                dedupeKey: notificationDedupeKeys[index],
+                type: NotificationType.SCHEDULE_PUBLISHED,
+                title: "Schedule published",
+                body: notificationBody,
+            })));
+            const response = {
+                id,
+                status: SCHEDULE_STATUS.PUBLISHED,
+                publishedAt: now.toISOString(),
+                settlement,
+            };
+            const actorUserId = this.actorUserId(req) ?? null;
+            await tx.auditLog.create({
+                data: {
+                    tenantId,
+                    userId: actorUserId,
+                    actorUserId,
+                    actorTenantId: tenantId,
+                    action: SCHEDULE_PUBLISH_ACTION,
+                    resource: SCHEDULE_PUBLISH_IDEMPOTENCY_RESOURCE,
+                    resourceId: operationId,
+                    newValue: {
+                        requestHash,
+                        acceptedContract,
+                        response,
+                        notificationDedupeKeys,
+                    },
                 },
             });
-            if (!scheduleAfterPublish) {
-                throw new common_1.NotFoundException("Published schedule not found");
-            }
-            if (webhookFeatureEnabled) {
-                if (!this.webhooksService) {
-                    throw new common_1.ServiceUnavailableException("Webhook event producer is unavailable");
-                }
-                await this.webhooksService.enqueueEventInTransaction(tx, {
-                    tenantId,
-                    eventId: `schedule.published:${id}:${now.toISOString()}`,
-                    eventType: "schedule.published",
-                    occurredAt: now,
-                    data: {
-                        scheduleId: scheduleAfterPublish.id,
-                        locationId: lockedSchedule.locationId,
-                        startDate: scheduleAfterPublish.startDate.toISOString(),
-                        endDate: scheduleAfterPublish.endDate.toISOString(),
-                        publishedAt: now.toISOString(),
-                        assignedShiftCount: shiftsForPublish.length,
-                    },
-                });
-            }
-            return {
-                publishedSchedule: scheduleAfterPublish,
-                assignedUserIds: Array.from(new Set(shiftsForPublish
-                    .map((shift) => shift.userId)
-                    .filter((userId) => Boolean(userId)))),
-            };
+            return { response, notificationDedupeKeys };
         });
-        const notificationBody = `${publishedSchedule.location.name}: ${(0, location_timezone_1.formatDateInTimeZone)(publishedSchedule.startDate, publishedSchedule.location.timezone)} to ${(0, location_timezone_1.formatDateInTimeZone)(new Date(publishedSchedule.endDate.getTime() - 1), publishedSchedule.location.timezone)}`;
-        const notificationResults = await Promise.allSettled(assignedUserIds.map((userId) => this.notificationsService.send(tenantId, userId, notifications_service_1.NotificationType.SCHEDULE_PUBLISHED, "Schedule published", notificationBody)));
-        const deliveredNotifications = notificationResults.filter((result) => result.status === "fulfilled").length;
-        const failedNotifications = notificationResults.length - deliveredNotifications;
-        const notificationStatus = failedNotifications === 0
-            ? deliveredNotifications === 0
-                ? "NOT_REQUIRED"
-                : "DELIVERED"
-            : deliveredNotifications === 0
-                ? "FAILED"
-                : "PARTIAL";
+        const notificationSummary = await this.notificationsService.deliverPendingNow(
+            tenantId,
+            published.notificationDedupeKeys,
+        );
         return {
-            id,
-            status: SCHEDULE_STATUS.PUBLISHED,
-            publishedAt: now.toISOString(),
-            notifications: {
-                status: notificationStatus,
-                delivered: deliveredNotifications,
-                failed: failedNotifications,
-            },
+            ...published.response,
+            notifications: notificationSummary,
         };
     }
+
     /**
      * Request auto-schedule from the Python engine via gRPC.
      */
-    async autoSchedule(id, req, body, idempotencyKey) {
+    @Post(":id/auto-schedule")
+    @Permission("schedules:write")
+    @HttpCode(HttpStatus.ACCEPTED)
+    async autoSchedule(
+        @Param("id") id: string,
+        @Req() req: AuthenticatedRequest,
+        @Body() body: AutoScheduleRequest | undefined,
+        @Headers("idempotency-key") idempotencyKey?: string,
+    ) {
         const tenantId = req.user.tenantId;
         const constraints = this.normalizeAutoScheduleConstraints(body?.constraints);
-        const requestKeyHash = (0, auto_schedule_idempotency_1.hashAutoScheduleIdempotencyKey)((0, auto_schedule_idempotency_1.normalizeAutoScheduleIdempotencyKey)(idempotencyKey));
-        const requestHash = (0, auto_schedule_idempotency_1.autoScheduleRequestHash)(constraints, body?.confirmReplace === true);
-        const jobId = `schedule-${id}-${(0, crypto_1.randomUUID)()}`;
+        const requestKeyHash = hashAutoScheduleIdempotencyKey(normalizeAutoScheduleIdempotencyKey(idempotencyKey));
+        const requestHash = autoScheduleRequestHash(constraints, body?.confirmReplace === true);
+        const jobId = `schedule-${id}-${randomUUID()}`;
         const prepared = await this.tenantDb.withTenant(tenantId, async (tx) => {
+            await this.featureAccessService.lockTenantInTransaction(tx, tenantId);
+            await this.lockDraftScheduleForAutoSchedule(tx, id, tenantId);
+            const activeJobs = await this.lockActiveScheduleSolveJobs(tx, tenantId, id);
             const existingJob = await this.findScheduleSolveJobByRequestKey(tx, tenantId, id, requestKeyHash);
             if (existingJob) {
                 this.assertIdempotentRequestMatch(existingJob, requestHash);
+                if (!TERMINAL_SCHEDULE_JOB_STATUSES.includes(existingJob.status)) {
+                    await this.featureAccessService.assertFeatureEntitledInTransaction(
+                        tx,
+                        tenantId,
+                        "scheduling",
+                    );
+                    const paidJob = await this.requireExactlyOnePaidActiveScheduleSolveJob(
+                        tx,
+                        tenantId,
+                        activeJobs,
+                    );
+                    if (paidJob.id !== existingJob.id) {
+                        throw new ConflictException("Active auto-schedule recovery ownership is ambiguous.");
+                    }
+                } else {
+                    await this.requireScheduleSolveJobPaidProvenance(tx, tenantId, existingJob);
+                }
                 return { existingJob };
+            }
+            if (activeJobs.length > 0) {
+                await this.featureAccessService.assertFeatureEntitledInTransaction(
+                    tx,
+                    tenantId,
+                    "scheduling",
+                );
+                const activeJob = await this.requireExactlyOnePaidActiveScheduleSolveJob(
+                    tx,
+                    tenantId,
+                    activeJobs,
+                );
+                if (activeJob.requestKeyHash === requestKeyHash) {
+                    this.assertIdempotentRequestMatch(activeJob, requestHash);
+                }
+                return { existingJob: activeJob };
             }
             const schedulingEntitlement =
                 await this.featureAccessService.assertFeatureEnabledInTransaction(
@@ -385,14 +845,7 @@ let SchedulesController = class SchedulesController {
                     tenantId,
                     "scheduling",
                 );
-            await this.lockDraftScheduleForAutoSchedule(tx, id, tenantId);
-            const activeJob = await this.findActiveScheduleSolveJob(tx, tenantId, id);
-            if (activeJob) {
-                if (activeJob.requestKeyHash === requestKeyHash) {
-                    this.assertIdempotentRequestMatch(activeJob, requestHash);
-                }
-                return { existingJob: activeJob };
-            }
+            const schedulingCreditCost = this.requirePositiveAutoScheduleCredit(schedulingEntitlement);
             const schedule = await tx.schedule.findFirst({
                 where: { id, tenantId, deletedAt: null },
                 select: {
@@ -407,18 +860,18 @@ let SchedulesController = class SchedulesController {
                 },
             });
             if (!schedule)
-                throw new common_1.NotFoundException("Schedule not found");
+                throw new NotFoundException("Schedule not found");
             if (schedule.status !== SCHEDULE_STATUS.DRAFT) {
-                throw new common_1.BadRequestException("Only draft schedules can be auto-scheduled.");
+                throw new BadRequestException("Only draft schedules can be auto-scheduled.");
             }
             const existingShiftCount = await tx.shift.count({
                 where: { tenantId, scheduleId: schedule.id, deletedAt: null },
             });
             if (existingShiftCount > 0 && body?.confirmReplace !== true) {
-                throw new common_1.BadRequestException("Auto-scheduling will replace existing draft shifts. Confirm replacement to continue.");
+                throw new BadRequestException("Auto-scheduling will replace existing draft shifts. Confirm replacement to continue.");
             }
-            const timeZone = (0, location_timezone_1.normalizeTimeZone)(schedule.location?.timezone);
-            const draftShiftRows = await tx.$queryRaw `
+            const timeZone = normalizeTimeZone(schedule.location?.timezone);
+            const draftShiftRows = await tx.$queryRaw<DraftShiftSnapshotRow[]>`
                 SELECT "id", "updatedAt"
                 FROM "Shift"
                 WHERE "tenantId" = ${tenantId}
@@ -433,14 +886,13 @@ let SchedulesController = class SchedulesController {
             const staff = await tx.user.findMany({
                 where: {
                     tenantId,
-                    deletedAt: null,
-                    role: { in: SCHEDULABLE_USER_ROLES },
+                    ...ACTIVE_SCHEDULABLE_USER_FILTER,
                 },
                 orderBy: { name: "asc" },
                 select: { id: true },
             });
             if (staff.length === 0) {
-                throw new common_1.BadRequestException("Add at least one schedulable staff member before auto-scheduling.");
+                throw new BadRequestException("Add at least one schedulable staff member before auto-scheduling.");
             }
             const staffIds = staff.map((user) => user.id);
             const persistedInputs = await this.loadPersistedScheduleInputs(tx, tenantId, schedule.id, schedule.locationId, staffIds, schedule.startDate, schedule.endDate, timeZone);
@@ -464,7 +916,7 @@ let SchedulesController = class SchedulesController {
                 existing_weekly_minutes: persistedInputs.existingWeeklyMinutes,
                 existing_shifts: persistedInputs.existingShifts,
             };
-            const job = {
+            const job: ScheduleSolveQueueJob = {
                 type: "schedule.solve",
                 job_id: jobId,
                 payload,
@@ -484,17 +936,28 @@ let SchedulesController = class SchedulesController {
             if (!inserted) {
                 const racedJob = await this.findScheduleSolveJobByRequestKey(tx, tenantId, id, requestKeyHash);
                 if (!racedJob) {
-                    throw new common_1.ServiceUnavailableException("Unable to reuse auto-schedule request");
+                    throw new ServiceUnavailableException("Unable to reuse auto-schedule request");
                 }
                 this.assertIdempotentRequestMatch(racedJob, requestHash);
+                if (!TERMINAL_SCHEDULE_JOB_STATUSES.includes(racedJob.status)) {
+                    const racedActiveJobs = await this.lockActiveScheduleSolveJobs(tx, tenantId, id);
+                    const paidJob = await this.requireExactlyOnePaidActiveScheduleSolveJob(
+                        tx,
+                        tenantId,
+                        racedActiveJobs,
+                    );
+                    if (paidJob.id !== racedJob.id) {
+                        throw new ConflictException("Active auto-schedule recovery ownership is ambiguous.");
+                    }
+                } else {
+                    await this.requireScheduleSolveJobPaidProvenance(tx, tenantId, racedJob);
+                }
                 return { existingJob: racedJob };
             }
             const creditConsumption = await this.reserveAutoScheduleCredit(tx, {
                 tenantId,
                 jobId,
-                source: schedulingEntitlement.source,
-                cost: schedulingEntitlement.creditCost ?? 0,
-                fallbackBalance: 0,
+                cost: schedulingCreditCost,
             });
             await this.recordScheduleSolveJobCreditConsumptionInTransaction(tx, tenantId, jobId, creditConsumption);
             return {
@@ -516,11 +979,14 @@ let SchedulesController = class SchedulesController {
             reused: false,
         };
     }
-    async reopen(id, req) {
+    @Post(":id/reopen")
+    @Permission("schedules:publish")
+    @HttpCode(HttpStatus.OK)
+    async reopen(@Param("id") id: string, @Req() req: AuthenticatedRequest) {
         const tenantId = req.user.tenantId;
-        await this.assertSchedulingFeature(tenantId);
         return this.tenantDb.withTenant(tenantId, async (tx) => {
-            const rows = await tx.$queryRaw `
+            await this.featureAccessService.assertFeatureEntitledInTransaction(tx, tenantId, "scheduling");
+            const rows = await tx.$queryRaw<LockedScheduleRow[]>`
                 SELECT "id", "status"
                 FROM "Schedule"
                 WHERE "id" = ${id}
@@ -530,9 +996,9 @@ let SchedulesController = class SchedulesController {
             `;
             const schedule = rows[0];
             if (!schedule)
-                throw new common_1.NotFoundException("Schedule not found");
+                throw new NotFoundException("Schedule not found");
             if (schedule.status !== SCHEDULE_STATUS.PUBLISHED) {
-                throw new common_1.BadRequestException("Only published schedules can be reopened.");
+                throw new BadRequestException("Only published schedules can be reopened.");
             }
             const reopened = await tx.schedule.updateMany({
                 where: {
@@ -541,36 +1007,37 @@ let SchedulesController = class SchedulesController {
                     status: SCHEDULE_STATUS.PUBLISHED,
                     deletedAt: null,
                 },
-                data: { status: SCHEDULE_STATUS.DRAFT, publishedAt: null },
+                data: {
+                    status: SCHEDULE_STATUS.DRAFT,
+                    publishedAt: null,
+                    revision: { increment: 1 },
+                },
             });
             if (reopened.count !== 1) {
-                throw new common_1.BadRequestException("Schedule changed before it could be reopened.");
+                throw new BadRequestException("Schedule changed before it could be reopened.");
             }
             return { id, status: SCHEDULE_STATUS.DRAFT, publishedAt: null };
         });
     }
-    async assertSchedulingFeature(tenantId) {
-        await this.featureAccessService.assertFeatureEnabled(tenantId, "scheduling");
-    }
-    normalizeAutoScheduleConstraints(value) {
+    private normalizeAutoScheduleConstraints(value: unknown): AutoScheduleConstraints {
         if (value === undefined || value === null)
             return {};
         if (typeof value !== "object" || Array.isArray(value)) {
-            throw new common_1.BadRequestException("constraints must be an object");
+            throw new BadRequestException("constraints must be an object");
         }
-        const constraints = value;
+        const constraints = value as AutoScheduleConstraints;
         for (const key of Object.keys(constraints)) {
             if (!AUTO_SCHEDULE_CONSTRAINTS.has(key)) {
-                throw new common_1.BadRequestException(`Unsupported auto-schedule constraint: ${key}`);
+                throw new BadRequestException(`Unsupported auto-schedule constraint: ${key}`);
             }
         }
         if (JSON.stringify(constraints).length > 16_384) {
-            throw new common_1.BadRequestException("constraints payload is too large");
+            throw new BadRequestException("constraints payload is too large");
         }
         return constraints;
     }
-    async loadPersistedScheduleInputs(tx, tenantId, scheduleId, locationId, staffIds, scheduleStart, scheduleEnd, timeZone) {
-        const staffSnapshot = new Map(staffIds.map((id) => [id, {
+    private async loadPersistedScheduleInputs(tx: TenantPrismaTransaction, tenantId: string, scheduleId: string, locationId: string, staffIds: string[], scheduleStart: Date, scheduleEnd: Date, timeZone: string): Promise<PersistedScheduleInputs> {
+        const staffSnapshot = new Map<string, StaffSnapshot>(staffIds.map((id) => [id, {
                 id,
                 skills: [],
                 availabilityConfigured: false,
@@ -589,11 +1056,11 @@ let SchedulesController = class SchedulesController {
                 existingShifts: [],
             };
         }
-        const availabilityRows = await tx.$queryRaw `
+        const availabilityRows = await tx.$queryRaw<AvailabilityRow[]>`
             SELECT "userId", "dayOfWeek", "startTimeMinutes", "endTimeMinutes"
             FROM "StaffAvailability"
             WHERE "tenantId" = ${tenantId}
-              AND "userId" IN (${client_1.Prisma.join(staffIds)})
+              AND "userId" IN (${Prisma.join(staffIds)})
               AND ("locationId" IS NULL OR "locationId" = ${locationId})
             ORDER BY "userId" ASC, "dayOfWeek" ASC, "startTimeMinutes" ASC, "locationId" NULLS FIRST
         `;
@@ -603,21 +1070,21 @@ let SchedulesController = class SchedulesController {
                 continue;
             if (staff.availability.length >=
                 MAX_AUTO_SCHEDULE_AVAILABILITY_RULES_PER_STAFF) {
-                throw new common_1.BadRequestException("Availability cannot exceed 21 rules per staff member.");
+                throw new BadRequestException("Availability cannot exceed 21 rules per staff member.");
             }
-            (0, schedule_availability_1.assertAvailabilityWindow)(row);
+            assertAvailabilityWindow(row);
             staff.availability.push({
-                day_of_week: (0, schedule_availability_1.availabilityDayName)(row.dayOfWeek),
-                start_time: (0, schedule_availability_1.availabilityTime)(row.startTimeMinutes, "availability startTimeMinutes"),
-                end_time: (0, schedule_availability_1.availabilityTime)(row.endTimeMinutes, "availability endTimeMinutes"),
+                day_of_week: availabilityDayName(row.dayOfWeek),
+                start_time: availabilityTime(row.startTimeMinutes, "availability startTimeMinutes"),
+                end_time: availabilityTime(row.endTimeMinutes, "availability endTimeMinutes"),
             });
             staff.availabilityConfigured = true;
         }
-        const skillRows = await tx.$queryRaw `
+        const skillRows = await tx.$queryRaw<StaffSkillRow[]>`
             SELECT "userId", "skill"
             FROM "StaffSkill"
             WHERE "tenantId" = ${tenantId}
-              AND "userId" IN (${client_1.Prisma.join(staffIds)})
+              AND "userId" IN (${Prisma.join(staffIds)})
             ORDER BY "userId" ASC, "skill" ASC
         `;
         for (const row of skillRows) {
@@ -627,7 +1094,7 @@ let SchedulesController = class SchedulesController {
                 continue;
             staff.skills.push(skill);
         }
-        const demandRows = await tx.$queryRaw `
+        const demandRows = await tx.$queryRaw<DemandWindowRow[]>`
             SELECT "id", "startTime", "endTime", "requiredStaff", "skill"
             FROM "ScheduleDemandWindow"
             WHERE "tenantId" = ${tenantId}
@@ -639,7 +1106,7 @@ let SchedulesController = class SchedulesController {
             const startTime = this.toRequiredIso(row.startTime, "demand window startTime");
             const endTime = this.toRequiredIso(row.endTime, "demand window endTime");
             if (new Date(endTime) <= new Date(startTime)) {
-                throw new common_1.BadRequestException("Invalid demand window. endTime must be after startTime.");
+                throw new BadRequestException("Invalid demand window. endTime must be after startTime.");
             }
             return {
                 id: row.id,
@@ -652,15 +1119,15 @@ let SchedulesController = class SchedulesController {
             };
         });
         if (demandSnapshot.length === 0) {
-            throw new common_1.BadRequestException("Configure at least one demand window with a date, start/end time, and required staff before auto-scheduling.");
+            throw new BadRequestException("Configure at least one demand window with a date, start/end time, and required staff before auto-scheduling.");
         }
-        const calendarWeeks = (0, schedule_weekly_hours_1.calendarWeekRange)(scheduleStart, scheduleEnd, timeZone);
-        const existingShiftRows = await tx.$queryRaw `
+        const calendarWeeks = calendarWeekRange(scheduleStart, scheduleEnd, timeZone);
+        const existingShiftRows = await tx.$queryRaw<ExistingShiftRow[]>`
             SELECT shift."id", shift."userId", shift."locationId", shift."startTime", shift."endTime"
             FROM "Shift" shift
             LEFT JOIN "Schedule" source_schedule ON source_schedule."id" = shift."scheduleId"
             WHERE shift."tenantId" = ${tenantId}
-              AND shift."userId" IN (${client_1.Prisma.join(staffIds)})
+              AND shift."userId" IN (${Prisma.join(staffIds)})
               AND shift."deletedAt" IS NULL
               AND (shift."scheduleId" IS NULL OR shift."scheduleId" <> ${scheduleId})
               AND (source_schedule."id" IS NULL OR (source_schedule."deletedAt" IS NULL AND source_schedule."status" <> 'ARCHIVED'))
@@ -668,16 +1135,16 @@ let SchedulesController = class SchedulesController {
               AND shift."endTime" > ${calendarWeeks.start}
             ORDER BY shift."userId" ASC, shift."startTime" ASC, shift."id" ASC
         `;
-        const existingWeeklyMinutes = (0, schedule_weekly_hours_1.aggregateExistingWeeklyMinutes)(existingShiftRows, calendarWeeks, staffIds);
+        const existingWeeklyMinutes = aggregateExistingWeeklyMinutes(existingShiftRows, calendarWeeks, staffIds);
         const existingShifts = existingShiftRows
-            .filter((row) => Boolean(row.userId) &&
+            .filter((row): row is ExistingShiftRow & { userId: string } => Boolean(row.userId) &&
             this.requiredDate(row.startTime, "existing shift startTime") < scheduleEnd &&
             this.requiredDate(row.endTime, "existing shift endTime") > scheduleStart)
             .map((row) => {
             const startTime = this.toRequiredIso(row.startTime, "existing shift startTime");
             const endTime = this.toRequiredIso(row.endTime, "existing shift endTime");
             if (new Date(endTime) <= new Date(startTime)) {
-                throw new common_1.BadRequestException("Invalid existing shift interval.");
+                throw new BadRequestException("Invalid existing shift interval.");
             }
             return {
                 id: row.id,
@@ -688,12 +1155,12 @@ let SchedulesController = class SchedulesController {
             };
         });
         if (existingShifts.length > MAX_AUTO_SCHEDULE_EXISTING_SHIFTS) {
-            throw new common_1.BadRequestException(`Existing shift intervals cannot exceed ${MAX_AUTO_SCHEDULE_EXISTING_SHIFTS} entries.`);
+            throw new BadRequestException(`Existing shift intervals cannot exceed ${MAX_AUTO_SCHEDULE_EXISTING_SHIFTS} entries.`);
         }
-        const dailyDemand = {};
-        const skillRequirements = {};
+        const dailyDemand: Record<string, number> = {};
+        const skillRequirements: Record<string, Record<string, number>> = {};
         for (const row of demandRows) {
-            for (const segment of (0, location_timezone_1.splitInstantRangeByLocalDay)(row.startTime, row.endTime, timeZone)) {
+            for (const segment of splitInstantRangeByLocalDay(row.startTime, row.endTime, timeZone)) {
                 dailyDemand[segment.weekday] = Math.max(dailyDemand[segment.weekday] ?? 0, this.requiredStaffCount(row.requiredStaff));
                 const skill = this.normalizeSkill(row.skill);
                 if (skill) {
@@ -719,7 +1186,7 @@ let SchedulesController = class SchedulesController {
             existingShifts,
         };
     }
-    async readDemandWindows(tx, tenantId, scheduleId, locationId) {
+    private async readDemandWindows(tx: TenantPrismaTransaction, tenantId: string, scheduleId: string, locationId: string): Promise<DemandWindowRow[]> {
         return tx.$queryRaw `
       SELECT "id", "startTime", "endTime", "requiredStaff", "skill"
       FROM "ScheduleDemandWindow"
@@ -729,7 +1196,7 @@ let SchedulesController = class SchedulesController {
       ORDER BY "startTime" ASC, "id" ASC
     `;
     }
-    serializeDemandWindow(row) {
+    private serializeDemandWindow(row: DemandWindowRow) {
         return {
             id: row.id,
             startTime: this.toRequiredIso(row.startTime, "demand window startTime"),
@@ -738,32 +1205,32 @@ let SchedulesController = class SchedulesController {
             skill: this.normalizeSkill(row.skill),
         };
     }
-    normalizeDemandWindowInput(value, index, tenantId, schedule) {
+    private normalizeDemandWindowInput(value: unknown, index: number, tenantId: string, schedule: DemandSchedule): Prisma.ScheduleDemandWindowCreateManyInput {
         if (!value || typeof value !== "object" || Array.isArray(value)) {
-            throw new common_1.BadRequestException(`windows[${index}] must be an object`);
+            throw new BadRequestException(`windows[${index}] must be an object`);
         }
-        const input = value;
+        const input = value as Record<string, unknown>;
         const startTime = this.parseScheduleDate(typeof input.startTime === "string" ? input.startTime : undefined, `windows[${index}].startTime`, schedule.timezone);
         const endTime = this.parseScheduleDate(typeof input.endTime === "string" ? input.endTime : undefined, `windows[${index}].endTime`, schedule.timezone);
         if (endTime <= startTime) {
-            throw new common_1.BadRequestException(`windows[${index}].endTime must be after startTime`);
+            throw new BadRequestException(`windows[${index}].endTime must be after startTime`);
         }
         if (startTime < schedule.startDate || endTime > schedule.endDate) {
-            throw new common_1.BadRequestException(`windows[${index}] must be inside the schedule window`);
+            throw new BadRequestException(`windows[${index}] must be inside the schedule window`);
         }
         const requiredStaff = this.requiredStaffCount(Number(input.requiredStaff));
         if (requiredStaff > 200) {
-            throw new common_1.BadRequestException("Demand window requiredStaff cannot exceed 200.");
+            throw new BadRequestException("Demand window requiredStaff cannot exceed 200.");
         }
         const skill = typeof input.skill === "string" ? input.skill.trim().toLowerCase() : "";
         if (input.skill != null && typeof input.skill !== "string") {
-            throw new common_1.BadRequestException(`windows[${index}].skill must be a string`);
+            throw new BadRequestException(`windows[${index}].skill must be a string`);
         }
         if (skill.length > 128) {
-            throw new common_1.BadRequestException(`windows[${index}].skill cannot exceed 128 characters`);
+            throw new BadRequestException(`windows[${index}].skill cannot exceed 128 characters`);
         }
         return {
-            id: (0, crypto_1.randomUUID)(),
+            id: randomUUID(),
             tenantId,
             scheduleId: schedule.id,
             locationId: schedule.locationId,
@@ -773,14 +1240,14 @@ let SchedulesController = class SchedulesController {
             skill: skill || null,
         };
     }
-    requiredStaffCount(value) {
+    private requiredStaffCount(value: unknown): number {
         const requiredStaff = Number(value);
         if (!Number.isInteger(requiredStaff) || requiredStaff <= 0) {
-            throw new common_1.BadRequestException("Invalid demand window requiredStaff. Use a positive integer.");
+            throw new BadRequestException("Invalid demand window requiredStaff. Use a positive integer.");
         }
         return requiredStaff;
     }
-    async enqueueSolveJob(job) {
+    private async enqueueSolveJob(job: ScheduleSolveQueueJob): Promise<void> {
         try {
             await this.scheduleOutbox.publishPendingNow(job.job_id);
         }
@@ -788,7 +1255,7 @@ let SchedulesController = class SchedulesController {
             // The committed outbox row remains eligible for the startup/poll recovery loop.
         }
     }
-    async createScheduleSolveJob(tx, args) {
+    private async createScheduleSolveJob(tx: TenantPrismaTransaction, args: CreateScheduleSolveJobArgs): Promise<boolean> {
         const constraintsJson = JSON.stringify(args.constraints);
         const staffSnapshotJson = JSON.stringify({ staff: args.staffSnapshot });
         const demandSnapshotJson = JSON.stringify({
@@ -835,8 +1302,8 @@ let SchedulesController = class SchedulesController {
         `;
         return Number(inserted) === 1;
     }
-    async findScheduleSolveJobByRequestKey(tx, tenantId, scheduleId, requestKeyHash) {
-        const rows = await tx.$queryRaw `
+    private async findScheduleSolveJobByRequestKey(tx: TenantPrismaTransaction, tenantId: string, scheduleId: string, requestKeyHash: string): Promise<ScheduleSolveJobRow | null> {
+        const rows = await tx.$queryRaw<ScheduleSolveJobRow[]>`
             SELECT
                 "id",
                 "scheduleId",
@@ -868,8 +1335,8 @@ let SchedulesController = class SchedulesController {
         `;
         return rows[0] ?? null;
     }
-    async findActiveScheduleSolveJob(tx, tenantId, scheduleId) {
-        const rows = await tx.$queryRaw `
+    private async lockActiveScheduleSolveJobs(tx: TenantPrismaTransaction, tenantId: string, scheduleId: string): Promise<ScheduleSolveJobRow[]> {
+        return tx.$queryRaw<ScheduleSolveJobRow[]>`
             SELECT
                 "id", "scheduleId", "locationId", "requestKeyHash", "requestHash",
                 "status", "statusReason", "retryCount", "resultShiftCount",
@@ -880,26 +1347,78 @@ let SchedulesController = class SchedulesController {
             FROM "ScheduleSolveJob"
             WHERE "tenantId" = ${tenantId}
               AND "scheduleId" = ${scheduleId}
-              AND "status" NOT IN (${client_1.Prisma.join([...TERMINAL_SCHEDULE_JOB_STATUSES])})
+              AND "status" NOT IN (${Prisma.join([...TERMINAL_SCHEDULE_JOB_STATUSES])})
             ORDER BY "createdAt" ASC, "id" ASC
-            LIMIT 1
             FOR UPDATE
         `;
-        return rows[0] ?? null;
     }
-    assertIdempotentRequestMatch(job, requestHash) {
-        if (job.requestHash !== requestHash) {
-            throw new common_1.ConflictException("Idempotency-Key was already used with a different auto-schedule request.");
+    private async requireExactlyOnePaidActiveScheduleSolveJob(
+        tx: TenantPrismaTransaction,
+        tenantId: string,
+        activeJobs: ScheduleSolveJobRow[],
+    ): Promise<ScheduleSolveJobRow> {
+        if (activeJobs.length !== 1) {
+            throw new ConflictException("Active auto-schedule recovery ownership is ambiguous.");
+        }
+        const job = activeJobs[0];
+        await this.requireScheduleSolveJobPaidProvenance(tx, tenantId, job);
+        return job;
+    }
+    private async requireScheduleSolveJobPaidProvenance(
+        tx: TenantPrismaTransaction,
+        tenantId: string,
+        job: ScheduleSolveJobRow,
+    ): Promise<void> {
+        const debitId = `schedule-credit-${job.id}`;
+        const refundId = `schedule-credit-refund-${job.id}`;
+        const creditRows = await tx.$queryRaw<ScheduleSolveSettlementRow[]>`
+            SELECT "id", "tenantId", "amount", "reason", "balanceAfter"
+            FROM "CreditTransaction"
+            WHERE "id" IN (${debitId}, ${refundId})
+            ORDER BY "id" ASC
+            FOR UPDATE
+        `;
+        try {
+            const provenance = assertScheduleSolveCreditProvenance({
+                jobId: job.id,
+                tenantId,
+                status: job.status,
+                creditConsumption: job.creditConsumption,
+                ...summarizeScheduleSolveCreditRows(job.id, creditRows),
+            });
+            const debit = creditRows.filter((row) => row.id === debitId);
+            const refund = creditRows.filter((row) => row.id === refundId);
+            if (debit.length !== 1
+                || this.scheduleSolveSettlementBalance(debit[0].balanceAfter) !== provenance.newBalance) {
+                throw new ScheduleSolveCreditProvenanceError(
+                    "Schedule solve debit settlement balance is invalid.",
+                );
+            }
+            if (["FAILED", "DEAD_LETTERED"].includes(job.status)
+                && (refund.length !== 1
+                    || this.scheduleSolveSettlementBalance(refund[0].balanceAfter) === null)) {
+                throw new ScheduleSolveCreditProvenanceError(
+                    "Schedule solve refund settlement balance is invalid.",
+                );
+            }
+        } catch (error) {
+            if (!(error instanceof ScheduleSolveCreditProvenanceError)) throw error;
+            throw new ConflictException("Active auto-schedule recovery paid reservation is invalid.");
         }
     }
-    reusedAutoScheduleResponse(scheduleId, job) {
+    private assertIdempotentRequestMatch(job: ScheduleSolveJobRow, requestHash: string): void {
+        if (job.requestHash !== requestHash) {
+            throw new ConflictException("Idempotency-Key was already used with a different auto-schedule request.");
+        }
+    }
+    private reusedAutoScheduleResponse(scheduleId: string, job: ScheduleSolveJobRow) {
         return {
             ...this.serializeScheduleSolveJob(job),
             statusUrl: `/v1/schedules/${scheduleId}/auto-schedule/jobs/${job.id}`,
             reused: true,
         };
     }
-    async recordScheduleSolveJobCreditConsumptionInTransaction(tx, tenantId, jobId, creditConsumption) {
+    private async recordScheduleSolveJobCreditConsumptionInTransaction(tx: TenantPrismaTransaction, tenantId: string, jobId: string, creditConsumption: CreditConsumption): Promise<void> {
         const creditConsumptionJson = JSON.stringify(creditConsumption);
         await tx.$executeRaw `
             UPDATE "ScheduleSolveJob"
@@ -910,47 +1429,59 @@ let SchedulesController = class SchedulesController {
               AND "tenantId" = ${tenantId}
         `;
     }
-    async reserveAutoScheduleCredit(tx, args) {
-        if (args.cost > 0) {
-            const rows = await tx.$queryRaw `
-                UPDATE "Tenant"
-                SET
-                    "usageCredits" = "usageCredits" - ${args.cost},
-                    "updatedAt" = CURRENT_TIMESTAMP
-                WHERE "id" = ${args.tenantId}
-                  AND "usageCredits" >= ${args.cost}
-                RETURNING "usageCredits"
-            `;
-            if (!rows[0]) {
-                throw new common_1.ForbiddenException("Insufficient usage credits balance.");
-            }
-            await tx.creditTransaction.create({
-                data: {
-                    id: `schedule-credit-${args.jobId}`,
-                    tenantId: args.tenantId,
-                    amount: -args.cost,
-                    reason: `Schedule generation (${args.jobId})`,
-                },
-            });
-            return {
-                consumedCredits: args.cost,
-                newBalance: Number(rows[0].usageCredits),
-                source: args.source,
-            };
+    private async reserveAutoScheduleCredit(tx: TenantPrismaTransaction, args: CreditReservationArgs): Promise<CreditConsumption> {
+        if (!Number.isSafeInteger(args.cost) || args.cost <= 0) {
+            throw new ForbiddenException("Auto-scheduling requires an active paid subscription and separately purchased usage credits.");
         }
+        const rows = await tx.$queryRaw<Array<{ usageCredits: number }>>`
+            UPDATE "Tenant"
+            SET
+                "usageCredits" = "usageCredits" - ${args.cost},
+                "updatedAt" = CURRENT_TIMESTAMP
+            WHERE "id" = ${args.tenantId}
+              AND "usageCredits" >= ${args.cost}
+            RETURNING "usageCredits"
+        `;
+        if (!rows[0]) {
+            throw new ForbiddenException("Insufficient usage credits balance.");
+        }
+        await tx.creditTransaction.create({
+            data: {
+                id: `schedule-credit-${args.jobId}`,
+                tenantId: args.tenantId,
+                amount: -args.cost,
+                reason: `Schedule generation (${args.jobId})`,
+                balanceAfter: Number(rows[0].usageCredits),
+            },
+        });
         return {
-            consumedCredits: args.source === "plan" || args.source === "stripe" ? args.cost : 0,
-            newBalance: args.fallbackBalance,
-            source: args.source,
+            consumedCredits: args.cost,
+            newBalance: Number(rows[0].usageCredits),
+            source: "credits",
         };
     }
-    serializeScheduleSolveJob(row) {
+    private requirePositiveAutoScheduleCredit(entitlement: FeatureResolution): number {
+        const creditCost = entitlement.creditCost;
+        if (entitlement.source !== "credits"
+            || typeof creditCost !== "number"
+            || !Number.isSafeInteger(creditCost)
+            || creditCost <= 0) {
+            throw new ForbiddenException("Auto-scheduling requires an active paid subscription and separately purchased usage credits.");
+        }
+        return creditCost;
+    }
+    private scheduleSolveSettlementBalance(value: number | bigint | null): number | null {
+        if (value === null) return null;
+        const parsed = Number(value);
+        return Number.isSafeInteger(parsed) && parsed >= 0 ? parsed : null;
+    }
+    private serializeScheduleSolveJob(row: ScheduleSolveJobRow) {
         return {
             jobId: row.id,
             scheduleId: row.scheduleId,
             locationId: row.locationId,
             status: row.status,
-            statusReason: row.statusReason,
+            statusReason: row.statusReason ? "Schedule generation failed" : null,
             retryCount: Number(row.retryCount ?? 0),
             resultShiftCount: row.resultShiftCount === null ? null : Number(row.resultShiftCount),
             requestedConstraints: row.requestedConstraints ?? {},
@@ -961,15 +1492,15 @@ let SchedulesController = class SchedulesController {
             publishAttempts: Number(row.publishAttempts ?? 0),
             nextPublishAt: this.toIsoOrNull(row.nextPublishAt),
             publishedAt: this.toIsoOrNull(row.publishedAt),
-            publishLastError: row.publishLastError,
+            publishLastError: row.publishLastError ? "Schedule publication failed" : null,
             startedAt: this.toIsoOrNull(row.startedAt),
             completedAt: this.toIsoOrNull(row.completedAt),
             createdAt: this.toIsoOrNull(row.createdAt),
             updatedAt: this.toIsoOrNull(row.updatedAt),
         };
     }
-    scheduleReadWhere(tenantId, req) {
-        const where = {
+    private scheduleReadWhere(tenantId: string, req: AuthenticatedRequest): Prisma.ScheduleWhereInput {
+        const where: Prisma.ScheduleWhereInput = {
             tenantId,
             deletedAt: null,
             location: { is: { deletedAt: null } },
@@ -986,39 +1517,44 @@ let SchedulesController = class SchedulesController {
         }
         return where;
     }
-    isStaffUser(req) {
+    private isStaffUser(req: AuthenticatedRequest): boolean {
         const roles = Array.isArray(req.user?.roles) ? req.user.roles : [];
-        return [req.user?.legacyRole, req.user?.role, ...roles].some((role) => this.isRole(role, client_1.UserRole.STAFF));
+        return [req.user?.legacyRole, req.user?.role, ...roles].some((role) => this.isRole(role, UserRole.STAFF));
     }
-    isRole(value, expected) {
+    private isRole(value: unknown, expected: UserRole): boolean {
         return (typeof value === "string" &&
             value
                 .trim()
                 .replace(/[\s-]+/g, "_")
                 .toUpperCase() === expected);
     }
-    actorUserId(req) {
+    private actorUserId(req: AuthenticatedRequest): string | undefined {
         return req.user?.sub ?? req.user?.id;
     }
-    toIsoOrNull(value) {
+    private toIsoOrNull(value: unknown): string | null {
         if (!value)
             return null;
         if (value instanceof Date)
             return value.toISOString();
+        if (typeof value !== "string" && typeof value !== "number") {
+            return null;
+        }
         const parsed = new Date(value);
-        return Number.isFinite(parsed.getTime()) ? parsed.toISOString() : value;
+        return Number.isFinite(parsed.getTime())
+            ? parsed.toISOString()
+            : typeof value === "string" ? value : null;
     }
-    toRequiredIso(value, field) {
+    private toRequiredIso(value: unknown, field: string): string {
         const serialized = this.toIsoOrNull(value);
         if (!serialized) {
-            throw new common_1.BadRequestException(`Invalid ${field}.`);
+            throw new BadRequestException(`Invalid ${field}.`);
         }
         return serialized;
     }
-    async assertLocationInTenant(tx, locationId, tenantId) {
+    private async assertLocationInTenant(tx: TenantPrismaTransaction, locationId: string, tenantId: string): Promise<{ id: string; timezone: string }> {
         if (!locationId)
-            throw new common_1.BadRequestException("locationId is required");
-        const rows = await tx.$queryRaw `
+            throw new BadRequestException("locationId is required");
+        const rows = await tx.$queryRaw<LocationRow[]>`
             SELECT "id", "timezone"
             FROM "Location"
             WHERE "id" = ${locationId}
@@ -1028,10 +1564,10 @@ let SchedulesController = class SchedulesController {
         `;
         const location = rows[0];
         if (!location)
-            throw new common_1.BadRequestException("Location is not available for this tenant.");
-        return { ...location, timezone: (0, location_timezone_1.normalizeTimeZone)(location.timezone) };
+            throw new BadRequestException("Location is not available for this tenant.");
+        return { ...location, timezone: normalizeTimeZone(location.timezone) };
     }
-    async assertNoScheduleOverlap(tx, tenantId, locationId, startDate, endDate) {
+    private async assertNoScheduleOverlap(tx: TenantPrismaTransaction, tenantId: string, locationId: string, startDate: Date, endDate: Date): Promise<void> {
         const overlapCount = await tx.schedule.count({
             where: {
                 tenantId,
@@ -1042,25 +1578,29 @@ let SchedulesController = class SchedulesController {
             },
         });
         if (overlapCount > 0) {
-            throw new common_1.BadRequestException("A schedule already overlaps this location and date window.");
+            throw new BadRequestException("A schedule already overlaps this location and date window.");
         }
     }
-    assertPublishableShifts(shifts, schedule) {
+    private assertPublishableShifts(shifts: PublishShift[], schedule: PublishSchedule): void {
         if (shifts.length === 0) {
-            throw new common_1.BadRequestException("Add at least one shift before publishing this schedule.");
+            throw new BadRequestException("Add at least one shift before publishing this schedule.");
         }
-        const inactiveAssignment = shifts.find((shift) => shift.userId && shift.user?.deletedAt);
+        const inactiveAssignment = shifts.find((shift) => shift.userId && shift.user && (
+            shift.user.deletedAt
+            || shift.user.suspendedAt
+            || (shift.user.role && !SCHEDULABLE_USER_ROLES.includes(shift.user.role))
+        ));
         if (inactiveAssignment) {
-            throw new common_1.BadRequestException(`Shift ${inactiveAssignment.id} is assigned to an inactive staff member.`);
+            throw new BadRequestException(`Shift ${inactiveAssignment.id} is assigned to an inactive staff member.`);
         }
-        const byUser = new Map();
+        const byUser = new Map<string, Array<{ id: string; startTime: Date; endTime: Date }>>();
         for (const shift of shifts) {
             if (shift.endTime <= shift.startTime) {
-                throw new common_1.BadRequestException(`Shift ${shift.id} has an invalid time window.`);
+                throw new BadRequestException(`Shift ${shift.id} has an invalid time window.`);
             }
             if (shift.startTime < schedule.startDate ||
                 shift.endTime > schedule.endDate) {
-                throw new common_1.BadRequestException(`Shift ${shift.id} must stay within its schedule window before publishing.`);
+                throw new BadRequestException(`Shift ${shift.id} must stay within its schedule window before publishing.`);
             }
             this.assertRequiredDefaultBreakTypes(shift);
             if (!shift.userId)
@@ -1069,7 +1609,7 @@ let SchedulesController = class SchedulesController {
             for (const existing of userShifts) {
                 if (shift.startTime < existing.endTime &&
                     shift.endTime > existing.startTime) {
-                    throw new common_1.BadRequestException("Resolve overlapping assigned shifts before publishing this schedule.");
+                    throw new BadRequestException("Resolve overlapping assigned shifts before publishing this schedule.");
                 }
             }
             userShifts.push({
@@ -1080,7 +1620,7 @@ let SchedulesController = class SchedulesController {
             byUser.set(shift.userId, userShifts);
         }
     }
-    assertRequiredDefaultBreakTypes(shift) {
+    private assertRequiredDefaultBreakTypes(shift: PublishShift): void {
         const durationHours = (shift.endTime.getTime() - shift.startTime.getTime()) / 3_600_000;
         const requiredTypes = durationHours >= 8
             ? ["BREAK1", "LUNCH", "BREAK2"]
@@ -1092,26 +1632,26 @@ let SchedulesController = class SchedulesController {
         const presentTypes = new Set((shift.breaks ?? []).map((item) => item.type).filter(Boolean));
         const missingTypes = requiredTypes.filter((type) => !presentTypes.has(type));
         if (missingTypes.length > 0) {
-            throw new common_1.BadRequestException(`Shift ${shift.id} is missing required break types: ${missingTypes.join(", ")}.`);
+            throw new BadRequestException(`Shift ${shift.id} is missing required break types: ${missingTypes.join(", ")}.`);
         }
     }
-    async assertPublishReadiness(tx, tenantId, scheduleId, locationId, timeZone, shifts) {
+    private async assertPublishReadiness(tx: TenantPrismaTransaction, tenantId: string, scheduleId: string, locationId: string, timeZone: string, shifts: PublishShift[]): Promise<void> {
         await this.assertDemandWindowsCovered(tx, tenantId, scheduleId, locationId, shifts);
         await this.assertAssignedShiftsWithinAvailability(tx, tenantId, locationId, timeZone, shifts);
         await this.assertMaxWeeklyHoursAtPublish(tx, tenantId, scheduleId, timeZone, shifts);
     }
-    async assertMaxWeeklyHoursAtPublish(tx, tenantId, scheduleId, timeZone, shifts) {
-        const assigned = shifts.filter((shift) => Boolean(shift.userId));
+    private async assertMaxWeeklyHoursAtPublish(tx: TenantPrismaTransaction, tenantId: string, scheduleId: string, timeZone: string, shifts: PublishShift[]): Promise<void> {
+        const assigned = shifts.filter((shift): shift is PublishShift & { userId: string } => Boolean(shift.userId));
         if (assigned.length === 0)
             return;
         const staffIds = Array.from(new Set(assigned.map((shift) => shift.userId))).sort();
-        const range = (0, schedule_weekly_hours_1.calendarWeekRange)(new Date(Math.min(...assigned.map((shift) => shift.startTime.getTime()))), new Date(Math.max(...assigned.map((shift) => shift.endTime.getTime()))), timeZone);
-        const existing = await tx.$queryRaw `
+        const range = calendarWeekRange(new Date(Math.min(...assigned.map((shift) => shift.startTime.getTime()))), new Date(Math.max(...assigned.map((shift) => shift.endTime.getTime()))), timeZone);
+        const existing = await tx.$queryRaw<ExistingShiftRow[]>`
             SELECT shift."id", shift."userId", shift."locationId", shift."startTime", shift."endTime"
             FROM "Shift" shift
             LEFT JOIN "Schedule" source_schedule ON source_schedule."id" = shift."scheduleId"
             WHERE shift."tenantId" = ${tenantId}
-              AND shift."userId" IN (${client_1.Prisma.join(staffIds)})
+              AND shift."userId" IN (${Prisma.join(staffIds)})
               AND shift."deletedAt" IS NULL
               AND (shift."scheduleId" IS NULL OR shift."scheduleId" <> ${scheduleId})
               AND (source_schedule."id" IS NULL OR (source_schedule."deletedAt" IS NULL AND source_schedule."status" <> 'ARCHIVED'))
@@ -1120,7 +1660,7 @@ let SchedulesController = class SchedulesController {
             ORDER BY shift."userId" ASC, shift."startTime" ASC, shift."id" ASC
             FOR UPDATE OF shift
         `;
-        const totals = (0, schedule_weekly_hours_1.aggregateExistingWeeklyMinutes)([
+        const totals = aggregateExistingWeeklyMinutes([
             ...existing,
             ...assigned.map((shift) => ({
                 userId: shift.userId,
@@ -1133,13 +1673,13 @@ let SchedulesController = class SchedulesController {
         for (const staffId of staffIds) {
             for (const [weekStart, minutes] of Object.entries(totals[staffId] ?? {})) {
                 if (minutes > maxMinutes) {
-                    throw new common_1.BadRequestException(`Staff ${staffId} exceeds ${maxHours} weekly hours for the location-local week starting ${weekStart}.`);
+                    throw new BadRequestException(`Staff ${staffId} exceeds ${maxHours} weekly hours for the location-local week starting ${weekStart}.`);
                 }
             }
         }
     }
-    async publishMaxWeeklyHours(tx, tenantId, scheduleId) {
-        const rows = await tx.$queryRaw `
+    private async publishMaxWeeklyHours(tx: TenantPrismaTransaction, tenantId: string, scheduleId: string): Promise<number> {
+        const rows = await tx.$queryRaw<Array<{ requestedConstraints: Prisma.JsonValue | null }>>`
             SELECT "requestedConstraints"
             FROM "ScheduleSolveJob"
             WHERE "tenantId" = ${tenantId}
@@ -1148,7 +1688,7 @@ let SchedulesController = class SchedulesController {
             ORDER BY "createdAt" DESC, "id" DESC
             LIMIT 1
         `;
-        const constraints = rows[0]?.requestedConstraints;
+        const constraints = rows[0]?.requestedConstraints as Record<string, unknown> | null | undefined;
         const configured = constraints && typeof constraints === "object"
             ? Number(constraints.max_hours_per_week)
             : Number.NaN;
@@ -1156,13 +1696,178 @@ let SchedulesController = class SchedulesController {
             ? configured
             : DEFAULT_MAX_HOURS_PER_WEEK;
     }
-    async lockTenantSchedulingMutations(tx, tenantId) {
-        await tx.$queryRaw `
+    private async lockTenantSchedulingMutations(tx: TenantPrismaTransaction, tenantId: string): Promise<void> {
+        await tx.$executeRaw `
             SELECT pg_advisory_xact_lock(hashtextextended(${`lunchlineup:scheduling:${tenantId}`}, 0))
         `;
     }
-    async assertDemandWindowsCovered(tx, tenantId, scheduleId, locationId, shifts) {
-        const demandRows = await tx.$queryRaw `
+    private async findSchedulePublishReplay(
+        tx: TenantPrismaTransaction,
+        tenantId: string,
+        operationId: string,
+        requestHash: string,
+    ): Promise<{
+        response: {
+            id: string;
+            status: string;
+            publishedAt: string;
+            settlement: SchedulePublishSettlement;
+        };
+        notificationDedupeKeys: string[];
+    } | null> {
+        const stored = await tx.auditLog.findFirst({
+            where: {
+                tenantId,
+                action: SCHEDULE_PUBLISH_ACTION,
+                resource: SCHEDULE_PUBLISH_IDEMPOTENCY_RESOURCE,
+                resourceId: operationId,
+            },
+            orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+            select: { newValue: true },
+        });
+        if (!stored) return null;
+        if (!this.isRecord(stored.newValue) || stored.newValue.requestHash !== requestHash) {
+            throw new ConflictException("Idempotency-Key was already used with a different schedule publish request.");
+        }
+        const response = stored.newValue.response;
+        const notificationDedupeKeys = stored.newValue.notificationDedupeKeys;
+        if (!this.isRecord(response)
+            || typeof response.id !== "string"
+            || typeof response.status !== "string"
+            || typeof response.publishedAt !== "string"
+            || !isSchedulePublishSettlement(response.settlement)
+            || response.settlement.ledgerIdentities.schedule !== schedulePublishLedgerId(operationId)
+            || !this.isStringArray(notificationDedupeKeys)) {
+            throw new ConflictException("The stored schedule publication outcome is unavailable. Use a new Idempotency-Key.");
+        }
+        return {
+            response: {
+                id: response.id,
+                status: response.status,
+                publishedAt: response.publishedAt,
+                settlement: response.settlement,
+            },
+            notificationDedupeKeys,
+        };
+    }
+    private isRecord(value: unknown): value is Record<string, unknown> {
+        return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+    }
+
+    private isStringArray(value: unknown): value is string[] {
+        return Array.isArray(value) && value.every((entry) => typeof entry === "string");
+    }
+
+    private async prepareSchedulePublishCost(
+        tx: TenantPrismaTransaction,
+        tenantId: string,
+        schedulingEntitlement: FeatureResolution,
+        scheduleVersion: number,
+    ): Promise<{
+        preflight: SchedulePublishPreflight;
+        webhookCostPlan: TransactionalWebhookCostPlan;
+    }> {
+        if (!this.webhooksService) {
+            throw new ServiceUnavailableException("Schedule publish settlement is unavailable");
+        }
+        const endpoints = await tx.webhookEndpoint.findMany({
+            where: {
+                tenantId,
+                active: true,
+                events: { has: "schedule.published" },
+            },
+            select: { id: true, url: true },
+            orderBy: { createdAt: "asc" },
+        });
+        const webhookEntitlement = endpoints.length > 0
+            ? await this.featureAccessService.assertFeatureEntitledInTransaction(
+                tx,
+                tenantId,
+                "webhooks",
+            )
+            : null;
+        const tenant = await tx.tenant.findUniqueOrThrow({
+            where: { id: tenantId },
+            select: { usageCredits: true },
+        });
+        const preflight = buildSchedulePublishPreflight({
+            schedulingEntitlement,
+            webhookEntitlement,
+            matchingWebhookDeliveryCount: endpoints.length,
+            availableCredits: tenant.usageCredits,
+            scheduleVersion,
+        });
+        const webhookCostPlan: TransactionalWebhookCostPlan = {
+            tenantId,
+            eventType: "schedule.published",
+            matchingDeliveryCount: preflight.matchingWebhookDeliveryCount,
+            unitCost: preflight.matchingWebhookDeliveryUnitCost,
+            totalConfiguredCost: preflight.matchingWebhookDeliveryCost,
+            entitlement: webhookEntitlement,
+            endpoints,
+        };
+        return { preflight, webhookCostPlan };
+    }
+
+    private async settleSchedulePublishInTransaction(
+        tx: TenantPrismaTransaction,
+        args: {
+            tenantId: string;
+            scheduleId: string;
+            operationId: string;
+            schedulingEntitlement: FeatureResolution;
+            acceptedContract: SchedulePublishAcceptedContract;
+            scheduleVersion: number;
+            occurredAt: Date;
+            eventData: Record<string, unknown>;
+        },
+    ): Promise<SchedulePublishSettlement> {
+        const { preflight, webhookCostPlan } = await this.prepareSchedulePublishCost(
+            tx,
+            args.tenantId,
+            args.schedulingEntitlement,
+            args.scheduleVersion,
+        );
+        if (!schedulePublishContractMatches(args.acceptedContract, preflight.acceptedContract)) {
+            throw new ConflictException({
+                message: "Schedule or configured publish cost changed after confirmation. Review and confirm the current preflight.",
+                preflight: { scheduleId: args.scheduleId, ...preflight },
+            });
+        }
+        assertSchedulePublishCredits(preflight);
+        const scheduleUsage = await this.featureAccessService.recordFeatureUsageInTransaction(
+            tx,
+            args.tenantId,
+            args.schedulingEntitlement,
+            `Schedule publication (${args.scheduleId})`,
+            `schedule-publish:${args.operationId}`,
+        );
+        if (scheduleUsage.consumedCredits !== preflight.scheduleCost
+            || scheduleUsage.newBalance === null
+            || !Number.isSafeInteger(scheduleUsage.newBalance)
+            || scheduleUsage.newBalance < 0) {
+            throw new ServiceUnavailableException("Schedule publication credit settlement balance is unavailable");
+        }
+        const webhookSettlement = await this.webhooksService!.enqueueEventInTransaction(tx, {
+            tenantId: args.tenantId,
+            eventId: `schedule.published:${args.scheduleId}:${args.operationId}`,
+            eventType: "schedule.published",
+            occurredAt: args.occurredAt,
+            data: args.eventData,
+        }, webhookCostPlan);
+        const finalWebhookDelivery = webhookSettlement.deliveries[
+            webhookSettlement.deliveries.length - 1
+        ];
+        return buildSchedulePublishSettlement({
+            preflight,
+            operationId: args.operationId,
+            newBalance: finalWebhookDelivery?.newBalance ?? scheduleUsage.newBalance,
+            webhookDeliveryIds: webhookSettlement.deliveries.map((delivery) => delivery.deliveryId),
+        });
+    }
+
+    private async assertDemandWindowsCovered(tx: TenantPrismaTransaction, tenantId: string, scheduleId: string, locationId: string, shifts: PublishShift[]): Promise<void> {
+        const demandRows = await tx.$queryRaw<DemandWindowRow[]>`
             SELECT "id", "startTime", "endTime", "requiredStaff", "skill"
             FROM "ScheduleDemandWindow"
             WHERE "tenantId" = ${tenantId}
@@ -1172,18 +1877,18 @@ let SchedulesController = class SchedulesController {
         `;
         if (demandRows.length === 0)
             return;
-        const assignedShifts = shifts.filter((shift) => Boolean(shift.userId));
+        const assignedShifts = shifts.filter((shift): shift is PublishShift & { userId: string } => Boolean(shift.userId));
         const neededSkills = Array.from(new Set(demandRows
             .map((row) => this.normalizeSkill(row.skill))
-            .filter((skill) => Boolean(skill))));
+            .filter((skill): skill is string => Boolean(skill))));
         const skillsByUser = neededSkills.length > 0
             ? await this.loadSkillsByUser(tx, tenantId, assignedShifts.map((shift) => shift.userId), neededSkills)
-            : new Map();
+            : new Map<string, Set<string>>();
         for (const row of demandRows) {
             const start = this.requiredDate(row.startTime, "demand window startTime");
             const end = this.requiredDate(row.endTime, "demand window endTime");
             if (end <= start) {
-                throw new common_1.BadRequestException("Invalid demand window. endTime must be after startTime.");
+                throw new BadRequestException("Invalid demand window. endTime must be after startTime.");
             }
             const requiredStaff = this.requiredStaffCount(row.requiredStaff);
             const skill = this.normalizeSkill(row.skill);
@@ -1196,23 +1901,23 @@ let SchedulesController = class SchedulesController {
                 const covered = assignedShifts.filter((shift) => this.isShiftWorkingForSegment(shift, segmentStart, segmentEnd) &&
                     (!skill || skillsByUser.get(shift.userId)?.has(skill))).length;
                 if (covered < requiredStaff) {
-                    throw new common_1.BadRequestException(`Demand window ${row.id} needs ${requiredStaff} assigned staff${skill ? ` with ${skill}` : ""} before publishing.`);
+                    throw new BadRequestException(`Demand window ${row.id} needs ${requiredStaff} assigned staff${skill ? ` with ${skill}` : ""} before publishing.`);
                 }
             }
         }
     }
-    async loadSkillsByUser(tx, tenantId, userIds, skills) {
+    private async loadSkillsByUser(tx: TenantPrismaTransaction, tenantId: string, userIds: string[], skills: string[]): Promise<Map<string, Set<string>>> {
         const uniqueUserIds = Array.from(new Set(userIds));
         if (uniqueUserIds.length === 0 || skills.length === 0)
             return new Map();
-        const rows = await tx.$queryRaw `
+        const rows = await tx.$queryRaw<StaffSkillRow[]>`
             SELECT "userId", "skill"
             FROM "StaffSkill"
             WHERE "tenantId" = ${tenantId}
-              AND "userId" IN (${client_1.Prisma.join(uniqueUserIds)})
-              AND lower(trim("skill")) IN (${client_1.Prisma.join(skills)})
+              AND "userId" IN (${Prisma.join(uniqueUserIds)})
+              AND lower(trim("skill")) IN (${Prisma.join(skills)})
         `;
-        const byUser = new Map();
+        const byUser = new Map<string, Set<string>>();
         for (const row of rows) {
             const skill = this.normalizeSkill(row.skill);
             if (!skill)
@@ -1223,7 +1928,7 @@ let SchedulesController = class SchedulesController {
         }
         return byUser;
     }
-    coverageBoundaries(start, end, shifts) {
+    private coverageBoundaries(start: Date, end: Date, shifts: PublishShift[]): Date[] {
         const timestamps = new Set([start.getTime(), end.getTime()]);
         for (const shift of shifts) {
             if (shift.endTime <= start || shift.startTime >= end)
@@ -1241,28 +1946,28 @@ let SchedulesController = class SchedulesController {
             .sort((a, b) => a - b)
             .map((value) => new Date(value));
     }
-    isShiftWorkingForSegment(shift, start, end) {
+    private isShiftWorkingForSegment(shift: PublishShift, start: Date, end: Date): boolean {
         if (shift.startTime > start || shift.endTime < end)
             return false;
         return !(shift.breaks ?? []).some((shiftBreak) => shiftBreak.startTime < end && shiftBreak.endTime > start);
     }
-    async assertAssignedShiftsWithinAvailability(tx, tenantId, locationId, timeZone, shifts) {
+    private async assertAssignedShiftsWithinAvailability(tx: TenantPrismaTransaction, tenantId: string, locationId: string, timeZone: string, shifts: PublishShift[]): Promise<void> {
         const assignedUserIds = Array.from(new Set(shifts
             .map((shift) => shift.userId)
-            .filter((userId) => Boolean(userId))));
+            .filter((userId): userId is string => Boolean(userId))));
         if (assignedUserIds.length === 0)
             return;
-        const availabilityRows = await tx.$queryRaw `
+        const availabilityRows = await tx.$queryRaw<AvailabilityRow[]>`
             SELECT "userId", "dayOfWeek", "startTimeMinutes", "endTimeMinutes"
             FROM "StaffAvailability"
             WHERE "tenantId" = ${tenantId}
-              AND "userId" IN (${client_1.Prisma.join(assignedUserIds)})
+              AND "userId" IN (${Prisma.join(assignedUserIds)})
               AND ("locationId" IS NULL OR "locationId" = ${locationId})
             ORDER BY "userId" ASC, "dayOfWeek" ASC, "startTimeMinutes" ASC
         `;
-        const availabilityByUser = new Map();
+        const availabilityByUser = new Map<string, PersistedAvailabilityWindow[]>();
         for (const row of availabilityRows) {
-            (0, schedule_availability_1.assertAvailabilityWindow)(row);
+            assertAvailabilityWindow(row);
             const rows = availabilityByUser.get(row.userId) ?? [];
             rows.push(row);
             availabilityByUser.set(row.userId, rows);
@@ -1272,35 +1977,36 @@ let SchedulesController = class SchedulesController {
                 continue;
             const rows = availabilityByUser.get(shift.userId);
             if (!rows?.length) {
-                throw new common_1.BadRequestException(`Shift ${shift.id} is assigned to staff with no applicable configured availability.`);
+                throw new BadRequestException(`Shift ${shift.id} is assigned to staff with no applicable configured availability.`);
             }
-            for (const segment of (0, location_timezone_1.splitInstantRangeByLocalDay)(shift.startTime, shift.endTime, timeZone)) {
-                const covered = rows.some((row) => (0, schedule_availability_1.availabilityWindowCoversLocalSegment)(row, segment.weekday, segment.startMinutes, segment.endMinutes));
+            for (const segment of splitInstantRangeByLocalDay(shift.startTime, shift.endTime, timeZone)) {
+                const covered = availabilityWindowsCoverLocalSegment(rows, segment.weekday, segment.startMinutes, segment.endMinutes);
                 if (!covered) {
-                    throw new common_1.BadRequestException(`Shift ${shift.id} is outside configured staff availability.`);
+                    throw new BadRequestException(`Shift ${shift.id} is outside configured staff availability.`);
                 }
             }
         }
     }
-    requiredDate(value, field) {
+    private requiredDate(value: Date | string, field: string): Date {
         const date = value instanceof Date ? value : new Date(value);
         if (!Number.isFinite(date.getTime())) {
-            throw new common_1.BadRequestException(`Invalid ${field}.`);
+            throw new BadRequestException(`Invalid ${field}.`);
         }
         return date;
     }
-    normalizeSkill(value) {
+    private normalizeSkill(value: unknown): string | null {
         const skill = typeof value === "string" ? value.trim().toLowerCase() : "";
         return skill || null;
     }
-    async lockDraftScheduleForPublish(tx, id, tenantId) {
-        const rows = await tx.$queryRaw `
+    private async lockDraftScheduleForPublish(tx: TenantPrismaTransaction, id: string, tenantId: string): Promise<PublishSchedule> {
+        const rows = await tx.$queryRaw<PublishSchedule[]>`
             SELECT
                 schedule.id,
                 schedule.status,
                 schedule."locationId",
                 schedule."startDate",
                 schedule."endDate",
+                schedule.revision,
                 location.timezone
             FROM "Schedule" schedule
             JOIN "Location" location ON location.id = schedule."locationId" AND location."tenantId" = schedule."tenantId"
@@ -1312,14 +2018,14 @@ let SchedulesController = class SchedulesController {
         `;
         const schedule = rows[0];
         if (!schedule)
-            throw new common_1.NotFoundException("Schedule not found");
+            throw new NotFoundException("Schedule not found");
         if (schedule.status !== SCHEDULE_STATUS.DRAFT) {
-            throw new common_1.BadRequestException("Only draft schedules can be published.");
+            throw new BadRequestException("Only draft schedules can be published.");
         }
         return schedule;
     }
-    async lockDraftScheduleForAutoSchedule(tx, id, tenantId) {
-        const rows = await tx.$queryRaw `
+    private async lockDraftScheduleForAutoSchedule(tx: TenantPrismaTransaction, id: string, tenantId: string): Promise<void> {
+        const rows = await tx.$queryRaw<LockedScheduleRow[]>`
             SELECT "id", "status"
             FROM "Schedule"
             WHERE "id" = ${id}
@@ -1329,13 +2035,13 @@ let SchedulesController = class SchedulesController {
         `;
         const schedule = rows[0];
         if (!schedule)
-            throw new common_1.NotFoundException("Schedule not found");
+            throw new NotFoundException("Schedule not found");
         if (schedule.status !== SCHEDULE_STATUS.DRAFT) {
-            throw new common_1.BadRequestException("Only draft schedules can be auto-scheduled.");
+            throw new BadRequestException("Only draft schedules can be auto-scheduled.");
         }
     }
-    async lockDraftScheduleForDemand(tx, id, tenantId) {
-        const rows = await tx.$queryRaw `
+    private async lockDraftScheduleForDemand(tx: TenantPrismaTransaction, id: string, tenantId: string): Promise<DemandSchedule> {
+        const rows = await tx.$queryRaw<DemandSchedule[]>`
       SELECT schedule."id", schedule."status", schedule."locationId",
              schedule."startDate", schedule."endDate", location."timezone"
       FROM "Schedule" schedule
@@ -1350,47 +2056,47 @@ let SchedulesController = class SchedulesController {
     `;
         const schedule = rows[0];
         if (!schedule)
-            throw new common_1.NotFoundException("Schedule not found");
+            throw new NotFoundException("Schedule not found");
         if (schedule.status !== SCHEDULE_STATUS.DRAFT) {
-            throw new common_1.BadRequestException("Demand can only be changed on draft schedules.");
+            throw new BadRequestException("Demand can only be changed on draft schedules.");
         }
         return {
             ...schedule,
             startDate: this.requiredDate(schedule.startDate, "schedule startDate"),
             endDate: this.requiredDate(schedule.endDate, "schedule endDate"),
-            timezone: (0, location_timezone_1.normalizeTimeZone)(schedule.timezone),
+            timezone: normalizeTimeZone(schedule.timezone),
         };
     }
-    parseScheduleDate(value, field, timeZone) {
+    private parseScheduleDate(value: unknown, field: string, timeZone: string): Date {
         if (typeof value !== "string" || !value.trim())
-            throw new common_1.BadRequestException(`${field} is required`);
+            throw new BadRequestException(`${field} is required`);
         const normalized = value.trim();
         const dateOnly = DATE_ONLY_RE.exec(normalized);
         if (dateOnly) {
             try {
-                return (0, location_timezone_1.localDateBoundaryUtc)(normalized, timeZone);
+                return localDateBoundaryUtc(normalized, timeZone);
             }
             catch {
-                throw new common_1.BadRequestException(`Invalid ${field}. Use a real YYYY-MM-DD calendar date.`);
+                throw new BadRequestException(`Invalid ${field}. Use a real YYYY-MM-DD calendar date.`);
             }
         }
         const utcInstant = UTC_INSTANT_RE.exec(normalized);
         if (!utcInstant) {
-            throw new common_1.BadRequestException(`Invalid ${field}. Use YYYY-MM-DD or UTC ISO 8601.`);
+            throw new BadRequestException(`Invalid ${field}. Use YYYY-MM-DD or UTC ISO 8601.`);
         }
         const parsed = new Date(normalized);
         this.assertUtcDateParts(parsed, utcInstant, field);
         if (!Number.isFinite(parsed.getTime())) {
-            throw new common_1.BadRequestException(`Invalid ${field}. Use YYYY-MM-DD or UTC ISO 8601.`);
+            throw new BadRequestException(`Invalid ${field}. Use YYYY-MM-DD or UTC ISO 8601.`);
         }
         return parsed;
     }
-    assertScheduleWindow(startDate, endDate) {
+    private assertScheduleWindow(startDate: Date, endDate: Date): void {
         if (endDate <= startDate) {
-            throw new common_1.BadRequestException("Schedule end date must be after start date.");
+            throw new BadRequestException("Schedule end date must be after start date.");
         }
     }
-    assertUtcDateParts(parsed, match, field) {
+    private assertUtcDateParts(parsed: Date, match: RegExpExecArray, field: string): void {
         const expectedYear = Number(match[1]);
         const expectedMonth = Number(match[2]) - 1;
         const expectedDate = Number(match[3]);
@@ -1398,119 +2104,7 @@ let SchedulesController = class SchedulesController {
             parsed.getUTCFullYear() !== expectedYear ||
             parsed.getUTCMonth() !== expectedMonth ||
             parsed.getUTCDate() !== expectedDate) {
-            throw new common_1.BadRequestException(`Invalid ${field}. Use YYYY-MM-DD or UTC ISO 8601.`);
+            throw new BadRequestException(`Invalid ${field}. Use YYYY-MM-DD or UTC ISO 8601.`);
         }
     }
-};
-exports.SchedulesController = SchedulesController;
-__decorate([
-    (0, common_1.Get)(),
-    Permission("schedules:read"),
-    __param(0, (0, common_1.Req)()),
-    __metadata("design:type", Function),
-    __metadata("design:paramtypes", [Object]),
-    __metadata("design:returntype", Promise)
-], SchedulesController.prototype, "findAll", null);
-__decorate([
-    (0, common_1.Get)(":id"),
-    Permission("schedules:read"),
-    __param(0, (0, common_1.Param)("id")),
-    __param(1, (0, common_1.Req)()),
-    __metadata("design:type", Function),
-    __metadata("design:paramtypes", [String, Object]),
-    __metadata("design:returntype", Promise)
-], SchedulesController.prototype, "findOne", null);
-__decorate([
-    (0, common_1.Get)(":id/demand-windows"),
-    Permission("schedules:read"),
-    __param(0, (0, common_1.Param)("id")),
-    __param(1, (0, common_1.Req)()),
-    __metadata("design:type", Function),
-    __metadata("design:paramtypes", [String, Object]),
-    __metadata("design:returntype", Promise)
-], SchedulesController.prototype, "findDemandWindows", null);
-__decorate([
-    (0, common_1.Put)(":id/demand-windows"),
-    Permission("schedules:write"),
-    __param(0, (0, common_1.Param)("id")),
-    __param(1, (0, common_1.Body)()),
-    __param(2, (0, common_1.Req)()),
-    __metadata("design:type", Function),
-    __metadata("design:paramtypes", [String, Object, Object]),
-    __metadata("design:returntype", Promise)
-], SchedulesController.prototype, "replaceDemandWindows", null);
-__decorate([
-    (0, common_1.Get)(":id/auto-schedule/jobs/:jobId"),
-    Permission("schedules:read"),
-    __param(0, (0, common_1.Param)("id")),
-    __param(1, (0, common_1.Param)("jobId")),
-    __param(2, (0, common_1.Req)()),
-    __metadata("design:type", Function),
-    __metadata("design:paramtypes", [String, String, Object]),
-    __metadata("design:returntype", Promise)
-], SchedulesController.prototype, "findAutoScheduleJob", null);
-__decorate([
-    (0, common_1.Post)(),
-    Permission("schedules:write"),
-    __param(0, (0, common_1.Body)()),
-    __param(1, (0, common_1.Req)()),
-    __metadata("design:type", Function),
-    __metadata("design:paramtypes", [Object, Object]),
-    __metadata("design:returntype", Promise)
-], SchedulesController.prototype, "create", null);
-__decorate([
-    (0, common_1.Delete)(":id"),
-    Permission("schedules:write"),
-    (0, common_1.HttpCode)(common_1.HttpStatus.NO_CONTENT),
-    __param(0, (0, common_1.Param)("id")),
-    __param(1, (0, common_1.Req)()),
-    __metadata("design:type", Function),
-    __metadata("design:paramtypes", [String, Object]),
-    __metadata("design:returntype", Promise)
-], SchedulesController.prototype, "remove", null);
-__decorate([
-    (0, common_1.Post)(":id/publish"),
-    Permission("schedules:publish"),
-    (0, common_1.HttpCode)(common_1.HttpStatus.OK),
-    __param(0, (0, common_1.Param)("id")),
-    __param(1, (0, common_1.Req)()),
-    __metadata("design:type", Function),
-    __metadata("design:paramtypes", [String, Object]),
-    __metadata("design:returntype", Promise)
-], SchedulesController.prototype, "publish", null);
-__decorate([
-    (0, common_1.Post)(":id/auto-schedule"),
-    Permission("schedules:write"),
-    (0, common_1.HttpCode)(common_1.HttpStatus.ACCEPTED),
-    __param(0, (0, common_1.Param)("id")),
-    __param(1, (0, common_1.Req)()),
-    __param(2, (0, common_1.Body)()),
-    __param(3, (0, common_1.Headers)("idempotency-key")),
-    __metadata("design:type", Function),
-    __metadata("design:paramtypes", [String, Object, Object, String]),
-    __metadata("design:returntype", Promise)
-], SchedulesController.prototype, "autoSchedule", null);
-__decorate([
-    (0, common_1.Post)(":id/reopen"),
-    Permission("schedules:publish"),
-    (0, common_1.HttpCode)(common_1.HttpStatus.OK),
-    __param(0, (0, common_1.Param)("id")),
-    __param(1, (0, common_1.Req)()),
-    __metadata("design:type", Function),
-    __metadata("design:paramtypes", [String, Object]),
-    __metadata("design:returntype", Promise)
-], SchedulesController.prototype, "reopen", null);
-exports.SchedulesController = SchedulesController = __decorate([
-    (0, common_1.Controller)({ path: "schedules", version: "1" }),
-    (0, common_1.UseGuards)(jwt_auth_guard_1.JwtAuthGuard, rbac_guard_1.RbacGuard),
-    __param(2, (0, common_1.Optional)()),
-    __param(3, (0, common_1.Optional)()),
-    __param(4, (0, common_1.Optional)()),
-    __metadata("design:paramtypes", [notifications_service_1.NotificationsService,
-        feature_access_service_1.FeatureAccessService,
-        tenant_prisma_service_1.TenantPrismaService,
-        metering_service_1.MeteringService,
-        webhooks_service_1.WebhooksService])
-], SchedulesController);
-export type SchedulesController = any;
-export { SchedulesController };
+}

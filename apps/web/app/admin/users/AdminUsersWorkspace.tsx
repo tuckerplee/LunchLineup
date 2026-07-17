@@ -1,18 +1,27 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Users } from 'lucide-react';
 import { fetchJsonWithSession, fetchWithSession } from '@/lib/client-api';
+import {
+    EMPTY_ADMIN_LIST_PAGINATION,
+    buildAdminListPath,
+    mergeAdminListPage,
+    parseAdminListPagination,
+    retainAdminListSelection,
+    type AdminListPagination,
+} from '../admin-list-pagination';
+import { canMutateAdminUserLifecycle, resolveAdminUserStatus, type AdminUserStatus } from './admin-user-lifecycle';
 
 type UserRole = 'SUPER_ADMIN' | 'ADMIN' | 'MANAGER' | 'STAFF';
-type UserStatus = 'ACTIVE' | 'LOCKED' | 'SUSPENDED';
-type StatusFilter = 'ALL' | UserStatus;
+type StatusFilter = 'ALL' | AdminUserStatus;
 
 type AdminTenant = {
     id: string;
     name: string;
     slug: string;
-    planTier: string;
-    status: string;
+    planTier?: string;
+    status?: string;
 };
 
 type AdminUser = {
@@ -25,9 +34,10 @@ type AdminUser = {
     lastLoginAt: string | null;
     lockedUntil: string | null;
     pinLockedUntil: string | null;
+    suspendedAt: string | null;
     deletedAt: string | null;
     mfaEnabled: boolean;
-    status: UserStatus;
+    status: AdminUserStatus;
     tenant: AdminTenant | null;
 };
 
@@ -48,24 +58,40 @@ type WorkspaceProps = {
     currentUserId: string | null;
 };
 
+type PaginatedAdminList<T> = {
+    data?: T[];
+    pagination?: unknown;
+};
+
+type LoadPageOptions = {
+    cursor?: string | null;
+    append?: boolean;
+};
+
+const USER_PAGE_LIMIT = 100;
+const TENANT_PAGE_LIMIT = 50;
+const SEARCH_DEBOUNCE_MS = 300;
+
 const ROLE_META: Record<UserRole, { label: string; color: string; bg: string; border: string }> = {
-    SUPER_ADMIN: { label: 'SUPER_ADMIN', color: '#cb3653', bg: '#ffeef2', border: '#ffd0da' },
-    ADMIN: { label: 'ADMIN', color: '#2f63ff', bg: '#edf3ff', border: '#c9d9ff' },
-    MANAGER: { label: 'MANAGER', color: '#0f8c52', bg: '#e9fbf1', border: '#bdeed4' },
+    SUPER_ADMIN: { label: 'SUPER_ADMIN', color: '#b4233f', bg: '#ffeef2', border: '#ffd0da' },
+    ADMIN: { label: 'ADMIN', color: '#1d4ed8', bg: '#edf3ff', border: '#c9d9ff' },
+    MANAGER: { label: 'MANAGER', color: '#166534', bg: '#e9fbf1', border: '#bdeed4' },
     STAFF: { label: 'STAFF', color: '#4c5f85', bg: '#eef2f9', border: '#d3ddeb' },
 };
 
-const STATUS_META: Record<UserStatus, { label: string; color: string; bg: string; border: string; dot: string }> = {
-    ACTIVE: { label: 'Active', color: '#0f8c52', bg: '#e9fbf1', border: '#bdeed4', dot: '#17b26a' },
-    LOCKED: { label: 'Locked', color: '#cc7f06', bg: '#fff4e2', border: '#ffe1a6', dot: '#f59e0b' },
-    SUSPENDED: { label: 'Suspended', color: '#cb3653', bg: '#ffeef2', border: '#ffd0da', dot: '#e74867' },
+const STATUS_META: Record<AdminUserStatus, { label: string; color: string; bg: string; border: string; dot: string }> = {
+    ACTIVE: { label: 'Active', color: '#166534', bg: '#e9fbf1', border: '#bdeed4', dot: '#166534' },
+    LOCKED: { label: 'Locked', color: '#7c4a03', bg: '#fff4e2', border: '#ffe1a6', dot: '#7c4a03' },
+    SUSPENDED: { label: 'Suspended', color: '#b4233f', bg: '#ffeef2', border: '#ffd0da', dot: '#e74867' },
+    DELETED: { label: 'Deleted', color: '#4b5563', bg: '#f3f4f6', border: '#d1d5db', dot: '#6b7280' },
 };
 
 const FILTER_META: Record<StatusFilter, { label: string; color: string; bg: string; border: string }> = {
     ALL: { label: 'All', color: '#4c5f85', bg: '#eef2f9', border: '#d3ddeb' },
-    ACTIVE: { label: 'Active', color: '#0f8c52', bg: '#e9fbf1', border: '#bdeed4' },
-    LOCKED: { label: 'Locked', color: '#cc7f06', bg: '#fff4e2', border: '#ffe1a6' },
-    SUSPENDED: { label: 'Suspended', color: '#cb3653', bg: '#ffeef2', border: '#ffd0da' },
+    ACTIVE: { label: 'Active', color: '#166534', bg: '#e9fbf1', border: '#bdeed4' },
+    LOCKED: { label: 'Locked', color: '#7c4a03', bg: '#fff4e2', border: '#ffe1a6' },
+    SUSPENDED: { label: 'Suspended', color: '#b4233f', bg: '#ffeef2', border: '#ffd0da' },
+    DELETED: { label: 'Deleted', color: '#4b5563', bg: '#f3f4f6', border: '#d1d5db' },
 };
 
 const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
@@ -176,92 +202,146 @@ function emptyForm(tenants: AdminTenant[], user?: AdminUser): UserForm {
 export function AdminUsersWorkspace({ currentUserId }: WorkspaceProps) {
     const [users, setUsers] = useState<AdminUser[]>([]);
     const [tenants, setTenants] = useState<AdminTenant[]>([]);
+    const [userPagination, setUserPagination] = useState<AdminListPagination>(EMPTY_ADMIN_LIST_PAGINATION);
+    const [tenantPagination, setTenantPagination] = useState<AdminListPagination>(EMPTY_ADMIN_LIST_PAGINATION);
     const [selectedUserId, setSelectedUserId] = useState<string | null>(null);
+    const [assignedTenantOption, setAssignedTenantOption] = useState<AdminTenant | null>(null);
     const [form, setForm] = useState<UserForm>(() => emptyForm([]));
     const [lockMinutes, setLockMinutes] = useState('60');
     const [search, setSearch] = useState('');
+    const [debouncedSearch, setDebouncedSearch] = useState('');
+    const [tenantSearch, setTenantSearch] = useState('');
+    const [debouncedTenantSearch, setDebouncedTenantSearch] = useState('');
     const [statusFilter, setStatusFilter] = useState<StatusFilter>('ALL');
     const [loading, setLoading] = useState(true);
+    const [loadingMoreUsers, setLoadingMoreUsers] = useState(false);
+    const [tenantLoading, setTenantLoading] = useState(true);
+    const [tenantLoadingMore, setTenantLoadingMore] = useState(false);
     const [savingKey, setSavingKey] = useState<string | null>(null);
     const [message, setMessage] = useState<Banner>(null);
     const [temporaryPin, setTemporaryPin] = useState<string | null>(null);
+    const userRequestId = useRef(0);
+    const tenantRequestId = useRef(0);
 
     const selectedUser = useMemo(
         () => users.find((user) => user.id === selectedUserId) ?? null,
         [selectedUserId, users],
     );
-
-    const filteredUsers = useMemo(() => {
-        const query = search.trim().toLowerCase();
-        return users.filter((user) => {
-            if (statusFilter !== 'ALL' && user.status !== statusFilter) return false;
-            if (!query) return true;
-            const haystack = [
-                user.name,
-                user.email ?? '',
-                user.username ?? '',
-                user.role,
-                user.status,
-                user.tenant?.name ?? '',
-                user.tenant?.slug ?? '',
-            ]
-                .join(' ')
-                .toLowerCase();
-            return haystack.includes(query);
-        });
-    }, [search, statusFilter, users]);
-
-    const stats = useMemo(() => {
-        const total = users.length;
-        const active = users.filter((user) => user.status === 'ACTIVE').length;
-        const locked = users.filter((user) => user.status === 'LOCKED').length;
-        const suspended = users.filter((user) => user.status === 'SUSPENDED').length;
-        return { total, active, locked, suspended };
-    }, [users]);
+    const tenantOptions = useMemo(
+        () => retainAdminListSelection(tenants, assignedTenantOption),
+        [assignedTenantOption, tenants],
+    );
 
     const isSelf = Boolean(currentUserId && selectedUser?.id === currentUserId);
+    const selectedIsDeleted = selectedUser?.status === 'DELETED';
     const selectedStatusMeta = selectedUser ? STATUS_META[selectedUser.status] : null;
     const selectedRoleMeta = selectedUser ? ROLE_META[selectedUser.role] : ROLE_META.STAFF;
-    const loadData = useCallback(async () => {
-        setLoading(true);
+
+    const loadUsers = useCallback(async ({ cursor, append = false }: LoadPageOptions = {}) => {
+        const requestId = ++userRequestId.current;
+        if (append) setLoadingMoreUsers(true);
+        else setLoading(true);
         try {
-            const [usersPayload, tenantsPayload] = await Promise.all([
-                fetchJsonWithSession<{ data?: AdminUser[] }>('/admin/users'),
-                fetchJsonWithSession<{ data?: AdminTenant[] }>('/admin/tenants'),
-            ]);
-            const nextUsers = Array.isArray(usersPayload.data) ? usersPayload.data : [];
-            const nextTenants = Array.isArray(tenantsPayload.data) ? tenantsPayload.data : [];
-            setUsers(nextUsers);
-            setTenants(nextTenants);
+            const payload = await fetchJsonWithSession<PaginatedAdminList<AdminUser>>(buildAdminListPath('/admin/users', {
+                limit: USER_PAGE_LIMIT,
+                cursor,
+                q: debouncedSearch || undefined,
+                status: statusFilter,
+            }));
+            if (requestId !== userRequestId.current) return;
+            const nextUsers = Array.isArray(payload.data)
+                ? payload.data.map((user) => ({ ...user, status: resolveAdminUserStatus(user) }))
+                : [];
+            setUsers((current) => mergeAdminListPage(current, nextUsers, append));
+            setUserPagination(parseAdminListPagination(payload.pagination));
             setSelectedUserId((current) => {
+                if (append) return current ?? nextUsers[0]?.id ?? null;
                 if (current && nextUsers.some((user) => user.id === current)) return current;
                 return nextUsers[0]?.id ?? null;
             });
         } catch (error) {
-            setMessage({ tone: 'error', text: (error as Error).message });
+            if (requestId === userRequestId.current) {
+                setMessage({ tone: 'error', text: (error as Error).message });
+            }
         } finally {
-            setLoading(false);
+            if (requestId === userRequestId.current) {
+                if (append) setLoadingMoreUsers(false);
+                else setLoading(false);
+            }
         }
-    }, []);
+    }, [debouncedSearch, statusFilter]);
+
+    const loadTenants = useCallback(async ({ cursor, append = false }: LoadPageOptions = {}) => {
+        const requestId = ++tenantRequestId.current;
+        if (append) setTenantLoadingMore(true);
+        else setTenantLoading(true);
+        try {
+            const payload = await fetchJsonWithSession<PaginatedAdminList<AdminTenant>>(buildAdminListPath('/admin/tenants', {
+                limit: TENANT_PAGE_LIMIT,
+                cursor,
+                q: debouncedTenantSearch || undefined,
+            }));
+            if (requestId !== tenantRequestId.current) return;
+            const nextTenants = Array.isArray(payload.data) ? payload.data : [];
+            setTenants((current) => mergeAdminListPage(current, nextTenants, append));
+            setTenantPagination(parseAdminListPagination(payload.pagination));
+        } catch (error) {
+            if (requestId === tenantRequestId.current) {
+                setMessage({ tone: 'error', text: (error as Error).message });
+            }
+        } finally {
+            if (requestId === tenantRequestId.current) {
+                if (append) setTenantLoadingMore(false);
+                else setTenantLoading(false);
+            }
+        }
+    }, [debouncedTenantSearch]);
+
+    const refreshUsers = useCallback(() => loadUsers(), [loadUsers]);
 
     useEffect(() => {
-        void loadData();
-    }, [loadData]);
+        const timeout = window.setTimeout(() => setDebouncedSearch(search.trim()), SEARCH_DEBOUNCE_MS);
+        return () => window.clearTimeout(timeout);
+    }, [search]);
+
+    useEffect(() => {
+        const timeout = window.setTimeout(
+            () => setDebouncedTenantSearch(tenantSearch.trim()),
+            SEARCH_DEBOUNCE_MS,
+        );
+        return () => window.clearTimeout(timeout);
+    }, [tenantSearch]);
+
+    useEffect(() => {
+        void loadUsers();
+        return () => {
+            userRequestId.current += 1;
+        };
+    }, [loadUsers]);
+
+    useEffect(() => {
+        void loadTenants();
+        return () => {
+            tenantRequestId.current += 1;
+        };
+    }, [loadTenants]);
 
     useEffect(() => {
         if (!selectedUser) {
-            setForm(emptyForm(tenants));
+            setForm(emptyForm([]));
+            setAssignedTenantOption(null);
             return;
         }
-        setForm(emptyForm(tenants, selectedUser));
-    }, [selectedUser, tenants]);
+        setForm(emptyForm([], selectedUser));
+        setAssignedTenantOption(selectedUser.tenant);
+    }, [selectedUser]);
 
     useEffect(() => {
         setTemporaryPin(null);
     }, [selectedUserId]);
 
     const saveUser = useCallback(async () => {
-        if (!selectedUser) return;
+        if (!selectedUser || selectedUser.status === 'DELETED') return;
         const name = form.name.trim();
         if (!name) {
             setMessage({ tone: 'error', text: 'Name is required.' });
@@ -278,11 +358,6 @@ export function AdminUsersWorkspace({ currentUserId }: WorkspaceProps) {
             setMessage({ tone: 'error', text: 'Username must be 3 to 32 characters and use lowercase letters, numbers, dot, dash, or underscore.' });
             return;
         }
-        if (!form.tenantId) {
-            setMessage({ tone: 'error', text: 'Tenant assignment is required.' });
-            return;
-        }
-
         setSavingKey(`save:${selectedUser.id}`);
         setMessage(null);
         try {
@@ -291,19 +366,18 @@ export function AdminUsersWorkspace({ currentUserId }: WorkspaceProps) {
                 email: email || null,
                 username: username || null,
                 role: form.role,
-                tenantId: form.tenantId,
             });
             setMessage({ tone: 'success', text: `${name} was updated.` });
-            await loadData();
+            await refreshUsers();
         } catch (error) {
             setMessage({ tone: 'error', text: (error as Error).message });
         } finally {
             setSavingKey(null);
         }
-    }, [form, loadData, selectedUser]);
+    }, [form, refreshUsers, selectedUser]);
 
     const resetPin = useCallback(async () => {
-        if (!selectedUser) return;
+        if (!selectedUser || selectedUser.status === 'DELETED') return;
         setSavingKey(`pin:${selectedUser.id}`);
         setMessage(null);
         try {
@@ -313,16 +387,16 @@ export function AdminUsersWorkspace({ currentUserId }: WorkspaceProps) {
             );
             setTemporaryPin(payload.temporaryPin ?? null);
             setMessage({ tone: 'success', text: `PIN reset for ${selectedUser.name}.` });
-            await loadData();
+            await refreshUsers();
         } catch (error) {
             setMessage({ tone: 'error', text: (error as Error).message });
         } finally {
             setSavingKey(null);
         }
-    }, [loadData, selectedUser]);
+    }, [refreshUsers, selectedUser]);
 
     const resetMfa = useCallback(async () => {
-        if (!selectedUser || isSelf || !selectedUser.mfaEnabled || selectedUser.status === 'SUSPENDED') return;
+        if (!selectedUser || isSelf || !selectedUser.mfaEnabled || !canMutateAdminUserLifecycle(selectedUser.status) || selectedUser.status === 'SUSPENDED') return;
         const expected = `reset-mfa:${selectedUser.id}`;
         const confirmation = typeof window === 'undefined'
             ? null
@@ -344,17 +418,17 @@ export function AdminUsersWorkspace({ currentUserId }: WorkspaceProps) {
         try {
             await writeJson(`/admin/users/${selectedUser.id}/mfa/reset`, 'POST', { confirmation, reason: reason.trim() });
             setMessage({ tone: 'success', text: `MFA factors cleared for ${selectedUser.name}; all sessions were revoked.` });
-            await loadData();
+            await refreshUsers();
         } catch (error) {
             setMessage({ tone: 'error', text: (error as Error).message });
         } finally {
             setSavingKey(null);
         }
-    }, [isSelf, loadData, selectedUser]);
+    }, [isSelf, refreshUsers, selectedUser]);
 
     const toggleLock = useCallback(async (targetUser?: AdminUser) => {
         const user = targetUser ?? selectedUser;
-        if (!user || user.status === 'SUSPENDED') return;
+        if (!user || user.status === 'SUSPENDED' || user.status === 'DELETED') return;
         setSavingKey(`lock:${user.id}`);
         setMessage(null);
         try {
@@ -367,17 +441,17 @@ export function AdminUsersWorkspace({ currentUserId }: WorkspaceProps) {
                 await writeJson(`/admin/users/${user.id}/lock`, 'POST', { minutes });
                 setMessage({ tone: 'success', text: `${user.name} was locked for ${minutes} minute${minutes === 1 ? '' : 's'}.` });
             }
-            await loadData();
+            await refreshUsers();
         } catch (error) {
             setMessage({ tone: 'error', text: (error as Error).message });
         } finally {
             setSavingKey(null);
         }
-    }, [lockMinutes, loadData, selectedUser]);
+    }, [lockMinutes, refreshUsers, selectedUser]);
 
     const toggleSuspension = useCallback(async (targetUser?: AdminUser) => {
         const user = targetUser ?? selectedUser;
-        if (!user) return;
+        if (!user || user.status === 'DELETED') return;
         const userIsSelf = Boolean(currentUserId && user.id === currentUserId);
         if (userIsSelf && user.status !== 'SUSPENDED') {
             setMessage({ tone: 'error', text: 'Your own account cannot be suspended from this screen.' });
@@ -393,18 +467,18 @@ export function AdminUsersWorkspace({ currentUserId }: WorkspaceProps) {
             } else {
                 const confirmed = typeof window === 'undefined'
                     ? true
-                    : window.confirm(`Suspend ${user.name}? This revokes current sessions.`);
+                    : window.confirm(`Suspend ${user.name}? This revokes current sessions while preserving identity and credentials. Reactivation restores sign-in.`);
                 if (!confirmed) return;
                 await writeJson(`/admin/users/${user.id}/suspend`, 'POST');
                 setMessage({ tone: 'success', text: `${user.name} was suspended.` });
             }
-            await loadData();
+            await refreshUsers();
         } catch (error) {
             setMessage({ tone: 'error', text: (error as Error).message });
         } finally {
             setSavingKey(null);
         }
-    }, [currentUserId, loadData, selectedUser]);
+    }, [currentUserId, refreshUsers, selectedUser]);
 
     const selectUser = useCallback((userId: string) => {
         setSelectedUserId(userId);
@@ -412,12 +486,11 @@ export function AdminUsersWorkspace({ currentUserId }: WorkspaceProps) {
     }, []);
 
     const actionDisabled = loading || !selectedUser;
-    const saveDisabled = actionDisabled || savingKey === `save:${selectedUser?.id ?? ''}`;
-    const pinDisabled = actionDisabled || savingKey === `pin:${selectedUser?.id ?? ''}`;
-    const mfaDisabled = actionDisabled || isSelf || !selectedUser?.mfaEnabled || selectedUser?.status === 'SUSPENDED' || savingKey === `mfa:${selectedUser?.id ?? ''}`;
-    const lockDisabled = actionDisabled || isSelf || selectedUser?.status === 'SUSPENDED' || savingKey === `lock:${selectedUser?.id ?? ''}`;
-    const suspendDisabled = actionDisabled || (isSelf && selectedUser?.status !== 'SUSPENDED') || savingKey === `suspend:${selectedUser?.id ?? ''}`;
-    const visibleSelection = selectedUser ? filteredUsers.some((user) => user.id === selectedUser.id) : false;
+    const saveDisabled = actionDisabled || selectedIsDeleted || savingKey === `save:${selectedUser?.id ?? ''}`;
+    const pinDisabled = actionDisabled || selectedIsDeleted || savingKey === `pin:${selectedUser?.id ?? ''}`;
+    const mfaDisabled = actionDisabled || isSelf || !selectedUser?.mfaEnabled || selectedUser?.status === 'SUSPENDED' || selectedIsDeleted || savingKey === `mfa:${selectedUser?.id ?? ''}`;
+    const lockDisabled = actionDisabled || isSelf || selectedUser?.status === 'SUSPENDED' || selectedIsDeleted || savingKey === `lock:${selectedUser?.id ?? ''}`;
+    const suspendDisabled = actionDisabled || selectedIsDeleted || (isSelf && selectedUser?.status !== 'SUSPENDED') || savingKey === `suspend:${selectedUser?.id ?? ''}`;
 
     return (
         <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem', maxWidth: 1440 }}>
@@ -431,14 +504,14 @@ export function AdminUsersWorkspace({ currentUserId }: WorkspaceProps) {
             >
                 <div style={{ display: 'flex', justifyContent: 'space-between', gap: '0.8rem', alignItems: 'flex-start', flexWrap: 'wrap' }}>
                     <div>
-                        <div className="workspace-kicker" style={{ color: '#cb3653' }}>
+                        <div className="workspace-kicker" style={{ color: '#b4233f' }}>
                             Identity and access
                         </div>
                         <h1 className="workspace-title" style={{ fontSize: '1.6rem', marginBottom: 2 }}>
                             Users
                         </h1>
                         <p className="workspace-subtitle">
-                            Cross-tenant user management Â· {stats.total} accounts{loading ? ' Â· refreshing...' : ' Â· loaded from admin APIs'}
+                            Cross-tenant user management with server-bound search and status filters.
                         </p>
                     </div>
 
@@ -454,11 +527,9 @@ export function AdminUsersWorkspace({ currentUserId }: WorkspaceProps) {
                             flexWrap: 'wrap',
                         }}
                     >
-                        <span style={{ fontWeight: 700, color: 'var(--text-primary)' }}>{filteredUsers.length}</span>
-                        <span>shown</span>
-                        <span style={{ color: 'var(--text-muted)' }}>of</span>
-                        <span style={{ fontWeight: 700, color: 'var(--text-primary)' }}>{stats.total}</span>
-                        <span>users</span>
+                        <span style={{ fontWeight: 700, color: 'var(--text-primary)' }}>{users.length}</span>
+                        <span>matching users loaded</span>
+                        {userPagination.hasMore ? <span>- more available</span> : null}
                     </div>
                 </div>
             </section>
@@ -470,7 +541,7 @@ export function AdminUsersWorkspace({ currentUserId }: WorkspaceProps) {
                         borderRadius: 12,
                         border: message.tone === 'success' ? '1px solid #bdeed4' : '1px solid #ffd0da',
                         background: message.tone === 'success' ? '#e9fbf1' : '#fff1f4',
-                        color: message.tone === 'success' ? '#0f8c52' : '#cb3653',
+                        color: message.tone === 'success' ? '#166534' : '#b4233f',
                         fontWeight: 600,
                         fontSize: '0.86rem',
                     }}
@@ -479,35 +550,15 @@ export function AdminUsersWorkspace({ currentUserId }: WorkspaceProps) {
                 </div>
             ) : null}
 
-            <section className="admin-users-stats">
-                {[
-                    { label: 'Total users', value: stats.total, tone: '#2f63ff', bg: '#edf3ff' },
-                    { label: 'Active', value: stats.active, tone: '#0f8c52', bg: '#e9fbf1' },
-                    { label: 'Locked', value: stats.locked, tone: '#cc7f06', bg: '#fff4e2' },
-                    { label: 'Suspended', value: stats.suspended, tone: '#cb3653', bg: '#ffeef2' },
-                ].map((card) => (
-                    <article key={card.label} className="surface-card" style={{ padding: '0.95rem', background: card.bg }}>
-                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.45rem' }}>
-                            <span style={{ fontSize: '0.78rem', color: 'var(--text-secondary)', fontWeight: 650 }}>{card.label}</span>
-                            <span
-                                style={{
-                                    width: 33,
-                                    height: 33,
-                                    borderRadius: 10,
-                                    display: 'grid',
-                                    placeItems: 'center',
-                                    background: '#ffffff',
-                                    border: '1px solid rgba(0,0,0,0.06)',
-                                    fontSize: '0.95rem',
-                                }}
-                            >
-                                {card.label === 'Suspended' ? 'â¸' : 'â—‰'}
-                            </span>
-                        </div>
-                        <div style={{ fontSize: '1.9rem', fontWeight: 800, letterSpacing: '-0.03em', color: 'var(--text-primary)' }}>{card.value}</div>
-                        <div style={{ fontSize: '0.72rem', fontWeight: 700, color: card.tone }}>{card.label.toLowerCase()}</div>
-                    </article>
-                ))}
+            <section
+                className="surface-card"
+                style={{ padding: '0.85rem 1rem', display: 'flex', alignItems: 'center', gap: '0.7rem', flexWrap: 'wrap' }}
+            >
+                <Users size={18} aria-hidden="true" />
+                <strong>{users.length} matching users loaded</strong>
+                <span style={{ color: 'var(--text-muted)', fontSize: '0.8rem' }}>
+                    {loading ? 'Refreshing the first page...' : userPagination.hasMore ? 'Use Load more to continue.' : 'End of matching results.'}
+                </span>
             </section>
 
             <section className="admin-users-grid">
@@ -516,16 +567,16 @@ export function AdminUsersWorkspace({ currentUserId }: WorkspaceProps) {
                         <div style={{ display: 'flex', justifyContent: 'space-between', gap: '0.75rem', alignItems: 'flex-start', flexWrap: 'wrap' }}>
                             <div>
                                 <h2 style={{ fontSize: '1rem', fontWeight: 760, color: 'var(--text-primary)' }}>Directory</h2>
-                                <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>Showing up to 200 users from the admin API.</div>
+                                <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>{users.length} matching users loaded in bounded pages.</div>
                             </div>
                             <button
                                 className="btn btn-sm btn-secondary"
                                 type="button"
                                 onClick={() => {
                                     setMessage(null);
-                                    void loadData();
+                                    void refreshUsers();
                                 }}
-                                disabled={loading}
+                                disabled={loading || loadingMoreUsers}
                             >
                                 {loading ? 'Refreshing...' : 'Refresh'}
                             </button>
@@ -543,7 +594,7 @@ export function AdminUsersWorkspace({ currentUserId }: WorkspaceProps) {
                             </label>
 
                             <div style={{ display: 'flex', gap: '0.4rem', flexWrap: 'wrap' }}>
-                                {(['ALL', 'ACTIVE', 'LOCKED', 'SUSPENDED'] as StatusFilter[]).map((filter) => (
+                                {(['ALL', 'ACTIVE', 'LOCKED', 'SUSPENDED', 'DELETED'] as StatusFilter[]).map((filter) => (
                                     <button
                                         key={filter}
                                         type="button"
@@ -588,12 +639,13 @@ export function AdminUsersWorkspace({ currentUserId }: WorkspaceProps) {
                             </tr>
                         </thead>
                         <tbody>
-                            {filteredUsers.map((user, index) => {
+                            {users.map((user, index) => {
                                 const isSelected = user.id === selectedUserId;
                                 const rowIsSelf = Boolean(currentUserId && user.id === currentUserId);
                                 const rowBusy = Boolean(savingKey && savingKey.endsWith(`:${user.id}`));
                                 const isLocked = user.status === 'LOCKED';
                                 const isSuspended = user.status === 'SUSPENDED';
+                                const isDeleted = user.status === 'DELETED';
                                 const status = STATUS_META[user.status];
                                 const role = ROLE_META[user.role];
 
@@ -601,7 +653,7 @@ export function AdminUsersWorkspace({ currentUserId }: WorkspaceProps) {
                                     <tr
                                         key={user.id}
                                         style={{
-                                            borderBottom: index < filteredUsers.length - 1 ? '1px solid var(--border)' : 'none',
+                                            borderBottom: index < users.length - 1 ? '1px solid var(--border)' : 'none',
                                             background: isSelected ? '#f8faff' : 'transparent',
                                         }}
                                     >
@@ -632,7 +684,7 @@ export function AdminUsersWorkspace({ currentUserId }: WorkspaceProps) {
                                                         placeItems: 'center',
                                                         fontSize: '0.66rem',
                                                         fontWeight: 800,
-                                                        color: '#2f63ff',
+                                                        color: '#1d4ed8',
                                                         flexShrink: 0,
                                                     }}
                                                 >
@@ -642,7 +694,7 @@ export function AdminUsersWorkspace({ currentUserId }: WorkspaceProps) {
                                                     <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', flexWrap: 'wrap' }}>
                                                         <span style={{ fontWeight: 700, fontSize: '0.88rem', color: 'var(--text-primary)' }}>{user.name}</span>
                                                         {rowIsSelf ? (
-                                                            <span className="badge" style={{ background: '#edf3ff', borderColor: '#c9d9ff', color: '#2f63ff', fontSize: '0.58rem' }}>
+                                                            <span className="badge" style={{ background: '#edf3ff', borderColor: '#c9d9ff', color: '#1d4ed8', fontSize: '0.58rem' }}>
                                                                 You
                                                             </span>
                                                         ) : null}
@@ -684,21 +736,21 @@ export function AdminUsersWorkspace({ currentUserId }: WorkspaceProps) {
                                         <td style={{ padding: '0.86rem 1rem' }}>
                                             <div style={{ display: 'flex', gap: '0.35rem', flexWrap: 'wrap' }}>
                                                 <button className="btn btn-sm btn-secondary" type="button" onClick={() => selectUser(user.id)}>
-                                                    Edit
+                                                    {isDeleted ? 'View' : 'Edit'}
                                                 </button>
                                                 <button
                                                     className="btn btn-sm"
                                                     type="button"
-                                                    disabled={loading || rowBusy || isSuspended || (rowIsSelf && user.status !== 'SUSPENDED')}
+                                                    disabled={loading || rowBusy || isSuspended || isDeleted || (rowIsSelf && user.status !== 'SUSPENDED')}
                                                     onClick={() => {
                                                         selectUser(user.id);
                                                         void toggleLock(user);
                                                     }}
                                                     style={{
                                                         background: isLocked ? '#e9fbf1' : '#ffeef2',
-                                                        color: isLocked ? '#0f8c52' : '#cb3653',
+                                                        color: isLocked ? '#166534' : '#b4233f',
                                                         borderColor: isLocked ? '#bdeed4' : '#ffd0da',
-                                                        opacity: isSuspended || (rowIsSelf && user.status !== 'SUSPENDED') ? 0.55 : 1,
+                                                        opacity: isSuspended || isDeleted || (rowIsSelf && user.status !== 'SUSPENDED') ? 0.55 : 1,
                                                     }}
                                                 >
                                                     {isLocked ? 'Unlock' : 'Lock'}
@@ -706,16 +758,16 @@ export function AdminUsersWorkspace({ currentUserId }: WorkspaceProps) {
                                                 <button
                                                     className="btn btn-sm"
                                                     type="button"
-                                                    disabled={loading || rowBusy || (rowIsSelf && user.status !== 'SUSPENDED')}
+                                                    disabled={loading || rowBusy || isDeleted || (rowIsSelf && user.status !== 'SUSPENDED')}
                                                     onClick={() => {
                                                         selectUser(user.id);
                                                         void toggleSuspension(user);
                                                     }}
                                                     style={{
                                                         background: isSuspended ? '#e9fbf1' : '#fff4e2',
-                                                        color: isSuspended ? '#0f8c52' : '#cc7f06',
+                                                        color: isSuspended ? '#166534' : '#7c4a03',
                                                         borderColor: isSuspended ? '#bdeed4' : '#ffe1a6',
-                                                        opacity: rowIsSelf && user.status !== 'SUSPENDED' ? 0.55 : 1,
+                                                        opacity: isDeleted || (rowIsSelf && user.status !== 'SUSPENDED') ? 0.55 : 1,
                                                     }}
                                                 >
                                                     {isSuspended ? 'Activate' : 'Suspend'}
@@ -726,7 +778,7 @@ export function AdminUsersWorkspace({ currentUserId }: WorkspaceProps) {
                                 );
                             })}
 
-                            {!loading && filteredUsers.length === 0 ? (
+                            {!loading && users.length === 0 ? (
                                 <tr>
                                     <td colSpan={7} style={{ padding: '1rem', color: 'var(--text-muted)', fontSize: '0.84rem' }}>
                                         No users matched the current filters.
@@ -735,6 +787,18 @@ export function AdminUsersWorkspace({ currentUserId }: WorkspaceProps) {
                             ) : null}
                         </tbody>
                     </table>
+                    {userPagination.hasMore && userPagination.nextCursor ? (
+                        <div style={{ padding: '0.8rem 1rem', borderTop: '1px solid var(--border)' }}>
+                            <button
+                                className="btn btn-sm btn-secondary"
+                                type="button"
+                                onClick={() => void loadUsers({ cursor: userPagination.nextCursor, append: true })}
+                                disabled={loading || loadingMoreUsers}
+                            >
+                                {loadingMoreUsers ? 'Loading more users...' : 'Load more users'}
+                            </button>
+                        </div>
+                    ) : null}
                 </article>
 
                 <article className="surface-card admin-users-panel" style={{ padding: '1rem', height: 'fit-content' }}>
@@ -742,14 +806,14 @@ export function AdminUsersWorkspace({ currentUserId }: WorkspaceProps) {
                         <div style={{ display: 'grid', gap: '0.9rem' }}>
                             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: '0.75rem', flexWrap: 'wrap' }}>
                                 <div>
-                                    <div className="workspace-kicker" style={{ color: '#cb3653' }}>
+                                    <div className="workspace-kicker" style={{ color: '#b4233f' }}>
                                         Selected user
                                     </div>
                                     <h2 style={{ fontSize: '1rem', fontWeight: 760, color: 'var(--text-primary)', marginBottom: 2 }}>
                                         {selectedUser.name}
                                     </h2>
                                     <div style={{ fontSize: '0.78rem', color: 'var(--text-muted)' }}>
-                                        {selectedUser.tenant ? `${selectedUser.tenant.name} Â· ${selectedUser.tenant.slug}` : 'No tenant assigned'}
+                                        {selectedUser.tenant ? `${selectedUser.tenant.name} - ${selectedUser.tenant.slug}` : 'No tenant assigned'}
                                     </div>
                                 </div>
 
@@ -758,7 +822,7 @@ export function AdminUsersWorkspace({ currentUserId }: WorkspaceProps) {
                                     type="button"
                                     onClick={() => {
                                         setMessage(null);
-                                        void loadData();
+                                        void refreshUsers();
                                     }}
                                     disabled={loading}
                                 >
@@ -769,7 +833,7 @@ export function AdminUsersWorkspace({ currentUserId }: WorkspaceProps) {
                             <div style={{ display: 'flex', gap: '0.4rem', flexWrap: 'wrap' }}>
                                 <Badge label={selectedStatusMeta?.label ?? 'Unknown'} color={selectedStatusMeta?.color ?? '#4c5f85'} bg={selectedStatusMeta?.bg ?? '#eef2f9'} border={selectedStatusMeta?.border ?? '#d3ddeb'} />
                                 <Badge label={selectedRoleMeta.label} color={selectedRoleMeta.color} bg={selectedRoleMeta.bg} border={selectedRoleMeta.border} />
-                                {isSelf ? <Badge label="Signed in" color="#2f63ff" bg="#edf3ff" border="#c9d9ff" /> : null}
+                                {isSelf ? <Badge label="Signed in" color="#1d4ed8" bg="#edf3ff" border="#c9d9ff" /> : null}
                             </div>
 
                             <div className="surface-muted" style={{ padding: '0.8rem' }}>
@@ -795,26 +859,12 @@ export function AdminUsersWorkspace({ currentUserId }: WorkspaceProps) {
                                     </div>
                                     {isSelf ? (
                                         <div style={{ fontSize: '0.74rem', color: '#234ed9' }}>
-                                            Role and tenant assignment are locked for your own account.
+                                            Role changes are locked for your own account. Tenant reassignment is unavailable for every account.
                                         </div>
                                     ) : null}
                                 </div>
                             </div>
 
-                            {!visibleSelection ? (
-                                <div
-                                    style={{
-                                        padding: '0.75rem 0.8rem',
-                                        borderRadius: 12,
-                                        border: '1px solid #dbe4f0',
-                                        background: '#f8faff',
-                                        color: 'var(--text-secondary)',
-                                        fontSize: '0.82rem',
-                                    }}
-                                >
-                                    This user is outside the current table filters.
-                                </div>
-                            ) : null}
 
                             <div style={{ display: 'grid', gap: '0.75rem' }}>
                                 <label className="form-group">
@@ -824,6 +874,7 @@ export function AdminUsersWorkspace({ currentUserId }: WorkspaceProps) {
                                         value={form.name}
                                         onChange={(event) => setForm((current) => ({ ...current, name: event.target.value }))}
                                         placeholder="Full name"
+                                        disabled={selectedIsDeleted}
                                     />
                                 </label>
 
@@ -835,6 +886,7 @@ export function AdminUsersWorkspace({ currentUserId }: WorkspaceProps) {
                                             value={form.email}
                                             onChange={(event) => setForm((current) => ({ ...current, email: event.target.value }))}
                                             placeholder="name@company.com"
+                                            disabled={selectedIsDeleted}
                                         />
                                     </label>
 
@@ -845,6 +897,7 @@ export function AdminUsersWorkspace({ currentUserId }: WorkspaceProps) {
                                             value={form.username}
                                             onChange={(event) => setForm((current) => ({ ...current, username: event.target.value.toLowerCase() }))}
                                             placeholder="lowercase username"
+                                            disabled={selectedIsDeleted}
                                         />
                                     </label>
                                 </div>
@@ -856,7 +909,7 @@ export function AdminUsersWorkspace({ currentUserId }: WorkspaceProps) {
                                             className="form-input"
                                             value={form.role}
                                             onChange={(event) => setForm((current) => ({ ...current, role: event.target.value as UserRole }))}
-                                            disabled={isSelf}
+                                            disabled={isSelf || selectedIsDeleted}
                                         >
                                             {(['SUPER_ADMIN', 'ADMIN', 'MANAGER', 'STAFF'] as UserRole[]).map((role) => (
                                                 <option key={role} value={role}>
@@ -866,24 +919,56 @@ export function AdminUsersWorkspace({ currentUserId }: WorkspaceProps) {
                                         </select>
                                     </label>
 
-                                    <label className="form-group">
-                                        <span className="form-label">Tenant assignment</span>
+                                    <div className="form-group">
+                                        <label className="form-label" htmlFor="admin-user-tenant-search">Tenant assignment (read-only)</label>
+                                        <input
+                                            id="admin-user-tenant-search"
+                                            className="form-input"
+                                            value={tenantSearch}
+                                            onChange={(event) => setTenantSearch(event.target.value)}
+                                            placeholder="Search tenant name or slug"
+                                            disabled
+                                        />
                                         <select
+                                            id="admin-user-tenant-assignment"
+                                            aria-label="Assigned tenant"
                                             className="form-input"
                                             value={form.tenantId}
-                                            onChange={(event) => setForm((current) => ({ ...current, tenantId: event.target.value }))}
-                                            disabled={tenants.length === 0 || isSelf}
+                                            onChange={(event) => {
+                                                const tenantId = event.target.value;
+                                                setForm((current) => ({ ...current, tenantId }));
+                                                setAssignedTenantOption(tenantOptions.find((tenant) => tenant.id === tenantId) ?? null);
+                                            }}
+                                            disabled
                                         >
-                                            {tenants.length === 0 ? (
-                                                <option value="">Loading tenants...</option>
+                                            {tenantOptions.length === 0 ? (
+                                                <option value="">{tenantLoading ? 'Loading tenants...' : 'No matching tenants'}</option>
                                             ) : null}
-                                            {tenants.map((tenant) => (
+                                            {tenantOptions.map((tenant) => (
                                                 <option key={tenant.id} value={tenant.id}>
-                                                    {tenant.name} Â· {tenant.slug} Â· {tenant.planTier}
+                                                    {tenant.name} - {tenant.slug}{tenant.planTier ? ' - ' + tenant.planTier : ''}
                                                 </option>
                                             ))}
                                         </select>
-                                    </label>
+                                        <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', flexWrap: 'wrap' }}>
+                                            <span style={{ color: 'var(--text-muted)', fontSize: '0.72rem' }}>
+                                                {tenants.length} matching tenants loaded
+                                            </span>
+                                            {tenantPagination.hasMore && tenantPagination.nextCursor ? (
+                                                <button
+                                                    className="btn btn-sm btn-secondary"
+                                                    type="button"
+                                                    onClick={() => void loadTenants({ cursor: tenantPagination.nextCursor, append: true })}
+                                                    disabled
+                                                >
+                                                    {tenantLoadingMore ? 'Loading more tenants...' : 'Load more tenants'}
+                                                </button>
+                                            ) : null}
+                                        </div>
+                                        <div style={{ color: 'var(--text-muted)', fontSize: '0.72rem' }}>
+                                            Cross-tenant reassignment is blocked because access assignments and tenant-owned records are not migrated here.
+                                        </div>
+                                    </div>
                                 </div>
                             </div>
 
@@ -899,10 +984,11 @@ export function AdminUsersWorkspace({ currentUserId }: WorkspaceProps) {
                                         value={lockMinutes}
                                         onChange={(event) => setLockMinutes(event.target.value.replace(/[^\d]/g, ''))}
                                         placeholder="60"
+                                        disabled={selectedIsDeleted}
                                     />
                                 </label>
                                 <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
-                                    Locking revokes active sessions. Suspension blocks the account until reactivated.
+                                    Locking revokes active sessions. Suspension is reversible and preserves identity and credentials. Deletion is irreversible.
                                 </div>
                             </div>
 
@@ -927,7 +1013,7 @@ export function AdminUsersWorkspace({ currentUserId }: WorkspaceProps) {
                                         type="button"
                                         onClick={() => void toggleSuspension()}
                                         disabled={suspendDisabled}
-                                        style={{ background: '#e9fbf1', color: '#0f8c52', borderColor: '#bdeed4' }}
+                                        style={{ background: '#e9fbf1', color: '#166534', borderColor: '#bdeed4' }}
                                     >
                                         {savingKey === `suspend:${selectedUser.id}` ? 'Activating...' : 'Activate'}
                                     </button>
@@ -939,7 +1025,7 @@ export function AdminUsersWorkspace({ currentUserId }: WorkspaceProps) {
                                         disabled={lockDisabled}
                                         style={{
                                             background: selectedUser.status === 'LOCKED' ? '#e9fbf1' : '#ffeef2',
-                                            color: selectedUser.status === 'LOCKED' ? '#0f8c52' : '#cb3653',
+                                            color: selectedUser.status === 'LOCKED' ? '#166534' : '#b4233f',
                                             borderColor: selectedUser.status === 'LOCKED' ? '#bdeed4' : '#ffd0da',
                                         }}
                                     >
@@ -958,7 +1044,7 @@ export function AdminUsersWorkspace({ currentUserId }: WorkspaceProps) {
                                         type="button"
                                         onClick={() => void toggleSuspension()}
                                         disabled={suspendDisabled}
-                                        style={{ background: '#fff4e2', color: '#cc7f06', borderColor: '#ffe1a6' }}
+                                        style={{ background: '#fff4e2', color: '#7c4a03', borderColor: '#ffe1a6' }}
                                     >
                                         {savingKey === `suspend:${selectedUser.id}` ? 'Suspending...' : 'Suspend'}
                                     </button>
@@ -968,7 +1054,7 @@ export function AdminUsersWorkspace({ currentUserId }: WorkspaceProps) {
                             {temporaryPin ? (
                                 <div className="surface-muted" style={{ padding: '0.8rem', borderColor: '#ffe1a6', background: '#fff7e7' }}>
                                     <div style={{ fontSize: '0.78rem', color: '#7a2e14', marginBottom: 2 }}>Temporary PIN</div>
-                                    <div style={{ fontSize: '1.1rem', fontWeight: 800, color: '#cc7f06', letterSpacing: '0.04em', fontFamily: 'var(--font-mono)' }}>
+                                    <div style={{ fontSize: '1.1rem', fontWeight: 800, color: '#7c4a03', letterSpacing: '0.04em', fontFamily: 'var(--font-mono)' }}>
                                         {temporaryPin}
                                     </div>
                                     <div style={{ fontSize: '0.74rem', color: 'var(--text-secondary)', marginTop: 4 }}>
@@ -1017,11 +1103,6 @@ export function AdminUsersWorkspace({ currentUserId }: WorkspaceProps) {
                     align-items: start;
                 }
 
-                .admin-users-stats {
-                    display: grid;
-                    grid-template-columns: repeat(4, minmax(0, 1fr));
-                    gap: 0.75rem;
-                }
 
                 .admin-users-table {
                     min-width: 1120px;
@@ -1032,15 +1113,10 @@ export function AdminUsersWorkspace({ currentUserId }: WorkspaceProps) {
                         grid-template-columns: 1fr;
                     }
 
-                    .admin-users-stats {
-                        grid-template-columns: repeat(2, minmax(0, 1fr));
-                    }
+
                 }
 
                 @media (max-width: 720px) {
-                    .admin-users-stats {
-                        grid-template-columns: 1fr;
-                    }
 
                     .admin-users-inline-two {
                         grid-template-columns: 1fr !important;
