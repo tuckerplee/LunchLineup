@@ -7,7 +7,7 @@
 - `apply-db-migrations.mjs`: applies the Prisma schema and raw SQL migrations in deployment order through the repository-local Prisma CLI.
 - `artillery-smoke.yml`: Artillery smoke-load scenario with 200-only response assertions, zero failed-expectation tolerance, request/response completeness checks, and a p99 latency gate, executed through the exact digest-pinned official runner image.
 - `availability-import-load-smoke.mjs`: bounded two-to-four-way availability-import proof with PIN-cookie/CSRF auth (or optional bearer auth), explicit request-origin validation, tenant-directory target resolution, live paid-Stripe and wallet-capacity checks, exact purchase/admin-grant source attestation, deterministic generated-PDF fallback, terminal cancellation handling, and separate secret-free entitlement/load evidence.
-- `audit-prod.mjs`: runs the production npm audit gate and allows only the documented Next/PostCSS moderate advisory.
+- `audit-prod.mjs`: runs a fail-closed production npm audit gate that blocks every advisory and rejects malformed or metadata-inconsistent reports.
 - `backup.sh`: encrypted Postgres backup helper with conditional immutable S3 publication, exact version/checksum readback, lifecycle-owned expiry proof, atomic local writes, optional Prometheus metrics, and the shared TERM-then-KILL provider-command owner.
 - `bounded-child-process.mjs`: cross-platform bounded child-process owner that terminates complete detached process trees with TERM then KILL and emits secret-free failures.
 - `build-release-bundle.mjs`: builds a source-bound rollback bundle from exact deployed inputs, retaining only an immutable runtime-secret descriptor and never runtime secret bytes.
