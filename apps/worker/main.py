@@ -342,6 +342,13 @@ class NormalizedBreak:
     break_type: str
 
 
+@dataclass(frozen=True)
+class ScheduleSolveJobIdentity:
+    tenant_id: str
+    schedule_id: str
+    location_id: str
+
+
 @dataclass
 class NormalizedShift:
     id: str
@@ -979,7 +986,7 @@ async def _process_message(body: bytes, message_id: str | None = None) -> dict[s
                 message.retry_count,
                 candidate_token,
             )
-            if claim_status in {"terminal", "quarantined"}:
+            if claim_status == "terminal":
                 logger.info(
                     "Skipping terminal schedule solve job job_ref=%s status=%s",
                     safe_ref(message.job_id or ""),
@@ -1142,45 +1149,23 @@ def _claim_schedule_solve_job_sync(
                 if not row:
                     raise NonRetryableJobError("schedule solve job not found")
                 status = str(row[0])
-                try:
-                    _assert_schedule_credit_provenance(
-                        status=status,
-                        credit_consumption=row[4],
-                        tenant_id=solve_payload.tenant_id,
-                        job_id=job_id,
-                        debit_count=row[5],
-                        debit_tenant_id=row[6],
-                        debit_amount=row[7],
-                        debit_reason=row[8],
-                        debit_balance_after=row[9],
-                        refund_count=row[10],
-                        refund_tenant_id=row[11],
-                        refund_amount=row[12],
-                        refund_reason=row[13],
-                        refund_balance_after=row[14],
-                        error_type=ScheduleCreditProvenanceError,
-                    )
-                except ScheduleCreditProvenanceError:
-                    cursor.execute(
-                        '''
-                        UPDATE "ScheduleSolveJob"
-                        SET
-                            "status" = 'DEAD_LETTERED',
-                            "statusReason" = 'Schedule solve billing provenance is invalid',
-                            "publicationStatus" = 'FAILED',
-                            "publishLeaseUntil" = NULL,
-                            "publishLastError" = 'Schedule solve billing provenance is invalid',
-                            "executionToken" = NULL,
-                            "executionLeaseUntil" = NULL,
-                            "completedAt" = COALESCE("completedAt", CURRENT_TIMESTAMP),
-                            "updatedAt" = CURRENT_TIMESTAMP
-                        WHERE "id" = %s
-                          AND "tenantId" = %s
-                          AND "status" NOT IN ('SUCCEEDED', 'FAILED', 'DEAD_LETTERED')
-                        ''',
-                        (job_id, solve_payload.tenant_id),
-                    )
-                    return "quarantined"
+                _assert_schedule_credit_provenance(
+                    status=status,
+                    credit_consumption=row[4],
+                    tenant_id=solve_payload.tenant_id,
+                    job_id=job_id,
+                    debit_count=row[5],
+                    debit_tenant_id=row[6],
+                    debit_amount=row[7],
+                    debit_reason=row[8],
+                    debit_balance_after=row[9],
+                    refund_count=row[10],
+                    refund_tenant_id=row[11],
+                    refund_amount=row[12],
+                    refund_reason=row[13],
+                    refund_balance_after=row[14],
+                    error_type=ScheduleCreditProvenanceError,
+                )
                 if status in SCHEDULE_JOB_TERMINAL_STATUSES:
                     return "terminal"
                 require_active_paid_scheduling_tenant(tenant)
@@ -1237,6 +1222,25 @@ async def try_mark_schedule_solve_job_status(
         retry_count,
         None,
         execution_token,
+    )
+
+
+async def terminalize_schedule_solve_job_by_id(
+    job_id: str,
+    status: str,
+    reason: str,
+    retry_count: int,
+) -> None:
+    if not os.getenv("DATABASE_URL"):
+        return
+    if not ID_RE.fullmatch(job_id):
+        raise NonRetryableJobError("schedule solve job id is invalid")
+    await asyncio.to_thread(
+        _terminalize_schedule_solve_job_by_id_sync,
+        job_id,
+        status,
+        reason,
+        retry_count,
     )
 
 
@@ -1373,7 +1377,7 @@ def _assert_schedule_refund_outcome(
 
 def _terminalize_schedule_solve_job_with_refund(
     cursor: Any,
-    solve_payload: SolvePayload,
+    solve_payload: SolvePayload | ScheduleSolveJobIdentity,
     job_id: str,
     status: str,
     safe_reason: str | None,
@@ -1536,6 +1540,72 @@ def _terminalize_schedule_solve_job_with_refund(
         solve_payload.tenant_id,
         job_id,
     )
+
+
+def _terminalize_schedule_solve_job_by_id_sync(
+    job_id: str,
+    status: str,
+    reason: str,
+    retry_count: int,
+) -> None:
+    database_url = os.getenv("DATABASE_URL")
+    if not database_url:
+        return
+    if status not in {"FAILED", "DEAD_LETTERED"}:
+        raise ValueError("unsupported terminal schedule solve job status")
+    capability = os.getenv("PLATFORM_ADMIN_DB_CONTEXT_SECRET", "").strip()
+    if not capability:
+        raise RetryableJobError(
+            "PLATFORM_ADMIN_DB_CONTEXT_SECRET is required for authoritative schedule settlement"
+        )
+
+    try:
+        import psycopg
+    except ImportError as exc:
+        raise RetryableJobError("psycopg is required to update schedule job state") from exc
+
+    safe_reason = normalize_job_status_reason(reason)
+    try:
+        with psycopg.connect(database_url) as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    "SELECT set_current_platform_admin(true, %s)",
+                    (capability,),
+                )
+                cursor.execute(
+                    '''
+                    SELECT "tenantId", "scheduleId", "locationId"
+                    FROM "ScheduleSolveJob"
+                    WHERE "id" = %s
+                    ''',
+                    (job_id,),
+                )
+                row = cursor.fetchone()
+                if not row:
+                    raise ScheduleJobOwnershipLostError("schedule solve job no longer exists")
+                identity = ScheduleSolveJobIdentity(
+                    tenant_id=str(row[0]),
+                    schedule_id=str(row[1]),
+                    location_id=str(row[2]),
+                )
+                cursor.execute("SELECT set_current_tenant(%s)", (identity.tenant_id,))
+                lock_tenant_status(cursor, identity.tenant_id)
+                _terminalize_schedule_solve_job_with_refund(
+                    cursor,
+                    identity,
+                    job_id,
+                    status,
+                    safe_reason,
+                    retry_count,
+                    None,
+                    None,
+                )
+    except (RetryableJobError, ScheduleJobOwnershipLostError):
+        raise
+    except Exception as exc:
+        raise RetryableJobError(
+            "failed to authoritatively terminalize schedule solve job"
+        ) from exc
 
 
 def _update_schedule_solve_job_status_sync(
@@ -2209,6 +2279,29 @@ async def handle_queue_message(channel: Any, message: Any) -> None:
         await message.ack()
         return
     except NonRetryableJobError as exc:
+        malformed_schedule_job_id = read_malformed_schedule_job_id(message.body)
+        if malformed_schedule_job_id:
+            try:
+                await terminalize_schedule_solve_job_by_id(
+                    malformed_schedule_job_id,
+                    "DEAD_LETTERED",
+                    job_status_reason(exc),
+                    max(0, min(MAX_RETRIES, read_retry_count(message.body))),
+                )
+            except ScheduleJobOwnershipLostError:
+                logger.info(
+                    "Malformed stale schedule solve delivery discarded after ownership changed"
+                )
+                await message.ack()
+                return
+            except Exception as state_error:
+                logger.error(
+                    "Malformed schedule terminal settlement failed; source will be requeued operation=malformed_schedule_terminal_settlement failure_class=%s",
+                    sanitized_failure_class(state_error),
+                )
+                await asyncio.sleep(RETRY_PUBLISH_FAILURE_REQUEUE_DELAY_SECONDS)
+                await message.nack(requeue=True)
+                return
         logger.warning("Non-retryable job routed to DLQ reason=%s", exc.__class__.__name__)
         await reject_to_solver_dlq(message, "non_retryable")
         return
@@ -2317,6 +2410,26 @@ def read_job_type(body: bytes) -> str:
         return job_type if job_type in JOB_HANDLERS else "unknown"
     except Exception:
         return "unknown"
+
+
+def read_malformed_schedule_job_id(body: bytes) -> str | None:
+    if len(body) > MAX_MESSAGE_BYTES:
+        return None
+    try:
+        raw = json.loads(body.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return None
+    if not isinstance(raw, dict) or raw.get("type") != "schedule.solve":
+        return None
+    job_id = raw.get("job_id")
+    if not isinstance(job_id, str) or not ID_RE.fullmatch(job_id):
+        return None
+    try:
+        message = JobMessage.model_validate(raw)
+        validate_solve_payload(message.payload)
+    except (ValidationError, NonRetryableJobError):
+        return job_id
+    return None
 
 
 def retry_delay_ms(retry_count: int) -> int:

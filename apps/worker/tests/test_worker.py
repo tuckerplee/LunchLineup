@@ -172,6 +172,12 @@ class FakePersistenceCursor:
             )
         elif 'FROM "Location"' in compact_sql:
             self.fetchone_result = ("loc-1", self.location_timezone) if self.location_active else None
+        elif compact_sql.startswith('SELECT "tenantId", "scheduleId", "locationId"'):
+            self.fetchone_result = (
+                ("tenant-1", "sch-1", "loc-1")
+                if self.schedule_job_status
+                else None
+            )
         elif 'FROM "ScheduleSolveJob"' in compact_sql:
             has_debit = self.schedule_job_has_paid_credit_reservation
             refunded = self.schedule_job_status in {"FAILED", "DEAD_LETTERED"}
@@ -406,7 +412,7 @@ class WorkerMessageTests(unittest.IsolatedAsyncioTestCase):
 
         handler.assert_not_awaited()
 
-    async def test_process_message_acknowledges_quarantined_provenance_without_running_handler(self):
+    async def test_process_message_retries_when_invalid_provenance_cannot_be_terminally_settled(self):
         body = json.dumps({
             "type": "schedule.solve",
             "job_id": "job-corrupt",
@@ -427,11 +433,17 @@ class WorkerMessageTests(unittest.IsolatedAsyncioTestCase):
                 patch.object(
                     main,
                     "claim_schedule_solve_job",
-                    AsyncMock(return_value="quarantined"),
-                ):
-            result = await main.process_message(body, message_id="msg-corrupt")
+                    AsyncMock(side_effect=main.ScheduleCreditProvenanceError("invalid provenance")),
+                ), \
+                patch.object(
+                    main,
+                    "try_mark_schedule_solve_job_status",
+                    AsyncMock(side_effect=main.RetryableJobError("debit provenance is invalid")),
+                ) as mark_status:
+            with self.assertRaises(main.RetryableJobError):
+                await main.process_message(body, message_id="msg-corrupt")
 
-        self.assertEqual(result, {"skipped": True, "status": "quarantined"})
+        mark_status.assert_awaited_once()
         handler.assert_not_awaited()
 
     async def test_schedule_solve_requires_job_id_when_database_persistence_is_enabled(self):
@@ -923,6 +935,112 @@ class WorkerMessageTests(unittest.IsolatedAsyncioTestCase):
         message.ack.assert_awaited_once()
         message.nack.assert_not_awaited()
         message.reject.assert_not_awaited()
+
+    async def test_consumer_settles_a_malformed_schedule_from_authoritative_job_state_before_dlq(self):
+        events = []
+        body = json.dumps({
+            "type": "schedule.solve",
+            "job_id": "job-1",
+            "retry_count": main.MAX_RETRIES + 1,
+            "payload": {},
+        }).encode("utf-8")
+        message = SimpleNamespace(
+            body=body,
+            message_id="msg-malformed",
+            ack=AsyncMock(),
+            nack=AsyncMock(),
+            reject=AsyncMock(),
+        )
+        channel = SimpleNamespace(default_exchange=object())
+
+        with patch.object(
+            main,
+            "process_message",
+            AsyncMock(side_effect=main.NonRetryableJobError("malformed")),
+        ), patch.object(
+            main,
+            "terminalize_schedule_solve_job_by_id",
+            AsyncMock(side_effect=lambda *_args: events.append("settled")),
+        ) as terminalize, patch.object(
+            main,
+            "reject_to_solver_dlq",
+            AsyncMock(side_effect=lambda *_args: events.append("dlq")),
+        ):
+            await main.handle_queue_message(channel, message)
+
+        self.assertEqual(events, ["settled", "dlq"])
+        terminalize.assert_awaited_once_with(
+            "job-1",
+            "DEAD_LETTERED",
+            "WORKER_FAILURE_NON_RETRYABLE_JOB",
+            main.MAX_RETRIES,
+        )
+        message.nack.assert_not_awaited()
+
+    async def test_consumer_requeues_malformed_schedule_when_terminal_provenance_fails_closed(self):
+        body = json.dumps({
+            "type": "schedule.solve",
+            "job_id": "job-1",
+            "payload": {},
+        }).encode("utf-8")
+        message = SimpleNamespace(
+            body=body,
+            message_id="msg-malformed",
+            ack=AsyncMock(),
+            nack=AsyncMock(),
+            reject=AsyncMock(),
+        )
+        channel = SimpleNamespace(default_exchange=object())
+
+        with patch.object(
+            main,
+            "process_message",
+            AsyncMock(side_effect=main.NonRetryableJobError("malformed")),
+        ), patch.object(
+            main,
+            "terminalize_schedule_solve_job_by_id",
+            AsyncMock(side_effect=main.RetryableJobError("debit provenance is invalid")),
+        ), patch.object(main, "reject_to_solver_dlq", AsyncMock()) as reject, patch.object(
+            main.asyncio,
+            "sleep",
+            AsyncMock(),
+        ) as sleep:
+            await main.handle_queue_message(channel, message)
+
+        sleep.assert_awaited_once_with(main.RETRY_PUBLISH_FAILURE_REQUEUE_DELAY_SECONDS)
+        message.nack.assert_awaited_once_with(requeue=True)
+        message.ack.assert_not_awaited()
+        reject.assert_not_awaited()
+
+    async def test_consumer_acks_malformed_schedule_when_a_live_replacement_owns_execution(self):
+        body = json.dumps({
+            "type": "schedule.solve",
+            "job_id": "job-1",
+            "payload": {},
+        }).encode("utf-8")
+        message = SimpleNamespace(
+            body=body,
+            message_id="msg-malformed",
+            ack=AsyncMock(),
+            nack=AsyncMock(),
+            reject=AsyncMock(),
+        )
+        channel = SimpleNamespace(default_exchange=object())
+
+        with patch.object(
+            main,
+            "process_message",
+            AsyncMock(side_effect=main.NonRetryableJobError("malformed")),
+        ), patch.object(
+            main,
+            "terminalize_schedule_solve_job_by_id",
+            AsyncMock(side_effect=main.ScheduleJobOwnershipLostError("live replacement")),
+        ), patch.object(main, "reject_to_solver_dlq", AsyncMock()) as reject:
+            await main.handle_queue_message(channel, message)
+
+        message.ack.assert_awaited_once()
+        message.nack.assert_not_awaited()
+        reject.assert_not_awaited()
 
     async def test_consumer_requeues_original_when_retry_replacement_publish_fails(self):
         body = json.dumps({
@@ -1772,12 +1890,10 @@ class WorkerMessageTests(unittest.IsolatedAsyncioTestCase):
 
         with patch.dict(os.environ, {"DATABASE_URL": "postgresql://unit-test"}), \
                 patch.dict(sys.modules, {"psycopg": SimpleNamespace(connect=lambda _: fake_connection)}):
-            self.assertEqual(
+            with self.assertRaisesRegex(main.ScheduleCreditProvenanceError, "debit provenance"):
                 main._claim_schedule_solve_job_sync(
                     solve_payload(), "job-1", retry_count=0, execution_token=EXECUTION_TOKEN
-                ),
-                "quarantined",
-            )
+                )
 
         claim_sql = next(
             sql for sql, _ in fake_connection.cursor_obj.calls
@@ -1786,13 +1902,10 @@ class WorkerMessageTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn('FROM "CreditTransaction" credit', claim_sql)
         self.assertIn('MIN(credit."reason")', claim_sql)
         self.assertIn('schedule-credit-refund-', claim_sql)
-        quarantine_sql = next(
-            sql for sql, _ in fake_connection.cursor_obj.calls
-            if sql.startswith('UPDATE "ScheduleSolveJob"')
-        )
-        self.assertIn("'DEAD_LETTERED'", quarantine_sql)
-        self.assertNotIn('UPDATE "Tenant"', quarantine_sql)
-        self.assertNotIn('INSERT INTO "CreditTransaction"', quarantine_sql)
+        self.assertFalse(any(
+            sql.startswith('UPDATE "ScheduleSolveJob"')
+            for sql, _ in fake_connection.cursor_obj.calls
+        ))
 
     def test_schedule_solve_job_claim_rejects_debit_without_matching_post_debit_balance(self):
         fake_connection = FakePersistenceConnection(
@@ -1800,17 +1913,15 @@ class WorkerMessageTests(unittest.IsolatedAsyncioTestCase):
         )
         with patch.dict(os.environ, {"DATABASE_URL": "postgresql://unit-test"}), \
                 patch.dict(sys.modules, {"psycopg": SimpleNamespace(connect=lambda _: fake_connection)}):
-            self.assertEqual(
+            with self.assertRaisesRegex(main.ScheduleCreditProvenanceError, "debit provenance"):
                 main._claim_schedule_solve_job_sync(
                     solve_payload(),
                     "job-1",
                     retry_count=0,
                     execution_token=EXECUTION_TOKEN,
-                ),
-                "quarantined",
-            )
+                )
 
-        self.assertTrue(any(
+        self.assertFalse(any(
             sql.startswith('UPDATE "ScheduleSolveJob"')
             for sql, _ in fake_connection.cursor_obj.calls
         ))
@@ -1836,17 +1947,17 @@ class WorkerMessageTests(unittest.IsolatedAsyncioTestCase):
             )
         with patch.dict(os.environ, {"DATABASE_URL": "postgresql://unit-test"}), \
                 patch.dict(sys.modules, {"psycopg": SimpleNamespace(connect=lambda _: invalid)}):
-            self.assertEqual(
+            with self.assertRaisesRegex(main.ScheduleCreditProvenanceError, "debit provenance"):
                 main._claim_schedule_solve_job_sync(
                     solve_payload(), "job-1", retry_count=0, execution_token=EXECUTION_TOKEN
-                ),
-                "quarantined",
-            )
+                )
 
         valid_sql = "\n".join(sql for sql, _ in valid.cursor_obj.calls)
         self.assertIn('FROM "Tenant"', valid_sql)
         self.assertIn('FROM "ScheduleSolveJob"', valid_sql)
         self.assertNotIn('UPDATE "ScheduleSolveJob"', valid_sql)
+        invalid_sql = "\n".join(sql for sql, _ in invalid.cursor_obj.calls)
+        self.assertNotIn('UPDATE "ScheduleSolveJob"', invalid_sql)
 
     def test_succeeded_terminal_replay_skips_after_paid_entitlement_is_lost(self):
         for tenant_status in ("PAST_DUE", "CANCELLED"):
@@ -2038,6 +2149,56 @@ class WorkerMessageTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn('"publishedAt" = CASE WHEN %s THEN CURRENT_TIMESTAMP', sql_text)
         update_params = next(params for sql, params in fake_connection.cursor_obj.calls if 'UPDATE "ScheduleSolveJob"' in sql)
         self.assertEqual(update_params[5:9], (True, True, True, True))
+
+    def test_authoritative_terminal_settlement_resolves_identity_then_locks_tenant_before_job(self):
+        fake_connection = FakePersistenceConnection()
+
+        with patch.dict(os.environ, {
+            "DATABASE_URL": "postgresql://unit-test",
+            "PLATFORM_ADMIN_DB_CONTEXT_SECRET": "unit-test-platform-capability",
+        }), patch.dict(
+            sys.modules,
+            {"psycopg": SimpleNamespace(connect=lambda _: fake_connection)},
+        ):
+            main._terminalize_schedule_solve_job_by_id_sync(
+                "job-1",
+                "DEAD_LETTERED",
+                "WORKER_FAILURE_NON_RETRYABLE_JOB",
+                retry_count=main.MAX_RETRIES,
+            )
+
+        statements = [sql for sql, _ in fake_connection.cursor_obj.calls]
+        platform_index = next(
+            index for index, sql in enumerate(statements)
+            if sql.startswith("SELECT set_current_platform_admin")
+        )
+        identity_index = next(
+            index for index, sql in enumerate(statements)
+            if sql.startswith('SELECT "tenantId", "scheduleId", "locationId"')
+        )
+        tenant_lock_index = next(
+            index for index, sql in enumerate(statements)
+            if 'FROM "Tenant"' in sql
+        )
+        job_lock_index = next(
+            index for index, sql in enumerate(statements)
+            if sql.startswith("WITH locked_job AS MATERIALIZED")
+        )
+        self.assertLess(platform_index, identity_index)
+        self.assertLess(identity_index, tenant_lock_index)
+        self.assertLess(tenant_lock_index, job_lock_index)
+        terminal_params = fake_connection.cursor_obj.calls[job_lock_index][1]
+        self.assertEqual(terminal_params[:8], (
+            "job-1",
+            "tenant-1",
+            "sch-1",
+            "loc-1",
+            "schedule-credit-refund-job-1",
+            "DEAD_LETTERED",
+            "WORKER_FAILURE_NON_RETRYABLE_JOB",
+            main.MAX_RETRIES,
+        ))
+        self.assertEqual(terminal_params[9:11], (None, None))
 
     def test_terminal_failure_refunds_wallet_credit_once_with_a_ledger_entry(self):
         fake_connection = FakePersistenceConnection()

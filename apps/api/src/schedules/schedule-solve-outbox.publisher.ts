@@ -376,7 +376,7 @@ export class ScheduleSolveOutboxPublisher {
                 FOR UPDATE
             `);
             const validCandidates: ScheduleSolveClaimCandidate[] = [];
-            const invalidCandidateIds: string[] = [];
+            const invalidCandidates: ScheduleSolveClaimCandidate[] = [];
             for (const candidate of candidates) {
                 try {
                     const provenance = assertScheduleSolveCreditProvenance({
@@ -398,23 +398,21 @@ export class ScheduleSolveOutboxPublisher {
                     validCandidates.push(candidate);
                 } catch (error) {
                     if (!(error instanceof ScheduleSolveCreditProvenanceError)) throw error;
-                    invalidCandidateIds.push(candidate.id);
+                    invalidCandidates.push(candidate);
                 }
             }
-            if (invalidCandidateIds.length > 0) {
+            for (const candidate of invalidCandidates) {
+                const retryAt = new Date(now.getTime() + this.maxPublicationAgeMs);
                 await tx.$executeRaw(Prisma.sql`
                     UPDATE "ScheduleSolveJob"
                     SET
-                        "status" = 'DEAD_LETTERED',
-                        "statusReason" = ${INVALID_CREDIT_PROVENANCE_REASON},
                         "publicationStatus" = 'FAILED',
+                        "nextPublishAt" = ${retryAt},
                         "publishLeaseUntil" = NULL,
                         "publishLastError" = ${INVALID_CREDIT_PROVENANCE_REASON},
-                        "executionToken" = NULL,
-                        "executionLeaseUntil" = NULL,
-                        "completedAt" = COALESCE("completedAt", ${now}),
                         "updatedAt" = ${now}
-                    WHERE "id" IN (${Prisma.join(invalidCandidateIds)})
+                    WHERE "id" = ${candidate.id}
+                      AND "tenantId" = ${candidate.tenantId}
                       AND "status" NOT IN ('SUCCEEDED', 'FAILED', 'DEAD_LETTERED')
                 `);
             }
