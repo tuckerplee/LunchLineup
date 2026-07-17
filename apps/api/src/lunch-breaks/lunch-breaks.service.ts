@@ -25,7 +25,6 @@ import {
 import {
     ACTIVE_SCHEDULABLE_USER_FILTER,
     lockActiveSchedulableUser,
-    SCHEDULABLE_USER_ROLES,
 } from "../common/schedulable-user";
 import {
     TenantPrismaService,
