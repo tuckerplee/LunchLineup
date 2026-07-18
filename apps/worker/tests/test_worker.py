@@ -4,9 +4,10 @@ import json
 import os
 from pathlib import Path
 import sys
+import threading
 from types import SimpleNamespace
 import unittest
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
 WORKER_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(WORKER_ROOT))
@@ -1406,7 +1407,7 @@ class WorkerMessageTests(unittest.IsolatedAsyncioTestCase):
         consumer_cancelled = asyncio.Event()
         never = asyncio.Event()
 
-        async def consume(_queue, _channel):
+        async def consume(_queue, _channel, _shutdown):
             try:
                 await never.wait()
             finally:
@@ -1435,7 +1436,7 @@ class WorkerMessageTests(unittest.IsolatedAsyncioTestCase):
         sweep_cancelled = asyncio.Event()
         never = asyncio.Event()
 
-        async def consume(_queue, _channel):
+        async def consume(_queue, _channel, _shutdown):
             await sweep_started.wait()
 
         async def run_sweep():
@@ -1451,9 +1452,340 @@ class WorkerMessageTests(unittest.IsolatedAsyncioTestCase):
             patch.object(main, "password_reset_email_enabled", return_value=True),
             patch.object(main, "run_password_reset_email_loop", new=run_sweep),
         ):
-            await main.run_worker_tasks(object(), object())
+            with self.assertRaisesRegex(
+                RuntimeError,
+                "Required background task exited unexpectedly: rabbitmq-consumer",
+            ):
+                await main.run_worker_tasks(object(), object())
 
         self.assertTrue(sweep_cancelled.is_set())
+
+    async def test_signal_during_claim_drains_provider_and_db_commit_before_ack(self):
+        events = []
+        claim_started = asyncio.Event()
+        release_claim = asyncio.Event()
+        db_commit_started = asyncio.Event()
+        release_db_commit = asyncio.Event()
+        iterator_closed = asyncio.Event()
+        shutdown = main.ShutdownCoordinator(timeout_seconds=1)
+
+        first_message = SimpleNamespace(
+            body=b"first",
+            message_id="first",
+            ack=AsyncMock(side_effect=lambda: events.append("ack")),
+            nack=AsyncMock(),
+            reject=AsyncMock(),
+        )
+        second_message = SimpleNamespace(
+            body=b"second",
+            message_id="second",
+            ack=AsyncMock(),
+            nack=AsyncMock(),
+            reject=AsyncMock(),
+        )
+
+        class QueueIterator:
+            def __init__(self):
+                self.messages = iter((first_message, second_message))
+                self.closed = False
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *_args):
+                await self.close()
+
+            def __aiter__(self):
+                return self
+
+            async def __anext__(self):
+                if self.closed:
+                    raise StopAsyncIteration
+                try:
+                    return next(self.messages)
+                except StopIteration:
+                    raise StopAsyncIteration from None
+
+            async def close(self):
+                self.closed = True
+                iterator_closed.set()
+
+        queue_iterator = QueueIterator()
+        queue = SimpleNamespace(iterator=lambda: queue_iterator)
+        channel = SimpleNamespace(default_exchange=object())
+
+        async def process(_body, message_id=None):
+            self.assertEqual(message_id, "first")
+            events.append("claim")
+            claim_started.set()
+            await release_claim.wait()
+            events.append("provider")
+            db_commit_started.set()
+            await release_db_commit.wait()
+            events.append("db_settled")
+
+        with patch.object(main, "process_message", new=process):
+            consumer = asyncio.create_task(
+                main.consume_queue(queue, channel, shutdown)
+            )
+            await claim_started.wait()
+            self.assertEqual(main.WORKER_READY._value.get(), 1)
+
+            shutdown.request("signal_sigterm", signal_number=15)
+            await iterator_closed.wait()
+            self.assertEqual(main.WORKER_READY._value.get(), 0)
+            release_claim.set()
+            await db_commit_started.wait()
+            self.assertFalse(consumer.done())
+            first_message.ack.assert_not_awaited()
+
+            release_db_commit.set()
+            await consumer
+
+        self.assertEqual(events, ["claim", "provider", "db_settled", "ack"])
+        first_message.ack.assert_awaited_once()
+        first_message.nack.assert_not_awaited()
+        second_message.ack.assert_not_awaited()
+        second_message.nack.assert_not_awaited()
+
+    async def test_signal_after_delivery_before_claim_nacks_without_acking(self):
+        shutdown = main.ShutdownCoordinator(timeout_seconds=1)
+        message = SimpleNamespace(
+            body=b"not-claimed",
+            message_id="not-claimed",
+            ack=AsyncMock(),
+            nack=AsyncMock(),
+            reject=AsyncMock(),
+        )
+
+        class QueueIterator:
+            delivered = False
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *_args):
+                return None
+
+            def __aiter__(self):
+                return self
+
+            async def __anext__(self):
+                if self.delivered:
+                    raise StopAsyncIteration
+                self.delivered = True
+                shutdown.request("signal_sigint", signal_number=2)
+                return message
+
+            async def close(self):
+                return None
+
+        queue = SimpleNamespace(iterator=QueueIterator)
+        channel = SimpleNamespace(default_exchange=object())
+        with patch.object(main, "process_message", AsyncMock()) as process:
+            await main.consume_queue(queue, channel, shutdown)
+
+        process.assert_not_awaited()
+        message.nack.assert_awaited_once_with(requeue=True)
+        message.ack.assert_not_awaited()
+        message.reject.assert_not_awaited()
+
+    async def test_delivery_cancellation_preserves_retry_budget_and_refund_state(self):
+        message = SimpleNamespace(
+            body=b"cancelled",
+            message_id="cancelled",
+            ack=AsyncMock(),
+            nack=AsyncMock(),
+            reject=AsyncMock(),
+        )
+        channel = SimpleNamespace(default_exchange=object())
+
+        with patch.object(
+            main,
+            "process_message",
+            AsyncMock(side_effect=asyncio.CancelledError()),
+        ), patch.object(
+            main,
+            "publish_retry",
+            AsyncMock(),
+        ) as publish_retry, patch.object(
+            main,
+            "try_mark_schedule_status_from_message",
+            AsyncMock(),
+        ) as mark_status, patch.object(
+            main,
+            "terminalize_schedule_solve_job_by_id",
+            AsyncMock(),
+        ) as terminalize:
+            with self.assertRaises(asyncio.CancelledError):
+                await main.handle_queue_message(channel, message)
+
+        publish_retry.assert_not_awaited()
+        mark_status.assert_not_awaited()
+        terminalize.assert_not_awaited()
+        message.ack.assert_not_awaited()
+        message.nack.assert_not_awaited()
+        message.reject.assert_not_awaited()
+
+    async def test_shutdown_during_busy_replacement_ack_keeps_retry_budget_stable(self):
+        body = json.dumps({
+            "type": "schedule.solve",
+            "job_id": "job-1",
+            "retry_count": 2,
+            "payload": {},
+        }).encode("utf-8")
+        ack_started = asyncio.Event()
+        never = asyncio.Event()
+
+        async def stuck_ack():
+            ack_started.set()
+            await never.wait()
+
+        message = SimpleNamespace(
+            body=body,
+            message_id="busy-replacement",
+            ack=AsyncMock(side_effect=stuck_ack),
+            nack=AsyncMock(),
+            reject=AsyncMock(),
+        )
+        channel = SimpleNamespace(default_exchange=object())
+
+        with patch.object(
+            main,
+            "process_message",
+            AsyncMock(side_effect=main.ScheduleJobBusyError("live replacement")),
+        ), patch.object(
+            main,
+            "publish_retry",
+            AsyncMock(),
+        ) as publish_retry, patch.object(
+            main,
+            "try_mark_schedule_status_from_message",
+            AsyncMock(),
+        ) as mark_status:
+            delivery = asyncio.create_task(
+                main.handle_queue_message(channel, message)
+            )
+            await ack_started.wait()
+            delivery.cancel()
+            with self.assertRaises(asyncio.CancelledError):
+                await delivery
+
+        publish_retry.assert_awaited_once_with(
+            channel.default_exchange,
+            body,
+            2,
+            "busy-replacement",
+        )
+        mark_status.assert_not_awaited()
+        message.nack.assert_not_awaited()
+        message.reject.assert_not_awaited()
+
+    async def test_worker_drain_timeout_is_aggregate_and_force_closes_grpc(self):
+        started = asyncio.Event()
+        release = asyncio.Event()
+        shutdown = main.ShutdownCoordinator(timeout_seconds=0.02)
+
+        async def cancellation_resistant_consumer(_queue, _channel, _shutdown):
+            started.set()
+            while not release.is_set():
+                try:
+                    await release.wait()
+                except asyncio.CancelledError:
+                    continue
+
+        async def idle_loop():
+            await asyncio.Event().wait()
+
+        with (
+            patch.object(main, "consume_queue", new=cancellation_resistant_consumer),
+            patch.object(main, "run_solver_queue_telemetry_loop", new=lambda _channel: idle_loop()),
+            patch.object(main, "run_pdf_parser_health_loop", new=idle_loop),
+            patch.object(main, "run_availability_import_retention_loop", new=idle_loop),
+            patch.object(main, "metered_usage_enabled", return_value=False),
+            patch.object(main, "password_reset_email_enabled", return_value=False),
+            patch.object(main, "staff_invitation_outbox_enabled", return_value=False),
+            patch.object(main, "force_close_active_grpc_channels") as force_grpc,
+        ):
+            worker = asyncio.create_task(
+                main.run_worker_tasks(object(), object(), shutdown)
+            )
+            await started.wait()
+            shutdown.request("signal_sigterm", signal_number=15)
+            with self.assertRaisesRegex(
+                main.WorkerDrainTimeout,
+                "rabbitmq-consumer",
+            ):
+                await worker
+            force_grpc.assert_called_once()
+            self.assertEqual(main.WORKER_READY._value.get(), 0)
+            release.set()
+            await asyncio.sleep(0)
+
+    async def test_stuck_rabbit_close_is_aborted_at_the_shared_deadline(self):
+        never = asyncio.Event()
+        transport = SimpleNamespace(abort=Mock())
+
+        async def stuck_close():
+            await never.wait()
+
+        connection = SimpleNamespace(
+            close=AsyncMock(side_effect=stuck_close),
+            transport=transport,
+        )
+        shutdown = main.ShutdownCoordinator(timeout_seconds=0.01)
+        shutdown.request("signal_sigterm", signal_number=15)
+
+        with self.assertRaises(main.WorkerDrainTimeout):
+            await main.close_rabbit_connection(
+                connection,
+                SimpleNamespace(),
+                shutdown,
+            )
+
+        transport.abort.assert_called_once()
+
+    async def test_stuck_grpc_close_forces_the_core_channel_closed(self):
+        never = asyncio.Event()
+        core_channel = SimpleNamespace(close=Mock())
+        channel = Mock()
+
+        async def stuck_close(**_kwargs):
+            await never.wait()
+
+        channel.close = AsyncMock(side_effect=stuck_close)
+        channel._channel = core_channel
+
+        with patch.object(main, "GRPC_CLOSE_TIMEOUT_SECONDS", 0.01):
+            await main.close_grpc_channel(channel)
+
+        core_channel.close.assert_called_once()
+
+    async def test_stuck_metrics_server_is_force_closed_at_the_shared_deadline(self):
+        release = threading.Event()
+        server_socket = SimpleNamespace(shutdown=Mock(), close=Mock())
+        server = SimpleNamespace(
+            shutdown=lambda: release.wait(),
+            server_close=Mock(),
+            socket=server_socket,
+        )
+        shutdown = main.ShutdownCoordinator(timeout_seconds=0.01)
+        shutdown.request("signal_sigterm", signal_number=15)
+        main._METRICS_SERVER = server
+        main._METRICS_THREAD = threading.current_thread()
+        main._METRICS_STARTED = True
+        try:
+            self.assertFalse(await main.stop_metrics_server(shutdown))
+        finally:
+            release.set()
+
+        server_socket.shutdown.assert_called_once()
+        server_socket.close.assert_called_once()
+
+    def test_signal_exit_codes_preserve_process_semantics(self):
+        shutdown = main.ShutdownCoordinator(timeout_seconds=1)
+        shutdown.request("signal_sigterm", signal_number=15)
+        self.assertEqual(main.shutdown_exit_code(shutdown), 143)
 
 
     def test_rejects_breaks_outside_their_shift(self):
