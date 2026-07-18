@@ -62,6 +62,8 @@ const AUTH_BLOCKED_TENANT_STATUSES = new Set<string>([
     TenantStatus.PURGED,
 ]);
 const PUBLIC_SIGNUP_MODES = new Set(['closed_beta', 'invite_only', 'open']);
+const BETA_DEMO_TENANT_SLUG = 'demo';
+const BETA_DEMO_IDENTIFIER = 'demo@demo.com';
 
 class UsernameReservationConflict extends Error {}
 
@@ -107,9 +109,15 @@ export type SessionRequestAudit = {
     userAgent?: string | null;
 };
 
+export type PasswordLoginOptions = {
+    betaDemoMfaBypass?: boolean;
+};
+
 type SessionTokenAudit = SessionRequestAudit & {
     loginMethod: LoginMethod | string;
 };
+
+type SessionMfaExemption = 'BETA_DEMO' | null;
 
 type SelectedRefreshCredential = {
     kind: 'selected';
@@ -902,6 +910,7 @@ export class AuthService implements OnModuleDestroy {
         user: AuthenticatedUser,
         source: SessionTokenAudit | string,
         resetLoginAttempts = true,
+        mfaExemption: SessionMfaExemption = null,
     ) {
         const audit = this.sessionTokenAudit(source);
         await this.assertTenantIdCanAuthenticate(user.tenantId);
@@ -979,7 +988,10 @@ export class AuthService implements OnModuleDestroy {
                     action: 'SESSION_CREATED',
                     resource: 'Session',
                     resourceId: session.id,
-                    newValue: { loginMethod: audit.loginMethod },
+                    newValue: {
+                        loginMethod: audit.loginMethod,
+                        ...(mfaExemption ? { mfaExemption } : {}),
+                    },
                     ipAddress: audit.ipAddress || null,
                     userAgent: audit.userAgent || null,
                 },
@@ -999,6 +1011,25 @@ export class AuthService implements OnModuleDestroy {
             return { session, user: lockedUser, access, mfaRequired };
         }, SESSION_CREATION_TRANSACTION_OPTIONS);
         const { session, user: currentUser, access, mfaRequired } = issuance;
+        const mfaVerified = !mfaRequired || mfaExemption === 'BETA_DEMO';
+        if (mfaRequired && mfaExemption === 'BETA_DEMO') {
+            try {
+                await this.markSessionMfaVerified(session.id, expiresAt);
+            } catch (error) {
+                this.logger.warn(operationalErrorLog('auth.beta_demo_mfa_marker_failed', error));
+                await this.getTenantDb().withTenant(currentUser.tenantId, (tx) => tx.session.updateMany({
+                    where: {
+                        id: session.id,
+                        userId: currentUser.id,
+                        revokedAt: null,
+                    },
+                    data: { revokedAt: new Date() },
+                })).catch((cleanupError) => {
+                    this.logger.warn(operationalErrorLog('auth.beta_demo_session_cleanup_failed', cleanupError));
+                });
+                throw new ServiceUnavailableException('Authentication service temporarily unavailable');
+            }
+        }
 
         const payload: TokenPayload = {
             sub: currentUser.id,
@@ -1006,7 +1037,7 @@ export class AuthService implements OnModuleDestroy {
             role: access.primaryRole,
             legacyRole: currentUser.role,
             sessionId: session.id,
-            mfaVerified: !mfaRequired,
+            mfaVerified,
             pinResetRequired: currentUser.pinResetRequired === true,
         };
 
@@ -1014,7 +1045,7 @@ export class AuthService implements OnModuleDestroy {
             accessToken: this.jwtService.generateAccessToken(payload),
             refreshToken: refreshCredential.token,
             csrfToken: this.jwtService.generateCsrfToken(),
-            requiresMfa: mfaRequired,
+            requiresMfa: mfaRequired && !mfaVerified,
             pinResetRequired: currentUser.pinResetRequired === true,
             sessionMaxAgeMs: settings.sessionTimeoutMinutes * 60 * 1000,
             user: {
@@ -1110,6 +1141,7 @@ export class AuthService implements OnModuleDestroy {
         passwordRaw: unknown,
         tenantSlugRaw?: string,
         audit: SessionRequestAudit = {},
+        options: PasswordLoginOptions = {},
     ) {
         const username = this.normalizeIdentifier(identifierRaw);
         const password = typeof passwordRaw === 'string' ? passwordRaw : '';
@@ -1191,6 +1223,11 @@ export class AuthService implements OnModuleDestroy {
         if (!access.permissions.includes('auth:login_password')) {
             throw new UnauthorizedException('Invalid username or password');
         }
+        const betaDemoMfaBypass = options.betaDemoMfaBypass === true
+            && this.configService.get<string>('BETA_DEMO_MFA_BYPASS_ENABLED')?.trim().toLowerCase() === 'true'
+            && tenant.tenantSlug === BETA_DEMO_TENANT_SLUG
+            && username === BETA_DEMO_IDENTIFIER
+            && authenticatedUser.email?.trim().toLowerCase() === BETA_DEMO_IDENTIFIER;
 
         return this.createSessionTokens({
             id: authenticatedUser.id,
@@ -1199,7 +1236,7 @@ export class AuthService implements OnModuleDestroy {
             tenantId: authenticatedUser.tenantId,
             role: authenticatedUser.role,
             mfaEnabled: authenticatedUser.mfaEnabled,
-        }, { loginMethod: 'USERNAME_PASSWORD', ...audit }, false);
+        }, { loginMethod: 'USERNAME_PASSWORD', ...audit }, false, betaDemoMfaBypass ? 'BETA_DEMO' : null);
     }
     async createPasswordReset(identifierRaw: string, tenantSlugRaw?: string): Promise<null> {
         const resetOutbox = new PasswordResetOutboxService(this.configService);

@@ -105,6 +105,8 @@ const PASSWORD_RESET_REQUEST_RESPONSE = {
     message: 'If a matching account exists, a password reset email will be sent shortly.',
 };
 const BETA_PASSWORD_LOGIN_HOST = 'beta.lunchlineup.com';
+const BETA_DEMO_TENANT_SLUG = 'demo';
+const BETA_DEMO_IDENTIFIER = 'demo@demo.com';
 
 @Controller({ path: 'auth', version: '1' })
 export class AuthController {
@@ -245,6 +247,17 @@ export class AuthController {
         } catch {
             return false;
         }
+    }
+
+    private isBetaDemoMfaBypassRequest(
+        req: Request,
+        identifier: string,
+        tenantSlug: string | undefined,
+    ): boolean {
+        return process.env.BETA_DEMO_MFA_BYPASS_ENABLED?.trim().toLowerCase() === 'true'
+            && this.isBetaPasswordLoginRequest(req)
+            && identifier === BETA_DEMO_IDENTIFIER
+            && tenantSlug?.trim().toLowerCase() === BETA_DEMO_TENANT_SLUG;
     }
 
     private addOrigin(origins: Set<string>, value: string | undefined): void {
@@ -406,7 +419,17 @@ export class AuthController {
         const safeNext = this.safeInternalPath(nextPath);
 
         try {
-            const result = await this.authService.loginWithUsernamePassword(identifier, body.password, body.tenantSlug, this.sessionRequestAudit(req));
+            const audit = this.sessionRequestAudit(req);
+            const betaDemoMfaBypass = this.isBetaDemoMfaBypassRequest(req, identifier, body.tenantSlug);
+            const result = betaDemoMfaBypass
+                ? await this.authService.loginWithUsernamePassword(
+                    identifier,
+                    body.password,
+                    body.tenantSlug,
+                    audit,
+                    { betaDemoMfaBypass: true },
+                )
+                : await this.authService.loginWithUsernamePassword(identifier, body.password, body.tenantSlug, audit);
             this.setSessionCookies(res, result.accessToken, result.refreshToken, result.csrfToken, result.sessionMaxAgeMs);
 
             const pinResetRequired = result.pinResetRequired === true;

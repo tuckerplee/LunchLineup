@@ -85,7 +85,7 @@ const EXPECTED_CONTROLLER_FILES = [
 const EXPECTED_ROUTE_COUNTS: Record<string, number> = {
     AppController: 2,
     MetricsController: 1,
-    BillingController: 10,
+    BillingController: 11,
     EmailDeliveryFeedbackController: 1,
     AvailabilityImportsController: 2,
     SchedulesController: 11,
@@ -186,7 +186,7 @@ describe('externally reachable API authorization inventory', () => {
             routes.filter((route) => route.controller === controller).length,
         ]));
         expect(counts).toEqual(EXPECTED_ROUTE_COUNTS);
-        expect(routes).toHaveLength(153);
+        expect(routes).toHaveLength(154);
     });
 
     it('keeps authentication, authorization, and abuse controls registered globally', () => {
@@ -247,6 +247,13 @@ describe('externally reachable API authorization inventory', () => {
             PERMISSION_METADATA_KEY,
             SchedulesController.prototype.findAutoScheduleJob,
         )).toBe('schedules:write');
+    });
+
+    it('keeps live subscription recovery reads behind billing read access', () => {
+        expect(Reflect.getMetadata(
+            PERMISSION_METADATA_KEY,
+            BillingController.prototype.subscriptionRecoveryAction,
+        )).toBe('billing:read');
     });
 
     it('keeps every payroll route bound to its exact reviewed permission', () => {

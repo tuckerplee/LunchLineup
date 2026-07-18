@@ -425,6 +425,48 @@ describe('AuthController', () => {
         );
     });
 
+    it('requests the MFA exemption only for the configured exact beta demo identity', async () => {
+        const previous = process.env.BETA_DEMO_MFA_BYPASS_ENABLED;
+        process.env.BETA_DEMO_MFA_BYPASS_ENABLED = 'true';
+        authService.loginWithUsernamePassword.mockResolvedValue({
+            accessToken: 'a',
+            refreshToken: 'r',
+            csrfToken: 'c',
+            requiresMfa: false,
+            user: { id: 'u1', role: 'ADMIN' },
+        });
+
+        try {
+            await controller.verifyPassword(
+                { identifier: 'demo@demo.com', password: 'demo', tenantSlug: 'demo' },
+                createRequestMock({ headers: { host: 'beta.lunchlineup.com' } }),
+                createResponseMock(),
+            );
+            expect(authService.loginWithUsernamePassword).toHaveBeenLastCalledWith(
+                'demo@demo.com',
+                'demo',
+                'demo',
+                { ipAddress: null, userAgent: null },
+                { betaDemoMfaBypass: true },
+            );
+
+            await controller.verifyPassword(
+                { identifier: 'other@demo.com', password: 'demo', tenantSlug: 'demo' },
+                createRequestMock({ headers: { host: 'beta.lunchlineup.com' } }),
+                createResponseMock(),
+            );
+            expect(authService.loginWithUsernamePassword).toHaveBeenLastCalledWith(
+                'other@demo.com',
+                'demo',
+                'demo',
+                { ipAddress: null, userAgent: null },
+            );
+        } finally {
+            if (previous === undefined) delete process.env.BETA_DEMO_MFA_BYPASS_ENABLED;
+            else process.env.BETA_DEMO_MFA_BYPASS_ENABLED = previous;
+        }
+    });
+
     it('preserves a temporary PIN reset boundary through the generic username credential path', async () => {
         const res = createResponseMock();
         const req = createRequestMock({ query: { redirect: '1', next: '/dashboard/staff' } });

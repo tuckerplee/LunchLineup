@@ -23,6 +23,7 @@ const MIN_SECRET_LENGTH = 32;
 const PLACEHOLDER_RE = /(change_me|generate_with|replace_me|example|secret|password)/i;
 const EMAIL_FROM_RE = /^(?:[^<>@\r\n]+<)?[^<>\s@]+@[^<>\s@]+\.[^<>\s@]+>?$/;
 const INTERNAL_PRODUCTION_HOSTS = new Set(['api', 'web', 'proxy']);
+const BETA_DEMO_HOST = 'beta.lunchlineup.com';
 const CREDIT_PACK_PRICE_KEYS = [
     'STRIPE_PRICE_CREDIT_PACK_100',
     'STRIPE_PRICE_CREDIT_PACK_500',
@@ -211,6 +212,20 @@ export function validateProductionEnvironment(env: NodeJS.ProcessEnv = process.e
             }
         } catch {
             errors.push('DOMAIN is invalid.');
+        }
+    }
+
+    if (env.BETA_DEMO_MFA_BYPASS_ENABLED?.trim().toLowerCase() === 'true') {
+        let appHostname = '';
+        let domainHostname = '';
+        try {
+            appHostname = new URL(resolvePublicAppOrigin(env)).hostname.toLowerCase();
+            domainHostname = hostnameFromAllowedHost(normalizeAllowedHost(env.DOMAIN ?? ''));
+        } catch {
+            // The primary origin and domain checks report their own validation errors.
+        }
+        if (appHostname !== BETA_DEMO_HOST || domainHostname !== BETA_DEMO_HOST) {
+            errors.push('BETA_DEMO_MFA_BYPASS_ENABLED may only be enabled for beta.lunchlineup.com.');
         }
     }
 
