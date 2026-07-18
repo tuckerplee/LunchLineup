@@ -105,6 +105,8 @@ test('Compose keeps a production API fallback and propagates launch-critical del
   const envExample = read('.env.example');
 
   assert.ok(api.includes('- NODE_ENV=${NODE_ENV:-production}'));
+  assert.ok(worker.includes('- NODE_ENV=${NODE_ENV:-production}'));
+  assert.ok(worker.includes('- ENVIRONMENT=${NODE_ENV:-production}'));
   for (const block of [api, worker]) {
     assert.ok(block.includes('- STRIPE_METER_ID=${STRIPE_METER_ID:-}'));
     assert.ok(block.includes('- STRIPE_METER_AGGREGATION=${STRIPE_METER_AGGREGATION:-last}'));

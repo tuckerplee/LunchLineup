@@ -2,8 +2,8 @@
 # scripts/bootstrap-vm107-dev.sh
 # Bootstrap a fresh VM107-style LunchLineup dev host from GitHub, then optionally
 # restore an existing Postgres dump. This script is for disposable private dev
-# servers only; do not run it against current production VM217. VM106 identifies
-# only the historical legacy PHP source environment.
+# servers only; do not run it against current public production ProxmoxS VM4014.
+# VM106 identifies only the historical legacy PHP source environment.
 set -euo pipefail
 
 APP_DIR="${APP_DIR:-/opt/lunchlineup}"
@@ -161,11 +161,15 @@ prepare_runtime_env() {
   upsert_if_empty_or_placeholder JWT_REFRESH_SECRET "$(generated_secret 64)"
   upsert_if_empty_or_placeholder SESSION_SECRET "$(generated_secret 64)"
   upsert_if_empty_or_placeholder CSRF_SECRET "$(generated_secret 32)"
+  upsert_if_empty_or_placeholder OTP_HMAC_SECRET "$(generated_secret 32)"
   upsert_if_empty_or_placeholder PLATFORM_ADMIN_DB_CONTEXT_SECRET "$(generated_secret 32)"
   upsert_if_empty_or_placeholder MFA_SECRET_ENCRYPTION_KEY_CURRENT "$(generated_secret 32)"
   upsert_if_empty_or_placeholder WEBHOOK_DELIVERY_ENCRYPTION_KEY_CURRENT "$(generated_secret 32)"
   upsert_if_empty_or_placeholder PASSWORD_RESET_OUTBOX_ENCRYPTION_KEY "$(generated_secret 32)"
+  upsert_if_empty_or_placeholder AVAILABILITY_IMPORT_ENCRYPTION_KEY "$(generated_secret 32)"
+  upsert_if_empty_or_placeholder STAFF_INVITATION_OUTBOX_ENCRYPTION_KEY "$(generated_secret 32)"
   upsert_if_empty_or_placeholder RESEND_API_KEY "${RESEND_API_KEY:-re_dev_$(generated_secret 24)}"
+  upsert_if_empty_or_placeholder RESEND_WEBHOOK_SECRET "whsec_$(generated_secret 24)"
   upsert_if_empty_or_placeholder STRIPE_SECRET_KEY "sk_test_$(generated_secret 24)"
   upsert_if_empty_or_placeholder STRIPE_WEBHOOK_SECRET "whsec_$(generated_secret 24)"
   upsert_if_empty_or_placeholder STRIPE_METER_ERROR_WEBHOOK_SECRET "whsec_$(generated_secret 24)"
@@ -203,12 +207,14 @@ prepare_runtime_env() {
   upsert_env STRIPE_METER_AGGREGATION "last"
   upsert_env STRIPE_METERED_USAGE_ENABLED "false"
   upsert_env PASSWORD_RESET_EMAIL_OUTBOX_ENABLED "true"
+  upsert_env STAFF_INVITATION_OUTBOX_ENABLED "true"
   upsert_env APP_ORIGIN "http://${HOST_HEADER}"
   upsert_env NEXT_PUBLIC_APP_ORIGIN "http://${HOST_HEADER}"
   upsert_env NEXT_PUBLIC_APP_URL "http://${HOST_HEADER}"
   upsert_env NEXT_PUBLIC_APP_ENV "development"
   upsert_env NEXT_PUBLIC_API_URL "/api/v1"
   upsert_env INTERNAL_API_URL "http://api:3000/v1"
+  upsert_env LUNCHLINEUP_STATUS_HEALTH_URL "http://api:3000/health"
   upsert_env NEXT_PUBLIC_OIDC_ENABLED false
   upsert_env OIDC_ENABLED false
   upsert_env COOKIE_SECURE false
@@ -221,6 +227,7 @@ prepare_runtime_env() {
 
 start_stack() {
   cd "$APP_DIR"
+  docker compose --env-file "$SECRET_ENV_PATH" config --quiet
   if ! docker compose --env-file "$SECRET_ENV_PATH" up -d --build "${services[@]}"; then
     echo "Initial Compose startup failed; waiting for dependency health and retrying once." >&2
     docker compose ps >&2 || true
@@ -303,8 +310,8 @@ main() {
   prepare_runtime_env
   start_stack
   restore_backup_if_requested
-  write_deploy_proof
   wait_for_health
+  write_deploy_proof
   docker compose ps
   echo "disposable_dev_restore_ok sha=$(cat "$APP_DIR/DEPLOYED_GIT_SHA") app_dir=$APP_DIR host=$HOST_HEADER hostname=$(hostname)"
 }

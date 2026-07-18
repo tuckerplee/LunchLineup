@@ -184,9 +184,28 @@ test('legacy import and migration wrapper reject missing context before Prisma w
 
 test('VM107 bootstrap requires exact confirmation immediately before delete and restore', () => {
   const bootstrap = read('scripts/bootstrap-vm107-dev.sh');
+  const compose = read('docker-compose.yml');
   assert.match(bootstrap, /VM107_DESTRUCTIVE_CONFIRM:-.*DESTRUCTIVE_CONFIRMATION/);
   assert.match(bootstrap, /upsert_env DATA_TARGET_ENV disposable/);
   assert.match(bootstrap, /require_root\s+if \[\[ ! -d "\$APP_DIR\/\.git" \|\| -n "\$BACKUP_FILE" \]\]; then\s+require_destructive_confirmation/);
   assert.match(bootstrap, /require_destructive_confirmation\s+rm -rf "\$APP_DIR"/);
   assert.match(bootstrap, /require_destructive_confirmation\s+echo "Restoring Postgres data/);
+
+  const requiredComposeKeys = new Set(
+    [...compose.matchAll(/\$\{([A-Z0-9_]+):\?/g)].map((match) => match[1]),
+  );
+  const bootstrapManagedKeys = new Set(
+    [...bootstrap.matchAll(/upsert_(?:env|if_empty_or_placeholder)\s+([A-Z0-9_]+)/g)]
+      .map((match) => match[1]),
+  );
+  assert.deepEqual(
+    [...requiredComposeKeys].filter((key) => !bootstrapManagedKeys.has(key)),
+    [],
+    'VM107 bootstrap must manage every required Compose interpolation',
+  );
+  assert.match(bootstrap, /upsert_if_empty_or_placeholder OTP_HMAC_SECRET/);
+  assert.match(bootstrap, /upsert_env STAFF_INVITATION_OUTBOX_ENABLED "true"/);
+  assert.match(bootstrap, /upsert_env LUNCHLINEUP_STATUS_HEALTH_URL "http:\/\/api:3000\/health"/);
+  assert.match(bootstrap, /docker compose --env-file "\$SECRET_ENV_PATH" config --quiet/);
+  assert.match(bootstrap, /wait_for_health\s+write_deploy_proof/);
 });

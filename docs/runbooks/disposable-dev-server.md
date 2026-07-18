@@ -4,7 +4,7 @@
 
 VM107 is disposable. If the VM is broken or intentionally removed, restore access by creating a fresh Debian VM on a healthy Proxmox1 host, assigning the same private IP shape, bootstrapping from GitHub, restoring already-available data, and validating private routes. Target restore time is 15 minutes after the VM exists and the data dump is available.
 
-Do not use this runbook for current production VM217. VM106 is the historical legacy PHP source identity, not the production target; VM107 remains disposable development only.
+Do not use this runbook for current public production ProxmoxS VM4014. VM106 is the historical legacy PHP source identity, not the production target; VM107 remains disposable development only. VM217 is the repository's future production architecture identifier, not a current live VM.
 
 ## Files
 
@@ -30,6 +30,7 @@ Recovery objective:
 - Restore HTTP access to `dev.lunchlineup.com` and `lunchlineup-dev.proxmox1.lan` within 15 minutes after VM availability and data availability.
 - Leave `/opt/lunchlineup/DEPLOYED_GIT_SHA` matching the GitHub branch used for bootstrap.
 - Leave the guest hostname set to `lunchlineup-dev` unless `VM_HOSTNAME` is intentionally overridden.
+- Provision every required Compose value with distinct disposable-development secrets, validate the rendered Compose configuration, and write `DEPLOYED_GIT_SHA` only after health succeeds.
 
 ## Fresh VM Steps
 

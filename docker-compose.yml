@@ -415,8 +415,8 @@ services:
       outbound-egress:
         gw_priority: 1
     environment:
-      - NODE_ENV=production
-      - ENVIRONMENT=production
+      - NODE_ENV=${NODE_ENV:-production}
+      - ENVIRONMENT=${NODE_ENV:-production}
       - DATABASE_URL=${DATABASE_URL:?Set validated percent-encoded DATABASE_URL in .env}
       - PLATFORM_ADMIN_DB_CONTEXT_SECRET=${PLATFORM_ADMIN_DB_CONTEXT_SECRET:?Set PLATFORM_ADMIN_DB_CONTEXT_SECRET in .env}
       - RABBITMQ_URL=${RABBITMQ_URL:?Set validated percent-encoded RABBITMQ_URL in .env}
