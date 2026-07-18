@@ -206,6 +206,8 @@ test('VM107 bootstrap requires exact confirmation immediately before delete and 
   assert.match(bootstrap, /upsert_if_empty_or_placeholder OTP_HMAC_SECRET/);
   assert.match(bootstrap, /upsert_env STAFF_INVITATION_OUTBOX_ENABLED "true"/);
   assert.match(bootstrap, /upsert_env LUNCHLINEUP_STATUS_HEALTH_URL "http:\/\/api:3000\/health"/);
+  assert.match(bootstrap, /COMPOSE_PARALLEL_LIMIT="\$\{COMPOSE_PARALLEL_LIMIT:-1\}"\s+BACKUP_FILE=/);
+  assert.match(bootstrap, /export COMPOSE_PARALLEL_LIMIT/);
   assert.match(bootstrap, /docker compose --env-file "\$SECRET_ENV_PATH" config --quiet/);
   assert.match(bootstrap, /wait_for_health\s+write_deploy_proof/);
 });

@@ -30,7 +30,7 @@ Recovery objective:
 - Restore HTTP access to `dev.lunchlineup.com` and `lunchlineup-dev.proxmox1.lan` within 15 minutes after VM availability and data availability.
 - Leave `/opt/lunchlineup/DEPLOYED_GIT_SHA` matching the GitHub branch used for bootstrap.
 - Leave the guest hostname set to `lunchlineup-dev` unless `VM_HOSTNAME` is intentionally overridden.
-- Provision every required Compose value with distinct disposable-development secrets, validate the rendered Compose configuration, and write `DEPLOYED_GIT_SHA` only after health succeeds.
+- Provision every required Compose value with distinct disposable-development secrets, validate the rendered Compose configuration, limit Compose to one concurrent engine/build operation by default, and write `DEPLOYED_GIT_SHA` only after health succeeds.
 
 ## Fresh VM Steps
 
