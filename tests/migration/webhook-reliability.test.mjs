@@ -96,7 +96,10 @@ test('webhook send and terminal settlement are attempt-fenced and refund paid fa
   assert.match(store, /status: 'SENDING'[\s\S]*attempts: expectedAttempts/);
   assert.match(store, /feature-refund-webhook-delivery:/);
   assert.match(store, /Webhook delivery refund \(/);
-  assert.match(store, /usageCredits: balanceAfter[\s\S]*creditTransaction\.create/);
+  assert.match(store, /public\.settle_positive_credit_value/);
+  assert.match(store, /spendableAmount \+ repaidDebt !== WEBHOOK_CREDIT_COST/);
+  assert.match(store, /settlement\?\.replayed !== false/);
+  assert.doesNotMatch(store, /usageCredits: balanceAfter[\s\S]*creditTransaction\.create/);
   assert.doesNotMatch(store, /return operation\(\)/);
   assert.match(deletion, /refundable_webhook_deliveries AS/);
   assert.match(deletion, /terminalized_webhook_deliveries AS/);

@@ -264,6 +264,105 @@ test('paid-through, exact admin grant, and deterministic replay hold in real Pos
       SELECT count(*) FROM public."CreditTransaction"
       WHERE "id" = 'retained-writer-null-settlement' AND "balanceAfter" IS NULL;
     `), '1');
+    psql(container, require('node:fs').readFileSync(
+      join(root, 'packages/db/prisma/migrations/20260717_credit_refund_debt.sql'),
+      'utf8',
+    ));
+    assert.equal(scalar(container, `
+      SELECT count(*) FROM public."CreditTransaction"
+      WHERE "debtAmount" = 0 AND "debtAfter" = 0;
+    `), '2');
+
+    psql(container, `
+      INSERT INTO public."Tenant"
+        ("id", "planTier", "status", "usageCredits", "creditDebt")
+      VALUES ('legacy-debt', 'GROWTH', 'ACTIVE', 10, 40);
+    `);
+    const retainedDebtWriter = psql(container, `
+      BEGIN;
+      UPDATE public."Tenant"
+      SET "usageCredits" = "usageCredits" + 5
+      WHERE "id" = 'legacy-debt';
+      INSERT INTO public."CreditTransaction"
+        ("id", "tenantId", "amount", "reason", "balanceAfter")
+      VALUES
+        ('legacy-debt-old-writer', 'legacy-debt', 5, 'retained old writer', 15);
+      COMMIT;
+    `, { allowFailure: true });
+    assert.notEqual(retainedDebtWriter.status, 0);
+    assert.equal(scalar(container, `
+      SELECT "usageCredits"::text || ':' || "creditDebt"::text
+      FROM public."Tenant"
+      WHERE "id" = 'legacy-debt';
+    `), '10:40');
+    assert.equal(scalar(container, `
+      SELECT count(*)
+      FROM public."CreditTransaction"
+      WHERE "id" = 'legacy-debt-old-writer';
+    `), '0');
+
+    psql(container, `
+      INSERT INTO public."Tenant"
+        ("id", "planTier", "status", "usageCredits", "creditDebt")
+      VALUES ('debt-first', 'GROWTH', 'ACTIVE', 10, 40);
+    `);
+    assert.equal(scalar(container, `
+      SELECT
+        "spendableAmount"::text || ':' ||
+        "repaidDebt"::text || ':' ||
+        "newBalance"::text || ':' ||
+        "debtAfter"::text || ':' ||
+        "replayed"::text
+      FROM public.settle_positive_credit_value(
+        'debt-first',
+        100,
+        'Disposable debt-first proof',
+        'debt-first-settlement'
+      );
+    `), '60:40:70:0:false');
+    assert.equal(scalar(container, `
+      SELECT
+        "spendableAmount"::text || ':' ||
+        "repaidDebt"::text || ':' ||
+        "newBalance"::text || ':' ||
+        "debtAfter"::text || ':' ||
+        "replayed"::text
+      FROM public.settle_positive_credit_value(
+        'debt-first',
+        100,
+        'Disposable debt-first proof',
+        'debt-first-settlement'
+      );
+    `), '60:40:70:0:true');
+    assert.equal(scalar(container, `
+      SELECT "usageCredits"::text || ':' || "creditDebt"::text
+      FROM public."Tenant"
+      WHERE "id" = 'debt-first';
+    `), '70:0');
+    assert.equal(scalar(container, `
+      SELECT count(*)
+      FROM public."CreditTransaction"
+      WHERE "id" = 'debt-first-settlement'
+        AND "amount" = 60
+        AND "debtAmount" = -40
+        AND "balanceAfter" = 70
+        AND "debtAfter" = 0;
+    `), '1');
+    const conflictingDebtReplay = psql(container, `
+      SELECT *
+      FROM public.settle_positive_credit_value(
+        'debt-first',
+        99,
+        'Disposable debt-first proof',
+        'debt-first-settlement'
+      );
+    `, { allowFailure: true });
+    assert.notEqual(conflictingDebtReplay.status, 0);
+    assert.equal(scalar(container, `
+      SELECT "usageCredits"::text || ':' || "creditDebt"::text
+      FROM public."Tenant"
+      WHERE "id" = 'debt-first';
+    `), '70:0');
 
     psql(container, `
       INSERT INTO public."PlanDefinition"
@@ -503,7 +602,7 @@ test('paid-through, exact admin grant, and deterministic replay hold in real Pos
 
     const immutableUpdate = psql(container, `UPDATE public."CreditTransaction" SET "balanceAfter" = 999 WHERE "id" = 'feature-usage-real-pg-1';`, { allowFailure: true });
     assert.notEqual(immutableUpdate.status, 0);
-    assert.match(immutableUpdate.stderr, /balanceAfter is immutable/);
+    assert.match(immutableUpdate.stderr, /settlement rows are immutable/);
 
     process.env.PLATFORM_ADMIN_DB_CONTEXT_SECRET = 'real-pg-platform-capability';
     const authorizationCalls = [];

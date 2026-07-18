@@ -302,6 +302,14 @@
       "requiresOldReleaseProof": true,
       "rationale": "the nullable credit settlement rollout boundary remains during rollback; isolated old-release proof is required before production mutation."
     },
+    "packages/db/prisma/migrations/20260717_credit_refund_debt.sql": {
+      "sha256": "1c340bd06eae4fb2ff0aa322d1a7baa2ec96e63e0397960bda874f2c3ea2c1d0",
+      "phase": "expand-contract",
+      "rollbackSchema": "retain",
+      "contractPhase": "compatibility-proven-inline",
+      "requiresOldReleaseProof": true,
+      "rationale": "credit-debt backfill, ledger compatibility triggers, and debt-first settlement functions remain during rollback; isolated old-release proof is required before production mutation."
+    },
     "packages/db/prisma/migrations/pre_20260715_availability_import_lifecycle.sql": {
       "sha256": "1563895292cca5540c95b88ffa22c99b82923a5f2ea295886f779f550367e70f",
       "phase": "expand",

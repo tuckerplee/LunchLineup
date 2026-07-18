@@ -442,11 +442,11 @@ function mockDeletionReconciliationClaim(prisma: ReturnType<typeof buildTenantLi
         if (queryText.includes('refund_candidates AS MATERIALIZED')) {
             return [{
                 candidateCount: 0,
-                insertedCount: 0,
+                settledCount: 0,
+                replayedCount: 0,
                 lockedWebhookCount: 0,
                 refundableWebhookCount: 0,
                 terminalizedWebhookCount: 0,
-                walletUpdateCount: 0,
             }];
         }
         return fallback(query);
@@ -3132,6 +3132,7 @@ describe('AdminController tenant updates', () => {
         ['planTier', { planTier: 'STARTER' }],
         ['status', { status: 'SUSPENDED' }],
         ['usageCredits', { usageCredits: 25 }],
+        ['creditDebt', { creditDebt: 25 }],
         ['stripeSubscriptionId', { stripeSubscriptionId: 'sub_admin_forbidden' }],
         ['stripeSubscriptionCurrentPeriodEnd', {
             stripeSubscriptionCurrentPeriodEnd: '2099-01-01T00:00:00.000Z',

@@ -784,7 +784,7 @@ describe('WebhooksService', () => {
         vi.useRealTimers();
     });
 
-    it('dead-letters a fenced paid attempt with one deterministic refund and wallet restoration', async () => {
+    it('dead-letters a fenced paid attempt with one deterministic debt-first refund', async () => {
         let state = { status: 'SENDING', attempts: 4 };
         const updateMany = vi.fn(async ({ data }) => {
             state = { ...state, status: data.status };
@@ -792,10 +792,16 @@ describe('WebhooksService', () => {
         });
         const findFirst = vi.fn(async () => state);
         const queryRaw = vi.fn()
-            .mockResolvedValueOnce([{ usageCredits: 7 }])
-            .mockResolvedValueOnce([{ status: 'SENDING', attempts: 4 }]);
-        const creditCreate = vi.fn().mockResolvedValue({ id: 'feature-refund-webhook-delivery:delivery-1' });
-        const tenantUpdate = vi.fn().mockResolvedValue({ id: 'tenant-1' });
+            .mockResolvedValueOnce([{ usageCredits: 7, creditDebt: 1 }])
+            .mockResolvedValueOnce([{ status: 'SENDING', attempts: 4 }])
+            .mockResolvedValueOnce([{
+                creditedValue: 1,
+                spendableAmount: 0,
+                repaidDebt: 1,
+                newBalance: 7,
+                debtAfter: 0,
+                replayed: false,
+            }]);
         const tx = {
             $queryRaw: queryRaw,
             webhookDelivery: { updateMany, findFirst },
@@ -803,12 +809,12 @@ describe('WebhooksService', () => {
                 findMany: vi.fn().mockResolvedValue([{
                     id: 'feature-usage-webhook-delivery:delivery-1',
                     amount: -1,
+                    debtAmount: 0,
                     reason: 'Webhook delivery (delivery-1)',
                     balanceAfter: 7,
+                    debtAfter: 0,
                 }]),
-                create: creditCreate,
             },
-            tenant: { update: tenantUpdate },
         };
         const tenantDb = { withTenant: vi.fn(async (_tenantId: string, operation: any) => operation(tx)) };
         const store = new WebhookDeliveryStore(configMock() as any, tenantDb as any);
@@ -820,19 +826,10 @@ describe('WebhooksService', () => {
             4,
         )).resolves.toEqual({ status: 'DEAD_LETTERED', attempts: 4 });
 
-        expect(tenantUpdate).toHaveBeenCalledWith({
-            where: { id: 'tenant-1' },
-            data: { usageCredits: 8 },
-        });
-        expect(creditCreate).toHaveBeenCalledWith({
-            data: {
-                id: 'feature-refund-webhook-delivery:delivery-1',
-                tenantId: 'tenant-1',
-                amount: 1,
-                reason: 'Webhook delivery refund (delivery-1)',
-                balanceAfter: 8,
-            },
-        });
+        const settlementQuery = queryRaw.mock.calls[2][0];
+        expect(settlementQuery.sql).toContain('public.settle_positive_credit_value');
+        expect(settlementQuery.values).toContain('feature-refund-webhook-delivery:delivery-1');
+        expect(settlementQuery.values).toContain('Webhook delivery refund (delivery-1)');
         expect(updateMany).toHaveBeenCalledWith(expect.objectContaining({
             where: expect.objectContaining({ attempts: 4 }),
             data: expect.objectContaining({

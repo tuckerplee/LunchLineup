@@ -49,10 +49,16 @@ describe('billing operation policy inventory', () => {
             'private async settleSchedulePublishInTransaction(',
             'private async assertDemandWindowsCovered(',
         );
+        const autoSettlement = section(
+            source,
+            'private async reserveAutoScheduleCredit(',
+            'private requirePositiveAutoScheduleCredit(',
+        );
 
         expect(autoSchedule).toContain('assertFeatureEnabledInTransaction');
         expect(autoSchedule).toContain('reserveAutoScheduleCredit');
-        expect(source).toMatch(/reserveAutoScheduleCredit[\s\S]*creditTransaction\.create\([\s\S]*balanceAfter/);
+        expect(autoSettlement).toContain('recordFeatureUsageInTransaction');
+        expect(autoSettlement).not.toContain('creditTransaction.create');
         expect(publishSettlement).toContain('recordFeatureUsageInTransaction');
     });
 

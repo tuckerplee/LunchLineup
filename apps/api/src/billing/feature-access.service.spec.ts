@@ -25,6 +25,7 @@ describe('FeatureAccessService', () => {
     let prisma: ReturnType<typeof buildPrismaMock>;
     let metering: {
         recordFeatureUsageInTransaction: ReturnType<typeof vi.fn>;
+        recordCreditDebitInTransaction: ReturnType<typeof vi.fn>;
     };
     let service: FeatureAccessService;
 
@@ -32,6 +33,7 @@ describe('FeatureAccessService', () => {
         prisma = buildPrismaMock();
         metering = {
             recordFeatureUsageInTransaction: vi.fn().mockResolvedValue({ consumedCredits: 0, newBalance: 0 }),
+            recordCreditDebitInTransaction: vi.fn().mockResolvedValue({ consumedCredits: 1, newBalance: 4 }),
         };
 
         service = new FeatureAccessService(metering as any, new TenantPrismaService(prisma as any));
@@ -43,6 +45,7 @@ describe('FeatureAccessService', () => {
             planTier: PlanTier.STARTER,
             status: TenantStatus.ACTIVE,
             usageCredits: 5,
+            creditDebt: 0,
             stripeSubscriptionId: 'sub_123',
             stripeSubscriptionCurrentPeriodEnd: new Date('2099-01-01T00:00:00.000Z'),
         });
@@ -68,6 +71,7 @@ describe('FeatureAccessService', () => {
             planTier: PlanTier.GROWTH,
             status: TenantStatus.ACTIVE,
             usageCredits: 500,
+            creditDebt: 0,
             stripeSubscriptionId: 'sub_123',
             stripeSubscriptionCurrentPeriodEnd,
         });
@@ -86,6 +90,7 @@ describe('FeatureAccessService', () => {
             planTier: PlanTier.STARTER,
             status: TenantStatus.ACTIVE,
             usageCredits: 0,
+            creditDebt: 0,
             stripeSubscriptionId: 'sub_123',
             stripeSubscriptionCurrentPeriodEnd: new Date('2099-01-01T00:00:00.000Z'),
         });
@@ -103,6 +108,7 @@ describe('FeatureAccessService', () => {
             status: TenantStatus.TRIAL,
             trialEndsAt: new Date(Date.now() + 24 * 60 * 60 * 1000),
             usageCredits: 50,
+            creditDebt: 0,
             stripeSubscriptionId: 'sub_trial_123',
         });
 
@@ -129,6 +135,7 @@ describe('FeatureAccessService', () => {
             status: TenantStatus.TRIAL,
             trialEndsAt: new Date(Date.now() - 1),
             usageCredits: 0,
+            creditDebt: 0,
             stripeSubscriptionId: null,
         });
 
@@ -150,6 +157,7 @@ describe('FeatureAccessService', () => {
             status,
             trialEndsAt: new Date(Date.now() + 24 * 60 * 60 * 1000),
             usageCredits: 50,
+            creditDebt: 0,
             stripeSubscriptionId: 'sub_123',
             stripeSubscriptionCurrentPeriodEnd: new Date('2099-01-01T00:00:00.000Z'),
         });
@@ -173,6 +181,7 @@ describe('FeatureAccessService', () => {
             planTier: PlanTier.FREE,
             status: TenantStatus.TRIAL,
             usageCredits: 50,
+            creditDebt: 0,
             stripeSubscriptionId: null,
         });
 
@@ -196,6 +205,7 @@ describe('FeatureAccessService', () => {
             planTier: PlanTier.FREE,
             status: TenantStatus.TRIAL,
             usageCredits: 300,
+            creditDebt: 0,
             stripeSubscriptionId: null,
         });
         prisma.tenantSetting.findUnique.mockResolvedValue({ value: config });
@@ -212,6 +222,7 @@ describe('FeatureAccessService', () => {
             planTier: PlanTier.GROWTH,
             status: TenantStatus.ACTIVE,
             usageCredits: 5,
+            creditDebt: 0,
             stripeSubscriptionId: 'sub_123',
             stripeSubscriptionCurrentPeriodEnd: new Date('2099-01-01T00:00:00.000Z'),
         });
@@ -246,6 +257,7 @@ describe('FeatureAccessService', () => {
             status: TenantStatus.ACTIVE,
             trialEndsAt: null,
             usageCredits: 50,
+            creditDebt: 0,
             stripeSubscriptionId: 'sub_123',
             stripeSubscriptionCurrentPeriodEnd: new Date('2099-01-01T00:00:00.000Z'),
         });
@@ -285,6 +297,7 @@ describe('FeatureAccessService', () => {
             status: TenantStatus.ACTIVE,
             trialEndsAt: null,
             usageCredits: 50,
+            creditDebt: 0,
             stripeSubscriptionId: 'sub_123',
             stripeSubscriptionCurrentPeriodEnd: new Date('2099-01-01T00:00:00.000Z'),
         });
@@ -319,6 +332,7 @@ describe('FeatureAccessService', () => {
             status: TenantStatus.ACTIVE,
             trialEndsAt: null,
             usageCredits: 50,
+            creditDebt: 0,
             stripeSubscriptionId: 'sub_123',
             stripeSubscriptionCurrentPeriodEnd: new Date('2099-01-01T00:00:00.000Z'),
         });
@@ -337,6 +351,7 @@ describe('FeatureAccessService', () => {
             planTier: PlanTier.GROWTH,
             status: TenantStatus.ACTIVE,
             usageCredits: 0,
+            creditDebt: 0,
             stripeSubscriptionId: 'sub_123',
             stripeSubscriptionCurrentPeriodEnd: new Date('2099-01-01T00:00:00.000Z'),
         });
@@ -358,6 +373,7 @@ describe('FeatureAccessService', () => {
             status: TenantStatus.ACTIVE,
             trialEndsAt: null,
             usageCredits: 0,
+            creditDebt: 0,
             stripeSubscriptionId: 'sub_123',
             stripeSubscriptionCurrentPeriodEnd: new Date('2099-01-01T00:00:00.000Z'),
         });
@@ -403,6 +419,7 @@ describe('FeatureAccessService', () => {
                 planTier: PlanTier.STARTER,
                 status: TenantStatus.ACTIVE,
                 usageCredits: 0,
+                creditDebt: 0,
                 stripeSubscriptionId: 'sub_123',
                 stripeSubscriptionCurrentPeriodEnd: new Date('2099-01-01T00:00:00.000Z'),
             });
@@ -437,6 +454,32 @@ describe('FeatureAccessService', () => {
             reason: 'Complete clock-in',
             operationId: 'time-card-clock-in:existing-operation',
         });
+    });
+
+    it('preserves an explicit legacy ledger identity through the canonical debit state machine', async () => {
+        const resolution = {
+            enabled: true,
+            source: 'credits' as const,
+            reason: 'Billable.',
+            creditCost: 1,
+        };
+
+        await expect(service.recordFeatureUsageInTransaction(
+            prisma as any,
+            'tenant-1',
+            resolution,
+            'Schedule generation (job-1)',
+            'job-1',
+            'schedule-credit-job-1',
+        )).resolves.toEqual({ consumedCredits: 1, newBalance: 4 });
+
+        expect(metering.recordCreditDebitInTransaction).toHaveBeenCalledWith(prisma, {
+            tenantId: 'tenant-1',
+            cost: 1,
+            reason: 'Schedule generation (job-1)',
+            transactionId: 'schedule-credit-job-1',
+        });
+        expect(metering.recordFeatureUsageInTransaction).not.toHaveBeenCalled();
     });
 
     it.each([
@@ -482,6 +525,7 @@ describe('FeatureAccessService', () => {
             planTier: PlanTier.STARTER,
             status: TenantStatus.ACTIVE,
             usageCredits: 5,
+            creditDebt: 0,
             stripeSubscriptionId: 'sub_123',
             stripeSubscriptionCurrentPeriodEnd: new Date('2099-01-01T00:00:00.000Z'),
         });
@@ -491,5 +535,39 @@ describe('FeatureAccessService', () => {
 
         expect(matrix.features.time_cards.enabled).toBe(true);
         expect(matrix.features.time_cards.source).toBe('credits');
+    });
+
+    it('blocks billable work while preserving entitlement-only recovery during credit debt', async () => {
+        prisma.tenant.findUniqueOrThrow.mockResolvedValue({
+            id: 'tenant-1',
+            planTier: PlanTier.GROWTH,
+            status: TenantStatus.ACTIVE,
+            trialEndsAt: null,
+            usageCredits: 50,
+            creditDebt: 3,
+            stripeSubscriptionId: 'sub_123',
+            stripeSubscriptionCurrentPeriodEnd: new Date('2099-01-01T00:00:00.000Z'),
+        });
+
+        const matrix = await service.resolveTenantFeatures('tenant-1');
+
+        expect(matrix.creditDebt).toBe(3);
+        expect(matrix.features.time_cards).toMatchObject({
+            enabled: false,
+            source: 'disabled',
+        });
+        expect(matrix.features.time_cards.reason).toMatch(/credit debt is repaid/i);
+        await expect(service.assertFeatureEnabledInTransaction(
+            prisma as any,
+            'tenant-1',
+            'time_cards',
+        )).rejects.toThrow(/credit debt is repaid/i);
+        await expect(service.assertFeatureEntitled(
+            'tenant-1',
+            'time_cards',
+        )).resolves.toMatchObject({
+            enabled: true,
+            source: 'credits',
+        });
     });
 });

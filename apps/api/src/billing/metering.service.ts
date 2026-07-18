@@ -20,6 +20,13 @@ export type CreditGrantSettlement = {
     replayed: boolean;
 };
 
+export type PositiveCreditSettlement = CreditGrantSettlement & {
+    creditedValue: number;
+    spendableAmount: number;
+    repaidDebt: number;
+    debtAfter: number;
+};
+
 @Injectable()
 export class MeteringService {
     private readonly logger = new Logger(MeteringService.name);
@@ -59,63 +66,166 @@ export class MeteringService {
             .update(`${normalizedTenantId}:${normalizedKey}`, 'utf8')
             .digest('hex')}`;
 
+        const settlement = await this.recordPositiveCreditSettlementInTransaction(tx, {
+            tenantId: normalizedTenantId,
+            amount,
+            reason: normalizedReason,
+            transactionId,
+        });
+        return {
+            transactionId: settlement.transactionId,
+            newBalance: settlement.newBalance,
+            replayed: settlement.replayed,
+        };
+    }
+
+    async recordPositiveCreditSettlementInTransaction(
+        tx: TenantPrismaTransaction,
+        args: { tenantId: string; amount: number; reason: string; transactionId: string },
+    ): Promise<PositiveCreditSettlement> {
+        const { tenantId, amount, reason, transactionId } = args;
+        if (typeof tenantId !== 'string' || !tenantId.trim()) {
+            throw new BadRequestException('tenantId is required');
+        }
+        if (!Number.isSafeInteger(amount) || amount <= 0) {
+            throw new BadRequestException('Amount must be a positive whole number');
+        }
+        if (typeof reason !== 'string' || !reason.trim() || reason.length > 500) {
+            throw new BadRequestException('Reason must be between 1 and 500 characters');
+        }
+        if (
+            typeof transactionId !== 'string'
+            || !transactionId.trim()
+            || transactionId.length > 255
+            || /[\u0000-\u001f\u007f]/.test(transactionId)
+        ) {
+            throw new BadRequestException('transactionId must be 255 printable characters or fewer');
+        }
+
         await this.lockCreditSettlementTables(tx);
-        await tx.$queryRaw`SELECT "id" FROM "Tenant" WHERE "id" = ${normalizedTenantId} FOR UPDATE`;
+        await tx.$queryRaw`SELECT "id" FROM "Tenant" WHERE "id" = ${tenantId} FOR UPDATE`;
         const existing = await tx.creditTransaction.findUnique({
             where: { id: transactionId },
-            select: { id: true, tenantId: true, amount: true, reason: true, balanceAfter: true },
+            select: {
+                id: true,
+                tenantId: true,
+                amount: true,
+                debtAmount: true,
+                reason: true,
+                balanceAfter: true,
+                debtAfter: true,
+            },
         });
         if (existing) {
-            return this.replayCreditGrant(
+            return this.replayPositiveCreditSettlement(
                 existing,
-                normalizedTenantId,
+                tenantId,
                 amount,
-                normalizedReason,
+                reason,
                 transactionId,
             );
         }
 
+        const current = await tx.tenant.findUniqueOrThrow({
+            where: { id: tenantId },
+            select: { usageCredits: true, creditDebt: true },
+        });
+        const currentBalance = this.requireStoredBalanceAfter(
+            current.usageCredits,
+            'Positive credit settlement found an invalid wallet balance.',
+        );
+        const currentDebt = this.requireStoredDebtAfter(
+            current.creditDebt,
+            'Positive credit settlement found an invalid debt balance.',
+        );
+        const repaidDebt = Math.min(currentDebt, amount);
+        const spendableAmount = amount - repaidDebt;
+        const debtAmount = repaidDebt === 0 ? 0 : -repaidDebt;
         const tenant = await tx.tenant.update({
-            where: { id: normalizedTenantId },
-            data: { usageCredits: { increment: amount } },
-            select: { usageCredits: true },
+            where: { id: tenantId },
+            data: {
+                usageCredits: { increment: spendableAmount },
+                creditDebt: { decrement: repaidDebt },
+            },
+            select: { usageCredits: true, creditDebt: true },
         });
         const newBalance = this.requireStoredBalanceAfter(
             tenant.usageCredits,
             'Credit grant settlement produced an invalid wallet balance.',
         );
+        const debtAfter = this.requireStoredDebtAfter(
+            tenant.creditDebt,
+            'Credit grant settlement produced an invalid debt balance.',
+        );
+        if (newBalance !== currentBalance + spendableAmount || debtAfter !== currentDebt - repaidDebt) {
+            throw new ConflictException('Positive credit settlement produced an inconsistent result.');
+        }
 
         await tx.creditTransaction.create({
             data: {
                 id: transactionId,
-                tenantId: normalizedTenantId,
-                amount,
-                reason: normalizedReason,
+                tenantId,
+                amount: spendableAmount,
+                debtAmount,
+                reason,
                 balanceAfter: newBalance,
+                debtAfter,
             },
             select: { id: true },
         });
 
-        return { transactionId, newBalance, replayed: false };
+        return {
+            transactionId,
+            creditedValue: amount,
+            spendableAmount,
+            repaidDebt,
+            newBalance,
+            debtAfter,
+            replayed: false,
+        };
     }
 
-    private replayCreditGrant(
-        existing: { tenantId: string; amount: number; reason: string; balanceAfter: number | null },
+    private replayPositiveCreditSettlement(
+        existing: {
+            tenantId: string;
+            amount: number;
+            debtAmount: number;
+            reason: string;
+            balanceAfter: number | null;
+            debtAfter: number | null;
+        },
         tenantId: string,
         amount: number,
         reason: string,
         transactionId: string,
-    ): CreditGrantSettlement {
-        if (existing.tenantId !== tenantId || existing.amount !== amount || existing.reason !== reason) {
-            throw new ConflictException('Idempotency-Key was already used with a different credit grant request.');
+    ): PositiveCreditSettlement {
+        if (
+            existing.tenantId !== tenantId
+            || !Number.isSafeInteger(existing.amount)
+            || existing.amount < 0
+            || !Number.isSafeInteger(existing.debtAmount)
+            || existing.debtAmount > 0
+            || existing.amount - existing.debtAmount !== amount
+            || existing.reason !== reason
+        ) {
+            throw new ConflictException('Credit settlement identity was already used with different billing details.');
         }
 
+        const newBalance = this.requireStoredBalanceAfter(
+            existing.balanceAfter,
+            'Existing credit grant is missing its immutable settlement balance.',
+        );
+        const debtAfter = this.requireStoredDebtAfter(
+            existing.debtAfter,
+            'Existing credit grant is missing its immutable debt balance.',
+        );
         return {
             transactionId,
-            newBalance: this.requireStoredBalanceAfter(
-                existing.balanceAfter,
-                'Existing credit grant is missing its immutable settlement balance.',
-            ),
+            creditedValue: amount,
+            spendableAmount: existing.amount,
+            repaidDebt: Math.abs(existing.debtAmount),
+            newBalance,
+            debtAfter,
             replayed: true,
         };
     }
@@ -138,6 +248,13 @@ export class MeteringService {
         return Number(value);
     }
 
+    private requireStoredDebtAfter(value: unknown, message: string): number {
+        if (!Number.isSafeInteger(value) || Number(value) < 0) {
+            throw new ConflictException(message);
+        }
+        return Number(value);
+    }
+
     async recordFeatureUsageInTransaction(
         tx: TenantPrismaTransaction,
         args: {
@@ -151,24 +268,70 @@ export class MeteringService {
         if (args.source !== 'credits') {
             throw new ForbiddenException('Billable feature usage requires wallet credits.');
         }
+        return this.recordCreditDebitInTransaction(tx, {
+            tenantId: args.tenantId,
+            cost: args.cost,
+            reason: args.reason,
+            transactionId: `feature-usage-${args.operationId}`,
+        });
+    }
+
+    async recordCreditDebitInTransaction(
+        tx: TenantPrismaTransaction,
+        args: {
+            tenantId: string;
+            cost: number;
+            reason: string;
+            transactionId: string;
+        },
+    ): Promise<{ consumedCredits: number; newBalance: number }> {
+        if (typeof args.tenantId !== 'string' || !args.tenantId.trim()) {
+            throw new BadRequestException('tenantId is required');
+        }
         if (!Number.isSafeInteger(args.cost) || args.cost <= 0) {
             throw new BadRequestException('Feature credit cost must be a positive whole number');
         }
+        if (typeof args.reason !== 'string' || !args.reason.trim() || args.reason.length > 500) {
+            throw new BadRequestException('Feature usage reason must be between 1 and 500 characters');
+        }
+        if (
+            typeof args.transactionId !== 'string'
+            || !args.transactionId.trim()
+            || args.transactionId.length > 255
+            || /[\u0000-\u001f\u007f]/.test(args.transactionId)
+        ) {
+            throw new BadRequestException('Feature transactionId must be 255 printable characters or fewer');
+        }
 
-        const ledgerId = `feature-usage-${args.operationId}`;
         await this.lockCreditSettlementTables(tx);
         await tx.$queryRaw`SELECT "id" FROM "Tenant" WHERE "id" = ${args.tenantId} FOR UPDATE`;
         const existing = await tx.creditTransaction.findUnique({
-            where: { id: ledgerId },
-            select: { id: true, tenantId: true, amount: true, reason: true, balanceAfter: true },
+            where: { id: args.transactionId },
+            select: {
+                id: true,
+                tenantId: true,
+                amount: true,
+                debtAmount: true,
+                reason: true,
+                balanceAfter: true,
+                debtAfter: true,
+            },
         });
         if (existing) {
             if (
                 existing.tenantId !== args.tenantId
                 || existing.amount !== -args.cost
+                || existing.debtAmount !== 0
                 || existing.reason !== args.reason
             ) {
                 throw new ConflictException('Feature usage operation was already recorded with different billing details.');
+            }
+            const existingDebtAfter = this.requireStoredDebtAfter(
+                existing.debtAfter,
+                'Existing feature usage is missing its immutable debt balance.',
+            );
+            if (existingDebtAfter !== 0) {
+                throw new ConflictException('Existing feature usage was recorded while credit debt remained outstanding.');
             }
             return {
                 consumedCredits: args.cost,
@@ -182,6 +345,7 @@ export class MeteringService {
         const debit = await tx.tenant.updateMany({
             where: {
                 id: args.tenantId,
+                creditDebt: 0,
                 usageCredits: { gte: args.cost },
             },
             data: { usageCredits: { decrement: args.cost } },
@@ -191,19 +355,25 @@ export class MeteringService {
         }
         const tenant = await tx.tenant.findUniqueOrThrow({
             where: { id: args.tenantId },
-            select: { usageCredits: true },
+            select: { usageCredits: true, creditDebt: true },
         });
         const newBalance = this.requireStoredBalanceAfter(
             tenant.usageCredits,
             'Feature usage settlement produced an invalid wallet balance.',
         );
+        const debtAfter = this.requireStoredDebtAfter(
+            tenant.creditDebt,
+            'Feature usage settlement produced an invalid debt balance.',
+        );
         await tx.creditTransaction.create({
             data: {
-                id: ledgerId,
+                id: args.transactionId,
                 tenantId: args.tenantId,
                 amount: -args.cost,
+                debtAmount: 0,
                 reason: args.reason,
                 balanceAfter: newBalance,
+                debtAfter,
             },
         });
         return { consumedCredits: args.cost, newBalance };

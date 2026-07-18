@@ -21,11 +21,11 @@ async function scheduleSettlementSql(): Promise<{
         .mockResolvedValueOnce([])
         .mockResolvedValueOnce([{
             candidateCount: 0,
-            insertedCount: 0,
+            settledCount: 0,
+            replayedCount: 0,
             lockedWebhookCount: 0,
             refundableWebhookCount: 0,
             terminalizedWebhookCount: 0,
-            walletUpdateCount: 0,
         }]);
     const service = new TenantDeletionBillingService({} as any, () => ({
         finalizeTenantBillingForPurge: vi.fn(),
@@ -379,7 +379,12 @@ describe('TenantDeletionBillingService schedule refund settlement', () => {
         expect(provenanceSql).toContain(`jsonb_typeof(job."creditConsumption") = 'object'`);
         expect(provenanceSql).toContain(`job."creditConsumption"->>'consumedCredits' ~ '^[1-9][0-9]*$'`);
         expect(provenanceSql).toContain('provenance."debitAmount" IS DISTINCT FROM -provenance."configuredAmount"');
-        expect(provenanceSql).toContain('provenance."refundAmount" IS DISTINCT FROM provenance."configuredAmount"');
+        expect(provenanceSql).toContain('provenance."debitDebtAmount" IS DISTINCT FROM 0');
+        expect(provenanceSql).toContain('provenance."debitDebtAfter" IS DISTINCT FROM 0');
+        expect(provenanceSql).toContain('provenance."refundDebtAmount" > 0');
+        expect(provenanceSql).toContain('provenance."refundAmount"::bigint');
+        expect(provenanceSql).toContain('- provenance."refundDebtAmount"::bigint');
+        expect(provenanceSql).toContain('IS DISTINCT FROM provenance."configuredAmount"::bigint');
     });
 
     it('enforces the exact schedule status/refund matrix before any mutation', async () => {
@@ -394,19 +399,19 @@ describe('TenantDeletionBillingService schedule refund settlement', () => {
         expect(provenanceSql).toContain(`provenance."status" NOT IN (`);
     });
 
-    it('preserves exactly-once concurrency by crediting only the deterministic refund insert winner', async () => {
+    it('settles deterministic refunds through the shared debt-first database owner', async () => {
         const { sql, executeRaw, queryRaw } = await scheduleSettlementSql();
-        const inserted = sql.slice(sql.indexOf('refund_candidates AS'));
+        const settled = sql.slice(sql.indexOf('refund_candidates AS'));
 
         expect(executeRaw).not.toHaveBeenCalled();
         expect(queryRaw).toHaveBeenCalledTimes(2);
         expect(sql).toContain(`"status" IN ('QUEUED', 'RUNNING', 'RETRYING')`);
-        expect(inserted).toContain(`'schedule-credit-refund-' || "id"`);
-        expect(inserted).toContain('ON CONFLICT ("id") DO NOTHING');
-        expect(inserted).toContain('RETURNING "tenantId", "amount", "balanceAfter"');
-        expect(sql).toContain('ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW');
-        expect(sql).toContain('"balanceAfter", "createdAt"');
-        expect(sql).toContain('tenant."usageCredits" + refund_totals."amount"');
+        expect(settled).toContain(`'schedule-credit-refund-' || "id"`);
+        expect(settled).toContain('public.settle_positive_credit_value(');
+        expect(settled).toContain('settlement."creditedValue" = candidate."amount"');
+        expect(settled).toContain('WHERE "replayed"');
+        expect(settled).not.toContain('INSERT INTO "CreditTransaction"');
+        expect(settled).not.toContain('tenant."usageCredits" +');
         expect(sql).toContain('COUNT(*)::integer FROM refund_candidates');
     });
 
@@ -441,11 +446,11 @@ describe('TenantDeletionBillingService availability-import settlement', () => {
                 .mockResolvedValueOnce([])
                 .mockResolvedValueOnce([{
                     candidateCount: 0,
-                    insertedCount: 0,
+                    settledCount: 0,
+                    replayedCount: 0,
                     lockedWebhookCount: 0,
                     refundableWebhookCount: 0,
                     terminalizedWebhookCount: 0,
-                    walletUpdateCount: 0,
                 }]),
         };
         const service = new TenantDeletionBillingService({} as any, () => ({
@@ -466,7 +471,7 @@ describe('TenantDeletionBillingService availability-import settlement', () => {
         expect(sql).toContain(`import_job."status" IN ('PENDING', 'QUEUED', 'RUNNING', 'RETRYING')`);
         expect(sql).toContain(`'feature-usage-availability-import:' || import_job."id"`);
         expect(sql).toContain(`'feature-refund-availability-import:' || "id"`);
-        expect(sql).toContain('ON CONFLICT ("id") DO NOTHING');
+        expect(sql).toContain('public.settle_positive_credit_value(');
         expect(sql).toContain('cancelled_availability_imports AS');
         expect(sql).toContain('erased_successful_availability_imports AS');
         expect(sql).toContain('"encryptedSourcePayload" = NULL');
@@ -481,8 +486,9 @@ describe('TenantDeletionBillingService availability-import settlement', () => {
         expect(successfulErasure).not.toContain(`"status" = 'CANCELLED'`);
         expect(sql).toContain('refund_candidates AS MATERIALIZED');
         expect(sql).toContain('settled_refunds AS MATERIALIZED');
-        expect(sql).toContain('inserted_refunds AS');
-        expect(sql).toContain('tenant."usageCredits" + refund_totals."amount"');
+        expect(sql).toContain('settlement."creditedValue"');
+        expect(sql).not.toContain('inserted_refunds AS');
+        expect(sql).not.toContain('tenant."usageCredits" +');
     });
 
     it('enforces the exact import status/refund matrix before any mutation', async () => {

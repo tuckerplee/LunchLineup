@@ -1902,6 +1902,9 @@ class WorkerMessageTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn('FROM "CreditTransaction" credit', claim_sql)
         self.assertIn('MIN(credit."reason")', claim_sql)
         self.assertIn('schedule-credit-refund-', claim_sql)
+        self.assertIn('credit."debtAmount" = 0', claim_sql)
+        self.assertIn('credit."debtAfter" = 0', claim_sql)
+        self.assertIn('refund."amount"::BIGINT - refund."debtAmount"::BIGINT', claim_sql)
         self.assertFalse(any(
             sql.startswith('UPDATE "ScheduleSolveJob"')
             for sql, _ in fake_connection.cursor_obj.calls
@@ -2225,18 +2228,19 @@ class WorkerMessageTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn('FROM "ScheduleSolveJob" job', sql_text)
         self.assertIn('JOIN debit_rows debit ON TRUE', sql_text)
         self.assertIn('debit."amount" = -job."configuredAmount"', sql_text)
+        self.assertIn('debit."debtAmount" = 0', sql_text)
+        self.assertIn('debit."debtAfter" = 0', sql_text)
         self.assertIn('debit."balanceAfter" =', sql_text)
-        self.assertIn('"usageCredits" = tenant."usageCredits" - provenance."debitAmount"', sql_text)
+        self.assertIn('public.settle_positive_credit_value', sql_text)
+        self.assertIn('CROSS JOIN LATERAL', sql_text)
         self.assertIn('"status" NOT IN (\'SUCCEEDED\', \'FAILED\', \'DEAD_LETTERED\')', sql_text)
-        self.assertIn('INSERT INTO "CreditTransaction"', sql_text)
-        self.assertIn('"balanceAfter", "createdAt"', sql_text)
-        self.assertNotIn('ON CONFLICT ("id") DO NOTHING', sql_text)
-        self.assertIn('UPDATE "Tenant" tenant', sql_text)
+        self.assertNotIn('INSERT INTO "CreditTransaction"', sql_text)
+        self.assertNotIn('UPDATE "Tenant" tenant', sql_text)
         self.assertEqual(update_params[4], "schedule-credit-refund-job-1")
         self.assertIsNone(update_params[9])
         self.assertIsNone(update_params[10])
-        self.assertEqual(update_params[11], "schedule-credit-refund-job-1")
-        self.assertEqual(update_params[12], "Schedule generation refund (job-1)")
+        self.assertEqual(update_params[11], "Schedule generation refund (job-1)")
+        self.assertEqual(update_params[12], "schedule-credit-refund-job-1")
 
     def test_terminal_failure_fails_closed_for_missing_mismatched_or_duplicate_debits(self):
         valid = [

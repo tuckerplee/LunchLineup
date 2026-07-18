@@ -67,13 +67,17 @@ type ScheduleRefundOutcome = {
     debitCount: number | bigint;
     debitTenantId: string | null;
     debitAmount: number | bigint | null;
+    debitDebtAmount: number | bigint | null;
     debitReason: string | null;
     debitBalanceAfter: number | bigint | null;
+    debitDebtAfter: number | bigint | null;
     refundCount: number | bigint;
     refundTenantId: string | null;
     refundAmount: number | bigint | null;
+    refundDebtAmount: number | bigint | null;
     refundReason: string | null;
     refundBalanceAfter: number | bigint | null;
+    refundDebtAfter: number | bigint | null;
     terminalizedCount: number | bigint;
     insertedRefundCount: number | bigint;
     insertedRefundBalanceAfter: number | bigint | null;
@@ -369,7 +373,7 @@ export class ScheduleSolveOutboxPublisher {
                 `schedule-credit-refund-${candidate.id}`,
             ]);
             const creditRows = await tx.$queryRaw<ScheduleSolveCreditSettlementRow[]>(Prisma.sql`
-                SELECT "id", "tenantId", "amount", "reason", "balanceAfter"
+                SELECT "id", "tenantId", "amount", "debtAmount", "reason", "balanceAfter", "debtAfter"
                 FROM "CreditTransaction"
                 WHERE "id" IN (${Prisma.join(creditIds)})
                 ORDER BY "id" ASC
@@ -558,12 +562,24 @@ export class ScheduleSolveOutboxPublisher {
                   AND job."tenantId" = ${publication.tenantId}
                 FOR UPDATE
             ), debit_rows AS MATERIALIZED (
-                SELECT debit."tenantId", debit."amount", debit."reason", debit."balanceAfter"
+                SELECT
+                    debit."tenantId",
+                    debit."amount",
+                    debit."debtAmount",
+                    debit."reason",
+                    debit."balanceAfter",
+                    debit."debtAfter"
                 FROM "CreditTransaction" debit
                 JOIN locked_job job
                   ON debit."id" = 'schedule-credit-' || job."id"
             ), refund_rows AS MATERIALIZED (
-                SELECT refund."tenantId", refund."amount", refund."reason", refund."balanceAfter"
+                SELECT
+                    refund."tenantId",
+                    refund."amount",
+                    refund."debtAmount",
+                    refund."reason",
+                    refund."balanceAfter",
+                    refund."debtAfter"
                 FROM "CreditTransaction" refund
                 JOIN locked_job job
                   ON refund."id" = ${refundId}
@@ -575,6 +591,8 @@ export class ScheduleSolveOutboxPublisher {
                   AND job."configuredAmount" IS NOT NULL
                   AND debit."tenantId" = job."tenantId"
                   AND debit."amount" = -job."configuredAmount"
+                  AND debit."debtAmount" = 0
+                  AND debit."debtAfter" = 0
                   AND debit."reason" = 'Schedule generation (' || job."id" || ')'
                   AND debit."balanceAfter" = (job."creditConsumption"->>'newBalance')::integer
                   AND (SELECT COUNT(*) FROM refund_rows) = 0
@@ -603,32 +621,16 @@ export class ScheduleSolveOutboxPublisher {
                     OR job."executionLeaseUntil" <= CURRENT_TIMESTAMP
                   )
                 RETURNING job."id", job."tenantId"
-            ), updated_wallet AS (
-                UPDATE "Tenant" tenant
-                SET
-                    "usageCredits" = tenant."usageCredits" - provenance."debitAmount",
-                    "updatedAt" = CURRENT_TIMESTAMP
+            ), settled_refund AS (
+                SELECT settlement.*
                 FROM terminalized_job terminalized
                 JOIN valid_provenance provenance ON provenance."id" = terminalized."id"
-                WHERE tenant."id" = terminalized."tenantId"
-                RETURNING
-                    tenant."id" AS "tenantId",
-                    -provenance."debitAmount" AS "amount",
-                    tenant."usageCredits" AS "balanceAfter"
-            ), inserted_refund AS (
-                INSERT INTO "CreditTransaction" (
-                    "id", "tenantId", "amount", "reason", "balanceAfter", "createdAt"
-                )
-                SELECT
-                    ${refundId},
-                    wallet."tenantId",
-                    wallet."amount",
+                CROSS JOIN LATERAL public.settle_positive_credit_value(
+                    terminalized."tenantId",
+                    -provenance."debitAmount",
                     ${refundReason},
-                    wallet."balanceAfter",
-                    CURRENT_TIMESTAMP
-                FROM updated_wallet wallet
-                ON CONFLICT ("id") DO NOTHING
-                RETURNING "tenantId", "amount", "balanceAfter"
+                    ${refundId}
+                ) settlement
             )
             SELECT
                 (SELECT "status" FROM locked_job) AS "jobStatus",
@@ -638,17 +640,29 @@ export class ScheduleSolveOutboxPublisher {
                 (SELECT COUNT(*)::integer FROM debit_rows) AS "debitCount",
                 (SELECT MIN("tenantId") FROM debit_rows) AS "debitTenantId",
                 (SELECT MIN("amount") FROM debit_rows) AS "debitAmount",
+                (SELECT MIN("debtAmount") FROM debit_rows) AS "debitDebtAmount",
                 (SELECT MIN("reason") FROM debit_rows) AS "debitReason",
                 (SELECT MIN("balanceAfter") FROM debit_rows) AS "debitBalanceAfter",
+                (SELECT MIN("debtAfter") FROM debit_rows) AS "debitDebtAfter",
                 (SELECT COUNT(*)::integer FROM refund_rows) AS "refundCount",
                 (SELECT MIN("tenantId") FROM refund_rows) AS "refundTenantId",
                 (SELECT MIN("amount") FROM refund_rows) AS "refundAmount",
+                (SELECT MIN("debtAmount") FROM refund_rows) AS "refundDebtAmount",
                 (SELECT MIN("reason") FROM refund_rows) AS "refundReason",
                 (SELECT MIN("balanceAfter") FROM refund_rows) AS "refundBalanceAfter",
+                (SELECT MIN("debtAfter") FROM refund_rows) AS "refundDebtAfter",
                 (SELECT COUNT(*)::integer FROM terminalized_job) AS "terminalizedCount",
-                (SELECT COUNT(*)::integer FROM inserted_refund) AS "insertedRefundCount",
-                (SELECT MIN("balanceAfter") FROM inserted_refund) AS "insertedRefundBalanceAfter",
-                (SELECT COUNT(*)::integer FROM updated_wallet) AS "walletUpdateCount"
+                (
+                    SELECT COUNT(*)::integer
+                    FROM settled_refund
+                    WHERE "replayed" = FALSE
+                ) AS "insertedRefundCount",
+                (SELECT MIN("newBalance") FROM settled_refund) AS "insertedRefundBalanceAfter",
+                (
+                    SELECT COUNT(*)::integer
+                    FROM settled_refund
+                    WHERE "replayed" = FALSE
+                ) AS "walletUpdateCount"
             `);
             this.assertScheduleRefundOutcome(outcomes[0], publication);
         });
@@ -670,13 +684,17 @@ export class ScheduleSolveOutboxPublisher {
                 count: outcome.debitCount,
                 tenantId: outcome.debitTenantId,
                 amount: outcome.debitAmount,
+                debtAmount: outcome.debitDebtAmount,
                 reason: outcome.debitReason,
+                debtAfter: outcome.debitDebtAfter,
             },
             refund: {
                 count: outcome.refundCount,
                 tenantId: outcome.refundTenantId,
                 amount: outcome.refundAmount,
+                debtAmount: outcome.refundDebtAmount,
                 reason: outcome.refundReason,
+                debtAfter: outcome.refundDebtAfter,
             },
         });
         if (this.nonnegativeIntegerValue(outcome.debitBalanceAfter) !== provenance.newBalance) {

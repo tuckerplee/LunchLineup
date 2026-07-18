@@ -15,13 +15,17 @@ type LockedAvailabilityImport = {
   debitCount: number | bigint;
   debitTenantId: string | null;
   debitAmount: number | bigint | null;
+  debitDebtAmount: number | bigint | null;
   debitReason: string | null;
   debitBalanceAfter: number | bigint | null;
+  debitDebtAfter: number | bigint | null;
   refundCount: number | bigint;
   refundTenantId: string | null;
   refundAmount: number | bigint | null;
+  refundDebtAmount: number | bigint | null;
   refundReason: string | null;
   refundBalanceAfter: number | bigint | null;
+  refundDebtAfter: number | bigint | null;
 };
 
 export type DeletedUserCleanup = {
@@ -53,20 +57,26 @@ async function cancelAvailabilityImports(
             debit."count" AS "debitCount",
             debit."tenantId" AS "debitTenantId",
             debit."amount" AS "debitAmount",
+            debit."debtAmount" AS "debitDebtAmount",
             debit."reason" AS "debitReason",
             debit."balanceAfter" AS "debitBalanceAfter",
+            debit."debtAfter" AS "debitDebtAfter",
             refund."count" AS "refundCount",
             refund."tenantId" AS "refundTenantId",
             refund."amount" AS "refundAmount",
+            refund."debtAmount" AS "refundDebtAmount",
             refund."reason" AS "refundReason",
-            refund."balanceAfter" AS "refundBalanceAfter"
+            refund."balanceAfter" AS "refundBalanceAfter",
+            refund."debtAfter" AS "refundDebtAfter"
         FROM "AvailabilityImportJob" job
         CROSS JOIN LATERAL (
                 SELECT COUNT(*)::integer AS "count",
                        MIN(debit."tenantId") AS "tenantId",
                        MIN(debit."amount") AS "amount",
+                       MIN(debit."debtAmount") AS "debtAmount",
                        MIN(debit."reason") AS "reason",
-                       MIN(debit."balanceAfter") AS "balanceAfter"
+                       MIN(debit."balanceAfter") AS "balanceAfter",
+                       MIN(debit."debtAfter") AS "debtAfter"
                 FROM "CreditTransaction" debit
                 WHERE debit."id" = 'feature-usage-availability-import:' || job."id"
         ) debit
@@ -74,8 +84,10 @@ async function cancelAvailabilityImports(
                 SELECT COUNT(*)::integer AS "count",
                        MIN(refund."tenantId") AS "tenantId",
                        MIN(refund."amount") AS "amount",
+                       MIN(refund."debtAmount") AS "debtAmount",
                        MIN(refund."reason") AS "reason",
-                       MIN(refund."balanceAfter") AS "balanceAfter"
+                       MIN(refund."balanceAfter") AS "balanceAfter",
+                       MIN(refund."debtAfter") AS "debtAfter"
                 FROM "CreditTransaction" refund
                 WHERE refund."id" = 'feature-refund-availability-import:' || job."id"
         ) refund
@@ -95,8 +107,10 @@ async function cancelAvailabilityImports(
     const debitIsExact = nonnegativeCount(job.debitCount) === 1
       && job.debitTenantId === tenantId
       && integer(job.debitAmount) === -consumedCredits
+      && integer(job.debitDebtAmount) === 0
       && job.debitReason === `Availability PDF import (${job.id})`
-      && nonnegativeInteger(job.debitBalanceAfter) === settlement.newBalance;
+      && nonnegativeInteger(job.debitBalanceAfter) === settlement.newBalance
+      && nonnegativeInteger(job.debitDebtAfter) === 0;
     if (!debitIsExact) {
       throw new Error("Availability import debit provenance is invalid during user deletion.");
     }
@@ -104,10 +118,16 @@ async function cancelAvailabilityImports(
     const refundReason = `Availability PDF import refund (${job.id})`;
     const refundCount = nonnegativeCount(job.refundCount);
     if (refundCount === 1) {
+      const refundAmount = nonnegativeInteger(job.refundAmount);
+      const refundDebtAmount = integer(job.refundDebtAmount);
       if (job.refundTenantId !== tenantId
-        || integer(job.refundAmount) !== consumedCredits
+        || refundAmount === null
+        || refundDebtAmount === null
+        || refundDebtAmount > 0
+        || refundAmount - refundDebtAmount !== consumedCredits
         || job.refundReason !== refundReason
-        || nonnegativeInteger(job.refundBalanceAfter) === null) {
+        || nonnegativeInteger(job.refundBalanceAfter) === null
+        || nonnegativeInteger(job.refundDebtAfter) === null) {
         throw new Error("Availability import refund provenance is invalid during user deletion.");
       }
       refundedAvailabilityImportCredits += consumedCredits;
@@ -116,34 +136,36 @@ async function cancelAvailabilityImports(
     if (refundCount !== 0) {
       throw new Error("Availability import refund provenance is invalid during user deletion.");
     }
-    const wallet = await tx.$queryRaw<Array<{ usageCredits: number | bigint }>>(Prisma.sql`
-            UPDATE "Tenant"
-            SET "usageCredits" = "usageCredits" + ${consumedCredits},
-                "updatedAt" = CURRENT_TIMESTAMP
-            WHERE "id" = ${tenantId}
-            RETURNING "usageCredits"
-        `);
-    const balanceAfter = nonnegativeInteger(wallet[0]?.usageCredits ?? null);
-    if (balanceAfter === null) {
-      throw new Error("Availability import refund wallet settlement failed during user deletion.");
-    }
-    const inserted = await tx.$queryRaw<Array<{ amount: number | bigint; balanceAfter: number | bigint }>>(Prisma.sql`
-            INSERT INTO "CreditTransaction" (
-                "id", "tenantId", "amount", "reason", "balanceAfter", "createdAt"
-            ) VALUES (
-                ${refundId},
+    const settled = await tx.$queryRaw<Array<{
+      transactionId: string;
+      creditedValue: number | bigint;
+      spendableAmount: number | bigint;
+      repaidDebt: number | bigint;
+      newBalance: number | bigint;
+      debtAfter: number | bigint;
+      replayed: boolean;
+    }>>(Prisma.sql`
+            SELECT *
+            FROM public.settle_positive_credit_value(
                 ${tenantId},
                 ${consumedCredits},
                 ${refundReason},
-                ${balanceAfter},
-                CURRENT_TIMESTAMP
+                ${refundId}
             )
-            ON CONFLICT ("id") DO NOTHING
-            RETURNING "amount", "balanceAfter"
         `);
-    if (inserted.length !== 1
-      || integer(inserted[0].amount) !== consumedCredits
-      || nonnegativeInteger(inserted[0].balanceAfter) !== balanceAfter) {
+    const result = settled[0];
+    const creditedValue = integer(result?.creditedValue ?? null);
+    const spendableAmount = nonnegativeInteger(result?.spendableAmount ?? null);
+    const repaidDebt = nonnegativeInteger(result?.repaidDebt ?? null);
+    if (settled.length !== 1
+      || result?.transactionId !== refundId
+      || creditedValue !== consumedCredits
+      || spendableAmount === null
+      || repaidDebt === null
+      || spendableAmount + repaidDebt !== consumedCredits
+      || nonnegativeInteger(result?.newBalance ?? null) === null
+      || nonnegativeInteger(result?.debtAfter ?? null) === null
+      || result?.replayed !== false) {
       throw new Error("Availability import refund settlement failed during user deletion.");
     }
     refundedAvailabilityImportCredits += consumedCredits;

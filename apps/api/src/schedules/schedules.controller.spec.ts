@@ -57,7 +57,30 @@ describe("SchedulesController", () => {
       assertFeatureEnabledInTransaction: vi.fn().mockResolvedValue({ enabled: true, source: "credits", creditCost: 1, reason: "Billable" }),
       assertFeatureEntitledInTransaction: vi.fn().mockResolvedValue({ enabled: true, source: "credits", creditCost: 1, reason: "Billable" }),
       lockTenantInTransaction: vi.fn().mockResolvedValue(undefined),
-      recordFeatureUsageInTransaction: vi.fn().mockResolvedValue({ consumedCredits: 1, newBalance: 0 }),
+      recordFeatureUsageInTransaction: vi.fn(async (
+        transaction: any,
+        tenantId: string,
+        resolution: { creditCost: number },
+        reason: string,
+        _operationId: string,
+        transactionId?: string,
+      ) => {
+        const cost = Number(resolution.creditCost);
+        if (transactionId?.startsWith("schedule-credit-")) {
+          await transaction.creditTransaction.create({
+            data: {
+              id: transactionId,
+              tenantId,
+              amount: -cost,
+              debtAmount: 0,
+              reason,
+              balanceAfter: 0,
+              debtAfter: 0,
+            },
+          });
+        }
+        return { consumedCredits: cost, newBalance: 0 };
+      }),
       resolveTenantFeatures: vi.fn().mockResolvedValue({
         usageCredits: 1,
         features: {
@@ -133,7 +156,7 @@ describe("SchedulesController", () => {
             : persistedSolveJobRows;
         }
         if (sql.includes('FROM "CreditTransaction"') && sql.includes("FOR UPDATE")) {
-          return persistedSolveDebitRows;
+          return persistedSolveDebitRows.map((row) => ({ debtAmount: 0, debtAfter: 0, ...row }));
         }
         if (
           sql.includes('UPDATE "Tenant"') &&
@@ -2047,8 +2070,10 @@ describe("SchedulesController", () => {
           id: `schedule-credit-${first.jobId}`,
           tenantId: "tenant-1",
           amount: -1,
+          debtAmount: 0,
           reason: `Schedule generation (${first.jobId})`,
           balanceAfter: 0,
+          debtAfter: 0,
         }];
       }
       return [{ set_current_tenant: null }];
@@ -2371,8 +2396,10 @@ describe("SchedulesController", () => {
           id: "schedule-credit-job-active",
           tenantId: "tenant-1",
           amount: -1,
+          debtAmount: 0,
           reason: "Schedule generation (job-active)",
           balanceAfter: 4,
+          debtAfter: 0,
         }];
       }
       return [{ set_current_tenant: null }];

@@ -706,7 +706,14 @@ def _persist_solved_schedule_sync(
                          WHERE credit."id" = 'schedule-credit-' || job."id"),
                         (SELECT MIN(credit."tenantId") FROM "CreditTransaction" credit
                          WHERE credit."id" = 'schedule-credit-' || job."id"),
-                        (SELECT MIN(credit."amount") FROM "CreditTransaction" credit
+                        (SELECT MIN(
+                            CASE
+                                WHEN credit."debtAmount" = 0
+                                 AND credit."debtAfter" = 0
+                                THEN credit."amount"
+                                ELSE NULL
+                            END
+                         ) FROM "CreditTransaction" credit
                          WHERE credit."id" = 'schedule-credit-' || job."id"),
                         (SELECT MIN(credit."reason") FROM "CreditTransaction" credit
                          WHERE credit."id" = 'schedule-credit-' || job."id"),
@@ -716,7 +723,15 @@ def _persist_solved_schedule_sync(
                          WHERE refund."id" = 'schedule-credit-refund-' || job."id"),
                         (SELECT MIN(refund."tenantId") FROM "CreditTransaction" refund
                          WHERE refund."id" = 'schedule-credit-refund-' || job."id"),
-                        (SELECT MIN(refund."amount") FROM "CreditTransaction" refund
+                        (SELECT MIN(
+                            CASE
+                                WHEN refund."amount" >= 0
+                                 AND refund."debtAmount" <= 0
+                                 AND refund."debtAfter" >= 0
+                                THEN refund."amount"::BIGINT - refund."debtAmount"::BIGINT
+                                ELSE NULL
+                            END
+                         ) FROM "CreditTransaction" refund
                          WHERE refund."id" = 'schedule-credit-refund-' || job."id"),
                         (SELECT MIN(refund."reason") FROM "CreditTransaction" refund
                          WHERE refund."id" = 'schedule-credit-refund-' || job."id"),
@@ -1115,7 +1130,14 @@ def _claim_schedule_solve_job_sync(
                          WHERE credit."id" = 'schedule-credit-' || job."id"),
                         (SELECT MIN(credit."tenantId") FROM "CreditTransaction" credit
                          WHERE credit."id" = 'schedule-credit-' || job."id"),
-                        (SELECT MIN(credit."amount") FROM "CreditTransaction" credit
+                        (SELECT MIN(
+                            CASE
+                                WHEN credit."debtAmount" = 0
+                                 AND credit."debtAfter" = 0
+                                THEN credit."amount"
+                                ELSE NULL
+                            END
+                         ) FROM "CreditTransaction" credit
                          WHERE credit."id" = 'schedule-credit-' || job."id"),
                         (SELECT MIN(credit."reason") FROM "CreditTransaction" credit
                          WHERE credit."id" = 'schedule-credit-' || job."id"),
@@ -1125,7 +1147,15 @@ def _claim_schedule_solve_job_sync(
                          WHERE refund."id" = 'schedule-credit-refund-' || job."id"),
                         (SELECT MIN(refund."tenantId") FROM "CreditTransaction" refund
                          WHERE refund."id" = 'schedule-credit-refund-' || job."id"),
-                        (SELECT MIN(refund."amount") FROM "CreditTransaction" refund
+                        (SELECT MIN(
+                            CASE
+                                WHEN refund."amount" >= 0
+                                 AND refund."debtAmount" <= 0
+                                 AND refund."debtAfter" >= 0
+                                THEN refund."amount"::BIGINT - refund."debtAmount"::BIGINT
+                                ELSE NULL
+                            END
+                         ) FROM "CreditTransaction" refund
                          WHERE refund."id" = 'schedule-credit-refund-' || job."id"),
                         (SELECT MIN(refund."reason") FROM "CreditTransaction" refund
                          WHERE refund."id" = 'schedule-credit-refund-' || job."id"),
@@ -1427,15 +1457,23 @@ def _terminalize_schedule_solve_job_with_refund(
             SELECT
                 debit."tenantId",
                 debit."amount",
+                debit."debtAmount",
                 debit."reason",
-                debit."balanceAfter"
+                debit."balanceAfter",
+                debit."debtAfter"
             FROM "CreditTransaction" debit
             JOIN locked_job job
               ON debit."id" = 'schedule-credit-' || job."id"
         ), refund_rows AS MATERIALIZED (
             SELECT
                 refund."tenantId",
-                refund."amount",
+                CASE
+                    WHEN refund."amount" >= 0
+                     AND refund."debtAmount" <= 0
+                     AND refund."debtAfter" >= 0
+                    THEN refund."amount"::BIGINT - refund."debtAmount"::BIGINT
+                    ELSE NULL
+                END AS "amount",
                 refund."reason",
                 refund."balanceAfter"
             FROM "CreditTransaction" refund
@@ -1449,6 +1487,8 @@ def _terminalize_schedule_solve_job_with_refund(
               AND job."configuredAmount" IS NOT NULL
               AND debit."tenantId" = job."tenantId"
               AND debit."amount" = -job."configuredAmount"
+              AND debit."debtAmount" = 0
+              AND debit."debtAfter" = 0
               AND debit."reason" = 'Schedule generation (' || job."id" || ')'
               AND debit."balanceAfter" =
                   (job."creditConsumption"->>'newBalance')::integer
@@ -1475,30 +1515,16 @@ def _terminalize_schedule_solve_job_with_refund(
                   ELSE job."executionToken" = %s
               END
             RETURNING job."id", job."tenantId"
-        ), updated_wallet AS (
-            UPDATE "Tenant" tenant
-            SET
-                "usageCredits" = tenant."usageCredits" - provenance."debitAmount",
-                "updatedAt" = CURRENT_TIMESTAMP
+        ), settled_refund AS (
+            SELECT settlement.*
             FROM updated_job updated
             JOIN valid_provenance provenance ON provenance."id" = updated."id"
-            WHERE tenant."id" = updated."tenantId"
-            RETURNING
-                tenant."id",
-                tenant."usageCredits" AS "balanceAfter",
-                -provenance."debitAmount" AS "refundAmount"
-        ), inserted_refund AS (
-            INSERT INTO "CreditTransaction"
-                ("id", "tenantId", "amount", "reason", "balanceAfter", "createdAt")
-            SELECT
+            CROSS JOIN LATERAL public.settle_positive_credit_value(
+                updated."tenantId",
+                -provenance."debitAmount",
                 %s,
-                wallet."id",
-                wallet."refundAmount",
-                %s,
-                wallet."balanceAfter",
-                CURRENT_TIMESTAMP
-            FROM updated_wallet wallet
-            RETURNING "tenantId", "amount", "balanceAfter"
+                %s
+            ) settlement
         )
         SELECT
             (SELECT "status" FROM locked_job),
@@ -1514,10 +1540,18 @@ def _terminalize_schedule_solve_job_with_refund(
             (SELECT MIN("reason") FROM refund_rows),
             (SELECT MIN("balanceAfter") FROM refund_rows),
             (SELECT COUNT(*)::integer FROM updated_job),
-            (SELECT COUNT(*)::integer FROM updated_wallet),
-            (SELECT COUNT(*)::integer FROM inserted_refund),
-            (SELECT MIN("amount") FROM inserted_refund),
-            (SELECT MIN("balanceAfter") FROM inserted_refund)
+            (
+                SELECT COUNT(*)::integer
+                FROM settled_refund
+                WHERE "replayed" = FALSE
+            ),
+            (
+                SELECT COUNT(*)::integer
+                FROM settled_refund
+                WHERE "replayed" = FALSE
+            ),
+            (SELECT MIN("creditedValue") FROM settled_refund),
+            (SELECT MIN("newBalance") FROM settled_refund)
         ''',
         (
             job_id,
@@ -1531,8 +1565,8 @@ def _terminalize_schedule_solve_job_with_refund(
             result_shift_count,
             execution_token,
             execution_token,
-            refund_id,
             refund_reason,
+            refund_id,
         ),
     )
     _assert_schedule_refund_outcome(

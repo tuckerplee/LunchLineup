@@ -614,6 +614,7 @@ export class AdminController implements OnModuleDestroy {
             name?: string;
             slug?: string;
             usageCredits?: number;
+            creditDebt?: number;
             trialEndsAt?: string | null;
             gracePeriodEndsAt?: string | null;
         },
@@ -623,6 +624,7 @@ export class AdminController implements OnModuleDestroy {
             'planTier',
             'status',
             'usageCredits',
+            'creditDebt',
             'stripeSubscriptionId',
             'stripeSubscriptionCurrentPeriodEnd',
         ].filter((field) =>

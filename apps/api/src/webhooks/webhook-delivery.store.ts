@@ -698,11 +698,11 @@ export class WebhookDeliveryStore {
         expectedAttempts: number,
     ): Promise<WebhookDeliveryReplayState> {
         const walletRows = await (tx as any).$queryRaw(Prisma.sql`
-            SELECT tenant."usageCredits"
+            SELECT tenant."usageCredits", tenant."creditDebt"
             FROM "Tenant" tenant
             WHERE tenant."id" = ${tenantId}
             FOR UPDATE OF tenant
-        `) as Array<{ usageCredits: number | bigint }>;
+        `) as Array<{ usageCredits: number | bigint; creditDebt: number | bigint }>;
         const deliveryRows = await (tx as any).$queryRaw(Prisma.sql`
             SELECT delivery."status"::text AS "status", delivery."attempts"
             FROM "WebhookDelivery" delivery
@@ -711,8 +711,9 @@ export class WebhookDeliveryStore {
             FOR UPDATE OF delivery
         `) as Array<{ status: WebhookDeliveryStatus; attempts: number }>;
         const walletBalance = this.nonnegativeInteger(walletRows[0]?.usageCredits);
+        const creditDebt = this.nonnegativeInteger(walletRows[0]?.creditDebt);
         const delivery = deliveryRows[0];
-        if (walletBalance === null || !delivery || delivery.attempts !== expectedAttempts) {
+        if (walletBalance === null || creditDebt === null || !delivery || delivery.attempts !== expectedAttempts) {
             throw new ServiceUnavailableException('Webhook terminal settlement ownership is unavailable');
         }
 
@@ -728,26 +729,34 @@ export class WebhookDeliveryStore {
             select: {
                 id: true,
                 amount: true,
+                debtAmount: true,
                 reason: true,
                 balanceAfter: true,
+                debtAfter: true,
             },
             orderBy: { id: 'asc' },
         }) as Array<{
             id: string;
             amount: number;
+            debtAmount: number;
             reason: string;
             balanceAfter: number | null;
+            debtAfter: number | null;
         }>;
         const debit = ledgerRows.find((row) => row.id === debitId);
         const existingRefund = ledgerRows.find((row) => row.id === refundId);
         if (!debit
             || debit.amount !== -WEBHOOK_CREDIT_COST
+            || debit.debtAmount !== 0
             || debit.reason !== debitReason
             || this.nonnegativeInteger(debit.balanceAfter) === null
+            || this.nonnegativeInteger(debit.debtAfter) !== 0
             || (existingRefund && (
-                existingRefund.amount !== WEBHOOK_CREDIT_COST
+                this.positiveCreditValue(existingRefund.amount, existingRefund.debtAmount)
+                    !== WEBHOOK_CREDIT_COST
                 || existingRefund.reason !== refundReason
                 || this.nonnegativeInteger(existingRefund.balanceAfter) === null
+                || this.nonnegativeInteger(existingRefund.debtAfter) === null
             ))) {
             throw new ServiceUnavailableException('Webhook terminal credit provenance is malformed or mismatched');
         }
@@ -756,23 +765,43 @@ export class WebhookDeliveryStore {
         }
 
         if (!existingRefund) {
-            const balanceAfter = walletBalance + WEBHOOK_CREDIT_COST;
-            if (!Number.isSafeInteger(balanceAfter)) {
-                throw new ServiceUnavailableException('Webhook terminal refund balance exceeds the supported range');
+            const settlements = await (tx as any).$queryRaw(Prisma.sql`
+                SELECT
+                    settlement."creditedValue",
+                    settlement."spendableAmount",
+                    settlement."repaidDebt",
+                    settlement."newBalance",
+                    settlement."debtAfter",
+                    settlement."replayed"
+                FROM public.settle_positive_credit_value(
+                    ${tenantId},
+                    ${WEBHOOK_CREDIT_COST},
+                    ${refundReason},
+                    ${refundId}
+                ) settlement
+            `) as Array<{
+                creditedValue: number | bigint;
+                spendableAmount: number | bigint;
+                repaidDebt: number | bigint;
+                newBalance: number | bigint;
+                debtAfter: number | bigint;
+                replayed: boolean;
+            }>;
+            const settlement = settlements[0];
+            const spendableAmount = this.nonnegativeInteger(settlement?.spendableAmount);
+            const repaidDebt = this.nonnegativeInteger(settlement?.repaidDebt);
+            if (
+                settlements.length !== 1
+                || this.nonnegativeInteger(settlement?.creditedValue) !== WEBHOOK_CREDIT_COST
+                || spendableAmount === null
+                || repaidDebt === null
+                || spendableAmount + repaidDebt !== WEBHOOK_CREDIT_COST
+                || this.nonnegativeInteger(settlement?.newBalance) === null
+                || this.nonnegativeInteger(settlement?.debtAfter) === null
+                || settlement?.replayed !== false
+            ) {
+                throw new ServiceUnavailableException('Webhook terminal refund settlement failed');
             }
-            await (tx as any).tenant.update({
-                where: { id: tenantId },
-                data: { usageCredits: balanceAfter },
-            });
-            await (tx as any).creditTransaction.create({
-                data: {
-                    id: refundId,
-                    tenantId,
-                    amount: WEBHOOK_CREDIT_COST,
-                    reason: refundReason,
-                    balanceAfter,
-                },
-            });
         }
 
         if (delivery.status !== 'DEAD_LETTERED') {
@@ -892,5 +921,20 @@ export class WebhookDeliveryStore {
         return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0
             ? value
             : null;
+    }
+
+    private positiveCreditValue(amount: unknown, debtAmount: unknown): number | null {
+        const spendableAmount = this.nonnegativeInteger(amount);
+        const numericDebt = typeof debtAmount === 'bigint' ? Number(debtAmount) : debtAmount;
+        if (
+            spendableAmount === null
+            || typeof numericDebt !== 'number'
+            || !Number.isSafeInteger(numericDebt)
+            || numericDebt > 0
+        ) {
+            return null;
+        }
+        const value = spendableAmount - numericDebt;
+        return Number.isSafeInteger(value) && value > 0 ? value : null;
     }
 }

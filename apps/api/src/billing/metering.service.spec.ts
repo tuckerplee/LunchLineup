@@ -47,7 +47,11 @@ afterEach(() => {
 });
 
 describe('MeteringService - credit grants', () => {
-    function buildGrantHarness(existing: any = null) {
+    function buildGrantHarness(
+        existing: any = null,
+        current = { usageCredits: 10, creditDebt: 0 },
+        settled = { usageCredits: 15, creditDebt: 0 },
+    ) {
         const tx = {
             $executeRaw: vi.fn().mockResolvedValue(0),
             $queryRaw: vi.fn().mockResolvedValue([{ id: 'tenant-1' }]),
@@ -56,7 +60,8 @@ describe('MeteringService - credit grants', () => {
                 create: vi.fn().mockResolvedValue({}),
             },
             tenant: {
-                update: vi.fn().mockResolvedValue({ usageCredits: 15 }),
+                findUniqueOrThrow: vi.fn().mockResolvedValue(current),
+                update: vi.fn().mockResolvedValue(settled),
             },
         };
         return {
@@ -84,15 +89,20 @@ describe('MeteringService - credit grants', () => {
                 id: expect.stringMatching(/^admin-credit-grant-[a-f0-9]{64}$/),
                 tenantId: 'tenant-1',
                 amount: 5,
+                debtAmount: 0,
                 reason: 'Correction grant',
                 balanceAfter: 15,
+                debtAfter: 0,
             },
             select: { id: true },
         });
         expect(h.tx.tenant.update).toHaveBeenCalledWith({
             where: { id: 'tenant-1' },
-            data: { usageCredits: { increment: 5 } },
-            select: { usageCredits: true },
+            data: {
+                usageCredits: { increment: 5 },
+                creditDebt: { decrement: 0 },
+            },
+            select: { usageCredits: true, creditDebt: true },
         });
         expect(h.tx.$queryRaw).toHaveBeenCalledOnce();
         expect(h.tx.$executeRaw).toHaveBeenCalledOnce();
@@ -111,8 +121,10 @@ describe('MeteringService - credit grants', () => {
         const h = buildGrantHarness({
             tenantId: 'tenant-1',
             amount: 5,
+            debtAmount: 0,
             reason: 'Correction grant',
             balanceAfter: 15,
+            debtAfter: 0,
         });
 
         await expect(h.service.grantCreditsInTransaction(h.tx as any, {
@@ -125,6 +137,90 @@ describe('MeteringService - credit grants', () => {
         expect(h.tx.creditTransaction.create).not.toHaveBeenCalled();
         expect(h.tx.tenant.update).not.toHaveBeenCalled();
         expect(h.tx.$queryRaw).toHaveBeenCalledOnce();
+    });
+
+    it.each([
+        {
+            label: 'fully',
+            amount: 5,
+            current: { usageCredits: 10, creditDebt: 3 },
+            settled: { usageCredits: 12, creditDebt: 0 },
+            spendableAmount: 2,
+            repaidDebt: 3,
+        },
+        {
+            label: 'partially',
+            amount: 2,
+            current: { usageCredits: 10, creditDebt: 5 },
+            settled: { usageCredits: 10, creditDebt: 3 },
+            spendableAmount: 0,
+            repaidDebt: 2,
+        },
+    ])('$label repays debt before adding spendable grant credits', async ({
+        amount,
+        current,
+        settled,
+        spendableAmount,
+        repaidDebt,
+    }) => {
+        const h = buildGrantHarness(null, current, settled);
+
+        await expect(h.service.grantCreditsInTransaction(h.tx as any, {
+            tenantId: 'tenant-1',
+            amount,
+            reason: 'Correction grant',
+            idempotencyKey: `debt-grant-${amount}`,
+        })).resolves.toEqual({
+            transactionId: expect.stringMatching(/^admin-credit-grant-[a-f0-9]{64}$/),
+            newBalance: settled.usageCredits,
+            replayed: false,
+        });
+
+        expect(h.tx.tenant.update).toHaveBeenCalledWith({
+            where: { id: 'tenant-1' },
+            data: {
+                usageCredits: { increment: spendableAmount },
+                creditDebt: { decrement: repaidDebt },
+            },
+            select: { usageCredits: true, creditDebt: true },
+        });
+        expect(h.tx.creditTransaction.create).toHaveBeenCalledWith({
+            data: {
+                id: expect.stringMatching(/^admin-credit-grant-[a-f0-9]{64}$/),
+                tenantId: 'tenant-1',
+                amount: spendableAmount,
+                debtAmount: -repaidDebt,
+                reason: 'Correction grant',
+                balanceAfter: settled.usageCredits,
+                debtAfter: settled.creditDebt,
+            },
+            select: { id: true },
+        });
+    });
+
+    it('replays the original total value after a debt-repaying grant', async () => {
+        const h = buildGrantHarness({
+            tenantId: 'tenant-1',
+            amount: 2,
+            debtAmount: -3,
+            reason: 'Correction grant',
+            balanceAfter: 12,
+            debtAfter: 0,
+        });
+
+        await expect(h.service.grantCreditsInTransaction(h.tx as any, {
+            tenantId: 'tenant-1',
+            amount: 5,
+            reason: 'Correction grant',
+            idempotencyKey: 'grant-request-1',
+        })).resolves.toEqual({
+            transactionId: expect.stringMatching(/^admin-credit-grant-[a-f0-9]{64}$/),
+            newBalance: 12,
+            replayed: true,
+        });
+
+        expect(h.tx.tenant.findUniqueOrThrow).not.toHaveBeenCalled();
+        expect(h.tx.tenant.update).not.toHaveBeenCalled();
     });
 
     it('derives different ledger identities for the same key in different tenants', async () => {
@@ -174,8 +270,10 @@ describe('MeteringService - credit grants', () => {
         const h = buildGrantHarness({
             tenantId: 'tenant-1',
             amount: 4,
+            debtAmount: 0,
             reason: 'Different grant',
             balanceAfter: 14,
+            debtAfter: 0,
         });
 
         await expect(h.service.grantCreditsInTransaction(h.tx as any, {
@@ -193,8 +291,10 @@ describe('MeteringService - credit grants', () => {
         const h = buildGrantHarness({
             tenantId: 'tenant-1',
             amount: 5,
+            debtAmount: 0,
             reason: 'Correction grant',
             balanceAfter,
+            debtAfter: 0,
         });
 
         await expect(h.service.grantCreditsInTransaction(h.tx as any, {
@@ -203,6 +303,27 @@ describe('MeteringService - credit grants', () => {
             reason: 'Correction grant',
             idempotencyKey: 'grant-request-1',
         })).rejects.toThrow(/immutable settlement balance/i);
+
+        expect(h.tx.tenant.update).not.toHaveBeenCalled();
+        expect(h.tx.creditTransaction.create).not.toHaveBeenCalled();
+    });
+
+    it.each([null, -1, 1.5])('rejects malformed immutable grant debt %#', async (debtAfter) => {
+        const h = buildGrantHarness({
+            tenantId: 'tenant-1',
+            amount: 5,
+            debtAmount: 0,
+            reason: 'Correction grant',
+            balanceAfter: 15,
+            debtAfter,
+        });
+
+        await expect(h.service.grantCreditsInTransaction(h.tx as any, {
+            tenantId: 'tenant-1',
+            amount: 5,
+            reason: 'Correction grant',
+            idempotencyKey: 'grant-request-1',
+        })).rejects.toThrow(/immutable debt balance/i);
 
         expect(h.tx.tenant.update).not.toHaveBeenCalled();
         expect(h.tx.creditTransaction.create).not.toHaveBeenCalled();
@@ -250,7 +371,7 @@ describe('MeteringService - transactional feature usage', () => {
             $queryRaw: vi.fn(),
             tenant: {
                 updateMany: vi.fn().mockResolvedValue({ count: 1 }),
-                findUniqueOrThrow: vi.fn().mockResolvedValue({ usageCredits: 4 }),
+                findUniqueOrThrow: vi.fn().mockResolvedValue({ usageCredits: 4, creditDebt: 0 }),
             },
             creditTransaction: {
                 create: vi.fn().mockResolvedValue({}),
@@ -272,12 +393,14 @@ describe('MeteringService - transactional feature usage', () => {
                 id: 'feature-usage-clock-in-op',
                 tenantId: 'tenant-1',
                 amount: -1,
+                debtAmount: 0,
                 reason: 'Time card clock-in (card-1)',
                 balanceAfter: 4,
+                debtAfter: 0,
             },
         });
         expect(tx.tenant.updateMany).toHaveBeenCalledWith({
-            where: { id: 'tenant-1', usageCredits: { gte: 1 } },
+            where: { id: 'tenant-1', creditDebt: 0, usageCredits: { gte: 1 } },
             data: { usageCredits: { decrement: 1 } },
         });
         expect(tx.$queryRaw.mock.invocationCallOrder[0]).toBeLessThan(
@@ -290,6 +413,41 @@ describe('MeteringService - transactional feature usage', () => {
             tx.creditTransaction.create.mock.invocationCallOrder[0],
         );
         expect(result).toEqual({ consumedCredits: 1, newBalance: 4 });
+    });
+
+    it('records a caller-owned deterministic debit identity without changing its format', async () => {
+        const tx: any = {
+            $executeRaw: vi.fn().mockResolvedValue(0),
+            $queryRaw: vi.fn(),
+            tenant: {
+                updateMany: vi.fn().mockResolvedValue({ count: 1 }),
+                findUniqueOrThrow: vi.fn().mockResolvedValue({ usageCredits: 3, creditDebt: 0 }),
+            },
+            creditTransaction: {
+                create: vi.fn().mockResolvedValue({}),
+                findUnique: vi.fn().mockResolvedValue(null),
+            },
+        };
+        const service = new MeteringService(new TenantPrismaService(buildPrismaMock() as any));
+
+        await expect(service.recordCreditDebitInTransaction(tx, {
+            tenantId: 'tenant-1',
+            cost: 2,
+            reason: 'Lunch/Break generation (request-1)',
+            transactionId: 'lunch-break-credit-request-1',
+        })).resolves.toEqual({ consumedCredits: 2, newBalance: 3 });
+
+        expect(tx.creditTransaction.create).toHaveBeenCalledWith({
+            data: {
+                id: 'lunch-break-credit-request-1',
+                tenantId: 'tenant-1',
+                amount: -2,
+                debtAmount: 0,
+                reason: 'Lunch/Break generation (request-1)',
+                balanceAfter: 3,
+                debtAfter: 0,
+            },
+        });
     });
 
     it.each(['plan', 'stripe', 'manual'] as const)('rejects legacy %s usage bypasses', async (source) => {
@@ -333,8 +491,10 @@ describe('MeteringService - transactional feature usage', () => {
                     id: 'feature-usage-clock-in-op',
                     tenantId: 'tenant-1',
                     amount: -1,
+                    debtAmount: 0,
                     reason: 'Time card clock-in (card-1)',
                     balanceAfter: 4,
+                    debtAfter: 0,
                 }),
                 create: vi.fn(),
             },
@@ -367,8 +527,10 @@ describe('MeteringService - transactional feature usage', () => {
                     id: 'feature-usage-clock-in-op',
                     tenantId: 'tenant-1',
                     amount: -2,
+                    debtAmount: 0,
                     reason: 'Different charge',
                     balanceAfter: 3,
+                    debtAfter: 0,
                 }),
                 create: vi.fn(),
             },
@@ -427,8 +589,10 @@ describe('MeteringService - transactional feature usage', () => {
                     id: 'feature-usage-clock-in-op',
                     tenantId: 'tenant-1',
                     amount: -1,
+                    debtAmount: 0,
                     reason: 'Time card clock-in (card-1)',
                     balanceAfter,
+                    debtAfter: 0,
                 }),
                 create: vi.fn(),
             },
@@ -442,6 +606,46 @@ describe('MeteringService - transactional feature usage', () => {
             reason: 'Time card clock-in (card-1)',
             operationId: 'clock-in-op',
         })).rejects.toThrow(/immutable settlement balance/i);
+
+        expect(tx.tenant.updateMany).not.toHaveBeenCalled();
+        expect(tx.creditTransaction.create).not.toHaveBeenCalled();
+    });
+
+    it.each([
+        [null, /immutable debt balance/i],
+        [-1, /immutable debt balance/i],
+        [1, /credit debt remained outstanding/i],
+        [1.5, /immutable debt balance/i],
+    ])('rejects malformed feature replay debt %#', async (debtAfter, expectedError) => {
+        const tx: any = {
+            $executeRaw: vi.fn().mockResolvedValue(0),
+            $queryRaw: vi.fn(),
+            tenant: {
+                updateMany: vi.fn(),
+                findUniqueOrThrow: vi.fn(),
+            },
+            creditTransaction: {
+                findUnique: vi.fn().mockResolvedValue({
+                    id: 'feature-usage-clock-in-op',
+                    tenantId: 'tenant-1',
+                    amount: -1,
+                    debtAmount: 0,
+                    reason: 'Time card clock-in (card-1)',
+                    balanceAfter: 4,
+                    debtAfter,
+                }),
+                create: vi.fn(),
+            },
+        };
+        const service = new MeteringService(new TenantPrismaService(buildPrismaMock() as any));
+
+        await expect(service.recordFeatureUsageInTransaction(tx, {
+            tenantId: 'tenant-1',
+            source: 'credits',
+            cost: 1,
+            reason: 'Time card clock-in (card-1)',
+            operationId: 'clock-in-op',
+        })).rejects.toThrow(expectedError);
 
         expect(tx.tenant.updateMany).not.toHaveBeenCalled();
         expect(tx.creditTransaction.create).not.toHaveBeenCalled();

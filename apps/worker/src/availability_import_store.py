@@ -330,29 +330,35 @@ def terminalize_import(
             )
             refund_id = f"feature-refund-availability-import:{payload.import_id}"
             cursor.execute(
-                'UPDATE "Tenant" SET "usageCredits" = "usageCredits" + %s, "updatedAt" = CURRENT_TIMESTAMP WHERE "id" = %s RETURNING "usageCredits"',
-                (refund_amount, payload.tenant_id),
-            )
-            wallet_row = cursor.fetchone()
-            if wallet_row is None or not _is_nonnegative_int(wallet_row[0]):
-                raise AvailabilityImportRejected("availability import refund wallet settlement failed")
-            refund_balance_after = int(wallet_row[0])
-            cursor.execute(
                 """
-                INSERT INTO "CreditTransaction" ("id", "tenantId", "amount", "reason", "balanceAfter", "createdAt")
-                VALUES (%s, %s, %s, %s, %s, CURRENT_TIMESTAMP)
-                ON CONFLICT ("id") DO NOTHING
-                RETURNING "id"
+                SELECT
+                    settlement."creditedValue",
+                    settlement."spendableAmount",
+                    settlement."repaidDebt",
+                    settlement."newBalance",
+                    settlement."debtAfter",
+                    settlement."replayed"
+                FROM public.settle_positive_credit_value(%s, %s, %s, %s) settlement
                 """,
                 (
-                    refund_id,
                     payload.tenant_id,
                     refund_amount,
                     f"Availability PDF import refund ({payload.import_id})",
-                    refund_balance_after,
+                    refund_id,
                 ),
             )
-            if cursor.fetchone() is None:
+            settlement = cursor.fetchone()
+            if (
+                settlement is None
+                or len(settlement) != 6
+                or settlement[0] != refund_amount
+                or not _is_nonnegative_int(settlement[1])
+                or not _is_nonnegative_int(settlement[2])
+                or int(settlement[1]) + int(settlement[2]) != refund_amount
+                or not _is_nonnegative_int(settlement[3])
+                or not _is_nonnegative_int(settlement[4])
+                or settlement[5] is not False
+            ):
                 raise AvailabilityImportRejected("availability import refund settlement conflicted")
             cursor.execute(
                 """
@@ -721,7 +727,14 @@ def _lock_job(cursor: Any, payload: ImportPayload) -> LockedImportState | None:
                 WHERE credit."id" = 'feature-usage-availability-import:' || job."id"
             ) AS "debitTenantId",
             (
-                SELECT MIN(credit."amount") FROM "CreditTransaction" credit
+                SELECT MIN(
+                    CASE
+                        WHEN credit."debtAmount" = 0
+                         AND credit."debtAfter" = 0
+                        THEN credit."amount"
+                        ELSE NULL
+                    END
+                ) FROM "CreditTransaction" credit
                 WHERE credit."id" = 'feature-usage-availability-import:' || job."id"
             ) AS "debitAmount",
             (
@@ -741,7 +754,15 @@ def _lock_job(cursor: Any, payload: ImportPayload) -> LockedImportState | None:
                 WHERE refund."id" = 'feature-refund-availability-import:' || job."id"
             ) AS "refundTenantId",
             (
-                SELECT MIN(refund."amount") FROM "CreditTransaction" refund
+                SELECT MIN(
+                    CASE
+                        WHEN refund."amount" >= 0
+                         AND refund."debtAmount" <= 0
+                         AND refund."debtAfter" >= 0
+                        THEN refund."amount"::BIGINT - refund."debtAmount"::BIGINT
+                        ELSE NULL
+                    END
+                ) FROM "CreditTransaction" refund
                 WHERE refund."id" = 'feature-refund-availability-import:' || job."id"
             ) AS "refundAmount",
             (

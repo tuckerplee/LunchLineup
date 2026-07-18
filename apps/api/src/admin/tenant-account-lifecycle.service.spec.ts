@@ -63,11 +63,11 @@ function addTransactionMock<T extends Record<string, any>>(prisma: T): T {
         if (sql.includes('COUNT(*)::integer FROM refund_candidates')) {
             return [{
                 candidateCount: 0,
-                insertedCount: 0,
+                settledCount: 0,
+                replayedCount: 0,
                 lockedWebhookCount: 0,
                 refundableWebhookCount: 0,
                 terminalizedWebhookCount: 0,
-                walletUpdateCount: 0,
             }];
         }
         return [{
@@ -632,8 +632,9 @@ describe('TenantAccountLifecycleService deletion saga', () => {
         expect(sql).toContain(`THEN -debit."amount" = (job."creditConsumption"->>'consumedCredits')::integer`);
         expect(sql).toContain('-debit."amount" AS "amount"');
         expect(sql).toContain(`'schedule-credit-refund-' || "id"`);
-        expect(sql).toContain('ON CONFLICT ("id") DO NOTHING');
-        expect(sql).toContain('tenant."usageCredits" + refund_totals."amount"');
+        expect(sql).toContain('public.settle_positive_credit_value(');
+        expect(sql).toContain('settlement."creditedValue" = candidate."amount"');
+        expect(sql).not.toContain('tenant."usageCredits" +');
         expect(rawCall).toContain('tenant-1');
     });
 

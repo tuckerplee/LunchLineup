@@ -269,7 +269,35 @@ describe('LunchBreaksService', () => {
             lockTenantInTransaction: vi.fn().mockResolvedValue(undefined),
             assertFeatureEnabledInTransaction: vi.fn().mockResolvedValue({ enabled: true, source: 'credits', creditCost: 2, reason: 'Billable' }),
             assertFeatureEntitledInTransaction: vi.fn().mockResolvedValue({ enabled: true, source: 'credits', creditCost: 2, reason: 'Entitled' }),
-            recordFeatureUsageInTransaction: vi.fn().mockResolvedValue({ consumedCredits: 2, newBalance: 98 }),
+            recordFeatureUsageInTransaction: vi.fn(async (
+                tx: any,
+                tenantId: string,
+                resolution: { creditCost: number },
+                reason: string,
+                _operationId: string,
+                transactionId?: string,
+            ) => {
+                const cost = Number(resolution.creditCost);
+                if (!transactionId?.startsWith('lunch-break-credit-')) {
+                    return { consumedCredits: cost, newBalance: 98 };
+                }
+                if (prisma.state.usageCredits < cost) {
+                    throw new ForbiddenException('Insufficient usage credits balance.');
+                }
+                prisma.state.usageCredits -= cost;
+                await tx.creditTransaction.create({
+                    data: {
+                        id: transactionId,
+                        tenantId,
+                        amount: -cost,
+                        debtAmount: 0,
+                        reason,
+                        balanceAfter: prisma.state.usageCredits,
+                        debtAfter: 0,
+                    },
+                });
+                return { consumedCredits: cost, newBalance: prisma.state.usageCredits };
+            }),
             resolveTenantFeatures: vi.fn().mockResolvedValue({
                 features: { lunch_breaks: { enabled: true, source: 'credits', creditCost: 2 } },
                 usageCredits: 100,

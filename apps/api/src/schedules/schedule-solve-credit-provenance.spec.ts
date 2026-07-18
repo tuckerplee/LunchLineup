@@ -8,12 +8,16 @@ const debit = {
     id: 'schedule-credit-job-1',
     tenantId: 'tenant-1',
     amount: -1,
+    debtAmount: 0,
+    debtAfter: 0,
     reason: 'Schedule generation (job-1)',
 };
 const refund = {
     id: 'schedule-credit-refund-job-1',
     tenantId: 'tenant-1',
     amount: 1,
+    debtAmount: 0,
+    debtAfter: 0,
     reason: 'Schedule generation refund (job-1)',
 };
 
@@ -37,11 +41,20 @@ describe('schedule solve credit provenance', () => {
         expect(validate('DEAD_LETTERED', [debit, refund]).refund.count).toBe(1);
     });
 
+    it('accepts a refund that repaid debt before exposing spendable value', () => {
+        expect(validate('FAILED', [
+            debit,
+            { ...refund, amount: 0, debtAmount: -1 },
+        ]).refund.count).toBe(1);
+    });
+
     it.each([
         ['wrong debit reason', [{ ...debit, reason: 'Schedule generation' }]],
         ['missing debit', []],
         ['duplicate debit', [debit, debit]],
         ['debit plus refund while active', [debit, refund]],
+        ['debit with a debt delta', [{ ...debit, debtAmount: -1 }]],
+        ['debit with outstanding debt', [{ ...debit, debtAfter: 1 }]],
     ])('rejects %s', (_label, rows) => {
         expect(() => validate('QUEUED', rows)).toThrow(/provenance|cannot coexist/i);
     });
@@ -60,6 +73,8 @@ describe('schedule solve credit provenance', () => {
     it('rejects terminal replay with missing or mismatched refund provenance', () => {
         expect(() => validate('FAILED')).toThrow(/refund provenance/i);
         expect(() => validate('FAILED', [debit, { ...refund, amount: 2 }])).toThrow(/refund provenance/i);
+        expect(() => validate('FAILED', [debit, { ...refund, amount: 0, debtAmount: 1 }])).toThrow(/refund provenance/i);
+        expect(() => validate('FAILED', [debit, { ...refund, debtAfter: -1 }])).toThrow(/refund provenance/i);
         expect(() => validate('SUCCEEDED', [debit, refund])).toThrow(/cannot coexist/i);
     });
 });

@@ -26,13 +26,17 @@ function refundState(overrides: Record<string, unknown> = {}) {
         debitCount: 1,
         debitTenantId: 'tenant-1',
         debitAmount: -1,
+        debitDebtAmount: 0,
         debitReason: 'Schedule generation (job-1)',
         debitBalanceAfter: 0,
+        debitDebtAfter: 0,
         refundCount: 0,
         refundTenantId: null as string | null,
         refundAmount: null as number | null,
+        refundDebtAmount: null as number | null,
         refundReason: null as string | null,
         refundBalanceAfter: null as number | null,
+        refundDebtAfter: null as number | null,
         walletBalance: 0,
         executionToken: null as string | null,
         executionLeaseUntil: null as Date | null,
@@ -45,8 +49,10 @@ type ClaimDebitFixture = {
     id: string;
     tenantId: string;
     amount: number;
+    debtAmount?: number;
     reason: string;
     balanceAfter: number | null;
+    debtAfter?: number;
 };
 
 function harness(
@@ -56,8 +62,10 @@ function harness(
         id: 'schedule-credit-job-1',
         tenantId: 'tenant-1',
         amount: -1,
+        debtAmount: 0,
         reason: 'Schedule generation (job-1)',
         balanceAfter: 0,
+        debtAfter: 0,
     }],
     publisherOptions: { transportDeadlineMs?: number } = {},
 ) {
@@ -68,7 +76,9 @@ function harness(
     const platformTx = {
         $queryRaw: vi.fn(async (query: { sql?: string; values?: unknown[] }) => {
             const sql = query.sql ?? '';
-            if (sql.includes('FROM "CreditTransaction"')) return claimDebits;
+            if (sql.includes('FROM "CreditTransaction"')) {
+                return claimDebits.map((row) => ({ debtAmount: 0, debtAfter: 0, ...row }));
+            }
             if (sql.includes('UPDATE "ScheduleSolveJob" AS job')) {
                 return rows.filter((row) => (query.values ?? []).includes(row.id));
             }
@@ -108,6 +118,8 @@ function harness(
                 && state.debitCount === 1
                 && state.debitTenantId === 'tenant-1'
                 && state.debitAmount === -1
+                && state.debitDebtAmount === 0
+                && state.debitDebtAfter === 0
                 && state.debitReason === 'Schedule generation (job-1)'
                 && state.debitBalanceAfter === metadata.newBalance;
             const canSettle = !['SUCCEEDED', 'FAILED', 'DEAD_LETTERED'].includes(initialStatus)
@@ -122,13 +134,17 @@ function harness(
                 debitCount: state.debitCount,
                 debitTenantId: state.debitTenantId,
                 debitAmount: state.debitAmount,
+                debitDebtAmount: state.debitDebtAmount,
                 debitReason: state.debitReason,
                 debitBalanceAfter: state.debitBalanceAfter,
+                debitDebtAfter: state.debitDebtAfter,
                 refundCount: state.refundCount,
                 refundTenantId: state.refundTenantId,
                 refundAmount: state.refundAmount,
+                refundDebtAmount: state.refundDebtAmount,
                 refundReason: state.refundReason,
                 refundBalanceAfter: state.refundBalanceAfter,
+                refundDebtAfter: state.refundDebtAfter,
                 terminalizedCount: canSettle ? 1 : 0,
                 insertedRefundCount: canSettle ? 1 : 0,
                 insertedRefundBalanceAfter: canSettle
@@ -142,8 +158,10 @@ function harness(
                 state.refundCount = 1;
                 state.refundTenantId = 'tenant-1';
                 state.refundAmount = 1;
+                state.refundDebtAmount = 0;
                 state.refundReason = 'Schedule generation refund (job-1)';
                 state.refundBalanceAfter = state.walletBalance;
+                state.refundDebtAfter = 0;
                 state.executionToken = null;
                 state.executionLeaseUntil = null;
                 state.walletUpdates += 1;
@@ -269,11 +287,11 @@ describe('ScheduleSolveOutboxPublisher', () => {
         expect(sql).toContain('"status" NOT IN (\'SUCCEEDED\', \'FAILED\', \'DEAD_LETTERED\')');
         expect(sql).toContain('debit."amount" = -job."configuredAmount"');
         expect(sql).toContain('-provenance."debitAmount"');
-        expect(sql).toContain('INSERT INTO "CreditTransaction"');
-        expect(sql).toContain('ON CONFLICT ("id") DO NOTHING');
-        expect(sql).toContain('UPDATE "Tenant" tenant');
-        expect(sql).toContain('FROM updated_wallet wallet');
-        expect(sql).toContain('"balanceAfter"');
+        expect(sql).toContain('public.settle_positive_credit_value');
+        expect(sql).toContain('CROSS JOIN LATERAL');
+        expect(sql).toContain('"newBalance"');
+        expect(sql).not.toContain('INSERT INTO "CreditTransaction"');
+        expect(sql).not.toContain('UPDATE "Tenant" tenant');
         expect(query?.values).toContain('schedule-credit-refund-job-1');
         expect(h.refundState.walletUpdates).toBe(1);
     });
@@ -494,8 +512,10 @@ describe('ScheduleSolveOutboxPublisher', () => {
             refundCount: 1,
             refundTenantId: 'tenant-1',
             refundAmount: 1,
+            refundDebtAmount: 0,
             refundReason: 'Schedule generation refund (job-1)',
             refundBalanceAfter: 1,
+            refundDebtAfter: 0,
         });
         const valid = harness([publication(3)], settled);
         await expect((valid.publisher as any).terminalizeFailedPublication(
@@ -508,8 +528,10 @@ describe('ScheduleSolveOutboxPublisher', () => {
             refundCount: 1,
             refundTenantId: 'tenant-1',
             refundAmount: 1,
+            refundDebtAmount: 0,
             refundReason: 'Wrong refund reason',
             refundBalanceAfter: 1,
+            refundDebtAfter: 0,
         }));
         await expect((invalid.publisher as any).terminalizeFailedPublication(
             publication(3),

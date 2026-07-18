@@ -261,13 +261,17 @@ describe("anonymizeDeletedUser", () => {
             debitCount: 1,
             debitTenantId: "tenant-1",
             debitAmount: -1,
+            debitDebtAmount: 0,
             debitReason: "Availability PDF import (import-1)",
             debitBalanceAfter: 5,
+            debitDebtAfter: 0,
             refundCount: 0,
             refundTenantId: null,
             refundAmount: null,
+            refundDebtAmount: null,
             refundReason: null,
             refundBalanceAfter: null,
+            refundDebtAfter: null,
           },
           {
             id: "import-2",
@@ -277,13 +281,17 @@ describe("anonymizeDeletedUser", () => {
             debitCount: 1,
             debitTenantId: "tenant-1",
             debitAmount: -1,
+            debitDebtAmount: 0,
             debitReason: "Availability PDF import (import-2)",
             debitBalanceAfter: 4,
+            debitDebtAfter: 0,
             refundCount: 0,
             refundTenantId: null,
             refundAmount: null,
+            refundDebtAmount: null,
             refundReason: null,
             refundBalanceAfter: null,
+            refundDebtAfter: null,
           },
           {
             id: "import-3",
@@ -293,17 +301,28 @@ describe("anonymizeDeletedUser", () => {
             debitCount: 1,
             debitTenantId: "tenant-1",
             debitAmount: -1,
+            debitDebtAmount: 0,
             debitReason: "Availability PDF import (import-3)",
             debitBalanceAfter: 3,
+            debitDebtAfter: 0,
             refundCount: 1,
             refundTenantId: "tenant-1",
-            refundAmount: 1,
+            refundAmount: 0,
+            refundDebtAmount: -1,
             refundReason: "Availability PDF import refund (import-3)",
             refundBalanceAfter: 4,
+            refundDebtAfter: 0,
           },
         ])
-        .mockResolvedValueOnce([{ usageCredits: 6 }])
-        .mockResolvedValueOnce([{ amount: 1, balanceAfter: 6 }])
+        .mockResolvedValueOnce([{
+          transactionId: "feature-refund-availability-import:import-1",
+          creditedValue: 1,
+          spendableAmount: 0,
+          repaidDebt: 1,
+          newBalance: 5,
+          debtAfter: 2,
+          replayed: false,
+        }])
         .mockResolvedValueOnce([])
         .mockResolvedValueOnce([]),
       $executeRaw: vi.fn().mockResolvedValue(2),
@@ -443,22 +462,21 @@ describe("anonymizeDeletedUser", () => {
       ],
       refundedAvailabilityImportCredits: 2,
     });
-    const walletQuery = tx.$queryRaw.mock.calls[3][0];
-    expect(walletQuery.strings.join(" ")).toContain('UPDATE "Tenant"');
-    expect(walletQuery.strings.join(" ")).toContain('RETURNING "usageCredits"');
-    const refundQuery = tx.$queryRaw.mock.calls[4][0];
-
-    expect(refundQuery.values).toContain(
+    const settlementQuery = tx.$queryRaw.mock.calls[3][0];
+    expect(settlementQuery.strings.join(" ")).toContain(
+      "public.settle_positive_credit_value",
+    );
+    expect(settlementQuery.strings.join(" ")).not.toContain('UPDATE "Tenant"');
+    expect(settlementQuery.strings.join(" ")).not.toContain('INSERT INTO "CreditTransaction"');
+    expect(settlementQuery.values).toContain(
       "feature-refund-availability-import:import-1",
     );
-    expect(refundQuery.values).not.toContain(
+    expect(settlementQuery.values).not.toContain(
       "feature-refund-availability-import:import-2",
     );
-    expect(refundQuery.values).not.toContain(
+    expect(settlementQuery.values).not.toContain(
       "feature-refund-availability-import:import-3",
     );
-    expect(refundQuery.strings.join(" ")).toContain('"balanceAfter"');
-    expect(refundQuery.values).toContain(6);
     expect(tx.availabilityImportJob.updateMany).toHaveBeenNthCalledWith(3, {
       where: { tenantId: "tenant-1", requestedByUserId: "user-1" },
       data: { requestedByUserId: null },
@@ -529,10 +547,14 @@ describe("anonymizeDeletedUser", () => {
           debitCount: 1,
           debitTenantId: "tenant-1",
           debitAmount: -1,
+          debitDebtAmount: 0,
           debitReason: "Availability PDF import (import-1)",
+          debitDebtAfter: 0,
           refundTenantId: "tenant-1",
           refundAmount: 1,
+          refundDebtAmount: 0,
           refundReason: "Availability PDF import refund (import-1)",
+          refundDebtAfter: 0,
           ...overrides,
         }]),
       availabilityImportJob: { updateMany: vi.fn() },

@@ -43,6 +43,7 @@ function buildHarness(options: {
         status: TenantStatus.ACTIVE,
         deletedAt: null,
         usageCredits: 0,
+        creditDebt: 0,
         stripeCustomerId: 'cus_tenant_1',
         stripeSubscriptionId: 'sub_tenant_1',
         stripeSubscriptionCurrentPeriodEnd: new Date('2099-01-01T00:00:00.000Z'),
@@ -100,9 +101,14 @@ function buildHarness(options: {
             findUnique: vi.fn(async (args: any) => (
                 args.where?.id === tenant.id ? tenant : null
             )),
-            updateMany: vi.fn(async (args: any) => {
+            findUniqueOrThrow: vi.fn(async (args: any) => {
+                if (args.where?.id !== tenant.id) throw new Error('Tenant not found');
+                return tenant;
+            }),
+            update: vi.fn(async (args: any) => {
                 tenant.usageCredits += args.data?.usageCredits?.increment ?? 0;
-                return { count: 1 };
+                tenant.creditDebt -= args.data?.creditDebt?.decrement ?? 0;
+                return tenant;
             }),
         },
         billingEvent: {
@@ -218,7 +224,7 @@ function buildHarness(options: {
 
 function expectNoGrant(harness: ReturnType<typeof buildHarness>) {
     expect(harness.tx.creditTransaction.create).not.toHaveBeenCalled();
-    expect(harness.tx.tenant.updateMany).not.toHaveBeenCalled();
+    expect(harness.tx.tenant.update).not.toHaveBeenCalled();
 }
 
 function refundFor(
@@ -517,19 +523,58 @@ describe('StripeCreditPurchaseService fulfillment verification', () => {
                 id: 'stripe-credit-purchase-cs_credit_1',
                 tenantId: 'tenant-1',
                 amount: 100,
+                debtAmount: 0,
                 reason: 'Stripe credit pack purchase CREDITS_100',
                 balanceAfter: 100,
+                debtAfter: 0,
             },
+            select: { id: true },
         });
-        expect(harness.tx.tenant.updateMany).toHaveBeenCalledWith({
-            where: {
-                id: 'tenant-1',
-                status: TenantStatus.ACTIVE,
-                deletedAt: null,
-                stripeCustomerId: 'cus_tenant_1',
-                stripeSubscriptionId: 'sub_tenant_1',
+        expect(harness.tx.tenant.update).toHaveBeenCalledWith({
+            where: { id: 'tenant-1' },
+            data: {
+                usageCredits: { increment: 100 },
+                creditDebt: { decrement: 0 },
             },
-            data: { usageCredits: { increment: 100 } },
+            select: { usageCredits: true, creditDebt: true },
+        });
+    });
+
+    it('repays outstanding credit debt before exposing purchased credits', async () => {
+        const harness = buildHarness({
+            tenant: { usageCredits: 10, creditDebt: 40 },
+        });
+
+        await expect(harness.service.handleCheckoutSessionCompleted(checkoutEvent()))
+            .resolves.toEqual({
+                transactionId: 'stripe-credit-purchase-cs_credit_1',
+                newBalance: 70,
+                replayed: false,
+            });
+
+        expect(harness.tenant).toEqual(expect.objectContaining({
+            usageCredits: 70,
+            creditDebt: 0,
+        }));
+        expect(harness.tx.tenant.update).toHaveBeenCalledWith({
+            where: { id: 'tenant-1' },
+            data: {
+                usageCredits: { increment: 60 },
+                creditDebt: { decrement: 40 },
+            },
+            select: { usageCredits: true, creditDebt: true },
+        });
+        expect(harness.tx.creditTransaction.create).toHaveBeenCalledWith({
+            data: {
+                id: 'stripe-credit-purchase-cs_credit_1',
+                tenantId: 'tenant-1',
+                amount: 60,
+                debtAmount: -40,
+                reason: 'Stripe credit pack purchase CREDITS_100',
+                balanceAfter: 70,
+                debtAfter: 0,
+            },
+            select: { id: true },
         });
     });
 
@@ -551,7 +596,7 @@ describe('StripeCreditPurchaseService fulfillment verification', () => {
         await harness.service.handleCheckoutSessionCompleted(checkoutEvent('evt_legacy_price'));
 
         expect(harness.tx.creditTransaction.create).toHaveBeenCalledOnce();
-        expect(harness.tx.tenant.updateMany).toHaveBeenCalledOnce();
+        expect(harness.tx.tenant.update).toHaveBeenCalledOnce();
         expect(harness.stripe.refunds.create).not.toHaveBeenCalled();
         expect(harness.stripe.prices.retrieve).not.toHaveBeenCalled();
     });
@@ -732,7 +777,7 @@ describe('StripeCreditPurchaseService fulfillment verification', () => {
         await harness.service.handleCheckoutSessionCompleted(checkoutEvent());
 
         expect(harness.tx.creditTransaction.create).toHaveBeenCalledOnce();
-        expect(harness.tx.tenant.updateMany).toHaveBeenCalledOnce();
+        expect(harness.tx.tenant.update).toHaveBeenCalledOnce();
     });
 
     it('uses the Checkout Session ledger identity to resist replay under another event ID', async () => {
@@ -747,10 +792,13 @@ describe('StripeCreditPurchaseService fulfillment verification', () => {
             });
 
         expect(harness.tx.creditTransaction.create).toHaveBeenCalledOnce();
-        expect(harness.tx.tenant.updateMany).toHaveBeenCalledOnce();
+        expect(harness.tx.tenant.update).toHaveBeenCalledOnce();
         expect(harness.tenant.usageCredits).toBe(137);
-        expect(harness.tx.tenant.updateMany).toHaveBeenCalledWith(expect.objectContaining({
-            data: { usageCredits: { increment: 100 } },
+        expect(harness.tx.tenant.update).toHaveBeenCalledWith(expect.objectContaining({
+            data: {
+                usageCredits: { increment: 100 },
+                creditDebt: { decrement: 0 },
+            },
         }));
     });
 
@@ -760,6 +808,8 @@ describe('StripeCreditPurchaseService fulfillment verification', () => {
         ['fractional balance', { balanceAfter: 1.5 }],
         ['wrong tenant', { tenantId: 'tenant-other', balanceAfter: 100 }],
         ['wrong amount', { amount: 500, balanceAfter: 100 }],
+        ['positive debt amount', { debtAmount: 1 }],
+        ['missing debt balance', { debtAfter: null }],
         ['wrong reason', { reason: 'Unattributed credit', balanceAfter: 100 }],
     ])('rejects a malformed legacy purchase settlement with %s', async (_label, override) => {
         const harness = buildHarness();
@@ -767,13 +817,16 @@ describe('StripeCreditPurchaseService fulfillment verification', () => {
             id: 'stripe-credit-purchase-cs_credit_1',
             tenantId: 'tenant-1',
             amount: 100,
+            debtAmount: 0,
             reason: 'Stripe credit pack purchase CREDITS_100',
+            balanceAfter: 100,
+            debtAfter: 0,
             ...override,
         });
 
         await expect(harness.service.handleCheckoutSessionCompleted(checkoutEvent('evt_legacy_replay')))
             .rejects.toThrow('settlement is malformed or mismatched');
-        expect(harness.tx.tenant.updateMany).not.toHaveBeenCalled();
+        expect(harness.tx.tenant.update).not.toHaveBeenCalled();
         expect(harness.tx.creditTransaction.create).not.toHaveBeenCalled();
     });
 
@@ -783,8 +836,10 @@ describe('StripeCreditPurchaseService fulfillment verification', () => {
             id: 'stripe-credit-purchase-cs_credit_1',
             tenantId: 'tenant-1',
             amount: 100,
+            debtAmount: 0,
             reason: 'Stripe credit pack purchase CREDITS_100',
             balanceAfter: 100,
+            debtAfter: 0,
         });
         harness.billingEvents.push({
             id: (harness.service as any).refundTerminalEventId('cs_credit_1'),
@@ -800,7 +855,7 @@ describe('StripeCreditPurchaseService fulfillment verification', () => {
 
         await expect(harness.service.handleCheckoutSessionCompleted(checkoutEvent('evt_conflict')))
             .rejects.toThrow('conflicting terminal outcomes');
-        expect(harness.tx.tenant.updateMany).not.toHaveBeenCalled();
+        expect(harness.tx.tenant.update).not.toHaveBeenCalled();
         expect(harness.tx.creditTransaction.create).not.toHaveBeenCalled();
     });
 
@@ -874,7 +929,7 @@ describe('StripeCreditPurchaseService fulfillment verification', () => {
         await harness.service.handleCheckoutSessionCompleted(paid);
 
         expect(harness.tx.creditTransaction.create).toHaveBeenCalledOnce();
-        expect(harness.tx.tenant.updateMany).toHaveBeenCalledOnce();
+        expect(harness.tx.tenant.update).toHaveBeenCalledOnce();
         expect(harness.stripe.refunds.create).not.toHaveBeenCalled();
         expect(harness.billingEvents.filter((event) =>
             event.metadata?.outcomeState === 'complete'
@@ -1172,13 +1227,13 @@ describe('StripeCreditPurchaseService failure behavior', () => {
         expectNoGrant(harness);
     });
 
-    it('fails the transaction when the verified tenant balance cannot be conditionally incremented', async () => {
-        const harness = buildHarness();
-        harness.tx.tenant.updateMany.mockResolvedValue({ count: 0 });
+    it('fails the transaction before mutation when the tenant debt state is invalid', async () => {
+        const harness = buildHarness({ tenant: { creditDebt: -1 } });
 
         await expect(harness.service.handleCheckoutSessionCompleted(checkoutEvent()))
-            .rejects.toThrow('Tenant credit balance changed during purchase verification');
+            .rejects.toThrow('invalid debt balance');
 
+        expect(harness.tx.tenant.update).not.toHaveBeenCalled();
         expect(harness.tx.creditTransaction.create).not.toHaveBeenCalled();
         expect(harness.logger.log).not.toHaveBeenCalledWith(expect.stringContaining('granted'));
     });

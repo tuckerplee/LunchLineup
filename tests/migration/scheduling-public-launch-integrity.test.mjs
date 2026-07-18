@@ -83,16 +83,18 @@ test('terminal schedule solve failures refund consumed wallet credits exactly on
   for (const source of [worker, migration]) {
     assert.match(source, /schedule-credit-refund-/);
     assert.match(source, /schedule-credit-/);
-    assert.match(source, /INSERT INTO "CreditTransaction"/);
-    assert.match(source, /UPDATE "Tenant"/);
     assert.match(source, /"creditConsumption"->>'source' = 'credits'/);
     assert.match(source, /debit\."amount"/);
   }
+  assert.match(migration, /INSERT INTO "CreditTransaction"/);
+  assert.match(migration, /UPDATE "Tenant"/);
   assert.match(migration, /ON CONFLICT \("id"\) DO NOTHING/);
+  assert.match(worker, /public\.settle_positive_credit_value/);
+  assert.match(worker, /debit\."debtAmount" = 0/);
   assert.match(worker, /FOR UPDATE/);
   assert.match(worker, /\(SELECT COUNT\(\*\) FROM refund_rows\) = 0/);
   assert.match(worker, /job\."status" NOT IN \('SUCCEEDED', 'FAILED', 'DEAD_LETTERED'\)/);
-  assert.match(worker, /FROM updated_wallet wallet/);
+  assert.match(worker, /FROM settled_refund/);
   assert.match(worker, /status in \{"FAILED", "DEAD_LETTERED"\}/);
 });
 
@@ -112,8 +114,10 @@ test('permanent schedule publication failure terminalizes and refunds atomically
   assert.match(publisher, /"status" = 'FAILED'/);
   assert.match(publisher, /"status" NOT IN \('SUCCEEDED', 'FAILED', 'DEAD_LETTERED'\)/);
   assert.match(publisher, /schedule-credit-refund-/);
-  assert.match(publisher, /ON CONFLICT \("id"\) DO NOTHING/);
-  assert.match(publisher, /FROM inserted_refund/);
+  assert.match(publisher, /public\.settle_positive_credit_value/);
+  assert.match(publisher, /debit\."debtAmount" = 0/);
+  assert.match(publisher, /FROM settled_refund/);
+  assert.doesNotMatch(publisher, /FROM inserted_refund/);
 });
 
 test('malformed schedule paths remain nonterminal until exact authoritative settlement succeeds', () => {

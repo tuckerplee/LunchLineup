@@ -8,14 +8,18 @@ export type ScheduleSolveCreditRow = {
     id: string;
     tenantId: string;
     amount: number | bigint;
+    debtAmount: number | bigint | null;
     reason: string;
+    debtAfter: number | bigint | null;
 };
 
 export type ScheduleSolveCreditRowSummary = {
     count: number | bigint;
     tenantId: string | null;
     amount: number | bigint | null;
+    debtAmount: number | bigint | null;
     reason: string | null;
+    debtAfter: number | bigint | null;
 };
 
 export type ScheduleSolveCreditProvenance = {
@@ -52,18 +56,31 @@ export function assertScheduleSolveCreditProvenance(args: {
 }): ScheduleSolveCreditProvenance {
     const metadata = parseCreditConsumption(args.creditConsumption);
     const debitAmount = integer(args.debit.amount);
+    const debitDebtAmount = ledgerDebtAmount(args.debit.debtAmount);
+    const debitDebtAfter = ledgerDebtAfter(args.debit.debtAfter);
     const debitIsExact = count(args.debit.count) === 1
         && args.debit.tenantId === args.tenantId
         && debitAmount === -metadata.consumedCredits
+        && debitDebtAmount === 0
+        && debitDebtAfter === 0
         && args.debit.reason === `Schedule generation (${args.jobId})`;
     if (!debitIsExact) {
         throw new ScheduleSolveCreditProvenanceError('Schedule solve debit provenance is invalid.');
     }
 
     const refundCount = count(args.refund.count);
+    const refundAmount = integer(args.refund.amount);
+    const refundDebtAmount = ledgerDebtAmount(args.refund.debtAmount);
+    const refundDebtAfter = ledgerDebtAfter(args.refund.debtAfter);
     const refundIsExact = refundCount === 1
         && args.refund.tenantId === args.tenantId
-        && integer(args.refund.amount) === metadata.consumedCredits
+        && refundAmount !== null
+        && refundAmount >= 0
+        && refundDebtAmount !== null
+        && refundDebtAmount <= 0
+        && refundAmount - refundDebtAmount === metadata.consumedCredits
+        && refundDebtAfter !== null
+        && refundDebtAfter >= 0
         && args.refund.reason === `Schedule generation refund (${args.jobId})`;
 
     if (REFUNDED_STATUSES.has(args.status)) {
@@ -120,7 +137,9 @@ function summarize(rows: ScheduleSolveCreditRow[]): ScheduleSolveCreditRowSummar
         count: rows.length,
         tenantId: rows.length === 1 ? rows[0].tenantId : null,
         amount: rows.length === 1 ? rows[0].amount : null,
+        debtAmount: rows.length === 1 ? rows[0].debtAmount : null,
         reason: rows.length === 1 ? rows[0].reason : null,
+        debtAfter: rows.length === 1 ? rows[0].debtAfter : null,
     };
 }
 
@@ -133,4 +152,12 @@ function integer(value: number | bigint | null): number | null {
     if (value === null) return null;
     const parsed = Number(value);
     return Number.isSafeInteger(parsed) ? parsed : null;
+}
+
+function ledgerDebtAmount(value: number | bigint | null): number | null {
+    return integer(value);
+}
+
+function ledgerDebtAfter(value: number | bigint | null): number | null {
+    return integer(value);
 }

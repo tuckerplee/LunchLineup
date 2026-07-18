@@ -140,6 +140,8 @@ class TerminalState:
         self.refund_count = 0
         self.refund_attempts = 0
         self.wallet_updates = 0
+        self.credit_debt = 0
+        self.last_settlement = None
         self.transaction_lock = threading.Lock()
 
 
@@ -186,16 +188,24 @@ class TerminalCursor:
                 "Availability PDF import refund (import-1)" if self.state.refund_count else None,
                 5 if self.state.refund_count else None,
             )
-        elif compact.startswith('INSERT INTO "CreditTransaction"'):
+        elif "FROM public.settle_positive_credit_value" in compact:
             self.state.refund_attempts += 1
             if self.state.refund_count:
                 self.result = None
             else:
                 self.state.refund_count = 1
-                self.result = ("refund-1",)
-        elif compact.startswith('UPDATE "Tenant" SET "usageCredits"'):
-            self.state.wallet_updates += 1
-            self.result = (5,)
+                self.state.wallet_updates += 1
+                repaid_debt = min(self.state.credit_debt, 1)
+                spendable_amount = 1 - repaid_debt
+                self.state.last_settlement = (
+                    1,
+                    spendable_amount,
+                    repaid_debt,
+                    4 + spendable_amount,
+                    self.state.credit_debt - repaid_debt,
+                    False,
+                )
+                self.result = self.state.last_settlement
         elif compact.startswith('UPDATE "AvailabilityImportJob"'):
             self.state.status = params[0]
 
@@ -270,17 +280,15 @@ class LeaseRaceCursor:
                 refund[2] if refund else None,
                 refund[3] if refund else None,
             )
-        elif compact.startswith('INSERT INTO "CreditTransaction"'):
+        elif "FROM public.settle_positive_credit_value" in compact:
             self.state.refund_attempts += 1
-            refund_id, tenant_id, amount, reason, balance_after = params
+            tenant_id, amount, reason, refund_id = params
             if refund_id in self.state.ledger:
                 self.result = None
             else:
-                self.state.ledger[refund_id] = (tenant_id, amount, reason, balance_after)
-                self.result = (refund_id,)
-        elif compact.startswith('UPDATE "Tenant" SET "usageCredits"'):
-            self.state.wallet_updates += 1
-            self.result = (5,)
+                self.state.wallet_updates += 1
+                self.state.ledger[refund_id] = (tenant_id, amount, reason, 5)
+                self.result = (amount, amount, 0, 5, 0, False)
         elif compact.startswith('UPDATE "AvailabilityImportJob"'):
             if 'SET "status" = \'RUNNING\'' in compact:
                 self.state.status = "RUNNING"
@@ -820,6 +828,27 @@ class AvailabilityImportStoreTests(unittest.TestCase):
         self.assertIn('WHEN %s IS NULL THEN', terminal_sql)
         self.assertIn('"executionLeaseUntil" <= CURRENT_TIMESTAMP', terminal_sql)
         self.assertIn('ELSE "executionToken" = %s', terminal_sql)
+        self.assertIn('credit."debtAfter" = 0', inspect.getsource(availability_import_store._lock_job))
+        self.assertEqual(state.wallet_updates, 1)
+
+    def test_terminalization_repays_credit_debt_before_restoring_wallet_value(self):
+        state = TerminalState()
+        state.credit_debt = 1
+        payload = availability_import_store.ImportPayload("import-1", "tenant-1")
+
+        with patch.object(
+            availability_import_store,
+            "_connect",
+            return_value=FakeConnection(TerminalCursor(state)),
+        ):
+            availability_import_store.terminalize_import(
+                payload,
+                None,
+                "FAILED",
+                "EXPIRED",
+            )
+
+        self.assertEqual(state.last_settlement, (1, 0, 1, 4, 0, False))
         self.assertEqual(state.wallet_updates, 1)
 
     def test_tokenless_terminalization_requires_a_proven_expired_foreign_lease(self):

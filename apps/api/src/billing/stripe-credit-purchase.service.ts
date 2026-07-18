@@ -20,6 +20,7 @@ import {
     CreditPackMetadata,
     findCreditPack,
 } from './credit-packs.config';
+import { MeteringService } from './metering.service';
 import { resolveEffectiveTenantEntitlement } from './plan-definitions';
 import { stripeErrorLog } from './stripe-error-diagnostic';
 
@@ -103,13 +104,16 @@ const SUBSCRIPTION_PRICE_KEYS = [
 export class StripeCreditPurchaseService {
     private readonly logger = new Logger(StripeCreditPurchaseService.name);
     private readonly tenantDb: TenantPrismaService;
+    private readonly metering: MeteringService;
     private stripe: Stripe | null;
 
     constructor(
         private readonly configService: ConfigService,
         @Optional() tenantDb?: TenantPrismaService,
+        @Optional() metering?: MeteringService,
     ) {
         this.tenantDb = tenantDb ?? new TenantPrismaService(new PrismaClient());
+        this.metering = metering ?? new MeteringService(this.tenantDb);
         const apiKey = this.configService.get<string>('STRIPE_SECRET_KEY')?.trim();
         this.stripe = apiKey
             ? new Stripe(apiKey, { apiVersion: '2024-04-10' as any })
@@ -282,8 +286,10 @@ export class StripeCreditPurchaseService {
                 id: true,
                 tenantId: true,
                 amount: true,
+                debtAmount: true,
                 reason: true,
                 balanceAfter: true,
+                debtAfter: true,
             },
         });
         const recorded = await tx.billingEvent.findUnique({
@@ -441,43 +447,19 @@ export class StripeCreditPurchaseService {
     private async grantPurchase(
         tx: Prisma.TransactionClient,
         context: PurchaseContext,
-        tenant: TenantState,
+        _tenant: TenantState,
         pack: CreditPackConfig,
     ): Promise<CreditPackSettlementResult> {
-        const incremented = await tx.tenant.updateMany({
-            where: {
-                id: context.tenantId,
-                status: TenantStatus.ACTIVE,
-                deletedAt: null,
-                stripeCustomerId: tenant.stripeCustomerId,
-                stripeSubscriptionId: tenant.stripeSubscriptionId,
-            },
-            data: { usageCredits: { increment: pack.credits } },
-        });
-        if (incremented.count !== 1) {
-            throw new ServiceUnavailableException('Tenant credit balance changed during purchase verification');
-        }
-        const wallet = await tx.tenant.findUnique({
-            where: { id: context.tenantId },
-            select: { usageCredits: true },
-        });
-        if (!wallet || !Number.isSafeInteger(wallet.usageCredits) || wallet.usageCredits < 0) {
-            throw new ServiceUnavailableException('Tenant credit balance settlement is invalid');
-        }
-        const transactionId = this.purchaseTransactionId(context.sessionId);
-        await tx.creditTransaction.create({
-            data: {
-                id: transactionId,
-                tenantId: context.tenantId,
-                amount: pack.credits,
-                reason: `Stripe credit pack purchase ${pack.code}`,
-                balanceAfter: wallet.usageCredits,
-            },
+        const settlement = await this.metering.recordPositiveCreditSettlementInTransaction(tx, {
+            tenantId: context.tenantId,
+            amount: pack.credits,
+            reason: `Stripe credit pack purchase ${pack.code}`,
+            transactionId: this.purchaseTransactionId(context.sessionId),
         });
         return {
-            transactionId,
-            newBalance: wallet.usageCredits,
-            replayed: false,
+            transactionId: settlement.transactionId,
+            newBalance: settlement.newBalance,
+            replayed: settlement.replayed,
         };
     }
 
@@ -487,8 +469,10 @@ export class StripeCreditPurchaseService {
             id: string;
             tenantId: string;
             amount: number;
+            debtAmount: number;
             reason: string;
             balanceAfter: number | null;
+            debtAfter: number | null;
         },
         recorded: BillingEventRecord | null,
     ): CreditPackSettlementResult {
@@ -503,10 +487,16 @@ export class StripeCreditPurchaseService {
             || this.asString(context.session.metadata?.creditAmount) !== String(pack.credits)
             || existing.id !== this.purchaseTransactionId(context.sessionId)
             || existing.tenantId !== context.tenantId
-            || existing.amount !== pack.credits
+            || !Number.isSafeInteger(existing.amount)
+            || existing.amount < 0
+            || !Number.isSafeInteger(existing.debtAmount)
+            || existing.debtAmount > 0
+            || existing.amount - existing.debtAmount !== pack.credits
             || existing.reason !== expectedReason
             || !Number.isSafeInteger(existing.balanceAfter)
             || existing.balanceAfter! < 0
+            || !Number.isSafeInteger(existing.debtAfter)
+            || existing.debtAfter! < 0
             || this.metadataString(recorded?.metadata, 'source') !== 'stripe_credit_purchase'
             || this.metadataString(recorded?.metadata, 'outcomeState') !== 'complete'
             || this.metadataString(recorded?.metadata, 'disposition') !== 'applied'

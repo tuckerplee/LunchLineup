@@ -209,7 +209,7 @@ type CreateScheduleSolveJobArgs = {
 type CreditReservationArgs = {
     tenantId: string;
     jobId: string;
-    cost: number;
+    entitlement: FeatureResolution;
 };
 
 type StaffAvailabilityPayload = {
@@ -845,7 +845,7 @@ export class SchedulesController implements OnModuleInit, OnModuleDestroy {
                     tenantId,
                     "scheduling",
                 );
-            const schedulingCreditCost = this.requirePositiveAutoScheduleCredit(schedulingEntitlement);
+            this.requirePositiveAutoScheduleCredit(schedulingEntitlement);
             const schedule = await tx.schedule.findFirst({
                 where: { id, tenantId, deletedAt: null },
                 select: {
@@ -957,7 +957,7 @@ export class SchedulesController implements OnModuleInit, OnModuleDestroy {
             const creditConsumption = await this.reserveAutoScheduleCredit(tx, {
                 tenantId,
                 jobId,
-                cost: schedulingCreditCost,
+                entitlement: schedulingEntitlement,
             });
             await this.recordScheduleSolveJobCreditConsumptionInTransaction(tx, tenantId, jobId, creditConsumption);
             return {
@@ -1372,7 +1372,7 @@ export class SchedulesController implements OnModuleInit, OnModuleDestroy {
         const debitId = `schedule-credit-${job.id}`;
         const refundId = `schedule-credit-refund-${job.id}`;
         const creditRows = await tx.$queryRaw<ScheduleSolveSettlementRow[]>`
-            SELECT "id", "tenantId", "amount", "reason", "balanceAfter"
+            SELECT "id", "tenantId", "amount", "debtAmount", "reason", "balanceAfter", "debtAfter"
             FROM "CreditTransaction"
             WHERE "id" IN (${debitId}, ${refundId})
             ORDER BY "id" ASC
@@ -1430,33 +1430,21 @@ export class SchedulesController implements OnModuleInit, OnModuleDestroy {
         `;
     }
     private async reserveAutoScheduleCredit(tx: TenantPrismaTransaction, args: CreditReservationArgs): Promise<CreditConsumption> {
-        if (!Number.isSafeInteger(args.cost) || args.cost <= 0) {
-            throw new ForbiddenException("Auto-scheduling requires an active paid subscription and separately purchased usage credits.");
+        const settlement = await this.featureAccessService.recordFeatureUsageInTransaction(
+            tx,
+            args.tenantId,
+            args.entitlement,
+            `Schedule generation (${args.jobId})`,
+            args.jobId,
+            `schedule-credit-${args.jobId}`,
+        );
+        const newBalance = Number(settlement.newBalance);
+        if (!Number.isSafeInteger(newBalance) || newBalance < 0) {
+            throw new ConflictException("Auto-schedule credit settlement is invalid.");
         }
-        const rows = await tx.$queryRaw<Array<{ usageCredits: number }>>`
-            UPDATE "Tenant"
-            SET
-                "usageCredits" = "usageCredits" - ${args.cost},
-                "updatedAt" = CURRENT_TIMESTAMP
-            WHERE "id" = ${args.tenantId}
-              AND "usageCredits" >= ${args.cost}
-            RETURNING "usageCredits"
-        `;
-        if (!rows[0]) {
-            throw new ForbiddenException("Insufficient usage credits balance.");
-        }
-        await tx.creditTransaction.create({
-            data: {
-                id: `schedule-credit-${args.jobId}`,
-                tenantId: args.tenantId,
-                amount: -args.cost,
-                reason: `Schedule generation (${args.jobId})`,
-                balanceAfter: Number(rows[0].usageCredits),
-            },
-        });
         return {
-            consumedCredits: args.cost,
-            newBalance: Number(rows[0].usageCredits),
+            consumedCredits: settlement.consumedCredits,
+            newBalance,
             source: "credits",
         };
     }

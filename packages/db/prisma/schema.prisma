@@ -25,6 +25,7 @@ model Tenant {
   trialEndsAt                DateTime?
   gracePeriodEndsAt          DateTime?
   usageCredits               Int          @default(0) // Separately purchased or administratively granted credits
+  creditDebt                 Int          @default(0) // Refunded or disputed purchased credits already consumed
   createdAt                  DateTime     @default(now())
   updatedAt                  DateTime     @updatedAt
   deletedAt                  DateTime?
@@ -88,9 +89,11 @@ model PlanDefinition {
 model CreditTransaction {
   id           String   @id @default(uuid())
   tenantId     String
-  amount       Int // Positive for granted, negative for consumed
+  amount       Int // Wallet delta: positive for spendable grants, negative for consumed or clawed-back credits
+  debtAmount   Int      @default(0) // Debt delta: positive when incurred, negative when repaid
   reason       String // E.g. "Beta signup bonus", "Schedule Generation"
   balanceAfter Int? // Immutable settlement result; legacy rows remain nullable and cannot be replayed
+  debtAfter    Int? // Immutable debt result; the database fills omitted old-writer values
   createdAt    DateTime @default(now())
 
   tenant Tenant @relation(fields: [tenantId], references: [id])

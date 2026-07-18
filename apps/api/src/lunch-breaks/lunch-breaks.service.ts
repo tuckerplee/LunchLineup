@@ -203,7 +203,7 @@ type GenerationPrepared = {
 type CreditReservationArgs = {
     tenantId: string;
     requestId: string;
-    cost: number;
+    entitlement: FeatureResolution;
 };
 
 type SetupShiftsResponse = {
@@ -1399,14 +1399,14 @@ export class LunchBreaksService {
                 tenantId,
                 'lunch_breaks',
             );
-            const creditCost = this.requirePositiveGenerationCredit(entitlement);
+            this.requirePositiveGenerationCredit(entitlement);
             if (prepared.generated) {
                 await this.assertGeneratedShiftIdsPersistable(tx, tenantId, this.getGeneratedShiftIdsOrThrow(prepared.generated), prepared.calculationSnapshot);
             }
             const creditConsumption = await this.reserveGenerationCredit(tx, {
                 tenantId,
                 requestId: claim.requestId,
-                cost: creditCost,
+                entitlement,
             });
             const response = {
                 source: prepared.source,
@@ -1438,34 +1438,24 @@ export class LunchBreaksService {
         });
     }
     private async reserveGenerationCredit(tx: TenantPrismaTransaction, args: CreditReservationArgs): Promise<CreditConsumption> {
-        if (!Number.isSafeInteger(args.cost) || args.cost <= 0) {
-            throw new ForbiddenException('Lunch/break generation requires an active paid subscription and separately purchased usage credits.');
-        }
-        const rows = await tx.$queryRaw<Array<{ usageCredits: number }>>`
-            UPDATE "Tenant"
-            SET
-                "usageCredits" = "usageCredits" - ${args.cost},
-                "updatedAt" = CURRENT_TIMESTAMP
-            WHERE "id" = ${args.tenantId}
-              AND "usageCredits" >= ${args.cost}
-            RETURNING "usageCredits"
-        `;
-        if (!rows[0])
-            throw new ForbiddenException('Insufficient usage credits balance.');
-        const newBalance = Number(rows[0].usageCredits);
+        const transactionId = this.generationCreditTransactionId(args.requestId);
+        const settlement = await this.featureAccessService.recordFeatureUsageInTransaction(
+            tx,
+            args.tenantId,
+            args.entitlement,
+            `Lunch/Break generation (${args.requestId})`,
+            args.requestId,
+            transactionId,
+        );
+        const newBalance = Number(settlement.newBalance);
         if (!Number.isSafeInteger(newBalance) || newBalance < 0) {
             throw new ConflictException('Lunch/break generation credit settlement is invalid.');
         }
-        await tx.creditTransaction.create({
-            data: {
-                id: this.generationCreditTransactionId(args.requestId),
-                tenantId: args.tenantId,
-                amount: -args.cost,
-                reason: `Lunch/Break generation (${args.requestId})`,
-                balanceAfter: newBalance,
-            },
-        });
-        return { consumedCredits: args.cost, newBalance, source: 'credits' };
+        return {
+            consumedCredits: settlement.consumedCredits,
+            newBalance,
+            source: 'credits',
+        };
     }
     private requirePositiveGenerationCredit(entitlement: FeatureResolution): number {
         const creditCost = entitlement.creditCost;

@@ -105,11 +105,11 @@ type TenantDeletionBillingServiceOptions = {
 
 type TenantDeletionPaidWorkSettlementOutcome = {
     candidateCount: number | bigint;
-    insertedCount: number | bigint;
+    settledCount: number | bigint;
+    replayedCount: number | bigint;
     lockedWebhookCount: number | bigint;
     refundableWebhookCount: number | bigint;
     terminalizedWebhookCount: number | bigint;
-    walletUpdateCount: number | bigint;
 };
 
 export class TenantDeletionBillingService {
@@ -967,12 +967,7 @@ export class TenantDeletionBillingService {
     ): Promise<void> {
         await this.assertPaidWorkProvenanceForDeletion(tx, tenantId);
         const outcomes = await tx.$queryRaw<TenantDeletionPaidWorkSettlementOutcome[]>`
-            WITH locked_wallet AS MATERIALIZED (
-                SELECT tenant."id", tenant."usageCredits"
-                FROM "Tenant" tenant
-                WHERE tenant."id" = ${tenantId}
-                FOR UPDATE OF tenant
-            ), locked_webhook_deliveries AS MATERIALIZED (
+            WITH locked_webhook_deliveries AS MATERIALIZED (
                 SELECT delivery."id", delivery."tenantId", delivery."status"::text AS "status"
                 FROM "WebhookDelivery" delivery
                 WHERE delivery."tenantId" = ${tenantId}
@@ -1140,57 +1135,45 @@ export class TenantDeletionBillingService {
                     candidate."tenantId",
                     candidate."amount",
                     candidate."reason",
-                    wallet."usageCredits" + SUM(candidate."amount") OVER (
-                        PARTITION BY candidate."tenantId"
-                        ORDER BY candidate."id"
-                        ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
-                    )::integer AS "balanceAfter"
+                    settlement."transactionId",
+                    settlement."creditedValue",
+                    settlement."replayed"
                 FROM refund_candidates candidate
-                JOIN locked_wallet wallet ON wallet."id" = candidate."tenantId"
-            ), inserted_refunds AS (
-                INSERT INTO "CreditTransaction" (
-                    "id", "tenantId", "amount", "reason", "balanceAfter", "createdAt"
-                )
-                SELECT
-                    "id", "tenantId", "amount", "reason", "balanceAfter", ${completedAt}
-                FROM settled_refunds
-                ORDER BY "id"
-                ON CONFLICT ("id") DO NOTHING
-                RETURNING "tenantId", "amount", "balanceAfter"
-            ), refund_totals AS (
-                SELECT "tenantId", SUM("amount")::integer AS "amount"
-                FROM inserted_refunds
-                GROUP BY "tenantId"
-            ), updated_wallet AS (
-                UPDATE "Tenant" tenant
-                SET
-                    "usageCredits" = tenant."usageCredits" + refund_totals."amount",
-                    "updatedAt" = ${completedAt}
-                FROM refund_totals
-                WHERE tenant."id" = refund_totals."tenantId"
-                RETURNING tenant."id"
+                CROSS JOIN LATERAL public.settle_positive_credit_value(
+                    candidate."tenantId",
+                    candidate."amount",
+                    candidate."reason",
+                    candidate."id"
+                ) settlement
+                WHERE settlement."transactionId" = candidate."id"
+                  AND settlement."creditedValue" = candidate."amount"
+                ORDER BY candidate."id"
             )
             SELECT
                 (SELECT COUNT(*)::integer FROM refund_candidates) AS "candidateCount",
-                (SELECT COUNT(*)::integer FROM inserted_refunds) AS "insertedCount",
+                (SELECT COUNT(*)::integer FROM settled_refunds) AS "settledCount",
+                (
+                    SELECT COUNT(*)::integer
+                    FROM settled_refunds
+                    WHERE "replayed"
+                ) AS "replayedCount",
                 (SELECT COUNT(*)::integer FROM locked_webhook_deliveries) AS "lockedWebhookCount",
                 (SELECT COUNT(*)::integer FROM refundable_webhook_deliveries) AS "refundableWebhookCount",
-                (SELECT COUNT(*)::integer FROM terminalized_webhook_deliveries) AS "terminalizedWebhookCount",
-                (SELECT COUNT(*)::integer FROM updated_wallet) AS "walletUpdateCount"
+                (SELECT COUNT(*)::integer FROM terminalized_webhook_deliveries) AS "terminalizedWebhookCount"
         `;
         const outcome = outcomes[0];
         const candidateCount = this.nonnegativeCount(outcome?.candidateCount);
-        const insertedCount = this.nonnegativeCount(outcome?.insertedCount);
+        const settledCount = this.nonnegativeCount(outcome?.settledCount);
+        const replayedCount = this.nonnegativeCount(outcome?.replayedCount);
         const lockedWebhookCount = this.nonnegativeCount(outcome?.lockedWebhookCount);
         const refundableWebhookCount = this.nonnegativeCount(outcome?.refundableWebhookCount);
         const terminalizedWebhookCount = this.nonnegativeCount(outcome?.terminalizedWebhookCount);
-        const walletUpdateCount = this.nonnegativeCount(outcome?.walletUpdateCount);
         if (candidateCount === null
-            || insertedCount !== candidateCount
+            || settledCount !== candidateCount
+            || replayedCount !== 0
             || lockedWebhookCount === null
             || refundableWebhookCount !== lockedWebhookCount
-            || terminalizedWebhookCount !== lockedWebhookCount
-            || walletUpdateCount !== (candidateCount > 0 ? 1 : 0)) {
+            || terminalizedWebhookCount !== lockedWebhookCount) {
             throw new ConflictException('Tenant deletion paid-work refund settlement failed.');
         }
     }
@@ -1211,13 +1194,17 @@ export class TenantDeletionBillingService {
                        debit."count" AS "debitCount",
                        debit."tenantId" AS "debitTenantId",
                        debit."amount" AS "debitAmount",
+                       debit."debtAmount" AS "debitDebtAmount",
                        debit."reason" AS "debitReason",
                        debit."balanceAfter" AS "debitBalanceAfter",
+                       debit."debtAfter" AS "debitDebtAfter",
                        refund."count" AS "refundCount",
                        refund."tenantId" AS "refundTenantId",
                        refund."amount" AS "refundAmount",
+                       refund."debtAmount" AS "refundDebtAmount",
                        refund."reason" AS "refundReason",
-                       refund."balanceAfter" AS "refundBalanceAfter"
+                       refund."balanceAfter" AS "refundBalanceAfter",
+                       refund."debtAfter" AS "refundDebtAfter"
                 FROM (
                     SELECT job.*,
                            CASE
@@ -1252,8 +1239,10 @@ export class TenantDeletionBillingService {
                     SELECT COUNT(*)::integer AS "count",
                            MIN(ledger."tenantId") AS "tenantId",
                            MIN(ledger."amount") AS "amount",
+                           MIN(ledger."debtAmount") AS "debtAmount",
                            MIN(ledger."reason") AS "reason",
-                           MIN(ledger."balanceAfter") AS "balanceAfter"
+                           MIN(ledger."balanceAfter") AS "balanceAfter",
+                           MIN(ledger."debtAfter") AS "debtAfter"
                     FROM "CreditTransaction" ledger
                     WHERE ledger."id" = 'schedule-credit-' || configured."id"
                 ) debit
@@ -1261,8 +1250,10 @@ export class TenantDeletionBillingService {
                     SELECT COUNT(*)::integer AS "count",
                            MIN(ledger."tenantId") AS "tenantId",
                            MIN(ledger."amount") AS "amount",
+                           MIN(ledger."debtAmount") AS "debtAmount",
                            MIN(ledger."reason") AS "reason",
-                           MIN(ledger."balanceAfter") AS "balanceAfter"
+                           MIN(ledger."balanceAfter") AS "balanceAfter",
+                           MIN(ledger."debtAfter") AS "debtAfter"
                     FROM "CreditTransaction" ledger
                     WHERE ledger."id" = 'schedule-credit-refund-' || configured."id"
                 ) refund
@@ -1277,13 +1268,17 @@ export class TenantDeletionBillingService {
                        debit."count" AS "debitCount",
                        debit."tenantId" AS "debitTenantId",
                        debit."amount" AS "debitAmount",
+                       debit."debtAmount" AS "debitDebtAmount",
                        debit."reason" AS "debitReason",
                        debit."balanceAfter" AS "debitBalanceAfter",
+                       debit."debtAfter" AS "debitDebtAfter",
                        refund."count" AS "refundCount",
                        refund."tenantId" AS "refundTenantId",
                        refund."amount" AS "refundAmount",
+                       refund."debtAmount" AS "refundDebtAmount",
                        refund."reason" AS "refundReason",
-                       refund."balanceAfter" AS "refundBalanceAfter"
+                       refund."balanceAfter" AS "refundBalanceAfter",
+                       refund."debtAfter" AS "refundDebtAfter"
                 FROM (
                     SELECT job.*,
                            CASE
@@ -1318,8 +1313,10 @@ export class TenantDeletionBillingService {
                     SELECT COUNT(*)::integer AS "count",
                            MIN(ledger."tenantId") AS "tenantId",
                            MIN(ledger."amount") AS "amount",
+                           MIN(ledger."debtAmount") AS "debtAmount",
                            MIN(ledger."reason") AS "reason",
-                           MIN(ledger."balanceAfter") AS "balanceAfter"
+                           MIN(ledger."balanceAfter") AS "balanceAfter",
+                           MIN(ledger."debtAfter") AS "debtAfter"
                     FROM "CreditTransaction" ledger
                     WHERE ledger."id" = 'feature-usage-availability-import:' || configured."id"
                 ) debit
@@ -1327,8 +1324,10 @@ export class TenantDeletionBillingService {
                     SELECT COUNT(*)::integer AS "count",
                            MIN(ledger."tenantId") AS "tenantId",
                            MIN(ledger."amount") AS "amount",
+                           MIN(ledger."debtAmount") AS "debtAmount",
                            MIN(ledger."reason") AS "reason",
-                           MIN(ledger."balanceAfter") AS "balanceAfter"
+                           MIN(ledger."balanceAfter") AS "balanceAfter",
+                           MIN(ledger."debtAfter") AS "debtAfter"
                     FROM "CreditTransaction" ledger
                     WHERE ledger."id" = 'feature-refund-availability-import:' || configured."id"
                 ) refund
@@ -1343,20 +1342,26 @@ export class TenantDeletionBillingService {
                        debit."count" AS "debitCount",
                        debit."tenantId" AS "debitTenantId",
                        debit."amount" AS "debitAmount",
+                       debit."debtAmount" AS "debitDebtAmount",
                        debit."reason" AS "debitReason",
                        debit."balanceAfter" AS "debitBalanceAfter",
+                       debit."debtAfter" AS "debitDebtAfter",
                        refund."count" AS "refundCount",
                        refund."tenantId" AS "refundTenantId",
                        refund."amount" AS "refundAmount",
+                       refund."debtAmount" AS "refundDebtAmount",
                        refund."reason" AS "refundReason",
-                       refund."balanceAfter" AS "refundBalanceAfter"
+                       refund."balanceAfter" AS "refundBalanceAfter",
+                       refund."debtAfter" AS "refundDebtAfter"
                 FROM locked_webhook_deliveries delivery
                 CROSS JOIN LATERAL (
                     SELECT COUNT(*)::integer AS "count",
                            MIN(ledger."tenantId") AS "tenantId",
                            MIN(ledger."amount") AS "amount",
+                           MIN(ledger."debtAmount") AS "debtAmount",
                            MIN(ledger."reason") AS "reason",
-                           MIN(ledger."balanceAfter") AS "balanceAfter"
+                           MIN(ledger."balanceAfter") AS "balanceAfter",
+                           MIN(ledger."debtAfter") AS "debtAfter"
                     FROM "CreditTransaction" ledger
                     WHERE ledger."id" = 'feature-usage-webhook-delivery:' || delivery."id"
                 ) debit
@@ -1364,8 +1369,10 @@ export class TenantDeletionBillingService {
                     SELECT COUNT(*)::integer AS "count",
                            MIN(ledger."tenantId") AS "tenantId",
                            MIN(ledger."amount") AS "amount",
+                           MIN(ledger."debtAmount") AS "debtAmount",
                            MIN(ledger."reason") AS "reason",
-                           MIN(ledger."balanceAfter") AS "balanceAfter"
+                           MIN(ledger."balanceAfter") AS "balanceAfter",
+                           MIN(ledger."debtAfter") AS "debtAfter"
                     FROM "CreditTransaction" ledger
                     WHERE ledger."id" = 'feature-refund-webhook-delivery:' || delivery."id"
                 ) refund
@@ -1377,8 +1384,10 @@ export class TenantDeletionBillingService {
                    OR provenance."debitCount" <> 1
                    OR provenance."debitTenantId" IS DISTINCT FROM provenance."tenantId"
                    OR provenance."debitAmount" IS DISTINCT FROM -provenance."configuredAmount"
+                   OR provenance."debitDebtAmount" IS DISTINCT FROM 0
                    OR provenance."debitReason" IS DISTINCT FROM 'Schedule generation (' || provenance."id" || ')'
                    OR provenance."debitBalanceAfter" IS DISTINCT FROM provenance."configuredBalance"
+                   OR provenance."debitDebtAfter" IS DISTINCT FROM 0
                    OR (
                        provenance."status" IN ('FAILED', 'DEAD_LETTERED')
                        AND provenance."refundCount" <> 1
@@ -1396,10 +1405,17 @@ export class TenantDeletionBillingService {
                    )
                     OR (provenance."refundCount" = 1 AND (
                         provenance."refundTenantId" IS DISTINCT FROM provenance."tenantId"
-                       OR provenance."refundAmount" IS DISTINCT FROM provenance."configuredAmount"
+                       OR provenance."refundAmount" < 0
+                       OR provenance."refundDebtAmount" > 0
+                       OR (
+                           provenance."refundAmount"::bigint
+                           - provenance."refundDebtAmount"::bigint
+                       ) IS DISTINCT FROM provenance."configuredAmount"::bigint
                        OR provenance."refundReason" IS DISTINCT FROM 'Schedule generation refund (' || provenance."id" || ')'
                        OR provenance."refundBalanceAfter" IS NULL
                        OR provenance."refundBalanceAfter" < 0
+                       OR provenance."refundDebtAfter" IS NULL
+                       OR provenance."refundDebtAfter" < 0
                    ))
                 UNION ALL
                 SELECT 'availability_import'::text AS "jobType", provenance."id" AS "jobId"
@@ -1409,8 +1425,10 @@ export class TenantDeletionBillingService {
                    OR provenance."debitCount" <> 1
                    OR provenance."debitTenantId" IS DISTINCT FROM provenance."tenantId"
                    OR provenance."debitAmount" IS DISTINCT FROM -provenance."configuredAmount"
+                   OR provenance."debitDebtAmount" IS DISTINCT FROM 0
                    OR provenance."debitReason" IS DISTINCT FROM 'Availability PDF import (' || provenance."id" || ')'
                    OR provenance."debitBalanceAfter" IS DISTINCT FROM provenance."configuredBalance"
+                   OR provenance."debitDebtAfter" IS DISTINCT FROM 0
                    OR (
                        provenance."status" IN ('FAILED', 'DEAD_LETTERED', 'CANCELLED')
                        AND provenance."refundCount" <> 1
@@ -1429,10 +1447,17 @@ export class TenantDeletionBillingService {
                    )
                    OR (provenance."refundCount" = 1 AND (
                        provenance."refundTenantId" IS DISTINCT FROM provenance."tenantId"
-                       OR provenance."refundAmount" IS DISTINCT FROM provenance."configuredAmount"
+                       OR provenance."refundAmount" < 0
+                       OR provenance."refundDebtAmount" > 0
+                       OR (
+                           provenance."refundAmount"::bigint
+                           - provenance."refundDebtAmount"::bigint
+                       ) IS DISTINCT FROM provenance."configuredAmount"::bigint
                        OR provenance."refundReason" IS DISTINCT FROM 'Availability PDF import refund (' || provenance."id" || ')'
                        OR provenance."refundBalanceAfter" IS NULL
-                        OR provenance."refundBalanceAfter" < 0
+                       OR provenance."refundBalanceAfter" < 0
+                       OR provenance."refundDebtAfter" IS NULL
+                       OR provenance."refundDebtAfter" < 0
                     ))
                  UNION ALL
                  SELECT 'webhook_delivery'::text AS "jobType", provenance."id" AS "jobId"
@@ -1440,9 +1465,11 @@ export class TenantDeletionBillingService {
                  WHERE provenance."debitCount" <> 1
                     OR provenance."debitTenantId" IS DISTINCT FROM provenance."tenantId"
                     OR provenance."debitAmount" IS DISTINCT FROM ${-FEATURE_CREDIT_COST.webhooks}
+                    OR provenance."debitDebtAmount" IS DISTINCT FROM 0
                     OR provenance."debitReason" IS DISTINCT FROM 'Webhook delivery (' || provenance."id" || ')'
                     OR provenance."debitBalanceAfter" IS NULL
                     OR provenance."debitBalanceAfter" < 0
+                    OR provenance."debitDebtAfter" IS DISTINCT FROM 0
                     OR (
                         provenance."status" = 'DEAD_LETTERED'
                         AND provenance."refundCount" <> 1
@@ -1456,10 +1483,17 @@ export class TenantDeletionBillingService {
                     )
                     OR (provenance."refundCount" = 1 AND (
                         provenance."refundTenantId" IS DISTINCT FROM provenance."tenantId"
-                        OR provenance."refundAmount" IS DISTINCT FROM ${FEATURE_CREDIT_COST.webhooks}
+                        OR provenance."refundAmount" < 0
+                        OR provenance."refundDebtAmount" > 0
+                        OR (
+                            provenance."refundAmount"::bigint
+                            - provenance."refundDebtAmount"::bigint
+                        ) IS DISTINCT FROM ${FEATURE_CREDIT_COST.webhooks}::bigint
                         OR provenance."refundReason" IS DISTINCT FROM 'Webhook delivery refund (' || provenance."id" || ')'
                         OR provenance."refundBalanceAfter" IS NULL
                         OR provenance."refundBalanceAfter" < 0
+                        OR provenance."refundDebtAfter" IS NULL
+                        OR provenance."refundDebtAfter" < 0
                     ))
             )
             SELECT "jobType", "jobId"

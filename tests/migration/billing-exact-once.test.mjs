@@ -55,7 +55,8 @@ test('wallet settlement replay is immutable and remains compatible with retained
   assert.match(metering, /existing\.balanceAfter/);
   assert.match(metering, /Existing credit grant is missing its immutable settlement balance/);
   assert.match(metering, /Existing feature usage is missing its immutable settlement balance/);
-  assert.match(creditPurchases, /balanceAfter: wallet\.usageCredits/);
+  assert.match(creditPurchases, /recordPositiveCreditSettlementInTransaction\(tx/);
+  assert.match(creditPurchases, /existing\.amount - existing\.debtAmount !== pack\.credits/);
   assert.match(creditPurchases, /newBalance: existing\.balanceAfter/);
   assert.match(creditPurchases, /Existing Stripe credit purchase settlement is malformed or mismatched/);
 });
@@ -64,6 +65,7 @@ test('availability claim, commit, debit, and refund use authoritative paid-throu
   assert.match(worker, /"stripeSubscriptionCurrentPeriodEnd" > CURRENT_TIMESTAMP/);
   assert.match(worker, /tenant\[1\]\.strip\(\)\.upper\(\) != "FREE"[\s\S]*tenant\[2\][\s\S]*tenant\[3\] is not None[\s\S]*tenant\[4\] is True/);
   assert.match(worker, /debit_balance_after == configured_balance/);
-  assert.match(worker, /"balanceAfter", "createdAt"/);
+  assert.match(worker, /public\.settle_positive_credit_value/);
+  assert.match(worker, /settlement\[1\][\s\S]*settlement\[2\][\s\S]*refund_amount/);
   assert.match(worker, /refund_balance_after/);
 });
