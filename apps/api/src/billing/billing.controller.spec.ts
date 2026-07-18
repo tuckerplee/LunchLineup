@@ -80,10 +80,20 @@ describe('BillingController - Stripe webhook', () => {
         expect(Reflect.getMetadata('permission', controller.features)).toBe('billing:read');
     });
 
-    it('adds the live Stripe recovery action to the billing feature contract', async () => {
+    it('keeps the feature matrix independent from live Stripe reads', async () => {
         await expect(controller.features({ user: { tenantId: 'tenant-1' } } as any)).resolves.toEqual({
             status: 'PAST_DUE',
             stripeSubscriptionPresent: true,
+            subscriptionRecoveryAction: null,
+        });
+        expect(stripeService.getTenantSubscriptionRecoveryAction).not.toHaveBeenCalled();
+    });
+
+    it('loads the live Stripe recovery action only through its billing-settings route', async () => {
+        expect(Reflect.getMetadata('permission', controller.subscriptionRecoveryAction)).toBe('billing:read');
+        await expect(controller.subscriptionRecoveryAction({
+            user: { tenantId: 'tenant-1' },
+        } as any)).resolves.toEqual({
             subscriptionRecoveryAction: 'resume',
         });
         expect(stripeService.getTenantSubscriptionRecoveryAction).toHaveBeenCalledWith('tenant-1');

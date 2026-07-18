@@ -23,10 +23,16 @@ export class BillingController {
     @RequirePermission('billing:read')
     async features(@Req() req: any) {
         const matrix = await this.featureAccessService.getFeatureMatrix(req.user.tenantId);
-        const subscriptionRecoveryAction = matrix.stripeSubscriptionPresent
-            ? await this.stripeService.getTenantSubscriptionRecoveryAction(req.user.tenantId)
-            : null;
-        return { ...matrix, subscriptionRecoveryAction };
+        return { ...matrix, subscriptionRecoveryAction: null };
+    }
+
+    @Get('subscription-recovery-action')
+    @RequirePermission('billing:read')
+    async subscriptionRecoveryAction(@Req() req: any) {
+        return {
+            subscriptionRecoveryAction:
+                await this.stripeService.getTenantSubscriptionRecoveryAction(req.user.tenantId),
+        };
     }
 
     @Get('price-options')

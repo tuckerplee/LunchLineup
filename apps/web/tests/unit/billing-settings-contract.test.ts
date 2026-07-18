@@ -186,6 +186,9 @@ describe('billing settings contract', () => {
     expect(hookSource).toContain('{ code: option.code }');
     expect(hookSource).toContain('hasActivePaidSubscription(billingState.matrix)');
     expect(hookSource).toContain('Promise.allSettled([');
+    expect(hookSource).toContain("fetchJsonWithSession<unknown>('/billing/features')");
+    expect(hookSource).toContain("fetchJsonWithSession<unknown>('/billing/subscription-recovery-action')");
+    expect(hookSource).toContain('mergeSubscriptionRecoveryAction(');
     expect(hookSource).toContain("postBilling('/billing/portal'");
     expect(hookSource).toContain("postBilling('/billing/change-plan'");
     expect(hookSource).toContain("postBilling('/billing/resume'");

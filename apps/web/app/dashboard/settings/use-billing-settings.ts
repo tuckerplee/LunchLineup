@@ -70,6 +70,20 @@ function rejectedMessage(result: PromiseRejectedResult, fallback: string): strin
     return result.reason instanceof Error ? result.reason.message : fallback;
 }
 
+function mergeSubscriptionRecoveryAction(featurePayload: unknown, recoveryPayload: unknown): unknown {
+    if (!featurePayload || typeof featurePayload !== 'object' || Array.isArray(featurePayload)) {
+        return featurePayload;
+    }
+    if (!recoveryPayload || typeof recoveryPayload !== 'object' || Array.isArray(recoveryPayload)) {
+        return featurePayload;
+    }
+    return {
+        ...featurePayload,
+        subscriptionRecoveryAction:
+            (recoveryPayload as Record<string, unknown>).subscriptionRecoveryAction,
+    };
+}
+
 function returnNotice(state: BillingReturnState): BillingNotice {
     switch (state) {
         case 'credit-purchase-pending':
@@ -134,9 +148,10 @@ export function useBillingSettings({
         }
 
         setBillingState((current) => ({ ...current, loading: true, error: null }));
-        const [featureResult, priceResult] = await Promise.allSettled([
+        const [featureResult, priceResult, recoveryResult] = await Promise.allSettled([
             fetchJsonWithSession<unknown>('/billing/features'),
             fetchJsonWithSession<unknown>('/billing/price-options'),
+            fetchJsonWithSession<unknown>('/billing/subscription-recovery-action'),
         ]);
         if (requestId !== billingRequestRef.current) return;
 
@@ -147,12 +162,18 @@ export function useBillingSettings({
         if (priceResult.status === 'rejected') {
             errors.push(rejectedMessage(priceResult, 'Unable to load subscription options.'));
         }
+        if (recoveryResult.status === 'rejected') {
+            errors.push(rejectedMessage(recoveryResult, 'Unable to load subscription recovery controls.'));
+        }
 
         setBillingState((current) => ({
             loading: false,
             error: errors.length > 0 ? errors.join(' ') : null,
             matrix: featureResult.status === 'fulfilled'
-                ? normalizeBillingFeatureMatrix(featureResult.value)
+                ? normalizeBillingFeatureMatrix(mergeSubscriptionRecoveryAction(
+                    featureResult.value,
+                    recoveryResult.status === 'fulfilled' ? recoveryResult.value : null,
+                ))
                 : current.matrix,
             priceOptions: priceResult.status === 'fulfilled'
                 ? normalizePriceOptions(priceResult.value)
