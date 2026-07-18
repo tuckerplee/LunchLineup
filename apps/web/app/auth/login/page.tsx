@@ -158,6 +158,26 @@ function LoginContent() {
         }
     };
 
+    const handleUsePassword = () => {
+        setError(null);
+        const normalizedIdentifier = identifier.trim().toLowerCase();
+        const normalizedWorkspaceSlug = normalizeWorkspaceSlug(workspaceSlug);
+        if (!normalizedWorkspaceSlug) {
+            setError('Enter your workspace slug.');
+            return;
+        }
+        if (!normalizedIdentifier) {
+            setError('Enter your work email or username.');
+            return;
+        }
+
+        setWorkspaceSlug(normalizedWorkspaceSlug);
+        rememberWorkspaceSlug(window.localStorage, normalizedWorkspaceSlug);
+        setUsername(normalizedIdentifier);
+        setPassword('');
+        setStep('password');
+    };
+
     const handleSendOtp = async () => {
         setError(null);
         const normalizedEmail = email.trim().toLowerCase();
@@ -398,6 +418,10 @@ function LoginContent() {
 
                                     <button type="submit" className="btn btn-primary" disabled={isLoading} style={{ width: '100%' }}>
                                         {isLoading ? 'Continuing...' : 'Continue'}
+                                    </button>
+
+                                    <button type="button" className="btn btn-secondary" disabled={isLoading} style={{ width: '100%' }} onClick={handleUsePassword}>
+                                        Sign in with password
                                     </button>
 
                                     <p className="login-card__trust">Secure sign-in · Email OTP, migrated password, or PIN</p>
