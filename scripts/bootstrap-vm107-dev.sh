@@ -16,16 +16,19 @@ HOST_HEADER="${HOST_HEADER:-dev.lunchlineup.com}"
 VM_HOSTNAME="${VM_HOSTNAME:-lunchlineup-dev}"
 HEALTH_TIMEOUT_SECONDS="${HEALTH_TIMEOUT_SECONDS:-180}"
 COMPOSE_PARALLEL_LIMIT="${COMPOSE_PARALLEL_LIMIT:-1}"
-COMPOSE_BAKE="${COMPOSE_BAKE:-false}"
 BACKUP_FILE="${BACKUP_FILE:-}"
 DESTRUCTIVE_CONFIRMATION="replace-and-restore-disposable-vm107"
-export COMPOSE_BAKE COMPOSE_PARALLEL_LIMIT
+export COMPOSE_PARALLEL_LIMIT
 
 services=(
   proxy web api webhook-replay engine worker control
   migrate pgbouncer postgres redis rabbitmq
   prometheus alertmanager node-exporter loki promtail otel-collector tempo grafana
   autoheal
+)
+
+build_services=(
+  web api migrate engine worker pitr-wal-provider control
 )
 
 require_root() {
@@ -231,11 +234,15 @@ prepare_runtime_env() {
 start_stack() {
   cd "$APP_DIR"
   docker compose --env-file "$SECRET_ENV_PATH" config --quiet
-  if ! docker compose --env-file "$SECRET_ENV_PATH" up -d --build "${services[@]}"; then
+  local service
+  for service in "${build_services[@]}"; do
+    docker compose --env-file "$SECRET_ENV_PATH" build "$service"
+  done
+  if ! docker compose --env-file "$SECRET_ENV_PATH" up -d --no-build "${services[@]}"; then
     echo "Initial Compose startup failed; waiting for dependency health and retrying once." >&2
     docker compose ps >&2 || true
     sleep 30
-    docker compose --env-file "$SECRET_ENV_PATH" up -d --build "${services[@]}"
+    docker compose --env-file "$SECRET_ENV_PATH" up -d --no-build "${services[@]}"
   fi
 }
 

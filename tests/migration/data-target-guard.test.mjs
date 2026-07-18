@@ -206,8 +206,12 @@ test('VM107 bootstrap requires exact confirmation immediately before delete and 
   assert.match(bootstrap, /upsert_if_empty_or_placeholder OTP_HMAC_SECRET/);
   assert.match(bootstrap, /upsert_env STAFF_INVITATION_OUTBOX_ENABLED "true"/);
   assert.match(bootstrap, /upsert_env LUNCHLINEUP_STATUS_HEALTH_URL "http:\/\/api:3000\/health"/);
-  assert.match(bootstrap, /COMPOSE_PARALLEL_LIMIT="\$\{COMPOSE_PARALLEL_LIMIT:-1\}"\s+COMPOSE_BAKE="\$\{COMPOSE_BAKE:-false\}"/);
-  assert.match(bootstrap, /export COMPOSE_BAKE COMPOSE_PARALLEL_LIMIT/);
+  assert.match(bootstrap, /COMPOSE_PARALLEL_LIMIT="\$\{COMPOSE_PARALLEL_LIMIT:-1\}"/);
+  assert.match(bootstrap, /export COMPOSE_PARALLEL_LIMIT/);
+  assert.match(bootstrap, /build_services=\(\s+web api migrate engine worker pitr-wal-provider control\s+\)/);
+  assert.match(bootstrap, /for service in "\$\{build_services\[@\]\}"; do\s+docker compose --env-file "\$SECRET_ENV_PATH" build "\$service"\s+done/);
+  assert.match(bootstrap, /up -d --no-build "\$\{services\[@\]\}"/);
+  assert.doesNotMatch(bootstrap, /up -d --build/);
   assert.match(bootstrap, /docker compose --env-file "\$SECRET_ENV_PATH" config --quiet/);
   assert.match(bootstrap, /wait_for_health\s+write_deploy_proof/);
 });
