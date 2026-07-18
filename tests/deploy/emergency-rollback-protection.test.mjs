@@ -138,9 +138,11 @@ test('emergency rollback authenticates exact target and current releases before 
   const verifyIndex = names.indexOf('Verify retained target, current release, and rollback command');
   const secretsIndex = names.indexOf('Rehydrate current and target runtime secrets');
   const compatibilityIndex = names.indexOf('Execute target release against current production schema clone');
+  const handoffIndex = names.indexOf('Retain signed emergency rollback compatibility handoff');
   const mutationIndex = names.indexOf('Execute checked-in emergency rollback transport and verify release identity');
   assert.ok(resolveIndex >= 0 && resolveIndex < verifyIndex);
   assert.ok(verifyIndex < secretsIndex && secretsIndex < compatibilityIndex && compatibilityIndex < mutationIndex);
+  assert.ok(compatibilityIndex < handoffIndex && handoffIndex < mutationIndex);
 
   const intent = step('Validate protected emergency rollback intent').run;
   assert.match(intent, /\^\[a-f0-9\]\{40\}\$/);
@@ -159,10 +161,15 @@ test('emergency rollback authenticates exact target and current releases before 
   assert.match(verifyRun, /--post-deploy-proof-command-env PRODUCTION_POST_DEPLOY_PROOF_COMMAND/);
   assert.match(verifyRun, /--launch-proof-mode rollback/);
   assert.match(verifyRun, /\$CURRENT_RELEASE_MANIFEST_PATH/);
+  assert.match(verifyRun, /PREVIOUS_ROLLBACK_ACTIVATOR_PATH|verify-release-artifacts/);
 
   const allRuns = emergency.steps.map((value) => value.run || '').join('\n');
   assert.match(allRuns, /cosign sign-blob --yes --bundle "\$signature" "\$proof"/);
   assert.doesNotMatch(allRuns, /release-bundle-registry\.mjs (?:publish|bootstrap-retained)/);
+  const handoff = step('Retain signed emergency rollback compatibility handoff');
+  assert.equal(handoff.uses, 'actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02');
+  assert.equal(handoff.with['retention-days'], 90);
+  assert.match(handoff.with.path, /emergency-old-release-current-schema-compatibility\.json/);
 });
 
 test('emergency rollback proves schema compatibility and post-mutation release identity', () => {

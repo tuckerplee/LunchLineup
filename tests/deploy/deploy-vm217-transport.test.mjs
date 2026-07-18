@@ -55,6 +55,7 @@ function createTransportFixture() {
     manifest: join(scratch, 'release-manifest.json'),
     runtimeEnv: join(scratch, 'runtime.env'),
     launchProof: join(scratch, 'launch-proof.json'),
+    transportPid: join(scratch, 'transport.pid'),
     log: join(scratch, 'transport.log'),
   };
 
@@ -74,6 +75,10 @@ esac
 `);
   writeExecutable(join(fakeBin, 'scp'), `#!/usr/bin/env bash
 printf 'scp\\n' >> "$FAKE_TRANSPORT_LOG"
+scp_count="$(grep -c '^scp$' "$FAKE_TRANSPORT_LOG")"
+if [[ -n "\${FAKE_SCP_FAIL_AT:-}" && "$scp_count" == "$FAKE_SCP_FAIL_AT" ]]; then
+  exit 255
+fi
 `);
   writeExecutable(join(fakeBin, 'ssh'), `#!/usr/bin/env bash
 printf 'ssh' >> "$FAKE_TRANSPORT_LOG"
@@ -90,18 +95,31 @@ printf '\\n' >> "$FAKE_TRANSPORT_LOG"
 
 is_cleanup=false
 for arg in "$@"; do [[ "$arg" == "rm" ]] && is_cleanup=true; done
+is_stage_allocation=false
+for arg in "$@"; do [[ "$arg" == "mkdir" ]] && is_stage_allocation=true; done
+if [[ "$is_stage_allocation" == "true" && "\${FAKE_STAGE_RESPONSE_LOSS:-false}" == "true" ]]; then
+  exit 255
+fi
+if [[ "$remote_deploy" == "true" && "\${FAKE_REMOTE_RESPONSE_LOSS:-false}" == "true" ]]; then
+  exit 255
+fi
 if [[ "\${FAKE_SSH_HANG:-false}" == "true" ]] \
   || [[ "$remote_deploy" == "true" && "\${FAKE_REMOTE_DEPLOY_HANG:-false}" == "true" ]] \
   || [[ "$is_cleanup" == "true" && "\${FAKE_SSH_CLEANUP_HANG:-false}" == "true" ]]; then
+  if [[ "$remote_deploy" == "true" && "\${FAKE_REMOTE_SIGNAL_TERM:-false}" == "true" ]]; then
+    transport_pid="$(tr -d '\\r\\n' < "$FAKE_TRANSPORT_PID_FILE")"
+    [[ "$transport_pid" =~ ^[1-9][0-9]*$ ]] || exit 97
+    (sleep 1; kill -TERM "$transport_pid") &
+  fi
   exec sleep 10
+fi
+
+if [[ "$has_stdin_script" == "true" && "$remote_deploy" != "true" ]]; then
+  printf 'reconciliation-start\\n' >> "$FAKE_TRANSPORT_LOG"
 fi
 
 previous=""
 for arg in "$@"; do
-  if [[ "$previous" == "mktemp" && "$arg" == "-d" ]]; then
-    printf '/tmp/lunchlineup-ci-transport.FIXTURE01\\n'
-    exit 0
-  fi
   if [[ "$previous" == "sha256sum" && "$arg" == "--" ]]; then
     previous="sha256sum--"
     continue
@@ -128,6 +146,7 @@ function runFixture(fixture, overrides = {}) {
   const env = {
     ...process.env,
     FAKE_TRANSPORT_LOG: bashPathFor(fixture.files.log),
+    FAKE_TRANSPORT_PID_FILE: bashPathFor(fixture.files.transportPid),
     FAKE_MANIFEST_SHA: digest(readFileSync(fixture.files.manifest)),
     FAKE_RUNTIME_SHA: digest(readFileSync(fixture.files.runtimeEnv)),
     FAKE_PROOF_SHA: digest(readFileSync(fixture.files.launchProof)),
@@ -139,9 +158,10 @@ function runFixture(fixture, overrides = {}) {
   };
   const args = [
     '-c',
-    'PATH="$1:$PATH"; export PATH; shift; exec bash "$@"',
+    'PATH="$1:$PATH"; printf \'%s\\n\' "$BASHPID" > "$2"; export PATH; shift 2; exec bash "$@"',
     'transport-fixture',
     bashPathFor(fixture.fakeBin),
+    bashPathFor(fixture.files.transportPid),
     bashPathFor(scriptPath),
     '--host', 'vm217.example',
     '--user', 'deploy',
@@ -418,8 +438,11 @@ test('VM217 transport helper keeps the SSH and execution contract fail closed', 
   assert.match(script, /ServerAliveInterval=\$VM217_SSH_SERVER_ALIVE_INTERVAL_SECONDS/);
   assert.match(script, /vm217_run_cleanup_ssh "remote deployment staging cleanup"/);
   assert.match(script, /vm217_begin_mutation_budget/);
-  assert.match(script, /mktemp -d \/tmp\/lunchlineup-ci-transport\.XXXXXXXX/);
+  assert.match(script, /remote_stage_candidate="\/tmp\/lunchlineup-ci-transport\.\$stage_token"/);
+  assert.match(script, /mkdir -m 700 -- "\$REMOTE_STAGE"/);
   assert.match(script, /trap cleanup_remote_stage EXIT/);
+  assert.match(script, /handle_transport_signal/);
+  assert.match(script, /reconciling exact release\/services\/traffic state before any next action/);
   assert.match(script, /rm -rf -- "\$REMOTE_STAGE"/);
   assert.match(script, /git -C "\$REPO_ROOT" ls-files --error-unmatch/);
   assert.match(script, /sha256sum -- "\$path"/);
@@ -460,7 +483,7 @@ test('VM217 transport fixture verifies bytes, invokes the entrypoint, and cleans
     assert.match(log, /<\/opt\/lunchlineup\/scripts\/deploy-vm217-remote\.sh>/);
     assert.doesNotMatch(log, /PRODUCTION_API_HEALTH_URL=|LAUNCH_PROOF_MANIFEST_URI=/);
     assert.doesNotMatch(log, new RegExp(`${launchProofUri.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}|${Buffer.from(launchProofUri).toString('base64')}`));
-    assert.match(log, /rm> <-rf> <--> <\/tmp\/lunchlineup-ci-transport\.FIXTURE01>/);
+    assert.match(log, /rm> <-rf> <--> <\/tmp\/lunchlineup-ci-transport\.[A-Za-z0-9]+>/);
     assert.doesNotMatch(log, /FIXTURE_VALUE=not-a-secret|fixture-private-key/);
   } finally {
     rmSync(fixture.scratch, { recursive: true, force: true });
@@ -487,6 +510,54 @@ test('VM217 deploy timeout always runs bounded exact-state reconciliation withou
   }
 });
 
+test('TERM during remote deploy reconciles before known-path cleanup and preserves cancellation status', { skip: !bashAvailable }, () => {
+  const fixture = createTransportFixture();
+  try {
+    const result = runFixture(fixture, {
+      FAKE_REMOTE_DEPLOY_HANG: 'true',
+      FAKE_REMOTE_SIGNAL_TERM: 'true',
+      VM217_SSH_COMMAND_TIMEOUT_SECONDS: '30',
+      VM217_MUTATION_BUDGET_SECONDS: '60',
+      VM217_SSH_RECONCILE_TIMEOUT_SECONDS: '5',
+      VM217_SSH_CLEANUP_TIMEOUT_SECONDS: '5',
+    });
+    assert.equal(result.status, 143, `${result.stdout}\n${result.stderr}`);
+    assert.match(result.stderr, /received TERM after remote operations began; attempting one bounded authenticated reconciliation before cleanup/);
+
+    const log = readFileSync(fixture.files.log, 'utf8');
+    const deploy = log.indexOf('</opt/lunchlineup/scripts/deploy-vm217-remote.sh>');
+    const reconciliation = log.indexOf('reconciliation-start', deploy);
+    const cleanup = log.indexOf('rm> <-rf> <--> </tmp/lunchlineup-ci-transport.', reconciliation);
+    assert.ok(deploy >= 0 && reconciliation > deploy, 'TERM must reconcile after deployment starts');
+    assert.ok(cleanup > reconciliation, 'reconciliation must precede known-path staging cleanup');
+  } finally {
+    rmSync(fixture.scratch, { recursive: true, force: true });
+  }
+});
+
+test('allocation response loss and partial upload both reconcile and clean the runner-known remote stage', { skip: !bashAvailable }, () => {
+  for (const overrides of [
+    { FAKE_STAGE_RESPONSE_LOSS: 'true' },
+    { FAKE_SCP_FAIL_AT: '2' },
+    { FAKE_REMOTE_RESPONSE_LOSS: 'true' },
+  ]) {
+    const fixture = createTransportFixture();
+    try {
+      const result = runFixture(fixture, overrides);
+      assert.equal(result.status, 255, `${result.stdout}\n${result.stderr}`);
+      assert.match(result.stderr, /reconciling exact release\/services\/traffic state before any next action/);
+      const log = readFileSync(fixture.files.log, 'utf8');
+      const allocation = log.match(/<mkdir> <-m> <700> <--> <(\/tmp\/lunchlineup-ci-transport\.[A-Za-z0-9]+)>/);
+      assert.ok(allocation, log);
+      const reconciliation = log.indexOf('reconciliation-start');
+      const cleanup = log.indexOf(`rm> <-rf> <--> <${allocation[1]}>`);
+      assert.ok(reconciliation > -1 && cleanup > reconciliation, log);
+    } finally {
+      rmSync(fixture.scratch, { recursive: true, force: true });
+    }
+  }
+});
+
 test('VM217 aggregate budget exhaustion prevents the first upload and still runs bounded reconciliation and cleanup', { skip: !bashAvailable }, () => {
   const fixture = createTransportFixture();
   const bashEnv = join(fixture.scratch, 'force-budget-exhaustion.sh');
@@ -503,7 +574,7 @@ trap 'case "$BASH_COMMAND" in *vm217_run_scp*release\\ manifest\\ upload*) VM217
     const log = readFileSync(fixture.files.log, 'utf8');
     assert.equal((log.match(/^scp$/gm) ?? []).length, 0, 'exhausted budget must not invoke SCP');
     assert.ok((log.match(/<bash> <-s> <-->/g) ?? []).length >= 1, `exhaustion must run read-only reconciliation\n${log}`);
-    assert.match(log, /rm> <-rf> <--> <\/tmp\/lunchlineup-ci-transport\.FIXTURE01>/);
+    assert.match(log, /rm> <-rf> <--> <\/tmp\/lunchlineup-ci-transport\.[A-Za-z0-9]+>/);
   } finally {
     rmSync(fixture.scratch, { recursive: true, force: true });
   }

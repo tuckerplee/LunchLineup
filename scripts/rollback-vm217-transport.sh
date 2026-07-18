@@ -404,7 +404,8 @@ encode_reconciliation_value() {
   printf '%s' "$value" | base64 --wrap=0
 }
 
-reconcile_vm217_rollback_state() {
+read_vm217_rollback_state() {
+  local expected_previous="$1"
   local reconciliation_output
   local reconciliation_status=0
   reconciliation_output="$(vm217_reconcile_release_state \
@@ -412,7 +413,7 @@ reconcile_vm217_rollback_state() {
     "$REMOTE_APP_DIR" \
     "$SOURCE_SHA" \
     "$COMPATIBILITY_CANDIDATE_SOURCE_SHA" \
-    "$COMPATIBILITY_CANDIDATE_SOURCE_SHA" \
+    "$expected_previous" \
     "$RUNTIME_ENV_SHA256" \
     "$REMOTE_RUNTIME_ENV_POINTER" \
     "$REMOTE_BACKUP_RELEASE_ENV" \
@@ -421,6 +422,13 @@ reconcile_vm217_rollback_state() {
     "-" \
     "${SSH_OPTIONS[@]}" "$SSH_TARGET")" || reconciliation_status=$?
   (( reconciliation_status == 0 )) || return "$reconciliation_status"
+  printf '%s\n' "$reconciliation_output"
+}
+
+reconcile_vm217_rollback_state() {
+  local reconciliation_output
+  reconciliation_output="$(read_vm217_rollback_state "$COMPATIBILITY_CANDIDATE_SOURCE_SHA")" \
+    || return $?
   printf '%s\n' "$reconciliation_output"
   [[ "$reconciliation_output" == vm217_reconciliation_ok\ exact_state=primary\ * ]] \
     || { echo "VM217 rollback reconciliation found the candidate or another non-target state." >&2; return 1; }
@@ -484,14 +492,33 @@ LOCAL_ARCHIVE="$(mktemp "${TMPDIR:-/tmp}/lunchlineup-rollback-transport.XXXXXXXX
 tar --create --file "$LOCAL_ARCHIVE" --directory "$ROLLBACK_APP_DIR" .
 chmod 600 "$LOCAL_ARCHIVE"
 ARCHIVE_SHA256="$(sha256_file "$LOCAL_ARCHIVE")"
+stage_token="${LOCAL_ARCHIVE##*.}"
+[[ "$stage_token" =~ ^[A-Za-z0-9]+$ ]] \
+  || fail "Could not derive a safe rollback transport staging token."
+remote_stage_candidate="/tmp/lunchlineup-rollback-transport.$stage_token"
 
 vm217_begin_mutation_budget
-REMOTE_MUTATION_STARTED=true
-remote_stage_candidate="$(vm217_run_ssh "remote rollback staging allocation" \
-  "${SSH_OPTIONS[@]}" "$SSH_TARGET" mktemp -d /tmp/lunchlineup-rollback-transport.XXXXXXXX)"
-[[ "$remote_stage_candidate" =~ ^/tmp/lunchlineup-rollback-transport\.[A-Za-z0-9]+$ ]] \
-  || fail "VM217 returned an invalid rollback transport staging path."
+preflight_output="$(read_vm217_rollback_state "-")" \
+  || fail "VM217 rollback preflight could not prove the exact target or candidate state; production mutation remains blocked."
+case "$preflight_output" in
+  vm217_reconciliation_ok\ exact_state=primary\ *)
+    printf '%s\n' "$preflight_output"
+    echo "vm217_rollback_transport_recovered sha=$SOURCE_SHA state=already-exact-target"
+    exit 0
+    ;;
+  vm217_reconciliation_ok\ exact_state=secondary\ *)
+    printf '%s\n' "$preflight_output"
+    ;;
+  *)
+    fail "VM217 rollback preflight returned an unsupported exact-state result; production mutation remains blocked."
+    ;;
+esac
+vm217_assert_mutation_cutoff \
+  || fail "VM217 rollback preflight exhausted the pre-mutation cutoff; production mutation remains blocked."
 REMOTE_STAGE="$remote_stage_candidate"
+REMOTE_MUTATION_STARTED=true
+vm217_run_ssh "remote rollback staging allocation" \
+  "${SSH_OPTIONS[@]}" "$SSH_TARGET" mkdir -m 700 -- "$REMOTE_STAGE"
 
 REMOTE_ARCHIVE="$REMOTE_STAGE/rollback-app.tar"
 REMOTE_RUNTIME_ENV="$REMOTE_STAGE/runtime.env"

@@ -131,6 +131,10 @@ exit 0
 printf 'scp' >> "$FAKE_TRANSPORT_LOG"
 for arg in "$@"; do printf ' <%s>' "$arg" >> "$FAKE_TRANSPORT_LOG"; done
 printf '\\n' >> "$FAKE_TRANSPORT_LOG"
+scp_count="$(grep -c '^scp' "$FAKE_TRANSPORT_LOG")"
+if [[ -n "\${FAKE_SCP_FAIL_AT:-}" && "$scp_count" == "$FAKE_SCP_FAIL_AT" ]]; then
+  exit 255
+fi
 `);
   writeExecutable(join(fakeBin, 'cosign'), `#!/usr/bin/env bash
 set -euo pipefail
@@ -157,15 +161,11 @@ done
 [[ "$has_activator" == "true" && "$has_stdin_script" == "true" ]] && remote_activation=true
 printf '\\n' >> "$FAKE_TRANSPORT_LOG"
 
-previous=""
-for arg in "$@"; do
-  if [[ "$previous" == "mktemp" && "$arg" == "-d" ]]; then
-    printf '/tmp/lunchlineup-rollback-transport.FIXTURE01\\n'
-    exit 0
-  fi
-  previous="$arg"
-done
-
+is_stage_allocation=false
+for arg in "$@"; do [[ "$arg" == "mkdir" ]] && is_stage_allocation=true; done
+if [[ "$is_stage_allocation" == "true" && "\${FAKE_STAGE_RESPONSE_LOSS:-false}" == "true" ]]; then
+  exit 255
+fi
 if [[ "$remote_activation" == "true" && "\${FAKE_REMOTE_FAIL:-false}" == "true" ]]; then
   printf 'failure-point <%s>\n' "\${FAKE_REMOTE_FAIL_POINT:-unspecified}" >> "$FAKE_TRANSPORT_LOG"
   exit 86
@@ -180,8 +180,13 @@ if [[ "$remote_activation" == "true" && "\${FAKE_REMOTE_HANG:-false}" == "true" 
   exec sleep "\${FAKE_REMOTE_HANG_SECONDS:-10}"
 fi
 if [[ "$has_stdin_script" == "true" && "$remote_activation" != "true" ]]; then
-  printf 'reconciliation-start <%s>\n' "\${FAKE_RECONCILE_STATE:-unknown}" >> "$FAKE_TRANSPORT_LOG"
-  case "\${FAKE_RECONCILE_STATE:-unknown}" in
+  reconciliation_count="$(grep -c 'reconciliation-start' "$FAKE_TRANSPORT_LOG")"
+  reconciliation_state="\${FAKE_RECONCILE_STATE:-unknown}"
+  if [[ "$reconciliation_count" == "0" ]]; then
+    reconciliation_state="\${FAKE_PREFLIGHT_RECONCILE_STATE:-secondary}"
+  fi
+  printf 'reconciliation-start <%s>\n' "$reconciliation_state" >> "$FAKE_TRANSPORT_LOG"
+  case "$reconciliation_state" in
     primary)
       printf 'vm217_reconciliation_ok exact_state=primary active_release_sha=${sourceSha} service_release_sha=${sourceSha} traffic_release_sha=${sourceSha} legacy_traffic=false\\n'
       ;;
@@ -225,6 +230,7 @@ function runFixture(fixture, overrides = {}, explicitArgs = fixtureArgs(fixture)
     PRODUCTION_API_HEALTH_URL: 'https://api.lunchlineup.com/health',
     PRODUCTION_WEB_URL: 'https://lunchlineup.com/',
     LAUNCH_PROOF_MANIFEST_URI: launchProofUri,
+    FAKE_PREFLIGHT_RECONCILE_STATE: 'secondary',
     FAKE_RECONCILE_STATE: 'primary',
     ...overrides,
   };
@@ -255,6 +261,10 @@ test('manual VM217 rollback transport is pinned, exact, isolated, and fail close
   assert.match(script, /ConnectTimeout=\$VM217_SSH_CONNECT_TIMEOUT_SECONDS/);
   assert.match(script, /ServerAliveCountMax=\$VM217_SSH_SERVER_ALIVE_COUNT_MAX/);
   assert.match(script, /vm217_begin_mutation_budget[\s\S]*remote rollback staging allocation/);
+  assert.match(script, /preflight_output="\$\(read_vm217_rollback_state "-"\)"/);
+  assert.match(script, /state=already-exact-target/);
+  assert.match(script, /remote_stage_candidate="\/tmp\/lunchlineup-rollback-transport\.\$stage_token"/);
+  assert.match(script, /mkdir -m 700 -- "\$REMOTE_STAGE"/);
   assert.match(script, /ssh-keygen -F "\$HOST" -f "\$KNOWN_HOSTS"/);
   assert.match(script, /ssh-keygen -y -P '' -f "\$PRIVATE_KEY"/);
   assert.match(script, /git -C "\$REPO_ROOT" ls-files --error-unmatch/);
@@ -302,7 +312,7 @@ test('TERM during hanging activation reconciles exact target before cleanup with
     const log = readFileSync(fixture.files.log, 'utf8');
     const activation = log.indexOf('activation-hanging');
     const reconciliation = log.indexOf('reconciliation-start <primary>');
-    const cleanup = log.indexOf('rm> <-rf> <--> </tmp/lunchlineup-rollback-transport.FIXTURE01>');
+    const cleanup = log.indexOf('rm> <-rf> <--> </tmp/lunchlineup-rollback-transport.');
     assert.ok(activation >= 0 && reconciliation > activation, 'TERM must reconcile after activation starts');
     assert.ok(cleanup > reconciliation, 'authenticated reconciliation must precede staging cleanup');
     assert.equal((result.stderr.match(/attempting one bounded authenticated reconciliation/g) || []).length, 1);
@@ -320,6 +330,29 @@ test('expired pre-mutation cutoff refuses every remote operation', { skip: !bash
     assert.equal(existsSync(fixture.files.log), false, 'cutoff refusal must happen before SSH or SCP');
   } finally {
     rmSync(fixture.scratch, { recursive: true, force: true });
+  }
+});
+
+test('rollback preflight no-ops only for the exact target and blocks uncertain state before staging', { skip: !bashAvailable }, () => {
+  const alreadyTarget = createFixture();
+  const unknown = createFixture();
+  try {
+    const recovered = runFixture(alreadyTarget, { FAKE_PREFLIGHT_RECONCILE_STATE: 'primary' });
+    assert.equal(recovered.status, 0, `${recovered.stdout}\n${recovered.stderr}`);
+    assert.match(recovered.stdout, new RegExp(`vm217_rollback_transport_recovered sha=${sourceSha} state=already-exact-target`));
+    const recoveredLog = readFileSync(alreadyTarget.files.log, 'utf8');
+    assert.doesNotMatch(recoveredLog, /^scp/gm);
+    assert.doesNotMatch(recoveredLog, /<mkdir>|<rm>/);
+
+    const blocked = runFixture(unknown, { FAKE_PREFLIGHT_RECONCILE_STATE: 'unknown' });
+    assert.notEqual(blocked.status, 0, `${blocked.stdout}\n${blocked.stderr}`);
+    assert.match(blocked.stderr, /preflight could not prove the exact target or candidate state; production mutation remains blocked/);
+    const blockedLog = readFileSync(unknown.files.log, 'utf8');
+    assert.doesNotMatch(blockedLog, /^scp/gm);
+    assert.doesNotMatch(blockedLog, /<mkdir>|<rm>/);
+  } finally {
+    rmSync(alreadyTarget.scratch, { recursive: true, force: true });
+    rmSync(unknown.scratch, { recursive: true, force: true });
   }
 });
 
@@ -371,7 +404,7 @@ test('fixture stages retained rollback bytes, invokes the retained entrypoint, a
     assert.match(log, /<bash> <-s> <-->/);
     assert.match(log, /<scripts\/deploy-vm217-remote\.sh>/);
     assert.match(log, /activate-retained-rollback\.sh>/);
-    assert.match(log, /rm> <-rf> <--> <\/tmp\/lunchlineup-rollback-transport\.FIXTURE01>/);
+    assert.match(log, /rm> <-rf> <--> <\/tmp\/lunchlineup-rollback-transport\.[A-Za-z0-9]+>/);
     assert.doesNotMatch(log, /do-not-log-this-value|fixture-private-key/);
     assert.doesNotMatch(log, new RegExp(`${launchProofUri.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}|${Buffer.from(launchProofUri).toString('base64')}`));
   } finally {
@@ -400,7 +433,7 @@ test('timed-out retained rollback activation exits with fixed unknown-state guid
     );
     const log = readFileSync(fixture.files.log, 'utf8');
     assert.ok((log.match(/<bash> <-s> <-->/g) ?? []).length >= 2, 'rollback timeout must trigger read-only reconciliation');
-    assert.match(log, /rm> <-rf> <--> <\/tmp\/lunchlineup-rollback-transport\.FIXTURE01>/);
+    assert.match(log, /rm> <-rf> <--> <\/tmp\/lunchlineup-rollback-transport\.[A-Za-z0-9]+>/);
   } finally {
     rmSync(fixture.scratch, { recursive: true, force: true });
   }
@@ -419,7 +452,7 @@ test('failure after previous pointer commit reconciles exact committed state and
     const log = readFileSync(fixture.files.log, 'utf8');
     assert.match(log, /failure-point <previous>/);
     assert.ok((log.match(/<bash> <-s> <-->/g) ?? []).length >= 2, 'every activation failure must reconcile');
-    assert.match(log, /rm> <-rf> <--> <\/tmp\/lunchlineup-rollback-transport\.FIXTURE01>/);
+    assert.match(log, /rm> <-rf> <--> <\/tmp\/lunchlineup-rollback-transport\.[A-Za-z0-9]+>/);
   } finally {
     rmSync(fixture.scratch, { recursive: true, force: true });
   }
@@ -529,7 +562,7 @@ test('remote rollback failure still cleans local and remote staging', { skip: !b
 
     const log = readFileSync(fixture.files.log, 'utf8');
     assert.match(log, /<bash> <-s> <-->/);
-    assert.match(log, /rm> <-rf> <--> <\/tmp\/lunchlineup-rollback-transport\.FIXTURE01>/);
+    assert.match(log, /rm> <-rf> <--> <\/tmp\/lunchlineup-rollback-transport\.[A-Za-z0-9]+>/);
     const archiveMatch = log.match(/scp[^\n]*<([^>]*lunchlineup-rollback-transport\.[^>]*)>/);
     assert.ok(archiveMatch, 'fixture should observe the local archive path');
     assert.equal(existsSync(archiveMatch[1]), false, 'local archive must be removed after failure');

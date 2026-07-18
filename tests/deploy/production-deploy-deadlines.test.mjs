@@ -34,9 +34,10 @@ const bashPath = bashCandidates.find((candidate) => spawnSync(
 ).status === 0);
 const bashPathFor = (path) => path.replaceAll('\\', '/');
 
-test('normal production deploy aggregate fits its exact outer job deadline', () => {
+test('normal production transaction fits below its outer job deadline with a hard-kill recovery reserve', () => {
   const result = validateProductionDeployDeadlines(deploy.env);
-  assert.equal(result.transactionSeconds, deploy['timeout-minutes'] * 60);
+  assert.equal(result.transactionSeconds, 10_800);
+  assert.equal(deploy['timeout-minutes'] * 60 - result.transactionSeconds, 1_200);
   assert.equal(result.phaseSeconds, 5_400);
   assert.equal(result.ownedSeconds, 4_800);
   assert.equal(result.postMutationReserveSeconds, 720);
@@ -102,6 +103,12 @@ test('normal production deploy aggregate fits its exact outer job deadline', () 
   assert.match(fallbackCleanup, /--phase runner-cleanup/);
   assert.match(fallbackCleanup, /destroy-old-release-compatibility-clone\.sh/);
   assert.match(fallbackCleanup, /--kill-after="\$\{PRODUCTION_DEPLOY_TIMEOUT_KILL_RESERVE_SECONDS\}s"/);
+
+  const rollback = step('Roll back to retained validated baseline in the approved job').run;
+  assert.match(rollback, /rollback_mutation_remaining="\$\(\(rollback_mutation_not_after - \$\(date \+%s\)\)\)"/);
+  assert.match(rollback, /if \(\( rollback_mutation_seconds > rollback_mutation_remaining \)\)/);
+  assert.match(rollback, /VM217_MUTATION_BUDGET_SECONDS="\$rollback_mutation_seconds"/);
+  assert.match(rollback, /VM217_SSH_COMMAND_TIMEOUT_SECONDS="\$rollback_mutation_seconds"/);
 });
 
 test('normal production deploy deadline contract rejects every declared maximum overrun', () => {
