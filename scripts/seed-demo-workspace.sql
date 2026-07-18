@@ -109,9 +109,17 @@ SET username = EXCLUDED.username,
     "suspendedAt" = NULL,
     "updatedAt" = now();
 
+UPDATE "Role"
+SET "legacyRole" = 'ADMIN',
+    "deletedAt" = NULL,
+    "updatedAt" = now()
+WHERE id = 'demo-role-v1'
+  AND "tenantId" = 'demo-tenant-v1';
+
 DELETE FROM "RoleAssignment"
 WHERE "tenantId" = 'demo-tenant-v1'
-  AND "userId" LIKE 'demo-user-%';
+  AND "userId" LIKE 'demo-user-%'
+  AND "userId" <> (SELECT admin_id FROM demo_context);
 
 INSERT INTO "RoleAssignment" ("userId", "roleId", "tenantId", "createdAt")
 SELECT u.id, r.id, u."tenantId", now()
@@ -121,15 +129,14 @@ JOIN "Role" r
  AND r.slug = CASE WHEN u.role = 'MANAGER' THEN 'manager' ELSE 'staff' END
 WHERE u."tenantId" = 'demo-tenant-v1'
   AND u.id LIKE 'demo-user-%'
+  AND u.id <> (SELECT admin_id FROM demo_context)
 ON CONFLICT DO NOTHING;
 
 DELETE FROM "RoleAssignment" assignment
-USING demo_context c, "Role" r
+USING demo_context c
 WHERE assignment."userId" = c.admin_id
   AND assignment."tenantId" = c.tenant_id
-  AND assignment."roleId" = r.id
-  AND r."tenantId" = c.tenant_id
-  AND r.slug = 'admin';
+  AND assignment."roleId" <> 'demo-role-v1';
 
 INSERT INTO "RoleAssignment" ("userId", "roleId", "tenantId", "createdAt")
 SELECT c.admin_id, r.id, c.tenant_id, now()
