@@ -1,10 +1,10 @@
 'use client';
 
-import { Suspense, useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
+import { Suspense, useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type KeyboardEvent as ReactKeyboardEvent } from 'react';
 import dynamic from 'next/dynamic';
 import { useSearchParams } from 'next/navigation';
 import { Button } from '@/components/ui/button';
-import { CalendarDays, CheckCircle2, Plus, Printer, RefreshCw, RotateCcw, Send, Settings2, WandSparkles } from 'lucide-react';
+import { CalendarDays, CheckCircle2, LockKeyhole, MapPin, Plus, Printer, RefreshCw, RotateCcw, Send, Settings2, WandSparkles, X } from 'lucide-react';
 import {
   ApiRequestError,
   fetchJsonWithSession,
@@ -363,6 +363,23 @@ function shiftsToEvents(shifts: ShiftRecord[]): StaffScheduleEvent[] {
   return shifts.flatMap((shift) => [shiftToEvent(shift), ...breakToEvents(shift)]);
 }
 
+function keepFocusInsideDialog(event: ReactKeyboardEvent<HTMLElement>) {
+  if (event.key !== 'Tab') return;
+  const focusable = Array.from(event.currentTarget.querySelectorAll<HTMLElement>(
+    'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
+  )).filter((element) => element.getClientRects().length > 0);
+  const first = focusable[0];
+  const last = focusable.at(-1);
+  if (!first || !last) return;
+  if (event.shiftKey && document.activeElement === first) {
+    event.preventDefault();
+    last.focus();
+  } else if (!event.shiftKey && document.activeElement === last) {
+    event.preventDefault();
+    first.focus();
+  }
+}
+
 function SchedulingContent() {
   const searchParams = useSearchParams();
   const initialDate = searchParams.get('date');
@@ -412,6 +429,14 @@ function SchedulingContent() {
   const [loadedShiftScope, setLoadedShiftScope] = useState<LocationShiftScope | null>(null);
   const [permissions, setPermissions] = useState<string[]>([]);
   const [error, setError] = useState<string | null>(null);
+  useEffect(() => {
+    if (!showShiftForm) return;
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    return () => {
+      document.body.style.overflow = previousOverflow;
+    };
+  }, [showShiftForm]);
   const capabilities = useMemo(() => getWorkspaceCapabilities(permissions), [permissions]);
   const activeTimeZone = safeTimeZone(locations.find((location) => location.id === shiftDraft.locationId)?.timezone ?? locations[0]?.timezone);
   const locationTimeZone = useCallback(
@@ -704,16 +729,22 @@ function SchedulingContent() {
     () => shifts.find((shift) => shift.id === editingShiftId) ?? null,
     [editingShiftId, shifts],
   );
+  const editingShiftSchedule = useMemo(
+    () => schedules.find((schedule) => schedule.id === editingShift?.scheduleId) ?? null,
+    [editingShift?.scheduleId, schedules],
+  );
+  const editingShiftLocked = Boolean(editingShift && isShiftLocked(editingShift));
   const canDeleteEditingShift = Boolean(editingShift && capabilities.canDeleteShifts && !isShiftLocked(editingShift));
 
   const shiftFormBlockReason = useMemo(() => {
+    if (editingShiftLocked) return 'This shift is published. Reopen its schedule before making changes.';
     if (!locations.length) return 'Add a location before saving shifts.';
     if (!schedulableStaff.length) return 'Add a staff member or manager before saving shifts.';
     if (!shiftDraft.userId || !schedulableStaff.some((person) => person.id === shiftDraft.userId)) return 'Select a schedulable staff member.';
     const windowError = shiftWindowError(shiftDraft.shiftDate, shiftDraft.startTime, shiftDraft.endTime, locationTimeZone(shiftDraft.locationId));
     if (windowError) return windowError;
     return null;
-  }, [locationTimeZone, locations.length, schedulableStaff, shiftDraft]);
+  }, [editingShiftLocked, locationTimeZone, locations.length, schedulableStaff, shiftDraft]);
 
   const handleDraftStaffChange = (value: string) => {
     const selectedStaff = schedulableStaff.find((person) => person.id === value);
@@ -893,20 +924,27 @@ function SchedulingContent() {
     setShowShiftForm(true);
   };
 
+  const closeShiftEditor = () => {
+    setShowShiftForm(false);
+    setEditingShiftId(null);
+    setConfirmDeleteShiftId(null);
+    setConfirmReopenScheduleId(null);
+  };
+
   const editShiftFromBoard = (event: StaffScheduleEvent) => {
     if (!capabilities.canWriteShifts) return;
     const shift = shifts.find((item) => item.id === event.id);
     if (!shift) return;
-    if (isShiftLocked(shift)) {
-      setError('Published schedules are locked. Create a new draft before changing shifts.');
-      setScheduleStatus({ tone: 'warning', message: 'Published schedule shifts cannot be edited.' });
-      return;
-    }
     const person = shift.userId ? schedulableStaff.find((item) => item.id === shift.userId) : null;
     const window = localTimeWindowFromInstants(shift.startTime, shift.endTime, locationTimeZone(shift.locationId));
-    setError(null);
+    const locked = isShiftLocked(shift);
+    setError(locked ? 'This shift is on a published schedule. Reopen the schedule from the editor to make a correction.' : null);
+    setScheduleStatus(locked
+      ? { tone: 'warning', message: 'Review the shift, then reopen its schedule to enable corrections.' }
+      : { tone: 'saved', message: 'Shift details opened.' });
     setEditingShiftId(shift.id);
     setConfirmDeleteShiftId(null);
+    setConfirmReopenScheduleId(null);
     setShiftDraft({
       userId: person?.id ?? '',
       locationId: shift.locationId,
@@ -1178,9 +1216,11 @@ function SchedulingContent() {
       setPublishReview((current) => current?.scheduleId === scheduleId ? null : current);
       setConfirmReopenScheduleId(null);
       setConfirmPublishScheduleId(null);
-      setShowShiftForm(false);
-      setEditingShiftId(null);
-      setConfirmDeleteShiftId(null);
+      if (editingShift?.scheduleId !== scheduleId) {
+        setShowShiftForm(false);
+        setEditingShiftId(null);
+        setConfirmDeleteShiftId(null);
+      }
       setScheduleStatus({ tone: 'saved', message: 'Schedule reopened as a draft. Corrections are enabled.' });
     } catch (err) {
       setConfirmReopenScheduleId(null);
@@ -1524,6 +1564,24 @@ function SchedulingContent() {
           </div>
 
           <div className="scheduler-topbar__controls">
+            <label className="scheduler-location-picker">
+              <MapPin size={15} />
+              <select
+                aria-label="Schedule location"
+                value={shiftDraft.locationId}
+                disabled={locations.length === 0}
+                onChange={(event) => {
+                  setShowShiftForm(false);
+                  selectScheduleLocation(event.target.value);
+                }}
+              >
+                {locations.length === 0 ? <option value="">No locations</option> : null}
+                {locations.map((location) => (
+                  <option key={location.id} value={location.id}>{location.name}</option>
+                ))}
+              </select>
+            </label>
+
             <label className="scheduler-day-picker">
               <CalendarDays size={15} />
               <input aria-label="Schedule date" type="date" suppressHydrationWarning value={selectedDate} onChange={(event) => selectScheduleDate(event.target.value)} />
@@ -1591,6 +1649,51 @@ function SchedulingContent() {
             </div>
           </section>
         ) : null}
+
+        <section className="scheduler-calendar-panel" aria-label="Schedule calendar board">
+          <header>
+            <div>
+              <h2>Schedule board</h2>
+              <p>
+                {scheduleEvents.length} event{scheduleEvents.length === 1 ? '' : 's'} across {dateLabel}.{' '}
+                {capabilities.canWriteShifts ? 'Drag shifts on the board to adjust coverage.' : 'Read-only access; schedule changes are hidden for this role.'}
+              </p>
+            </div>
+            <Button size="sm" variant="secondary" onClick={() => setShowTimeline((value) => !value)}>
+              {showTimeline ? 'Hide board' : 'Show board'}
+            </Button>
+          </header>
+          {showTimeline ? (
+            <div className={`scheduler-calendar-shell ${capabilities.canWriteShifts ? '' : 'scheduler-calendar-shell--readonly'}`}>
+              {!capabilities.canWriteShifts ? (
+                <div className="scheduler-readonly-note" role="status">
+                  Read-only schedule view
+                </div>
+              ) : null}
+              <StaffScheduler
+                resources={visibleResources}
+                events={scheduleEvents}
+                viewMode={viewMode}
+                initialDate={selectedDate}
+                timeZone={activeTimeZone}
+                onEventChange={capabilities.canWriteShifts && locationDataCurrent ? (id, start, end, resourceId) => void updateShift(id, start, end, resourceId) : undefined}
+                onEventSelect={capabilities.canWriteShifts && locationDataCurrent ? editShiftFromBoard : undefined}
+                onEventDelete={capabilities.canDeleteShifts && locationDataCurrent ? (event) => void deleteShift(event.id) : undefined}
+                onSlotSelect={capabilities.canWriteShifts && locationDataCurrent ? prepareShiftFromBoardSlot : undefined}
+                onTimeSelectionError={(message) => {
+                  setError(message);
+                  setScheduleStatus({ tone: 'warning', message: 'Choose a different time before saving the shift.' });
+                }}
+              />
+            </div>
+          ) : (
+            <div className="timeline-summary">
+              <CalendarDays size={18} />
+              <strong>{dateLabel}</strong>
+              <span>{visibleShifts.length} shift{visibleShifts.length === 1 ? '' : 's'} ready for review.</span>
+            </div>
+          )}
+        </section>
 
         {scheduleReviewItems.length > 0 ? (
           <section className="scheduler-publish-panel" aria-label="Schedule publish review">
@@ -1738,139 +1841,152 @@ function SchedulingContent() {
           </section>
         ) : null}
 
-        <section className="scheduler-calendar-panel" aria-label="Schedule calendar board">
-          <header>
-            <div>
-              <h2>Schedule board</h2>
-              <p>
-                {scheduleEvents.length} event{scheduleEvents.length === 1 ? '' : 's'} across {dateLabel}.{' '}
-                {capabilities.canWriteShifts ? 'Drag shifts on the board to adjust coverage.' : 'Read-only access; schedule changes are hidden for this role.'}
-              </p>
-            </div>
-            <Button size="sm" variant="secondary" onClick={() => setShowTimeline((value) => !value)}>
-              {showTimeline ? 'Hide board' : 'Show board'}
-            </Button>
-          </header>
-          {showTimeline ? (
-            <div className={`scheduler-calendar-shell ${capabilities.canWriteShifts ? '' : 'scheduler-calendar-shell--readonly'}`}>
-              {!capabilities.canWriteShifts ? (
-                <div className="scheduler-readonly-note" role="status">
-                  Read-only schedule view
+        {showShiftForm && !openFocus && capabilities.canWriteShifts ? (
+          <div className="scheduler-editor-backdrop" role="presentation" onMouseDown={closeShiftEditor}>
+            <section
+              className="scheduler-editor-panel"
+              role="dialog"
+              aria-modal="true"
+              aria-labelledby="shift-editor-title"
+              onMouseDown={(event) => event.stopPropagation()}
+              onKeyDown={(event) => {
+                if (event.key === 'Escape') closeShiftEditor();
+                keepFocusInsideDialog(event);
+              }}
+            >
+              <header className="scheduler-editor-header">
+                <div>
+                  <span className="workspace-kicker">Shift details</span>
+                  <h2 id="shift-editor-title">{editingShiftId ? 'Edit shift' : 'Create shift'}</h2>
+                </div>
+                <Button type="button" variant="ghost" size="icon" onClick={closeShiftEditor} title="Close shift editor" aria-label="Close shift editor">
+                  <X size={18} />
+                </Button>
+              </header>
+
+              {editingShiftLocked && editingShiftSchedule ? (
+                <div className="scheduler-editor-locked" role="status">
+                  <LockKeyhole size={18} />
+                  <div>
+                    <strong>Published schedule</strong>
+                    <span>Reopen this schedule to correct the shift, then publish it again when the changes are ready.</span>
+                  </div>
+                  {capabilities.canPublishSchedules ? (
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant={confirmReopenScheduleId === editingShiftSchedule.id ? 'default' : 'outline'}
+                      onClick={() => void reopenSchedule(editingShiftSchedule.id)}
+                      disabled={isReopening || isPublishing}
+                    >
+                      <RotateCcw size={14} />
+                      {isReopening
+                        ? 'Reopening...'
+                        : confirmReopenScheduleId === editingShiftSchedule.id
+                          ? 'Confirm reopen schedule'
+                          : 'Reopen schedule to edit'}
+                    </Button>
+                  ) : null}
                 </div>
               ) : null}
-              <StaffScheduler
-                resources={visibleResources}
-                events={scheduleEvents}
-                viewMode={viewMode}
-                initialDate={selectedDate}
-                timeZone={activeTimeZone}
-                onEventChange={capabilities.canWriteShifts && locationDataCurrent ? (id, start, end, resourceId) => void updateShift(id, start, end, resourceId) : undefined}
-                onEventSelect={capabilities.canWriteShifts && locationDataCurrent ? editShiftFromBoard : undefined}
-                onEventDelete={capabilities.canDeleteShifts && locationDataCurrent ? (event) => void deleteShift(event.id) : undefined}
-                onSlotSelect={capabilities.canWriteShifts && locationDataCurrent ? prepareShiftFromBoardSlot : undefined}
-                onTimeSelectionError={(message) => {
-                  setError(message);
-                  setScheduleStatus({ tone: 'warning', message: 'Choose a different time before saving the shift.' });
-                }}
-              />
-            </div>
-          ) : (
-            <div className="timeline-summary">
-              <CalendarDays size={18} />
-              <strong>{dateLabel}</strong>
-              <span>{visibleShifts.length} shift{visibleShifts.length === 1 ? '' : 's'} ready for review.</span>
-            </div>
-          )}
-        </section>
 
-        {showShiftForm && !openFocus && capabilities.canWriteShifts ? (
-          <section className="scheduler-editor-panel" aria-label={editingShiftId ? 'Edit shift' : 'Create shift'}>
-            <form className="shift-form" onSubmit={addShift}>
-              <label>
-                <span>Staff</span>
-                <select value={shiftDraft.userId} onChange={(event) => handleDraftStaffChange(event.target.value)}>
-                  <option value="">Select staff</option>
-                  {schedulableStaff.map((person) => (
-                    <option key={person.id} value={person.id}>{person.name}</option>
-                  ))}
-                </select>
-              </label>
-              <label>
-                <span>Location</span>
-                <select value={shiftDraft.locationId} onChange={(event) => selectScheduleLocation(event.target.value)}>
-                  <option value="">Select location</option>
-                  {locations.map((location) => (
-                    <option key={location.id} value={location.id}>{location.name}</option>
-                  ))}
-                </select>
-              </label>
-              <label>
-                <span>Shift role</span>
-                <select value={shiftDraft.role} onChange={(event) => setShiftDraft((current) => ({ ...current, role: toSchedulableShiftRole(event.target.value) }))}>
-                  {SCHEDULABLE_SHIFT_ROLES.map((role) => (
-                    <option key={role.value} value={role.value}>{role.label}</option>
-                  ))}
-                </select>
-              </label>
-              <label>
-                <span>Date</span>
-                <input
-                  type="date"
-                  value={shiftDraft.shiftDate}
-                  onChange={(event) => setShiftDraft((current) => ({ ...current, shiftDate: event.target.value }))}
-                />
-              </label>
-              <label>
-                <span>Start</span>
-                <input
-                  type="time"
-                  value={shiftDraft.startTime}
-                  onChange={(event) => setShiftDraft((current) => ({ ...current, startTime: event.target.value }))}
-                />
-              </label>
-              <label>
-                <span>End</span>
-                <input
-                  type="time"
-                  value={shiftDraft.endTime}
-                  onChange={(event) => setShiftDraft((current) => ({ ...current, endTime: event.target.value }))}
-                />
-              </label>
-              {shiftFormBlockReason ? <p id="shift-form-status" className="shift-form__hint">{shiftFormBlockReason}</p> : null}
-              <div className="shift-form__actions">
-                {editingShiftId && canDeleteEditingShift ? (
+              <form className="shift-form" onSubmit={addShift}>
+                <label>
+                  <span>Staff</span>
+                  <select autoFocus value={shiftDraft.userId} disabled={editingShiftLocked} onChange={(event) => handleDraftStaffChange(event.target.value)}>
+                    <option value="">Select staff</option>
+                    {schedulableStaff.map((person) => (
+                      <option key={person.id} value={person.id}>{person.name}</option>
+                    ))}
+                  </select>
+                </label>
+                <label>
+                  <span>Location</span>
+                  <select
+                    value={shiftDraft.locationId}
+                    disabled={editingShiftLocked || Boolean(editingShiftId)}
+                    title={editingShiftId ? 'A saved shift stays with its schedule location.' : undefined}
+                    onChange={(event) => selectScheduleLocation(event.target.value)}
+                  >
+                    <option value="">Select location</option>
+                    {locations.map((location) => (
+                      <option key={location.id} value={location.id}>{location.name}</option>
+                    ))}
+                  </select>
+                </label>
+                <label>
+                  <span>Shift role</span>
+                  <select value={shiftDraft.role} disabled={editingShiftLocked} onChange={(event) => setShiftDraft((current) => ({ ...current, role: toSchedulableShiftRole(event.target.value) }))}>
+                    {SCHEDULABLE_SHIFT_ROLES.map((role) => (
+                      <option key={role.value} value={role.value}>{role.label}</option>
+                    ))}
+                  </select>
+                </label>
+                <label>
+                  <span>Date</span>
+                  <input
+                    type="date"
+                    value={shiftDraft.shiftDate}
+                    disabled={editingShiftLocked}
+                    onChange={(event) => setShiftDraft((current) => ({ ...current, shiftDate: event.target.value }))}
+                  />
+                </label>
+                <div className="shift-form__time-grid">
+                  <label>
+                    <span>Start</span>
+                    <input
+                      type="time"
+                      value={shiftDraft.startTime}
+                      disabled={editingShiftLocked}
+                      onChange={(event) => setShiftDraft((current) => ({ ...current, startTime: event.target.value }))}
+                    />
+                  </label>
+                  <label>
+                    <span>End</span>
+                    <input
+                      type="time"
+                      value={shiftDraft.endTime}
+                      disabled={editingShiftLocked}
+                      onChange={(event) => setShiftDraft((current) => ({ ...current, endTime: event.target.value }))}
+                    />
+                  </label>
+                </div>
+                {shiftFormBlockReason ? <p id="shift-form-status" className="shift-form__hint">{shiftFormBlockReason}</p> : null}
+                <div className="shift-form__actions">
+                  {editingShiftId && canDeleteEditingShift ? (
+                    <Button
+                      size="sm"
+                      type="button"
+                      variant="destructive"
+                      onClick={() => {
+                        if (confirmDeleteShiftId === editingShiftId) {
+                          void deleteShift(editingShiftId);
+                          return;
+                        }
+                        setConfirmDeleteShiftId(editingShiftId);
+                      }}
+                      onBlur={() => {
+                        window.setTimeout(() => setConfirmDeleteShiftId((current) => (current === editingShiftId ? null : current)), 120);
+                      }}
+                    >
+                      {confirmDeleteShiftId === editingShiftId ? 'Confirm delete' : 'Delete shift'}
+                    </Button>
+                  ) : null}
                   <Button
                     size="sm"
-                    type="button"
-                    variant="destructive"
-                    onClick={() => {
-                      if (confirmDeleteShiftId === editingShiftId) {
-                        void deleteShift(editingShiftId);
-                        return;
-                      }
-                      setConfirmDeleteShiftId(editingShiftId);
-                    }}
-                    onBlur={() => {
-                      window.setTimeout(() => setConfirmDeleteShiftId((current) => (current === editingShiftId ? null : current)), 120);
-                    }}
+                    type="submit"
+                    disabled={Boolean(shiftFormBlockReason)}
+                    aria-describedby={shiftFormBlockReason ? 'shift-form-status' : undefined}
                   >
-                    {confirmDeleteShiftId === editingShiftId ? 'Confirm delete' : 'Delete shift'}
+                    {editingShiftId ? 'Save shift' : 'Create shift'}
                   </Button>
-                ) : null}
-                <Button
-                  size="sm"
-                  type="submit"
-                  disabled={Boolean(shiftFormBlockReason)}
-                  aria-describedby={shiftFormBlockReason ? 'shift-form-status' : undefined}
-                >
-                  {editingShiftId ? 'Save shift' : 'Create shift'}
-                </Button>
-                <Button size="sm" type="button" variant="ghost" onClick={() => { setShowShiftForm(false); setEditingShiftId(null); setConfirmDeleteShiftId(null); }}>
-                  Cancel
-                </Button>
-              </div>
-            </form>
-          </section>
+                  <Button size="sm" type="button" variant="ghost" onClick={closeShiftEditor}>
+                    Cancel
+                  </Button>
+                </div>
+              </form>
+            </section>
+          </div>
         ) : null}
 
         </section>
@@ -1885,7 +2001,8 @@ function SchedulingContent() {
 
         .scheduler-workspace {
           overflow: hidden;
-          display: grid;
+          display: flex;
+          flex-direction: column;
         }
 
         .scheduler-error {
@@ -1989,7 +2106,8 @@ function SchedulingContent() {
           justify-content: flex-end;
         }
 
-        .scheduler-day-picker {
+        .scheduler-day-picker,
+        .scheduler-location-picker {
           height: 40px;
           display: inline-flex;
           align-items: center;
@@ -2001,10 +2119,17 @@ function SchedulingContent() {
           color: var(--text-muted);
         }
 
-        .scheduler-day-picker input {
+        .scheduler-day-picker input,
+        .scheduler-location-picker select {
           border: 0;
           background: transparent;
           color: var(--text);
+        }
+
+        .scheduler-location-picker select {
+          max-width: 180px;
+          min-width: 100px;
+          font-weight: 700;
         }
 
         .scheduler-view-toggle {
@@ -2055,6 +2180,7 @@ function SchedulingContent() {
         }
 
         .scheduler-publish-panel {
+          order: 2;
           padding: 16px 20px;
           border-bottom: 1px solid var(--border);
           background: #f8fafc;
@@ -2242,6 +2368,7 @@ function SchedulingContent() {
         }
 
         .scheduler-calendar-panel {
+          order: 1;
           position: relative;
           z-index: 1;
           overflow: hidden;
@@ -2304,24 +2431,79 @@ function SchedulingContent() {
           display: none;
         }
 
+        .scheduler-editor-backdrop {
+          position: fixed;
+          inset: 0;
+          z-index: 100;
+          display: flex;
+          justify-content: flex-end;
+          background: rgba(15, 23, 42, 0.42);
+        }
+
         .scheduler-editor-panel {
-          position: relative;
+          width: min(440px, 100%);
+          height: 100dvh;
+          overflow-y: auto;
+          background: var(--surface);
+          box-shadow: -18px 0 48px rgba(15, 23, 42, 0.18);
+        }
+
+        .scheduler-editor-header {
+          position: sticky;
+          top: 0;
           z-index: 2;
-          padding: 0 20px 20px;
+          min-height: 72px;
+          padding: 16px 20px;
           border-bottom: 1px solid var(--border);
-          background: #fbfdff;
+          background: rgba(255, 255, 255, 0.96);
+          display: flex;
+          align-items: flex-start;
+          justify-content: space-between;
+          gap: 16px;
+        }
+
+        .scheduler-editor-header h2 {
+          margin: 4px 0 0;
+          font-size: 20px;
+          line-height: 1.2;
+        }
+
+        .scheduler-editor-locked {
+          margin: 16px 20px 0;
+          padding: 12px;
+          border: 1px solid #f4c46b;
+          border-radius: var(--r-md);
+          background: #fff8e8;
+          color: #6f4a00;
+          display: grid;
+          grid-template-columns: auto 1fr;
+          gap: 10px;
+          align-items: start;
+        }
+
+        .scheduler-editor-locked div {
+          display: grid;
+          gap: 3px;
+        }
+
+        .scheduler-editor-locked strong {
+          font-size: 13px;
+        }
+
+        .scheduler-editor-locked span {
+          font-size: 12px;
+          line-height: 1.45;
+        }
+
+        .scheduler-editor-locked :global(button) {
+          grid-column: 1 / -1;
         }
 
         .shift-form {
-          margin-top: 0;
-          padding: 12px;
-          border: 1px solid var(--border);
-          border-radius: var(--r-md);
-          background: var(--surface-soft);
+          padding: 20px;
           display: grid;
-          grid-template-columns: minmax(160px, 1.2fr) minmax(160px, 1fr) minmax(130px, 0.8fr) repeat(3, minmax(96px, 0.55fr));
-          gap: 10px;
-          align-items: end;
+          grid-template-columns: minmax(0, 1fr);
+          gap: 16px;
         }
 
         .shift-form label {
@@ -2351,15 +2533,28 @@ function SchedulingContent() {
           padding: 0 10px;
         }
 
+        .shift-form select:disabled,
+        .shift-form input:disabled {
+          background: var(--surface-soft);
+          color: var(--text-muted);
+          cursor: not-allowed;
+        }
+
+        .shift-form__time-grid {
+          display: grid;
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+          gap: 10px;
+        }
+
         .shift-form__actions {
-          grid-column: 1 / -1;
           display: flex;
           gap: 8px;
           justify-content: flex-end;
+          flex-wrap: wrap;
+          padding-top: 4px;
         }
 
         .shift-form__hint {
-          grid-column: 1 / -1;
           margin: 0;
           color: #9a3412;
           font-size: 12px;
@@ -2401,14 +2596,7 @@ function SchedulingContent() {
           min-height: 520px;
         }
 
-        @media (max-width: 1200px) {
-          .shift-form {
-            grid-template-columns: repeat(2, minmax(0, 1fr));
-          }
-        }
-
         @media (max-width: 768px) {
-          .scheduler-editor-panel,
           .scheduler-calendar-panel,
           .scheduler-timeline-panel,
           .scheduler-topbar {
@@ -2440,18 +2628,22 @@ function SchedulingContent() {
             width: 100%;
           }
 
+          .scheduler-location-picker {
+            flex: 1 1 100%;
+          }
+
+          .scheduler-location-picker select {
+            max-width: none;
+            flex: 1;
+          }
+
           .scheduler-topbar__controls {
             width: 100%;
             justify-content: flex-start;
           }
 
-          .shift-form {
-            grid-template-columns: 1fr;
-          }
-
           .shift-form__actions {
             justify-content: flex-start;
-            flex-wrap: wrap;
           }
         }
       `}</style>

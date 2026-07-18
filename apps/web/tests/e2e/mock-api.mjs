@@ -1195,6 +1195,19 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
+    const scheduleReopenMatch = /^\/v1\/schedules\/([^/]+)\/reopen$/.exec(pathname);
+    if (scheduleReopenMatch && req.method === 'POST') {
+      const schedule = state.schedules.find((candidate) => candidate.id === scheduleReopenMatch[1]);
+      if (!schedule || schedule.status !== 'PUBLISHED') {
+        sendJson(res, 400, { message: 'Only published schedules can be reopened.' });
+        return;
+      }
+      schedule.status = 'DRAFT';
+      schedule.publishedAt = null;
+      sendJson(res, 200, { id: schedule.id, status: schedule.status, publishedAt: null });
+      return;
+    }
+
     const schedulePublishMatch = /^\/v1\/schedules\/([^/]+)\/publish$/.exec(pathname);
     if (schedulePublishMatch && req.method === 'POST') {
       const idempotencyKey = typeof req.headers['idempotency-key'] === 'string'

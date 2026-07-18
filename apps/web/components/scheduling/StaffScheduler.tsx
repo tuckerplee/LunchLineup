@@ -221,16 +221,20 @@ export function StaffScheduler({ resources, events, viewMode, initialDate, timeZ
         return { positionedShifts: shifts, breakMarkersByShift: markers };
     }, [dayStarts, events, hourWidth, maxHour, minHour, timeZone]);
     const dragHint = useMemo(() => {
-        if (!drag) return 'Drag horizontally to change time, drag vertically to reassign, or click a shift for actions.';
+        if (!drag) return 'Drag horizontally to change time, drag vertically to reassign, or click a shift to edit.';
         if (dragDeltaHours === 0) return 'Release on a staff row to reassign without changing time.';
-        const hours = Math.abs(dragDeltaHours);
-        return `Release to save ${hours} hour${hours === 1 ? '' : 's'} ${dragDeltaHours > 0 ? 'later' : 'earlier'}.`;
+        const minutes = Math.round(Math.abs(dragDeltaHours) * 60);
+        const duration = minutes < 60
+            ? `${minutes} minutes`
+            : `${Math.floor(minutes / 60)}h${minutes % 60 ? ` ${minutes % 60}m` : ''}`;
+        return `Release to save ${duration} ${dragDeltaHours > 0 ? 'later' : 'earlier'}.`;
     }, [drag, dragDeltaHours]);
 
-    const handleDragStart = (e: React.MouseEvent, event: StaffScheduleEvent) => {
-        if (event.extendedProps.kind) return;
+    const handleDragStart = (e: React.PointerEvent<HTMLButtonElement>, event: StaffScheduleEvent) => {
+        if (event.extendedProps.kind || !onEventChange || e.button !== 0) return;
         const originalStart = instantToWallClockDate(event.start, timeZone);
         const originalEnd = instantToWallClockDate(event.end, timeZone);
+        e.currentTarget.setPointerCapture(e.pointerId);
         setShiftAction(null);
         setPendingDeleteEventId(null);
         suppressShiftClickRef.current = false;
@@ -238,11 +242,11 @@ export function StaffScheduler({ resources, events, viewMode, initialDate, timeZ
         setDragDeltaHours(0);
     };
 
-    const handleMouseMove = (e: React.MouseEvent) => {
+    const handlePointerMove = (e: React.PointerEvent) => {
         if (!drag) return;
         const deltaPx = e.clientX - drag.startX;
         const deltaY = e.clientY - drag.startY;
-        const deltaHours = Math.round(deltaPx / hourWidth);
+        const deltaHours = Math.round((deltaPx / hourWidth) * 4) / 4;
         if (deltaHours !== 0 || Math.abs(deltaY) > 4) suppressShiftClickRef.current = true;
         setDrag((current) => (current ? { ...current, currentY: e.clientY } : current));
         setDragDeltaHours(deltaHours);
@@ -257,7 +261,7 @@ export function StaffScheduler({ resources, events, viewMode, initialDate, timeZ
         return row?.dataset.resourceId ?? null;
     };
 
-    const handleMouseUp = (e?: React.MouseEvent) => {
+    const handlePointerUp = (e?: React.PointerEvent) => {
         if (!drag) return;
 
         let newResourceId: string | null = null;
@@ -293,10 +297,23 @@ export function StaffScheduler({ resources, events, viewMode, initialDate, timeZ
         setDragDeltaHours(0);
     };
 
+    const cancelDrag = () => {
+        if (!drag) return;
+        suppressShiftClickRef.current = true;
+        setDrag(null);
+        setDragDeltaHours(0);
+    };
+
     const handleShiftClick = (e: React.MouseEvent, event: StaffScheduleEvent) => {
         e.stopPropagation();
         if (dragDeltaHours !== 0 || suppressShiftClickRef.current) {
             suppressShiftClickRef.current = false;
+            return;
+        }
+        if (onEventSelect) {
+            setShiftAction(null);
+            setPendingDeleteEventId(null);
+            onEventSelect(event);
             return;
         }
         const rowRect = e.currentTarget.closest('.timeline-row')?.getBoundingClientRect();
@@ -345,7 +362,7 @@ export function StaffScheduler({ resources, events, viewMode, initialDate, timeZ
         formatTimeInTimeZone(dateIso, timeZone);
 
     return (
-        <div className="scheduler-root" onMouseMove={handleMouseMove} onMouseUp={handleMouseUp} onMouseLeave={handleMouseUp}>
+        <div className="scheduler-root" onPointerMove={handlePointerMove} onPointerUp={handlePointerUp} onPointerCancel={cancelDrag}>
             <div className="scheduler-status">
                 <span id="scheduler-timeline-instructions">{dragHint}</span>
                 <span>{currentLabel}</span>
@@ -449,9 +466,11 @@ export function StaffScheduler({ resources, events, viewMode, initialDate, timeZ
                                                 <button
                                                     key={event.segmentKey}
                                                     type="button"
-                                                    onMouseDown={(ev) => handleDragStart(ev, event)}
+                                                    onPointerDown={(ev) => handleDragStart(ev, event)}
                                                     onClick={(ev) => handleShiftClick(ev, event)}
                                                     className="shift-block"
+                                                    aria-label={`Edit ${event.title} shift, ${start} to ${end}`}
+                                                    title={`${event.title}, ${start} to ${end}. Click to edit or drag to move.`}
                                                     style={{
                                                         left,
                                                         width: event.width,
@@ -755,6 +774,8 @@ export function StaffScheduler({ resources, events, viewMode, initialDate, timeZ
                     padding: 0 6px;
                     text-align: left;
                     cursor: grab;
+                    touch-action: none;
+                    user-select: none;
                     overflow: hidden;
                 }
 

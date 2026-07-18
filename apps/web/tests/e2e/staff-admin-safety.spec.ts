@@ -50,7 +50,11 @@ test.describe('Staff and platform admin safety controls', () => {
     await loginAsSeedAdmin(page, '/dashboard/staff');
 
     const resetRow = page.getByRole('row').filter({ hasText: 'Reset Candidate' });
-    await resetRow.getByRole('button', { name: 'Reset PIN' }).click();
+    await resetRow.getByText('Reset Candidate', { exact: true }).click();
+    const resetDrawer = page.getByRole('dialog', { name: 'Manage Reset Candidate' });
+    await expect(resetDrawer).toBeVisible();
+    await expect(resetDrawer.getByText('No delegable roles available.')).toBeVisible();
+    await resetDrawer.getByRole('button', { name: 'Reset PIN' }).click();
     const resetDialog = page.getByRole('alertdialog', { name: 'Reset PIN for Reset Candidate?' });
     await expect(resetDialog).toBeVisible();
     expect(resetRequests).toBe(0);
@@ -58,12 +62,16 @@ test.describe('Staff and platform admin safety controls', () => {
     await expect(resetDialog).toHaveCount(0);
     expect(resetRequests).toBe(0);
 
-    await resetRow.getByRole('button', { name: 'Reset PIN' }).click();
+    await resetDrawer.getByRole('button', { name: 'Reset PIN' }).click();
     await page.getByRole('alertdialog').getByRole('button', { name: 'Reset PIN' }).click();
     await expect.poll(() => resetRequests).toBe(1);
+    await expect(resetDrawer.getByText('Temporary PIN:')).toContainText('123456');
+    await resetDrawer.getByRole('button', { name: 'Close staff management' }).click();
 
     const removeRow = page.getByRole('row').filter({ hasText: 'Remove Candidate' });
-    await removeRow.getByRole('button', { name: 'Remove' }).click();
+    await removeRow.getByText('Remove Candidate', { exact: true }).click();
+    const removeDrawer = page.getByRole('dialog', { name: 'Manage Remove Candidate' });
+    await removeDrawer.getByRole('button', { name: 'Remove' }).click();
     const removeDialog = page.getByRole('alertdialog', { name: 'Remove Remove Candidate?' });
     await expect(removeDialog).toBeVisible();
     expect(removeRequests).toBe(0);
@@ -82,7 +90,8 @@ test.describe('Staff and platform admin safety controls', () => {
     await expect(page.getByRole('button', { name: 'Remove' })).toHaveCount(0);
 
     const staffRow = page.getByRole('row').filter({ hasText: 'Mock Staff' });
-    await staffRow.getByRole('button', { name: 'Edit schedule profile' }).click();
+    await staffRow.getByText('Mock Staff', { exact: true }).click();
+    await expect(page.getByRole('dialog', { name: 'Manage Mock Staff' })).toBeVisible();
     const editor = page.getByRole('region', { name: 'Scheduling profile for Mock Staff' });
     await expect(editor.getByText('Availability is not configured. This staff member is unavailable to auto-scheduling.')).toBeVisible();
 
@@ -96,7 +105,7 @@ test.describe('Staff and platform admin safety controls', () => {
     await editor.getByRole('button', { name: 'Save profile' }).click();
     await expect(editor.getByText('Scheduling profile saved.')).toBeVisible();
 
-    await editor.getByRole('button', { name: 'Close scheduling profile' }).click();
+    await page.getByRole('dialog', { name: 'Manage Mock Staff' }).getByRole('button', { name: 'Close staff management' }).click();
     await staffRow.getByRole('button', { name: 'Edit schedule profile' }).click();
     const reopened = page.getByRole('region', { name: 'Scheduling profile for Mock Staff' });
     await expect(reopened.getByText('line cook')).toBeVisible();

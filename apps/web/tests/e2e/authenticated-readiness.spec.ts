@@ -8,6 +8,7 @@ const publicOnlyOverride = process.env.E2E_PUBLIC_SMOKE_ONLY === '1';
 async function saveDemandWindow(page: Page, date: string) {
   const editor = page.getByLabel('Schedule demand setup').first();
   await expect(editor).toBeVisible();
+  await editor.getByRole('button', { name: 'Edit demand' }).click();
   await editor.getByRole('button', { name: 'Add window' }).click();
   const row = editor.locator('.demand-editor__row').last();
   await row.getByLabel('Date').fill(date);
@@ -157,6 +158,17 @@ test.describe('Authenticated scheduling SaaS readiness', () => {
       },
     ]);
 
+    await page.locator('.shift-block').first().click();
+    const publishedShiftEditor = page.getByRole('dialog', { name: 'Edit shift' });
+    await expect(publishedShiftEditor).toBeVisible();
+    await expect(publishedShiftEditor.getByText('Published schedule')).toBeVisible();
+    await expect(publishedShiftEditor.getByRole('button', { name: 'Save shift' })).toBeDisabled();
+    await publishedShiftEditor.getByRole('button', { name: 'Reopen schedule to edit' }).click();
+    await publishedShiftEditor.getByRole('button', { name: 'Confirm reopen schedule' }).click();
+    await expect(publishedShiftEditor.getByText('Published schedule')).toHaveCount(0);
+    await expect(publishedShiftEditor.getByRole('button', { name: 'Save shift' })).toBeEnabled();
+    await publishedShiftEditor.getByRole('button', { name: 'Close shift editor' }).click();
+
     await page.getByRole('link', { name: /Time Cards/ }).click();
     await expect(page.getByRole('heading', { name: 'Time Cards' })).toBeVisible();
     await page.getByLabel('Employee').selectOption({ label: 'Mock Staff' });
@@ -213,7 +225,7 @@ test.describe('Authenticated scheduling SaaS readiness', () => {
     const overnightShift = page.locator('.shift-block').filter({ hasText: '22:00-02:00' }).first();
     await expect(overnightShift).toBeVisible();
     await overnightShift.click();
-    await page.getByRole('button', { name: 'Edit shift' }).click();
+    await expect(page.getByRole('dialog', { name: 'Edit shift' })).toBeVisible();
     await expect(shiftForm.getByLabel('Date')).toHaveValue('2026-07-11');
     await expect(shiftForm.getByLabel('Start')).toHaveValue('22:00');
     await expect(shiftForm.getByLabel('End')).toHaveValue('02:00');
@@ -250,7 +262,7 @@ test.describe('Authenticated scheduling SaaS readiness', () => {
     const recoveredShift = page.locator('.shift-block').filter({ hasText: '22:00-01:30' }).first();
     await expect(recoveredShift).toBeVisible();
     await recoveredShift.click();
-    await page.getByRole('button', { name: 'Edit shift' }).click();
+    await expect(page.getByRole('dialog', { name: 'Edit shift' })).toBeVisible();
     const recoveredForm = page.locator('form.shift-form');
     const editRequestPromise = page.waitForRequest((request) =>
       request.method() === 'PUT' && /\/api\/v1\/shifts\/[^/]+$/.test(new URL(request.url()).pathname));
@@ -268,6 +280,7 @@ test.describe('Authenticated scheduling SaaS readiness', () => {
     await expect.poll(() => page.evaluate(() => window.sessionStorage.getItem('lunchlineup:shift-update-recovery:v1'))).toBeNull();
 
     const editor = page.getByLabel('Schedule demand setup').first();
+    await editor.getByRole('button', { name: 'Edit demand' }).click();
     await editor.getByRole('button', { name: 'Add window' }).click();
     const demandRow = editor.locator('.demand-editor__row').last();
     await demandRow.getByLabel('Date').fill('2026-07-11');
@@ -290,6 +303,48 @@ test.describe('Authenticated scheduling SaaS readiness', () => {
     await expect(demandRow.getByLabel('Date')).toHaveValue('2026-07-11');
     await expect(demandRow.getByLabel('Start')).toHaveValue('23:00');
     await expect(demandRow.getByLabel('End')).toHaveValue('01:00');
+  });
+
+  test('moves a draft shift in time and reassigns it with one drag', async ({ page }) => {
+    await loginAsSeedAdmin(page, '/dashboard/scheduling?date=2026-07-09');
+    await page.getByRole('button', { name: /Add shift/ }).click();
+    const shiftForm = page.locator('form.shift-form');
+    await shiftForm.locator('select').first().selectOption({ label: 'Mock Staff' });
+    await shiftForm.getByLabel('Start').fill('10:00');
+    await shiftForm.getByLabel('End').fill('18:00');
+    await shiftForm.getByRole('button', { name: 'Create shift' }).click();
+    await expect(page.getByText(/Shift created and saved/)).toBeVisible();
+
+    const shift = page.locator('.timeline-row[data-resource-title="Mock Staff"] .shift-block').filter({ hasText: '10:00-18:00' }).first();
+    const targetRow = page.locator('.timeline-row[data-resource-title="Mock Manager"]');
+    const hourCell = page.locator('.hour-label').first();
+    const [shiftBox, targetBox, hourBox] = await Promise.all([
+      shift.boundingBox(),
+      targetRow.boundingBox(),
+      hourCell.boundingBox(),
+    ]);
+    expect(shiftBox).toBeTruthy();
+    expect(targetBox).toBeTruthy();
+    expect(hourBox).toBeTruthy();
+    if (!shiftBox || !targetBox || !hourBox) return;
+
+    const updateRequest = page.waitForRequest((request) =>
+      request.method() === 'PUT' && /\/api\/v1\/shifts\/[^/]+$/.test(new URL(request.url()).pathname));
+    const sourceX = shiftBox.x + Math.min(20, shiftBox.width / 3);
+    await page.mouse.move(sourceX, shiftBox.y + shiftBox.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(sourceX + hourBox.width / 2, targetBox.y + targetBox.height / 2, { steps: 8 });
+    await page.mouse.up();
+
+    const payload = (await updateRequest).postDataJSON() as {
+      userId: string;
+      startTime: string;
+      endTime: string;
+    };
+    expect(payload.userId).toBe('user-mock-manager');
+    expect(new Date(payload.endTime).getTime() - new Date(payload.startTime).getTime()).toBe(8 * 60 * 60 * 1000);
+    await expect(page.getByText(/Board change saved/)).toBeVisible();
+    await expect(targetRow.locator('.shift-block').filter({ hasText: '10:30-18:30' })).toBeVisible();
   });
 
   test('retains the active location through break generation and refresh', async ({ page }) => {
@@ -371,9 +426,9 @@ test.describe('Authenticated scheduling SaaS readiness', () => {
     await loginAsSeedAdmin(page, '/dashboard/scheduling?date=2026-07-09&location=loc-uptown');
     await expect(page.getByRole('heading', { name: 'Calendar' })).toBeVisible();
     await expect.poll(() => requestedLocationIds.at(-1)).toBe('loc-uptown');
+    await expect(page.locator('.timeline-row[data-resource-title="Mock Manager"] .shift-block')).toBeVisible();
 
-    await page.getByRole('button', { name: /Add shift/ }).click();
-    const locationSelect = page.locator('form.shift-form').getByLabel('Location');
+    const locationSelect = page.getByLabel('Schedule location');
     await expect(locationSelect).toHaveValue('loc-uptown');
     const requestsBeforeSwitch = requestedLocationIds.length;
     await locationSelect.selectOption('loc-downtown');
@@ -393,7 +448,10 @@ test.describe('Authenticated scheduling SaaS readiness', () => {
     expect(requestedLocationIds.slice(requestsBeforeSwitch)).toEqual(
       expect.arrayContaining(['loc-downtown']),
     );
-    expect(requestedLocationIds.slice(requestsBeforeSwitch).every((locationId) => locationId === 'loc-downtown')).toBe(true);
+    expect(
+      requestedLocationIds.slice(requestsBeforeSwitch).every((locationId) => locationId === 'loc-downtown'),
+      `Requests after switching location: ${requestedLocationIds.slice(requestsBeforeSwitch).join(', ')}`,
+    ).toBe(true);
   });
 
   test('keeps the selected calendar scope when an older auto-schedule job completes', async ({ page }) => {
@@ -664,6 +722,7 @@ test.describe('Authenticated scheduling SaaS readiness', () => {
 
     const editor = page.getByLabel('Schedule demand setup').first();
     await expect(editor.getByText('Existing demand has not been replaced.')).toBeVisible();
+    await editor.getByRole('button', { name: 'Edit demand' }).click();
     await expect(editor.getByRole('button', { name: 'Add window' })).toBeDisabled();
     await expect(editor.getByRole('button', { name: 'Save demand' })).toBeDisabled();
     expect(demandWrites).toBe(0);

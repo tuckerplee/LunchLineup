@@ -1,7 +1,7 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
-import { CalendarClock, RotateCcw, Trash2, UserMinus } from 'lucide-react';
+import { useCallback, useEffect, useMemo, useState, type KeyboardEvent as ReactKeyboardEvent } from 'react';
+import { CalendarClock, RotateCcw, Trash2, UserMinus, X } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { fetchWithSession } from '@/lib/client-api';
 import {
@@ -116,6 +116,23 @@ function initials(name: string): string {
         .join('') || 'SM';
 }
 
+function keepFocusInsideDialog(event: ReactKeyboardEvent<HTMLElement>) {
+    if (event.key !== 'Tab') return;
+    const focusable = Array.from(event.currentTarget.querySelectorAll<HTMLElement>(
+        'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
+    )).filter((element) => element.getClientRects().length > 0);
+    const first = focusable[0];
+    const last = focusable.at(-1);
+    if (!first || !last) return;
+    if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last.focus();
+    } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+    }
+}
+
 function byCategory(items: PermissionCatalogItem[]): Record<string, PermissionCatalogItem[]> {
     return items.reduce<Record<string, PermissionCatalogItem[]>>((acc, item) => {
         acc[item.category] ??= [];
@@ -161,6 +178,7 @@ export function StaffWorkspace({ currentUserId, canInvite, canAdminister, canRea
     const [pendingRoleDeletion, setPendingRoleDeletion] = useState<RoleCatalogItem | null>(null);
     const [roleDeletionName, setRoleDeletionName] = useState('');
     const [schedulingProfileUser, setSchedulingProfileUser] = useState<StaffUser | null>(null);
+    const canOpenStaffDrawer = canManageSchedulingProfiles || canAdminister || (canAssignRoles && canReadRoles);
 
     const [inviteName, setInviteName] = useState('');
     const [inviteEmail, setInviteEmail] = useState('');
@@ -170,6 +188,7 @@ export function StaffWorkspace({ currentUserId, canInvite, canAdminister, canRea
     const [inviteLoginType, setInviteLoginType] = useState<'email' | 'username'>('username');
     const [isInviting, setIsInviting] = useState(false);
     const [lastTemporaryPin, setLastTemporaryPin] = useState<string | null>(null);
+    const [lastTemporaryPinUserId, setLastTemporaryPinUserId] = useState<string | null>(null);
     const [lastInvitationUserId, setLastInvitationUserId] = useState<string | null>(null);
 
     const [editorRoleId, setEditorRoleId] = useState<string | null>(null);
@@ -184,6 +203,15 @@ export function StaffWorkspace({ currentUserId, canInvite, canAdminister, canRea
         refreshStatuses: refreshInvitationStatuses,
         retry: retryInvitation,
     } = useInvitationDelivery({ canAdminister, users });
+
+    useEffect(() => {
+        if (!schedulingProfileUser) return;
+        const previousOverflow = document.body.style.overflow;
+        document.body.style.overflow = 'hidden';
+        return () => {
+            document.body.style.overflow = previousOverflow;
+        };
+    }, [schedulingProfileUser]);
 
     const loadWorkspace = useCallback(async () => {
         setIsLoading(true);
@@ -297,6 +325,7 @@ export function StaffWorkspace({ currentUserId, canInvite, canAdminister, canRea
         setIsInviting(true);
         setError(null);
         setLastTemporaryPin(null);
+        setLastTemporaryPinUserId(null);
         setLastInvitationUserId(null);
         try {
             const res = await fetchWithSession('/users/invite', jsonWriteInit('POST', {
@@ -326,6 +355,7 @@ export function StaffWorkspace({ currentUserId, canInvite, canAdminister, canRea
             setInvitePin('');
             setInviteLoginType('username');
             setLastTemporaryPin(payload.temporaryPin ?? null);
+            setLastTemporaryPinUserId(invitedUserId);
             await loadWorkspace();
         } catch (err) {
             setError((err as Error).message);
@@ -341,9 +371,13 @@ export function StaffWorkspace({ currentUserId, canInvite, canAdminister, canRea
             const res = await fetchWithSession(`/users/${userId}/access`, jsonWriteInit('PUT', { roleIds }));
             const payload = (await res.json().catch(() => ({}))) as { assignedRoles?: AssignedRole[]; message?: string };
             if (!res.ok) throw new Error(payload.message ?? 'Failed to update user access.');
+            const assignedRoles = payload.assignedRoles;
             setUsers((prev) => prev.map((user) => (
-                user.id === userId ? { ...user, assignedRoles: payload.assignedRoles ?? user.assignedRoles } : user
+                user.id === userId ? { ...user, assignedRoles: assignedRoles ?? user.assignedRoles } : user
             )));
+            setSchedulingProfileUser((current) => current?.id === userId
+                ? { ...current, assignedRoles: assignedRoles ?? current.assignedRoles }
+                : current);
         } catch (err) {
             setError((err as Error).message);
         } finally {
@@ -354,6 +388,8 @@ export function StaffWorkspace({ currentUserId, canInvite, canAdminister, canRea
     const resetPin = useCallback(async (id: string) => {
         setIsSaving(id);
         setError(null);
+        setLastTemporaryPin(null);
+        setLastTemporaryPinUserId(null);
         try {
             const res = await fetchWithSession(`/users/${id}/pin/reset`, jsonWriteInit('POST'));
             const payload = (await res.json().catch(() => ({}))) as { temporaryPin?: string; username?: string; message?: string };
@@ -361,7 +397,11 @@ export function StaffWorkspace({ currentUserId, canInvite, canAdminister, canRea
             setUsers((prev) => prev.map((u) => (
                 u.id === id ? { ...u, username: payload.username ?? u.username, pinEnabled: true, pinResetRequired: true } : u
             )));
+            setSchedulingProfileUser((current) => current?.id === id
+                ? { ...current, username: payload.username ?? current.username, pinEnabled: true, pinResetRequired: true }
+                : current);
             setLastTemporaryPin(payload.temporaryPin ?? null);
+            setLastTemporaryPinUserId(id);
         } catch (err) {
             setError((err as Error).message);
         } finally {
@@ -376,6 +416,7 @@ export function StaffWorkspace({ currentUserId, canInvite, canAdminister, canRea
             const res = await fetchWithSession(`/users/${id}`, jsonWriteInit('DELETE'));
             if (!res.ok && res.status !== 204) throw new Error('Failed to remove staff member.');
             setUsers((prev) => prev.filter((u) => u.id !== id));
+            setSchedulingProfileUser((current) => current?.id === id ? null : current);
         } catch (err) {
             setError((err as Error).message);
         } finally {
@@ -597,7 +638,27 @@ export function StaffWorkspace({ currentUserId, canInvite, canAdminister, canRea
                     </thead>
                     <tbody>
                         {users.map((user, index) => (
-                            <tr key={user.id} style={{ borderBottom: index < users.length - 1 ? '1px solid var(--border)' : 'none' }}>
+                            <tr
+                                key={user.id}
+                                className={canOpenStaffDrawer ? 'staff-directory-row staff-directory-row--interactive' : 'staff-directory-row'}
+                                tabIndex={canOpenStaffDrawer ? 0 : undefined}
+                                aria-label={canOpenStaffDrawer ? `Manage ${user.name}` : undefined}
+                                title={canOpenStaffDrawer ? `Manage ${user.name}` : undefined}
+                                onClick={(event) => {
+                                    if (!canOpenStaffDrawer) return;
+                                    const target = event.target as HTMLElement;
+                                    if (target.closest('button, a, input, select, textarea, label')) return;
+                                    setSchedulingProfileUser(user);
+                                }}
+                                onKeyDown={(event) => {
+                                    if (!canOpenStaffDrawer || event.target !== event.currentTarget) return;
+                                    if (event.key === 'Enter' || event.key === ' ') {
+                                        event.preventDefault();
+                                        setSchedulingProfileUser(user);
+                                    }
+                                }}
+                                style={{ borderBottom: index < users.length - 1 ? '1px solid var(--border)' : 'none' }}
+                            >
                                 <td style={{ padding: '0.86rem 1rem' }}>
                                     <div style={{ display: 'flex', alignItems: 'center', gap: '0.7rem' }}>
                                         <div style={{ width: 34, height: 34, borderRadius: '50%', border: '1px solid #c9d6ef', background: '#edf3ff', display: 'grid', placeItems: 'center', fontSize: '0.66rem', fontWeight: 800, color: '#244aa8' }}>
@@ -723,11 +784,132 @@ export function StaffWorkspace({ currentUserId, canInvite, canAdminister, canRea
                 </div>            </section>
 
             {schedulingProfileUser ? (
-                <StaffSchedulingProfileEditor
-                    key={schedulingProfileUser.id}
-                    user={schedulingProfileUser}
-                    onClose={() => setSchedulingProfileUser(null)}
-                />
+                <div className="staff-profile-drawer-backdrop" role="presentation" onMouseDown={() => setSchedulingProfileUser(null)}>
+                    <aside
+                        className="staff-profile-drawer"
+                        role="dialog"
+                        aria-modal="true"
+                        aria-label={`Manage ${schedulingProfileUser.name}`}
+                        onMouseDown={(event) => event.stopPropagation()}
+                        onKeyDown={(event) => {
+                            if (event.key === 'Escape') setSchedulingProfileUser(null);
+                            keepFocusInsideDialog(event);
+                        }}
+                    >
+                        <header className="staff-profile-drawer__header">
+                            <div>
+                                <div className="workspace-kicker">Staff member</div>
+                                <h2>{schedulingProfileUser.name}</h2>
+                                <span>{schedulingProfileUser.role}</span>
+                            </div>
+                            <Button
+                                type="button"
+                                variant="ghost"
+                                size="icon"
+                                onClick={() => setSchedulingProfileUser(null)}
+                                title="Close staff management"
+                                aria-label="Close staff management"
+                                autoFocus
+                            >
+                                <X aria-hidden="true" size={18} />
+                            </Button>
+                        </header>
+
+                        <section className="staff-profile-drawer__account" aria-label={`Account and access for ${schedulingProfileUser.name}`}>
+                            <div className="staff-profile-drawer__section-heading">
+                                <h3>Account & access</h3>
+                                <span>{schedulingProfileUser.email || schedulingProfileUser.username || 'No login configured'}</span>
+                            </div>
+
+                            {canReadRoles ? (
+                                <div className="staff-profile-drawer__roles">
+                                    <strong>Assigned roles</strong>
+                                    <div className="staff-profile-drawer__role-badges">
+                                        {schedulingProfileUser.assignedRoles.map((role) => (
+                                            <span key={role.id}>{role.name}</span>
+                                        ))}
+                                        {schedulingProfileUser.assignedRoles.length === 0 ? <span>No roles assigned</span> : null}
+                                    </div>
+                                    {canAssignRoles && schedulingProfileUser.id !== currentUserId ? (
+                                        <>
+                                            <strong>Change roles</strong>
+                                            {delegableRoles.length > 0 ? (
+                                                <div role="group" aria-label={`Manage roles for ${schedulingProfileUser.name}`}>
+                                                    {delegableRoles.map((role) => {
+                                                        const checked = schedulingProfileUser.assignedRoles.some((assignedRole) => assignedRole.id === role.id);
+                                                        return (
+                                                            <label key={role.id}>
+                                                                <input
+                                                                    type="checkbox"
+                                                                    checked={checked}
+                                                                    disabled={isSaving === schedulingProfileUser.id}
+                                                                    onChange={(event) => {
+                                                                        const currentRoleIds = schedulingProfileUser.assignedRoles.map((assignedRole) => assignedRole.id);
+                                                                        const nextRoleIds = event.target.checked
+                                                                            ? Array.from(new Set([...currentRoleIds, role.id]))
+                                                                            : currentRoleIds.filter((roleId) => roleId !== role.id);
+                                                                        void updateUserRoles(schedulingProfileUser.id, nextRoleIds);
+                                                                    }}
+                                                                />
+                                                                <span>{role.name}</span>
+                                                            </label>
+                                                        );
+                                                    })}
+                                                </div>
+                                            ) : <span className="staff-profile-drawer__empty">No delegable roles available.</span>}
+                                        </>
+                                    ) : null}
+                                </div>
+                            ) : null}
+
+                            {lastTemporaryPin && lastTemporaryPinUserId === schedulingProfileUser.id ? (
+                                <div className="staff-profile-drawer__temporary-pin" role="status">
+                                    Temporary PIN: <strong>{lastTemporaryPin}</strong>
+                                </div>
+                            ) : null}
+
+                            {canAdminister && schedulingProfileUser.id !== currentUserId ? (
+                                <div className="staff-profile-drawer__account-actions">
+                                    {!schedulingProfileUser.email ? (
+                                        <Button
+                                            size="sm"
+                                            variant="outline"
+                                            onClick={() => setPendingAction({ action: 'reset-pin', user: schedulingProfileUser })}
+                                            disabled={isSaving === schedulingProfileUser.id}
+                                        >
+                                            <RotateCcw aria-hidden="true" size={14} />
+                                            Reset PIN
+                                        </Button>
+                                    ) : null}
+                                    <Button
+                                        size="sm"
+                                        variant="outline"
+                                        onClick={() => setPendingAction({ action: 'remove', user: schedulingProfileUser })}
+                                        disabled={isSaving === schedulingProfileUser.id}
+                                    >
+                                        <UserMinus aria-hidden="true" size={14} />
+                                        Remove
+                                    </Button>
+                                </div>
+                            ) : null}
+                        </section>
+
+                        {canManageSchedulingProfiles ? (
+                            <section className="staff-profile-drawer__scheduling" aria-label={`Scheduling settings for ${schedulingProfileUser.name}`}>
+                                <div className="staff-profile-drawer__section-heading">
+                                    <h3>Scheduling profile</h3>
+                                    <span>Skills and weekly availability</span>
+                                </div>
+                                <StaffSchedulingProfileEditor
+                                    key={schedulingProfileUser.id}
+                                    user={schedulingProfileUser}
+                                    onClose={() => setSchedulingProfileUser(null)}
+                                    showHeader={false}
+                                />
+                            </section>
+                        ) : null}
+                    </aside>
+                </div>
             ) : null}
 
             {canManageRoles && canReadRoles ? (
