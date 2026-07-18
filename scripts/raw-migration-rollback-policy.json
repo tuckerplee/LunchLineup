@@ -239,7 +239,7 @@
       "rationale": "data backfill, constraint transition, database enforcement, schema expansion remains in the candidate schema during rollback; isolated old-release smoke proof is mandatory before production mutation."
     },
     "packages/db/prisma/migrations/20260716_legacy_unbacked_credit_cleanup.sql": {
-      "sha256": "1a5caa2adc40eb3d7566b7c31ac21aefa4025a7488ccb5dea7fed0bb5679e3f8",
+      "sha256": "ec1da9b03ff9e32f3a1b11803909a07fbf5d558f7186bdb7bb2dfadf91690157",
       "phase": "expand-contract",
       "rollbackSchema": "retain",
       "contractPhase": "compatibility-proven-inline",

@@ -13,7 +13,7 @@ const payrollMigrations = [
 ];
 const governanceMigration = 'packages/db/prisma/migrations/20260716_zzzz_tenant_data_governance_p1.sql';
 const legacyCleanupMigration = 'packages/db/prisma/migrations/20260716_legacy_unbacked_credit_cleanup.sql';
-const legacyCleanupDigest = '1a5caa2adc40eb3d7566b7c31ac21aefa4025a7488ccb5dea7fed0bb5679e3f8';
+const legacyCleanupDigest = 'ec1da9b03ff9e32f3a1b11803909a07fbf5d558f7186bdb7bb2dfadf91690157';
 
 function git(cwd, ...args) {
   const result = spawnSync('git', args, { cwd, encoding: 'utf8', windowsHide: true });
@@ -121,7 +121,7 @@ test('every non-payroll candidate-only raw and pre migration has exact policy co
   );
 });
 
-test('governance trigger migration has exact expand-contract approval without changing the legacy cleanup digest', () => {
+test('governance trigger and legacy cleanup migrations have exact expand-contract approvals', () => {
   const policy = JSON.parse(readFileSync(join(root, 'scripts/raw-migration-rollback-policy.json'), 'utf8'));
   const governanceDigest = createHash('sha256').update(readFileSync(join(root, governanceMigration))).digest('hex');
   assert.deepEqual(policy.expandContract[governanceMigration], {

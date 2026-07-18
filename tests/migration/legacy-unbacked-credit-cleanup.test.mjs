@@ -23,7 +23,13 @@ test('legacy import and forward cleanup remove only the known unbacked grant', (
   assert.match(migration, /WHERE tenant\."slug" LIKE 'legacy-company-%'[\s\S]*FOR UPDATE/);
   assert.match(migration, /legacy-import\.credit-provenance\.v1\.' \|\| tenant\."id"/);
   assert.match(migration, /candidate\.wallet_balance = candidate\.ledger_balance \+ 1000[\s\S]*candidate\.ledger_balance >= 0/);
-  assert.match(migration, /SET "usageCredits" = candidate\.ledger_balance::INTEGER/);
+  assert.match(migration, /candidate\.ledger_balance BETWEEN -1000 AND -1/);
+  assert.match(migration, /candidate\.ledger_debit_row_count = candidate\.ledger_row_count/);
+  assert.match(migration, /SET "usageCredits" = reconciled_wallet_balance/);
+  assert.match(migration, /legacy-unbacked-1000-consumed-reconciled/);
+  assert.match(migration, /'consumedCreditValue', -candidate\.ledger_balance/);
+  assert.match(migration, /'removedUnspentCredits', candidate\.wallet_balance/);
+  assert.match(migration, /reconciled_wallet_balance := candidate\.ledger_balance::INTEGER/);
   assert.doesNotMatch(migration, /(?:INSERT|UPDATE|DELETE)\s+(?:INTO\s+|FROM\s+)?public\."CreditTransaction"/i);
   const grantBody = metering.slice(
     metering.indexOf('async grantCreditsInTransaction'),
@@ -40,6 +46,8 @@ test('legacy cleanup rescans every pass and fails closed on malformed provenance
   assert.match(migration, /candidate\.import_provenance IS NOT NULL[\s\S]*zero-wallet-no-ledger/);
   assert.match(migration, /malformed fixed-import credit provenance/);
   assert.match(migration, /legacy-unbacked-1000-reconciled/);
+  assert.match(migration, /malformed consumed-credit reconciliation provenance/);
+  assert.match(migration, /candidate\.wallet_balance IS DISTINCT FROM candidate\.ledger_balance \+ provenance_consumed_credits/);
   assert.match(migration, /per-tenant credit provenance has an imbalanced wallet/);
   assert.match(migration, /ledger_row_count = 0 AND candidate\.wallet_balance = 0[\s\S]*ambiguous fully consumed or manually cleared/);
   assert.match(migration, /ambiguous or consumed credit history[\s\S]*manual reconciliation is required/);

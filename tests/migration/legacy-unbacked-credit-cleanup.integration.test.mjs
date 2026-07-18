@@ -100,8 +100,10 @@ CREATE TABLE public."CreditTransaction" (
   "id" TEXT PRIMARY KEY,
   "tenantId" TEXT NOT NULL REFERENCES public."Tenant"("id"),
   "amount" INTEGER NOT NULL,
+  "debtAmount" INTEGER NOT NULL DEFAULT 0,
   "reason" TEXT NOT NULL,
   "balanceAfter" INTEGER,
+  "debtAfter" INTEGER,
   "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -170,10 +172,13 @@ test('legacy unbacked credit cleanup is selective, fail-closed, and replay-safe 
         ('legacy-zero-ledger', 'legacy-company-1', 1000),
         ('legacy-legitimate', 'legacy-company-2', 1000),
         ('legacy-mixed', 'legacy-company-3', 1250),
+        ('legacy-consumed', 'legacy-company-consumed', 998),
         ('ordinary-tenant', 'ordinary-tenant', 1000);
       INSERT INTO public."CreditTransaction" ("id", "tenantId", "amount", "reason") VALUES
         ('legitimate-grant', 'legacy-legitimate', 1000, 'Stripe credit purchase'),
-        ('mixed-grant', 'legacy-mixed', 250, 'Admin credit grant');
+        ('mixed-grant', 'legacy-mixed', 250, 'Admin credit grant'),
+        ('consumed-debit-1', 'legacy-consumed', -1, 'Lunch/Break generation'),
+        ('consumed-debit-2', 'legacy-consumed', -1, 'Lunch/Break generation');
       INSERT INTO public."PlatformConfig" ("id", "key", "value", "updatedAt", "updatedBy") VALUES
         (
           'legacy-fixed-zero-provenance',
@@ -197,6 +202,7 @@ test('legacy unbacked credit cleanup is selective, fail-closed, and replay-safe 
       FROM public."Tenant";
     `)), {
       'legacy-fixed-zero': 0,
+      'legacy-consumed': 0,
       'legacy-legitimate': 1000,
       'legacy-mixed': 250,
       'legacy-zero-ledger': 0,
@@ -204,14 +210,26 @@ test('legacy unbacked credit cleanup is selective, fail-closed, and replay-safe 
     });
     assert.equal(
       scalar(container, 'SELECT count(*)::text || \':\' || sum("amount")::text FROM public."CreditTransaction";'),
-      '2:1250',
+      '4:1248',
       'ledger-backed credits must remain untouched',
     );
     assert.equal(
       scalar(container, `SELECT count(*) FROM public."PlatformConfig" WHERE "key" LIKE 'legacy-import.credit-provenance.v1.%';`),
-      '3',
+      '4',
       'the migration must retain importer provenance and add only per-tenant reconciliation provenance',
     );
+    assert.deepEqual(JSON.parse(scalar(container, `
+      SELECT "value"
+      FROM public."PlatformConfig"
+      WHERE "key" = 'legacy-import.credit-provenance.v1.legacy-consumed';
+    `)), {
+      version: 1,
+      tenantId: 'legacy-consumed',
+      initialCreditPolicy: 'legacy-unbacked-1000-consumed-reconciled',
+      initialCreditGrant: 1000,
+      consumedCreditValue: 2,
+      removedUnspentCredits: 998,
+    });
 
     const firstPassState = scalar(container, `
       SELECT jsonb_build_object(
@@ -357,12 +375,13 @@ test('legacy unbacked credit cleanup is selective, fail-closed, and replay-safe 
     psql(container, `DROP SCHEMA public CASCADE; CREATE SCHEMA public; ${schema}
       INSERT INTO public."Tenant" ("id", "slug", "usageCredits") VALUES
         ('legacy-safe', 'legacy-company-4', 1000),
-        ('legacy-consumed', 'legacy-company-5', 600);
+        ('legacy-ambiguous', 'legacy-company-5', 600);
       INSERT INTO public."CreditTransaction" ("id", "tenantId", "amount", "reason") VALUES
-        ('consumed-debit', 'legacy-consumed', -400, 'Historical usage');
+        ('ambiguous-grant', 'legacy-ambiguous', 100, 'Historical grant'),
+        ('ambiguous-debit', 'legacy-ambiguous', -500, 'Historical usage');
     `);
     const ambiguous = psql(container, migration, { allowFailure: true });
-    assert.notEqual(ambiguous.status, 0, 'consumed legacy history must stop the migration');
+    assert.notEqual(ambiguous.status, 0, 'mixed legacy history must stop the migration');
     assert.match(ambiguous.stderr, /ambiguous or consumed credit history/);
     assert.equal(
       scalar(container, `SELECT "usageCredits" FROM public."Tenant" WHERE "id" = 'legacy-safe';`),
