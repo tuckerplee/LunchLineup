@@ -23,6 +23,10 @@ test('Shift schema has the fields needed for database overlap enforcement', () =
 
 test('shift overlap migration enforces active assigned shifts with a deferrable exclusion constraint', () => {
   const sql = read('packages/db/prisma/migrations/20260709_shift_overlap_constraints.sql');
+  const legacyReconciliation = read(
+    'packages/db/prisma/migrations/pre_20260717_legacy_shift_overlap_unassign.sql',
+  );
+  const migrationsReadme = read('packages/db/prisma/migrations/README.md');
 
   for (const expected of [
     'CREATE EXTENSION IF NOT EXISTS btree_gist',
@@ -46,6 +50,31 @@ test('shift overlap migration enforces active assigned shifts with a deferrable 
   assert.match(sql, /s1\."endTime"\s+>\s+s2\."startTime"/);
   assert.match(sql, /s1\."deletedAt" IS NULL/);
   assert.match(sql, /s2\."deletedAt" IS NULL/);
+  assert.match(migrationsReadme, /pre_20260717_legacy_shift_overlap_unassign\.sql/);
+
+  for (const expected of [
+    `to_regclass('public."Shift"') IS NULL`,
+    'LOCK TABLE public."Shift" IN SHARE ROW EXCLUSIVE MODE',
+    'LOCK TABLE public."TimeCard" IN SHARE MODE',
+    'array_agg(DISTINCT conflict.shift_id ORDER BY conflict.shift_id)',
+    `candidate."scheduleId" IS NOT NULL`,
+    `candidate."locationId" NOT LIKE 'legacy-%'`,
+    `candidate.role IS DISTINCT FROM 'STAFF'`,
+    `candidate."endTime" - candidate."startTime" <> INTERVAL '8 hours'`,
+    `candidate."createdAt" >= TIMESTAMP '2026-07-17 00:00:00'`,
+    'a conflict has time-card history',
+    '"userId" = NULL',
+    'GET DIAGNOSTICS updated_count = ROW_COUNT',
+    'left an assigned overlap',
+    'did not clear every ambiguous assignment',
+  ]) {
+    assert.ok(
+      legacyReconciliation.includes(expected),
+      `missing legacy shift overlap reconciliation fragment: ${expected}`,
+    );
+  }
+
+  assert.doesNotMatch(legacyReconciliation, /\b(?:DELETE|DROP|TRUNCATE)\b/i);
 });
 
 test('schedule integrity migration enforces windows, tenant FKs, and breaks at the database layer', () => {

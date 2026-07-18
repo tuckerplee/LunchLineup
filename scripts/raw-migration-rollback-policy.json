@@ -342,6 +342,14 @@
       "requiresOldReleaseProof": true,
       "rationale": "the exact legacy break-window data re-anchor remains during rollback; isolated old-release smoke proof is mandatory before production mutation."
     },
+    "packages/db/prisma/migrations/pre_20260717_legacy_shift_overlap_unassign.sql": {
+      "sha256": "5f5dc6ca1b0b15a219b63b14498b0e64fce4af304e27355b4209892f124d0b7e",
+      "phase": "expand",
+      "rollbackSchema": "retain",
+      "contractPhase": "after-rollback-window",
+      "requiresOldReleaseProof": true,
+      "rationale": "ambiguous legacy shift assignments remain cleared during rollback; isolated old-release smoke proof is mandatory before production mutation."
+    },
     "packages/db/prisma/migrations/pre_20260717_prisma_composite_parent_keys.sql": {
       "sha256": "7e1b4d86ab5f8427fc5f5bd3b7beda0fbc989e8764de63b761b390b992e2e988",
       "phase": "expand",
