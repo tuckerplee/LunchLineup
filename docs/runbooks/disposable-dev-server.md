@@ -31,6 +31,8 @@ Recovery objective:
 - Leave `/opt/lunchlineup/DEPLOYED_GIT_SHA` matching the GitHub branch used for bootstrap.
 - Leave the guest hostname set to `lunchlineup-dev` unless `VM_HOSTNAME` is intentionally overridden.
 - Provision every required Compose value with distinct disposable-development secrets, validate the rendered Compose configuration, build each unique runtime image serially, start with `--no-build`, and write `DEPLOYED_GIT_SHA` only after health succeeds.
+- Keep `/opt/lunchlineup-secrets` root-only while making only the files explicitly mounted as Compose secrets readable inside their authorized non-root containers.
+- Reconcile the configured owner and existing application-role passwords through PostgreSQL's local socket before migrations. This preserves a reused VM107 data volume when its original initialization credentials differ from the current runtime env.
 
 ## Fresh VM Steps
 
@@ -85,3 +87,5 @@ df -h /
 ```
 
 Fix the GitHub branch or runtime env, then rerun `scripts/bootstrap-vm107-dev.sh`.
+
+The bootstrap does not delete an existing Postgres volume to repair credential drift. It starts only Postgres, reconciles disposable-development role passwords locally, and then reruns the normal migration and health gates. If local socket administration fails or the configured role names are invalid, stop and inspect the volume rather than removing it.

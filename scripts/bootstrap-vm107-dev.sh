@@ -117,11 +117,15 @@ ensure_secret_file() {
   if [[ ! -s "$path" ]]; then
     (umask 077; printf '%s\n' "$value" > "$path")
   fi
-  chmod 600 "$path"
+  # Standalone Compose bind-mounts secret sources without changing ownership.
+  # The root-only parent protects the host path while 0444 lets each explicitly
+  # authorized non-root container read its mounted copy.
+  chmod 0444 "$path"
 }
 
 prepare_secret_files() {
   mkdir -p "$SECRETS_DIR"
+  chmod 0700 "$SECRETS_DIR"
   ensure_secret_file metrics_token "$(generated_secret 32)"
   ensure_secret_file control_plane_admin_token "$(generated_secret 32)"
   ensure_secret_file retention_purge_token "$(generated_secret 32)"
@@ -231,6 +235,80 @@ prepare_runtime_env() {
   ln -sfn "$SECRET_ENV_PATH" .env
 }
 
+sql_identifier() {
+  printf '%s' "$1" | sed 's/"/""/g'
+}
+
+sql_literal() {
+  printf '%s' "$1" | sed "s/'/''/g"
+}
+
+require_disposable_role_name() {
+  local name="$1"
+  local label="$2"
+  if [[ ! "$name" =~ ^[A-Za-z_][A-Za-z0-9_]{0,62}$ ]]; then
+    echo "$label must be a simple PostgreSQL role name on disposable VM107." >&2
+    exit 1
+  fi
+}
+
+require_single_line_secret() {
+  local value="$1"
+  local label="$2"
+  if [[ ! "$value" =~ ^[A-Za-z0-9._~-]+$ ]]; then
+    echo "$label must be non-empty and URL-unreserved on disposable VM107." >&2
+    exit 1
+  fi
+}
+
+reconcile_disposable_database_credentials() {
+  cd "$APP_DIR"
+
+  local db_user db_pass app_db_user app_db_pass
+  db_user="$(env_value POSTGRES_USER)"
+  db_pass="$(env_value POSTGRES_PASSWORD)"
+  app_db_user="$(env_value APP_DB_USER)"
+  app_db_pass="$(env_value APP_DB_PASSWORD)"
+  require_disposable_role_name "$db_user" POSTGRES_USER
+  require_disposable_role_name "$app_db_user" APP_DB_USER
+  require_single_line_secret "$db_pass" POSTGRES_PASSWORD
+  require_single_line_secret "$app_db_pass" APP_DB_PASSWORD
+
+  docker compose --env-file "$SECRET_ENV_PATH" up -d --no-build postgres
+
+  local deadline
+  deadline=$(( $(date +%s) + 90 ))
+  until docker compose --env-file "$SECRET_ENV_PATH" exec -T postgres \
+    pg_isready -U "$db_user" -d postgres >/dev/null 2>&1; do
+    if (( $(date +%s) >= deadline )); then
+      echo "Postgres did not become ready for disposable credential reconciliation." >&2
+      exit 1
+    fi
+    sleep 2
+  done
+
+  local quoted_db_user quoted_db_pass quoted_app_user quoted_app_pass app_role_exists
+  quoted_db_user="$(sql_identifier "$db_user")"
+  quoted_db_pass="$(sql_literal "$db_pass")"
+  quoted_app_user="$(sql_identifier "$app_db_user")"
+  quoted_app_pass="$(sql_literal "$app_db_pass")"
+  app_role_exists="$(
+    docker compose --env-file "$SECRET_ENV_PATH" exec -T -u postgres postgres \
+      psql --no-psqlrc -U "$db_user" -d postgres -Atqc \
+      "SELECT 1 FROM pg_roles WHERE rolname = '$(sql_literal "$app_db_user")'" </dev/null
+  )"
+
+  {
+    printf 'BEGIN;\n'
+    printf 'ALTER ROLE "%s" WITH LOGIN PASSWORD '\''%s'\'';\n' "$quoted_db_user" "$quoted_db_pass"
+    if [[ "$app_role_exists" == "1" ]]; then
+      printf 'ALTER ROLE "%s" WITH LOGIN PASSWORD '\''%s'\'';\n' "$quoted_app_user" "$quoted_app_pass"
+    fi
+    printf 'COMMIT;\n'
+  } | docker compose --env-file "$SECRET_ENV_PATH" exec -T -u postgres postgres \
+    psql --no-psqlrc -v ON_ERROR_STOP=1 -U "$db_user" -d postgres
+}
+
 start_stack() {
   cd "$APP_DIR"
   docker compose --env-file "$SECRET_ENV_PATH" config --quiet
@@ -318,6 +396,7 @@ main() {
   install_host_dependencies
   sync_repository
   prepare_runtime_env
+  reconcile_disposable_database_credentials
   start_stack
   restore_backup_if_requested
   wait_for_health
