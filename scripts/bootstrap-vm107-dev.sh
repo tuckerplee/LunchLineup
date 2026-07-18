@@ -16,9 +16,10 @@ HOST_HEADER="${HOST_HEADER:-dev.lunchlineup.com}"
 VM_HOSTNAME="${VM_HOSTNAME:-lunchlineup-dev}"
 HEALTH_TIMEOUT_SECONDS="${HEALTH_TIMEOUT_SECONDS:-180}"
 COMPOSE_PARALLEL_LIMIT="${COMPOSE_PARALLEL_LIMIT:-1}"
+COMPOSE_BAKE="${COMPOSE_BAKE:-false}"
 BACKUP_FILE="${BACKUP_FILE:-}"
 DESTRUCTIVE_CONFIRMATION="replace-and-restore-disposable-vm107"
-export COMPOSE_PARALLEL_LIMIT
+export COMPOSE_BAKE COMPOSE_PARALLEL_LIMIT
 
 services=(
   proxy web api webhook-replay engine worker control
