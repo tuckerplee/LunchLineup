@@ -1,4 +1,4 @@
-aio-pika==9.6.2
+aio-pika==10.0.1
 pydantic==2.13.4
 grpcio==1.76.0
 grpcio-tools==1.76.0
