@@ -396,6 +396,35 @@ describe('AuthController', () => {
         });
     });
 
+    it('allows email-password login only for the beta request host', async () => {
+        authService.loginWithUsernamePassword.mockResolvedValue({
+            accessToken: 'a',
+            refreshToken: 'r',
+            csrfToken: 'c',
+            requiresMfa: false,
+            user: { id: 'u1', role: 'STAFF' },
+        });
+
+        await expect(controller.verifyPassword(
+            { identifier: 'demo@demo.com', password: 'demo', tenantSlug: 'demo' },
+            createRequestMock({ headers: { host: 'lunchlineup.com' } }),
+            createResponseMock(),
+        )).rejects.toBeInstanceOf(ForbiddenException);
+        expect(authService.loginWithUsernamePassword).not.toHaveBeenCalled();
+
+        await controller.verifyPassword(
+            { identifier: 'demo@demo.com', password: 'demo', tenantSlug: 'demo' },
+            createRequestMock({ headers: { host: 'beta.lunchlineup.com' } }),
+            createResponseMock(),
+        );
+        expect(authService.loginWithUsernamePassword).toHaveBeenCalledWith(
+            'demo@demo.com',
+            'demo',
+            'demo',
+            { ipAddress: null, userAgent: null },
+        );
+    });
+
     it('preserves a temporary PIN reset boundary through the generic username credential path', async () => {
         const res = createResponseMock();
         const req = createRequestMock({ query: { redirect: '1', next: '/dashboard/staff' } });

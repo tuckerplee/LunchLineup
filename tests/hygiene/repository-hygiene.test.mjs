@@ -207,9 +207,9 @@ test('Caddy applies public SaaS browser and API cache hardening headers', () => 
 
   for (const config of [caddy, template]) {
     assert.match(config, /Content-Security-Policy .*script-src-attr 'none'/);
-    assert.match(config, /script-src 'self' https:\/\/challenges\.cloudflare\.com 'unsafe-inline'/);
+    assert.match(config, /script-src 'self' https:\/\/challenges\.cloudflare\.com https:\/\/static\.cloudflareinsights\.com 'unsafe-inline'/);
     assert.match(config, /frame-src 'self' https:\/\/challenges\.cloudflare\.com/);
-    assert.match(config, /connect-src 'self' https:\/\/challenges\.cloudflare\.com;/);
+    assert.match(config, /connect-src 'self' https:\/\/challenges\.cloudflare\.com https:\/\/cloudflareinsights\.com;/);
     assert.doesNotMatch(config, /NEXT_PUBLIC_WS_URL|CADDY_WEBSOCKET_SOURCE|handle \/ws\/\*|wss?:\/\//);
     assert.match(config, /Cross-Origin-Opener-Policy "same-origin"/);
     assert.match(config, /Cross-Origin-Resource-Policy "same-origin"/);
@@ -217,7 +217,7 @@ test('Caddy applies public SaaS browser and API cache hardening headers', () => 
     assert.doesNotMatch(config, /Access-Control-Allow-Origin "\*"/);
   }
 
-  assert.match(nextConfig, /script-src 'self' \$\{turnstileOrigin\} 'unsafe-inline'/);
+  assert.match(nextConfig, /script-src 'self' \$\{turnstileOrigin\} \$\{cloudflareAnalyticsScriptOrigin\} 'unsafe-inline'/);
   assert.match(nextConfig, /frame-src 'self' \$\{turnstileOrigin\}/);
   assert.match(nextConfig, /const connectSources = \[/);
   assert.match(nextConfig, /browserOrigin\(process\.env\.NEXT_PUBLIC_API_URL\)/);

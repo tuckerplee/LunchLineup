@@ -119,36 +119,13 @@ test.describe('validated public-web P1 regressions', () => {
     expect(attempts).toBe(2);
   });
 
-  test('explicit password login accepts an email identifier without starting the OTP resolver', async ({ page }) => {
-    const email = 'demo@demo.com';
-    let resolveRequests = 0;
-    await page.route('**/api/v1/auth/login/resolve', async (route) => {
-      resolveRequests += 1;
-      await route.abort();
-    });
-    await page.route('**/api/v1/auth/password/verify**', async (route) => {
-      expect(route.request().postDataJSON()).toMatchObject({
-        identifier: email,
-        tenantSlug: e2eTenantSlug,
-        password: 'demo',
-      });
-      await route.fulfill({
-        status: 200,
-        contentType: 'application/json',
-        body: JSON.stringify({ success: true, redirectTo: '/status?source=explicit-password' }),
-      });
-    });
-
+  test('explicit email-password login is absent outside the beta domain', async ({ page }) => {
     await page.goto(`/auth/login?tenantSlug=${e2eTenantSlug}`);
-    await page.getByLabel('Work email or username').fill(email);
-    await page.getByRole('button', { name: 'Sign in with password' }).click();
-    await expect(page.getByRole('heading', { name: 'Enter your password' })).toBeVisible();
-    await expect(page.getByText(`Sign in as ${email}.`)).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Sign in with password' })).toHaveCount(0);
 
-    await page.getByLabel('Password').fill('demo');
-    await page.getByRole('button', { name: 'Sign in with password' }).click();
-    await expect(page).toHaveURL(/\/status\?source=explicit-password$/);
-    expect(resolveRequests).toBe(0);
+    await page.goto(`/auth/login?tenantSlug=${e2eTenantSlug}&identifier=${encodeURIComponent('demo@demo.com')}&step=password`);
+    await expect(page.getByRole('heading', { name: 'Sign in to LunchLineup' })).toBeVisible();
+    await expect(page.getByLabel('Password')).toHaveCount(0);
   });
 
   test('OTP rejection keeps the step, identifier, code, and safe next before retry succeeds', async ({ page }) => {

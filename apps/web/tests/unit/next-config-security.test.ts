@@ -65,7 +65,10 @@ describe('Next.js production security configuration', () => {
     const headers = responseHeaders(config);
     const policy = headers.get('Content-Security-Policy') ?? '';
     expect(policy).toContain(
-      "connect-src 'self' https://challenges.cloudflare.com https://app.lunchlineup.com",
+      "connect-src 'self' https://challenges.cloudflare.com https://cloudflareinsights.com https://app.lunchlineup.com",
+    );
+    expect(policy).toContain(
+      "script-src 'self' https://challenges.cloudflare.com https://static.cloudflareinsights.com",
     );
     expect(policy).not.toMatch(/connect-src[^;]*\shttps:\s/);
     expect(policy).not.toMatch(/connect-src[^;]*\swss?:\/\//);

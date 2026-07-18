@@ -1,5 +1,7 @@
 const isProduction = process.env.NODE_ENV === 'production';
 const turnstileOrigin = 'https://challenges.cloudflare.com';
+const cloudflareAnalyticsScriptOrigin = 'https://static.cloudflareinsights.com';
+const cloudflareAnalyticsConnectOrigin = 'https://cloudflareinsights.com';
 
 function serverHttpUrl(value) {
     const url = new URL(value);
@@ -44,6 +46,7 @@ const developmentConnectOrigins = isProduction
 const connectSources = [
     "'self'",
     turnstileOrigin,
+    cloudflareAnalyticsConnectOrigin,
     ...configuredConnectOrigins,
     ...developmentConnectOrigins,
 ];
@@ -57,7 +60,7 @@ const contentSecurityPolicy = [
     "img-src 'self' data: blob:",
     "font-src 'self' data:",
     "style-src 'self' 'unsafe-inline'",
-    `script-src 'self' ${turnstileOrigin} 'unsafe-inline'${isProduction ? '' : " 'unsafe-eval'"}`,
+    `script-src 'self' ${turnstileOrigin} ${cloudflareAnalyticsScriptOrigin} 'unsafe-inline'${isProduction ? '' : " 'unsafe-eval'"}`,
     "script-src-attr 'none'",
     `connect-src ${[...new Set(connectSources)].join(' ')}`,
     ...(isProduction ? ['upgrade-insecure-requests'] : []),

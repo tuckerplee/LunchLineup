@@ -856,9 +856,9 @@ test('proxy config is TLS-ready, route-specific, size-limited, and sets browser 
   assert.match(caddy, /request_body[\s\S]*max_size 10MB/);
   assert.match(caddy, /Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"/);
   assert.match(caddy, /Content-Security-Policy/);
-  assert.match(caddy, /connect-src 'self' https:\/\/challenges\.cloudflare\.com;/);
+  assert.match(caddy, /connect-src 'self' https:\/\/challenges\.cloudflare\.com https:\/\/cloudflareinsights\.com;/);
   assert.doesNotMatch(caddy, /handle \/ws\/\*|CADDY_WEBSOCKET_SOURCE|wss?:\/\//);
-  assert.match(caddy, /script-src 'self' https:\/\/challenges\.cloudflare\.com 'unsafe-inline'/);
+  assert.match(caddy, /script-src 'self' https:\/\/challenges\.cloudflare\.com https:\/\/static\.cloudflareinsights\.com 'unsafe-inline'/);
   assert.match(caddy, /frame-src 'self' https:\/\/challenges\.cloudflare\.com/);
   assert.match(caddy, /X-Content-Type-Options "nosniff"/);
   assert.match(caddy, /X-Frame-Options "DENY"/);
@@ -868,9 +868,9 @@ test('proxy config is TLS-ready, route-specific, size-limited, and sets browser 
   assert.match(caddyTemplate, /handle \/api\/v1\/\* \{[\s\S]*uri strip_prefix \/api[\s\S]*reverse_proxy api:3000[\s\S]*\}/);
   assert.match(caddyTemplate, /request_body[\s\S]*max_size 10MB/);
   assert.match(caddyTemplate, /Content-Security-Policy/);
-  assert.match(caddyTemplate, /connect-src 'self' https:\/\/challenges\.cloudflare\.com;/);
+  assert.match(caddyTemplate, /connect-src 'self' https:\/\/challenges\.cloudflare\.com https:\/\/cloudflareinsights\.com;/);
   assert.doesNotMatch(caddyTemplate, /handle \/ws\/\*|CADDY_WEBSOCKET_SOURCE|wss?:\/\//);
-  assert.match(caddyTemplate, /script-src 'self' https:\/\/challenges\.cloudflare\.com 'unsafe-inline'/);
+  assert.match(caddyTemplate, /script-src 'self' https:\/\/challenges\.cloudflare\.com https:\/\/static\.cloudflareinsights\.com 'unsafe-inline'/);
   assert.match(caddyTemplate, /frame-src 'self' https:\/\/challenges\.cloudflare\.com/);
   assert.match(caddyTemplate, /Permissions-Policy/);
   assert.doesNotMatch(caddyTemplate, /\{\{|\}\}/);

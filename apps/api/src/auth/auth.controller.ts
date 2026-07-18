@@ -104,6 +104,7 @@ const PASSWORD_RESET_REQUEST_RESPONSE = {
     success: true,
     message: 'If a matching account exists, a password reset email will be sent shortly.',
 };
+const BETA_PASSWORD_LOGIN_HOST = 'beta.lunchlineup.com';
 
 @Controller({ path: 'auth', version: '1' })
 export class AuthController {
@@ -235,6 +236,15 @@ export class AuthController {
         const raw = req.headers?.[name.toLowerCase()];
         if (Array.isArray(raw)) return raw[0] ?? null;
         return typeof raw === 'string' ? raw : null;
+    }
+
+    private isBetaPasswordLoginRequest(req: Request): boolean {
+        const requestHost = this.headerValue(req, 'host')?.trim().toLowerCase() ?? '';
+        try {
+            return new URL(`https://${requestHost}`).hostname === BETA_PASSWORD_LOGIN_HOST;
+        } catch {
+            return false;
+        }
     }
 
     private addOrigin(origins: Set<string>, value: string | undefined): void {
@@ -388,6 +398,9 @@ export class AuthController {
     ) {
         this.assertSameOriginRequest(req);
         const identifier = typeof body?.identifier === 'string' ? body.identifier.toLowerCase().trim() : '';
+        if (identifier.includes('@') && !this.isBetaPasswordLoginRequest(req)) {
+            throw new ForbiddenException('Email password sign-in is available only on the beta site');
+        }
         const redirectMode = String((req.query as any)?.redirect || '') === '1';
         const nextPath = String((req.query as any)?.next || '');
         const safeNext = this.safeInternalPath(nextPath);

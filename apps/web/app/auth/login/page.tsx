@@ -11,6 +11,7 @@ import { isSelfServiceSignupAvailable } from '../../onboarding/challenge';
 
 const OIDC_ENABLED = (process.env.NEXT_PUBLIC_OIDC_ENABLED ?? '').toLowerCase() === 'true';
 const SELF_SERVICE_SIGNUP_AVAILABLE = isSelfServiceSignupAvailable(process.env.NEXT_PUBLIC_SIGNUP_MODE);
+const BETA_PASSWORD_LOGIN_HOST = 'beta.lunchlineup.com';
 
 type Step = 'identifier' | 'otp' | 'pin' | 'password';
 
@@ -42,6 +43,7 @@ function LoginContent() {
     const [pin, setPin] = useState('');
     const [password, setPassword] = useState('');
     const [isHydrated, setIsHydrated] = useState(false);
+    const [isBetaPasswordLogin, setIsBetaPasswordLogin] = useState(false);
     const [isLoading, setIsLoading] = useState(false);
     const [error, setError] = useState<string | null>(null);
     const [resendCountdown, setResendCountdown] = useState(0);
@@ -50,6 +52,7 @@ function LoginContent() {
     const verifyInFlightRef = useRef(false);
 
     useEffect(() => {
+        setIsBetaPasswordLogin(window.location.hostname.toLowerCase() === BETA_PASSWORD_LOGIN_HOST);
         setIsHydrated(true);
     }, []);
 
@@ -67,7 +70,14 @@ function LoginContent() {
             ? rememberWorkspaceSlug(window.localStorage, prefillWorkspace)
             : readRememberedWorkspaceSlug(window.localStorage);
         if (normalizedWorkspace) setWorkspaceSlug(normalizedWorkspace);
-        if (stepParam === 'otp' || stepParam === 'pin' || stepParam === 'password') setStep(stepParam);
+        if (stepParam === 'otp' || stepParam === 'pin') {
+            setStep(stepParam);
+        } else if (
+            stepParam === 'password'
+            && (window.location.hostname.toLowerCase() === BETA_PASSWORD_LOGIN_HOST || !prefillIdentifier.includes('@'))
+        ) {
+            setStep('password');
+        }
         if (errorParam === 'invalid') {
             if (stepParam === 'pin') {
                 setError('Invalid username or PIN. Please try again.');
@@ -160,6 +170,10 @@ function LoginContent() {
 
     const handleUsePassword = () => {
         setError(null);
+        if (!isBetaPasswordLogin) {
+            setError('Email password sign-in is available only on the beta site.');
+            return;
+        }
         const normalizedIdentifier = identifier.trim().toLowerCase();
         const normalizedWorkspaceSlug = normalizeWorkspaceSlug(workspaceSlug);
         if (!normalizedWorkspaceSlug) {
@@ -311,6 +325,12 @@ function LoginContent() {
 
     const handleVerifyPassword = async (e?: React.FormEvent) => {
         e?.preventDefault();
+        if (username.includes('@') && !isBetaPasswordLogin) {
+            setStep('identifier');
+            setPassword('');
+            setError('Continue with email to receive your sign-in code.');
+            return;
+        }
         if (!password) {
             setError('Enter your password.');
             return;
@@ -420,11 +440,13 @@ function LoginContent() {
                                         {isLoading ? 'Continuing...' : 'Continue'}
                                     </button>
 
-                                    <button type="button" className="btn btn-secondary" disabled={isLoading} style={{ width: '100%' }} onClick={handleUsePassword}>
-                                        Sign in with password
-                                    </button>
+                                    {isBetaPasswordLogin ? (
+                                        <button type="button" className="btn btn-secondary" disabled={isLoading} style={{ width: '100%' }} onClick={handleUsePassword}>
+                                            Sign in with password
+                                        </button>
+                                    ) : null}
 
-                                    <p className="login-card__trust">Secure sign-in · Email OTP, migrated password, or PIN</p>
+                                    <p className="login-card__trust">Secure sign-in · Email OTP or PIN</p>
                                 </form>
                             </>
                         ) : null}
@@ -524,7 +546,7 @@ function LoginContent() {
                             </form>
                         ) : null}
 
-                        {step === 'password' ? (
+                        {step === 'password' && (isBetaPasswordLogin || !username.includes('@')) ? (
                             <form onSubmit={handleVerifyPassword} style={{ display: 'grid', gap: '0.62rem' }}>
                                 <label className="form-group">
                                     <span className="form-label">Password</span>
