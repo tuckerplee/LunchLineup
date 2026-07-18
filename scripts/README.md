@@ -65,6 +65,7 @@
 - `rsync-vm217.sh`: legacy VM217 rsync helper.
 - `run-dast.sh`: runs OWASP ZAP only through the required immutable `ZAP_IMAGE`, mounts the checkout read-only plus one validated temporary output directory read-write, observes `X-LunchLineup-Release`, and emits a deterministic source-SHA-bound canonical/JSON/HTML bundle.
 - `seed-e2e.mjs`: idempotently resets and seeds the disposable E2E tenant with ACTIVE paid-Stripe markers, a ledger-backed admin credit grant, admin and super-admin PIN users, the `staff-1` import target, RBAC roles, and first location.
+- `seed-demo-workspace.sql`: guarded, idempotent VM107 demo-workspace fixture that preserves the demo administrator's authentication and tenant billing while refreshing fictional locations, staff, availability, schedules, demand, shifts, breaks, timecards, payroll, settings, and notifications.
 - `setup-vm217.sh`: legacy VM217 setup helper.
 - `verify-deploy-source.ps1`: Windows deploy-source verification script.
 - `verify-deploy-source.sh`: Linux deploy-source verification script.
