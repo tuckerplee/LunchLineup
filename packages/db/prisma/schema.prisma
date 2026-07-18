@@ -201,6 +201,7 @@ model User {
   requestedAvailabilityImports AvailabilityImportJob[]    @relation("AvailabilityImportRequester")
   availabilityImports          AvailabilityImportJob[]    @relation("AvailabilityImportTarget")
 
+  @@unique([id, tenantId])
   @@unique([tenantId, email])
   @@unique([tenantId, username])
   @@unique([tenantId, oidcIssuer, oidcSubject])
@@ -233,7 +234,7 @@ model OnboardingSignupAttempt {
   updatedAt                DateTime  @updatedAt
 
   tenant Tenant? @relation(fields: [tenantId], references: [id], onDelete: SetNull)
-  user   User?   @relation(fields: [userId], references: [id], onDelete: SetNull)
+  user   User?   @relation(fields: [userId, tenantId], references: [id, tenantId], onDelete: SetNull)
 
   @@index([identityHash])
   @@index([organizationHash])
@@ -272,6 +273,7 @@ model Role {
   rolePermissions RolePermission[]
   assignments     RoleAssignment[]
 
+  @@unique([id, tenantId])
   @@unique([tenantId, slug])
   @@unique([tenantId, name])
   @@index([tenantId])
@@ -298,8 +300,8 @@ model RoleAssignment {
   createdAt DateTime @default(now())
 
   tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
-  role   Role   @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  user   User   @relation(fields: [userId, tenantId], references: [id, tenantId], onDelete: Cascade)
+  role   Role   @relation(fields: [roleId, tenantId], references: [id, tenantId], onDelete: Cascade)
 
   @@id([userId, roleId])
   @@index([roleId])
@@ -535,6 +537,7 @@ model Location {
   scheduleDemandWindows ScheduleDemandWindow[]
   timeCards             TimeCard[]
 
+  @@unique([id, tenantId])
   @@unique([tenantId, creationRequestKeyHash])
   @@index([tenantId])
   @@index([tenantId, deletedAt, name, id])
@@ -555,11 +558,13 @@ model Schedule {
   updatedAt   DateTime       @updatedAt
 
   tenant        Tenant                 @relation(fields: [tenantId], references: [id])
-  location      Location               @relation(fields: [locationId], references: [id])
+  location      Location               @relation(fields: [locationId, tenantId], references: [id, tenantId])
   shifts        Shift[]
   solveJobs     ScheduleSolveJob[]
   demandWindows ScheduleDemandWindow[]
 
+  @@unique([id, tenantId])
+  @@unique([id, tenantId, locationId])
   @@index([tenantId])
   @@index([tenantId, deletedAt])
   @@index([tenantId, deletedAt, startDate(sort: Desc), id(sort: Desc)])
@@ -598,8 +603,8 @@ model ScheduleSolveJob {
   updatedAt            DateTime  @updatedAt
 
   tenant   Tenant   @relation(fields: [tenantId], references: [id])
-  schedule Schedule @relation(fields: [scheduleId], references: [id])
-  location Location @relation(fields: [locationId], references: [id])
+  schedule Schedule @relation(fields: [scheduleId, tenantId], references: [id, tenantId])
+  location Location @relation(fields: [locationId, tenantId], references: [id, tenantId])
 
   @@unique([tenantId, scheduleId, requestKeyHash])
   @@index([tenantId])
@@ -650,8 +655,8 @@ model StaffAvailability {
   updatedAt        DateTime @updatedAt
 
   tenant   Tenant    @relation(fields: [tenantId], references: [id])
-  user     User      @relation(fields: [userId], references: [id])
-  location Location? @relation(fields: [locationId], references: [id])
+  user     User      @relation(fields: [userId, tenantId], references: [id, tenantId])
+  location Location? @relation(fields: [locationId, tenantId], references: [id, tenantId], onDelete: Restrict)
 
   @@index([tenantId])
   @@index([userId])
@@ -736,7 +741,7 @@ model StaffSkill {
   updatedAt DateTime @updatedAt
 
   tenant Tenant @relation(fields: [tenantId], references: [id])
-  user   User   @relation(fields: [userId], references: [id])
+  user   User   @relation(fields: [userId, tenantId], references: [id, tenantId])
 
   @@unique([tenantId, userId, skill])
   @@index([tenantId])
@@ -757,8 +762,8 @@ model ScheduleDemandWindow {
   updatedAt     DateTime @updatedAt
 
   tenant   Tenant   @relation(fields: [tenantId], references: [id])
-  schedule Schedule @relation(fields: [scheduleId], references: [id])
-  location Location @relation(fields: [locationId], references: [id])
+  schedule Schedule @relation(fields: [scheduleId, tenantId, locationId], references: [id, tenantId, locationId], onDelete: Cascade)
+  location Location @relation(fields: [locationId, tenantId], references: [id, tenantId])
 
   @@index([tenantId])
   @@index([scheduleId])
@@ -788,12 +793,13 @@ model Shift {
   deletedAt  DateTime?
 
   tenant    Tenant     @relation(fields: [tenantId], references: [id])
-  location  Location   @relation(fields: [locationId], references: [id])
-  schedule  Schedule?  @relation(fields: [scheduleId], references: [id])
-  user      User?      @relation(fields: [userId], references: [id])
+  location  Location   @relation(fields: [locationId, tenantId], references: [id, tenantId])
+  schedule  Schedule?  @relation(fields: [scheduleId, tenantId, locationId], references: [id, tenantId, locationId], onDelete: Restrict)
+  user      User?      @relation(fields: [userId, tenantId], references: [id, tenantId], onDelete: Restrict)
   breaks    Break[]
   timeCards TimeCard[]
 
+  @@unique([id, tenantId])
   @@index([tenantId])
   @@index([locationId])
   @@index([scheduleId])
@@ -850,9 +856,9 @@ model TimeCard {
   deletedAt          DateTime?
 
   tenant   Tenant          @relation(fields: [tenantId], references: [id])
-  user     User            @relation(fields: [userId], references: [id])
-  location Location?       @relation(fields: [locationId], references: [id])
-  shift    Shift?          @relation(fields: [shiftId], references: [id])
+  user     User            @relation(fields: [userId, tenantId], references: [id, tenantId])
+  location Location?       @relation(fields: [locationId, tenantId], references: [id, tenantId], onDelete: Restrict)
+  shift    Shift?          @relation(fields: [shiftId, tenantId], references: [id, tenantId], onDelete: Restrict)
   breaks   TimeCardBreak[]
 
   @@unique([id, tenantId])
@@ -880,7 +886,7 @@ model TimeCardBreak {
   updatedAt  DateTime @updatedAt
 
   tenant   Tenant   @relation(fields: [tenantId], references: [id])
-  timeCard TimeCard @relation(fields: [timeCardId], references: [id], onDelete: Cascade)
+  timeCard TimeCard @relation(fields: [timeCardId, tenantId], references: [id, tenantId], onDelete: Cascade)
 
   @@index([tenantId])
   @@index([timeCardId, startAt])
@@ -1276,7 +1282,7 @@ model AuditLog {
   createdAt     DateTime @default(now())
 
   tenant Tenant @relation(fields: [tenantId], references: [id])
-  user   User?  @relation(fields: [userId], references: [id])
+  user   User?  @relation(fields: [userId, tenantId], references: [id, tenantId], onDelete: Restrict)
 
   // BRIN index for time-series queries on this high-churn table
   @@index([tenantId])
@@ -1300,7 +1306,7 @@ model Notification {
   createdAt DateTime         @default(now())
 
   tenant Tenant @relation(fields: [tenantId], references: [id])
-  user   User   @relation(fields: [userId], references: [id])
+  user   User   @relation(fields: [userId, tenantId], references: [id, tenantId])
 
   @@index([userId, readAt])
   @@index([tenantId])

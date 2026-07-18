@@ -174,6 +174,99 @@ test('nullable unique identities are staged safely before Prisma schema synchron
   assert.doesNotMatch(preMigration, /--accept-data-loss/);
 });
 
+test('Prisma owns every composite parent identity required by raw tenant foreign keys', () => {
+  const schema = read('packages/db/prisma/schema.prisma');
+  const preMigration = read(
+    'packages/db/prisma/migrations/pre_20260717_prisma_composite_parent_keys.sql',
+  );
+  const migrationsReadme = read('packages/db/prisma/migrations/README.md');
+
+  for (const model of ['User', 'Role', 'Location', 'Schedule', 'Shift']) {
+    const modelBody = schema.match(new RegExp(`model ${model} \\{([\\s\\S]*?)\\n\\}`))?.[1] ?? '';
+    assert.match(modelBody, /@@unique\(\[id, tenantId\]\)/, `${model} must own its composite identity`);
+  }
+
+  const scheduleBody = schema.match(/model Schedule \{([\s\S]*?)\n\}/)?.[1] ?? '';
+  assert.match(scheduleBody, /@@unique\(\[id, tenantId, locationId\]\)/);
+  assert.match(migrationsReadme, /pre_20260717_prisma_composite_parent_keys\.sql/);
+
+  for (const [table, index, columns] of [
+    ['User', 'User_id_tenantId_key', "'id', 'tenantId'"],
+    ['Role', 'Role_id_tenantId_key', "'id', 'tenantId'"],
+    ['Location', 'Location_id_tenantId_key', "'id', 'tenantId'"],
+    ['Schedule', 'Schedule_id_tenantId_key', "'id', 'tenantId'"],
+    ['Schedule', 'Schedule_id_tenantId_locationId_key', "'id', 'tenantId', 'locationId'"],
+    ['Shift', 'Shift_id_tenantId_key', "'id', 'tenantId'"],
+  ]) {
+    assert.match(
+      preMigration,
+      new RegExp(`'${table}'\\s*,\\s*'${index}'\\s*,\\s*ARRAY\\[${columns}\\]`),
+    );
+  }
+
+  assert.match(preMigration, /LOCK TABLE public\.%I IN SHARE MODE/);
+  assert.match(preMigration, /CREATE UNIQUE INDEX IF NOT EXISTS %I ON public\.%I/);
+  assert.match(preMigration, /index_metadata\.indpred IS NULL/);
+  assert.match(preMigration, /actual_columns IS DISTINCT FROM target\.column_names/);
+  assert.doesNotMatch(preMigration, /--accept-data-loss/);
+});
+
+test('Prisma owns raw composite tenant foreign keys across repeated schema synchronization', () => {
+  const schema = read('packages/db/prisma/schema.prisma');
+
+  for (const [model, relations] of [
+    ['RoleAssignment', [
+      '@relation(fields: [userId, tenantId], references: [id, tenantId], onDelete: Cascade)',
+      '@relation(fields: [roleId, tenantId], references: [id, tenantId], onDelete: Cascade)',
+    ]],
+    ['Schedule', [
+      '@relation(fields: [locationId, tenantId], references: [id, tenantId])',
+    ]],
+    ['ScheduleSolveJob', [
+      '@relation(fields: [scheduleId, tenantId], references: [id, tenantId])',
+      '@relation(fields: [locationId, tenantId], references: [id, tenantId])',
+    ]],
+    ['StaffAvailability', [
+      '@relation(fields: [userId, tenantId], references: [id, tenantId])',
+      '@relation(fields: [locationId, tenantId], references: [id, tenantId], onDelete: Restrict)',
+    ]],
+    ['StaffSkill', [
+      '@relation(fields: [userId, tenantId], references: [id, tenantId])',
+    ]],
+    ['ScheduleDemandWindow', [
+      '@relation(fields: [scheduleId, tenantId, locationId], references: [id, tenantId, locationId], onDelete: Cascade)',
+      '@relation(fields: [locationId, tenantId], references: [id, tenantId])',
+    ]],
+    ['Shift', [
+      '@relation(fields: [locationId, tenantId], references: [id, tenantId])',
+      '@relation(fields: [scheduleId, tenantId, locationId], references: [id, tenantId, locationId], onDelete: Restrict)',
+      '@relation(fields: [userId, tenantId], references: [id, tenantId], onDelete: Restrict)',
+    ]],
+    ['TimeCard', [
+      '@relation(fields: [userId, tenantId], references: [id, tenantId])',
+      '@relation(fields: [locationId, tenantId], references: [id, tenantId], onDelete: Restrict)',
+      '@relation(fields: [shiftId, tenantId], references: [id, tenantId], onDelete: Restrict)',
+    ]],
+    ['TimeCardBreak', [
+      '@relation(fields: [timeCardId, tenantId], references: [id, tenantId], onDelete: Cascade)',
+    ]],
+    ['AuditLog', [
+      '@relation(fields: [userId, tenantId], references: [id, tenantId], onDelete: Restrict)',
+    ]],
+    ['Notification', [
+      '@relation(fields: [userId, tenantId], references: [id, tenantId])',
+    ]],
+    ['OnboardingSignupAttempt', [
+      '@relation(fields: [userId, tenantId], references: [id, tenantId], onDelete: SetNull)',
+    ]],
+  ]) {
+    const modelBody = schema.match(new RegExp(`model ${model} \\{([\\s\\S]*?)\\n\\}`))?.[1] ?? '';
+    for (const relation of relations) {
+      assert.ok(modelBody.includes(relation), `${model} must own composite relation: ${relation}`);
+    }
+  }
+});
+
 test('RLS and audit migrations use Prisma quoted identifiers', () => {
   const checkedFiles = [
     'packages/db/prisma/migrations/20260712_core_rls_audit_forward_reconciliation.sql',
