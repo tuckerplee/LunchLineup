@@ -50,9 +50,13 @@ test('shift overlap migration enforces active assigned shifts with a deferrable 
 
 test('schedule integrity migration enforces windows, tenant FKs, and breaks at the database layer', () => {
   const sql = read('packages/db/prisma/migrations/20260709_schedule_integrity_constraints.sql');
+  const legacyBreakReanchor = read(
+    'packages/db/prisma/migrations/pre_20260717_legacy_break_window_reanchor.sql',
+  );
   const migrationsReadme = read('packages/db/prisma/migrations/README.md');
 
   assert.match(migrationsReadme, /20260709_schedule_integrity_constraints\.sql/);
+  assert.match(migrationsReadme, /pre_20260717_legacy_break_window_reanchor\.sql/);
 
   for (const expected of [
     'CREATE EXTENSION IF NOT EXISTS btree_gist',
@@ -100,6 +104,30 @@ test('schedule integrity migration enforces windows, tenant FKs, and breaks at t
   assert.match(sql, /NEW\."endTime"\s+<=\s+s\."endTime"/);
   assert.match(sql, /b\."startTime"\s+<\s+NEW\."startTime"/);
   assert.match(sql, /b\."endTime"\s+>\s+NEW\."endTime"/);
+
+  for (const expected of [
+    `to_regclass('public."Shift"') IS NULL`,
+    `to_regclass('public."Break"') IS NULL`,
+    'LOCK TABLE public."Shift" IN SHARE MODE',
+    'LOCK TABLE public."Break" IN SHARE ROW EXCLUSIVE MODE',
+    'paid_pattern = ARRAY[TRUE, FALSE, TRUE]',
+    'duration_minutes = ARRAY[10, 30, 10]',
+    'relative_start_minutes = ARRAY[0, 120, 270]',
+    `shift_start + INTERVAL '120 minutes'`,
+    'invalid break set does not match the supported historical pattern',
+    'updated an unexpected number of rows',
+    'left an invalid break window',
+    'produced overlapping breaks',
+  ]) {
+    assert.ok(
+      legacyBreakReanchor.includes(expected),
+      `missing legacy break-window reconciliation fragment: ${expected}`,
+    );
+  }
+  assert.match(
+    legacyBreakReanchor,
+    /SET\s+"startTime" = b\."startTime" \+ candidate\.reanchor_delta,\s+"endTime" = b\."endTime" \+ candidate\.reanchor_delta/,
+  );
 
   const softDeleteSql = read('packages/db/prisma/migrations/20260709_zzzzz_schedule_soft_delete_overlap.sql');
   assert.match(migrationsReadme, /20260709_zzzzz_schedule_soft_delete_overlap\.sql/);
