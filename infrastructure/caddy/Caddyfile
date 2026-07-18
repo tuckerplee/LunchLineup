@@ -31,6 +31,12 @@ http://127.0.0.1:2015 {
 
 	header /api/* Cache-Control "no-store"
 
+	@betaWeb {
+		host beta.lunchlineup.com
+		not path /api/* /health
+	}
+	header @betaWeb Cache-Control "private, no-store, no-transform"
+
 	handle /health {
 		reverse_proxy api:3000
 	}

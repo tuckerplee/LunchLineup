@@ -7,7 +7,7 @@ Shared helpers for the Next.js web app.
 - `README.md`: this web lib folder guide.
 - `bounded-pagination.ts`: guarded multi-page continuation helper for bounded schedule, shift, roster, and lunch-break reads.
 - `user-directory-pagination.ts`: fixed-size user-directory request and cursor-validation helpers.
-- `client-api.ts`: browser-side authenticated and public API fetch helper with bounded deadlines/bodies, coalesced session refresh, rotated CSRF headers, safe error normalization, same-origin/no-follow enforcement, and idempotency-gated unsafe replay.
+- `client-api.ts`: browser-side authenticated, public, and unversioned health API fetch helpers with bounded deadlines/bodies, coalesced session refresh, rotated CSRF headers, safe error normalization, same-origin/no-follow enforcement, and idempotency-gated unsafe replay.
 - `http-safety.ts`: shared request-deadline and bounded response-body primitives for browser, proxy, route, and server probes.
 - `latest-request.ts`: generation-based gate for discarding superseded client request completions.
 - `location-timezone.ts`: location-local date/range, wall-clock conversion, unambiguous DST persistence, and display formatting helpers.

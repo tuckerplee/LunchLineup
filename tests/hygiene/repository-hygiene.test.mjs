@@ -214,6 +214,7 @@ test('Caddy applies public SaaS browser and API cache hardening headers', () => 
     assert.match(config, /Cross-Origin-Opener-Policy "same-origin"/);
     assert.match(config, /Cross-Origin-Resource-Policy "same-origin"/);
     assert.match(config, /header \/api\/\* Cache-Control "no-store"/);
+    assert.match(config, /header @betaWeb Cache-Control "private, no-store, no-transform"/);
     assert.doesNotMatch(config, /Access-Control-Allow-Origin "\*"/);
   }
 

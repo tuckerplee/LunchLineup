@@ -254,6 +254,10 @@ export async function fetchPublicApi(path: string, init: RequestInit = {}): Prom
     return safeFetch(toApiPath(path), withSessionDefaults(init));
 }
 
+export async function fetchApiHealth(): Promise<Response> {
+    return safeFetch('/api/health', withSessionDefaults());
+}
+
 export async function fetchJsonWithSession<T>(path: string, init: RequestInit = {}): Promise<T> {
     const response = await fetchWithSession(path, init);
     if (!response.ok) {

@@ -852,6 +852,8 @@ test('proxy config is TLS-ready, route-specific, size-limited, and sets browser 
   assert.match(caddy, /handle \/health \{[\s\S]*reverse_proxy api:3000[\s\S]*\}/);
   assert.match(caddy, /handle \/api\/health \{[\s\S]*uri strip_prefix \/api[\s\S]*reverse_proxy api:3000[\s\S]*\}/);
   assert.match(caddy, /handle \/api\/v1\/\* \{[\s\S]*uri strip_prefix \/api[\s\S]*reverse_proxy api:3000[\s\S]*\}/);
+  assert.match(caddy, /@betaWeb \{[\s\S]*host beta\.lunchlineup\.com[\s\S]*not path \/api\/\* \/health[\s\S]*\}/);
+  assert.match(caddy, /header @betaWeb Cache-Control "private, no-store, no-transform"/);
   assert.match(caddy, /handle \{[\s\S]*reverse_proxy web:3000[\s\S]*\}/);
   assert.match(caddy, /request_body[\s\S]*max_size 10MB/);
   assert.match(caddy, /Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"/);
@@ -866,6 +868,8 @@ test('proxy config is TLS-ready, route-specific, size-limited, and sets browser 
   assert.match(caddyTemplate, /\{\$CADDY_SITE_ADDRESSES:/);
   assert.match(caddyTemplate, /X-LunchLineup-Release "\{\$DEPLOY_RELEASE_SHA:local\}"/);
   assert.match(caddyTemplate, /handle \/api\/v1\/\* \{[\s\S]*uri strip_prefix \/api[\s\S]*reverse_proxy api:3000[\s\S]*\}/);
+  assert.match(caddyTemplate, /@betaWeb \{[\s\S]*host beta\.lunchlineup\.com[\s\S]*not path \/api\/\* \/health[\s\S]*\}/);
+  assert.match(caddyTemplate, /header @betaWeb Cache-Control "private, no-store, no-transform"/);
   assert.match(caddyTemplate, /request_body[\s\S]*max_size 10MB/);
   assert.match(caddyTemplate, /Content-Security-Policy/);
   assert.match(caddyTemplate, /connect-src 'self' https:\/\/challenges\.cloudflare\.com https:\/\/cloudflareinsights\.com;/);

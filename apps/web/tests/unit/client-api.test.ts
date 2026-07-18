@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
+  fetchApiHealth,
   fetchJsonWithSession,
   fetchPublicApi,
   fetchWithSession,
@@ -47,6 +48,20 @@ describe('fetchWithSession', () => {
     expect(headersFromCall(fetchMock.mock.calls[0]).get('x-csrf-token')).toBe('csrf-123');
     expect((fetchMock.mock.calls[0][1] as RequestInit).credentials).toBe('include');
     expect((fetchMock.mock.calls[0][1] as RequestInit).redirect).toBe('error');
+  });
+
+  it('routes dependency health through the unversioned same-origin proxy endpoint', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(
+      JSON.stringify({ status: 'ok' }),
+      { status: 200, headers: { 'content-type': 'application/json' } },
+    ));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(fetchApiHealth()).resolves.toMatchObject({ status: 200 });
+    expect(fetchMock).toHaveBeenCalledWith('/api/health', expect.objectContaining({
+      credentials: 'include',
+      redirect: 'error',
+    }));
   });
 
   it('includes CSRF protection when refreshing an expired session', async () => {

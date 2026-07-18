@@ -5,6 +5,7 @@ import { AnimatePresence, motion } from 'framer-motion';
 import { Button } from '@/components/ui/button';
 import {
   apiPath,
+  fetchApiHealth,
   fetchWithSession,
   withIdempotencyKey,
 } from '@/lib/client-api';
@@ -550,7 +551,7 @@ export default function LunchBreaksPage() {
   }, []);
 
   const loadServerNow = useCallback(async (): Promise<Date | null> => {
-    const res = await fetchWithSession('/health');
+    const res = await fetchApiHealth();
     if (!res.ok) return null;
     const headerDate = res.headers.get('date');
     if (!headerDate) return null;
