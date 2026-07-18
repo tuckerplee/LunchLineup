@@ -207,6 +207,11 @@ function workerHealthCommand(worker) {
   return commandLines.join('\n').replaceAll('$$', '$');
 }
 
+function exactScientificNotation(value) {
+  const digits = String(value);
+  return `${digits[0]}.${digits.slice(1)}e+${digits.length - 1}`;
+}
+
 const bash = findBash();
 
 function serviceImageRef(compose, serviceName) {
@@ -607,6 +612,11 @@ test('worker health requires parser readiness and enabled password-reset sweep r
     '',
   ].join('\n');
   assert.equal(run(parserReady + passwordResetReady).status, 0);
+  assert.equal(
+    run(parserReady + passwordResetReady.replace(`${now}.0`, exactScientificNotation(now))).status,
+    0,
+    'Prometheus scientific-notation timestamps must remain healthcheck-compatible',
+  );
 
   const missingReady = parserReady + passwordResetReady.replace('lunchlineup_password_reset_email_sweep_ready 1.0\n', '');
   assert.notEqual(run(missingReady).status, 0);
@@ -651,6 +661,11 @@ test('worker health fails closed for an enabled stale or unhealthy staff invitat
     '',
   ].join('\n');
   assert.equal(run(parserReady + invitationReady).status, 0);
+  assert.equal(
+    run(parserReady + invitationReady.replace(now + '.0', exactScientificNotation(now))).status,
+    0,
+    'Prometheus scientific-notation timestamps must remain healthcheck-compatible',
+  );
 
   const missingReady = parserReady + invitationReady.replace(
     'lunchlineup_staff_invitation_sweep_ready 1.0\n',
