@@ -111,10 +111,43 @@ SET username = EXCLUDED.username,
 
 UPDATE "Role"
 SET "legacyRole" = 'ADMIN',
+    "isSystem" = true,
     "deletedAt" = NULL,
     "updatedAt" = now()
 WHERE id = 'demo-role-v1'
   AND "tenantId" = 'demo-tenant-v1';
+
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1
+    FROM "Role"
+    WHERE "tenantId" = 'demo-tenant-v1'
+      AND slug = 'admin'
+      AND "isSystem" = true
+      AND "legacyRole" = 'ADMIN'
+      AND "deletedAt" IS NULL
+      AND id <> 'demo-role-v1'
+  ) THEN
+    RAISE EXCEPTION 'Expected canonical demo-tenant Admin role was not found';
+  END IF;
+END $$;
+
+DELETE FROM "RolePermission"
+WHERE "roleId" = 'demo-role-v1';
+
+INSERT INTO "RolePermission" ("roleId", "permissionId", "createdAt")
+SELECT 'demo-role-v1', source_permission."permissionId", now()
+FROM "Role" source_role
+JOIN "RolePermission" source_permission
+  ON source_permission."roleId" = source_role.id
+WHERE source_role."tenantId" = 'demo-tenant-v1'
+  AND source_role.slug = 'admin'
+  AND source_role."isSystem" = true
+  AND source_role."legacyRole" = 'ADMIN'
+  AND source_role."deletedAt" IS NULL
+  AND source_role.id <> 'demo-role-v1'
+ON CONFLICT DO NOTHING;
 
 DELETE FROM "RoleAssignment"
 WHERE "tenantId" = 'demo-tenant-v1'
