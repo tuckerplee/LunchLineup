@@ -129,6 +129,51 @@ test('first-location retries have a paired tenant-scoped durable request identit
   assert.match(sql, /CHECK \(\("creationRequestKeyHash" IS NULL\) = \("creationRequestHash" IS NULL\)\)/);
 });
 
+test('nullable unique identities are staged safely before Prisma schema synchronization', () => {
+  const migrationScript = read('scripts/apply-db-migrations.mjs');
+  const preMigration = read(
+    'packages/db/prisma/migrations/pre_20260717_prisma_nullable_unique_indexes.sql',
+  );
+  const migrationsReadme = read('packages/db/prisma/migrations/README.md');
+
+  assert.ok(
+    migrationScript.indexOf('await operations.applyPreMigrations()')
+      < migrationScript.indexOf('await operations.pushSchema()'),
+    'pre-migrations must run before Prisma schema synchronization',
+  );
+  assert.match(migrationsReadme, /pre_20260717_prisma_nullable_unique_indexes\.sql/);
+
+  for (const table of ['Location', 'Session', 'User']) {
+    assert.match(preMigration, new RegExp(`to_regclass\\('public\\."${table}"'\\) IS NULL`));
+    assert.match(preMigration, new RegExp(`LOCK TABLE public\\."${table}" IN SHARE ROW EXCLUSIVE MODE`));
+  }
+
+  for (const column of [
+    'creationRequestKeyHash',
+    'creationRequestHash',
+    'selectorHash',
+    'oidcIssuer',
+    'oidcSubject',
+  ]) {
+    assert.match(preMigration, new RegExp(`ADD COLUMN IF NOT EXISTS "${column}" TEXT`));
+  }
+
+  for (const index of [
+    'Location_tenantId_creationRequestKeyHash_key',
+    'Session_selectorHash_key',
+    'User_tenantId_oidcIssuer_oidcSubject_key',
+  ]) {
+    assert.match(preMigration, new RegExp(`CREATE UNIQUE INDEX IF NOT EXISTS "${index}"`));
+    assert.match(preMigration, new RegExp(`index_relation\\.relname = '${index}'`));
+  }
+
+  assert.match(preMigration, /GROUP BY "tenantId", "creationRequestKeyHash"[\s\S]*HAVING COUNT\(\*\) > 1/);
+  assert.match(preMigration, /GROUP BY "selectorHash"[\s\S]*HAVING COUNT\(\*\) > 1/);
+  assert.match(preMigration, /GROUP BY "tenantId", "oidcIssuer", "oidcSubject"[\s\S]*HAVING COUNT\(\*\) > 1/);
+  assert.match(preMigration, /\("oidcIssuer" IS NULL\) <> \("oidcSubject" IS NULL\)/);
+  assert.doesNotMatch(preMigration, /--accept-data-loss/);
+});
+
 test('RLS and audit migrations use Prisma quoted identifiers', () => {
   const checkedFiles = [
     'packages/db/prisma/migrations/20260712_core_rls_audit_forward_reconciliation.sql',

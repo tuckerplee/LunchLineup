@@ -333,6 +333,14 @@
       "contractPhase": "after-rollback-window",
       "requiresOldReleaseProof": true,
       "rationale": "payroll enum and nullable time-card context expansion remains in the candidate schema during rollback; isolated old-release smoke proof is mandatory before production mutation."
+    },
+    "packages/db/prisma/migrations/pre_20260717_prisma_nullable_unique_indexes.sql": {
+      "sha256": "eecd3026d96810847494f1144fbe0d58a4a6f19783c746b3ca1a21ebd9837ac0",
+      "phase": "expand",
+      "rollbackSchema": "retain",
+      "contractPhase": "after-rollback-window",
+      "requiresOldReleaseProof": true,
+      "rationale": "nullable identity columns and canonical unique indexes remain during rollback; isolated old-release smoke proof is mandatory before production mutation."
     }
   }
 }
