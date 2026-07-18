@@ -123,12 +123,20 @@ WHERE u."tenantId" = 'demo-tenant-v1'
   AND u.id LIKE 'demo-user-%'
 ON CONFLICT DO NOTHING;
 
+DELETE FROM "RoleAssignment" assignment
+USING demo_context c, "Role" r
+WHERE assignment."userId" = c.admin_id
+  AND assignment."tenantId" = c.tenant_id
+  AND assignment."roleId" = r.id
+  AND r."tenantId" = c.tenant_id
+  AND r.slug = 'admin';
+
 INSERT INTO "RoleAssignment" ("userId", "roleId", "tenantId", "createdAt")
 SELECT c.admin_id, r.id, c.tenant_id, now()
 FROM demo_context c
 JOIN "Role" r
   ON r."tenantId" = c.tenant_id
- AND r.slug = 'admin'
+ AND r.id = 'demo-role-v1'
 ON CONFLICT DO NOTHING;
 
 DELETE FROM "TimeCardBreak"
