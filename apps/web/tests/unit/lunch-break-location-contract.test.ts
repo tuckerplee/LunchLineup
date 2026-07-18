@@ -172,6 +172,16 @@ describe('lunch break location contract', () => {
     expect(pageSource).not.toContain('window.setInterval');
   });
 
+  it('keeps the server and first client render deterministic before date bootstrap', () => {
+    expect(pageSource).toContain("const DATE_BOOTSTRAP_PLACEHOLDER = '1970-01-01';");
+    expect(pageSource).toContain('const [serverToday, setServerToday] = useState(DATE_BOOTSTRAP_PLACEHOLDER);');
+    expect(pageSource).toContain('const [selectedDate, setSelectedDate] = useState(DATE_BOOTSTRAP_PLACEHOLDER);');
+    expect(pageSource).toContain("if (isLoading) return 'Loading date';");
+    expect(pageSource).toContain(': toDateInputValue(new Date());');
+    expect(pageSource).not.toContain('useState<string>(toDateInputValue(new Date()))');
+    expect(pageSource).not.toContain('toLocaleDateString([],');
+  });
+
   it('invalidates scoped rows and derived display state before a request and fails closed', () => {
     expect(pageSource.indexOf('clearDayRows();')).toBeLessThan(pageSource.indexOf('fetchAllBoundedPages('));
     expect(pageSource).toContain('clearScopedDisplayState();');

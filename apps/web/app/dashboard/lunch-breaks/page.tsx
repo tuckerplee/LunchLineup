@@ -194,6 +194,7 @@ type LunchBreakDaySession = {
 };
 
 const LUNCH_BREAKS_SESSION_KEY = 'lunch-breaks/day-session/v1';
+const DATE_BOOTSTRAP_PLACEHOLDER = '1970-01-01';
 
 type EmployeeCard = {
   id: string;
@@ -255,10 +256,7 @@ const HIDDEN_BILLING_FEATURES: FeatureMatrixResponse = {
 };
 
 function toDateInputValue(date: Date): string {
-  if (!Number.isFinite(date.getTime())) {
-    const now = new Date();
-    return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
-  }
+  if (!Number.isFinite(date.getTime())) return '';
   const y = date.getFullYear();
   const m = String(date.getMonth() + 1).padStart(2, '0');
   const d = String(date.getDate()).padStart(2, '0');
@@ -277,7 +275,8 @@ function parseDateInputValue(dateValue: string): Date | null {
 }
 
 function shiftDate(dateValue: string, days: number): string {
-  const date = parseDateInputValue(dateValue) ?? new Date();
+  const date = parseDateInputValue(dateValue);
+  if (!date) return dateValue;
   date.setDate(date.getDate() + days);
   return toDateInputValue(date);
 }
@@ -433,8 +432,8 @@ export default function LunchBreaksPage() {
   const [features, setFeatures] = useState<FeatureMatrixResponse | null>(null);
   const [policy, setPolicy] = useState<LunchBreakPolicy>(DEFAULT_POLICY);
   const [policyLoaded, setPolicyLoaded] = useState<LunchBreakPolicy>(DEFAULT_POLICY);
-  const [serverToday, setServerToday] = useState<string>(toDateInputValue(new Date()));
-  const [selectedDate, setSelectedDate] = useState<string>(toDateInputValue(new Date()));
+  const [serverToday, setServerToday] = useState(DATE_BOOTSTRAP_PLACEHOLDER);
+  const [selectedDate, setSelectedDate] = useState(DATE_BOOTSTRAP_PLACEHOLDER);
   const [dayRows, setDayRows] = useState<DayShiftRow[]>([]);
   const [baselines, setBaselines] = useState<Record<string, DayShiftRow>>({});
   const [lastRun, setLastRun] = useState<GenerateResponse | null>(null);
@@ -691,7 +690,9 @@ export default function LunchBreaksPage() {
       }
       const primaryLocation = locationData[0] ?? null;
       const primaryTimeZone = safeTimeZone(primaryLocation?.timezone);
-      const locationToday = serverNow ? dateValueInTimeZone(serverNow, primaryTimeZone) : initialSelectedDateRef.current;
+      const locationToday = serverNow
+        ? dateValueInTimeZone(serverNow, primaryTimeZone)
+        : toDateInputValue(new Date());
       setPermissions(sessionPermissions);
       setSessionIdentity(sessionContext.identity);
       setLocations(locationData);
@@ -1169,14 +1170,16 @@ export default function LunchBreaksPage() {
   }, [dayRows, selectedDate, selectedLocationId]);
 
   const selectedDateLabel = useMemo(() => {
-    const base = parseDateInputValue(selectedDate) ?? new Date();
-    return base.toLocaleDateString([], {
+    if (isLoading) return 'Loading date';
+    const base = parseDateInputValue(selectedDate);
+    if (!base) return 'Loading date';
+    return base.toLocaleDateString('en-US', {
       weekday: 'long',
       month: 'short',
       day: 'numeric',
       year: 'numeric',
     });
-  }, [selectedDate]);
+  }, [isLoading, selectedDate]);
 
   const dirtyCount = dayRows.filter((row) => row.dirty).length;
   const hasSharedRows = dayRows.length > 0;
@@ -2118,7 +2121,7 @@ export default function LunchBreaksPage() {
                           Today
                         </div>
                         <div style={{ fontSize: '1.02rem', fontWeight: 900, color: 'var(--text-primary)' }}>
-                          {selectedDate === serverToday ? selectedDateLabel : parseDateInputValue(serverToday)?.toLocaleDateString([], {
+                          {selectedDate === serverToday ? selectedDateLabel : parseDateInputValue(serverToday)?.toLocaleDateString('en-US', {
                             weekday: 'long',
                             month: 'short',
                             day: 'numeric',
@@ -2166,7 +2169,7 @@ export default function LunchBreaksPage() {
                         }}
                       >
                         <div style={{ fontSize: '0.78rem', fontWeight: 700, color: 'var(--text-primary)' }}>
-                          {parseDateInputValue(previousPickerDate)?.toLocaleDateString([], { weekday: 'short', month: 'short', day: 'numeric' })}
+                          {parseDateInputValue(previousPickerDate)?.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' })}
                         </div>
                         <div style={{ fontSize: '0.72rem', color: 'var(--text-secondary)' }}>
                           Secondary fallback if you need to look back.
@@ -2186,7 +2189,7 @@ export default function LunchBreaksPage() {
                       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(92px, 1fr))', gap: 6 }}>
                         {futurePickerDays.map((dateValue) => {
                           const date = parseDateInputValue(dateValue);
-                          const weekday = date?.toLocaleDateString([], { weekday: 'short' }) ?? '';
+                          const weekday = date?.toLocaleDateString('en-US', { weekday: 'short' }) ?? '';
                           const dayOfMonth = date?.getDate() ?? '';
                           const isActive = dateValue === selectedDate;
                           return (
