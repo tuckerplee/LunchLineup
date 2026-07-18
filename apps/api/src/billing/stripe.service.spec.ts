@@ -134,8 +134,9 @@ function buildService(options: {
     const checkoutSessionCreate = vi.fn();
     const checkoutSessionRetrieve = vi.fn(async (sessionId: string) => {
         const createCall = checkoutSessionCreate.mock.calls.at(-1)?.[0] as any;
-        const created = checkoutSessionCreate.mock.results.at(-1)?.value
-            ? await checkoutSessionCreate.mock.results.at(-1).value
+        const latestCreateResult = checkoutSessionCreate.mock.results.at(-1)?.value;
+        const created = latestCreateResult
+            ? await latestCreateResult
             : {};
         return {
             ...created,
@@ -155,7 +156,7 @@ function buildService(options: {
                 id: 'cus_123',
                 deleted: true,
             }),
-            retrieve: vi.fn(async (customerId: string) => ({
+            retrieve: vi.fn(async (customerId: string): Promise<any> => ({
                 id: customerId,
                 deleted: false,
                 metadata: { tenantId: 'tenant-1' },

@@ -2392,7 +2392,7 @@ async def run_worker_tasks(
                     )
 
         for task in tasks:
-            if task is not consumer_task and not task.done():
+            if (task is not consumer_task or fatal_error is not None) and not task.done():
                 task.cancel()
 
         done, pending = await asyncio.wait(
@@ -2404,9 +2404,15 @@ async def run_worker_tasks(
                 task.cancel()
             force_close_active_grpc_channels()
             names = ",".join(sorted(tasks[task] for task in pending))
+            if fatal_error is not None:
+                logger.error(
+                    "Worker drain deadline elapsed after required task failure pending=%s",
+                    names,
+                )
+                raise fatal_error
             raise WorkerDrainTimeout(
                 f"Worker drain deadline exceeded pending={names}"
-            ) from fatal_error
+            )
 
         await asyncio.gather(*done, return_exceptions=True)
         if fatal_error is not None:
