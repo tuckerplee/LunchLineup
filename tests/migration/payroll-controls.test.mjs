@@ -151,7 +151,29 @@ test('every payroll relationship has a tenant-consistent composite foreign key',
     assert.match(migration, new RegExp(
       `'${escapeRegex(constraint)}'[\\s\\S]*?FOREIGN KEY \\(${escapeRegex(columns)}\\) REFERENCES "${target}"\\("id", "tenantId"\\)`,
     ), `${constraint} is missing or is not tenant-consistent`);
+    assert.match(
+      schema,
+      new RegExp(`map: "${escapeRegex(constraint)}"`),
+      `${constraint} must remain Prisma-owned after raw migration replay`,
+    );
   }
+
+  for (const model of payrollModels) {
+    assert.match(
+      prismaBlock('model', model),
+      /tenant\s+Tenant\s+@relation\(fields: \[tenantId\], references: \[id\]\)/,
+      `${model} must keep its direct tenant foreign key across schema synchronization`,
+    );
+  }
+
+  assert.match(
+    prismaBlock('model', 'PayrollAmendmentDecision'),
+    /@@unique\(\[amendmentId, tenantId\]\)/,
+  );
+  assert.match(
+    prismaBlock('model', 'PayrollExportBatch'),
+    /@@unique\(\[periodId, tenantId\]\)/,
+  );
 });
 
 test('period exclusion, value checks, and tenant-leading database indexes are explicit', () => {

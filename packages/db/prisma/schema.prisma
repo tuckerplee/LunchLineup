@@ -45,6 +45,18 @@ model Tenant {
   scheduleDemandWindows        ScheduleDemandWindow[]
   timeCards                    TimeCard[]
   timeCardBreaks               TimeCardBreak[]
+  payrollPolicyVersions        PayrollPolicyVersion[]
+  payrollPeriods               PayrollPeriod[]
+  payrollTimeCardApprovals     PayrollTimeCardApproval[]
+  payrollLockedEntries         PayrollLockedEntry[]
+  payrollAmendments            PayrollAmendment[]
+  payrollAmendmentDecisions    PayrollAmendmentDecision[]
+  payrollOperations            PayrollOperation[]
+  payrollExportBatches         PayrollExportBatch[]
+  payrollExportLines           PayrollExportLine[]
+  payrollReconciliationReceipts PayrollReconciliationReceipt[]
+  payrollReconciliationEvents  PayrollReconciliationLineEvent[]
+  payrollReconciliationStates  PayrollReconciliationLineState[]
   auditLogs                    AuditLog[]
   tenantSettings               TenantSetting[]
   roles                        Role[]
@@ -859,7 +871,9 @@ model TimeCard {
   user     User            @relation(fields: [userId, tenantId], references: [id, tenantId])
   location Location?       @relation(fields: [locationId, tenantId], references: [id, tenantId], onDelete: Restrict)
   shift    Shift?          @relation(fields: [shiftId, tenantId], references: [id, tenantId], onDelete: Restrict)
+  payrollPeriod PayrollPeriod? @relation(fields: [payrollPeriodId, tenantId], references: [id, tenantId], onDelete: Restrict, map: "TimeCard_payroll_period_tenant_fkey")
   breaks   TimeCardBreak[]
+  payrollApprovals PayrollTimeCardApproval[]
 
   @@unique([id, tenantId])
   @@index([tenantId])
@@ -906,6 +920,9 @@ model PayrollPolicyVersion {
   createdByUserId String
   createdAt       DateTime       @default(now())
 
+  tenant  Tenant          @relation(fields: [tenantId], references: [id])
+  periods PayrollPeriod[]
+
   @@unique([id, tenantId])
   @@unique([tenantId, version])
   @@unique([tenantId, effectiveFrom])
@@ -936,6 +953,15 @@ model PayrollPeriod {
   createdAt             DateTime            @default(now())
   updatedAt             DateTime            @updatedAt
 
+  tenant        Tenant                    @relation(fields: [tenantId], references: [id])
+  policyVersion PayrollPolicyVersion      @relation(fields: [policyVersionId, tenantId], references: [id, tenantId], map: "PayrollPeriod_policy_tenant_fkey")
+  timeCards     TimeCard[]
+  approvals     PayrollTimeCardApproval[]
+  lockedEntries PayrollLockedEntry[]
+  amendments    PayrollAmendment[]
+  operations    PayrollOperation[]
+  exportBatch   PayrollExportBatch?
+
   @@unique([tenantId, localStartDate])
   @@unique([id, tenantId])
   @@index([tenantId, startsAt, endsAt])
@@ -954,6 +980,10 @@ model PayrollTimeCardApproval {
   requestHash      String
   decidedAt        DateTime                @default(now())
   decidedByUserId  String
+
+  tenant   Tenant        @relation(fields: [tenantId], references: [id])
+  period   PayrollPeriod @relation(fields: [periodId, tenantId], references: [id, tenantId], map: "PayrollTimeCardApproval_period_tenant_fkey")
+  timeCard TimeCard      @relation(fields: [timeCardId, tenantId], references: [id, tenantId], map: "PayrollTimeCardApproval_card_tenant_fkey")
 
   @@unique([tenantId, timeCardId, timeCardRevision])
   @@index([tenantId, periodId, decision, timeCardId])
@@ -979,6 +1009,11 @@ model PayrollLockedEntry {
   canonicalSha256  String
   createdAt        DateTime          @default(now())
 
+  tenant      Tenant              @relation(fields: [tenantId], references: [id])
+  period      PayrollPeriod       @relation(fields: [periodId, tenantId], references: [id, tenantId], map: "PayrollLockedEntry_period_tenant_fkey")
+  amendments  PayrollAmendment[]
+  exportLines PayrollExportLine[]
+
   @@unique([id, tenantId])
   @@unique([periodId, sequence])
   @@unique([periodId, sourceType, sourceId])
@@ -1001,6 +1036,11 @@ model PayrollAmendment {
   minuteDelta               Int
   createdAt                 DateTime @default(now())
 
+  tenant           Tenant                    @relation(fields: [tenantId], references: [id])
+  lockedEntry      PayrollLockedEntry        @relation(fields: [lockedEntryId, tenantId], references: [id, tenantId], map: "PayrollAmendment_locked_entry_tenant_fkey")
+  adjustmentPeriod PayrollPeriod             @relation(fields: [adjustmentPeriodId, tenantId], references: [id, tenantId], map: "PayrollAmendment_period_tenant_fkey")
+  decision         PayrollAmendmentDecision?
+
   @@unique([id, tenantId])
   @@index([tenantId, adjustmentPeriodId, createdAt, id])
   @@index([tenantId, lockedEntryId])
@@ -1017,6 +1057,10 @@ model PayrollAmendmentDecision {
   decidedByUserId String
   decidedAt       DateTime                @default(now())
 
+  tenant    Tenant           @relation(fields: [tenantId], references: [id])
+  amendment PayrollAmendment @relation(fields: [amendmentId, tenantId], references: [id, tenantId], map: "PayrollAmendmentDecision_amendment_tenant_fkey")
+
+  @@unique([amendmentId, tenantId])
   @@index([tenantId, decision, decidedAt, id])
 }
 
@@ -1028,6 +1072,9 @@ model PayrollOperation {
   requestHash String
   response    Json
   createdAt   DateTime             @default(now())
+
+  tenant Tenant         @relation(fields: [tenantId], references: [id])
+  period PayrollPeriod? @relation(fields: [periodId, tenantId], references: [id, tenantId], onDelete: Restrict, map: "PayrollOperation_period_tenant_fkey")
 
   @@index([tenantId, periodId, kind])
 }
@@ -1051,6 +1098,14 @@ model PayrollExportBatch {
   reconciledAt        DateTime?
   updatedAt           DateTime            @updatedAt
 
+  tenant               Tenant                           @relation(fields: [tenantId], references: [id])
+  period               PayrollPeriod                    @relation(fields: [periodId, tenantId], references: [id, tenantId], map: "PayrollExportBatch_period_tenant_fkey")
+  lines                PayrollExportLine[]
+  receipts             PayrollReconciliationReceipt[]
+  reconciliationEvents PayrollReconciliationLineEvent[]
+  reconciliationStates PayrollReconciliationLineState[]
+
+  @@unique([periodId, tenantId])
   @@unique([id, tenantId])
   @@index([tenantId, status, createdAt(sort: Desc), id(sort: Desc)])
 }
@@ -1073,6 +1128,12 @@ model PayrollExportLine {
   canonicalSha256 String
   createdAt       DateTime          @default(now())
 
+  tenant               Tenant                           @relation(fields: [tenantId], references: [id])
+  batch                PayrollExportBatch               @relation(fields: [batchId, tenantId], references: [id, tenantId], map: "PayrollExportLine_batch_tenant_fkey")
+  lockedEntry          PayrollLockedEntry               @relation(fields: [lockedEntryId, tenantId], references: [id, tenantId], map: "PayrollExportLine_entry_tenant_fkey")
+  reconciliationEvents PayrollReconciliationLineEvent[]
+  reconciliationStates PayrollReconciliationLineState[]
+
   @@unique([id, tenantId])
   @@unique([batchId, lineNumber])
   @@unique([batchId, lockedEntryId])
@@ -1093,6 +1154,11 @@ model PayrollReconciliationReceipt {
   receivedByUserId     String
   receivedAt           DateTime @default(now())
 
+  tenant     Tenant                           @relation(fields: [tenantId], references: [id])
+  batch      PayrollExportBatch               @relation(fields: [batchId, tenantId], references: [id, tenantId], map: "PayrollReconciliationReceipt_batch_tenant_fkey")
+  lineEvents PayrollReconciliationLineEvent[]
+  lineStates PayrollReconciliationLineState[]
+
   @@unique([id, tenantId])
   @@unique([tenantId, provider, providerEventId])
   @@index([tenantId, batchId, receivedAt, id])
@@ -1108,6 +1174,11 @@ model PayrollReconciliationLineEvent {
   reason    String?
   createdAt DateTime                        @default(now())
 
+  tenant  Tenant                       @relation(fields: [tenantId], references: [id])
+  receipt PayrollReconciliationReceipt @relation(fields: [receiptId, tenantId], references: [id, tenantId], map: "PayrollReconciliationLineEvent_receipt_tenant_fkey")
+  batch   PayrollExportBatch           @relation(fields: [batchId, tenantId], references: [id, tenantId], map: "PayrollReconciliationLineEvent_batch_tenant_fkey")
+  line    PayrollExportLine            @relation(fields: [lineId, tenantId], references: [id, tenantId], map: "PayrollReconciliationLineEvent_line_tenant_fkey")
+
   @@unique([receiptId, lineId])
   @@index([tenantId, batchId, lineId, createdAt])
 }
@@ -1121,6 +1192,11 @@ model PayrollReconciliationLineState {
   latestReceiptId String
   reason          String?
   updatedAt       DateTime                        @updatedAt
+
+  tenant        Tenant                       @relation(fields: [tenantId], references: [id])
+  batch         PayrollExportBatch           @relation(fields: [batchId, tenantId], references: [id, tenantId], map: "PayrollReconciliationLineState_batch_tenant_fkey")
+  line          PayrollExportLine            @relation(fields: [lineId, tenantId], references: [id, tenantId], map: "PayrollReconciliationLineState_line_tenant_fkey")
+  latestReceipt PayrollReconciliationReceipt @relation(fields: [latestReceiptId, tenantId], references: [id, tenantId], map: "PayrollReconciliationLineState_receipt_tenant_fkey")
 
   @@unique([batchId, lineId])
   @@index([tenantId, batchId, status, lineId])

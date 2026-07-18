@@ -343,7 +343,7 @@
       "rationale": "the exact legacy break-window data re-anchor remains during rollback; isolated old-release smoke proof is mandatory before production mutation."
     },
     "packages/db/prisma/migrations/pre_20260717_prisma_composite_parent_keys.sql": {
-      "sha256": "115f9a6ff0c0377cf61efd385522db68dd8801a73e1fa5cbbda15e1a187fdc55",
+      "sha256": "7e1b4d86ab5f8427fc5f5bd3b7beda0fbc989e8764de63b761b390b992e2e988",
       "phase": "expand",
       "rollbackSchema": "retain",
       "contractPhase": "after-rollback-window",

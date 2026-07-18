@@ -197,6 +197,16 @@ test('Prisma owns every composite parent identity required by raw tenant foreign
     ['Schedule', 'Schedule_id_tenantId_key', "'id', 'tenantId'"],
     ['Schedule', 'Schedule_id_tenantId_locationId_key', "'id', 'tenantId', 'locationId'"],
     ['Shift', 'Shift_id_tenantId_key', "'id', 'tenantId'"],
+    [
+      'PayrollAmendmentDecision',
+      'PayrollAmendmentDecision_amendmentId_tenantId_key',
+      "'amendmentId', 'tenantId'",
+    ],
+    [
+      'PayrollExportBatch',
+      'PayrollExportBatch_periodId_tenantId_key',
+      "'periodId', 'tenantId'",
+    ],
   ]) {
     assert.match(
       preMigration,

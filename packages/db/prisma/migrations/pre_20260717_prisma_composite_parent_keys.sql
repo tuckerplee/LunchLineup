@@ -25,7 +25,17 @@ BEGIN
           'Schedule_id_tenantId_locationId_key',
           ARRAY['id', 'tenantId', 'locationId']::TEXT[]
         ),
-        ('Shift', 'Shift_id_tenantId_key', ARRAY['id', 'tenantId']::TEXT[])
+        ('Shift', 'Shift_id_tenantId_key', ARRAY['id', 'tenantId']::TEXT[]),
+        (
+          'PayrollAmendmentDecision',
+          'PayrollAmendmentDecision_amendmentId_tenantId_key',
+          ARRAY['amendmentId', 'tenantId']::TEXT[]
+        ),
+        (
+          'PayrollExportBatch',
+          'PayrollExportBatch_periodId_tenantId_key',
+          ARRAY['periodId', 'tenantId']::TEXT[]
+        )
     ) AS targets(table_name, index_name, column_names)
   LOOP
     table_oid := to_regclass(format('public.%I', target.table_name));
