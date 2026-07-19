@@ -10,6 +10,9 @@ import { type IdentityAdapter } from './platform/identity';
 import { NativeIdentityAdapter } from './platform/native-identity';
 import { installProblemHandler } from './platform/problem';
 import { RetainedApplicationBridge } from './platform/retained-application.bridge';
+import { LocationIdentifierTranslator } from './locations/identifier-translation';
+import { LocationService } from './locations/locations.service';
+import { registerLocationRoutes } from './locations/routes';
 import { ScheduleBoardService } from './scheduling/board.service';
 import { ScheduleChangeSetService } from './scheduling/change-set.service';
 import { DemandWindowService } from './scheduling/demand-window.service';
@@ -35,6 +38,9 @@ const VersionSchema = Type.Object({
 export type ApiV2ServerDependencies = Partial<{
   database: TenantDatabase;
   routes: Omit<SchedulingRouteDependencies, 'config' | 'identity'>;
+  locations: Pick<LocationService,
+    'list' | 'summary' | 'get' | 'create' | 'update' | 'remove' | 'resolvePublicIds' | 'resolveInternalIds'
+  >;
   identity: IdentityAdapter;
   retainedApplication: Pick<RetainedApplicationBridge, 'execute'>;
 }>;
@@ -60,7 +66,11 @@ export async function buildServer(
   }).withTypeProvider<TypeBoxTypeProvider>();
   const database = overrides.database ?? new TenantDatabase();
   const identity = overrides.identity ?? new NativeIdentityAdapter(config, database);
-  const retainedApplication = overrides.retainedApplication ?? new RetainedApplicationBridge(config);
+  const locations = overrides.locations ?? new LocationService(database);
+  const retainedApplication = overrides.retainedApplication ?? new RetainedApplicationBridge(
+    config,
+    new LocationIdentifierTranslator(locations),
+  );
   const routeServices = overrides.routes ?? {
     board: new ScheduleBoardService(database),
     scheduleCreate: new ScheduleCreateService(database),
@@ -156,6 +166,11 @@ export async function buildServer(
     config,
     identity,
     ...routeServices,
+  });
+  await registerLocationRoutes(app, {
+    config,
+    identity,
+    locations,
   });
   await registerApplicationRoutes(app, {
     config,

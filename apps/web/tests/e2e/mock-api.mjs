@@ -185,7 +185,10 @@ function resetState() {
     id: 'loc-downtown',
     publicId: publicIds.downtown,
     name: process.env.E2E_LOCATION_NAME ?? 'Downtown Diner',
+    address: null,
     timezone: 'America/Los_Angeles',
+    createdAt: now.toISOString(),
+    updatedAt: now.toISOString(),
   };
   const adminTenant = {
     id: 'tenant-e2e',
@@ -548,13 +551,55 @@ function mfaSetupPayload(user) {
   };
 }
 
+function translateLocationReferences(value, identifiers) {
+  if (Array.isArray(value)) return value.map((entry) => translateLocationReferences(entry, identifiers));
+  if (!value || typeof value !== 'object') return value;
+  return Object.fromEntries(Object.entries(value).map(([key, child]) => {
+    if (key === 'locationId' && typeof child === 'string') return [key, identifiers.get(child) ?? child];
+    if (key === 'locationIds' && Array.isArray(child)) {
+      return [key, child.map((entry) => typeof entry === 'string' ? identifiers.get(entry) ?? entry : entry)];
+    }
+    return [key, translateLocationReferences(child, identifiers)];
+  }));
+}
+
+function publicLocation(location) {
+  return {
+    id: location.publicId,
+    name: location.name,
+    address: location.address ?? null,
+    timezone: location.timezone ?? 'America/Los_Angeles',
+    createdAt: location.createdAt,
+    updatedAt: location.updatedAt,
+  };
+}
+
+function nativeLocationCursor(location) {
+  return Buffer.from(JSON.stringify({ name: location.name, publicId: location.publicId })).toString('base64url');
+}
+
+function parseNativeLocationCursor(cursor) {
+  if (!cursor) return null;
+  try {
+    const parsed = JSON.parse(Buffer.from(cursor, 'base64url').toString('utf8'));
+    return typeof parsed?.name === 'string' && typeof parsed?.publicId === 'string'
+      ? parsed
+      : null;
+  } catch {
+    return null;
+  }
+}
+
 function sendJson(res, status, payload, headers = {}) {
+  const body = res.__translateV2LocationReferences
+    ? translateLocationReferences(payload, new Map(state.locations.map((location) => [location.id, location.publicId])))
+    : payload;
   res.writeHead(status, {
     'content-type': 'application/json',
     'cache-control': 'no-store',
     ...headers,
   });
-  res.end(JSON.stringify(payload));
+  res.end(JSON.stringify(body));
 }
 
 function sendText(res, status, body, headers = {}) {
@@ -585,10 +630,12 @@ async function readBody(req) {
   for await (const chunk of req) chunks.push(chunk);
   const text = Buffer.concat(chunks).toString('utf8');
   const type = req.headers['content-type'] ?? '';
-  if (type.includes('application/json')) {
-    return text ? JSON.parse(text) : {};
-  }
-  return Object.fromEntries(new URLSearchParams(text));
+  const parsed = type.includes('application/json')
+    ? (text ? JSON.parse(text) : {})
+    : Object.fromEntries(new URLSearchParams(text));
+  return req.__translateV2LocationReferences
+    ? translateLocationReferences(parsed, new Map(state.locations.map((location) => [location.publicId, location.id])))
+    : parsed;
 }
 
 function currentUser(req) {
@@ -830,6 +877,114 @@ async function handleV2(req, res, url, pathname) {
   if (!requireCsrf(req, res, pathname)) return;
   const user = requireAuth(req, res);
   if (!user) return;
+
+  if (pathname === '/v2/locations' && req.method === 'GET') {
+    const requestedLimit = Number.parseInt(url.searchParams.get('limit') ?? '100', 10);
+    const limit = Number.isSafeInteger(requestedLimit) ? Math.min(200, Math.max(1, requestedLimit)) : 100;
+    const cursor = parseNativeLocationCursor(url.searchParams.get('cursor'));
+    if (url.searchParams.has('cursor') && !cursor) {
+      sendV2Problem(res, 422, 'invalid_location_cursor', 'The location page cursor is invalid.');
+      return;
+    }
+    const ordered = state.locations.slice().sort((left, right) => (
+      left.name.localeCompare(right.name) || left.publicId.localeCompare(right.publicId)
+    ));
+    const start = cursor
+      ? ordered.findIndex((location) => (
+        location.name.localeCompare(cursor.name) > 0
+        || (location.name === cursor.name && location.publicId.localeCompare(cursor.publicId) > 0)
+      ))
+      : 0;
+    const page = (start < 0 ? [] : ordered.slice(start, start + limit + 1));
+    const data = page.slice(0, limit);
+    const hasMore = page.length > limit;
+    sendJson(res, 200, {
+      data: data.map(publicLocation),
+      pagination: {
+        limit,
+        maxLimit: 200,
+        returned: data.length,
+        hasMore,
+        nextCursor: hasMore ? nativeLocationCursor(data[data.length - 1]) : null,
+      },
+    });
+    return;
+  }
+
+  if (pathname === '/v2/locations/summary' && req.method === 'GET') {
+    sendJson(res, 200, { count: state.locations.length });
+    return;
+  }
+
+  if (pathname === '/v2/locations' && req.method === 'POST') {
+    const body = await readBody(req);
+    const hasIdempotencyKey = typeof req.headers['idempotency-key'] === 'string' && req.headers['idempotency-key'].trim();
+    const attempt = hasIdempotencyKey ? beginV2IdempotentRequest(req, res, pathname, body) : null;
+    if (attempt?.handled) return;
+    if (typeof body.name !== 'string' || !body.name.trim() || typeof body.timezone !== 'string' || !body.timezone.trim()) {
+      sendV2Problem(res, 422, 'invalid_location_input', 'Name and a valid IANA timezone are required.');
+      return;
+    }
+    const now = new Date().toISOString();
+    const location = {
+      id: `loc-${crypto.randomUUID()}`,
+      publicId: crypto.randomUUID(),
+      name: body.name.trim(),
+      address: typeof body.address === 'string' ? body.address.trim() || null : null,
+      timezone: body.timezone.trim(),
+      createdAt: now,
+      updatedAt: now,
+    };
+    state.locations.push(location);
+    const response = publicLocation(location);
+    if (attempt) commitV2IdempotentRequest(attempt, 201, response);
+    sendJson(res, 201, response);
+    return;
+  }
+
+  const locationMatch = /^\/v2\/locations\/([0-9a-f-]{36})$/.exec(pathname);
+  if (locationMatch) {
+    const location = state.locations.find((candidate) => candidate.publicId === locationMatch[1]);
+    if (!location) {
+      sendV2Problem(res, 404, 'location_not_found', 'The selected location was not found.');
+      return;
+    }
+    if (req.method === 'GET') {
+      sendJson(res, 200, publicLocation(location));
+      return;
+    }
+    if (req.method === 'PUT') {
+      const body = await readBody(req);
+      if (typeof body.timezone !== 'string' || !body.timezone.trim()) {
+        sendV2Problem(res, 422, 'invalid_location_input', 'A valid IANA timezone is required.');
+        return;
+      }
+      if (body.name !== undefined) {
+        if (typeof body.name !== 'string' || !body.name.trim()) {
+          sendV2Problem(res, 422, 'invalid_location_input', 'Location name must be non-empty.');
+          return;
+        }
+        location.name = body.name.trim();
+      }
+      if (body.address !== undefined) {
+        if (body.address !== null && typeof body.address !== 'string') {
+          sendV2Problem(res, 422, 'invalid_location_input', 'Location address must be a string or null.');
+          return;
+        }
+        location.address = typeof body.address === 'string' ? body.address.trim() || null : null;
+      }
+      location.timezone = body.timezone.trim();
+      location.updatedAt = new Date().toISOString();
+      sendJson(res, 200, publicLocation(location));
+      return;
+    }
+    if (req.method === 'DELETE') {
+      state.locations = state.locations.filter((candidate) => candidate.id !== location.id);
+      res.writeHead(204, { 'cache-control': 'no-store' });
+      res.end();
+      return;
+    }
+  }
 
   if (pathname === '/v2/schedule-board' && req.method === 'GET') {
     const requestedLocationId = url.searchParams.get('locationId');
@@ -1218,7 +1373,10 @@ async function handleV2(req, res, url, pathname) {
 }
 
 function isNativeV2Path(pathname) {
-  return pathname === '/v2/schedule-board'
+  return pathname === '/v2/locations'
+    || pathname === '/v2/locations/summary'
+    || /^\/v2\/locations\/[0-9a-f-]{36}$/.test(pathname)
+    || pathname === '/v2/schedule-board'
     || pathname === '/v2/break-generations'
     || /^\/v2\/locations\/[0-9a-f-]{36}\/schedules$/.test(pathname)
     || /^\/v2\/schedules\/[0-9a-f-]{36}\/(?:change-sets|demand-windows|publish-plan|publications|reopenings|solve-jobs(?:\/[0-9a-f-]{36})?)$/.test(pathname);
@@ -1247,6 +1405,16 @@ const server = http.createServer(async (req, res) => {
       return;
     }
     if (pathname.startsWith('/v2/')) {
+      req.__translateV2LocationReferences = true;
+      res.__translateV2LocationReferences = true;
+      const publicToInternal = new Map(state.locations.map((location) => [location.publicId, location.id]));
+      const requestedLocationIds = url.searchParams.getAll('locationId');
+      if (requestedLocationIds.length > 0) {
+        url.searchParams.delete('locationId');
+        for (const locationId of requestedLocationIds) {
+          url.searchParams.append('locationId', publicToInternal.get(locationId) ?? locationId);
+        }
+      }
       pathname = `/v1/${pathname.slice('/v2/'.length)}`;
     }
     if (!pathname.startsWith('/v1/')) {

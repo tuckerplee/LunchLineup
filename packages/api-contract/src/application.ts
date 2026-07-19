@@ -21,6 +21,8 @@ export type ApplicationApiOperation = Readonly<{
   summary: string;
   responseKind?: ApplicationApiResponseKind;
   bodyLimitBytes?: number;
+  /** Native API-02 route registration owns this operation instead of the retained bridge. */
+  native?: true;
 }>;
 
 const MiB = 1024 * 1024;
@@ -50,14 +52,14 @@ export const APPLICATION_API_OPERATIONS = [
   { operationId: 'deleteMfaEnrollment', method: 'DELETE', path: '/auth/mfa/enrollment', tag: 'Authentication', summary: 'Disable MFA enrollment' },
   { operationId: 'verifyMfaChallenge', method: 'POST', path: '/auth/mfa/verify', tag: 'Authentication', summary: 'Verify an MFA sign-in challenge' },
   { operationId: 'deleteSession', method: 'POST', path: '/auth/logout', tag: 'Authentication', summary: 'Revoke the authenticated session' },
-  { operationId: 'getCurrentSession', method: 'GET', path: '/auth/me', tag: 'Authentication', summary: 'Read the authenticated identity and permissions' },
+  { operationId: 'getCurrentSession', method: 'GET', path: '/auth/me', tag: 'Authentication', summary: 'Read the authenticated identity and permissions', native: true },
 
-  { operationId: 'listLocations', method: 'GET', path: '/locations', tag: 'Locations', summary: 'List active locations' },
-  { operationId: 'createLocation', method: 'POST', path: '/locations', tag: 'Locations', summary: 'Create a location' },
-  { operationId: 'getLocationSummary', method: 'GET', path: '/locations/summary', tag: 'Locations', summary: 'Read the location summary' },
-  { operationId: 'getLocation', method: 'GET', path: '/locations/:locationId', tag: 'Locations', summary: 'Read one location' },
-  { operationId: 'updateLocation', method: 'PUT', path: '/locations/:locationId', tag: 'Locations', summary: 'Replace one location' },
-  { operationId: 'deleteLocation', method: 'DELETE', path: '/locations/:locationId', tag: 'Locations', summary: 'Archive one location' },
+  { operationId: 'listLocations', method: 'GET', path: '/locations', tag: 'Locations', summary: 'List active locations', native: true },
+  { operationId: 'createLocation', method: 'POST', path: '/locations', tag: 'Locations', summary: 'Create a location', native: true },
+  { operationId: 'getLocationSummary', method: 'GET', path: '/locations/summary', tag: 'Locations', summary: 'Read the location summary', native: true },
+  { operationId: 'getLocation', method: 'GET', path: '/locations/:locationId', tag: 'Locations', summary: 'Read one location', native: true },
+  { operationId: 'updateLocation', method: 'PUT', path: '/locations/:locationId', tag: 'Locations', summary: 'Replace one location', native: true },
+  { operationId: 'deleteLocation', method: 'DELETE', path: '/locations/:locationId', tag: 'Locations', summary: 'Archive one location', native: true },
 
   { operationId: 'listStaffMembers', method: 'GET', path: '/users', tag: 'People', summary: 'List staff members' },
   { operationId: 'getAccessCatalog', method: 'GET', path: '/users/access/catalog', tag: 'People', summary: 'Read the access-role catalog' },

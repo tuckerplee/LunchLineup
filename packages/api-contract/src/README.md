@@ -9,5 +9,7 @@
 - `application.test.ts`: uniqueness, safety, and no-legacy-shift-mutation regression tests.
 - `generated-client.ts`: deterministic browser client output; regenerate it instead of editing it.
 - `index.ts`: package exports.
+- `locations.ts`: native API-02 location records, request schemas, pagination, and Problem Details responses.
+- `locations.test.ts`: public-ID, pagination-envelope, and strict location-write schema regression tests.
 - `scheduling.ts`: scheduling schemas, request/response contracts, and RFC 9457 Problem Details.
 - `scheduling.test.ts`: focused schema and generated-client contract tests.

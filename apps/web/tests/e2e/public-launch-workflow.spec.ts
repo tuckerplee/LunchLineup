@@ -51,6 +51,16 @@ test.describe('Public launch workflow gaps', () => {
     await expect(page).toHaveURL(/\/dashboard\/locations$/);
     expect(locationReads).toBeGreaterThanOrEqual(2);
   });
+
+  test('uses the native public location UUID for scheduling navigation', async ({ page }) => {
+    await loginAsSeedAdmin(page, '/dashboard/locations');
+
+    const locationCard = page.getByRole('article').filter({ hasText: 'Downtown Diner' });
+    await expect(locationCard).toBeVisible();
+    await expect(locationCard.getByRole('link', { name: 'View schedule' }))
+      .toHaveAttribute('href', '/dashboard/scheduling?location=10000000-0000-4000-8000-000000000001');
+  });
+
   test('loads another location page only after explicit operator continuation', async ({ page }) => {
     const requestedCursors: Array<string | null> = [];
     await page.route('**/api/v2/locations?*', async (route) => {

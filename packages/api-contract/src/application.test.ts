@@ -20,6 +20,19 @@ describe('API v2 application operation catalog', () => {
     }
   });
 
+  it('marks only completed API-02 modules as native owners', () => {
+    expect(APPLICATION_API_OPERATIONS.filter((operation) => operation.native).map((operation) => operation.operationId))
+      .toEqual([
+        'getCurrentSession',
+        'listLocations',
+        'createLocation',
+        'getLocationSummary',
+        'getLocation',
+        'updateLocation',
+        'deleteLocation',
+      ]);
+  });
+
   it('does not reintroduce legacy row-at-a-time scheduling mutations', () => {
     for (const [method, path] of [
       ['POST', '/shifts'],

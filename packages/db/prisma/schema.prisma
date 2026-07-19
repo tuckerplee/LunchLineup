@@ -556,6 +556,7 @@ model Location {
   @@unique([tenantId, creationRequestKeyHash])
   @@index([tenantId])
   @@index([tenantId, deletedAt, name, id])
+  @@index([tenantId, deletedAt, name, publicId])
   @@index([deletedAt])
 }
 

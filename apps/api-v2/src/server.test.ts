@@ -22,6 +22,8 @@ const identity: SessionIdentity = {
   roles: [{ id: 'role-manager', name: 'Manager', isSystem: true, legacyRole: 'MANAGER' }],
   permissions: [
     'locations:read',
+    'locations:write',
+    'locations:delete',
     'schedules:read',
     'schedules:write',
     'schedules:publish',
@@ -39,6 +41,33 @@ const apps: Array<Awaited<ReturnType<typeof buildServer>>> = [];
 
 async function harness(identityResponse: SessionIdentity = identity) {
   const retainedApplication = vi.fn(async () => ({ ok: true }));
+  const location = {
+    id: '34aa4812-63f5-4e5c-8b3a-06b564987a1f',
+    name: 'Downtown Diner',
+    address: '100 Main Street',
+    timezone: 'America/Los_Angeles',
+    createdAt: '2026-07-18T00:00:00.000Z',
+    updatedAt: '2026-07-18T00:00:00.000Z',
+  };
+  const locations = {
+    list: vi.fn(async () => ({
+      data: [location],
+      pagination: {
+        limit: 100,
+        maxLimit: 200 as const,
+        returned: 1,
+        hasMore: false,
+        nextCursor: null,
+      },
+    })),
+    summary: vi.fn(async () => ({ count: 1 })),
+    get: vi.fn(async () => location),
+    create: vi.fn(async () => location),
+    update: vi.fn(async () => location),
+    remove: vi.fn(async () => undefined),
+    resolvePublicIds: vi.fn(async () => new Map()),
+    resolveInternalIds: vi.fn(async () => new Map()),
+  };
   const board = vi.fn(async () => ({
     data: {
       permissions: identity.permissions,
@@ -97,6 +126,7 @@ async function harness(identityResponse: SessionIdentity = identity) {
       authenticate,
     } as never,
     retainedApplication: { execute: retainedApplication },
+    locations,
     routes: {
       board: { get: board },
       scheduleCreate: {
@@ -125,6 +155,7 @@ async function harness(identityResponse: SessionIdentity = identity) {
     demandReplace,
     reopen,
     retainedApplication,
+    locations,
     authenticate,
   };
 }
@@ -149,6 +180,10 @@ describe('API v2 HTTP contract', () => {
     expect(document.paths['/v2/schedules/{scheduleId}/solve-jobs'].post.operationId).toBe('startScheduleSolve');
     expect(document.paths['/v2/break-generations'].post.operationId).toBe('generateScheduleBreaks');
     expect(document.paths['/v2/auth/me'].get.operationId).toBe('getCurrentSession');
+    expect(document.paths['/v2/locations'].get.operationId).toBe('listLocations');
+    expect(document.paths['/v2/locations'].post.operationId).toBe('createLocation');
+    expect(document.paths['/v2/locations/{locationId}'].put.operationId).toBe('updateLocation');
+    expect(document.paths['/v2/locations'].post.responses['500']).toBeDefined();
     expect(
       document.paths['/v2/auth/me'].get.responses['200'].content['application/json'].schema
         .properties.user.properties.mfaVerified.type,
@@ -177,6 +212,44 @@ describe('API v2 HTTP contract', () => {
     expect(response.headers['cache-control']).toBe('private, no-store');
     expect(authenticate).toHaveBeenCalledOnce();
     expect(retainedApplication).not.toHaveBeenCalled();
+  });
+
+  it('serves tenant locations through the native API-02 owner and public UUID contract', async () => {
+    const { app, retainedApplication, locations } = await harness();
+    const response = await app.inject({
+      method: 'GET',
+      url: '/v2/locations?limit=100',
+      headers: { cookie: 'access_token=test' },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({
+      data: [{ id: '34aa4812-63f5-4e5c-8b3a-06b564987a1f', name: 'Downtown Diner' }],
+      pagination: { returned: 1, hasMore: false },
+    });
+    expect(response.headers['x-lunchlineup-compatibility-owner']).toBeUndefined();
+    expect(locations.list).toHaveBeenCalledOnce();
+    expect(retainedApplication).not.toHaveBeenCalled();
+  });
+
+  it('requires CSRF and location permission before a native location mutation', async () => {
+    const restricted = { ...identity, permissions: ['locations:read'] };
+    const { app, locations } = await harness(restricted);
+    const response = await app.inject({
+      method: 'POST',
+      url: '/v2/locations',
+      headers: {
+        cookie: 'access_token=test; csrf_token=abcdefghijklmnop',
+        origin: 'https://beta.lunchlineup.com',
+        'x-csrf-token': 'abcdefghijklmnop',
+        'content-type': 'application/json',
+      },
+      payload: { name: 'Downtown Diner', timezone: 'America/Los_Angeles' },
+    });
+
+    expect(response.statusCode).toBe(403);
+    expect(response.json()).toMatchObject({ code: 'permission_denied' });
+    expect(locations.create).not.toHaveBeenCalled();
   });
 
   it('rejects unsafe compatibility writes before the retained owner is called', async () => {

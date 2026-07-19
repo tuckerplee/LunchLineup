@@ -1,7 +1,8 @@
-import type { ApplicationApiOperation } from '@lunchlineup/api-contract';
+import type { ApplicationApiOperation, SessionIdentity } from '@lunchlineup/api-contract';
 import type { FastifyReply, FastifyRequest } from 'fastify';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { loadConfig } from '../config';
+import { LocationIdentifierTranslator } from '../locations/identifier-translation';
 import { ProblemError } from './problem';
 import { RetainedApplicationBridge } from './retained-application.bridge';
 
@@ -65,6 +66,21 @@ function reply() {
   return target as unknown as FastifyReply & typeof target;
 }
 
+const identity: SessionIdentity = {
+  sub: 'user-1',
+  tenantId: 'tenant-1',
+  sessionId: 'session-1',
+  role: 'Manager',
+  legacyRole: 'MANAGER',
+  roles: [{ id: 'role-1', name: 'Manager', isSystem: true, legacyRole: 'MANAGER' }],
+  permissions: ['locations:read', 'time_cards:write'],
+  mfaVerified: true,
+  mfaRequired: false,
+};
+
+const publicLocationId = '34aa4812-63f5-4e5c-8b3a-06b564987a1f';
+const internalLocationId = 'location-storage-1';
+
 afterEach(() => {
   vi.unstubAllGlobals();
 });
@@ -124,6 +140,49 @@ describe('retained application compatibility bridge', () => {
         remediation: 'Retry the unchanged request or create a new attempt.',
       },
     });
+  });
+
+  it('translates declared retained location references only after native identity binding', async () => {
+    const resolver = {
+      resolvePublicIds: vi.fn(async () => new Map([[publicLocationId, internalLocationId]])),
+      resolveInternalIds: vi.fn(async () => new Map([[internalLocationId, publicLocationId]])),
+    };
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({
+      data: [{ locationId: internalLocationId }],
+      unrelatedId: internalLocationId,
+    }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const response = await new RetainedApplicationBridge(
+      config,
+      new LocationIdentifierTranslator(resolver),
+    ).execute({
+      operation: operation({
+        operationId: 'clockIn',
+        method: 'POST',
+        path: '/time-cards/clock-in',
+        tag: 'Time',
+      }),
+      request: request(
+        `/v2/time-cards/clock-in?locationId=${publicLocationId}`,
+        { locationId: publicLocationId, id: publicLocationId },
+      ),
+      reply: reply(),
+      identity,
+    });
+
+    expect(response).toEqual({
+      data: [{ locationId: publicLocationId }],
+      unrelatedId: internalLocationId,
+    });
+    const [target, init] = fetchMock.mock.calls[0]!;
+    expect(target).toBe(`http://api:3000/v1/time-cards/clock-in?locationId=${internalLocationId}`);
+    expect(JSON.parse(String(init.body))).toEqual({ locationId: internalLocationId, id: publicLocationId });
+    expect(resolver.resolvePublicIds).toHaveBeenCalledWith('tenant-1', [publicLocationId]);
+    expect(resolver.resolveInternalIds).toHaveBeenCalledWith('tenant-1', [internalLocationId]);
   });
 
   it('rejects traversal and oversized retained responses', async () => {

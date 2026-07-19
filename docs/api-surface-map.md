@@ -14,11 +14,11 @@ browser (application traffic uses /api/v2 only)
        everything else -> web:3000
 
 api-v2
-  -> PostgreSQL with tenant RLS for native v2 session and scheduling reads/writes
+  -> PostgreSQL with tenant RLS for native v2 session, location, and scheduling reads/writes
   -> Redis for bounded MFA session-marker validation
   -> selected private v1 scheduling operations for billing, notification,
      solver-queue, and break-generation compatibility
-  -> exact 120-operation API-01 compatibility catalog for remaining browser domains
+  -> exact 114-operation API-01 compatibility catalog for remaining browser domains
 
 worker -> RabbitMQ, PostgreSQL, engine:50051 gRPC, parser Unix socket
 control -> private operator status/health/metrics only
@@ -36,6 +36,12 @@ External paths include `/api`; the service receives the same path after Caddy re
 | GET | `/api/v2/ready` | database readiness | none |
 | GET | `/api/v2/version` | service and release SHA | none |
 | GET | `/api/v2/openapi.json` | generated OpenAPI 3.1 contract | five-minute public cache |
+| GET | `/api/v2/locations` | list active locations by opaque public-ID cursor | private, no-store |
+| POST | `/api/v2/locations` | create a location | optional `Idempotency-Key` durable replay |
+| GET | `/api/v2/locations/summary` | count active locations | private, no-store |
+| GET | `/api/v2/locations/{locationId}` | read one location by public UUID | private, no-store |
+| PUT | `/api/v2/locations/{locationId}` | update a location and fence affected draft schedules | private, no-store |
+| DELETE | `/api/v2/locations/{locationId}` | soft-delete a location and fence affected draft schedules | private, no-store |
 | GET | `/api/v2/schedule-board` | bounded screen read model for one date/view/location | private, no-store |
 | POST | `/api/v2/locations/{locationId}/schedules` | create a draft schedule | `Idempotency-Key` |
 | POST | `/api/v2/schedules/{scheduleId}/change-sets` | atomically create/update/delete up to 100 shifts | `If-Match` plus `Idempotency-Key` |
@@ -48,7 +54,7 @@ External paths include `/api`; the service receives the same path after Caddy re
 | GET | `/api/v2/schedules/{scheduleId}/solve-jobs/{jobId}` | read one solve job | private, no-store |
 | POST | `/api/v2/break-generations` | generate and persist breaks for selected shifts | `Idempotency-Key` |
 
-The 121 browser operations are registered explicitly from `packages/api-contract/src/application.ts`. `GET /auth/me` is native; the remaining 120 compatibility operations cover authentication (16), locations (6), people/access (17), operational/lunch-break reads and commands (9), time cards (6), payroll (17), notifications (3), settings (4), billing (9), availability imports (2), and administration/account lifecycle (31). The same catalog validates browser path/method pairs. There is no `/v2/*` catch-all handler and no caller-supplied upstream path.
+The 121 browser operations are registered explicitly from `packages/api-contract/src/application.ts`. Seven are native (`GET /auth/me` plus the six location operations); the remaining 114 compatibility operations cover authentication (16), people/access (17), operational/lunch-break reads and commands (9), time cards (6), payroll (17), notifications (3), settings (4), billing (9), availability imports (2), and administration/account lifecycle (31). The same catalog validates browser path/method pairs. There is no `/v2/*` catch-all handler and no caller-supplied upstream path.
 
 API v2 uses shared TypeBox schemas for server validation, OpenAPI generation, and the generated browser client. Every v2 response exposes the server-generated `X-Correlation-ID` used for downstream retained-service calls. Errors are bounded RFC 9457 Problem Details with stable machine codes. Contract failures use `422`; missing preconditions use `428`; stale schedule revisions use `412` and return `currentEtag`; state conflicts use `409`. Unsafe cookie-authenticated requests require an allowed `Origin` and double-submit CSRF proof. Shift updates are partial: omitted fields retain their exact saved values, including custom role labels, while explicitly supplied role labels are trimmed without case normalization.
 
@@ -63,15 +69,16 @@ Native v2 ownership:
 - schedule reopening.
 - current-session validation and `GET /auth/me`;
 - session-bound RBAC, tenant status, session timeout, MFA, and PIN-rotation enforcement for native scheduling.
+- tenant location list/create/read/update/delete with public UUIDs, bounded pagination, capacity/idempotency rules, and draft-schedule revision fencing.
 
 Bounded compatibility ownership during the strangler migration:
 
 - publication billing and notifications;
 - solver queue submission/status;
 - charged break generation.
-- the frozen 120-operation API-01 application catalog while API-02 replaces each domain implementation.
+- the frozen 114-operation API-01 application catalog while API-02 replaces each domain implementation.
 
-The scheduling compatibility adapter accepts only hard-coded internal route shapes and translates public UUIDs to tenant-scoped internal IDs. The API-01 application compatibility owner is reachable only through the exact shared catalog, uses a fixed internal authority, bounds request time/body/response size, forwards only approved headers, replaces spoofable forwarding values with the trusted client address and canonical `APP_ORIGIN` host/protocol, permits redirects only for the two declared OIDC operations, and sanitizes errors into Problem Details. Neither boundary exposes a wildcard route. API-02 is the required removal owner.
+The scheduling compatibility adapter accepts only hard-coded internal route shapes and translates public UUIDs to tenant-scoped internal IDs. The API-01 application compatibility owner is reachable only through the exact shared catalog, uses a fixed internal authority, bounds request time/body/response size, forwards only approved headers, replaces spoofable forwarding values with the trusted client address and canonical `APP_ORIGIN` host/protocol, permits redirects only for the two declared OIDC operations, and sanitizes errors into Problem Details. Its location seam applies only to declared retained domains and exact `locationId`/`locationIds` fields; requests translate public UUIDs inward and retained responses translate storage IDs outward. Neither boundary exposes a wildcard route. API-02 is the required removal owner.
 
 ## Retained Application API v1
 

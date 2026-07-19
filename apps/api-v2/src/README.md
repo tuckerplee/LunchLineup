@@ -9,5 +9,6 @@
 - `server.ts`: Fastify assembly, OpenAPI, health, and module registration.
 - `server.test.ts`: HTTP contract, OpenAPI, and route-level security tests.
 - `application/`: explicit non-scheduling browser API routes and their API-02 compatibility ownership.
+- `locations/`: native API-02 tenant-location lifecycle and public-ID boundary.
 - `platform/`: database, native session identity, request-security, compatibility transport, and Problem Details boundaries.
 - `scheduling/`: board query and atomic change-set domain module.

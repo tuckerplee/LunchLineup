@@ -50,7 +50,7 @@ function pathParameters(path: string): TSchema | undefined {
 
 function routeSchema(operation: ApplicationApiOperation) {
   const params = pathParameters(operation.path);
-  const native = operation.operationId === 'getCurrentSession';
+  const native = operation.native === true;
   return {
     operationId: operation.operationId,
     summary: operation.summary,
@@ -78,6 +78,9 @@ export async function registerApplicationRoutes(
 ): Promise<void> {
   for (const catalogOperation of APPLICATION_API_OPERATIONS) {
     const operation: ApplicationApiOperation = catalogOperation;
+    // Locations use the native API-02 module. The session-context route lives
+    // here because it is the application-wide identity envelope.
+    if (operation.native && operation.operationId !== 'getCurrentSession') continue;
     app.route({
       method: operation.method,
       url: `/v2${operation.path}`,
@@ -95,10 +98,18 @@ export async function registerApplicationRoutes(
         if (unsafeMethods.has(operation.method) && operation.tag !== 'Authentication') {
           assertUnsafeRequestSecurity(request as FastifyRequest, dependencies.config);
         }
+        // API-02 location translation has to resolve a tenant-scoped public
+        // UUID before a retained implementation can see its storage key. The
+        // native identity boundary also prevents this compatibility owner from
+        // trusting caller-supplied tenant context.
+        const identity = operation.tag === 'Authentication'
+          ? undefined
+          : await dependencies.identity.authenticate(request as FastifyRequest, reply);
         return dependencies.retainedApplication.execute({
           operation,
           request: request as FastifyRequest,
           reply,
+          identity,
         });
       },
     });

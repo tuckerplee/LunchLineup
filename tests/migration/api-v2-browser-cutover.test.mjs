@@ -103,6 +103,36 @@ test('API-02 owns current-session validation natively without a v1 identity hop'
   assert.match(config, /AUTH_STATE_TIMEOUT_MS/);
 });
 
+test('API-02 owns locations natively with public UUIDs and a bounded retained translation seam', () => {
+  const catalog = read('packages/api-contract/src/application.ts');
+  const locations = read('apps/api-v2/src/locations/routes.ts');
+  const service = read('apps/api-v2/src/locations/locations.service.ts');
+  const bridge = read('apps/api-v2/src/platform/retained-application.bridge.ts');
+  const translator = read('apps/api-v2/src/locations/identifier-translation.ts');
+  const web = read('apps/web/app/dashboard/locations/LocationsWorkspace.tsx');
+
+  for (const operationId of [
+    'listLocations',
+    'createLocation',
+    'getLocationSummary',
+    'getLocation',
+    'updateLocation',
+    'deleteLocation',
+  ]) {
+    assert.match(catalog, new RegExp(`operationId: '${operationId}'[^\\n]*native: true`));
+  }
+  assert.match(locations, /registerLocationRoutes/);
+  assert.match(locations, /LocationPathSchema/);
+  assert.match(service, /publicId: randomUUID\(\)/);
+  assert.match(service, /SELECT \"id\", \"publicId\"::text AS \"publicId\"/);
+  assert.match(bridge, /LocationIdentifierTranslator/);
+  assert.match(translator, /locationId/);
+  assert.match(translator, /locationIds/);
+  assert.doesNotMatch(translator, /key === 'id'/);
+  assert.doesNotMatch(web, /publicId\?: string/);
+  assert.match(web, /dashboard\/scheduling\?location=\$\{location\.id\}/);
+});
+
 test('public build and deployment defaults select API v2', () => {
   for (const [path, expected] of [
     ['.env.example', 'NEXT_PUBLIC_API_URL=/api/v2'],
