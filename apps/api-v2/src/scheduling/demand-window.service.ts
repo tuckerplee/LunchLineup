@@ -36,14 +36,14 @@ function inputJson(value: unknown): Prisma.InputJsonValue {
 }
 
 function serializeWindows(rows: Array<{
-  id: string;
+  publicId: string;
   startTime: Date;
   endTime: Date;
   requiredStaff: number;
   skill: string | null;
 }>): DemandWindowListResponse['data'] {
   return rows.map((row) => ({
-    id: row.id,
+    id: row.publicId,
     startTime: row.startTime.toISOString(),
     endTime: row.endTime.toISOString(),
     requiredStaff: row.requiredStaff,
@@ -115,7 +115,7 @@ export class DemandWindowService {
         orderBy: [{ startTime: 'asc' }, { id: 'asc' }],
         take: 501,
         select: {
-          id: true,
+          publicId: true,
           startTime: true,
           endTime: true,
           requiredStaff: true,
@@ -290,7 +290,7 @@ export class DemandWindowService {
         },
         orderBy: [{ startTime: 'asc' }, { id: 'asc' }],
         select: {
-          id: true,
+          publicId: true,
           startTime: true,
           endTime: true,
           requiredStaff: true,

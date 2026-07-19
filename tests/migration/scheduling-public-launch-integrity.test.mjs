@@ -13,6 +13,9 @@ function read(path) {
 test('API v2 public identifier expansion is safe for fresh and populated databases', () => {
   const schema = read('packages/db/prisma/schema.prisma');
   const sql = read('packages/db/prisma/migrations/pre_20260718_api_v2_public_ids.sql');
+  const demandWindowSql = read(
+    'packages/db/prisma/migrations/pre_20260718_api_v2_demand_window_public_ids.sql',
+  );
 
   assert.match(sql, /CREATE EXTENSION IF NOT EXISTS pgcrypto/);
   assert.match(sql, /to_regclass\(format\('%I\.%I', 'public', target_table\)\) IS NULL/);
@@ -29,6 +32,21 @@ test('API v2 public identifier expansion is safe for fresh and populated databas
       new RegExp(`model ${model} \\{[\\s\\S]*?publicId\\s+String\\s+@unique\\s+@default\\(dbgenerated\\(\"gen_random_uuid\\(\\)\"\\)\\)\\s+@db\\.Uuid`),
     );
   }
+
+  for (const expected of [
+    'to_regclass(\'public."ScheduleDemandWindow"\') IS NULL',
+    'ADD COLUMN IF NOT EXISTS "publicId" UUID',
+    'SET "publicId" = gen_random_uuid()',
+    'ALTER COLUMN "publicId" SET DEFAULT gen_random_uuid()',
+    'ALTER COLUMN "publicId" SET NOT NULL',
+    'CREATE UNIQUE INDEX IF NOT EXISTS "ScheduleDemandWindow_publicId_key"',
+  ]) {
+    assert.ok(demandWindowSql.includes(expected), `missing demand-window public identifier fragment: ${expected}`);
+  }
+  assert.match(
+    schema,
+    /model ScheduleDemandWindow \{[\s\S]*?publicId\s+String\s+@unique\s+@default\(dbgenerated\("gen_random_uuid\(\)"\)\)\s+@db\.Uuid/,
+  );
 });
 
 test('shift schedule-window migration blocks writes from either side of the relation', () => {

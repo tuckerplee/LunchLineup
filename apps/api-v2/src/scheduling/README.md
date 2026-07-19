@@ -9,6 +9,7 @@
 - `change-set.service.test.ts`: response-loss replay proof across refreshed board revisions.
 - `change-set.service.ts`: serialized, idempotent, revision-fenced aggregate transaction.
 - `contract-helpers.ts`: ETag, idempotency, canonical hashing, and UTC parsing.
+- `demand-window.service.test.ts`: proof that v2 exposes only opaque UUID demand-window identifiers.
 - `demand-window.service.ts`: native bounded demand reads and atomic revision-fenced replacement.
 - `entitlement.ts`: zero-settlement scheduling entitlement check.
 - `idempotency-replay.test.ts`: response-loss replay proof for demand replacement and schedule reopening.

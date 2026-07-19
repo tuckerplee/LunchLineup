@@ -70,22 +70,6 @@
     }
   },
   "expandContract": {
-    "packages/db/prisma/migrations/20260718_api_v2_schedule_change_sets.sql": {
-      "sha256": "b962eb04a64ccb52b6932ef3db5ae826fafd68e0d01b3200f35623fd8055b602",
-      "phase": "expand",
-      "rollbackSchema": "retain",
-      "contractPhase": "after-rollback-window",
-      "requiresOldReleaseProof": true,
-      "rationale": "API v2 change-set RLS and validation remain during rollback while the old-release ignores the new table; isolated old-release proof is required before production mutation."
-    },
-    "packages/db/prisma/migrations/pre_20260718_api_v2_public_ids.sql": {
-      "sha256": "f752e22dc59fbdd7085100d1935426ad28c2ff7ab91d75132d122fd53cf5658b",
-      "phase": "expand",
-      "rollbackSchema": "retain",
-      "contractPhase": "after-rollback-window",
-      "requiresOldReleaseProof": true,
-      "rationale": "opaque public identifier backfills and old-writer-compatible defaults remain during rollback; isolated old-release proof is required before production mutation."
-    },
     "packages/db/prisma/migrations/20260709_yyyyyy_schedule_solve_credit_refund_provenance_guard.sql": {
       "sha256": "051b3460cfcabe00a4eacf5289d4b8b89703f4f945deaa489b9242e7674f74ff",
       "phase": "expand-contract",
@@ -326,6 +310,14 @@
       "requiresOldReleaseProof": true,
       "rationale": "credit-debt backfill, ledger compatibility triggers, and debt-first settlement functions remain during rollback; isolated old-release proof is required before production mutation."
     },
+    "packages/db/prisma/migrations/20260718_api_v2_schedule_change_sets.sql": {
+      "sha256": "b962eb04a64ccb52b6932ef3db5ae826fafd68e0d01b3200f35623fd8055b602",
+      "phase": "expand",
+      "rollbackSchema": "retain",
+      "contractPhase": "after-rollback-window",
+      "requiresOldReleaseProof": true,
+      "rationale": "API v2 change-set RLS and validation remain during rollback while the old-release ignores the new table; isolated old-release proof is required before production mutation."
+    },
     "packages/db/prisma/migrations/pre_20260715_availability_import_lifecycle.sql": {
       "sha256": "1563895292cca5540c95b88ffa22c99b82923a5f2ea295886f779f550367e70f",
       "phase": "expand",
@@ -381,6 +373,22 @@
       "contractPhase": "after-rollback-window",
       "requiresOldReleaseProof": true,
       "rationale": "nullable identity columns and canonical unique indexes remain during rollback; isolated old-release smoke proof is mandatory before production mutation."
+    },
+    "packages/db/prisma/migrations/pre_20260718_api_v2_demand_window_public_ids.sql": {
+      "sha256": "ac44045d5c8717c9dc87b5619fd557dc1c65e5871ef8ccd32bb8c526b31ea953",
+      "phase": "expand",
+      "rollbackSchema": "retain",
+      "contractPhase": "after-rollback-window",
+      "requiresOldReleaseProof": true,
+      "rationale": "demand-window public identifier backfill and old-writer-compatible default remain during rollback; isolated old-release proof is required before production mutation."
+    },
+    "packages/db/prisma/migrations/pre_20260718_api_v2_public_ids.sql": {
+      "sha256": "f752e22dc59fbdd7085100d1935426ad28c2ff7ab91d75132d122fd53cf5658b",
+      "phase": "expand",
+      "rollbackSchema": "retain",
+      "contractPhase": "after-rollback-window",
+      "requiresOldReleaseProof": true,
+      "rationale": "opaque public identifier backfills and old-writer-compatible defaults remain during rollback; isolated old-release proof is required before production mutation."
     }
   }
 }
