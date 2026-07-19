@@ -16,9 +16,9 @@ Exit criteria:
 
 The shared catalog contains 121 explicit application operations. `GET /auth/me` is now native; 120 operations remain behind a compatibility owner:
 
-| Domain | Operations |
+| Domain | Compatibility operations |
 | --- | ---: |
-| Authentication | 17 |
+| Authentication | 16 |
 | Locations | 6 |
 | People and access | 17 |
 | Operational reads and lunch/break planning | 9 |
