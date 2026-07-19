@@ -757,6 +757,7 @@ test('payroll controls enforce tenant, workflow, evidence, reconciliation, and r
 
       await owner.$executeRawUnsafe('DELETE FROM "Location" WHERE "tenantId" = $1', values.primaryTenantId);
       await owner.$executeRawUnsafe('DELETE FROM "User" WHERE "tenantId" = $1', values.primaryTenantId);
+      await owner.$executeRawUnsafe('DELETE FROM "CreditTransaction" WHERE "tenantId" = $1', values.primaryTenantId);
       await owner.$executeRawUnsafe('DELETE FROM "Tenant" WHERE "id" = $1', values.primaryTenantId);
 
       await asPlatformAdmin(owner, (tx) => tx.$executeRawUnsafe(`

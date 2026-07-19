@@ -11,6 +11,8 @@ const root = resolve(import.meta.dirname, '../..');
 process.env.TS_NODE_PROJECT = resolve(root, 'apps/api/tsconfig.json');
 process.env.JWT_SECRET ||= 'integration-auth-access-secret-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
 process.env.JWT_REFRESH_SECRET ||= 'integration-auth-refresh-secret-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';
+process.env.RESEND_API_KEY ||= 're_test_integration_auth_boundary';
+process.env.STRIPE_SECRET_KEY ||= 'sk_test_integration_auth_boundary';
 const require = createRequire(import.meta.url);
 const requireApi = createRequire(resolve(root, 'apps/api/package.json'));
 require('ts-node/register/transpile-only');
@@ -1056,7 +1058,7 @@ test('admin PIN reset locks live RBAC state and rolls back username bootstrap on
     assert.equal(outcome.status, 'rejected');
     assert.match(
       String(outcome.error?.message ?? outcome.error),
-      /permission is no longer active|equal or greater access|Authorization changed during PIN reset/,
+      /Administrator session is no longer active|permission is no longer active|equal or greater access|Authorization changed during PIN reset/,
     );
     const after = await targetCredentialState(resetTargetId);
     if (expectRoleMutationSessionRevocation) {

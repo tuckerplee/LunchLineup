@@ -13,6 +13,8 @@ process.env.NODE_ENV = 'test';
 process.env.COOKIE_SECURE = 'false';
 process.env.JWT_SECRET ||= 'payroll-full-stack-access-secret';
 process.env.JWT_REFRESH_SECRET ||= 'payroll-full-stack-refresh-secret';
+process.env.RESEND_API_KEY ||= 're_test_payroll_full_stack';
+process.env.STRIPE_SECRET_KEY ||= 'sk_test_payroll_full_stack';
 
 const require = createRequire(import.meta.url);
 require('reflect-metadata');
