@@ -4,9 +4,8 @@ import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'rea
 import { useSearchParams } from 'next/navigation';
 import { ArrowLeft, Printer, RefreshCw } from 'lucide-react';
 import { Button } from '@/components/ui/button';
-import { fetchJsonWithSession } from '@/lib/client-api';
+import { apiV2 } from '@/lib/api-v2';
 import { createLatestRequestGate } from '@/lib/latest-request';
-import { fetchAllBoundedPages, type BoundedPage } from '@/lib/bounded-pagination';
 import { formatTimeInTimeZone, localDateRange, safeTimeZone } from '@/lib/location-timezone';
 import {
   createPrintScheduleScope,
@@ -16,7 +15,6 @@ import {
 
 type StaffRole = 'SUPER_ADMIN' | 'ADMIN' | 'MANAGER' | 'STAFF';
 type BreakItem = { startTime: string; endTime: string; paid: boolean };
-type LocationItem = { id: string; name: string; timezone: string };
 type ShiftRecord = {
   id: string;
   userId: string | null;
@@ -111,22 +109,22 @@ function PrintScheduleView() {
     setLoadedScope(null);
     setShifts([]);
     try {
-      const location = requestedLocationId
-        ? await fetchJsonWithSession<LocationItem>('/locations/' + encodeURIComponent(requestedLocationId))
-        : (await fetchJsonWithSession<{ data: LocationItem[] }>('/locations?limit=1')).data?.[0];
+      const board = await apiV2.getScheduleBoard({
+        date: dateValue,
+        view: 'day',
+        ...(/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(requestedLocationId)
+          ? { locationId: requestedLocationId }
+          : {}),
+      });
+      const location = board.data.locations.find((item) => item.id === board.data.selectedLocationId)
+        ?? board.data.locations[0];
       const nextTimeZone = safeTimeZone(location?.timezone);
       const range = localDateRange(dateValue, 1, nextTimeZone);
-      const params = new URLSearchParams({
-        startDate: range.start,
-        endDate: range.end,
-        limit: '200',
-      });
-      if (location?.id) params.set('locationId', location.id);
       if (!scheduleRequestGate.current.isLatest(ticket)) return;
-      const rows = await fetchAllBoundedPages(
-        `/shifts?${params.toString()}`,
-        (path) => fetchJsonWithSession<BoundedPage<ShiftRecord>>(path),
-      );
+      const rows = board.data.shifts.filter((shift) => (
+        new Date(shift.startTime) < new Date(range.end)
+        && new Date(shift.endTime) > new Date(range.start)
+      ));
       if (!scheduleRequestGate.current.isLatest(ticket)) return;
       setTimeZone(nextTimeZone);
       setShifts(rows);

@@ -712,7 +712,7 @@ import sys
 from urllib.parse import urlsplit
 
 manifest_path, source_sha, production_api_health_url, runtime_env_path, app_dir = sys.argv[1:6]
-required_services = ["api", "web", "engine", "worker", "migrate", "control", "backup"]
+required_services = ["api", "api-v2", "web", "engine", "worker", "migrate", "control", "backup"]
 
 with open(manifest_path, "r", encoding="utf-8") as handle:
     manifest = json.load(handle)

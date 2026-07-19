@@ -61,6 +61,7 @@ function samplePublicBuildConfig() {
 function sampleReleaseManifest() {
   const services = {
     api: 'Dockerfile.api',
+    'api-v2': 'Dockerfile.api-v2',
     web: 'Dockerfile.web',
     engine: 'Dockerfile.engine',
     worker: 'Dockerfile.worker',

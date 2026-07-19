@@ -1534,6 +1534,9 @@ describe("tenant export model coverage contract", () => {
     const solveJob = TENANT_EXPORT_COLLECTIONS.find(
       (collection) => collection.model === "ScheduleSolveJob",
     )!;
+    const changeSet = TENANT_EXPORT_COLLECTIONS.find(
+      (collection) => collection.model === "ScheduleChangeSet",
+    )!;
 
     expect(user.select).toMatchObject({
       oidcIssuer: true,
@@ -1546,6 +1549,18 @@ describe("tenant export model coverage contract", () => {
       revision: true,
       deletedAt: true,
     });
+    expect(changeSet.select).toEqual({
+      id: true,
+      scheduleId: true,
+      actorUserId: true,
+      baseRevision: true,
+      resultRevision: true,
+      createdAt: true,
+    });
+    expect(changeSet.select).not.toHaveProperty("idempotencyKeyHash");
+    expect(changeSet.select).not.toHaveProperty("requestHash");
+    expect(changeSet.select).not.toHaveProperty("request");
+    expect(changeSet.select).not.toHaveProperty("response");
     expect(solveJob.select).toMatchObject({
       requestedConstraints: true,
       staffSnapshot: true,

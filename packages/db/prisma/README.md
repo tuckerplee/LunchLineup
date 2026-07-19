@@ -11,6 +11,8 @@
 
 The legacy user import targets this schema through `scripts/import-legacy-users.mjs`. Fresh tenant creation atomically stores exact source-digest zero-wallet/no-ledger provenance in `PlatformConfig`; repeatable legacy-credit cleanup records matching per-tenant reconciliation evidence for older 1,000-credit imports instead of using a global pass marker. Keep schema, migrations, and import assumptions synchronized before running imports against dev, staging, or production.
 
+API v2 exposes `publicId` UUIDs for users, locations, schedules, shifts, and solve jobs; internal primary keys remain storage-only. Database defaults keep older v1 writers compatible during the migration window. `ScheduleChangeSet` is the tenant-RLS, idempotent ledger for one atomic scheduling aggregate mutation and one schedule revision increment.
+
 `Tenant.stripeSubscriptionCurrentPeriodEnd` is the authoritative Stripe-paid-through instant. Effective paid entitlement requires `ACTIVE`, a nonblank `stripeSubscriptionId`, and this field strictly in the future; `gracePeriodEndsAt` and wallet credits never substitute for it. Only Stripe synchronization owns population and clearing. `CreditTransaction.balanceAfter` is the immutable result returned by exact replay; pre-migration rows remain nullable and must fail closed when a caller attempts deterministic replay.
 
 OIDC accounts bind the configured issuer and provider subject as an all-or-null pair on `User`. The pair is globally unique, while email remains tenant-scoped; callback logic requires provider-verified email and rejects any binding mismatch.

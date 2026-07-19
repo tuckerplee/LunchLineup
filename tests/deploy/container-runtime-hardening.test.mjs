@@ -12,6 +12,7 @@ const capabilityLockedServices = [
   'proxy',
   'web',
   'api',
+  'api-v2',
   'webhook-replay',
   'migrate',
   'engine',
@@ -173,7 +174,7 @@ test('availability PDF parsing runs in a secret-free no-network container bounda
 });
 
 test('release application images declare non-root runtime users', () => {
-  for (const name of ['api', 'control', 'engine', 'migrations', 'web', 'worker']) {
+  for (const name of ['api', 'api-v2', 'control', 'engine', 'migrations', 'web', 'worker']) {
     const dockerfile = read(`infrastructure/docker/Dockerfile.${name}`);
     const users = [...dockerfile.matchAll(/^USER\s+([^\s#]+).*$/gm)].map((match) => match[1]);
     assert.ok(users.length > 0, `Dockerfile.${name} must declare a runtime USER`);

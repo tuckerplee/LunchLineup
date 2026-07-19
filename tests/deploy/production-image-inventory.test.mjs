@@ -8,7 +8,7 @@ import { deriveProductionImageInventory } from '../../scripts/production-image-i
 
 const root = resolve(import.meta.dirname, '../..');
 const sourceSha = '0123456789abcdef0123456789abcdef01234567';
-const releaseServices = ['api', 'web', 'engine', 'worker', 'migrate', 'control', 'backup'];
+const releaseServices = ['api', 'api-v2', 'web', 'engine', 'worker', 'migrate', 'control', 'backup'];
 
 function releaseManifest() {
   return {
@@ -43,7 +43,7 @@ test('production image inventory covers every Compose image without a second har
     const ci = readFileSync(join(root, '.github/workflows/ci.yml'), 'utf8');
     assert.match(ci, /production-image-inventory\.mjs --manifest \.release\/release-manifest\.json --github-matrix-output/);
     assert.equal((ci.match(/fromJSON\(needs\.production-image-inventory\.outputs\.matrix\)/g) ?? []).length, 2);
-    assert.doesNotMatch(ci, /service: \[api, web, engine, worker, migrate, control, backup\]/);
+    assert.doesNotMatch(ci, /service: \[api, api-v2, web, engine, worker, migrate, control, backup\]/);
   } finally {
     rmSync(scratch, { recursive: true, force: true });
   }

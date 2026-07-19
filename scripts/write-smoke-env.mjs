@@ -125,6 +125,7 @@ const env = {
   COOKIE_SECURE: 'true',
   NEXT_PUBLIC_API_URL: '/api/v1',
   INTERNAL_API_URL: 'http://api:3000/v1',
+  INTERNAL_API_V2_URL: 'http://api-v2:3002/v2',
   LUNCHLINEUP_STATUS_HEALTH_URL: 'http://api:3000/health',
   NEXT_PUBLIC_OIDC_ENABLED: 'false',
   OIDC_ENABLED: 'false',

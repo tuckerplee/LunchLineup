@@ -62,6 +62,7 @@
 - `20260716_zzzzzz_billing_exact_once.sql`: adds authoritative Stripe paid-through state, subscription-binding and paid-entitlement indexing, legacy-readable immutable `CreditTransaction.balanceAfter`, nonnegative settlement validation, and a database trigger preventing settlement-result rewrites while keeping the additive result column nullable for retained old-writer compatibility.
 - `20260716_zzzzzzz_credit_balance_rollout_compatibility.sql`: removes the premature required-balance constraint in environments that applied an earlier prelaunch candidate, preserving the two-release old-writer compatibility window before later database enforcement.
 - `20260717_credit_refund_debt.sql`: adds nonnegative tenant credit debt, immutable ledger debt deltas/results, exact zero backfill, an old-writer insert trigger that fails closed while debt exists, and the invoker-rights `settle_positive_credit_value` function used by API and worker refunds to repay debt before restoring spendable wallet value.
+- `20260718_api_v2_schedule_change_sets.sql`: forces tenant RLS and validates monotonic revisions and request hashes on the API v2 schedule change-set ledger created by the canonical Prisma schema.
 - `20260714_availability_import_enums.sql`: creates availability import status enums before later ledger transactions consume them in table defaults.
 - `20260714_availability_import_jobs.sql`: creates tenant-RLS, idempotent, credit-audited availability PDF import jobs with bounded file metadata, worker execution leases, private terminal failures, and expiry indexes.
 - `20260712_core_rls_audit_forward_reconciliation.sql`: replaces superseded legacy bootstrap execution with Prisma-named, platform-capability-aware direct-tenant RLS and append-only audit enforcement.
@@ -98,6 +99,7 @@
 - `pre_20260717_legacy_shift_overlap_unassign.sql`: preserves exact legacy unscheduled eight-hour STAFF shifts and their breaks while clearing only ambiguous assignments in overlap components, refusing referenced time cards or any unsupported shape.
 - `pre_20260717_prisma_composite_parent_keys.sql`: stages and catalog-verifies Prisma-owned composite identities used by tenant-consistency and one-to-one foreign keys before schema synchronization.
 - `pre_20260717_prisma_nullable_unique_indexes.sql`: safely stages nullable first-location, session-selector, and tenant-scoped OIDC identity columns plus Prisma's exact unique indexes before schema push, rejecting conflicting populated rows instead of bypassing data-loss warnings.
+- `pre_20260718_api_v2_public_ids.sql`: adds and backfills globally unique UUID public identifiers for users, locations, schedules, shifts, and solve jobs, retaining database defaults so the deployed v1 writer remains schema-compatible.
 - `pre_20260709_schedule_solve_request_idempotency.sql`: adds nullable request hashes, backfills existing solve jobs, and makes the columns required before Prisma schema push enforces the final model.
 - `rls_relation_hardening.sql`: forces RLS for tenant-owned tables and adds relationship-based RLS for sessions, role joins, and breaks.
 

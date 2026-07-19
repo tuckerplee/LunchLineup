@@ -13,68 +13,69 @@ datasource db {
 // ─── Multi-Tenant Core ───
 
 model Tenant {
-  id                         String       @id @default(uuid())
-  name                       String
-  slug                       String       @unique
-  planTier                   PlanTier     @default(FREE)
+  id                                 String       @id @default(uuid())
+  name                               String
+  slug                               String       @unique
+  planTier                           PlanTier     @default(FREE)
   // Non-null Stripe identifier uniqueness is enforced by a partial SQL migration.
-  stripeCustomerId           String?
-  stripeSubscriptionId       String?
+  stripeCustomerId                   String?
+  stripeSubscriptionId               String?
   stripeSubscriptionCurrentPeriodEnd DateTime?
-  status                     TenantStatus @default(TRIAL)
-  trialEndsAt                DateTime?
-  gracePeriodEndsAt          DateTime?
-  usageCredits               Int          @default(0) // Separately purchased or administratively granted credits
-  creditDebt                 Int          @default(0) // Refunded or disputed purchased credits already consumed
-  createdAt                  DateTime     @default(now())
-  updatedAt                  DateTime     @updatedAt
-  deletedAt                  DateTime?
-  applicationDataPurgedAt    DateTime?
-  retentionLegalHoldAt       DateTime?
-  retentionLegalHoldReason   String?
-  retentionLegalHoldByUserId String?
+  status                             TenantStatus @default(TRIAL)
+  trialEndsAt                        DateTime?
+  gracePeriodEndsAt                  DateTime?
+  usageCredits                       Int          @default(0) // Separately purchased or administratively granted credits
+  creditDebt                         Int          @default(0) // Refunded or disputed purchased credits already consumed
+  createdAt                          DateTime     @default(now())
+  updatedAt                          DateTime     @updatedAt
+  deletedAt                          DateTime?
+  applicationDataPurgedAt            DateTime?
+  retentionLegalHoldAt               DateTime?
+  retentionLegalHoldReason           String?
+  retentionLegalHoldByUserId         String?
 
-  users                        User[]
-  locations                    Location[]
-  shifts                       Shift[]
-  schedules                    Schedule[]
-  scheduleSolveJobs            ScheduleSolveJob[]
-  lunchBreakGenerationRequests LunchBreakGenerationRequest[]
-  staffAvailabilities          StaffAvailability[]
-  staffSkills                  StaffSkill[]
-  scheduleDemandWindows        ScheduleDemandWindow[]
-  timeCards                    TimeCard[]
-  timeCardBreaks               TimeCardBreak[]
-  payrollPolicyVersions        PayrollPolicyVersion[]
-  payrollPeriods               PayrollPeriod[]
-  payrollTimeCardApprovals     PayrollTimeCardApproval[]
-  payrollLockedEntries         PayrollLockedEntry[]
-  payrollAmendments            PayrollAmendment[]
-  payrollAmendmentDecisions    PayrollAmendmentDecision[]
-  payrollOperations            PayrollOperation[]
-  payrollExportBatches         PayrollExportBatch[]
-  payrollExportLines           PayrollExportLine[]
+  users                         User[]
+  locations                     Location[]
+  shifts                        Shift[]
+  schedules                     Schedule[]
+  scheduleSolveJobs             ScheduleSolveJob[]
+  lunchBreakGenerationRequests  LunchBreakGenerationRequest[]
+  staffAvailabilities           StaffAvailability[]
+  staffSkills                   StaffSkill[]
+  scheduleDemandWindows         ScheduleDemandWindow[]
+  scheduleChangeSets            ScheduleChangeSet[]
+  timeCards                     TimeCard[]
+  timeCardBreaks                TimeCardBreak[]
+  payrollPolicyVersions         PayrollPolicyVersion[]
+  payrollPeriods                PayrollPeriod[]
+  payrollTimeCardApprovals      PayrollTimeCardApproval[]
+  payrollLockedEntries          PayrollLockedEntry[]
+  payrollAmendments             PayrollAmendment[]
+  payrollAmendmentDecisions     PayrollAmendmentDecision[]
+  payrollOperations             PayrollOperation[]
+  payrollExportBatches          PayrollExportBatch[]
+  payrollExportLines            PayrollExportLine[]
   payrollReconciliationReceipts PayrollReconciliationReceipt[]
-  payrollReconciliationEvents  PayrollReconciliationLineEvent[]
-  payrollReconciliationStates  PayrollReconciliationLineState[]
-  auditLogs                    AuditLog[]
-  tenantSettings               TenantSetting[]
-  roles                        Role[]
-  roleAssignments              RoleAssignment[]
-  passwordResetTokens          PasswordResetToken[]
-  passwordResetEmailOutbox     PasswordResetEmailOutbox[]
-  billingEvents                BillingEvent[]
-  stripeUsageEvents            StripeUsageEvent[]
-  notifications                Notification[]
-  webhookEndpoints             WebhookEndpoint[]
-  webhookDeliveries            WebhookDelivery[]
-  creditTransactions           CreditTransaction[]
-  exportJobs                   TenantExportJob[]
-  mfaTotpClaims                MfaTotpClaim[]
-  onboardingSignupAttempts     OnboardingSignupAttempt[]
-  notificationOutbox           NotificationOutbox[]
-  availabilityImportJobs       AvailabilityImportJob[]
-  staffInvitationOutbox        StaffInvitationOutbox[]
+  payrollReconciliationEvents   PayrollReconciliationLineEvent[]
+  payrollReconciliationStates   PayrollReconciliationLineState[]
+  auditLogs                     AuditLog[]
+  tenantSettings                TenantSetting[]
+  roles                         Role[]
+  roleAssignments               RoleAssignment[]
+  passwordResetTokens           PasswordResetToken[]
+  passwordResetEmailOutbox      PasswordResetEmailOutbox[]
+  billingEvents                 BillingEvent[]
+  stripeUsageEvents             StripeUsageEvent[]
+  notifications                 Notification[]
+  webhookEndpoints              WebhookEndpoint[]
+  webhookDeliveries             WebhookDelivery[]
+  creditTransactions            CreditTransaction[]
+  exportJobs                    TenantExportJob[]
+  mfaTotpClaims                 MfaTotpClaim[]
+  onboardingSignupAttempts      OnboardingSignupAttempt[]
+  notificationOutbox            NotificationOutbox[]
+  availabilityImportJobs        AvailabilityImportJob[]
+  staffInvitationOutbox         StaffInvitationOutbox[]
   deletionBillingReconciliation TenantDeletionBillingReconciliation?
 
   @@index([slug])
@@ -136,12 +137,12 @@ enum TenantDeletionBillingReconciliationState {
 }
 
 model TenantDeletionBillingReconciliation {
-  tenantId         String                                    @id
-  operationId      String                                    @unique
+  tenantId         String                                   @id
+  operationId      String                                   @unique
   barrierCreatedAt DateTime
   state            TenantDeletionBillingReconciliationState @default(PENDING)
-  attemptCount     Int                                       @default(0)
-  nextAttemptAt    DateTime                                  @default(now())
+  attemptCount     Int                                      @default(0)
+  nextAttemptAt    DateTime                                 @default(now())
   lastAttemptAt    DateTime?
   lastFailureAt    DateTime?
   lastErrorCode    String?
@@ -149,8 +150,8 @@ model TenantDeletionBillingReconciliation {
   leaseToken       String?
   leaseExpiresAt   DateTime?
   finalizedAt      DateTime?
-  createdAt        DateTime                                  @default(now())
-  updatedAt        DateTime                                  @updatedAt
+  createdAt        DateTime                                 @default(now())
+  updatedAt        DateTime                                 @updatedAt
 
   tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
 
@@ -162,6 +163,7 @@ model TenantDeletionBillingReconciliation {
 
 model User {
   id                             String    @id @default(uuid())
+  publicId                       String    @unique @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   tenantId                       String
   email                          String?
   username                       String?
@@ -531,6 +533,7 @@ model PasswordResetEmailOutbox {
 
 model Location {
   id                     String    @id @default(uuid())
+  publicId               String    @unique @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   tenantId               String
   name                   String
   address                String?
@@ -558,6 +561,7 @@ model Location {
 
 model Schedule {
   id          String         @id @default(uuid())
+  publicId    String         @unique @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   tenantId    String
   locationId  String
   startDate   DateTime
@@ -574,6 +578,7 @@ model Schedule {
   shifts        Shift[]
   solveJobs     ScheduleSolveJob[]
   demandWindows ScheduleDemandWindow[]
+  changeSets    ScheduleChangeSet[]
 
   @@unique([id, tenantId])
   @@unique([id, tenantId, locationId])
@@ -587,6 +592,7 @@ model Schedule {
 
 model ScheduleSolveJob {
   id                   String    @id
+  publicId             String    @unique @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   tenantId             String
   scheduleId           String
   locationId           String
@@ -792,6 +798,7 @@ enum ScheduleStatus {
 
 model Shift {
   id         String    @id @default(uuid())
+  publicId   String    @unique @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   tenantId   String
   locationId String
   scheduleId String?
@@ -822,6 +829,27 @@ model Shift {
   @@index([tenantId, locationId, deletedAt, startTime])
   @@index([tenantId, scheduleId, deletedAt, startTime])
   @@index([tenantId, userId, deletedAt, startTime])
+}
+
+model ScheduleChangeSet {
+  id                 String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId           String
+  scheduleId         String
+  actorUserId        String
+  idempotencyKeyHash String
+  requestHash        String
+  baseRevision       Int
+  resultRevision     Int
+  request            Json
+  response           Json
+  createdAt          DateTime @default(now())
+
+  tenant   Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  schedule Schedule @relation(fields: [scheduleId, tenantId], references: [id, tenantId], onDelete: Restrict)
+
+  @@unique([tenantId, idempotencyKeyHash])
+  @@index([tenantId, scheduleId, createdAt(sort: Desc)])
+  @@index([tenantId, actorUserId, createdAt(sort: Desc)])
 }
 
 model Break {
@@ -867,12 +895,12 @@ model TimeCard {
   updatedAt          DateTime       @updatedAt
   deletedAt          DateTime?
 
-  tenant   Tenant          @relation(fields: [tenantId], references: [id])
-  user     User            @relation(fields: [userId, tenantId], references: [id, tenantId])
-  location Location?       @relation(fields: [locationId, tenantId], references: [id, tenantId], onDelete: Restrict)
-  shift    Shift?          @relation(fields: [shiftId, tenantId], references: [id, tenantId], onDelete: Restrict)
-  payrollPeriod PayrollPeriod? @relation(fields: [payrollPeriodId, tenantId], references: [id, tenantId], onDelete: Restrict, map: "TimeCard_payroll_period_tenant_fkey")
-  breaks   TimeCardBreak[]
+  tenant           Tenant                    @relation(fields: [tenantId], references: [id])
+  user             User                      @relation(fields: [userId, tenantId], references: [id, tenantId])
+  location         Location?                 @relation(fields: [locationId, tenantId], references: [id, tenantId], onDelete: Restrict)
+  shift            Shift?                    @relation(fields: [shiftId, tenantId], references: [id, tenantId], onDelete: Restrict)
+  payrollPeriod    PayrollPeriod?            @relation(fields: [payrollPeriodId, tenantId], references: [id, tenantId], onDelete: Restrict, map: "TimeCard_payroll_period_tenant_fkey")
+  breaks           TimeCardBreak[]
   payrollApprovals PayrollTimeCardApproval[]
 
   @@unique([id, tenantId])

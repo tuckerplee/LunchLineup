@@ -1,0 +1,29 @@
+{
+  "name": "@lunchlineup/api-v2",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/main.js",
+    "start:dev": "tsx watch src/main.ts",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint \"src/**/*.ts\"",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@fastify/cookie": "^11.1.2",
+    "@fastify/swagger": "^9.8.1",
+    "@fastify/type-provider-typebox": "^6.1.0",
+    "@lunchlineup/api-contract": "*",
+    "@lunchlineup/db": "*",
+    "@prisma/client": "^5.22.0",
+    "@sinclair/typebox": "^0.34.52",
+    "fastify": "^5.10.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.12.12",
+    "tsx": "^4.20.6",
+    "typescript": "^5.4.5",
+    "vitest": "^4.1.8"
+  }
+}

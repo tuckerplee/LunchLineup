@@ -4,7 +4,7 @@ import { isIP } from 'node:net';
 import { basename, isAbsolute, join, resolve } from 'node:path';
 import { buildDeploymentContract } from './write-deployment-contract.mjs';
 
-const requiredServices = ['api', 'web', 'engine', 'worker', 'migrate', 'control', 'backup'];
+const requiredServices = ['api', 'api-v2', 'web', 'engine', 'worker', 'migrate', 'control', 'backup'];
 const publicBuildConfigKeys = [
   'NEXT_PUBLIC_API_URL',
   'NEXT_PUBLIC_OIDC_ENABLED',
@@ -19,7 +19,7 @@ const publicBuildConfigKeys = [
 ];
 const digestSuffixPattern = /@sha256:[a-f0-9]{64}$/i;
 const appComposeImagePattern =
-  /^\$\{IMAGE_PREFIX:-lunchlineup\}\/(?:api|web|engine|worker|migrate|control|backup):\$\{IMAGE_TAG:-local\}$/;
+  /^\$\{IMAGE_PREFIX:-lunchlineup\}\/(?:api|api-v2|web|engine|worker|migrate|control|backup):\$\{IMAGE_TAG:-local\}$/;
 const requiredLaunchProofEntries = ['runtimeEnv', 'dast', 'load', 'drDrill', 'pitrDrill', 'alertRoute'];
 const placeholderProofPattern = /(change_me|replace_me|example|placeholder|todo|skipped|not_applicable|n\/a|dummy|fake)/i;
 const forbiddenCommandPatterns = [
@@ -896,7 +896,7 @@ function verifyProductionDeployDeadlineOwner(workflowFile) {
     fail(`${workflowFile} normal production deploy must not trust mutable command text or a runner-temporary deploy helper.`);
   }
   const requiredPatterns = [
-    [/timeout-minutes:\s*180\b/, 'reserve one bounded outer window for deploy, smoke, publication, and automatic rollback'],
+    [/timeout-minutes:\s*200\b/, 'reserve one bounded outer window plus the 20-minute hard-kill recovery margin'],
     [/environment:\s*production\b/, 'use one protected production environment approval for the complete release transaction'],
     [/PRODUCTION_RELEASE_TRANSACTION_TIMEOUT_SECONDS:\s*'10800'/, 'declare the exact release transaction deadline in seconds'],
     [/PRODUCTION_DEPLOY_PHASE_TIMEOUT_SECONDS:\s*'5400'/, 'declare the exact deploy phase deadline in seconds'],

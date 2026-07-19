@@ -143,7 +143,7 @@ test('production rollback is durably armed in a completed step before remote mut
   assert.ok(preflightIndex !== -1 && preflightIndex < mutationIndex);
   assert.ok(verifyInputsIndex !== -1 && verifyInputsIndex < armStepIndex);
   assert.ok(armStepIndex < deployStepStart, 'arming must complete before the remote deploy command starts');
-  assert.match(ci, /id: arm_production_rollback[\s\S]*echo "armed=true" >> "\$GITHUB_OUTPUT"/);
+  assert.match(ci, /id: arm_production_rollback[\s\S]*echo "armed=true"[\s\S]*\} >> "\$GITHUB_OUTPUT"/);
   assert.match(ci, /production_rollback_armed: \$\{\{ steps\.arm_production_rollback\.outputs\.armed \}\}/);
   assert.match(ci, /if: always\(\) && steps\.arm_production_rollback\.outcome == 'success'/);
   assert.match(ci, /steps\.same_gate_release_outcome\.outcome != 'success' \|\| steps\.same_gate_release_outcome\.outputs\.rollback_required == 'true'/);
@@ -834,7 +834,7 @@ test('release pointers advance only after retained proof and use staged atomic w
 test('fresh-runner DAST and load jobs pull every started third-party image before pull-never startup', () => {
   const ci = read('.github/workflows/ci.yml');
   const requiredPull = 'docker compose --env-file .env.smoke pull proxy pgbouncer postgres redis rabbitmq';
-  const startup = 'docker compose --env-file .env.smoke up -d --no-build --pull never migrate proxy web api engine worker pgbouncer postgres redis rabbitmq';
+  const startup = 'docker compose --env-file .env.smoke up -d --no-build --pull never migrate proxy web api api-v2 engine worker pgbouncer postgres redis rabbitmq';
 
   for (const [job, nextJob] of [['dast', 'e2e-tests'], ['load-test', 'validate-release-gates']]) {
     const block = ci.slice(ci.indexOf(`  ${job}:`), ci.indexOf(`  ${nextJob}:`));

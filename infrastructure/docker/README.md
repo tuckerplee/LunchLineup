@@ -4,6 +4,7 @@
 
 - `README.md`: this Docker folder guide.
 - `Dockerfile.api`: NestJS API build and runtime image.
+- `Dockerfile.api-v2`: contract-first Fastify tenant API image with generated contract and Prisma runtime artifacts.
 - `Dockerfile.backup`: required release image for encrypted Postgres backups, request-scoped WAL/lifecycle/PITR provider jobs, S3/rclone offsite copy, and textfile metrics.
 - `Dockerfile.control`: out-of-band control plane image.
 - `Dockerfile.engine`: Python scheduling engine image.
@@ -17,7 +18,7 @@
 
 ## Runtime Users
 
-`Dockerfile.api`, `Dockerfile.web`, `Dockerfile.worker`, `Dockerfile.engine`, `Dockerfile.control`, and `Dockerfile.migrations` run their final process as a non-root image user. The API image pre-creates the tenant-export volume path for the Node user; Python images use fixed UID/GID `10001` and disable bytecode writes. The worker image also pre-creates the UID-10001 parser IPC directory; Compose reuses that image for the `pdf-parser` service with no network, no secrets, a read-only root, bounded tmpfs, and a private Unix-socket volume.
+`Dockerfile.api`, `Dockerfile.api-v2`, `Dockerfile.web`, `Dockerfile.worker`, `Dockerfile.engine`, `Dockerfile.control`, and `Dockerfile.migrations` run their final process as a non-root image user. The API image pre-creates the tenant-export volume path for the Node user; Python images use fixed UID/GID `10001` and disable bytecode writes. The worker image also pre-creates the UID-10001 parser IPC directory; Compose reuses that image for the `pdf-parser` service with no network, no secrets, a read-only root, bounded tmpfs, and a private Unix-socket volume.
 
 `Dockerfile.backup` remains root because the existing host-mounted node-exporter textfile directory is provisioned root-owned. Compose still applies a read-only root filesystem, `no-new-privileges`, drops all capabilities, and exposes only `/backups`, `/metrics`, and bounded `/tmp` as writable paths. Moving backup to non-root requires a coordinated host-directory ownership migration and restore/telemetry proof.
 

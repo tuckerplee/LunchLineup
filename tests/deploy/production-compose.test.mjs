@@ -252,6 +252,7 @@ function publicBuildRuntimeEnv(overrides = {}) {
 function sampleReleaseManifest(sourceSha = '0123456789abcdef0123456789abcdef01234567') {
   const services = {
     api: 'Dockerfile.api',
+    'api-v2': 'Dockerfile.api-v2',
     web: 'Dockerfile.web',
     engine: 'Dockerfile.engine',
     worker: 'Dockerfile.worker',
@@ -391,7 +392,7 @@ test('RabbitMQ persists broker state on a declared project-scoped named volume',
 test('Compose build services are tagged for release-image smoke checks', () => {
   const compose = read('docker-compose.yml');
 
-  for (const service of ['api', 'web', 'engine', 'worker', 'migrate', 'control', 'backup']) {
+  for (const service of ['api', 'api-v2', 'web', 'engine', 'worker', 'migrate', 'control', 'backup']) {
     assert.match(
       serviceBlock(compose, service),
       new RegExp(`image: "\\$\\{IMAGE_PREFIX:-lunchlineup\\}/${service}:\\$\\{IMAGE_TAG:-local\\}"`),
@@ -445,9 +446,35 @@ test('web image bakes explicit public config at build time', () => {
   }
 });
 
+test('web image bakes and runs with explicit internal API proxy targets', () => {
+  const dockerfile = read('infrastructure/docker/Dockerfile.web');
+  const compose = read('docker-compose.yml');
+  const webBlock = serviceBlock(compose, 'web');
+
+  for (const [key, defaultValue] of [
+    ['INTERNAL_API_URL', 'http://api:3000/v1'],
+    ['INTERNAL_API_V2_URL', 'http://api-v2:3002/v2'],
+  ]) {
+    assert.ok(
+      dockerfile.includes(`ARG ${key}=${defaultValue}`),
+      `Dockerfile.web must declare ${key} with the Compose service target`,
+    );
+    assert.ok(dockerfile.includes(`${key}=$${key}`), `Dockerfile.web must export ${key}`);
+    assert.ok(
+      webBlock.includes(`${key}: \${${key}:-${defaultValue}}`),
+      `Compose web build args must pass ${key}`,
+    );
+    assert.ok(
+      webBlock.includes(`- ${key}=\${${key}:-${defaultValue}}`),
+      `Compose web runtime env must pass ${key}`,
+    );
+  }
+});
+
 test('Dockerfile base images are digest-pinned', () => {
   for (const dockerfile of [
     'Dockerfile.api',
+    'Dockerfile.api-v2',
     'Dockerfile.backup',
     'Dockerfile.control',
     'Dockerfile.engine',
@@ -775,7 +802,7 @@ test('only the migration container imports the shared service env file', () => {
   const smokeWriter = read('scripts/write-smoke-env.mjs');
 
   assert.match(serviceBlock(compose, 'migrate'), /env_file: \$\{COMPOSE_SERVICE_ENV_FILE:-\.env\}/);
-  for (const service of ['api', 'webhook-replay', 'worker', 'backup']) {
+  for (const service of ['api', 'api-v2', 'webhook-replay', 'worker', 'backup']) {
     const block = serviceBlock(compose, service);
     assert.doesNotMatch(block, /env_file:/);
     assert.doesNotMatch(block, /MIGRATION_DATABASE_URL/);
@@ -846,11 +873,13 @@ test('proxy config is TLS-ready, route-specific, size-limited, and sets browser 
   assert.match(compose, /CADDY_SITE_ADDRESSES/);
   assert.doesNotMatch(compose, /NEXT_PUBLIC_WS_URL|CADDY_WEBSOCKET_SOURCE/);
   assert.match(serviceBlock(compose, 'api'), /http:\/\/127\.0\.0\.1:3000\/live/);
-  assert.match(serviceBlock(compose, 'proxy'), /DEPLOY_RELEASE_SHA: "\$\{IMAGE_TAG:-local\}"/);
+  assert.match(serviceBlock(compose, 'api-v2'), /http:\/\/127\.0\.0\.1:3002\/v2\/live/);
+  assert.match(serviceBlock(compose, 'proxy'), /DEPLOY_RELEASE_SHA: "\$\{DEPLOY_RELEASE_SHA:-local\}"/);
   assert.match(caddy, /\{\$CADDY_SITE_ADDRESSES:/);
   assert.match(caddy, /X-LunchLineup-Release "\{\$DEPLOY_RELEASE_SHA:local\}"/);
   assert.match(caddy, /handle \/health \{[\s\S]*reverse_proxy api:3000[\s\S]*\}/);
   assert.match(caddy, /handle \/api\/health \{[\s\S]*uri strip_prefix \/api[\s\S]*reverse_proxy api:3000[\s\S]*\}/);
+  assert.match(caddy, /handle \/api\/v2\/\* \{[\s\S]*uri strip_prefix \/api[\s\S]*reverse_proxy api-v2:3002[\s\S]*\}/);
   assert.match(caddy, /handle \/api\/v1\/\* \{[\s\S]*uri strip_prefix \/api[\s\S]*reverse_proxy api:3000[\s\S]*\}/);
   assert.match(caddy, /@betaWeb \{[\s\S]*host beta\.lunchlineup\.com[\s\S]*not path \/api\/\* \/health[\s\S]*\}/);
   assert.match(caddy, /header @betaWeb Cache-Control "private, no-store, no-transform"/);
@@ -1737,6 +1766,7 @@ test('smoke environment generator writes the requested env and metrics token fil
       'COOKIE_SECURE',
       'NEXT_PUBLIC_API_URL',
       'INTERNAL_API_URL',
+      'INTERNAL_API_V2_URL',
       'NEXT_PUBLIC_OIDC_ENABLED',
       'PUBLIC_SIGNUP_MODE',
       'NEXT_PUBLIC_SIGNUP_MODE',

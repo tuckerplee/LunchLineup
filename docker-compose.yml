@@ -49,7 +49,7 @@ services:
     environment:
       CADDY_SITE_ADDRESSES: "${CADDY_SITE_ADDRESSES:-http://localhost:80, http://127.0.0.1:80, http://proxy:80}"
       ADMIN_EMAIL: "${ADMIN_EMAIL:-admin@example.com}"
-      DEPLOY_RELEASE_SHA: "${IMAGE_TAG:-local}"
+      DEPLOY_RELEASE_SHA: "${DEPLOY_RELEASE_SHA:-local}"
     volumes:
       - ./infrastructure/caddy/Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy_data:/data
@@ -79,6 +79,8 @@ services:
       dockerfile: infrastructure/docker/Dockerfile.web
       args:
         NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-/api/v1}
+        INTERNAL_API_URL: ${INTERNAL_API_URL:-http://api:3000/v1}
+        INTERNAL_API_V2_URL: ${INTERNAL_API_V2_URL:-http://api-v2:3002/v2}
         NEXT_PUBLIC_OIDC_ENABLED: ${NEXT_PUBLIC_OIDC_ENABLED:-false}
         NEXT_PUBLIC_SIGNUP_MODE: ${NEXT_PUBLIC_SIGNUP_MODE:-closed_beta}
         NEXT_PUBLIC_TURNSTILE_SITE_KEY: ${NEXT_PUBLIC_TURNSTILE_SITE_KEY:-}
@@ -95,6 +97,7 @@ services:
       - COOKIE_SECURE=${COOKIE_SECURE:-true}
       - NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL:-/api/v1}
       - INTERNAL_API_URL=${INTERNAL_API_URL:-http://api:3000/v1}
+      - INTERNAL_API_V2_URL=${INTERNAL_API_V2_URL:-http://api-v2:3002/v2}
       - LUNCHLINEUP_STATUS_HEALTH_URL=${LUNCHLINEUP_STATUS_HEALTH_URL:?Set public HTTPS LUNCHLINEUP_STATUS_HEALTH_URL ending in /health in .env}
       - NEXT_PUBLIC_OIDC_ENABLED=${NEXT_PUBLIC_OIDC_ENABLED:-false}
       - NEXT_PUBLIC_SIGNUP_MODE=${NEXT_PUBLIC_SIGNUP_MODE:-closed_beta}
@@ -587,6 +590,52 @@ services:
     networks:
       - pitr-wal-control
       - pitr-egress
+    restart: unless-stopped
+
+  # Contract-first tenant API. The retained v1 service is private compatibility
+  # infrastructure for auth plus billing/notification/solver migration seams.
+  api-v2:
+    <<: *locked-runtime
+    cpus: "1.50"
+    mem_limit: 768m
+    pids_limit: 384
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=64m,mode=1777
+    image: "${IMAGE_PREFIX:-lunchlineup}/api-v2:${IMAGE_TAG:-local}"
+    build:
+      context: .
+      dockerfile: infrastructure/docker/Dockerfile.api-v2
+      args:
+        VCS_REF: ${DEPLOY_RELEASE_SHA:-local}
+    networks:
+      - app
+      - data
+      - telemetry
+    environment:
+      - NODE_ENV=${NODE_ENV:-production}
+      - HOST=0.0.0.0
+      - PORT=3002
+      - APP_ORIGIN=${APP_ORIGIN:?Set public HTTPS APP_ORIGIN in .env}
+      - ALLOWED_ORIGINS=${ALLOWED_ORIGINS:-}
+      - TRUST_PROXY=${TRUST_PROXY:-}
+      - DATABASE_URL=${DATABASE_URL:?Set validated percent-encoded DATABASE_URL in .env}
+      - LEGACY_IDENTITY_URL=http://api:3000/v1/auth/me
+      - IDENTITY_TIMEOUT_MS=${IDENTITY_TIMEOUT_MS:-5000}
+      - LEGACY_REQUEST_TIMEOUT_MS=${LEGACY_REQUEST_TIMEOUT_MS:-15000}
+      - DEPLOY_RELEASE_SHA=${DEPLOY_RELEASE_SHA:-local}
+      - LOG_LEVEL=${LOG_LEVEL:-info}
+    healthcheck:
+      test: [ "CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://127.0.0.1:3002/v2/live" ]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+    depends_on:
+      api:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
     restart: unless-stopped
 
   # Read-only provider identity used only to export and verify lifecycle policy.

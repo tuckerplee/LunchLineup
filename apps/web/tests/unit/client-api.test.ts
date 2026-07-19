@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
+  fetchApiV2WithSession,
   fetchApiHealth,
   fetchJsonWithSession,
   fetchPublicApi,
@@ -85,6 +86,86 @@ describe('fetchWithSession', () => {
 
     await expect(fetchWithSession('https://evil.example/collect')).rejects.toThrow('same-origin API paths');
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('restricts the v2 transport to exact same-origin /api/v2 paths', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response('{}', {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await fetchApiV2WithSession('/api/v2/schedule-board?date=2026-07-18&view=day');
+    expect(fetchMock.mock.calls[0][0]).toBe('/api/v2/schedule-board?date=2026-07-18&view=day');
+
+    await expect(fetchApiV2WithSession('/api/v1/shifts')).rejects.toThrow('/api/v2 same-origin');
+    await expect(fetchApiV2WithSession('https://evil.example/api/v2/shifts')).rejects.toThrow('/api/v2 same-origin');
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('preserves safe RFC Problem Details for v2 concurrency failures', async () => {
+    const problem = {
+      type: 'https://lunchlineup.com/problems/stale-schedule-revision',
+      title: 'Precondition failed',
+      status: 412,
+      detail: 'The schedule changed after this board loaded. Reload before saving.',
+      code: 'stale_schedule_revision',
+      currentEtag: '"schedule:88d8d86a-7e8d-4246-8ad3-eb7eedb44c1e:6"',
+      violations: [{
+        pointer: '/operations/0',
+        code: 'stale_shift',
+        message: 'Reload this schedule before retrying.',
+      }],
+      internal: 'postgres.internal token=hidden',
+    };
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify(problem), {
+      status: 412,
+      headers: { 'content-type': 'application/problem+json' },
+    })));
+
+    const response = await fetchApiV2WithSession(
+      '/api/v2/schedules/88d8d86a-7e8d-4246-8ad3-eb7eedb44c1e/change-sets',
+    );
+    const payload = await response.json();
+    expect(payload).toMatchObject({
+      code: 'stale_schedule_revision',
+      currentEtag: problem.currentEtag,
+      violations: problem.violations,
+    });
+    expect(JSON.stringify(payload)).not.toContain('postgres.internal');
+    expect(JSON.stringify(payload)).not.toContain('hidden');
+  });
+
+  it('replays a v2 mutation after refresh only with its original idempotency key', async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response('{}', {
+        status: 401,
+        headers: { 'content-type': 'application/problem+json' },
+      }))
+      .mockResolvedValueOnce(new Response('{}', {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      }))
+      .mockResolvedValueOnce(new Response('{}', {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      }));
+    vi.stubGlobal('fetch', fetchMock);
+    vi.stubGlobal('document', { cookie: 'csrf_token=csrf-v2' });
+
+    await fetchApiV2WithSession(
+      '/api/v2/schedules/88d8d86a-7e8d-4246-8ad3-eb7eedb44c1e/change-sets',
+      withIdempotencyKey({ method: 'POST', body: '{"operations":[]}' }, 'v2-attempt-1'),
+    );
+
+    expect(fetchMock.mock.calls.map((call) => String(call[0]))).toEqual([
+      '/api/v2/schedules/88d8d86a-7e8d-4246-8ad3-eb7eedb44c1e/change-sets',
+      '/api/v1/auth/refresh',
+      '/api/v2/schedules/88d8d86a-7e8d-4246-8ad3-eb7eedb44c1e/change-sets',
+    ]);
+    expect(headersFromCall(fetchMock.mock.calls[0]).get('idempotency-key')).toBe('v2-attempt-1');
+    expect(headersFromCall(fetchMock.mock.calls[2]).get('idempotency-key')).toBe('v2-attempt-1');
+    expect(headersFromCall(fetchMock.mock.calls[2]).get('x-csrf-token')).toBe('csrf-v2');
   });
 
   it('reuses one attempt key for the same canonical payload and rotates it when the payload changes', () => {

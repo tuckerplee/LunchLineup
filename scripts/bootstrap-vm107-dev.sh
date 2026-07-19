@@ -13,6 +13,7 @@ SECRETS_DIR="${SECRETS_DIR:-/opt/lunchlineup-secrets}"
 SECRET_ENV_PATH="${SECRET_ENV_PATH:-$SECRETS_DIR/runtime.env}"
 HEALTH_URL="${HEALTH_URL:-http://127.0.0.1/health}"
 HOST_HEADER="${HOST_HEADER:-dev.lunchlineup.com}"
+PUBLIC_APP_ORIGIN="${PUBLIC_APP_ORIGIN:-http://${HOST_HEADER}}"
 VM_HOSTNAME="${VM_HOSTNAME:-lunchlineup-dev}"
 HEALTH_TIMEOUT_SECONDS="${HEALTH_TIMEOUT_SECONDS:-180}"
 COMPOSE_PARALLEL_LIMIT="${COMPOSE_PARALLEL_LIMIT:-1}"
@@ -21,14 +22,14 @@ DESTRUCTIVE_CONFIRMATION="replace-and-restore-disposable-vm107"
 export COMPOSE_PARALLEL_LIMIT
 
 services=(
-  proxy web api webhook-replay engine worker control
+  proxy web api api-v2 webhook-replay engine worker control
   migrate pgbouncer postgres redis rabbitmq
   prometheus alertmanager node-exporter loki promtail otel-collector tempo grafana
   autoheal
 )
 
 build_services=(
-  web api migrate engine worker pitr-wal-provider control
+  web api api-v2 migrate engine worker pitr-wal-provider control
 )
 
 require_root() {
@@ -145,6 +146,16 @@ upsert_if_empty_or_placeholder() {
 
 prepare_runtime_env() {
   cd "$APP_DIR"
+  local source_sha
+  source_sha="$(git rev-parse HEAD)"
+  if [[ ! "$PUBLIC_APP_ORIGIN" =~ ^https?://[A-Za-z0-9][A-Za-z0-9.-]*(\:[0-9]{1,5})?$ ]]; then
+    echo "PUBLIC_APP_ORIGIN must be one exact HTTP(S) origin without a path, query, or fragment." >&2
+    exit 1
+  fi
+  local cookie_secure=false
+  if [[ "$PUBLIC_APP_ORIGIN" == https://* ]]; then
+    cookie_secure=true
+  fi
 
   if [[ ! -f "$SECRET_ENV_PATH" ]]; then
     cp .env.example "$SECRET_ENV_PATH"
@@ -196,6 +207,9 @@ prepare_runtime_env() {
   rabbit_pass="$(env_value RABBITMQ_PASSWORD)"
 
   upsert_env NODE_ENV development
+  upsert_env IMAGE_TAG "$source_sha"
+  upsert_env DEPLOY_RELEASE_SHA "$source_sha"
+  upsert_env MIGRATION_SOURCE_SHA "$source_sha"
   upsert_env DATA_TARGET_ENV disposable
   upsert_env DOMAIN "$HOST_HEADER"
   upsert_env CADDY_SITE_ADDRESSES "http://${HOST_HEADER}:80, http://lunchlineup-dev.proxmox1.lan:80, http://lunchlineup-dev-vm.proxmox1.lan:80, http://10.231.10.108:80, http://localhost:80, http://127.0.0.1:80, http://proxy:80"
@@ -218,18 +232,19 @@ prepare_runtime_env() {
   upsert_env STRIPE_METERED_USAGE_ENABLED "false"
   upsert_env PASSWORD_RESET_EMAIL_OUTBOX_ENABLED "true"
   upsert_env STAFF_INVITATION_OUTBOX_ENABLED "true"
-  upsert_env APP_ORIGIN "http://${HOST_HEADER}"
-  upsert_env NEXT_PUBLIC_APP_ORIGIN "http://${HOST_HEADER}"
-  upsert_env NEXT_PUBLIC_APP_URL "http://${HOST_HEADER}"
+  upsert_env APP_ORIGIN "$PUBLIC_APP_ORIGIN"
+  upsert_env NEXT_PUBLIC_APP_ORIGIN "$PUBLIC_APP_ORIGIN"
+  upsert_env NEXT_PUBLIC_APP_URL "$PUBLIC_APP_ORIGIN"
   upsert_env NEXT_PUBLIC_APP_ENV "development"
   upsert_env NEXT_PUBLIC_API_URL "/api/v1"
   upsert_env INTERNAL_API_URL "http://api:3000/v1"
+  upsert_env INTERNAL_API_V2_URL "http://api-v2:3002/v2"
   upsert_env LUNCHLINEUP_STATUS_HEALTH_URL "http://api:3000/health"
   upsert_env NEXT_PUBLIC_OIDC_ENABLED false
   upsert_env OIDC_ENABLED false
-  upsert_env COOKIE_SECURE false
+  upsert_env COOKIE_SECURE "$cookie_secure"
   upsert_env ALLOWED_HOSTS "10.231.10.108,10.231.10.108:80,${HOST_HEADER},lunchlineup-dev.proxmox1.lan,lunchlineup-dev-vm.proxmox1.lan"
-  upsert_env ALLOWED_ORIGINS "http://10.231.10.108,http://${HOST_HEADER},http://lunchlineup-dev.proxmox1.lan,http://lunchlineup-dev-vm.proxmox1.lan"
+  upsert_env ALLOWED_ORIGINS "$PUBLIC_APP_ORIGIN,http://10.231.10.108,http://${HOST_HEADER},http://lunchlineup-dev.proxmox1.lan,http://lunchlineup-dev-vm.proxmox1.lan"
   upsert_env EMAIL_FROM "${EMAIL_FROM:-LunchLineup Dev <no-reply@dev.lunchlineup.com>}"
 
   ln -sfn "$SECRET_ENV_PATH" .env
@@ -358,7 +373,7 @@ restore_backup_if_requested() {
   esac
 
   docker compose --env-file "$SECRET_ENV_PATH" run --rm migrate
-  docker compose --env-file "$SECRET_ENV_PATH" up -d api webhook-replay worker
+  docker compose --env-file "$SECRET_ENV_PATH" up -d api api-v2 webhook-replay worker
 }
 
 write_deploy_proof() {
@@ -375,12 +390,14 @@ wait_for_health() {
     code="$(curl -s -o /dev/null -w "%{http_code}" "$HEALTH_URL" || true)"
     local host_code
     host_code="$(curl -s -o /dev/null -w "%{http_code}" -H "Host: ${HOST_HEADER}" "http://127.0.0.1/health" || true)"
-    if [[ "$code" == "200" && "$host_code" == "200" ]]; then
+    local api_v2_code
+    api_v2_code="$(curl -s -o /dev/null -w "%{http_code}" -H "Host: ${HOST_HEADER}" "http://127.0.0.1/api/v2/live" || true)"
+    if [[ "$code" == "200" && "$host_code" == "200" && "$api_v2_code" == "200" ]]; then
       break
     fi
 
     if (( "$(date +%s)" - start_time > HEALTH_TIMEOUT_SECONDS )); then
-      echo "Health check timed out. direct=$code host_header=$host_code" >&2
+      echo "Health check timed out. direct=$code host_header=$host_code api_v2=$api_v2_code" >&2
       docker compose ps
       exit 1
     fi

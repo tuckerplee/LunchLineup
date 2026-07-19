@@ -19,6 +19,12 @@ const mfaPin = process.env.E2E_MFA_PIN ?? '135790';
 const unenrolledMfaUsername = process.env.E2E_UNENROLLED_MFA_USERNAME ?? 'e2e.unenrolled';
 const unenrolledMfaPin = process.env.E2E_UNENROLLED_MFA_PIN ?? '975310';
 const csrfToken = 'mock-e2e-csrf';
+const publicIds = {
+  downtown: '10000000-0000-4000-8000-000000000001',
+  uptown: '10000000-0000-4000-8000-000000000002',
+  staff: '20000000-0000-4000-8000-000000000001',
+  manager: '20000000-0000-4000-8000-000000000002',
+};
 const mockMfaSecret = 'JBSWY3DPEHPK3PXP';
 const mockMfaRecoveryCodes = ['LL-4F8K-92HD', 'LL-73QW-1PZM', 'LL-8T2N-6YKC'];
 const creditPackOptions = [
@@ -175,7 +181,12 @@ let state = resetState();
 
 function resetState() {
   const now = new Date();
-  const location = { id: 'loc-downtown', name: process.env.E2E_LOCATION_NAME ?? 'Downtown Diner' };
+  const location = {
+    id: 'loc-downtown',
+    publicId: publicIds.downtown,
+    name: process.env.E2E_LOCATION_NAME ?? 'Downtown Diner',
+    timezone: 'America/Los_Angeles',
+  };
   const adminTenant = {
     id: 'tenant-e2e',
     name: tenantName,
@@ -254,8 +265,8 @@ function resetState() {
     mfaSetup: null,
   };
   const staff = [
-    { id: 'user-mock-staff', name: 'Mock Staff', username: 'mock.staff', role: 'STAFF' },
-    { id: 'user-mock-manager', name: 'Mock Manager', username: 'mock.manager', role: 'MANAGER' },
+    { id: 'user-mock-staff', publicId: publicIds.staff, name: 'Mock Staff', username: 'mock.staff', role: 'STAFF' },
+    { id: 'user-mock-manager', publicId: publicIds.manager, name: 'Mock Manager', username: 'mock.manager', role: 'MANAGER' },
   ];
   const adminUsers = [
     { account: superAdmin, mfaEnabled: true },
@@ -357,6 +368,7 @@ function resetState() {
     schedulePublishRequests: new Map(),
     lunchBreakGenerationRequests: new Map(),
     shiftUpdateRequests: new Map(),
+    v2Idempotency: new Map(),
     payroll: {
       exportCreated: false,
       exportRequests: new Map(),
@@ -687,11 +699,13 @@ function scheduleForShift(locationId, startTime, endTime, scheduleId) {
   const { startDate, endDate } = dayScheduleWindow(startTime, endTime);
   schedule = {
     id: `sched-${crypto.randomUUID()}`,
+    publicId: crypto.randomUUID(),
     locationId,
     startDate,
     endDate,
     status: 'DRAFT',
     publishedAt: null,
+    revision: 0,
   };
   state.schedules.push(schedule);
   return schedule;
@@ -706,6 +720,501 @@ function lunchRows() {
     endTime: shift.endTime,
     breaks: shift.breaks ?? [],
   }));
+}
+
+function scheduleEtag(schedule) {
+  return `"schedule:${schedule.publicId}:${schedule.revision ?? 0}"`;
+}
+
+function publicSchedule(schedule) {
+  const location = state.locations.find((candidate) => candidate.id === schedule.locationId);
+  if (!location) return null;
+  return {
+    id: schedule.publicId,
+    locationId: location.publicId,
+    startDate: schedule.startDate,
+    endDate: schedule.endDate,
+    status: schedule.status,
+    publishedAt: schedule.publishedAt ?? null,
+    revision: schedule.revision ?? 0,
+    etag: scheduleEtag(schedule),
+  };
+}
+
+function publicShift(shift) {
+  const location = state.locations.find((candidate) => candidate.id === shift.locationId);
+  const schedule = state.schedules.find((candidate) => candidate.id === shift.scheduleId);
+  const user = shift.userId ? state.staff.find((candidate) => candidate.id === shift.userId) ?? null : null;
+  if (!location || !schedule) return null;
+  return {
+    id: shift.publicId,
+    userId: user?.publicId ?? null,
+    locationId: location.publicId,
+    scheduleId: schedule.publicId,
+    startTime: shift.startTime,
+    endTime: shift.endTime,
+    role: shift.role ?? null,
+    user: user ? { id: user.publicId, name: user.name, role: user.role } : null,
+    breaks: (shift.breaks ?? []).map((item) => ({
+      startTime: item.startTime,
+      endTime: item.endTime,
+      paid: item.paid,
+    })),
+  };
+}
+
+function mockBoardRange(date, view) {
+  const start = new Date(`${date}T00:00:00.000Z`);
+  const days = view === 'day' ? 1 : view === 'week' ? 7 : 3;
+  const end = new Date(start);
+  end.setUTCDate(end.getUTCDate() + days);
+  return { start, end };
+}
+
+function sendV2Problem(res, status, code, detail, currentEtag) {
+  sendJson(res, status, {
+    type: `https://lunchlineup.com/problems/${code.replaceAll('_', '-')}`,
+    title: status === 412 ? 'Precondition failed' : status === 409 ? 'Conflict' : 'Request rejected',
+    status,
+    detail,
+    code,
+    ...(currentEtag ? { currentEtag } : {}),
+  }, { 'content-type': 'application/problem+json' });
+}
+
+function beginV2IdempotentRequest(req, res, pathname, body) {
+  const key = typeof req.headers['idempotency-key'] === 'string'
+    ? req.headers['idempotency-key'].trim()
+    : '';
+  if (!key) {
+    sendV2Problem(res, 428, 'idempotency_key_required', 'This write requires an Idempotency-Key.');
+    return { handled: true };
+  }
+  const fingerprint = crypto.createHash('sha256')
+    .update(JSON.stringify({ pathname, body }))
+    .digest('hex');
+  const existing = state.v2Idempotency.get(key);
+  if (existing) {
+    if (existing.fingerprint !== fingerprint) {
+      sendV2Problem(res, 409, 'idempotency_key_reused', 'Idempotency-Key was already used for a different request.');
+      return { handled: true };
+    }
+    sendJson(res, existing.status, existing.response);
+    return { handled: true };
+  }
+  return { handled: false, key, fingerprint };
+}
+
+function commitV2IdempotentRequest(attempt, status, response) {
+  state.v2Idempotency.set(attempt.key, {
+    fingerprint: attempt.fingerprint,
+    status,
+    response,
+  });
+}
+
+function requireCurrentScheduleEtag(req, res, schedule) {
+  const current = scheduleEtag(schedule);
+  if (req.headers['if-match'] === current) return true;
+  sendV2Problem(
+    res,
+    412,
+    'stale_schedule_revision',
+    'The schedule changed after this board loaded. Reload before saving.',
+    current,
+  );
+  return false;
+}
+
+async function handleV2(req, res, url, pathname) {
+  if (!requireCsrf(req, res, pathname)) return;
+  const user = requireAuth(req, res);
+  if (!user) return;
+
+  if (pathname === '/v2/schedule-board' && req.method === 'GET') {
+    const requestedLocationId = url.searchParams.get('locationId');
+    const selectedLocation = state.locations.find((candidate) => candidate.publicId === requestedLocationId)
+      ?? state.locations[0]
+      ?? null;
+    const range = mockBoardRange(
+      url.searchParams.get('date') ?? new Date().toISOString().slice(0, 10),
+      url.searchParams.get('view') ?? 'threeDay',
+    );
+    const schedules = selectedLocation
+      ? state.schedules.filter((schedule) => (
+        schedule.locationId === selectedLocation.id
+        && Date.parse(schedule.startDate) < range.end.getTime()
+        && Date.parse(schedule.endDate) > range.start.getTime()
+      ))
+      : [];
+    const scheduleIds = new Set(schedules.map((schedule) => schedule.id));
+    sendJson(res, 200, {
+      data: {
+        permissions: user.permissions,
+        locations: state.locations.map((location) => ({
+          id: location.publicId,
+          name: location.name,
+          timezone: location.timezone ?? 'America/Los_Angeles',
+        })),
+        locationsTruncated: false,
+        selectedLocationId: selectedLocation?.publicId ?? null,
+        staff: state.staff.map((member) => ({
+          id: member.publicId,
+          name: member.name,
+          role: member.role,
+        })),
+        schedules: schedules.map(publicSchedule).filter(Boolean),
+        shifts: state.shifts
+          .filter((shift) => scheduleIds.has(shift.scheduleId))
+          .map(publicShift)
+          .filter(Boolean),
+        range: {
+          start: range.start.toISOString(),
+          end: range.end.toISOString(),
+        },
+      },
+      meta: { generatedAt: new Date().toISOString() },
+    });
+    return;
+  }
+
+  const createScheduleMatch = /^\/v2\/locations\/([0-9a-f-]{36})\/schedules$/.exec(pathname);
+  if (createScheduleMatch && req.method === 'POST') {
+    const body = await readBody(req);
+    const attempt = beginV2IdempotentRequest(req, res, pathname, body);
+    if (attempt.handled) return;
+    const location = state.locations.find((candidate) => candidate.publicId === createScheduleMatch[1]);
+    if (!location) {
+      sendV2Problem(res, 404, 'location_not_found', 'The selected location was not found.');
+      return;
+    }
+    const schedule = {
+      id: `schedule-${crypto.randomUUID()}`,
+      publicId: crypto.randomUUID(),
+      locationId: location.id,
+      startDate: body.startDate,
+      endDate: body.endDate,
+      status: 'DRAFT',
+      revision: 0,
+      publishedAt: null,
+    };
+    state.schedules.push(schedule);
+    const response = { data: publicSchedule(schedule) };
+    commitV2IdempotentRequest(attempt, 200, response);
+    sendJson(res, 200, response);
+    return;
+  }
+
+  const changeSetMatch = /^\/v2\/schedules\/([0-9a-f-]{36})\/change-sets$/.exec(pathname);
+  if (changeSetMatch && req.method === 'POST') {
+    const body = await readBody(req);
+    const attempt = beginV2IdempotentRequest(req, res, pathname, body);
+    if (attempt.handled) return;
+    const schedule = state.schedules.find((candidate) => candidate.publicId === changeSetMatch[1]);
+    if (!schedule) {
+      sendV2Problem(res, 404, 'schedule_not_found', 'The selected schedule was not found.');
+      return;
+    }
+    if (!requireCurrentScheduleEtag(req, res, schedule)) return;
+    const created = [];
+    for (const operation of body.operations ?? []) {
+      if (operation.op === 'shift.create') {
+        const assigned = operation.userId
+          ? state.staff.find((candidate) => candidate.publicId === operation.userId)
+          : null;
+        const shift = {
+          id: `shift-${crypto.randomUUID()}`,
+          publicId: crypto.randomUUID(),
+          locationId: schedule.locationId,
+          scheduleId: schedule.id,
+          userId: assigned?.id ?? null,
+          role: operation.role ?? assigned?.role ?? null,
+          startTime: operation.startTime,
+          endTime: operation.endTime,
+          breaks: [],
+        };
+        state.shifts.push(shift);
+        created.push({ clientId: operation.clientId ?? null, shiftId: shift.publicId });
+        continue;
+      }
+      const shift = state.shifts.find((candidate) => (
+        candidate.publicId === operation.shiftId && candidate.scheduleId === schedule.id
+      ));
+      if (!shift) {
+        sendV2Problem(res, 404, 'shift_not_found', 'A selected shift was not found.');
+        return;
+      }
+      if (operation.op === 'shift.delete') {
+        state.shifts = state.shifts.filter((candidate) => candidate !== shift);
+        continue;
+      }
+      if (Object.hasOwn(operation, 'userId')) {
+        shift.userId = operation.userId
+          ? state.staff.find((candidate) => candidate.publicId === operation.userId)?.id ?? null
+          : null;
+      }
+      if (operation.startTime) shift.startTime = operation.startTime;
+      if (operation.endTime) shift.endTime = operation.endTime;
+      if (Object.hasOwn(operation, 'role')) shift.role = operation.role;
+    }
+    const baseRevision = schedule.revision ?? 0;
+    schedule.revision = baseRevision + 1;
+    const response = {
+      data: {
+        changeSetId: crypto.randomUUID(),
+        scheduleId: schedule.publicId,
+        baseRevision,
+        revision: schedule.revision,
+        etag: scheduleEtag(schedule),
+        shifts: state.shifts
+          .filter((shift) => shift.scheduleId === schedule.id)
+          .map(publicShift)
+          .filter(Boolean),
+        created,
+      },
+    };
+    commitV2IdempotentRequest(attempt, 200, response);
+    sendJson(res, 200, response);
+    return;
+  }
+
+  const demandMatch = /^\/v2\/schedules\/([0-9a-f-]{36})\/demand-windows$/.exec(pathname);
+  if (demandMatch && req.method === 'GET') {
+    const schedule = state.schedules.find((candidate) => candidate.publicId === demandMatch[1]);
+    if (!schedule) {
+      sendV2Problem(res, 404, 'schedule_not_found', 'The selected schedule was not found.');
+      return;
+    }
+    sendJson(res, 200, { data: state.demandWindowsBySchedule.get(schedule.id) ?? [] });
+    return;
+  }
+  if (demandMatch && req.method === 'PUT') {
+    const body = await readBody(req);
+    const attempt = beginV2IdempotentRequest(req, res, pathname, body);
+    if (attempt.handled) return;
+    const schedule = state.schedules.find((candidate) => candidate.publicId === demandMatch[1]);
+    if (!schedule) {
+      sendV2Problem(res, 404, 'schedule_not_found', 'The selected schedule was not found.');
+      return;
+    }
+    if (!requireCurrentScheduleEtag(req, res, schedule)) return;
+    const windows = (body.windows ?? []).map((window) => ({
+      id: crypto.randomUUID(),
+      startTime: window.startTime,
+      endTime: window.endTime,
+      requiredStaff: window.requiredStaff,
+      skill: window.skill ?? null,
+    }));
+    state.demandWindowsBySchedule.set(schedule.id, windows);
+    const baseRevision = schedule.revision ?? 0;
+    schedule.revision = baseRevision + 1;
+    const response = {
+      data: windows,
+      changeSetId: crypto.randomUUID(),
+      scheduleId: schedule.publicId,
+      baseRevision,
+      revision: schedule.revision,
+      etag: scheduleEtag(schedule),
+    };
+    commitV2IdempotentRequest(attempt, 200, response);
+    sendJson(res, 200, response);
+    return;
+  }
+
+  const publishPlanMatch = /^\/v2\/schedules\/([0-9a-f-]{36})\/publish-plan$/.exec(pathname);
+  if (publishPlanMatch && req.method === 'GET') {
+    const schedule = state.schedules.find((candidate) => candidate.publicId === publishPlanMatch[1]);
+    if (!schedule) {
+      sendV2Problem(res, 404, 'schedule_not_found', 'The selected schedule was not found.');
+      return;
+    }
+    const plan = schedulePublishPreflight(schedule);
+    sendJson(res, 200, { ...plan, scheduleId: schedule.publicId });
+    return;
+  }
+
+  const publicationMatch = /^\/v2\/schedules\/([0-9a-f-]{36})\/publications$/.exec(pathname);
+  if (publicationMatch && req.method === 'POST') {
+    const body = await readBody(req);
+    const attempt = beginV2IdempotentRequest(req, res, pathname, body);
+    if (attempt.handled) return;
+    const schedule = state.schedules.find((candidate) => candidate.publicId === publicationMatch[1]);
+    if (!schedule || schedule.status !== 'DRAFT') {
+      sendV2Problem(res, 409, 'schedule_not_draft', 'Only a draft schedule can be published.');
+      return;
+    }
+    if (!state.shifts.some((shift) => shift.scheduleId === schedule.id)) {
+      sendV2Problem(res, 422, 'schedule_empty', 'Add at least one shift before publishing this schedule.');
+      return;
+    }
+    const preflight = schedulePublishPreflight(schedule);
+    if (!schedulePublishContractMatches(body.acceptedContract, preflight.acceptedContract)) {
+      sendV2Problem(res, 409, 'publish_plan_changed', 'The publication plan changed. Review it again.');
+      return;
+    }
+    const creditConsumption = consumeMockUsageCredit();
+    schedule.status = 'PUBLISHED';
+    schedule.publishedAt = new Date().toISOString();
+    const response = {
+      id: schedule.publicId,
+      status: 'PUBLISHED',
+      publishedAt: schedule.publishedAt,
+      settlement: {
+        ...preflight.acceptedContract,
+        acceptedContract: preflight.acceptedContract,
+        creditsConsumed: 1,
+        newBalance: creditConsumption.newBalance,
+        ledgerIdentities: {
+          schedule: `feature-usage-schedule-publish:${attempt.fingerprint}`,
+          webhookDeliveries: [],
+        },
+      },
+      notifications: { status: 'DELIVERED', delivered: 1, pending: 0, failed: 0 },
+    };
+    commitV2IdempotentRequest(attempt, 200, response);
+    sendJson(res, 200, response);
+    return;
+  }
+
+  const reopeningMatch = /^\/v2\/schedules\/([0-9a-f-]{36})\/reopenings$/.exec(pathname);
+  if (reopeningMatch && req.method === 'POST') {
+    const body = await readBody(req);
+    const attempt = beginV2IdempotentRequest(req, res, pathname, body);
+    if (attempt.handled) return;
+    const schedule = state.schedules.find((candidate) => candidate.publicId === reopeningMatch[1]);
+    if (!schedule || schedule.status !== 'PUBLISHED') {
+      sendV2Problem(res, 409, 'schedule_not_published', 'Only a published schedule can be reopened.');
+      return;
+    }
+    if (!requireCurrentScheduleEtag(req, res, schedule)) return;
+    schedule.status = 'DRAFT';
+    schedule.publishedAt = null;
+    schedule.revision = (schedule.revision ?? 0) + 1;
+    const response = { data: publicSchedule(schedule) };
+    commitV2IdempotentRequest(attempt, 200, response);
+    sendJson(res, 200, response);
+    return;
+  }
+
+  const solveMatch = /^\/v2\/schedules\/([0-9a-f-]{36})\/solve-jobs$/.exec(pathname);
+  if (solveMatch && req.method === 'POST') {
+    const body = await readBody(req);
+    const attempt = beginV2IdempotentRequest(req, res, pathname, body);
+    if (attempt.handled) return;
+    const schedule = state.schedules.find((candidate) => candidate.publicId === solveMatch[1]);
+    if (!schedule || schedule.status !== 'DRAFT') {
+      sendV2Problem(res, 409, 'schedule_not_draft', 'Only a draft schedule can be solved.');
+      return;
+    }
+    if ((state.demandWindowsBySchedule.get(schedule.id) ?? []).length === 0) {
+      sendV2Problem(res, 422, 'demand_required', 'Configure at least one demand window before solving.');
+      return;
+    }
+    const location = state.locations.find((candidate) => candidate.id === schedule.locationId);
+    const creditConsumption = consumeMockUsageCredit();
+    const now = new Date().toISOString();
+    const job = {
+      id: `job-${crypto.randomUUID()}`,
+      publicId: crypto.randomUUID(),
+      scheduleId: schedule.id,
+      locationId: location.id,
+      status: 'SUCCEEDED',
+      statusReason: null,
+      retryCount: 0,
+      resultShiftCount: state.shifts.filter((shift) => shift.scheduleId === schedule.id).length,
+      publicationStatus: 'DRAFT',
+      startedAt: now,
+      completedAt: now,
+    };
+    state.scheduleJobs.push(job);
+    const response = {
+      jobId: job.publicId,
+      status: 'QUEUED',
+      statusUrl: `/api/v2/schedules/${schedule.publicId}/solve-jobs/${job.publicId}`,
+      creditConsumption,
+    };
+    commitV2IdempotentRequest(attempt, 202, response);
+    sendJson(res, 202, response);
+    return;
+  }
+
+  const solveJobMatch = /^\/v2\/schedules\/([0-9a-f-]{36})\/solve-jobs\/([0-9a-f-]{36})$/.exec(pathname);
+  if (solveJobMatch && req.method === 'GET') {
+    const schedule = state.schedules.find((candidate) => candidate.publicId === solveJobMatch[1]);
+    const job = schedule
+      ? state.scheduleJobs.find((candidate) => candidate.scheduleId === schedule.id && candidate.publicId === solveJobMatch[2])
+      : null;
+    const location = schedule
+      ? state.locations.find((candidate) => candidate.id === schedule.locationId)
+      : null;
+    if (!schedule || !job || !location) {
+      sendV2Problem(res, 404, 'solve_job_not_found', 'The selected solve job was not found.');
+      return;
+    }
+    sendJson(res, 200, {
+      jobId: job.publicId,
+      scheduleId: schedule.publicId,
+      locationId: location.publicId,
+      status: job.status,
+      statusReason: job.statusReason,
+      retryCount: job.retryCount,
+      resultShiftCount: job.resultShiftCount,
+      publicationStatus: job.publicationStatus,
+      startedAt: job.startedAt,
+      completedAt: job.completedAt,
+      statusUrl: `/api/v2/schedules/${schedule.publicId}/solve-jobs/${job.publicId}`,
+    });
+    return;
+  }
+
+  if (pathname === '/v2/break-generations' && req.method === 'POST') {
+    const body = await readBody(req);
+    const attempt = beginV2IdempotentRequest(req, res, pathname, body);
+    if (attempt.handled) return;
+    const location = state.locations.find((candidate) => candidate.publicId === body.locationId);
+    const selectedPublicIds = new Set(body.shiftIds ?? []);
+    const selected = state.shifts.filter((shift) => (
+      shift.locationId === location?.id && selectedPublicIds.has(shift.publicId)
+    ));
+    if (!location || selected.length !== selectedPublicIds.size) {
+      sendV2Problem(res, 422, 'invalid_break_generation_scope', 'Every shift must belong to the selected location.');
+      return;
+    }
+    const creditConsumption = consumeMockUsageCredit();
+    for (const shift of selected) shift.breaks = shiftBreaks(shift);
+    const response = {
+      locationId: location.publicId,
+      source: 'shared_schedule',
+      persisted: true,
+      policy: {
+        break1OffsetMinutes: 120,
+        lunchOffsetMinutes: 240,
+        break2OffsetMinutes: 360,
+        break1DurationMinutes: 10,
+        lunchDurationMinutes: 30,
+        break2DurationMinutes: 10,
+        timeStepMinutes: 5,
+      },
+      creditConsumption,
+      data: selected.map((shift) => {
+        const serialized = publicShift(shift);
+        return {
+          shiftId: serialized.id,
+          userId: serialized.userId,
+          employeeName: serialized.user?.name ?? null,
+          startTime: serialized.startTime,
+          endTime: serialized.endTime,
+          breaks: shift.breaks,
+        };
+      }),
+      reused: false,
+    };
+    commitV2IdempotentRequest(attempt, 200, response);
+    sendJson(res, 200, response);
+    return;
+  }
+
+  sendV2Problem(res, 404, 'route_not_found', 'The requested API route does not exist.');
 }
 
 const server = http.createServer(async (req, res) => {
@@ -724,6 +1233,10 @@ const server = http.createServer(async (req, res) => {
     if (pathname === '/v1/__e2e/reset' && req.method === 'POST') {
       state = resetState();
       sendJson(res, 200, { ok: true });
+      return;
+    }
+    if (pathname.startsWith('/v2/')) {
+      await handleV2(req, res, url, pathname);
       return;
     }
     if (!pathname.startsWith('/v1/')) {
@@ -1095,6 +1608,7 @@ const server = http.createServer(async (req, res) => {
       }
       const schedule = {
         id: `schedule-${crypto.randomUUID()}`,
+        publicId: crypto.randomUUID(),
         locationId: location.id,
         startDate: new Date(`${body.startDate}T00:00:00.000Z`).toISOString(),
         endDate: new Date(`${body.endDate}T00:00:00.000Z`).toISOString(),
@@ -1316,6 +1830,7 @@ const server = http.createServer(async (req, res) => {
       }
       const shift = {
         id: `shift-${crypto.randomUUID()}`,
+        publicId: crypto.randomUUID(),
         locationId: body.locationId,
         scheduleId: schedule.id,
         userId: body.userId ?? null,

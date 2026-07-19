@@ -6,15 +6,16 @@ import { useSearchParams } from 'next/navigation';
 import { Button } from '@/components/ui/button';
 import { CalendarDays, CheckCircle2, LockKeyhole, MapPin, Plus, Printer, RefreshCw, RotateCcw, Send, Settings2, WandSparkles, X } from 'lucide-react';
 import {
+  ApiV2ClientError,
+  type ScheduleChangeSetRequest,
+} from '@lunchlineup/api-contract';
+import { apiV2 } from '@/lib/api-v2';
+import {
   ApiRequestError,
-  fetchJsonWithSession,
-  fetchWithSession,
   idempotentRequestAttempt,
-  withIdempotencyKey,
   type IdempotentRequestAttempt,
 } from '@/lib/client-api';
 import { getWorkspaceCapabilities, hasSchedulingReadAccess } from '@/lib/permissions';
-import { fetchAllBoundedPages, type BoundedPage } from '@/lib/bounded-pagination';
 import {
   addLocalDays,
   dateValueInTimeZone,
@@ -39,16 +40,11 @@ import {
 import {
   executeBreakGenerationWithRecovery,
   type BreakGenerationAttempt,
-  type BreakGenerationResponse,
 } from './break-generation-recovery';
 import {
   assertBreakGenerationResponseScope,
-  buildLocationScheduleQuery,
-  buildLocationShiftQuery,
   locationShiftScopeMatches,
-  resolveTenantVisibleLocation,
   shiftIdsForLocation,
-  shiftsForLocation,
   type LocationShiftScope,
 } from './location-shift-scope';
 import { DemandWindowEditor } from './DemandWindowEditor';
@@ -81,10 +77,6 @@ const StaffScheduler = dynamic(
 type StaffRole = 'SUPER_ADMIN' | 'ADMIN' | 'MANAGER' | 'STAFF';
 type StaffRosterItem = { id: string; name: string; role: StaffRole };
 type LocationItem = { id: string; name: string; timezone: string };
-type LocationPage = {
-  data?: LocationItem[];
-  pagination?: { hasMore?: boolean; nextCursor?: string | null };
-};
 type BreakItem = { startTime: string; endTime: string; paid: boolean };
 type ScheduleRecordStatus = 'DRAFT' | 'PUBLISHED' | 'ARCHIVED';
 type ScheduleRecord = {
@@ -94,11 +86,8 @@ type ScheduleRecord = {
   endDate: string;
   status: ScheduleRecordStatus;
   publishedAt?: string | null;
-};
-type AutoScheduleResponse = {
-  jobId: string;
-  status: string;
-  statusUrl: string;
+  revision: number;
+  etag: string;
 };
 type ScheduleSolveJobSnapshot = {
   jobId: string;
@@ -147,36 +136,6 @@ const DEFAULT_SHIFT_DRAFT: ShiftDraft = {
   startTime: '09:00',
   endTime: '17:00',
 };
-
-function getCsrfTokenFromCookie(): string {
-  if (typeof document === 'undefined') return '';
-  const pair = document.cookie.split('; ').find((entry) => entry.startsWith('csrf_token='));
-  return pair ? decodeURIComponent(pair.split('=')[1] ?? '') : '';
-}
-
-function jsonWriteInit(method: 'POST' | 'PUT', payload: unknown): RequestInit {
-  const csrfToken = getCsrfTokenFromCookie();
-  return {
-    method,
-    credentials: 'include',
-    headers: {
-      'Content-Type': 'application/json',
-      ...(csrfToken ? { 'x-csrf-token': csrfToken } : {}),
-    },
-    body: JSON.stringify(payload),
-  };
-}
-
-function deleteWriteInit(): RequestInit {
-  const csrfToken = getCsrfTokenFromCookie();
-  return {
-    method: 'DELETE',
-    credentials: 'include',
-    headers: {
-      ...(csrfToken ? { 'x-csrf-token': csrfToken } : {}),
-    },
-  };
-}
 
 function toDateInputValue(date: Date): string {
   const y = date.getFullYear();
@@ -311,13 +270,6 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => window.setTimeout(resolve, ms));
 }
 
-function jobStatusPath(statusUrl: string | undefined, scheduleId: string, jobId: string): string {
-  if (!statusUrl) return `/schedules/${encodeURIComponent(scheduleId)}/auto-schedule/jobs/${encodeURIComponent(jobId)}`;
-  if (statusUrl.startsWith('/api/v1/')) return statusUrl.slice('/api/v1'.length);
-  if (statusUrl.startsWith('/v1/')) return statusUrl.slice('/v1'.length);
-  return statusUrl.startsWith('/') ? statusUrl : `/${statusUrl}`;
-}
-
 function isTerminalSolveStatus(status: string): boolean {
   return ['SUCCEEDED', 'FAILED', 'DEAD_LETTERED'].includes(status.toUpperCase());
 }
@@ -396,8 +348,6 @@ function SchedulingContent() {
   const [selectedDate, setSelectedDate] = useState(initialDateValue);
   const [staff, setStaff] = useState<StaffRosterItem[]>([]);
   const [locations, setLocations] = useState<LocationItem[]>([]);
-  const [nextLocationCursor, setNextLocationCursor] = useState<string | null>(null);
-  const [isLoadingMoreLocations, setIsLoadingMoreLocations] = useState(false);
   const [schedules, setSchedules] = useState<ScheduleRecord[]>([]);
   const [shifts, setShifts] = useState<ShiftRecord[]>([]);
   const [showShiftForm, setShowShiftForm] = useState(false);
@@ -418,6 +368,9 @@ function SchedulingContent() {
   const breakGenerationAttemptRef = useRef<BreakGenerationAttempt | null>(null);
   const shiftCreateAttemptRef = useRef<IdempotentRequestAttempt | null>(null);
   const shiftUpdateAttemptsRef = useRef<Record<string, IdempotentRequestAttempt>>({});
+  const demandWindowAttemptsRef = useRef<Record<string, IdempotentRequestAttempt>>({});
+  const scheduleCreateAttemptsRef = useRef<Record<string, IdempotentRequestAttempt>>({});
+  const reopenAttemptsRef = useRef<Record<string, IdempotentRequestAttempt>>({});
   const publishAttemptsRef = useRef<Record<string, IdempotentRequestAttempt>>({});
   const publishingScheduleIdRef = useRef<string | null>(null);
   const latestLoadRequestRef = useRef(0);
@@ -455,28 +408,42 @@ function SchedulingContent() {
     viewModeRef.current === scope.viewMode
   ), []);
   const loadDemandWindows = useCallback(async (scheduleId: string) => {
-    const payload = await fetchJsonWithSession<{ data: DemandWindowRecord[] }>(`/schedules/${scheduleId}/demand-windows`);
-    return payload.data ?? [];
+    const payload = await apiV2.getDemandWindows(scheduleId);
+    return payload.data;
   }, []);
   const saveDemandWindows = useCallback(async (
     scheduleId: string,
     windows: Array<Omit<DemandWindowRecord, 'id'>>,
   ) => {
-    const payload = await fetchJsonWithSession<{ data: DemandWindowRecord[] }>(`/schedules/${scheduleId}/demand-windows`, {
-      ...jsonWriteInit('PUT', { windows }),
-    });
-    return payload.data ?? [];
-  }, []);
-  const loadAllShiftsForSchedule = useCallback((scheduleId: string) => (
-    fetchAllBoundedPages(
-      `/shifts?scheduleId=${encodeURIComponent(scheduleId)}&limit=200`,
-      (path) => fetchJsonWithSession<BoundedPage<ShiftRecord>>(path),
-    )
-  ), []);
+    const schedule = schedules.find((item) => item.id === scheduleId);
+    if (!schedule) throw new Error('The selected schedule is no longer loaded.');
+    const request = { windows };
+    const attempt = idempotentRequestAttempt(
+      { scheduleId, etag: schedule.etag, request },
+      demandWindowAttemptsRef.current[scheduleId],
+    );
+    demandWindowAttemptsRef.current[scheduleId] = attempt;
+    const payload = await apiV2.replaceDemandWindows(
+      scheduleId,
+      request,
+      schedule.etag,
+      attempt.key,
+    );
+    if (demandWindowAttemptsRef.current[scheduleId]?.key === attempt.key) {
+      delete demandWindowAttemptsRef.current[scheduleId];
+    }
+    setSchedules((current) => current.map((item) => item.id === scheduleId
+      ? { ...item, revision: payload.revision, etag: payload.etag }
+      : item));
+    return payload.data;
+  }, [schedules]);
+  const loadAllShiftsForSchedule = useCallback(async (scheduleId: string) => (
+    shifts.filter((shift) => shift.scheduleId === scheduleId)
+  ), [shifts]);
   const loadSchedulePublishReview = useCallback(async (scheduleId: string) => {
     const [scheduleShifts, preflightPayload] = await Promise.all([
       loadAllShiftsForSchedule(scheduleId),
-      fetchJsonWithSession<unknown>(`/schedules/${scheduleId}/publish/preflight`),
+      apiV2.getSchedulePublishPlan(scheduleId),
     ]);
     return {
       blocker: publishBlockerForShifts(scheduleShifts),
@@ -491,74 +458,44 @@ function SchedulingContent() {
     setError(null);
     setScheduleStatus({ tone: 'loading', message: 'Loading saved schedule data.' });
     try {
-      const mePayload = await fetchJsonWithSession<{ user?: { permissions?: string[] } }>('/auth/me');
-      const effectivePermissions = mePayload.user?.permissions ?? [];
+      const payload = await apiV2.getScheduleBoard({
+        date: dateValue,
+        view: mode,
+        ...(requestedLocationId && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(requestedLocationId)
+          ? { locationId: requestedLocationId }
+          : {}),
+      });
+      const effectivePermissions = payload.data.permissions;
       if (!hasSchedulingReadAccess(effectivePermissions)) {
         throw new Error('You do not have access to all data required by the scheduling calendar.');
       }
-      const [staffRows, locationsPayload, requestedLocation] = await Promise.all([
-        fetchAllBoundedPages(
-          '/shifts/staff-roster?limit=200',
-          (path) => fetchJsonWithSession<BoundedPage<StaffRosterItem>>(path),
-        ),
-        fetchJsonWithSession<LocationPage>('/locations?limit=200'),
-        requestedLocationId ? fetchJsonWithSession<LocationItem>('/locations/' + encodeURIComponent(requestedLocationId)) : Promise.resolve(null),
-      ]);
-      const locationRows = Array.isArray(locationsPayload.data) ? locationsPayload.data : [];
-      if (requestedLocation && !locationRows.some((location) => location.id === requestedLocation.id)) {
-        locationRows.push(requestedLocation);
-        locationRows.sort((left, right) => left.name.localeCompare(right.name) || left.id.localeCompare(right.id));
-      }
-      const locationContinuation = locationsPayload.pagination?.hasMore === true
-        ? locationsPayload.pagination.nextCursor
-        : null;
-      if (locationsPayload.pagination?.hasMore === true && (typeof locationContinuation !== 'string' || !locationContinuation)) {
-        throw new Error('Location list did not provide a continuation cursor.');
-      }
-      const primaryLocation = resolveTenantVisibleLocation(locationRows, requestedLocationId);
-      const range = viewRange(dateValue, mode, safeTimeZone(primaryLocation?.timezone));
-      const [scheduleRows, shiftRows] = primaryLocation?.id
-        ? await Promise.all([
-          fetchAllBoundedPages(
-            buildLocationScheduleQuery(range, primaryLocation.id),
-            (path) => fetchJsonWithSession<BoundedPage<ScheduleRecord>>(path),
-          ),
-          fetchAllBoundedPages(
-            buildLocationShiftQuery(range, primaryLocation.id),
-            (path) => fetchJsonWithSession<BoundedPage<ShiftRecord>>(path),
-          ),
-        ])
-        : [[], []];
       if (requestId !== latestLoadRequestRef.current) return;
-      selectedLocationRef.current = primaryLocation?.id ?? '';
+      const primaryLocationId = payload.data.selectedLocationId ?? '';
+      selectedLocationRef.current = primaryLocationId;
       setPermissions(effectivePermissions);
-      setStaff(staffRows.slice().sort((left, right) =>
+      setStaff(payload.data.staff.slice().sort((left, right) =>
         left.name.localeCompare(right.name) || left.id.localeCompare(right.id)
       ));
-      setLocations(locationRows);
-      setNextLocationCursor(locationContinuation ?? null);
-      setSchedules(scheduleRows);
+      setLocations(payload.data.locations);
+      setSchedules(payload.data.schedules);
       setShiftDraft((current) => (
-        primaryLocation?.id && current.locationId !== primaryLocation.id
-          ? { ...current, locationId: primaryLocation.id }
+        primaryLocationId && current.locationId !== primaryLocationId
+          ? { ...current, locationId: primaryLocationId }
           : current
       ));
-      const locationShifts = primaryLocation?.id
-        ? shiftsForLocation(shiftRows, primaryLocation.id)
-        : [];
-      setShifts(locationShifts);
-      setLoadedShiftScope(primaryLocation?.id ? { locationId: primaryLocation.id, dateValue, viewMode: mode } : null);
-      const shiftCount = locationShifts.length;
+      setShifts(payload.data.shifts);
+      setLoadedShiftScope(primaryLocationId ? { locationId: primaryLocationId, dateValue, viewMode: mode } : null);
+      const shiftCount = payload.data.shifts.length;
       setScheduleStatus({
-        tone: 'ready',
-        message: `${shiftCount ? `${shiftCountLabel(shiftCount)} loaded from saved schedule records` : 'No saved shifts in this range'}. Updated ${formatStatusTime(new Date())}.`,
+        tone: payload.data.locationsTruncated ? 'warning' : 'ready',
+        message: `${shiftCount ? `${shiftCountLabel(shiftCount)} loaded from saved schedules` : 'No saved shifts in this range'}. Updated ${formatStatusTime(new Date())}.${payload.data.locationsTruncated ? ' The location selector is capped at 500 locations.' : ''}`,
       });
+      return payload.data;
     } catch (err) {
       if (requestId !== latestLoadRequestRef.current) return;
       setError((err as Error).message);
       setStaff([]);
       setLocations([]);
-      setNextLocationCursor(null);
       setSchedules([]);
       setShifts([]);
       setLoadedShiftScope(null);
@@ -567,32 +504,6 @@ function SchedulingContent() {
       if (requestId === latestLoadRequestRef.current) setIsLoading(false);
     }
   }, []);
-
-  const loadMoreLocations = useCallback(async () => {
-    if (!nextLocationCursor) return;
-    setIsLoadingMoreLocations(true);
-    setError(null);
-    try {
-      const payload = await fetchJsonWithSession<LocationPage>(
-        '/locations?limit=200&cursor=' + encodeURIComponent(nextLocationCursor),
-      );
-      const rows = Array.isArray(payload.data) ? payload.data : [];
-      const continuation = payload.pagination?.hasMore === true ? payload.pagination.nextCursor : null;
-      if (payload.pagination?.hasMore === true && (typeof continuation !== 'string' || !continuation)) {
-        throw new Error('Location list did not provide a continuation cursor.');
-      }
-      setLocations((current) => {
-        const byId = new Map(current.map((location) => [location.id, location]));
-        for (const location of rows) byId.set(location.id, location);
-        return [...byId.values()].sort((left, right) => left.name.localeCompare(right.name) || left.id.localeCompare(right.id));
-      });
-      setNextLocationCursor(continuation ?? null);
-    } catch (loadError) {
-      setError(loadError instanceof Error ? loadError.message : 'Unable to load more locations.');
-    } finally {
-      setIsLoadingMoreLocations(false);
-    }
-  }, [nextLocationCursor]);
 
   useEffect(() => {
     void loadSchedule(selectedDate, viewMode, shiftDraft.locationId || initialLocationId || undefined);
@@ -796,7 +707,11 @@ function SchedulingContent() {
     setScheduleStatus({ tone: 'saving', message: editingShiftId ? 'Saving shift changes...' : 'Creating and saving shift...' });
     try {
       if (editingShiftId) {
-        const updateRequest = {
+        const schedule = editingShiftSchedule;
+        if (!schedule) throw new Error('The shift schedule is no longer loaded.');
+        const operation: ScheduleChangeSetRequest['operations'][number] = {
+          op: 'shift.update',
+          shiftId: editingShiftId,
           startTime: range.startTime,
           endTime: range.endTime,
           userId: selectedStaff.id,
@@ -805,53 +720,76 @@ function SchedulingContent() {
         const updateAttempt = beginShiftUpdateAttempt(
           window.sessionStorage,
           editingShiftId,
-          updateRequest,
+          { scheduleId: schedule.id, operation },
           shiftUpdateAttemptsRef.current[editingShiftId],
         );
         shiftUpdateAttemptsRef.current[editingShiftId] = updateAttempt;
-        const updated = await fetchJsonWithSession<ShiftRecord>(
-          `/shifts/${editingShiftId}`,
-          withIdempotencyKey(jsonWriteInit('PUT', updateRequest), updateAttempt.key),
+        const updated = await apiV2.applyScheduleChangeSet(
+          schedule.id,
+          { operations: [operation] },
+          schedule.etag,
+          updateAttempt.key,
         );
         clearShiftUpdateAttempt(window.sessionStorage, editingShiftId, updateAttempt.key);
         if (shiftUpdateAttemptsRef.current[editingShiftId]?.key === updateAttempt.key) {
           delete shiftUpdateAttemptsRef.current[editingShiftId];
         }
         if (!scopeIsStillSelected(writeScope)) return;
-        setShifts((current) => current.map((shift) => (shift.id === editingShiftId ? updated : shift)));
+        setSchedules((current) => current.map((item) => item.id === schedule.id
+          ? { ...item, revision: updated.data.revision, etag: updated.data.etag }
+          : item));
+        setShifts((current) => [
+          ...current.filter((shift) => shift.scheduleId !== schedule.id),
+          ...updated.data.shifts,
+        ]);
         setScheduleStatus({ tone: 'saved', message: `Shift changes saved at ${formatStatusTime(new Date())}.` });
       } else {
         const createRequest = {
           locationId,
-          scheduleId: containingDraft?.id,
           userId: selectedStaff.id,
           role: nextRole,
           ...range,
         };
         const createAttempt = idempotentRequestAttempt(createRequest, shiftCreateAttemptRef.current);
         shiftCreateAttemptRef.current = createAttempt;
-        const created = await fetchJsonWithSession<ShiftRecord>(
-          '/shifts',
-          withIdempotencyKey(jsonWriteInit('POST', createRequest), createAttempt.key),
+        let schedule = containingDraft;
+        if (!schedule) {
+          const scheduleRange = fallbackDraftWindowForShift(range.startTime, range.endTime, draftTimeZone);
+          const createdSchedule = await apiV2.createSchedule(
+            locationId,
+            { startDate: scheduleRange.start, endDate: scheduleRange.end },
+            `${createAttempt.key}:schedule`,
+          );
+          schedule = createdSchedule.data;
+          if (scopeIsStillSelected(writeScope)) {
+            setSchedules((current) => current.some((item) => item.id === createdSchedule.data.id)
+              ? current
+              : [...current, createdSchedule.data]);
+          }
+        }
+        const created = await apiV2.applyScheduleChangeSet(
+          schedule.id,
+          {
+            operations: [{
+              op: 'shift.create',
+              clientId: createAttempt.key,
+              userId: selectedStaff.id,
+              role: nextRole,
+              startTime: range.startTime,
+              endTime: range.endTime,
+            }],
+          },
+          schedule.etag,
+          `${createAttempt.key}:shift`,
         );
         if (!scopeIsStillSelected(writeScope)) return;
-        setShifts((current) => [...current, created]);
-        if (created.scheduleId) {
-          const scheduleRange = fallbackDraftWindowForShift(created.startTime, created.endTime, draftTimeZone);
-          setSchedules((current) => current.some((schedule) => schedule.id === created.scheduleId)
-            ? current
-            : [
-              ...current,
-              {
-                id: created.scheduleId as string,
-                locationId: created.locationId,
-                startDate: scheduleRange.start,
-                endDate: scheduleRange.end,
-                status: 'DRAFT',
-                publishedAt: null,
-              },
-            ]);
-        }
+        setSchedules((current) => current.map((item) => item.id === schedule.id
+          ? { ...item, revision: created.data.revision, etag: created.data.etag }
+          : item));
+        setShifts((current) => [
+          ...current.filter((shift) => shift.scheduleId !== schedule.id),
+          ...created.data.shifts,
+        ]);
         shiftCreateAttemptRef.current = null;
         setScheduleStatus({ tone: 'saved', message: `Shift created and saved at ${formatStatusTime(new Date())}.` });
       }
@@ -865,7 +803,15 @@ function SchedulingContent() {
       }));
     } catch (err) {
       setError((err as Error).message);
-      setScheduleStatus({ tone: 'error', message: 'Shift save failed. Schedule was not changed.' });
+      setScheduleStatus({
+        tone: err instanceof ApiV2ClientError && err.status === 412 ? 'warning' : 'error',
+        message: err instanceof ApiV2ClientError && err.status === 412
+          ? 'The schedule changed elsewhere. Reloading the saved board.'
+          : 'Shift save failed. Schedule was not changed.',
+      });
+      if (err instanceof ApiV2ClientError && err.status === 412) {
+        void loadSchedule(selectedDate, viewMode, shiftDraft.locationId || undefined);
+      }
     }
   };
 
@@ -980,25 +926,24 @@ function SchedulingContent() {
         setScheduleStatus({ tone: 'warning', message: 'No shifts are loaded for break generation.' });
         return;
       }
-      const requestBody = { locationId: activeLocationId, shiftIds, persist: true };
+      const requestBody = { locationId: activeLocationId, shiftIds, persist: true as const };
       const refreshedLocationShifts = await executeBreakGenerationWithRecovery({
         requestBody,
         currentAttempt: breakGenerationAttemptRef.current,
         retainAttempt: (attempt) => {
           breakGenerationAttemptRef.current = attempt;
         },
-        postGeneration: (key) => fetchJsonWithSession<BreakGenerationResponse>('/lunch-breaks/generate', {
-          ...withIdempotencyKey(jsonWriteInit('POST', requestBody), key),
-        }),
+        postGeneration: (key) => apiV2.generateBreaks(requestBody, key),
         reconcile: async (generationResponse) => {
           assertBreakGenerationResponseScope(generationResponse, activeLocationId, shiftIds);
           if (!scopeIsStillSelected(generationScope)) return null;
-          const range = viewRange(selectedDate, viewMode, locationTimeZone(activeLocationId));
-          const refreshed = await fetchJsonWithSession<{ data: ShiftRecord[] }>(
-            buildLocationShiftQuery(range, activeLocationId),
+          const refreshed = await loadSchedule(
+            generationScope.dateValue,
+            generationScope.viewMode,
+            activeLocationId,
           );
           if (!scopeIsStillSelected(generationScope)) return null;
-          return shiftsForLocation(refreshed.data ?? [], activeLocationId);
+          return refreshed?.shifts ?? null;
         },
       });
       if (!refreshedLocationShifts) return;
@@ -1116,11 +1061,10 @@ function SchedulingContent() {
       );
       publishAttemptsRef.current[scheduleId] = publishAttempt;
       publishRequestStarted = true;
-      const publishedPayload = await fetchJsonWithSession<unknown>(
-        `/schedules/${scheduleId}/publish`,
-        withIdempotencyKey(jsonWriteInit('POST', {
-          acceptedContract: publishReview!.acceptedContract,
-        }), publishAttempt.key),
+      const publishedPayload = await apiV2.publishSchedule(
+        scheduleId,
+        { acceptedContract: publishReview!.acceptedContract },
+        publishAttempt.key,
       );
       const published = parseSchedulePublishResponse(scheduleId, publishedPayload);
       setSchedules((current) => current.map((item) => item.id === scheduleId
@@ -1152,7 +1096,11 @@ function SchedulingContent() {
       });
     } catch (err) {
       const error = err instanceof Error ? err : new Error('Schedule publication failed.');
-      const status = err instanceof ApiRequestError ? err.status : null;
+      const status = err instanceof ApiV2ClientError
+        ? err.status
+        : err instanceof ApiRequestError
+          ? err.status
+          : null;
       const failure = schedulePublishFailure(status, error.message);
       if (!publishRequestStarted) {
         setConfirmPublishScheduleId(null);
@@ -1202,11 +1150,17 @@ function SchedulingContent() {
     setError(null);
     setScheduleStatus({ tone: 'saving', message: 'Reopening published schedule for correction...' });
     try {
-      await fetchJsonWithSession(`/schedules/${scheduleId}/reopen`, {
-        ...jsonWriteInit('POST', {}),
-      });
+      const attempt = idempotentRequestAttempt(
+        { operation: 'schedule.reopen', scheduleId, etag: schedule.etag },
+        reopenAttemptsRef.current[scheduleId],
+      );
+      reopenAttemptsRef.current[scheduleId] = attempt;
+      const reopened = await apiV2.reopenSchedule(scheduleId, schedule.etag, attempt.key);
+      if (reopenAttemptsRef.current[scheduleId]?.key === attempt.key) {
+        delete reopenAttemptsRef.current[scheduleId];
+      }
       setSchedules((current) => current.map((item) => item.id === scheduleId
-        ? { ...item, status: 'DRAFT', publishedAt: null }
+        ? reopened.data
         : item));
       setPublishSettlementByScheduleId((current) => {
         const next = { ...current };
@@ -1225,7 +1179,15 @@ function SchedulingContent() {
     } catch (err) {
       setConfirmReopenScheduleId(null);
       setError((err as Error).message);
-      setScheduleStatus({ tone: 'error', message: 'Schedule could not be reopened.' });
+      setScheduleStatus({
+        tone: err instanceof ApiV2ClientError && err.status === 412 ? 'warning' : 'error',
+        message: err instanceof ApiV2ClientError && err.status === 412
+          ? 'The schedule changed elsewhere. Reloading before reopen.'
+          : 'Schedule could not be reopened.',
+      });
+      if (err instanceof ApiV2ClientError && err.status === 412) {
+        void loadSchedule(selectedDate, viewMode, shiftDraft.locationId || undefined);
+      }
     } finally {
       setIsReopening(false);
     }
@@ -1292,18 +1254,12 @@ function SchedulingContent() {
     const scheduleTimeZone = locationTimeZone(schedule.locationId);
     setScheduleStatus({ tone: 'saving', message: `Queueing auto-schedule for ${scheduleWindowLabel(schedule, scheduleTimeZone)}...` });
     try {
-      const requestInit = jsonWriteInit('POST', {
+      const queued = await apiV2.startScheduleSolve(scheduleId, {
         constraints: {},
         confirmReplace: requestAttempt.confirmReplace,
-      });
-      const requestHeaders = new Headers(requestInit.headers);
-      requestHeaders.set('Idempotency-Key', requestAttempt.key);
-      const queued = await fetchJsonWithSession<AutoScheduleResponse>(`/schedules/${scheduleId}/auto-schedule`, {
-        ...requestInit,
-        headers: requestHeaders,
-      });
+      }, requestAttempt.key);
       setConfirmReplaceScheduleId(null);
-      const statusPath = jobStatusPath(queued.statusUrl, scheduleId, queued.jobId);
+      const statusPath = queued.statusUrl;
       let latest: ScheduleSolveJobSnapshot = {
         jobId: queued.jobId,
         status: queued.status,
@@ -1324,7 +1280,7 @@ function SchedulingContent() {
 
       for (let attempt = 0; attempt < 30 && !isTerminalSolveStatus(latest.status); attempt += 1) {
         await sleep(attempt === 0 ? 1200 : 3000);
-        const polled = await fetchJsonWithSession<ScheduleSolveJobSnapshot>(statusPath);
+        const polled = await apiV2.getScheduleSolveJob(scheduleId, queued.jobId);
         latest = { ...polled, statusUrl: statusPath };
         if (solveIsCurrent()) {
           setSolveJobsByScheduleId((current) => ({ ...current, [scheduleId]: latest }));
@@ -1381,21 +1337,15 @@ function SchedulingContent() {
         let statusPath = recovery.statusUrl;
         try {
           if (!jobId) {
-            const requestInit = jsonWriteInit('POST', {
+            const queued = await apiV2.startScheduleSolve(schedule.id, {
               constraints: {},
               confirmReplace: recovery.confirmReplace,
-            });
-            const headers = new Headers(requestInit.headers);
-            headers.set('Idempotency-Key', recovery.attemptKey);
-            const queued = await fetchJsonWithSession<AutoScheduleResponse>(
-              `/schedules/${schedule.id}/auto-schedule`,
-              { ...requestInit, headers },
-            );
+            }, recovery.attemptKey);
             jobId = queued.jobId;
-            statusPath = jobStatusPath(queued.statusUrl, schedule.id, queued.jobId);
+            statusPath = queued.statusUrl;
           }
           if (!jobId) return;
-          statusPath = jobStatusPath(statusPath, schedule.id, jobId);
+          statusPath = `/api/v2/schedules/${encodeURIComponent(schedule.id)}/solve-jobs/${encodeURIComponent(jobId)}`;
           saveAutoScheduleRecovery(window.sessionStorage, {
             scheduleId: schedule.id,
             attemptKey: recovery.attemptKey,
@@ -1409,7 +1359,7 @@ function SchedulingContent() {
           setSolveJobsByScheduleId((current) => ({ ...current, [schedule.id]: latest }));
           for (let attempt = 0; attempt < 120 && !isTerminalSolveStatus(latest.status); attempt += 1) {
             if (attempt > 0) await sleep(3000);
-            const polled = await fetchJsonWithSession<ScheduleSolveJobSnapshot>(statusPath);
+            const polled = await apiV2.getScheduleSolveJob(schedule.id, jobId);
             latest = { ...polled, statusUrl: statusPath };
             setSolveJobsByScheduleId((current) => ({ ...current, [schedule.id]: latest }));
           }
@@ -1449,14 +1399,20 @@ function SchedulingContent() {
     setError(null);
     setScheduleStatus({ tone: 'saving', message: 'Creating a draft schedule...' });
     try {
-      const created = await fetchJsonWithSession<ScheduleRecord>('/schedules', {
-        ...jsonWriteInit('POST', {
-          locationId: location.id,
-          startDate: selectedDate,
-          endDate: addLocalDays(selectedDate, 7),
-        }),
-      });
-      setSchedules((current) => [...current, created]);
+      const range = localDateRange(selectedDate, 7, safeTimeZone(location.timezone));
+      const request = { startDate: range.start, endDate: range.end };
+      const attempt = idempotentRequestAttempt(
+        { locationId: location.id, request },
+        scheduleCreateAttemptsRef.current[location.id],
+      );
+      scheduleCreateAttemptsRef.current[location.id] = attempt;
+      const created = await apiV2.createSchedule(location.id, request, attempt.key);
+      if (scheduleCreateAttemptsRef.current[location.id]?.key === attempt.key) {
+        delete scheduleCreateAttemptsRef.current[location.id];
+      }
+      setSchedules((current) => current.some((item) => item.id === created.data.id)
+        ? current
+        : [...current, created.data]);
       setScheduleStatus({ tone: 'saved', message: 'Draft schedule created. Add demand before auto-scheduling.' });
     } catch (err) {
       setError((err as Error).message);
@@ -1474,6 +1430,11 @@ function SchedulingContent() {
       setScheduleStatus({ tone: 'warning', message: 'Published schedule shifts cannot be moved.' });
       return;
     }
+    const schedule = schedules.find((item) => item.id === shift?.scheduleId);
+    if (!shift || !schedule) {
+      setError('The shift schedule is no longer loaded.');
+      return;
+    }
     const nextUserId = userId === UNASSIGNED_RESOURCE_ID ? null : userId;
     const selectedStaff = nextUserId ? schedulableStaff.find((person) => person.id === nextUserId) ?? null : null;
     setScheduleStatus({ tone: 'saving', message: 'Saving board change...' });
@@ -1481,7 +1442,9 @@ function SchedulingContent() {
       previous.map((shift) => (shift.id === id ? applyStaffToShift({ ...shift, startTime: start, endTime: end }, selectedStaff) : shift)),
     );
     try {
-      const updateRequest = {
+      const operation: ScheduleChangeSetRequest['operations'][number] = {
+        op: 'shift.update',
+        shiftId: id,
         startTime: start,
         endTime: end,
         userId: nextUserId,
@@ -1489,20 +1452,28 @@ function SchedulingContent() {
       const updateAttempt = beginShiftUpdateAttempt(
         window.sessionStorage,
         id,
-        updateRequest,
+        { scheduleId: schedule.id, operation },
         shiftUpdateAttemptsRef.current[id],
       );
       shiftUpdateAttemptsRef.current[id] = updateAttempt;
-      const updated = await fetchJsonWithSession<ShiftRecord>(
-        `/shifts/${id}`,
-        withIdempotencyKey(jsonWriteInit('PUT', updateRequest), updateAttempt.key),
+      const updated = await apiV2.applyScheduleChangeSet(
+        schedule.id,
+        { operations: [operation] },
+        schedule.etag,
+        updateAttempt.key,
       );
       clearShiftUpdateAttempt(window.sessionStorage, id, updateAttempt.key);
       if (shiftUpdateAttemptsRef.current[id]?.key === updateAttempt.key) {
         delete shiftUpdateAttemptsRef.current[id];
       }
       if (!scopeIsStillSelected(writeScope)) return;
-      setShifts((previous) => previous.map((shift) => (shift.id === id ? updated : shift)));
+      setSchedules((current) => current.map((item) => item.id === schedule.id
+        ? { ...item, revision: updated.data.revision, etag: updated.data.etag }
+        : item));
+      setShifts((current) => [
+        ...current.filter((item) => item.scheduleId !== schedule.id),
+        ...updated.data.shifts,
+      ]);
       setScheduleStatus({ tone: 'saved', message: `Board change saved at ${formatStatusTime(new Date())}.` });
     } catch (err) {
       setError((err as Error).message);
@@ -1525,17 +1496,43 @@ function SchedulingContent() {
       setScheduleStatus({ tone: 'warning', message: 'Published schedule shifts cannot be deleted.' });
       return;
     }
+    const schedule = schedules.find((item) => item.id === shift.scheduleId);
+    if (!schedule) {
+      setError('The shift schedule is no longer loaded.');
+      return;
+    }
     setError(null);
     setScheduleStatus({ tone: 'saving', message: 'Deleting shift...' });
     try {
-      const response = await fetchWithSession(`/shifts/${id}`, deleteWriteInit());
-      if (!response.ok) {
-        const payload = await response.json().catch(() => ({}));
-        const message = (payload as any)?.message;
-        throw new Error(typeof message === 'string' ? message : `Request failed (${response.status})`);
+      const operation: ScheduleChangeSetRequest['operations'][number] = {
+        op: 'shift.delete',
+        shiftId: id,
+      };
+      const attempt = beginShiftUpdateAttempt(
+        window.sessionStorage,
+        id,
+        { scheduleId: schedule.id, operation },
+        shiftUpdateAttemptsRef.current[id],
+      );
+      shiftUpdateAttemptsRef.current[id] = attempt;
+      const deleted = await apiV2.applyScheduleChangeSet(
+        schedule.id,
+        { operations: [operation] },
+        schedule.etag,
+        attempt.key,
+      );
+      clearShiftUpdateAttempt(window.sessionStorage, id, attempt.key);
+      if (shiftUpdateAttemptsRef.current[id]?.key === attempt.key) {
+        delete shiftUpdateAttemptsRef.current[id];
       }
       if (!scopeIsStillSelected(writeScope)) return;
-      setShifts((previous) => previous.filter((item) => item.id !== id));
+      setSchedules((current) => current.map((item) => item.id === schedule.id
+        ? { ...item, revision: deleted.data.revision, etag: deleted.data.etag }
+        : item));
+      setShifts((current) => [
+        ...current.filter((item) => item.scheduleId !== schedule.id),
+        ...deleted.data.shifts,
+      ]);
       if (editingShiftId === id) {
         setShowShiftForm(false);
         setEditingShiftId(null);
@@ -1599,12 +1596,6 @@ function SchedulingContent() {
                 </button>
               ))}
             </div>
-
-            {nextLocationCursor ? (
-              <Button variant="outline" onClick={() => void loadMoreLocations()} disabled={isLoadingMoreLocations}>
-                {isLoadingMoreLocations ? 'Loading locations...' : 'Load more locations'}
-              </Button>
-            ) : null}
 
             <Button variant="secondary" onClick={handleRefresh} disabled={isLoading || isRefreshing}>
               {isLoading || isRefreshing ? 'Reloading...' : 'Reload'}

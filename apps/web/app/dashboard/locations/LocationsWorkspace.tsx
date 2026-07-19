@@ -14,6 +14,7 @@ type LocationsWorkspaceProps = {
 
 type ApiLocation = {
     id: string;
+    publicId?: string;
     name: string;
     address?: string | null;
     timezone?: string | null;
@@ -262,7 +263,9 @@ export function LocationsWorkspace({ canWrite, canDelete }: LocationsWorkspacePr
                         </div>
 
                         <div style={{ display: 'flex', gap: '0.5rem', paddingTop: '0.2rem', flexWrap: 'wrap' }}>
-                            <Link href={`/dashboard/scheduling?location=${location.id}`} className="btn btn-secondary">
+                            <Link href={location.publicId
+                                ? `/dashboard/scheduling?location=${location.publicId}`
+                                : '/dashboard/scheduling'} className="btn btn-secondary">
                                 View schedule
                             </Link>
                             <LocationLifecycleActions

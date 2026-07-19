@@ -46,6 +46,7 @@ permissions:
 env:
   REGISTRY: ghcr.io
   IMAGE_PREFIX: ghcr.io/tuckerplee/lunchlineup
+  DEPLOY_RELEASE_SHA: ${{ github.sha }}
   ZAP_IMAGE: ${{ vars.ZAP_IMAGE }}
   ARTILLERY_IMAGE: artilleryio/artillery:2.0.33@sha256:ee382d480f5cb8473c52fe94cb8e1505a9564ce2accbc94114098e0be06dff56
   RELEASE_BUNDLE_CERTIFICATE_IDENTITY: https://github.com/${{ github.repository }}/.github/workflows/ci.yml@refs/heads/main
@@ -249,6 +250,7 @@ jobs:
       packages: write
     outputs:
       api_ref: ${{ steps.release_manifest.outputs.api_ref }}
+      api_v2_ref: ${{ steps.release_manifest.outputs.api_v2_ref }}
       web_ref: ${{ steps.release_manifest.outputs.web_ref }}
       engine_ref: ${{ steps.release_manifest.outputs.engine_ref }}
       worker_ref: ${{ steps.release_manifest.outputs.worker_ref }}
@@ -271,6 +273,18 @@ jobs:
           file: infrastructure/docker/Dockerfile.api
           push: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
           tags: ${{ env.IMAGE_PREFIX }}/api:${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: Build & Push API v2
+        id: build_api_v2
+        uses: docker/build-push-action@ca052bb54ab0790a636c9b5f226502c73d547a25 # v5
+        with:
+          context: .
+          file: infrastructure/docker/Dockerfile.api-v2
+          push: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+          tags: ${{ env.IMAGE_PREFIX }}/api-v2:${{ github.sha }}
+          build-args: |
+            VCS_REF=${{ github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
       - name: Verify web public build config
@@ -388,6 +402,7 @@ jobs:
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         env:
           API_DIGEST: ${{ steps.build_api.outputs.digest }}
+          API_V2_DIGEST: ${{ steps.build_api_v2.outputs.digest }}
           WEB_DIGEST: ${{ steps.build_web.outputs.digest }}
           ENGINE_DIGEST: ${{ steps.build_engine.outputs.digest }}
           WORKER_DIGEST: ${{ steps.build_worker.outputs.digest }}
@@ -440,6 +455,7 @@ jobs:
           )"
           deployment_contract="$(RELEASE_REQUIRE_TRACKED_INPUTS=true node scripts/write-deployment-contract.mjs --bundle-output .release/deployment-contract.bundle.json)"
           API_REF="${IMAGE_PREFIX}/api:${GITHUB_SHA}@${API_DIGEST}"
+          API_V2_REF="${IMAGE_PREFIX}/api-v2:${GITHUB_SHA}@${API_V2_DIGEST}"
           WEB_REF="${IMAGE_PREFIX}/web:${GITHUB_SHA}@${WEB_DIGEST}"
           ENGINE_REF="${IMAGE_PREFIX}/engine:${GITHUB_SHA}@${ENGINE_DIGEST}"
           WORKER_REF="${IMAGE_PREFIX}/worker:${GITHUB_SHA}@${WORKER_DIGEST}"
@@ -457,6 +473,7 @@ jobs:
             "deploymentContract": ${deployment_contract},
             "images": {
               "api": { "ref": "${API_REF}", "digest": "${API_DIGEST}", "dockerfile": "infrastructure/docker/Dockerfile.api" },
+              "api-v2": { "ref": "${API_V2_REF}", "digest": "${API_V2_DIGEST}", "dockerfile": "infrastructure/docker/Dockerfile.api-v2" },
               "web": { "ref": "${WEB_REF}", "digest": "${WEB_DIGEST}", "dockerfile": "infrastructure/docker/Dockerfile.web" },
               "engine": { "ref": "${ENGINE_REF}", "digest": "${ENGINE_DIGEST}", "dockerfile": "infrastructure/docker/Dockerfile.engine" },
               "worker": { "ref": "${WORKER_REF}", "digest": "${WORKER_DIGEST}", "dockerfile": "infrastructure/docker/Dockerfile.worker" },
@@ -468,6 +485,7 @@ jobs:
           JSON
           {
             echo "api_ref=${API_REF}"
+            echo "api_v2_ref=${API_V2_REF}"
             echo "web_ref=${WEB_REF}"
             echo "engine_ref=${ENGINE_REF}"
             echo "worker_ref=${WORKER_REF}"
@@ -595,6 +613,7 @@ jobs:
       - name: Pull smoke stack images by digest
         env:
           API_IMAGE_REF: ${{ needs.build-images.outputs.api_ref }}
+          API_V2_IMAGE_REF: ${{ needs.build-images.outputs.api_v2_ref }}
           WEB_IMAGE_REF: ${{ needs.build-images.outputs.web_ref }}
           ENGINE_IMAGE_REF: ${{ needs.build-images.outputs.engine_ref }}
           WORKER_IMAGE_REF: ${{ needs.build-images.outputs.worker_ref }}
@@ -603,15 +622,15 @@ jobs:
           BACKUP_IMAGE_REF: ${{ needs.build-images.outputs.backup_ref }}
         run: |
           set -euo pipefail
-          for ref in "$API_IMAGE_REF" "$WEB_IMAGE_REF" "$ENGINE_IMAGE_REF" "$WORKER_IMAGE_REF" "$MIGRATE_IMAGE_REF" "$CONTROL_IMAGE_REF" "$BACKUP_IMAGE_REF"; do
+          for ref in "$API_IMAGE_REF" "$API_V2_IMAGE_REF" "$WEB_IMAGE_REF" "$ENGINE_IMAGE_REF" "$WORKER_IMAGE_REF" "$MIGRATE_IMAGE_REF" "$CONTROL_IMAGE_REF" "$BACKUP_IMAGE_REF"; do
             docker pull "$ref"
           done
-          for service in api web engine worker migrate control backup; do
+          for service in api api-v2 web engine worker migrate control backup; do
             docker image inspect "${IMAGE_PREFIX}/${service}:${IMAGE_TAG}" > /dev/null
           done
           docker compose --env-file .env.smoke pull proxy pgbouncer postgres redis rabbitmq
       - name: Start smoke stack
-        run: docker compose --env-file .env.smoke up -d --no-build --pull never migrate proxy web api engine worker pgbouncer postgres redis rabbitmq
+        run: docker compose --env-file .env.smoke up -d --no-build --pull never migrate proxy web api api-v2 engine worker pgbouncer postgres redis rabbitmq
       - name: Wait for smoke target
         run: |
           for attempt in {1..60}; do
@@ -707,6 +726,7 @@ jobs:
       - name: Pull release stack by digest
         env:
           API_IMAGE_REF: ${{ needs.build-images.outputs.api_ref }}
+          API_V2_IMAGE_REF: ${{ needs.build-images.outputs.api_v2_ref }}
           WEB_IMAGE_REF: ${{ needs.build-images.outputs.web_ref }}
           ENGINE_IMAGE_REF: ${{ needs.build-images.outputs.engine_ref }}
           WORKER_IMAGE_REF: ${{ needs.build-images.outputs.worker_ref }}
@@ -715,12 +735,12 @@ jobs:
           BACKUP_IMAGE_REF: ${{ needs.build-images.outputs.backup_ref }}
         run: |
           set -euo pipefail
-          for ref in "$API_IMAGE_REF" "$WEB_IMAGE_REF" "$ENGINE_IMAGE_REF" "$WORKER_IMAGE_REF" "$MIGRATE_IMAGE_REF" "$CONTROL_IMAGE_REF" "$BACKUP_IMAGE_REF"; do
+          for ref in "$API_IMAGE_REF" "$API_V2_IMAGE_REF" "$WEB_IMAGE_REF" "$ENGINE_IMAGE_REF" "$WORKER_IMAGE_REF" "$MIGRATE_IMAGE_REF" "$CONTROL_IMAGE_REF" "$BACKUP_IMAGE_REF"; do
             docker pull "$ref"
           done
           docker compose --env-file .env.smoke pull proxy pgbouncer postgres redis rabbitmq
       - name: Start full-stack release images
-        run: docker compose --env-file .env.smoke up -d --no-build --pull never migrate proxy web api engine worker pgbouncer postgres redis rabbitmq
+        run: docker compose --env-file .env.smoke up -d --no-build --pull never migrate proxy web api api-v2 engine worker pgbouncer postgres redis rabbitmq
       - name: Wait for full-stack target
         run: |
           for attempt in {1..60}; do
@@ -779,6 +799,7 @@ jobs:
       - name: Pull smoke stack images by digest
         env:
           API_IMAGE_REF: ${{ needs.build-images.outputs.api_ref }}
+          API_V2_IMAGE_REF: ${{ needs.build-images.outputs.api_v2_ref }}
           WEB_IMAGE_REF: ${{ needs.build-images.outputs.web_ref }}
           ENGINE_IMAGE_REF: ${{ needs.build-images.outputs.engine_ref }}
           WORKER_IMAGE_REF: ${{ needs.build-images.outputs.worker_ref }}
@@ -787,15 +808,15 @@ jobs:
           BACKUP_IMAGE_REF: ${{ needs.build-images.outputs.backup_ref }}
         run: |
           set -euo pipefail
-          for ref in "$API_IMAGE_REF" "$WEB_IMAGE_REF" "$ENGINE_IMAGE_REF" "$WORKER_IMAGE_REF" "$MIGRATE_IMAGE_REF" "$CONTROL_IMAGE_REF" "$BACKUP_IMAGE_REF"; do
+          for ref in "$API_IMAGE_REF" "$API_V2_IMAGE_REF" "$WEB_IMAGE_REF" "$ENGINE_IMAGE_REF" "$WORKER_IMAGE_REF" "$MIGRATE_IMAGE_REF" "$CONTROL_IMAGE_REF" "$BACKUP_IMAGE_REF"; do
             docker pull "$ref"
           done
-          for service in api web engine worker migrate control backup; do
+          for service in api api-v2 web engine worker migrate control backup; do
             docker image inspect "${IMAGE_PREFIX}/${service}:${IMAGE_TAG}" > /dev/null
           done
           docker compose --env-file .env.smoke pull proxy pgbouncer postgres redis rabbitmq
       - name: Start smoke stack
-        run: docker compose --env-file .env.smoke up -d --no-build --pull never migrate proxy web api engine worker pgbouncer postgres redis rabbitmq
+        run: docker compose --env-file .env.smoke up -d --no-build --pull never migrate proxy web api api-v2 engine worker pgbouncer postgres redis rabbitmq
       - name: Wait for smoke target
         run: |
           for attempt in {1..60}; do
@@ -2364,7 +2385,7 @@ jobs:
           path: ${{ runner.temp }}/lunchlineup-rollback-handoff
       - name: Materialize retained automatic rollback baseline
         id: materialize_automatic_rollback
-        if: always() && steps.download_automatic_rollback_handoff.outcome == 'success'
+        if: always() && steps.download_automatic_rollback_handoff.outcome == 'success' && (steps.same_gate_release_outcome.outcome != 'success' || steps.same_gate_release_outcome.outputs.rollback_required == 'true')
         run: |
           set -euo pipefail
           rollback_handoff="$RUNNER_TEMP/lunchlineup-rollback-handoff"

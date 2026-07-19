@@ -70,6 +70,22 @@
     }
   },
   "expandContract": {
+    "packages/db/prisma/migrations/20260718_api_v2_schedule_change_sets.sql": {
+      "sha256": "b962eb04a64ccb52b6932ef3db5ae826fafd68e0d01b3200f35623fd8055b602",
+      "phase": "expand",
+      "rollbackSchema": "retain",
+      "contractPhase": "after-rollback-window",
+      "requiresOldReleaseProof": true,
+      "rationale": "API v2 change-set RLS and validation remain during rollback while the old-release ignores the new table; isolated old-release proof is required before production mutation."
+    },
+    "packages/db/prisma/migrations/pre_20260718_api_v2_public_ids.sql": {
+      "sha256": "737881aadbc1be3fea6cf311063cc046d213e52fc5a95b800d13f0aa3ee68946",
+      "phase": "expand",
+      "rollbackSchema": "retain",
+      "contractPhase": "after-rollback-window",
+      "requiresOldReleaseProof": true,
+      "rationale": "opaque public identifier backfills and old-writer-compatible defaults remain during rollback; isolated old-release proof is required before production mutation."
+    },
     "packages/db/prisma/migrations/20260709_yyyyyy_schedule_solve_credit_refund_provenance_guard.sql": {
       "sha256": "051b3460cfcabe00a4eacf5289d4b8b89703f4f945deaa489b9242e7674f74ff",
       "phase": "expand-contract",

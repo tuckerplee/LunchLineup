@@ -43,12 +43,16 @@ curl -fsSL https://raw.githubusercontent.com/tuckerplee/LunchLineup/migration-te
 chmod +x /tmp/bootstrap-vm107-dev.sh
 sudo env \
   BRANCH=migration-testing-baseline \
+  HOST_HEADER=beta.lunchlineup.com \
+  PUBLIC_APP_ORIGIN=https://beta.lunchlineup.com \
   BACKUP_FILE=/path/to/lunchlineup.sql.zst.gpg \
   BACKUP_ENCRYPTION_KEY="$(sudo cat /run/secrets/lunchlineup-dev-backup-key)" \
   /tmp/bootstrap-vm107-dev.sh
 ```
 
 If the data volume is intentionally empty, omit `BACKUP_FILE` and import dev data later.
+
+`PUBLIC_APP_ORIGIN` is the exact browser-visible origin used by CORS, CSRF, redirects, and secure-cookie policy. The bootstrap derives `COOKIE_SECURE=true` for HTTPS. Leave it unset for the private `http://dev.lunchlineup.com` default; set it to `https://beta.lunchlineup.com` when VM107 is the beta origin behind Cloudflare.
 
 ## Validation
 
@@ -61,6 +65,7 @@ hostname
 docker compose ps
 curl -fsS http://127.0.0.1/health
 curl -fsS -H 'Host: dev.lunchlineup.com' http://127.0.0.1/health
+curl -fsS -H 'Host: beta.lunchlineup.com' http://127.0.0.1/api/v2/live
 ```
 
 From a private network client:

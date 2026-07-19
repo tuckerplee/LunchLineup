@@ -46,6 +46,11 @@ http://127.0.0.1:2015 {
 		reverse_proxy api:3000
 	}
 
+	handle /api/v2/* {
+		uri strip_prefix /api
+		reverse_proxy api-v2:3002
+	}
+
 	handle /api/v1/* {
 		uri strip_prefix /api
 		reverse_proxy api:3000

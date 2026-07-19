@@ -33,6 +33,7 @@ function requireBrowserProtocol(origin, label, allowedProtocols) {
 }
 
 const internalApiUrl = serverHttpUrl(process.env.INTERNAL_API_URL || 'http://api:3000/v1');
+const internalApiV2Url = serverHttpUrl(process.env.INTERNAL_API_V2_URL || 'http://api-v2:3002/v2');
 const configuredConnectOrigins = [
     requireBrowserProtocol(
         browserOrigin(process.env.NEXT_PUBLIC_API_URL),
@@ -138,6 +139,10 @@ const nextConfig = {
     // Proxy API requests from the Next.js server to the Docker API service.
     async rewrites() {
         return [
+            {
+                source: '/api/v2/:path*',
+                destination: `${internalApiV2Url}/:path*`,
+            },
             {
                 source: '/api/v1/:path*',
                 destination: `${internalApiUrl}/:path*`,

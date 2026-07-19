@@ -31,7 +31,7 @@ variable "domain_name" {
 }
 
 variable "image_digests" {
-  description = "Immutable image references keyed by service name. Required keys are api, web, engine, worker, control, and migrate."
+  description = "Immutable image references keyed by service name. Required keys are api, api-v2, web, engine, worker, control, and migrate."
   type        = map(string)
   default     = {}
 }
@@ -85,7 +85,7 @@ variable "operator_runbook_url" {
 }
 
 locals {
-  required_services   = toset(["api", "web", "engine", "worker", "control", "migrate"])
+  required_services   = toset(["api", "api-v2", "web", "engine", "worker", "control", "migrate"])
   placeholder_pattern = "(^|[^a-z0-9])(todo|tbd|change[_ -]?me|example|placeholder|dummy|none|unset|localhost|local)([^a-z0-9]|$)"
 
   image_digest_ready = alltrue([

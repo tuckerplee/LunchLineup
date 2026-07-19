@@ -318,18 +318,39 @@ remote_sha256_file() {
   local path="$1"
   local output
   local digest
-  output="$(run_transport_mutation_step vm217_run_ssh "remote deployment input checksum readback" \
-    "${SSH_OPTIONS[@]}" "$SSH_TARGET" sha256sum -- "$path")"
+  local readback_status=0
+  if output="$(run_transport_mutation_step vm217_run_ssh "remote deployment input checksum readback" \
+    "${SSH_OPTIONS[@]}" "$SSH_TARGET" sha256sum -- "$path")"; then
+    :
+  else
+    readback_status=$?
+    return "$readback_status"
+  fi
   read -r digest _ <<< "$output"
   [[ "$digest" =~ ^[a-fA-F0-9]{64}$ ]] || fail "VM217 returned an invalid SHA-256 result."
   printf '%s' "$digest"
 }
 
-[[ "$(remote_sha256_file "$REMOTE_MANIFEST")" == "$MANIFEST_SHA256" ]] || fail "Release manifest changed in transport."
-[[ "$(remote_sha256_file "$REMOTE_RUNTIME_ENV")" == "$RUNTIME_ENV_SHA256" ]] || fail "Runtime environment changed in transport."
-[[ "$(remote_sha256_file "$REMOTE_LAUNCH_PROOF")" == "$LAUNCH_PROOF_SHA256" ]] || fail "Launch proof changed in transport."
-[[ "$(remote_sha256_file "$REMOTE_PROTECTED_CHANNEL")" == "$PROTECTED_CHANNEL_SHA256" ]] || fail "Protected launch-proof channel changed in transport."
-[[ "$(remote_sha256_file "$REMOTE_ENTRYPOINT_PATH")" == "$ENTRYPOINT_SHA256" ]] || fail "Remote deployment entrypoint does not match the checked-in runner copy."
+verify_remote_sha256_file() {
+  local path="$1"
+  local expected="$2"
+  local mismatch_message="$3"
+  local actual
+  local readback_status=0
+  if actual="$(remote_sha256_file "$path")"; then
+    :
+  else
+    readback_status=$?
+    return "$readback_status"
+  fi
+  [[ "$actual" == "$expected" ]] || fail "$mismatch_message"
+}
+
+verify_remote_sha256_file "$REMOTE_MANIFEST" "$MANIFEST_SHA256" "Release manifest changed in transport."
+verify_remote_sha256_file "$REMOTE_RUNTIME_ENV" "$RUNTIME_ENV_SHA256" "Runtime environment changed in transport."
+verify_remote_sha256_file "$REMOTE_LAUNCH_PROOF" "$LAUNCH_PROOF_SHA256" "Launch proof changed in transport."
+verify_remote_sha256_file "$REMOTE_PROTECTED_CHANNEL" "$PROTECTED_CHANNEL_SHA256" "Protected launch-proof channel changed in transport."
+verify_remote_sha256_file "$REMOTE_ENTRYPOINT_PATH" "$ENTRYPOINT_SHA256" "Remote deployment entrypoint does not match the checked-in runner copy."
 
 if [[ -n "${LAUNCH_PROOF_MAX_AGE_SECONDS:-}" && ! "${LAUNCH_PROOF_MAX_AGE_SECONDS}" =~ ^[1-9][0-9]*$ ]]; then
   fail "LAUNCH_PROOF_MAX_AGE_SECONDS must be a positive integer when provided."

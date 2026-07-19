@@ -36,7 +36,8 @@ LunchLineup utilizes a **Turborepo** monorepo structure, orchestrating a suite o
 
 ### The Stack
 *   **Web (Frontend)**: Next.js 14+ (React), Tailwind CSS, Zod.
-*   **API Gateway**: NestJS (TypeScript), REST & GraphQL.
+*   **API v2**: Fastify (TypeScript), TypeBox/OpenAPI 3.1 contracts, generated browser client, aggregate resources, optimistic concurrency, and idempotency.
+*   **Retained API v1**: NestJS (TypeScript) application API being replaced module by module.
 *   **Engine**: Python 3.12 (FastAPI), used for complex scheduling algorithms, constraint solving, and data extraction.
 *   **Worker**: Python background job consumer for scheduling, email, PDF, billing, and webhook jobs.
 *   **Database**: PostgreSQL 16 with Row-Level Security (RLS) managed via Prisma ORM.
@@ -52,11 +53,13 @@ lunchlineup/
 ├── .github/               # CI/CD, CodeQL, and Dependabot automation
 ├── apps/
 │   ├── web/               # Next.js user-facing frontend
-│   ├── api/               # NestJS API Gateway
+│   ├── api/               # Retained NestJS API v1
+│   ├── api-v2/            # Contract-first Fastify API v2
 │   ├── engine/            # Python scheduling/optimization engine
 │   ├── worker/            # Background job processor
 │   └── control-plane/     # Out-of-band infrastructure management (Port 300X)
 ├── packages/
+│   ├── api-contract/      # Shared v2 schemas and generated browser client
 │   ├── db/                # Prisma schema, migrations, and generated client
 │   ├── config/            # 3-layer hierarchical configuration engine
 │   ├── rbac/              # Policy-based permission definitions
