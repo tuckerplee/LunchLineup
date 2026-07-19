@@ -23,7 +23,7 @@ Assumptions:
 - The VM has or will receive `10.231.10.108/24`, gateway `10.231.10.1`, and DNS `10.231.10.20`.
 - DNS on CT930 and proxy routing on CT940 still target `10.231.10.108`.
 - Existing data is already available as `.sql`, `.sql.zst`, or `.sql.zst.gpg`.
-- Runtime provider secrets are either already in `/opt/lunchlineup-secrets/runtime.env` or acceptable as private-dev placeholders.
+- Runtime provider secrets are already in `/opt/lunchlineup-secrets/runtime.env`. Private-dev placeholders are acceptable only for private development origins; `beta.lunchlineup.com` requires a valid Resend API key and a provider-verified `EMAIL_FROM` sender.
 
 Recovery objective:
 
@@ -53,6 +53,8 @@ sudo env \
 If the data volume is intentionally empty, omit `BACKUP_FILE` and import dev data later.
 
 `PUBLIC_APP_ORIGIN` is the exact browser-visible origin used by CORS, CSRF, redirects, and secure-cookie policy. The bootstrap derives `COOKIE_SECURE=true` for HTTPS. Leave it unset for the private `http://dev.lunchlineup.com` default; set it to `https://beta.lunchlineup.com` when VM107 is the beta origin behind Cloudflare.
+
+Before bootstrapping `beta.lunchlineup.com`, securely provision a valid `RESEND_API_KEY`, `RESEND_WEBHOOK_SECRET`, and provider-verified `EMAIL_FROM` in the root-only runtime environment. Do not rely on the disposable-development placeholder values for a browser-visible beta host; email OTP and password-reset delivery require real provider credentials.
 
 ## Validation
 

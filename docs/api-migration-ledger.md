@@ -61,7 +61,7 @@ API-02-LOC native slice: `/v2/locations` now owns list, summary, create, read, u
 
 ## Current known operational residuals
 
-- Beta email OTP delivery: `POST /v2/auth/email/send-otp` currently returns a service-unavailable problem because the existing outbound email delivery provider is unavailable in beta. API-02-AUTH retains this operation until its native owner and transport are addressed. The beta password sign-in path remains verified.
+- Beta email OTP delivery: `POST /v2/auth/email/send-otp` remains unavailable until VM107 receives a valid Resend API key and a provider-verified sender. The API container now resolves and reaches `api.resend.com`; the current runtime key is rejected by the provider with `400 validation_error: API key is invalid`. API-02-AUTH retains this operation until its native owner and transport are addressed. The beta password sign-in path remains verified.
 
 ## API-03 — Retire public API v1 exposure
 
