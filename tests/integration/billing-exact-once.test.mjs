@@ -125,6 +125,7 @@ CREATE TABLE public."AuditLog" (
 CREATE TABLE public."User" (
   "id" TEXT PRIMARY KEY,
   "tenantId" TEXT NOT NULL REFERENCES public."Tenant"("id"),
+  "role" TEXT NOT NULL DEFAULT 'STAFF',
   "deletedAt" TIMESTAMP(3),
   "suspendedAt" TIMESTAMP(3)
 );
