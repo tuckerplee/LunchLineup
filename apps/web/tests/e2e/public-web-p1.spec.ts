@@ -7,7 +7,7 @@ async function resetMockState(page: Page) {
 }
 
 async function mockLoginResolve(page: Page, flow: 'PIN' | 'USERNAME_PASSWORD' | 'EMAIL_OTP', identifier: string) {
-  await page.route('**/api/v1/auth/login/resolve', async (route) => {
+  await page.route('**/api/v2/auth/login/resolve', async (route) => {
     const payload = route.request().postDataJSON() as { identifier?: string; tenantSlug?: string };
     expect(payload.tenantSlug).toBe(e2eTenantSlug);
     await route.fulfill({
@@ -66,7 +66,7 @@ test.describe('validated public-web P1 regressions', () => {
     const redirectTo = '/status?source=pin';
     let attempts = 0;
     await mockLoginResolve(page, 'PIN', e2eAdminUsername);
-    await page.route('**/api/v1/auth/pin/verify**', async (route) => {
+    await page.route('**/api/v2/auth/pin/verify**', async (route) => {
       attempts += 1;
       const payload = route.request().postDataJSON() as Record<string, string>;
       expect(payload).toMatchObject({ identifier: e2eAdminUsername, tenantSlug: e2eTenantSlug, pin: e2eAdminPin });
@@ -95,7 +95,7 @@ test.describe('validated public-web P1 regressions', () => {
     const password = 'migrated-password';
     let attempts = 0;
     await mockLoginResolve(page, 'USERNAME_PASSWORD', e2eAdminUsername);
-    await page.route('**/api/v1/auth/password/verify**', async (route) => {
+    await page.route('**/api/v2/auth/password/verify**', async (route) => {
       attempts += 1;
       const payload = route.request().postDataJSON() as Record<string, string>;
       expect(payload).toMatchObject({ identifier: e2eAdminUsername, tenantSlug: e2eTenantSlug, password });
@@ -133,7 +133,7 @@ test.describe('validated public-web P1 regressions', () => {
     const email = 'manager@example.com';
     let attempts = 0;
     await mockLoginResolve(page, 'EMAIL_OTP', email);
-    await page.route('**/api/v1/auth/email/verify-otp**', async (route) => {
+    await page.route('**/api/v2/auth/email/verify-otp**', async (route) => {
       attempts += 1;
       const payload = route.request().postDataJSON() as Record<string, string>;
       expect(payload).toMatchObject({ email, tenantSlug: e2eTenantSlug, code: '123456' });
@@ -161,7 +161,7 @@ test.describe('validated public-web P1 regressions', () => {
     const token = 'reset-token-for-e2e';
     const seenReferrers: Array<string | undefined> = [];
     let attempts = 0;
-    await page.route('**/api/v1/auth/password/reset/confirm', async (route) => {
+    await page.route('**/api/v2/auth/password/reset/confirm', async (route) => {
       attempts += 1;
       seenReferrers.push(route.request().headers().referer);
       expect(route.request().postDataJSON()).toEqual({ token, password: 'new-password-123' });
@@ -234,7 +234,7 @@ test.describe('validated public-web P1 regressions', () => {
   });
 
   test('dashboard endpoint failure marks only affected widgets unavailable with retry', async ({ page }) => {
-    await page.route('**/api/v1/shifts?**', async (route) => {
+    await page.route('**/api/v2/shifts?**', async (route) => {
       await route.fulfill({ status: 503, contentType: 'application/json', body: JSON.stringify({ message: 'Unavailable' }) });
     });
 

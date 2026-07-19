@@ -52,7 +52,7 @@ describe('logout route', () => {
     expect(response.headers.get('set-cookie')).toContain('access_token=');
     expect(response.headers.get('set-cookie')).toContain('refresh_token=');
     expect(response.headers.get('set-cookie')).toContain('csrf_token=');
-    expect(fetchMock).toHaveBeenCalledWith('http://localhost:3100/api/v1/auth/logout', expect.objectContaining({
+    expect(fetchMock).toHaveBeenCalledWith('http://localhost:3100/api/v2/auth/logout', expect.objectContaining({
       method: 'POST',
       cache: 'no-store',
       headers: expect.objectContaining({

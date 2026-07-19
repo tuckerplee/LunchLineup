@@ -164,7 +164,7 @@ async function installPayrollApi(
   let currentBatch = options.initialBatch ?? null;
   const amendments: unknown[] = [];
   let postExportRefreshFailed = false;
-  await page.route('**/api/v1/payroll/**', async (route) => {
+  await page.route('**/api/v2/payroll/**', async (route) => {
     const request = route.request();
     const path = new URL(request.url()).pathname;
 

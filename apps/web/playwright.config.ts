@@ -60,7 +60,10 @@ const webServer = process.env.BASE_URL
             : []),
         {
             command: webCommand,
-            url: localBaseUrl,
+            // Precompile the first authenticated-flow entrypoint before tests
+            // begin; a root-only readiness probe can leave the dev server
+            // compiling this client route inside the first 30-second test.
+            url: `${localBaseUrl}/auth/login`,
             reuseExistingServer: false,
             cwd: '.',
             timeout: 240000,
@@ -69,7 +72,7 @@ const webServer = process.env.BASE_URL
                     NODE_ENV: 'development',
                     INTERNAL_API_URL: `${mockApiBaseUrl}/v1`,
                     INTERNAL_API_V2_URL: `${mockApiBaseUrl}/v2`,
-                    NEXT_PUBLIC_API_URL: '/api/v1',
+                    NEXT_PUBLIC_API_URL: '/api/v2',
                     NEXT_PUBLIC_SIGNUP_MODE: mockSignupMode,
                     NEXT_PUBLIC_SUPPORT_CONTACT_EMAIL: 'support@lunchlineup.test',
                 }

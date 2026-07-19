@@ -1217,10 +1217,17 @@ async function handleV2(req, res, url, pathname) {
   sendV2Problem(res, 404, 'route_not_found', 'The requested API route does not exist.');
 }
 
+function isNativeV2Path(pathname) {
+  return pathname === '/v2/schedule-board'
+    || pathname === '/v2/break-generations'
+    || /^\/v2\/locations\/[0-9a-f-]{36}\/schedules$/.test(pathname)
+    || /^\/v2\/schedules\/[0-9a-f-]{36}\/(?:change-sets|demand-windows|publish-plan|publications|reopenings|solve-jobs(?:\/[0-9a-f-]{36})?)$/.test(pathname);
+}
+
 const server = http.createServer(async (req, res) => {
   try {
     const url = new URL(req.url ?? '/', `http://${req.headers.host ?? '127.0.0.1'}`);
-    const pathname = url.pathname;
+    let pathname = url.pathname;
 
     if (pathname === '/__mock-api/ready') {
       sendJson(res, 200, { ok: true });
@@ -1235,9 +1242,12 @@ const server = http.createServer(async (req, res) => {
       sendJson(res, 200, { ok: true });
       return;
     }
-    if (pathname.startsWith('/v2/')) {
+    if (pathname.startsWith('/v2/') && isNativeV2Path(pathname)) {
       await handleV2(req, res, url, pathname);
       return;
+    }
+    if (pathname.startsWith('/v2/')) {
+      pathname = `/v1/${pathname.slice('/v2/'.length)}`;
     }
     if (!pathname.startsWith('/v1/')) {
       sendJson(res, 404, { message: 'Unknown mock endpoint.' });

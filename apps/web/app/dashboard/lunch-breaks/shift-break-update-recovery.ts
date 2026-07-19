@@ -257,14 +257,19 @@ export async function readShiftBreakUpdateResponse<T>(response: Response): Promi
   const payload: unknown = await response.json().catch(() => null);
   if (response.ok) return payload as T;
 
-  const code = isRecord(payload)
-    && typeof payload.code === 'string'
-    && payload.code in PUBLIC_ERROR_STATUS
-    && PUBLIC_ERROR_STATUS[payload.code as ShiftBreakUpdatePublicErrorCode] === response.status
-    ? payload.code as ShiftBreakUpdatePublicErrorCode
+  const candidateCode = isRecord(payload)
+    ? (typeof payload.legacyCode === 'string' ? payload.legacyCode : payload.code)
     : null;
-  const message = isRecord(payload) && typeof payload.message === 'string' && payload.message.trim()
-    ? payload.message.trim()
+  const code = typeof candidateCode === 'string'
+    && candidateCode in PUBLIC_ERROR_STATUS
+    && PUBLIC_ERROR_STATUS[candidateCode as ShiftBreakUpdatePublicErrorCode] === response.status
+    ? candidateCode as ShiftBreakUpdatePublicErrorCode
+    : null;
+  const responseDetail = isRecord(payload)
+    ? (typeof payload.message === 'string' ? payload.message : payload.detail)
+    : null;
+  const message = typeof responseDetail === 'string' && responseDetail.trim()
+    ? responseDetail.trim()
     : response.status === 403
       ? 'Saving manual lunch/break changes requires an active paid subscription and enough configured usage credits.'
       : response.status === 409

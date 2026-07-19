@@ -1,6 +1,6 @@
 # API Contract
 
-`@lunchlineup/api-contract` is the source of truth for the new HTTP API's schemas and browser client. Fastify routes consume the same TypeBox schemas that describe OpenAPI, and the web app consumes the generated client instead of constructing endpoint paths itself.
+`@lunchlineup/api-contract` is the source of truth for the new HTTP API's schemas and browser transport. Native scheduling uses shared TypeBox schemas and the generated client. API-01 application routes use one exact shared operation catalog so Fastify registration and browser path/method validation cannot drift while API-02 replaces their retained implementations with fully typed native modules.
 
 ## Files
 
@@ -10,4 +10,4 @@
 - `src/`: TypeBox schemas, shared types, and generated client output.
 - `tsconfig.json`: strict TypeScript build settings inherited from the repository baseline.
 
-Run `npm run generate --workspace @lunchlineup/api-contract` after changing a client operation. CI and the package build rerun generation and fail on TypeScript drift.
+Run `npm run generate --workspace @lunchlineup/api-contract` after changing a generated scheduling-client operation. The API-01 retained operation catalog is frozen: new product operations must be added as typed native v2 contracts rather than expanding the compatibility surface.

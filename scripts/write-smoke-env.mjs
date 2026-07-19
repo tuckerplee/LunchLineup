@@ -123,7 +123,7 @@ const env = {
   BACKUP_ENCRYPTION_KEY_SECRET_FILE: composeSecretPaths.backupEncryptionKey,
   ALERTMANAGER_WEBHOOK_URL_FILE: composeSecretPaths.alertmanagerWebhookUrl,
   COOKIE_SECURE: 'true',
-  NEXT_PUBLIC_API_URL: '/api/v1',
+  NEXT_PUBLIC_API_URL: '/api/v2',
   INTERNAL_API_URL: 'http://api:3000/v1',
   INTERNAL_API_V2_URL: 'http://api-v2:3002/v2',
   LUNCHLINEUP_STATUS_HEALTH_URL: 'http://api:3000/health',

@@ -28,6 +28,7 @@ describe('Playwright mock harness contract', () => {
     expect(playwrightConfig).toContain('workers: serializeMockApiTests || process.env.CI ? 1 : undefined');
     expect(playwrightConfig).toContain('const webServer = process.env.BASE_URL');
     expect(playwrightConfig).toContain('baseURL: process.env.BASE_URL || localBaseUrl');
+    expect(playwrightConfig).toContain('url: `${localBaseUrl}/auth/login`');
   });
 
   it('keeps automatic ports inside a browser-safe per-process range', () => {

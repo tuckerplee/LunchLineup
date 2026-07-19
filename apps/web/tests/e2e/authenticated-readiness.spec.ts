@@ -680,7 +680,7 @@ test.describe('Authenticated scheduling SaaS readiness', () => {
   test('renders paused resume and delinquent portal recovery from normalized billing state', async ({ page }) => {
     let recoveryAction: 'resume' | 'portal' = 'resume';
 
-    await page.route('**/api/v1/billing/features', async (route) => {
+    await page.route('**/api/v2/billing/features', async (route) => {
       await route.fulfill({
         status: 200,
         contentType: 'application/json',
@@ -755,7 +755,7 @@ test.describe('Authenticated scheduling SaaS readiness', () => {
 
     const checkoutRequestPromise = page.waitForRequest((request) => (
       request.method() === 'POST'
-      && new URL(request.url()).pathname === '/api/v1/billing/credit-packs/checkout'
+      && new URL(request.url()).pathname === '/api/v2/billing/credit-packs/checkout'
     ));
     await selectedPack.getByRole('button', { name: 'Purchase' }).click();
     const checkoutRequest = await checkoutRequestPromise;
@@ -778,7 +778,7 @@ test.describe('Authenticated scheduling SaaS readiness', () => {
   test('keeps settings writes disabled after a transient read failure until retry hydrates them', async ({ page }) => {
     let settingsReads = 0;
     let settingsWrites = 0;
-    await page.route('**/api/v1/settings', async (route) => {
+    await page.route('**/api/v2/settings', async (route) => {
       settingsReads += 1;
       if (settingsReads === 1) {
         await route.fulfill({ status: 503, contentType: 'application/json', body: JSON.stringify({ message: 'Settings temporarily unavailable.' }) });
@@ -786,7 +786,7 @@ test.describe('Authenticated scheduling SaaS readiness', () => {
       }
       await route.continue();
     });
-    await page.route('**/api/v1/settings/**', async (route) => {
+    await page.route('**/api/v2/settings/**', async (route) => {
       if (route.request().method() === 'PUT') settingsWrites += 1;
       await route.continue();
     });
@@ -887,13 +887,13 @@ test.describe('Authenticated scheduling SaaS readiness', () => {
     await expect(page.locator('.surface-muted').filter({ hasText: 'Lifecycle' }).getByText('Open')).toBeVisible();
 
     let postDeleteStatusReads = 0;
-    await page.route('**/api/v1/admin/account/status', async (route) => {
+    await page.route('**/api/v2/admin/account/status', async (route) => {
       postDeleteStatusReads += 1;
       await route.continue();
     });
     const deletionResponsePromise = page.waitForResponse((response) => (
       response.request().method() === 'DELETE'
-      && new URL(response.url()).pathname === '/api/v1/admin/account'
+      && new URL(response.url()).pathname === '/api/v2/admin/account'
     ));
     const localLogoutResponsePromise = page.waitForResponse((response) => (
       response.request().method() === 'POST'

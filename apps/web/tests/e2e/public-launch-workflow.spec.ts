@@ -16,7 +16,7 @@ test.describe('Public launch workflow gaps', () => {
 
   test('recovers a failed first-admin location read and routes setup before scheduling', async ({ page }) => {
     let locationReads = 0;
-    await page.route('**/api/v1/locations/summary', async (route) => {
+    await page.route('**/api/v2/locations/summary', async (route) => {
       if (route.request().method() !== 'GET') {
         await route.fallback();
         return;
@@ -53,7 +53,7 @@ test.describe('Public launch workflow gaps', () => {
   });
   test('loads another location page only after explicit operator continuation', async ({ page }) => {
     const requestedCursors: Array<string | null> = [];
-    await page.route('**/api/v1/locations?*', async (route) => {
+    await page.route('**/api/v2/locations?*', async (route) => {
       const url = new URL(route.request().url());
       const cursor = url.searchParams.get('cursor');
       requestedCursors.push(cursor);
@@ -101,14 +101,14 @@ test.describe('Public launch workflow gaps', () => {
     let createRequestPayload: { name: string; address?: string; timezone: string } | null = null;
     let updateRequestPayload: { name: string; address: string | null; timezone: string } | null = null;
 
-    await page.route('**/api/v1/locations**', async (route) => {
+    await page.route('**/api/v2/locations**', async (route) => {
       const request = route.request();
       const url = new URL(request.url());
-      if (url.pathname === '/api/v1/locations' && request.method() === 'GET') {
+      if (url.pathname === '/api/v2/locations' && request.method() === 'GET') {
         await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ data: locations, pagination: { limit: 100, maxLimit: 200, returned: locations.length, hasMore: false, nextCursor: null } }) });
         return;
       }
-      if (url.pathname === '/api/v1/locations' && request.method() === 'POST') {
+      if (url.pathname === '/api/v2/locations' && request.method() === 'POST') {
         createRequestKey = request.headers()['idempotency-key'] ?? '';
         const payload = request.postDataJSON() as { name: string; address?: string; timezone: string };
         createRequestPayload = payload;
@@ -118,7 +118,7 @@ test.describe('Public launch workflow gaps', () => {
         return;
       }
 
-      const match = /^\/api\/v1\/locations\/([^/]+)$/.exec(url.pathname);
+      const match = /^\/api\/v2\/locations\/([^/]+)$/.exec(url.pathname);
       if (match && request.method() === 'PUT') {
         const index = locations.findIndex((location) => location.id === match[1]);
         const payload = request.postDataJSON() as { name: string; address: string | null; timezone: string };
@@ -224,7 +224,7 @@ test.describe('Public launch workflow gaps', () => {
   });
 
   test('submits staff invitations by keyboard and clears a stale temporary PIN before a failed retry', async ({ page }) => {
-    await page.route('**/api/v1/users/access/catalog', async (route) => {
+    await page.route('**/api/v2/users/access/catalog', async (route) => {
       await route.fulfill({
         status: 200,
         contentType: 'application/json',
@@ -247,7 +247,7 @@ test.describe('Public launch workflow gaps', () => {
     });
 
     let invitationCount = 0;
-    await page.route('**/api/v1/users/invite', async (route) => {
+    await page.route('**/api/v2/users/invite', async (route) => {
       invitationCount += 1;
       if (invitationCount === 1) {
         await route.fulfill({
@@ -281,11 +281,11 @@ test.describe('Public launch workflow gaps', () => {
   });
 
   test('announces password-reset request, failure, and success without a blank recovery page', async ({ page }) => {
-    await page.route('**/api/v1/auth/password/reset/request', async (route) => {
+    await page.route('**/api/v2/auth/password/reset/request', async (route) => {
       await route.fulfill({ status: 503, contentType: 'application/json', body: JSON.stringify({ message: 'Unavailable' }) });
     });
     let confirmAttempts = 0;
-    await page.route('**/api/v1/auth/password/reset/confirm', async (route) => {
+    await page.route('**/api/v2/auth/password/reset/confirm', async (route) => {
       confirmAttempts += 1;
       await route.fulfill({
         status: confirmAttempts === 1 ? 410 : 200,

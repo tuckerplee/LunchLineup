@@ -414,7 +414,12 @@ describe('AuthController', () => {
 
         await controller.verifyPassword(
             { identifier: 'demo@demo.com', password: 'demo', tenantSlug: 'demo' },
-            createRequestMock({ headers: { host: 'beta.lunchlineup.com' } }),
+            createRequestMock({
+                headers: {
+                    host: 'api:3000',
+                    'x-forwarded-host': 'beta.lunchlineup.com',
+                },
+            }),
             createResponseMock(),
         );
         expect(authService.loginWithUsernamePassword).toHaveBeenCalledWith(
@@ -423,6 +428,17 @@ describe('AuthController', () => {
             'demo',
             { ipAddress: null, userAgent: null },
         );
+
+        await expect(controller.verifyPassword(
+            { identifier: 'demo@demo.com', password: 'demo', tenantSlug: 'demo' },
+            createRequestMock({
+                headers: {
+                    host: 'beta.lunchlineup.com',
+                    'x-forwarded-host': 'evil.example',
+                },
+            }),
+            createResponseMock(),
+        )).rejects.toBeInstanceOf(ForbiddenException);
     });
 
     it('requests the MFA exemption only for the configured exact beta demo identity', async () => {

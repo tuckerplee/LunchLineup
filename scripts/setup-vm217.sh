@@ -139,7 +139,7 @@ fi
 sed -i "s|^DATABASE_URL=.*|DATABASE_URL=postgresql://${DB_USER}:${DB_PASS}@postgres:5432/${DB_NAME}|" .env
 sed -i "s|^REDIS_URL=.*|REDIS_URL=redis://redis:6379|" .env
 sed -i "s|^RABBITMQ_URL=.*|RABBITMQ_URL=amqp://${RABBIT_USER}:${RABBIT_PASS}@rabbitmq:5672|" .env
-sed -i "s|^NEXT_PUBLIC_API_URL=.*|NEXT_PUBLIC_API_URL=/api/v1|" .env
+sed -i "s|^NEXT_PUBLIC_API_URL=.*|NEXT_PUBLIC_API_URL=/api/v2|" .env
 sed -i "s|^INTERNAL_API_URL=.*|INTERNAL_API_URL=http://api:3000/v1|" .env
 sed -i "s|^INTERNAL_API_V2_URL=.*|INTERNAL_API_V2_URL=http://api-v2:3002/v2|" .env
 sed -i "s|^OIDC_REDIRECT_URI=.*|OIDC_REDIRECT_URI=https://beta.lunchlineup.com/api/v1/auth/callback|" .env

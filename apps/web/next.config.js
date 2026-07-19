@@ -136,7 +136,8 @@ const nextConfig = {
         ];
     },
 
-    // Proxy API requests from the Next.js server to the Docker API service.
+    // API v2 owns browser traffic. The v1 rewrite remains only for API-03
+    // non-browser compatibility while external integrations are migrated.
     async rewrites() {
         return [
             {

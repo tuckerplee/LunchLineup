@@ -38,14 +38,14 @@ describe('fetchWithSession', () => {
     vi.stubGlobal('fetch', fetchMock);
     vi.stubGlobal('document', { cookie: 'csrf_token=csrf-123; other=value' });
 
-    await fetchWithSession('/shifts', {
+    await fetchWithSession('/locations', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ id: 'shift-1' }),
+      body: JSON.stringify({ name: 'Downtown', timezone: 'America/Los_Angeles' }),
     });
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
-    expect(fetchMock.mock.calls[0][0]).toBe('/api/v1/shifts');
+    expect(fetchMock.mock.calls[0][0]).toBe('/api/v2/locations');
     expect(headersFromCall(fetchMock.mock.calls[0]).get('x-csrf-token')).toBe('csrf-123');
     expect((fetchMock.mock.calls[0][1] as RequestInit).credentials).toBe('include');
     expect((fetchMock.mock.calls[0][1] as RequestInit).redirect).toBe('error');
@@ -76,7 +76,7 @@ describe('fetchWithSession', () => {
     await fetchWithSession('/auth/me');
 
     expect(fetchMock).toHaveBeenCalledTimes(3);
-    expect(fetchMock.mock.calls[1][0]).toBe('/api/v1/auth/refresh');
+    expect(fetchMock.mock.calls[1][0]).toBe('/api/v2/auth/refresh');
     expect(headersFromCall(fetchMock.mock.calls[1]).get('x-csrf-token')).toBe('refresh-csrf');
   });
 
@@ -160,7 +160,7 @@ describe('fetchWithSession', () => {
 
     expect(fetchMock.mock.calls.map((call) => String(call[0]))).toEqual([
       '/api/v2/schedules/88d8d86a-7e8d-4246-8ad3-eb7eedb44c1e/change-sets',
-      '/api/v1/auth/refresh',
+      '/api/v2/auth/refresh',
       '/api/v2/schedules/88d8d86a-7e8d-4246-8ad3-eb7eedb44c1e/change-sets',
     ]);
     expect(headersFromCall(fetchMock.mock.calls[0]).get('idempotency-key')).toBe('v2-attempt-1');
@@ -217,9 +217,9 @@ describe('fetchWithSession', () => {
     vi.stubGlobal('fetch', fetchMock);
     vi.stubGlobal('document', documentState);
 
-    const body = JSON.stringify({ shiftId: 'shift-1' });
-    const first = fetchWithSession('/shifts/shift-1', withIdempotencyKey({ method: 'PATCH', body }, 'attempt-1'));
-    const second = fetchWithSession('/shifts/shift-2', withIdempotencyKey({ method: 'DELETE', body }, 'attempt-2'));
+    const body = JSON.stringify({ enabled: true });
+    const first = fetchWithSession('/settings/general', withIdempotencyKey({ method: 'PUT', body }, 'attempt-1'));
+    const second = fetchWithSession('/settings/team', withIdempotencyKey({ method: 'PUT', body }, 'attempt-2'));
 
     await vi.waitFor(() => expect(refreshCalls).toBe(1));
     releaseRefresh?.();
@@ -242,16 +242,16 @@ describe('fetchWithSession', () => {
     vi.stubGlobal('fetch', fetchMock);
     vi.stubGlobal('document', { cookie: 'csrf_token=refresh-csrf' });
 
-    const response = await fetchWithSession('/shifts', {
+    const response = await fetchWithSession('/locations', {
       method: 'POST',
-      body: JSON.stringify({ startsAt: '2026-07-14T09:00:00Z' }),
+      body: JSON.stringify({ name: 'Downtown', timezone: 'America/Los_Angeles' }),
     });
 
     expect(response.status).toBe(401);
     expect(fetchMock).toHaveBeenCalledTimes(2);
     expect(fetchMock.mock.calls.map((call) => String(call[0]))).toEqual([
-      '/api/v1/shifts',
-      '/api/v1/auth/refresh',
+      '/api/v2/locations',
+      '/api/v2/auth/refresh',
     ]);
   });
 
@@ -266,7 +266,7 @@ describe('fetchWithSession', () => {
     }));
     vi.stubGlobal('fetch', fetchMock);
 
-    const response = await fetchWithSession('/health');
+    const response = await fetchWithSession('/auth/me');
     const serialized = JSON.stringify({
       body: await response.json(),
       headers: Object.fromEntries(response.headers.entries()),
@@ -346,7 +346,7 @@ describe('fetchWithSession', () => {
       init?.signal?.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')), { once: true });
     })));
 
-    const request = fetchPublicApi('/auth/login/resolve');
+    const request = fetchPublicApi('/auth/login/resolve', { method: 'POST' });
     const assertion = expect(request).rejects.toThrow('The request timed out. Please try again.');
     await vi.advanceTimersByTimeAsync(15_000);
     await assertion;
@@ -373,10 +373,24 @@ describe('fetchWithSession', () => {
       headers: { 'content-type': 'application/json' },
     })));
 
-    const response = await fetchPublicApi('/auth/login/resolve');
+    const response = await fetchPublicApi('/auth/login/resolve', { method: 'POST' });
     const serialized = JSON.stringify(await response.json());
     expect(serialized).toContain('Request failed (400).');
     expect(serialized).not.toContain('server-secret');
     expect(serialized).not.toContain('api.internal');
+  });
+
+  it('rejects removed and method-undeclared operations before transport', async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(fetchWithSession('/shifts/demo-shift-05-casey-v1', {
+      method: 'PUT',
+      body: '{}',
+    })).rejects.toThrow('not part of the API v2 application contract');
+    await expect(fetchWithSession('/locations', {
+      method: 'DELETE',
+    })).rejects.toThrow('not part of the API v2 application contract');
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 });

@@ -1,3 +1,7 @@
+import {
+    applicationApiOperation,
+    type ApplicationApiMethod,
+} from '@lunchlineup/api-contract';
 import { safeSameOriginReturnPath } from './safe-navigation';
 import {
     DEFAULT_JSON_RESPONSE_LIMIT_BYTES,
@@ -6,7 +10,6 @@ import {
     withRequestTimeout,
 } from './http-safety';
 
-const API = process.env.NEXT_PUBLIC_API_URL ?? '/api/v1';
 const API_V2 = '/api/v2';
 const UNSAFE_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
 let refreshPromise: Promise<Response> | null = null;
@@ -38,7 +41,10 @@ export function idempotentRequestAttempt(
     return { key: keyFactory(), payloadFingerprint };
 }
 
-export function withIdempotencyKey(init: RequestInit, key: string): RequestInit {
+export function withIdempotencyKey<T extends RequestInit>(
+    init: T,
+    key: string,
+): Omit<T, 'headers'> & { headers: Headers } {
     const normalizedKey = key.trim();
     if (!normalizedKey) throw new Error('Idempotency-Key cannot be blank.');
     const headers = new Headers(init.headers);
@@ -57,12 +63,23 @@ function sortJsonValue(value: unknown): unknown {
     );
 }
 
-function toApiPath(path: string): string {
+function applicationMethod(init: RequestInit = {}): ApplicationApiMethod {
+    const method = (init.method ?? 'GET').toUpperCase();
+    if (!['GET', 'POST', 'PUT', 'PATCH', 'DELETE'].includes(method)) {
+        throw new Error('The API v2 application client does not support this HTTP method.');
+    }
+    return method as ApplicationApiMethod;
+}
+
+function toApiPath(path: string, method: ApplicationApiMethod): string {
     if (/^[a-z][a-z\d+.-]*:/i.test(path) || path.startsWith('//') || path.includes('\\')) {
         throw new Error('fetchWithSession only accepts same-origin API paths.');
     }
     const normalized = path.startsWith('/') ? path : `/${path}`;
-    return `${API}${normalized}`;
+    if (!applicationApiOperation(normalized, method)) {
+        throw new Error('The requested operation is not part of the API v2 application contract.');
+    }
+    return `${API_V2}${normalized}`;
 }
 
 function toApiV2Path(input: RequestInfo | URL): string {
@@ -80,8 +97,8 @@ function toApiV2Path(input: RequestInfo | URL): string {
     return input;
 }
 
-export function apiPath(path: string): string {
-    return toApiPath(path);
+export function apiPath(path: string, method: ApplicationApiMethod = 'GET'): string {
+    return toApiPath(path, method);
 }
 
 function getCsrfTokenFromCookie(): string {
@@ -120,7 +137,11 @@ function withSessionDefaults(init: RequestInit = {}): RequestInit {
 function refreshSession(): Promise<Response> {
     if (refreshPromise) return refreshPromise;
 
-    refreshPromise = safeFetch(toApiPath('/auth/refresh'), withSessionDefaults({ method: 'POST' }))
+    refreshPromise = safeFetch(
+        toApiPath('/auth/refresh', 'POST'),
+        withSessionDefaults({ method: 'POST' }),
+        true,
+    )
         .finally(() => {
             refreshPromise = null;
         });
@@ -184,8 +205,23 @@ function safeProblemPayload(
         title: payload.title,
         status,
         detail: payload.detail,
+        message: payload.detail,
         code: payload.code,
     };
+    if (typeof payload.legacyCode === 'string' && /^[A-Z0-9_]{1,128}$/.test(payload.legacyCode)) {
+        safe.legacyCode = payload.legacyCode;
+    }
+    if (typeof payload.remediation === 'string' && isSafePublicMessage(payload.remediation)) {
+        safe.remediation = payload.remediation;
+    }
+    if (
+        typeof payload.retryAfterSeconds === 'number'
+        && Number.isInteger(payload.retryAfterSeconds)
+        && payload.retryAfterSeconds >= 0
+        && payload.retryAfterSeconds <= 86_400
+    ) {
+        safe.retryAfterSeconds = payload.retryAfterSeconds;
+    }
     if (typeof payload.instance === 'string' && /^\/[^\r\n\\]{0,511}$/.test(payload.instance)) {
         safe.instance = payload.instance;
     }
@@ -327,8 +363,8 @@ function canReplayAfterRefresh(init: RequestInit): boolean {
 
 export async function fetchWithSession(path: string, init: RequestInit = {}): Promise<Response> {
     const requestInit = withSessionDefaults(init);
-    const endpoint = toApiPath(path);
-    let response = await safeFetch(endpoint, requestInit);
+    const endpoint = toApiPath(path, applicationMethod(requestInit));
+    let response = await safeFetch(endpoint, requestInit, true);
     if (response.status !== 401) return response;
 
     const refresh = await refreshSession();
@@ -342,7 +378,7 @@ export async function fetchWithSession(path: string, init: RequestInit = {}): Pr
 
     if (!canReplayAfterRefresh(requestInit)) return response;
 
-    response = await safeFetch(endpoint, withSessionDefaults(init));
+    response = await safeFetch(endpoint, withSessionDefaults(init), true);
     if (response.status === 401 && typeof window !== 'undefined') {
         window.location.assign(loginRedirectPath());
     }
@@ -375,7 +411,8 @@ export async function fetchApiV2WithSession(
 }
 
 export async function fetchPublicApi(path: string, init: RequestInit = {}): Promise<Response> {
-    return safeFetch(toApiPath(path), withSessionDefaults(init));
+    const requestInit = withSessionDefaults(init);
+    return safeFetch(toApiPath(path, applicationMethod(requestInit)), requestInit, true);
 }
 
 export async function fetchApiHealth(): Promise<Response> {

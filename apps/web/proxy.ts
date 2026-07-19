@@ -6,7 +6,6 @@ import { parseApprovedAppOrigin, safeSameOriginReturnPath } from './lib/safe-nav
 const PROTECTED_PATH_ROOTS = ['/admin', '/dashboard'];
 const PASSWORD_RESET_PATH = '/auth/reset-password';
 const PASSWORD_RESET_TOKEN_COOKIE = 'll_password_reset_token';
-const API_URL = process.env.NEXT_PUBLIC_API_URL ?? '/api/v1';
 const AUTH_DEBUG_ENABLED = ['1', 'true', 'yes', 'on'].includes((process.env.AUTH_DEBUG ?? '').toLowerCase());
 const UNSAFE_DEBUG_VALUE = /(?:\b(?:bearer|authorization|cookie|set-cookie|password|secret|stack|token)\b|https?:\/\/|file:\/\/|\\\\|[\r\n\0<>]|localhost|127\.0\.0\.1|\.internal\b|\b(?:10|192\.168)\.\d{1,3}\.\d{1,3}|\b172\.(?:1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3})/i;
 const AUTH_FETCH_TIMEOUT_MS = 5_000;
@@ -83,25 +82,16 @@ function readCookie(request: NextRequest, name: string): string | undefined {
 }
 
 function apiEndpoint(appOrigin: string, path: string): string {
-    const internalApiUrl = process.env.INTERNAL_API_URL?.trim();
-    if (internalApiUrl) {
-        const internalBase = parseServiceBase(internalApiUrl);
+    const internalApiV2Url = process.env.INTERNAL_API_V2_URL?.trim();
+    if (internalApiV2Url) {
+        const internalBase = parseServiceBase(internalApiV2Url);
         if (!internalBase) throw new Error('invalid_api_configuration');
         return `${internalBase}${path}`;
     }
 
-    if (/^https?:/i.test(API_URL)) {
-        const publicBase = parseServiceBase(API_URL);
-        if (!publicBase || new URL(publicBase).origin !== appOrigin) {
-            throw new Error('invalid_api_configuration');
-        }
-        return `${publicBase}${path}`;
-    }
-
-    const relativeBase = API_URL.startsWith('/') ? API_URL : `/${API_URL}`;
     const base = process.env.NODE_ENV === 'production'
-        ? `http://api:3000${relativeBase}`
-        : `${appOrigin}${relativeBase}`;
+        ? 'http://api-v2:3002/v2'
+        : `${appOrigin}/api/v2`;
     return `${base}${path}`;
 }
 

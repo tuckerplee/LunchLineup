@@ -3,10 +3,12 @@ import swagger from '@fastify/swagger';
 import { TypeBoxTypeProvider } from '@fastify/type-provider-typebox';
 import { Type } from '@sinclair/typebox';
 import Fastify, { type FastifyInstance } from 'fastify';
+import { registerApplicationRoutes } from './application/routes';
 import type { ApiV2Config } from './config';
 import { TenantDatabase } from './platform/database';
 import { LegacyIdentityAdapter } from './platform/identity';
 import { installProblemHandler } from './platform/problem';
+import { RetainedApplicationBridge } from './platform/retained-application.bridge';
 import { ScheduleBoardService } from './scheduling/board.service';
 import { ScheduleChangeSetService } from './scheduling/change-set.service';
 import { DemandWindowService } from './scheduling/demand-window.service';
@@ -33,6 +35,7 @@ export type ApiV2ServerDependencies = Partial<{
   database: TenantDatabase;
   routes: Omit<SchedulingRouteDependencies, 'config' | 'identity'>;
   identity: LegacyIdentityAdapter;
+  retainedApplication: Pick<RetainedApplicationBridge, 'execute'>;
 }>;
 
 export async function buildServer(
@@ -56,6 +59,7 @@ export async function buildServer(
   }).withTypeProvider<TypeBoxTypeProvider>();
   const database = overrides.database ?? new TenantDatabase();
   const identity = overrides.identity ?? new LegacyIdentityAdapter(config);
+  const retainedApplication = overrides.retainedApplication ?? new RetainedApplicationBridge(config);
   const routeServices = overrides.routes ?? {
     board: new ScheduleBoardService(database),
     scheduleCreate: new ScheduleCreateService(database),
@@ -66,6 +70,11 @@ export async function buildServer(
   };
 
   await app.register(cookie);
+  app.addContentTypeParser(
+    /^multipart\/form-data(?:;|$)/i,
+    { parseAs: 'buffer', bodyLimit: 10 * 1024 * 1024 },
+    (_request, body, done) => done(null, body),
+  );
   await app.register(swagger, {
     openapi: {
       openapi: '3.1.0',
@@ -75,7 +84,20 @@ export async function buildServer(
         description: 'Contract-first tenant API. Scheduling writes use aggregate change sets, optimistic concurrency, and idempotency.',
       },
       servers: [{ url: '/api/v2', description: 'Same-origin tenant API' }],
-      tags: [{ name: 'Scheduling', description: 'Schedule board and aggregate mutations' }],
+      tags: [
+        { name: 'Scheduling', description: 'Schedule board and aggregate mutations' },
+        { name: 'Authentication', description: 'Sign-in and session lifecycle' },
+        { name: 'Locations', description: 'Tenant locations' },
+        { name: 'People', description: 'Staff, access roles, and invitations' },
+        { name: 'Operations', description: 'Operational read models and lunch/break planning' },
+        { name: 'Time', description: 'Time-card lifecycle' },
+        { name: 'Payroll', description: 'Payroll review, locking, export, and reconciliation' },
+        { name: 'Notifications', description: 'Authenticated notification feed' },
+        { name: 'Settings', description: 'Workspace settings' },
+        { name: 'Billing', description: 'Entitlements and customer billing sessions' },
+        { name: 'Imports', description: 'Bounded asynchronous imports' },
+        { name: 'Administration', description: 'Platform and tenant lifecycle administration' },
+      ],
     },
   });
   installProblemHandler(app);
@@ -84,6 +106,7 @@ export async function buildServer(
     if (request.url.startsWith('/v2/')) {
       reply.header('X-LunchLineup-API-Version', '2');
       reply.header('X-LunchLineup-Service-Release', config.releaseSha);
+      reply.header('X-Correlation-ID', request.id);
       reply.header('X-Content-Type-Options', 'nosniff');
     }
     return payload;
@@ -121,6 +144,10 @@ export async function buildServer(
     config,
     identity,
     ...routeServices,
+  });
+  await registerApplicationRoutes(app, {
+    config,
+    retainedApplication,
   });
 
   app.get('/v2/openapi.json', {

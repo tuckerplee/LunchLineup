@@ -25,7 +25,7 @@ function scopedRow(locationId: string) {
 }
 
 async function installLunchScopes(context: BrowserContext) {
-  await context.route(/\/api\/v1\/locations\?limit=200$/, async (route) => {
+  await context.route(/\/api\/v2\/locations\?limit=200$/, async (route) => {
     await route.fulfill({
       status: 200,
       contentType: 'application/json',
@@ -38,7 +38,7 @@ async function installLunchScopes(context: BrowserContext) {
       }),
     });
   });
-  await context.route(/\/api\/v1\/lunch-breaks\?.+/, async (route) => {
+  await context.route(/\/api\/v2\/lunch-breaks\?.+/, async (route) => {
     const locationId = new URL(route.request().url()).searchParams.get('locationId') ?? '';
     await route.fulfill({
       status: 200,
@@ -70,7 +70,7 @@ test.describe('Lunch/break durable recovery', () => {
 
   test('reuses one generation A key and debit across A-to-B-to-A, lost response, and reload', async ({ context, page }) => {
     await installLunchScopes(context);
-    await context.route('**/api/v1/lunch-breaks/setup-shifts', async (route) => {
+    await context.route('**/api/v2/lunch-breaks/setup-shifts', async (route) => {
       const body = route.request().postDataJSON() as { locationId: string };
       await route.fulfill({
         status: 201,
@@ -85,7 +85,7 @@ test.describe('Lunch/break durable recovery', () => {
     const committed = new Map<string, Record<string, unknown>>();
     const debits = new Map<string, number>();
     let loseFirstAResponse = true;
-    await context.route('**/api/v1/lunch-breaks/generate', async (route) => {
+    await context.route('**/api/v2/lunch-breaks/generate', async (route) => {
       const request = route.request();
       const body = request.postDataJSON() as { locationId: string };
       const key = request.headers()['idempotency-key'] ?? '';
@@ -148,7 +148,7 @@ test.describe('Lunch/break durable recovery', () => {
     let debitCount = 0;
     let releaseBoth: (() => void) | undefined;
     const bothArrived = new Promise<void>((resolve) => { releaseBoth = resolve; });
-    await context.route('**/api/v1/lunch-breaks/setup-shifts', async (route) => {
+    await context.route('**/api/v2/lunch-breaks/setup-shifts', async (route) => {
       const key = route.request().headers()['idempotency-key'] ?? '';
       const body = route.request().postDataJSON();
       calls.push({ key, body });
@@ -171,7 +171,7 @@ test.describe('Lunch/break durable recovery', () => {
     let generationDebitCount = 0;
     let releaseBothGenerations: (() => void) | undefined;
     const bothGenerationsArrived = new Promise<void>((resolve) => { releaseBothGenerations = resolve; });
-    await context.route('**/api/v1/lunch-breaks/generate', async (route) => {
+    await context.route('**/api/v2/lunch-breaks/generate', async (route) => {
       const key = route.request().headers()['idempotency-key'] ?? '';
       const body = route.request().postDataJSON();
       generationCalls.push({ key, body });

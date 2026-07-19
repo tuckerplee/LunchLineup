@@ -25,7 +25,7 @@ const publicBuildConfigKeys = [
   'NEXT_PUBLIC_APP_ENV',
 ];
 const publicBuildConfigValues = {
-  NEXT_PUBLIC_API_URL: '/api/v1',
+  NEXT_PUBLIC_API_URL: '/api/v2',
   NEXT_PUBLIC_OIDC_ENABLED: 'false',
   NEXT_PUBLIC_SIGNUP_MODE: 'closed_beta',
   NEXT_PUBLIC_TURNSTILE_SITE_KEY: '',
@@ -41,6 +41,16 @@ test('Compose requires a non-empty APP_ORIGIN for API startup', () => {
   const api = serviceBlock(read('docker-compose.yml'), 'api');
   assert.match(api, /APP_ORIGIN=\$\{APP_ORIGIN:\?Set public HTTPS APP_ORIGIN in \.env\}/);
   assert.doesNotMatch(api, /APP_ORIGIN=\$\{APP_ORIGIN:-\}/);
+});
+
+test('Compose trusts only local proxy networks across the API v2 compatibility hop', () => {
+  const compose = read('docker-compose.yml');
+  for (const service of ['api', 'api-v2']) {
+    assert.ok(serviceBlock(compose, service).includes(
+      '- TRUST_PROXY=${TRUST_PROXY:-loopback,linklocal,uniquelocal}',
+    ));
+  }
+  assert.match(read('.env.example'), /^TRUST_PROXY=loopback,linklocal,uniquelocal$/m);
 });
 
 test('Compose fail-closes staff invitation delivery and passes the canonical origin to the worker', () => {

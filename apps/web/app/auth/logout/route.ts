@@ -44,19 +44,12 @@ function approvedAppOrigin(request: NextRequest): string | null {
 }
 
 function apiBase(appOrigin: string): string | null {
-  const internal = process.env.INTERNAL_API_URL?.trim();
+  const internal = process.env.INTERNAL_API_V2_URL?.trim();
   if (internal) return parseServiceBase(internal);
 
-  const publicApi = (process.env.NEXT_PUBLIC_API_URL ?? '/api/v1').trim();
-  if (/^https?:/i.test(publicApi)) {
-    const parsed = parseServiceBase(publicApi);
-    return parsed && new URL(parsed).origin === appOrigin ? parsed : null;
-  }
-
-  const relativeApi = publicApi.startsWith('/') ? publicApi : `/${publicApi}`;
   return process.env.NODE_ENV === 'production'
-    ? `http://api:3000${relativeApi}`
-    : `${appOrigin}${relativeApi}`;
+    ? 'http://api-v2:3002/v2'
+    : `${appOrigin}/api/v2`;
 }
 
 function safeCookieValue(value: string | undefined): value is string {

@@ -215,8 +215,8 @@ function assertSameOriginPublicApiUrl(context) {
   const value = assertRequired('NEXT_PUBLIC_API_URL');
   if (!value) return;
 
-  if (value !== '/api/v1') {
-    collector.fail('NEXT_PUBLIC_API_URL must be exactly /api/v1 for same-origin public launch.');
+  if (value !== '/api/v2') {
+    collector.fail('NEXT_PUBLIC_API_URL must be exactly /api/v2 for same-origin public launch.');
     return;
   }
 

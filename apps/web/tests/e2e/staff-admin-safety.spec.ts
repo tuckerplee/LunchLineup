@@ -18,7 +18,7 @@ test.describe('Staff and platform admin safety controls', () => {
     let resetRequests = 0;
     let removeRequests = 0;
 
-    await page.route('**/api/v1/users?*', async (route) => {
+    await page.route('**/api/v2/users?*', async (route) => {
       await route.fulfill({
         status: 200,
         contentType: 'application/json',
@@ -38,11 +38,11 @@ test.describe('Staff and platform admin safety controls', () => {
         }),
       });
     });
-    await page.route('**/api/v1/users/user-reset/pin/reset', async (route) => {
+    await page.route('**/api/v2/users/user-reset/pin/reset', async (route) => {
       resetRequests += 1;
       await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ temporaryPin: '123456' }) });
     });
-    await page.route('**/api/v1/users/user-remove', async (route) => {
+    await page.route('**/api/v2/users/user-remove', async (route) => {
       removeRequests += 1;
       await route.fulfill({ status: 204, body: '' });
     });
@@ -122,7 +122,7 @@ test.describe('Staff and platform admin safety controls', () => {
     let profileWrites = 0;
     let appliedProfile: { skills?: string[]; availability?: unknown[] } | null = null;
 
-    await page.route('**/api/v1/billing/features', async (route) => {
+    await page.route('**/api/v2/billing/features', async (route) => {
       await route.fulfill({
         status: 200,
         contentType: 'application/json',
@@ -131,7 +131,7 @@ test.describe('Staff and platform admin safety controls', () => {
         }),
       });
     });
-    await page.route('**/api/v1/availability-imports/users/user-mock-staff', async (route) => {
+    await page.route('**/api/v2/availability-imports/users/user-mock-staff', async (route) => {
       uploadRequests += 1;
       idempotencyKeys.push(route.request().headers()['idempotency-key'] ?? '');
       csrfHeaders.push(route.request().headers()['x-csrf-token'] ?? '');
@@ -155,7 +155,7 @@ test.describe('Staff and platform admin safety controls', () => {
         }),
       });
     });
-    await page.route('**/api/v1/availability-imports/availability-import-1', async (route) => {
+    await page.route('**/api/v2/availability-imports/availability-import-1', async (route) => {
       statusRequests += 1;
       const succeeded = statusRequests >= 2;
       await route.fulfill({
@@ -175,7 +175,7 @@ test.describe('Staff and platform admin safety controls', () => {
         }),
       });
     });
-    await page.route('**/api/v1/users/user-mock-staff/scheduling-profile', async (route) => {
+    await page.route('**/api/v2/users/user-mock-staff/scheduling-profile', async (route) => {
       if (route.request().method() !== 'PUT') {
         await route.continue();
         return;
@@ -235,7 +235,7 @@ test.describe('Staff and platform admin safety controls', () => {
   });
   test('defaults tenant admin invites to Staff and hides non-delegable Admin', async ({ page }) => {
     let invitedRoleId = '';
-    await page.route('**/api/v1/users/access/catalog', async (route) => {
+    await page.route('**/api/v2/users/access/catalog', async (route) => {
       await route.fulfill({
         status: 200,
         contentType: 'application/json',
@@ -249,7 +249,7 @@ test.describe('Staff and platform admin safety controls', () => {
         }),
       });
     });
-    await page.route('**/api/v1/users/invite', async (route) => {
+    await page.route('**/api/v2/users/invite', async (route) => {
       invitedRoleId = (await route.request().postDataJSON()).roleId;
       await route.fulfill({ status: 201, contentType: 'application/json', body: JSON.stringify({ id: 'new-staff', temporaryPin: '123456' }) });
     });
@@ -269,7 +269,7 @@ test.describe('Staff and platform admin safety controls', () => {
     let profileReads = 0;
     let profileWrites = 0;
     let profileAvailable = false;
-    await page.route('**/api/v1/users/user-mock-staff/scheduling-profile', async (route) => {
+    await page.route('**/api/v2/users/user-mock-staff/scheduling-profile', async (route) => {
       if (route.request().method() === 'PUT') {
         profileWrites += 1;
         await route.continue();
@@ -303,7 +303,7 @@ test.describe('Staff and platform admin safety controls', () => {
 
   test('requires an exact role name and blocks deletion while assignments exist', async ({ page }) => {
     let deleteRequests = 0;
-    await page.route('**/api/v1/users/access/catalog', async (route) => {
+    await page.route('**/api/v2/users/access/catalog', async (route) => {
       await route.fulfill({
         status: 200,
         contentType: 'application/json',
@@ -316,7 +316,7 @@ test.describe('Staff and platform admin safety controls', () => {
         }),
       });
     });
-    await page.route('**/api/v1/users/roles/role-unused', async (route) => {
+    await page.route('**/api/v2/users/roles/role-unused', async (route) => {
       deleteRequests += 1;
       await route.fulfill({ status: 204, body: '' });
     });
@@ -369,7 +369,7 @@ test.describe('Staff and platform admin safety controls', () => {
     });
 
     const resetRequestPromise = page.waitForRequest((request) =>
-      request.method() === 'POST' && request.url().endsWith('/api/v1/admin/users/user-mfa-admin/mfa/reset'),
+      request.method() === 'POST' && request.url().endsWith('/api/v2/admin/users/user-mfa-admin/mfa/reset'),
     );
     await resetMfaButton.click();
     const resetRequest = await resetRequestPromise;

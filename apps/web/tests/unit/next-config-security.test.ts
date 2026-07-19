@@ -60,7 +60,7 @@ describe('Next.js production security configuration', () => {
   it('limits production connections to trusted configured origins', () => {
     const config = loadConfig({
       NODE_ENV: 'production',
-      NEXT_PUBLIC_API_URL: 'https://app.lunchlineup.com/api/v1',
+      NEXT_PUBLIC_API_URL: 'https://app.lunchlineup.com/api/v2',
     });
     const headers = responseHeaders(config);
     const policy = headers.get('Content-Security-Policy') ?? '';
@@ -82,7 +82,7 @@ describe('Next.js production security configuration', () => {
   it('keeps loopback connections available only for local development', () => {
     const config = loadConfig({
       NODE_ENV: 'development',
-      NEXT_PUBLIC_API_URL: '/api/v1',
+      NEXT_PUBLIC_API_URL: '/api/v2',
     });
     const headers = responseHeaders(config);
     const policy = headers.get('Content-Security-Policy') ?? '';
@@ -94,7 +94,7 @@ describe('Next.js production security configuration', () => {
   it('rejects insecure or malformed production origins', () => {
     expect(() => loadConfig({
       NODE_ENV: 'production',
-      NEXT_PUBLIC_API_URL: 'http://app.lunchlineup.com/api/v1',
+      NEXT_PUBLIC_API_URL: 'http://app.lunchlineup.com/api/v2',
     })).toThrow();
   });
 

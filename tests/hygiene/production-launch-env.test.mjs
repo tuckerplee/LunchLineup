@@ -207,7 +207,7 @@ function validEnv(overrides = {}) {
     GRAFANA_USER: 'lunchlineup_admin',
     GRAFANA_PASSWORD: 'grafana_abcdefghijklmnopqrstuvwxyz123456',
     CONTROL_PLANE_PASSWORD: 'control_abcdefghijklmnopqrstuvwxyz123456',
-    NEXT_PUBLIC_API_URL: '/api/v1',
+    NEXT_PUBLIC_API_URL: '/api/v2',
     APP_ORIGIN: 'https://lunchlineup.com',
     NEXT_PUBLIC_APP_ORIGIN: 'https://lunchlineup.com',
     NEXT_PUBLIC_APP_URL: 'https://lunchlineup.com',
@@ -636,13 +636,13 @@ test('production launch validator rejects non-same-origin public API URLs', () =
   for (const value of [
     'https://api.lunchlineup.com/api/v1',
     'https://lunchlineup.com/api/v1',
-    '/api/v2',
+    '/api/v1',
     '/v1',
   ]) {
     const result = run(validEnv({ NEXT_PUBLIC_API_URL: value }));
 
     assert.notEqual(result.status, 0, value);
-    assert.match(result.stderr, /NEXT_PUBLIC_API_URL must be exactly \/api\/v1/);
+    assert.match(result.stderr, /NEXT_PUBLIC_API_URL must be exactly \/api\/v2/);
   }
 });
 

@@ -3,6 +3,7 @@
 ## Files
 
 - `README.md`: this migration test folder guide.
+- `api-v2-browser-cutover.test.mjs`: verifies API-01 removed browser and web-server v1 application targets, uses one exact shared 121-operation catalog without wildcard forwarding, keeps row-at-a-time shift mutations absent, defaults release builds to API v2, and keeps consumer-facing compliance/runbook application paths on v2 while the API-03 retention ingress remains explicit.
 - `billing-exact-once.test.mjs`: verifies authoritative paid-through plus non-`FREE` schema/API/worker threading, admin exact-session Serializable grant ownership, immutable `balanceAfter` storage/replay with retained nullable-writer rollout compatibility, attributed audit replay, and fail-closed legacy settlement handling.
 - `bounded-child-process.test.mjs`: proves migration subprocess deadlines terminate a TERM-ignoring descendant tree before it can perform delayed output.
 - `availability-import-state-machine.test.mjs`: verifies leased publication recovery, fresh no-op and populated replay semantics for the availability pre-migration, nullable bounded encrypted source expansion, separate public document and active-account identity checks, API/worker secret wiring, forced tenant isolation, deletion cancellation/refund/source-erasure barriers, quote-agnostic lifecycle contracts, final-handoff lock order, and 24-hour terminal retention.

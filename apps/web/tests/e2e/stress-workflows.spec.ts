@@ -123,7 +123,7 @@ function scopedLunchRow(locationId: string) {
 }
 
 async function installTwoLocationLunchScopes(page: Page) {
-  await page.route(/\/api\/v1\/locations\?limit=200$/, async (route) => {
+  await page.route(/\/api\/v2\/locations\?limit=200$/, async (route) => {
     await route.fulfill({
       status: 200,
       contentType: 'application/json',
@@ -136,7 +136,7 @@ async function installTwoLocationLunchScopes(page: Page) {
       }),
     });
   });
-  await page.route(/\/api\/v1\/lunch-breaks\?.+/, async (route) => {
+  await page.route(/\/api\/v2\/lunch-breaks\?.+/, async (route) => {
     const locationId = new URL(route.request().url()).searchParams.get('locationId') ?? '';
     await route.fulfill({
       status: 200,
@@ -175,7 +175,7 @@ test.describe('Lunch setup editor safety', () => {
     let setupRequests = 0;
     let shiftBreakRequests = 0;
     let dayReadRequests = 0;
-    await page.route(/\/api\/v1\/lunch-breaks\?.+/, async (route) => {
+    await page.route(/\/api\/v2\/lunch-breaks\?.+/, async (route) => {
       dayReadRequests += 1;
       await route.fulfill({
         status: 200,
@@ -193,7 +193,7 @@ test.describe('Lunch setup editor safety', () => {
         }),
       });
     });
-    await page.route('**/api/v1/lunch-breaks/setup-shifts', async (route) => {
+    await page.route('**/api/v2/lunch-breaks/setup-shifts', async (route) => {
       setupRequests += 1;
       setupKeys.push(route.request().headers()['idempotency-key'] ?? '');
       if (setupRequests === 1) {
@@ -215,7 +215,7 @@ test.describe('Lunch setup editor safety', () => {
         body: JSON.stringify({ shiftIds: ['shift-1'] }),
       });
     });
-    await page.route('**/api/v1/lunch-breaks/shift/shift-1', async (route) => {
+    await page.route('**/api/v2/lunch-breaks/shift/shift-1', async (route) => {
       shiftBreakRequests += 1;
       shiftBreakKeys.push(route.request().headers()['idempotency-key'] ?? '');
       shiftBreakBodies.push(route.request().postDataJSON());
@@ -360,7 +360,7 @@ test.describe('Lunch setup editor safety', () => {
     let abortFirstDowntownResponse = true;
 
     await installTwoLocationLunchScopes(page);
-    await page.route('**/api/v1/lunch-breaks/setup-shifts', async (route) => {
+    await page.route('**/api/v2/lunch-breaks/setup-shifts', async (route) => {
       const request = route.request();
       const body = request.postDataJSON() as { locationId: string };
       const key = request.headers()['idempotency-key'] ?? '';
@@ -444,7 +444,7 @@ test.describe('Lunch setup editor safety', () => {
     const committedSetupOperations = new Set<string>();
     let uptownReadRequests = 0;
 
-    await page.route(/\/api\/v1\/locations\?limit=200$/, async (route) => {
+    await page.route(/\/api\/v2\/locations\?limit=200$/, async (route) => {
       await route.fulfill({
         status: 200,
         contentType: 'application/json',
@@ -457,7 +457,7 @@ test.describe('Lunch setup editor safety', () => {
         }),
       });
     });
-    await page.route(/\/api\/v1\/lunch-breaks\?.+/, async (route) => {
+    await page.route(/\/api\/v2\/lunch-breaks\?.+/, async (route) => {
       const locationId = new URL(route.request().url()).searchParams.get('locationId') ?? '';
       dayRequestLocations.push(locationId);
       if (locationId === 'loc-uptown') {
@@ -481,7 +481,7 @@ test.describe('Lunch setup editor safety', () => {
         }),
       });
     });
-    await page.route('**/api/v1/lunch-breaks/setup-shifts', async (route) => {
+    await page.route('**/api/v2/lunch-breaks/setup-shifts', async (route) => {
       const body = route.request().postDataJSON() as { locationId: string };
       const key = route.request().headers()['idempotency-key'] ?? '';
       setupCalls.push({ locationId: body.locationId, key });
@@ -530,7 +530,7 @@ test.describe('Lunch setup editor safety', () => {
     expect(uptownCall[0].key).not.toBe(downtownCall[0].key);
     expect(setupResponses.get('loc-uptown')).toBe(1);
     expect([...committedSetupOperations].filter((operation) => operation.startsWith('loc-uptown:'))).toHaveLength(1);
-    expect(dayRequestLocations).toEqual(['loc-downtown', 'loc-uptown', 'loc-uptown']);
+    await expect.poll(() => dayRequestLocations).toEqual(['loc-downtown', 'loc-uptown', 'loc-uptown']);
     await expect(page.getByLabel('Location')).toHaveValue('loc-uptown');
   });
 
@@ -544,14 +544,14 @@ test.describe('Lunch setup editor safety', () => {
     const debits = new Map<string, number>();
 
     await installTwoLocationLunchScopes(page);
-    await page.route('**/api/v1/lunch-breaks/setup-shifts', async (route) => {
+    await page.route('**/api/v2/lunch-breaks/setup-shifts', async (route) => {
       await route.fulfill({
         status: 201,
         contentType: 'application/json',
         body: JSON.stringify({ shiftIds: ['shift-downtown'] }),
       });
     });
-    await page.route('**/api/v1/lunch-breaks/generate', async (route) => {
+    await page.route('**/api/v2/lunch-breaks/generate', async (route) => {
       const body = route.request().postDataJSON() as { locationId: string };
       const key = route.request().headers()['idempotency-key'] ?? '';
       generationCalls.push({ locationId: body.locationId, key });
@@ -623,7 +623,7 @@ test.describe('Lunch setup editor safety', () => {
     const debits = new Map<string, number>();
 
     await installTwoLocationLunchScopes(page);
-    await page.route('**/api/v1/lunch-breaks/generate', async (route) => {
+    await page.route('**/api/v2/lunch-breaks/generate', async (route) => {
       const ordinal = generationCalls.length + 1;
       const key = route.request().headers()['idempotency-key'] ?? '';
       generationCalls.push({ ordinal, key });
@@ -707,7 +707,7 @@ test.describe('Lunch setup editor safety', () => {
       },
     ];
 
-    await page.route(/\/api\/v1\/locations\?limit=200$/, async (route) => {
+    await page.route(/\/api\/v2\/locations\?limit=200$/, async (route) => {
       await route.fulfill({
         status: 200,
         contentType: 'application/json',
@@ -720,7 +720,7 @@ test.describe('Lunch setup editor safety', () => {
         }),
       });
     });
-    await page.route(/\/api\/v1\/lunch-breaks\?.+/, async (route) => {
+    await page.route(/\/api\/v2\/lunch-breaks\?.+/, async (route) => {
       const requestUrl = new URL(route.request().url());
       const locationId = requestUrl.searchParams.get('locationId');
       const cursor = requestUrl.searchParams.get('cursor');

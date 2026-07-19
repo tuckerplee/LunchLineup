@@ -36,6 +36,7 @@ const identity: LegacyIdentity = {
 const apps: Array<Awaited<ReturnType<typeof buildServer>>> = [];
 
 async function harness() {
+  const retainedApplication = vi.fn(async () => ({ ok: true }));
   const board = vi.fn(async () => ({
     data: {
       permissions: identity.permissions,
@@ -92,6 +93,7 @@ async function harness() {
     identity: {
       authenticate: vi.fn(async () => identity),
     } as never,
+    retainedApplication: { execute: retainedApplication },
     routes: {
       board: { get: board },
       scheduleCreate: {
@@ -112,7 +114,7 @@ async function harness() {
     },
   });
   apps.push(app);
-  return { app, board, apply, demandList, demandReplace, reopen };
+  return { app, board, apply, demandList, demandReplace, reopen, retainedApplication };
 }
 
 afterEach(async () => {
@@ -134,8 +136,85 @@ describe('API v2 HTTP contract', () => {
     expect(document.paths['/v2/schedules/{scheduleId}/reopenings'].post.operationId).toBe('reopenSchedule');
     expect(document.paths['/v2/schedules/{scheduleId}/solve-jobs'].post.operationId).toBe('startScheduleSolve');
     expect(document.paths['/v2/break-generations'].post.operationId).toBe('generateScheduleBreaks');
+    expect(document.paths['/v2/auth/me'].get.operationId).toBe('getCurrentSession');
+    expect(document.paths['/v2/users/{userId}/scheduling-profile'].put.operationId)
+      .toBe('updateStaffSchedulingProfile');
+    expect(document.paths['/v2/payroll/periods/{periodId}/exports'].post.operationId)
+      .toBe('createPayrollExport');
+    expect(document.paths['/v2/admin/account/exports/{jobId}/download'].get.operationId)
+      .toBe('downloadAccountExport');
     expect(JSON.stringify(document.paths)).not.toContain('/shifts/{person');
     expect(JSON.stringify(document.paths)).not.toContain('demo-shift');
+    expect(document.paths['/v2/shifts/{shiftId}']).toBeUndefined();
+  });
+
+  it('dispatches declared application operations through the named API-02 owner', async () => {
+    const { app, retainedApplication } = await harness();
+    const response = await app.inject({
+      method: 'GET',
+      url: '/v2/auth/me',
+      headers: { cookie: 'access_token=test' },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual({ ok: true });
+    expect(retainedApplication).toHaveBeenCalledWith(expect.objectContaining({
+      operation: expect.objectContaining({ operationId: 'getCurrentSession' }),
+    }));
+  });
+
+  it('rejects unsafe compatibility writes before the retained owner is called', async () => {
+    const { app, retainedApplication } = await harness();
+    const response = await app.inject({
+      method: 'PUT',
+      url: '/v2/settings/general',
+      headers: {
+        cookie: 'access_token=test; csrf_token=abcdefghijklmnop',
+        'content-type': 'application/json',
+      },
+      payload: { organizationName: 'Diner' },
+    });
+
+    expect(response.statusCode).toBe(403);
+    expect(response.json()).toMatchObject({ code: 'origin_not_allowed' });
+    expect(retainedApplication).not.toHaveBeenCalled();
+  });
+
+  it('leaves pre-session authentication CSRF policy with the retained auth owner', async () => {
+    const { app, retainedApplication } = await harness();
+    const response = await app.inject({
+      method: 'POST',
+      url: '/v2/auth/password/reset/confirm',
+      headers: {
+        cookie: 'll_password_reset_token=opaque-reset-state',
+        'content-type': 'application/json',
+      },
+      payload: { password: 'new-password' },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(retainedApplication).toHaveBeenCalledWith(expect.objectContaining({
+      operation: expect.objectContaining({ operationId: 'confirmPasswordReset' }),
+    }));
+  });
+
+  it('does not expose old per-shift mutation routes', async () => {
+    const { app, retainedApplication } = await harness();
+    const response = await app.inject({
+      method: 'PUT',
+      url: '/v2/shifts/demo-shift-05-casey-v1',
+      headers: {
+        cookie: 'access_token=test; csrf_token=abcdefghijklmnop',
+        origin: 'https://beta.lunchlineup.com',
+        'x-csrf-token': 'abcdefghijklmnop',
+        'content-type': 'application/json',
+      },
+      payload: { userId: 'casey' },
+    });
+
+    expect(response.statusCode).toBe(404);
+    expect(response.json()).toMatchObject({ code: 'route_not_found' });
+    expect(retainedApplication).not.toHaveBeenCalled();
   });
 
   it('loads one screen-oriented board request', async () => {
@@ -147,6 +226,7 @@ describe('API v2 HTTP contract', () => {
     expect(response.statusCode).toBe(200);
     expect(board).toHaveBeenCalledTimes(1);
     expect(response.headers['x-lunchlineup-api-version']).toBe('2');
+    expect(response.headers['x-correlation-id']).toMatch(/^req-/);
   });
 
   it('requires same-origin CSRF proof for cookie-authenticated writes', async () => {

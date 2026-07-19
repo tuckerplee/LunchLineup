@@ -3,6 +3,7 @@
 ## Files
 
 - `README.md`: this documentation folder guide.
+- `api-migration-ledger.md`: ordered API-01 browser cutover, API-02 native ownership, and API-03 v1 retirement status and exit criteria.
 - `api-surface-map.md`: complete browser, v2, retained v1, engine, worker, web, and control-plane API ownership map.
 - `architecture.md`: platform architecture overview.
 - `code-organization.md`: current oversized/tangled source hotspot map and extraction routing.

@@ -5,7 +5,7 @@ This is the source-of-truth map for the HTTP and RPC boundaries serving `beta.lu
 ## Request Path
 
 ```text
-browser
+browser (application traffic uses /api/v2 only)
   -> Cloudflare DNS/proxy
   -> Caddy on VM107
        /api/v2/* -> api-v2:3002 (Fastify, new public contract)
@@ -18,12 +18,13 @@ api-v2
   -> api:3000/v1/auth/me for temporary session validation
   -> selected private v1 scheduling operations for billing, notification,
      solver-queue, and break-generation compatibility
+  -> exact API-01 retained-operation catalog for non-scheduling browser domains
 
 worker -> RabbitMQ, PostgreSQL, engine:50051 gRPC, parser Unix socket
 control -> private operator status/health/metrics only
 ```
 
-The browser never receives a v1 database identifier from a v2 scheduling response. Users, locations, schedules, shifts, and solve jobs have stable UUID public identifiers. Strings such as `demo-shift-05-casey-v1` were legacy fixture shift resource IDs, not separate APIs per person. The broken behavior came from the old calendar issuing one mutable request per shift and colliding with schedule state; v2 replaces that fan-out with one aggregate change set.
+The browser no longer targets `/api/v1`. It cannot address an undeclared API-01 path, and API v2 does not expose the old row-at-a-time schedule/shift mutation routes. Native v2 scheduling responses contain only stable public UUIDs for users, locations, schedules, shifts, and solve jobs. Strings such as `demo-shift-05-casey-v1` were legacy fixture shift resource IDs, not separate APIs per person. The broken behavior came from the old calendar issuing one mutable request per shift and colliding with schedule state; v2 replaces that fan-out with one aggregate change set.
 
 ## Public API v2
 
@@ -47,7 +48,9 @@ External paths include `/api`; the service receives the same path after Caddy re
 | GET | `/api/v2/schedules/{scheduleId}/solve-jobs/{jobId}` | read one solve job | private, no-store |
 | POST | `/api/v2/break-generations` | generate and persist breaks for selected shifts | `Idempotency-Key` |
 
-API v2 uses shared TypeBox schemas for server validation, OpenAPI generation, and the generated browser client. Errors are bounded RFC 9457 Problem Details with stable machine codes. Contract failures use `422`; missing preconditions use `428`; stale schedule revisions use `412` and return `currentEtag`; state conflicts use `409`. Unsafe cookie-authenticated requests require an allowed `Origin` and double-submit CSRF proof. Shift updates are partial: omitted fields retain their exact saved values, including custom role labels, while explicitly supplied role labels are trimmed without case normalization.
+The remaining 121 browser operations are registered explicitly from `packages/api-contract/src/application.ts`. They cover authentication (17), locations (6), people/access (17), operational/lunch-break reads and commands (9), time cards (6), payroll (17), notifications (3), settings (4), billing (9), availability imports (2), and administration/account lifecycle (31). The same catalog validates browser path/method pairs. There is no `/v2/*` catch-all handler and no caller-supplied upstream path.
+
+API v2 uses shared TypeBox schemas for server validation, OpenAPI generation, and the generated browser client. Every v2 response exposes the server-generated `X-Correlation-ID` used for downstream retained-service calls. Errors are bounded RFC 9457 Problem Details with stable machine codes. Contract failures use `422`; missing preconditions use `428`; stale schedule revisions use `412` and return `currentEtag`; state conflicts use `409`. Unsafe cookie-authenticated requests require an allowed `Origin` and double-submit CSRF proof. Shift updates are partial: omitted fields retain their exact saved values, including custom role labels, while explicitly supplied role labels are trimmed without case normalization.
 
 For revision-fenced mutations, `If-Match` rejects a genuinely stale first attempt. Once an idempotency key has committed, replaying the same operation returns that stored result even if the caller has since refreshed to a newer ETag. Response-loss recovery therefore cannot manufacture a second write or a false conflict.
 
@@ -65,12 +68,13 @@ Bounded compatibility ownership during the strangler migration:
 - publication billing and notifications;
 - solver queue submission/status;
 - charged break generation.
+- the frozen 121-operation API-01 application catalog while API-02 replaces each domain implementation.
 
-The compatibility adapter accepts only hard-coded internal route shapes, translates public UUIDs to tenant-scoped internal IDs, bounds request time and response size, sanitizes errors, and translates results back to the v2 contract. It is not a general v1 proxy.
+The scheduling compatibility adapter accepts only hard-coded internal route shapes and translates public UUIDs to tenant-scoped internal IDs. The API-01 application compatibility owner is reachable only through the exact shared catalog, uses a fixed internal authority, bounds request time/body/response size, forwards only approved headers, replaces spoofable forwarding values with the trusted client address and canonical `APP_ORIGIN` host/protocol, permits redirects only for the two declared OIDC operations, and sanitizes errors into Problem Details. Neither boundary exposes a wildcard route. API-02 is the required removal owner.
 
 ## Retained Application API v1
 
-These routes remain external under `/api/v1` until their owning screens move to a v2 module. All controller paths below are tenant/session scoped unless explicitly noted.
+The browser has moved off these routes under API-01. They remain as internal compatibility implementations and as public non-browser ingress until API-02 and API-03 close. Caddy still exposes `/api/v1/*`, so this inventory is not a security boundary or a claim of retirement. All controller paths below are tenant/session scoped unless explicitly noted.
 
 ### Authentication
 
@@ -132,7 +136,7 @@ These routes remain external under `/api/v1` until their owning screens move to 
 - `POST /api/v1/lunch-breaks/setup-shifts`
 - `PUT /api/v1/lunch-breaks/shift/{shiftId}`
 
-The beta scheduling calendar and print view no longer call these legacy schedule/shift endpoints directly. Other retained screens may still use lunch-break or roster endpoints until their own v2 slice is built.
+No browser screen calls these v1 paths directly. Lunch-break and roster screens use their explicit API-v2 catalog routes; only the named API-02 server-side compatibility owner can reach the retained v1 implementations.
 
 ### Time cards and payroll
 
@@ -237,4 +241,4 @@ Caddy exposes `/health` and `/api/health`; metrics stay on the private service n
 
 ## Migration Rule
 
-New browser work must use `/api/v2`, add its schema to `@lunchlineup/api-contract`, regenerate the client, and use an aggregate resource boundary. It may not construct a per-person or per-row endpoint in a page component. A v1 dependency is permitted only behind a named, bounded server-side compatibility adapter with an owner and removal target; it is never exposed as a generic pass-through route.
+New browser work must use `/api/v2`, add its specific TypeBox schema to `@lunchlineup/api-contract`, regenerate the client where applicable, and use an aggregate resource boundary. It may not expand the frozen API-01 compatibility catalog or construct a per-person/per-row scheduling mutation in a page component. A retained dependency is permitted only behind a named, bounded server-side compatibility owner with an API-02 removal target; wildcard and caller-selected passthrough routes are forbidden.

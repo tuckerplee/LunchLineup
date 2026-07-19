@@ -16,6 +16,11 @@ export class ProblemError extends Error {
     readonly title = 'Request could not be completed',
     readonly violations?: ProblemViolation[],
     readonly currentEtag?: string,
+    readonly extensions?: Readonly<{
+      legacyCode?: string;
+      remediation?: string;
+      retryAfterSeconds?: number;
+    }>,
   ) {
     super(detail);
     this.name = 'ProblemError';
@@ -81,11 +86,17 @@ function toProblem(error: FastifyError | Error | unknown, request: FastifyReques
       title: error.title,
       status: error.status,
       detail: error.message,
+      message: error.message,
       instance: request.url,
       code: error.code,
       requestId: request.id,
       ...(error.violations ? { violations: error.violations } : {}),
       ...(error.currentEtag ? { currentEtag: error.currentEtag } : {}),
+      ...(error.extensions?.legacyCode ? { legacyCode: error.extensions.legacyCode } : {}),
+      ...(error.extensions?.remediation ? { remediation: error.extensions.remediation } : {}),
+      ...(error.extensions?.retryAfterSeconds === undefined
+        ? {}
+        : { retryAfterSeconds: error.extensions.retryAfterSeconds }),
     };
   }
 
@@ -96,6 +107,7 @@ function toProblem(error: FastifyError | Error | unknown, request: FastifyReques
       title: 'Request contract validation failed',
       status: 422,
       detail: 'One or more request values do not match the API contract.',
+      message: 'One or more request values do not match the API contract.',
       instance: request.url,
       code: 'contract_validation_failed',
       requestId: request.id,
@@ -111,6 +123,7 @@ function toProblem(error: FastifyError | Error | unknown, request: FastifyReques
     title: 'Service error',
     status: 500,
     detail: 'The service could not complete the request.',
+    message: 'The service could not complete the request.',
     instance: request.url,
     code: 'internal_error',
     requestId: request.id,
@@ -142,6 +155,7 @@ export function installProblemHandler(app: FastifyInstance): void {
       title: 'Not found',
       status: 404,
       detail: 'The requested API route does not exist.',
+      message: 'The requested API route does not exist.',
       instance: request.url,
       code: 'route_not_found',
       requestId: request.id,

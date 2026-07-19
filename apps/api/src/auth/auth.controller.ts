@@ -241,7 +241,9 @@ export class AuthController {
     }
 
     private isBetaPasswordLoginRequest(req: Request): boolean {
-        const requestHost = this.headerValue(req, 'host')?.trim().toLowerCase() ?? '';
+        const forwardedHost = this.headerValue(req, 'x-forwarded-host');
+        if (forwardedHost?.includes(',')) return false;
+        const requestHost = (forwardedHost ?? this.headerValue(req, 'host'))?.trim().toLowerCase() ?? '';
         try {
             return new URL(`https://${requestHost}`).hostname === BETA_PASSWORD_LOGIN_HOST;
         } catch {

@@ -367,7 +367,7 @@ function getCsrfTokenFromCookie(): string {
   return pair ? decodeURIComponent(pair.split('=')[1] ?? '') : '';
 }
 
-function jsonWriteInit(method: 'POST' | 'PUT', payload: unknown): RequestInit {
+function jsonWriteInit(method: 'POST' | 'PUT', payload: unknown): RequestInit & { method: 'POST' | 'PUT' } {
   const csrfToken = getCsrfTokenFromCookie();
   return {
     method,
@@ -380,11 +380,11 @@ function jsonWriteInit(method: 'POST' | 'PUT', payload: unknown): RequestInit {
   };
 }
 
-async function fetchLunchBreakMutation(path: string, init: RequestInit): Promise<Response> {
+async function fetchLunchBreakMutation(path: string, init: RequestInit & { method: 'POST' | 'PUT' }): Promise<Response> {
   const controller = new AbortController();
   const timeout = globalThis.setTimeout(() => controller.abort(), 15_000);
   try {
-    return await fetch(apiPath(path), {
+    return await fetch(apiPath(path, init.method), {
       ...init,
       credentials: 'include',
       redirect: 'error',
