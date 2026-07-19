@@ -42,6 +42,13 @@ export async function buildServer(
   const app = Fastify({
     logger: { level: config.logLevel },
     trustProxy: config.trustProxy,
+    ajv: {
+      customOptions: {
+        // Mutating removal corrupts discriminated unions while AJV probes each
+        // branch. Strict schemas still reject unknown properties.
+        removeAdditional: false,
+      },
+    },
     bodyLimit: 256 * 1024,
     requestTimeout: 15_000,
     keepAliveTimeout: 72_000,
