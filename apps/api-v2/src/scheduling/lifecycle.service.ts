@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import {
   ScheduleReopenResponseSchema,
-  type LegacyIdentity,
+  type SessionIdentity,
   type ScheduleReopenResponse,
 } from '@lunchlineup/api-contract';
 import { Prisma } from '@prisma/client';
@@ -74,7 +74,7 @@ export class ScheduleLifecycleService {
   }
 
   async reopen(
-    identity: LegacyIdentity,
+    identity: SessionIdentity,
     schedulePublicId: string,
     headers: { ifMatch?: string; idempotencyKey?: string },
     metadata: { ipAddress?: string; userAgent?: string } = {},

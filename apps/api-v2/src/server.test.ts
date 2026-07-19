@@ -1,4 +1,4 @@
-import type { LegacyIdentity } from '@lunchlineup/api-contract';
+import type { SessionIdentity } from '@lunchlineup/api-contract';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { loadConfig } from './config';
 import { ProblemError } from './platform/problem';
@@ -7,12 +7,13 @@ import { buildServer } from './server';
 const config = loadConfig({
   APP_ORIGIN: 'https://beta.lunchlineup.com',
   ALLOWED_ORIGINS: 'https://beta.lunchlineup.com',
-  LEGACY_IDENTITY_URL: 'http://api:3000/v1/auth/me',
+  LEGACY_API_BASE_URL: 'http://api:3000/v1',
+  JWT_SECRET: 'test-api-v2-jwt-secret',
   DEPLOY_RELEASE_SHA: 'a'.repeat(40),
   LOG_LEVEL: 'silent',
 });
 
-const identity: LegacyIdentity = {
+const identity: SessionIdentity = {
   sub: 'user-1',
   tenantId: 'tenant-1',
   sessionId: 'session-1',
@@ -31,11 +32,12 @@ const identity: LegacyIdentity = {
   ],
   mfaVerified: true,
   mfaRequired: true,
+  pinResetRequired: false,
 };
 
 const apps: Array<Awaited<ReturnType<typeof buildServer>>> = [];
 
-async function harness() {
+async function harness(identityResponse: SessionIdentity = identity) {
   const retainedApplication = vi.fn(async () => ({ ok: true }));
   const board = vi.fn(async () => ({
     data: {
@@ -85,13 +87,14 @@ async function harness() {
       etag: '"schedule:88d8d86a-7e8d-4246-8ad3-eb7eedb44c1e:5"',
     },
   }));
+  const authenticate = vi.fn(async () => identityResponse);
   const app = await buildServer(config, {
     database: {
       ready: vi.fn(async () => undefined),
       disconnect: vi.fn(async () => undefined),
     } as never,
     identity: {
-      authenticate: vi.fn(async () => identity),
+      authenticate,
     } as never,
     retainedApplication: { execute: retainedApplication },
     routes: {
@@ -114,7 +117,16 @@ async function harness() {
     },
   });
   apps.push(app);
-  return { app, board, apply, demandList, demandReplace, reopen, retainedApplication };
+  return {
+    app,
+    board,
+    apply,
+    demandList,
+    demandReplace,
+    reopen,
+    retainedApplication,
+    authenticate,
+  };
 }
 
 afterEach(async () => {
@@ -137,6 +149,10 @@ describe('API v2 HTTP contract', () => {
     expect(document.paths['/v2/schedules/{scheduleId}/solve-jobs'].post.operationId).toBe('startScheduleSolve');
     expect(document.paths['/v2/break-generations'].post.operationId).toBe('generateScheduleBreaks');
     expect(document.paths['/v2/auth/me'].get.operationId).toBe('getCurrentSession');
+    expect(
+      document.paths['/v2/auth/me'].get.responses['200'].content['application/json'].schema
+        .properties.user.properties.mfaVerified.type,
+    ).toBe('boolean');
     expect(document.paths['/v2/users/{userId}/scheduling-profile'].put.operationId)
       .toBe('updateStaffSchedulingProfile');
     expect(document.paths['/v2/payroll/periods/{periodId}/exports'].post.operationId)
@@ -148,8 +164,8 @@ describe('API v2 HTTP contract', () => {
     expect(document.paths['/v2/shifts/{shiftId}']).toBeUndefined();
   });
 
-  it('dispatches declared application operations through the named API-02 owner', async () => {
-    const { app, retainedApplication } = await harness();
+  it('serves current session context through the native API-02 owner', async () => {
+    const { app, retainedApplication, authenticate } = await harness();
     const response = await app.inject({
       method: 'GET',
       url: '/v2/auth/me',
@@ -157,10 +173,10 @@ describe('API v2 HTTP contract', () => {
     });
 
     expect(response.statusCode).toBe(200);
-    expect(response.json()).toEqual({ ok: true });
-    expect(retainedApplication).toHaveBeenCalledWith(expect.objectContaining({
-      operation: expect.objectContaining({ operationId: 'getCurrentSession' }),
-    }));
+    expect(response.json()).toEqual({ user: identity });
+    expect(response.headers['cache-control']).toBe('private, no-store');
+    expect(authenticate).toHaveBeenCalledOnce();
+    expect(retainedApplication).not.toHaveBeenCalled();
   });
 
   it('rejects unsafe compatibility writes before the retained owner is called', async () => {
@@ -227,6 +243,30 @@ describe('API v2 HTTP contract', () => {
     expect(board).toHaveBeenCalledTimes(1);
     expect(response.headers['x-lunchlineup-api-version']).toBe('2');
     expect(response.headers['x-correlation-id']).toMatch(/^req-/);
+  });
+
+  it('blocks native scheduling while MFA verification is incomplete', async () => {
+    const { app, board } = await harness({ ...identity, mfaVerified: false });
+    const response = await app.inject({
+      method: 'GET',
+      url: '/v2/schedule-board?date=2026-07-18&view=day',
+    });
+
+    expect(response.statusCode).toBe(403);
+    expect(response.json()).toMatchObject({ code: 'mfa_verification_required' });
+    expect(board).not.toHaveBeenCalled();
+  });
+
+  it('blocks native scheduling while PIN rotation is required', async () => {
+    const { app, board } = await harness({ ...identity, pinResetRequired: true });
+    const response = await app.inject({
+      method: 'GET',
+      url: '/v2/schedule-board?date=2026-07-18&view=day',
+    });
+
+    expect(response.statusCode).toBe(403);
+    expect(response.json()).toMatchObject({ code: 'pin_rotation_required' });
+    expect(board).not.toHaveBeenCalled();
   });
 
   it('requires same-origin CSRF proof for cookie-authenticated writes', async () => {

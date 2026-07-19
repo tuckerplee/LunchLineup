@@ -53,6 +53,18 @@ test('Compose trusts only local proxy networks across the API v2 compatibility h
   assert.match(read('.env.example'), /^TRUST_PROXY=loopback,linklocal,uniquelocal$/m);
 });
 
+test('Compose gives native API v2 session validation its direct security dependencies', () => {
+  const apiV2 = serviceBlock(read('docker-compose.yml'), 'api-v2');
+
+  assert.match(apiV2, /REDIS_URL=\$\{REDIS_URL:-redis:\/\/redis:6379\}/);
+  assert.match(apiV2, /JWT_SECRET=\$\{JWT_SECRET:\?Set JWT_SECRET in \.env\}/);
+  assert.match(apiV2, /COOKIE_SECURE=\$\{COOKIE_SECURE:-true\}/);
+  assert.match(apiV2, /LEGACY_API_BASE_URL=http:\/\/api:3000\/v1/);
+  assert.match(apiV2, /AUTH_STATE_TIMEOUT_MS=\$\{AUTH_STATE_TIMEOUT_MS:-5000\}/);
+  assert.match(apiV2, /redis:[\s\S]*condition: service_healthy/);
+  assert.doesNotMatch(apiV2, /LEGACY_IDENTITY_URL|IDENTITY_TIMEOUT_MS/);
+});
+
 test('Compose fail-closes staff invitation delivery and passes the canonical origin to the worker', () => {
   const compose = read('docker-compose.yml');
   const api = serviceBlock(compose, 'api');

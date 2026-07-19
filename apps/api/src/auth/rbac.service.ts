@@ -1,5 +1,6 @@
 import { BadRequestException, ConflictException, ForbiddenException, Injectable, NotFoundException, Optional, UnauthorizedException } from '@nestjs/common';
 import { PermissionCategory, Prisma, PrismaClient, UserRole } from '@prisma/client';
+import { PRIVILEGED_MFA_PERMISSION_KEYS as SHARED_PRIVILEGED_MFA_PERMISSION_KEYS } from '@lunchlineup/rbac';
 import {
     lockTenantSchedulingMutations,
     SCHEDULABLE_USER_ROLES,
@@ -68,11 +69,7 @@ export const RBAC_PERMISSION_CATALOG: CatalogPermission[] = [
 ];
 
 export const ALL_PERMISSION_KEYS = RBAC_PERMISSION_CATALOG.map((permission) => permission.key);
-export const PRIVILEGED_MFA_PERMISSION_KEYS: ReadonlySet<string> = new Set(
-    RBAC_PERMISSION_CATALOG
-        .filter((permission) => permission.requiresMfa === true)
-        .map((permission) => permission.key),
-);
+export const PRIVILEGED_MFA_PERMISSION_KEYS: ReadonlySet<string> = SHARED_PRIVILEGED_MFA_PERMISSION_KEYS;
 const ALL_PERMISSION_KEY_SET: ReadonlySet<string> = new Set(ALL_PERMISSION_KEYS);
 export const PROTECTED_PERMISSION_KEYS: ReadonlySet<string> = new Set([
     'admin_portal:access',

@@ -6,7 +6,8 @@ import Fastify, { type FastifyInstance } from 'fastify';
 import { registerApplicationRoutes } from './application/routes';
 import type { ApiV2Config } from './config';
 import { TenantDatabase } from './platform/database';
-import { LegacyIdentityAdapter } from './platform/identity';
+import { type IdentityAdapter } from './platform/identity';
+import { NativeIdentityAdapter } from './platform/native-identity';
 import { installProblemHandler } from './platform/problem';
 import { RetainedApplicationBridge } from './platform/retained-application.bridge';
 import { ScheduleBoardService } from './scheduling/board.service';
@@ -34,7 +35,7 @@ const VersionSchema = Type.Object({
 export type ApiV2ServerDependencies = Partial<{
   database: TenantDatabase;
   routes: Omit<SchedulingRouteDependencies, 'config' | 'identity'>;
-  identity: LegacyIdentityAdapter;
+  identity: IdentityAdapter;
   retainedApplication: Pick<RetainedApplicationBridge, 'execute'>;
 }>;
 
@@ -58,7 +59,7 @@ export async function buildServer(
     maxRequestsPerSocket: 1000,
   }).withTypeProvider<TypeBoxTypeProvider>();
   const database = overrides.database ?? new TenantDatabase();
-  const identity = overrides.identity ?? new LegacyIdentityAdapter(config);
+  const identity = overrides.identity ?? new NativeIdentityAdapter(config, database);
   const retainedApplication = overrides.retainedApplication ?? new RetainedApplicationBridge(config);
   const routeServices = overrides.routes ?? {
     board: new ScheduleBoardService(database),
@@ -70,6 +71,17 @@ export async function buildServer(
   };
 
   await app.register(cookie);
+  try {
+    await identity.ready?.();
+  } catch (error) {
+    try {
+      await identity.close?.();
+    } catch {
+      // Startup is already failing; ensure the database cleanup still runs.
+    }
+    await database.disconnect().catch(() => undefined);
+    throw error;
+  }
   app.addContentTypeParser(
     /^multipart\/form-data(?:;|$)/i,
     { parseAs: 'buffer', bodyLimit: 10 * 1024 * 1024 },
@@ -147,6 +159,7 @@ export async function buildServer(
   });
   await registerApplicationRoutes(app, {
     config,
+    identity,
     retainedApplication,
   });
 
@@ -161,7 +174,11 @@ export async function buildServer(
   });
 
   app.addHook('onClose', async () => {
-    await database.disconnect();
+    try {
+      await identity.close?.();
+    } finally {
+      await database.disconnect();
+    }
   });
   return app;
 }

@@ -1,10 +1,10 @@
-import type { LegacyIdentity } from '@lunchlineup/api-contract';
+import type { SessionIdentity } from '@lunchlineup/api-contract';
 import { describe, expect, it, vi } from 'vitest';
 import { DemandWindowService } from './demand-window.service';
 
 const scheduleId = '88d8d86a-7e8d-4246-8ad3-eb7eedb44c1e';
 const demandWindowId = '831551d1-a27e-4ee7-a4f7-3f70f8916041';
-const identity: LegacyIdentity = {
+const identity: SessionIdentity = {
   sub: 'user-internal',
   tenantId: 'tenant-internal',
   sessionId: 'session-internal',

@@ -2,11 +2,11 @@
 
 `@lunchlineup/api-v2` is the clean-slate HTTP boundary. It is a contract-first Fastify modular monolith and does not import v1 controllers or business services. API-01 makes it the only browser-facing application API.
 
-The native scheduling slice owns scheduling board reads, schedule creation, demand replacement, reopening, and atomic schedule change sets. During migration, `platform/identity.ts` asks the existing authentication boundary to validate the current cookie or bearer session. This preserves session revocation, MFA, PIN rotation, and effective RBAC without copying the legacy auth service.
+The native session slice in `platform/native-identity.ts` validates the signed access-token locator directly against tenant-scoped session, role-assignment, MFA-marker, tenant-policy, and revocation state. It owns `GET /auth/me` and all native scheduling authorization without calling `/v1/auth/me`; `platform/identity.ts` is the narrow interface shared by HTTP modules.
 
 Publication billing/notifications, solver queue execution, and charged break generation retain mature v1 subsystems behind `scheduling/legacy-scheduling.bridge.ts`. That adapter is a private anti-corruption boundary, not a generic proxy: it accepts only known operations, resolves tenant-scoped public UUIDs, bounds time and response size, sanitizes errors, and translates every result back to the v2 contract. Native scheduling reads and ordinary schedule mutations go directly through API v2's tenant-scoped database services.
 
-The remaining browser domains are registered from the exact 121-operation API-01 catalog. They temporarily preserve mature v1 behavior through `platform/retained-application.bridge.ts`, with fixed upstream authority, bounded request/response sizes, no redirects except the two declared OIDC operations, sanitized RFC 9457 errors, and no wildcard route. API-02 owns deleting those compatibility operations as typed native domain modules land; the catalog may not grow.
+The exact 121-operation API-01 catalog includes one native session operation and 120 retained operations. The retained operations preserve mature v1 behavior through `platform/retained-application.bridge.ts`, with fixed upstream authority, bounded request/response sizes, no redirects except the two declared OIDC operations, sanitized RFC 9457 errors, and no wildcard route. API-02 owns deleting those compatibility operations as typed native domain modules land; the catalog may not grow.
 
 ## Files
 

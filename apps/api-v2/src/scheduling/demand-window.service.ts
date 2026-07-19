@@ -4,7 +4,7 @@ import {
   type DemandWindowListResponse,
   type DemandWindowReplaceRequest,
   type DemandWindowReplaceResponse,
-  type LegacyIdentity,
+  type SessionIdentity,
 } from '@lunchlineup/api-contract';
 import { Prisma } from '@prisma/client';
 import { TenantDatabase, type TenantTransaction } from '../platform/database';
@@ -90,7 +90,7 @@ export class DemandWindowService {
   }
 
   async list(
-    identity: LegacyIdentity,
+    identity: SessionIdentity,
     schedulePublicId: string,
   ): Promise<DemandWindowListResponse> {
     requirePermissions(identity, ['schedules:write']);
@@ -135,7 +135,7 @@ export class DemandWindowService {
   }
 
   async replace(
-    identity: LegacyIdentity,
+    identity: SessionIdentity,
     schedulePublicId: string,
     body: DemandWindowReplaceRequest,
     headers: { ifMatch?: string; idempotencyKey?: string },

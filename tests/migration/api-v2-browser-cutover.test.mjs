@@ -83,6 +83,26 @@ test('API-01 uses one explicit shared route catalog and no wildcard compatibilit
   }
 });
 
+test('API-02 owns current-session validation natively without a v1 identity hop', () => {
+  const server = read('apps/api-v2/src/server.ts');
+  const routes = read('apps/api-v2/src/application/routes.ts');
+  const identity = read('apps/api-v2/src/platform/identity.ts');
+  const nativeIdentity = read('apps/api-v2/src/platform/native-identity.ts');
+  const config = read('apps/api-v2/src/config.ts');
+
+  assert.match(server, /new NativeIdentityAdapter\(config, database\)/);
+  assert.match(routes, /operation\.operationId === 'getCurrentSession'/);
+  assert.match(routes, /dependencies\.identity\.authenticate/);
+  assert.match(nativeIdentity, /transaction\.session\.findFirst/);
+  assert.match(nativeIdentity, /transaction\.roleAssignment\.findMany/);
+  assert.match(nativeIdentity, /session_mfa:/);
+  assert.doesNotMatch(nativeIdentity, /fetch\(/);
+  assert.doesNotMatch(identity, /LegacyIdentityAdapter|fetch\(/);
+  assert.doesNotMatch(config, /LEGACY_IDENTITY_URL|IDENTITY_TIMEOUT_MS/);
+  assert.match(config, /LEGACY_API_BASE_URL/);
+  assert.match(config, /AUTH_STATE_TIMEOUT_MS/);
+});
+
 test('public build and deployment defaults select API v2', () => {
   for (const [path, expected] of [
     ['.env.example', 'NEXT_PUBLIC_API_URL=/api/v2'],

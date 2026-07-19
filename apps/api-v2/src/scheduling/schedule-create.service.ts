@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import {
   ScheduleCreateResponseSchema,
-  type LegacyIdentity,
+  type SessionIdentity,
   type ScheduleCreateRequest,
   type ScheduleCreateResponse,
 } from '@lunchlineup/api-contract';
@@ -77,7 +77,7 @@ export class ScheduleCreateService {
   }
 
   async create(
-    identity: LegacyIdentity,
+    identity: SessionIdentity,
     locationPublicId: string,
     body: ScheduleCreateRequest,
     idempotencyKeyValue: string | undefined,

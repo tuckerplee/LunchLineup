@@ -14,3 +14,4 @@ export const MODEL_PATH = packageFilePath('model.conf');
 export const POLICY_PATH = packageFilePath('policy.csv');
 
 export * from 'casbin';
+export * from './permissions';

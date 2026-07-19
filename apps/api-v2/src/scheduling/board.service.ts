@@ -1,5 +1,5 @@
 import type {
-  LegacyIdentity,
+  SessionIdentity,
   ScheduleBoardResponse,
   SchedulerView,
 } from '@lunchlineup/api-contract';
@@ -23,7 +23,7 @@ function normalizedRole(value: string | null | undefined): string {
   return value?.trim().replace(/[\s-]+/g, '_').toUpperCase() ?? '';
 }
 
-function isStaffIdentity(identity: LegacyIdentity): boolean {
+function isStaffIdentity(identity: SessionIdentity): boolean {
   return [
     identity.legacyRole,
     identity.role,
@@ -51,7 +51,7 @@ export type BoardQuery = {
 export class ScheduleBoardService {
   constructor(private readonly database: TenantDatabase) {}
 
-  async get(identity: LegacyIdentity, query: BoardQuery): Promise<ScheduleBoardResponse> {
+  async get(identity: SessionIdentity, query: BoardQuery): Promise<ScheduleBoardResponse> {
     return this.database.withTenant(identity.tenantId, async (transaction) => {
       const firstLocations = await transaction.location.findMany({
         where: { tenantId: identity.tenantId, deletedAt: null },

@@ -2323,7 +2323,13 @@ export class AuthService implements OnModuleDestroy {
         return null;
     }
 
-    async getSessionUserContext(userId: string, tenantId: string, sessionClaims: { role: string; sessionId: string; mfaVerified?: boolean; mfaRequired?: boolean }) {
+    async getSessionUserContext(userId: string, tenantId: string, sessionClaims: {
+        role: string;
+        sessionId: string;
+        mfaVerified?: boolean;
+        mfaRequired?: boolean;
+        pinResetRequired?: boolean;
+    }) {
         const user = await this.getTenantDb().withTenant(tenantId, (tx) => tx.user.findFirst({
             where: {
                 id: userId,
@@ -2372,6 +2378,7 @@ export class AuthService implements OnModuleDestroy {
             tenantName: user.tenant?.name ?? '',
             mfaVerified: sessionClaims.mfaVerified === true,
             mfaRequired: sessionClaims.mfaRequired === true,
+            pinResetRequired: sessionClaims.pinResetRequired === true,
         };
     }
 

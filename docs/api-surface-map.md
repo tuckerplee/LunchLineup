@@ -14,11 +14,11 @@ browser (application traffic uses /api/v2 only)
        everything else -> web:3000
 
 api-v2
-  -> PostgreSQL with tenant RLS for native v2 scheduling reads/writes
-  -> api:3000/v1/auth/me for temporary session validation
+  -> PostgreSQL with tenant RLS for native v2 session and scheduling reads/writes
+  -> Redis for bounded MFA session-marker validation
   -> selected private v1 scheduling operations for billing, notification,
      solver-queue, and break-generation compatibility
-  -> exact API-01 retained-operation catalog for non-scheduling browser domains
+  -> exact 120-operation API-01 compatibility catalog for remaining browser domains
 
 worker -> RabbitMQ, PostgreSQL, engine:50051 gRPC, parser Unix socket
 control -> private operator status/health/metrics only
@@ -48,7 +48,7 @@ External paths include `/api`; the service receives the same path after Caddy re
 | GET | `/api/v2/schedules/{scheduleId}/solve-jobs/{jobId}` | read one solve job | private, no-store |
 | POST | `/api/v2/break-generations` | generate and persist breaks for selected shifts | `Idempotency-Key` |
 
-The remaining 121 browser operations are registered explicitly from `packages/api-contract/src/application.ts`. They cover authentication (17), locations (6), people/access (17), operational/lunch-break reads and commands (9), time cards (6), payroll (17), notifications (3), settings (4), billing (9), availability imports (2), and administration/account lifecycle (31). The same catalog validates browser path/method pairs. There is no `/v2/*` catch-all handler and no caller-supplied upstream path.
+The 121 browser operations are registered explicitly from `packages/api-contract/src/application.ts`. `GET /auth/me` is native; the remaining 120 compatibility operations cover authentication (16), locations (6), people/access (17), operational/lunch-break reads and commands (9), time cards (6), payroll (17), notifications (3), settings (4), billing (9), availability imports (2), and administration/account lifecycle (31). The same catalog validates browser path/method pairs. There is no `/v2/*` catch-all handler and no caller-supplied upstream path.
 
 API v2 uses shared TypeBox schemas for server validation, OpenAPI generation, and the generated browser client. Every v2 response exposes the server-generated `X-Correlation-ID` used for downstream retained-service calls. Errors are bounded RFC 9457 Problem Details with stable machine codes. Contract failures use `422`; missing preconditions use `428`; stale schedule revisions use `412` and return `currentEtag`; state conflicts use `409`. Unsafe cookie-authenticated requests require an allowed `Origin` and double-submit CSRF proof. Shift updates are partial: omitted fields retain their exact saved values, including custom role labels, while explicitly supplied role labels are trimmed without case normalization.
 
@@ -61,14 +61,15 @@ Native v2 ownership:
 - atomic shift change sets and revision ledger;
 - demand-window replacement;
 - schedule reopening.
+- current-session validation and `GET /auth/me`;
+- session-bound RBAC, tenant status, session timeout, MFA, and PIN-rotation enforcement for native scheduling.
 
 Bounded compatibility ownership during the strangler migration:
 
-- current-session validation;
 - publication billing and notifications;
 - solver queue submission/status;
 - charged break generation.
-- the frozen 121-operation API-01 application catalog while API-02 replaces each domain implementation.
+- the frozen 120-operation API-01 application catalog while API-02 replaces each domain implementation.
 
 The scheduling compatibility adapter accepts only hard-coded internal route shapes and translates public UUIDs to tenant-scoped internal IDs. The API-01 application compatibility owner is reachable only through the exact shared catalog, uses a fixed internal authority, bounds request time/body/response size, forwards only approved headers, replaces spoofable forwarding values with the trusted client address and canonical `APP_ORIGIN` host/protocol, permits redirects only for the two declared OIDC operations, and sanitizes errors into Problem Details. Neither boundary exposes a wildcard route. API-02 is the required removal owner.
 

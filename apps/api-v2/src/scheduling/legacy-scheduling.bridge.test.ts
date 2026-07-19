@@ -5,7 +5,8 @@ import { LegacySchedulingBridge } from './legacy-scheduling.bridge';
 const config = loadConfig({
   APP_ORIGIN: 'https://beta.lunchlineup.com',
   ALLOWED_ORIGINS: 'https://beta.lunchlineup.com',
-  LEGACY_IDENTITY_URL: 'http://api:3000/v1/auth/me',
+  LEGACY_API_BASE_URL: 'http://api:3000/v1',
+  JWT_SECRET: 'test-api-v2-jwt-secret',
   DEPLOY_RELEASE_SHA: 'a'.repeat(40),
   LOG_LEVEL: 'silent',
 });

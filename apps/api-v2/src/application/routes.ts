@@ -1,11 +1,14 @@
 import {
   APPLICATION_API_OPERATIONS,
+  CurrentSessionResponseSchema,
   ProblemDetailsSchema,
   type ApplicationApiOperation,
+  type CurrentSessionResponse,
 } from '@lunchlineup/api-contract';
 import { Type, type TSchema } from '@sinclair/typebox';
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import type { ApiV2Config } from '../config';
+import type { IdentityAdapter } from '../platform/identity';
 import { assertUnsafeRequestSecurity } from '../platform/request-security';
 import type { RetainedApplicationBridge } from '../platform/retained-application.bridge';
 
@@ -29,6 +32,7 @@ const commonResponses = {
 
 export type ApplicationRouteDependencies = {
   config: ApiV2Config;
+  identity: IdentityAdapter;
   retainedApplication: Pick<RetainedApplicationBridge, 'execute'>;
 };
 
@@ -46,14 +50,17 @@ function pathParameters(path: string): TSchema | undefined {
 
 function routeSchema(operation: ApplicationApiOperation) {
   const params = pathParameters(operation.path);
+  const native = operation.operationId === 'getCurrentSession';
   return {
     operationId: operation.operationId,
     summary: operation.summary,
-    description: 'API-01 public contract. The mature implementation is isolated behind the named API-02 compatibility owner.',
+    description: native
+      ? 'Native API-02 session-context owner. Roles, permissions, revocation, MFA state, and session policy are validated directly by API v2.'
+      : 'API-01 public contract. The mature implementation is isolated behind the named API-02 compatibility owner.',
     tags: [operation.tag],
     ...(params ? { params } : {}),
     response: {
-      200: Type.Any(),
+      200: native ? CurrentSessionResponseSchema : Type.Any(),
       201: Type.Any(),
       202: Type.Any(),
       204: Type.Any(),
@@ -77,6 +84,11 @@ export async function registerApplicationRoutes(
       bodyLimit: operation.bodyLimitBytes,
       schema: routeSchema(operation),
       handler: async (request, reply) => {
+        if (operation.operationId === 'getCurrentSession') {
+          const user = await dependencies.identity.authenticate(request as FastifyRequest, reply);
+          reply.header('Cache-Control', 'private, no-store');
+          return { user } satisfies CurrentSessionResponse;
+        }
         // Retained authentication routes own their existing login/reset/session
         // CSRF rules. Requiring the application-session double submit token here
         // would reject valid pre-session and reset-token flows.

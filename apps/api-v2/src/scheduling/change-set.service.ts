@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import {
   ScheduleChangeSetResponseSchema,
-  type LegacyIdentity,
+  type SessionIdentity,
   type ScheduleChangeSetRequest,
   type ScheduleChangeSetResponse,
 } from '@lunchlineup/api-contract';
@@ -77,7 +77,7 @@ function plannedShift(row: StoredShift): PlannedShift {
 export class ScheduleChangeSetService {
   constructor(private readonly database: TenantDatabase) {}
 
-  private authorize(identity: LegacyIdentity, body: ScheduleChangeSetRequest): void {
+  private authorize(identity: SessionIdentity, body: ScheduleChangeSetRequest): void {
     if (body.operations.some((operation) => operation.op === 'shift.delete')) {
       requirePermissions(identity, ['shifts:delete']);
     }
@@ -126,7 +126,7 @@ export class ScheduleChangeSetService {
 
   private async applyMutation(
     transaction: TenantTransaction,
-    identity: LegacyIdentity,
+    identity: SessionIdentity,
     schedule: LockedSchedule,
     mutation: ShiftMutation,
     deletedAt: Date,
@@ -202,7 +202,7 @@ export class ScheduleChangeSetService {
   }
 
   async apply(
-    identity: LegacyIdentity,
+    identity: SessionIdentity,
     schedulePublicId: string,
     body: ScheduleChangeSetRequest,
     headers: { ifMatch?: string; idempotencyKey?: string },

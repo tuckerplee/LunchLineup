@@ -5,10 +5,12 @@ export type ApiV2Config = {
   host: string;
   appOrigin: string;
   allowedOrigins: ReadonlySet<string>;
-  legacyIdentityUrl: string;
   legacyApiBaseUrl: string;
-  identityTimeoutMs: number;
+  authStateTimeoutMs: number;
   legacyRequestTimeoutMs: number;
+  jwtSecret: string;
+  redisUrl: string;
+  cookieSecure: boolean;
   releaseSha: string;
   trustProxy: boolean | number | string[];
   logLevel: string;
@@ -30,6 +32,33 @@ function requiredHttpUrl(value: string | undefined, name: string): URL {
     throw new Error(`${name} must be an HTTP(S) URL without embedded credentials.`);
   }
   return parsed;
+}
+
+function requiredSecret(value: string | undefined, name: string): string {
+  if (!value) throw new Error(`${name} is required.`);
+  return value;
+}
+
+function redisUrl(value: string | undefined): string {
+  const candidate = value?.trim() || 'redis://redis:6379';
+  let parsed: URL;
+  try {
+    parsed = new URL(candidate);
+  } catch {
+    throw new Error('REDIS_URL must be a valid redis:// or rediss:// URL.');
+  }
+  if (!['redis:', 'rediss:'].includes(parsed.protocol) || !parsed.hostname) {
+    throw new Error('REDIS_URL must be a valid redis:// or rediss:// URL.');
+  }
+  return parsed.toString();
+}
+
+function cookieSecure(value: string | undefined, nodeEnvironment: string | undefined): boolean {
+  if (value === undefined) return nodeEnvironment === 'production';
+  const normalized = value.trim().toLowerCase();
+  if (['1', 'true', 'yes', 'on'].includes(normalized)) return true;
+  if (['0', 'false', 'no', 'off'].includes(normalized)) return false;
+  throw new Error('COOKIE_SECURE must be a boolean value.');
 }
 
 function normalizedOrigin(value: string): string {
@@ -84,12 +113,16 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ApiV2Config {
   for (const entry of (env.ALLOWED_ORIGINS ?? '').split(',')) {
     if (entry.trim()) origins.add(normalizedOrigin(entry.trim()));
   }
-  const legacyIdentityUrl = requiredHttpUrl(
-    env.LEGACY_IDENTITY_URL ?? 'http://api:3000/v1/auth/me',
-    'LEGACY_IDENTITY_URL',
+  const legacyApiBaseUrl = requiredHttpUrl(
+    env.LEGACY_API_BASE_URL ?? 'http://api:3000/v1',
+    'LEGACY_API_BASE_URL',
   );
-  if (legacyIdentityUrl.pathname !== '/v1/auth/me' || legacyIdentityUrl.search || legacyIdentityUrl.hash) {
-    throw new Error('LEGACY_IDENTITY_URL must target the exact /v1/auth/me compatibility boundary.');
+  if (
+    !['/v1', '/v1/'].includes(legacyApiBaseUrl.pathname)
+    || legacyApiBaseUrl.search
+    || legacyApiBaseUrl.hash
+  ) {
+    throw new Error('LEGACY_API_BASE_URL must target the exact /v1 compatibility base.');
   }
 
   return {
@@ -97,10 +130,12 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ApiV2Config {
     host: env.HOST?.trim() || '0.0.0.0',
     appOrigin,
     allowedOrigins: origins,
-    legacyIdentityUrl: legacyIdentityUrl.toString(),
-    legacyApiBaseUrl: new URL('/v1/', legacyIdentityUrl).toString().replace(/\/+$/, ''),
-    identityTimeoutMs: boundedInteger(env.IDENTITY_TIMEOUT_MS, 5000, 250, 15_000),
+    legacyApiBaseUrl: legacyApiBaseUrl.toString().replace(/\/+$/, ''),
+    authStateTimeoutMs: boundedInteger(env.AUTH_STATE_TIMEOUT_MS, 5000, 250, 15_000),
     legacyRequestTimeoutMs: boundedInteger(env.LEGACY_REQUEST_TIMEOUT_MS, 15_000, 1000, 30_000),
+    jwtSecret: requiredSecret(env.JWT_SECRET, 'JWT_SECRET'),
+    redisUrl: redisUrl(env.REDIS_URL),
+    cookieSecure: cookieSecure(env.COOKIE_SECURE, env.NODE_ENV),
     releaseSha: releaseSha(env.DEPLOY_RELEASE_SHA ?? env.IMAGE_TAG),
     trustProxy: trustProxy(env.TRUST_PROXY),
     logLevel: env.LOG_LEVEL?.trim() || 'info',

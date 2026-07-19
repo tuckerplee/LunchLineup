@@ -4,7 +4,8 @@ import { loadConfig } from './config';
 function config(trustProxy: string) {
   return loadConfig({
     APP_ORIGIN: 'https://beta.lunchlineup.com',
-    LEGACY_IDENTITY_URL: 'http://api:3000/v1/auth/me',
+    LEGACY_API_BASE_URL: 'http://api:3000/v1',
+    JWT_SECRET: 'test-api-v2-jwt-secret',
     TRUST_PROXY: trustProxy,
   });
 }
@@ -30,5 +31,23 @@ describe('API v2 runtime configuration', () => {
   it('rejects wildcards and invalid CIDR ranges', () => {
     expect(() => config('*')).toThrow(/TRUST_PROXY/);
     expect(() => config('10.0.0.0/99')).toThrow(/TRUST_PROXY/);
+  });
+
+  it('requires the shared access-token secret and validates the MFA session-store URL', () => {
+    expect(() => loadConfig({
+      APP_ORIGIN: 'https://beta.lunchlineup.com',
+      LEGACY_API_BASE_URL: 'http://api:3000/v1',
+    })).toThrow('JWT_SECRET is required.');
+    expect(() => loadConfig({
+      APP_ORIGIN: 'https://beta.lunchlineup.com',
+      LEGACY_API_BASE_URL: 'http://api:3000/v1',
+      JWT_SECRET: 'test-api-v2-jwt-secret',
+      REDIS_URL: 'https://not-redis.example',
+    })).toThrow('REDIS_URL');
+    expect(() => loadConfig({
+      APP_ORIGIN: 'https://beta.lunchlineup.com',
+      LEGACY_API_BASE_URL: 'http://api:3000/v1/auth/me',
+      JWT_SECRET: 'test-api-v2-jwt-secret',
+    })).toThrow('LEGACY_API_BASE_URL');
   });
 });

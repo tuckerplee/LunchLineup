@@ -1,4 +1,4 @@
-import type { LegacyIdentity, ScheduleChangeSetRequest } from '@lunchlineup/api-contract';
+import type { SessionIdentity, ScheduleChangeSetRequest } from '@lunchlineup/api-contract';
 import { describe, expect, it, vi } from 'vitest';
 import { requestHash } from './contract-helpers';
 import { ScheduleChangeSetService } from './change-set.service';
@@ -10,7 +10,7 @@ const body: ScheduleChangeSetRequest = {
     shiftId: 'bdcbf0a0-674c-45d3-a69a-fdb9b28c9b2f',
   }],
 };
-const identity: LegacyIdentity = {
+const identity: SessionIdentity = {
   sub: 'user-internal',
   tenantId: 'tenant-internal',
   sessionId: 'session-internal',

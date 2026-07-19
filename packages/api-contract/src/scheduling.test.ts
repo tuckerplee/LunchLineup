@@ -1,7 +1,6 @@
 import { Value } from '@sinclair/typebox/value';
 import { describe, expect, it, vi } from 'vitest';
 import {
-  LegacyIdentitySchema,
   ProblemDetailsSchema,
   ScheduleChangeSetRequestSchema,
   createApiV2Client,
@@ -46,25 +45,6 @@ describe('API v2 scheduling contract', () => {
         code: 'shift_overlap',
         message: 'The staff member already has an overlapping shift.',
       }],
-    })).toBe(true);
-  });
-
-  it('matches the structured RBAC roles returned by the live identity boundary', () => {
-    expect(Value.Check(LegacyIdentitySchema, {
-      sub: 'user-internal',
-      tenantId: 'tenant-internal',
-      sessionId: 'session-internal',
-      role: 'Manager',
-      legacyRole: 'MANAGER',
-      roles: [{
-        id: 'role-manager',
-        name: 'Manager',
-        isSystem: true,
-        legacyRole: 'MANAGER',
-      }],
-      permissions: ['dashboard:access', 'schedules:read'],
-      mfaVerified: true,
-      mfaRequired: true,
     })).toBe(true);
   });
 

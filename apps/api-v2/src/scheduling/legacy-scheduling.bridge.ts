@@ -6,7 +6,7 @@ import {
   ScheduleSolveResponseSchema,
   type BreakGenerationRequest,
   type BreakGenerationResponse,
-  type LegacyIdentity,
+  type SessionIdentity,
   type SchedulePublicationRequest,
   type SchedulePublicationResponse,
   type SchedulePublishPlanResponse,
@@ -108,7 +108,7 @@ export class LegacySchedulingBridge {
     private readonly database: TenantDatabase,
   ) {}
 
-  private async schedule(identity: LegacyIdentity, publicId: string): Promise<PublicScheduleReference> {
+  private async schedule(identity: SessionIdentity, publicId: string): Promise<PublicScheduleReference> {
     const schedule = await this.database.withTenant(identity.tenantId, (transaction) => (
       transaction.schedule.findFirst({
         where: {
@@ -223,7 +223,7 @@ export class LegacySchedulingBridge {
   }
 
   async publishPlan(
-    identity: LegacyIdentity,
+    identity: SessionIdentity,
     schedulePublicId: string,
     request: FastifyRequest,
     reply: FastifyReply,
@@ -246,7 +246,7 @@ export class LegacySchedulingBridge {
   }
 
   async publish(
-    identity: LegacyIdentity,
+    identity: SessionIdentity,
     schedulePublicId: string,
     body: SchedulePublicationRequest,
     request: FastifyRequest,
@@ -304,7 +304,7 @@ export class LegacySchedulingBridge {
   }
 
   async startSolve(
-    identity: LegacyIdentity,
+    identity: SessionIdentity,
     schedulePublicId: string,
     body: ScheduleSolveRequest,
     request: FastifyRequest,
@@ -363,7 +363,7 @@ export class LegacySchedulingBridge {
   }
 
   async solveJob(
-    identity: LegacyIdentity,
+    identity: SessionIdentity,
     schedulePublicId: string,
     jobPublicId: string,
     request: FastifyRequest,
@@ -406,7 +406,7 @@ export class LegacySchedulingBridge {
   }
 
   async generateBreaks(
-    identity: LegacyIdentity,
+    identity: SessionIdentity,
     body: BreakGenerationRequest,
     request: FastifyRequest,
     reply: FastifyReply,

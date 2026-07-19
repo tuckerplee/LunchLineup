@@ -1,6 +1,6 @@
 import type {
   DemandWindowReplaceRequest,
-  LegacyIdentity,
+  SessionIdentity,
 } from '@lunchlineup/api-contract';
 import { describe, expect, it, vi } from 'vitest';
 import { requestHash } from './contract-helpers';
@@ -8,7 +8,7 @@ import { DemandWindowService } from './demand-window.service';
 import { ScheduleLifecycleService } from './lifecycle.service';
 
 const scheduleId = '88d8d86a-7e8d-4246-8ad3-eb7eedb44c1e';
-const identity: LegacyIdentity = {
+const identity: SessionIdentity = {
   sub: 'user-internal',
   tenantId: 'tenant-internal',
   sessionId: 'session-internal',

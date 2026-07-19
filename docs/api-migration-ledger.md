@@ -14,7 +14,7 @@ Exit criteria:
 - old `POST|PUT|DELETE /shifts/{id}` browser mutations cannot be addressed through API v2;
 - build, unit, migration, browser, deployment, and live-beta checks pass.
 
-The shared catalog currently contains 121 explicit retained application operations:
+The shared catalog contains 121 explicit application operations. `GET /auth/me` is now native; 120 operations remain behind a compatibility owner:
 
 | Domain | Operations |
 | --- | ---: |
@@ -34,13 +34,13 @@ These sit beside 11 native scheduling operations. The catalog is defined once in
 
 ## API-02 — Replace retained implementations with native v2 modules
 
-Status: open. This is the next API blocker after API-01.
+Status: in progress. API-02-AUTH now has a native current-session and authorization boundary; the remaining domain replacements are open.
 
 The API-01 routes are real, explicit public v2 routes, but their mature implementations remain behind bounded server-side compatibility owners. API-02 removes those dependencies domain by domain:
 
 | Issue | Remaining native owner | Compatibility operations |
 | --- | --- | ---: |
-| API-02-AUTH | Authentication, session validation, cookie lifecycle, MFA, reset, OTP, PIN, and OIDC | 17 plus the private identity adapter |
+| API-02-AUTH | Login, cookie lifecycle, MFA mutation, reset, OTP, PIN, and OIDC; native session validation and `GET /auth/me` are complete | 16 |
 | API-02-LOC | Tenant locations and public identifier translation | 6 |
 | API-02-PEOPLE | Staff, roles, permissions, invitations, and public identifier translation | 17 |
 | API-02-OPS | Operational schedule/roster reads and aggregate lunch/break planning | 9 |
@@ -54,6 +54,8 @@ The API-01 routes are real, explicit public v2 routes, but their mature implemen
 | API-02-SCHED-SEAMS | Publication settlement, solver queue/status, and charged break generation | 5 retained scheduling operations |
 
 Each replacement must add specific TypeBox request/response schemas, tenant-scoped native services, public identifiers, authorization tests, and direct database/integration proof before its compatibility operation is deleted. No new operation may be added to the retained catalog; new product work must be native v2.
+
+API-02-AUTH native slice: API v2 now verifies access-token signature, tenant/session revocation, effective role assignments, tenant status, session timeout, MFA policy and Redis MFA marker itself. Cookie sessions rotate at the v2 boundary. Native scheduling rejects incomplete MFA and forced PIN rotation before any domain service runs. The old private `/v1/auth/me` identity adapter has been removed.
 
 ## API-03 — Retire public API v1 exposure
 

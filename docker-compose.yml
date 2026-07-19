@@ -620,8 +620,11 @@ services:
       - ALLOWED_ORIGINS=${ALLOWED_ORIGINS:-}
       - TRUST_PROXY=${TRUST_PROXY:-loopback,linklocal,uniquelocal}
       - DATABASE_URL=${DATABASE_URL:?Set validated percent-encoded DATABASE_URL in .env}
-      - LEGACY_IDENTITY_URL=http://api:3000/v1/auth/me
-      - IDENTITY_TIMEOUT_MS=${IDENTITY_TIMEOUT_MS:-5000}
+      - REDIS_URL=${REDIS_URL:-redis://redis:6379}
+      - JWT_SECRET=${JWT_SECRET:?Set JWT_SECRET in .env}
+      - COOKIE_SECURE=${COOKIE_SECURE:-true}
+      - LEGACY_API_BASE_URL=http://api:3000/v1
+      - AUTH_STATE_TIMEOUT_MS=${AUTH_STATE_TIMEOUT_MS:-5000}
       - LEGACY_REQUEST_TIMEOUT_MS=${LEGACY_REQUEST_TIMEOUT_MS:-15000}
       - DEPLOY_RELEASE_SHA=${DEPLOY_RELEASE_SHA:-local}
       - LOG_LEVEL=${LOG_LEVEL:-info}
@@ -637,6 +640,8 @@ services:
         condition: service_healthy
       migrate:
         condition: service_completed_successfully
+      redis:
+        condition: service_healthy
     restart: unless-stopped
 
   # Read-only provider identity used only to export and verify lifecycle policy.

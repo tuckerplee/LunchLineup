@@ -25,7 +25,7 @@ import {
   type DemandWindowListResponse,
   type DemandWindowReplaceRequest,
   type DemandWindowReplaceResponse,
-  type LegacyIdentity,
+  type SessionIdentity,
   type ScheduleBoardResponse,
   type ScheduleChangeSetRequest,
   type ScheduleChangeSetResponse,
@@ -43,7 +43,8 @@ import {
 import { Type } from '@sinclair/typebox';
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import type { ApiV2Config } from '../config';
-import { LegacyIdentityAdapter, requireAnyPermission, requirePermissions } from '../platform/identity';
+import { type IdentityAdapter, requireAnyPermission, requirePermissions } from '../platform/identity';
+import { ProblemError } from '../platform/problem';
 import { assertUnsafeRequestSecurity } from '../platform/request-security';
 import type { ScheduleBoardService } from './board.service';
 import type { ScheduleChangeSetService } from './change-set.service';
@@ -88,7 +89,7 @@ const commonResponses = {
 
 export type SchedulingRouteDependencies = {
   config: ApiV2Config;
-  identity: LegacyIdentityAdapter;
+  identity: IdentityAdapter;
   board: Pick<ScheduleBoardService, 'get'>;
   scheduleCreate: Pick<ScheduleCreateService, 'create'>;
   changeSets: Pick<ScheduleChangeSetService, 'apply'>;
@@ -108,9 +109,26 @@ function header(request: FastifyRequest, name: string): string | undefined {
 async function authenticate(
   request: FastifyRequest,
   reply: FastifyReply,
-  identityAdapter: LegacyIdentityAdapter,
-): Promise<LegacyIdentity> {
-  return identityAdapter.authenticate(request, reply);
+  identityAdapter: IdentityAdapter,
+): Promise<SessionIdentity> {
+  const identity = await identityAdapter.authenticate(request, reply);
+  if (identity.pinResetRequired) {
+    throw new ProblemError(
+      403,
+      'pin_rotation_required',
+      'PIN rotation is required before this session can access scheduling.',
+      'Forbidden',
+    );
+  }
+  if (identity.mfaRequired && !identity.mfaVerified) {
+    throw new ProblemError(
+      403,
+      'mfa_verification_required',
+      'MFA verification is required before this session can access scheduling.',
+      'Forbidden',
+    );
+  }
+  return identity;
 }
 
 export async function registerSchedulingRoutes(
