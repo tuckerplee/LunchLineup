@@ -127,12 +127,12 @@ const SCHEDULABLE_SHIFT_ROLES: Array<{ value: SchedulableShiftRole; label: strin
   { value: 'STAFF', label: 'Staff' },
   { value: 'MANAGER', label: 'Manager' },
 ];
-const TODAY = new Date();
+const DATE_BOOTSTRAP_PLACEHOLDER = '2000-01-01';
 const DEFAULT_SHIFT_DRAFT: ShiftDraft = {
   userId: '',
   locationId: '',
   role: 'STAFF',
-  shiftDate: toDateInputValue(TODAY),
+  shiftDate: DATE_BOOTSTRAP_PLACEHOLDER,
   startTime: '09:00',
   endTime: '17:00',
 };
@@ -336,8 +336,10 @@ function SchedulingContent() {
   const searchParams = useSearchParams();
   const initialDate = searchParams.get('date');
   const initialLocationId = searchParams.get('location')?.trim() ?? '';
-  const initialDateValue = initialDate && /^\d{4}-\d{2}-\d{2}$/.test(initialDate) ? initialDate : toDateInputValue(TODAY);
+  const requestedDate = initialDate && /^\d{4}-\d{2}-\d{2}$/.test(initialDate) ? initialDate : null;
+  const initialDateValue = requestedDate ?? DATE_BOOTSTRAP_PLACEHOLDER;
   const openFocus = searchParams.get('focus') === 'open';
+  const [isHydrated, setIsHydrated] = useState(Boolean(requestedDate));
   const [isLoading, setIsLoading] = useState(true);
   const [isGenerating, setIsGenerating] = useState(false);
   const [isRefreshing, setIsRefreshing] = useState(false);
@@ -382,6 +384,15 @@ function SchedulingContent() {
   const [loadedShiftScope, setLoadedShiftScope] = useState<LocationShiftScope | null>(null);
   const [permissions, setPermissions] = useState<string[]>([]);
   const [error, setError] = useState<string | null>(null);
+  useEffect(() => {
+    const browserDate = requestedDate ?? toDateInputValue(new Date());
+    selectedDateRef.current = browserDate;
+    setSelectedDate(browserDate);
+    setShiftDraft((current) => (
+      current.shiftDate === browserDate ? current : { ...current, shiftDate: browserDate }
+    ));
+    setIsHydrated(true);
+  }, [requestedDate]);
   useEffect(() => {
     if (!showShiftForm) return;
     const previousOverflow = document.body.style.overflow;
@@ -506,8 +517,9 @@ function SchedulingContent() {
   }, []);
 
   useEffect(() => {
+    if (!isHydrated) return;
     void loadSchedule(selectedDate, viewMode, shiftDraft.locationId || initialLocationId || undefined);
-  }, [initialLocationId, loadSchedule, selectedDate, shiftDraft.locationId, viewMode]);
+  }, [initialLocationId, isHydrated, loadSchedule, selectedDate, shiftDraft.locationId, viewMode]);
 
   useEffect(() => {
     setShiftDraft((current) => {
@@ -1554,7 +1566,7 @@ function SchedulingContent() {
           <div className="scheduler-topbar__left">
             <span className="workspace-kicker">Schedule workspace</span>
             <h1 className="workspace-title">Calendar</h1>
-            <p className="workspace-subtitle">{dateLabel}</p>
+            <p className="workspace-subtitle">{isHydrated ? dateLabel : 'Loading calendar date...'}</p>
             <div className={`scheduler-status-pill scheduler-status-pill--${scheduleStatus.tone}`} role="status" aria-live="polite">
               {scheduleStatus.message}
             </div>
@@ -1581,7 +1593,13 @@ function SchedulingContent() {
 
             <label className="scheduler-day-picker">
               <CalendarDays size={15} />
-              <input aria-label="Schedule date" type="date" suppressHydrationWarning value={selectedDate} onChange={(event) => selectScheduleDate(event.target.value)} />
+              <input
+                aria-label="Schedule date"
+                type="date"
+                value={isHydrated ? selectedDate : ''}
+                disabled={!isHydrated}
+                onChange={(event) => selectScheduleDate(event.target.value)}
+              />
             </label>
 
             <div className="scheduler-view-toggle" role="group" aria-label="Scheduler view">
