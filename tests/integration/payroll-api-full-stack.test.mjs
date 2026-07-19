@@ -225,6 +225,7 @@ async function createFixture(owner, values) {
         slug: values.primarySlug,
         planTier: 'GROWTH',
         stripeSubscriptionId: `sub_payroll_primary_${values.suffix}`,
+        stripeSubscriptionCurrentPeriodEnd: new Date('2099-01-01T00:00:00.000Z'),
         status: 'ACTIVE',
         usageCredits: 5,
       },

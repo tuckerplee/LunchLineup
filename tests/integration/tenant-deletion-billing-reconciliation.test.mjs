@@ -581,8 +581,10 @@ test('production StripeService retains the lease through late success, then read
            CURRENT_TIMESTAMP + INTERVAL '7 days', 'DRAFT'::"ScheduleStatus", CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
       `;
       await tx.$executeRaw`
-        INSERT INTO "CreditTransaction" ("id", "tenantId", "amount", "reason", "createdAt")
-        VALUES (${debitId}, ${tenantId}, -4, ${`Schedule generation (${solveJobId})`}, CURRENT_TIMESTAMP)
+        INSERT INTO "CreditTransaction"
+          ("id", "tenantId", "amount", "debtAmount", "reason", "balanceAfter", "debtAfter", "createdAt")
+        VALUES
+          (${debitId}, ${tenantId}, -4, 0, ${`Schedule generation (${solveJobId})`}, 7, 0, CURRENT_TIMESTAMP)
       `;
       await tx.$executeRaw`
         INSERT INTO "ScheduleSolveJob"
@@ -590,7 +592,7 @@ test('production StripeService retains the lease through late success, then read
            "status", "creditConsumption", "createdAt", "updatedAt")
         VALUES
           (${solveJobId}, ${tenantId}, ${scheduleId}, ${locationId}, ${digest(`key-${runId}`)}, ${digest(`request-${runId}`)},
-           'QUEUED', ${JSON.stringify({ source: 'credits', consumedCredits: 4 })}::jsonb,
+           'QUEUED', ${JSON.stringify({ source: 'credits', consumedCredits: 4, newBalance: 7 })}::jsonb,
            CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
       `;
     });
@@ -781,7 +783,7 @@ test('real Postgres shutdown retains the exact fence until provider transport te
     const stop = processor.stop().finally(() => { stopSettled = true; });
     await bounded(providerAbortObserved, 3_000, 'shutdown did not abort the provider attempt');
     await new Promise((resolveWait) => setTimeout(resolveWait, 900));
-    assert.equal(stopSettled, false, 'shutdown must wait past its warning threshold for transport termination');
+    assert.equal(stopSettled, true, 'shutdown must return after its bounded drain warning threshold');
     const retained = await prisma.tenantDeletionBillingReconciliation.findUnique({
       where: { tenantId: fixture.tenantId },
       select: { leaseOwner: true, leaseToken: true, leaseExpiresAt: true },

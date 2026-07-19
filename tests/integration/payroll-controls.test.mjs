@@ -99,6 +99,8 @@ function fixture() {
     amendmentDecisionId: `amendment-decision-${suffix}`,
     amendmentEntryId: `entry-amendment-${suffix}`,
     batchId: `batch-payroll-${suffix}`,
+    exportOperationId: `export-op-${suffix}`,
+    exportCreditTransactionId: `feature-usage-payroll-export:export-op-${suffix}`,
     lineId: `line-payroll-${suffix}`,
     firstReceiptId: `receipt-1-${suffix}`,
     secondReceiptId: `receipt-2-${suffix}`,
@@ -128,6 +130,7 @@ async function forceCleanup(owner, values) {
       'TimeCard',
       'PayrollPeriod',
       'PayrollPolicyVersion',
+      'CreditTransaction',
     ]) {
       await tx.$executeRawUnsafe(`DELETE FROM "${table}" WHERE "tenantId" = ANY($1::text[])`, tenantIds);
     }
@@ -145,10 +148,10 @@ test('payroll controls enforce tenant, workflow, evidence, reconciliation, and r
 
   try {
     await owner.$executeRawUnsafe(`
-      INSERT INTO "Tenant" ("id", "name", "slug", "status", "createdAt", "updatedAt")
+      INSERT INTO "Tenant" ("id", "name", "slug", "status", "usageCredits", "createdAt", "updatedAt")
       VALUES
-        ($1, 'Payroll Primary', $2, 'ACTIVE'::"TenantStatus", CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
-        ($3, 'Payroll Isolated', $4, 'ACTIVE'::"TenantStatus", CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+        ($1, 'Payroll Primary', $2, 'ACTIVE'::"TenantStatus", 9, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+        ($3, 'Payroll Isolated', $4, 'ACTIVE'::"TenantStatus", 0, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
     `, values.primaryTenantId, values.primarySlug, values.isolatedTenantId, values.isolatedSlug);
     await owner.$executeRawUnsafe(`
       INSERT INTO "User"
@@ -528,14 +531,21 @@ test('payroll controls enforce tenant, workflow, evidence, reconciliation, and r
     });
 
     await phase('export rows exactly snapshot locked evidence and remain immutable', async () => {
+      await owner.$executeRawUnsafe(`
+        INSERT INTO "CreditTransaction"
+          ("id", "tenantId", "amount", "debtAmount", "reason", "balanceAfter", "debtAfter", "createdAt")
+        VALUES ($1, $2, -1, 0, $3, 9, 0, CURRENT_TIMESTAMP)
+      `, values.exportCreditTransactionId, values.primaryTenantId,
+      `Payroll export (${values.sourcePeriodId})`);
       const insertBatch = (tx) => tx.$executeRawUnsafe(`
         INSERT INTO "PayrollExportBatch"
-          ("id", "tenantId", "periodId", "operationId", "requestHash", "formatVersion", "status",
+          ("id", "tenantId", "periodId", "operationId", "requestHash", "creditTransactionId",
+           "formatVersion", "status",
            "contentSha256", "rowCount", "totalPayableMinutes", "consumedCredits", "newBalance", "createdAt", "updatedAt")
-        VALUES ($1, $2, $3, $4, $5, 1, 'GENERATED'::"PayrollExportStatus", $6, 1, 390, 1, 9,
+        VALUES ($1, $2, $3, $4, $5, $6, 1, 'GENERATED'::"PayrollExportStatus", $7, 1, 390, 1, 9,
                 CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
       `, values.batchId, values.primaryTenantId, values.sourcePeriodId,
-      `export-op-${values.suffix}`, hash('9'), hash('a'));
+      values.exportOperationId, hash('9'), values.exportCreditTransactionId, hash('a'));
       const insertLine = (tx, payableMinutes) => tx.$executeRawUnsafe(`
         INSERT INTO "PayrollExportLine"
           ("id", "tenantId", "batchId", "lineNumber", "lockedEntryId", "sourceType", "sourceId", "employeeId",
