@@ -1,3 +1,5 @@
+import { isIP } from 'node:net';
+
 export type ApiV2Config = {
   port: number;
   host: string;
@@ -8,7 +10,7 @@ export type ApiV2Config = {
   identityTimeoutMs: number;
   legacyRequestTimeoutMs: number;
   releaseSha: string;
-  trustProxy: boolean | number;
+  trustProxy: boolean | number | string[];
   logLevel: string;
 };
 
@@ -46,11 +48,34 @@ function releaseSha(value: string | undefined): string {
   return normalized;
 }
 
-function trustProxy(value: string | undefined): boolean | number {
+const TRUST_PROXY_RANGES = new Set(['loopback', 'linklocal', 'uniquelocal']);
+
+function trustedNetwork(value: string): boolean {
+  if (TRUST_PROXY_RANGES.has(value)) return true;
+  const segments = value.split('/');
+  if (segments.length > 2) return false;
+  const family = isIP(segments[0] ?? '');
+  if (family === 0) return false;
+  if (segments.length === 1) return true;
+  const prefix = segments[1] ?? '';
+  if (!/^\d+$/.test(prefix)) return false;
+  const bits = Number(prefix);
+  return bits >= 0 && bits <= (family === 4 ? 32 : 128);
+}
+
+function trustProxy(value: string | undefined): boolean | number | string[] {
   const normalized = value?.trim().toLowerCase();
   if (!normalized || normalized === 'false' || normalized === '0') return false;
   if (normalized === 'true') return 1;
-  return boundedInteger(normalized, 1, 1, 10);
+  if (/^\d+$/.test(normalized)) return boundedInteger(normalized, 1, 1, 10);
+
+  const networks = normalized.split(',').map((entry) => entry.trim());
+  if (networks.some((entry) => !trustedNetwork(entry))) {
+    throw new Error(
+      'TRUST_PROXY must be false, a hop count from 1 to 10, or a comma-separated list of trusted named networks, IP addresses, or CIDRs.',
+    );
+  }
+  return networks;
 }
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): ApiV2Config {

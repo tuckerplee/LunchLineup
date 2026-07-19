@@ -3,6 +3,7 @@
 ## Files
 
 - `README.md`: this source-folder guide.
+- `config.test.ts`: hardened proxy and runtime-configuration regression tests.
 - `config.ts`: validated runtime configuration.
 - `main.ts`: bounded process startup and shutdown.
 - `server.ts`: Fastify assembly, OpenAPI, health, and module registration.
