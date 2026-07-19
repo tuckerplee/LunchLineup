@@ -289,7 +289,10 @@ reconcile_disposable_database_credentials() {
   require_single_line_secret "$db_pass" POSTGRES_PASSWORD
   require_single_line_secret "$app_db_pass" APP_DB_PASSWORD
 
-  docker compose --env-file "$SECRET_ENV_PATH" up -d --no-build postgres
+  # IMAGE_TAG already names the candidate release here, but its app-owned
+  # dependency images are intentionally built in start_stack. Start only
+  # PostgreSQL so credential reconciliation cannot pull or recreate them first.
+  docker compose --env-file "$SECRET_ENV_PATH" up -d --no-build --no-deps postgres
 
   local deadline
   deadline=$(( $(date +%s) + 90 ))

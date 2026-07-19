@@ -214,6 +214,10 @@ test('VM107 bootstrap requires exact confirmation immediately before delete and 
   assert.doesNotMatch(bootstrap, /up -d --build/);
   assert.match(bootstrap, /chmod 0700 "\$SECRETS_DIR"/);
   assert.match(bootstrap, /chmod 0444 "\$path"/);
+  assert.match(
+    bootstrap,
+    /docker compose --env-file "\$SECRET_ENV_PATH" up -d --no-build --no-deps postgres/,
+  );
   assert.match(bootstrap, /reconcile_disposable_database_credentials[\s\S]*ALTER ROLE[\s\S]*psql --no-psqlrc/);
   assert.match(bootstrap, /prepare_runtime_env\s+reconcile_disposable_database_credentials\s+start_stack/);
   assert.doesNotMatch(bootstrap, /psql[^\n]*(?:db_pass|app_db_pass)/);
