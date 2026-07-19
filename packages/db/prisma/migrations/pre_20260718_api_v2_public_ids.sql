@@ -1,57 +1,50 @@
 -- Add stable opaque API identifiers without breaking the currently deployed v1 writers.
 -- Database defaults are intentional: old Prisma clients do not know these columns.
 
-ALTER TABLE "User"
-  ADD COLUMN IF NOT EXISTS "publicId" UUID;
-UPDATE "User"
-SET "publicId" = gen_random_uuid()
-WHERE "publicId" IS NULL;
-ALTER TABLE "User"
-  ALTER COLUMN "publicId" SET DEFAULT gen_random_uuid(),
-  ALTER COLUMN "publicId" SET NOT NULL;
-CREATE UNIQUE INDEX IF NOT EXISTS "User_publicId_key"
-  ON "User"("publicId");
+CREATE EXTENSION IF NOT EXISTS pgcrypto;
 
-ALTER TABLE "Location"
-  ADD COLUMN IF NOT EXISTS "publicId" UUID;
-UPDATE "Location"
-SET "publicId" = gen_random_uuid()
-WHERE "publicId" IS NULL;
-ALTER TABLE "Location"
-  ALTER COLUMN "publicId" SET DEFAULT gen_random_uuid(),
-  ALTER COLUMN "publicId" SET NOT NULL;
-CREATE UNIQUE INDEX IF NOT EXISTS "Location_publicId_key"
-  ON "Location"("publicId");
+-- A fresh database has no Prisma-owned tables yet because pre-migrations run
+-- before `prisma db push`. Existing databases need the nullable/backfill/not-null
+-- sequence so the schema push never attempts a destructive required-column add.
+DO $migration$
+DECLARE
+  target_table TEXT;
+BEGIN
+  FOREACH target_table IN ARRAY ARRAY[
+    'User',
+    'Location',
+    'Schedule',
+    'Shift',
+    'ScheduleSolveJob'
+  ]
+  LOOP
+    IF to_regclass(format('%I.%I', 'public', target_table)) IS NULL THEN
+      CONTINUE;
+    END IF;
 
-ALTER TABLE "Schedule"
-  ADD COLUMN IF NOT EXISTS "publicId" UUID;
-UPDATE "Schedule"
-SET "publicId" = gen_random_uuid()
-WHERE "publicId" IS NULL;
-ALTER TABLE "Schedule"
-  ALTER COLUMN "publicId" SET DEFAULT gen_random_uuid(),
-  ALTER COLUMN "publicId" SET NOT NULL;
-CREATE UNIQUE INDEX IF NOT EXISTS "Schedule_publicId_key"
-  ON "Schedule"("publicId");
-
-ALTER TABLE "Shift"
-  ADD COLUMN IF NOT EXISTS "publicId" UUID;
-UPDATE "Shift"
-SET "publicId" = gen_random_uuid()
-WHERE "publicId" IS NULL;
-ALTER TABLE "Shift"
-  ALTER COLUMN "publicId" SET DEFAULT gen_random_uuid(),
-  ALTER COLUMN "publicId" SET NOT NULL;
-CREATE UNIQUE INDEX IF NOT EXISTS "Shift_publicId_key"
-  ON "Shift"("publicId");
-
-ALTER TABLE "ScheduleSolveJob"
-  ADD COLUMN IF NOT EXISTS "publicId" UUID;
-UPDATE "ScheduleSolveJob"
-SET "publicId" = gen_random_uuid()
-WHERE "publicId" IS NULL;
-ALTER TABLE "ScheduleSolveJob"
-  ALTER COLUMN "publicId" SET DEFAULT gen_random_uuid(),
-  ALTER COLUMN "publicId" SET NOT NULL;
-CREATE UNIQUE INDEX IF NOT EXISTS "ScheduleSolveJob_publicId_key"
-  ON "ScheduleSolveJob"("publicId");
+    EXECUTE format(
+      'ALTER TABLE %I.%I ADD COLUMN IF NOT EXISTS "publicId" UUID',
+      'public',
+      target_table
+    );
+    EXECUTE format(
+      'UPDATE %I.%I SET "publicId" = gen_random_uuid() WHERE "publicId" IS NULL',
+      'public',
+      target_table
+    );
+    EXECUTE format(
+      'ALTER TABLE %I.%I '
+      || 'ALTER COLUMN "publicId" SET DEFAULT gen_random_uuid(), '
+      || 'ALTER COLUMN "publicId" SET NOT NULL',
+      'public',
+      target_table
+    );
+    EXECUTE format(
+      'CREATE UNIQUE INDEX IF NOT EXISTS %I ON %I.%I ("publicId")',
+      target_table || '_publicId_key',
+      'public',
+      target_table
+    );
+  END LOOP;
+END
+$migration$;

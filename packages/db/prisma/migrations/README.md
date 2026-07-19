@@ -99,7 +99,7 @@
 - `pre_20260717_legacy_shift_overlap_unassign.sql`: preserves exact legacy unscheduled eight-hour STAFF shifts and their breaks while clearing only ambiguous assignments in overlap components, refusing referenced time cards or any unsupported shape.
 - `pre_20260717_prisma_composite_parent_keys.sql`: stages and catalog-verifies Prisma-owned composite identities used by tenant-consistency and one-to-one foreign keys before schema synchronization.
 - `pre_20260717_prisma_nullable_unique_indexes.sql`: safely stages nullable first-location, session-selector, and tenant-scoped OIDC identity columns plus Prisma's exact unique indexes before schema push, rejecting conflicting populated rows instead of bypassing data-loss warnings.
-- `pre_20260718_api_v2_public_ids.sql`: adds and backfills globally unique UUID public identifiers for users, locations, schedules, shifts, and solve jobs, retaining database defaults so the deployed v1 writer remains schema-compatible.
+- `pre_20260718_api_v2_public_ids.sql`: fresh-database-safe expansion that adds and backfills globally unique UUID public identifiers for users, locations, schedules, shifts, and solve jobs when those Prisma tables already exist, retaining database defaults so the deployed v1 writer remains schema-compatible.
 - `pre_20260709_schedule_solve_request_idempotency.sql`: adds nullable request hashes, backfills existing solve jobs, and makes the columns required before Prisma schema push enforces the final model.
 - `rls_relation_hardening.sql`: forces RLS for tenant-owned tables and adds relationship-based RLS for sessions, role joins, and breaks.
 

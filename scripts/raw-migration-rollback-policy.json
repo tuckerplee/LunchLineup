@@ -79,7 +79,7 @@
       "rationale": "API v2 change-set RLS and validation remain during rollback while the old-release ignores the new table; isolated old-release proof is required before production mutation."
     },
     "packages/db/prisma/migrations/pre_20260718_api_v2_public_ids.sql": {
-      "sha256": "737881aadbc1be3fea6cf311063cc046d213e52fc5a95b800d13f0aa3ee68946",
+      "sha256": "f752e22dc59fbdd7085100d1935426ad28c2ff7ab91d75132d122fd53cf5658b",
       "phase": "expand",
       "rollbackSchema": "retain",
       "contractPhase": "after-rollback-window",

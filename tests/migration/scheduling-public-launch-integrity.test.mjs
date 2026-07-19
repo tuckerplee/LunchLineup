@@ -10,6 +10,27 @@ function read(path) {
   return readFileSync(join(root, path), 'utf8');
 }
 
+test('API v2 public identifier expansion is safe for fresh and populated databases', () => {
+  const schema = read('packages/db/prisma/schema.prisma');
+  const sql = read('packages/db/prisma/migrations/pre_20260718_api_v2_public_ids.sql');
+
+  assert.match(sql, /CREATE EXTENSION IF NOT EXISTS pgcrypto/);
+  assert.match(sql, /to_regclass\(format\('%I\.%I', 'public', target_table\)\) IS NULL/);
+  assert.match(sql, /CONTINUE/);
+  assert.match(sql, /ADD COLUMN IF NOT EXISTS "publicId" UUID/);
+  assert.match(sql, /SET "publicId" = gen_random_uuid\(\) WHERE "publicId" IS NULL/);
+  assert.match(sql, /ALTER COLUMN "publicId" SET NOT NULL/);
+  assert.match(sql, /CREATE UNIQUE INDEX IF NOT EXISTS %I/);
+
+  for (const model of ['User', 'Location', 'Schedule', 'Shift', 'ScheduleSolveJob']) {
+    assert.match(sql, new RegExp(`'${model}'`));
+    assert.match(
+      schema,
+      new RegExp(`model ${model} \\{[\\s\\S]*?publicId\\s+String\\s+@unique\\s+@default\\(dbgenerated\\(\"gen_random_uuid\\(\\)\"\\)\\)\\s+@db\\.Uuid`),
+    );
+  }
+});
+
 test('shift schedule-window migration blocks writes from either side of the relation', () => {
   const sql = read('packages/db/prisma/migrations/20260709_shift_schedule_window_enforcement.sql');
 
