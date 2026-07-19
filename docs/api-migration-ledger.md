@@ -34,7 +34,7 @@ These sit beside 11 native scheduling operations. The catalog is defined once in
 
 ## API-02 — Replace retained implementations with native v2 modules
 
-Status: in progress. API-02-AUTH, API-02-LOC, and API-02-PEOPLE are complete except for the separately tracked staff-deactivation lifecycle extraction; the remaining domain replacements are open.
+Status: in progress. API-02-LOC is complete. API-02-AUTH has a native session boundary but retains its credential/lifecycle operations; API-02-PEOPLE owns 16 of 17 operations and retains the separately tracked staff-deactivation lifecycle extraction. The remaining domain replacements are open.
 
 The API-01 routes are real, explicit public v2 routes, but their mature implementations remain behind bounded server-side compatibility owners. API-02 removes those dependencies domain by domain:
 
@@ -55,7 +55,7 @@ The API-01 routes are real, explicit public v2 routes, but their mature implemen
 
 Each replacement must add specific TypeBox request/response schemas, tenant-scoped native services, public identifiers, authorization tests, and direct database/integration proof before its compatibility operation is deleted. No new operation may be added to the retained catalog; new product work must be native v2.
 
-API-02-AUTH native slice: API v2 now verifies access-token signature, tenant/session revocation, effective role assignments, tenant status, session timeout, MFA policy and Redis MFA marker itself. Cookie sessions rotate at the v2 boundary. Native scheduling rejects incomplete MFA and forced PIN rotation before any domain service runs. The old private `/v1/auth/me` identity adapter has been removed.
+API-02-AUTH native slice: API v2 now verifies access-token signature, tenant/session revocation, effective role assignments, tenant status, session timeout, MFA policy and Redis MFA marker itself. Cookie sessions rotate at the v2 boundary. Native scheduling rejects incomplete MFA and forced PIN rotation before any domain service runs. The old private `/v1/auth/me` identity adapter has been removed. The remaining 16 credential and lifecycle operations still need native owners, and the public `/auth/me` envelope must be split from the internal authorization context before it stops exposing private storage `sub` and role-key fields to browser consumers.
 
 API-02-LOC native slice: `/v2/locations` now owns list, summary, create, read, update, and soft delete with `Location.publicId` as the only browser identifier. It uses TypeBox contracts, tenant-RLS transactions, opaque `name, publicId` pagination, tenant capacity serialization, durable create replay, timezone-history fencing, and draft-revision invalidation. The temporary retained-domain seam translates only exact `locationId` and `locationIds` fields at the server boundary, never arbitrary `id` fields; disposable database proof plus beta deployment, authenticated browser workflow, and live API proof passed.
 
@@ -64,6 +64,7 @@ API-02-PEOPLE native slice: `/v2/users` now owns the tenant directory, role cata
 ## Current known operational residuals
 
 - Beta email delivery: password-email OTP and native staff invitation delivery remain unusable until VM107 receives a valid Resend API key and a provider-verified sender. The API container now resolves and reaches `api.resend.com`; the current runtime key is rejected by the provider with `400 validation_error: API key is invalid`. API-02-AUTH retains OTP transport work; native People invitations durably queue but must not be relied on for delivery until this external credential is updated. The beta password sign-in path remains verified.
+- API-02-AUTH public-envelope cleanup: `/api/v2/auth/me` now includes `publicUserId`, but it still returns private storage `sub` and role-key fields because existing retained browser consumers use them for self-comparisons and recovery payloads. Replace those callers with public resource identifiers, then publish a separate browser-safe session schema with only public identifiers.
 
 ## API-03 — Retire public API v1 exposure
 
