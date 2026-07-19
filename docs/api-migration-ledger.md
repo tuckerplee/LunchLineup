@@ -34,14 +34,14 @@ These sit beside 11 native scheduling operations. The catalog is defined once in
 
 ## API-02 — Replace retained implementations with native v2 modules
 
-Status: in progress. API-02-AUTH has a native current-session and authorization boundary, and API-02-LOC is ready for beta verification; the remaining domain replacements are open.
+Status: in progress. API-02-AUTH and API-02-LOC are complete; the remaining domain replacements are open.
 
 The API-01 routes are real, explicit public v2 routes, but their mature implementations remain behind bounded server-side compatibility owners. API-02 removes those dependencies domain by domain:
 
 | Issue | Remaining native owner | Compatibility operations |
 | --- | --- | ---: |
 | API-02-AUTH | Login, cookie lifecycle, MFA mutation, reset, OTP, PIN, and OIDC; native session validation and `GET /auth/me` are complete | 16 |
-| API-02-LOC | Native tenant locations plus exact public/internal identifier translation for declared retained domains; beta verification pending | 0 |
+| API-02-LOC | Native tenant locations plus exact public/internal identifier translation for declared retained domains | 0 |
 | API-02-PEOPLE | Staff, roles, permissions, invitations, and public identifier translation | 17 |
 | API-02-OPS | Operational schedule/roster reads and aggregate lunch/break planning | 9 |
 | API-02-TIME | Clock events, active-card reads, corrections, and time-card history | 6 |
@@ -57,7 +57,11 @@ Each replacement must add specific TypeBox request/response schemas, tenant-scop
 
 API-02-AUTH native slice: API v2 now verifies access-token signature, tenant/session revocation, effective role assignments, tenant status, session timeout, MFA policy and Redis MFA marker itself. Cookie sessions rotate at the v2 boundary. Native scheduling rejects incomplete MFA and forced PIN rotation before any domain service runs. The old private `/v1/auth/me` identity adapter has been removed.
 
-API-02-LOC native slice: `/v2/locations` now owns list, summary, create, read, update, and soft delete with `Location.publicId` as the only browser identifier. It uses TypeBox contracts, tenant-RLS transactions, opaque `name, publicId` pagination, tenant capacity serialization, durable create replay, timezone-history fencing, and draft-revision invalidation. The temporary retained-domain seam translates only exact `locationId` and `locationIds` fields at the server boundary, never arbitrary `id` fields; beta deployment and live workflow proof remain required before this row is marked complete.
+API-02-LOC native slice: `/v2/locations` now owns list, summary, create, read, update, and soft delete with `Location.publicId` as the only browser identifier. It uses TypeBox contracts, tenant-RLS transactions, opaque `name, publicId` pagination, tenant capacity serialization, durable create replay, timezone-history fencing, and draft-revision invalidation. The temporary retained-domain seam translates only exact `locationId` and `locationIds` fields at the server boundary, never arbitrary `id` fields; disposable database proof plus beta deployment, authenticated browser workflow, and live API proof passed.
+
+## Current known operational residuals
+
+- Beta email OTP delivery: `POST /v2/auth/email/send-otp` currently returns a service-unavailable problem because the existing outbound email delivery provider is unavailable in beta. API-02-AUTH retains this operation until its native owner and transport are addressed. The beta password sign-in path remains verified.
 
 ## API-03 — Retire public API v1 exposure
 
