@@ -290,13 +290,20 @@ test.describe('Authenticated scheduling SaaS readiness', () => {
       && /\/api\/v2\/schedules\/[0-9a-f-]{36}\/change-sets$/.test(new URL(request.url()).pathname));
     await recoveredForm.getByRole('button', { name: 'Save shift' }).click();
     const editPayload = (await editRequestPromise).postDataJSON() as {
-      operations: Array<{ op: string; startTime: string; endTime: string }>;
+      operations: Array<{
+        op: string;
+        shiftId: string;
+        startTime?: string;
+        endTime?: string;
+        userId?: string | null;
+        role?: string | null;
+      }>;
     };
-    expect(editPayload.operations).toEqual([expect.objectContaining({
+    expect(editPayload.operations).toEqual([{
       op: 'shift.update',
-      startTime: '2026-07-12T05:00:00.000Z',
+      shiftId: expect.any(String),
       endTime: '2026-07-12T08:30:00.000Z',
-    })]);
+    }]);
     await expect(page.getByText(/Shift changes saved/)).toBeVisible();
     expect(editKeys).toHaveLength(2);
     expect(editKeys[1]).toBe(editKeys[0]);
@@ -1031,7 +1038,7 @@ test.describe('Mobile schedule publish readiness', () => {
     await expect(page.locator('.scheduler-publish-row__cost').getByText('Configured total: 1 credit')).toBeVisible();
     const publishRequestPromise = page.waitForRequest((request) => (
       request.method() === 'POST'
-      && /\/api\/v1\/schedules\/[^/]+\/publish$/.test(new URL(request.url()).pathname)
+      && /\/api\/v2\/schedules\/[0-9a-f-]{36}\/publications$/.test(new URL(request.url()).pathname)
     ));
     await page.getByRole('button', { name: 'Confirm - 1 credit' }).click();
     const publishRequest = await publishRequestPromise;
@@ -1039,7 +1046,7 @@ test.describe('Mobile schedule publish readiness', () => {
     expect(publishRequest.headers()['idempotency-key']).toMatch(/^[0-9a-f-]{36}$/i);
     expect(publishRequest.postDataJSON()).toEqual({
       acceptedContract: {
-        version: 0,
+        version: 1,
         totalConfiguredCost: 1,
         scheduleCost: 1,
         matchingWebhookDeliveryCount: 0,

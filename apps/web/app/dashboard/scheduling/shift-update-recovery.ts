@@ -2,6 +2,7 @@ import {
   idempotentRequestAttempt,
   type IdempotentRequestAttempt,
 } from '../../../lib/client-api';
+import type { ScheduleChangeSetRequest } from '@lunchlineup/api-contract';
 
 export const SHIFT_UPDATE_RECOVERY_KEY = 'lunchlineup:shift-update-recovery:v1';
 
@@ -12,6 +13,10 @@ type ShiftUpdateRecovery = {
 };
 
 type StorageLike = Pick<Storage, 'getItem' | 'setItem' | 'removeItem'>;
+type ShiftUpdateOperation = Extract<
+  ScheduleChangeSetRequest['operations'][number],
+  { op: 'shift.update' }
+>;
 
 const RECOVERY_TTL_MS = 24 * 60 * 60 * 1000;
 const MAX_RECOVERIES = 100;
@@ -61,6 +66,81 @@ export function beginShiftUpdateAttempt(
     // The in-memory attempt still protects auth refresh and same-page retries.
   }
   return attempt;
+}
+
+function isBoundedString(value: unknown, maxLength: number): value is string {
+  return typeof value === 'string'
+    && value.length > 0
+    && value.length <= maxLength
+    && !/[\0\r\n]/.test(value);
+}
+
+export function readShiftUpdateRecoveryPayload(
+  storage: StorageLike,
+  shiftId: string,
+  scheduleId: string,
+  now = Date.now(),
+): { scheduleId: string; operation: ShiftUpdateOperation } | null {
+  const recovery = readShiftUpdateRecoveries(storage, now)
+    .find((entry) => entry.shiftId === shiftId);
+  if (!recovery) return null;
+
+  try {
+    const payload = JSON.parse(recovery.attempt.payloadFingerprint) as unknown;
+    if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return null;
+    const payloadRecord = payload as Record<string, unknown>;
+    if (
+      Object.keys(payloadRecord).sort().join(',') !== 'operation,scheduleId'
+      || payloadRecord.scheduleId !== scheduleId
+      || !payloadRecord.operation
+      || typeof payloadRecord.operation !== 'object'
+      || Array.isArray(payloadRecord.operation)
+    ) {
+      return null;
+    }
+
+    const stored = payloadRecord.operation as Record<string, unknown>;
+    const keys = Object.keys(stored);
+    const allowedKeys = new Set(['op', 'shiftId', 'startTime', 'endTime', 'userId', 'role']);
+    if (
+      stored.op !== 'shift.update'
+      || stored.shiftId !== shiftId
+      || keys.some((key) => !allowedKeys.has(key))
+      || !keys.some((key) => !['op', 'shiftId'].includes(key))
+    ) {
+      return null;
+    }
+    if ('startTime' in stored && !isBoundedString(stored.startTime, 64)) return null;
+    if ('endTime' in stored && !isBoundedString(stored.endTime, 64)) return null;
+    if (
+      'userId' in stored
+      && stored.userId !== null
+      && !isBoundedString(stored.userId, 255)
+    ) {
+      return null;
+    }
+    if (
+      'role' in stored
+      && stored.role !== null
+      && !isBoundedString(stored.role, 64)
+    ) {
+      return null;
+    }
+
+    return {
+      scheduleId,
+      operation: {
+        op: 'shift.update',
+        shiftId,
+        ...('startTime' in stored ? { startTime: stored.startTime as string } : {}),
+        ...('endTime' in stored ? { endTime: stored.endTime as string } : {}),
+        ...('userId' in stored ? { userId: stored.userId as string | null } : {}),
+        ...('role' in stored ? { role: stored.role as string | null } : {}),
+      },
+    };
+  } catch {
+    return null;
+  }
 }
 
 export function clearShiftUpdateAttempt(

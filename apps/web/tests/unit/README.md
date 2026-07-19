@@ -56,7 +56,7 @@
 - `server-auth.test.ts`: strict middleware identity-header role, tenant, permission-count, and role-name validation coverage.
 - `settings-tabs.test.ts`: focused ArrowLeft/ArrowRight wrapping, Home/End activation, unrelated-key handling, and stable tab/panel identifier coverage.
 - `setup-shifts-recovery.test.ts`: deterministic full-scope/request recovery across response loss/reload/storage loss, A-to-B-to-A retention, two-page exact-once race behavior, concurrent distinct-scope submission, per-session fail-closed cap handling with oldest-key retry and new-login admission, payload-storage exclusion, fingerprint duplicate-submit exclusion, 403/409 surfacing, and page wiring coverage.
-- `shift-update-recovery.test.ts`: payload-bound shift-update key reuse across reloads, changed-payload rotation, matching-response cleanup, and expiry coverage.
+- `shift-update-recovery.test.ts`: partial aggregate shift-update construction with exact custom-role preservation plus validated same-payload/key replay across reloads, changed-payload rotation, matching-response cleanup, and expiry coverage.
 - `staff-action-confirmation.test.ts`: destructive staff PIN-reset and removal confirmation copy coverage.
 - `staff-invitation-delivery.test.ts`: exact lowercase invitation status parsing, malformed-data rejection, terminal retry/reissue policy, PII-free view state, date labels, and stable recovery-key coverage.
 - `stale-request-wiring-contract.test.ts`: static wiring coverage for immediate time-card invalidation and current-scope-only schedule printing.

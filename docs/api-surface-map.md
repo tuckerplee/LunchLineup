@@ -47,7 +47,7 @@ External paths include `/api`; the service receives the same path after Caddy re
 | GET | `/api/v2/schedules/{scheduleId}/solve-jobs/{jobId}` | read one solve job | private, no-store |
 | POST | `/api/v2/break-generations` | generate and persist breaks for selected shifts | `Idempotency-Key` |
 
-API v2 uses shared TypeBox schemas for server validation, OpenAPI generation, and the generated browser client. Errors are bounded RFC 9457 Problem Details with stable machine codes. Contract failures use `422`; missing preconditions use `428`; stale schedule revisions use `412` and return `currentEtag`; state conflicts use `409`. Unsafe cookie-authenticated requests require an allowed `Origin` and double-submit CSRF proof.
+API v2 uses shared TypeBox schemas for server validation, OpenAPI generation, and the generated browser client. Errors are bounded RFC 9457 Problem Details with stable machine codes. Contract failures use `422`; missing preconditions use `428`; stale schedule revisions use `412` and return `currentEtag`; state conflicts use `409`. Unsafe cookie-authenticated requests require an allowed `Origin` and double-submit CSRF proof. Shift updates are partial: omitted fields retain their exact saved values, including custom role labels, while explicitly supplied role labels are trimmed without case normalization.
 
 For revision-fenced mutations, `If-Match` rejects a genuinely stale first attempt. Once an idempotency key has committed, replaying the same operation returns that stored result even if the caller has since refreshed to a newer ETag. Response-loss recovery therefore cannot manufacture a second write or a false conflict.
 

@@ -282,12 +282,12 @@ test.describe('Lunch setup editor safety', () => {
     await expect(editorHeading).toBeFocused();
     await expectAccessibleGuidedScreen(page);
     const shiftSlider = page.getByRole('slider', { name: 'Shift window for Mock Staff' });
-    await expect(shiftSlider).toHaveAttribute('aria-valuetext', '09:00 to 17:00');
+    await expect(shiftSlider).toHaveAttribute('aria-valuetext', '06:00 to 14:00');
     await shiftSlider.focus();
     await page.keyboard.press('ArrowRight');
-    await expect(shiftSlider).toHaveAttribute('aria-valuetext', '09:15 to 17:15');
-    await expect(page.getByLabel('Start time for Mock Staff')).toHaveValue('09:15');
-    await expect(page.getByLabel('End time for Mock Staff')).toHaveValue('17:15');
+    await expect(shiftSlider).toHaveAttribute('aria-valuetext', '06:15 to 14:15');
+    await expect(page.getByLabel('Start time for Mock Staff')).toHaveValue('06:15');
+    await expect(page.getByLabel('End time for Mock Staff')).toHaveValue('14:15');
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
 
     const continueButton = page.getByRole('button', { name: 'Continue to planner' });

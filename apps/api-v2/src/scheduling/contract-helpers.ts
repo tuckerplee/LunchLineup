@@ -96,7 +96,7 @@ export function parseUtcInstant(value: string, pointer: string): Date {
 export function normalizedRole(value: string | null | undefined): string | null | undefined {
   if (value === undefined) return undefined;
   if (value === null || value.trim() === '') return null;
-  const role = value.trim().toUpperCase();
+  const role = value.trim();
   if (role.length > 64) {
     throw new ProblemError(
       422,

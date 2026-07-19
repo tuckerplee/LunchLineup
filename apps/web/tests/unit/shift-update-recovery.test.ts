@@ -3,7 +3,12 @@ import {
   beginShiftUpdateAttempt,
   clearShiftUpdateAttempt,
   readShiftUpdateRecoveries,
+  readShiftUpdateRecoveryPayload,
 } from '../../app/dashboard/scheduling/shift-update-recovery';
+import {
+  buildShiftUpdateOperation,
+  shiftRoleDraftValue,
+} from '../../app/dashboard/scheduling/shift-change-set';
 
 function memoryStorage(): Storage {
   const values = new Map<string, string>();
@@ -46,5 +51,100 @@ describe('shift update response-loss recovery', () => {
     const storage = memoryStorage();
     beginShiftUpdateAttempt(storage, 'shift-1', { endTime: '21:00' }, null, () => 'attempt-1', 1_000);
     expect(readShiftUpdateRecoveries(storage, 24 * 60 * 60 * 1000 + 1_001)).toEqual([]);
+  });
+
+  it('recovers the exact partial operation for a same-key response-loss replay', () => {
+    const storage = memoryStorage();
+    const payload = {
+      scheduleId: 'schedule-1',
+      operation: {
+        op: 'shift.update',
+        shiftId: 'shift-1',
+        endTime: '2026-07-19T00:15:00.000Z',
+      },
+    };
+    beginShiftUpdateAttempt(storage, 'shift-1', payload, null, () => 'attempt-1', 1_000);
+
+    expect(readShiftUpdateRecoveryPayload(
+      storage,
+      'shift-1',
+      'schedule-1',
+      2_000,
+    )).toEqual(payload);
+  });
+
+  it('rejects a stored operation for another schedule or with extra fields', () => {
+    const storage = memoryStorage();
+    beginShiftUpdateAttempt(storage, 'shift-1', {
+      scheduleId: 'schedule-1',
+      operation: {
+        op: 'shift.update',
+        shiftId: 'shift-1',
+        endTime: '2026-07-19T00:15:00.000Z',
+        unexpected: true,
+      },
+    }, null, () => 'attempt-1', 1_000);
+
+    expect(readShiftUpdateRecoveryPayload(storage, 'shift-1', 'schedule-2', 2_000)).toBeNull();
+    expect(readShiftUpdateRecoveryPayload(storage, 'shift-1', 'schedule-1', 2_000)).toBeNull();
+  });
+});
+
+describe('shift update aggregate operation', () => {
+  const current = {
+    shiftId: 'shift-1',
+    startTime: '2026-07-18T16:00:00.000Z',
+    endTime: '2026-07-19T00:00:00.000Z',
+    userId: 'user-1',
+    role: 'Barista',
+    userRole: 'STAFF',
+  };
+
+  it('sends only the changed time and omits an unchanged custom role', () => {
+    expect(buildShiftUpdateOperation({
+      current,
+      next: {
+        startTime: current.startTime,
+        endTime: '2026-07-19T00:15:00.000Z',
+        userId: current.userId,
+        role: 'Barista',
+        userRole: 'STAFF',
+      },
+    })).toEqual({
+      op: 'shift.update',
+      shiftId: 'shift-1',
+      endTime: '2026-07-19T00:15:00.000Z',
+    });
+  });
+
+  it('keeps custom role casing in the editor and emits an explicit role change exactly', () => {
+    expect(shiftRoleDraftValue(' Barista ', 'STAFF')).toBe('Barista');
+    expect(buildShiftUpdateOperation({
+      current,
+      next: {
+        startTime: current.startTime,
+        endTime: current.endTime,
+        userId: current.userId,
+        role: ' Shift Lead ',
+        userRole: 'STAFF',
+      },
+    })).toEqual({
+      op: 'shift.update',
+      shiftId: 'shift-1',
+      role: 'Shift Lead',
+    });
+  });
+
+  it('returns no operation when the editor has no effective changes', () => {
+    expect(buildShiftUpdateOperation({
+      current,
+      next: {
+        startTime: current.startTime,
+        endTime: current.endTime,
+        userId: current.userId,
+        role: current.role,
+        userRole: current.userRole,
+      },
+    })).toBeNull();
   });
 });

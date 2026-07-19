@@ -59,7 +59,12 @@ import {
 import {
   beginShiftUpdateAttempt,
   clearShiftUpdateAttempt,
+  readShiftUpdateRecoveryPayload,
 } from './shift-update-recovery';
+import {
+  buildShiftUpdateOperation,
+  shiftRoleDraftValue,
+} from './shift-change-set';
 
 const StaffScheduler = dynamic(
   () => import('@/components/scheduling/StaffScheduler').then((m) => m.StaffScheduler),
@@ -117,7 +122,7 @@ type ShiftRecord = {
 type ShiftDraft = {
   userId: string;
   locationId: string;
-  role: SchedulableShiftRole;
+  role: string;
   shiftDate: string;
   startTime: string;
   endTime: string;
@@ -715,20 +720,41 @@ function SchedulingContent() {
     }
     const range = shiftRange(shiftDraft.shiftDate, shiftDraft.startTime, shiftDraft.endTime, draftTimeZone);
     const containingDraft = containingDraftScheduleForShift(schedules, locationId, range.startTime, range.endTime);
-    const nextRole = toSchedulableShiftRole(shiftDraft.role || selectedStaff.role);
+    const nextRole = shiftRoleDraftValue(shiftDraft.role, selectedStaff.role);
     setScheduleStatus({ tone: 'saving', message: editingShiftId ? 'Saving shift changes...' : 'Creating and saving shift...' });
     try {
       if (editingShiftId) {
         const schedule = editingShiftSchedule;
-        if (!schedule) throw new Error('The shift schedule is no longer loaded.');
-        const operation: ScheduleChangeSetRequest['operations'][number] = {
-          op: 'shift.update',
-          shiftId: editingShiftId,
-          startTime: range.startTime,
-          endTime: range.endTime,
-          userId: selectedStaff.id,
-          role: nextRole,
-        };
+        const currentShift = editingShift;
+        if (!schedule || !currentShift) throw new Error('The shift schedule is no longer loaded.');
+        const plannedOperation = buildShiftUpdateOperation({
+          current: {
+            shiftId: currentShift.id,
+            startTime: currentShift.startTime,
+            endTime: currentShift.endTime,
+            userId: currentShift.userId,
+            role: currentShift.role,
+            userRole: currentShift.user?.role,
+          },
+          next: {
+            startTime: range.startTime,
+            endTime: range.endTime,
+            userId: selectedStaff.id,
+            role: nextRole,
+            userRole: selectedStaff.role,
+          },
+        });
+        const operation = plannedOperation
+          ?? readShiftUpdateRecoveryPayload(
+            window.sessionStorage,
+            editingShiftId,
+            schedule.id,
+          )?.operation
+          ?? null;
+        if (!operation) {
+          setScheduleStatus({ tone: 'saved', message: 'No shift changes to save.' });
+          return;
+        }
         const updateAttempt = beginShiftUpdateAttempt(
           window.sessionStorage,
           editingShiftId,
@@ -906,7 +932,7 @@ function SchedulingContent() {
     setShiftDraft({
       userId: person?.id ?? '',
       locationId: shift.locationId,
-      role: toSchedulableShiftRole(shift.role ?? person?.role),
+      role: shiftRoleDraftValue(shift.role, person?.role),
       shiftDate: window.date,
       startTime: window.startTime,
       endTime: window.endTime,
@@ -1925,7 +1951,10 @@ function SchedulingContent() {
                 </label>
                 <label>
                   <span>Shift role</span>
-                  <select value={shiftDraft.role} disabled={editingShiftLocked} onChange={(event) => setShiftDraft((current) => ({ ...current, role: toSchedulableShiftRole(event.target.value) }))}>
+                  <select value={shiftDraft.role} disabled={editingShiftLocked} onChange={(event) => setShiftDraft((current) => ({ ...current, role: event.target.value }))}>
+                    {shiftDraft.role && !SCHEDULABLE_SHIFT_ROLES.some((role) => role.value === shiftDraft.role) ? (
+                      <option value={shiftDraft.role}>{shiftDraft.role}</option>
+                    ) : null}
                     {SCHEDULABLE_SHIFT_ROLES.map((role) => (
                       <option key={role.value} value={role.value}>{role.label}</option>
                     ))}

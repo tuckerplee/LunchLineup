@@ -29,6 +29,50 @@ function shift(
 }
 
 describe('schedule change-set final-state planner', () => {
+  it('preserves the exact saved custom role when an update omits role', () => {
+    const saved = shift(
+      shiftAId,
+      userA,
+      '2026-07-18T08:00:00.000Z',
+      '2026-07-18T12:00:00.000Z',
+    );
+    saved.role = 'Barista';
+
+    const plan = planScheduleChangeSet({
+      scheduleStart,
+      scheduleEnd,
+      currentShifts: [saved],
+      externalShifts: [],
+      usersByPublicId: new Map([[userA.publicId, userA]]),
+      operations: [{
+        op: 'shift.update',
+        shiftId: shiftAId,
+        endTime: '2026-07-18T12:15:00.000Z',
+      }],
+    });
+
+    expect(plan.finalShifts[0].role).toBe('Barista');
+  });
+
+  it('trims an explicitly changed custom role without changing its casing', () => {
+    const plan = planScheduleChangeSet({
+      scheduleStart,
+      scheduleEnd,
+      currentShifts: [
+        shift(shiftAId, userA, '2026-07-18T08:00:00.000Z', '2026-07-18T12:00:00.000Z'),
+      ],
+      externalShifts: [],
+      usersByPublicId: new Map([[userA.publicId, userA]]),
+      operations: [{
+        op: 'shift.update',
+        shiftId: shiftAId,
+        role: '  Shift Lead  ',
+      }],
+    });
+
+    expect(plan.finalShifts[0].role).toBe('Shift Lead');
+  });
+
   it('accepts an atomic two-shift assignment swap', () => {
     const plan = planScheduleChangeSet({
       scheduleStart,
