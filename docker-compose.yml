@@ -134,8 +134,6 @@ services:
       - app
       - data
       - telemetry
-    dns:
-      - 10.10.10.1
     environment:
       - NODE_ENV=${NODE_ENV:-production}
       - PORT=3000

@@ -40,3 +40,11 @@ test('tmpfs exceptions are bounded and disable executable, setuid, and device fi
     }
   }
 });
+
+test('API inherits the runtime resolver for outbound provider access', () => {
+  assert.equal(
+    Object.hasOwn(compose.services.api, 'dns'),
+    false,
+    'api must inherit the VM resolver instead of pinning a private LAN nameserver',
+  );
+});
