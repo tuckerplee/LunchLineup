@@ -15,6 +15,7 @@ const MAX_ROLE_DISPLAY_NAME_LENGTH = 80;
 
 type AuthUser = {
     sub: string;
+    publicUserId: string;
     role: string;
     legacyRole: 'SUPER_ADMIN' | 'ADMIN' | 'MANAGER' | 'STAFF';
     tenantId: string;
@@ -28,6 +29,7 @@ type AuthUser = {
 
 const LEGACY_USER_ROLES = new Set<AuthUser['legacyRole']>(['SUPER_ADMIN', 'ADMIN', 'MANAGER', 'STAFF']);
 const SAFE_ROLE_ID = /^[A-Za-z0-9:_-]{1,64}$/;
+const SAFE_PUBLIC_USER_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const ROLE_NAME_CONTROL_CHARACTERS = /[\u0000-\u001f\u007f-\u009f]/g;
 
 type RefreshResult =
@@ -123,6 +125,8 @@ function parseAuthUser(payload: unknown): AuthUser | null {
     const user = candidate as Record<string, unknown>;
     if (
         !safeHeaderToken(user.sub)
+        || typeof user.publicUserId !== 'string'
+        || !SAFE_PUBLIC_USER_ID.test(user.publicUserId)
         || typeof user.role !== 'string'
         || typeof user.legacyRole !== 'string'
         || !LEGACY_USER_ROLES.has(user.legacyRole as AuthUser['legacyRole'])
@@ -153,6 +157,7 @@ function parseAuthUser(payload: unknown): AuthUser | null {
 
     return {
         sub: user.sub,
+        publicUserId: user.publicUserId,
         role: migrationSafeRoleName(user.role),
         legacyRole: user.legacyRole as AuthUser['legacyRole'],
         tenantId: user.tenantId,
@@ -435,6 +440,7 @@ export async function proxy(request: NextRequest) {
 
     const forwardedHeaders = new Headers(request.headers);
     forwardedHeaders.set('x-user-id', user.sub);
+    forwardedHeaders.set('x-user-public-id', user.publicUserId);
     forwardedHeaders.set('x-user-role', user.legacyRole);
     forwardedHeaders.set('x-tenant-id', user.tenantId ?? '');
     forwardedHeaders.set('x-user-permissions', permissions.join(','));

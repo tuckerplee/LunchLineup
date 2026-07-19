@@ -62,6 +62,7 @@ function fixture(options: FixtureOptions = {}) {
         revokedAt: options.revokedAt ?? null,
         user: {
           id: 'user-1',
+          publicId: 'f6776d21-bb21-4c35-a6ed-5da8df5ed238',
           tenantId: 'tenant-1',
           email: 'manager@example.com',
           username: 'manager',
@@ -119,6 +120,7 @@ describe('native API v2 identity', () => {
 
     await expect(adapter.authenticate(request(), response)).resolves.toEqual({
       sub: 'user-1',
+      publicUserId: 'f6776d21-bb21-4c35-a6ed-5da8df5ed238',
       tenantId: 'tenant-1',
       sessionId: 'session-1',
       role: 'Manager',

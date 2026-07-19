@@ -109,6 +109,7 @@ test('API-02 owns locations natively with public UUIDs and a bounded retained tr
   const service = read('apps/api-v2/src/locations/locations.service.ts');
   const bridge = read('apps/api-v2/src/platform/retained-application.bridge.ts');
   const translator = read('apps/api-v2/src/locations/identifier-translation.ts');
+  const server = read('apps/api-v2/src/server.ts');
   const web = read('apps/web/app/dashboard/locations/LocationsWorkspace.tsx');
 
   for (const operationId of [
@@ -125,12 +126,55 @@ test('API-02 owns locations natively with public UUIDs and a bounded retained tr
   assert.match(locations, /LocationPathSchema/);
   assert.match(service, /publicId: randomUUID\(\)/);
   assert.match(service, /SELECT \"id\", \"publicId\"::text AS \"publicId\"/);
-  assert.match(bridge, /LocationIdentifierTranslator/);
+  assert.match(server, /LocationIdentifierTranslator/);
+  assert.match(bridge, /IdentifierTranslator/);
   assert.match(translator, /locationId/);
   assert.match(translator, /locationIds/);
   assert.doesNotMatch(translator, /key === 'id'/);
   assert.doesNotMatch(web, /publicId\?: string/);
   assert.match(web, /dashboard\/scheduling\?location=\$\{location\.id\}/);
+});
+
+test('API-02 owns People natively with public role/user UUIDs and one explicit deactivation seam', () => {
+  const catalog = read('packages/api-contract/src/application.ts');
+  const server = read('apps/api-v2/src/server.ts');
+  const routes = read('apps/api-v2/src/people/routes.ts');
+  const service = read('apps/api-v2/src/people/people.service.ts');
+  const translator = read('apps/api-v2/src/people/identifier-translation.ts');
+  const schema = read('packages/db/prisma/schema.prisma');
+  const migration = read('packages/db/prisma/migrations/pre_20260719_api_v2_role_public_ids.sql');
+
+  for (const operationId of [
+    'listStaffMembers',
+    'getAccessCatalog',
+    'getStaffSchedulingProfile',
+    'updateStaffSchedulingProfile',
+    'getStaffMember',
+    'createStaffInvitation',
+    'getStaffInvitation',
+    'retryStaffInvitation',
+    'reissueStaffInvitation',
+    'resetStaffPin',
+    'replaceCurrentPin',
+    'getStaffAccess',
+    'updateStaffAccess',
+    'createAccessRole',
+    'updateAccessRole',
+    'deleteAccessRole',
+  ]) {
+    assert.match(catalog, new RegExp(`operationId: '${operationId}'[^\\n]*native: true`));
+  }
+  assert.doesNotMatch(catalog, /operationId: 'deleteStaffMember'[^\n]*native: true/);
+  assert.match(server, /new PeopleService\(database, config\)/);
+  assert.match(server, /new PeopleIdentifierTranslator\(people\)/);
+  assert.match(routes, /registerPeopleRoutes/);
+  assert.match(service, /publicId: true/);
+  assert.match(translator, /userId/);
+  assert.match(translator, /userIds/);
+  assert.doesNotMatch(translator, /key === 'id'/);
+  assert.match(schema, /model Role \{[\s\S]*?publicId\s+String\s+@unique/);
+  assert.match(migration, /ADD COLUMN IF NOT EXISTS "publicId" UUID/);
+  assert.match(migration, /Role_publicId_key/);
 });
 
 test('public build and deployment defaults select API v2', () => {

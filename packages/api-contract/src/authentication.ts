@@ -1,7 +1,9 @@
 import { Static, Type } from '@sinclair/typebox';
+import { UuidSchema } from './scheduling';
 
 export const SessionIdentitySchema = Type.Object({
   sub: Type.String({ minLength: 1, maxLength: 128 }),
+  publicUserId: UuidSchema,
   tenantId: Type.String({ minLength: 1, maxLength: 128 }),
   sessionId: Type.String({ minLength: 1, maxLength: 128 }),
   role: Type.String({ minLength: 1, maxLength: 128 }),

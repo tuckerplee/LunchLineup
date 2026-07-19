@@ -16,7 +16,7 @@ import { StaffSchedulingProfileEditor } from './StaffSchedulingProfileEditor';
 import { useInvitationDelivery } from './use-invitation-delivery';
 
 type StaffWorkspaceProps = {
-    currentUserId: string;
+    currentUserPublicId: string;
     canInvite: boolean;
     canAdminister: boolean;
     canReadRoles: boolean;
@@ -161,7 +161,7 @@ function parseDirectorySummary(value: unknown): UserDirectorySummary {
     return payload as UserDirectorySummary;
 }
 
-export function StaffWorkspace({ currentUserId, canInvite, canAdminister, canReadRoles, canAssignRoles, canManageRoles, canManageSchedulingProfiles }: StaffWorkspaceProps) {
+export function StaffWorkspace({ currentUserPublicId, canInvite, canAdminister, canReadRoles, canAssignRoles, canManageRoles, canManageSchedulingProfiles }: StaffWorkspaceProps) {
     const [users, setUsers] = useState<StaffUser[]>([]);
     const [directorySummary, setDirectorySummary] = useState<UserDirectorySummary | null>(null);
     const [nextCursor, setNextCursor] = useState<string | null>(null);
@@ -705,7 +705,7 @@ export function StaffWorkspace({ currentUserId, canInvite, canAdminister, canRea
                                                 </span>
                                             ))}
                                         </div>
-                                        {canAssignRoles && canReadRoles && user.id !== currentUserId ? (
+                                        {canAssignRoles && canReadRoles && user.id !== currentUserPublicId ? (
                                             <select
                                                 multiple
                                                 aria-label={`Assigned roles for ${user.name}`}
@@ -733,13 +733,13 @@ export function StaffWorkspace({ currentUserId, canInvite, canAdminister, canRea
                                                     Edit schedule profile
                                                 </Button>
                                             ) : null}
-                                            {canAdminister && user.id !== currentUserId && !user.email ? (
+                                            {canAdminister && user.id !== currentUserPublicId && !user.email ? (
                                                 <Button size="sm" variant="outline" onClick={() => setPendingAction({ action: 'reset-pin', user })} disabled={isSaving === user.id}>
                                                     <RotateCcw aria-hidden="true" size={14} />
                                                     {isSaving === user.id ? 'Resetting...' : 'Reset PIN'}
                                                 </Button>
                                             ) : null}
-                                            {canAdminister && user.id !== currentUserId ? (
+                                            {canAdminister && user.id !== currentUserPublicId ? (
                                                 <Button size="sm" variant="outline" onClick={() => setPendingAction({ action: 'remove', user })} disabled={isSaving === user.id}>
                                                     <UserMinus aria-hidden="true" size={14} />
                                                     {isSaving === user.id ? 'Removing...' : 'Remove'}
@@ -830,7 +830,7 @@ export function StaffWorkspace({ currentUserId, canInvite, canAdminister, canRea
                                         ))}
                                         {schedulingProfileUser.assignedRoles.length === 0 ? <span>No roles assigned</span> : null}
                                     </div>
-                                    {canAssignRoles && schedulingProfileUser.id !== currentUserId ? (
+                                    {canAssignRoles && schedulingProfileUser.id !== currentUserPublicId ? (
                                         <>
                                             <strong>Change roles</strong>
                                             {delegableRoles.length > 0 ? (
@@ -868,7 +868,7 @@ export function StaffWorkspace({ currentUserId, canInvite, canAdminister, canRea
                                 </div>
                             ) : null}
 
-                            {canAdminister && schedulingProfileUser.id !== currentUserId ? (
+                            {canAdminister && schedulingProfileUser.id !== currentUserPublicId ? (
                                 <div className="staff-profile-drawer__account-actions">
                                     {!schedulingProfileUser.email ? (
                                         <Button

@@ -7,7 +7,6 @@ import {
 import { isIP } from 'node:net';
 import type { FastifyReply, FastifyRequest } from 'fastify';
 import type { ApiV2Config } from '../config';
-import { LocationIdentifierTranslator } from '../locations/identifier-translation';
 import { ProblemError } from './problem';
 
 const DEFAULT_RESPONSE_LIMIT_BYTES = 2 * 1024 * 1024;
@@ -21,6 +20,25 @@ type RetainedCall = {
   request: FastifyRequest;
   reply: FastifyReply;
   identity?: SessionIdentity;
+};
+
+/**
+ * A narrow anti-corruption seam for the retained API-02 operations. Each
+ * translator may only rewrite the exact public identifier fields it owns.
+ */
+export type IdentifierTranslator = {
+  translateRequest(
+    operation: ApplicationApiOperation,
+    tenantId: string,
+    target: string,
+    body: string | Buffer | undefined,
+    parsedBody: unknown,
+  ): Promise<{ target: string; body: string | Buffer | undefined }>;
+  translateResponse(
+    operation: ApplicationApiOperation,
+    tenantId: string,
+    payload: unknown,
+  ): Promise<unknown>;
 };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -107,6 +125,28 @@ function requestBody(request: FastifyRequest): string | Buffer | undefined {
   if (Buffer.isBuffer(request.body)) return request.body;
   if (typeof request.body === 'string') return request.body;
   return JSON.stringify(request.body);
+}
+
+function parsedTranslatedBody(
+  original: unknown,
+  body: string | Buffer | undefined,
+): unknown {
+  if (original === undefined || typeof original === 'string' || Buffer.isBuffer(original)) return original;
+  if (body === undefined || Buffer.isBuffer(body)) return original;
+  try {
+    return JSON.parse(body) as unknown;
+  } catch {
+    return original;
+  }
+}
+
+function identifierUnavailable(): ProblemError {
+  return new ProblemError(
+    503,
+    'identifier_translation_unavailable',
+    'Reference validation is temporarily unavailable.',
+    'Service unavailable',
+  );
 }
 
 function retainedTarget(
@@ -265,28 +305,41 @@ function responseLimit(kind: ApplicationApiResponseKind | undefined): number {
 }
 
 export class RetainedApplicationBridge {
+  private readonly identifierTranslators: readonly IdentifierTranslator[];
+
   constructor(
     private readonly config: ApiV2Config,
-    private readonly locationIdentifiers?: LocationIdentifierTranslator,
-  ) {}
+    identifiers?: IdentifierTranslator | readonly IdentifierTranslator[],
+  ) {
+    this.identifierTranslators = identifiers === undefined
+      ? []
+      : Array.isArray(identifiers)
+        ? identifiers
+        : [identifiers];
+  }
 
   async execute({ operation, request, reply, identity }: RetainedCall): Promise<unknown> {
     const target = retainedTarget(this.config, operation, request);
     const headers = requestHeaders(this.config, request);
     const body = requestBody(request);
-    let translated: { target: string; body: string | Buffer | undefined };
+    let translated: { target: string; body: string | Buffer | undefined } = { target, body };
     try {
-      translated = identity && this.locationIdentifiers
-        ? await this.locationIdentifiers.translateRequest(operation, identity.tenantId, target, body, request.body)
-        : { target, body };
+      if (identity) {
+        let translatedBodyModel: unknown = request.body;
+        for (const translator of this.identifierTranslators) {
+          translated = await translator.translateRequest(
+            operation,
+            identity.tenantId,
+            translated.target,
+            translated.body,
+            translatedBodyModel,
+          );
+          translatedBodyModel = parsedTranslatedBody(request.body, translated.body);
+        }
+      }
     } catch (error) {
       if (error instanceof ProblemError) throw error;
-      throw new ProblemError(
-        503,
-        'location_identifier_unavailable',
-        'Location reference validation is temporarily unavailable.',
-        'Service unavailable',
-      );
+      throw identifierUnavailable();
     }
     let response: Response;
     try {
@@ -348,17 +401,14 @@ export class RetainedApplicationBridge {
 
     if (!response.ok) throw compatibilityProblem(response, json);
 
-    if (identity && this.locationIdentifiers && json !== null) {
+    if (identity && json !== null) {
       try {
-        json = await this.locationIdentifiers.translateResponse(operation, identity.tenantId, json);
+        for (const translator of [...this.identifierTranslators].reverse()) {
+          json = await translator.translateResponse(operation, identity.tenantId, json);
+        }
       } catch (error) {
         if (error instanceof ProblemError) throw error;
-        throw new ProblemError(
-          503,
-          'location_identifier_unavailable',
-          'Location reference validation is temporarily unavailable.',
-          'Service unavailable',
-        );
+        throw identifierUnavailable();
       }
     }
 

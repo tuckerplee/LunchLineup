@@ -10,6 +10,7 @@ import { ScheduleLifecycleService } from './lifecycle.service';
 const scheduleId = '88d8d86a-7e8d-4246-8ad3-eb7eedb44c1e';
 const identity: SessionIdentity = {
   sub: 'user-internal',
+  publicUserId: 'f6776d21-bb21-4c35-a6ed-5da8df5ed238',
   tenantId: 'tenant-internal',
   sessionId: 'session-internal',
   role: 'Manager',

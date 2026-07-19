@@ -15,6 +15,7 @@ const config = loadConfig({
 
 const identity: SessionIdentity = {
   sub: 'user-1',
+  publicUserId: 'f6776d21-bb21-4c35-a6ed-5da8df5ed238',
   tenantId: 'tenant-1',
   sessionId: 'session-1',
   role: 'MANAGER',
@@ -31,6 +32,12 @@ const identity: SessionIdentity = {
     'shifts:write',
     'shifts:delete',
     'lunch_breaks:write',
+    'users:read',
+    'users:write',
+    'users:admin',
+    'roles:read',
+    'roles:write',
+    'roles:assign',
   ],
   mfaVerified: true,
   mfaRequired: true,
@@ -67,6 +74,82 @@ async function harness(identityResponse: SessionIdentity = identity) {
     remove: vi.fn(async () => undefined),
     resolvePublicIds: vi.fn(async () => new Map()),
     resolveInternalIds: vi.fn(async () => new Map()),
+  };
+  const staffMember = {
+    id: 'f6776d21-bb21-4c35-a6ed-5da8df5ed238',
+    name: 'Casey Server Test',
+    email: 'casey@example.test',
+    username: '',
+    role: 'STAFF' as const,
+    pinEnabled: false,
+    pinResetRequired: false,
+    assignedRoles: [{
+      id: '2680ed8d-a36a-43ea-b83a-5f4ebf9bea4f',
+      name: 'Staff',
+      description: null,
+      isSystem: true,
+      legacyRole: 'STAFF' as const,
+      permissions: ['users:read'],
+    }],
+  };
+  const people = {
+    list: vi.fn(async () => ({
+      data: [staffMember],
+      pagination: { limit: 1, maxLimit: 200 as const, returned: 1, hasMore: false, nextCursor: null },
+      summary: { totalUsers: 1, staffCount: 1, managerCount: 0, privilegedUsers: 0, pinAccounts: 0 },
+    })),
+    accessCatalog: vi.fn(async () => ({
+      permissions: [],
+      defaultInviteRoleId: '2680ed8d-a36a-43ea-b83a-5f4ebf9bea4f',
+      roles: [{
+        ...staffMember.assignedRoles[0],
+        slug: 'staff',
+        isDefault: true,
+        userCount: 1,
+        canDelegate: true,
+      }],
+    })),
+    get: vi.fn(async () => staffMember),
+    schedulingProfile: vi.fn(async () => ({
+      user: { id: staffMember.id, name: staffMember.name },
+      skills: [], availability: [], availabilityConfigured: false,
+    })),
+    replaceSchedulingProfile: vi.fn(async () => ({
+      user: { id: staffMember.id, name: staffMember.name },
+      skills: [], availability: [], availabilityConfigured: false,
+    })),
+    invite: vi.fn(async () => ({
+      ...staffMember,
+      temporaryPin: null,
+      invitationDelivery: { status: 'NOT_APPLICABLE' as const, attempts: 0, canRetry: false, canReissue: false },
+      status: 'INVITED' as const,
+    })),
+    invitation: vi.fn(async () => ({
+      invitationDelivery: { status: 'NOT_APPLICABLE' as const, attempts: 0, canRetry: false, canReissue: false },
+    })),
+    retryInvitation: vi.fn(async () => ({
+      invitationDelivery: { status: 'PENDING' as const, attempts: 0, canRetry: true, canReissue: false },
+    })),
+    reissueInvitation: vi.fn(async () => ({
+      invitationDelivery: { status: 'PENDING' as const, attempts: 0, canRetry: true, canReissue: false },
+    })),
+    resetPin: vi.fn(async () => ({
+      id: staffMember.id, username: 'casey', temporaryPin: '123456', pinResetRequired: true as const,
+    })),
+    replaceOwnPin: vi.fn(async () => undefined),
+    access: vi.fn(async () => ({
+      primaryRole: 'Staff', roles: [{ id: '2680ed8d-a36a-43ea-b83a-5f4ebf9bea4f', name: 'Staff', isSystem: true, legacyRole: 'STAFF' as const }], permissions: ['users:read'],
+    })),
+    replaceAccess: vi.fn(async () => ({ id: staffMember.id, assignedRoles: staffMember.assignedRoles })),
+    createRole: vi.fn(async () => ({
+      id: '2680ed8d-a36a-43ea-b83a-5f4ebf9bea4f', name: 'Staff', description: null, isSystem: true, userCount: 1, permissions: ['users:read'],
+    })),
+    updateRole: vi.fn(async () => ({
+      id: '2680ed8d-a36a-43ea-b83a-5f4ebf9bea4f', name: 'Staff', description: null, isSystem: true, userCount: 1, permissions: ['users:read'],
+    })),
+    deleteRole: vi.fn(async () => undefined),
+    resolvePublicUserIds: vi.fn(async () => new Map()),
+    resolveInternalUserIds: vi.fn(async () => new Map()),
   };
   const board = vi.fn(async () => ({
     data: {
@@ -127,6 +210,7 @@ async function harness(identityResponse: SessionIdentity = identity) {
     } as never,
     retainedApplication: { execute: retainedApplication },
     locations,
+    people: people as never,
     routes: {
       board: { get: board },
       scheduleCreate: {
@@ -156,6 +240,7 @@ async function harness(identityResponse: SessionIdentity = identity) {
     reopen,
     retainedApplication,
     locations,
+    people,
     authenticate,
   };
 }
@@ -184,6 +269,9 @@ describe('API v2 HTTP contract', () => {
     expect(document.paths['/v2/locations'].post.operationId).toBe('createLocation');
     expect(document.paths['/v2/locations/{locationId}'].put.operationId).toBe('updateLocation');
     expect(document.paths['/v2/locations'].post.responses['500']).toBeDefined();
+    expect(document.paths['/v2/users'].get.operationId).toBe('listStaffMembers');
+    expect(document.paths['/v2/users/access/catalog'].get.operationId).toBe('getAccessCatalog');
+    expect(document.paths['/v2/users/{userId}/access'].put.operationId).toBe('updateStaffAccess');
     expect(
       document.paths['/v2/auth/me'].get.responses['200'].content['application/json'].schema
         .properties.user.properties.mfaVerified.type,
@@ -230,6 +318,43 @@ describe('API v2 HTTP contract', () => {
     expect(response.headers['x-lunchlineup-compatibility-owner']).toBeUndefined();
     expect(locations.list).toHaveBeenCalledOnce();
     expect(retainedApplication).not.toHaveBeenCalled();
+  });
+
+  it('serves the staff directory natively with public UUIDs and no retained hop', async () => {
+    const { app, people, retainedApplication } = await harness();
+    const response = await app.inject({
+      method: 'GET',
+      url: '/v2/users?limit=1',
+      headers: { cookie: 'access_token=test' },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({
+      data: [{ id: 'f6776d21-bb21-4c35-a6ed-5da8df5ed238', name: 'Casey Server Test' }],
+      pagination: { returned: 1, hasMore: false },
+    });
+    expect(response.headers['x-lunchlineup-compatibility-owner']).toBeUndefined();
+    expect(people.list).toHaveBeenCalledWith(identity, { limit: '1' });
+    expect(retainedApplication).not.toHaveBeenCalled();
+  });
+
+  it('requires MFA and same-origin CSRF proof before a native staff invitation', async () => {
+    const { app, people } = await harness({ ...identity, mfaVerified: false });
+    const response = await app.inject({
+      method: 'POST',
+      url: '/v2/users/invite',
+      headers: {
+        cookie: 'access_token=test; csrf_token=abcdefghijklmnop',
+        origin: 'https://beta.lunchlineup.com',
+        'x-csrf-token': 'abcdefghijklmnop',
+        'content-type': 'application/json',
+      },
+      payload: { name: 'Jamie', username: 'jamie', pin: '123456' },
+    });
+
+    expect(response.statusCode).toBe(403);
+    expect(response.json()).toMatchObject({ code: 'mfa_verification_required' });
+    expect(people.invite).not.toHaveBeenCalled();
   });
 
   it('requires CSRF and location permission before a native location mutation', async () => {

@@ -3,6 +3,7 @@ import type { FastifyReply, FastifyRequest } from 'fastify';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { loadConfig } from '../config';
 import { LocationIdentifierTranslator } from '../locations/identifier-translation';
+import { PeopleIdentifierTranslator } from '../people/identifier-translation';
 import { ProblemError } from './problem';
 import { RetainedApplicationBridge } from './retained-application.bridge';
 
@@ -68,6 +69,7 @@ function reply() {
 
 const identity: SessionIdentity = {
   sub: 'user-1',
+  publicUserId: 'f6776d21-bb21-4c35-a6ed-5da8df5ed238',
   tenantId: 'tenant-1',
   sessionId: 'session-1',
   role: 'Manager',
@@ -80,6 +82,8 @@ const identity: SessionIdentity = {
 
 const publicLocationId = '34aa4812-63f5-4e5c-8b3a-06b564987a1f';
 const internalLocationId = 'location-storage-1';
+const publicUserId = 'f6776d21-bb21-4c35-a6ed-5da8df5ed238';
+const internalUserId = 'user-storage-1';
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -183,6 +187,57 @@ describe('retained application compatibility bridge', () => {
     expect(JSON.parse(String(init.body))).toEqual({ locationId: internalLocationId, id: publicLocationId });
     expect(resolver.resolvePublicIds).toHaveBeenCalledWith('tenant-1', [publicLocationId]);
     expect(resolver.resolveInternalIds).toHaveBeenCalledWith('tenant-1', [internalLocationId]);
+  });
+
+  it('composes narrow location and people translators without exposing either storage key', async () => {
+    const locationResolver = {
+      resolvePublicIds: vi.fn(async () => new Map([[publicLocationId, internalLocationId]])),
+      resolveInternalIds: vi.fn(async () => new Map([[internalLocationId, publicLocationId]])),
+    };
+    const peopleResolver = {
+      resolvePublicUserIds: vi.fn(async () => new Map([[publicUserId, internalUserId]])),
+      resolveInternalUserIds: vi.fn(async () => new Map([[internalUserId, publicUserId]])),
+    };
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({
+      locationId: internalLocationId,
+      userId: internalUserId,
+      id: internalUserId,
+    }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const response = await new RetainedApplicationBridge(config, [
+      new LocationIdentifierTranslator(locationResolver),
+      new PeopleIdentifierTranslator(peopleResolver),
+    ]).execute({
+      operation: operation({
+        operationId: 'clockIn',
+        method: 'POST',
+        path: '/time-cards/clock-in',
+        tag: 'Time',
+      }),
+      request: request(
+        `/v2/time-cards/clock-in?locationId=${publicLocationId}&userId=${publicUserId}`,
+        { locationId: publicLocationId, userId: publicUserId, id: publicUserId },
+      ),
+      reply: reply(),
+      identity,
+    });
+
+    expect(response).toEqual({
+      locationId: publicLocationId,
+      userId: publicUserId,
+      id: internalUserId,
+    });
+    const [target, init] = fetchMock.mock.calls[0]!;
+    expect(target).toBe(`http://api:3000/v1/time-cards/clock-in?locationId=${internalLocationId}&userId=${internalUserId}`);
+    expect(JSON.parse(String(init.body))).toEqual({
+      locationId: internalLocationId,
+      userId: internalUserId,
+      id: publicUserId,
+    });
   });
 
   it('rejects traversal and oversized retained responses', async () => {

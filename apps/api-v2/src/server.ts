@@ -13,6 +13,9 @@ import { RetainedApplicationBridge } from './platform/retained-application.bridg
 import { LocationIdentifierTranslator } from './locations/identifier-translation';
 import { LocationService } from './locations/locations.service';
 import { registerLocationRoutes } from './locations/routes';
+import { PeopleIdentifierTranslator } from './people/identifier-translation';
+import { PeopleService } from './people/people.service';
+import { registerPeopleRoutes, type PeopleRouteDependencies } from './people/routes';
 import { ScheduleBoardService } from './scheduling/board.service';
 import { ScheduleChangeSetService } from './scheduling/change-set.service';
 import { DemandWindowService } from './scheduling/demand-window.service';
@@ -41,6 +44,7 @@ export type ApiV2ServerDependencies = Partial<{
   locations: Pick<LocationService,
     'list' | 'summary' | 'get' | 'create' | 'update' | 'remove' | 'resolvePublicIds' | 'resolveInternalIds'
   >;
+  people: PeopleRouteDependencies['people'] & Pick<PeopleService, 'resolvePublicUserIds' | 'resolveInternalUserIds'>;
   identity: IdentityAdapter;
   retainedApplication: Pick<RetainedApplicationBridge, 'execute'>;
 }>;
@@ -67,9 +71,13 @@ export async function buildServer(
   const database = overrides.database ?? new TenantDatabase();
   const identity = overrides.identity ?? new NativeIdentityAdapter(config, database);
   const locations = overrides.locations ?? new LocationService(database);
+  const people = overrides.people ?? new PeopleService(database, config);
   const retainedApplication = overrides.retainedApplication ?? new RetainedApplicationBridge(
     config,
-    new LocationIdentifierTranslator(locations),
+    [
+      new LocationIdentifierTranslator(locations),
+      new PeopleIdentifierTranslator(people),
+    ],
   );
   const routeServices = overrides.routes ?? {
     board: new ScheduleBoardService(database),
@@ -171,6 +179,11 @@ export async function buildServer(
     config,
     identity,
     locations,
+  });
+  await registerPeopleRoutes(app, {
+    config,
+    identity,
+    people,
   });
   await registerApplicationRoutes(app, {
     config,

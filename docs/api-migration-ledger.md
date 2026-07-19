@@ -14,13 +14,13 @@ Exit criteria:
 - old `POST|PUT|DELETE /shifts/{id}` browser mutations cannot be addressed through API v2;
 - build, unit, migration, browser, deployment, and live-beta checks pass.
 
-The shared catalog contains 121 explicit application operations. `GET /auth/me` and the six location operations are native; 114 operations remain behind a compatibility owner:
+The shared catalog contains 121 explicit application operations. `GET /auth/me`, the six location operations, and 16 People operations are native; 98 operations remain behind a compatibility owner:
 
 | Domain | Compatibility operations |
 | --- | ---: |
 | Authentication | 16 |
 | Locations | 0 |
-| People and access | 17 |
+| People and access | 1 |
 | Operational reads and lunch/break planning | 9 |
 | Time cards | 6 |
 | Payroll | 17 |
@@ -34,7 +34,7 @@ These sit beside 11 native scheduling operations. The catalog is defined once in
 
 ## API-02 — Replace retained implementations with native v2 modules
 
-Status: in progress. API-02-AUTH and API-02-LOC are complete; the remaining domain replacements are open.
+Status: in progress. API-02-AUTH, API-02-LOC, and API-02-PEOPLE are complete except for the separately tracked staff-deactivation lifecycle extraction; the remaining domain replacements are open.
 
 The API-01 routes are real, explicit public v2 routes, but their mature implementations remain behind bounded server-side compatibility owners. API-02 removes those dependencies domain by domain:
 
@@ -42,7 +42,7 @@ The API-01 routes are real, explicit public v2 routes, but their mature implemen
 | --- | --- | ---: |
 | API-02-AUTH | Login, cookie lifecycle, MFA mutation, reset, OTP, PIN, and OIDC; native session validation and `GET /auth/me` are complete | 16 |
 | API-02-LOC | Native tenant locations plus exact public/internal identifier translation for declared retained domains | 0 |
-| API-02-PEOPLE | Staff, roles, permissions, invitations, and public identifier translation | 17 |
+| API-02-PEOPLE | Native staff, roles, permissions, PINs, scheduling profiles, invitation commands, and public identifier translation; staff deactivation remains pending lifecycle extraction | 1 |
 | API-02-OPS | Operational schedule/roster reads and aggregate lunch/break planning | 9 |
 | API-02-TIME | Clock events, active-card reads, corrections, and time-card history | 6 |
 | API-02-PAYROLL | Policy, period, review, lock, amendment, export, download, and reconciliation | 17 |
@@ -59,9 +59,11 @@ API-02-AUTH native slice: API v2 now verifies access-token signature, tenant/ses
 
 API-02-LOC native slice: `/v2/locations` now owns list, summary, create, read, update, and soft delete with `Location.publicId` as the only browser identifier. It uses TypeBox contracts, tenant-RLS transactions, opaque `name, publicId` pagination, tenant capacity serialization, durable create replay, timezone-history fencing, and draft-revision invalidation. The temporary retained-domain seam translates only exact `locationId` and `locationIds` fields at the server boundary, never arbitrary `id` fields; disposable database proof plus beta deployment, authenticated browser workflow, and live API proof passed.
 
+API-02-PEOPLE native slice: `/v2/users` now owns the tenant directory, role catalog and lifecycle, staff access assignments, invitations and durable encrypted invitation commands, invitation retry/reissue state, PIN reset/rotation, and scheduling profiles. `User.publicId` and `Role.publicId` are the only browser-visible identifiers. Direct native paths use tenant-RLS transactions, live authorization revalidation for mutations, CSRF/MFA gates, public UUID schemas, and tests for public-only serialization. The retained seam translates only exact `userId` and `userIds` fields for declared People/Operations/Time/Payroll/Notifications/Imports operations, including the one retained `DELETE /users/:userId` deactivation path. That deletion remains retained until its availability-import cancellation, credit-refund, and storage-cleanup lifecycle can be extracted as a single safe native owner.
+
 ## Current known operational residuals
 
-- Beta email OTP delivery: `POST /v2/auth/email/send-otp` remains unavailable until VM107 receives a valid Resend API key and a provider-verified sender. The API container now resolves and reaches `api.resend.com`; the current runtime key is rejected by the provider with `400 validation_error: API key is invalid`. API-02-AUTH retains this operation until its native owner and transport are addressed. The beta password sign-in path remains verified.
+- Beta email delivery: password-email OTP and native staff invitation delivery remain unusable until VM107 receives a valid Resend API key and a provider-verified sender. The API container now resolves and reaches `api.resend.com`; the current runtime key is rejected by the provider with `400 validation_error: API key is invalid`. API-02-AUTH retains OTP transport work; native People invitations durably queue but must not be relied on for delivery until this external credential is updated. The beta password sign-in path remains verified.
 
 ## API-03 — Retire public API v1 exposure
 

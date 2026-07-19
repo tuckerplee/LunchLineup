@@ -4,6 +4,7 @@ import { CurrentSessionResponseSchema, SessionIdentitySchema } from './authentic
 
 const identity = {
   sub: 'user-internal',
+  publicUserId: 'f6776d21-bb21-4c35-a6ed-5da8df5ed238',
   tenantId: 'tenant-internal',
   sessionId: 'session-internal',
   role: 'Manager',
@@ -22,6 +23,7 @@ describe('API v2 native authentication contract', () => {
 
   it('requires session-bound MFA state and rejects untyped user envelopes', () => {
     expect(Value.Check(SessionIdentitySchema, { ...identity, mfaVerified: undefined })).toBe(false);
+    expect(Value.Check(SessionIdentitySchema, { ...identity, publicUserId: undefined })).toBe(false);
     expect(Value.Check(CurrentSessionResponseSchema, { identity })).toBe(false);
   });
 });

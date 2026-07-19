@@ -30,6 +30,22 @@ describe('API v2 application operation catalog', () => {
         'getLocation',
         'updateLocation',
         'deleteLocation',
+        'listStaffMembers',
+        'getAccessCatalog',
+        'getStaffSchedulingProfile',
+        'updateStaffSchedulingProfile',
+        'getStaffMember',
+        'createStaffInvitation',
+        'getStaffInvitation',
+        'retryStaffInvitation',
+        'reissueStaffInvitation',
+        'resetStaffPin',
+        'replaceCurrentPin',
+        'getStaffAccess',
+        'updateStaffAccess',
+        'createAccessRole',
+        'updateAccessRole',
+        'deleteAccessRole',
       ]);
   });
 

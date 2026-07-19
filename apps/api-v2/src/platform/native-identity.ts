@@ -30,6 +30,7 @@ type TenantSecuritySettings = {
 type AuthorizationSnapshot = {
   user: {
     id: string;
+    publicId: string;
     tenantId: string;
     email: string | null;
     username: string | null;
@@ -279,6 +280,7 @@ export class NativeIdentityAdapter implements IdentityAdapter {
 
     const identity: SessionIdentity = {
       sub: snapshot.user.id,
+      publicUserId: snapshot.user.publicId,
       tenantId: snapshot.user.tenantId,
       sessionId: snapshot.session.id,
       role: snapshot.roles[0]?.name ?? 'Unknown role',
@@ -311,6 +313,7 @@ export class NativeIdentityAdapter implements IdentityAdapter {
           user: {
             select: {
               id: true,
+              publicId: true,
               tenantId: true,
               email: true,
               username: true,

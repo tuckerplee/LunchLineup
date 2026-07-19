@@ -12,6 +12,7 @@ const body: ScheduleChangeSetRequest = {
 };
 const identity: SessionIdentity = {
   sub: 'user-internal',
+  publicUserId: 'f6776d21-bb21-4c35-a6ed-5da8df5ed238',
   tenantId: 'tenant-internal',
   sessionId: 'session-internal',
   role: 'Manager',

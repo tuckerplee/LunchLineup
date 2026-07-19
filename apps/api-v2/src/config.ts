@@ -10,6 +10,9 @@ export type ApiV2Config = {
   legacyRequestTimeoutMs: number;
   jwtSecret: string;
   redisUrl: string;
+  staffInvitationOutboxEnabled: boolean;
+  staffInvitationOutboxEncryptionKey: string;
+  staffInvitationMaxAttempts: number;
   cookieSecure: boolean;
   releaseSha: string;
   trustProxy: boolean | number | string[];
@@ -59,6 +62,14 @@ function cookieSecure(value: string | undefined, nodeEnvironment: string | undef
   if (['1', 'true', 'yes', 'on'].includes(normalized)) return true;
   if (['0', 'false', 'no', 'off'].includes(normalized)) return false;
   throw new Error('COOKIE_SECURE must be a boolean value.');
+}
+
+function booleanSetting(value: string | undefined, fallback: boolean, name: string): boolean {
+  if (value === undefined) return fallback;
+  const normalized = value.trim().toLowerCase();
+  if (['1', 'true', 'yes', 'on'].includes(normalized)) return true;
+  if (['0', 'false', 'no', 'off'].includes(normalized)) return false;
+  throw new Error(`${name} must be a boolean value.`);
 }
 
 function normalizedOrigin(value: string): string {
@@ -135,6 +146,13 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ApiV2Config {
     legacyRequestTimeoutMs: boundedInteger(env.LEGACY_REQUEST_TIMEOUT_MS, 15_000, 1000, 30_000),
     jwtSecret: requiredSecret(env.JWT_SECRET, 'JWT_SECRET'),
     redisUrl: redisUrl(env.REDIS_URL),
+    staffInvitationOutboxEnabled: booleanSetting(
+      env.STAFF_INVITATION_OUTBOX_ENABLED,
+      false,
+      'STAFF_INVITATION_OUTBOX_ENABLED',
+    ),
+    staffInvitationOutboxEncryptionKey: env.STAFF_INVITATION_OUTBOX_ENCRYPTION_KEY?.trim() ?? '',
+    staffInvitationMaxAttempts: boundedInteger(env.STAFF_INVITATION_MAX_ATTEMPTS, 8, 1, 8),
     cookieSecure: cookieSecure(env.COOKIE_SECURE, env.NODE_ENV),
     releaseSha: releaseSha(env.DEPLOY_RELEASE_SHA ?? env.IMAGE_TAG),
     trustProxy: trustProxy(env.TRUST_PROXY),

@@ -389,6 +389,14 @@
       "contractPhase": "after-rollback-window",
       "requiresOldReleaseProof": true,
       "rationale": "opaque public identifier backfills and old-writer-compatible defaults remain during rollback; isolated old-release proof is required before production mutation."
+    },
+    "packages/db/prisma/migrations/pre_20260719_api_v2_role_public_ids.sql": {
+      "sha256": "7cf9e9b453fbdec6dec21c990860306051f2e62e5ae682868b08b84b3bee008c",
+      "phase": "expand",
+      "rollbackSchema": "retain",
+      "contractPhase": "after-rollback-window",
+      "requiresOldReleaseProof": true,
+      "rationale": "role public identifier backfill and old-writer-compatible default remain during rollback; isolated old-release proof is required before production mutation."
     }
   }
 }

@@ -4,6 +4,7 @@ import { LocationService } from './locations.service';
 
 const identity: SessionIdentity = {
   sub: 'user-1',
+  publicUserId: 'f6776d21-bb21-4c35-a6ed-5da8df5ed238',
   tenantId: 'tenant-1',
   sessionId: 'session-1',
   role: 'Manager',

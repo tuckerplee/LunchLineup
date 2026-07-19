@@ -272,6 +272,7 @@ model Permission {
 
 model Role {
   id          String    @id @default(uuid())
+  publicId    String    @unique @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   tenantId    String
   name        String
   slug        String

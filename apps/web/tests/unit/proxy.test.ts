@@ -10,6 +10,7 @@ function makeRequest(path: string, cookie?: string): NextRequest {
 }
 
 function authUser(overrides: Partial<{
+  publicUserId: string;
   role: string;
   legacyRole: string;
   permissions: string[];
@@ -17,6 +18,7 @@ function authUser(overrides: Partial<{
 }> = {}) {
   return {
     sub: 'user-1',
+    publicUserId: overrides.publicUserId ?? 'f6776d21-bb21-4c35-a6ed-5da8df5ed238',
     role: overrides.role ?? 'Admin',
     legacyRole: overrides.legacyRole ?? 'ADMIN',
     tenantId: 'tenant-1',
@@ -416,6 +418,20 @@ describe('web auth proxy', () => {
     expect(await response.text()).toBe('Authentication service temporarily unavailable. Please retry.');
   });
 
+  it('fails closed when the auth response does not provide a valid public user identifier', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValueOnce(new Response(JSON.stringify({
+      user: authUser({ publicUserId: 'storage-user-1' }),
+    }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    })));
+
+    const response = await proxy(makeRequest('/dashboard/staff', 'access_token=access-token'));
+
+    expect(response.status).toBe(503);
+    expect(response.headers.get('x-middleware-request-x-user-public-id')).toBeNull();
+  });
+
   it.each([
     ['Admin', 'ADMIN'],
     ['Manager', 'MANAGER'],
@@ -434,6 +450,7 @@ describe('web auth proxy', () => {
 
     expect(response.status).toBe(200);
     expect(response.headers.get('x-middleware-request-x-user-role')).toBe(legacyRole);
+    expect(response.headers.get('x-middleware-request-x-user-public-id')).toBe('f6776d21-bb21-4c35-a6ed-5da8df5ed238');
     expect(response.headers.get('x-middleware-request-x-user-permissions')).toContain('payroll:read');
   });
 

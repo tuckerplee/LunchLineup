@@ -50,4 +50,19 @@ describe('API v2 runtime configuration', () => {
       JWT_SECRET: 'test-api-v2-jwt-secret',
     })).toThrow('LEGACY_API_BASE_URL');
   });
+
+  it('shares the bounded invitation retry ceiling with the delivery worker', () => {
+    expect(loadConfig({
+      APP_ORIGIN: 'https://beta.lunchlineup.com',
+      LEGACY_API_BASE_URL: 'http://api:3000/v1',
+      JWT_SECRET: 'test-api-v2-jwt-secret',
+      STAFF_INVITATION_MAX_ATTEMPTS: '3',
+    }).staffInvitationMaxAttempts).toBe(3);
+    expect(() => loadConfig({
+      APP_ORIGIN: 'https://beta.lunchlineup.com',
+      LEGACY_API_BASE_URL: 'http://api:3000/v1',
+      JWT_SECRET: 'test-api-v2-jwt-secret',
+      STAFF_INVITATION_MAX_ATTEMPTS: '9',
+    })).toThrow(/integer between 1 and 8/);
+  });
 });
