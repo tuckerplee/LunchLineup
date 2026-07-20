@@ -81,6 +81,7 @@ test('native API v2 Payroll uses public IDs, tenant RLS, immutable evidence, exa
     tenantId: `api-v2-payroll-${runId}`,
     otherTenantId: `api-v2-payroll-other-${runId}`,
     adminId: `api-v2-payroll-admin-${runId}`,
+    approverId: `api-v2-payroll-approver-${runId}`,
     employeeId: `api-v2-payroll-employee-${runId}`,
     locationId: `api-v2-payroll-location-${runId}`,
   };
@@ -108,9 +109,12 @@ test('native API v2 Payroll uses public IDs, tenant RLS, immutable evidence, exa
         status: 'ACTIVE',
       },
     });
-    const [admin, employee, otherUser, location] = await Promise.all([
+    const [admin, approver, employee, otherUser, location] = await Promise.all([
       owner.user.create({
         data: { id: fixture.adminId, tenantId: tenant.id, name: 'API v2 Payroll Admin', role: 'ADMIN', mfaBackupCodes: [] },
+      }),
+      owner.user.create({
+        data: { id: fixture.approverId, tenantId: tenant.id, name: 'API v2 Payroll Approver', role: 'ADMIN', mfaBackupCodes: [] },
       }),
       owner.user.create({
         data: { id: fixture.employeeId, tenantId: tenant.id, name: 'API v2 Payroll Employee', role: 'STAFF', mfaBackupCodes: [] },
@@ -131,6 +135,7 @@ test('native API v2 Payroll uses public IDs, tenant RLS, immutable evidence, exa
       'time_cards:approve',
     ]);
     const otherIdentity = identity(otherTenant.id, otherUser, 'ADMIN', ['payroll:read']);
+    const approverIdentity = identity(tenant.id, approver, 'ADMIN', ['time_cards:approve']);
     const policyKey = `api-v2-payroll-policy-${runId}`;
     const policy = await payroll.createPolicy(adminIdentity, {
       timeZone: 'UTC',
@@ -222,12 +227,19 @@ test('native API v2 Payroll uses public IDs, tenant RLS, immutable evidence, exa
     assert.equal(amendment.minuteDelta, 60);
 
     const adjustmentReview = await payroll.startReview(adminIdentity, adjustment.id, { expectedRevision: adjustment.revision }, `api-v2-payroll-adjustment-review-${runId}`);
-    const amendmentDecision = await payroll.decideAmendment(adminIdentity, amendment.id, {
+    await assert.rejects(
+      () => payroll.decideAmendment(adminIdentity, amendment.id, {
+        decision: 'APPROVED',
+        reason: 'A requester cannot approve their own amendment.',
+      }, `api-v2-payroll-amendment-self-decision-${runId}`),
+      (error) => error?.code === 'payroll_self_amendment_decision_denied',
+    );
+    const amendmentDecision = await payroll.decideAmendment(approverIdentity, amendment.id, {
       decision: 'APPROVED',
       reason: 'Amendment approved.',
     }, `api-v2-payroll-amendment-decision-${runId}`);
     assert.equal(amendmentDecision.amendmentId, amendment.id);
-    assert.equal(amendmentDecision.decidedByUserId, admin.publicId);
+    assert.equal(amendmentDecision.decidedByUserId, approver.publicId);
     const lockedAdjustment = await payroll.lockPeriod(adminIdentity, adjustment.id, { expectedRevision: adjustmentReview.revision }, `api-v2-payroll-adjustment-lock-${runId}`);
     assert.equal(lockedAdjustment.status, 'LOCKED');
     assert.equal(lockedAdjustment.lockedEntryCount, 1);
@@ -418,6 +430,7 @@ test('native API v2 Payroll uses public IDs, tenant RLS, immutable evidence, exa
     assertPublic({ policy, source, adjustment, sourceDetail, amendment, exported, receipt, reconciled }, [
       fixture.tenantId,
       fixture.adminId,
+      fixture.approverId,
       fixture.employeeId,
       fixture.locationId,
       card.id,
