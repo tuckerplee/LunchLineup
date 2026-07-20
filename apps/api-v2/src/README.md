@@ -12,6 +12,7 @@
 - `locations/`: native API-02 tenant-location lifecycle and public-ID boundary.
 - `notifications/`: native tenant notification feed and read-state boundary with opaque public IDs.
 - `operations/`: native operational read models and lunch/break planning persistence.
+- `payroll/`: native payroll policy, period, immutable evidence, export, and reconciliation owner.
 - `platform/`: database, native session identity, request-security, compatibility transport, and Problem Details boundaries.
 - `scheduling/`: board query and atomic change-set domain module.
 - `settings/`: native tenant workspace-settings aggregate and security-policy audit boundary.

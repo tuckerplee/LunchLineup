@@ -278,6 +278,60 @@ test('API-02 owns notifications natively with public feed IDs and no retained ap
   assert.doesNotMatch(service, /RetainedApplicationBridge|fetch\(/);
 });
 
+test('API-02 owns Payroll natively with public immutable evidence and no retained application hop', () => {
+  const catalog = read('packages/api-contract/src/application.ts');
+  const contract = read('packages/api-contract/src/payroll.ts');
+  const schema = read('packages/db/prisma/schema.prisma');
+  const migration = read('packages/db/prisma/migrations/pre_20260719_api_v2_payroll_public_ids.sql');
+  const server = read('apps/api-v2/src/server.ts');
+  const routes = read('apps/api-v2/src/payroll/routes.ts');
+  const service = read('apps/api-v2/src/payroll/payroll.service.ts');
+
+  for (const operationId of [
+    'getPayrollExportEntitlement',
+    'listPayrollPolicies',
+    'getPayrollPolicy',
+    'createPayrollPolicy',
+    'listPayrollPeriods',
+    'createPayrollPeriod',
+    'getPayrollPeriod',
+    'adoptPayrollTimeCards',
+    'startPayrollReview',
+    'decidePayrollEntries',
+    'lockPayrollPeriod',
+    'createPayrollAmendment',
+    'decidePayrollAmendment',
+    'createPayrollExport',
+    'getPayrollExport',
+    'downloadPayrollExport',
+    'reconcilePayrollExport',
+  ]) {
+    assert.match(catalog, new RegExp(`operationId: '${operationId}'[^\\n]*native: true`));
+  }
+  for (const model of [
+    'PayrollPolicyVersion',
+    'PayrollPeriod',
+    'PayrollLockedEntry',
+    'PayrollAmendment',
+    'PayrollExportBatch',
+    'PayrollExportLine',
+    'PayrollReconciliationReceipt',
+  ]) {
+    assert.match(schema, new RegExp(`model ${model} \\{[\\s\\S]*?publicId\\s+String\\s+@unique`));
+    assert.match(migration, new RegExp(`'${model}'`));
+  }
+  assert.match(contract, /PayrollLockedEntrySchema/);
+  assert.match(contract, /PayrollReconciliationReceiptSchema/);
+  assert.match(server, /new PayrollService\(database\)/);
+  assert.match(server, /registerPayrollRoutes/);
+  assert.match(routes, /registerPayrollRoutes/);
+  assert.match(routes, /assertUnsafeRequestSecurity/);
+  assert.match(service, /debitFeatureCredit/);
+  assert.match(service, /buildPayrollCsv/);
+  assert.match(service, /publicId/);
+  assert.doesNotMatch(service, /RetainedApplicationBridge|fetch\(/);
+});
+
 test('API-02 owns workspace settings natively with tenant RLS and a redacted security audit', () => {
   const catalog = read('packages/api-contract/src/application.ts');
   const contract = read('packages/api-contract/src/settings.ts');

@@ -15,6 +15,8 @@ import { LocationService } from './locations/locations.service';
 import { registerLocationRoutes } from './locations/routes';
 import { NotificationService } from './notifications/notifications.service';
 import { registerNotificationRoutes, type NotificationRouteDependencies } from './notifications/routes';
+import { PayrollService } from './payroll/payroll.service';
+import { registerPayrollRoutes, type PayrollRouteDependencies } from './payroll/routes';
 import { PeopleIdentifierTranslator } from './people/identifier-translation';
 import { PeopleService } from './people/people.service';
 import { registerPeopleRoutes, type PeopleRouteDependencies } from './people/routes';
@@ -57,6 +59,7 @@ export type ApiV2ServerDependencies = Partial<{
   operations: OperationsRouteDependencies['operations'];
   lunchBreaks: OperationsRouteDependencies['lunchBreaks'];
   notifications: NotificationRouteDependencies['notifications'];
+  payroll: PayrollRouteDependencies['payroll'];
   timeCards: TimeCardRouteDependencies['timeCards'];
   settings: WorkspaceSettingsRouteDependencies['settings'];
   identity: IdentityAdapter;
@@ -89,6 +92,7 @@ export async function buildServer(
   const operations = overrides.operations ?? new OperationsService(database);
   const lunchBreaks = overrides.lunchBreaks ?? new LunchBreakService(database);
   const notifications = overrides.notifications ?? new NotificationService(database);
+  const payroll = overrides.payroll ?? new PayrollService(database);
   const timeCards = overrides.timeCards ?? new TimeCardService(database);
   const settings = overrides.settings ?? new WorkspaceSettingsService(database, config);
   const retainedApplication = overrides.retainedApplication ?? new RetainedApplicationBridge(
@@ -215,6 +219,11 @@ export async function buildServer(
     config,
     identity,
     notifications,
+  });
+  await registerPayrollRoutes(app, {
+    config,
+    identity,
+    payroll,
   });
   await registerTimeCardRoutes(app, {
     config,

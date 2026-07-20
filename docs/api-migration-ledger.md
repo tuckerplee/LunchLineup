@@ -14,7 +14,7 @@ Exit criteria:
 - old `POST|PUT|DELETE /shifts/{id}` browser mutations cannot be addressed through API v2;
 - build, unit, migration, browser, deployment, and live-beta checks pass.
 
-The shared catalog contains 121 explicit application operations. `GET /auth/me`, the six location operations, 16 People operations, nine Operations resources, six Time Card resources, three Notification operations, and four workspace Settings resources are native; 76 operations remain behind a compatibility owner:
+The shared catalog contains 121 explicit application operations. `GET /auth/me`, the six location operations, 16 People operations, nine Operations resources, six Time Card resources, 17 Payroll operations, three Notification operations, and four workspace Settings resources are native; 59 operations remain behind a compatibility owner:
 
 | Domain | Compatibility operations |
 | --- | ---: |
@@ -23,7 +23,7 @@ The shared catalog contains 121 explicit application operations. `GET /auth/me`,
 | People and access | 1 |
 | Operational reads and lunch/break planning | 0 |
 | Time cards | 0 |
-| Payroll | 17 |
+| Payroll | 0 |
 | Notifications | 0 |
 | Settings | 0 |
 | Billing | 9 |
@@ -34,7 +34,7 @@ These sit beside 11 native scheduling operations. The catalog is defined once in
 
 ## API-02 — Replace retained implementations with native v2 modules
 
-Status: in progress. API-02-LOC, API-02-OPS, API-02-TIME, API-02-NOTIFY, and API-02-SETTINGS are complete. API-02-AUTH has a native session boundary but retains its credential/lifecycle operations; API-02-PEOPLE owns 16 of 17 operations and retains the separately tracked staff-deactivation lifecycle extraction. The remaining domain replacements are open.
+Status: in progress. API-02-LOC, API-02-OPS, API-02-TIME, API-02-PAYROLL, API-02-NOTIFY, and API-02-SETTINGS are complete. API-02-AUTH has a native session boundary but retains its credential/lifecycle operations; API-02-PEOPLE owns 16 of 17 operations and retains the separately tracked staff-deactivation lifecycle extraction. The remaining domain replacements are open.
 
 The API-01 routes are real, explicit public v2 routes, but their mature implementations remain behind bounded server-side compatibility owners. API-02 removes those dependencies domain by domain:
 
@@ -45,7 +45,7 @@ The API-01 routes are real, explicit public v2 routes, but their mature implemen
 | API-02-PEOPLE | Native staff, roles, permissions, PINs, scheduling profiles, invitation commands, and public identifier translation; staff deactivation remains pending lifecycle extraction | 1 |
 | API-02-OPS | Native bounded schedule/shift/roster read models plus direct lunch/break planning, policy, generation, setup, and replacement | 0 |
 | API-02-TIME | Native public time-card lifecycle, active recovery, correction, payroll fencing, and history | 0 |
-| API-02-PAYROLL | Policy, period, review, lock, amendment, export, download, and reconciliation | 17 |
+| API-02-PAYROLL | Native public payroll policy, period, review, lock, amendment, export, download, and reconciliation | 0 |
 | API-02-NOTIFY | Native tenant notification feed, cursor pagination, and read-state commands | 0 |
 | API-02-SETTINGS | Native tenant workspace aggregate with OIDC safety gate and audit | 0 |
 | API-02-BILLING | Entitlements, recovery, checkout, portal, plan change, and resume | 9 |
@@ -64,6 +64,8 @@ API-02-PEOPLE native slice: `/v2/users` now owns the tenant directory, role cata
 API-02-OPS native slice: `/v2/schedules`, `/v2/shifts`, `/v2/shifts/staff-roster`, and the six lunch/break planning resources now use one direct tenant-RLS Operations owner. Every identifier and cursor is a public UUID; Staff receives only its own published assignments. Policy reads and updates remain ledger-free, while persisted generation, setup shifts, and changed individual break plans use tenant-first aggregate locking, paid feature authorization, immutable credit debits, idempotency replay, and draft revision fencing. The existing `/v2/break-generations` scheduling endpoint now calls this owner directly as well, leaving publication and solver behavior as the only retained scheduling seams. Contract, route, and restricted-PostgreSQL integration coverage prove the native owner and its public-ID, replay, credit, no-op, revision, and tenant-isolation boundaries.
 
 API-02-TIME native slice: `/v2/time-cards` now owns history, active-card recovery, one-card reads, clock-in, clock-out, and corrections directly through tenant-RLS transactions. `TimeCard.publicId` and `TimeCardBreak.publicId` are the only browser-visible IDs; list cursors are opaque `clockInAt, publicId` positions. Clock-in preserves the prior durable operation/request identity exactly so a retry across the v1 cutover reuses its original row and immutable credit debit. New clock-ins require active paid entitlement and credits; reads and corrections require paid entitlement without debit; active reads and closing an existing card remain available after entitlement loss. Public contract, route, migration, browser-cutover, and restricted-PostgreSQL coverage prove no private storage IDs, tenant isolation, correction fencing, payroll cutoffs, exact replay, and recovery behavior.
+
+API-02-PAYROLL native slice: `/v2/payroll` now owns all 17 browser payroll operations directly through tenant-RLS PostgreSQL transactions. `PayrollPolicyVersion`, `PayrollPeriod`, `PayrollLockedEntry`, `PayrollAmendment`, `PayrollExportBatch`, `PayrollExportLine`, and `PayrollReconciliationReceipt` use opaque public UUIDs at the browser boundary; internal IDs remain inside policy, snapshot, credit, CSV-integrity, and reconciliation transactions. The owner preserves policy/DST validation, period and card revision fencing, immutable lock hashes, amendment ordering and approval, exact-once time-card credit settlement, verified CSV download, and provider receipt/replay evidence without a retained HTTP bridge. Contract, route, browser-cutover, and restricted-PostgreSQL coverage prove public-only serialization, tenant isolation, durable replay, immutable export evidence, and reconciliation state.
 
 API-02-NOTIFY native slice: `/v2/notifications` now owns the authenticated user feed and both read-state commands directly through tenant-RLS transactions. `Notification.publicId` is the only browser-visible notification identifier; the feed uses an opaque `createdAt, publicId` cursor and a bounded limit. Same-origin CSRF plus `notifications:write` protects reads-state mutations, and every update scopes both tenant and session user so callers cannot mark another worker's notifications. The retained scheduling outbox may continue to create durable feed rows during its separate publication seam, but no browser notification operation crosses the retained application bridge. Contract, route, unit, browser-cutover, and restricted-PostgreSQL coverage prove public-only serialization, pagination, tenant isolation, unread counts, and read-state containment.
 

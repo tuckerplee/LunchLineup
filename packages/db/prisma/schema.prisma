@@ -944,6 +944,7 @@ model TimeCardBreak {
 
 model PayrollPolicyVersion {
   id              String         @id @default(uuid())
+  publicId        String         @unique @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   tenantId        String
   version         Int
   timeZone        String
@@ -962,10 +963,12 @@ model PayrollPolicyVersion {
   @@unique([tenantId, version])
   @@unique([tenantId, effectiveFrom])
   @@index([tenantId, effectiveFrom(sort: Desc), version(sort: Desc)])
+  @@index([tenantId, version(sort: Desc), publicId(sort: Desc)])
 }
 
 model PayrollPeriod {
   id                    String              @id @default(uuid())
+  publicId              String              @unique @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   tenantId              String
   policyVersionId       String
   localStartDate        DateTime            @db.Date
@@ -1001,6 +1004,7 @@ model PayrollPeriod {
   @@unique([id, tenantId])
   @@index([tenantId, startsAt, endsAt])
   @@index([tenantId, status, localStartDate(sort: Desc), id(sort: Desc)])
+  @@index([tenantId, status, localStartDate(sort: Desc), publicId(sort: Desc)])
 }
 
 model PayrollTimeCardApproval {
@@ -1026,6 +1030,7 @@ model PayrollTimeCardApproval {
 
 model PayrollLockedEntry {
   id               String            @id @default(uuid())
+  publicId         String            @unique @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   tenantId         String
   periodId         String
   sequence         Int
@@ -1053,10 +1058,12 @@ model PayrollLockedEntry {
   @@unique([periodId, sequence])
   @@unique([periodId, sourceType, sourceId])
   @@index([tenantId, periodId, employeeId, sequence])
+  @@index([tenantId, periodId, sequence, publicId])
 }
 
 model PayrollAmendment {
   id                        String   @id @default(uuid())
+  publicId                  String   @unique @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   tenantId                  String
   lockedEntryId             String
   adjustmentPeriodId        String
@@ -1078,6 +1085,7 @@ model PayrollAmendment {
 
   @@unique([id, tenantId])
   @@index([tenantId, adjustmentPeriodId, createdAt, id])
+  @@index([tenantId, adjustmentPeriodId, createdAt, publicId])
   @@index([tenantId, lockedEntryId])
 }
 
@@ -1116,6 +1124,7 @@ model PayrollOperation {
 
 model PayrollExportBatch {
   id                  String              @id @default(uuid())
+  publicId            String              @unique @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   tenantId            String
   periodId            String              @unique
   operationId         String              @unique
@@ -1143,10 +1152,12 @@ model PayrollExportBatch {
   @@unique([periodId, tenantId])
   @@unique([id, tenantId])
   @@index([tenantId, status, createdAt(sort: Desc), id(sort: Desc)])
+  @@index([tenantId, status, createdAt(sort: Desc), publicId(sort: Desc)])
 }
 
 model PayrollExportLine {
   id              String            @id @default(uuid())
+  publicId        String            @unique @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   tenantId        String
   batchId         String
   lineNumber      Int
@@ -1173,10 +1184,12 @@ model PayrollExportLine {
   @@unique([batchId, lineNumber])
   @@unique([batchId, lockedEntryId])
   @@index([tenantId, batchId, lineNumber])
+  @@index([tenantId, batchId, lineNumber, publicId])
 }
 
 model PayrollReconciliationReceipt {
   id                   String   @id @default(uuid())
+  publicId             String   @unique @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   tenantId             String
   batchId              String
   provider             String
@@ -1197,6 +1210,7 @@ model PayrollReconciliationReceipt {
   @@unique([id, tenantId])
   @@unique([tenantId, provider, providerEventId])
   @@index([tenantId, batchId, receivedAt, id])
+  @@index([tenantId, batchId, receivedAt, publicId])
 }
 
 model PayrollReconciliationLineEvent {

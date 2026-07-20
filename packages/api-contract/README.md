@@ -1,6 +1,6 @@
 # API Contract
 
-`@lunchlineup/api-contract` is the source of truth for the new HTTP API's schemas and browser transport. Native scheduling uses shared TypeBox schemas and the generated client. API-01 application routes use one exact shared operation catalog so Fastify registration and browser path/method validation cannot drift while API-02 replaces their retained implementations with fully typed native modules.
+`@lunchlineup/api-contract` is the source of truth for the new HTTP API's schemas and browser transport. Native scheduling, time cards, notifications, settings, and payroll use shared TypeBox schemas. API-01 application routes use one exact shared operation catalog so Fastify registration and browser path/method validation cannot drift while API-02 replaces their retained implementations with fully typed native modules.
 
 ## Files
 

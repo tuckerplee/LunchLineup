@@ -14,11 +14,11 @@ browser (application traffic uses /api/v2 only)
        everything else -> web:3000
 
 api-v2
-  -> PostgreSQL with tenant RLS for native v2 session, location, scheduling, Operations, Time Card, Notification, and workspace Settings reads/writes
+  -> PostgreSQL with tenant RLS for native v2 session, location, scheduling, Operations, Time Card, Payroll, Notification, and workspace Settings reads/writes
   -> Redis for bounded MFA session-marker validation
   -> selected private v1 scheduling operations for publication billing and notification delivery
      and solver-queue compatibility
-  -> exact 76-operation API-01 compatibility catalog for remaining browser domains
+  -> exact 59-operation API-01 compatibility catalog for remaining browser domains
 
 worker -> RabbitMQ, PostgreSQL, engine:50051 gRPC, parser Unix socket
 control -> private operator status/health/metrics only
@@ -57,6 +57,23 @@ External paths include `/api`; the service receives the same path after Caddy re
 | POST | `/api/v2/time-cards/clock-in` | create one time card | `Idempotency-Key`, exact credit debit/replay |
 | POST | `/api/v2/time-cards/{timeCardId}/clock-out` | close one active time card | payroll cutoff and revision fence |
 | PATCH | `/api/v2/time-cards/{timeCardId}/correction` | correct one team time card | expected-updated-at and payroll fences |
+| GET | `/api/v2/payroll/export-entitlement` | read paid payroll-export eligibility | private, no-store |
+| GET | `/api/v2/payroll/policies` | list immutable public payroll policy versions | opaque `version, publicId` cursor |
+| GET | `/api/v2/payroll/policy` | read current payroll policy | private, no-store |
+| PUT | `/api/v2/payroll/policy` | create an immutable policy version | same-origin CSRF, `Idempotency-Key` |
+| GET | `/api/v2/payroll/periods` | list public payroll period summaries | opaque `localStartDate, publicId` cursor |
+| POST | `/api/v2/payroll/periods` | create a policy-aligned payroll period | same-origin CSRF, `Idempotency-Key` |
+| GET | `/api/v2/payroll/periods/{periodId}` | read one public payroll period and evidence | private, no-store |
+| POST | `/api/v2/payroll/periods/{periodId}/adopt` | adopt closed public time cards | same-origin CSRF, `Idempotency-Key`, revision fence |
+| POST | `/api/v2/payroll/periods/{periodId}/review` | begin payroll review | same-origin CSRF, `Idempotency-Key`, revision fence |
+| POST | `/api/v2/payroll/periods/{periodId}/decisions` | decide adopted time-card revisions | same-origin CSRF, `Idempotency-Key` |
+| POST | `/api/v2/payroll/periods/{periodId}/lock` | write immutable payroll snapshots | same-origin CSRF, `Idempotency-Key`, revision fence |
+| POST | `/api/v2/payroll/entries/{entryId}/amendments` | request a future-period payroll amendment | same-origin CSRF, `Idempotency-Key` |
+| POST | `/api/v2/payroll/amendments/{amendmentId}/decision` | decide one payroll amendment | same-origin CSRF, `Idempotency-Key` |
+| POST | `/api/v2/payroll/periods/{periodId}/exports` | create a settled immutable export | same-origin CSRF, `Idempotency-Key`, exact credit debit |
+| GET | `/api/v2/payroll/exports/{exportId}` | read one immutable payroll export | private, no-store |
+| GET | `/api/v2/payroll/exports/{exportId}/download` | verify and download CSV evidence | private, no-store |
+| POST | `/api/v2/payroll/exports/{exportId}/reconciliation` | record provider reconciliation receipt | same-origin CSRF, durable provider replay |
 | GET | `/api/v2/notifications` | list the authenticated user notification feed | opaque `createdAt, publicId` cursor |
 | POST | `/api/v2/notifications/read` | mark bounded public notification IDs read | same-origin CSRF |
 | POST | `/api/v2/notifications/read-all` | mark the authenticated user feed read | same-origin CSRF |
@@ -76,7 +93,7 @@ External paths include `/api`; the service receives the same path after Caddy re
 | GET | `/api/v2/schedules/{scheduleId}/solve-jobs/{jobId}` | read one solve job | private, no-store |
 | POST | `/api/v2/break-generations` | generate and persist breaks for selected shifts | `Idempotency-Key` |
 
-The 121 browser operations are registered explicitly from `packages/api-contract/src/application.ts`. Forty-five are native (`GET /auth/me`, six location operations, sixteen people/access operations, nine Operations resources, six Time Card resources, three Notification operations, and four workspace Settings operations); the remaining 76 compatibility operations cover authentication (16), the temporary user-deletion lifecycle (1), payroll (17), billing (9), availability imports (2), and administration/account lifecycle (31). The same catalog validates browser path/method pairs. There is no `/v2/*` catch-all handler and no caller-supplied upstream path.
+The 121 browser operations are registered explicitly from `packages/api-contract/src/application.ts`. Sixty-two are native (`GET /auth/me`, six location operations, sixteen people/access operations, nine Operations resources, six Time Card resources, seventeen Payroll operations, three Notification operations, and four workspace Settings operations); the remaining 59 compatibility operations cover authentication (16), the temporary user-deletion lifecycle (1), billing (9), availability imports (2), and administration/account lifecycle (31). The same catalog validates browser path/method pairs. There is no `/v2/*` catch-all handler and no caller-supplied upstream path.
 
 API v2 uses shared TypeBox schemas for server validation, OpenAPI generation, and the generated browser client. Every v2 response exposes the server-generated `X-Correlation-ID` used for downstream retained-service calls. Errors are bounded RFC 9457 Problem Details with stable machine codes. Contract failures use `422`; missing preconditions use `428`; stale schedule revisions use `412` and return `currentEtag`; state conflicts use `409`. Unsafe cookie-authenticated requests require an allowed `Origin` and double-submit CSRF proof. Shift updates are partial: omitted fields retain their exact saved values, including custom role labels, while explicitly supplied role labels are trimmed without case normalization.
 
@@ -95,6 +112,7 @@ Native v2 ownership:
 - tenant people, staff access, role, invitation, password-reset, profile, and self-suspension resources with public UUIDs; invite delivery uses the durable staff-invitation outbox.
 - bounded schedule, shift, and roster read models plus lunch/break policy, generation, setup, and individual replacement with public UUIDs, tenant-RLS, idempotency, credit settlement, and draft revision fencing.
 - public time-card history, active-card recovery, one-card reads, clock-in, clock-out, and correction with tenant-RLS, opaque public cursors, payroll fencing, exact clock-in replay/credit settlement, and public break resources.
+- payroll policy/version history, period adoption/review/lock, immutable snapshot evidence, amendments, exact-once export settlement/download, and provider reconciliation through tenant-RLS and public UUIDs only.
 - authenticated notification-feed reads and read-state commands with tenant-RLS, public notification UUIDs, opaque cursors, and same-origin CSRF.
 - tenant workspace general, team, and security settings with closed schemas, same-origin CSRF, OIDC-only safety gating, and redacted append-only security audits.
 
@@ -102,7 +120,7 @@ Bounded compatibility ownership during the strangler migration:
 
 - publication billing and notification-emission compatibility;
 - solver queue submission/status;
-- the frozen 76-operation API-01 application catalog while API-02 replaces each domain implementation.
+- the frozen 59-operation API-01 application catalog while API-02 replaces each remaining domain implementation.
 
 The scheduling compatibility adapter accepts only hard-coded internal route shapes and translates public UUIDs to tenant-scoped internal IDs. The API-01 application compatibility owner is reachable only through the exact shared catalog, uses a fixed internal authority, bounds request time/body/response size, forwards only approved headers, replaces spoofable forwarding values with the trusted client address and canonical `APP_ORIGIN` host/protocol, permits redirects only for the two declared OIDC operations, and sanitizes errors into Problem Details. Its location and people seams apply only to declared retained domains and exact `locationId`/`locationIds` and `userId`/`userIds` fields; requests translate public UUIDs inward and retained responses translate storage IDs outward. Neither boundary exposes a wildcard route. API-02 is the required removal owner.
 

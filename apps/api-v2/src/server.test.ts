@@ -35,6 +35,12 @@ const identity: SessionIdentity = {
     'lunch_breaks:write',
     'time_cards:read',
     'time_cards:write',
+    'time_cards:approve',
+    'payroll:read',
+    'payroll:policy_write',
+    'payroll:lock',
+    'payroll:export',
+    'payroll:reconcile',
     'users:read',
     'users:write',
     'users:admin',
@@ -296,6 +302,25 @@ async function harness(identityResponse: SessionIdentity = identity) {
     updateTeam: vi.fn(async () => workspaceSettings),
     updateSecurity: vi.fn(async () => workspaceSettings),
   };
+  const payroll = {
+    listPolicies: vi.fn(async () => ({ data: [], nextCursor: null })),
+    latestPolicy: vi.fn(async () => ({ data: null })),
+    createPolicy: vi.fn(async () => { throw new Error('unused'); }),
+    listPeriods: vi.fn(async () => ({ data: [], nextCursor: null })),
+    createPeriod: vi.fn(async () => { throw new Error('unused'); }),
+    getPeriod: vi.fn(async () => { throw new Error('unused'); }),
+    startReview: vi.fn(async () => { throw new Error('unused'); }),
+    adoptCards: vi.fn(async () => { throw new Error('unused'); }),
+    decideCards: vi.fn(async () => { throw new Error('unused'); }),
+    lockPeriod: vi.fn(async () => { throw new Error('unused'); }),
+    createAmendment: vi.fn(async () => { throw new Error('unused'); }),
+    decideAmendment: vi.fn(async () => { throw new Error('unused'); }),
+    exportEntitlement: vi.fn(async () => ({ creditCost: 1, eligible: true, reason: 'Payroll export is eligible.' })),
+    createExport: vi.fn(async () => { throw new Error('unused'); }),
+    getExport: vi.fn(async () => { throw new Error('unused'); }),
+    downloadExport: vi.fn(async () => { throw new Error('unused'); }),
+    reconcileExport: vi.fn(async () => { throw new Error('unused'); }),
+  };
   const board = vi.fn(async () => ({
     data: {
       permissions: identity.permissions,
@@ -361,6 +386,7 @@ async function harness(identityResponse: SessionIdentity = identity) {
     notifications,
     timeCards,
     settings,
+    payroll: payroll as never,
     routes: {
       board: { get: board },
       scheduleCreate: {
@@ -395,6 +421,7 @@ async function harness(identityResponse: SessionIdentity = identity) {
     notifications,
     timeCards,
     settings,
+    payroll,
     authenticate,
   };
 }
@@ -453,6 +480,8 @@ describe('API v2 HTTP contract', () => {
     expect(document.paths['/v2/settings/security'].put.operationId).toBe('updateSecuritySettings');
     expect(document.paths['/v2/payroll/periods/{periodId}/exports'].post.operationId)
       .toBe('createPayrollExport');
+    expect(document.paths['/v2/payroll/export-entitlement'].get.operationId)
+      .toBe('getPayrollExportEntitlement');
     expect(document.paths['/v2/admin/account/exports/{jobId}/download'].get.operationId)
       .toBe('downloadAccountExport');
     expect(JSON.stringify(document.paths)).not.toContain('/shifts/{person');
@@ -605,6 +634,33 @@ describe('API v2 HTTP contract', () => {
     expect(notifications.list).toHaveBeenCalledWith(identity, { status: 'all', limit: '20' });
     expect(notifications.markRead).toHaveBeenCalledWith(identity, ['668196db-7db2-4eb7-9808-5cd1a21717b7']);
     expect(notifications.markAllRead).toHaveBeenCalledWith(identity);
+    expect(retainedApplication).not.toHaveBeenCalled();
+  });
+
+  it('serves payroll through its native owner and fences unsafe payroll exports with CSRF', async () => {
+    const { app, payroll, retainedApplication } = await harness();
+    const entitlement = await app.inject({
+      method: 'GET',
+      url: '/v2/payroll/export-entitlement',
+      headers: { cookie: 'access_token=test' },
+    });
+    const rejectedExport = await app.inject({
+      method: 'POST',
+      url: '/v2/payroll/periods/98a5e6c4-41c1-4d06-95df-0a4b0ff3d913/exports',
+      headers: {
+        cookie: 'access_token=test; csrf_token=abcdefghijklmnop',
+        'content-type': 'application/json',
+        'idempotency-key': 'payroll-export-test-key',
+      },
+      payload: { expectedCreditCost: 1 },
+    });
+
+    expect(entitlement.statusCode).toBe(200);
+    expect(entitlement.json()).toEqual({ creditCost: 1, eligible: true, reason: 'Payroll export is eligible.' });
+    expect(payroll.exportEntitlement).toHaveBeenCalledWith(identity);
+    expect(rejectedExport.statusCode).toBe(403);
+    expect(rejectedExport.json()).toMatchObject({ code: 'origin_not_allowed' });
+    expect(payroll.createExport).not.toHaveBeenCalled();
     expect(retainedApplication).not.toHaveBeenCalled();
   });
 
