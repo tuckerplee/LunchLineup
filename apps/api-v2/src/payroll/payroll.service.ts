@@ -749,7 +749,7 @@ export class PayrollService {
       const rows = await transaction.$queryRaw<Array<{ id: string }>>(Prisma.sql`
         SELECT "id"
         FROM "PayrollExportBatch"
-        WHERE "tenantId" = ${identity.tenantId} AND "publicId" = ${publicId}
+        WHERE "tenantId" = ${identity.tenantId} AND "publicId" = CAST(${publicId} AS uuid)
         FOR UPDATE
       `);
       if (rows.length !== 1) {
