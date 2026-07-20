@@ -291,40 +291,43 @@ test('native API v2 Payroll uses public IDs, tenant RLS, immutable evidence, exa
         debtAfter: 0,
       },
     });
-    const legacyBatch = await owner.payrollExportBatch.create({
-      data: {
-        id: legacyBatchId,
-        tenantId: tenant.id,
-        periodId: persistedAdjustment.id,
-        operationId: legacyOperationId,
-        requestHash: 'f'.repeat(64),
-        creditTransactionId: legacyCreditTransactionId,
-        formatVersion: 1,
-        contentSha256: payrollContentSha256(legacyContent),
-        rowCount: 1,
-        totalPayableMinutes: persistedAdjustmentEntry.payableMinutes,
-        consumedCredits: 1,
-        newBalance: 4,
-      },
-    });
-    const legacyLine = await owner.payrollExportLine.create({
-      data: {
-        id: legacyLineId,
-        tenantId: tenant.id,
-        batchId: legacyBatch.id,
-        lineNumber: 1,
-        lockedEntryId: persistedAdjustmentEntry.id,
-        sourceType: persistedAdjustmentEntry.sourceType,
-        sourceId: persistedAdjustmentEntry.sourceId,
-        employeeId: persistedAdjustmentEntry.employeeId,
-        locationId: persistedAdjustmentEntry.locationId,
-        workTimeZone: persistedAdjustmentEntry.workTimeZone,
-        clockInAt: persistedAdjustmentEntry.clockInAt,
-        clockOutAt: persistedAdjustmentEntry.clockOutAt,
-        breakMinutes: persistedAdjustmentEntry.breakMinutes,
-        payableMinutes: persistedAdjustmentEntry.payableMinutes,
-        canonicalSha256: legacyLineHash,
-      },
+    const { legacyBatch, legacyLine } = await owner.$transaction(async (transaction) => {
+      const batch = await transaction.payrollExportBatch.create({
+        data: {
+          id: legacyBatchId,
+          tenantId: tenant.id,
+          periodId: persistedAdjustment.id,
+          operationId: legacyOperationId,
+          requestHash: 'f'.repeat(64),
+          creditTransactionId: legacyCreditTransactionId,
+          formatVersion: 1,
+          contentSha256: payrollContentSha256(legacyContent),
+          rowCount: 1,
+          totalPayableMinutes: persistedAdjustmentEntry.payableMinutes,
+          consumedCredits: 1,
+          newBalance: 4,
+        },
+      });
+      const line = await transaction.payrollExportLine.create({
+        data: {
+          id: legacyLineId,
+          tenantId: tenant.id,
+          batchId: batch.id,
+          lineNumber: 1,
+          lockedEntryId: persistedAdjustmentEntry.id,
+          sourceType: persistedAdjustmentEntry.sourceType,
+          sourceId: persistedAdjustmentEntry.sourceId,
+          employeeId: persistedAdjustmentEntry.employeeId,
+          locationId: persistedAdjustmentEntry.locationId,
+          workTimeZone: persistedAdjustmentEntry.workTimeZone,
+          clockInAt: persistedAdjustmentEntry.clockInAt,
+          clockOutAt: persistedAdjustmentEntry.clockOutAt,
+          breakMinutes: persistedAdjustmentEntry.breakMinutes,
+          payableMinutes: persistedAdjustmentEntry.payableMinutes,
+          canonicalSha256: legacyLineHash,
+        },
+      });
+      return { legacyBatch: batch, legacyLine: line };
     });
     const legacyExport = await payroll.getExport(adminIdentity, legacyBatch.publicId, {});
     const legacyDownload = await payroll.downloadExport(adminIdentity, legacyBatch.publicId);
