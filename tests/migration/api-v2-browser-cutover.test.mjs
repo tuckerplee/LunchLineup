@@ -249,6 +249,35 @@ test('API-02 owns Time Cards natively with public records and no retained applic
   assert.doesNotMatch(service, /RetainedApplicationBridge|fetch\(/);
 });
 
+test('API-02 owns notifications natively with public feed IDs and no retained application hop', () => {
+  const catalog = read('packages/api-contract/src/application.ts');
+  const contract = read('packages/api-contract/src/notifications.ts');
+  const schema = read('packages/db/prisma/schema.prisma');
+  const migration = read('packages/db/prisma/migrations/pre_20260719_api_v2_notification_public_ids.sql');
+  const server = read('apps/api-v2/src/server.ts');
+  const routes = read('apps/api-v2/src/notifications/routes.ts');
+  const service = read('apps/api-v2/src/notifications/notifications.service.ts');
+
+  for (const operationId of [
+    'listNotifications',
+    'markNotificationRead',
+    'markAllNotificationsRead',
+  ]) {
+    assert.match(catalog, new RegExp(`operationId: '${operationId}'[^\\n]*native: true`));
+  }
+  assert.match(contract, /NotificationListResponseSchema/);
+  assert.match(contract, /NotificationReadRequestSchema/);
+  assert.match(schema, /model Notification \{[\s\S]*?publicId\s+String\s+@unique/);
+  assert.match(migration, /ADD COLUMN IF NOT EXISTS "publicId" UUID/);
+  assert.match(migration, /Notification_publicId_key/);
+  assert.match(server, /new NotificationService\(database\)/);
+  assert.match(server, /registerNotificationRoutes/);
+  assert.match(routes, /registerNotificationRoutes/);
+  assert.match(service, /publicId: true/);
+  assert.match(service, /setCurrentTenant|withTenant/);
+  assert.doesNotMatch(service, /RetainedApplicationBridge|fetch\(/);
+});
+
 test('API-02 owns workspace settings natively with tenant RLS and a redacted security audit', () => {
   const catalog = read('packages/api-contract/src/application.ts');
   const contract = read('packages/api-contract/src/settings.ts');

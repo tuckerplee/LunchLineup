@@ -11,6 +11,8 @@
 - `index.ts`: package exports.
 - `locations.ts`: native API-02 location records, request schemas, pagination, and Problem Details responses.
 - `locations.test.ts`: public-ID, pagination-envelope, and strict location-write schema regression tests.
+- `notifications.ts`: native notification-feed records, cursor pagination, read-state requests, and Problem Details responses.
+- `notifications.test.ts`: public-ID, pagination-envelope, and strict notification read-request schema regression tests.
 - `operations.ts`: native operational read-model and lunch/break planning schemas.
 - `scheduling.ts`: scheduling schemas, request/response contracts, and RFC 9457 Problem Details.
 - `scheduling.test.ts`: focused schema and generated-client contract tests.

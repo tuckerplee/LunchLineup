@@ -114,9 +114,9 @@ export const APPLICATION_API_OPERATIONS = [
   { operationId: 'downloadPayrollExport', method: 'GET', path: '/payroll/exports/:exportId/download', tag: 'Payroll', summary: 'Download one payroll export', responseKind: 'download', bodyLimitBytes: 25 * MiB },
   { operationId: 'reconcilePayrollExport', method: 'POST', path: '/payroll/exports/:exportId/reconciliation', tag: 'Payroll', summary: 'Reconcile a payroll export' },
 
-  { operationId: 'listNotifications', method: 'GET', path: '/notifications', tag: 'Notifications', summary: 'List notifications' },
-  { operationId: 'markNotificationRead', method: 'POST', path: '/notifications/read', tag: 'Notifications', summary: 'Mark one notification read' },
-  { operationId: 'markAllNotificationsRead', method: 'POST', path: '/notifications/read-all', tag: 'Notifications', summary: 'Mark all notifications read' },
+  { operationId: 'listNotifications', method: 'GET', path: '/notifications', tag: 'Notifications', summary: 'List notifications', native: true },
+  { operationId: 'markNotificationRead', method: 'POST', path: '/notifications/read', tag: 'Notifications', summary: 'Mark one notification read', native: true },
+  { operationId: 'markAllNotificationsRead', method: 'POST', path: '/notifications/read-all', tag: 'Notifications', summary: 'Mark all notifications read', native: true },
 
   { operationId: 'getWorkspaceSettings', method: 'GET', path: '/settings', tag: 'Settings', summary: 'Read workspace settings', native: true },
   { operationId: 'updateGeneralSettings', method: 'PUT', path: '/settings/general', tag: 'Settings', summary: 'Replace general workspace settings', native: true },

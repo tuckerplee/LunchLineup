@@ -5,5 +5,6 @@ export * from './locations';
 export * from './people';
 export * from './operations';
 export * from './scheduling';
+export * from './notifications';
 export * from './settings';
 export * from './time-cards';

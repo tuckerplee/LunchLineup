@@ -41,6 +41,8 @@ const identity: SessionIdentity = {
     'roles:read',
     'roles:write',
     'roles:assign',
+    'notifications:read',
+    'notifications:write',
     'settings:read',
     'settings:write',
   ],
@@ -266,6 +268,23 @@ async function harness(identityResponse: SessionIdentity = identity) {
     clockOut: vi.fn(async () => ({ ...timeCard, clockOutAt: '2026-07-18T17:00:00.000Z', status: 'CLOSED' as const, revision: 2 })),
     correct: vi.fn(async () => timeCard),
   };
+  const notification = {
+    id: '668196db-7db2-4eb7-9808-5cd1a21717b7',
+    type: 'INFO' as const,
+    title: 'Schedule updated',
+    body: 'Your shift changed.',
+    readAt: null,
+    createdAt: '2026-07-19T16:00:00.000Z',
+  };
+  const notifications = {
+    list: vi.fn(async () => ({
+      data: [notification],
+      unreadCount: 1,
+      pagination: { limit: 20, maxLimit: 100 as const, returned: 1, hasMore: false, nextCursor: null },
+    })),
+    markRead: vi.fn(async () => ({ updated: 1, unreadCount: 0 })),
+    markAllRead: vi.fn(async () => ({ success: true as const, updated: 1, unreadCount: 0 as const })),
+  };
   const workspaceSettings = {
     general: { name: 'Harbor & Main Demo Cafe', slug: 'harbor-main-demo', timezone: 'America/Los_Angeles' },
     team: { defaultInviteRole: 'STAFF' as const, shiftApprovalPolicy: 'MANAGER_APPROVAL' as const },
@@ -339,6 +358,7 @@ async function harness(identityResponse: SessionIdentity = identity) {
     people: people as never,
     operations,
     lunchBreaks,
+    notifications,
     timeCards,
     settings,
     routes: {
@@ -372,6 +392,7 @@ async function harness(identityResponse: SessionIdentity = identity) {
     people,
     operations,
     lunchBreaks,
+    notifications,
     timeCards,
     settings,
     authenticate,
@@ -425,6 +446,9 @@ describe('API v2 HTTP contract', () => {
     expect(document.paths['/v2/time-cards/clock-in'].post.operationId).toBe('clockIn');
     expect(document.paths['/v2/time-cards/{timeCardId}/clock-out'].post.operationId).toBe('clockOut');
     expect(document.paths['/v2/time-cards/{timeCardId}/correction'].patch.operationId).toBe('correctTimeCard');
+    expect(document.paths['/v2/notifications'].get.operationId).toBe('listNotifications');
+    expect(document.paths['/v2/notifications/read'].post.operationId).toBe('markNotificationRead');
+    expect(document.paths['/v2/notifications/read-all'].post.operationId).toBe('markAllNotificationsRead');
     expect(document.paths['/v2/settings'].get.operationId).toBe('getWorkspaceSettings');
     expect(document.paths['/v2/settings/security'].put.operationId).toBe('updateSecuritySettings');
     expect(document.paths['/v2/payroll/periods/{periodId}/exports'].post.operationId)
@@ -539,6 +563,48 @@ describe('API v2 HTTP contract', () => {
       userId: 'f6776d21-bb21-4c35-a6ed-5da8df5ed238',
       limit: '1',
     });
+    expect(retainedApplication).not.toHaveBeenCalled();
+  });
+
+  it('serves native notifications and their read-state commands without a retained hop', async () => {
+    const { app, notifications, retainedApplication } = await harness();
+    const read = await app.inject({
+      method: 'GET',
+      url: '/v2/notifications?status=all&limit=20',
+      headers: { cookie: 'access_token=test' },
+    });
+    const markOne = await app.inject({
+      method: 'POST',
+      url: '/v2/notifications/read',
+      headers: {
+        cookie: 'access_token=test; csrf_token=abcdefghijklmnop',
+        origin: 'https://beta.lunchlineup.com',
+        'x-csrf-token': 'abcdefghijklmnop',
+        'content-type': 'application/json',
+      },
+      payload: { ids: ['668196db-7db2-4eb7-9808-5cd1a21717b7'] },
+    });
+    const markAll = await app.inject({
+      method: 'POST',
+      url: '/v2/notifications/read-all',
+      headers: {
+        cookie: 'access_token=test; csrf_token=abcdefghijklmnop',
+        origin: 'https://beta.lunchlineup.com',
+        'x-csrf-token': 'abcdefghijklmnop',
+      },
+    });
+
+    expect(read.statusCode).toBe(200);
+    expect(read.json()).toMatchObject({
+      data: [{ id: '668196db-7db2-4eb7-9808-5cd1a21717b7' }],
+      unreadCount: 1,
+    });
+    expect(read.headers['x-lunchlineup-compatibility-owner']).toBeUndefined();
+    expect(markOne.statusCode).toBe(200);
+    expect(markAll.statusCode).toBe(200);
+    expect(notifications.list).toHaveBeenCalledWith(identity, { status: 'all', limit: '20' });
+    expect(notifications.markRead).toHaveBeenCalledWith(identity, ['668196db-7db2-4eb7-9808-5cd1a21717b7']);
+    expect(notifications.markAllRead).toHaveBeenCalledWith(identity);
     expect(retainedApplication).not.toHaveBeenCalled();
   });
 

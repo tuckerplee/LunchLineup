@@ -1408,6 +1408,7 @@ model AuditLog {
 
 model Notification {
   id        String           @id @default(uuid())
+  publicId  String           @unique @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   tenantId  String
   userId    String
   type      NotificationType
@@ -1422,6 +1423,8 @@ model Notification {
   @@index([userId, readAt])
   @@index([tenantId])
   @@index([createdAt])
+  @@index([tenantId, userId, createdAt(sort: Desc), publicId(sort: Desc)])
+  @@index([tenantId, userId, readAt, createdAt(sort: Desc), publicId(sort: Desc)])
 }
 
 enum NotificationOutboxStatus {

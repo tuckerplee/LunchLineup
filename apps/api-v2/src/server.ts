@@ -13,6 +13,8 @@ import { RetainedApplicationBridge } from './platform/retained-application.bridg
 import { LocationIdentifierTranslator } from './locations/identifier-translation';
 import { LocationService } from './locations/locations.service';
 import { registerLocationRoutes } from './locations/routes';
+import { NotificationService } from './notifications/notifications.service';
+import { registerNotificationRoutes, type NotificationRouteDependencies } from './notifications/routes';
 import { PeopleIdentifierTranslator } from './people/identifier-translation';
 import { PeopleService } from './people/people.service';
 import { registerPeopleRoutes, type PeopleRouteDependencies } from './people/routes';
@@ -54,6 +56,7 @@ export type ApiV2ServerDependencies = Partial<{
   people: PeopleRouteDependencies['people'] & Pick<PeopleService, 'resolvePublicUserIds' | 'resolveInternalUserIds'>;
   operations: OperationsRouteDependencies['operations'];
   lunchBreaks: OperationsRouteDependencies['lunchBreaks'];
+  notifications: NotificationRouteDependencies['notifications'];
   timeCards: TimeCardRouteDependencies['timeCards'];
   settings: WorkspaceSettingsRouteDependencies['settings'];
   identity: IdentityAdapter;
@@ -85,6 +88,7 @@ export async function buildServer(
   const people = overrides.people ?? new PeopleService(database, config);
   const operations = overrides.operations ?? new OperationsService(database);
   const lunchBreaks = overrides.lunchBreaks ?? new LunchBreakService(database);
+  const notifications = overrides.notifications ?? new NotificationService(database);
   const timeCards = overrides.timeCards ?? new TimeCardService(database);
   const settings = overrides.settings ?? new WorkspaceSettingsService(database, config);
   const retainedApplication = overrides.retainedApplication ?? new RetainedApplicationBridge(
@@ -206,6 +210,11 @@ export async function buildServer(
     identity,
     operations,
     lunchBreaks,
+  });
+  await registerNotificationRoutes(app, {
+    config,
+    identity,
+    notifications,
   });
   await registerTimeCardRoutes(app, {
     config,
