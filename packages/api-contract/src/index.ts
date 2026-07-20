@@ -3,4 +3,5 @@ export * from './application';
 export * from './authentication';
 export * from './locations';
 export * from './people';
+export * from './operations';
 export * from './scheduling';

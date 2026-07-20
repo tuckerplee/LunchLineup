@@ -14,11 +14,11 @@ browser (application traffic uses /api/v2 only)
        everything else -> web:3000
 
 api-v2
-  -> PostgreSQL with tenant RLS for native v2 session, location, and scheduling reads/writes
+  -> PostgreSQL with tenant RLS for native v2 session, location, scheduling, and Operations reads/writes
   -> Redis for bounded MFA session-marker validation
-  -> selected private v1 scheduling operations for billing, notification,
-     solver-queue, and break-generation compatibility
-  -> exact 98-operation API-01 compatibility catalog for remaining browser domains
+  -> selected private v1 scheduling operations for publication billing/notification
+     and solver-queue compatibility
+  -> exact 89-operation API-01 compatibility catalog for remaining browser domains
 
 worker -> RabbitMQ, PostgreSQL, engine:50051 gRPC, parser Unix socket
 control -> private operator status/health/metrics only
@@ -42,6 +42,15 @@ External paths include `/api`; the service receives the same path after Caddy re
 | GET | `/api/v2/locations/{locationId}` | read one location by public UUID | private, no-store |
 | PUT | `/api/v2/locations/{locationId}` | update a location and fence affected draft schedules | private, no-store |
 | DELETE | `/api/v2/locations/{locationId}` | soft-delete a location and fence affected draft schedules | private, no-store |
+| GET | `/api/v2/schedules` | bounded operational schedule summaries | opaque public-ID cursor |
+| GET | `/api/v2/shifts/staff-roster` | bounded schedulable staff roster | opaque public-ID cursor |
+| GET | `/api/v2/shifts` | bounded operational shift summaries | opaque public-ID cursor |
+| GET | `/api/v2/lunch-breaks` | bounded lunch/break planning rows | opaque public-ID cursor |
+| GET | `/api/v2/lunch-breaks/policy` | read lunch/break planning policy | private, no-store |
+| PUT | `/api/v2/lunch-breaks/policy` | update lunch/break planning policy | same-origin CSRF |
+| POST | `/api/v2/lunch-breaks/generate` | generate a preview or persist a bounded plan | `Idempotency-Key` for durable request replay |
+| POST | `/api/v2/lunch-breaks/setup-shifts` | atomically create/update manual setup shifts | `Idempotency-Key` |
+| PUT | `/api/v2/lunch-breaks/shift/{shiftId}` | replace one draft shift's break plan | `Idempotency-Key` |
 | GET | `/api/v2/schedule-board` | bounded screen read model for one date/view/location | private, no-store |
 | POST | `/api/v2/locations/{locationId}/schedules` | create a draft schedule | `Idempotency-Key` |
 | POST | `/api/v2/schedules/{scheduleId}/change-sets` | atomically create/update/delete up to 100 shifts | `If-Match` plus `Idempotency-Key` |
@@ -54,7 +63,7 @@ External paths include `/api`; the service receives the same path after Caddy re
 | GET | `/api/v2/schedules/{scheduleId}/solve-jobs/{jobId}` | read one solve job | private, no-store |
 | POST | `/api/v2/break-generations` | generate and persist breaks for selected shifts | `Idempotency-Key` |
 
-The 121 browser operations are registered explicitly from `packages/api-contract/src/application.ts`. Twenty-three are native (`GET /auth/me`, six location operations, and sixteen people/access operations); the remaining 98 compatibility operations cover authentication (16), the temporary user-deletion lifecycle (1), operational/lunch-break reads and commands (9), time cards (6), payroll (17), notifications (3), settings (4), billing (9), availability imports (2), and administration/account lifecycle (31). The same catalog validates browser path/method pairs. There is no `/v2/*` catch-all handler and no caller-supplied upstream path.
+The 121 browser operations are registered explicitly from `packages/api-contract/src/application.ts`. Thirty-two are native (`GET /auth/me`, six location operations, sixteen people/access operations, and nine Operations resources); the remaining 89 compatibility operations cover authentication (16), the temporary user-deletion lifecycle (1), time cards (6), payroll (17), notifications (3), settings (4), billing (9), availability imports (2), and administration/account lifecycle (31). The same catalog validates browser path/method pairs. There is no `/v2/*` catch-all handler and no caller-supplied upstream path.
 
 API v2 uses shared TypeBox schemas for server validation, OpenAPI generation, and the generated browser client. Every v2 response exposes the server-generated `X-Correlation-ID` used for downstream retained-service calls. Errors are bounded RFC 9457 Problem Details with stable machine codes. Contract failures use `422`; missing preconditions use `428`; stale schedule revisions use `412` and return `currentEtag`; state conflicts use `409`. Unsafe cookie-authenticated requests require an allowed `Origin` and double-submit CSRF proof. Shift updates are partial: omitted fields retain their exact saved values, including custom role labels, while explicitly supplied role labels are trimmed without case normalization.
 
@@ -71,13 +80,13 @@ Native v2 ownership:
 - session-bound RBAC, tenant status, session timeout, MFA, and PIN-rotation enforcement for native scheduling.
 - tenant location list/create/read/update/delete with public UUIDs, bounded pagination, capacity/idempotency rules, and draft-schedule revision fencing.
 - tenant people, staff access, role, invitation, password-reset, profile, and self-suspension resources with public UUIDs; invite delivery uses the durable staff-invitation outbox.
+- bounded schedule, shift, and roster read models plus lunch/break policy, generation, setup, and individual replacement with public UUIDs, tenant-RLS, idempotency, credit settlement, and draft revision fencing.
 
 Bounded compatibility ownership during the strangler migration:
 
 - publication billing and notifications;
 - solver queue submission/status;
-- charged break generation.
-- the frozen 98-operation API-01 application catalog while API-02 replaces each domain implementation.
+- the frozen 89-operation API-01 application catalog while API-02 replaces each domain implementation.
 
 The scheduling compatibility adapter accepts only hard-coded internal route shapes and translates public UUIDs to tenant-scoped internal IDs. The API-01 application compatibility owner is reachable only through the exact shared catalog, uses a fixed internal authority, bounds request time/body/response size, forwards only approved headers, replaces spoofable forwarding values with the trusted client address and canonical `APP_ORIGIN` host/protocol, permits redirects only for the two declared OIDC operations, and sanitizes errors into Problem Details. Its location and people seams apply only to declared retained domains and exact `locationId`/`locationIds` and `userId`/`userIds` fields; requests translate public UUIDs inward and retained responses translate storage IDs outward. Neither boundary exposes a wildcard route. API-02 is the required removal owner.
 
@@ -145,7 +154,7 @@ The browser has moved off these routes under API-01. They remain as internal com
 - `POST /api/v1/lunch-breaks/setup-shifts`
 - `PUT /api/v1/lunch-breaks/shift/{shiftId}`
 
-No browser screen calls these v1 paths directly. Lunch-break and roster screens use their explicit API-v2 catalog routes; only the named API-02 server-side compatibility owner can reach the retained v1 implementations.
+No browser screen calls these v1 paths directly. Lunch-break and roster screens use their direct API-v2 Operations resources; the retained v1 paths remain public only until API-03 closes, not as a v2 compatibility dependency.
 
 ### Time cards and payroll
 

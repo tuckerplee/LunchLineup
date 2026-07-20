@@ -46,6 +46,15 @@ describe('API v2 application operation catalog', () => {
         'createAccessRole',
         'updateAccessRole',
         'deleteAccessRole',
+        'listScheduleSummaries',
+        'listShiftSummaries',
+        'listStaffRoster',
+        'listLunchBreakRows',
+        'getLunchBreakPolicy',
+        'updateLunchBreakPolicy',
+        'generateLunchBreakPlan',
+        'importLunchBreakShifts',
+        'updateShiftBreakPlan',
       ]);
   });
 

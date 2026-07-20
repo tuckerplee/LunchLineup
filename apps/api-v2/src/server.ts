@@ -16,6 +16,9 @@ import { registerLocationRoutes } from './locations/routes';
 import { PeopleIdentifierTranslator } from './people/identifier-translation';
 import { PeopleService } from './people/people.service';
 import { registerPeopleRoutes, type PeopleRouteDependencies } from './people/routes';
+import { LunchBreakService } from './operations/lunch-breaks.service';
+import { OperationsService } from './operations/operations.service';
+import { registerOperationsRoutes, type OperationsRouteDependencies } from './operations/routes';
 import { ScheduleBoardService } from './scheduling/board.service';
 import { ScheduleChangeSetService } from './scheduling/change-set.service';
 import { DemandWindowService } from './scheduling/demand-window.service';
@@ -40,11 +43,13 @@ const VersionSchema = Type.Object({
 
 export type ApiV2ServerDependencies = Partial<{
   database: TenantDatabase;
-  routes: Omit<SchedulingRouteDependencies, 'config' | 'identity'>;
+  routes: Omit<SchedulingRouteDependencies, 'config' | 'identity' | 'lunchBreaks'>;
   locations: Pick<LocationService,
     'list' | 'summary' | 'get' | 'create' | 'update' | 'remove' | 'resolvePublicIds' | 'resolveInternalIds'
   >;
   people: PeopleRouteDependencies['people'] & Pick<PeopleService, 'resolvePublicUserIds' | 'resolveInternalUserIds'>;
+  operations: OperationsRouteDependencies['operations'];
+  lunchBreaks: OperationsRouteDependencies['lunchBreaks'];
   identity: IdentityAdapter;
   retainedApplication: Pick<RetainedApplicationBridge, 'execute'>;
 }>;
@@ -72,6 +77,8 @@ export async function buildServer(
   const identity = overrides.identity ?? new NativeIdentityAdapter(config, database);
   const locations = overrides.locations ?? new LocationService(database);
   const people = overrides.people ?? new PeopleService(database, config);
+  const operations = overrides.operations ?? new OperationsService(database);
+  const lunchBreaks = overrides.lunchBreaks ?? new LunchBreakService(database);
   const retainedApplication = overrides.retainedApplication ?? new RetainedApplicationBridge(
     config,
     [
@@ -174,6 +181,7 @@ export async function buildServer(
     config,
     identity,
     ...routeServices,
+    lunchBreaks,
   });
   await registerLocationRoutes(app, {
     config,
@@ -184,6 +192,12 @@ export async function buildServer(
     config,
     identity,
     people,
+  });
+  await registerOperationsRoutes(app, {
+    config,
+    identity,
+    operations,
+    lunchBreaks,
   });
   await registerApplicationRoutes(app, {
     config,

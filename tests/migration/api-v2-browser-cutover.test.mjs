@@ -177,6 +177,46 @@ test('API-02 owns People natively with public role/user UUIDs and one explicit d
   assert.match(migration, /Role_publicId_key/);
 });
 
+test('API-02 owns Operations natively with public records and no retained application hop', () => {
+  const catalog = read('packages/api-contract/src/application.ts');
+  const contract = read('packages/api-contract/src/operations.ts');
+  const server = read('apps/api-v2/src/server.ts');
+  const routes = read('apps/api-v2/src/operations/routes.ts');
+  const operations = read('apps/api-v2/src/operations/operations.service.ts');
+  const lunchBreaks = read('apps/api-v2/src/operations/lunch-breaks.service.ts');
+  const schedulingRoutes = read('apps/api-v2/src/scheduling/routes.ts');
+  const locationTranslator = read('apps/api-v2/src/locations/identifier-translation.ts');
+  const peopleTranslator = read('apps/api-v2/src/people/identifier-translation.ts');
+
+  for (const operationId of [
+    'listScheduleSummaries',
+    'listShiftSummaries',
+    'listStaffRoster',
+    'listLunchBreakRows',
+    'getLunchBreakPolicy',
+    'updateLunchBreakPolicy',
+    'generateLunchBreakPlan',
+    'importLunchBreakShifts',
+    'updateShiftBreakPlan',
+  ]) {
+    assert.match(catalog, new RegExp(`operationId: '${operationId}'[^\\n]*native: true`));
+  }
+  assert.match(server, /new OperationsService\(database\)/);
+  assert.match(server, /new LunchBreakService\(database\)/);
+  assert.match(server, /registerOperationsRoutes/);
+  assert.match(routes, /registerOperationsRoutes/);
+  assert.match(contract, /LunchBreakGenerationRequestSchema/);
+  assert.match(operations, /publicId: true/);
+  assert.match(lunchBreaks, /LunchBreakGenerationRequest/);
+  assert.match(lunchBreaks, /debitFeatureCredit/);
+  assert.doesNotMatch(operations, /RetainedApplicationBridge|fetch\(/);
+  assert.doesNotMatch(lunchBreaks, /RetainedApplicationBridge|fetch\(/);
+  assert.match(schedulingRoutes, /dependencies\.lunchBreaks\.generate/);
+  assert.doesNotMatch(schedulingRoutes, /retainedScheduling\.generateBreaks/);
+  assert.doesNotMatch(locationTranslator, /Operations/);
+  assert.doesNotMatch(peopleTranslator, /Operations/);
+});
+
 test('public build and deployment defaults select API v2', () => {
   for (const [path, expected] of [
     ['.env.example', 'NEXT_PUBLIC_API_URL=/api/v2'],

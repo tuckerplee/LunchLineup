@@ -52,6 +52,7 @@ import type { ScheduleCreateService } from './schedule-create.service';
 import type { DemandWindowService } from './demand-window.service';
 import type { LegacySchedulingBridge } from './legacy-scheduling.bridge';
 import type { ScheduleLifecycleService } from './lifecycle.service';
+import type { LunchBreakService } from '../operations/lunch-breaks.service';
 
 const BoardQuerySchema = Type.Object({
   date: LocalDateSchema,
@@ -95,9 +96,10 @@ export type SchedulingRouteDependencies = {
   changeSets: Pick<ScheduleChangeSetService, 'apply'>;
   demandWindows: Pick<DemandWindowService, 'list' | 'replace'>;
   lifecycle: Pick<ScheduleLifecycleService, 'reopen'>;
+  lunchBreaks: Pick<LunchBreakService, 'generate'>;
   retainedScheduling: Pick<
     LegacySchedulingBridge,
-    'publishPlan' | 'publish' | 'startSolve' | 'solveJob' | 'generateBreaks'
+    'publishPlan' | 'publish' | 'startSolve' | 'solveJob'
   >;
 };
 
@@ -450,13 +452,31 @@ export async function registerSchedulingRoutes(
     assertUnsafeRequestSecurity(request, dependencies.config);
     const identity = await authenticate(request, reply, dependencies.identity);
     requirePermissions(identity, ['lunch_breaks:write']);
-    const response = await dependencies.retainedScheduling.generateBreaks(
+    const generated = await dependencies.lunchBreaks.generate(
       identity,
-      request.body,
-      request,
-      reply,
+      {
+        locationId: request.body.locationId,
+        shiftIds: request.body.shiftIds,
+        persist: true,
+      },
       header(request, 'idempotency-key'),
     );
+    if (generated.locationId !== request.body.locationId || generated.creditConsumption.newBalance === null) {
+      throw new ProblemError(
+        500,
+        'invalid_break_generation_result',
+        'Break generation did not return a valid location and credit settlement.',
+        'Scheduling data error',
+      );
+    }
+    const response: BreakGenerationResponse = {
+      ...generated,
+      locationId: generated.locationId,
+      creditConsumption: {
+        ...generated.creditConsumption,
+        newBalance: generated.creditConsumption.newBalance,
+      },
+    };
     reply.header('Cache-Control', 'private, no-store');
     return response;
   });

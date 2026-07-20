@@ -31,6 +31,7 @@ const identity: SessionIdentity = {
     'shifts:read',
     'shifts:write',
     'shifts:delete',
+    'lunch_breaks:read',
     'lunch_breaks:write',
     'users:read',
     'users:write',
@@ -151,6 +152,85 @@ async function harness(identityResponse: SessionIdentity = identity) {
     resolvePublicUserIds: vi.fn(async () => new Map()),
     resolveInternalUserIds: vi.fn(async () => new Map()),
   };
+  const operationsPagination = {
+    limit: 1,
+    maxLimit: 200 as const,
+    returned: 1,
+    hasMore: false,
+    nextCursor: null,
+    window: { startDate: null, endDate: null },
+  };
+  const breakPolicy = {
+    break1OffsetMinutes: 120,
+    lunchOffsetMinutes: 240,
+    break2OffsetMinutes: 120,
+    break1DurationMinutes: 10,
+    lunchDurationMinutes: 30,
+    break2DurationMinutes: 10,
+    timeStepMinutes: 5,
+  };
+  const lunchBreakRow = {
+    shiftId: 'a49bc1a3-f1f2-4d6d-8b8c-c2c8ab481068',
+    userId: staffMember.id,
+    employeeName: staffMember.name,
+    startTime: '2026-07-18T16:00:00.000Z',
+    endTime: '2026-07-18T23:00:00.000Z',
+    breaks: [{
+      type: 'lunch' as const,
+      startTime: '2026-07-18T20:00:00.000Z',
+      endTime: '2026-07-18T20:30:00.000Z',
+      durationMinutes: 30,
+      paid: false,
+    }],
+  };
+  const operations = {
+    listSchedules: vi.fn(async () => ({
+      data: [{
+        id: '88d8d86a-7e8d-4246-8ad3-eb7eedb44c1e',
+        locationId: location.id,
+        startDate: '2026-07-18T00:00:00.000Z',
+        endDate: '2026-07-19T00:00:00.000Z',
+        status: 'DRAFT' as const,
+        publishedAt: null,
+        revision: 4,
+      }],
+      pagination: operationsPagination,
+    })),
+    listShifts: vi.fn(async () => ({
+      data: [{
+        id: lunchBreakRow.shiftId,
+        userId: lunchBreakRow.userId,
+        locationId: location.id,
+        scheduleId: '88d8d86a-7e8d-4246-8ad3-eb7eedb44c1e',
+        startTime: lunchBreakRow.startTime,
+        endTime: lunchBreakRow.endTime,
+        role: 'STAFF',
+        user: { id: staffMember.id, name: staffMember.name, role: 'STAFF' as const },
+        breaks: lunchBreakRow.breaks,
+      }],
+      pagination: operationsPagination,
+    })),
+    staffRoster: vi.fn(async () => ({
+      data: [{ id: staffMember.id, name: staffMember.name, role: 'STAFF' as const }],
+      pagination: operationsPagination,
+    })),
+  };
+  const lunchBreaks = {
+    list: vi.fn(async () => ({ data: [lunchBreakRow], pagination: operationsPagination })),
+    policy: vi.fn(async () => breakPolicy),
+    replacePolicy: vi.fn(async () => breakPolicy),
+    generate: vi.fn(async () => ({
+      locationId: location.id,
+      source: 'shared_schedule' as const,
+      persisted: true,
+      policy: breakPolicy,
+      creditConsumption: { consumedCredits: 1, newBalance: 4, source: 'credits' as const },
+      data: [lunchBreakRow],
+      reused: false,
+    })),
+    setupShifts: vi.fn(async () => ({ shiftIds: [lunchBreakRow.shiftId] })),
+    replaceShiftBreaks: vi.fn(async () => lunchBreakRow),
+  };
   const board = vi.fn(async () => ({
     data: {
       permissions: identity.permissions,
@@ -211,6 +291,8 @@ async function harness(identityResponse: SessionIdentity = identity) {
     retainedApplication: { execute: retainedApplication },
     locations,
     people: people as never,
+    operations,
+    lunchBreaks,
     routes: {
       board: { get: board },
       scheduleCreate: {
@@ -226,7 +308,6 @@ async function harness(identityResponse: SessionIdentity = identity) {
         publish: vi.fn(async () => { throw new Error('unused'); }),
         startSolve: vi.fn(async () => { throw new Error('unused'); }),
         solveJob: vi.fn(async () => { throw new Error('unused'); }),
-        generateBreaks: vi.fn(async () => { throw new Error('unused'); }),
       },
     },
   });
@@ -241,6 +322,8 @@ async function harness(identityResponse: SessionIdentity = identity) {
     retainedApplication,
     locations,
     people,
+    operations,
+    lunchBreaks,
     authenticate,
   };
 }
@@ -278,6 +361,15 @@ describe('API v2 HTTP contract', () => {
     ).toBe('boolean');
     expect(document.paths['/v2/users/{userId}/scheduling-profile'].put.operationId)
       .toBe('updateStaffSchedulingProfile');
+    expect(document.paths['/v2/schedules'].get.operationId).toBe('listScheduleSummaries');
+    expect(document.paths['/v2/shifts'].get.operationId).toBe('listShiftSummaries');
+    expect(document.paths['/v2/shifts/staff-roster'].get.operationId).toBe('listStaffRoster');
+    expect(document.paths['/v2/lunch-breaks'].get.operationId).toBe('listLunchBreakRows');
+    expect(document.paths['/v2/lunch-breaks/policy'].get.operationId).toBe('getLunchBreakPolicy');
+    expect(document.paths['/v2/lunch-breaks/policy'].put.operationId).toBe('updateLunchBreakPolicy');
+    expect(document.paths['/v2/lunch-breaks/generate'].post.operationId).toBe('generateLunchBreakPlan');
+    expect(document.paths['/v2/lunch-breaks/setup-shifts'].post.operationId).toBe('importLunchBreakShifts');
+    expect(document.paths['/v2/lunch-breaks/shift/{shiftId}'].put.operationId).toBe('updateShiftBreakPlan');
     expect(document.paths['/v2/payroll/periods/{periodId}/exports'].post.operationId)
       .toBe('createPayrollExport');
     expect(document.paths['/v2/admin/account/exports/{jobId}/download'].get.operationId)
@@ -335,6 +427,91 @@ describe('API v2 HTTP contract', () => {
     });
     expect(response.headers['x-lunchlineup-compatibility-owner']).toBeUndefined();
     expect(people.list).toHaveBeenCalledWith(identity, { limit: '1' });
+    expect(retainedApplication).not.toHaveBeenCalled();
+  });
+
+  it('serves operations read models with public identifiers and no retained hop', async () => {
+    const { app, operations, lunchBreaks, retainedApplication } = await harness();
+    const shifts = await app.inject({
+      method: 'GET',
+      url: '/v2/shifts?limit=1',
+      headers: { cookie: 'access_token=test' },
+    });
+    const policy = await app.inject({
+      method: 'GET',
+      url: '/v2/lunch-breaks/policy',
+      headers: { cookie: 'access_token=test' },
+    });
+
+    expect(shifts.statusCode).toBe(200);
+    expect(shifts.json()).toMatchObject({
+      data: [{
+        id: 'a49bc1a3-f1f2-4d6d-8b8c-c2c8ab481068',
+        locationId: '34aa4812-63f5-4e5c-8b3a-06b564987a1f',
+        user: { id: 'f6776d21-bb21-4c35-a6ed-5da8df5ed238' },
+      }],
+      pagination: { returned: 1, hasMore: false },
+    });
+    expect(policy.statusCode).toBe(200);
+    expect(policy.json()).toMatchObject({ lunchDurationMinutes: 30 });
+    expect(shifts.headers['x-lunchlineup-compatibility-owner']).toBeUndefined();
+    expect(operations.listShifts).toHaveBeenCalledWith(identity, { limit: '1' });
+    expect(lunchBreaks.policy).toHaveBeenCalledWith(identity);
+    expect(retainedApplication).not.toHaveBeenCalled();
+  });
+
+  it('requires same-origin CSRF proof before a native lunch and break generation', async () => {
+    const { app, lunchBreaks, retainedApplication } = await harness();
+    const response = await app.inject({
+      method: 'POST',
+      url: '/v2/lunch-breaks/generate',
+      headers: {
+        cookie: 'access_token=test; csrf_token=abcdefghijklmnop',
+        'content-type': 'application/json',
+        'idempotency-key': '4daaf25a-92d7-4fba-975c-f54e4ce15c4a',
+      },
+      payload: {
+        locationId: '34aa4812-63f5-4e5c-8b3a-06b564987a1f',
+        shiftIds: ['a49bc1a3-f1f2-4d6d-8b8c-c2c8ab481068'],
+        persist: true,
+      },
+    });
+
+    expect(response.statusCode).toBe(403);
+    expect(response.json()).toMatchObject({ code: 'origin_not_allowed' });
+    expect(lunchBreaks.generate).not.toHaveBeenCalled();
+    expect(retainedApplication).not.toHaveBeenCalled();
+  });
+
+  it('uses the native lunch-break owner for the legacy scheduling generation resource', async () => {
+    const { app, lunchBreaks, retainedApplication } = await harness();
+    const response = await app.inject({
+      method: 'POST',
+      url: '/v2/break-generations',
+      headers: {
+        cookie: 'access_token=test; csrf_token=abcdefghijklmnop',
+        origin: 'https://beta.lunchlineup.com',
+        'x-csrf-token': 'abcdefghijklmnop',
+        'content-type': 'application/json',
+        'idempotency-key': '4daaf25a-92d7-4fba-975c-f54e4ce15c4a',
+      },
+      payload: {
+        locationId: '34aa4812-63f5-4e5c-8b3a-06b564987a1f',
+        shiftIds: ['a49bc1a3-f1f2-4d6d-8b8c-c2c8ab481068'],
+        persist: true,
+      },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({
+      locationId: '34aa4812-63f5-4e5c-8b3a-06b564987a1f',
+      creditConsumption: { consumedCredits: 1, newBalance: 4 },
+    });
+    expect(lunchBreaks.generate).toHaveBeenCalledWith(identity, {
+      locationId: '34aa4812-63f5-4e5c-8b3a-06b564987a1f',
+      shiftIds: ['a49bc1a3-f1f2-4d6d-8b8c-c2c8ab481068'],
+      persist: true,
+    }, '4daaf25a-92d7-4fba-975c-f54e4ce15c4a');
     expect(retainedApplication).not.toHaveBeenCalled();
   });
 

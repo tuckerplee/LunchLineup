@@ -14,14 +14,14 @@ Exit criteria:
 - old `POST|PUT|DELETE /shifts/{id}` browser mutations cannot be addressed through API v2;
 - build, unit, migration, browser, deployment, and live-beta checks pass.
 
-The shared catalog contains 121 explicit application operations. `GET /auth/me`, the six location operations, and 16 People operations are native; 98 operations remain behind a compatibility owner:
+The shared catalog contains 121 explicit application operations. `GET /auth/me`, the six location operations, 16 People operations, and nine Operations resources are native; 89 operations remain behind a compatibility owner:
 
 | Domain | Compatibility operations |
 | --- | ---: |
 | Authentication | 16 |
 | Locations | 0 |
 | People and access | 1 |
-| Operational reads and lunch/break planning | 9 |
+| Operational reads and lunch/break planning | 0 |
 | Time cards | 6 |
 | Payroll | 17 |
 | Notifications | 3 |
@@ -34,7 +34,7 @@ These sit beside 11 native scheduling operations. The catalog is defined once in
 
 ## API-02 — Replace retained implementations with native v2 modules
 
-Status: in progress. API-02-LOC is complete. API-02-AUTH has a native session boundary but retains its credential/lifecycle operations; API-02-PEOPLE owns 16 of 17 operations and retains the separately tracked staff-deactivation lifecycle extraction. The remaining domain replacements are open.
+Status: in progress. API-02-LOC and API-02-OPS are complete. API-02-AUTH has a native session boundary but retains its credential/lifecycle operations; API-02-PEOPLE owns 16 of 17 operations and retains the separately tracked staff-deactivation lifecycle extraction. The remaining domain replacements are open.
 
 The API-01 routes are real, explicit public v2 routes, but their mature implementations remain behind bounded server-side compatibility owners. API-02 removes those dependencies domain by domain:
 
@@ -43,7 +43,7 @@ The API-01 routes are real, explicit public v2 routes, but their mature implemen
 | API-02-AUTH | Login, cookie lifecycle, MFA mutation, reset, OTP, PIN, and OIDC; native session validation and `GET /auth/me` are complete | 16 |
 | API-02-LOC | Native tenant locations plus exact public/internal identifier translation for declared retained domains | 0 |
 | API-02-PEOPLE | Native staff, roles, permissions, PINs, scheduling profiles, invitation commands, and public identifier translation; staff deactivation remains pending lifecycle extraction | 1 |
-| API-02-OPS | Operational schedule/roster reads and aggregate lunch/break planning | 9 |
+| API-02-OPS | Native bounded schedule/shift/roster read models plus direct lunch/break planning, policy, generation, setup, and replacement | 0 |
 | API-02-TIME | Clock events, active-card reads, corrections, and time-card history | 6 |
 | API-02-PAYROLL | Policy, period, review, lock, amendment, export, download, and reconciliation | 17 |
 | API-02-NOTIFY | Notification feed and read-state commands | 3 |
@@ -51,7 +51,7 @@ The API-01 routes are real, explicit public v2 routes, but their mature implemen
 | API-02-BILLING | Entitlements, recovery, checkout, portal, plan change, and resume | 9 |
 | API-02-IMPORTS | Availability import creation and status | 2 |
 | API-02-ADMIN | Platform tenant/user/plan/credit/audit plus account export and lifecycle | 31 |
-| API-02-SCHED-SEAMS | Publication settlement, solver queue/status, and charged break generation | 5 retained scheduling operations |
+| API-02-SCHED-SEAMS | Publication settlement and solver queue/status | 4 retained scheduling operations |
 
 Each replacement must add specific TypeBox request/response schemas, tenant-scoped native services, public identifiers, authorization tests, and direct database/integration proof before its compatibility operation is deleted. No new operation may be added to the retained catalog; new product work must be native v2.
 
@@ -59,7 +59,9 @@ API-02-AUTH native slice: API v2 now verifies access-token signature, tenant/ses
 
 API-02-LOC native slice: `/v2/locations` now owns list, summary, create, read, update, and soft delete with `Location.publicId` as the only browser identifier. It uses TypeBox contracts, tenant-RLS transactions, opaque `name, publicId` pagination, tenant capacity serialization, durable create replay, timezone-history fencing, and draft-revision invalidation. The temporary retained-domain seam translates only exact `locationId` and `locationIds` fields at the server boundary, never arbitrary `id` fields; disposable database proof plus beta deployment, authenticated browser workflow, and live API proof passed.
 
-API-02-PEOPLE native slice: `/v2/users` now owns the tenant directory, role catalog and lifecycle, staff access assignments, invitations and durable encrypted invitation commands, invitation retry/reissue state, PIN reset/rotation, and scheduling profiles. `User.publicId` and `Role.publicId` are the only browser-visible identifiers. Direct native paths use tenant-RLS transactions, live authorization revalidation for mutations, CSRF/MFA gates, public UUID schemas, and tests for public-only serialization. The retained seam translates only exact `userId` and `userIds` fields for declared People/Operations/Time/Payroll/Notifications/Imports operations, including the one retained `DELETE /users/:userId` deactivation path. That deletion remains retained until its availability-import cancellation, credit-refund, and storage-cleanup lifecycle can be extracted as a single safe native owner.
+API-02-PEOPLE native slice: `/v2/users` now owns the tenant directory, role catalog and lifecycle, staff access assignments, invitations and durable encrypted invitation commands, invitation retry/reissue state, PIN reset/rotation, and scheduling profiles. `User.publicId` and `Role.publicId` are the only browser-visible identifiers. Direct native paths use tenant-RLS transactions, live authorization revalidation for mutations, CSRF/MFA gates, public UUID schemas, and tests for public-only serialization. The retained seam translates only exact `userId` and `userIds` fields for declared People/Time/Payroll/Notifications/Imports operations, including the one retained `DELETE /users/:userId` deactivation path. That deletion remains retained until its availability-import cancellation, credit-refund, and storage-cleanup lifecycle can be extracted as a single safe native owner.
+
+API-02-OPS native slice: `/v2/schedules`, `/v2/shifts`, `/v2/shifts/staff-roster`, and the six lunch/break planning resources now use one direct tenant-RLS Operations owner. Every identifier and cursor is a public UUID; Staff receives only its own published assignments. Policy reads and updates remain ledger-free, while persisted generation, setup shifts, and changed individual break plans use tenant-first aggregate locking, paid feature authorization, immutable credit debits, idempotency replay, and draft revision fencing. The existing `/v2/break-generations` scheduling endpoint now calls this owner directly as well, leaving publication and solver behavior as the only retained scheduling seams. Contract, route, and restricted-PostgreSQL integration coverage prove the native owner and its public-ID, replay, credit, no-op, revision, and tenant-isolation boundaries.
 
 ## Current known operational residuals
 

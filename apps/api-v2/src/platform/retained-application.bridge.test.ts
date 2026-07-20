@@ -128,12 +128,12 @@ describe('retained application compatibility bridge', () => {
 
     await expect(new RetainedApplicationBridge(config).execute({
       operation: operation({
-        operationId: 'importLunchBreakShifts',
-        method: 'POST',
-        path: '/lunch-breaks/setup-shifts',
-        tag: 'Operations',
+        operationId: 'updateGeneralSettings',
+        method: 'PUT',
+        path: '/settings/general',
+        tag: 'Settings',
       }),
-      request: request('/v2/lunch-breaks/setup-shifts'),
+      request: request('/v2/settings/general'),
       reply: reply(),
     })).rejects.toMatchObject<Partial<ProblemError>>({
       status: 409,
