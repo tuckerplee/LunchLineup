@@ -4,6 +4,7 @@
 
 - `README.md`: this module guide.
 - `entitlement.ts`: paid-feature authorization, aggregate locking, and immutable credit-ledger settlement.
+- `entitlement.test.ts`: live-plan metadata compatibility regression tests.
 - `lunch-breaks.service.ts`: native policy, read, generation, setup-shift, and individual-break persistence owner.
 - `operations.service.ts`: bounded public schedule, shift, and roster read models.
 - `pagination.ts`: strict UTC-window and opaque public-ID cursor utilities.

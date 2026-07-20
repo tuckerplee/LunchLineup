@@ -44,10 +44,10 @@ function planCode(value: string): keyof typeof DEFAULT_FEATURES {
 function planFeatures(metadata: Prisma.JsonValue | null, fallback: keyof typeof DEFAULT_FEATURES): readonly BillableFeature[] {
   if (!metadata || typeof metadata !== 'object' || Array.isArray(metadata)) return DEFAULT_FEATURES[fallback];
   const values = (metadata as Record<string, unknown>).features;
-  if (!Array.isArray(values) || values.some((value) => value !== 'scheduling' && value !== 'lunch_breaks')) {
-    return [];
-  }
-  return [...new Set(values)] as BillableFeature[];
+  if (!Array.isArray(values)) return [];
+  return [...new Set(values.filter((value): value is BillableFeature => (
+    value === 'scheduling' || value === 'lunch_breaks'
+  )))];
 }
 
 function overrideFor(value: Prisma.JsonValue | null, feature: BillableFeature): {
