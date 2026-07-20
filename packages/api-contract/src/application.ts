@@ -118,10 +118,10 @@ export const APPLICATION_API_OPERATIONS = [
   { operationId: 'markNotificationRead', method: 'POST', path: '/notifications/read', tag: 'Notifications', summary: 'Mark one notification read' },
   { operationId: 'markAllNotificationsRead', method: 'POST', path: '/notifications/read-all', tag: 'Notifications', summary: 'Mark all notifications read' },
 
-  { operationId: 'getWorkspaceSettings', method: 'GET', path: '/settings', tag: 'Settings', summary: 'Read workspace settings' },
-  { operationId: 'updateGeneralSettings', method: 'PUT', path: '/settings/general', tag: 'Settings', summary: 'Replace general workspace settings' },
-  { operationId: 'updateTeamSettings', method: 'PUT', path: '/settings/team', tag: 'Settings', summary: 'Replace team workspace settings' },
-  { operationId: 'updateSecuritySettings', method: 'PUT', path: '/settings/security', tag: 'Settings', summary: 'Replace security workspace settings' },
+  { operationId: 'getWorkspaceSettings', method: 'GET', path: '/settings', tag: 'Settings', summary: 'Read workspace settings', native: true },
+  { operationId: 'updateGeneralSettings', method: 'PUT', path: '/settings/general', tag: 'Settings', summary: 'Replace general workspace settings', native: true },
+  { operationId: 'updateTeamSettings', method: 'PUT', path: '/settings/team', tag: 'Settings', summary: 'Replace team workspace settings', native: true },
+  { operationId: 'updateSecuritySettings', method: 'PUT', path: '/settings/security', tag: 'Settings', summary: 'Replace security workspace settings', native: true },
 
   { operationId: 'getBillingFeatures', method: 'GET', path: '/billing/features', tag: 'Billing', summary: 'Read billing features and entitlements' },
   { operationId: 'getSubscriptionRecoveryAction', method: 'GET', path: '/billing/subscription-recovery-action', tag: 'Billing', summary: 'Read the subscription recovery action' },

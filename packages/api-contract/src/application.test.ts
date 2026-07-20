@@ -61,6 +61,10 @@ describe('API v2 application operation catalog', () => {
         'clockIn',
         'clockOut',
         'correctTimeCard',
+        'getWorkspaceSettings',
+        'updateGeneralSettings',
+        'updateTeamSettings',
+        'updateSecuritySettings',
       ]);
   });
 

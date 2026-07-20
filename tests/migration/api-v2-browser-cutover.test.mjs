@@ -249,6 +249,31 @@ test('API-02 owns Time Cards natively with public records and no retained applic
   assert.doesNotMatch(service, /RetainedApplicationBridge|fetch\(/);
 });
 
+test('API-02 owns workspace settings natively with tenant RLS and a redacted security audit', () => {
+  const catalog = read('packages/api-contract/src/application.ts');
+  const contract = read('packages/api-contract/src/settings.ts');
+  const server = read('apps/api-v2/src/server.ts');
+  const routes = read('apps/api-v2/src/settings/routes.ts');
+  const service = read('apps/api-v2/src/settings/settings.service.ts');
+
+  for (const operationId of [
+    'getWorkspaceSettings',
+    'updateGeneralSettings',
+    'updateTeamSettings',
+    'updateSecuritySettings',
+  ]) {
+    assert.match(catalog, new RegExp(`operationId: '${operationId}'[^\\n]*native: true`));
+  }
+  assert.match(contract, /WorkspaceSettingsSchema/);
+  assert.match(server, /new WorkspaceSettingsService\(database, config\)/);
+  assert.match(server, /registerWorkspaceSettingsRoutes/);
+  assert.match(routes, /registerWorkspaceSettingsRoutes/);
+  assert.match(service, /tenantSetting\.upsert/);
+  assert.match(service, /SECURITY_POLICY_UPDATED/);
+  assert.match(service, /oidcSsoAvailable/);
+  assert.doesNotMatch(service, /RetainedApplicationBridge|fetch\(/);
+});
+
 test('public build and deployment defaults select API v2', () => {
   for (const [path, expected] of [
     ['.env.example', 'NEXT_PUBLIC_API_URL=/api/v2'],

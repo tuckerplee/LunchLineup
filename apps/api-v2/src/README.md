@@ -13,4 +13,5 @@
 - `operations/`: native operational read models and lunch/break planning persistence.
 - `platform/`: database, native session identity, request-security, compatibility transport, and Problem Details boundaries.
 - `scheduling/`: board query and atomic change-set domain module.
+- `settings/`: native tenant workspace-settings aggregate and security-policy audit boundary.
 - `time/`: native public time-card lifecycle, payroll lock, idempotency, and correction module.

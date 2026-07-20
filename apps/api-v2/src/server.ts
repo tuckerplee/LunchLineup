@@ -21,6 +21,8 @@ import { OperationsService } from './operations/operations.service';
 import { registerOperationsRoutes, type OperationsRouteDependencies } from './operations/routes';
 import { registerTimeCardRoutes, type TimeCardRouteDependencies } from './time/routes';
 import { TimeCardService } from './time/time-cards.service';
+import { registerWorkspaceSettingsRoutes, type WorkspaceSettingsRouteDependencies } from './settings/routes';
+import { WorkspaceSettingsService } from './settings/settings.service';
 import { ScheduleBoardService } from './scheduling/board.service';
 import { ScheduleChangeSetService } from './scheduling/change-set.service';
 import { DemandWindowService } from './scheduling/demand-window.service';
@@ -53,6 +55,7 @@ export type ApiV2ServerDependencies = Partial<{
   operations: OperationsRouteDependencies['operations'];
   lunchBreaks: OperationsRouteDependencies['lunchBreaks'];
   timeCards: TimeCardRouteDependencies['timeCards'];
+  settings: WorkspaceSettingsRouteDependencies['settings'];
   identity: IdentityAdapter;
   retainedApplication: Pick<RetainedApplicationBridge, 'execute'>;
 }>;
@@ -83,6 +86,7 @@ export async function buildServer(
   const operations = overrides.operations ?? new OperationsService(database);
   const lunchBreaks = overrides.lunchBreaks ?? new LunchBreakService(database);
   const timeCards = overrides.timeCards ?? new TimeCardService(database);
+  const settings = overrides.settings ?? new WorkspaceSettingsService(database, config);
   const retainedApplication = overrides.retainedApplication ?? new RetainedApplicationBridge(
     config,
     [
@@ -207,6 +211,11 @@ export async function buildServer(
     config,
     identity,
     timeCards,
+  });
+  await registerWorkspaceSettingsRoutes(app, {
+    config,
+    identity,
+    settings,
   });
   await registerApplicationRoutes(app, {
     config,

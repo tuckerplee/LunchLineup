@@ -41,6 +41,8 @@ const identity: SessionIdentity = {
     'roles:read',
     'roles:write',
     'roles:assign',
+    'settings:read',
+    'settings:write',
   ],
   mfaVerified: true,
   mfaRequired: true,
@@ -264,6 +266,17 @@ async function harness(identityResponse: SessionIdentity = identity) {
     clockOut: vi.fn(async () => ({ ...timeCard, clockOutAt: '2026-07-18T17:00:00.000Z', status: 'CLOSED' as const, revision: 2 })),
     correct: vi.fn(async () => timeCard),
   };
+  const workspaceSettings = {
+    general: { name: 'Harbor & Main Demo Cafe', slug: 'harbor-main-demo', timezone: 'America/Los_Angeles' },
+    team: { defaultInviteRole: 'STAFF' as const, shiftApprovalPolicy: 'MANAGER_APPROVAL' as const },
+    security: { requireMfaForAll: false, sessionTimeoutMinutes: 120, ssoOidcOnly: false, oidcIssuerUrl: null },
+  };
+  const settings = {
+    get: vi.fn(async () => workspaceSettings),
+    updateGeneral: vi.fn(async () => workspaceSettings),
+    updateTeam: vi.fn(async () => workspaceSettings),
+    updateSecurity: vi.fn(async () => workspaceSettings),
+  };
   const board = vi.fn(async () => ({
     data: {
       permissions: identity.permissions,
@@ -327,6 +340,7 @@ async function harness(identityResponse: SessionIdentity = identity) {
     operations,
     lunchBreaks,
     timeCards,
+    settings,
     routes: {
       board: { get: board },
       scheduleCreate: {
@@ -359,6 +373,7 @@ async function harness(identityResponse: SessionIdentity = identity) {
     operations,
     lunchBreaks,
     timeCards,
+    settings,
     authenticate,
   };
 }
@@ -410,6 +425,8 @@ describe('API v2 HTTP contract', () => {
     expect(document.paths['/v2/time-cards/clock-in'].post.operationId).toBe('clockIn');
     expect(document.paths['/v2/time-cards/{timeCardId}/clock-out'].post.operationId).toBe('clockOut');
     expect(document.paths['/v2/time-cards/{timeCardId}/correction'].patch.operationId).toBe('correctTimeCard');
+    expect(document.paths['/v2/settings'].get.operationId).toBe('getWorkspaceSettings');
+    expect(document.paths['/v2/settings/security'].put.operationId).toBe('updateSecuritySettings');
     expect(document.paths['/v2/payroll/periods/{periodId}/exports'].post.operationId)
       .toBe('createPayrollExport');
     expect(document.paths['/v2/admin/account/exports/{jobId}/download'].get.operationId)
@@ -544,6 +561,37 @@ describe('API v2 HTTP contract', () => {
     expect(retainedApplication).not.toHaveBeenCalled();
   });
 
+  it('serves workspace settings through the native owner without a retained hop', async () => {
+    const { app, settings, retainedApplication } = await harness();
+    const read = await app.inject({
+      method: 'GET',
+      url: '/v2/settings',
+      headers: { cookie: 'access_token=test' },
+    });
+    const write = await app.inject({
+      method: 'PUT',
+      url: '/v2/settings/team',
+      headers: {
+        cookie: 'access_token=test; csrf_token=abcdefghijklmnop',
+        origin: 'https://beta.lunchlineup.com',
+        'x-csrf-token': 'abcdefghijklmnop',
+        'content-type': 'application/json',
+      },
+      payload: { defaultInviteRole: 'MANAGER', shiftApprovalPolicy: 'ADMIN_APPROVAL' },
+    });
+
+    expect(read.statusCode).toBe(200);
+    expect(read.json()).toMatchObject({ general: { name: 'Harbor & Main Demo Cafe' } });
+    expect(read.headers['x-lunchlineup-compatibility-owner']).toBeUndefined();
+    expect(write.statusCode).toBe(200);
+    expect(settings.get).toHaveBeenCalledWith(identity);
+    expect(settings.updateTeam).toHaveBeenCalledWith(identity, {
+      defaultInviteRole: 'MANAGER',
+      shiftApprovalPolicy: 'ADMIN_APPROVAL',
+    });
+    expect(retainedApplication).not.toHaveBeenCalled();
+  });
+
   it('requires same-origin CSRF proof before a native lunch and break generation', async () => {
     const { app, lunchBreaks, retainedApplication } = await harness();
     const response = await app.inject({
@@ -638,8 +686,8 @@ describe('API v2 HTTP contract', () => {
     expect(locations.create).not.toHaveBeenCalled();
   });
 
-  it('rejects unsafe compatibility writes before the retained owner is called', async () => {
-    const { app, retainedApplication } = await harness();
+  it('rejects unsafe native settings writes before either owner is called', async () => {
+    const { app, retainedApplication, settings } = await harness();
     const response = await app.inject({
       method: 'PUT',
       url: '/v2/settings/general',
@@ -647,11 +695,12 @@ describe('API v2 HTTP contract', () => {
         cookie: 'access_token=test; csrf_token=abcdefghijklmnop',
         'content-type': 'application/json',
       },
-      payload: { organizationName: 'Diner' },
+      payload: { name: 'Diner' },
     });
 
     expect(response.statusCode).toBe(403);
     expect(response.json()).toMatchObject({ code: 'origin_not_allowed' });
+    expect(settings.updateGeneral).not.toHaveBeenCalled();
     expect(retainedApplication).not.toHaveBeenCalled();
   });
 

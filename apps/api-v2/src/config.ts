@@ -13,6 +13,7 @@ export type ApiV2Config = {
   staffInvitationOutboxEnabled: boolean;
   staffInvitationOutboxEncryptionKey: string;
   staffInvitationMaxAttempts: number;
+  oidcSsoAvailable: boolean;
   cookieSecure: boolean;
   releaseSha: string;
   trustProxy: boolean | number | string[];
@@ -70,6 +71,13 @@ function booleanSetting(value: string | undefined, fallback: boolean, name: stri
   if (['1', 'true', 'yes', 'on'].includes(normalized)) return true;
   if (['0', 'false', 'no', 'off'].includes(normalized)) return false;
   throw new Error(`${name} must be a boolean value.`);
+}
+
+function oidcSsoAvailable(env: NodeJS.ProcessEnv): boolean {
+  return booleanSetting(env.OIDC_ENABLED, false, 'OIDC_ENABLED')
+    && booleanSetting(env.NEXT_PUBLIC_OIDC_ENABLED, false, 'NEXT_PUBLIC_OIDC_ENABLED')
+    && [env.OIDC_ISSUER_URL, env.OIDC_CLIENT_ID, env.OIDC_CLIENT_SECRET, env.OIDC_REDIRECT_URI]
+      .every((value) => Boolean(value?.trim()));
 }
 
 function normalizedOrigin(value: string): string {
@@ -153,6 +161,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ApiV2Config {
     ),
     staffInvitationOutboxEncryptionKey: env.STAFF_INVITATION_OUTBOX_ENCRYPTION_KEY?.trim() ?? '',
     staffInvitationMaxAttempts: boundedInteger(env.STAFF_INVITATION_MAX_ATTEMPTS, 8, 1, 8),
+    oidcSsoAvailable: oidcSsoAvailable(env),
     cookieSecure: cookieSecure(env.COOKIE_SECURE, env.NODE_ENV),
     releaseSha: releaseSha(env.DEPLOY_RELEASE_SHA ?? env.IMAGE_TAG),
     trustProxy: trustProxy(env.TRUST_PROXY),
