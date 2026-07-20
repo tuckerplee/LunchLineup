@@ -399,7 +399,7 @@
       "rationale": "notification public identifier backfill and old-writer-compatible default remain during rollback; isolated old-release proof is required before production mutation."
     },
     "packages/db/prisma/migrations/pre_20260719_api_v2_payroll_public_ids.sql": {
-      "sha256": "982b754f58be9ac833a25778276b66fbff6c90c0182c5061d6e84edbc9359a3f",
+      "sha256": "06e66a2679408c997736252da39c4d14be0b7f172fdae97e44cab45112432028",
       "phase": "expand",
       "rollbackSchema": "retain",
       "contractPhase": "after-rollback-window",
