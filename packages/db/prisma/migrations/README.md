@@ -102,6 +102,7 @@
 - `pre_20260718_api_v2_public_ids.sql`: fresh-database-safe expansion that adds and backfills globally unique UUID public identifiers for users, locations, schedules, shifts, and solve jobs when those Prisma tables already exist, retaining database defaults so the deployed v1 writer remains schema-compatible.
 - `pre_20260718_api_v2_demand_window_public_ids.sql`: fresh-database-safe expansion that adds and backfills globally unique UUID public identifiers for demand windows while retaining legacy internal primary keys and old-writer compatibility.
 - `pre_20260719_api_v2_role_public_ids.sql`: fresh-database-safe expansion that adds and backfills globally unique UUID public identifiers for access roles while preserving legacy text primary keys and database defaults for deployed v1 writers.
+- `pre_20260719_api_v2_time_card_public_ids.sql`: fresh-database-safe expansion that adds and backfills globally unique UUID public identifiers for time cards and their persisted break intervals while preserving legacy primary keys and database defaults for deployed v1 writers.
 - `pre_20260709_schedule_solve_request_idempotency.sql`: adds nullable request hashes, backfills existing solve jobs, and makes the columns required before Prisma schema push enforces the final model.
 - `rls_relation_hardening.sql`: forces RLS for tenant-owned tables and adds relationship-based RLS for sessions, role joins, and breaks.
 

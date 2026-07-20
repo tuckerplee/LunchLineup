@@ -880,6 +880,7 @@ enum BreakType {
 
 model TimeCard {
   id                 String         @id @default(uuid())
+  publicId           String         @unique @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   tenantId           String
   userId             String
   locationId         String?
@@ -915,7 +916,9 @@ model TimeCard {
   @@index([status])
   @@index([deletedAt])
   @@index([tenantId, deletedAt, clockInAt(sort: Desc), id(sort: Desc)])
+  @@index([tenantId, deletedAt, clockInAt(sort: Desc), publicId(sort: Desc)])
   @@index([tenantId, userId, deletedAt, clockInAt(sort: Desc), id(sort: Desc)])
+  @@index([tenantId, userId, deletedAt, clockInAt(sort: Desc), publicId(sort: Desc)])
   @@index([tenantId, userId, status, deletedAt, clockInAt])
   @@index([tenantId, locationId, deletedAt, clockInAt])
   @@index([tenantId, payrollPeriodId, status, deletedAt, id])
@@ -923,6 +926,7 @@ model TimeCard {
 
 model TimeCardBreak {
   id         String   @id @default(uuid())
+  publicId   String   @unique @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   tenantId   String
   timeCardId String
   startAt    DateTime

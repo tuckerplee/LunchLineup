@@ -33,6 +33,8 @@ const identity: SessionIdentity = {
     'shifts:delete',
     'lunch_breaks:read',
     'lunch_breaks:write',
+    'time_cards:read',
+    'time_cards:write',
     'users:read',
     'users:write',
     'users:admin',
@@ -231,6 +233,37 @@ async function harness(identityResponse: SessionIdentity = identity) {
     setupShifts: vi.fn(async () => ({ shiftIds: [lunchBreakRow.shiftId] })),
     replaceShiftBreaks: vi.fn(async () => lunchBreakRow),
   };
+  const timeCard = {
+    id: '74023f56-a8ca-441f-8d01-afbcb75892d3',
+    userId: staffMember.id,
+    locationId: location.id,
+    shiftId: lunchBreakRow.shiftId,
+    clockInAt: '2026-07-18T16:00:00.000Z',
+    clockOutAt: null,
+    breakMinutes: 0,
+    status: 'OPEN' as const,
+    revision: 1,
+    grossMinutes: 60,
+    workedMinutes: 60,
+    notes: null,
+    createdAt: '2026-07-18T16:00:00.000Z',
+    updatedAt: '2026-07-18T16:00:00.000Z',
+    displayTimeZone: 'America/Los_Angeles',
+    breaks: [],
+    user: { id: staffMember.id, name: staffMember.name, username: null, role: 'STAFF' },
+    location: { id: location.id, name: location.name, timezone: location.timezone },
+  };
+  const timeCards = {
+    list: vi.fn(async () => ({
+      data: [timeCard],
+      pagination: { ...operationsPagination, window: { startDate: null, endDate: null } },
+    })),
+    active: vi.fn(async () => ({ data: timeCard })),
+    get: vi.fn(async () => timeCard),
+    clockIn: vi.fn(async () => ({ data: timeCard, reused: false })),
+    clockOut: vi.fn(async () => ({ ...timeCard, clockOutAt: '2026-07-18T17:00:00.000Z', status: 'CLOSED' as const, revision: 2 })),
+    correct: vi.fn(async () => timeCard),
+  };
   const board = vi.fn(async () => ({
     data: {
       permissions: identity.permissions,
@@ -293,6 +326,7 @@ async function harness(identityResponse: SessionIdentity = identity) {
     people: people as never,
     operations,
     lunchBreaks,
+    timeCards,
     routes: {
       board: { get: board },
       scheduleCreate: {
@@ -324,6 +358,7 @@ async function harness(identityResponse: SessionIdentity = identity) {
     people,
     operations,
     lunchBreaks,
+    timeCards,
     authenticate,
   };
 }
@@ -370,6 +405,11 @@ describe('API v2 HTTP contract', () => {
     expect(document.paths['/v2/lunch-breaks/generate'].post.operationId).toBe('generateLunchBreakPlan');
     expect(document.paths['/v2/lunch-breaks/setup-shifts'].post.operationId).toBe('importLunchBreakShifts');
     expect(document.paths['/v2/lunch-breaks/shift/{shiftId}'].put.operationId).toBe('updateShiftBreakPlan');
+    expect(document.paths['/v2/time-cards'].get.operationId).toBe('listTimeCards');
+    expect(document.paths['/v2/time-cards/active'].get.operationId).toBe('getActiveTimeCard');
+    expect(document.paths['/v2/time-cards/clock-in'].post.operationId).toBe('clockIn');
+    expect(document.paths['/v2/time-cards/{timeCardId}/clock-out'].post.operationId).toBe('clockOut');
+    expect(document.paths['/v2/time-cards/{timeCardId}/correction'].patch.operationId).toBe('correctTimeCard');
     expect(document.paths['/v2/payroll/periods/{periodId}/exports'].post.operationId)
       .toBe('createPayrollExport');
     expect(document.paths['/v2/admin/account/exports/{jobId}/download'].get.operationId)
@@ -457,6 +497,50 @@ describe('API v2 HTTP contract', () => {
     expect(shifts.headers['x-lunchlineup-compatibility-owner']).toBeUndefined();
     expect(operations.listShifts).toHaveBeenCalledWith(identity, { limit: '1' });
     expect(lunchBreaks.policy).toHaveBeenCalledWith(identity);
+    expect(retainedApplication).not.toHaveBeenCalled();
+  });
+
+  it('serves native time cards with public identifiers and no retained hop', async () => {
+    const { app, timeCards, retainedApplication } = await harness();
+    const response = await app.inject({
+      method: 'GET',
+      url: '/v2/time-cards?userId=f6776d21-bb21-4c35-a6ed-5da8df5ed238&limit=1',
+      headers: { cookie: 'access_token=test' },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({
+      data: [{
+        id: '74023f56-a8ca-441f-8d01-afbcb75892d3',
+        userId: 'f6776d21-bb21-4c35-a6ed-5da8df5ed238',
+        locationId: '34aa4812-63f5-4e5c-8b3a-06b564987a1f',
+      }],
+      pagination: { returned: 1, hasMore: false },
+    });
+    expect(response.headers['x-lunchlineup-compatibility-owner']).toBeUndefined();
+    expect(timeCards.list).toHaveBeenCalledWith(identity, {
+      userId: 'f6776d21-bb21-4c35-a6ed-5da8df5ed238',
+      limit: '1',
+    });
+    expect(retainedApplication).not.toHaveBeenCalled();
+  });
+
+  it('requires same-origin CSRF proof before a native time-card clock-in', async () => {
+    const { app, timeCards, retainedApplication } = await harness();
+    const response = await app.inject({
+      method: 'POST',
+      url: '/v2/time-cards/clock-in',
+      headers: {
+        cookie: 'access_token=test; csrf_token=abcdefghijklmnop',
+        'content-type': 'application/json',
+        'idempotency-key': 'clock-in-test-key',
+      },
+      payload: {},
+    });
+
+    expect(response.statusCode).toBe(403);
+    expect(response.json()).toMatchObject({ code: 'origin_not_allowed' });
+    expect(timeCards.clockIn).not.toHaveBeenCalled();
     expect(retainedApplication).not.toHaveBeenCalled();
   });
 

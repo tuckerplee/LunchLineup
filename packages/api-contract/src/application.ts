@@ -89,12 +89,12 @@ export const APPLICATION_API_OPERATIONS = [
   { operationId: 'importLunchBreakShifts', method: 'POST', path: '/lunch-breaks/setup-shifts', tag: 'Operations', summary: 'Import manual shifts into a break plan', native: true },
   { operationId: 'updateShiftBreakPlan', method: 'PUT', path: '/lunch-breaks/shift/:shiftId', tag: 'Operations', summary: 'Replace one shift break plan', native: true },
 
-  { operationId: 'listTimeCards', method: 'GET', path: '/time-cards', tag: 'Time', summary: 'List time cards' },
-  { operationId: 'getActiveTimeCard', method: 'GET', path: '/time-cards/active', tag: 'Time', summary: 'Read the active time card' },
-  { operationId: 'getTimeCard', method: 'GET', path: '/time-cards/:timeCardId', tag: 'Time', summary: 'Read one time card' },
-  { operationId: 'clockIn', method: 'POST', path: '/time-cards/clock-in', tag: 'Time', summary: 'Create a clock-in event' },
-  { operationId: 'clockOut', method: 'POST', path: '/time-cards/:timeCardId/clock-out', tag: 'Time', summary: 'Create a clock-out event' },
-  { operationId: 'correctTimeCard', method: 'PATCH', path: '/time-cards/:timeCardId/correction', tag: 'Time', summary: 'Correct a time card' },
+  { operationId: 'listTimeCards', method: 'GET', path: '/time-cards', tag: 'Time', summary: 'List time cards', native: true },
+  { operationId: 'getActiveTimeCard', method: 'GET', path: '/time-cards/active', tag: 'Time', summary: 'Read the active time card', native: true },
+  { operationId: 'getTimeCard', method: 'GET', path: '/time-cards/:timeCardId', tag: 'Time', summary: 'Read one time card', native: true },
+  { operationId: 'clockIn', method: 'POST', path: '/time-cards/clock-in', tag: 'Time', summary: 'Create a clock-in event', native: true },
+  { operationId: 'clockOut', method: 'POST', path: '/time-cards/:timeCardId/clock-out', tag: 'Time', summary: 'Create a clock-out event', native: true },
+  { operationId: 'correctTimeCard', method: 'PATCH', path: '/time-cards/:timeCardId/correction', tag: 'Time', summary: 'Correct a time card', native: true },
 
   { operationId: 'getPayrollExportEntitlement', method: 'GET', path: '/payroll/export-entitlement', tag: 'Payroll', summary: 'Read payroll export entitlement' },
   { operationId: 'listPayrollPolicies', method: 'GET', path: '/payroll/policies', tag: 'Payroll', summary: 'List payroll policy versions' },

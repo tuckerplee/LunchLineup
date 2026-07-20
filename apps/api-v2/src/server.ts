@@ -19,6 +19,8 @@ import { registerPeopleRoutes, type PeopleRouteDependencies } from './people/rou
 import { LunchBreakService } from './operations/lunch-breaks.service';
 import { OperationsService } from './operations/operations.service';
 import { registerOperationsRoutes, type OperationsRouteDependencies } from './operations/routes';
+import { registerTimeCardRoutes, type TimeCardRouteDependencies } from './time/routes';
+import { TimeCardService } from './time/time-cards.service';
 import { ScheduleBoardService } from './scheduling/board.service';
 import { ScheduleChangeSetService } from './scheduling/change-set.service';
 import { DemandWindowService } from './scheduling/demand-window.service';
@@ -50,6 +52,7 @@ export type ApiV2ServerDependencies = Partial<{
   people: PeopleRouteDependencies['people'] & Pick<PeopleService, 'resolvePublicUserIds' | 'resolveInternalUserIds'>;
   operations: OperationsRouteDependencies['operations'];
   lunchBreaks: OperationsRouteDependencies['lunchBreaks'];
+  timeCards: TimeCardRouteDependencies['timeCards'];
   identity: IdentityAdapter;
   retainedApplication: Pick<RetainedApplicationBridge, 'execute'>;
 }>;
@@ -79,6 +82,7 @@ export async function buildServer(
   const people = overrides.people ?? new PeopleService(database, config);
   const operations = overrides.operations ?? new OperationsService(database);
   const lunchBreaks = overrides.lunchBreaks ?? new LunchBreakService(database);
+  const timeCards = overrides.timeCards ?? new TimeCardService(database);
   const retainedApplication = overrides.retainedApplication ?? new RetainedApplicationBridge(
     config,
     [
@@ -198,6 +202,11 @@ export async function buildServer(
     identity,
     operations,
     lunchBreaks,
+  });
+  await registerTimeCardRoutes(app, {
+    config,
+    identity,
+    timeCards,
   });
   await registerApplicationRoutes(app, {
     config,

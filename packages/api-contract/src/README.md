@@ -14,3 +14,5 @@
 - `operations.ts`: native operational read-model and lunch/break planning schemas.
 - `scheduling.ts`: scheduling schemas, request/response contracts, and RFC 9457 Problem Details.
 - `scheduling.test.ts`: focused schema and generated-client contract tests.
+- `time-cards.ts`: native time-card records, public-identifier paths, lifecycle requests, pagination, and Problem Details responses.
+- `time-cards.test.ts`: public time-card and break-record contract regressions.

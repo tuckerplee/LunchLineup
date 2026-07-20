@@ -5,6 +5,7 @@
 - `README.md`: this platform-folder guide.
 - `contract-check.ts`: runtime schema checking with local TypeBox UUID and UTC-instant formats.
 - `database.ts`: tenant-RLS transaction boundary and readiness probe.
+- `feature-entitlement.ts`: native paid-feature authorization, tenant locking, and immutable credit-ledger settlement shared by API-v2 domains.
 - `identity.ts`: narrow native session-identity interface and permission helpers.
 - `native-identity.test.ts`: direct JWT/session/RBAC/MFA/policy validation and no-retained-fetch regression proof.
 - `native-identity.ts`: native v2 session validation, cookie rotation, and bounded Redis MFA-marker store.

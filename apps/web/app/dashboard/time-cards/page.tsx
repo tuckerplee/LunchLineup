@@ -8,7 +8,7 @@ export default async function TimeCardsPage() {
             canManageTeam={canPermission(user, 'users:read') && canPermission(user, 'shifts:read')}
             canReadLocations={canPermission(user, 'locations:read')}
             canWriteTimeCards={canPermission(user, 'time_cards:write')}
-            currentUserId={user.id}
+            currentUserId={user.publicUserId}
         />
     );
 }

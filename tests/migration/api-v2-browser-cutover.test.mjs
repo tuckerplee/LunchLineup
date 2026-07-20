@@ -217,6 +217,38 @@ test('API-02 owns Operations natively with public records and no retained applic
   assert.doesNotMatch(peopleTranslator, /Operations/);
 });
 
+test('API-02 owns Time Cards natively with public records and no retained application hop', () => {
+  const catalog = read('packages/api-contract/src/application.ts');
+  const contract = read('packages/api-contract/src/time-cards.ts');
+  const schema = read('packages/db/prisma/schema.prisma');
+  const migration = read('packages/db/prisma/migrations/pre_20260719_api_v2_time_card_public_ids.sql');
+  const server = read('apps/api-v2/src/server.ts');
+  const routes = read('apps/api-v2/src/time/routes.ts');
+  const service = read('apps/api-v2/src/time/time-cards.service.ts');
+
+  for (const operationId of [
+    'listTimeCards',
+    'getActiveTimeCard',
+    'getTimeCard',
+    'clockIn',
+    'clockOut',
+    'correctTimeCard',
+  ]) {
+    assert.match(catalog, new RegExp(`operationId: '${operationId}'[^\\n]*native: true`));
+  }
+  assert.match(contract, /TimeCardRecordSchema/);
+  assert.match(schema, /model TimeCard \{[\s\S]*?publicId\s+String\s+@unique/);
+  assert.match(schema, /model TimeCardBreak \{[\s\S]*?publicId\s+String\s+@unique/);
+  assert.match(migration, /\['TimeCard', 'TimeCardBreak'\]/);
+  assert.match(migration, /target_table \|\| '_publicId_key'/);
+  assert.match(server, /new TimeCardService\(database\)/);
+  assert.match(server, /registerTimeCardRoutes/);
+  assert.match(routes, /registerTimeCardRoutes/);
+  assert.match(service, /publicId: true/);
+  assert.match(service, /debitFeatureCredit/);
+  assert.doesNotMatch(service, /RetainedApplicationBridge|fetch\(/);
+});
+
 test('public build and deployment defaults select API v2', () => {
   for (const [path, expected] of [
     ['.env.example', 'NEXT_PUBLIC_API_URL=/api/v2'],

@@ -55,6 +55,12 @@ describe('API v2 application operation catalog', () => {
         'generateLunchBreakPlan',
         'importLunchBreakShifts',
         'updateShiftBreakPlan',
+        'listTimeCards',
+        'getActiveTimeCard',
+        'getTimeCard',
+        'clockIn',
+        'clockOut',
+        'correctTimeCard',
       ]);
   });
 

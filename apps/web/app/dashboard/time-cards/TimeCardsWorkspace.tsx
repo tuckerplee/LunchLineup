@@ -111,7 +111,7 @@ export function TimeCardsWorkspace({ canManageTeam, canReadLocations, canWriteTi
                 const page = (await snapshot.historyResponse.json()) as TimeCardPage;
                 if (!cardsRequestGate.current.isLatest(ticket)) return;
                 setCards(Array.isArray(page.data) ? page.data.filter((card) => card.userId === userId) : []);
-                setNextCardsCursor(page.nextCursor ?? null);
+                setNextCardsCursor(page.pagination?.nextCursor ?? null);
             } else {
                 setCards([]);
                 setError('Time card history and new clock-ins are unavailable. You can still clock out an open card.');
@@ -144,7 +144,7 @@ export function TimeCardsWorkspace({ canManageTeam, canReadLocations, canWriteTi
                 const knownIds = new Set(current.map((card) => card.id));
                 return [...current, ...additionalCards.filter((card) => !knownIds.has(card.id))];
             });
-            setNextCardsCursor(page.nextCursor ?? null);
+            setNextCardsCursor(page.pagination?.nextCursor ?? null);
         } catch (loadError) {
             if (cardsRequestGate.current.isLatest(ticket)) {
                 setError(loadError instanceof Error ? loadError.message : 'Unable to load earlier time cards.');
