@@ -9,3 +9,10 @@ CSRF, and cache controls.
 All browser-facing identifiers in this folder are opaque public UUIDs. Internal
 database IDs remain inside tenant transactions and immutable payroll evidence.
 No file in this folder calls the retained application bridge.
+
+## Files
+
+- `README.md`: this payroll-module guide.
+- `domain.ts`: deterministic payroll policy, evidence, export, and reconciliation primitives.
+- `payroll.service.ts`: tenant-RLS PostgreSQL owner for the native payroll surface.
+- `routes.ts`: authenticated API-v2 route bindings.
