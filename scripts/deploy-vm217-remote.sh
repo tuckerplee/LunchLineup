@@ -1686,10 +1686,14 @@ run_development_source_deploy() {
   )
 
   echo "Deploying VM217 development source build: ${services[*]}"
-  docker compose --env-file "$SECRET_ENV_PATH" up -d --build "${services[@]}"
+  DEPLOY_RELEASE_SHA="$DEPLOY_SOURCE_SHA" \
+    IMAGE_TAG="$DEPLOY_SOURCE_SHA" \
+    docker compose --env-file "$SECRET_ENV_PATH" up -d --build "${services[@]}"
   wait_for_health "${HEALTH_URL:-http://127.0.0.1/api/health}"
   wait_for_web_surface "${WEB_URL:-http://127.0.0.1/}" "Development Next.js web surface"
-  docker compose --env-file "$SECRET_ENV_PATH" ps
+  DEPLOY_RELEASE_SHA="$DEPLOY_SOURCE_SHA" \
+    IMAGE_TAG="$DEPLOY_SOURCE_SHA" \
+    docker compose --env-file "$SECRET_ENV_PATH" ps
   printf "%s\n" "$DEPLOY_SOURCE_SHA" > DEPLOYED_GIT_SHA
   echo "deploy_remote_ok scope=development sha=$DEPLOY_SOURCE_SHA app_dir=$APP_DIR"
 }

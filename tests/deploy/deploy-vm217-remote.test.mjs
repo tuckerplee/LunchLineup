@@ -691,6 +691,11 @@ test('deploy delegates owner DDL exclusively to the migration service', () => {
 
   assert.match(productionDeploy, /compose_release up -d --no-build --pull never/);
   assert.match(developmentDeploy, /migrate pgbouncer postgres/);
+  assert.match(
+    developmentDeploy,
+    /DEPLOY_RELEASE_SHA="\$DEPLOY_SOURCE_SHA"\s*\\\s*\n\s*IMAGE_TAG="\$DEPLOY_SOURCE_SHA"\s*\\\s*\n\s*docker compose --env-file "\$SECRET_ENV_PATH" up -d --build/,
+    'development builds must bind both the image tag and Caddy/API release identity to the requested SHA',
+  );
   assert.match(compose, /apply\)[\s\S]*exec node scripts\/apply-db-migrations\.mjs/);
   assert.doesNotMatch(script, /compose_release exec -T api/);
   assert.doesNotMatch(script, /docker compose[^\n]*exec -T api/);
