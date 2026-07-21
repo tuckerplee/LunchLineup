@@ -691,11 +691,20 @@ test('deploy delegates owner DDL exclusively to the migration service', () => {
 
   assert.match(productionDeploy, /compose_release up -d --no-build --pull never/);
   assert.match(developmentDeploy, /migrate pgbouncer postgres/);
+  for (const service of ['api-v2', 'webhook-replay', 'control', 'pitr-wal-provider']) {
+    assert.match(developmentDeploy, new RegExp(`\\b${service}\\b`));
+  }
   assert.match(
     developmentDeploy,
     /DEPLOY_RELEASE_SHA="\$DEPLOY_SOURCE_SHA"\s*\\\s*\n\s*IMAGE_TAG="\$DEPLOY_SOURCE_SHA"\s*\\\s*\n\s*docker compose --env-file "\$SECRET_ENV_PATH" up -d --build/,
     'development builds must bind both the image tag and Caddy/API release identity to the requested SHA',
   );
+  assert.match(
+    developmentDeploy,
+    /wait_for_web_surface "\$\{WEB_URL:-http:\/\/127\.0\.0\.1\/\}" "Development Next\.js web surface" "\$DEPLOY_SOURCE_SHA"/,
+    'development success must prove the public web surface carries the requested release identity',
+  );
+  assert.match(script, /tolower\(\$0\) ~ \/\^x-lunchlineup-release:\//);
   assert.match(compose, /apply\)[\s\S]*exec node scripts\/apply-db-migrations\.mjs/);
   assert.doesNotMatch(script, /compose_release exec -T api/);
   assert.doesNotMatch(script, /docker compose[^\n]*exec -T api/);

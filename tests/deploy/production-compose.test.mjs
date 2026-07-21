@@ -1850,6 +1850,7 @@ test('DAST and load helper scripts execute real smoke tools', () => {
   assert.match(dast, /zap-baseline\.py/);
   assert.match(dast, /ZAP_IMAGE/);
   assert.match(dast, /docker run --rm/);
+  assert.match(dast, /tolower\(\$0\) ~ \/\^x-lunchlineup-release:\//);
   assert.doesNotMatch(dast, /DAST scan complete/);
 
   assert.match(load, /artilleryio\/artillery:2\.0\.33@sha256:ee382d480f5cb8473c52fe94cb8e1505a9564ce2accbc94114098e0be06dff56/);
@@ -1858,6 +1859,7 @@ test('DAST and load helper scripts execute real smoke tools', () => {
   assert.match(load, /--volume "\$OUTPUT_DIR:\/output:rw"/);
   assert.doesNotMatch(load, /\$SOURCE_ROOT:[^"\n]*:rw/);
   assert.match(load, /scripts\/artillery-smoke\.yml/);
+  assert.match(load, /tolower\(\$0\) ~ \/\^x-lunchlineup-release:\//);
   assert.doesNotMatch(load, /\bnpx\b|npm exec/);
 });
 

@@ -240,7 +240,7 @@ code="$(curl --silent --show-error \
   "${production_web_url%/}/?lunchlineup_reconcile=$(date +%s)")" \
   || fail "VM217 reconciliation could not read public traffic."
 [[ "$code" == "200" ]] || fail "VM217 reconciliation public traffic did not return HTTP 200."
-traffic_release="$(awk 'BEGIN { IGNORECASE=1 } /^X-LunchLineUp-Release:/ { sub(/\r$/, ""); sub(/^[^:]+:[[:space:]]*/, ""); value=$0 } END { print value }' "$headers")"
+traffic_release="$(awk 'tolower($0) ~ /^x-lunchlineup-release:/ { value=$0; sub(/\r$/, "", value); sub(/^[^:]+:[[:space:]]*/, "", value) } END { print value }' "$headers")"
 
 active_pointer="$production_root/current"
 if [[ -L "$active_pointer" ]]; then

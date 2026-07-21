@@ -69,7 +69,7 @@ scan_exit=$?
 headers="$(curl --fail --silent --show-error --location --head "$TARGET_URL" 2>/dev/null)"
 header_exit=$?
 set -e
-served_release_sha="$(printf '%s\n' "$headers" | awk 'BEGIN { IGNORECASE=1 } /^X-LunchLineup-Release:/ { value=$0; sub(/^[^:]*:[[:space:]]*/, "", value); sub(/\r$/, "", value); last=value } END { print last }')"
+served_release_sha="$(printf '%s\n' "$headers" | awk 'tolower($0) ~ /^x-lunchlineup-release:/ { value=$0; sub(/^[^:]*:[[:space:]]*/, "", value); sub(/\r$/, "", value); last=value } END { print last }')"
 if [[ $header_exit -ne 0 ]]; then
   scan_exit=1
 fi

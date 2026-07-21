@@ -626,8 +626,8 @@ wait_for_web_surface() {
       --output "$body" \
       --write-out '%{http_code}' \
       "$probe_url" 2>/dev/null || true)
-    content_type="$(awk 'BEGIN { IGNORECASE=1 } /^Content-Type:/ { sub(/\r$/, ""); sub(/^[^:]+:[[:space:]]*/, ""); value=$0 } END { print value }' "$headers")"
-    served_release="$(awk 'BEGIN { IGNORECASE=1 } /^X-LunchLineUp-Release:/ { sub(/\r$/, ""); sub(/^[^:]+:[[:space:]]*/, ""); value=$0 } END { print value }' "$headers")"
+    content_type="$(awk 'tolower($0) ~ /^content-type:/ { value=$0; sub(/\r$/, "", value); sub(/^[^:]+:[[:space:]]*/, "", value) } END { print value }' "$headers")"
+    served_release="$(awk 'tolower($0) ~ /^x-lunchlineup-release:/ { value=$0; sub(/\r$/, "", value); sub(/^[^:]+:[[:space:]]*/, "", value) } END { print value }' "$headers")"
     response_bytes="$(stat -c%s "$body" 2>/dev/null || printf '0')"
 
     if [[ "$code" != "200" ]]; then
@@ -1680,7 +1680,7 @@ run_development_source_deploy() {
   quarantine_worktree_git_pointer
 
   local services=(
-    proxy web api engine pdf-parser worker
+    proxy web api api-v2 webhook-replay engine pdf-parser worker control pitr-wal-provider
     migrate pgbouncer postgres redis rabbitmq
     prometheus loki promtail otel-collector tempo grafana autoheal
   )
@@ -1690,7 +1690,7 @@ run_development_source_deploy() {
     IMAGE_TAG="$DEPLOY_SOURCE_SHA" \
     docker compose --env-file "$SECRET_ENV_PATH" up -d --build "${services[@]}"
   wait_for_health "${HEALTH_URL:-http://127.0.0.1/api/health}"
-  wait_for_web_surface "${WEB_URL:-http://127.0.0.1/}" "Development Next.js web surface"
+  wait_for_web_surface "${WEB_URL:-http://127.0.0.1/}" "Development Next.js web surface" "$DEPLOY_SOURCE_SHA"
   DEPLOY_RELEASE_SHA="$DEPLOY_SOURCE_SHA" \
     IMAGE_TAG="$DEPLOY_SOURCE_SHA" \
     docker compose --env-file "$SECRET_ENV_PATH" ps
