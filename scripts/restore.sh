@@ -112,6 +112,12 @@ validate_app_role_settings() {
   [ -n "${MIGRATION_DATABASE_URL}" ] || fail "MIGRATION_DATABASE_URL is required."
 }
 
+run_bounded_command() {
+  local seconds="$1"
+  shift
+  node "${SCRIPT_DIR}/run-bounded-command.mjs" --timeout-seconds "${seconds}" -- "$@"
+}
+
 verify_fixed_signature() {
   local payload_file="$1"
   local signature_file="$2"
@@ -829,7 +835,7 @@ run_restore_mutation_command() {
   local status
   remaining="$(restore_mutation_remaining_seconds)" \
     || restore_mutation_unknown "${label} before command start"
-  if timeout --signal=TERM --kill-after=5s "${remaining}s" "$@"; then
+  if run_bounded_command "${remaining}" "$@"; then
     return 0
   else
     status=$?

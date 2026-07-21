@@ -138,7 +138,7 @@ test('retention schedulers use token, proof, lock, and metrics files', () => {
   const systemdReadme = read('infrastructure/systemd/README.md');
 
   for (const content of [envExample, runbook]) {
-    assert.match(content, /RETENTION_PURGE_URL=https:\/\/lunchlineup\.com\/api\/v1\/admin\/retention\/purge-expired/);
+    assert.match(content, /RETENTION_PURGE_URL=https:\/\/lunchlineup\.com\/api\/v2\/admin\/retention\/purge-expired/);
     assert.match(content, /RETENTION_PURGE_TOKEN_FILE=\/run\/secrets\/retention_purge_token/);
     assert.match(content, /RETENTION_PURGE_PROOF_FILE=\/var\/lib\/lunchlineup\/proofs\/retention-purge-latest\.json/);
     assert.match(content, /RETENTION_PURGE_METRICS_FILE=\/var\/lib\/node_exporter\/textfile_collector\/lunchlineup_retention_purge\.prom/);

@@ -8,7 +8,7 @@ This runbook covers OTP, password-reset email, staff-invitation email, in-app no
 
 - API: `RESEND_API_KEY`, `RESEND_WEBHOOK_SECRET`, and `EMAIL_FROM`.
 - Worker: `PASSWORD_RESET_EMAIL_OUTBOX_ENABLED=true`, `PASSWORD_RESET_OUTBOX_ENCRYPTION_KEY`, canonical `STAFF_INVITATION_OUTBOX_ENABLED=true`, the dedicated `STAFF_INVITATION_OUTBOX_ENCRYPTION_KEY`, shared `STAFF_INVITATION_MAX_ATTEMPTS`, canonical HTTPS `APP_ORIGIN`, `RESEND_API_KEY`, `EMAIL_FROM`, database URL, and platform-admin database capability.
-- Configure Resend delivery feedback to POST signed events to `/api/v1/email-delivery/provider-events`. Subscribe to bounce, complaint, and suppression events.
+- Configure Resend delivery feedback to POST signed events to `/api/webhooks/resend/delivery-events`. Caddy preserves the raw body and forwards only this fixed provider ingress to the private delivery handler; do not configure a `/api/v1/*` URL. Subscribe to bounce, complaint, and suppression events.
 
 Production startup and launch validation fail closed when the Resend API or webhook signing secret is missing or placeholder-shaped. Never log OTPs, reset URLs, webhook payloads, recipient addresses, encrypted payloads, or provider signature headers.
 

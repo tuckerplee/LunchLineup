@@ -34,12 +34,13 @@
 	header @betaWeb Cache-Control "private, no-store, no-transform"
 
 	handle /health {
-		reverse_proxy api:3000
+		rewrite * /v2/ready
+		reverse_proxy api-v2:3002
 	}
 
 	handle /api/health {
-		uri strip_prefix /api
-		reverse_proxy api:3000
+		rewrite * /v2/ready
+		reverse_proxy api-v2:3002
 	}
 
 	handle /api/v2/* {
@@ -47,9 +48,38 @@
 		reverse_proxy api-v2:3002
 	}
 
-	handle /api/v1/* {
-		uri strip_prefix /api
+	@stripeWebhook {
+		method POST
+		path /api/webhooks/stripe
+	}
+	handle @stripeWebhook {
+		uri replace /api/webhooks/stripe /v1/billing/webhook
 		reverse_proxy api:3000
+	}
+
+	@stripeMeterErrorsWebhook {
+		method POST
+		path /api/webhooks/stripe/meter-errors
+	}
+	handle @stripeMeterErrorsWebhook {
+		uri replace /api/webhooks/stripe/meter-errors /v1/billing/meter-errors/webhook
+		reverse_proxy api:3000
+	}
+
+	@resendDeliveryWebhook {
+		method POST
+		path /api/webhooks/resend/delivery-events
+	}
+	handle @resendDeliveryWebhook {
+		uri replace /api/webhooks/resend/delivery-events /v1/email-delivery/provider-events
+		reverse_proxy api:3000
+	}
+
+	# The former broad v1 application surface is deliberately terminal. The
+	# three provider ingress paths above preserve their raw signed payloads while
+	# their domain implementations finish migration behind the private network.
+	handle /api/v1/* {
+		respond "API version v1 has been retired." 410
 	}
 
 	handle {

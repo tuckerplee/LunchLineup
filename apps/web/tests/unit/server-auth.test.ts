@@ -12,12 +12,11 @@ import { getServerUser } from '../../lib/server-auth';
 
 function setIdentityHeaders(overrides: Record<string, string> = {}) {
   mocks.headers.mockResolvedValue(new Headers({
-    'x-user-id': 'user-1',
-    'x-user-public-id': 'f6776d21-bb21-4c35-a6ed-5da8df5ed238',
-    'x-user-role': 'ADMIN',
-    'x-tenant-id': 'tenant-1',
-    'x-user-permissions': 'dashboard:access,users:read',
-    'x-user-roles': 'Admin,Manager',
+    'x-lunchlineup-user-public-id': 'f6776d21-bb21-4c35-a6ed-5da8df5ed238',
+    'x-lunchlineup-user-role': 'ADMIN',
+    'x-lunchlineup-workspace-scope': 'A'.repeat(43),
+    'x-lunchlineup-session-scope': 'B'.repeat(43),
+    'x-lunchlineup-user-permissions': 'dashboard:access,users:read',
     ...overrides,
   }));
 }
@@ -32,25 +31,21 @@ describe('server auth identity headers', () => {
     setIdentityHeaders();
 
     await expect(getServerUser()).resolves.toEqual({
-      id: 'user-1',
       publicUserId: 'f6776d21-bb21-4c35-a6ed-5da8df5ed238',
       role: 'ADMIN',
-      tenantId: 'tenant-1',
+      workspaceScope: 'A'.repeat(43),
+      sessionScope: 'B'.repeat(43),
       permissions: ['dashboard:access', 'users:read'],
-      roles: [
-        { id: 'Admin', name: 'Admin' },
-        { id: 'Manager', name: 'Manager' },
-      ],
     });
   });
 
   it.each([
-    ['unknown role', { 'x-user-role': 'OWNER' }],
-    ['RBAC display role instead of canonical role', { 'x-user-role': 'Admin' }],
-    ['case-confusable role', { 'x-user-role': 'STAFF\u00c9' }],
-    ['invalid tenant token', { 'x-tenant-id': 'tenant one' }],
-    ['invalid public user id', { 'x-user-public-id': 'not-a-uuid' }],
-    ['oversized permission list', { 'x-user-permissions': Array.from({ length: 201 }, (_, i) => `p:${i}`).join(',') }],
+    ['unknown role', { 'x-lunchlineup-user-role': 'OWNER' }],
+    ['RBAC display role instead of canonical role', { 'x-lunchlineup-user-role': 'Admin' }],
+    ['case-confusable role', { 'x-lunchlineup-user-role': 'STAFF\u00c9' }],
+    ['invalid opaque workspace scope', { 'x-lunchlineup-workspace-scope': 'tenant one' }],
+    ['invalid public user id', { 'x-lunchlineup-user-public-id': 'not-a-uuid' }],
+    ['oversized permission list', { 'x-lunchlineup-user-permissions': Array.from({ length: 201 }, (_, i) => `p:${i}`).join(',') }],
   ])('rejects %s instead of trusting malformed forwarded identity', async (_label, overrides) => {
     setIdentityHeaders(overrides);
     await expect(getServerUser()).resolves.toBeNull();

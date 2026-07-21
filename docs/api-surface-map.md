@@ -9,8 +9,10 @@ browser (application traffic uses /api/v2 only)
   -> Cloudflare DNS/proxy
   -> Caddy on VM107
        /api/v2/* -> api-v2:3002 (Fastify, new public contract)
-       /api/v1/* -> api:3000    (NestJS, retained application API)
-       /api/health and /health -> api:3000
+       POST /api/webhooks/stripe* -> api:3000 private billing handlers
+       POST /api/webhooks/resend/delivery-events -> api:3000 private delivery handler
+       /api/v1/* -> terminal 410 (retired; no upstream)
+       /api/health and /health -> api-v2:3002 /v2/ready
        everything else -> web:3000
 
 api-v2
@@ -18,13 +20,14 @@ api-v2
   -> Redis for bounded MFA session-marker validation
   -> selected private v1 scheduling operations for publication billing and notification delivery
      and solver-queue compatibility
-  -> exact 59-operation API-01 compatibility catalog for remaining browser domains
+  -> exact 58-operation API-01 compatibility catalog for remaining browser domains,
+     over the private api:3000 service network only
 
 worker -> RabbitMQ, PostgreSQL, engine:50051 gRPC, parser Unix socket
 control -> private operator status/health/metrics only
 ```
 
-The browser no longer targets `/api/v1`. It cannot address an undeclared API-01 path, and API v2 does not expose the old row-at-a-time schedule/shift mutation routes. Native v2 scheduling responses contain only stable public UUIDs for users, locations, schedules, shifts, and solve jobs. Strings such as `demo-shift-05-casey-v1` were legacy fixture shift resource IDs, not separate APIs per person. The broken behavior came from the old calendar issuing one mutable request per shift and colliding with schedule state; v2 replaces that fan-out with one aggregate change set.
+The browser no longer targets `/api/v1`, and Caddy returns `410 Gone` for every public `/api/v1/*` request. It cannot address an undeclared API-01 path, and API v2 does not expose the old row-at-a-time schedule/shift mutation routes. Native v2 scheduling responses contain only stable public UUIDs for users, locations, schedules, shifts, and solve jobs. Strings such as `demo-shift-05-casey-v1` were legacy fixture shift resource IDs, not separate APIs per person. The broken behavior came from the old calendar issuing one mutable request per shift and colliding with schedule state; v2 replaces that fan-out with one aggregate change set.
 
 ## Public API v2
 
@@ -36,6 +39,8 @@ External paths include `/api`; the service receives the same path after Caddy re
 | GET | `/api/v2/ready` | database readiness | none |
 | GET | `/api/v2/version` | service and release SHA | none |
 | GET | `/api/v2/openapi.json` | generated OpenAPI 3.1 contract | five-minute public cache |
+| GET | `/api/v2/auth/me` | browser-safe current session envelope | private, no-store |
+| POST | `/api/v2/admin/retention/purge-expired` | service-token-only retention operator adapter | explicit bearer only, no cookies |
 | GET | `/api/v2/locations` | list active locations by opaque public-ID cursor | private, no-store |
 | POST | `/api/v2/locations` | create a location | optional `Idempotency-Key` durable replay |
 | GET | `/api/v2/locations/summary` | count active locations | private, no-store |
@@ -93,7 +98,7 @@ External paths include `/api`; the service receives the same path after Caddy re
 | GET | `/api/v2/schedules/{scheduleId}/solve-jobs/{jobId}` | read one solve job | private, no-store |
 | POST | `/api/v2/break-generations` | generate and persist breaks for selected shifts | `Idempotency-Key` |
 
-The 121 browser operations are registered explicitly from `packages/api-contract/src/application.ts`. Sixty-two are native (`GET /auth/me`, six location operations, sixteen people/access operations, nine Operations resources, six Time Card resources, seventeen Payroll operations, three Notification operations, and four workspace Settings operations); the remaining 59 compatibility operations cover authentication (16), the temporary user-deletion lifecycle (1), billing (9), availability imports (2), and administration/account lifecycle (31). The same catalog validates browser path/method pairs. There is no `/v2/*` catch-all handler and no caller-supplied upstream path.
+The 121 browser operations are registered explicitly from `packages/api-contract/src/application.ts`. Sixty-three are native (`GET /auth/me`, six location operations, all seventeen People operations, nine Operations resources, six Time Card resources, seventeen Payroll operations, three Notification operations, and four workspace Settings operations); the remaining 58 compatibility operations cover authentication (16), billing (9), availability imports (2), and administration/account lifecycle (31). The same catalog validates browser path/method pairs. There is no `/v2/*` catch-all handler and no caller-supplied upstream path.
 
 API v2 uses shared TypeBox schemas for server validation, OpenAPI generation, and the generated browser client. Every v2 response exposes the server-generated `X-Correlation-ID` used for downstream retained-service calls. Errors are bounded RFC 9457 Problem Details with stable machine codes. Contract failures use `422`; missing preconditions use `428`; stale schedule revisions use `412` and return `currentEtag`; state conflicts use `409`. Unsafe cookie-authenticated requests require an allowed `Origin` and double-submit CSRF proof. Shift updates are partial: omitted fields retain their exact saved values, including custom role labels, while explicitly supplied role labels are trimmed without case normalization.
 
@@ -120,13 +125,13 @@ Bounded compatibility ownership during the strangler migration:
 
 - publication billing and notification-emission compatibility;
 - solver queue submission/status;
-- the frozen 59-operation API-01 application catalog while API-02 replaces each remaining domain implementation.
+- the frozen 58-operation API-01 application catalog while API-02 replaces each remaining domain implementation.
 
 The scheduling compatibility adapter accepts only hard-coded internal route shapes and translates public UUIDs to tenant-scoped internal IDs. The API-01 application compatibility owner is reachable only through the exact shared catalog, uses a fixed internal authority, bounds request time/body/response size, forwards only approved headers, replaces spoofable forwarding values with the trusted client address and canonical `APP_ORIGIN` host/protocol, permits redirects only for the two declared OIDC operations, and sanitizes errors into Problem Details. Its location and people seams apply only to declared retained domains and exact `locationId`/`locationIds` and `userId`/`userIds` fields; requests translate public UUIDs inward and retained responses translate storage IDs outward. Neither boundary exposes a wildcard route. API-02 is the required removal owner.
 
-## Retained Application API v1
+## Retained Private Implementation Inventory
 
-The browser has moved off these routes under API-01. They remain as internal compatibility implementations and as public non-browser ingress until API-02 and API-03 close. Caddy still exposes `/api/v1/*`, so this inventory is not a security boundary or a claim of retirement. All controller paths below are tenant/session scoped unless explicitly noted.
+The browser has moved off these routes under API-01. Caddy now returns `410 Gone` for public `/api/v1/*`; the entries below are the still-retained **private** implementation paths on `http://api:3000`, reached only through fixed API-v2 compatibility owners or the three named raw provider adapters. The historical `/api/v1` spelling is retained in this inventory only to map the old controller catalog; it is not a reachable public route. All controller paths below are tenant/session scoped unless explicitly noted.
 
 ### Authentication
 
@@ -156,7 +161,7 @@ The browser has moved off these routes under API-01. They remain as internal com
 - `GET /api/v1/users`
 - `GET /api/v1/users/access/catalog`
 - `GET|PUT /api/v1/users/{id}/scheduling-profile`
-- `GET|DELETE /api/v1/users/{id}`
+- `GET /api/v1/users/{id}`
 - `POST /api/v1/users/invite`
 - `GET /api/v1/users/{id}/invitation`
 - `POST /api/v1/users/{id}/invitation/retry`
@@ -188,7 +193,7 @@ The browser has moved off these routes under API-01. They remain as internal com
 - `POST /api/v1/lunch-breaks/setup-shifts`
 - `PUT /api/v1/lunch-breaks/shift/{shiftId}`
 
-No browser screen calls these v1 paths directly. Lunch-break, roster, and Time Card screens use their direct API-v2 resources; the retained v1 paths remain public only until API-03 closes, not as a v2 compatibility dependency.
+No browser screen calls these retained paths directly. Lunch-break, roster, and Time Card screens use their direct API-v2 resources; any remaining implementation bridge is private and has an API-02 removal owner.
 
 ### Time cards and payroll
 
@@ -279,7 +284,7 @@ No browser screen calls these v1 paths directly. Lunch-break, roster, and Time C
 - `GET /health`
 - `GET /metrics` (private scrape path)
 
-Caddy exposes `/health` and `/api/health`; metrics stay on the private service network.
+Caddy exposes `/health` and `/api/health` from API v2 readiness; metrics stay on the private service network.
 
 ## Other Runtime Interfaces
 

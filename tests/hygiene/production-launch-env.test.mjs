@@ -653,7 +653,7 @@ test('production launch validator requires OIDC on both API and web before SSO-o
     OIDC_ISSUER_URL: 'https://accounts.lunchlineup.com',
     OIDC_CLIENT_ID: 'lunchlineup-prod',
     OIDC_CLIENT_SECRET: 'oidc_abcdefghijklmnopqrstuvwxyz1234567890',
-    OIDC_REDIRECT_URI: 'https://lunchlineup.com/api/v1/auth/callback',
+    OIDC_REDIRECT_URI: 'https://lunchlineup.com/api/v2/auth/callback',
   }));
   assert.notEqual(apiOnly.status, 0);
   assert.match(apiOnly.stderr, /OIDC_ENABLED and NEXT_PUBLIC_OIDC_ENABLED must match/);
@@ -664,7 +664,7 @@ test('production launch validator requires OIDC on both API and web before SSO-o
     OIDC_ISSUER_URL: 'https://accounts.lunchlineup.com',
     OIDC_CLIENT_ID: 'lunchlineup-prod',
     OIDC_CLIENT_SECRET: 'oidc_abcdefghijklmnopqrstuvwxyz1234567890',
-    OIDC_REDIRECT_URI: 'https://lunchlineup.com/api/v1/auth/callback',
+    OIDC_REDIRECT_URI: 'https://lunchlineup.com/api/v2/auth/callback',
   }));
   assert.notEqual(webOnly.status, 0);
   assert.match(webOnly.stderr, /OIDC_ENABLED and NEXT_PUBLIC_OIDC_ENABLED must match/);
@@ -675,7 +675,7 @@ test('production launch validator requires OIDC on both API and web before SSO-o
     OIDC_ISSUER_URL: 'https://accounts.lunchlineup.com',
     OIDC_CLIENT_ID: 'lunchlineup-prod',
     OIDC_CLIENT_SECRET: '',
-    OIDC_REDIRECT_URI: 'https://lunchlineup.com/api/v1/auth/callback',
+    OIDC_REDIRECT_URI: 'https://lunchlineup.com/api/v2/auth/callback',
   }));
   assert.notEqual(missingSecret.status, 0);
   assert.match(missingSecret.stderr, /OIDC_CLIENT_SECRET is required/);
@@ -699,7 +699,7 @@ test('production launch validator accepts OIDC when API and web login are both a
     OIDC_ISSUER_URL: 'https://accounts.lunchlineup.com',
     OIDC_CLIENT_ID: 'lunchlineup-prod',
     OIDC_CLIENT_SECRET: 'oidc_abcdefghijklmnopqrstuvwxyz1234567890',
-    OIDC_REDIRECT_URI: 'https://lunchlineup.com/api/v1/auth/callback',
+    OIDC_REDIRECT_URI: 'https://lunchlineup.com/api/v2/auth/callback',
   }));
 
   assert.equal(result.status, 0, result.stderr);

@@ -61,6 +61,13 @@ const apps: Array<Awaited<ReturnType<typeof buildServer>>> = [];
 
 async function harness(identityResponse: SessionIdentity = identity) {
   const retainedApplication = vi.fn(async () => ({ ok: true }));
+  const retainedOperators = {
+    executeRetentionPurge: vi.fn(async () => ({
+      dryRun: true,
+      stage: 'application_data',
+      processedTenantCount: 0,
+    })),
+  };
   const location = {
     id: '34aa4812-63f5-4e5c-8b3a-06b564987a1f',
     name: 'Downtown Diner',
@@ -150,6 +157,7 @@ async function harness(identityResponse: SessionIdentity = identity) {
       id: staffMember.id, username: 'casey', temporaryPin: '123456', pinResetRequired: true as const,
     })),
     replaceOwnPin: vi.fn(async () => undefined),
+    deactivate: vi.fn(async () => undefined),
     access: vi.fn(async () => ({
       primaryRole: 'Staff', roles: [{ id: '2680ed8d-a36a-43ea-b83a-5f4ebf9bea4f', name: 'Staff', isSystem: true, legacyRole: 'STAFF' as const }], permissions: ['users:read'],
     })),
@@ -379,6 +387,7 @@ async function harness(identityResponse: SessionIdentity = identity) {
       authenticate,
     } as never,
     retainedApplication: { execute: retainedApplication },
+    retainedOperators,
     locations,
     people: people as never,
     operations,
@@ -414,6 +423,7 @@ async function harness(identityResponse: SessionIdentity = identity) {
     demandReplace,
     reopen,
     retainedApplication,
+    retainedOperators,
     locations,
     people,
     operations,
@@ -451,12 +461,19 @@ describe('API v2 HTTP contract', () => {
     expect(document.paths['/v2/locations/{locationId}'].put.operationId).toBe('updateLocation');
     expect(document.paths['/v2/locations'].post.responses['500']).toBeDefined();
     expect(document.paths['/v2/users'].get.operationId).toBe('listStaffMembers');
+    expect(document.paths['/v2/users/{userId}'].delete.operationId).toBe('deleteStaffMember');
     expect(document.paths['/v2/users/access/catalog'].get.operationId).toBe('getAccessCatalog');
     expect(document.paths['/v2/users/{userId}/access'].put.operationId).toBe('updateStaffAccess');
     expect(
       document.paths['/v2/auth/me'].get.responses['200'].content['application/json'].schema
         .properties.user.properties.mfaVerified.type,
     ).toBe('boolean');
+    const browserSessionProperties = document.paths['/v2/auth/me'].get.responses['200'].content['application/json'].schema
+      .properties.user.properties;
+    expect(browserSessionProperties.sub).toBeUndefined();
+    expect(browserSessionProperties.tenantId).toBeUndefined();
+    expect(browserSessionProperties.sessionId).toBeUndefined();
+    expect(browserSessionProperties.roles).toBeUndefined();
     expect(document.paths['/v2/users/{userId}/scheduling-profile'].put.operationId)
       .toBe('updateStaffSchedulingProfile');
     expect(document.paths['/v2/schedules'].get.operationId).toBe('listScheduleSummaries');
@@ -498,10 +515,64 @@ describe('API v2 HTTP contract', () => {
     });
 
     expect(response.statusCode).toBe(200);
-    expect(response.json()).toEqual({ user: identity });
+    expect(response.json()).toMatchObject({
+      user: {
+        publicUserId: identity.publicUserId,
+        role: 'MANAGER',
+        roleLabel: 'MANAGER',
+        workspaceName: 'Workspace',
+        permissions: [...identity.permissions].sort(),
+        mfaVerified: true,
+        mfaRequired: true,
+        pinResetRequired: false,
+      },
+    });
+    const user = response.json().user as Record<string, unknown>;
+    expect(user.workspaceScope).toMatch(/^[A-Za-z0-9_-]{43}$/);
+    expect(user.sessionScope).toMatch(/^[A-Za-z0-9_-]{43}$/);
+    expect(user).not.toHaveProperty('sub');
+    expect(user).not.toHaveProperty('tenantId');
+    expect(user).not.toHaveProperty('sessionId');
+    expect(user).not.toHaveProperty('roles');
     expect(response.headers['cache-control']).toBe('private, no-store');
     expect(authenticate).toHaveBeenCalledOnce();
     expect(retainedApplication).not.toHaveBeenCalled();
+  });
+
+  it('deactivates staff through the native People owner rather than the retained application bridge', async () => {
+    const { app, people, retainedApplication, authenticate } = await harness();
+    const response = await app.inject({
+      method: 'DELETE',
+      url: '/v2/users/f6776d21-bb21-4c35-a6ed-5da8df5ed238',
+    });
+
+    expect(response.statusCode).toBe(204);
+    expect(response.headers['cache-control']).toBe('private, no-store');
+    expect(people.deactivate).toHaveBeenCalledWith(identity, identity.publicUserId);
+    expect(retainedApplication).not.toHaveBeenCalled();
+    expect(authenticate).toHaveBeenCalledOnce();
+  });
+
+  it('accepts the protected retention operator only through the v2 bearer ingress', async () => {
+    const { app, retainedOperators, authenticate } = await harness();
+    const denied = await app.inject({
+      method: 'POST',
+      url: '/v2/admin/retention/purge-expired',
+      payload: { dryRun: true, stage: 'application_data' },
+      headers: { cookie: 'access_token=browser-session' },
+    });
+    const accepted = await app.inject({
+      method: 'POST',
+      url: '/v2/admin/retention/purge-expired',
+      payload: { dryRun: true, stage: 'application_data' },
+      headers: { authorization: 'Bearer retention-service-token' },
+    });
+
+    expect(denied.statusCode).toBe(401);
+    expect(accepted.statusCode).toBe(200);
+    expect(accepted.json()).toMatchObject({ dryRun: true, stage: 'application_data' });
+    expect(retainedOperators.executeRetentionPurge).toHaveBeenCalledOnce();
+    expect(authenticate).not.toHaveBeenCalled();
   });
 
   it('serves tenant locations through the native API-02 owner and public UUID contract', async () => {

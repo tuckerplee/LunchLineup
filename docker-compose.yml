@@ -79,7 +79,6 @@ services:
       dockerfile: infrastructure/docker/Dockerfile.web
       args:
         NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-/api/v2}
-        INTERNAL_API_URL: ${INTERNAL_API_URL:-http://api:3000/v1}
         INTERNAL_API_V2_URL: ${INTERNAL_API_V2_URL:-http://api-v2:3002/v2}
         NEXT_PUBLIC_OIDC_ENABLED: ${NEXT_PUBLIC_OIDC_ENABLED:-false}
         NEXT_PUBLIC_SIGNUP_MODE: ${NEXT_PUBLIC_SIGNUP_MODE:-closed_beta}
@@ -96,7 +95,6 @@ services:
       - NODE_ENV=production
       - COOKIE_SECURE=${COOKIE_SECURE:-true}
       - NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL:-/api/v2}
-      - INTERNAL_API_URL=${INTERNAL_API_URL:-http://api:3000/v1}
       - INTERNAL_API_V2_URL=${INTERNAL_API_V2_URL:-http://api-v2:3002/v2}
       - LUNCHLINEUP_STATUS_HEALTH_URL=${LUNCHLINEUP_STATUS_HEALTH_URL:?Set public HTTPS LUNCHLINEUP_STATUS_HEALTH_URL ending in /health in .env}
       - NEXT_PUBLIC_OIDC_ENABLED=${NEXT_PUBLIC_OIDC_ENABLED:-false}
@@ -590,9 +588,8 @@ services:
       - pitr-egress
     restart: unless-stopped
 
-  # Contract-first tenant API. The retained v1 service is its temporary
-  # implementation dependency and remains public only for API-03 non-browser
-  # integrations until those ingress paths are migrated.
+  # Contract-first tenant API. The retained v1 service is an internal-only
+  # implementation dependency; public v1 ingress is terminal at Caddy.
   api-v2:
     <<: *locked-runtime
     cpus: "1.50"
@@ -623,12 +620,15 @@ services:
       - STAFF_INVITATION_OUTBOX_ENABLED=${STAFF_INVITATION_OUTBOX_ENABLED:?Set STAFF_INVITATION_OUTBOX_ENABLED=true in .env}
       - STAFF_INVITATION_OUTBOX_ENCRYPTION_KEY=${STAFF_INVITATION_OUTBOX_ENCRYPTION_KEY:?Set STAFF_INVITATION_OUTBOX_ENCRYPTION_KEY in .env}
       - STAFF_INVITATION_MAX_ATTEMPTS=${STAFF_INVITATION_MAX_ATTEMPTS:-8}
+      - AVAILABILITY_UPLOAD_ROOT=/app/uploads
       - COOKIE_SECURE=${COOKIE_SECURE:-true}
       - LEGACY_API_BASE_URL=http://api:3000/v1
       - AUTH_STATE_TIMEOUT_MS=${AUTH_STATE_TIMEOUT_MS:-5000}
       - LEGACY_REQUEST_TIMEOUT_MS=${LEGACY_REQUEST_TIMEOUT_MS:-15000}
       - DEPLOY_RELEASE_SHA=${DEPLOY_RELEASE_SHA:-local}
       - LOG_LEVEL=${LOG_LEVEL:-info}
+    volumes:
+      - availability_uploads:/app/uploads
     healthcheck:
       test: [ "CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://127.0.0.1:3002/v2/live" ]
       interval: 15s

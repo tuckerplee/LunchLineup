@@ -533,6 +533,10 @@ test('backup, restore, DR, and retention purge scripts expose machine-checkable 
   assert.match(restore, /rehydrate-durable-queues\.sql/);
   assert.match(restore, /RESTORE_MUTATION_TIMEOUT_SECONDS="\$\{RESTORE_MUTATION_TIMEOUT_SECONDS:-600\}"/);
   assert.match(restore, /RESTORE_MUTATION_TIMEOUT_SECONDS must be between 1 and 600/);
+  assert.match(restore, /run_bounded_command\(\)/);
+  assert.match(restore, /run-bounded-command\.mjs/);
+  assert.match(read('scripts/run-bounded-command.mjs'), /runBoundedProcessResult/);
+  assert.match(read('scripts/run-bounded-command.mjs'), /process\.exit\(124\)/);
 
   const rehydrate = read('scripts/rehydrate-durable-queues.sql');
   assert.match(rehydrate, /"publicationStatus" = 'PUBLISHED'/);
@@ -635,7 +639,7 @@ test('retained-record purge dry-run invocation writes proof and Prometheus metri
       timeout: 10000,
       env: {
         ...process.env,
-        RETENTION_PURGE_URL: `http://127.0.0.1:${port}/api/v1/admin/retention/purge-expired`,
+          RETENTION_PURGE_URL: `http://127.0.0.1:${port}/api/v2/admin/retention/purge-expired`,
         RETENTION_PURGE_TOKEN_FILE: tokenPath,
         RETENTION_PURGE_PROOF_FILE: proofPath,
         RETENTION_PURGE_METRICS_FILE: metricsPath,
@@ -645,7 +649,7 @@ test('retained-record purge dry-run invocation writes proof and Prometheus metri
 
     assert.match(result.stdout, /retention_purge_ok mode=dry_run/);
     assert.equal(seen.method, 'POST');
-    assert.equal(seen.url, '/api/v1/admin/retention/purge-expired');
+    assert.equal(seen.url, '/api/v2/admin/retention/purge-expired');
     assert.equal(seen.authorization, 'Bearer test-retention-token');
     assert.deepEqual(JSON.parse(seen.body), { dryRun: true, stage: 'retained_records' });
 
@@ -714,7 +718,7 @@ test('retained-record purge execution sends API confirmation', async () => {
       timeout: 10000,
       env: {
         ...process.env,
-        RETENTION_PURGE_URL: `http://127.0.0.1:${port}/api/v1/admin/retention/purge-expired`,
+        RETENTION_PURGE_URL: `http://127.0.0.1:${port}/api/v2/admin/retention/purge-expired`,
         RETENTION_PURGE_TOKEN_FILE: tokenPath,
         RETENTION_PURGE_DRY_RUN: 'false',
         RETENTION_PURGE_EXECUTE_CONFIRM: 'purge-expired-retained-records',
@@ -800,7 +804,7 @@ test('retention purge continues past failed oldest tenants and fails the overall
         timeout: 10000,
         env: {
           ...process.env,
-          RETENTION_PURGE_URL: `http://127.0.0.1:${port}/api/v1/admin/retention/purge-expired`,
+        RETENTION_PURGE_URL: `http://127.0.0.1:${port}/api/v2/admin/retention/purge-expired`,
           RETENTION_PURGE_TOKEN_FILE: tokenPath,
           RETENTION_PURGE_DRY_RUN: 'false',
           RETENTION_PURGE_STAGE: 'application_data',
@@ -863,7 +867,7 @@ test('retained-record purge execution fails closed without confirmation before n
       encoding: 'utf8',
       env: {
         ...process.env,
-        RETENTION_PURGE_URL: 'http://127.0.0.1:1/api/v1/admin/retention/purge-expired',
+        RETENTION_PURGE_URL: 'http://127.0.0.1:1/api/v2/admin/retention/purge-expired',
         RETENTION_PURGE_TOKEN_FILE: tokenPath,
         RETENTION_PURGE_DRY_RUN: 'false',
         RETENTION_PURGE_PROOF_FILE: proofPath,
@@ -2046,6 +2050,7 @@ test('production restore aggregate mutation timeout exits 70, kills children, an
   const proofPath = join(fixture.scratch, 'provider-readback.json');
   const psqlLog = join(fixture.scratch, 'psql.log');
   const childPidFile = join(fixture.scratch, 'mutation-child.pid');
+  const mutationStartedAtFile = join(fixture.scratch, 'mutation-started-at');
   mkdirSync(fakeBin);
   writeExecutable(join(fakeBin, 'cosign'), '#!/bin/sh\nexit 0\n');
   writeExecutable(join(fakeBin, 'gpg'), '#!/bin/sh\nprintf "%s\\n" "CREATE TABLE aggregate_deadline_fixture(id integer);"\n');
@@ -2058,7 +2063,8 @@ case " $* " in
   *'SELECT count(*) FROM information_schema.tables'*) printf '0\n'; exit 0 ;;
 esac
 cat >/dev/null
-sleep 30 &
+date +%s >'${bashPath(mutationStartedAtFile)}'
+sleep "\${FAKE_MUTATION_SLEEP_SECONDS:-45}" &
 child=$!
 printf '%s' "$child" >'${bashPath(childPidFile)}'
 wait "$child"
@@ -2093,7 +2099,10 @@ wait "$child"
       ...execution.env,
       RESTORE_MUTATION_TIMEOUT_SECONDS: '3',
       RESTORE_RECONCILIATION_TIMEOUT_SECONDS: '5',
+      FAKE_MUTATION_SLEEP_SECONDS: '45',
     }, [fixture.backupFile]);
+    const mutationStartedAt = Number(readFileSync(mutationStartedAtFile, 'utf8').trim()) * 1_000;
+    assert.ok(Date.now() - mutationStartedAt < 20_000, 'aggregate timeout must not wait for a surviving mutation child');
     assert.equal(result.status, 70, `${result.stdout}\n${result.stderr}`);
     assert.match(result.stderr, /mutation state is unknown and must not be retried blindly/);
     assert.match(result.stderr, /restore_unknown_state_reconciliation target_identity=match table_readback=count:0/);

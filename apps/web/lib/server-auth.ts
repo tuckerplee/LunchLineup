@@ -10,9 +10,8 @@ export type UserRole = 'SUPER_ADMIN' | 'ADMIN' | 'MANAGER' | 'STAFF';
 const USER_ROLES = new Set<UserRole>(['SUPER_ADMIN', 'ADMIN', 'MANAGER', 'STAFF']);
 const SAFE_HEADER_TOKEN = /^[A-Za-z0-9:_-]{1,128}$/;
 const SAFE_PUBLIC_USER_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
-const SAFE_ROLE_NAME = /^[^,\r\n\0]{1,128}$/;
+const SAFE_BROWSER_SCOPE = /^[A-Za-z0-9_-]{43}$/;
 const MAX_PERMISSION_COUNT = 200;
-const MAX_ROLE_COUNT = 100;
 const AUTH_DEBUG_ENABLED = ['1', 'true', 'yes', 'on'].includes((process.env.AUTH_DEBUG ?? '').toLowerCase());
 
 function authDebug(event: string, details: Record<string, unknown> = {}) {
@@ -21,12 +20,11 @@ function authDebug(event: string, details: Record<string, unknown> = {}) {
 }
 
 export interface ServerUser {
-    id: string;
     publicUserId: string;
     role: UserRole;
-    tenantId: string;
+    workspaceScope: string;
+    sessionScope: string;
     permissions: string[];
-    roles: Array<{ id: string; name: string }>;
 }
 
 function parseTokenList(value: string, limit: number): string[] | null {
@@ -39,61 +37,48 @@ function parseTokenList(value: string, limit: number): string[] | null {
     return entries;
 }
 
-function parseRoleNames(value: string): Array<{ id: string; name: string }> | null {
-    if (!value) return [];
-    if (value.length > MAX_ROLE_COUNT * 129) return null;
-    const entries = value.split(',');
-    if (entries.length > MAX_ROLE_COUNT || !entries.every((entry) => SAFE_ROLE_NAME.test(entry))) {
-        return null;
-    }
-    return entries.map((entry) => ({ id: entry, name: entry }));
-}
-
 /**
  * Read the current user from middleware-injected request headers.
  * Returns null if the headers aren't set (e.g., unauthenticated paths).
  */
 export async function getServerUser(): Promise<ServerUser | null> {
     const headerStore = await headers();
-    const id = headerStore.get('x-user-id');
-    const publicUserId = headerStore.get('x-user-public-id');
-    const role = headerStore.get('x-user-role');
-    const tenantId = headerStore.get('x-tenant-id');
+    const publicUserId = headerStore.get('x-lunchlineup-user-public-id');
+    const role = headerStore.get('x-lunchlineup-user-role');
+    const workspaceScope = headerStore.get('x-lunchlineup-workspace-scope');
+    const sessionScope = headerStore.get('x-lunchlineup-session-scope');
     const permissions = parseTokenList(
-        headerStore.get('x-user-permissions') ?? '',
+        headerStore.get('x-lunchlineup-user-permissions') ?? '',
         MAX_PERMISSION_COUNT,
     );
-    const roles = parseRoleNames(headerStore.get('x-user-roles') ?? '');
 
     if (
-        !id
-        || !SAFE_HEADER_TOKEN.test(id)
-        || !publicUserId
+        !publicUserId
         || !SAFE_PUBLIC_USER_ID.test(publicUserId)
         || !role
         || !USER_ROLES.has(role as UserRole)
-        || !tenantId
-        || !SAFE_HEADER_TOKEN.test(tenantId)
+        || !workspaceScope
+        || !SAFE_BROWSER_SCOPE.test(workspaceScope)
+        || !sessionScope
+        || !SAFE_BROWSER_SCOPE.test(sessionScope)
         || !permissions
-        || !roles
     ) {
         authDebug('get_server_user_invalid_headers', {
-            hasUserId: Boolean(id),
             hasPublicUserId: Boolean(publicUserId),
             hasUserRole: Boolean(role),
-            hasTenantId: Boolean(tenantId),
+            hasWorkspaceScope: Boolean(workspaceScope),
+            hasSessionScope: Boolean(sessionScope),
         });
         return null;
     }
 
     authDebug('get_server_user_ok', { role });
     return {
-        id,
         publicUserId,
         role: role as UserRole,
-        tenantId,
+        workspaceScope,
+        sessionScope,
         permissions,
-        roles,
     };
 }
 

@@ -468,13 +468,12 @@ test('web image bakes explicit public config at build time', () => {
   }
 });
 
-test('web image bakes and runs with explicit internal API proxy targets', () => {
+test('web image bakes and runs with the sole internal v2 API proxy target', () => {
   const dockerfile = read('infrastructure/docker/Dockerfile.web');
   const compose = read('docker-compose.yml');
   const webBlock = serviceBlock(compose, 'web');
 
   for (const [key, defaultValue] of [
-    ['INTERNAL_API_URL', 'http://api:3000/v1'],
     ['INTERNAL_API_V2_URL', 'http://api-v2:3002/v2'],
   ]) {
     assert.ok(
@@ -491,6 +490,8 @@ test('web image bakes and runs with explicit internal API proxy targets', () => 
       `Compose web runtime env must pass ${key}`,
     );
   }
+  assert.doesNotMatch(dockerfile, /INTERNAL_API_URL/);
+  assert.doesNotMatch(webBlock, /INTERNAL_API_URL/);
 });
 
 test('Dockerfile base images are digest-pinned', () => {
@@ -899,10 +900,13 @@ test('proxy config is TLS-ready, route-specific, size-limited, and sets browser 
   assert.match(serviceBlock(compose, 'proxy'), /DEPLOY_RELEASE_SHA: "\$\{DEPLOY_RELEASE_SHA:-local\}"/);
   assert.match(caddy, /\{\$CADDY_SITE_ADDRESSES:/);
   assert.match(caddy, /X-LunchLineup-Release "\{\$DEPLOY_RELEASE_SHA:local\}"/);
-  assert.match(caddy, /handle \/health \{[\s\S]*reverse_proxy api:3000[\s\S]*\}/);
-  assert.match(caddy, /handle \/api\/health \{[\s\S]*uri strip_prefix \/api[\s\S]*reverse_proxy api:3000[\s\S]*\}/);
+  assert.match(caddy, /handle \/health \{[\s\S]*rewrite \* \/v2\/ready[\s\S]*reverse_proxy api-v2:3002[\s\S]*\}/);
+  assert.match(caddy, /handle \/api\/health \{[\s\S]*rewrite \* \/v2\/ready[\s\S]*reverse_proxy api-v2:3002[\s\S]*\}/);
   assert.match(caddy, /handle \/api\/v2\/\* \{[\s\S]*uri strip_prefix \/api[\s\S]*reverse_proxy api-v2:3002[\s\S]*\}/);
-  assert.match(caddy, /handle \/api\/v1\/\* \{[\s\S]*uri strip_prefix \/api[\s\S]*reverse_proxy api:3000[\s\S]*\}/);
+  assert.match(caddy, /@stripeWebhook \{[\s\S]*method POST[\s\S]*path \/api\/webhooks\/stripe[\s\S]*\}[\s\S]*handle @stripeWebhook \{[\s\S]*uri replace \/api\/webhooks\/stripe \/v1\/billing\/webhook[\s\S]*reverse_proxy api:3000[\s\S]*\}/);
+  assert.match(caddy, /@stripeMeterErrorsWebhook \{[\s\S]*path \/api\/webhooks\/stripe\/meter-errors[\s\S]*\}[\s\S]*handle @stripeMeterErrorsWebhook \{[\s\S]*uri replace \/api\/webhooks\/stripe\/meter-errors \/v1\/billing\/meter-errors\/webhook[\s\S]*reverse_proxy api:3000[\s\S]*\}/);
+  assert.match(caddy, /@resendDeliveryWebhook \{[\s\S]*path \/api\/webhooks\/resend\/delivery-events[\s\S]*\}[\s\S]*handle @resendDeliveryWebhook \{[\s\S]*uri replace \/api\/webhooks\/resend\/delivery-events \/v1\/email-delivery\/provider-events[\s\S]*reverse_proxy api:3000[\s\S]*\}/);
+  assert.match(caddy, /handle \/api\/v1\/\* \{[\s\S]*respond "API version v1 has been retired\." 410[\s\S]*\}/);
   assert.match(caddy, /@betaWeb \{[\s\S]*host beta\.lunchlineup\.com[\s\S]*not path \/api\/\* \/health[\s\S]*\}/);
   assert.match(caddy, /header @betaWeb Cache-Control "private, no-store, no-transform"/);
   assert.match(caddy, /handle \{[\s\S]*reverse_proxy web:3000[\s\S]*\}/);
@@ -918,7 +922,7 @@ test('proxy config is TLS-ready, route-specific, size-limited, and sets browser 
   assert.match(caddy, /Permissions-Policy/);
   assert.match(caddyTemplate, /\{\$CADDY_SITE_ADDRESSES:/);
   assert.match(caddyTemplate, /X-LunchLineup-Release "\{\$DEPLOY_RELEASE_SHA:local\}"/);
-  assert.match(caddyTemplate, /handle \/api\/v1\/\* \{[\s\S]*uri strip_prefix \/api[\s\S]*reverse_proxy api:3000[\s\S]*\}/);
+  assert.match(caddyTemplate, /handle \/api\/v1\/\* \{[\s\S]*respond "API version v1 has been retired\." 410[\s\S]*\}/);
   assert.match(caddyTemplate, /@betaWeb \{[\s\S]*host beta\.lunchlineup\.com[\s\S]*not path \/api\/\* \/health[\s\S]*\}/);
   assert.match(caddyTemplate, /header @betaWeb Cache-Control "private, no-store, no-transform"/);
   assert.match(caddyTemplate, /request_body[\s\S]*max_size 10MB/);
@@ -1787,7 +1791,6 @@ test('smoke environment generator writes the requested env and metrics token fil
       'PASSWORD_RESET_EMAIL_OUTBOX_ENABLED',
       'COOKIE_SECURE',
       'NEXT_PUBLIC_API_URL',
-      'INTERNAL_API_URL',
       'INTERNAL_API_V2_URL',
       'NEXT_PUBLIC_OIDC_ENABLED',
       'PUBLIC_SIGNUP_MODE',

@@ -85,7 +85,7 @@ done
 [[ "${VM217_RECONCILE_ONLY:-false}" == "true" || "${VM217_RECONCILE_ONLY:-false}" == "false" ]] \
   || fail "VM217_RECONCILE_ONLY must be true or false."
 
-for command_name in awk base64 chmod git mktemp rm scp sha256sum ssh stat timeout; do
+for command_name in awk base64 chmod git mktemp node rm scp sha256sum ssh stat; do
   command -v "$command_name" >/dev/null 2>&1 || fail "$command_name is required."
 done
 

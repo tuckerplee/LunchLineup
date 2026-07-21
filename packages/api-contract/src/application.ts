@@ -72,7 +72,7 @@ export const APPLICATION_API_OPERATIONS = [
   { operationId: 'reissueStaffInvitation', method: 'POST', path: '/users/:userId/invitation/reissue', tag: 'People', summary: 'Reissue an invitation', native: true },
   { operationId: 'resetStaffPin', method: 'POST', path: '/users/:userId/pin/reset', tag: 'People', summary: 'Reset a staff PIN', native: true },
   { operationId: 'replaceCurrentPin', method: 'PUT', path: '/users/me/pin', tag: 'People', summary: 'Replace the current user PIN', native: true },
-  { operationId: 'deleteStaffMember', method: 'DELETE', path: '/users/:userId', tag: 'People', summary: 'Deactivate a staff member' },
+  { operationId: 'deleteStaffMember', method: 'DELETE', path: '/users/:userId', tag: 'People', summary: 'Deactivate a staff member', native: true },
   { operationId: 'getStaffAccess', method: 'GET', path: '/users/:userId/access', tag: 'People', summary: 'Read one staff access assignment', native: true },
   { operationId: 'updateStaffAccess', method: 'PUT', path: '/users/:userId/access', tag: 'People', summary: 'Replace one staff access assignment', native: true },
   { operationId: 'createAccessRole', method: 'POST', path: '/users/roles', tag: 'People', summary: 'Create an access role', native: true },

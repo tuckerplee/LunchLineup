@@ -34,7 +34,7 @@ Use Loki and Tempo to identify the failing route, tenant boundary, and downstrea
 
 ```bash
 curl -fsS https://lunchlineup.com/health
-curl -fsS https://lunchlineup.com/api/v1/health
+curl -fsS https://lunchlineup.com/api/v2/ready
 docker compose logs --tail=100 api worker engine | grep -E "ERROR|timeout" || true
 ```
 

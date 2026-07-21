@@ -135,7 +135,7 @@ test('API-02 owns locations natively with public UUIDs and a bounded retained tr
   assert.match(web, /dashboard\/scheduling\?location=\$\{location\.id\}/);
 });
 
-test('API-02 owns People natively with public role/user UUIDs and one explicit deactivation seam', () => {
+test('API-02 owns People natively with public role/user UUIDs and native staff deactivation', () => {
   const catalog = read('packages/api-contract/src/application.ts');
   const server = read('apps/api-v2/src/server.ts');
   const routes = read('apps/api-v2/src/people/routes.ts');
@@ -164,11 +164,14 @@ test('API-02 owns People natively with public role/user UUIDs and one explicit d
   ]) {
     assert.match(catalog, new RegExp(`operationId: '${operationId}'[^\\n]*native: true`));
   }
-  assert.doesNotMatch(catalog, /operationId: 'deleteStaffMember'[^\n]*native: true/);
+  assert.match(catalog, /operationId: 'deleteStaffMember'[^\n]*native: true/);
   assert.match(server, /new PeopleService\(database, config\)/);
   assert.match(server, /new PeopleIdentifierTranslator\(people\)/);
   assert.match(routes, /registerPeopleRoutes/);
+  assert.match(routes, /deactivate\(identity, request\.params\.userId\)/);
   assert.match(service, /publicId: true/);
+  assert.match(service, /anonymizeDeletedUser/);
+  assert.match(service, /deleteAvailabilityImportStorageKeys/);
   assert.match(translator, /userId/);
   assert.match(translator, /userIds/);
   assert.doesNotMatch(translator, /key === 'id'/);
@@ -380,6 +383,6 @@ test('consumer-facing compliance and operator docs use v2 application routes', (
   }
 
   const retentionRunbook = read('docs/runbooks/data-retention-delete-export.md');
-  assert.match(retentionRunbook, /\/api\/v1\/admin\/retention\/purge-expired/);
+  assert.match(retentionRunbook, /\/api\/v2\/admin\/retention\/purge-expired/);
   assert.match(retentionRunbook, /\/api\/v2\/admin\/account\/export/);
 });

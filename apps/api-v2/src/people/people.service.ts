@@ -36,6 +36,7 @@ import {
   type RoleWithPermissions,
   withSerializable,
 } from './access';
+import { anonymizeDeletedUser, deleteAvailabilityImportStorageKeys } from './deactivation';
 import { InvitationOutbox } from './invitation-outbox';
 
 const DEFAULT_LIST_LIMIT = 50;
@@ -841,6 +842,40 @@ export class PeopleService {
         },
       });
     });
+  }
+
+  /**
+   * Deactivates one staff account through the native People transaction. The
+   * cleanup preserves immutable operational history, clears editable schedule
+   * assignments, settles abandoned availability-import credits, tombstones
+   * credentials/PII, and removes only validated local source files after the
+   * transaction commits.
+   */
+  async deactivate(identity: SessionIdentity, userPublicId: string): Promise<void> {
+    const storageKeys = await withSerializable(this.database, identity.tenantId, async (transaction) => {
+      const internalId = await this.resolveUser(transaction, identity.tenantId, userPublicId);
+      const authority = await authorizeMutation(transaction, identity, 'users:admin', { targetUserId: internalId });
+      assertCanAdministerTarget(
+        authority.actor,
+        authority.actorAccess,
+        authority.target!,
+        authority.targetAccess!,
+        'You cannot deactivate your own account.',
+      );
+      const cleanup = await anonymizeDeletedUser(transaction, identity.tenantId, internalId, new Date());
+      await transaction.auditLog.create({
+        data: {
+          tenantId: identity.tenantId,
+          userId: identity.sub,
+          ...requestAudit(identity),
+          action: 'USER_DELETED',
+          resource: 'User',
+          resourceId: internalId,
+        },
+      });
+      return cleanup.availabilityImportStorageKeys;
+    });
+    await deleteAvailabilityImportStorageKeys(storageKeys);
   }
 
   async access(identity: SessionIdentity, userPublicId: string): Promise<StaffAccessResponse> {

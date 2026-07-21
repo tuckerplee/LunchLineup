@@ -21,12 +21,12 @@ const DEFAULT_MAX_PAGES = 20;
 if (process.argv.includes("--help")) {
   console.log("Usage: node scripts/invoke-retained-record-purge.mjs");
   console.log(
-    "Calls POST /api/v1/admin/retention/purge-expired with dryRun enabled by default.",
+    "Calls POST /api/v2/admin/retention/purge-expired with dryRun enabled by default.",
   );
   console.log("");
   console.log("Required environment:");
   console.log(
-    "  RETENTION_PURGE_URL=https://lunchlineup.com/api/v1/admin/retention/purge-expired",
+    "  RETENTION_PURGE_URL=https://lunchlineup.com/api/v2/admin/retention/purge-expired",
   );
   console.log(
     "  RETENTION_PURGE_TOKEN_FILE=/run/secrets/retention_purge_token",
@@ -223,9 +223,9 @@ function endpointUrl() {
     );
   }
 
-  if (!url.pathname.endsWith("/api/v1/admin/retention/purge-expired")) {
+  if (!url.pathname.endsWith("/api/v2/admin/retention/purge-expired")) {
     throw new Error(
-      "RETENTION_PURGE_URL must target /api/v1/admin/retention/purge-expired.",
+      "RETENTION_PURGE_URL must target /api/v2/admin/retention/purge-expired.",
     );
   }
 

@@ -52,7 +52,7 @@ test('retention scheduler publishes password-reset token dry-run proof and metri
       timeout: 10000,
       env: {
         ...process.env,
-        RETENTION_PURGE_URL: `http://127.0.0.1:${port}/api/v1/admin/retention/purge-expired`,
+        RETENTION_PURGE_URL: `http://127.0.0.1:${port}/api/v2/admin/retention/purge-expired`,
         RETENTION_PURGE_TOKEN_FILE: tokenPath,
         RETENTION_PURGE_DRY_RUN: 'true',
         RETENTION_PURGE_STAGE: 'application_data',

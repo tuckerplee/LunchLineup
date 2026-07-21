@@ -35,22 +35,22 @@ describe('status health URL resolution', () => {
   it('uses the explicit status health URL when configured', () => {
     expect(resolveApiHealthUrl({
       LUNCHLINEUP_STATUS_HEALTH_URL: 'https://status.example.test/healthz',
-      INTERNAL_API_URL: 'http://api:3000/v1',
+      INTERNAL_API_V2_URL: 'http://api-v2:3002/v2',
     })).toBe('https://status.example.test/healthz');
   });
 
-  it('maps an internal versioned API base to the unversioned health endpoint', () => {
-    expect(resolveApiHealthUrl({ INTERNAL_API_URL: 'http://api:3000/v1' })).toBe('http://api:3000/health');
+  it('maps the internal v2 base to its explicit readiness endpoint', () => {
+    expect(resolveApiHealthUrl({ INTERNAL_API_V2_URL: 'http://api-v2:3002/v2' })).toBe('http://api-v2:3002/v2/ready');
   });
 
-  it('keeps proxy prefixes while dropping only the URI-version suffix', () => {
-    expect(resolveApiHealthUrl({ INTERNAL_API_URL: 'http://proxy/api/v1/' })).toBe('http://proxy/api/health');
+  it('keeps the v2 prefix while appending readiness', () => {
+    expect(resolveApiHealthUrl({ INTERNAL_API_V2_URL: 'http://proxy/api/v2/' })).toBe('http://proxy/api/v2/ready');
   });
 
   it('does not substitute an internal endpoint when production configuration is missing', () => {
     expect(resolveApiHealthUrl({
       NODE_ENV: 'production',
-      INTERNAL_API_URL: 'http://api:3000/v1',
+      INTERNAL_API_V2_URL: 'http://api-v2:3002/v2',
     })).toBeNull();
   });
 
@@ -60,7 +60,7 @@ describe('status health URL resolution', () => {
 
     const result = await readApiHealth({
       NODE_ENV: 'production',
-      INTERNAL_API_URL: 'http://api:3000/v1',
+      INTERNAL_API_V2_URL: 'http://api-v2:3002/v2',
     });
 
     expect(result).toMatchObject({

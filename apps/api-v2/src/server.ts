@@ -4,12 +4,14 @@ import { TypeBoxTypeProvider } from '@fastify/type-provider-typebox';
 import { Type } from '@sinclair/typebox';
 import Fastify, { type FastifyInstance } from 'fastify';
 import { registerApplicationRoutes } from './application/routes';
+import { registerRetentionOperatorRoutes } from './application/retention.routes';
 import type { ApiV2Config } from './config';
 import { TenantDatabase } from './platform/database';
 import { type IdentityAdapter } from './platform/identity';
 import { NativeIdentityAdapter } from './platform/native-identity';
 import { installProblemHandler } from './platform/problem';
 import { RetainedApplicationBridge } from './platform/retained-application.bridge';
+import { RetainedOperatorBridge } from './platform/retained-operator.bridge';
 import { LocationIdentifierTranslator } from './locations/identifier-translation';
 import { LocationService } from './locations/locations.service';
 import { registerLocationRoutes } from './locations/routes';
@@ -64,6 +66,7 @@ export type ApiV2ServerDependencies = Partial<{
   settings: WorkspaceSettingsRouteDependencies['settings'];
   identity: IdentityAdapter;
   retainedApplication: Pick<RetainedApplicationBridge, 'execute'>;
+  retainedOperators: Pick<RetainedOperatorBridge, 'executeRetentionPurge'>;
 }>;
 
 export async function buildServer(
@@ -102,6 +105,7 @@ export async function buildServer(
       new PeopleIdentifierTranslator(people),
     ],
   );
+  const retainedOperators = overrides.retainedOperators ?? new RetainedOperatorBridge(config);
   const routeServices = overrides.routes ?? {
     board: new ScheduleBoardService(database),
     scheduleCreate: new ScheduleCreateService(database),
@@ -235,6 +239,7 @@ export async function buildServer(
     identity,
     settings,
   });
+  await registerRetentionOperatorRoutes(app, { retainedOperators });
   await registerApplicationRoutes(app, {
     config,
     identity,

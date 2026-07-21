@@ -3,10 +3,10 @@ const turnstileOrigin = 'https://challenges.cloudflare.com';
 const cloudflareAnalyticsScriptOrigin = 'https://static.cloudflareinsights.com';
 const cloudflareAnalyticsConnectOrigin = 'https://cloudflareinsights.com';
 
-function serverHttpUrl(value) {
+function serverHttpUrl(value, label) {
     const url = new URL(value);
     if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password || url.search || url.hash) {
-        throw new Error('INTERNAL_API_URL must be an HTTP(S) URL without credentials, query, or fragment');
+        throw new Error(`${label} must be an HTTP(S) URL without credentials, query, or fragment`);
     }
     return url.toString().replace(/\/$/, '');
 }
@@ -32,8 +32,15 @@ function requireBrowserProtocol(origin, label, allowedProtocols) {
     return origin;
 }
 
-const internalApiUrl = serverHttpUrl(process.env.INTERNAL_API_URL || 'http://api:3000/v1');
-const internalApiV2Url = serverHttpUrl(process.env.INTERNAL_API_V2_URL || 'http://api-v2:3002/v2');
+const internalApiV2Url = serverHttpUrl(
+    process.env.INTERNAL_API_V2_URL || 'http://api-v2:3002/v2',
+    'INTERNAL_API_V2_URL',
+);
+// Legacy rewrites exist only in the explicit local E2E fixture. Production
+// never reads this value, so a public v1 route cannot be re-enabled by env.
+const localE2eLegacyApiUrl = !isProduction && process.env.LUNCHLINEUP_E2E_LEGACY_API_URL
+    ? serverHttpUrl(process.env.LUNCHLINEUP_E2E_LEGACY_API_URL, 'LUNCHLINEUP_E2E_LEGACY_API_URL')
+    : null;
 const configuredConnectOrigins = [
     requireBrowserProtocol(
         browserOrigin(process.env.NEXT_PUBLIC_API_URL),
@@ -136,18 +143,18 @@ const nextConfig = {
         ];
     },
 
-    // API v2 owns browser traffic. The v1 rewrite remains only for API-03
-    // non-browser compatibility while external integrations are migrated.
+    // API v2 owns browser traffic. v1 is reachable only inside an explicitly
+    // configured local E2E fixture; no production server rewrite exists.
     async rewrites() {
         return [
             {
                 source: '/api/v2/:path*',
                 destination: `${internalApiV2Url}/:path*`,
             },
-            {
+            ...(localE2eLegacyApiUrl ? [{
                 source: '/api/v1/:path*',
-                destination: `${internalApiUrl}/:path*`,
-            },
+                destination: `${localE2eLegacyApiUrl}/:path*`,
+            }] : []),
         ];
     },
 };

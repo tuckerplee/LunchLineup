@@ -12,7 +12,7 @@
     "lint": "turbo run lint",
     "postinstall": "npm run generate --workspace @lunchlineup/db",
     "test": "turbo run test",
-    "test:migration": "node --test tests/deploy/*.test.mjs tests/hygiene/*.test.mjs tests/migration/*.test.mjs infrastructure/terraform/production/*.test.mjs",
+    "test:migration": "node scripts/run-migration-tests.mjs",
     "test:integration": "node --test --test-concurrency=1 tests/integration/*.test.mjs",
     "audit:prod": "node scripts/audit-prod.mjs",
     "seed:e2e": "node scripts/seed-e2e.mjs",

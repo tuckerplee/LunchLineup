@@ -23,6 +23,8 @@ const bashPath = process.platform === 'win32' && existsSync('C:\\Program Files\\
   ? 'C:\\Program Files\\Git\\bin\\bash.exe'
   : 'bash';
 const bashAvailable = spawnSync(bashPath, ['--version'], { encoding: 'utf8' }).status === 0;
+// The timeout fixtures use a 45-second child below, so this proves timely
+// cancellation rather than accepting a natural completion.
 const fixtureDeadlineAssertionMs = process.platform === 'win32' ? 20_000 : 10_000;
 const sourceSha = '0123456789abcdef0123456789abcdef01234567';
 const secondarySha = 'b'.repeat(40);
@@ -111,7 +113,9 @@ if [[ "\${FAKE_SSH_HANG:-false}" == "true" ]] \
     [[ "$transport_pid" =~ ^[1-9][0-9]*$ ]] || exit 97
     (sleep 1; kill -TERM "$transport_pid") &
   fi
-  exec sleep 10
+  hang_seconds="\${FAKE_SSH_HANG_SECONDS:-10}"
+  [[ "$hang_seconds" =~ ^[1-9][0-9]*$ ]] || exit 98
+  exec sleep "$hang_seconds"
 fi
 
 if [[ "$has_stdin_script" == "true" && "$remote_deploy" != "true" ]]; then
@@ -496,6 +500,7 @@ test('VM217 deploy timeout always runs bounded exact-state reconciliation withou
     const startedAt = Date.now();
     const result = runFixture(fixture, {
       FAKE_REMOTE_DEPLOY_HANG: 'true',
+      FAKE_SSH_HANG_SECONDS: '45',
       VM217_SSH_COMMAND_TIMEOUT_SECONDS: '1',
       VM217_MUTATION_BUDGET_SECONDS: '30',
       VM217_TRANSPORT_KILL_AFTER_SECONDS: '1',
@@ -607,6 +612,20 @@ test('shared reconciliation proves exact retained pointer, service owner, public
   );
 });
 
+test('VM217 transport deadlines use the shared complete process-tree owner', () => {
+  const deadlines = read('scripts/vm217-transport-deadlines.sh');
+  const transport = read('scripts/deploy-vm217-transport.sh');
+  const boundedCommand = read('scripts/run-bounded-command.mjs');
+  assert.match(deadlines, /run-bounded-command\.mjs/);
+  assert.match(deadlines, /MSYS2_ARG_CONV_EXCL='\*'/);
+  assert.match(deadlines, /LUNCHLINEUP_BOUNDED_COMMAND_PRESERVE_MSYS_ARGUMENTS=1/);
+  assert.match(deadlines, /--timeout-seconds "\$deadline_seconds"/);
+  assert.match(deadlines, /--kill-after-seconds "\$VM217_TRANSPORT_KILL_AFTER_SECONDS"/);
+  assert.doesNotMatch(deadlines, /\n\s*timeout\s+\\/);
+  assert.match(transport, /for command_name in awk base64 chmod git mktemp node rm scp sha256sum ssh stat;/);
+  assert.match(boundedCommand, /PRESERVED_MSYS_ARGUMENTS_MARKER/);
+});
+
 test('shared reconciliation uses the real Compose proxy/pdf-parser contract and rejects missing, unhealthy, or mixed services', { skip: !bashAvailable }, () => {
   const contract = realComposeReconciliationContract();
   assert.match(contract.services.proxy.image, /^caddy:2-alpine@sha256:[a-f0-9]{64}$/);
@@ -664,6 +683,7 @@ test('VM217 remote cleanup has its own deadline and preserves timeout status', {
     const startedAt = Date.now();
     const result = runFixture(fixture, {
       FAKE_SSH_CLEANUP_HANG: 'true',
+      FAKE_SSH_HANG_SECONDS: '45',
       VM217_SSH_CLEANUP_TIMEOUT_SECONDS: '1',
       VM217_TRANSPORT_KILL_AFTER_SECONDS: '1',
     });

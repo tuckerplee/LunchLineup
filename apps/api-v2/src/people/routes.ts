@@ -48,6 +48,7 @@ export type PeopleRouteDependencies = {
     | 'reissueInvitation'
     | 'resetPin'
     | 'replaceOwnPin'
+    | 'deactivate'
     | 'access'
     | 'replaceAccess'
     | 'createRole'
@@ -382,5 +383,22 @@ export async function registerPeopleRoutes(
     const response = await dependencies.people.get(identity, request.params.userId);
     reply.header('Cache-Control', 'private, no-store');
     return response;
+  });
+
+  app.delete<{ Params: { userId: string } }>('/v2/users/:userId', {
+    schema: {
+      operationId: 'deleteStaffMember',
+      summary: 'Deactivate a staff member',
+      description: 'Tombstones one staff account and atomically clears its editable schedule and availability-import lifecycle state.',
+      tags: ['People'],
+      params: StaffPathSchema,
+      response: { 204: Type.Null(), ...PeopleRouteProblemResponses },
+    },
+  }, async (request, reply) => {
+    assertUnsafeRequestSecurity(request, dependencies.config);
+    const identity = await authenticate(request, reply, dependencies, { mfa: true });
+    requirePermissions(identity, ['users:admin']);
+    await dependencies.people.deactivate(identity, request.params.userId);
+    reply.code(204).header('Cache-Control', 'private, no-store').send();
   });
 }

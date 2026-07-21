@@ -238,9 +238,8 @@ prepare_runtime_env() {
   upsert_env NEXT_PUBLIC_APP_URL "$PUBLIC_APP_ORIGIN"
   upsert_env NEXT_PUBLIC_APP_ENV "development"
   upsert_env NEXT_PUBLIC_API_URL "/api/v2"
-  upsert_env INTERNAL_API_URL "http://api:3000/v1"
   upsert_env INTERNAL_API_V2_URL "http://api-v2:3002/v2"
-  upsert_env LUNCHLINEUP_STATUS_HEALTH_URL "http://api:3000/health"
+  upsert_env LUNCHLINEUP_STATUS_HEALTH_URL "http://api-v2:3002/v2/ready"
   upsert_env NEXT_PUBLIC_OIDC_ENABLED false
   upsert_env OIDC_ENABLED false
   upsert_env COOKIE_SECURE "$cookie_secure"

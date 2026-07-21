@@ -13,18 +13,21 @@ function authUser(overrides: Partial<{
   publicUserId: string;
   role: string;
   legacyRole: string;
+  roleLabel: string;
+  workspaceName: string;
+  workspaceScope: string;
+  sessionScope: string;
   permissions: string[];
   roles: Array<{ id: string; name: string }>;
 }> = {}) {
   return {
-    sub: 'user-1',
     publicUserId: overrides.publicUserId ?? 'f6776d21-bb21-4c35-a6ed-5da8df5ed238',
-    role: overrides.role ?? 'Admin',
-    legacyRole: overrides.legacyRole ?? 'ADMIN',
-    tenantId: 'tenant-1',
-    sessionId: 'session-1',
+    role: overrides.legacyRole ?? 'ADMIN',
+    roleLabel: overrides.roleLabel ?? overrides.role ?? 'Admin',
+    workspaceName: overrides.workspaceName ?? 'Demo Workspace',
+    workspaceScope: overrides.workspaceScope ?? 'A'.repeat(43),
+    sessionScope: overrides.sessionScope ?? 'B'.repeat(43),
     permissions: overrides.permissions ?? ['dashboard:access', 'shifts:read'],
-    roles: overrides.roles ?? [{ id: 'role-1', name: 'Admin' }],
   };
 }
 
@@ -413,8 +416,8 @@ describe('web auth proxy', () => {
     const response = await proxy(makeRequest('/dashboard', 'access_token=access-token'));
 
     expect(response.status).toBe(503);
-    expect(response.headers.get('x-user-id')).toBeNull();
-    expect(response.headers.get('x-user-role')).toBeNull();
+    expect(response.headers.get('x-lunchlineup-user-public-id')).toBeNull();
+    expect(response.headers.get('x-lunchlineup-user-role')).toBeNull();
     expect(await response.text()).toBe('Authentication service temporarily unavailable. Please retry.');
   });
 
@@ -429,7 +432,7 @@ describe('web auth proxy', () => {
     const response = await proxy(makeRequest('/dashboard/staff', 'access_token=access-token'));
 
     expect(response.status).toBe(503);
-    expect(response.headers.get('x-middleware-request-x-user-public-id')).toBeNull();
+    expect(response.headers.get('x-middleware-request-x-lunchlineup-user-public-id')).toBeNull();
   });
 
   it.each([
@@ -449,22 +452,18 @@ describe('web auth proxy', () => {
     const response = await proxy(makeRequest('/dashboard/payroll', 'access_token=access-token'));
 
     expect(response.status).toBe(200);
-    expect(response.headers.get('x-middleware-request-x-user-role')).toBe(legacyRole);
-    expect(response.headers.get('x-middleware-request-x-user-public-id')).toBe('f6776d21-bb21-4c35-a6ed-5da8df5ed238');
-    expect(response.headers.get('x-middleware-request-x-user-permissions')).toContain('payroll:read');
+    expect(response.headers.get('x-middleware-request-x-lunchlineup-user-role')).toBe(legacyRole);
+    expect(response.headers.get('x-middleware-request-x-lunchlineup-user-public-id')).toBe('f6776d21-bb21-4c35-a6ed-5da8df5ed238');
+    expect(response.headers.get('x-middleware-request-x-lunchlineup-user-permissions')).toContain('payroll:read');
   });
 
-  it('accepts delimiter-bearing API role names and forwards only bounded role IDs', async () => {
+  it('does not forward a role label or any private role keys into server-component headers', async () => {
     const roleName = 'Payroll, Closing | Lead / West';
     vi.stubGlobal('fetch', vi.fn().mockResolvedValueOnce(new Response(JSON.stringify({
       user: authUser({
         role: roleName,
         legacyRole: 'STAFF',
         permissions: ['dashboard:access', 'payroll:read'],
-        roles: [
-          { id: 'role-payroll-closing', name: roleName },
-          { id: 'role-audit', name: 'Audit; Export' },
-        ],
       }),
     }), {
       status: 200,
@@ -472,84 +471,55 @@ describe('web auth proxy', () => {
     })));
 
     const response = await proxy(makeRequest('/dashboard/payroll', 'access_token=access-token'));
-    const forwardedRoles = response.headers.get('x-middleware-request-x-user-roles');
+    const headers = JSON.stringify([...response.headers]);
 
     expect(response.status).toBe(200);
-    expect(forwardedRoles).toBe('role-payroll-closing,role-audit');
-    expect(forwardedRoles).not.toContain(roleName);
-    expect(response.headers.get('x-middleware-request-x-user-role')).toBe('STAFF');
+    expect(response.headers.get('x-middleware-request-x-lunchlineup-user-role')).toBe('STAFF');
+    expect(headers).not.toContain(roleName);
+    expect(headers).not.toContain('x-user-id');
+    expect(headers).not.toContain('x-user-roles');
   });
 
-  it.each([
-    ['primary role name', { role: 'Payroll\r\nx-user-role: SUPER_ADMIN' }],
-    ['assigned role name', { roles: [{ id: 'role-1', name: 'Payroll\nLead' }] }],
-  ])('tolerates legacy control-bearing %s while forwarding only canonical role ids', async (_label, overrides) => {
+  it.each(['sub', 'tenantId', 'sessionId', 'roles', 'legacyRole'] as const)(
+    'rejects a public session response containing private %s fields',
+    async (field) => {
+      const privateValue = field === 'roles' ? [{ id: 'role-internal', name: 'Admin' }] : 'private-value';
+      vi.stubGlobal('fetch', vi.fn().mockResolvedValueOnce(new Response(JSON.stringify({
+        user: { ...authUser(), [field]: privateValue },
+      }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      })));
+
+      const response = await proxy(makeRequest('/dashboard', 'access_token=access-token'));
+
+      expect(response.status).toBe(503);
+      expect(response.headers.get('x-middleware-request-x-lunchlineup-user-public-id')).toBeNull();
+    },
+  );
+
+  it('removes attacker-supplied legacy identity headers before forwarding the verified public envelope', async () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValueOnce(new Response(JSON.stringify({
-      user: authUser(overrides),
+      user: authUser(),
     }), {
       status: 200,
       headers: { 'content-type': 'application/json' },
     })));
 
-    const response = await proxy(makeRequest('/dashboard', 'access_token=access-token'));
-
-    expect(response.status).toBe(200);
-    expect(response.headers.get('x-middleware-request-x-user-roles')).toBe('role-1');
-    expect(response.headers.get('x-middleware-request-x-user-role')).toBe('ADMIN');
-    expect(JSON.stringify([...response.headers])).not.toContain('Payroll\nLead');
-    expect(JSON.stringify([...response.headers])).not.toContain('SUPER_ADMIN');
-  });
-
-  it('rejects a delimiter-bearing assigned role id before forwarding identity headers', async () => {
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValueOnce(new Response(JSON.stringify({
-      user: authUser({ roles: [{ id: 'role-1,role-admin', name: 'Payroll Lead' }] }),
-    }), {
-      status: 200,
-      headers: { 'content-type': 'application/json' },
-    })));
-
-    const response = await proxy(makeRequest('/dashboard', 'access_token=access-token'));
-
-    expect(response.status).toBe(503);
-    expect(response.headers.get('x-middleware-request-x-user-roles')).toBeNull();
-    expect(response.headers.get('x-middleware-request-x-user-role')).toBeNull();
-  });
-
-  it('accepts exactly 100 assigned role ids without locking out the protected route', async () => {
-    const roles = Array.from({ length: 100 }, (_, index) => ({
-      id: `role-${index + 1}`,
-      name: `Role ${index + 1}`,
+    const response = await proxy(new NextRequest('http://localhost:3100/dashboard', {
+      headers: {
+        cookie: 'access_token=access-token',
+        'x-user-id': 'attacker-user',
+        'x-tenant-id': 'attacker-tenant',
+        'x-user-roles': 'role-admin',
+      },
     }));
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValueOnce(new Response(JSON.stringify({
-      user: authUser({ roles }),
-    }), {
-      status: 200,
-      headers: { 'content-type': 'application/json' },
-    })));
-
-    const response = await proxy(makeRequest('/dashboard', 'access_token=access-token'));
-    const forwardedRoleIds = response.headers.get('x-middleware-request-x-user-roles')?.split(',') ?? [];
 
     expect(response.status).toBe(200);
-    expect(forwardedRoleIds).toEqual(roles.map((role) => role.id));
-  });
-
-  it('rejects 101 assigned roles before constructing an unbounded identity header', async () => {
-    const roles = Array.from({ length: 101 }, (_, index) => ({
-      id: `role-${index + 1}`,
-      name: `Role ${index + 1}`,
-    }));
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValueOnce(new Response(JSON.stringify({
-      user: authUser({ roles }),
-    }), {
-      status: 200,
-      headers: { 'content-type': 'application/json' },
-    })));
-
-    const response = await proxy(makeRequest('/dashboard', 'access_token=access-token'));
-
-    expect(response.status).toBe(503);
+    expect(response.headers.get('x-middleware-request-x-user-id')).toBeNull();
+    expect(response.headers.get('x-middleware-request-x-tenant-id')).toBeNull();
     expect(response.headers.get('x-middleware-request-x-user-roles')).toBeNull();
+    expect(response.headers.get('x-middleware-request-x-lunchlineup-user-public-id')).toBe('f6776d21-bb21-4c35-a6ed-5da8df5ed238');
   });
 
   it.each(['Admin', 'admin', 'STAFF\u0130', 'SUPER_ADMIN\r\nx-user-role: SUPER_ADMIN']) (
@@ -565,7 +535,7 @@ describe('web auth proxy', () => {
       const response = await proxy(makeRequest('/dashboard', 'access_token=access-token'));
 
       expect(response.status).toBe(503);
-      expect(response.headers.get('x-middleware-request-x-user-role')).toBeNull();
+      expect(response.headers.get('x-middleware-request-x-lunchlineup-user-role')).toBeNull();
     },
   );
 
@@ -609,7 +579,7 @@ describe('web auth proxy', () => {
     const response = await proxy(makeRequest('/dashboard', 'access_token=access-token'));
 
     expect(response.status).toBe(503);
-    expect(response.headers.get('x-user-id')).toBeNull();
+    expect(response.headers.get('x-lunchlineup-user-public-id')).toBeNull();
   });
 
 

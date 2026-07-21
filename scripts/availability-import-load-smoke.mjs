@@ -103,7 +103,7 @@ export function buildEntitlementEvidence(matrix, requestCount, creditSourceAttes
     evidenceType: "availability-import-entitlement",
     status: "passed",
     verifiedAt: verifiedAt.toISOString(),
-    endpoint: "/api/v1/billing/features",
+    endpoint: "/api/v2/billing/features",
     tenantStatus: matrix.status,
     paidStripeSubscriptionVerified: true,
     stripeSubscriptionPresent: matrix.stripeSubscriptionPresent,
@@ -321,7 +321,7 @@ export async function runAvailabilityImportLoadSmoke() {
   );
 
   const basePath = target.pathname === "/" ? "" : target.pathname;
-  const apiBase = target.origin + basePath + "/api/v1";
+  const apiBase = target.origin + basePath + "/api/v2";
   const auth = await authenticate(apiBase);
   const targetUser = await resolveTargetUser(
     apiBase,

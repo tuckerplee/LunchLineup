@@ -236,8 +236,8 @@ function assertOidcRedirectUri(context, key, domain) {
     return;
   }
 
-  if (url.pathname !== '/api/v1/auth/callback') {
-    collector.fail(`${key} must end at /api/v1/auth/callback for the public API callback route.`);
+  if (url.pathname !== '/api/v2/auth/callback') {
+    collector.fail(`${key} must end at /api/v2/auth/callback for the public API callback route.`);
     return;
   }
 

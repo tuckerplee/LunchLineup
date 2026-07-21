@@ -69,7 +69,7 @@ release_root="/opt/lunchlineup/releases/$release_sha"
 runtime_env="$(readlink -f /var/lib/lunchlineup/runtime-env/current)"
 docker compose --project-name lunchlineup --project-directory "$release_root" --env-file "$runtime_env" -f "$release_root/docker-compose.yml" ps
 curl -fsS https://lunchlineup.com/health
-curl -fsS https://lunchlineup.com/api/v1/health
+curl -fsS https://lunchlineup.com/api/v2/ready
 docker inspect --format '{{.State.Health.Status}}' $(docker compose --project-name lunchlineup --project-directory "$release_root" --env-file "$runtime_env" -f "$release_root/docker-compose.yml" ps -q worker engine webhook-replay prometheus alertmanager)
 test -s /var/lib/lunchlineup/proofs/deploy-$(cat /opt/lunchlineup/DEPLOYED_GIT_SHA).json
 ```

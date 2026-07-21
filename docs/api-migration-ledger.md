@@ -14,13 +14,13 @@ Exit criteria:
 - old `POST|PUT|DELETE /shifts/{id}` browser mutations cannot be addressed through API v2;
 - build, unit, migration, browser, deployment, and live-beta checks pass.
 
-The shared catalog contains 121 explicit application operations. `GET /auth/me`, the six location operations, 16 People operations, nine Operations resources, six Time Card resources, 17 Payroll operations, three Notification operations, and four workspace Settings resources are native; 59 operations remain behind a compatibility owner:
+The shared catalog contains 121 explicit application operations. `GET /auth/me`, the six location operations, all 17 People operations, nine Operations resources, six Time Card resources, 17 Payroll operations, three Notification operations, and four workspace Settings resources are native; 58 operations remain behind a compatibility owner:
 
 | Domain | Compatibility operations |
 | --- | ---: |
 | Authentication | 16 |
 | Locations | 0 |
-| People and access | 1 |
+| People and access | 0 |
 | Operational reads and lunch/break planning | 0 |
 | Time cards | 0 |
 | Payroll | 0 |
@@ -34,7 +34,7 @@ These sit beside 11 native scheduling operations. The catalog is defined once in
 
 ## API-02 — Replace retained implementations with native v2 modules
 
-Status: in progress. API-02-LOC, API-02-OPS, API-02-TIME, API-02-PAYROLL, API-02-NOTIFY, and API-02-SETTINGS are complete. API-02-AUTH has a native session boundary but retains its credential/lifecycle operations; API-02-PEOPLE owns 16 of 17 operations and retains the separately tracked staff-deactivation lifecycle extraction. The remaining domain replacements are open.
+Status: in progress. API-02-LOC, API-02-OPS, API-02-TIME, API-02-PAYROLL, API-02-NOTIFY, API-02-SETTINGS, and API-02-PEOPLE are complete. API-02-AUTH has a native session boundary but retains its credential/lifecycle operations. The remaining domain replacements are open.
 
 The API-01 routes are real, explicit public v2 routes, but their mature implementations remain behind bounded server-side compatibility owners. API-02 removes those dependencies domain by domain:
 
@@ -42,7 +42,7 @@ The API-01 routes are real, explicit public v2 routes, but their mature implemen
 | --- | --- | ---: |
 | API-02-AUTH | Login, cookie lifecycle, MFA mutation, reset, OTP, PIN, and OIDC; native session validation and `GET /auth/me` are complete | 16 |
 | API-02-LOC | Native tenant locations plus exact public/internal identifier translation for declared retained domains | 0 |
-| API-02-PEOPLE | Native staff, roles, permissions, PINs, scheduling profiles, invitation commands, and public identifier translation; staff deactivation remains pending lifecycle extraction | 1 |
+| API-02-PEOPLE | Native staff, roles, permissions, PINs, scheduling profiles, invitation commands, deactivation lifecycle, and public identifier translation | 0 |
 | API-02-OPS | Native bounded schedule/shift/roster read models plus direct lunch/break planning, policy, generation, setup, and replacement | 0 |
 | API-02-TIME | Native public time-card lifecycle, active recovery, correction, payroll fencing, and history | 0 |
 | API-02-PAYROLL | Native public payroll policy, period, review, lock, amendment, export, download, and reconciliation | 0 |
@@ -55,11 +55,11 @@ The API-01 routes are real, explicit public v2 routes, but their mature implemen
 
 Each replacement must add specific TypeBox request/response schemas, tenant-scoped native services, public identifiers, authorization tests, and direct database/integration proof before its compatibility operation is deleted. No new operation may be added to the retained catalog; new product work must be native v2.
 
-API-02-AUTH native slice: API v2 now verifies access-token signature, tenant/session revocation, effective role assignments, tenant status, session timeout, MFA policy and Redis MFA marker itself. Cookie sessions rotate at the v2 boundary. Native scheduling rejects incomplete MFA and forced PIN rotation before any domain service runs. The old private `/v1/auth/me` identity adapter has been removed. The remaining 16 credential and lifecycle operations still need native owners, and the public `/auth/me` envelope must be split from the internal authorization context before it stops exposing private storage `sub` and role-key fields to browser consumers.
+API-02-AUTH native slice: API v2 now verifies access-token signature, tenant/session revocation, effective role assignments, tenant status, session timeout, MFA policy and Redis MFA marker itself. Cookie sessions rotate at the v2 boundary. Native scheduling rejects incomplete MFA and forced PIN rotation before any domain service runs. The old private `/v1/auth/me` identity adapter has been removed. `/api/v2/auth/me` now serializes a separate browser-safe envelope: public UUID, canonical role/label, workspace display data, opaque signed scope handles, permissions, and required presentation/MFA state only. It never returns JWT `sub`, raw role keys, tenant/session identifiers, or legacy-role fields. The remaining 16 credential and lifecycle operations still need native owners.
 
 API-02-LOC native slice: `/v2/locations` now owns list, summary, create, read, update, and soft delete with `Location.publicId` as the only browser identifier. It uses TypeBox contracts, tenant-RLS transactions, opaque `name, publicId` pagination, tenant capacity serialization, durable create replay, timezone-history fencing, and draft-revision invalidation. The temporary retained-domain seam translates only exact `locationId` and `locationIds` fields at the server boundary, never arbitrary `id` fields; disposable database proof plus beta deployment, authenticated browser workflow, and live API proof passed.
 
-API-02-PEOPLE native slice: `/v2/users` now owns the tenant directory, role catalog and lifecycle, staff access assignments, invitations and durable encrypted invitation commands, invitation retry/reissue state, PIN reset/rotation, and scheduling profiles. `User.publicId` and `Role.publicId` are the only browser-visible identifiers. Direct native paths use tenant-RLS transactions, live authorization revalidation for mutations, CSRF/MFA gates, public UUID schemas, and tests for public-only serialization. The retained seam translates only exact `userId` and `userIds` fields for declared People/Time/Payroll/Notifications/Imports operations, including the one retained `DELETE /users/:userId` deactivation path. That deletion remains retained until its availability-import cancellation, credit-refund, and storage-cleanup lifecycle can be extracted as a single safe native owner.
+API-02-PEOPLE native slice: `/v2/users` now owns the tenant directory, role catalog and lifecycle, staff access assignments, invitations and durable encrypted invitation commands, invitation retry/reissue state, PIN reset/rotation, scheduling profiles, and deactivation. `User.publicId` and `Role.publicId` are the only browser-visible identifiers. Direct native paths use tenant-RLS transactions, live authorization revalidation for mutations, CSRF/MFA gates, public UUID schemas, and tests for public-only serialization. Native deactivation locks the tenant and live administrator session, rejects self/equal-or-greater access changes, clears only editable shift assignments, fences each affected draft schedule once, cancels/refunds unfinished availability imports with provenance checks, tombstones credentials/PII, revokes sessions, and clears bounded local source files after commit. The retained seam now translates only exact `userId` and `userIds` fields for declared Time/Payroll/Notifications/Imports operations.
 
 API-02-OPS native slice: `/v2/schedules`, `/v2/shifts`, `/v2/shifts/staff-roster`, and the six lunch/break planning resources now use one direct tenant-RLS Operations owner. Every identifier and cursor is a public UUID; Staff receives only its own published assignments. Policy reads and updates remain ledger-free, while persisted generation, setup shifts, and changed individual break plans use tenant-first aggregate locking, paid feature authorization, immutable credit debits, idempotency replay, and draft revision fencing. The existing `/v2/break-generations` scheduling endpoint now calls this owner directly as well, leaving publication and solver behavior as the only retained scheduling seams. Contract, route, and restricted-PostgreSQL integration coverage prove the native owner and its public-ID, replay, credit, no-op, revision, and tenant-isolation boundaries.
 
@@ -74,23 +74,23 @@ API-02-SETTINGS native slice: `/v2/settings` now owns the general, team, and sec
 ## Current known operational residuals
 
 - Beta email delivery: password-email OTP and native staff invitation delivery remain unusable until VM107 receives a valid Resend API key and a provider-verified sender. The API container now resolves and reaches `api.resend.com`; the current runtime key is rejected by the provider with `400 validation_error: API key is invalid`. API-02-AUTH retains OTP transport work; native People invitations durably queue but must not be relied on for delivery until this external credential is updated. The beta password sign-in path remains verified.
-- API-02-AUTH public-envelope cleanup: `/api/v2/auth/me` now includes `publicUserId`, but it still returns private storage `sub` and role-key fields because existing retained browser consumers use them for self-comparisons and recovery payloads. Replace those callers with public resource identifiers, then publish a separate browser-safe session schema with only public identifiers.
+- API-02-AUTH credential/lifecycle migration: the browser-safe session boundary is complete, but the 16 retained authentication operations (login, cookie lifecycle, MFA mutation, reset, OTP, PIN, and OIDC) still execute through the bounded private compatibility owner until native domain services replace them.
 
 ## API-03 — Retire public API v1 exposure
 
-Status: open and blocked by API-02 plus external integration migration.
+Status: public `/api/v1/*` is retired now: Caddy returns terminal `410 Gone` and production Next.js has no v1 rewrite. The legacy NestJS service remains private while API-02 migrates its 58 retained operations. Named provider adapters and the retention operator route are intentionally separate ingress boundaries and still need external configuration/readback proof before their individual rows close.
 
 | Issue | Remaining public-v1 caller or edge | Required closure evidence |
 | --- | --- | --- |
-| API-03-OIDC | OIDC callback configuration | Provider configuration readback and a complete signed login round trip on the replacement path |
-| API-03-STRIPE | Stripe webhook ingress | Endpoint readback, signature/replay tests, and a provider-observed delivery |
-| API-03-METER | Meter-error webhook ingress | Signed replay tests and producer configuration readback |
-| API-03-EMAIL | Email-delivery provider events | Signature/replay tests and provider configuration readback |
-| API-03-RETENTION | Scheduled retention service-token ingress | Private or v2 replacement, systemd environment readback, dry-run proof, and one bounded execution proof |
-| API-03-OPERATORS | Platform-admin runbook commands | Updated commands, authorization proof, and operator rehearsal against the replacement path |
-| API-03-CLIENTS | Legacy or currently unknown API clients | Dated deprecation notice plus live route/edge telemetry showing zero required v1 traffic |
-| API-03-EDGE | Caddy `/api/v1/*` matcher and Next.js v1 rewrite | Removal only after every preceding API-03 issue closes; verify v1 is unreachable and all v2 health/behavior checks stay green |
+| API-03-OIDC | `/api/v2/auth/callback` is the replacement callback; beta currently has no enabled OIDC settings | Provider configuration readback and a complete signed login round trip on the replacement path before enabling OIDC |
+| API-03-STRIPE | Stable raw ingress `/api/webhooks/stripe` privately adapts to the retained handler | Endpoint readback, signature/replay tests, and a provider-observed delivery |
+| API-03-METER | Stable raw ingress `/api/webhooks/stripe/meter-errors` privately adapts to the retained handler | Signed replay tests and producer configuration readback |
+| API-03-EMAIL | Stable raw ingress `/api/webhooks/resend/delivery-events` privately adapts to the retained handler | Signature/replay tests and provider configuration readback after the Resend key/sender update |
+| API-03-RETENTION | `/api/v2/admin/retention/purge-expired` is the v2-only service-token ingress | Systemd environment readback, dry-run proof, and one bounded execution proof |
+| API-03-OPERATORS | Public runbooks target v2; private retained domain work remains behind bounded adapters | Updated commands, authorization proof, and operator rehearsal against the replacement path |
+| API-03-CLIENTS | Unknown external callers now receive terminal `410` | Dated deprecation notice plus live route/edge telemetry showing no required legacy traffic |
+| API-03-EDGE | Complete for public browser/application ingress: terminal v1 response and no production Next.js rewrite | Live `410` proof plus v2 health/behavior checks |
 
-Each caller needs an explicit v2 or private ingress replacement, configuration readback, replay/signature tests where applicable, a dated deprecation window, and live traffic evidence showing no remaining v1 application use before the public v1 edge is removed.
+Each remaining caller needs configuration readback, replay/signature tests where applicable, a dated deprecation window, and live traffic evidence. The edge is already closed; no new public v1 exception may be added.
 
 Health and private metrics are service probes, not tenant application API operations, and remain separately routed.

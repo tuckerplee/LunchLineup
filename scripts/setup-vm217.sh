@@ -140,9 +140,8 @@ sed -i "s|^DATABASE_URL=.*|DATABASE_URL=postgresql://${DB_USER}:${DB_PASS}@postg
 sed -i "s|^REDIS_URL=.*|REDIS_URL=redis://redis:6379|" .env
 sed -i "s|^RABBITMQ_URL=.*|RABBITMQ_URL=amqp://${RABBIT_USER}:${RABBIT_PASS}@rabbitmq:5672|" .env
 sed -i "s|^NEXT_PUBLIC_API_URL=.*|NEXT_PUBLIC_API_URL=/api/v2|" .env
-sed -i "s|^INTERNAL_API_URL=.*|INTERNAL_API_URL=http://api:3000/v1|" .env
 sed -i "s|^INTERNAL_API_V2_URL=.*|INTERNAL_API_V2_URL=http://api-v2:3002/v2|" .env
-sed -i "s|^OIDC_REDIRECT_URI=.*|OIDC_REDIRECT_URI=https://beta.lunchlineup.com/api/v1/auth/callback|" .env
+sed -i "s|^OIDC_REDIRECT_URI=.*|OIDC_REDIRECT_URI=https://beta.lunchlineup.com/api/v2/auth/callback|" .env
 if grep -q "^CADDY_SITE_ADDRESSES=" .env; then
   sed -i "s|^CADDY_SITE_ADDRESSES=.*|CADDY_SITE_ADDRESSES=https://beta.lunchlineup.com, https://www.beta.lunchlineup.com, http://10.10.10.141:80, http://localhost:80, http://127.0.0.1:80, http://proxy:80|" .env
 else
