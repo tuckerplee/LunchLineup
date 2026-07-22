@@ -6,8 +6,18 @@ ENV NPM_CONFIG_AUDIT=false \
     NPM_CONFIG_FUND=false \
     NPM_CONFIG_LOGLEVEL=error \
     NPM_CONFIG_UPDATE_NOTIFIER=false \
+    npm_config_audit=false \
+    npm_config_fund=false \
+    npm_config_loglevel=error \
+    npm_config_update_notifier=false \
+    CHECKPOINT_DISABLE=1 \
+    DO_NOT_TRACK=1 \
+    NEXT_TELEMETRY_DISABLED=1 \
     NO_UPDATE_NOTIFIER=1 \
-    PRISMA_HIDE_UPDATE_MESSAGE=true
+    PRISMA_HIDE_UPDATE_MESSAGE=true \
+    TURBO_TELEMETRY_DISABLED=1
+
+RUN apk update && apk add openssl && rm -rf /var/cache/apk/*
 
 ARG NEXT_PUBLIC_API_URL=/api/v2
 ARG INTERNAL_API_V2_URL=http://api-v2:3002/v2
@@ -59,6 +69,9 @@ ARG NEXT_PUBLIC_APP_ENV=production
 ENV NODE_ENV=production \
     HOME=/home/node \
     TMPDIR=/tmp \
+    CHECKPOINT_DISABLE=1 \
+    NEXT_TELEMETRY_DISABLED=1 \
+    NO_UPDATE_NOTIFIER=1 \
     PRISMA_HIDE_UPDATE_MESSAGE=true \
     NEXT_PUBLIC_API_URL=$NEXT_PUBLIC_API_URL \
     INTERNAL_API_V2_URL=$INTERNAL_API_V2_URL \

@@ -6,8 +6,17 @@ ENV NPM_CONFIG_AUDIT=false \
     NPM_CONFIG_FUND=false \
     NPM_CONFIG_LOGLEVEL=error \
     NPM_CONFIG_UPDATE_NOTIFIER=false \
+    npm_config_audit=false \
+    npm_config_fund=false \
+    npm_config_loglevel=error \
+    npm_config_update_notifier=false \
+    CHECKPOINT_DISABLE=1 \
+    DO_NOT_TRACK=1 \
+    NEXT_TELEMETRY_DISABLED=1 \
     NO_UPDATE_NOTIFIER=1 \
-    PRISMA_HIDE_UPDATE_MESSAGE=true
+    PRISMA_HIDE_UPDATE_MESSAGE=true \
+    TURBO_TELEMETRY_DISABLED=1
+RUN apk update && apk add openssl && rm -rf /var/cache/apk/*
 COPY . .
 RUN npm ci --prefer-offline || npm ci
 RUN npm run build --workspace @lunchlineup/control-plane
@@ -16,7 +25,7 @@ RUN npm run build --workspace @lunchlineup/control-plane
 FROM node:22-alpine@sha256:16e22a550f3863206a3f701448c45f7912c6896a62de43add43bb9c86130c3e2 AS runner
 WORKDIR /app
 ENV NODE_ENV=production
-ENV HOME=/home/node TMPDIR=/tmp PRISMA_HIDE_UPDATE_MESSAGE=true
+ENV HOME=/home/node TMPDIR=/tmp CHECKPOINT_DISABLE=1 NO_UPDATE_NOTIFIER=1 PRISMA_HIDE_UPDATE_MESSAGE=true
 COPY --from=builder /app/apps/control-plane/dist ./dist
 COPY --from=builder /app/node_modules ./node_modules
 COPY --from=builder /app/apps/control-plane/package.json ./package.json

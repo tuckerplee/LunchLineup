@@ -7,8 +7,16 @@ ENV HOME=/home/node \
     NPM_CONFIG_FUND=false \
     NPM_CONFIG_LOGLEVEL=error \
     NPM_CONFIG_UPDATE_NOTIFIER=false \
+    npm_config_audit=false \
+    npm_config_fund=false \
+    npm_config_loglevel=error \
+    npm_config_update_notifier=false \
+    CHECKPOINT_DISABLE=1 \
+    DO_NOT_TRACK=1 \
+    NEXT_TELEMETRY_DISABLED=1 \
     NO_UPDATE_NOTIFIER=1 \
-    PRISMA_HIDE_UPDATE_MESSAGE=true
+    PRISMA_HIDE_UPDATE_MESSAGE=true \
+    TURBO_TELEMETRY_DISABLED=1
 
 RUN apk update && apk add openssl postgresql-client && rm -rf /var/cache/apk/*
 
