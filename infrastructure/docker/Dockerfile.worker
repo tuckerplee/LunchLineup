@@ -1,5 +1,5 @@
 FROM python:3.11-slim@sha256:e031123e3d85762b141ad1cbc56452ba69c6e722ebf2f042cc0dc86c47c0d8b3
-ENV HOME=/home/lunchlineup TMPDIR=/tmp PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
+ENV HOME=/home/lunchlineup TMPDIR=/tmp PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 PIP_DISABLE_PIP_VERSION_CHECK=1 PIP_ROOT_USER_ACTION=ignore
 RUN groupadd --gid 10001 lunchlineup \
     && useradd --uid 10001 --gid lunchlineup --create-home --home-dir /home/lunchlineup --shell /usr/sbin/nologin lunchlineup
 WORKDIR /app
