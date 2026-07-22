@@ -75,6 +75,17 @@ describe('scheduler responsive timeline contract', () => {
     expect(schedulerSource).toMatch(/catch \(error\) \{\s+onTimeSelectionError\?\.\(\(error as Error\)\.message\);/);
     expect(schedulingPageSource).toContain('onTimeSelectionError={(message) => {');
   });
+
+  it('keeps copy and move gestures separate while exposing a touch-friendly duplicate action', () => {
+    expect(schedulerSource).toContain("mode: 'move' | 'copy'");
+    expect(schedulerSource).toContain('(e.shiftKey || e.altKey) && onEventCopy');
+    expect(schedulerSource).toContain("drag.mode === 'copy' ? onEventCopy : onEventChange");
+    expect(schedulerSource).toContain('hold Shift or Alt while dragging to copy');
+    expect(schedulingPageSource).toContain('onEventCopy={capabilities.canWriteShifts && locationDataCurrent');
+    expect(schedulingPageSource).toContain('<Copy size={14} /> Duplicate shift');
+    expect(schedulingPageSource).toContain('clientId: attempt.key');
+    expect(schedulingPageSource).toContain("'Shift copy failed. The source shift was not changed.'");
+  });
 });
 
 describe('scheduler accessibility semantics', () => {

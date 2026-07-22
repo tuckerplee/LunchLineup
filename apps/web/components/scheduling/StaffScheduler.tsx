@@ -33,6 +33,7 @@ type CoverageTone = 'healthy' | 'risk' | 'critical';
 
 type DragState = {
     eventId: string;
+    mode: 'move' | 'copy';
     startX: number;
     startY: number;
     currentY: number;
@@ -60,6 +61,7 @@ interface StaffSchedulerProps {
     timeZone: string;
     compactWindow?: boolean;
     onEventChange?: (eventId: string, newStart: string, newEnd: string, newResourceId: string) => void;
+    onEventCopy?: (eventId: string, newStart: string, newEnd: string, newResourceId: string) => void;
     onEventSelect?: (event: StaffScheduleEvent) => void;
     onEventDelete?: (event: StaffScheduleEvent) => void;
     onSlotSelect?: (slot: StaffScheduleSlotSelection) => void;
@@ -100,7 +102,7 @@ function clamp(n: number, min: number, max: number): number {
     return Math.max(min, Math.min(max, n));
 }
 
-export function StaffScheduler({ resources, events, viewMode, initialDate, timeZone, compactWindow = true, onEventChange, onEventSelect, onEventDelete, onSlotSelect, onTimeSelectionError }: StaffSchedulerProps) {
+export function StaffScheduler({ resources, events, viewMode, initialDate, timeZone, compactWindow = true, onEventChange, onEventCopy, onEventSelect, onEventDelete, onSlotSelect, onTimeSelectionError }: StaffSchedulerProps) {
     const [drag, setDrag] = useState<DragState | null>(null);
     const [dragDeltaHours, setDragDeltaHours] = useState(0);
     const [shiftAction, setShiftAction] = useState<ShiftActionState | null>(null);
@@ -221,24 +223,27 @@ export function StaffScheduler({ resources, events, viewMode, initialDate, timeZ
         return { positionedShifts: shifts, breakMarkersByShift: markers };
     }, [dayStarts, events, hourWidth, maxHour, minHour, timeZone]);
     const dragHint = useMemo(() => {
-        if (!drag) return 'Drag horizontally to change time, drag vertically to reassign, or click a shift to edit.';
-        if (dragDeltaHours === 0) return 'Release on a staff row to reassign without changing time.';
+        if (!drag) return 'Drag to move, hold Shift or Alt while dragging to copy, or click a shift to edit.';
+        if (dragDeltaHours === 0) return drag.mode === 'copy'
+            ? 'Release on another staff row to copy this shift.'
+            : 'Release on a staff row to reassign without changing time.';
         const minutes = Math.round(Math.abs(dragDeltaHours) * 60);
         const duration = minutes < 60
             ? `${minutes} minutes`
             : `${Math.floor(minutes / 60)}h${minutes % 60 ? ` ${minutes % 60}m` : ''}`;
-        return `Release to save ${duration} ${dragDeltaHours > 0 ? 'later' : 'earlier'}.`;
+        return `Release to ${drag.mode === 'copy' ? 'copy' : 'save'} ${duration} ${dragDeltaHours > 0 ? 'later' : 'earlier'}.`;
     }, [drag, dragDeltaHours]);
 
     const handleDragStart = (e: React.PointerEvent<HTMLButtonElement>, event: StaffScheduleEvent) => {
-        if (event.extendedProps.kind || !onEventChange || e.button !== 0) return;
+        const mode = (e.shiftKey || e.altKey) && onEventCopy ? 'copy' : 'move';
+        if (event.extendedProps.kind || (mode === 'copy' ? !onEventCopy : !onEventChange) || e.button !== 0) return;
         const originalStart = instantToWallClockDate(event.start, timeZone);
         const originalEnd = instantToWallClockDate(event.end, timeZone);
         e.currentTarget.setPointerCapture(e.pointerId);
         setShiftAction(null);
         setPendingDeleteEventId(null);
         suppressShiftClickRef.current = false;
-        setDrag({ eventId: event.id, startX: e.clientX, startY: e.clientY, currentY: e.clientY, originalStart, originalEnd });
+        setDrag({ eventId: event.id, mode, startX: e.clientX, startY: e.clientY, currentY: e.clientY, originalStart, originalEnd });
         setDragDeltaHours(0);
     };
 
@@ -281,7 +286,8 @@ export function StaffScheduler({ resources, events, viewMode, initialDate, timeZ
                 try {
                     const startIso = wallClockDateToIso(newStart, timeZone);
                     const endIso = wallClockDateToIso(newEnd, timeZone);
-                    onEventChange?.(event.id, startIso, endIso, newResourceId ?? event.resourceId);
+                    const applyChange = drag.mode === 'copy' ? onEventCopy : onEventChange;
+                    applyChange?.(event.id, startIso, endIso, newResourceId ?? event.resourceId);
                 } catch (error) {
                     onTimeSelectionError?.((error as Error).message);
                 }
@@ -289,7 +295,8 @@ export function StaffScheduler({ resources, events, viewMode, initialDate, timeZ
         } else if (newResourceId) {
             const event = events.find((ev) => ev.id === drag.eventId);
             if (event && newResourceId !== event.resourceId) {
-                onEventChange?.(event.id, event.start, event.end, newResourceId);
+                const applyChange = drag.mode === 'copy' ? onEventCopy : onEventChange;
+                applyChange?.(event.id, event.start, event.end, newResourceId);
             }
         }
 
@@ -470,7 +477,7 @@ export function StaffScheduler({ resources, events, viewMode, initialDate, timeZ
                                                     onClick={(ev) => handleShiftClick(ev, event)}
                                                     className="shift-block"
                                                     aria-label={`Edit ${event.title} shift, ${start} to ${end}`}
-                                                    title={`${event.title}, ${start} to ${end}. Click to edit or drag to move.`}
+                                                    title={`${event.title}, ${start} to ${end}. Click to edit, drag to move, or hold Shift or Alt while dragging to copy.`}
                                                     style={{
                                                         left,
                                                         width: event.width,

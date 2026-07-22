@@ -207,6 +207,80 @@ test.describe('Authenticated scheduling SaaS readiness', () => {
     });
   });
 
+  test('duplicates a shift from the editor and copies it with modifier drag', async ({ page }) => {
+    await loginAsSeedAdmin(page, '/dashboard/scheduling');
+    await expect(page.getByRole('heading', { name: 'Calendar' })).toBeVisible();
+
+    await page.getByRole('button', { name: /Add shift/ }).click();
+    const createForm = page.locator('form.shift-form');
+    await createForm.locator('select').first().selectOption({ label: 'Mock Staff' });
+    await createForm.getByLabel('Start').fill('10:00');
+    await createForm.getByLabel('End').fill('18:00');
+    const sourceDate = await createForm.getByLabel('Date').inputValue();
+    await createForm.getByRole('button', { name: 'Create shift' }).click();
+    await expect(page.getByText(/Shift created and saved/)).toBeVisible();
+
+    const sourceShift = page
+      .locator('.timeline-row[data-resource-title="Mock Staff"] .shift-block')
+      .filter({ hasText: '10:00-18:00' })
+      .first();
+    await expect(sourceShift).toBeVisible();
+    await sourceShift.click();
+
+    const editDialog = page.getByRole('dialog', { name: 'Edit shift' });
+    await expect(editDialog.getByRole('button', { name: 'Duplicate shift' })).toBeVisible();
+    await editDialog.getByRole('button', { name: 'Duplicate shift' }).click();
+
+    const duplicateDialog = page.getByRole('dialog', { name: 'Create shift' });
+    const expectedNextDate = new Date(`${sourceDate}T12:00:00.000Z`);
+    expectedNextDate.setUTCDate(expectedNextDate.getUTCDate() + 1);
+    await expect(duplicateDialog.getByLabel('Date')).toHaveValue(expectedNextDate.toISOString().slice(0, 10));
+    await expect(duplicateDialog.getByLabel('Start')).toHaveValue('10:00');
+    await expect(duplicateDialog.getByLabel('End')).toHaveValue('18:00');
+    await expect(duplicateDialog.getByRole('button', { name: 'Create shift' })).toBeEnabled();
+    await duplicateDialog.getByRole('button', { name: 'Cancel' }).click();
+
+    const destinationRow = page.locator('.timeline-row[data-resource-title="Mock Manager"]');
+    await expect(destinationRow).toBeVisible();
+    const sourceBox = await sourceShift.boundingBox();
+    const destinationBox = await destinationRow.boundingBox();
+    expect(sourceBox).not.toBeNull();
+    expect(destinationBox).not.toBeNull();
+
+    const copyRequestPromise = page.waitForRequest((request) =>
+      request.method() === 'POST'
+      && /\/api\/v2\/schedules\/[0-9a-f-]{36}\/change-sets$/.test(new URL(request.url()).pathname));
+    await page.keyboard.down('Shift');
+    try {
+      await page.mouse.move(sourceBox!.x + sourceBox!.width / 2, sourceBox!.y + sourceBox!.height / 2);
+      await page.mouse.down();
+      await page.mouse.move(
+        sourceBox!.x + sourceBox!.width / 2,
+        destinationBox!.y + destinationBox!.height / 2,
+        { steps: 8 },
+      );
+      await page.mouse.up();
+    } finally {
+      await page.keyboard.up('Shift');
+    }
+
+    const copyRequest = await copyRequestPromise;
+    expect(copyRequest.headers()['idempotency-key']).toMatch(/^[0-9a-f-]{36}:shift$/i);
+    expect(copyRequest.postDataJSON()).toEqual({
+      operations: [{
+        op: 'shift.create',
+        clientId: expect.stringMatching(/^[0-9a-f-]{36}$/i),
+        userId: v2Ids.manager,
+        role: 'STAFF',
+        startTime: expect.any(String),
+        endTime: expect.any(String),
+      }],
+    });
+    await expect(page.getByText(/Shift copied at/)).toBeVisible();
+    await expect(destinationRow.locator('.shift-block').filter({ hasText: '10:00-18:00' })).toBeVisible();
+    await expect(sourceShift).toBeVisible();
+  });
+
   test('creates and edits an overnight shift inside the containing weekly draft', async ({ page }) => {
     await loginAsSeedAdmin(page, '/dashboard/scheduling?date=2026-07-11');
     await expect(page.getByRole('heading', { name: 'Calendar' })).toBeVisible();
