@@ -3,6 +3,7 @@ import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 const playwrightConfig = readFileSync(resolve(__dirname, '../../playwright.config.ts'), 'utf8');
+const mockApi = readFileSync(resolve(__dirname, '../e2e/mock-api.mjs'), 'utf8');
 const ciWorkflow = readFileSync(resolve(__dirname, '../../../../.github/workflows/ci.yml'), 'utf8');
 
 describe('Playwright mock harness contract', () => {
@@ -12,6 +13,20 @@ describe('Playwright mock harness contract', () => {
     );
     expect(playwrightConfig).toContain('? `npm run dev -- -H 127.0.0.1 -p ${e2ePort}`');
     expect(playwrightConfig).toContain("NODE_ENV: 'development'");
+  });
+
+  it('serves the native browser-session routes used by the authenticated proxy', () => {
+    expect(playwrightConfig).toContain('INTERNAL_API_V2_URL: `${mockApiBaseUrl}/v2`');
+    expect(mockApi).toContain("pathname === '/v2/auth/me'");
+    expect(mockApi).toContain("pathname === '/v2/auth/refresh'");
+    expect(mockApi).toContain('browserSessionUser(user)');
+    expect(mockApi).toContain('publicUserId: user.publicUserId');
+    expect(mockApi).toContain("browserScope(`workspace:${user.tenantId}`)");
+    expect(mockApi).toContain('id: account.publicUserId');
+  });
+
+  it('points the rendered status page at the explicit dependency-health fixture', () => {
+    expect(playwrightConfig).toContain('LUNCHLINEUP_STATUS_HEALTH_URL: `${mockApiBaseUrl}/health`');
   });
 
   it('supports explicit closed-beta rendering without weakening the default open test harness', () => {

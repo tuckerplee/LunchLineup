@@ -2021,6 +2021,7 @@ describe('AdminController user directory pagination', () => {
 
     const makeUser = (index: number, overrides: Record<string, unknown> = {}) => ({
         id: 'user-' + String(index).padStart(3, '0'),
+        publicId: `20000000-0000-4000-8000-${String(index).padStart(12, '0')}`,
         name: 'User ' + index,
         email: 'user' + index + '@example.com',
         username: 'user' + index,
@@ -2066,20 +2067,23 @@ describe('AdminController user directory pagination', () => {
 
         expect(prisma.user.findMany).toHaveBeenNthCalledWith(1, expect.objectContaining({
             where: {},
-            orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+            orderBy: [{ createdAt: 'desc' }, { publicId: 'desc' }],
             take: 201,
         }));
         expect(prisma.user.findMany).toHaveBeenNthCalledWith(2, expect.objectContaining({
             where: {
                 OR: [
                     { createdAt: { lt: allUsers[199].createdAt } },
-                    { createdAt: allUsers[199].createdAt, id: { lt: allUsers[199].id } },
+                    { createdAt: allUsers[199].createdAt, publicId: { lt: allUsers[199].publicId } },
                 ],
             },
             take: 201,
         }));
         expect([...firstPage.data, ...secondPage.data]).toHaveLength(205);
         expect(new Set([...firstPage.data, ...secondPage.data].map((user) => user.id)).size).toBe(205);
+        expect(firstPage.data[0].id).toBe(allUsers[0].publicId);
+        const cursorPayload = JSON.parse(Buffer.from(firstPage.pagination.nextCursor ?? '', 'base64url').toString('utf8'));
+        expect(cursorPayload.id).toBe(allUsers[199].publicId);
         expect(firstPage.pagination).toMatchObject({ returned: 200, hasMore: true });
         expect(secondPage.pagination).toMatchObject({ returned: 5, hasMore: false, nextCursor: null });
     });
@@ -3298,6 +3302,31 @@ describe('AdminController MFA recovery', () => {
             actorUserId: 'admin-1',
             actorTenantId: 'platform-tenant',
             actorSessionId: 'admin-session-1',
+            confirmation: 'reset-mfa:user-1',
+        }));
+    });
+
+    it('resolves a public user UUID while keeping the storage ID inside the retained service', async () => {
+        const publicUserId = '20000000-0000-4000-8000-000000000104';
+        const prisma = addTransactionMock({
+            user: {
+                findUnique: vi.fn().mockResolvedValue({ id: 'user-1', publicId: publicUserId }),
+            },
+        } as any);
+        const controller = buildController(prisma, {} as any);
+        const reset = vi.fn().mockResolvedValue({ id: 'user-1', mfaEnabled: false, sessionsRevoked: 2 });
+        (controller as any).userMfaRecovery = { reset };
+
+        await expect(controller.resetUserMfa(superAdminReq, publicUserId, {
+            confirmation: `reset-mfa:${publicUserId}`,
+            reason: 'Lost all registered MFA factors',
+        })).resolves.toEqual({ id: publicUserId, mfaEnabled: false, sessionsRevoked: 2 });
+        expect(prisma.user.findUnique).toHaveBeenCalledWith({
+            where: { publicId: publicUserId },
+            select: { id: true, publicId: true },
+        });
+        expect(reset).toHaveBeenCalledWith(expect.objectContaining({
+            targetUserId: 'user-1',
             confirmation: 'reset-mfa:user-1',
         }));
     });

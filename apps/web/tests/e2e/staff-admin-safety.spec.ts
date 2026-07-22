@@ -3,6 +3,8 @@ import { expect, test } from '@playwright/test';
 import { loginAsSeedAdmin, loginAsSeedManager, loginAsSeedSuperAdmin, runFullStack } from './support';
 
 const runMockReadiness = process.env.E2E_MOCK_API !== '0' && !runFullStack && !process.env.BASE_URL;
+const DOWNTOWN_LOCATION_ID = '10000000-0000-4000-8000-000000000001';
+const MFA_ADMIN_USER_ID = '20000000-0000-4000-8000-000000000104';
 
 test.describe('Staff and platform admin safety controls', () => {
   test.skip(runFullStack, 'Mock safety coverage is separate from full-stack tenant workflows.');
@@ -98,7 +100,7 @@ test.describe('Staff and platform admin safety controls', () => {
     await editor.getByLabel('Skills').fill('  Line   Cook ');
     await editor.getByRole('button', { name: 'Add skill' }).click();
     await editor.getByRole('button', { name: 'Add window' }).click();
-    await editor.getByLabel('Location').selectOption('loc-downtown');
+    await editor.getByLabel('Location').selectOption(DOWNTOWN_LOCATION_ID);
     await editor.getByLabel('Start').fill('22:00');
     await editor.getByLabel(/End/).fill('02:00');
     await expect(editor.getByText(/overnight/)).toBeVisible();
@@ -109,7 +111,7 @@ test.describe('Staff and platform admin safety controls', () => {
     await staffRow.getByRole('button', { name: 'Edit schedule profile' }).click();
     const reopened = page.getByRole('region', { name: 'Scheduling profile for Mock Staff' });
     await expect(reopened.getByText('line cook')).toBeVisible();
-    await expect(reopened.getByLabel('Location')).toHaveValue('loc-downtown');
+    await expect(reopened.getByLabel('Location')).toHaveValue(DOWNTOWN_LOCATION_ID);
     await expect(reopened.getByLabel('Start')).toHaveValue('22:00');
     await expect(reopened.getByLabel(/End/)).toHaveValue('02:00');
   });
@@ -359,7 +361,7 @@ test.describe('Staff and platform admin safety controls', () => {
     await enrolledRow.getByRole('button').first().click();
     await expect(resetMfaButton).toBeEnabled();
 
-    const confirmation = 'reset-mfa:user-mfa-admin';
+    const confirmation = `reset-mfa:${MFA_ADMIN_USER_ID}`;
     const reason = 'Support verified account ownership.';
     const promptMessages: string[] = [];
     const promptResponses = [confirmation, reason];
@@ -369,13 +371,13 @@ test.describe('Staff and platform admin safety controls', () => {
     });
 
     const resetRequestPromise = page.waitForRequest((request) =>
-      request.method() === 'POST' && request.url().endsWith('/api/v2/admin/users/user-mfa-admin/mfa/reset'),
+      request.method() === 'POST' && request.url().endsWith(`/api/v2/admin/users/${MFA_ADMIN_USER_ID}/mfa/reset`),
     );
     await resetMfaButton.click();
     const resetRequest = await resetRequestPromise;
 
     expect(promptMessages).toEqual([
-      'Type reset-mfa:user-mfa-admin to clear MFA factors and revoke all sessions.',
+      `Type reset-mfa:${MFA_ADMIN_USER_ID} to clear MFA factors and revoke all sessions.`,
       'Enter the support reason for this MFA recovery.',
     ]);
     expect(promptResponses).toHaveLength(0);

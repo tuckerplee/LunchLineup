@@ -3,6 +3,7 @@ import { expect, test, type Page, type Route } from '@playwright/test';
 import { loginAsSeedAdmin, loginAsSeedManager, runFullStack } from './support';
 
 const runMockReadiness = process.env.E2E_MOCK_API !== '0' && !runFullStack && !process.env.BASE_URL;
+const MILLISECONDS_PER_WEEK = 7 * 24 * 60 * 60 * 1000;
 
 const policy = {
   id: 'payroll-policy-1',
@@ -14,6 +15,20 @@ const policy = {
   createdByUserId: 'user-admin',
   createdAt: '2026-07-06T16:00:00.000Z',
 };
+
+function nextWeeklyBoundary(anchorDate: string, timeZone: string): string {
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).formatToParts(new Date());
+  const values = Object.fromEntries(parts.map((part) => [part.type, part.value]));
+  const today = Date.parse(`${values.year}-${values.month}-${values.day}T00:00:00.000Z`);
+  const anchor = Date.parse(`${anchorDate}T00:00:00.000Z`);
+  const periods = Math.max(0, Math.floor((today - anchor) / MILLISECONDS_PER_WEEK) + 1);
+  return new Date(anchor + periods * MILLISECONDS_PER_WEEK).toISOString().slice(0, 10);
+}
 
 function exportBatch(overrides: Record<string, unknown> = {}) {
   return {
@@ -465,11 +480,12 @@ test.describe('Payroll control surface', () => {
     });
     await loginAsSeedAdmin(page, '/dashboard/payroll');
 
+    const futureEffectiveDate = nextWeeklyBoundary(policy.anchorDate, policy.timeZone);
     const effectiveDate = page.getByLabel('Future effective date');
-    await effectiveDate.fill('2026-07-20');
+    await effectiveDate.fill(futureEffectiveDate);
     await page.getByRole('button', { name: 'Create policy version' }).click();
     await expect(page.getByText(/Policy creation is unconfirmed/i)).toBeVisible();
-    await expect(effectiveDate).toHaveValue('2026-07-20');
+    await expect(effectiveDate).toHaveValue(futureEffectiveDate);
     await page.getByRole('button', { name: 'Create policy version' }).click();
     await expect(page.getByText(/Policy version 2 created/i)).toBeVisible();
 

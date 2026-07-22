@@ -71,6 +71,7 @@ const webServer = process.env.BASE_URL
                 ? {
                     NODE_ENV: 'development',
                     INTERNAL_API_V2_URL: `${mockApiBaseUrl}/v2`,
+                    LUNCHLINEUP_STATUS_HEALTH_URL: `${mockApiBaseUrl}/health`,
                     LUNCHLINEUP_E2E_LEGACY_API_URL: `${mockApiBaseUrl}/v1`,
                     NEXT_PUBLIC_API_URL: '/api/v2',
                     NEXT_PUBLIC_SIGNUP_MODE: mockSignupMode,

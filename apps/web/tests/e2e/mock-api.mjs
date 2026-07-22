@@ -24,6 +24,11 @@ const publicIds = {
   uptown: '10000000-0000-4000-8000-000000000002',
   staff: '20000000-0000-4000-8000-000000000001',
   manager: '20000000-0000-4000-8000-000000000002',
+  admin: '20000000-0000-4000-8000-000000000101',
+  managerAccount: '20000000-0000-4000-8000-000000000102',
+  superAdmin: '20000000-0000-4000-8000-000000000103',
+  mfaAdmin: '20000000-0000-4000-8000-000000000104',
+  unenrolledMfaAdmin: '20000000-0000-4000-8000-000000000105',
 };
 const mockMfaSecret = 'JBSWY3DPEHPK3PXP';
 const mockMfaRecoveryCodes = ['LL-4F8K-92HD', 'LL-73QW-1PZM', 'LL-8T2N-6YKC'];
@@ -199,6 +204,7 @@ function resetState() {
   };
   const admin = {
     id: 'user-admin',
+    publicUserId: publicIds.admin,
     sub: 'user-admin',
     tenantId: 'tenant-e2e',
     sessionId: 'session-admin',
@@ -214,6 +220,7 @@ function resetState() {
   const superAdmin = {
     ...admin,
     id: 'user-super-admin',
+    publicUserId: publicIds.superAdmin,
     sub: 'user-super-admin',
     sessionId: 'session-super-admin',
     username: superAdminUsername,
@@ -226,6 +233,7 @@ function resetState() {
   const manager = {
     ...admin,
     id: 'user-manager',
+    publicUserId: publicIds.managerAccount,
     sub: 'user-manager',
     sessionId: 'session-manager',
     username: managerUsername,
@@ -242,6 +250,7 @@ function resetState() {
   const mfaAdmin = {
     ...admin,
     id: 'user-mfa-admin',
+    publicUserId: publicIds.mfaAdmin,
     sub: 'user-mfa-admin',
     sessionId: 'session-mfa-admin',
     username: mfaUsername,
@@ -256,6 +265,7 @@ function resetState() {
   const unenrolledMfaAdmin = {
     ...admin,
     id: 'user-unenrolled-mfa-admin',
+    publicUserId: publicIds.unenrolledMfaAdmin,
     sub: 'user-unenrolled-mfa-admin',
     sessionId: 'session-unenrolled-mfa-admin',
     username: unenrolledMfaUsername,
@@ -276,7 +286,7 @@ function resetState() {
     { account: admin, mfaEnabled: false },
     { account: mfaAdmin, mfaEnabled: true },
   ].map(({ account, mfaEnabled }) => ({
-    id: account.id,
+    id: account.publicUserId,
     name: account.name,
     email: account.email,
     username: account.username,
@@ -644,6 +654,28 @@ function currentUser(req) {
   return token ? state.usersByToken.get(token) ?? null : null;
 }
 
+function browserScope(value) {
+  return crypto.createHash('sha256').update(value).digest('base64url');
+}
+
+function browserSessionUser(user) {
+  return {
+    publicUserId: user.publicUserId,
+    role: user.legacyRole,
+    roleLabel: user.role,
+    workspaceName: user.tenantName,
+    workspaceScope: browserScope(`workspace:${user.tenantId}`),
+    sessionScope: browserScope(`session:${user.tenantId}:${user.sub}:${user.sessionId}`),
+    permissions: [...new Set(user.permissions)].sort(),
+    email: user.email ?? null,
+    username: user.username ?? null,
+    name: user.name ?? null,
+    mfaVerified: user.mfaVerified ?? true,
+    mfaRequired: user.mfaRequired ?? false,
+    pinResetRequired: user.pinResetRequired ?? false,
+  };
+}
+
 function requireAuth(req, res) {
   const user = currentUser(req);
   if (!user) {
@@ -875,8 +907,17 @@ function requireCurrentScheduleEtag(req, res, schedule) {
 
 async function handleV2(req, res, url, pathname) {
   if (!requireCsrf(req, res, pathname)) return;
+  if (pathname === '/v2/auth/refresh' && req.method === 'POST') {
+    sendJson(res, 200, { success: true }, { 'set-cookie': authCookies('mock-admin-access') });
+    return;
+  }
   const user = requireAuth(req, res);
   if (!user) return;
+
+  if (pathname === '/v2/auth/me' && req.method === 'GET') {
+    sendJson(res, 200, { user: browserSessionUser(user) });
+    return;
+  }
 
   if (pathname === '/v2/locations' && req.method === 'GET') {
     const requestedLimit = Number.parseInt(url.searchParams.get('limit') ?? '100', 10);
@@ -1373,7 +1414,9 @@ async function handleV2(req, res, url, pathname) {
 }
 
 function isNativeV2Path(pathname) {
-  return pathname === '/v2/locations'
+  return pathname === '/v2/auth/me'
+    || pathname === '/v2/auth/refresh'
+    || pathname === '/v2/locations'
     || pathname === '/v2/locations/summary'
     || /^\/v2\/locations\/[0-9a-f-]{36}$/.test(pathname)
     || pathname === '/v2/schedule-board'

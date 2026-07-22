@@ -10,6 +10,9 @@ import { SHIFT_BREAK_UPDATE_RECOVERY_KEY_PREFIX } from '../../app/dashboard/lunc
 import { dayWindow, loginAsSeedAdmin, repoRoot, runFullStack, seedTenant } from './support';
 
 const axeSource = readFileSync(path.join(repoRoot, 'node_modules', 'axe-core', 'axe.min.js'), 'utf8');
+const DOWNTOWN_LOCATION_ID = '10000000-0000-4000-8000-000000000001';
+const ADMIN_USER_ID = '20000000-0000-4000-8000-000000000101';
+const OPAQUE_BROWSER_SCOPE = /^[A-Za-z0-9_-]{43}$/;
 
 type AxeViolation = {
   id: string;
@@ -334,12 +337,13 @@ test.describe('Lunch setup editor safety', () => {
     expect(retainedShiftBreak).toMatchObject({
       identity: {
         shiftId: 'shift-1',
-        locationId: 'loc-downtown',
-        tenantId: 'tenant-e2e',
-        userId: 'user-admin',
-        sessionId: 'session-admin',
+        locationId: DOWNTOWN_LOCATION_ID,
+        userId: ADMIN_USER_ID,
       },
     });
+    expect(retainedShiftBreak?.identity?.tenantId).toMatch(OPAQUE_BROWSER_SCOPE);
+    expect(retainedShiftBreak?.identity?.sessionId).toMatch(OPAQUE_BROWSER_SCOPE);
+    expect(JSON.stringify(retainedShiftBreak)).not.toMatch(/tenant-e2e|user-admin|session-admin|loc-downtown/);
 
     await saveShiftButton.click();
     await expect(saveShiftButton).toBeDisabled();
