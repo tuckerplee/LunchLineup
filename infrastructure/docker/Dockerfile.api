@@ -27,7 +27,7 @@ COPY . .
 RUN npm ci --prefer-offline || npm ci
 
 # Build only the API and its dependencies
-RUN npx turbo run build --filter=@lunchlineup/api
+RUN npx turbo run build --env-mode=loose --filter=@lunchlineup/api
 
 # Normalize the compiled output into a stable path for the runtime stage.
 RUN if [ -d /app/apps/api/dist ]; then \

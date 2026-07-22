@@ -18,7 +18,10 @@ ENV HOME=/home/node \
     PRISMA_HIDE_UPDATE_MESSAGE=true \
     TURBO_TELEMETRY_DISABLED=1
 
-RUN apk update && apk add openssl postgresql-client && rm -rf /var/cache/apk/*
+RUN mkdir -p /usr/share/man \
+    && apk update \
+    && apk add openssl postgresql-client \
+    && rm -rf /var/cache/apk/*
 
 COPY . .
 RUN npm ci --prefer-offline || npm ci

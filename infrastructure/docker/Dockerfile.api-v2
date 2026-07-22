@@ -19,7 +19,7 @@ ENV NPM_CONFIG_AUDIT=false \
 RUN apk update && apk add openssl && rm -rf /var/cache/apk/*
 COPY . .
 RUN npm ci --prefer-offline || npm ci
-RUN npx turbo run build --filter=@lunchlineup/api-v2
+RUN npx turbo run build --env-mode=loose --filter=@lunchlineup/api-v2
 
 FROM node:22-alpine@sha256:16e22a550f3863206a3f701448c45f7912c6896a62de43add43bb9c86130c3e2 AS runner
 WORKDIR /app
