@@ -6,6 +6,7 @@
 - `api-migration-ledger.md`: ordered API-01 browser cutover, API-02 native ownership, and API-03 v1 retirement status and exit criteria.
 - `api-surface-map.md`: complete browser, v2, retained v1, engine, worker, web, and control-plane API ownership map.
 - `architecture.md`: platform architecture overview.
+- `brand-bible.md`: public brand, messaging, visual system, SaaS benchmark blend, and beta-homepage design source of truth.
 - `code-organization.md`: current oversized/tangled source hotspot map and extraction routing.
 - `saas-ui-overhaul.md`: SaaS user-interface overhaul notes.
 - `compliance/`: compliance documentation.

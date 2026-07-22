@@ -12,7 +12,7 @@ Next.js App Router entrypoints for the LunchLineup web app.
 - `legal-page.tsx` - Shared public legal/trust page shell.
 - `layout.tsx` - Root canonical, social metadata, favicon link, and global CSS import.
 - `opengraph-image.tsx` - Generated 1200x630 social preview image.
-- `page.tsx` - Public SaaS entry page with mode-gated onboarding and existing-workspace sign-in links.
+- `page.tsx` - Product-led beta homepage with mode-gated conversion paths, schedule proof, workflow depth, and trust narrative.
 - `robots.ts` - Public crawler policy that excludes authenticated and API routes.
 - `sitemap.ts` - Canonical public-route sitemap.
 - `admin/` - Platform administration routes; see `admin/README.md`.
