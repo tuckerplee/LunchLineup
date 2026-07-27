@@ -10,7 +10,7 @@
         "lint": "eslint index.ts"
     },
     "dependencies": {
-        "casbin": "^5.28.0"
+        "casbin": "^5.51.1"
     },
     "devDependencies": {
         "typescript": "^5.4.5"
