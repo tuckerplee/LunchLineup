@@ -207,7 +207,7 @@ printf '%s\n' "$*" >> "\${FAKE_DOCKER_LOG:?}"
       result: spawnSync(bashPath, [
         '-c',
         `PATH="$1:$PATH"; export PATH
-python3() { "$PYTHON_BINARY" "$@"; }
+python3() { command "$PYTHON_BINARY" "$@"; }
 export -f python3
 source "$2"
 validate_production_compose_scope
