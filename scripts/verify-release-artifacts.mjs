@@ -896,7 +896,7 @@ function verifyProductionDeployDeadlineOwner(workflowFile) {
     fail(`${workflowFile} normal production deploy must not trust mutable command text or a runner-temporary deploy helper.`);
   }
   const requiredPatterns = [
-    [/timeout-minutes:\s*180\b/, 'reserve one bounded outer window for deploy, smoke, publication, and automatic rollback'],
+    [/timeout-minutes:\s*200\b/, 'reserve one bounded outer window for deploy, smoke, publication, and automatic rollback'],
     [/environment:\s*production\b/, 'use one protected production environment approval for the complete release transaction'],
     [/PRODUCTION_RELEASE_TRANSACTION_TIMEOUT_SECONDS:\s*'10800'/, 'declare the exact release transaction deadline in seconds'],
     [/PRODUCTION_DEPLOY_PHASE_TIMEOUT_SECONDS:\s*'5400'/, 'declare the exact deploy phase deadline in seconds'],
@@ -916,7 +916,7 @@ function verifyProductionDeployDeadlineOwner(workflowFile) {
     [/--phase runner-cleanup[\s\S]*--maximum-seconds "\$PRODUCTION_DEPLOY_RUNNER_RESERVE_SECONDS"/, 'retain an absolute runner-cutoff cleanup fallback for preflight failures'],
     [/id:\s*production_smoke[\s\S]*id:\s*publish_release[\s\S]*id:\s*same_gate_release_outcome/, 'run smoke, publication, and release-outcome ownership after the deploy in the same protected job'],
     [/id:\s*same_gate_release_outcome[\s\S]*if:\s*always\(\) && steps\.arm_production_rollback\.outcome == 'success'/, 'evaluate every post-arm release outcome even after a failed step'],
-    [/id:\s*materialize_automatic_rollback[\s\S]*steps\.same_gate_release_outcome\.outcome != 'success'[\s\S]*id:\s*automatic_production_rollback[\s\S]*id:\s*prove_automatic_production_rollback/, 'fail closed into materialization, rollback, and independent rollback proof'],
+    [/id:\s*download_automatic_rollback_handoff[\s\S]*steps\.same_gate_release_outcome\.outcome != 'success'[\s\S]*id:\s*materialize_automatic_rollback[\s\S]*steps\.download_automatic_rollback_handoff\.outcome == 'success'[\s\S]*id:\s*authenticate_automatic_rollback_registry[\s\S]*steps\.materialize_automatic_rollback\.outcome == 'success'[\s\S]*id:\s*automatic_production_rollback[\s\S]*steps\.authenticate_automatic_rollback_registry\.outcome == 'success'[\s\S]*id:\s*prove_automatic_production_rollback[\s\S]*steps\.automatic_production_rollback\.outcome == 'success'/, 'fail closed through durable handoff download, materialization, authenticated registry precondition, rollback, and independent rollback proof'],
     [/automatic-rollback-cutoff[\s\S]*export VM217_MUTATION_NOT_AFTER_EPOCH_SECONDS="\$rollback_mutation_not_after"[\s\S]*rollback-vm217-transport\.sh/, 'replace the deploy cutoff with a transaction-bounded automatic rollback cutoff'],
     [/Require completed automatic rollback after release failure[\s\S]*ROLLBACK_PROOF_OUTCOME[\s\S]*test "\$ROLLBACK_PROOF_OUTCOME" = success/, 'require every automatic rollback phase to complete successfully'],
   ];

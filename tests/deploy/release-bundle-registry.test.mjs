@@ -825,7 +825,10 @@ test('CI bootstraps and retains one validated baseline before centralized rollba
   assert.equal((ci.match(/REGISTRY_BASELINE_AVAILABLE=true/g) ?? []).length, 1);
   assert.equal((ci.match(/name: Verify previous rollback release inputs/g) ?? []).length, 1);
   assert.match(ci, /Retain validated secret-free rollback baseline/);
-  assert.match(automaticDeploy, /Materialize retained automatic rollback baseline[\s\S]*lunchlineup-rollback-baseline\/release\.json/);
+  assert.match(
+    automaticDeploy,
+    /Materialize retained automatic rollback baseline[\s\S]*rollback_handoff="\$RUNNER_TEMP\/lunchlineup-rollback-handoff"[\s\S]*rollback_state="\$rollback_handoff\/release\.json"/,
+  );
   assert.match(automaticDeploy, /Require completed automatic rollback after release failure/);
   assert.match(automaticDeploy, /steps\.arm_production_rollback\.outcome == 'success'/);
   assert.doesNotMatch(ci, /REGISTRY_BASELINE_AVAILABLE=false|bootstrap-first-production-release|release-bundle-registry\.mjs bootstrap --/);

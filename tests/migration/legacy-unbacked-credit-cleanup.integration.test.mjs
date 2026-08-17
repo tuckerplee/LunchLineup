@@ -44,6 +44,10 @@ function psql(container, sql, { allowFailure = false } = {}) {
   ], { allowFailure, input: sql });
 }
 
+function applyMigration(container) {
+  return psql(container, `BEGIN;\n${migration}\nCOMMIT;`);
+}
+
 function dockerAsync(args, { input, timeout = 30_000 } = {}) {
   return new Promise((resolveRun, rejectRun) => {
     const child = spawn('docker', args, { windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] });
@@ -196,7 +200,7 @@ test('legacy unbacked credit cleanup is selective, fail-closed, and replay-safe 
         );
     `);
 
-    psql(container, migration);
+    applyMigration(container);
     assert.deepEqual(JSON.parse(scalar(container, `
       SELECT jsonb_object_agg("id", "usageCredits" ORDER BY "id")
       FROM public."Tenant";
@@ -238,7 +242,7 @@ test('legacy unbacked credit cleanup is selective, fail-closed, and replay-safe 
         'provenance', (SELECT jsonb_object_agg("key", "value" ORDER BY "key") FROM public."PlatformConfig")
       );
     `);
-    psql(container, migration);
+    applyMigration(container);
     assert.equal(scalar(container, `
       SELECT jsonb_build_object(
         'wallets', (SELECT jsonb_object_agg("id", "usageCredits" ORDER BY "id") FROM public."Tenant"),
@@ -259,7 +263,7 @@ test('legacy unbacked credit cleanup is selective, fail-closed, and replay-safe 
         'scripts/import-legacy-users.mjs'
       );
     `);
-    psql(container, migration);
+    applyMigration(container);
     assert.equal(
       scalar(container, `SELECT "usageCredits" FROM public."Tenant" WHERE "id" = 'legacy-later-unbacked';`),
       '0',

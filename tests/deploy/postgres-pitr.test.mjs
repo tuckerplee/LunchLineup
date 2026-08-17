@@ -150,6 +150,7 @@ test('rendered Compose defaults non-PITR Postgres to archive off and forwards ex
     env[match[1]] = env[match[1]] || 'compose-fixture';
   }
   Object.assign(env, {
+    COMPOSE_SERVICE_ENV_FILE: '.env.example',
     PITR_BASE_BACKUP_COMPLETE_VERSION_ID: 'complete-version-exact-101',
     PITR_BASE_BACKUP_ARCHIVE_VERSION_ID: 'archive-version-exact-202',
     PITR_BASE_BACKUP_MANIFEST_VERSION_ID: 'manifest-version-exact-303',

@@ -218,7 +218,7 @@ compose_release ps`,
       ], {
         cwd: root,
         encoding: 'utf8',
-        timeout: 10_000,
+        timeout: 30_000,
         env: {
           ...process.env,
           APP_DIR: bashPathFor(candidate),

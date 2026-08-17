@@ -3,6 +3,7 @@
   "name": "LunchLineup source validation",
   "timeout_seconds": 14400,
   "required_labels": [
+    "containers",
     "linux",
     "x64"
   ],
