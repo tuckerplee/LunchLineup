@@ -19,6 +19,7 @@ const migration = readFileSync(
   join(root, 'packages/db/prisma/migrations/20260716_legacy_unbacked_credit_cleanup.sql'),
   'utf8',
 );
+const transactionalMigration = `BEGIN;\n${migration}\nCOMMIT;`;
 const postgresImage = 'postgres:16-alpine@sha256:57c72fd2a128e416c7fcc499958864df5301e940bca0a56f58fddf30ffc07777';
 const database = 'legacy_credit_cleanup_test';
 
@@ -45,7 +46,7 @@ function psql(container, sql, { allowFailure = false } = {}) {
 }
 
 function applyMigration(container) {
-  return psql(container, `BEGIN;\n${migration}\nCOMMIT;`);
+  return psql(container, transactionalMigration);
 }
 
 function dockerAsync(args, { input, timeout = 30_000 } = {}) {
@@ -334,7 +335,7 @@ test('legacy unbacked credit cleanup is selective, fail-closed, and replay-safe 
         'exec', '-i', container,
         'psql', '--no-psqlrc', '--set', 'ON_ERROR_STOP=1',
         '--username', 'postgres', '--dbname', database,
-      ], { input: migration, timeout: 30_000 });
+      ], { input: transactionalMigration, timeout: 30_000 });
       await waitForScalar(
         container,
         `SELECT count(*)
@@ -385,7 +386,7 @@ test('legacy unbacked credit cleanup is selective, fail-closed, and replay-safe 
         ('ambiguous-grant', 'legacy-ambiguous', 100, 'Historical grant'),
         ('ambiguous-debit', 'legacy-ambiguous', -500, 'Historical usage');
     `);
-    const ambiguous = psql(container, migration, { allowFailure: true });
+    const ambiguous = psql(container, transactionalMigration, { allowFailure: true });
     assert.notEqual(ambiguous.status, 0, 'mixed legacy history must stop the migration');
     assert.match(ambiguous.stderr, /ambiguous or consumed credit history/);
     assert.equal(
@@ -407,7 +408,7 @@ test('legacy unbacked credit cleanup is selective, fail-closed, and replay-safe 
         'scripts/import-legacy-users.mjs'
       );
     `);
-    const zeroAmbiguity = psql(container, migration, { allowFailure: true });
+    const zeroAmbiguity = psql(container, transactionalMigration, { allowFailure: true });
     assert.notEqual(zeroAmbiguity.status, 0, 'zero wallet/no ledger without importer provenance must fail closed');
     assert.match(zeroAmbiguity.stderr, /ambiguous fully consumed or manually cleared/);
     assert.equal(
