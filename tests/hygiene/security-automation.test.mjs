@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { readdirSync, readFileSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
@@ -78,7 +78,7 @@ test('CI uploads mandatory Semgrep and CodeQL analyses with least privilege', ()
   assert.equal(workflow.jobs['build-images'].needs, 'unit-tests');
 });
 
-test('dependency review and Dependabot cover every repository dependency ecosystem', () => {
+test('dependency review remains fail-closed and GitHub dependency scheduling stays disabled', () => {
   const workflow = load('.github/workflows/ci.yml');
   const dependencyReview = workflow.jobs['dependency-audit'].steps.find(
     (step) => step.uses === 'actions/dependency-review-action@' + dependencyReviewSha,
@@ -89,30 +89,7 @@ test('dependency review and Dependabot cover every repository dependency ecosyst
   assert.equal(dependencyReview.with['fail-on-severity'], 'high');
   assert.equal(dependencyReview['continue-on-error'], undefined);
 
-  const dependabot = load('.github/dependabot.yml');
-  assert.equal(dependabot.version, 2);
-  assert.deepEqual(
-    dependabot.updates.map((entry) => entry['package-ecosystem']).sort(),
-    ['docker', 'github-actions', 'npm', 'pip'],
-  );
-
-  for (const update of dependabot.updates) {
-    assert.equal(update.schedule.interval, 'weekly');
-    assert.equal(update.schedule.timezone, 'America/Los_Angeles');
-    assert.ok(update.directory || update.directories);
-    assert.equal(update['target-branch'], undefined);
-    assert.equal(update['open-pull-requests-limit'], 10);
-  }
-
-  const npm = dependabot.updates.find((entry) => entry['package-ecosystem'] === 'npm');
-  const pip = dependabot.updates.find((entry) => entry['package-ecosystem'] === 'pip');
-  const actions = dependabot.updates.find((entry) => entry['package-ecosystem'] === 'github-actions');
-  const docker = dependabot.updates.find((entry) => entry['package-ecosystem'] === 'docker');
-
-  assert.equal(npm.directory, '/');
-  assert.deepEqual(pip.directories, ['/apps/engine', '/apps/worker']);
-  assert.equal(actions.directory, '/');
-  assert.deepEqual(docker.directories, ['/', '/infrastructure/docker']);
+  assert.equal(existsSync(join(root, '.github/dependabot.yml')), false);
 });
 
 test('all external actions are immutable and CodeQL uses the reviewed source scope', () => {

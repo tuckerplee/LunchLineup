@@ -8,7 +8,7 @@
 - `production-launch-env.test.mjs`: exercises all 33 strict public launch cases through the thin CLI and policy owners, including rendered production Compose, blank optional MFA overlap, exact Compose/PITR secret sources, distinct lifecycle-audit credentials, bounded lifecycle proof metadata, path and credential reuse, loopback Caddy health, HTTPS-only launch manifests, the paid legal and closed-beta Terms gates, provider keys, public API/OIDC config, and retained proof references.
 - `privacy-data-governance.test.mjs`: prevents tenant/session retention windows, public privacy copy, paid-period cancellation semantics, export confidentiality, retained-record minimization, and stale metadata purge coverage from drifting apart.
 - `repository-hygiene.test.mjs`: fast repo-level checks for tracked secrets, public backup payloads, Caddy security headers, ignore rules, CI wiring, migration test documentation, and tracked plus untracked README sibling inventories.
-- `security-automation.test.mjs`: validates least-privilege workflow permissions, immutable actions, mandatory CodeQL and Semgrep SARIF uploads, fail-closed release dependencies, and Dependabot ecosystem coverage.
+- `security-automation.test.mjs`: validates retained least-privilege workflow permissions, immutable actions, mandatory CodeQL and Semgrep SARIF uploads, fail-closed release dependencies, and the absence of GitHub dependency scheduling.
 
 ## Purpose
 

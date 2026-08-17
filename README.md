@@ -49,7 +49,7 @@ LunchLineup utilizes a **Turborepo** monorepo structure, orchestrating a suite o
 
 ```text
 lunchlineup/
-├── .github/               # CI/CD, CodeQL, and Dependabot automation
+├── .github/               # Disabled GitHub workflows retained for reference
 ├── apps/
 │   ├── web/               # Next.js user-facing frontend
 │   ├── api/               # NestJS API Gateway
@@ -72,7 +72,7 @@ lunchlineup/
 - `.dockerignore`: Docker build ignore rules.
 - `.env.example`: local environment variable template.
 - `.ci/`: source-neutral internal CI pipeline and validation documentation.
-- `.github/`: GitHub workflow and repository automation configuration.
+- `.github/`: disabled GitHub workflow definitions retained for review and rollback reference.
 - `.gitattributes`: Git path attributes and line-ending normalization rules.
 - `.gitignore`: Git ignore rules for local, generated, and sensitive files.
 - `.zap-rules.tsv`: OWASP ZAP baseline scan rule severity configuration.

@@ -1,28 +1,28 @@
 # Security Automation
 
-LunchLineup uses two independent source scanners in the required CI path:
+The authoritative CI path is the source-neutral `.ci/pipeline.json` executed by the internal CI appliance. Repository-level GitHub Actions is disabled. The GitHub workflow definitions and the controls below are retained for review and rollback reference; they are not a live execution dependency.
+
+The retained workflow defines two independent source scanners:
 
 - Semgrep runs from a versioned, digest-pinned container, writes SARIF, uploads it through the SHA-pinned GitHub CodeQL upload action, and then enforces the scanner exit code.
 - CodeQL runs `security-extended` analysis for JavaScript/TypeScript and Python, waits for GitHub to process each upload, and fails the job if extraction, analysis, or upload fails.
 
 Both jobs have only `contents: read`, plus `security-events: write` for result upload. CodeQL also has `actions: read` for workflow metadata. The workflow default is `contents: read`; release jobs declare any additional write permissions locally.
 
-The unit and release chain requires Semgrep, CodeQL, and the production dependency audit. Pull requests also run GitHub dependency review and reject newly introduced high or critical vulnerable dependencies. Weekly scheduled CI refreshes analysis even when application code is unchanged.
+If reactivated, the retained unit and release chain requires Semgrep, CodeQL, and the production dependency audit. Its pull-request path also rejects newly introduced high or critical vulnerable dependencies.
 
 ## Dependency Updates
 
-`.github/dependabot.yml` checks the root npm workspace, both Python applications, GitHub Actions, Docker Compose, and application Dockerfiles each Monday. Updates remain review-only. The configuration intentionally omits `target-branch` so security updates continue to target the repository default branch.
+`.github/dependabot.yml` is intentionally absent. This prevents GitHub from launching scheduled dependency-update jobs or sending their failure notifications. Operators prepare dependency updates as ordinary source changes and push them to internal source control for validation.
 
-The exact production npm audit remains the installed-tree launch gate. Dependabot alert counts describe the current default branch dependency graph and are not dismissed by this automation; merging a patched branch and completing a new default-branch dependency graph refresh is required to close stale alerts.
+The exact production npm audit remains the installed-tree launch gate. Internal CI validates the locked dependency tree, tests, and build; dependency advisories must be reviewed before any deployment.
 
-## Required GitHub Controls
+## GitHub Controls
 
-Before launch, verify outside the repository that:
+While GitHub remains a mirror, verify outside the repository that:
 
-- Code scanning accepts successful Semgrep and both CodeQL categories on `main`.
-- Branch protection requires the SAST, CodeQL, dependency audit, and test jobs.
-- Dependabot alerts and security updates remain enabled.
+- Repository-level GitHub Actions remains disabled.
+- No scheduled Dependabot configuration exists.
 - Secret scanning and push protection remain enabled, and every reported secret alert is reviewed by an authorized operator.
-- Workflow permissions remain read-only by default in repository settings.
 
-Repository automation does not dismiss alerts or modify these settings.
+Internal CI does not dismiss GitHub alerts or modify repository security settings.

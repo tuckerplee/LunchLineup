@@ -6,3 +6,5 @@ This directory defines source-neutral validation for LunchLineup on the internal
 - `pipeline.json` - declares triggers, worker requirements, validation steps, timeouts, and artifacts.
 
 Source validation only. The declared `containers` capability is required for disposable validator and PostgreSQL fixtures. This pipeline never deploys, restarts, seeds, audits, or connects to the live LunchLineup service.
+
+Internal source control is the authoritative trigger. GitHub Actions and scheduled Dependabot jobs are disabled and are not part of this pipeline.

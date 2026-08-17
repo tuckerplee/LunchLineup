@@ -1,14 +1,15 @@
-# GitHub Automation
+# GitHub Automation (Disabled)
 
 ## Files
 
 - `README.md`: this GitHub automation map.
 - `codeql/`: CodeQL query and source-scope configuration.
-- `dependabot.yml`: weekly npm, Python, GitHub Actions, and container dependency update policy.
-- `workflows/`: pinned GitHub Actions CI, security, release, deploy, and rollback automation.
+- `workflows/`: retained, pinned GitHub Actions definitions for review and rollback reference.
 
-## Security Boundary
+## Live CI Boundary
 
-The workflow token defaults to read-only repository contents. Jobs receive write permissions only for their bounded responsibility, such as uploading code-scanning results, publishing release images, or creating immutable release evidence.
+Repository-level GitHub Actions is disabled. The authoritative source validation path is `.ci/pipeline.json` on the internal CI appliance, triggered by pushes to internal source control.
 
-Dependabot opens reviewable updates; it does not auto-merge, dismiss alerts, or alter repository security settings.
+Scheduled Dependabot configuration is deliberately absent, so GitHub cannot launch dependency-update jobs or send their failure notifications. Dependency updates are deliberate source changes and must pass the internal pipeline before promotion.
+
+If the retained workflows are ever reviewed for reactivation, their token defaults to read-only repository contents. Jobs receive write permissions only for their bounded responsibility.
