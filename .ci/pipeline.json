@@ -1,0 +1,57 @@
+{
+  "version": 1,
+  "name": "LunchLineup source validation",
+  "timeout_seconds": 14400,
+  "required_labels": [
+    "linux",
+    "x64"
+  ],
+  "triggers": {
+    "branches": [
+      "*"
+    ],
+    "tags": [],
+    "manual": true
+  },
+  "env": {
+    "NODE_VERSION": "22",
+    "NODE_OPTIONS": "--max-old-space-size=4096"
+  },
+  "steps": [
+    {
+      "name": "Install locked JavaScript dependencies",
+      "run": "npm ci",
+      "timeout_seconds": 1800
+    },
+    {
+      "name": "Lint, typecheck, and migration checks",
+      "run": "npm run lint && npm run typecheck && npm run test:migration && node scripts/verify-observability-configs.mjs --root . --tool-mode container",
+      "timeout_seconds": 2400
+    },
+    {
+      "name": "Run JavaScript unit suites",
+      "run": "npx turbo run test -- --coverage",
+      "timeout_seconds": 3000
+    },
+    {
+      "name": "Create Python test environment",
+      "run": "python3 -m venv .ci-venv && .ci-venv/bin/python -m pip install --upgrade pip && .ci-venv/bin/pip install -r apps/engine/requirements.txt -r apps/worker/requirements.txt",
+      "timeout_seconds": 2400
+    },
+    {
+      "name": "Run Python suites",
+      "run": ".ci-venv/bin/python -m pytest -C apps/engine --cov=src --cov-fail-under=90 && (cd apps/worker && ../../.ci-venv/bin/python -m unittest discover -s tests)",
+      "timeout_seconds": 3000
+    },
+    {
+      "name": "Build source",
+      "run": "npm run build",
+      "timeout_seconds": 3000
+    }
+  ],
+  "artifacts": [
+    "coverage/**",
+    "apps/engine/coverage.xml",
+    "test-results/**"
+  ]
+}
