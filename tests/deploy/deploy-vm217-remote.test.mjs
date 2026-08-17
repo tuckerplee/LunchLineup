@@ -143,7 +143,10 @@ test('production rollback is durably armed in a completed step before remote mut
   assert.ok(preflightIndex !== -1 && preflightIndex < mutationIndex);
   assert.ok(verifyInputsIndex !== -1 && verifyInputsIndex < armStepIndex);
   assert.ok(armStepIndex < deployStepStart, 'arming must complete before the remote deploy command starts');
-  assert.match(ci, /id: arm_production_rollback[\s\S]*echo "armed=true" >> "\$GITHUB_OUTPUT"/);
+  assert.match(
+    ci,
+    /id: arm_production_rollback[\s\S]*?\{[\s\S]*?echo "armed=true"[\s\S]*?\}\s*>> "\$GITHUB_OUTPUT"/,
+  );
   assert.match(ci, /production_rollback_armed: \$\{\{ steps\.arm_production_rollback\.outputs\.armed \}\}/);
   assert.match(ci, /if: always\(\) && steps\.arm_production_rollback\.outcome == 'success'/);
   assert.match(ci, /steps\.same_gate_release_outcome\.outcome != 'success' \|\| steps\.same_gate_release_outcome\.outputs\.rollback_required == 'true'/);

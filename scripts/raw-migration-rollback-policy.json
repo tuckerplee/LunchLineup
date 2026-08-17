@@ -87,7 +87,7 @@
       "rationale": "data backfill, database enforcement remains in the candidate schema during rollback; isolated old-release smoke proof is mandatory before production mutation."
     },
     "packages/db/prisma/migrations/20260713_refresh_token_family_replay.sql": {
-      "sha256": "167b64ac49446e542384447ff91a0af39b62f4157b5ceb164283b5aab784ac69",
+      "sha256": "1dd903cd1c3f066a23aed98a77667caca58f20a677a41ab6f913d6f7f00d37d1",
       "phase": "expand-contract",
       "rollbackSchema": "retain",
       "contractPhase": "compatibility-proven-inline",
@@ -95,7 +95,7 @@
       "rationale": "data backfill, constraint transition, database enforcement, schema expansion remains in the candidate schema during rollback; isolated old-release smoke proof is mandatory before production mutation."
     },
     "packages/db/prisma/migrations/20260713_schedule_solve_execution_lease.sql": {
-      "sha256": "20527d3faf9b501ee75683c5aafce921699fbfc4ffcd0fbdd49a1eb2f01e9012",
+      "sha256": "c11cf924ae58ba0227ddab0e48256f701dd30386710508d5a3e9cda6cc0b1c46",
       "phase": "expand-contract",
       "rollbackSchema": "retain",
       "contractPhase": "compatibility-proven-inline",
@@ -103,7 +103,7 @@
       "rationale": "data backfill, constraint transition, database enforcement, schema expansion remains in the candidate schema during rollback; isolated old-release smoke proof is mandatory before production mutation."
     },
     "packages/db/prisma/migrations/20260713_terminal_encrypted_payload_erasure.sql": {
-      "sha256": "a927f74f8c905d323b9a0329ecb7b7cc3e57964fdadd52ce9617334dde15353e",
+      "sha256": "a63123662ec1e99cde397bb4ef3eac38509788aa38b6ba24de9f2212fc34ee3b",
       "phase": "expand-contract",
       "rollbackSchema": "retain",
       "contractPhase": "compatibility-proven-inline",
@@ -159,7 +159,7 @@
       "rationale": "notification delivery enum expansion remains during rollback; isolated old-release proof is required before production mutation."
     },
     "packages/db/prisma/migrations/20260714_notification_delivery_outbox.sql": {
-      "sha256": "19c62805cbfc422775b392b5543784b8bced89da31d6a5135974c0e35aa57cd5",
+      "sha256": "aee34c416d3be717e4f955870fd66b2edc7a297b225e66c9417e744c786d9e64",
       "phase": "expand-contract",
       "rollbackSchema": "retain",
       "contractPhase": "compatibility-proven-inline",
@@ -167,7 +167,7 @@
       "rationale": "data backfill, constraint transition, database enforcement, schema expansion remains in the candidate schema during rollback; isolated old-release smoke proof is mandatory before production mutation."
     },
     "packages/db/prisma/migrations/20260714_notification_terminal_payload_erasure.sql": {
-      "sha256": "f3497423bcca189bc8238a25eb2348d9deafacd131b4a887263775b879d6414c",
+      "sha256": "8a03a19ede0b341aab23846fbca20363ba853f3b2ff7f82e7ad3f39cec446eb9",
       "phase": "expand-contract",
       "rollbackSchema": "retain",
       "contractPhase": "compatibility-proven-inline",
@@ -191,7 +191,7 @@
       "rationale": "data backfill, database enforcement remains in the candidate schema during rollback; isolated old-release smoke proof is mandatory before production mutation."
     },
     "packages/db/prisma/migrations/20260714_session_retention.sql": {
-      "sha256": "a1cebd5eef62c57fe6eb3cd51ec8017b9fe49e695a31dfd71a044905d7db477c",
+      "sha256": "d268503c78441a4909d27e0234a919ad12e9782bd0e220e088410e0133037ebd",
       "phase": "expand",
       "rollbackSchema": "retain",
       "contractPhase": "after-rollback-window",
@@ -207,7 +207,7 @@
       "rationale": "data backfill, constraint transition remains in the candidate schema during rollback; isolated old-release smoke proof is mandatory before production mutation."
     },
     "packages/db/prisma/migrations/20260715_availability_import_encrypted_source.sql": {
-      "sha256": "ebfd14bed2f80a59f3415b69fc3d81616e85a2c1bbed29c342cbcf054a035634",
+      "sha256": "31eae06e25a79b64ab67bdc02e0ab5f2dda0b92d6f23608c110387558f39fbd8",
       "phase": "expand-contract",
       "rollbackSchema": "retain",
       "contractPhase": "compatibility-proven-inline",
@@ -223,7 +223,7 @@
       "rationale": "data backfill, constraint transition, database enforcement, schema expansion remains in the candidate schema during rollback; isolated old-release smoke proof is mandatory before production mutation."
     },
     "packages/db/prisma/migrations/20260715_staff_invitation_outbox.sql": {
-      "sha256": "f7505c694ac34890de839c0e3cd8a68194e699527030eb13bc88a05540bdc865",
+      "sha256": "cdd8babf3abcb82de0d00622f4d0d4197755fd0392ec9fef841cfb3ba2a2d5d4",
       "phase": "expand-contract",
       "rollbackSchema": "retain",
       "contractPhase": "compatibility-proven-inline",
@@ -231,7 +231,7 @@
       "rationale": "data backfill, constraint transition, database enforcement, schema expansion remains in the candidate schema during rollback; isolated old-release smoke proof is mandatory before production mutation."
     },
     "packages/db/prisma/migrations/20260715_user_suspension_lifecycle.sql": {
-      "sha256": "5192a6428dee08044683fa6a23257277bc7cd9b59d969d7d41416eaa21f665b2",
+      "sha256": "9ece8fd8c960c9339020668155cbb048fcb11b4b6b9632a317ed45489b09390a",
       "phase": "expand-contract",
       "rollbackSchema": "retain",
       "contractPhase": "compatibility-proven-inline",

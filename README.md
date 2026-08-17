@@ -71,6 +71,7 @@ lunchlineup/
 
 - `.dockerignore`: Docker build ignore rules.
 - `.env.example`: local environment variable template.
+- `.ci/`: source-neutral internal CI pipeline and validation documentation.
 - `.github/`: GitHub workflow and repository automation configuration.
 - `.gitattributes`: Git path attributes and line-ending normalization rules.
 - `.gitignore`: Git ignore rules for local, generated, and sensitive files.
