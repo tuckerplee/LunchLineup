@@ -41,7 +41,7 @@
     },
     {
       "name": "Run Python suites",
-      "run": ".ci-venv/bin/python -m pytest -C apps/engine --cov=src --cov-fail-under=90 && (cd apps/worker && ../../.ci-venv/bin/python -m unittest discover -s tests)",
+      "run": "(cd apps/engine && ../../.ci-venv/bin/python -m pytest --cov=src --cov-fail-under=90) && (cd apps/worker && ../../.ci-venv/bin/python -m unittest discover -s tests)",
       "timeout_seconds": 3000
     },
     {
