@@ -19,7 +19,7 @@ export async function resetAndOpenCalendar(page: Page) {
 
 export async function readShifts(page: Page): Promise<ShiftReadback[]> {
   const { startDate, endDate } = dayWindow(new Date(Date.now() - 2 * 24 * 60 * 60 * 1000), 7);
-  const response = await page.request.get(`/api/v1/shifts?startDate=${encodeURIComponent(startDate)}&endDate=${encodeURIComponent(endDate)}`);
+  const response = await page.request.get(`/api/v2/shifts?startDate=${encodeURIComponent(startDate)}&endDate=${encodeURIComponent(endDate)}`);
   expect(response.ok(), await response.text()).toBeTruthy();
   const payload = await response.json() as { data?: ShiftReadback[] };
   return payload.data ?? [];
