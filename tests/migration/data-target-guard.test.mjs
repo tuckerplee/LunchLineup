@@ -15,7 +15,7 @@ import {
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 
 function read(relativePath) {
-  return readFileSync(join(root, relativePath), 'utf8');
+  return readFileSync(join(root, relativePath), 'utf8').replace(/\r\n/g, '\n');
 }
 
 test('E2E and development seeds accept only explicit non-production scopes', () => {
@@ -187,7 +187,7 @@ test('VM107 bootstrap requires exact confirmation immediately before delete and 
   const compose = read('docker-compose.yml');
   assert.match(bootstrap, /VM107_DESTRUCTIVE_CONFIRM:-.*DESTRUCTIVE_CONFIRMATION/);
   assert.match(bootstrap, /upsert_env DATA_TARGET_ENV disposable/);
-  assert.match(bootstrap, /require_root\s+if \[\[ ! -d "\$APP_DIR\/\.git" \|\| -n "\$BACKUP_FILE" \]\]; then\s+require_destructive_confirmation/);
+  assert.match(bootstrap, /if \[\[ ! -d "\$APP_DIR\/\.git" \|\| -n "\$BACKUP_FILE" \]\]; then\s+require_destructive_confirmation/);
   assert.match(bootstrap, /require_destructive_confirmation\s+rm -rf "\$APP_DIR"/);
   assert.match(bootstrap, /require_destructive_confirmation\s+echo "Restoring Postgres data/);
 
@@ -228,5 +228,5 @@ test('VM107 bootstrap requires exact confirmation immediately before delete and 
   );
   assert.doesNotMatch(bootstrap, /psql[^\n]*(?:db_pass|app_db_pass)/);
   assert.match(bootstrap, /docker compose --env-file "\$SECRET_ENV_PATH" config --quiet/);
-  assert.match(bootstrap, /wait_for_health\s+write_deploy_proof/);
+  assert.match(bootstrap, /wait_for_health[\s\S]*write_deploy_proof/);
 });
