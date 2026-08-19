@@ -68,7 +68,6 @@ env:
   ZAP_IMAGE: ${{ vars.ZAP_IMAGE }}
   ARTILLERY_IMAGE: artilleryio/artillery:2.0.33@sha256:ee382d480f5cb8473c52fe94cb8e1505a9564ce2accbc94114098e0be06dff56
   RELEASE_BUNDLE_CERTIFICATE_IDENTITY: https://github.com/${{ github.repository }}/.github/workflows/ci.yml@refs/heads/main
-  RELEASE_EVIDENCE_CERTIFICATE_IDENTITY: https://github.com/${{ github.repository }}/.github/workflows/ci.yml@${{ github.ref }}
   RELEASE_BUNDLE_OIDC_ISSUER: https://token.actions.githubusercontent.com
   RECOVERY_ADAPTER_CERTIFICATE_IDENTITY: https://github.com/${{ github.repository }}/.github/workflows/ci.yml@refs/heads/main
   RECOVERY_ADAPTER_OIDC_ISSUER: https://token.actions.githubusercontent.com
@@ -2768,7 +2767,7 @@ jobs:
         env:
           SERVICE: ${{ matrix.service }}
           IMAGE_REF: ${{ steps.release_image.outputs.ref }}
-          CERTIFICATE_IDENTITY: ${{ env.RELEASE_EVIDENCE_CERTIFICATE_IDENTITY }}
+          CERTIFICATE_IDENTITY: ${{ env.RELEASE_BUNDLE_CERTIFICATE_IDENTITY }}
           OIDC_ISSUER: ${{ env.RELEASE_BUNDLE_OIDC_ISSUER }}
         run: |
           node scripts/write-release-image-report-evidence.mjs \
@@ -2794,7 +2793,7 @@ jobs:
         run: |
           node scripts/verify-sbom-release-reports.mjs .release/release-manifest.json .release/sbom \
             --service "${{ matrix.service }}" \
-            --expected-certificate-identity "$RELEASE_EVIDENCE_CERTIFICATE_IDENTITY" \
+            --expected-certificate-identity "$RELEASE_BUNDLE_CERTIFICATE_IDENTITY" \
             --expected-oidc-issuer "$RELEASE_BUNDLE_OIDC_ISSUER"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
@@ -2854,7 +2853,7 @@ jobs:
       - name: Bind Trivy report to release manifest
         env:
           SERVICE: ${{ matrix.service }}
-          CERTIFICATE_IDENTITY: ${{ env.RELEASE_EVIDENCE_CERTIFICATE_IDENTITY }}
+          CERTIFICATE_IDENTITY: ${{ env.RELEASE_BUNDLE_CERTIFICATE_IDENTITY }}
           OIDC_ISSUER: ${{ env.RELEASE_BUNDLE_OIDC_ISSUER }}
         run: |
           node scripts/write-release-image-report-evidence.mjs \
@@ -2887,7 +2886,7 @@ jobs:
         run: |
           node scripts/verify-trivy-release-reports.mjs .release/release-manifest.json .release/trivy \
             --service "${{ matrix.service }}" \
-            --expected-certificate-identity "$RELEASE_EVIDENCE_CERTIFICATE_IDENTITY" \
+            --expected-certificate-identity "$RELEASE_BUNDLE_CERTIFICATE_IDENTITY" \
             --expected-oidc-issuer "$RELEASE_BUNDLE_OIDC_ISSUER"
 
   internal-beta-candidate-proof:
@@ -2973,10 +2972,10 @@ jobs:
         run: |
           set -euo pipefail
           node scripts/verify-trivy-release-reports.mjs .release/release-manifest.json .release/trivy \
-            --expected-certificate-identity "$RELEASE_EVIDENCE_CERTIFICATE_IDENTITY" \
+            --expected-certificate-identity "$RELEASE_BUNDLE_CERTIFICATE_IDENTITY" \
             --expected-oidc-issuer "$RELEASE_BUNDLE_OIDC_ISSUER"
           node scripts/verify-sbom-release-reports.mjs .release/release-manifest.json .release/sbom \
-            --expected-certificate-identity "$RELEASE_EVIDENCE_CERTIFICATE_IDENTITY" \
+            --expected-certificate-identity "$RELEASE_BUNDLE_CERTIFICATE_IDENTITY" \
             --expected-oidc-issuer "$RELEASE_BUNDLE_OIDC_ISSUER"
           node scripts/launch-proof-evidence.mjs verify-bundle dast \
             --evidence ".release/candidate-dast/dast-evidence-$GITHUB_SHA.json" \
