@@ -10,6 +10,7 @@ variables {
 
   image_digests = {
     api     = "registry.terraform.test/api@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    api-v2  = "registry.terraform.test/api-v2@sha256:abababababababababababababababababababababababababababababababab"
     web     = "registry.terraform.test/web@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
     engine  = "registry.terraform.test/engine@sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
     worker  = "registry.terraform.test/worker@sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
