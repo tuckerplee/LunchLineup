@@ -4,7 +4,7 @@ grpcio==1.76.0
 grpcio-tools==1.76.0
 pydantic==2.13.4
 pydantic-settings==2.14.2
-python-multipart==0.0.30
+python-multipart==0.0.31
 python-jose[cryptography]==3.5.0
 passlib[bcrypt]==1.7.4
 aio-pika==9.6.2
