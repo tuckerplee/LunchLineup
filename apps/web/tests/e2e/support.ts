@@ -104,7 +104,11 @@ export async function loginWithPin(
     await page.getByRole('button', { name: 'Sign in with PIN' }).click();
   }
   await page.waitForURL(/\/(?:mfa|dashboard|admin)(?:[/?#].*)?$/, { timeout: 10_000 });
-  if (new URL(page.url()).pathname === '/mfa') {
+  // A caller that explicitly expects the MFA route is testing the gate itself
+  // (including the unenrolled enrollment screen), so leave that session at
+  // the gate for the test to drive.  Ordinary authenticated helpers continue
+  // through an enrolled seeded TOTP challenge automatically.
+  if (new URL(page.url()).pathname === '/mfa' && expectedPath !== '/mfa') {
     const secret = options.username === e2eSuperAdminUsername
       ? e2eSuperAdminMfaSecret
       : e2eAdminMfaSecret;

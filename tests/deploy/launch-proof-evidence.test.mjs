@@ -458,6 +458,13 @@ test('candidate DAST and load evidence bind served release, immutable images, ra
       'expected-tool-image': image,
       'max-age-seconds': 300,
     }));
+    const warningOnlyDast = emitCandidateEvidence('dast', {
+      ...base,
+      'command-exit-code': '2',
+      'raw-report': zapReport,
+      'raw-html': zapHtml,
+    });
+    assert.equal(warningOnlyDast.status, 'passed');
     assert.throws(() => verifyFetchedEvidenceArtifact('dast', bytes({ ...dast, servedReleaseSha: 'b'.repeat(40) }), dastEntry, releaseManifest), /servedReleaseSha/);
     assert.throws(() => verifyFetchedEvidenceArtifact('dast', bytes({ ...dast, tool: { ...dast.tool, image: 'zaproxy/zaproxy:stable' } }), dastEntry, releaseManifest), /immutable image reference/);
     assert.throws(() => verifyFetchedEvidenceArtifact('dast', bytes({ ...dast, raw: {} }), dastEntry, releaseManifest), /raw\.report/);

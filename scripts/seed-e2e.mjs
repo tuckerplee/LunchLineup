@@ -179,12 +179,12 @@ async function resetTenantData(tenantId) {
 
   await prisma.session.deleteMany({ where: { userId: { in: userIds } } });
   await prisma.notification.deleteMany({ where: { tenantId } });
-  // The disposable E2E tenant is reset before every DB-backed spec. Preserve
-  // the production append-only trigger while using its explicit retention
-  // capability for this isolated test tenant's old evidence.
+  // The disposable E2E database is reset before every DB-backed spec. Its
+  // owner connection may truncate the isolated audit table without weakening
+  // the production append-only trigger or invoking the retained-record purge
+  // function (which intentionally requires a seven-year PURGED tenant).
   await prisma.$transaction(async (transaction) => {
-    await transaction.$executeRaw`SELECT set_config('app.allow_audit_log_delete', 'retention_expired', true)`;
-    await transaction.auditLog.deleteMany({ where: { tenantId } });
+    await transaction.$executeRawUnsafe('TRUNCATE TABLE "AuditLog"');
   });
   await prisma.timeCard.deleteMany({ where: { tenantId } });
   await prisma.break.deleteMany({ where: { shift: { tenantId } } });

@@ -972,7 +972,11 @@ export function emitCandidateEvidence(kind, options) {
       htmlReport: { sha256: htmlReport.sha256, bytes: htmlReport.bytes.byteLength },
     };
     evidence.dast = { findingCounts: counts, severityThreshold: { high: 0, critical: 0 } };
-    if (commandExitCode === 0 && servedReleaseSha === sourceSha && counts.high === 0 && counts.critical === 0) evidence.status = 'passed';
+    // ZAP baseline exits 2 when it finds warning-only alerts.  Warnings remain
+    // in the retained report; the launch threshold is explicitly zero HIGH or
+    // CRITICAL findings, so accept only the documented warning exit alongside
+    // a clean severity count and exact release binding.
+    if ([0, 2].includes(commandExitCode) && servedReleaseSha === sourceSha && counts.high === 0 && counts.critical === 0) evidence.status = 'passed';
   } else if (kind === 'load') {
     const artillery = rawFile(options['raw-result']);
     const availability = rawFile(options['availability-result']);
