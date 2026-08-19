@@ -3,7 +3,7 @@
 FROM minio/mc:RELEASE.2025-08-13T08-35-41Z@sha256:a7fe349ef4bd8521fb8497f55c6042871b2ae640607cf99d9bede5e9bdf11727 AS pitr-client
 
 # Stage 2: Runtime
-FROM alpine:3.22@sha256:14358309a308569c32bdc37e2e0e9694be33a9d99e68afb0f5ff33cc1f695dce AS runner
+FROM alpine:3.24@sha256:28bd5fe8b56d1bd048e5babf5b10710ebe0bae67db86916198a6eec434943f8b AS runner
 RUN apk add --no-cache postgresql-client rsync zstd gpg aws-cli rclone nodejs coreutils \
   && if ! grep -q '^postgres:' /etc/group; then addgroup -S -g 70 postgres; fi \
   && if ! grep -q '^postgres:' /etc/passwd; then adduser -S -D -H -u 70 -G postgres postgres; fi
