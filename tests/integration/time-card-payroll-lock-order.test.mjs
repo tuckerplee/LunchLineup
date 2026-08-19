@@ -167,9 +167,11 @@ async function createFixture(owner, values) {
         tenantId: values.tenantId,
         policyVersionId: values.policyId,
         localStartDate: new Date('2026-07-01T00:00:00.000Z'),
-        localEndDateExclusive: new Date('2026-08-01T00:00:00.000Z'),
+        // The controller intentionally uses the real clock when no event time is supplied.
+        // Keep this synthetic open period broad enough for CI and local runs on any date.
+        localEndDateExclusive: new Date('2099-01-01T00:00:00.000Z'),
         startsAt: new Date('2026-07-01T00:00:00.000Z'),
-        endsAt: new Date('2026-08-01T00:00:00.000Z'),
+        endsAt: new Date('2099-01-01T00:00:00.000Z'),
         timeZone: 'UTC',
         cadence: 'WEEKLY',
         status: 'OPEN',
