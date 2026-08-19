@@ -41,6 +41,7 @@ describe('API v2 application operation catalog', () => {
         'reissueStaffInvitation',
         'resetStaffPin',
         'replaceCurrentPin',
+        'deleteStaffMember',
         'getStaffAccess',
         'updateStaffAccess',
         'createAccessRole',

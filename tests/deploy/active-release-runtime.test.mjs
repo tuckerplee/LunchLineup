@@ -54,7 +54,7 @@ test('backup and PITR systemd jobs execute the exact release selected by IMAGE_T
     ['lunchlineup-pitr-base-backup.service', 'lunchlineup-pitr-base-backup.service'],
   ]) {
     const unit = readUnit(unitName);
-    assert.match(unit, /User=lunchlineup\nGroup=lunchlineup/);
+    assert.match(unit, /User=lunchlineup\r?\nGroup=lunchlineup/);
     assert.match(unit, /^WorkingDirectory=\/$/m);
     assert.match(unit, /^EnvironmentFile=\/var\/lib\/lunchlineup\/backup-release\.env$/m);
     assert.match(unit, /^Environment=CANDIDATE_RELEASE_ROOT=\/opt\/lunchlineup\/releases$/m);

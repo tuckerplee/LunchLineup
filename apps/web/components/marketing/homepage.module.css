@@ -61,7 +61,7 @@
   gap: 11px;
   font-size: 17px;
   font-weight: 780;
-  letter-spacing: -0.025em;
+  letter-spacing: 0;
 }
 
 .brand svg {
@@ -228,7 +228,7 @@
   font-size: clamp(54px, 6vw, 92px);
   font-weight: 760;
   line-height: 0.96;
-  letter-spacing: -0.068em;
+  letter-spacing: 0;
   text-wrap: balance;
 }
 
@@ -238,7 +238,7 @@
   color: var(--slate);
   font-size: clamp(18px, 1.55vw, 22px);
   line-height: 1.58;
-  letter-spacing: -0.015em;
+  letter-spacing: 0;
 }
 
 .heroActions {
@@ -426,7 +426,7 @@
   text-align: left;
   font-size: 10px;
   font-weight: 740;
-  letter-spacing: -0.01em;
+  letter-spacing: 0;
 }
 
 .scheduleTable thead th:first-child {
@@ -684,7 +684,7 @@
   font-size: clamp(38px, 4.5vw, 64px);
   font-weight: 740;
   line-height: 1.02;
-  letter-spacing: -0.052em;
+  letter-spacing: 0;
   text-wrap: balance;
 }
 
@@ -846,7 +846,7 @@
   font-size: clamp(24px, 2.7vw, 36px);
   font-weight: 720;
   line-height: 1.08;
-  letter-spacing: -0.042em;
+  letter-spacing: 0;
 }
 
 .boardWeek {
@@ -1129,7 +1129,7 @@
   color: var(--ink);
   font-size: 20px;
   font-weight: 730;
-  letter-spacing: -0.025em;
+  letter-spacing: 0;
 }
 
 .workflowStep p {
@@ -1194,7 +1194,7 @@
   font-size: clamp(29px, 3.2vw, 45px);
   font-weight: 720;
   line-height: 1.08;
-  letter-spacing: -0.045em;
+  letter-spacing: 0;
   text-wrap: balance;
 }
 
@@ -1537,7 +1537,7 @@
 .footerBrand strong {
   color: var(--ink);
   font-size: 14px;
-  letter-spacing: -0.02em;
+  letter-spacing: 0;
 }
 
 .footerBrand small,
@@ -1747,7 +1747,7 @@
 
   .heroCopy h1 {
     font-size: clamp(44px, 14vw, 62px);
-    letter-spacing: -0.06em;
+    letter-spacing: 0;
   }
 
   .heroActions {

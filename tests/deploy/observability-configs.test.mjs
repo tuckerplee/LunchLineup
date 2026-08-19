@@ -179,8 +179,10 @@ test('staff invitation delivery has alerts, runbook coverage, and Grafana panels
   ]) {
     const offset = alerts.indexOf('alert: ' + alert);
     assert.notEqual(offset, -1, alert + ' must be configured');
+    const nextAlertOffset = alerts.indexOf('\n      - alert:', offset + 1);
+    const alertDefinition = alerts.slice(offset, nextAlertOffset === -1 ? undefined : nextAlertOffset);
     assert.ok(
-      alerts.slice(offset, offset + 900).includes('runbook: "docs/runbooks/outbound-delivery.md"'),
+      alertDefinition.includes('runbook: "docs/runbooks/outbound-delivery.md"'),
       alert + ' must use the outbound-delivery runbook',
     );
     assert.ok(runbook.includes(alert), alert + ' must be documented');
@@ -227,7 +229,7 @@ test('dead-letter paging is recent and rule fixtures prove fire then recovery', 
     ['NotificationOutboxDeadLetters', 'lunchlineup_notification_outbox_total'],
   ]) {
     assert.match(alerts, new RegExp(`alert: ${alertName}[\\s\\S]*increase\\(${metric}[\\s\\S]*\\[15m\\]`));
-    assert.match(ruleTests, new RegExp(`eval_time: 5m\\n\\s*alertname: ${alertName}[\\s\\S]*eval_time: 18m\\n\\s*alertname: ${alertName}`));
+    assert.match(ruleTests, new RegExp(`eval_time: 5m\\r?\\n\\s*alertname: ${alertName}[\\s\\S]*eval_time: 18m\\r?\\n\\s*alertname: ${alertName}`));
   }
   assert.doesNotMatch(alerts, /DeadLetters[\s\S]{0,120}_dead_lettered[^\n]*> 0/);
 });

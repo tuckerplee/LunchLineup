@@ -555,8 +555,8 @@ test('backup, restore, DR, and retention purge scripts expose machine-checkable 
   assert.match(drill, /kill -STOP/);
   assert.match(drill, /ownership domain could not be proven empty/);
   assert.doesNotMatch(drill, /setsid "\$@"/);
-  assert.match(drill, /run_adapter_process_tree_bounded \\\n\s*"\$\{DR_OFFHOST_FETCH_TIMEOUT_SECONDS\}"/);
-  assert.match(drill, /run_adapter_process_tree_bounded \\\n\s*"\$\{DR_OFFHOST_READBACK_TIMEOUT_SECONDS\}"/);
+  assert.match(drill, /run_adapter_process_tree_bounded \\\r?\n\s*"\$\{DR_OFFHOST_FETCH_TIMEOUT_SECONDS\}"/);
+  assert.match(drill, /run_adapter_process_tree_bounded \\\r?\n\s*"\$\{DR_OFFHOST_READBACK_TIMEOUT_SECONDS\}"/);
   assert.match(drill, /source_readback_verified/);
   assert.match(drill, /lunchlineup-signed-recovery-adapter-provenance/);
   assert.match(drill, /cosign verify-blob/);

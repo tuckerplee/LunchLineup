@@ -51,10 +51,10 @@ export default function OpenGraphImage() {
                                 <div style={{ width: 17, height: 3, position: 'absolute', top: 7, left: 3, borderRadius: 2, background: '#FFFFFF' }} />
                             </div>
                         </div>
-                        <div style={{ fontSize: 27, fontWeight: 800, letterSpacing: '-0.8px' }}>LunchLineup</div>
+                        <div style={{ fontSize: 27, fontWeight: 800, letterSpacing: '0' }}>LunchLineup</div>
                     </div>
                     <div style={{ display: 'flex', flexDirection: 'column' }}>
-                        <div style={{ fontSize: 59, lineHeight: 0.98, fontWeight: 800, letterSpacing: '-3px', maxWidth: 470 }}>
+                        <div style={{ fontSize: 59, lineHeight: 0.98, fontWeight: 800, letterSpacing: '0', maxWidth: 470 }}>
                             The schedule, already thinking ahead.
                         </div>
                         <div style={{ marginTop: 24, fontSize: 20, lineHeight: 1.45, color: '#526078', maxWidth: 430 }}>

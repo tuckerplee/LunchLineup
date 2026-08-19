@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { existsSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
@@ -22,9 +23,26 @@ const nativeRootAvailable = process.platform !== 'win32'
 test('service-group permissions allow backup, PITR, probe, and marker access as a real non-root identity', {
   skip: !wslAvailable && !nativeRootAvailable,
 }, () => {
-  const result = wslAvailable
-    ? spawnSync('wsl.exe', ['--exec', 'sh', wslPath(fixture), wslPath(deployScript), wslPath(rollbackActivator)], { encoding: 'utf8' })
-    : spawnSync('sh', [fixture, deployScript, rollbackActivator], { encoding: 'utf8' });
+  let normalizedFixture = fixture;
+  let temporaryRoot;
+  if (wslAvailable) {
+    temporaryRoot = mkdtempSync(join(tmpdir(), 'lunchlineup-runtime-permissions-'));
+    normalizedFixture = join(temporaryRoot, 'runtime-permission-access.fixture.sh');
+    writeFileSync(
+      normalizedFixture,
+      readFileSync(fixture, 'utf8').replaceAll('\r\n', '\n'),
+      { mode: 0o700 },
+    );
+  }
+
+  let result;
+  try {
+    result = wslAvailable
+      ? spawnSync('wsl.exe', ['--exec', 'sh', wslPath(normalizedFixture), wslPath(deployScript), wslPath(rollbackActivator)], { encoding: 'utf8' })
+      : spawnSync('sh', [fixture, deployScript, rollbackActivator], { encoding: 'utf8' });
+  } finally {
+    if (temporaryRoot) rmSync(temporaryRoot, { recursive: true, force: true });
+  }
 
   assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
   assert.match(result.stdout, /runtime_permission_access_fixture_ok uid=[1-9][0-9]* gid=[1-9][0-9]*/);

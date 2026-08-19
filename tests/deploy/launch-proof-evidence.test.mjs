@@ -530,7 +530,7 @@ test('candidate evidence helpers reject mutable ZAP images and emit the canonica
   assert.doesNotMatch(dast, /\$SOURCE_ROOT:[^"\n]*:rw/);
   assert.match(load, /--availability-result/);
   assert.match(load, /--raw-result/);
-  assert.match(load, /X-LunchLineup-Release/);
+  assert.match(load, /x-lunchlineup-release/i);
   assert.match(load, /--volume "\$SOURCE_ROOT:\/workspace:ro"/);
   assert.match(load, /--volume "\$OUTPUT_DIR:\/output:rw"/);
   assert.doesNotMatch(load, /\$SOURCE_ROOT:[^"\n]*:rw/);
