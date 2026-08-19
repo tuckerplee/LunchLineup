@@ -11,6 +11,7 @@ import { EmailDeliveryFeedbackService } from './email-delivery-feedback.service'
 const DEFAULT_PROVIDER_TIMEOUT_MS = 10_000;
 const MIN_PROVIDER_TIMEOUT_MS = 1_000;
 const MAX_PROVIDER_TIMEOUT_MS = 30_000;
+const SYSTEM_STAFF_EMAIL_SUFFIX = '@staff.lunchlineup.local';
 
 type SchedulePublishedEmailInput = {
     outboxId: string;
@@ -180,6 +181,7 @@ export class SchedulePublishedEmailService {
         return value.length >= 3
             && value.length <= 320
             && !/\r|\n/.test(value)
+            && !value.toLowerCase().endsWith(SYSTEM_STAFF_EMAIL_SUFFIX)
             && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value);
     }
 

@@ -318,6 +318,14 @@
       "requiresOldReleaseProof": true,
       "rationale": "API v2 change-set RLS and validation remain during rollback while the old-release ignores the new table; isolated old-release proof is required before production mutation."
     },
+    "packages/db/prisma/migrations/20260818_staff_availability_exceptions.sql": {
+      "sha256": "c1e1a694f94ebd66c2e048e80e26607ff7d6b4a3a8a3ed21c55e257f1bf07d62",
+      "phase": "expand",
+      "rollbackSchema": "retain",
+      "contractPhase": "after-rollback-window",
+      "requiresOldReleaseProof": true,
+      "rationale": "The additive dated-availability table, constraints, index, and RLS policy remain unused by the old-release during rollback; isolated old-release smoke proof is mandatory before beta mutation, and destructive removal waits until after the rollback window."
+    },
     "packages/db/prisma/migrations/pre_20260715_availability_import_lifecycle.sql": {
       "sha256": "1563895292cca5540c95b88ffa22c99b82923a5f2ea295886f779f550367e70f",
       "phase": "expand",

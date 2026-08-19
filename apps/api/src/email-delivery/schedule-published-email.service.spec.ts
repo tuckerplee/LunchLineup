@@ -69,6 +69,8 @@ describe('SchedulePublishedEmailService', () => {
 
         await expect(service.send(input())).resolves.toBe('suppressed');
         await expect(service.send(input({ recipientEmail: null }))).resolves.toBe('not_addressable');
+        await expect(service.send(input({ recipientEmail: 'pin-user@staff.lunchlineup.local' })))
+            .resolves.toBe('not_addressable');
 
         expect(send).not.toHaveBeenCalled();
         expect(JSON.stringify(warn.mock.calls)).not.toContain('staff@example.test');
