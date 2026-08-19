@@ -163,6 +163,10 @@ function validEnv(overrides = {}) {
     RESEND_API_KEY: 're_abcdefghijklmnopqrstuvwxyz123456',
     RESEND_WEBHOOK_SECRET: 'whsec_abcdefghijklmnopqrstuvwxyz123456',
     EMAIL_FROM: 'LunchLineup <no-reply@lunchlineup.com>',
+    RESEND_PREFLIGHT_RECIPIENT: 'launch-owner@lunchlineup.com',
+    RESEND_PREFLIGHT_TIMEOUT_MS: '10000',
+    SCHEDULE_PUBLISHED_EMAIL_ENABLED: 'true',
+    SCHEDULE_PUBLISHED_EMAIL_PROVIDER_TIMEOUT_MS: '10000',
     STRIPE_SECRET_KEY: ['sk', 'live', 'abcdefghijklmnopqrstuvwxyz123456'].join('_'),
     STRIPE_WEBHOOK_SECRET: 'whsec_abcdefghijklmnopqrstuvwxyz123456',
     STRIPE_WEBHOOK_ENDPOINT_ID: 'we_1234567890abcdef',
@@ -267,6 +271,8 @@ test('production launch validator accepts a real public launch profile', () => {
   assert.ok(payload.checked.includes('PASSWORD_RESET_EMAIL_OUTBOX_ENABLED'));
   assert.ok(payload.checked.includes('STAFF_INVITATION_OUTBOX_ENABLED'));
   assert.ok(payload.checked.includes('RESEND_WEBHOOK_SECRET'));
+  assert.ok(payload.checked.includes('RESEND_PREFLIGHT_RECIPIENT'));
+  assert.ok(payload.checked.includes('SCHEDULE_PUBLISHED_EMAIL_ENABLED'));
   assert.ok(payload.checked.includes('APP_ORIGIN'));
   assert.ok(payload.checked.includes('NEXT_PUBLIC_PRIVACY_CONTACT_EMAIL'));
   assert.ok(payload.checked.includes('PAID_GA_LEGAL_APPROVED'));
@@ -856,6 +862,21 @@ test('production launch validator rejects a missing Resend feedback signing secr
   const missing = run(validEnv({ RESEND_WEBHOOK_SECRET: '' }));
   assert.notEqual(missing.status, 0);
   assert.match(missing.stderr, /RESEND_WEBHOOK_SECRET is required/);
+});
+
+test('production launch validator requires schedule email and bounded provider preflight configuration', () => {
+  for (const [overrides, expected] of [
+    [{ RESEND_PREFLIGHT_RECIPIENT: '' }, /RESEND_PREFLIGHT_RECIPIENT is required/],
+    [{ RESEND_PREFLIGHT_RECIPIENT: 'not-an-email' }, /must be one internal launch-owner email address/],
+    [{ RESEND_PREFLIGHT_RECIPIENT: 'operator@example.test' }, /must be one internal launch-owner email address/],
+    [{ SCHEDULE_PUBLISHED_EMAIL_ENABLED: 'false' }, /SCHEDULE_PUBLISHED_EMAIL_ENABLED must be exactly true/],
+    [{ SCHEDULE_PUBLISHED_EMAIL_PROVIDER_TIMEOUT_MS: '999' }, /must be an integer from 1000 through 30000/],
+    [{ RESEND_PREFLIGHT_TIMEOUT_MS: '30001' }, /must be an integer from 1000 through 30000/],
+  ]) {
+    const result = run(validEnv(overrides));
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, expected);
+  }
 });
 
 test('production launch validator rejects missing or malformed password reset outbox encryption key', () => {

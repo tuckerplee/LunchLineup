@@ -26,7 +26,7 @@ describe('NotificationOutboxProcessor', () => {
                 findFirst: vi.fn().mockResolvedValue({ status: 'ACTIVE' }),
             },
             user: {
-                findFirst: vi.fn().mockResolvedValue({ id: 'user-1' }),
+                findFirst: vi.fn().mockResolvedValue({ id: 'user-1', email: 'staff@example.test' }),
             },
             notification: {
                 upsert: vi.fn().mockResolvedValue({
@@ -97,7 +97,7 @@ describe('NotificationOutboxProcessor', () => {
                 deletedAt: null,
                 suspendedAt: null,
             },
-            select: { id: true },
+            select: { id: true, email: true },
         });
         expect(tx.notification.upsert).toHaveBeenCalledWith({
             where: { id: 'outbox-1' },
@@ -178,6 +178,48 @@ describe('NotificationOutboxProcessor', () => {
             }),
         );
         expect(fanOut).toHaveBeenCalledOnce();
+    });
+
+    it('retries schedule email with one stable outbox identity before marking delivery complete', async () => {
+        tx.$queryRaw
+            .mockResolvedValueOnce([claimed(1)])
+            .mockResolvedValueOnce([claimed(2)]);
+        tx.notificationOutbox.findMany
+            .mockResolvedValueOnce([{ dedupeKey: claimed().dedupeKey, status: 'FAILED' }])
+            .mockResolvedValueOnce([{ dedupeKey: claimed().dedupeKey, status: 'DELIVERED' }]);
+        const deliverExternal = vi.fn()
+            .mockRejectedValueOnce(new Error('provider response contained recipient@example.test'))
+            .mockResolvedValueOnce('accepted');
+        const processor = new NotificationOutboxProcessor(tenantDb, {
+            fanOut,
+            deliverExternal,
+            maxAttempts: 3,
+        });
+
+        await expect(
+            processor.deliverPendingNow('tenant-1', [claimed().dedupeKey]),
+        ).resolves.toEqual({ status: 'PENDING', delivered: 0, pending: 1, failed: 0 });
+        expect(fanOut).not.toHaveBeenCalled();
+
+        await expect(
+            processor.deliverPendingNow('tenant-1', [claimed().dedupeKey]),
+        ).resolves.toEqual({ status: 'DELIVERED', delivered: 1, pending: 0, failed: 0 });
+
+        expect(deliverExternal).toHaveBeenCalledTimes(2);
+        expect(deliverExternal.mock.calls.map(([intent]: any[]) => intent.id))
+            .toEqual(['outbox-1', 'outbox-1']);
+        expect(deliverExternal.mock.calls[0][1]).toBe('staff@example.test');
+        expect(tx.notification.upsert).toHaveBeenCalledTimes(2);
+        expect(fanOut).toHaveBeenCalledOnce();
+        expect(tx.notificationOutbox.updateMany).toHaveBeenNthCalledWith(
+            1,
+            expect.objectContaining({
+                data: expect.objectContaining({
+                    status: 'FAILED',
+                    lastError: 'category=unknown class=Error',
+                }),
+            }),
+        );
     });
 
     it('persists and logs terminal failure after bounded attempts', async () => {

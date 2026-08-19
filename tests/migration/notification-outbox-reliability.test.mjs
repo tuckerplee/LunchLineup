@@ -47,7 +47,7 @@ test('notification outbox migration is replay-safe after Prisma schema synchroni
 });
 
 test('schedule publication commits one deduplicated intent per recipient before any delivery attempt', () => {
-  const controller = read('apps/api/src/schedules/schedules.controller.ts');
+  const controller = read('apps/api/src/schedules/schedules.controller.ts').replace(/\r\n?/g, '\n');
   const enqueueAt = controller.indexOf('enqueueInTransaction(tx, assignedUserIds.map');
   const transactionEndAt = controller.indexOf(
     '\n        });\n        const notificationSummary = await this.notificationsService.deliverPendingNow(',

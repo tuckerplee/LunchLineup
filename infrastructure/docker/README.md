@@ -14,7 +14,7 @@
 
 ## API Runtime Note
 
-`Dockerfile.api` copies both root workspace modules and API workspace-local modules into the runtime image. Nest's HTTP driver package can be installed under the API workspace during `npm ci`, so the runtime image must merge that folder into `/app/node_modules`.
+`Dockerfile.api` copies both root workspace modules and API workspace-local modules into the runtime image. Nest's HTTP driver package can be installed under the API workspace during `npm ci`, so the runtime image must merge that folder into `/app/node_modules`. It also carries the Resend readiness probe and its env parser so disposable browser-beta bootstrap can execute the exact candidate through the image's pinned Node runtime before database or service startup.
 
 ## Runtime Users
 

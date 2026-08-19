@@ -189,6 +189,23 @@ export function validateProviderBillingPolicy(context) {
       collector.fail('EMAIL_FROM must use a real sender domain.');
     }
   }
+  const preflightRecipient = assertRequired('RESEND_PREFLIGHT_RECIPIENT');
+  const preflightRecipientMatch = preflightRecipient.match(/^[^<>\s@]+@([^<>\s@]+\.[^<>\s@]+)$/);
+  if (
+    preflightRecipient
+    && (!preflightRecipientMatch || !isPublicLaunchHostname(preflightRecipientMatch[1].toLowerCase()))
+  ) {
+    collector.fail('RESEND_PREFLIGHT_RECIPIENT must be one internal launch-owner email address on a real public domain.');
+  }
+  assertExactValue('SCHEDULE_PUBLISHED_EMAIL_ENABLED', 'true');
+  const scheduleEmailTimeout = Number(assertRequired('SCHEDULE_PUBLISHED_EMAIL_PROVIDER_TIMEOUT_MS'));
+  if (!Number.isInteger(scheduleEmailTimeout) || scheduleEmailTimeout < 1000 || scheduleEmailTimeout > 30000) {
+    collector.fail('SCHEDULE_PUBLISHED_EMAIL_PROVIDER_TIMEOUT_MS must be an integer from 1000 through 30000.');
+  }
+  const resendPreflightTimeout = Number(assertRequired('RESEND_PREFLIGHT_TIMEOUT_MS'));
+  if (!Number.isInteger(resendPreflightTimeout) || resendPreflightTimeout < 1000 || resendPreflightTimeout > 30000) {
+    collector.fail('RESEND_PREFLIGHT_TIMEOUT_MS must be an integer from 1000 through 30000.');
+  }
 
   assertPattern('STRIPE_SECRET_KEY', /^sk_live_[A-Za-z0-9]{24,}$/, 'be a live Stripe secret key');
   assertPattern('STRIPE_WEBHOOK_SECRET', /^whsec_[A-Za-z0-9]{24,}$/, 'be a Stripe webhook secret');

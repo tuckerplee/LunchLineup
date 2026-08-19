@@ -6,6 +6,7 @@ import type { Notification } from '@prisma/client';
 import { MetricsService } from '../common/metrics.service';
 import { runtimeErrorText } from '../common/runtime-error-diagnostic';
 import { TenantPrismaService } from '../database/tenant-prisma.service';
+import { SchedulePublishedEmailService } from '../email-delivery/schedule-published-email.service';
 import {
     NotificationOutboxProcessor,
     type NotificationDeliverySummary,
@@ -33,6 +34,7 @@ export class NotificationsService implements OnModuleInit, OnModuleDestroy {
     constructor(
         @Inject(ConfigService) private readonly configService: ConfigService,
         @Inject(ModuleRef) private readonly moduleRef: ModuleRef,
+        @Inject(SchedulePublishedEmailService) schedulePublishedEmail: SchedulePublishedEmailService,
         @Inject(TenantPrismaService) @Optional() tenantDb?: TenantPrismaService,
     ) {
         this.tenantDb = tenantDb ?? new TenantPrismaService();
@@ -46,6 +48,12 @@ export class NotificationsService implements OnModuleInit, OnModuleDestroy {
             : null;
         this.outbox = new NotificationOutboxProcessor(this.tenantDb, {
             fanOut: (notification) => this.publishExisting(notification),
+            deliverExternal: (intent, recipientEmail) => schedulePublishedEmail.send({
+                outboxId: intent.id,
+                recipientEmail,
+                title: intent.title,
+                body: intent.body,
+            }),
             recordOutcome: (status) => this.metrics.notificationOutboxDeliveriesTotal.inc({ status }),
             setDeadLetteredCount: (count) => this.metrics.notificationOutboxDeadLettered.set(count),
         });

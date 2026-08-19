@@ -2,28 +2,29 @@
 
 ## Scope
 
-This runbook covers OTP, password-reset email, staff-invitation email, in-app notification outbox delivery, tenant webhook delivery/replay, Resend bounce and complaint feedback, terminal payload erasure, and operator recovery.
+This runbook covers OTP, password-reset email, staff-invitation email, in-app and schedule-publication notification delivery, tenant webhook delivery/replay, Resend bounce and complaint feedback, terminal payload erasure, and operator recovery.
 
 ## Required Configuration
 
-- API: `RESEND_API_KEY`, `RESEND_WEBHOOK_SECRET`, and `EMAIL_FROM`.
+- API: `RESEND_API_KEY`, `RESEND_WEBHOOK_SECRET`, `EMAIL_FROM`, canonical HTTPS `APP_ORIGIN`, `SCHEDULE_PUBLISHED_EMAIL_ENABLED=true`, and a bounded `SCHEDULE_PUBLISHED_EMAIL_PROVIDER_TIMEOUT_MS`.
 - Worker: `PASSWORD_RESET_EMAIL_OUTBOX_ENABLED=true`, `PASSWORD_RESET_OUTBOX_ENCRYPTION_KEY`, canonical `STAFF_INVITATION_OUTBOX_ENABLED=true`, the dedicated `STAFF_INVITATION_OUTBOX_ENCRYPTION_KEY`, shared `STAFF_INVITATION_MAX_ATTEMPTS`, canonical HTTPS `APP_ORIGIN`, `RESEND_API_KEY`, `EMAIL_FROM`, database URL, and platform-admin database capability.
+- Launch probe: an internal `RESEND_PREFLIGHT_RECIPIENT`, `RESEND_PREFLIGHT_TIMEOUT_MS`, and the exact candidate `DEPLOY_RELEASE_SHA`.
 - Configure Resend delivery feedback to POST signed events to `/api/webhooks/resend/delivery-events`. Caddy preserves the raw body and forwards only this fixed provider ingress to the private delivery handler; do not configure a `/api/v1/*` URL. Subscribe to bounce, complaint, and suppression events.
 
-Production startup and launch validation fail closed when the Resend API or webhook signing secret is missing or placeholder-shaped. Never log OTPs, reset URLs, webhook payloads, recipient addresses, encrypted payloads, or provider signature headers.
+Browser-visible beta and production rollout run the candidate's `verify-resend-readiness.mjs` before service startup. Fresh disposable-beta bootstrap executes it through the already-built API image's pinned Node runtime; production executes it from the verified candidate release. The probe submits one small acceptance email with `email-readiness/<DEPLOY_RELEASE_SHA>/<probe-uuid>` as the provider idempotency key. A fresh probe UUID per invocation prevents same-release launches from reusing stale provider acceptance, while the release prefix keeps evidence candidate-bound. An invalid key, unverified sender domain, or rejected sender fails the rollout without exposing provider response bodies. Confirm the controlled inbox receives the probe and that the signed feedback webhook is enabled in the Resend dashboard. Never log OTPs, reset URLs, webhook payloads, recipient addresses, encrypted payloads, or provider signature headers.
 
 ## Delivery Ownership
 
 - OTP: API sends synchronously after checking the active recipient suppression state.
 - Password reset: API writes an encrypted outbox envelope; the worker claims with a lease, checks recipient lifecycle/suppression, and sends with `password-reset/<outbox-id>` as the provider idempotency key.
 - Staff invitation: API commits the user, role assignment, encrypted outbox envelope, and audit event atomically; the worker uses `staff-invitation/<outbox-id>` as the provider idempotency key after final recipient lifecycle/suppression checks. This access flow never consumes scheduling credits.
-- Notifications: the API processor claims committed notification intents with skip-locked leases and bounded attempts.
+- Notifications: the API processor claims committed notification intents with skip-locked leases and bounded attempts. `SCHEDULE_PUBLISHED` first upserts the durable in-app entry, then submits email with `schedule-published/<notification-outbox-id>` before marking the intent delivered. A provider timeout or response loss retries the same outbox/provider identity; other notification types remain in-app only.
 - Tenant webhooks: the API replay worker owns durable encrypted delivery rows. `X-LunchLineup-Delivery-Id` remains stable across retries so consumers can deduplicate.
 - Resend feedback: the API verifies the raw signed body before applying permanent suppression. Transient bounces do not suppress.
 
 ## Triage
 
-1. Check notification metrics: `lunchlineup_notification_outbox_dead_lettered` must remain zero; use `lunchlineup_notification_outbox_total` by status to distinguish retries from terminal failures.
+1. Check notification metrics: `lunchlineup_notification_outbox_dead_lettered` must remain zero; use `lunchlineup_notification_outbox_total` by status to distinguish retries from terminal failures. A schedule-email failure leaves the same notification intent retryable and does not emit duplicate Redis fan-out.
 2. Check password-reset metrics: `lunchlineup_password_reset_email_sweep_ready`, `lunchlineup_password_reset_email_sweep_last_success_unixtime`, `lunchlineup_password_reset_email_dead_lettered`, and `lunchlineup_password_reset_email_total` by status.
 3. Check staff-invitation readiness, last-success age/configured maximum, due rows, expired leases, recent provider failures, and dead letters in the platform dashboard.
 4. Check webhook replay metrics and token-free logs for ready, in-flight, retrying, dead-lettered, and sweep-failure outcomes.
@@ -61,7 +62,8 @@ Production requires `STAFF_INVITATION_OUTBOX_ENABLED=true`, a dedicated exact 32
 1. Send an OTP and password-reset email to a controlled inbox and confirm no secret-bearing application logs.
 2. Replay the same password-reset outbox identity and confirm the provider does not create a second message.
 3. Trigger a signed permanent-bounce fixture and confirm the matching active user is suppressed; confirm a transient bounce is ignored.
-4. Publish a schedule twice with the same publication identity and confirm one notification intent per recipient.
-5. Retry one tenant webhook delivery and confirm `X-LunchLineup-Delivery-Id` is unchanged.
-6. Terminalize controlled notification, password-reset, and webhook rows and confirm their sensitive payload columns are blank.
-7. Dead-letter a controlled staff invitation, reissue with one `Idempotency-Key`, and confirm the user ID is unchanged, the outbox/provider identity and ciphertext are new, the old terminal state is audited, and same-key response-loss replay does not create another action.
+4. Run `node scripts/verify-resend-readiness.mjs <runtime-env>` and confirm one release-bound message reaches the controlled internal inbox without recipient or provider-body output in the deploy log.
+5. Publish a schedule twice with the same publication identity and confirm one notification intent and one accepted schedule email per addressable, nonsuppressed recipient.
+6. Retry one tenant webhook delivery and confirm `X-LunchLineup-Delivery-Id` is unchanged.
+7. Terminalize controlled notification, password-reset, and webhook rows and confirm their sensitive payload columns are blank.
+8. Dead-letter a controlled staff invitation, reissue with one `Idempotency-Key`, and confirm the user ID is unchanged, the outbox/provider identity and ciphertext are new, the old terminal state is audited, and same-key response-loss replay does not create another action.

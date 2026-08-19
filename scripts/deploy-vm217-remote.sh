@@ -1626,6 +1626,7 @@ run_production_release_deploy() {
   validate_production_compose_scope
   persist_candidate_runtime_env
   node scripts/validate-production-launch.mjs "$COMPOSE_SERVICE_ENV_FILE" --verify-local-secret-files
+  node scripts/verify-resend-readiness.mjs "$COMPOSE_SERVICE_ENV_FILE"
   preflight_webhook_rollback_keys
   quarantine_worktree_git_pointer
   pull_release_images

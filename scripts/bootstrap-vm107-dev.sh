@@ -32,6 +32,8 @@ build_services=(
   web api api-v2 migrate engine worker pitr-wal-provider control
 )
 
+candidate_api_built=false
+
 require_root() {
   if [[ "$(id -u)" -ne 0 ]]; then
     echo "Run as root or through sudo on the disposable dev VM." >&2
@@ -139,7 +141,7 @@ upsert_if_empty_or_placeholder() {
   local value="$2"
   local current
   current="$(env_value "$key")"
-  if [[ -z "$current" || "$current" == change_me* || "$current" == "password" || "$current" == "guest" || "$current" == generate_with_* ]]; then
+  if [[ -z "$current" || "$current" == change_me* || "$current" == "password" || "$current" == "guest" || "$current" == generate_with_* || "$current" == re_dev_* || "$current" == whsec_dev_* ]]; then
     upsert_env "$key" "$value"
   fi
 }
@@ -153,8 +155,14 @@ prepare_runtime_env() {
     exit 1
   fi
   local cookie_secure=false
+  local public_email_delivery=false
+  local default_email_from="LunchLineup Dev <no-reply@dev.lunchlineup.com>"
   if [[ "$PUBLIC_APP_ORIGIN" == https://* ]]; then
     cookie_secure=true
+  fi
+  if [[ "$PUBLIC_APP_ORIGIN" == "https://beta.lunchlineup.com" ]]; then
+    public_email_delivery=true
+    default_email_from="LunchLineup Beta <no-reply@beta.lunchlineup.com>"
   fi
 
   if [[ ! -f "$SECRET_ENV_PATH" ]]; then
@@ -189,8 +197,19 @@ prepare_runtime_env() {
   upsert_if_empty_or_placeholder PASSWORD_RESET_OUTBOX_ENCRYPTION_KEY "$(generated_secret 32)"
   upsert_if_empty_or_placeholder AVAILABILITY_IMPORT_ENCRYPTION_KEY "$(generated_secret 32)"
   upsert_if_empty_or_placeholder STAFF_INVITATION_OUTBOX_ENCRYPTION_KEY "$(generated_secret 32)"
-  upsert_if_empty_or_placeholder RESEND_API_KEY "${RESEND_API_KEY:-re_dev_$(generated_secret 24)}"
-  upsert_if_empty_or_placeholder RESEND_WEBHOOK_SECRET "whsec_$(generated_secret 24)"
+  if [[ -n "${RESEND_API_KEY:-}" ]]; then
+    upsert_env RESEND_API_KEY "$RESEND_API_KEY"
+  else
+    upsert_if_empty_or_placeholder RESEND_API_KEY "re_dev_$(generated_secret 24)"
+  fi
+  if [[ -n "${RESEND_WEBHOOK_SECRET:-}" ]]; then
+    upsert_env RESEND_WEBHOOK_SECRET "$RESEND_WEBHOOK_SECRET"
+  elif [[ "$public_email_delivery" != true ]]; then
+    upsert_if_empty_or_placeholder RESEND_WEBHOOK_SECRET "whsec_dev_$(generated_secret 24)"
+  fi
+  if [[ -n "${RESEND_PREFLIGHT_RECIPIENT:-}" ]]; then
+    upsert_env RESEND_PREFLIGHT_RECIPIENT "$RESEND_PREFLIGHT_RECIPIENT"
+  fi
   upsert_if_empty_or_placeholder STRIPE_SECRET_KEY "sk_test_$(generated_secret 24)"
   upsert_if_empty_or_placeholder STRIPE_WEBHOOK_SECRET "whsec_$(generated_secret 24)"
   upsert_if_empty_or_placeholder STRIPE_METER_ERROR_WEBHOOK_SECRET "whsec_$(generated_secret 24)"
@@ -232,6 +251,9 @@ prepare_runtime_env() {
   upsert_env STRIPE_METERED_USAGE_ENABLED "false"
   upsert_env PASSWORD_RESET_EMAIL_OUTBOX_ENABLED "true"
   upsert_env STAFF_INVITATION_OUTBOX_ENABLED "true"
+  upsert_env SCHEDULE_PUBLISHED_EMAIL_ENABLED "$public_email_delivery"
+  upsert_env SCHEDULE_PUBLISHED_EMAIL_PROVIDER_TIMEOUT_MS "${SCHEDULE_PUBLISHED_EMAIL_PROVIDER_TIMEOUT_MS:-10000}"
+  upsert_env RESEND_PREFLIGHT_TIMEOUT_MS "${RESEND_PREFLIGHT_TIMEOUT_MS:-10000}"
   upsert_env APP_ORIGIN "$PUBLIC_APP_ORIGIN"
   upsert_env TRUST_PROXY "loopback,linklocal,uniquelocal"
   upsert_env NEXT_PUBLIC_APP_ORIGIN "$PUBLIC_APP_ORIGIN"
@@ -245,9 +267,33 @@ prepare_runtime_env() {
   upsert_env COOKIE_SECURE "$cookie_secure"
   upsert_env ALLOWED_HOSTS "10.231.10.108,10.231.10.108:80,${HOST_HEADER},lunchlineup-dev.proxmox1.lan,lunchlineup-dev-vm.proxmox1.lan"
   upsert_env ALLOWED_ORIGINS "$PUBLIC_APP_ORIGIN,http://10.231.10.108,http://${HOST_HEADER},http://lunchlineup-dev.proxmox1.lan,http://lunchlineup-dev-vm.proxmox1.lan"
-  upsert_env EMAIL_FROM "${EMAIL_FROM:-LunchLineup Dev <no-reply@dev.lunchlineup.com>}"
+  if [[ "$public_email_delivery" == true ]]; then
+    local current_email_from
+    current_email_from="$(env_value EMAIL_FROM)"
+    if [[ -n "${EMAIL_FROM:-}" ]]; then
+      upsert_env EMAIL_FROM "$EMAIL_FROM"
+    elif [[ -z "$current_email_from" || "$current_email_from" == *"@dev.lunchlineup.com"* || "$current_email_from" == *"@example."* ]]; then
+      upsert_env EMAIL_FROM "$default_email_from"
+    fi
+  else
+    upsert_if_empty_or_placeholder EMAIL_FROM "${EMAIL_FROM:-$default_email_from}"
+  fi
 
   ln -sfn "$SECRET_ENV_PATH" .env
+}
+
+verify_public_email_readiness() {
+  if [[ "$(env_value SCHEDULE_PUBLISHED_EMAIL_ENABLED)" != true ]]; then
+    return
+  fi
+
+  cd "$APP_DIR"
+  docker compose --env-file "$SECRET_ENV_PATH" config --quiet
+  docker compose --env-file "$SECRET_ENV_PATH" build api
+  candidate_api_built=true
+  docker compose --env-file "$SECRET_ENV_PATH" run --rm --no-deps --pull never \
+    --env-from-file "$SECRET_ENV_PATH" \
+    api node scripts/verify-resend-readiness.mjs
 }
 
 sql_identifier() {
@@ -332,6 +378,9 @@ start_stack() {
   docker compose --env-file "$SECRET_ENV_PATH" config --quiet
   local service
   for service in "${build_services[@]}"; do
+    if [[ "$service" == api && "$candidate_api_built" == true ]]; then
+      continue
+    fi
     docker compose --env-file "$SECRET_ENV_PATH" build "$service"
   done
   if ! docker compose --env-file "$SECRET_ENV_PATH" up -d --no-build "${services[@]}"; then
@@ -416,6 +465,7 @@ main() {
   install_host_dependencies
   sync_repository
   prepare_runtime_env
+  verify_public_email_readiness
   reconcile_disposable_database_credentials
   start_stack
   restore_backup_if_requested

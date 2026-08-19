@@ -7,6 +7,7 @@ describe('NotificationsService', () => {
     let tenantDb: { withTenant: ReturnType<typeof vi.fn> };
     let metrics: any;
     let moduleRef: any;
+    let schedulePublishedEmail: any;
 
     beforeEach(() => {
         tx = {
@@ -25,9 +26,11 @@ describe('NotificationsService', () => {
             notificationOutboxDeadLettered: { set: vi.fn() },
         };
         moduleRef = { get: vi.fn().mockReturnValue(metrics) };
+        schedulePublishedEmail = { send: vi.fn().mockResolvedValue('accepted') };
         service = new NotificationsService(
             { get: vi.fn().mockReturnValue(undefined) } as any,
             moduleRef,
+            schedulePublishedEmail,
             tenantDb as any,
         );
     });
@@ -42,6 +45,27 @@ describe('NotificationsService', () => {
         expect(moduleRef.get).toHaveBeenCalledWith(expect.any(Function), { strict: false });
         expect(start).toHaveBeenCalledOnce();
         expect(stop).toHaveBeenCalledOnce();
+    });
+
+    it('delegates schedule publication email with only outbox-owned delivery fields', async () => {
+        await (service as any).outbox.deliverExternal({
+            id: 'outbox-1',
+            tenantId: 'tenant-1',
+            userId: 'user-1',
+            dedupeKey: 'schedule-published:schedule-1:revision-1:user-1',
+            notificationType: NotificationType.SCHEDULE_PUBLISHED,
+            title: 'Schedule published',
+            body: 'Downtown: Jul 14 to Jul 20',
+            attempts: 1,
+            createdAt: new Date(),
+        }, 'staff@example.test');
+
+        expect(schedulePublishedEmail.send).toHaveBeenCalledWith({
+            outboxId: 'outbox-1',
+            recipientEmail: 'staff@example.test',
+            title: 'Schedule published',
+            body: 'Downtown: Jul 14 to Jul 20',
+        });
     });
 
     it('creates notifications inside tenant context', async () => {

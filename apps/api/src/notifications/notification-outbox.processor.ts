@@ -52,6 +52,7 @@ type NotificationOutboxProcessorOptions = {
     batchSize?: number;
     maxAttempts?: number;
     fanOut?: (notification: Notification) => Promise<void>;
+    deliverExternal?: (intent: ClaimedNotificationIntent, recipientEmail: string | null) => Promise<unknown>;
     recordOutcome?: (status: NotificationDeliveryMetricStatus) => void;
     setDeadLetteredCount?: (count: number) => void;
 };
@@ -63,6 +64,7 @@ export class NotificationOutboxProcessor {
     private readonly batchSize: number;
     private readonly maxAttempts: number;
     private readonly fanOut?: (notification: Notification) => Promise<void>;
+    private readonly deliverExternal?: (intent: ClaimedNotificationIntent, recipientEmail: string | null) => Promise<unknown>;
     private readonly recordOutcome?: (status: NotificationDeliveryMetricStatus) => void;
     private readonly setDeadLetteredCount?: (count: number) => void;
     private timer?: NodeJS.Timeout;
@@ -101,6 +103,7 @@ export class NotificationOutboxProcessor {
                 MAX_ATTEMPTS,
             );
         this.fanOut = options.fanOut;
+        this.deliverExternal = options.deliverExternal;
         this.recordOutcome = options.recordOutcome;
         this.setDeadLetteredCount = options.setDeadLetteredCount;
     }
@@ -230,7 +233,7 @@ export class NotificationOutboxProcessor {
 
     private async deliver(intent: ClaimedNotificationIntent): Promise<void> {
         try {
-            const notification = await this.tenantDb.withTenant(intent.tenantId, async (tx: any) => {
+            const delivery = await this.tenantDb.withTenant(intent.tenantId, async (tx: any) => {
                 const [tenant, user] = await Promise.all([
                     tx.tenant.findFirst({
                         where: { id: intent.tenantId, deletedAt: null },
@@ -244,7 +247,7 @@ export class NotificationOutboxProcessor {
                                 ? ACTIVE_SCHEDULABLE_USER_FILTER
                                 : { deletedAt: null }),
                         },
-                        select: { id: true },
+                        select: { id: true, email: true },
                     }),
                 ]);
 
@@ -286,7 +289,22 @@ export class NotificationOutboxProcessor {
                     },
                     update: {},
                 });
-                const transitioned = await tx.notificationOutbox.updateMany({
+                return {
+                    notification: durable as Notification,
+                    recipientEmail: typeof user.email === 'string' ? user.email : null,
+                };
+            });
+
+            if (!delivery) return;
+            if (
+                intent.notificationType === 'SCHEDULE_PUBLISHED'
+                && this.deliverExternal
+            ) {
+                await this.deliverExternal(intent, delivery.recipientEmail);
+            }
+
+            const transitioned = await this.tenantDb.withTenant<{ count: number }>(intent.tenantId, (tx: any) => (
+                tx.notificationOutbox.updateMany({
                     where: {
                         id: intent.id,
                         tenantId: intent.tenantId,
@@ -302,18 +320,15 @@ export class NotificationOutboxProcessor {
                         body: '',
                         lastError: null,
                     },
-                });
-                if (transitioned.count !== 1) {
-                    throw new Error('Notification outbox lease was lost before delivery committed');
-                }
-                return durable as Notification;
-            });
-
-            if (notification) {
-                this.recordOutcome?.('delivered');
+                })
+            ));
+            if (transitioned.count !== 1) {
+                throw new Error('Notification outbox lease was lost before delivery committed');
             }
-            if (notification && this.fanOut) {
-                await this.fanOut(notification).catch((error) => {
+
+            this.recordOutcome?.('delivered');
+            if (this.fanOut) {
+                await this.fanOut(delivery.notification).catch((error) => {
                     this.logger.warn(
                         `Notification Redis fan-out skipped ${this.errorMessage(error)}`,
                     );

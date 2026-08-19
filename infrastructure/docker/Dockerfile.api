@@ -60,6 +60,11 @@ COPY --from=builder /app/apps/api/package.json /app/package.json
 # Copy workspace packages needed at runtime
 COPY --from=builder /app/packages /app/packages
 
+# Keep the launch-time provider preflight candidate-bound. Disposable hosts run
+# this script through the built API image and do not require a host Node runtime.
+COPY --from=builder /app/scripts/production-launch-policy-shared.mjs /app/scripts/production-launch-policy-shared.mjs
+COPY --from=builder /app/scripts/verify-resend-readiness.mjs /app/scripts/verify-resend-readiness.mjs
+
 # Ensure runtime Prisma client artifacts are generated in the final image.
 RUN ./node_modules/.bin/prisma generate --schema=/app/packages/db/prisma/schema.prisma --no-hints
 

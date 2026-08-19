@@ -23,7 +23,7 @@ Assumptions:
 - The VM has or will receive `10.231.10.108/24`, gateway `10.231.10.1`, and DNS `10.231.10.20`.
 - DNS on CT930 and proxy routing on CT940 still target `10.231.10.108`.
 - Existing data is already available as `.sql`, `.sql.zst`, or `.sql.zst.gpg`.
-- Runtime provider secrets are already in `/opt/lunchlineup-secrets/runtime.env`. Private-dev placeholders are acceptable only for private development origins; `beta.lunchlineup.com` requires a valid Resend API key and a provider-verified `EMAIL_FROM` sender.
+- Runtime provider secrets are already in `/opt/lunchlineup-secrets/runtime.env`. Private-dev placeholders are acceptable only for private development origins; `beta.lunchlineup.com` requires a valid Resend API key, provider-issued webhook secret, provider-verified `EMAIL_FROM` sender, and controlled `RESEND_PREFLIGHT_RECIPIENT` inbox.
 
 Recovery objective:
 
@@ -54,7 +54,7 @@ If the data volume is intentionally empty, omit `BACKUP_FILE` and import dev dat
 
 `PUBLIC_APP_ORIGIN` is the exact browser-visible origin used by CORS, CSRF, redirects, and secure-cookie policy. The bootstrap derives `COOKIE_SECURE=true` for HTTPS. Leave it unset for the private `http://dev.lunchlineup.com` default; set it to `https://beta.lunchlineup.com` when VM107 is the beta origin behind Cloudflare.
 
-Before bootstrapping `beta.lunchlineup.com`, securely provision a valid `RESEND_API_KEY`, `RESEND_WEBHOOK_SECRET`, and provider-verified `EMAIL_FROM` in the root-only runtime environment. Do not rely on the disposable-development placeholder values for a browser-visible beta host; email OTP and password-reset delivery require real provider credentials.
+Before bootstrapping `beta.lunchlineup.com`, securely provision a valid `RESEND_API_KEY`, `RESEND_WEBHOOK_SECRET`, provider-verified `EMAIL_FROM`, and internal `RESEND_PREFLIGHT_RECIPIENT` in the root-only runtime environment. The beta bootstrap enables schedule-publication email and runs one release-bound Resend acceptance probe before starting the application stack. Each invocation receives a fresh provider idempotency identity so a same-release restart revalidates current provider/domain state instead of reusing an earlier acceptance. It fails closed on a placeholder credential, rejected sender, missing controlled inbox, or provider timeout. Confirm the probe arrives and configure signed bounce, complaint, and suppression events for `/api/webhooks/resend/delivery-events`; the send probe cannot prove webhook registration. Do not rely on disposable-development placeholders for a browser-visible beta host.
 
 ## Validation
 

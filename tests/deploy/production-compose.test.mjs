@@ -136,9 +136,19 @@ test('Compose keeps a production API fallback and propagates launch-critical del
   assert.ok(worker.includes(
     '- PASSWORD_RESET_EMAIL_OUTBOX_ENABLED=${PASSWORD_RESET_EMAIL_OUTBOX_ENABLED:?Set PASSWORD_RESET_EMAIL_OUTBOX_ENABLED=true in .env}',
   ));
+  assert.ok(api.includes(
+    '- SCHEDULE_PUBLISHED_EMAIL_ENABLED=${SCHEDULE_PUBLISHED_EMAIL_ENABLED:-false}',
+  ));
+  assert.ok(api.includes(
+    '- SCHEDULE_PUBLISHED_EMAIL_PROVIDER_TIMEOUT_MS=${SCHEDULE_PUBLISHED_EMAIL_PROVIDER_TIMEOUT_MS:-10000}',
+  ));
   assert.doesNotMatch(worker, /PASSWORD_RESET_EMAIL_OUTBOX_ENABLED=\$\{PASSWORD_RESET_EMAIL_OUTBOX_ENABLED:-/);
   assert.match(envExample, /^STRIPE_METER_AGGREGATION=last$/m);
   assert.match(envExample, /^PASSWORD_RESET_EMAIL_OUTBOX_ENABLED=true$/m);
+  assert.match(envExample, /^RESEND_PREFLIGHT_RECIPIENT=$/m);
+  assert.match(envExample, /^RESEND_PREFLIGHT_TIMEOUT_MS=10000$/m);
+  assert.match(envExample, /^SCHEDULE_PUBLISHED_EMAIL_ENABLED=false$/m);
+  assert.match(envExample, /^SCHEDULE_PUBLISHED_EMAIL_PROVIDER_TIMEOUT_MS=10000$/m);
 });
 
 function read(path) {

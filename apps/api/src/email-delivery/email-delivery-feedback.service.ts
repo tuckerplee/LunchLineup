@@ -1,5 +1,6 @@
 import {
     BadRequestException,
+    Inject,
     Injectable,
     Logger,
     Optional,
@@ -38,6 +39,7 @@ export class EmailDeliveryFeedbackService {
     private readonly resend: Resend | null;
 
     constructor(
+        @Inject(ConfigService)
         private readonly configService: ConfigService,
         @Optional() tenantDb?: TenantPrismaService,
     ) {
