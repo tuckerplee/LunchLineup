@@ -48,7 +48,9 @@ if (args[0] === 'verify-attestation') {
     _type: 'https://in-toto.io/Statement/v1',
     predicateType: 'https://cosign.sigstore.dev/attestation/v1',
     subject: [{ name: repository, digest: { sha256: digest } }],
-    predicate: evidence,
+    predicate: process.env.FAKE_ATTESTATION_SHAPE === 'custom'
+      ? { Data: `${JSON.stringify(evidence)}\n`, Timestamp: '2026-08-19T00:00:00Z' }
+      : evidence,
   };
   process.stdout.write(JSON.stringify({
     payload: Buffer.from(JSON.stringify(statement)).toString('base64'),

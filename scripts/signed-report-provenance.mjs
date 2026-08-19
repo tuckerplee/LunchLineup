@@ -118,7 +118,15 @@ function imageIdentity(imageRef) {
 function statementMatches(statement, evidence, image) {
   if (!String(statement?._type ?? '').startsWith('https://in-toto.io/Statement/')) return false;
   if (statement.predicateType !== REPORT_PREDICATE_TYPE) return false;
-  if (canonicalJson(statement.predicate) !== canonicalJson(evidence)) return false;
+  const predicateMatches = canonicalJson(statement.predicate) === canonicalJson(evidence)
+    || (typeof statement.predicate?.Data === 'string' && (() => {
+      try {
+        return canonicalJson(JSON.parse(statement.predicate.Data)) === canonicalJson(evidence);
+      } catch {
+        return false;
+      }
+    })());
+  if (!predicateMatches) return false;
   if (!Array.isArray(statement.subject)) return false;
   return statement.subject.some((subject) => (
     (subject?.name === image.repository || subject?.name === image.taggedName)

@@ -117,6 +117,8 @@ const env = {
   STRIPE_METER_ID: 'mtr_smoke1234567890',
   STRIPE_METER_AGGREGATION: 'last',
   PASSWORD_RESET_EMAIL_OUTBOX_ENABLED: 'true',
+  STAFF_INVITATION_OUTBOX_ENABLED: 'true',
+  STAFF_INVITATION_OUTBOX_ENCRYPTION_KEY: randomBytes(32).toString('base64'),
   METRICS_TOKEN_FILE: composeSecretPaths.metricsToken,
   RETENTION_PURGE_SERVICE_TOKEN_SECRET_FILE: composeSecretPaths.retentionPurgeToken,
   CONTROL_PLANE_ADMIN_TOKEN_SECRET_FILE: composeSecretPaths.controlPlaneAdminToken,

@@ -989,7 +989,7 @@ test('CI smoke jobs use the shared smoke environment generator', () => {
   assert.ok((ci.match(/actions\/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093/g) ?? []).length >= 10);
   assert.equal((ci.match(/docker compose --env-file \.env\.smoke up -d --no-build/g) ?? []).length, 3);
   assert.equal((ci.match(/--no-build --pull never/g) ?? []).length, 3);
-  assert.equal((ci.match(/docker image inspect "\$\{IMAGE_PREFIX\}\/\$\{service\}:\$\{IMAGE_TAG\}"/g) ?? []).length, 2);
+  assert.equal((ci.match(/docker image inspect "\$\{IMAGE_PREFIX\}\/\$\{service\}:\$\{IMAGE_TAG\}"/g) ?? []).length, 3);
   assert.equal((ci.match(/rm -f \.env\.smoke secrets\/metrics_token/g) ?? []).length, 3);
   assert.match(ci, /IMAGE_TAG: \$\{\{ github\.sha \}\}/);
   assert.match(ci, /SMOKE_TARGET_URL: http:\/\/localhost:8080/);
@@ -1006,6 +1006,8 @@ test('CI smoke jobs use the shared smoke environment generator', () => {
   assert.match(smokeWriter, /metrics-token-path/);
   assert.match(smokeWriter, /randomBytes/);
   assert.match(smokeWriter, /secret\('metrics_'\)/);
+  assert.match(smokeWriter, /STAFF_INVITATION_OUTBOX_ENABLED: 'true'/);
+  assert.match(smokeWriter, /STAFF_INVITATION_OUTBOX_ENCRYPTION_KEY: randomBytes\(32\)/);
   assert.match(smokeWriter, /DOMAIN: 'smoke\.lunchlineup\.test'/);
   assert.match(smokeWriter, /COOKIE_SECURE: 'true'/);
   assert.doesNotMatch(smokeWriter, /JWT_SECRET: '.*(secret|change_me|replace_me|example|password)/i);

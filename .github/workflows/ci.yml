@@ -681,12 +681,23 @@ jobs:
           BACKUP_IMAGE_REF: ${{ needs.build-images.outputs.backup_ref }}
         run: |
           set -euo pipefail
-          for ref in "$API_IMAGE_REF" "$API_V2_IMAGE_REF" "$WEB_IMAGE_REF" "$ENGINE_IMAGE_REF" "$WORKER_IMAGE_REF" "$MIGRATE_IMAGE_REF" "$CONTROL_IMAGE_REF" "$BACKUP_IMAGE_REF"; do
+          pull_release_image() {
+            local service="$1"
+            local ref="$2"
             docker pull "$ref"
-          done
-          for service in api api-v2 web engine worker migrate control backup; do
+            local image_id
+            image_id="$(docker image inspect --format '{{.Id}}' "$ref")"
+            docker image tag "$image_id" "${IMAGE_PREFIX}/${service}:${IMAGE_TAG}"
             docker image inspect "${IMAGE_PREFIX}/${service}:${IMAGE_TAG}" > /dev/null
-          done
+          }
+          pull_release_image api "$API_IMAGE_REF"
+          pull_release_image api-v2 "$API_V2_IMAGE_REF"
+          pull_release_image web "$WEB_IMAGE_REF"
+          pull_release_image engine "$ENGINE_IMAGE_REF"
+          pull_release_image worker "$WORKER_IMAGE_REF"
+          pull_release_image migrate "$MIGRATE_IMAGE_REF"
+          pull_release_image control "$CONTROL_IMAGE_REF"
+          pull_release_image backup "$BACKUP_IMAGE_REF"
           docker compose --env-file .env.smoke pull proxy pgbouncer postgres redis rabbitmq
       - name: Start smoke stack
         run: docker compose --env-file .env.smoke up -d --no-build --pull never migrate proxy web api api-v2 engine worker pgbouncer postgres redis rabbitmq
@@ -796,9 +807,23 @@ jobs:
           BACKUP_IMAGE_REF: ${{ needs.build-images.outputs.backup_ref }}
         run: |
           set -euo pipefail
-          for ref in "$API_IMAGE_REF" "$API_V2_IMAGE_REF" "$WEB_IMAGE_REF" "$ENGINE_IMAGE_REF" "$WORKER_IMAGE_REF" "$MIGRATE_IMAGE_REF" "$CONTROL_IMAGE_REF" "$BACKUP_IMAGE_REF"; do
+          pull_release_image() {
+            local service="$1"
+            local ref="$2"
             docker pull "$ref"
-          done
+            local image_id
+            image_id="$(docker image inspect --format '{{.Id}}' "$ref")"
+            docker image tag "$image_id" "${IMAGE_PREFIX}/${service}:${IMAGE_TAG}"
+            docker image inspect "${IMAGE_PREFIX}/${service}:${IMAGE_TAG}" > /dev/null
+          }
+          pull_release_image api "$API_IMAGE_REF"
+          pull_release_image api-v2 "$API_V2_IMAGE_REF"
+          pull_release_image web "$WEB_IMAGE_REF"
+          pull_release_image engine "$ENGINE_IMAGE_REF"
+          pull_release_image worker "$WORKER_IMAGE_REF"
+          pull_release_image migrate "$MIGRATE_IMAGE_REF"
+          pull_release_image control "$CONTROL_IMAGE_REF"
+          pull_release_image backup "$BACKUP_IMAGE_REF"
           docker compose --env-file .env.smoke pull proxy pgbouncer postgres redis rabbitmq
       - name: Start full-stack release images
         run: docker compose --env-file .env.smoke up -d --no-build --pull never migrate proxy web api api-v2 engine worker pgbouncer postgres redis rabbitmq
@@ -888,12 +913,23 @@ jobs:
           BACKUP_IMAGE_REF: ${{ needs.build-images.outputs.backup_ref }}
         run: |
           set -euo pipefail
-          for ref in "$API_IMAGE_REF" "$API_V2_IMAGE_REF" "$WEB_IMAGE_REF" "$ENGINE_IMAGE_REF" "$WORKER_IMAGE_REF" "$MIGRATE_IMAGE_REF" "$CONTROL_IMAGE_REF" "$BACKUP_IMAGE_REF"; do
+          pull_release_image() {
+            local service="$1"
+            local ref="$2"
             docker pull "$ref"
-          done
-          for service in api api-v2 web engine worker migrate control backup; do
+            local image_id
+            image_id="$(docker image inspect --format '{{.Id}}' "$ref")"
+            docker image tag "$image_id" "${IMAGE_PREFIX}/${service}:${IMAGE_TAG}"
             docker image inspect "${IMAGE_PREFIX}/${service}:${IMAGE_TAG}" > /dev/null
-          done
+          }
+          pull_release_image api "$API_IMAGE_REF"
+          pull_release_image api-v2 "$API_V2_IMAGE_REF"
+          pull_release_image web "$WEB_IMAGE_REF"
+          pull_release_image engine "$ENGINE_IMAGE_REF"
+          pull_release_image worker "$WORKER_IMAGE_REF"
+          pull_release_image migrate "$MIGRATE_IMAGE_REF"
+          pull_release_image control "$CONTROL_IMAGE_REF"
+          pull_release_image backup "$BACKUP_IMAGE_REF"
           docker compose --env-file .env.smoke pull proxy pgbouncer postgres redis rabbitmq
       - name: Start smoke stack
         run: docker compose --env-file .env.smoke up -d --no-build --pull never migrate proxy web api api-v2 engine worker pgbouncer postgres redis rabbitmq

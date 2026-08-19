@@ -106,6 +106,9 @@ test('SBOM verifier requires trusted signatures and exact release-image attestat
     assert.equal(valid.status, 0, `${valid.stdout}\n${valid.stderr}`);
     assert.match(valid.stdout, new RegExp(`images=${inventory.images.map(({ name }) => name).join(',')}`));
 
+    const customPredicate = run({ FAKE_ATTESTATION_SHAPE: 'custom' });
+    assert.equal(customPredicate.status, 0, `${customPredicate.stdout}\n${customPredicate.stderr}`);
+
     writeSignatureBundle('proxy', false);
     const unsignedThirdParty = run();
     assert.notEqual(unsignedThirdParty.status, 0);
