@@ -67,9 +67,9 @@ env:
   RELEASE_NEXT_PUBLIC_APP_ENV: ${{ ((github.event_name == 'push' && github.ref == 'refs/heads/internal-beta-candidate') || (github.event_name == 'workflow_dispatch' && inputs.internal_beta_candidate == true)) && vars.INTERNAL_BETA_NEXT_PUBLIC_APP_ENV || vars.NEXT_PUBLIC_APP_ENV }}
   ZAP_IMAGE: ${{ vars.ZAP_IMAGE }}
   ARTILLERY_IMAGE: artilleryio/artillery:2.0.33@sha256:ee382d480f5cb8473c52fe94cb8e1505a9564ce2accbc94114098e0be06dff56
-  RELEASE_BUNDLE_CERTIFICATE_IDENTITY: https://github.com/${{ github.repository }}/.github/workflows/ci.yml@refs/heads/main
+  RELEASE_BUNDLE_CERTIFICATE_IDENTITY: https://github.com/${{ github.repository }}/.github/workflows/ci.yml@${{ ((github.event_name == 'push' && github.ref == 'refs/heads/internal-beta-candidate') || (github.event_name == 'workflow_dispatch' && inputs.internal_beta_candidate == true)) && github.ref || 'refs/heads/main' }}
   RELEASE_BUNDLE_OIDC_ISSUER: https://token.actions.githubusercontent.com
-  RECOVERY_ADAPTER_CERTIFICATE_IDENTITY: https://github.com/${{ github.repository }}/.github/workflows/ci.yml@refs/heads/main
+  RECOVERY_ADAPTER_CERTIFICATE_IDENTITY: https://github.com/${{ github.repository }}/.github/workflows/ci.yml@${{ ((github.event_name == 'push' && github.ref == 'refs/heads/internal-beta-candidate') || (github.event_name == 'workflow_dispatch' && inputs.internal_beta_candidate == true)) && github.ref || 'refs/heads/main' }}
   RECOVERY_ADAPTER_OIDC_ISSUER: https://token.actions.githubusercontent.com
   RELEASE_REGISTRY_COMMAND_TIMEOUT_MS: '120000'
   RELEASE_REGISTRY_FETCH_MAX_BYTES: '10485760'
