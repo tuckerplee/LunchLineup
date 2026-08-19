@@ -191,6 +191,8 @@ Deployments are entirely automated—no human manually runs migrations or builds
     *   Each signed release retains a bounded secret-free version-2 source archive with exact package/lock/workspace manifests, schema/migrations, integration owners, rollback scripts, Compose/infrastructure inputs, and systemd units; materialization rejects missing, extra, or one-byte-drifted content.
 4.  **Automated Rollbacks**: If post-deployment smoke tests fail, the system restores the retained previous release inputs. INT/TERM after rollback mutation begins triggers one bounded authenticated reconciliation before staging cleanup; activation is not blindly retried. Recovery time is measured during drills and is not assumed to be sub-minute.
 
+The intentionally offline VM107 internal beta is a separate, explicit operator workflow. Follow `docs/runbooks/internal-beta-operations.md` to launch one pushed SHA, prove migrations, services, direct/public release identity, delivery/outbox monitoring, and encrypted restore, then pause the Compose project and power the `onboot: 0` guest off without deleting data.
+
 ---
 
 ## 🛡 Security & Compliance

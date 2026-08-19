@@ -9,6 +9,7 @@ set -euo pipefail
 APP_DIR="${APP_DIR:-/opt/lunchlineup}"
 REPO_URL="${REPO_URL:-https://github.com/tuckerplee/LunchLineup.git}"
 BRANCH="${BRANCH:-migration-testing-baseline}"
+CANDIDATE_SHA="${CANDIDATE_SHA:-}"
 SECRETS_DIR="${SECRETS_DIR:-/opt/lunchlineup-secrets}"
 SECRET_ENV_PATH="${SECRET_ENV_PATH:-$SECRETS_DIR/runtime.env}"
 HEALTH_URL="${HEALTH_URL:-http://127.0.0.1/health}"
@@ -77,6 +78,10 @@ install_host_dependencies() {
 }
 
 sync_repository() {
+  if ! git check-ref-format "refs/heads/$BRANCH" >/dev/null; then
+    echo "BRANCH is not a valid Git branch name." >&2
+    exit 1
+  fi
   if [[ ! -d "$APP_DIR/.git" ]]; then
     require_destructive_confirmation
     rm -rf "$APP_DIR"
@@ -84,13 +89,36 @@ sync_repository() {
   fi
 
   cd "$APP_DIR"
-  git fetch origin
-  if git show-ref --verify --quiet "refs/heads/$BRANCH"; then
-    git checkout "$BRANCH"
-  else
-    git checkout -b "$BRANCH" "origin/$BRANCH"
+  if [[ -n "$(git status --porcelain --untracked-files=all)" ]]; then
+    echo "Refusing to replace a dirty VM107 checkout." >&2
+    exit 1
   fi
-  git pull --ff-only origin "$BRANCH"
+  git fetch --prune origin
+  local remote_ref="refs/remotes/origin/$BRANCH"
+  if ! git show-ref --verify --quiet "$remote_ref"; then
+    echo "Requested branch is not available from origin: $BRANCH" >&2
+    exit 1
+  fi
+
+  if [[ -n "$CANDIDATE_SHA" ]]; then
+    if [[ ! "$CANDIDATE_SHA" =~ ^[a-f0-9]{40}$ ]]; then
+      echo "CANDIDATE_SHA must be one lowercase 40-character Git SHA." >&2
+      exit 1
+    fi
+    git cat-file -e "${CANDIDATE_SHA}^{commit}" 2>/dev/null \
+      || { echo "CANDIDATE_SHA is not available after fetching origin." >&2; exit 1; }
+    remote_sha="$(git rev-parse "${remote_ref}^{commit}")"
+    [[ "$remote_sha" == "$CANDIDATE_SHA" ]] \
+      || { echo "CANDIDATE_SHA must exactly equal the pushed origin/$BRANCH head." >&2; exit 1; }
+    git checkout --detach "$CANDIDATE_SHA"
+  else
+    if git show-ref --verify --quiet "refs/heads/$BRANCH"; then
+      git checkout "$BRANCH"
+    else
+      git checkout -b "$BRANCH" "$remote_ref"
+    fi
+    git pull --ff-only origin "$BRANCH"
+  fi
 }
 
 upsert_env() {
@@ -459,6 +487,10 @@ wait_for_health() {
 
 main() {
   require_root
+  if [[ "$PUBLIC_APP_ORIGIN" == "https://beta.lunchlineup.com" && -z "$CANDIDATE_SHA" ]]; then
+    echo "CANDIDATE_SHA is required for the browser-visible VM107 beta origin." >&2
+    exit 1
+  fi
   if [[ ! -d "$APP_DIR/.git" || -n "$BACKUP_FILE" ]]; then
     require_destructive_confirmation
   fi
@@ -470,9 +502,13 @@ main() {
   start_stack
   restore_backup_if_requested
   wait_for_health
-  write_deploy_proof
+  if [[ "$PUBLIC_APP_ORIGIN" == "https://beta.lunchlineup.com" ]]; then
+    echo "internal_beta_bootstrap_pending sha=$(git -C "$APP_DIR" rev-parse HEAD) next=scripts/internal-beta-lifecycle.sh"
+  else
+    write_deploy_proof
+  fi
   docker compose ps
-  echo "disposable_dev_restore_ok sha=$(cat "$APP_DIR/DEPLOYED_GIT_SHA") app_dir=$APP_DIR host=$HOST_HEADER hostname=$(hostname)"
+  echo "disposable_dev_restore_ok sha=$(git -C "$APP_DIR" rev-parse HEAD) app_dir=$APP_DIR host=$HOST_HEADER hostname=$(hostname)"
 }
 
 main "$@"

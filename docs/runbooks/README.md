@@ -10,6 +10,7 @@
 - `high-cpu.md`: high CPU response.
 - `high-error-rate.md`: high error-rate response.
 - `incident-response.md`: cross-service incident ownership, severity, status communication, evidence, and closure contract.
+- `internal-beta-operations.md`: VM107 exact-candidate launch, verification, encrypted restore drill, resource-saving pause/resume, and fail-closed readiness contract.
 - `mfa-encryption-key-rotation.md`: managed current/previous MFA key overlap, transactional re-encryption, and fail-closed old-key removal verification.
 - `outbound-delivery.md`: transactional and staff-invitation email, notification outbox, tenant webhook replay, provider suppression, privacy erasure, and dead-letter response.
 - `production-readiness.md`: public SaaS production launch preflight, required remote versioned Terraform state, immutable release, scheduled encrypted offsite backup, cleanup/absence-bound DR proof, alert, and post-deploy checks.
@@ -21,6 +22,8 @@
 ## Current Focus
 
 Use `disposable-dev-server.md` when VM107 needs to be replaced instead of repaired. It ties fresh-server bootstrap to GitHub, already-available data restore, `DEPLOYED_GIT_SHA`, and private-route validation.
+
+Use `internal-beta-operations.md` to turn the intentionally offline VM107 beta into a candidate-bound session, prove direct/public behavior plus delivery/monitoring/restore readiness, and pause it again without changing `onboot: 0` or deleting data.
 
 Use `production-readiness.md` before public SaaS production deploys. It is the preferred `operator_runbook_url` for the Terraform production readiness gate and the release-manifest deploy gate.
 

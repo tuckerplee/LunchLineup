@@ -10,6 +10,7 @@ Do not use this runbook for current public production ProxmoxS VM4014. VM106 is 
 
 - `docs/runbooks/disposable-dev-server.md`: this VM107 disposable-server restore runbook.
 - `scripts/bootstrap-vm107-dev.sh`: fresh-VM bootstrap and optional Postgres restore helper.
+- `scripts/internal-beta-lifecycle.sh`: exact-candidate browser-beta launch and readiness owner used after bootstrap.
 - `scripts/verify-deploy-source.sh`: verifies clean GitHub-pushed deploy source and `DEPLOYED_GIT_SHA` alignment.
 - `scripts/backup.sh`: encrypted Postgres backup helper for creating compatible `.sql.zst.gpg` dumps.
 - `scripts/restore.sh`: generic Postgres restore helper; use the VM107 bootstrap script for full fresh-host recovery.
@@ -28,7 +29,7 @@ Assumptions:
 Recovery objective:
 
 - Restore HTTP access to `dev.lunchlineup.com` and `lunchlineup-dev.proxmox1.lan` within 15 minutes after VM availability and data availability.
-- Leave `/opt/lunchlineup/DEPLOYED_GIT_SHA` matching the GitHub branch used for bootstrap.
+- For private development, leave `/opt/lunchlineup/DEPLOYED_GIT_SHA` matching the GitHub branch used for bootstrap. For `beta.lunchlineup.com`, treat bootstrap as pending and let `internal-beta-lifecycle.sh launch` write the marker only after the stronger beta launch gate passes.
 - Leave the guest hostname set to `lunchlineup-dev` unless `VM_HOSTNAME` is intentionally overridden.
 - Provision every required Compose value with distinct disposable-development secrets, validate the rendered Compose configuration, build each unique runtime image serially, start with `--no-build`, and write `DEPLOYED_GIT_SHA` only after health succeeds.
 - Keep `/opt/lunchlineup-secrets` root-only while making only the files explicitly mounted as Compose secrets readable inside their authorized non-root containers.
@@ -39,22 +40,32 @@ Recovery objective:
 On the fresh VM:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/tuckerplee/LunchLineup/migration-testing-baseline/scripts/bootstrap-vm107-dev.sh -o /tmp/bootstrap-vm107-dev.sh
+candidate_sha='<40-character-lowercase-sha>'
+candidate_branch='<github-branch-pointing-at-the-sha>'
+curl -fsSL "https://raw.githubusercontent.com/tuckerplee/LunchLineup/$candidate_branch/scripts/bootstrap-vm107-dev.sh" -o /tmp/bootstrap-vm107-dev.sh
 chmod +x /tmp/bootstrap-vm107-dev.sh
 sudo env \
-  BRANCH=migration-testing-baseline \
+  BRANCH="$candidate_branch" \
+  CANDIDATE_SHA="$candidate_sha" \
   HOST_HEADER=beta.lunchlineup.com \
   PUBLIC_APP_ORIGIN=https://beta.lunchlineup.com \
   BACKUP_FILE=/path/to/lunchlineup.sql.zst.gpg \
   BACKUP_ENCRYPTION_KEY="$(sudo cat /run/secrets/lunchlineup-dev-backup-key)" \
+  VM107_DESTRUCTIVE_CONFIRM=replace-and-restore-disposable-vm107 \
   /tmp/bootstrap-vm107-dev.sh
+
+sudo env \
+  BETA_CANDIDATE_SHA="$candidate_sha" \
+  BETA_CANDIDATE_REF="origin/$candidate_branch" \
+  BETA_BUILD_IMAGES=false \
+  bash /opt/lunchlineup/scripts/internal-beta-lifecycle.sh launch
 ```
 
 If the data volume is intentionally empty, omit `BACKUP_FILE` and import dev data later.
 
 `PUBLIC_APP_ORIGIN` is the exact browser-visible origin used by CORS, CSRF, redirects, and secure-cookie policy. The bootstrap derives `COOKIE_SECURE=true` for HTTPS. Leave it unset for the private `http://dev.lunchlineup.com` default; set it to `https://beta.lunchlineup.com` when VM107 is the beta origin behind Cloudflare.
 
-Before bootstrapping `beta.lunchlineup.com`, securely provision a valid `RESEND_API_KEY`, `RESEND_WEBHOOK_SECRET`, provider-verified `EMAIL_FROM`, and internal `RESEND_PREFLIGHT_RECIPIENT` in the root-only runtime environment. The beta bootstrap enables schedule-publication email and runs one release-bound Resend acceptance probe before starting the application stack. Each invocation receives a fresh provider idempotency identity so a same-release restart revalidates current provider/domain state instead of reusing an earlier acceptance. It fails closed on a placeholder credential, rejected sender, missing controlled inbox, or provider timeout. Confirm the probe arrives and configure signed bounce, complaint, and suppression events for `/api/webhooks/resend/delivery-events`; the send probe cannot prove webhook registration. Do not rely on disposable-development placeholders for a browser-visible beta host.
+Before bootstrapping `beta.lunchlineup.com`, securely provision a valid `RESEND_API_KEY`, `RESEND_WEBHOOK_SECRET`, provider-verified `EMAIL_FROM`, internal `RESEND_PREFLIGHT_RECIPIENT`, real HTTPS Alertmanager route, and backup encryption key in the root-only runtime environment. The beta bootstrap enables schedule-publication email and runs one release-bound Resend acceptance probe before starting the application stack. Each invocation receives a fresh provider idempotency identity so a same-release restart revalidates current provider/domain state instead of reusing an earlier acceptance. It fails closed on a placeholder credential, rejected sender, missing controlled inbox, or provider timeout. Confirm the probe arrives and configure signed bounce, complaint, and suppression events for `/api/webhooks/resend/delivery-events`; the send probe cannot prove webhook registration. Do not rely on disposable-development placeholders for a browser-visible beta host. The lifecycle gate also requires alert, outbox, and encrypted restore proof; see `internal-beta-operations.md`.
 
 ## Validation
 
@@ -68,6 +79,7 @@ docker compose ps
 curl -fsS http://127.0.0.1/health
 curl -fsS -H 'Host: dev.lunchlineup.com' http://127.0.0.1/health
 curl -fsS -H 'Host: beta.lunchlineup.com' http://127.0.0.1/api/v2/live
+curl -fsSI https://beta.lunchlineup.com/health | grep -i '^x-lunchlineup-release:'
 ```
 
 From a private network client:
@@ -78,7 +90,7 @@ curl.exe -H "Host: dev.lunchlineup.com" http://10.231.10.30/health
 curl.exe -H "Host: lunchlineup-dev.proxmox1.lan" http://10.231.10.30/health
 ```
 
-Expected result: each health response contains `"status":"ok"`, and `DEPLOYED_GIT_SHA` matches a pushed GitHub commit.
+Expected result: each health response contains `"status":"ok"`, the public release header and `DEPLOYED_GIT_SHA` equal the exact pushed candidate, and `/var/lib/lunchlineup/proofs/internal-beta-readiness.json` records a passed beta launch gate.
 
 ## Failure Handling
 

@@ -151,7 +151,7 @@ Retained-record expiry scheduling is not part of this release artifact proof. Us
 
 ## Disposable Dev Restore
 
-VM107 restore work uses `docs/runbooks/disposable-dev-server.md` and `scripts/bootstrap-vm107-dev.sh`. Set `VM107_DESTRUCTIVE_CONFIRM=replace-and-restore-disposable-vm107` before the bootstrap can remove `APP_DIR` or restore `BACKUP_FILE`. The disposable path must preserve the same deploy discipline: bootstrap from the GitHub branch, restore only already-available data, write `DEPLOYED_GIT_SHA`, and validate direct plus private proxy health before declaring access restored.
+VM107 restore work uses `docs/runbooks/disposable-dev-server.md` and `scripts/bootstrap-vm107-dev.sh`. Set `VM107_DESTRUCTIVE_CONFIRM=replace-and-restore-disposable-vm107` before the bootstrap can remove `APP_DIR` or restore `BACKUP_FILE`. The disposable path must preserve the same deploy discipline: bootstrap from the GitHub branch and one exact contained `CANDIDATE_SHA` for the browser-visible beta origin, restore only already-available data, and validate direct plus private proxy health before declaring access restored. `DEPLOYED_GIT_SHA` is final beta launch evidence only after `scripts/internal-beta-lifecycle.sh launch` also proves the exact migration/images, direct and public release headers, required service health, delivery/outbox/alert telemetry, and a fresh encrypted isolated restore drill. See `docs/runbooks/internal-beta-operations.md`.
 
 ## First Release Registry Bootstrap
 
