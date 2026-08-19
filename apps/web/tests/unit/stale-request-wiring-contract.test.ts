@@ -12,7 +12,7 @@ describe('stale request wiring contract', () => {
         expect(source).toContain('cardsRequestGate.current.invalidate();');
         expect(source).toContain('setActiveCard(null);');
         expect(source).toContain('activeCardForSelectedUser');
-        expect(source).toContain('disabled={isSaving || !hasCurrentCards}');
+        expect(source).toContain('disabled={isSaving || !canClockOut}');
     });
 
     it('discards stale print loads and gates printing on the loaded scope', () => {

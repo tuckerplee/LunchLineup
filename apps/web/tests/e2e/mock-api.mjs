@@ -731,6 +731,12 @@ function toTimeCard(card) {
   };
 }
 
+function internalTimeCardUserId(requestedUserId, sessionUser) {
+  if (!requestedUserId) return null;
+  if (requestedUserId === sessionUser.publicUserId) return sessionUser.id;
+  return state.staff.find((candidate) => candidate.publicId === requestedUserId)?.id ?? requestedUserId;
+}
+
 function shiftBreaks(shift) {
   const start = new Date(shift.startTime);
   const firstBreakStart = new Date(start.getTime() + 2 * 60 * 60 * 1000);
@@ -2308,13 +2314,13 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (pathname === '/v1/time-cards/active' && req.method === 'GET') {
-      const selectedUserId = url.searchParams.get('userId') ?? user.id;
+      const selectedUserId = internalTimeCardUserId(url.searchParams.get('userId'), user) ?? user.id;
       const card = state.timeCards.find((entry) => entry.userId === selectedUserId && entry.status === 'OPEN') ?? null;
       sendJson(res, 200, { data: card ? toTimeCard(card) : null });
       return;
     }
     if (pathname === '/v1/time-cards' && req.method === 'GET') {
-      const selectedUserId = url.searchParams.get('userId');
+      const selectedUserId = internalTimeCardUserId(url.searchParams.get('userId'), user);
       const cards = state.timeCards
         .filter((entry) => !selectedUserId || entry.userId === selectedUserId)
         .map(toTimeCard);

@@ -24,8 +24,33 @@ describe('time-card workspace permission contract', () => {
     expect(apiSource).toContain("if (!activeResponse.ok) throw new Error('Unable to load active time card.');");
     expect(workspaceSource).toContain('setCanStartNewTimeCard(snapshot.historyResponse.ok);');
     expect(workspaceSource).toContain('You can still clock out an open card.');
-    expect(workspaceSource).toContain('disabled={isSaving || !hasCurrentCards || !canStartNewTimeCard}');
-    expect(workspaceSource).toContain('disabled={isSaving || !hasCurrentCards}');
+    expect(workspaceSource).toContain('const canClockIn = clockInTargetIsExplicit && hasCurrentCards && canStartNewTimeCard;');
+    expect(workspaceSource).toContain('const canClockOut = Boolean(activeCardForSelectedUser && hasCurrentCards && teamClockOutTargetIsExplicit);');
+    expect(workspaceSource).toContain('disabled={isSaving || !canClockIn}');
+    expect(workspaceSource).toContain('disabled={isSaving || !canClockOut}');
+  });
+
+  it('separates My Time from explicit Team Time targeting without first-row defaults', () => {
+    const workspaceSource = readFileSync(resolve(timeCardsRoot, 'TimeCardsWorkspace.tsx'), 'utf8');
+
+    expect(workspaceSource).toContain("const [view, setView] = useState<TimeCardView>('mine');");
+    expect(workspaceSource).toContain("const [selectedTeamUserId, setSelectedTeamUserId] = useState('');");
+    expect(workspaceSource).toContain("const [selectedLocationId, setSelectedLocationId] = useState('');");
+    expect(workspaceSource).not.toContain('nextStaff[0]');
+    expect(workspaceSource).not.toContain('nextLocations[0]');
+    expect(workspaceSource).toContain('Team Time selected person');
+    expect(workspaceSource).toContain("...(isTeamTime ? { userId: selectedUserId } : {}),");
+  });
+
+  it('clears person and location drafts before a different target can write', () => {
+    const workspaceSource = readFileSync(resolve(timeCardsRoot, 'TimeCardsWorkspace.tsx'), 'utf8');
+
+    expect(workspaceSource).toContain('const resetPersonDraft = useCallback(() => {');
+    expect(workspaceSource).toContain("setBreakMinutes('30');");
+    expect(workspaceSource).toContain("setNotes('');");
+    expect(workspaceSource).toContain('setCorrectingCard(null);');
+    expect(workspaceSource).toContain('resetPersonDraft();');
+    expect(workspaceSource).toContain('onChange={(event) => selectLocation(event.target.value)}');
   });
 
   it('does not present operational time cards as payroll-final records', () => {

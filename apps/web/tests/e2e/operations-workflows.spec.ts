@@ -92,13 +92,15 @@ test.describe.serial('Full-stack operations workflows', () => {
 
     await page.goto('/dashboard/time-cards');
     await expect(page.getByRole('heading', { name: 'Time Cards' })).toBeVisible();
-    await page.getByLabel('Employee').selectOption({ label: 'Casey Manager' });
-    await page.getByRole('button', { name: 'Clock in' }).click();
-    await expect(page.getByText('Clocked in.')).toBeVisible();
+    await page.getByRole('button', { name: 'Team Time' }).click();
+    await page.getByLabel('Team member').selectOption({ label: 'Casey Manager' });
+    await page.getByLabel('Team location').selectOption({ index: 1 });
+    await page.getByRole('button', { name: /Clock in Casey Manager/ }).click();
+    await expect(page.getByText(/Casey Manager was clocked in at/)).toBeVisible();
     await expect(page.getByText(/Clocked in at/)).toBeVisible();
     await page.getByLabel('Break minutes').fill('0');
-    await page.getByRole('button', { name: 'Clock out' }).click();
-    await expect(page.getByText('Clocked out.')).toBeVisible();
+    await page.getByRole('button', { name: /Clock out Casey Manager/ }).click();
+    await expect(page.getByText(/Casey Manager was clocked out from/)).toBeVisible();
     await expect(page.getByText('CLOSED').first()).toBeVisible();
   });
 

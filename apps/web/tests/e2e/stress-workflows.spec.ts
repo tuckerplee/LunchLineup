@@ -884,20 +884,22 @@ test.describe.serial('Stress operations workflows', () => {
 
     await page.goto('/dashboard/time-cards');
     await expect(page.getByRole('heading', { name: 'Time Cards' })).toBeVisible();
-    await page.getByLabel('Employee').selectOption({ label: 'Stress Manager' });
-    await page.getByRole('button', { name: 'Clock in' }).dblclick();
+    await page.getByRole('button', { name: 'Team Time' }).click();
+    await page.getByLabel('Team member').selectOption({ label: 'Stress Manager' });
+    await page.getByLabel('Team location').selectOption({ index: 1 });
+    await page.getByRole('button', { name: /Clock in Stress Manager/ }).dblclick();
     await expect(page.getByText(/Clocked in at/)).toBeVisible();
     await expect(page.getByText('This employee already has an open time card.')).toHaveCount(0);
     await expect(page.getByText('1 open')).toBeVisible();
 
     await page.getByLabel('Break minutes').fill('999');
-    await page.getByRole('button', { name: 'Clock out' }).click();
+    await page.getByRole('button', { name: /Clock out Stress Manager/ }).click();
     await expect(page.getByText('Break minutes must be less than worked minutes.')).toBeVisible();
     await expect(page.getByText(/Clocked in at/)).toBeVisible();
 
     await page.getByLabel('Break minutes').fill('0');
-    await page.getByRole('button', { name: 'Clock out' }).click();
-    await expect(page.getByText('Clocked out.')).toBeVisible();
+    await page.getByRole('button', { name: /Clock out Stress Manager/ }).click();
+    await expect(page.getByText(/Stress Manager was clocked out from/)).toBeVisible();
     await expect(page.getByText('CLOSED').first()).toBeVisible();
   });
 });

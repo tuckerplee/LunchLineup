@@ -186,13 +186,15 @@ test.describe('Authenticated scheduling SaaS readiness', () => {
 
     await page.getByRole('link', { name: /Time Cards/ }).click();
     await expect(page.getByRole('heading', { name: 'Time Cards' })).toBeVisible();
-    await page.getByLabel('Employee').selectOption({ label: 'Mock Staff' });
-    await page.getByRole('button', { name: 'Clock in' }).click();
-    await expect(page.getByText('Clocked in.')).toBeVisible();
+    await page.getByRole('button', { name: 'Team Time' }).click();
+    await page.getByLabel('Team member').selectOption({ label: 'Mock Staff' });
+    await page.getByLabel('Team location').selectOption({ label: 'Downtown Diner' });
+    await page.getByRole('button', { name: /Clock in Mock Staff/ }).click();
+    await expect(page.getByText('Mock Staff was clocked in at Downtown Diner.')).toBeVisible();
     await expect(page.getByText(/Clocked in at/)).toBeVisible();
     await page.getByLabel('Break minutes').fill('0');
-    await page.getByRole('button', { name: 'Clock out' }).click();
-    await expect(page.getByText('Clocked out.')).toBeVisible();
+    await page.getByRole('button', { name: /Clock out Mock Staff/ }).click();
+    await expect(page.getByText('Mock Staff was clocked out from Downtown Diner.')).toBeVisible();
     await expect(page.getByText('CLOSED').first()).toBeVisible();
 
     const endingBillingResponse = await page.request.get('/api/v1/billing/features');

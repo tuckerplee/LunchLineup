@@ -67,7 +67,7 @@
 - `tenant-provisioning-contract.test.ts`: FREE active and paid bounded-trial admin provisioning UI contract coverage.
 - `time-card-correction-contract.test.ts`: source-contract coverage for manager-only corrections, optimistic versions, reasons, break intervals, and repeated-hour disambiguation.
 - `time-card-format.test.ts`: unit coverage for duration formatting, explicit location timezones, skipped DST times, and repeated-hour UTC candidates.
-- `time-card-permission-contract.test.ts`: static permission-parity coverage for optional time-card staff and location catalogs.
-- `time-card-request.test.ts`: selected-employee active-card ownership coverage.
+- `time-card-permission-contract.test.ts`: static permission-parity plus My Time/Team Time separation, empty-default targeting, named delegated payload, and person/location draft-reset wiring coverage.
+- `time-card-request.test.ts`: selected-employee active-card ownership, stable request keys, fail-closed explicit target policy, signed-in-user binding, and target-aware mutation-label coverage.
 - `user-directory-pagination.test.ts`: fixed-size user pages, cursor validation, bounded Previous/Next staff navigation, and aggregate dashboard count contracts.
 - `workspace-slug.test.ts`: unit coverage for canonical generated-workspace slug persistence and login fallback reads.
