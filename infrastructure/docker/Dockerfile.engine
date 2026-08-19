@@ -9,7 +9,7 @@ COPY apps/engine/requirements.txt .
 RUN if [ -f /etc/dpkg/dpkg.cfg.d/docker ]; then sed -i '\|^path-exclude[[:space:]]\+/usr/share/man/|d' /etc/dpkg/dpkg.cfg.d/docker; fi \
     && apt-get update \
     && apt-get upgrade -y --no-install-recommends \
-    && apt-get install -y --no-install-recommends build-essential \
+    && apt-get install -y --no-install-recommends build-essential curl \
     && rm -rf /var/lib/apt/lists/*
 RUN pip install --no-cache-dir -r requirements.txt
 RUN apt-get purge -y --auto-remove build-essential && rm -rf /var/lib/apt/lists/*
