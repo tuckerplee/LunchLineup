@@ -25,6 +25,7 @@ RUN mkdir -p /usr/share/man \
 
 COPY . .
 RUN npm ci --prefer-offline || npm ci
+RUN npm prune --omit=dev --ignore-scripts --no-audit --no-fund
 
 USER node
 

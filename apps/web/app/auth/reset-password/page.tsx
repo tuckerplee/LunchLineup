@@ -36,7 +36,11 @@ export function resetConfirmationErrorMessage(status: number): string {
 
 function ResetPasswordContent() {
     const searchParams = useSearchParams();
-    const [token, setToken] = useState<string | null>(null);
+    // Seed URL tokens during the first client render so a valid recovery link
+    // never flashes the request form while the effect reads the token and
+    // removes it from the address bar. Cookie-only recovery still waits for
+    // the effect because cookies are unavailable during the server render.
+    const [token, setToken] = useState<string | null>(() => searchParams.get('token') || null);
     const [workspaceSlug, setWorkspaceSlug] = useState(normalizeWorkspaceSlug(searchParams.get('tenantSlug') ?? ''));
     const [identifier, setIdentifier] = useState(searchParams.get('identifier') ?? '');
     const [password, setPassword] = useState('');
@@ -60,7 +64,11 @@ function ResetPasswordContent() {
             );
         }
         if (cookieToken) clearResetTokenCookie();
-        setToken(cookieToken || tokenFromUrl);
+        // The proxy scrubs the token with a redirect, which can make
+        // useSearchParams fire this effect a second time after the cookie is
+        // cleared. Never replace an already-resolved token with that empty
+        // post-scrub value.
+        setToken((current) => current || cookieToken || tokenFromUrl);
     }, [searchParams]);
 
     useEffect(() => {

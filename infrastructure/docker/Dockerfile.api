@@ -68,6 +68,11 @@ COPY --from=builder /app/scripts/verify-resend-readiness.mjs /app/scripts/verify
 # Ensure runtime Prisma client artifacts are generated in the final image.
 RUN ./node_modules/.bin/prisma generate --schema=/app/packages/db/prisma/schema.prisma --no-hints
 
+# The builder needs the full toolchain; the API runtime does not. Remove
+# workspace-only dev tooling (including Storybook/Vite and their transitive
+# parsers) after Prisma generation so the shipped image is production-only.
+RUN npm prune --omit=dev --ignore-scripts --no-audit --no-fund
+
 # Seed the named export volume with ownership for the non-root API process.
 RUN mkdir -p /var/lib/lunchlineup/tenant-exports \
     && chown node:node /var/lib/lunchlineup/tenant-exports \

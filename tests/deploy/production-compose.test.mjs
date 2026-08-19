@@ -550,14 +550,14 @@ test('Compose third-party service images are digest-pinned', () => {
   ]) {
     const ref = serviceImageRef(compose, service);
     assert.match(ref, immutableImageRefPattern, service);
-    assert.match(ref, /:[^:@]+@sha256:/, service);
+    assert.match(ref, /(?::[^:@]+)?@sha256:/, service);
     assert.doesNotMatch(ref, /\$\{/, service);
     assert.doesNotMatch(ref, /(^|[/:])latest(@|$)/i, service);
     assert.doesNotMatch(serviceBlock(compose, service), /build:/, service);
   }
 
   assert.match(serviceImageRef(compose, 'pgbouncer'), /^edoburu\/pgbouncer:v1\.25\.2-p0@sha256:/);
-  assert.match(serviceImageRef(compose, 'autoheal'), /^willfarrell\/autoheal:1\.2\.0@sha256:/);
+  assert.match(serviceImageRef(compose, 'autoheal'), /^willfarrell\/autoheal@sha256:/);
 });
 
 test('CI service containers are digest-pinned', () => {
@@ -565,7 +565,7 @@ test('CI service containers are digest-pinned', () => {
   const imageRefs = [...ci.matchAll(/^ {8}image:\s*"?([^"\r\n]+)"?\s*$/gm)].map((match) => match[1]);
 
   assert.deepEqual(imageRefs.sort(), [
-    'postgres:16-alpine@sha256:57c72fd2a128e416c7fcc499958864df5301e940bca0a56f58fddf30ffc07777',
+    'postgres:16-alpine@sha256:cf78e76683b9ca8c5733cbbdce6c9262b45b6767934dd0a95e671f9a0fc20685',
     'rabbitmq:3-alpine@sha256:d7af1c87c5f1eda13fcfca06db452bf3aeab6619fc3358b68535c0c02c4e52bc',
     'redis:7-alpine@sha256:6ab0b6e7381779332f97b8ca76193e45b0756f38d4c0dcda72dbb3c32061ab99',
   ].sort());
@@ -767,14 +767,14 @@ test('observability alerts have live metric sources', () => {
   const alerts = read('infrastructure/prometheus/alerts/lunchlineup.yml');
   const alertmanager = read('infrastructure/alertmanager/alertmanager.yml');
 
-  assert.match(compose, /alertmanager:[\s\S]*prom\/alertmanager:v0\.27\.0/);
+  assert.match(compose, /alertmanager:[\s\S]*prom\/alertmanager:v0\.34\.0/);
   assert.match(compose, /alertmanager:[\s\S]*alertmanager_webhook_url/);
   assert.match(compose, /alertmanager_webhook_url:[\s\S]*ALERTMANAGER_WEBHOOK_URL_FILE/);
   assert.match(prometheus, /environment: lunchlineup-compose/);
   assert.match(prometheus, /alerting:[\s\S]*targets:\s*\['alertmanager:9093'\]/);
   assert.match(alertmanager, /receiver: production-paging-webhook/);
   assert.match(alertmanager, /url_file: \/run\/secrets\/alertmanager_webhook_url/);
-  assert.match(compose, /node-exporter:[\s\S]*prom\/node-exporter:v1\.8\.1/);
+  assert.match(compose, /node-exporter:[\s\S]*prom\/node-exporter:v1\.12\.1-distroless/);
   assert.match(prometheus, /job_name: 'node'[\s\S]*targets:\s*\['node-exporter:9100'\]/);
   assert.match(alerts, /alert: ServiceDown/);
   assert.match(alerts, /alert: WorkerJobFailures/);
@@ -1159,7 +1159,7 @@ test('release artifact verifier accepts pinned manifests and rejects mutable dep
   const sourceSha = '0123456789abcdef0123456789abcdef01234567';
   const pinnedDockerfile = 'FROM node:22-alpine@sha256:16e22a550f3863206a3f701448c45f7912c6896a62de43add43bb9c86130c3e2\n';
   const pinnedCompose =
-    'services:\n  postgres:\n    image: postgres:16-alpine@sha256:57c72fd2a128e416c7fcc499958864df5301e940bca0a56f58fddf30ffc07777\n';
+    'services:\n  postgres:\n    image: postgres:16-alpine@sha256:cf78e76683b9ca8c5733cbbdce6c9262b45b6767934dd0a95e671f9a0fc20685\n';
   const pinnedWorkflow =
     'jobs:\n  integration:\n    services:\n      redis:\n        image: redis:7-alpine@sha256:6ab0b6e7381779332f97b8ca76193e45b0756f38d4c0dcda72dbb3c32061ab99\n';
 

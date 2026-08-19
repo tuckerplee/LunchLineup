@@ -228,8 +228,8 @@ test.describe('validated public-web P1 regressions', () => {
     page.on('pageerror', (error) => pageErrors.push(error.message));
 
     await loginAsSeedAdmin(page, '/dashboard');
-    await expect(page.getByRole('heading', { name: 'Welcome back, E2E' })).toBeVisible();
-    await expect(page.locator('article').filter({ hasText: 'Locations online' })).toContainText('1');
+    await expect(page.getByRole('heading', { name: 'Manager dashboard' })).toBeVisible();
+    await expect(page.getByRole('link', { name: /^Locations 1 location/ })).toContainText('1');
     expect(pageErrors).toEqual([]);
   });
 
@@ -239,14 +239,11 @@ test.describe('validated public-web P1 regressions', () => {
     });
 
     await loginAsSeedAdmin(page, '/dashboard');
-    const coverageCard = page.locator('article').filter({ hasText: "This week's coverage" });
-    const locationsCard = page.locator('article').filter({ hasText: 'Locations online' });
-    const openShiftWidget = page.locator('article').filter({ hasText: 'Open shift coverage' });
+    const coverageCard = page.getByRole('link', { name: /Schedule/ });
+    const locationsCard = page.getByRole('link', { name: /^Locations 1 location/ });
 
     await expect(coverageCard).toContainText('Unavailable');
-    await expect(coverageCard.getByRole('button', { name: 'Retry' })).toBeVisible();
-    await expect(openShiftWidget).toContainText('Open shift data is unavailable.');
-    await expect(openShiftWidget).not.toContainText('0 shifts');
+    await expect(page.getByRole('button', { name: 'Retry unavailable data' })).toBeVisible();
     await expect(locationsCard).toContainText('1');
     await expect(locationsCard).not.toContainText('Unavailable');
   });

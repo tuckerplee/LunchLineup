@@ -151,6 +151,9 @@ test('availability-import load smoke is mandatory, authenticated, and independen
   assert.doesNotMatch(runner, /Origin: target\.origin/);
   assert.match(runner, /"X-CSRF-Token": auth\.csrfToken/);
   assert.match(runner, /AVAILABILITY_IMPORT_TARGET_USER_IDENTIFIER/);
+  assert.match(runner, /AVAILABILITY_IMPORT_MFA_SECRET/);
+  assert.match(runner, /auth\/mfa\/verify/);
+  assert.match(runner, /currentTotpCode/);
   assert.match(runner, /\/billing\/features/);
   assert.match(runner, /entitlementEvidenceSha256/);
   assert.match(runner, /sourcePdfMode = "generated"/);
@@ -180,6 +183,7 @@ test('cookie runner uses configured origin and billing preflight before uploads'
   const names = [
     'TARGET_URL', 'ALLOW_LOCAL_LOAD_SMOKE', 'AVAILABILITY_IMPORT_TENANT_SLUG',
     'AVAILABILITY_IMPORT_LOGIN_IDENTIFIER', 'AVAILABILITY_IMPORT_LOGIN_PIN',
+    'AVAILABILITY_IMPORT_MFA_SECRET',
     'AVAILABILITY_IMPORT_ORIGIN', 'AVAILABILITY_IMPORT_TARGET_USER_IDENTIFIER',
     'AVAILABILITY_IMPORT_CREDIT_SOURCE_ATTESTATION', 'AVAILABILITY_IMPORT_REQUESTS',
     'AVAILABILITY_IMPORT_CONCURRENCY', 'AVAILABILITY_IMPORT_PDF_PATH',
@@ -201,8 +205,9 @@ test('cookie runner uses configured origin and billing preflight before uploads'
       TARGET_URL: 'http://localhost:8080',
       ALLOW_LOCAL_LOAD_SMOKE: 'true',
       AVAILABILITY_IMPORT_TENANT_SLUG: 'e2e-operations',
-      AVAILABILITY_IMPORT_LOGIN_IDENTIFIER: 'e2e.admin',
-      AVAILABILITY_IMPORT_LOGIN_PIN: '246810',
+      AVAILABILITY_IMPORT_LOGIN_IDENTIFIER: 'e2e.load',
+      AVAILABILITY_IMPORT_LOGIN_PIN: '246812',
+      AVAILABILITY_IMPORT_MFA_SECRET: 'JBSWY3DPEHPK3PXP',
       AVAILABILITY_IMPORT_ORIGIN: 'https://smoke.lunchlineup.test',
       AVAILABILITY_IMPORT_TARGET_USER_IDENTIFIER: 'staff-1',
       AVAILABILITY_IMPORT_CREDIT_SOURCE_ATTESTATION: 'admin-credit-grant',

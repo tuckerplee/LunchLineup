@@ -93,6 +93,11 @@ COPY --from=builder /app/apps/web/package.json /app/package.json
 # Copy node_modules from builder to avoid workspace resolution issues
 COPY --from=builder /app/node_modules /app/node_modules
 
+# Next's production server needs the app dependencies only. Pruning the
+# copied workspace tree removes Storybook/Vite tooling and vulnerable dev-only
+# transitive packages from the browser runtime.
+RUN npm prune --omit=dev --ignore-scripts --no-audit --no-fund
+
 RUN mkdir -p /app/.next/cache && chown node:node /app/.next/cache
 
 USER node

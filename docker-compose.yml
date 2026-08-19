@@ -692,7 +692,7 @@ services:
     tmpfs:
       - /tmp:rw,noexec,nosuid,nodev,size=64m,mode=1777
       - /var/run/postgresql:rw,noexec,nosuid,nodev,size=16m,mode=1777
-    image: postgres:16-alpine@sha256:57c72fd2a128e416c7fcc499958864df5301e940bca0a56f58fddf30ffc07777
+    image: postgres:16-alpine@sha256:cf78e76683b9ca8c5733cbbdce6c9262b45b6767934dd0a95e671f9a0fc20685
     volumes:
       - postgres_data:/var/lib/postgresql/data
       - ./infrastructure/postgres/postgresql.conf:/etc/postgresql/postgresql.conf:ro
@@ -798,7 +798,7 @@ services:
       - /tmp:rw,noexec,nosuid,nodev,size=16m,mode=1777
     profiles:
       - ops
-    image: willfarrell/autoheal:1.2.0@sha256:31f580ef0279eaced5b38d631b08c474d70d8403c1c2fdd6ddcf2e879d5f3f7c
+    image: willfarrell/autoheal@sha256:5898f4403aa3d32e967dbd527a017f49e9ef2e8a2a01cccc76135c2a0926b507
     environment:
       - AUTOHEAL_CONTAINER_LABEL=all
       - AUTOHEAL_INTERVAL=30
@@ -817,7 +817,7 @@ services:
     pids_limit: 512
     tmpfs:
       - /tmp:rw,noexec,nosuid,nodev,size=32m,mode=1777
-    image: prom/prometheus:v2.51.2@sha256:4f6c47e39a9064028766e8c95890ed15690c30f00c4ba14e7ce6ae1ded0295b1
+    image: prom/prometheus:v3.14.0-distroless@sha256:50c707e96da5ade383cb1707790576480485e93de06aa60ad8802cb5f744bd0a
     volumes:
       - ./infrastructure/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
       - ./infrastructure/prometheus/alerts:/etc/prometheus/alerts:ro
@@ -993,7 +993,7 @@ services:
     <<: *locked-runtime
     tmpfs:
       - /tmp:rw,noexec,nosuid,nodev,size=16m,mode=1777
-    image: prom/alertmanager:v0.27.0@sha256:e13b6ed5cb929eeaee733479dce55e10eb3bc2e9c4586c705a4e8da41e5eacf5
+    image: prom/alertmanager:v0.34.0@sha256:690c7b525f4367aa91f73e2f91c632206d32e97c6384bdbf2fb7a861b420340d
     ports:
       - "127.0.0.1:9093:9093"
     volumes:
@@ -1020,7 +1020,7 @@ services:
     <<: *locked-runtime
     tmpfs:
       - /tmp:rw,noexec,nosuid,nodev,size=16m,mode=1777
-    image: prom/node-exporter:v1.8.1@sha256:fa7fa12a57eff607176d5c363d8bb08dfbf636b36ac3cb5613a202f3c61a6631
+    image: prom/node-exporter:v1.12.1-distroless@sha256:8c9bac11973b94b59be88d6e11fee4429aa743c8846cdc75d65b18db33f6a106
     command:
       - '--path.rootfs=/host'
       - '--collector.filesystem.mount-points-exclude=^/(dev|proc|sys|run/credentials/.+|var/lib/docker/.+)($$|/)'
@@ -1041,7 +1041,7 @@ services:
     pids_limit: 512
     tmpfs:
       - /tmp:rw,noexec,nosuid,nodev,size=32m,mode=1777
-    image: grafana/loki:2.9.7@sha256:792a791d9e52fdff6a4e21be57b5fd9e5868218156e175bb8dde0fa258c76e20
+    image: grafana/loki:3.7.6@sha256:efd47c67f9bac88ca29bcf8cb997d9ab29d1848bd0aff579282295542a745952
     volumes:
       - ./infrastructure/loki/loki-config.yml:/etc/loki/local-config.yaml:ro
       - loki_data:/loki
@@ -1060,7 +1060,7 @@ services:
     <<: *locked-runtime
     tmpfs:
       - /tmp:rw,noexec,nosuid,nodev,size=16m,mode=1777
-    image: grafana/promtail:2.9.7@sha256:ba5f128849f51db31459a8ecd63d3f50e443af8585cf088ec11cb22248c6ae23
+    image: grafana/promtail:3.6.11@sha256:a761cb834cfaeee29745440d4884d6748f0a08d8f68928db1d707018c1dcfbe9
     command: -config.file=/etc/promtail/config.yml -config.expand-env=true
     environment:
       - PROMTAIL_HOST=${PROMTAIL_HOST:-lunchlineup-host}
@@ -1083,7 +1083,7 @@ services:
     pids_limit: 512
     tmpfs:
       - /tmp:rw,noexec,nosuid,nodev,size=32m,mode=1777
-    image: otel/opentelemetry-collector-contrib:0.153.0@sha256:93aad750175cbf1a973ae1c5886c3371f4d800f61be25cdd26870b8441ffe9fa
+    image: otel/opentelemetry-collector-contrib:0.159.0@sha256:1f2c54a30e713fac6b3ae77a1ec84010c2007e29ced8ec666214fc2f6739c1cc
     command: [ "--config=/etc/otelcol-contrib/config.yml" ]
     volumes:
       - ./infrastructure/otel-collector/otel-collector-config.yml:/etc/otelcol-contrib/config.yml:ro
@@ -1103,7 +1103,7 @@ services:
     pids_limit: 512
     tmpfs:
       - /tmp:rw,noexec,nosuid,nodev,size=32m,mode=1777
-    image: grafana/tempo:2.4.1@sha256:5b9c08f6d8fb43b3b72dfd1252ba4f198b11a245257bf76ee2ca13e243bac565
+    image: grafana/tempo:2.10.8@sha256:f0561deb1c68ec44d6e6e7e4487f30106c4e5e768642077695b37958b105812a
     volumes:
       - ./infrastructure/tempo/tempo-config.yml:/etc/tempo/config.yml:ro
       - tempo_data:/var/tempo
@@ -1125,7 +1125,7 @@ services:
     pids_limit: 512
     tmpfs:
       - /tmp:rw,noexec,nosuid,nodev,size=64m,mode=1777
-    image: grafana/grafana:10.4.2@sha256:7d5faae481a4c6f436c99e98af11534f7fd5e8d3e35213552dd1dd02bc393d2e
+    image: grafana/grafana:13.1.4-distroless@sha256:246165bbf0b5b516299129fd11e8675420a98ee9c57bdbdf979f235dfeb82c5c
     ports:
       - "127.0.0.1:3002:3000"
     volumes:

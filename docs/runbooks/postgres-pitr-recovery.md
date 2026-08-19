@@ -148,7 +148,7 @@ docker run --rm --name lunchlineup-pitr-validation \
   -v "$PITR_VALIDATION_TOOL_DIR":/opt/lunchlineup/tools:ro \
   -v /opt/lunchlineup/infrastructure/postgres:/opt/lunchlineup/pitr:ro \
   -v "$PITR_RESTORE_OBJECT_STORE_SECRETS_DIR":/run/secrets/pitr-restore-object-store:ro \
-  postgres:16-alpine@sha256:57c72fd2a128e416c7fcc499958864df5301e940bca0a56f58fddf30ffc07777 \
+  postgres:16-alpine@sha256:cf78e76683b9ca8c5733cbbdce6c9262b45b6767934dd0a95e671f9a0fc20685 \
   postgres -c listen_addresses='*' -c archive_mode=off
 ```
 

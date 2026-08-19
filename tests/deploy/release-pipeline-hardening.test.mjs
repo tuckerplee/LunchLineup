@@ -202,8 +202,9 @@ test('load gate runs the mandatory availability smoke with exact bounded CI inpu
   assert.ok(stopStep > smokeStep, 'missing Stage 13 cleanup after load smoke');
   assert.match(smoke, /ALLOW_LOCAL_LOAD_SMOKE: 'true'/);
   assert.match(smoke, /AVAILABILITY_IMPORT_TENANT_SLUG: e2e-operations/);
-  assert.match(smoke, /AVAILABILITY_IMPORT_LOGIN_IDENTIFIER: e2e\.admin/);
-  assert.match(smoke, /AVAILABILITY_IMPORT_LOGIN_PIN: '246810'/);
+  assert.match(smoke, /AVAILABILITY_IMPORT_LOGIN_IDENTIFIER: e2e\.load/);
+  assert.match(smoke, /AVAILABILITY_IMPORT_LOGIN_PIN: '246812'/);
+  assert.match(smoke, /AVAILABILITY_IMPORT_MFA_SECRET: JBSWY3DPEHPK3PXP/);
   assert.match(smoke, /AVAILABILITY_IMPORT_TARGET_USER_IDENTIFIER: staff-1/);
   assert.match(smoke, /AVAILABILITY_IMPORT_ORIGIN: https:\/\/smoke\.lunchlineup\.test/);
   assert.match(smoke, /AVAILABILITY_IMPORT_CREDIT_SOURCE_ATTESTATION: admin-credit-grant/);

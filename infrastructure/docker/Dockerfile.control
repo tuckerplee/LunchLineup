@@ -29,6 +29,7 @@ ENV HOME=/home/node TMPDIR=/tmp CHECKPOINT_DISABLE=1 NO_UPDATE_NOTIFIER=1 PRISMA
 COPY --from=builder /app/apps/control-plane/dist ./dist
 COPY --from=builder /app/node_modules ./node_modules
 COPY --from=builder /app/apps/control-plane/package.json ./package.json
+RUN npm prune --omit=dev --ignore-scripts --no-audit --no-fund
 USER node
 
 EXPOSE 3001

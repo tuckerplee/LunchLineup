@@ -57,9 +57,14 @@ fi
 
 echo "Starting candidate-bound DAST scan against $TARGET_URL..."
 set +e
+# The pinned ZAP image has no passwd entry for the runner UID. Keep the
+# disposable scanner root-owned and put its writable HOME on the evidence
+# volume so ZAP can create zap.yaml without depending on host identity.
 docker run --rm \
-  --user "$(id -u):$(id -g)" \
-  --env HOME=/tmp/zap-home \
+  --user 0:0 \
+  --env HOME=/zap/wrk \
+  --env ZAP_HOME=/zap/wrk \
+  --env JAVA_TOOL_OPTIONS=-Duser.home=/zap/wrk \
   --volume "$SOURCE_ROOT:/workspace:ro" \
   --volume "$OUTPUT_DIR:/zap/wrk:rw" \
   --workdir /zap/wrk \

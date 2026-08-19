@@ -1,4 +1,4 @@
-import { createHash, randomUUID } from "node:crypto";
+import { createHash, createHmac, randomUUID } from "node:crypto";
 import { readFile, stat, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -172,6 +172,51 @@ export function cookieAuthFromSetCookieHeaders(headers) {
   };
 }
 
+function decodeBase32Secret(raw) {
+  const normalized = String(raw || "").toUpperCase().replace(/[ =-]/g, "");
+  if (!/^[A-Z2-7]+$/.test(normalized)) {
+    throw new Error("AVAILABILITY_IMPORT_MFA_SECRET must be a base32 TOTP secret.");
+  }
+  let buffer = 0;
+  let bits = 0;
+  const output = [];
+  for (const character of normalized) {
+    buffer = (buffer << 5) | "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567".indexOf(character);
+    bits += 5;
+    if (bits >= 8) {
+      output.push((buffer >>> (bits - 8)) & 0xff);
+      bits -= 8;
+    }
+  }
+  if (output.length < 10) {
+    throw new Error("AVAILABILITY_IMPORT_MFA_SECRET must decode to at least 10 bytes.");
+  }
+  return Buffer.from(output);
+}
+
+function currentTotpCode(secret, now = Date.now()) {
+  const counter = Math.floor(now / 30_000);
+  const counterBytes = Buffer.alloc(8);
+  counterBytes.writeBigUInt64BE(BigInt(counter));
+  const digest = createHmac("sha1", decodeBase32Secret(secret)).update(counterBytes).digest();
+  const offset = digest[digest.length - 1] & 0x0f;
+  const truncated = (digest.readUInt32BE(offset) & 0x7fffffff) % 1_000_000;
+  return String(truncated).padStart(6, "0");
+}
+
+function mergeSetCookieHeaders(auth, headers) {
+  const cookies = new Map(auth.cookie.split("; ").map((entry) => {
+    const separator = entry.indexOf("=");
+    return [entry.slice(0, separator), entry.slice(separator + 1)];
+  }));
+  for (const header of headers) {
+    const pair = String(header).split(";", 1)[0];
+    const separator = pair.indexOf("=");
+    if (separator > 0) cookies.set(pair.slice(0, separator), pair.slice(separator + 1));
+  }
+  return { ...auth, cookie: Array.from(cookies, ([name, value]) => `${name}=${value}`).join("; ") };
+}
+
 async function authenticate(apiBase) {
   const bearerToken = process.env.AVAILABILITY_IMPORT_BEARER_TOKEN?.trim();
   const tenantSlug = process.env.AVAILABILITY_IMPORT_TENANT_SLUG?.trim();
@@ -197,13 +242,40 @@ async function authenticate(apiBase) {
       throw new Error("PIN login failed with HTTP " + response.status + ".");
     }
     const login = responseData(JSON.parse(text));
-    if (login.success !== true || login.requiresMfa === true || login.pinResetRequired === true) {
+    if (login.success !== true || login.pinResetRequired === true) {
       throw new Error("PIN login did not establish a load-smoke-ready session.");
     }
     const setCookies = typeof response.headers.getSetCookie === "function"
       ? response.headers.getSetCookie()
       : [response.headers.get("set-cookie")].filter(Boolean);
-    return { ...cookieAuthFromSetCookieHeaders(setCookies), origin: requestOrigin };
+    let auth = { ...cookieAuthFromSetCookieHeaders(setCookies), origin: requestOrigin };
+    if (login.requiresMfa === true) {
+      const secret = requiredEnvironment("AVAILABILITY_IMPORT_MFA_SECRET");
+      const mfaResponse = await fetch(apiBase + "/auth/mfa/verify", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Origin: requestOrigin,
+          Cookie: auth.cookie,
+          "X-CSRF-Token": auth.csrfToken,
+        },
+        body: JSON.stringify({ code: currentTotpCode(secret) }),
+        signal: AbortSignal.timeout(15_000),
+      });
+      const mfaText = await mfaResponse.text();
+      if (mfaResponse.status !== 200 || Buffer.byteLength(mfaText) > MAX_RESPONSE_BYTES) {
+        throw new Error("MFA verification failed with HTTP " + mfaResponse.status + ".");
+      }
+      const mfaPayload = responseData(JSON.parse(mfaText));
+      if (mfaPayload.success !== true || mfaPayload.mfaVerified !== true) {
+        throw new Error("MFA verification did not establish a load-smoke-ready session.");
+      }
+      const mfaCookies = typeof mfaResponse.headers.getSetCookie === "function"
+        ? mfaResponse.headers.getSetCookie()
+        : [mfaResponse.headers.get("set-cookie")].filter(Boolean);
+      auth = mergeSetCookieHeaders(auth, mfaCookies);
+    }
+    return auth;
   }
   if (bearerToken) return { mode: "bearer", bearerToken };
   throw new Error("Cookie auth credentials or AVAILABILITY_IMPORT_BEARER_TOKEN are required.");

@@ -53,11 +53,11 @@ test.describe('Public SaaS entrypoints', () => {
     await page.goto('/');
 
     await expect(page.getByRole('link', { name: 'LunchLineup home' })).toHaveAttribute('href', '/');
-    await expect(page.getByRole('heading', { name: 'LunchLineup' })).toBeVisible();
-    await expect(page.getByText('Workforce scheduling SaaS')).toBeVisible();
-    await expect(page.getByRole('link', { name: 'Start with email verification' })).toHaveAttribute('href', '/onboarding');
-    await expect(page.getByRole('link', { name: 'Open existing workspace' })).toHaveAttribute('href', '/auth/login');
-    await expect(page.getByLabel('Schedule preview')).toContainText('Frontline schedule');
+    await expect(page.getByRole('heading', { name: 'The schedule, already thinking ahead.' })).toBeVisible();
+    await expect(page.getByText('Build the week with availability, breaks, coverage, and time review in one clear flow.')).toBeVisible();
+    await expect(page.getByRole('link', { name: /^(Create your workspace|Open beta workspace)$/ }).first())
+      .toHaveAttribute('href', /^\/(?:onboarding|auth\/login)$/);
+    await expect(page.getByRole('group', { name: 'LunchLineup weekly schedule preview' })).toContainText('Review schedule');
   });
 
   test('login page exposes identifier entry and links to onboarding', async ({ page }) => {

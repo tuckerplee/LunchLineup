@@ -570,7 +570,7 @@ jobs:
     timeout-minutes: 45
     services:
       postgres:
-        image: postgres:16-alpine@sha256:57c72fd2a128e416c7fcc499958864df5301e940bca0a56f58fddf30ffc07777
+        image: postgres:16-alpine@sha256:cf78e76683b9ca8c5733cbbdce6c9262b45b6767934dd0a95e671f9a0fc20685
         env:
           POSTGRES_USER: root
           POSTGRES_PASSWORD: testpass
@@ -704,7 +704,8 @@ jobs:
       - name: Wait for smoke target
         run: |
           for attempt in {1..60}; do
-            if curl -fsS "$SMOKE_TARGET_URL/health"; then
+            if curl -fsS "$SMOKE_TARGET_URL/health" -o /dev/null \
+              && curl -fsS "$SMOKE_TARGET_URL/" -o /dev/null; then
               exit 0
             fi
             docker compose ps
@@ -831,7 +832,8 @@ jobs:
       - name: Wait for full-stack target
         run: |
           for attempt in {1..60}; do
-            if curl -fsS "$BASE_URL/health"; then exit 0; fi
+            if curl -fsS "$BASE_URL/health" -o /dev/null \
+              && curl -fsS "$BASE_URL/" -o /dev/null; then exit 0; fi
             docker compose ps
             sleep 5
           done
@@ -937,7 +939,8 @@ jobs:
       - name: Wait for smoke target
         run: |
           for attempt in {1..60}; do
-            if curl -fsS "$TARGET_URL/health"; then
+            if curl -fsS "$TARGET_URL/health" -o /dev/null \
+              && curl -fsS "$TARGET_URL/" -o /dev/null; then
               exit 0
             fi
             docker compose ps
@@ -955,8 +958,9 @@ jobs:
         env:
           ALLOW_LOCAL_LOAD_SMOKE: 'true'
           AVAILABILITY_IMPORT_TENANT_SLUG: e2e-operations
-          AVAILABILITY_IMPORT_LOGIN_IDENTIFIER: e2e.admin
-          AVAILABILITY_IMPORT_LOGIN_PIN: '246810'
+          AVAILABILITY_IMPORT_LOGIN_IDENTIFIER: e2e.load
+          AVAILABILITY_IMPORT_LOGIN_PIN: '246812'
+          AVAILABILITY_IMPORT_MFA_SECRET: JBSWY3DPEHPK3PXP
           AVAILABILITY_IMPORT_TARGET_USER_IDENTIFIER: staff-1
           AVAILABILITY_IMPORT_ORIGIN: https://smoke.lunchlineup.test
           AVAILABILITY_IMPORT_CREDIT_SOURCE_ATTESTATION: admin-credit-grant

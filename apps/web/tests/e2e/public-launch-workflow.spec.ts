@@ -39,13 +39,13 @@ test.describe('Public launch workflow gaps', () => {
 
     await loginAsSeedAdmin(page, '/dashboard');
     await expect(page.getByText('Some dashboard data is unavailable. Retry to refresh affected widgets.')).toBeVisible();
-    const locationsCard = page.locator('article').filter({ hasText: 'Locations online' });
+    const locationsCard = page.getByRole('link', { name: /Locations Unavailable/ });
     await expect(locationsCard).toContainText('Unavailable');
-    await locationsCard.getByRole('button', { name: 'Retry' }).click();
+    await page.getByRole('button', { name: 'Retry unavailable data' }).click();
 
-    await expect(page.getByRole('heading', { name: 'Complete workspace setup' })).toBeVisible();
-    await expect(page.getByRole('link', { name: 'Build Weekly Schedule' })).toHaveCount(0);
-    const firstLocationLink = page.getByRole('link', { name: 'Add First Location' });
+    await expect(page.getByRole('heading', { name: 'Manager dashboard' })).toBeVisible();
+    await expect(page.getByRole('link', { name: /Build this week's schedule/ })).toHaveCount(0);
+    const firstLocationLink = page.getByRole('link', { name: /Set up your first location/ });
     await expect(firstLocationLink).toBeVisible();
     await firstLocationLink.click();
     await expect(page).toHaveURL(/\/dashboard\/locations$/);

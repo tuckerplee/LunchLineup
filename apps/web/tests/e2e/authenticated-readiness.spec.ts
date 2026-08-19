@@ -173,7 +173,7 @@ test.describe('Authenticated scheduling SaaS readiness', () => {
       },
     ]);
 
-    await page.locator('.shift-block').first().click();
+    await page.getByRole('button', { name: /View .* shift, .*published/ }).first().click();
     const publishedShiftEditor = page.getByRole('dialog', { name: 'Edit shift' });
     await expect(publishedShiftEditor).toBeVisible();
     await expect(publishedShiftEditor.getByText('Published schedule')).toBeVisible();
@@ -227,7 +227,7 @@ test.describe('Authenticated scheduling SaaS readiness', () => {
       .filter({ hasText: '10:00-18:00' })
       .first();
     await expect(sourceShift).toBeVisible();
-    await sourceShift.click();
+    await page.getByRole('button', { name: /Edit .* shift, 10:00 to 18:00/ }).click();
 
     const editDialog = page.getByRole('dialog', { name: 'Edit shift' });
     await expect(editDialog.getByRole('button', { name: 'Duplicate shift' })).toBeVisible();
@@ -280,7 +280,7 @@ test.describe('Authenticated scheduling SaaS readiness', () => {
         endTime: expect.any(String),
       }],
     });
-    await expect(page.getByText(/Shift copied at/)).toBeVisible();
+    await expect(page.getByRole('status').filter({ hasText: /Copied to Mock Manager/ }).first()).toBeVisible();
     await expect(destinationRow.locator('.shift-block').filter({ hasText: '10:00-18:00' })).toBeVisible();
     await expect(sourceShift).toBeVisible();
   });
@@ -323,7 +323,7 @@ test.describe('Authenticated scheduling SaaS readiness', () => {
 
     const overnightShift = page.locator('.shift-block').filter({ hasText: '22:00-02:00' }).first();
     await expect(overnightShift).toBeVisible();
-    await overnightShift.click();
+    await page.getByRole('button', { name: /Edit .* shift, 22:00 to 02:00/ }).click();
     await expect(page.getByRole('dialog', { name: 'Edit shift' })).toBeVisible();
     await expect(shiftForm.getByLabel('Date')).toHaveValue('2026-07-11');
     await expect(shiftForm.getByLabel('Start')).toHaveValue('22:00');
@@ -360,7 +360,7 @@ test.describe('Authenticated scheduling SaaS readiness', () => {
     await expect(page.getByRole('heading', { name: 'Calendar' })).toBeVisible();
     const recoveredShift = page.locator('.shift-block').filter({ hasText: '22:00-01:30' }).first();
     await expect(recoveredShift).toBeVisible();
-    await recoveredShift.click();
+    await page.getByRole('button', { name: /Edit .* shift, 22:00 to 01:30/ }).click();
     await expect(page.getByRole('dialog', { name: 'Edit shift' })).toBeVisible();
     const recoveredForm = page.locator('form.shift-form');
     const editRequestPromise = page.waitForRequest((request) =>
@@ -455,7 +455,7 @@ test.describe('Authenticated scheduling SaaS readiness', () => {
     expect(
       new Date(payload.operations[0].endTime).getTime() - new Date(payload.operations[0].startTime).getTime(),
     ).toBe(8 * 60 * 60 * 1000);
-    await expect(page.getByText(/Board change saved/)).toBeVisible();
+    await expect(page.getByRole('status').filter({ hasText: /Saved Mock Manager/ }).first()).toBeVisible();
     await expect(targetRow.locator('.shift-block').filter({ hasText: '10:30-18:30' })).toBeVisible();
   });
 

@@ -66,9 +66,10 @@ test('Compose wires remote-confirmed WAL archiving and isolated PITR services', 
   const migrate = serviceBlock(compose, 'migrate');
   const deploy = read('scripts/deploy-vm217-remote.sh');
 
-  assert.match(backupDockerfile, /FROM minio\/mc:RELEASE\.2025-08-13T08-35-41Z@sha256:[a-f0-9]{64} AS pitr-client/);
+  assert.match(backupDockerfile, /FROM golang:1\.26\.6-alpine@sha256:[a-f0-9]{64} AS pitr-client-builder/);
+  assert.match(backupDockerfile, /MC_COMMIT=d6541ea280b73a834b64d4097e21f2be77676104/);
   assert.match(backupDockerfile, /apk add --no-cache .*nodejs coreutils/);
-  assert.match(backupDockerfile, /COPY --from=pitr-client \/usr\/bin\/mc \/opt\/lunchlineup\/tools\/mc/);
+  assert.match(backupDockerfile, /COPY --from=pitr-client-builder \/mc \/opt\/lunchlineup\/tools\/mc/);
   assert.match(backupDockerfile, /COPY infrastructure\/postgres\/pitr-verify-object-store\.sh/);
   assert.match(backupDockerfile, /COPY infrastructure\/postgres\/pitr-export-lifecycle-policy\.sh/);
   assert.match(postgres, /infrastructure\/postgres:\/opt\/lunchlineup\/pitr:ro/);

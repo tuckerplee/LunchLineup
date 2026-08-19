@@ -6,7 +6,7 @@ import { repoRoot } from './support';
 const axeSource = readFileSync(path.join(repoRoot, 'node_modules', 'axe-core', 'axe.min.js'), 'utf8');
 
 const PUBLIC_ROUTES = [
-  { path: '/', heading: 'LunchLineup' },
+  { path: '/', heading: 'The schedule, already thinking ahead.' },
   { path: '/status', heading: 'LunchLineup Status' },
   { path: '/privacy', heading: 'Privacy' },
   { path: '/terms', heading: 'Terms' },

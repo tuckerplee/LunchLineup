@@ -11,6 +11,9 @@ const adminUsername = process.env.E2E_ADMIN_USERNAME ?? 'e2e.admin';
 const adminPin = process.env.E2E_ADMIN_PIN ?? '246810';
 const superAdminUsername = process.env.E2E_SUPER_ADMIN_USERNAME ?? 'e2e.superadmin';
 const superAdminPin = process.env.E2E_SUPER_ADMIN_PIN ?? '864200';
+const loadSmokeUsername = process.env.E2E_LOAD_SMOKE_USERNAME ?? 'e2e.load';
+const loadSmokePin = process.env.E2E_LOAD_SMOKE_PIN ?? '246812';
+const loadSmokeMfaSecret = process.env.E2E_LOAD_SMOKE_MFA_SECRET ?? 'JBSWY3DPEHPK3PXP';
 const locationName = process.env.E2E_LOCATION_NAME ?? 'Downtown Diner';
 const staffUsername = process.env.E2E_STAFF_USERNAME ?? 'staff-1';
 const walletCredits = 500;
@@ -241,6 +244,12 @@ async function main() {
   if (!/^\d{4,8}$/.test(superAdminPin)) {
     throw new Error('E2E_SUPER_ADMIN_PIN must be 4-8 digits.');
   }
+  if (!/^\d{4,8}$/.test(loadSmokePin)) {
+    throw new Error('E2E_LOAD_SMOKE_PIN must be 4-8 digits.');
+  }
+  if (!/^[A-Z2-7]+=*$/i.test(loadSmokeMfaSecret)) {
+    throw new Error('E2E_LOAD_SMOKE_MFA_SECRET must be a base32 TOTP secret.');
+  }
 
   await ensurePermissionCatalog();
 
@@ -320,6 +329,33 @@ async function main() {
     },
   });
 
+  // The availability-import load proof exercises the real privileged route.
+  // Its disposable-only account completes MFA in the proof runner; ordinary
+  // browser E2E identities remain unchanged and do not receive a fixture MFA
+  // factor.
+  const loadSmoke = await prisma.user.create({
+    data: {
+      tenantId: tenant.id,
+      email: null,
+      username: loadSmokeUsername,
+      name: 'E2E Load Smoke',
+      role: 'ADMIN',
+      pinHash: hashPin(loadSmokePin),
+      pinSetAt: new Date(),
+      pinResetRequired: false,
+      mfaEnabled: true,
+      mfaSecret: loadSmokeMfaSecret,
+    },
+  });
+
+  await prisma.roleAssignment.create({
+    data: {
+      tenantId: tenant.id,
+      userId: loadSmoke.id,
+      roleId: adminRole.id,
+    },
+  });
+
   const superAdmin = await prisma.user.create({
     data: {
       tenantId: tenant.id,
@@ -374,6 +410,8 @@ async function main() {
     adminPin,
     superAdminUsername,
     superAdminPin,
+    loadSmokeUsername,
+    loadSmokePin,
     staffUsername,
     stripeSubscriptionStatus: tenant.status,
     creditSourceAttestation: 'admin-credit-grant',
