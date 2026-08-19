@@ -39,8 +39,8 @@ describe('public-launch frontend accessibility contracts', () => {
         expect(mobileSignOut).toContain('title="Sign out"');
         expect(mobileSignOut).toContain('<LogOut size={16} aria-hidden="true" />');
         expect(mobileSignOut).not.toContain('<LogOut size={16} />');
-        expect(mobileSignOutStyles).toContain('width: 32px;');
-        expect(mobileSignOutStyles).toContain('height: 32px;');
+        expect(mobileSignOutStyles).toContain('width: 44px;');
+        expect(mobileSignOutStyles).toContain('height: 44px;');
     });
 
     it('provides a focus-managed, escapable notification dialog', () => {

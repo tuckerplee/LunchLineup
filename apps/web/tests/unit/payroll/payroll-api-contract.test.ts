@@ -50,7 +50,7 @@ describe('immutable payroll API contract', () => {
     expect(hookSource).toContain('const authoritativeCost = await loadCreditCost();');
     expect(hookSource).toContain('fetchPayrollExport(batch.id, batch.nextLineCursor)');
     expect(hookSource).toContain('appendPayrollExportLines(batch.lines, page.lines)');
-    expect(hookSource).toContain('Downloads consume no credits.');
+    expect(hookSource).toContain('Downloads use no credits.');
   });
 
   it('treats a changed export cost as definitive refresh and reconfirmation', () => {
@@ -64,7 +64,7 @@ describe('immutable payroll API contract', () => {
     expect(policyFormSource).toContain("if (created) setEffectiveFrom('');");
     expect(amendmentFormSource).toContain('const created = await onCreate(editingEntry.id, {');
     expect(amendmentFormSource).toContain('if (created) setEditingEntryId(null);');
-    expect(hookSource).toContain('Submit the unchanged form to replay the same payload and Idempotency-Key.');
+    expect(hookSource).toContain('Submit the unchanged form to retry safely.');
     expect(hookSource).toContain('amendment.replacementBreakMinutes === payload.replacementBreakMinutes');
   });
 
@@ -79,7 +79,7 @@ describe('immutable payroll API contract', () => {
   it('refreshes stale revisions and preserves ambiguous keyed replay', () => {
     expect(hookSource).toContain('if (page.period.revision !== baseRevision)');
     expect(hookSource).toContain("kind === 'stale'");
-    expect(hookSource).toContain('replay uses the same Idempotency-Key');
+    expect(hookSource).toContain("attemptFor('review', detail.period.id, payload)");
     expect(hookSource).toContain('Replay the saved same request without editing it.');
   });
 

@@ -110,9 +110,9 @@ describe('authoritative review and terminal lock readiness', () => {
     expect(hasExportablePayrollEntries(period({ status: 'REVIEW', lockedEntryCount: 1, summary: { ...readiness, lockedEntryCount: 1 } }))).toBe(false);
   });
 
-  it('describes LOCKED as terminal with future amendments', () => {
-    expect(payrollStatusExplanation(period({ status: 'LOCKED' }))).toContain('Terminal locked snapshot');
-    expect(payrollStatusExplanation(period({ status: 'LOCKED' }))).toContain('future-period amendments');
+  it('describes LOCKED in manager language with future amendments', () => {
+    expect(payrollStatusExplanation(period({ status: 'LOCKED' }))).toContain('This period is locked');
+    expect(payrollStatusExplanation(period({ status: 'LOCKED' }))).toContain('future-period amendment');
   });
 });
 

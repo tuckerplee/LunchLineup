@@ -3,8 +3,8 @@
 ## Files
 
 - `README.md`: this E2E test folder guide.
-- `authenticated-mobile-layout.spec.ts`: 375px authenticated regression covering document width, all dashboard routes, scroll-contained staff controls, horizontal navigation, and shell controls.
-- `authenticated-readiness.spec.ts`: default authenticated readiness gate with bounded/exact location fixtures, scoped scheduling, details-card plus explicit-handle move/copy gestures, resumable solve polling, shift-update response-loss replay, lunch/break idempotency, time cards, paid-subscription plus separate-credit billing, settings recovery, deletion receipts, and MFA coverage.
+- `authenticated-mobile-layout.spec.ts`: 375px/768px authenticated regression covering document width, all dashboard routes, permission-aware Home/Schedule/Breaks/Team/More navigation, keyboard access, and manager task links.
+- `authenticated-readiness.spec.ts`: default authenticated readiness gate with bounded/exact location fixtures, scoped scheduling, editor and modifier-drag shift duplication, resumable solve polling, shift-update response-loss replay, lunch/break idempotency, time cards, paid-subscription plus separate-credit billing, settings recovery, deletion receipts, and MFA coverage.
 - `core-flows.spec.ts`: public entrypoint, onboarding, login, and unauthenticated redirect smoke tests.
 - `frontend-accessibility.spec.ts`: rendered Enter-submit onboarding, deterministic error focus, notification-dialog focus trap/Escape restoration, roving settings tabs, pack-specific purchase names, and fixed-size mobile sign-out coverage.
 - `homepage-modern.spec.ts`: public homepage product-story, actionable-path, accessible perspective-tab, and desktop/mobile document-containment coverage.
@@ -16,7 +16,7 @@
 - `month-volume-workflows.spec.ts`: opt-in full-stack 10-person monthly schedule with distinct shift-create keys, schedule deletion, keyed lunch/break setup volume, and generation idempotency contract test.
 - `onboarding-recovery.spec.ts`: rendered closed-beta access-state coverage plus desktop/mobile direct, lost-response, and post-MFA first-location recovery with stable idempotency keys, verified-workspace binding, and no OTP resubmission.
 - `operations-workflows.spec.ts`: opt-in release-image full-stack staff, schedule, drag/drop, lunch/break workflow, and deterministic API-v2 internal-beta create/edit/replay/publish/readback journey.
-- `payroll-control-surface.spec.ts`: mock-backed payroll lifecycle smoke proving immutable evidence, separate subscription/credit export denial without POST, exact-cost idempotent export, rejected/all-accepted reconciliation correction, date-rot-safe exact policy/amendment replay after ambiguous `503` readback, responsive containment, raw sensitive-marker exclusion, logout cleanup, and no cross-user replay.
+- `payroll-control-surface.spec.ts`: mock-backed payroll lifecycle smoke proving manager-task language, closed/keyboard-accessible audit evidence at 375px/768px, separate subscription/credit export denial without POST, exact-cost idempotent export, reconciliation correction, replay safety, storage exclusion, logout cleanup, and no cross-user replay.
 - `public-launch-accessibility-responsive.spec.ts`: mock-backed desktop/mobile Chromium gate for public, authenticated workspace, and platform-admin document overflow plus serious/critical WCAG violations.
 - `public-status-accessibility.spec.ts`: public status page explicit dependency-health smoke, login error-announcement coverage, plus automated axe accessibility smoke for public pages.
 - `public-web-p1.spec.ts`: focused Chromium regressions for reject-then-success JSON login modes, reset-token URL/history/cookie/Referer containment and retry classes, unknown-route 404s, delayed-hydration branded fallbacks, dashboard boot, and per-widget endpoint failure rendering.

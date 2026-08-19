@@ -54,11 +54,11 @@ export function PayrollReconciliation({ batch, replay, isBusy, onLoadLines, onSu
 
   return (
     <section className={`surface-card ${styles.panel}`} aria-labelledby="payroll-reconciliation-title">
-      <div className={styles.sectionHeading}><div><div className="workspace-kicker">Provider evidence</div><h2 id="payroll-reconciliation-title" className={styles.sectionTitle}>Line-level reconciliation</h2></div><Scale size={19} aria-hidden="true" /></div>
+      <div className={styles.sectionHeading}><div><div className="workspace-kicker">Payroll provider</div><h2 id="payroll-reconciliation-title" className={styles.sectionTitle}>Confirm payroll results</h2></div><Scale size={19} aria-hidden="true" /></div>
       <div className={styles.reconciliationSummary} role="status">
         <span>Accepted <strong>{batch.reconciliation.acceptedCount}</strong></span><span>Rejected <strong>{batch.reconciliation.rejectedCount}</strong></span><span>Pending <strong>{batch.reconciliation.pendingCount}</strong></span><span>Provider total <strong>{batch.reconciliation.providerTotalMinutes ?? 'Not reported'}</strong></span>
       </div>
-      <p className={styles.helpText}>{complete ? 'Every line is accepted and provider totals exactly match this deterministic batch.' : 'This batch is not fully reconciled. Every line must be accepted and provider total minutes must exactly equal the batch total.'}</p>
+      <p className={styles.helpText}>{complete ? 'Every row is accepted and the provider total matches this export.' : 'Record the provider result for each row and confirm that its total matches the export.'}</p>
 
       {!complete ? <div className={styles.tableHeader}><span className={styles.loadedLabel}>{batch.lines.length} export lines explicitly loaded</span>{batch.nextLineCursor ? <button className="btn btn-secondary btn-sm" type="button" disabled={isBusy} onClick={() => void onLoadLines()}><Rows3 size={14} aria-hidden="true" /> Load next 500 lines</button> : <span className={styles.loadedLabel}>Last line page loaded</span>}</div> : null}
 
@@ -81,7 +81,7 @@ export function PayrollReconciliation({ batch, replay, isBusy, onLoadLines, onSu
             <table className={styles.table}><caption className={styles.visuallyHidden}>Explicit outcomes for deterministic export lines</caption><thead><tr><th scope="col">Line</th><th scope="col">Employee</th><th scope="col">Minutes</th><th scope="col">Current</th><th scope="col">New outcome</th><th scope="col">Reason</th></tr></thead><tbody>{lines.map((line) => <tr key={line.id}><th scope="row">{line.lineNumber}</th><td>{line.employeeId}</td><td>{line.payableMinutes}</td><td>{line.reconciliationStatus}</td><td><select className="form-input" aria-label={`Outcome for export line ${line.lineNumber}`} value={outcomes[line.id]?.status ?? ''} onChange={(event) => setOutcomes((current) => ({ ...current, [line.id]: { ...(current[line.id] ?? { reason: '' }), status: event.target.value as OutcomeDraft['status'] } }))}><option value="">Choose outcome</option><option value="ACCEPTED">Accepted</option><option value="REJECTED">Rejected</option><option value="PENDING">Pending</option></select></td><td><input className="form-input" aria-label={`Reason for export line ${line.lineNumber}`} value={outcomes[line.id]?.reason ?? ''} onChange={(event) => setOutcomes((current) => ({ ...current, [line.id]: { ...(current[line.id] ?? { status: '' }), reason: event.target.value } }))} maxLength={500} /></td></tr>)}</tbody></table>
           </div>
           {formError ? <div role="alert" className={styles.inlineError}>{formError}</div> : null}
-          <button className="btn btn-primary btn-sm" type="submit" disabled={isBusy}><Scale size={14} aria-hidden="true" /> Record explicit line outcomes</button>
+          <button className="btn btn-primary btn-sm" type="submit" disabled={isBusy}><Scale size={14} aria-hidden="true" /> Save result confirmations</button>
         </form>
       ) : null}
       {!complete && !replay && lines.length === 0 ? <div role="status" className={styles.partialNotice}>{batch.nextLineCursor ? 'Load the next bounded page to reach correctable lines.' : 'No explicitly loaded lines are available for reconciliation correction.'}</div> : null}

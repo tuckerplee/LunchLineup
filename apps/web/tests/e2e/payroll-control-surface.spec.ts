@@ -307,13 +307,13 @@ test.describe('Payroll control surface', () => {
     await expect(page.getByText('LOCKED', { exact: true })).toBeVisible();
     await expect(page.getByText(/Unhandled mock endpoint/i)).toHaveCount(0);
 
-    await page.getByRole('button', { name: 'Create deterministic export' }).click();
-    const confirmation = page.getByRole('alertdialog', { name: 'Create the deterministic export?' });
-    await expect(confirmation).toContainText('consumes exactly 1 credit');
-    await confirmation.getByRole('button', { name: 'Confirm exact cost' }).click();
+    await page.getByRole('button', { name: 'Create payroll export' }).click();
+    const confirmation = page.getByRole('alertdialog', { name: 'Create the payroll export?' });
+    await expect(confirmation).toContainText('uses 1 credit');
+    await confirmation.getByRole('button', { name: 'Create export' }).click();
 
-    await expect(page.getByText(/Deterministic batch created for 1 credit; balance 499/)).toBeVisible();
-    await expect(page.getByRole('heading', { name: 'GENERATED' })).toBeVisible();
+    await expect(page.getByText(/Payroll export created for 1 credit; balance 499/)).toBeVisible();
+    await expect(page.getByRole('heading', { name: 'Export ready' })).toBeVisible();
   });
 
   test('shows terminal evidence and creates one exact-cost paid export', async ({ page }) => {
@@ -322,20 +322,25 @@ test.describe('Payroll control surface', () => {
     await loginAsSeedAdmin(page, '/dashboard/payroll');
 
     await expect(page.getByRole('heading', { name: 'Payroll', exact: true })).toBeVisible();
-    await expect(page.getByRole('heading', { name: 'Immutable payroll calendar' })).toBeVisible();
+    await expect(page.getByRole('heading', { name: 'Pay period settings' })).toBeVisible();
     await expect(page.getByText('Version 1', { exact: true })).toBeVisible();
     await expect(page.getByText('LOCKED', { exact: true })).toBeVisible();
-    await expect(page.getByText('Count 1')).toBeVisible();
-    await expect(page.getByText(/external payroll system remains authoritative/i)).toBeVisible();
+    await expect(page.getByText(/payroll provider remains the final source/i)).toBeVisible();
+    const auditDetails = page.locator('details').filter({ has: page.getByText('Audit details', { exact: true }) });
+    await expect(auditDetails).not.toHaveAttribute('open', '');
+    await expect(page.getByText('Locked entry SHA-256')).toBeHidden();
+    await auditDetails.getByText('Audit details', { exact: true }).click();
+    await expect(auditDetails).toHaveAttribute('open', '');
+    await expect(page.getByText('Locked entry SHA-256')).toBeVisible();
 
-    await page.getByRole('button', { name: 'Create deterministic export' }).click();
-    const confirmation = page.getByRole('alertdialog', { name: 'Create the deterministic export?' });
-    await expect(confirmation).toContainText('consumes exactly 1 credit');
-    await confirmation.getByRole('button', { name: 'Confirm exact cost' }).click();
+    await page.getByRole('button', { name: 'Create payroll export' }).click();
+    const confirmation = page.getByRole('alertdialog', { name: 'Create the payroll export?' });
+    await expect(confirmation).toContainText('uses 1 credit');
+    await confirmation.getByRole('button', { name: 'Create export' }).click();
 
-    await expect(page.getByText(/Deterministic batch created for 1 credit; balance 499/)).toBeVisible();
-    await expect(page.getByRole('heading', { name: 'GENERATED' })).toBeVisible();
-    await expect(page.getByText('1 credits')).toBeVisible();
+    await expect(page.getByText(/Payroll export created for 1 credit; balance 499/)).toBeVisible();
+    await expect(page.getByRole('heading', { name: 'Export ready' })).toBeVisible();
+    await expect(page.getByText('Credits used')).toBeVisible();
     expect(exportRequests).toHaveLength(1);
     expect(exportRequests[0].key).toMatch(/^[0-9a-f-]{36}$/i);
     expect(exportRequests[0].body).toEqual({ expectedCreditCost: 1 });
@@ -352,15 +357,42 @@ test.describe('Payroll control surface', () => {
     await installPayrollApi(page, exportRequests, { failNextPostExportRefresh: true });
     await loginAsSeedAdmin(page, '/dashboard/payroll');
 
-    await page.getByRole('button', { name: 'Create deterministic export' }).click();
-    await page.getByRole('alertdialog', { name: 'Create the deterministic export?' })
-      .getByRole('button', { name: 'Confirm exact cost' }).click();
+    await page.getByRole('button', { name: 'Create payroll export' }).click();
+    await page.getByRole('alertdialog', { name: 'Create the payroll export?' })
+      .getByRole('button', { name: 'Create export' }).click();
 
-    await expect(page.getByText(/Deterministic batch created for 1 credit; balance 499/)).toBeVisible();
-    await expect(page.getByRole('heading', { name: 'GENERATED' })).toBeVisible();
+    await expect(page.getByText(/Payroll export created for 1 credit; balance 499/)).toBeVisible();
+    await expect(page.getByRole('heading', { name: 'Export ready' })).toBeVisible();
     await expect(page.getByText(/export creation succeeded, but the latest payroll state could not be refreshed/i)).toBeVisible();
     await expect(page.getByText(/outcome is unclear|outcome is unknown|replay uses the same/i)).toHaveCount(0);
     expect(exportRequests).toHaveLength(1);
+  });
+
+  test('keeps audit evidence collapsed and keyboard-reachable at 375px and 768px', async ({ page }) => {
+    await installPayrollApi(page, []);
+    await loginAsSeedAdmin(page, '/dashboard/payroll');
+
+    for (const width of [375, 768]) {
+      await page.setViewportSize({ width, height: width === 375 ? 812 : 900 });
+      await page.reload();
+
+      const details = page.locator('details').filter({ has: page.getByText('Audit details', { exact: true }) });
+      const summary = details.locator('summary');
+      await expect(summary).toBeVisible();
+      await expect(details).not.toHaveAttribute('open', '');
+      await expect(page.getByText('Locked entry SHA-256')).toBeHidden();
+
+      await summary.focus();
+      await page.keyboard.press('Enter');
+      await expect(details).toHaveAttribute('open', '');
+      await expect(page.getByText('Locked entry SHA-256')).toBeVisible();
+
+      const dimensions = await page.evaluate(() => ({
+        clientWidth: document.documentElement.clientWidth,
+        scrollWidth: document.documentElement.scrollWidth,
+      }));
+      expect(dimensions.scrollWidth, `${width}px payroll document overflow`).toBeLessThanOrEqual(dimensions.clientWidth);
+    }
   });
 
   test('keeps the default Manager payroll workspace read-only', async ({ page }) => {
@@ -371,7 +403,7 @@ test.describe('Payroll control surface', () => {
     await expect(page.getByText('LOCKED', { exact: true })).toBeVisible();
     await expect(page.getByRole('button', { name: 'Create policy version' })).toHaveCount(0);
     await expect(page.getByRole('button', { name: 'Create period' })).toHaveCount(0);
-    await expect(page.getByRole('button', { name: 'Create deterministic export' })).toHaveCount(0);
+    await expect(page.getByRole('button', { name: 'Create payroll export' })).toHaveCount(0);
   });
 
   for (const ineligible of [
@@ -392,7 +424,7 @@ test.describe('Payroll control surface', () => {
       await loginAsSeedAdmin(page, '/dashboard/payroll');
 
       await expect(page.getByText(ineligible.reason, { exact: true })).toBeVisible();
-      await expect(page.getByRole('button', { name: 'Create deterministic export' })).toBeDisabled();
+      await expect(page.getByRole('button', { name: 'Create payroll export' })).toBeDisabled();
       expect(exportRequests).toEqual([]);
     });
   }
@@ -422,7 +454,7 @@ test.describe('Payroll control surface', () => {
     await page.getByLabel('Provider', { exact: true }).fill('Provider A');
     await page.getByLabel('Provider event ID').fill('event-corrected');
     await page.getByLabel('Outcome for export line 1').selectOption('ACCEPTED');
-    await page.getByRole('button', { name: 'Record explicit line outcomes' }).click();
+    await page.getByRole('button', { name: 'Save result confirmations' }).click();
 
     await expect.poll(() => reconciliationRequests.length).toBe(1);
     expect(reconciliationRequests[0]).toEqual({
@@ -457,7 +489,7 @@ test.describe('Payroll control surface', () => {
     await expect(page.getByLabel('Outcome for export line 1')).toHaveValue('ACCEPTED');
     await page.getByLabel('Provider', { exact: true }).fill('Provider A');
     await page.getByLabel('Provider event ID').fill('event-total-corrected');
-    await page.getByRole('button', { name: 'Record explicit line outcomes' }).click();
+    await page.getByRole('button', { name: 'Save result confirmations' }).click();
 
     await expect.poll(() => reconciliationRequests.length).toBe(1);
     expect(reconciliationRequests[0]).toEqual({
@@ -493,7 +525,7 @@ test.describe('Payroll control surface', () => {
     expect(policyRequests[1]).toEqual(policyRequests[0]);
     expect(policyRequests[0].key).toMatch(/^[0-9a-f-]{36}$/i);
 
-    await page.getByRole('button', { name: 'Amend into future period' }).click();
+    await page.getByRole('button', { name: 'Add future correction' }).click();
     const reason = page.getByRole('textbox', { name: 'Reason' });
     await reason.fill('Correct approved source evidence after provider confirmation.');
     await page.getByRole('button', { name: 'Create amendment only' }).click();
@@ -527,15 +559,15 @@ test.describe('Payroll control surface', () => {
     await expect(page.getByRole('heading', { name: 'Payroll', exact: true })).toBeVisible();
     await expect.poll(async () => (await payrollBrowserStorage(page)).local).toEqual([]);
 
-    await page.getByRole('button', { name: 'Create deterministic export' }).click();
-    await page.getByRole('alertdialog', { name: 'Create the deterministic export?' })
-      .getByRole('button', { name: 'Confirm exact cost' }).click();
-    await expect(page.getByRole('heading', { name: 'Line-level reconciliation' })).toBeVisible();
+    await page.getByRole('button', { name: 'Create payroll export' }).click();
+    await page.getByRole('alertdialog', { name: 'Create the payroll export?' })
+      .getByRole('button', { name: 'Create export' }).click();
+    await expect(page.getByRole('heading', { name: 'Confirm payroll results' })).toBeVisible();
     await page.getByLabel('Provider', { exact: true }).fill(markers.provider);
     await page.getByLabel('Provider event ID').fill(markers.event);
     await page.getByLabel('Outcome for export line 1').selectOption('REJECTED');
     await page.getByLabel('Reason for export line 1').fill(markers.rejectionReason);
-    await page.getByRole('button', { name: 'Record explicit line outcomes' }).click();
+    await page.getByRole('button', { name: 'Save result confirmations' }).click();
 
     await expect(page.getByRole('button', { name: 'Replay same request' })).toBeVisible();
     expect(reconciliationRequests).toHaveLength(1);

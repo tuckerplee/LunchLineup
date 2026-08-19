@@ -242,10 +242,10 @@ export function usePayrollWorkspace(canExportPayroll: boolean, currentUserId: st
     try {
       await refreshAfterPeriodMutation(periodId);
       setError(kind === 'stale'
-        ? `Payroll data changed. The latest revision was loaded; review it before trying to ${operation} again.`
-        : `The ${operation} outcome is unclear. The latest state was loaded; replay uses the same Idempotency-Key.`);
+        ? `Payroll data changed. The latest information was loaded; review it before trying to ${operation} again.`
+        : `The ${operation} outcome is unclear. The latest information was loaded; review it before trying again.`);
     } catch {
-      setError(`The ${operation} outcome is unknown. Replay uses the same Idempotency-Key.`);
+      setError(`The ${operation} outcome is unknown. Refresh payroll before trying again.`);
     }
   }, [refreshAfterPeriodMutation]);
 
@@ -275,7 +275,7 @@ export function usePayrollWorkspace(canExportPayroll: boolean, currentUserId: st
           }
         } catch { /* Preserve the exact attempt for replay. */ }
       }
-      setError(kind === 'definitive' ? message(policyError, 'Unable to create the policy version.') : 'Policy creation is unconfirmed. Submit the unchanged form to replay the same Idempotency-Key.');
+      setError(kind === 'definitive' ? message(policyError, 'Unable to create the policy version.') : 'Policy creation is unconfirmed. Submit the unchanged form to retry safely.');
       return false;
     } finally { setBusyAction(null); }
   }, [attemptFor, completeAttempt]);
@@ -313,7 +313,7 @@ export function usePayrollWorkspace(canExportPayroll: boolean, currentUserId: st
           if (confirmed) { completeAttempt(attempt); await loadPeriod(confirmed.id); setNotice('Period creation was confirmed by readback.'); return; }
         } catch { /* Preserve the exact attempt for replay. */ }
       }
-      setError(kind === 'definitive' ? message(createError, 'Unable to create the payroll period.') : 'Period creation is unconfirmed. Retry the same date to replay the same Idempotency-Key.');
+      setError(kind === 'definitive' ? message(createError, 'Unable to create the payroll period.') : 'Period creation is unconfirmed. Retry the same date safely.');
     } finally { setBusyAction(null); }
   }, [attemptFor, completeAttempt, loadPeriod, refreshPeriods, upsertPeriod]);
 
@@ -338,7 +338,7 @@ export function usePayrollWorkspace(canExportPayroll: boolean, currentUserId: st
       const page = await fetchPayrollPeriod(periodId, cursor);
       if (page.period.revision !== baseRevision) {
         await readBackPeriod(periodId);
-        setNotice('The period revision changed during paging. The latest first page is shown.');
+        setNotice('The period changed while more time cards were loading. The latest first page is shown.');
         return;
       }
       installDetail({ ...page, cards: appendPayrollCards(detail.cards, page.cards) });
@@ -403,7 +403,7 @@ export function usePayrollWorkspace(canExportPayroll: boolean, currentUserId: st
     setBusyAction('review'); setError(null); setNotice(null);
     try {
       await startPayrollReview(detail.period.id, detail.period.revision, attempt.key);
-      completeAttempt(attempt); setNotice('Review started. Decisions remain bound to exact card versions.');
+      completeAttempt(attempt); setNotice('Time-card review started.');
       await refreshAfterConfirmedPeriodMutation(detail.period.id, 'Review start');
     } catch (operationError) { await recoverPeriodError(detail.period.id, 'start review', operationError); }
     finally { setBusyAction(null); }
@@ -416,8 +416,8 @@ export function usePayrollWorkspace(canExportPayroll: boolean, currentUserId: st
     setBusyAction('lock'); setError(null); setNotice(null);
     try {
       await lockPayrollPeriod(detail.period.id, detail.period.revision, attempt.key);
-      completeAttempt(attempt); setNotice('Terminal lock recorded. The snapshot is immutable and is not payroll-final.');
-      await refreshAfterConfirmedPeriodMutation(detail.period.id, 'Terminal lock');
+      completeAttempt(attempt); setNotice('Payroll period locked. Export it when you are ready.');
+      await refreshAfterConfirmedPeriodMutation(detail.period.id, 'Payroll lock');
     } catch (operationError) { await recoverPeriodError(detail.period.id, 'lock the period', operationError); }
     finally { setBusyAction(null); }
   }, [attemptFor, completeAttempt, detail, recoverPeriodError, refreshAfterConfirmedPeriodMutation]);
@@ -454,7 +454,7 @@ export function usePayrollWorkspace(canExportPayroll: boolean, currentUserId: st
       }
       setError(kind === 'definitive'
         ? message(operationError, 'Unable to create amendment.')
-        : 'Amendment creation is unconfirmed. Submit the unchanged form to replay the same payload and Idempotency-Key.');
+        : 'Amendment creation is unconfirmed. Submit the unchanged form to retry safely.');
       return false;
     }
     finally { setBusyAction(null); }
@@ -486,9 +486,9 @@ export function usePayrollWorkspace(canExportPayroll: boolean, currentUserId: st
       completeAttempt(attempt);
       installDetail({ ...detail, period: { ...detail.period, exportBatch: batch } });
       setNotice(batch.settlement.consumedCredits === authoritativeCost
-        ? `Deterministic batch created for ${authoritativeCost} ${authoritativeCost === 1 ? 'credit' : 'credits'}; balance ${batch.settlement.newBalance}.`
-        : 'The batch was created but settlement differs from the confirmed cost. Do not retry the export.');
-      await refreshAfterConfirmedPeriodMutation(detail.period.id, 'Deterministic export creation');
+        ? `Payroll export created for ${authoritativeCost} ${authoritativeCost === 1 ? 'credit' : 'credits'}; balance ${batch.settlement.newBalance}.`
+        : 'The payroll export was created but its credit charge differs from the confirmation. Do not create it again.');
+      await refreshAfterConfirmedPeriodMutation(detail.period.id, 'Payroll export creation');
     } catch (operationError) {
       if (isExportCostMismatch(operationError)) {
         completeAttempt(attempt);
@@ -507,7 +507,7 @@ export function usePayrollWorkspace(canExportPayroll: boolean, currentUserId: st
     setBusyAction('download'); setError(null); setNotice(null);
     try {
       await downloadPayrollExport(batch.id);
-      setNotice('Existing deterministic batch download started. Downloads consume no credits.');
+      setNotice('Payroll export download started. Downloads use no credits.');
       await refreshAfterConfirmedPeriodMutation(detail.period.id, 'Export download');
     } catch (downloadError) { setError(message(downloadError, 'Unable to download the export.')); }
     finally { setBusyAction(null); }

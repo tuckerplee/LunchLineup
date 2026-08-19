@@ -103,11 +103,11 @@ export function PayrollAmendments({ entries, amendments, periods, sourcePeriod, 
         </form>
       ) : null}
 
-      <div className={styles.tableRegion} role="region" aria-label="Locked payroll evidence" tabIndex={0}>
+      <div className={styles.tableRegion} role="region" aria-label="Locked payroll entries available for correction" tabIndex={0}>
         <table className={styles.table}>
-          <caption className={styles.visuallyHidden}>Immutable locked entries available for future-period amendments</caption>
-          <thead><tr><th scope="col">Entry</th><th scope="col">Employee</th><th scope="col">Payable</th><th scope="col">Evidence hash</th><th scope="col">Command</th></tr></thead>
-          <tbody>{entries.map((entry) => { const canCreateForEntry = canCreatePayrollAmendmentForEntry(canCreate, currentUserId, entry.employeeId); return <tr key={entry.id}><th scope="row">#{entry.sequence}</th><td>{entry.employeeName || entry.employeeId}</td><td>{formatSignedMinutes(entry.payableMinutes)}</td><td><code>{entry.canonicalSha256}</code></td><td>{canCreateForEntry ? <button className="btn btn-secondary btn-sm" type="button" disabled={isBusy || futureAdjustmentPeriods.length === 0} onClick={() => openForm(entry)}><FilePenLine size={14} aria-hidden="true" /> Amend into future period</button> : <span className={styles.fieldHelp}>{entry.employeeId === currentUserId ? 'Unavailable for your own entry' : 'Create permission required'}</span>}</td></tr>; })}</tbody>
+          <caption className={styles.visuallyHidden}>Locked payroll entries available for future-period corrections</caption>
+          <thead><tr><th scope="col">Entry</th><th scope="col">Employee</th><th scope="col">Payable</th><th scope="col">Action</th></tr></thead>
+          <tbody>{entries.map((entry) => { const canCreateForEntry = canCreatePayrollAmendmentForEntry(canCreate, currentUserId, entry.employeeId); return <tr key={entry.id}><th scope="row">#{entry.sequence}</th><td>{entry.employeeName || entry.employeeId}</td><td>{formatSignedMinutes(entry.payableMinutes)}</td><td>{canCreateForEntry ? <button className="btn btn-secondary btn-sm" type="button" disabled={isBusy || futureAdjustmentPeriods.length === 0} onClick={() => openForm(entry)}><FilePenLine size={14} aria-hidden="true" /> Add future correction</button> : <span className={styles.fieldHelp}>{entry.employeeId === currentUserId ? 'Unavailable for your own entry' : 'Create permission required'}</span>}</td></tr>; })}</tbody>
         </table>
       </div>
 

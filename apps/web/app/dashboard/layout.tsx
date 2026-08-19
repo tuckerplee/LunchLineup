@@ -11,9 +11,11 @@ import {
   Store,
 } from 'lucide-react';
 import { NotificationsMenu, type DashboardNotification } from './NotificationsMenu';
+import { DashboardMobileNavigation } from './DashboardMobileNavigation';
 import {
   canOpenDashboardAccountSettings,
   getDashboardCurrentPage,
+  getDashboardMobileNavGroups,
   getDashboardUserInitials,
   getVisibleDashboardNavItems,
 } from './dashboard-navigation';
@@ -128,6 +130,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
   }
 
   const visibleNavItems = useMemo(() => getVisibleDashboardNavItems(user?.permissions), [user?.permissions]);
+  const mobileNavGroups = useMemo(() => getDashboardMobileNavGroups(user?.permissions), [user?.permissions]);
   const canOpenAccountSettings = useMemo(() => canOpenDashboardAccountSettings(user?.permissions), [user?.permissions]);
 
   const currentPage = useMemo(() => {
@@ -177,7 +180,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
             </div>
           </div>
 
-          <nav style={{ padding: '0.5rem 0.75rem', display: 'flex', flexDirection: 'column', gap: 4, flex: 1 }}>
+          <nav className="workspace-desktop-navigation" aria-label="Workspace navigation" style={{ padding: '0.5rem 0.75rem', display: 'flex', flexDirection: 'column', gap: 4, flex: 1 }}>
             {visibleNavItems.map((item) => {
               const Icon = item.icon;
               const isActive = item.exact ? pathname === item.href : pathname.startsWith(item.href);
@@ -225,6 +228,8 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
               );
             })}
           </nav>
+
+          <DashboardMobileNavigation pathname={pathname} {...mobileNavGroups} />
 
           <div style={{ borderTop: '1px solid var(--border)', padding: '0.8rem' }}>
             <Link href="/auth/logout" prefetch={false} className="workspace-nav-link" style={{ justifyContent: 'flex-start' }}>

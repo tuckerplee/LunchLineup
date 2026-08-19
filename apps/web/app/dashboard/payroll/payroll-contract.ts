@@ -208,7 +208,7 @@ export function isBatchFullyReconciled(batch: PayrollExportBatch): boolean {
 export function payrollStatusExplanation(period: PayrollPeriodSummary): string {
   if (period.status === 'OPEN') return 'Open for bounded adoption and preparation. Original time cards remain operational records.';
   if (period.status === 'REVIEW') return 'In review for version-bound decisions. Readiness uses server aggregates, not loaded rows.';
-  return 'Terminal locked snapshot. Original entries are immutable; corrections use future-period amendments.';
+  return 'This period is locked. Use a future-period amendment if a correction is needed.';
 }
 
 export function formatSignedMinutes(minutes: number): string {

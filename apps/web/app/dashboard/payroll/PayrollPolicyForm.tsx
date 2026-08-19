@@ -72,8 +72,8 @@ export function PayrollPolicyForm({
     <section className={`surface-card ${styles.panel}`} aria-labelledby="payroll-policy-title">
       <div className={styles.sectionHeading}>
         <div>
-          <div className="workspace-kicker">Policy versions</div>
-          <h2 id="payroll-policy-title" className={styles.sectionTitle}>Immutable payroll calendar</h2>
+          <div className="workspace-kicker">Period setup</div>
+          <h2 id="payroll-policy-title" className={styles.sectionTitle}>Pay period settings</h2>
         </div>
         <History size={19} aria-hidden="true" />
       </div>

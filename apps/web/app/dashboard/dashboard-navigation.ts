@@ -21,6 +21,15 @@ export type DashboardNavItem = {
   priority?: 'strong';
 };
 
+export type DashboardMobileNavItem = DashboardNavItem & {
+  mobileLabel: 'Home' | 'Schedule' | 'Breaks' | 'Team';
+};
+
+export type DashboardMobileNavGroups = {
+  primary: DashboardMobileNavItem[];
+  more: DashboardNavItem[];
+};
+
 type DashboardProfileSummary = {
   email?: string | null;
   name?: string | null;
@@ -40,6 +49,13 @@ const NAV_ITEMS: DashboardNavItem[] = [
 
 const ADMIN_NAV_ITEM: DashboardNavItem = { href: '/admin', label: 'Admin Console', icon: Shield, exact: false };
 
+const MOBILE_PRIMARY_ITEMS = [
+  { href: '/dashboard', mobileLabel: 'Home' },
+  { href: '/dashboard/scheduling', mobileLabel: 'Schedule' },
+  { href: '/dashboard/lunch-breaks', mobileLabel: 'Breaks' },
+  { href: '/dashboard/staff', mobileLabel: 'Team' },
+] as const;
+
 export function getVisibleDashboardNavItems(permissions: PermissionList): DashboardNavItem[] {
   const capabilities = getWorkspaceCapabilities(permissions);
   const navItems = NAV_ITEMS.filter((item) => {
@@ -58,6 +74,21 @@ export function getVisibleDashboardNavItems(permissions: PermissionList): Dashbo
 
 export function canOpenDashboardAccountSettings(permissions: PermissionList): boolean {
   return getWorkspaceCapabilities(permissions).canReadSettings;
+}
+
+export function getDashboardMobileNavGroups(permissions: PermissionList): DashboardMobileNavGroups {
+  const visibleItems = getVisibleDashboardNavItems(permissions);
+  const visibleByHref = new Map(visibleItems.map((item) => [item.href, item]));
+  const primary = MOBILE_PRIMARY_ITEMS.flatMap(({ href, mobileLabel }) => {
+    const item = visibleByHref.get(href);
+    return item ? [{ ...item, mobileLabel }] : [];
+  });
+  const primaryHrefs = new Set(primary.map((item) => item.href));
+
+  return {
+    primary,
+    more: visibleItems.filter((item) => !primaryHrefs.has(item.href)),
+  };
 }
 
 export function getDashboardCurrentPage(pathname: string, navItems: readonly DashboardNavItem[]): string {

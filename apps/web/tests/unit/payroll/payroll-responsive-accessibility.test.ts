@@ -5,6 +5,7 @@ import { describe, expect, it } from 'vitest';
 const root = resolve(process.cwd(), 'app/dashboard/payroll');
 const workspace = readFileSync(resolve(root, 'PayrollWorkspace.tsx'), 'utf8');
 const detail = readFileSync(resolve(root, 'PayrollPeriodDetail.tsx'), 'utf8');
+const audit = readFileSync(resolve(root, 'PayrollAuditDetails.tsx'), 'utf8');
 const policy = readFileSync(resolve(root, 'PayrollPolicyForm.tsx'), 'utf8');
 const amendments = readFileSync(resolve(root, 'PayrollAmendments.tsx'), 'utf8');
 const reconciliation = readFileSync(resolve(root, 'PayrollReconciliation.tsx'), 'utf8');
@@ -13,14 +14,15 @@ const styles = readFileSync(resolve(root, 'payroll.module.css'), 'utf8');
 describe('payroll responsive and accessibility contracts', () => {
   it('keeps bounded evidence tables in named focusable horizontal regions at 375px', () => {
     expect(detail).toContain('role="region" aria-label="Payroll time cards" tabIndex={0}');
-    expect(amendments).toContain('role="region" aria-label="Locked payroll evidence" tabIndex={0}');
+    expect(amendments).toContain('role="region" aria-label="Locked payroll entries available for correction" tabIndex={0}');
+    expect(audit).toContain('role="region" aria-label="Immutable locked payroll evidence" tabIndex={0}');
     expect(reconciliation).toContain('role="region" aria-label="Export line reconciliation outcomes" tabIndex={0}');
     expect(styles).toContain('overflow-x: auto;');
     expect(styles).toContain('@media (max-width: 640px)');
     expect(styles).toContain('grid-template-columns: minmax(0, 1fr);');
   });
 
-  it('labels future policy validation, terminal confirmation, and live outcomes', () => {
+  it('labels future policy validation, manager confirmation, and live outcomes', () => {
     expect(policy).toContain('aria-invalid={Boolean(errors.timeZone)}');
     expect(policy).toContain('aria-invalid={Boolean(errors.effectiveFrom)}');
     expect(policy).toContain('readOnly={Boolean(currentPolicy)}');
@@ -33,11 +35,25 @@ describe('payroll responsive and accessibility contracts', () => {
     expect(workspace).toContain('role="status" aria-live="polite"');
   });
 
-  it('preserves the authoritative limitation until full line completeness', () => {
+  it('keeps technical evidence in a closed-by-default audit disclosure', () => {
+    expect(audit).toContain('<details className={`surface-card ${styles.auditDetails}`}>');
+    expect(audit).toContain('<summary>Audit details</summary>');
+    expect(audit).not.toMatch(/<details[^>]+open/);
+    expect(audit).toContain('Period revision');
+    expect(audit).toContain('Idempotency');
+    expect(audit).toContain('lockedEntrySha256');
+    expect(audit).toContain('canonicalSha256');
+    expect(detail).not.toContain('lockedEntrySha256');
+    expect(detail).not.toContain('Revision {card.timeCardRevision}');
+    expect(amendments).not.toContain('canonicalSha256');
+    expect(styles).toContain('min-height: 52px;');
+  });
+
+  it('preserves the provider limitation until results are fully confirmed', () => {
     expect(workspace).toContain('isBatchFullyReconciled');
-    expect(workspace).toContain('not payroll-final');
-    expect(detail).toContain('A locked or exported batch is not payroll-final.');
-    expect(reconciliation).toContain('Every line must be accepted and provider total minutes must exactly equal the batch total.');
+    expect(workspace).toContain('Your payroll provider remains the final source');
+    expect(detail).toContain('confirm the provider results below');
+    expect(reconciliation).toContain('Every row is accepted and the provider total matches this export.');
   });
 
   it('uses exact permission branches and lucide command icons', () => {
@@ -50,15 +66,15 @@ describe('payroll responsive and accessibility contracts', () => {
     expect(detail).toContain("from 'lucide-react'");
   });
 
-  it('keeps zero-entry terminal snapshots visible but not exportable', () => {
+  it('keeps zero-entry locked periods visible but not exportable', () => {
     expect(detail).toContain('const hasExportableEntries = hasExportablePayrollEntries(period);');
     expect(detail).toContain('capabilities.canExportPayroll && hasExportableEntries && !batch');
-    expect(detail).toContain('This terminal snapshot has no entries, so no export batch can be created.');
+    expect(detail).toContain('This locked period has no entries to export.');
   });
 
   it('fails export closed without a positive confirmed cost', () => {
     expect(detail).toContain('disabled={isBusy || creditCost === null}');
-    expect(detail).toContain('This operation consumes exactly <strong>{creditCost}');
+    expect(detail).toContain('Creating this export uses <strong>{creditCost}');
     expect(detail).toContain("if (confirmation === 'export' && creditCost !== null && hasExportableEntries) await onExport(creditCost);");
   });
 

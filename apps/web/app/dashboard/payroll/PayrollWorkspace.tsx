@@ -37,11 +37,11 @@ export function PayrollWorkspace({ capabilities, currentUserId }: PayrollWorkspa
   return (
     <div className={styles.workspace}>
       <header className={styles.pageHeader}>
-        <div><div className="workspace-kicker">Manager workspace</div><h1>Payroll</h1><p>Versioned policy, exact review decisions, terminal evidence, amendments, export, and provider reconciliation.</p></div>
+        <div><div className="workspace-kicker">Manager workspace</div><h1>Payroll</h1><p>Review time cards, approve the period, lock payroll, export, and confirm results with your payroll provider.</p></div>
         <button className="btn btn-secondary btn-sm" type="button" disabled={payroll.busyAction !== null} onClick={() => void payroll.retryBootstrap()}><RefreshCw size={15} aria-hidden="true" /> Refresh</button>
       </header>
 
-      {!fullyReconciled ? <div role="note" className={styles.sourceNotice}>Operational records and locked batches are not payroll-final. The external payroll system remains authoritative for wages, taxes, and filings until every export line is accepted and exact totals are reconciled.</div> : null}
+      {!fullyReconciled ? <div role="note" className={styles.sourceNotice}>LunchLineup prepares payroll records and exports. Your payroll provider remains the final source for wages, taxes, and filings until its results are confirmed here.</div> : null}
       {payroll.error ? <div role="alert" aria-live="assertive" className={styles.errorBanner}>{payroll.error}</div> : null}
       {payroll.notice ? <div role="status" aria-live="polite" className={styles.noticeBanner}>{payroll.notice}</div> : null}
 

@@ -8,5 +8,5 @@
 - `payroll-attempt.test.ts` - SHA-256-bound session keys, legacy local-storage purge, raw-marker exclusion, user isolation, logout cleanup, and memory-only reconciliation replay.
 - `payroll-navigation.test.ts` - `payroll:read` navigation, public-user-ID workspace wiring, policy-write adoption/creation, and independent amendment create/decision combinations.
 - `payroll-normalize.test.ts` - Direct policy, period/card page, and deterministic export-line cursor normalization.
-- `payroll-responsive-accessibility.test.ts` - 375px tables, policy boundaries, focus, terminal/zero-entry states, signed correctable-line paging, timezone/separation, and icon contracts.
+- `payroll-responsive-accessibility.test.ts` - 375px tables, policy boundaries, focus, closed audit disclosure, manager language, zero-entry states, signed correctable-line paging, timezone/separation, and icon contracts.
 - `payroll-state.test.ts` - Initial/later policy boundaries, aggregate/empty readiness, terminal export guard, authoritative subscription/separate-credit ineligibility reasons, bounded row/line merge, signed totals, rejected/all-accepted correction, and reconciliation completeness.

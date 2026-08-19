@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import {
   canOpenDashboardAccountSettings,
   getDashboardCurrentPage,
+  getDashboardMobileNavGroups,
   getDashboardUserInitials,
   getVisibleDashboardNavItems,
 } from '../../app/dashboard/dashboard-navigation';
@@ -39,6 +40,32 @@ describe('dashboard navigation helpers', () => {
 
   it('shows payroll from payroll permission without relying on a legacy role name', () => {
     expect(labelsFor(['dashboard:access', 'payroll:read'])).toEqual(['Overview', 'Payroll']);
+  });
+
+  it('builds the permission-aware mobile primary row and moves remaining destinations under More', () => {
+    const groups = getDashboardMobileNavGroups([
+      'schedules:read',
+      'shifts:read',
+      'locations:read',
+      'lunch_breaks:read',
+      'time_cards:read',
+      'payroll:read',
+      'users:read',
+      'settings:read',
+    ]);
+
+    expect(groups.primary.map((item) => item.mobileLabel)).toEqual(['Home', 'Schedule', 'Breaks', 'Team']);
+    expect(groups.more.map((item) => item.label)).toEqual(['Time Cards', 'Payroll', 'Locations', 'Settings']);
+  });
+
+  it('filters both mobile groups without leaking unavailable or admin-only destinations', () => {
+    const limited = getDashboardMobileNavGroups(['time_cards:read']);
+    expect(limited.primary.map((item) => item.mobileLabel)).toEqual(['Home']);
+    expect(limited.more.map((item) => item.label)).toEqual(['Time Cards']);
+
+    const admin = getDashboardMobileNavGroups(['admin_portal:access']);
+    expect(admin.primary.map((item) => item.mobileLabel)).toEqual(['Home']);
+    expect(admin.more.map((item) => item.label)).toEqual(['Admin Console']);
   });
 
   it('does not fabricate navigation badges without authoritative counts', () => {

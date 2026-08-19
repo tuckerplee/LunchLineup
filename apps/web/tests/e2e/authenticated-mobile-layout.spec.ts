@@ -22,8 +22,9 @@ test.describe('Authenticated mobile dashboard layout', () => {
     'Runs once in desktop Chromium with an explicit mobile-sized CSS viewport.',
   );
 
-  test('keeps every dashboard route within a 375px viewport with shell controls reachable', async ({ page }) => {
-    await page.setViewportSize({ width: 375, height: 812 });
+  for (const viewport of [{ width: 375, height: 812 }, { width: 768, height: 900 }]) {
+  test(`keeps the permission-aware manager shell reachable at ${viewport.width}px`, async ({ page }) => {
+    await page.setViewportSize(viewport);
     await page.route('**/api/v2/users', async (route) => {
       await route.fulfill({
         status: 200,
@@ -43,18 +44,46 @@ test.describe('Authenticated mobile dashboard layout', () => {
     });
     await loginAsSeedAdmin(page, dashboardRoutes[0]);
 
-    for (const route of dashboardRoutes) {
+    for (const [routeIndex, route] of dashboardRoutes.entries()) {
       await page.goto(route);
 
       const shell = page.locator('.workspace-shell');
       const sidebar = page.getByLabel('Sidebar navigation');
-      const settingsNav = sidebar.getByRole('link', { name: 'Settings', exact: true });
+      const mobileNav = page.getByRole('navigation', { name: 'Mobile primary navigation' });
+      const moreButton = mobileNav.getByRole('button', { name: 'More', exact: true });
 
       await expect(shell, `${route} shell`).toBeVisible();
       await expect(sidebar, `${route} navigation`).toBeVisible();
+      await expect(mobileNav, `${route} mobile primary navigation`).toBeVisible();
+      for (const label of ['Home', 'Schedule', 'Breaks', 'Team']) {
+        await expect(mobileNav.getByRole('link', { name: label, exact: true }), `${route} ${label} destination`).toBeVisible();
+      }
+      await expect(moreButton, `${route} More destination`).toBeVisible();
       await expect(page.locator('.workspace-mobile-signout'), `${route} sign-out control`).toBeVisible();
       await expect(page.getByRole('button', { name: 'Notifications' }), `${route} notifications control`).toBeVisible();
       await expect(page.getByRole('link', { name: 'Account settings' }), `${route} account control`).toBeVisible();
+
+      if (routeIndex === 0) {
+        await expect(page.getByRole('heading', { name: 'Needs attention' })).toBeVisible();
+        await expect(page.getByRole('heading', { name: 'This week' })).toBeVisible();
+        await expect(page.getByRole('link', { name: /Review time cards/ })).toHaveAttribute('href', '/dashboard/time-cards');
+        await expect(page.getByRole('link', { name: /Prepare payroll/ })).toHaveAttribute('href', '/dashboard/payroll');
+
+        await moreButton.click();
+        const moreMenu = page.getByRole('menu', { name: 'More workspace destinations' });
+        await expect(moreMenu).toBeVisible();
+        await expect(moreMenu.getByRole('menuitem', { name: 'Settings', exact: true })).toBeInViewport();
+
+        await moreMenu.getByRole('menuitem', { name: 'Settings', exact: true }).focus();
+        await page.keyboard.press('Escape');
+        await expect(moreMenu).toBeHidden();
+        await expect(moreButton).toBeFocused();
+
+        await page.keyboard.press('ArrowDown');
+        await expect(page.getByRole('menuitem', { name: 'Time Cards', exact: true })).toBeFocused();
+        await page.keyboard.press('Escape');
+        await expect(moreButton).toBeFocused();
+      }
 
       const widths = await page.evaluate(() => ({
         viewport: window.innerWidth,
@@ -82,13 +111,11 @@ test.describe('Authenticated mobile dashboard layout', () => {
           })),
       }));
 
-      expect(widths.viewport, `${route} viewport width`).toBe(375);
+      expect(widths.viewport, `${route} viewport width`).toBe(viewport.width);
       expect(widths.document, `${route} document overflow: ${JSON.stringify(widths.overflowing)}`).toBeLessThanOrEqual(widths.viewport);
       expect(widths.body, `${route} body overflow`).toBeLessThanOrEqual(widths.viewport);
       expect(widths.shell, `${route} shell width`).toBeLessThanOrEqual(widths.viewport);
-
-      await settingsNav.scrollIntoViewIfNeeded();
-      await expect(settingsNav, `${route} horizontally scrollable Settings navigation`).toBeInViewport();
     }
   });
+  }
 });

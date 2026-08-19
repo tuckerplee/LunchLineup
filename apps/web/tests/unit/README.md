@@ -16,9 +16,9 @@
 - `billing-settings-contract.test.ts`: billing/credit-pack normalization, active-paid purchase gating, minor-unit currency formatting, sanitized checkout-return state, safe Stripe redirects, plan changes, and subscription recovery coverage.
 - `bounded-pagination.test.ts`: bounded continuation filter preservation, compatibility, cursor-loop rejection, request caps, and scheduling/list consumer wiring coverage.
 - `client-api.test.ts`: unit coverage for CSRF/session preservation, off-origin rejection, sanitized network/5xx/non-JSON failures, secret-free login redirects, and idempotency-gated unsafe request replay.
-- `dashboard-navigation.test.ts`: unit coverage for dashboard shell navigation filtering, lunch/location prerequisite alignment, current-page matching, and account initials.
+- `dashboard-navigation.test.ts`: unit coverage for desktop/mobile navigation grouping, permission filtering, More-menu contents, lunch/location prerequisite alignment, current-page matching, and account initials.
 - `demand-window-contract.test.ts`: exact timezone serialization, overnight handling, fallback ambiguity rejection for shift and demand windows, and no-arbitrary-time validation.
-- `frontend-accessibility-contract.test.ts`: source contracts for onboarding form/error semantics, mobile sign-out sizing, notification dialog focus management, settings tab ARIA wiring, pack-specific purchase names, admin user status icons, and encoding-safe admin separators.
+- `frontend-accessibility-contract.test.ts`: source contracts for onboarding form/error semantics, 44px mobile sign-out sizing, notification dialog focus management, settings tab ARIA wiring, pack-specific purchase names, admin user status icons, and encoding-safe admin separators.
 - `frontend-transport-contract.test.ts`: source contracts keeping public API callers on the bounded same-origin transport, direct fetches deadline-wrapped, root recovery states present, and sensitive proxy diagnostics omission-based.
 - `http-safety.test.ts`: request deadline plus declared and streamed response-body limit coverage.
 - `location-form.test.ts`: browser-resolved IANA default validation, timezone option de-duplication, persisted edit-draft restoration, required-zone rejection, and explicit create/update request payload coverage.

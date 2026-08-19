@@ -2,8 +2,6 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
-import { CalendarDays, Clock3, MapPin, Plus, Users, UserPlus } from 'lucide-react';
-import { LunchLineupMark } from '@/components/branding/LunchLineupMark';
 import { fetchWithSession } from '@/lib/client-api';
 import { getWorkspaceCapabilities } from '@/lib/permissions';
 import { fetchAllBoundedPages, type BoundedPage } from '@/lib/bounded-pagination';
@@ -95,55 +93,15 @@ type FetchResult<T> =
     | { ok: true; data: T }
     | { ok: false };
 
-type ActionIcon = typeof CalendarDays | typeof LunchLineupMark;
-
-type QuickAction = {
+type ManagerTask = {
     label: string;
-    desc: string;
-    icon: ActionIcon;
+    detail: string;
     href: string;
-    tier: 'primary' | 'secondary';
+    priority: 'urgent' | 'routine';
 };
-
-const QUICK_ACTIONS: QuickAction[] = [
-    {
-        label: 'Build Weekly Schedule',
-        desc: 'Assign and optimize shifts in one workspace',
-        icon: CalendarDays,
-        href: '/dashboard/scheduling',
-        tier: 'primary' as const,
-    },
-    {
-        label: 'Generate Lunch Plan',
-        desc: 'Auto-stagger breaks with policy controls',
-        icon: LunchLineupMark,
-        href: '/dashboard/lunch-breaks',
-        tier: 'primary' as const,
-    },
-    {
-        label: 'Invite a Team Member',
-        desc: 'Add staff and assign roles instantly',
-        icon: UserPlus,
-        href: '/dashboard/staff',
-        tier: 'secondary' as const,
-    },
-    {
-        label: 'Add New Location',
-        desc: 'Extend scheduling to another storefront',
-        icon: Plus,
-        href: '/dashboard/locations',
-        tier: 'secondary' as const,
-    },
-];
 
 function formatCount(count: number, singular: string, plural?: string): string {
     return `${count} ${count === 1 ? singular : plural ?? `${singular}s`}`;
-}
-
-function firstName(name?: string | null): string {
-    const value = name?.trim();
-    if (!value) return 'team';
-    return value.split(/\s+/)[0] ?? 'team';
 }
 
 function formatScheduleLabel(schedule: ApiSchedule | null): string {
@@ -384,83 +342,6 @@ export function DashboardWorkspace() {
         void loadOverview();
     }, [loadOverview]);
 
-    const summaryCards = useMemo(() => {
-        const data = overview;
-        const staffUnavailable = !isLoading && (data?.staffCount == null || data.managerCount == null);
-        const coverageUnavailable = !isLoading && (data?.coveragePercent == null || data.openShiftCount == null);
-        const breaksUnavailable = !isLoading && (
-            data?.breakCompliancePercent == null
-            || data.lunchPlanCount == null
-            || data.lunchBreaksEnabled == null
-        );
-        const locationsUnavailable = !isLoading && (
-            data?.locationCount == null
-            || data.scheduleCount == null
-            || data.latestScheduleLabel == null
-        );
-
-        return [
-            {
-                label: 'Active staff',
-                value: isLoading ? '—' : staffUnavailable ? 'Unavailable' : String(data?.staffCount),
-                delta: isLoading
-                    ? 'Loading staff counts...'
-                    : staffUnavailable
-                        ? 'Staff totals could not be loaded.'
-                        : formatCount(data?.managerCount ?? 0, 'manager') + ' active',
-                tone: '#2f63ff',
-                bg: 'linear-gradient(145deg, #edf3ff, #f7f9ff)',
-                icon: Users,
-                unavailable: staffUnavailable,
-            },
-            {
-                label: "This week's coverage",
-                value: isLoading ? '—' : coverageUnavailable ? 'Unavailable' : `${data?.coveragePercent}%`,
-                delta: isLoading
-                    ? 'Loading shift coverage...'
-                    : coverageUnavailable
-                        ? 'Shift coverage could not be loaded.'
-                        : (data?.openShiftCount ?? 0) > 0
-                            ? `${formatCount(data?.openShiftCount ?? 0, 'open shift')} remaining`
-                            : 'All shifts are assigned',
-                tone: '#17b26a',
-                bg: 'linear-gradient(145deg, #e9fbf1, #f7fffb)',
-                icon: CalendarDays,
-                unavailable: coverageUnavailable,
-            },
-            {
-                label: 'Break compliance',
-                value: isLoading ? '—' : breaksUnavailable ? 'Unavailable' : `${data?.breakCompliancePercent}%`,
-                delta: isLoading
-                    ? 'Loading lunch data...'
-                    : breaksUnavailable
-                        ? 'Lunch coverage could not be loaded.'
-                        : data?.lunchBreaksEnabled
-                            ? `${formatCount(data.lunchPlanCount ?? 0, 'shift')} with lunch plans`
-                            : 'Lunch breaks require an active paid subscription and usage credits',
-                tone: '#f59e0b',
-                bg: 'linear-gradient(145deg, #fff6e7, #fffaf1)',
-                icon: Clock3,
-                unavailable: breaksUnavailable,
-            },
-            {
-                label: 'Locations online',
-                value: isLoading ? '—' : locationsUnavailable ? 'Unavailable' : String(data?.locationCount),
-                delta: isLoading
-                    ? 'Loading locations...'
-                    : locationsUnavailable
-                        ? 'Location or schedule data could not be loaded.'
-                        : (data?.scheduleCount ?? 0) > 0
-                            ? `${data?.latestScheduleLabel}`
-                            : 'No schedules created yet',
-                tone: '#22b8cf',
-                bg: 'linear-gradient(145deg, #e9fafe, #f6fdff)',
-                icon: MapPin,
-                unavailable: locationsUnavailable,
-            },
-        ];
-    }, [isLoading, overview]);
-
     const liveItems = useMemo(() => {
         const data = overview;
         if (!data || data.activityItems === null) {
@@ -487,471 +368,185 @@ export function DashboardWorkspace() {
         && overview.locationCount === 0
         && capabilities.canWriteLocations;
 
-    const heroActions = useMemo(() => {
-        const actions: Array<{ href: string; label: string; className: string }> = [];
+    const managerTasks = useMemo<ManagerTask[]>(() => {
+        const tasks: ManagerTask[] = [];
         if (needsFirstLocation) {
-            return [{
+            tasks.push({
                 href: '/dashboard/locations',
-                label: 'Add First Location',
-                className: 'btn btn-primary',
-            }];
+                label: 'Set up your first location',
+                detail: 'Add a location before building schedules for the team.',
+                priority: 'urgent',
+            });
         }
-        if (capabilities.canWriteShifts) {
-            actions.push({ href: '/dashboard/scheduling?focus=open', label: 'Assign Open Shifts', className: 'btn btn-primary' });
+
+        if (capabilities.canWriteShifts && (overview?.openShiftCount ?? 0) > 0) {
+            tasks.push({
+                href: '/dashboard/scheduling?focus=open',
+                label: `Assign ${formatCount(overview?.openShiftCount ?? 0, 'open shift')}`,
+                detail: 'Close coverage gaps before the next shift starts.',
+                priority: 'urgent',
+            });
         }
-        if (capabilities.canReadScheduling) {
-            actions.push({
+
+        if (capabilities.canReadScheduling && overview?.scheduleCount === 0) {
+            tasks.push({
                 href: '/dashboard/scheduling',
-                label: capabilities.canWriteShifts ? 'Build Weekly Schedule' : 'View Schedule',
-                className: capabilities.canWriteShifts ? 'btn btn-secondary' : 'btn btn-primary',
-            });
-        }
-        if (!capabilities.canReadScheduling && capabilities.canReadTimeCards) {
-            actions.push({ href: '/dashboard/time-cards', label: 'Open Time Cards', className: 'btn btn-primary' });
-        }
-        return actions;
-    }, [capabilities, needsFirstLocation]);
-
-    const quickActions = useMemo(() => {
-        const actions: typeof QUICK_ACTIONS = [];
-        if (needsFirstLocation) {
-            return [{
-                ...QUICK_ACTIONS[3],
-                label: 'Set Up First Location',
-                desc: 'Add the timezone and operating location for this workspace',
-                tier: 'primary',
-            }];
-        }
-        if (capabilities.canWriteShifts) {
-            actions.push(QUICK_ACTIONS[0]);
-        } else if (capabilities.canReadScheduling) {
-            actions.push({
-                ...QUICK_ACTIONS[0],
-                label: 'Review Weekly Schedule',
-                desc: 'View assigned shifts and open coverage',
-                tier: 'primary',
+                label: capabilities.canWriteSchedules ? "Build this week's schedule" : "Review this week's schedule",
+                detail: 'There is no schedule in the current planning window.',
+                priority: 'urgent',
             });
         }
 
-        if (capabilities.canWriteLunchBreaks) {
-            actions.push(QUICK_ACTIONS[1]);
-        } else if (capabilities.canReadLunchBreaks) {
-            actions.push({
-                ...QUICK_ACTIONS[1],
-                label: 'Review Lunch Plan',
-                desc: 'View generated meals, breaks, and coverage risk',
-                tier: 'primary',
-            });
-        }
-
-        if (capabilities.canWriteUsers) {
-            actions.push(QUICK_ACTIONS[2]);
-        } else if (capabilities.canReadUsers) {
-            actions.push({
-                ...QUICK_ACTIONS[2],
-                label: 'Staff Directory',
-                desc: 'Review team members and assigned roles',
-                tier: 'secondary',
-            });
-        }
-
-        if (capabilities.canWriteLocations) {
-            actions.push(QUICK_ACTIONS[3]);
-        } else if (capabilities.canReadLocations) {
-            actions.push({
-                ...QUICK_ACTIONS[3],
-                label: 'Locations',
-                desc: 'Review workspace locations',
-                tier: 'secondary',
+        if (capabilities.canReadLunchBreaks && overview?.lunchBreaksEnabled && overview.lunchPlanCount === 0) {
+            tasks.push({
+                href: '/dashboard/lunch-breaks',
+                label: capabilities.canWriteLunchBreaks ? "Plan this week's breaks" : "Review this week's breaks",
+                detail: 'No lunch plans are currently assigned to shifts.',
+                priority: 'urgent',
             });
         }
 
         if (capabilities.canReadTimeCards) {
-            actions.push({
-                label: capabilities.canWriteTimeCards ? 'Open Time Clock' : 'Review Time Cards',
-                desc: capabilities.canWriteTimeCards ? 'Clock in, clock out, and review history' : 'Review time card history',
-                icon: Clock3,
+            tasks.push({
                 href: '/dashboard/time-cards',
-                tier: 'secondary',
+                label: 'Review time cards',
+                detail: 'Check completed punches and resolve anything that needs attention.',
+                priority: 'routine',
             });
         }
 
-        return actions;
-    }, [capabilities, needsFirstLocation]);
+        if (capabilities.canReadPayroll) {
+            tasks.push({
+                href: '/dashboard/payroll',
+                label: 'Prepare payroll',
+                detail: 'Review approvals, lock the period, export, and confirm results.',
+                priority: 'routine',
+            });
+        }
+
+        if (tasks.length === 0 && capabilities.canReadScheduling) {
+            tasks.push({
+                href: '/dashboard/scheduling',
+                label: "Review this week's schedule",
+                detail: 'Coverage is ready for a final manager check.',
+                priority: 'routine',
+            });
+        }
+
+        return tasks;
+    }, [capabilities, needsFirstLocation, overview]);
+
+    const weekStatus = useMemo(() => [
+        capabilities.canReadScheduling ? {
+            href: '/dashboard/scheduling',
+            label: 'Schedule',
+            value: isLoading ? 'Loading…' : overview?.coveragePercent == null ? 'Unavailable' : `${overview.coveragePercent}% covered`,
+            detail: isLoading ? 'Checking shift coverage.' : overview?.openShiftCount == null ? 'Coverage could not be loaded.' : `${formatCount(overview.openShiftCount, 'open shift')} remaining`,
+        } : null,
+        capabilities.canReadLunchBreaks ? {
+            href: '/dashboard/lunch-breaks',
+            label: 'Breaks',
+            value: isLoading ? 'Loading…' : overview?.breakCompliancePercent == null ? 'Unavailable' : `${overview.breakCompliancePercent}% planned`,
+            detail: isLoading ? 'Checking lunch plans.' : overview?.lunchPlanCount == null ? 'Break plans could not be loaded.' : `${formatCount(overview.lunchPlanCount, 'shift')} with lunch plans`,
+        } : null,
+        capabilities.canReadUsers ? {
+            href: '/dashboard/staff',
+            label: 'Team',
+            value: isLoading ? 'Loading…' : overview?.staffCount == null ? 'Unavailable' : formatCount(overview.staffCount, 'person', 'people'),
+            detail: isLoading ? 'Checking team totals.' : overview?.managerCount == null ? 'Team totals could not be loaded.' : formatCount(overview.managerCount, 'manager'),
+        } : null,
+        capabilities.canReadLocations ? {
+            href: '/dashboard/locations',
+            label: 'Locations',
+            value: isLoading ? 'Loading…' : overview?.locationCount == null ? 'Unavailable' : formatCount(overview.locationCount, 'location'),
+            detail: isLoading ? 'Checking workspace locations.' : overview?.latestScheduleLabel ?? 'Schedule status could not be loaded.',
+        } : null,
+    ].filter((item): item is NonNullable<typeof item> => item !== null), [capabilities, isLoading, overview]);
 
     return (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem', maxWidth: 1420 }}>
+        <div className="manager-dashboard">
             {error ? (
-                <section aria-live="polite" style={{ padding: '0.95rem 1rem', border: '1px solid #ffd0da', background: '#fff8fa', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '0.75rem', flexWrap: 'wrap' }}>
-                    <div style={{ fontSize: '0.88rem', color: '#b8334d', fontWeight: 700 }}>
-                        {error}
-                    </div>
+                <section className="manager-dashboard-alert" aria-live="polite">
+                    <div>{error}</div>
                     <button type="button" className="btn btn-secondary" onClick={() => void loadOverview()} disabled={isLoading}>
                         {isLoading ? 'Retrying...' : 'Retry'}
                     </button>
                 </section>
             ) : null}
 
-            <section
-                className="surface-card animate-fade-up"
-                style={{
-                    padding: '1.6rem',
-                    background:
-                        'radial-gradient(35rem 18rem at 0% 0%, rgba(79,121,255,0.16), transparent 60%), radial-gradient(28rem 14rem at 100% 100%, rgba(34,184,207,0.14), transparent 60%), #ffffff',
-                }}
-            >
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: '1rem', flexWrap: 'wrap' }}>
-                    <div style={{ maxWidth: 720, display: 'grid', gap: '0.32rem' }}>
-                        <h1 className="workspace-title" style={{ marginBottom: '0.35rem' }}>
-                            {needsFirstLocation
-                                ? 'Complete workspace setup'
-                                : `Welcome back, ${firstName(overview?.profile?.name)}`}
-                        </h1>
-                        <p className="workspace-subtitle">
-                            {todayLabel} - {overview?.profile?.tenantName ?? 'Live dashboard'}
-                        </p>
-                        <p style={{ color: 'var(--text-primary)', fontSize: '0.95rem', fontWeight: 650 }}>
-                            {isLoading
-                                ? 'Loading live overview data...'
-                                : needsFirstLocation
-                                    ? 'Add the first location before creating schedules or inviting the wider team.'
-                                    : overview?.openShiftCount == null
-                                        ? 'Shift coverage is unavailable. Retry the affected dashboard widgets.'
-                                        : `${formatCount(overview.openShiftCount, 'open shift')} need assignment. ${overview.lunchBreaksEnabled === null ? 'Lunch feature access is unavailable.' : overview.lunchBreaksEnabled ? 'Lunch coverage is available.' : 'Lunch coverage requires an active paid subscription and usage credits.'}`}
-                        </p>
-                    </div>
+            <header className="manager-dashboard-header">
+                <div>
+                    <div className="workspace-kicker">{overview?.profile?.tenantName ?? 'Manager workspace'}</div>
+                    <h1 className="workspace-title">Manager dashboard</h1>
+                    <p className="workspace-subtitle">{todayLabel}</p>
+                </div>
+            </header>
 
-                    <div style={{ display: 'flex', gap: '0.6rem', flexWrap: 'wrap' }}>
-                        {heroActions.map((action) => (
-                            <Link key={`${action.href}-${action.label}`} href={action.href} className={action.className}>
-                                {action.label}
+            <section className="surface-card manager-dashboard-section" aria-labelledby="needs-attention-title">
+                <div className="manager-dashboard-section-heading">
+                    <div>
+                        <div className="workspace-kicker">Your next steps</div>
+                        <h2 id="needs-attention-title">Needs attention</h2>
+                    </div>
+                    <span className="manager-dashboard-count">{managerTasks.length}</span>
+                </div>
+                {isLoading ? <p role="status" className="manager-dashboard-muted">Loading manager tasks…</p> : null}
+                {!isLoading && managerTasks.length === 0 ? <p className="manager-dashboard-muted">Nothing needs action right now.</p> : null}
+                {!isLoading && managerTasks.length > 0 ? (
+                    <div className="manager-task-list">
+                        {managerTasks.map((task) => (
+                            <Link key={`${task.href}-${task.label}`} href={task.href} className={`manager-task-link manager-task-${task.priority}`}>
+                                <span><strong>{task.label}</strong><small>{task.detail}</small></span>
+                                <span aria-hidden="true">→</span>
                             </Link>
                         ))}
-                    </div>
-                </div>
-            </section>
-
-            <section>
-                <article
-                    className="surface-card animate-slide-up"
-                    style={{
-                        padding: '1rem 1.1rem',
-                        border: '1px solid #ffd0da',
-                        background: 'linear-gradient(145deg, #fff1f4, #fff8fa)',
-                    }}
-                >
-                    <div style={{ display: 'flex', justifyContent: 'space-between', gap: '0.75rem', flexWrap: 'wrap', alignItems: 'center' }}>
-                        <div style={{ display: 'grid', gap: '0.2rem' }}>
-                            <h2 style={{ fontSize: '1rem', fontWeight: 800, color: 'var(--text-primary)' }}>Open shift coverage</h2>
-                            <p style={{ fontSize: '0.88rem', color: '#b8324a', fontWeight: 700 }}>
-                                {isLoading
-                                    ? 'Loading open shift data...'
-                                    : overview?.openShiftCount == null
-                                        ? 'Open shift data is unavailable.'
-                                        : `${formatCount(overview.openShiftCount, 'shift')} need assignment before the next planning cycle`}
-                            </p>
-                            <p style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>
-                                {isLoading
-                                    ? 'Loading schedule details...'
-                                    : overview?.coveragePercent == null
-                                        ? 'Coverage data is unavailable.'
-                                        : `${overview.coveragePercent}% staffed across the current shift set`}
-                            </p>
-                        </div>
-                        {!isLoading && overview?.openShiftCount == null ? (
-                            <button type="button" className="btn btn-secondary" onClick={() => void loadOverview()}>
-                                Retry
-                            </button>
-                        ) : capabilities.canReadScheduling ? (
-                            <div style={{ display: 'flex', gap: '0.55rem', flexWrap: 'wrap' }}>
-                                {capabilities.canWriteShifts ? (
-                                    <Link href="/dashboard/scheduling?focus=open" className="btn btn-primary">
-                                        Assign now
-                                    </Link>
-                                ) : null}
-                                <Link href="/dashboard/scheduling" className={capabilities.canWriteShifts ? 'btn btn-secondary' : 'btn btn-primary'}>
-                                    View schedule
-                                </Link>
-                            </div>
-                        ) : null}
-                    </div>
-                </article>
-            </section>
-
-            <section
-                style={{
-                    display: 'grid',
-                    gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))',
-                    gap: '0.9rem',
-                }}
-            >
-                {summaryCards.map((card) => {
-                    const Icon = card.icon;
-                    return (
-                        <article key={card.label} className="surface-card animate-slide-up" style={{ padding: '1rem', background: card.bg }}>
-                            <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '0.55rem' }}>
-                                <span style={{ color: 'var(--text-secondary)', fontSize: '0.82rem', fontWeight: 600 }}>{card.label}</span>
-                                <span
-                                    style={{
-                                        width: 34,
-                                        height: 34,
-                                        borderRadius: 12,
-                                        display: 'grid',
-                                        placeItems: 'center',
-                                        color: card.tone,
-                                        background: '#ffffff',
-                                        border: '1px solid rgba(0,0,0,0.05)',
-                                    }}
-                                >
-                                    <Icon size={16} />
-                                </span>
-                            </div>
-                            <div style={{ fontSize: '1.85rem', fontWeight: 800, letterSpacing: 0, color: 'var(--text-primary)' }}>
-                                {card.value}
-                            </div>
-                            <div style={{ fontSize: '0.78rem', color: card.tone, fontWeight: 700 }}>{card.delta}</div>
-                            {card.unavailable ? (
-                                <button type="button" className="btn btn-secondary" onClick={() => void loadOverview()} style={{ marginTop: '0.65rem' }}>
-                                    Retry
-                                </button>
-                            ) : null}
-                        </article>
-                    );
-                })}
-            </section>
-
-            <section>
-                <article
-                    className="surface-card"
-                    style={{
-                        padding: '1rem 1.1rem',
-                        background:
-                            'radial-gradient(22rem 11rem at 0% 0%, rgba(106, 199, 154, 0.14), transparent 70%), radial-gradient(20rem 10rem at 100% 100%, rgba(34, 184, 207, 0.1), transparent 70%), #ffffff',
-                    }}
-                >
-                    <div style={{ display: 'flex', justifyContent: 'space-between', gap: '0.75rem', flexWrap: 'wrap', alignItems: 'center' }}>
-                        <div style={{ display: 'grid', gap: '0.2rem' }}>
-                            <h2 style={{ fontSize: '1rem', fontWeight: 800, color: 'var(--text-primary)' }}>Today&apos;s break status</h2>
-                            <div style={{ display: 'grid', gap: '0.15rem', fontSize: '0.82rem', color: 'var(--text-secondary)', fontWeight: 600 }}>
-                                <p>{isLoading ? 'Loading break plans...' : overview?.lunchPlanCount == null ? 'Break plan data is unavailable.' : `${formatCount(overview.lunchPlanCount, 'shift')} have lunch plans`}</p>
-                                <p>{isLoading ? 'Loading schedule counts...' : overview?.publishedScheduleCount == null ? 'Schedule data is unavailable.' : `${formatCount(overview.publishedScheduleCount, 'published schedule')}`}</p>
-                                <p style={{ color: '#b55f00' }}>
-                                    {isLoading
-                                        ? 'Loading feature access...'
-                                        : overview?.lunchBreaksEnabled == null || overview.breakCompliancePercent == null
-                                            ? 'Lunch compliance is unavailable.'
-                                            : overview.lunchBreaksEnabled
-                                                ? `${overview.breakCompliancePercent}% lunch compliance`
-                                                : 'Lunch breaks require an active paid subscription and usage credits'}
-                                </p>
-                                <p style={{ color: '#148f56' }}>
-                                    {isLoading
-                                        ? 'Loading coverage status...'
-                                        : overview?.coveragePercent == null
-                                            ? 'Coverage status is unavailable.'
-                                            : `${overview.coveragePercent}% coverage across current shifts`}
-                                </p>
-                            </div>
-                        </div>
-                        {!isLoading && (
-                            overview?.lunchPlanCount == null
-                            || overview.publishedScheduleCount == null
-                            || overview.lunchBreaksEnabled == null
-                            || overview.coveragePercent == null
-                        ) ? (
-                            <button type="button" className="btn btn-secondary" onClick={() => void loadOverview()}>
-                                Retry
-                            </button>
-                        ) : capabilities.canReadLunchBreaks ? (
-                            <Link href="/dashboard/lunch-breaks" className="btn btn-secondary">
-                                {capabilities.canWriteLunchBreaks ? 'Open Lunch Plan' : 'Review Lunch Plan'}
-                            </Link>
-                        ) : null}
-                    </div>
-                </article>
-            </section>
-
-            <section>
-                <article className="surface-card" style={{ padding: '1.2rem' }}>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem' }}>
-                        <h2 style={{ fontSize: '1rem', fontWeight: 750, color: 'var(--text-primary)' }}>Coverage this week</h2>
-                        {capabilities.canReadScheduling ? (
-                            <Link href="/dashboard/scheduling" className="text-sm text-brand" style={{ fontWeight: 700 }}>
-                                Open scheduler
-                            </Link>
-                        ) : null}
-                    </div>
-
-                    {isLoading ? (
-                        <p role="status" style={{ color: 'var(--text-secondary)', fontSize: '0.84rem' }}>Loading weekly coverage...</p>
-                    ) : overview?.coverageDays == null ? (
-                        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '0.75rem', flexWrap: 'wrap' }}>
-                            <p style={{ color: 'var(--text-secondary)', fontSize: '0.84rem' }}>Weekly coverage is unavailable.</p>
-                            <button type="button" className="btn btn-secondary" onClick={() => void loadOverview()}>Retry</button>
-                        </div>
-                    ) : (
-                    <div style={{ display: 'grid', gap: '0.52rem' }}>
-                        {overview.coverageDays.map((d) => {
-                            const tone =
-                                d.tone === 'healthy'
-                                    ? { chip: '#e9fbf1', dot: '#17b26a', text: '#148f56' }
-                                    : d.tone === 'risk'
-                                        ? { chip: '#fff6e7', dot: '#f59e0b', text: '#9a6400' }
-                                        : { chip: '#ffeef2', dot: '#e74867', text: '#b8334d' };
-
-                            return (
-                                <div key={d.day} className="surface-muted" style={{ padding: '0.58rem 0.68rem', display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '0.75rem' }}>
-                                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', minWidth: 0 }}>
-                                        <span style={{ fontSize: '0.8rem', fontWeight: 800, color: 'var(--text-primary)', minWidth: 32 }}>{d.day}</span>
-                                        <span style={{ fontSize: '0.82rem', color: 'var(--text-secondary)', fontWeight: 600, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                                            {d.status}
-                                        </span>
-                                    </div>
-                                    <span
-                                        style={{
-                                            background: tone.chip,
-                                            color: tone.text,
-                                            borderRadius: 999,
-                                            padding: '0.2rem 0.48rem',
-                                            fontSize: '0.68rem',
-                                            fontWeight: 800,
-                                            display: 'inline-flex',
-                                            alignItems: 'center',
-                                            gap: '0.28rem',
-                                            flexShrink: 0,
-                                        }}
-                                    >
-                                        <span style={{ width: 7, height: 7, borderRadius: 999, background: tone.dot, display: 'inline-block' }} />
-                                        {d.tone === 'healthy' ? 'Healthy' : d.tone === 'risk' ? 'At risk' : 'Needs attention'}
-                                    </span>
-                                </div>
-                            );
-                        })}
-                    </div>
-                    )}
-                </article>
-            </section>
-
-            <section style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '0.85rem' }}>
-                <div style={{ gridColumn: '1 / -1', display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: '0.85rem' }}>
-                    {quickActions.filter((action) => action.tier === 'primary').map((action) => {
-                        const Icon = action.icon;
-                        return (
-                        <Link
-                            key={action.label}
-                            href={action.href}
-                            className="surface-card"
-                            style={{
-                                padding: '1.15rem',
-                                display: 'flex',
-                                gap: '0.85rem',
-                                background:
-                                    'radial-gradient(16rem 10rem at 0% 0%, rgba(79,121,255,0.12), transparent 70%), #ffffff',
-                            }}
-                        >
-                            <span
-                                style={{
-                                    width: 48,
-                                    height: 48,
-                                    borderRadius: 13,
-                                    border: '1px solid #cfe0ff',
-                                    background: '#edf3ff',
-                                    display: 'grid',
-                                    placeItems: 'center',
-                                    fontSize: '1.2rem',
-                                    flexShrink: 0,
-                                }}
-                            >
-                                <Icon size={20} />
-                            </span>
-                            <div>
-                                <div style={{ fontSize: '0.98rem', fontWeight: 750, color: 'var(--text-primary)' }}>{action.label}</div>
-                                <div style={{ fontSize: '0.82rem', color: 'var(--text-secondary)' }}>{action.desc}</div>
-                            </div>
-                        </Link>
-                        );
-                    })}
-                </div>
-
-                <div style={{ gridColumn: '1 / -1', display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '0.75rem' }}>
-                    {quickActions.filter((action) => action.tier === 'secondary').map((action) => {
-                        const Icon = action.icon;
-                        return (
-                        <Link key={action.label} href={action.href} className="surface-card" style={{ padding: '0.85rem', display: 'flex', gap: '0.68rem' }}>
-                            <span
-                                style={{
-                                    width: 38,
-                                    height: 38,
-                                    borderRadius: 11,
-                                    border: '1px solid var(--border)',
-                                    background: 'var(--bg-soft)',
-                                    display: 'grid',
-                                    placeItems: 'center',
-                                    fontSize: '1rem',
-                                    flexShrink: 0,
-                                }}
-                            >
-                                <Icon size={20} />
-                            </span>
-                            <div>
-                                <div style={{ fontSize: '0.86rem', fontWeight: 700, color: 'var(--text-primary)' }}>{action.label}</div>
-                                <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>{action.desc}</div>
-                            </div>
-                        </Link>
-                        );
-                    })}
-                </div>
-                {quickActions.length === 0 ? (
-                    <div className="surface-card" style={{ gridColumn: '1 / -1', padding: '1rem', color: 'var(--text-secondary)', fontSize: '0.84rem' }}>
-                        No additional workspace routes are available for this role.
                     </div>
                 ) : null}
             </section>
 
-            <section>
-                <article className="surface-card" style={{ padding: '1.2rem' }}>
-                    <h2 style={{ fontSize: '1rem', fontWeight: 750, color: 'var(--text-primary)', marginBottom: '1rem' }}>
-                        Recent changes
-                    </h2>
-                    {isLoading ? (
-                        <p role="status" style={{ color: 'var(--text-secondary)', fontSize: '0.84rem' }}>Loading recent changes...</p>
-                    ) : overview?.activityItems == null ? (
-                        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '0.75rem', flexWrap: 'wrap' }}>
-                            <p style={{ color: 'var(--text-secondary)', fontSize: '0.84rem' }}>Recent changes are unavailable.</p>
-                            <button type="button" className="btn btn-secondary" onClick={() => void loadOverview()}>Retry</button>
-                        </div>
-                    ) : (
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: '0.85rem' }}>
-                        {liveItems.map((item) => (
-                            <div key={`${item.category}-${item.title}`} style={{ display: 'flex', gap: '0.6rem', alignItems: 'flex-start' }}>
-                                <span className="status-dot" style={{ marginTop: 7, background: item.tone }} />
-                                <div>
-                                    <div style={{ display: 'flex', gap: '0.42rem', alignItems: 'center', flexWrap: 'wrap', marginBottom: 2 }}>
-                                        <span
-                                            style={{
-                                                borderRadius: 999,
-                                                padding: '0.08rem 0.4rem',
-                                                fontSize: '0.65rem',
-                                                fontWeight: 700,
-                                                color: item.tone,
-                                                background: 'rgba(47, 99, 255, 0.09)',
-                                                border: '1px solid var(--border)',
-                                            }}
-                                        >
-                                            {item.category}
-                                        </span>
-                                        <p style={{ fontSize: '0.81rem', color: 'var(--text-primary)', fontWeight: 700, lineHeight: 1.35 }}>
-                                            {item.title}
-                                        </p>
-                                    </div>
-                                    <p style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', lineHeight: 1.4 }}>{item.detail}</p>
-                                    <span style={{ fontSize: '0.74rem', color: 'var(--text-muted)' }}>{item.time}</span>
-                                </div>
-                            </div>
-                        ))}
+            <section className="surface-card manager-dashboard-section" aria-labelledby="this-week-title">
+                <div className="manager-dashboard-section-heading">
+                    <div>
+                        <div className="workspace-kicker">Current status</div>
+                        <h2 id="this-week-title">This week</h2>
                     </div>
-                    )}
-                </article>
+                    {error ? <button type="button" className="btn btn-secondary btn-sm" onClick={() => void loadOverview()}>Retry unavailable data</button> : null}
+                </div>
+                <div className="manager-week-grid">
+                    {weekStatus.map((item) => (
+                        <Link key={item.label} href={item.href} className="manager-week-link">
+                            <span>{item.label}</span>
+                            <strong>{item.value}</strong>
+                            <small>{item.detail}</small>
+                        </Link>
+                    ))}
+                </div>
+
+                {capabilities.canReadScheduling ? (
+                    <div className="manager-coverage-strip" aria-label="Daily shift coverage">
+                        {isLoading ? <span>Loading daily coverage…</span> : overview?.coverageDays?.map((day) => (
+                            <span key={day.day} className={`manager-coverage-day manager-coverage-${day.tone}`}>
+                                <strong>{day.day}</strong><small>{day.status}</small>
+                            </span>
+                        )) ?? <span>Daily coverage is unavailable.</span>}
+                    </div>
+                ) : null}
+
+                <div className="manager-recent">
+                    <h3>Recent changes</h3>
+                    {isLoading ? <p role="status" className="manager-dashboard-muted">Loading recent changes…</p> : null}
+                    {!isLoading && overview?.activityItems == null ? <p className="manager-dashboard-muted">Recent changes are unavailable.</p> : null}
+                    {!isLoading && overview?.activityItems !== null ? (
+                        <ul>
+                            {liveItems.slice(0, 3).map((item) => (
+                                <li key={`${item.category}-${item.title}`}>
+                                    <span className="status-dot" style={{ background: item.tone }} />
+                                    <span><strong>{item.title}</strong><small>{item.detail} · {item.time}</small></span>
+                                </li>
+                            ))}
+                        </ul>
+                    ) : null}
+                </div>
             </section>
         </div>
     );
