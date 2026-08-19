@@ -103,6 +103,20 @@ describe('bootstrap security policy', () => {
             .toThrow(/AUTH_DEBUG/);
     });
 
+    it('allows the beta demo MFA exemption only on the exact beta deployment', () => {
+        expect(() => validateProductionEnvironment(productionEnv({
+            BETA_DEMO_MFA_BYPASS_ENABLED: 'true',
+        }))).toThrow(/BETA_DEMO_MFA_BYPASS_ENABLED/);
+
+        expect(() => validateProductionEnvironment(productionEnv({
+            DOMAIN: 'beta.lunchlineup.com',
+            APP_ORIGIN: 'https://beta.lunchlineup.com',
+            ALLOWED_ORIGINS: 'https://beta.lunchlineup.com',
+            MFA_SECRET_ENCRYPTION_KEY_CURRENT: Buffer.alloc(32, 0x73).toString('base64'),
+            BETA_DEMO_MFA_BYPASS_ENABLED: 'true',
+        }))).not.toThrow();
+    });
+
     it('accepts current-only MFA encryption in production', () => {
         expect(() => validateProductionEnvironment(productionEnv({
             MFA_SECRET_ENCRYPTION_KEY_CURRENT: Buffer.alloc(32, 0x11).toString('base64'),

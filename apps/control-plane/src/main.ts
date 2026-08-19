@@ -309,6 +309,7 @@ function parseExpectedServices(value: string | undefined): string[] {
         'proxy',
         'web',
         'api',
+        'api-v2',
         'worker',
         'engine',
         'postgres',

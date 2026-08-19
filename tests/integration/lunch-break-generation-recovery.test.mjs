@@ -47,6 +47,7 @@ test('real PostgreSQL reclaims only recoverable FAILED generation intents with o
           planTier: 'GROWTH',
           status: 'PAST_DUE',
           stripeSubscriptionId: `sub_generation_recovery_${runId}`,
+          stripeSubscriptionCurrentPeriodEnd: new Date('2099-01-01T00:00:00.000Z'),
           usageCredits: 5,
         },
       });

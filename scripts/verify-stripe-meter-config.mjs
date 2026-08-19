@@ -112,12 +112,12 @@ export async function verifyStripeMeterConfiguration({
   const expectedMeterId = requireString(meterId, 'STRIPE_METER_ID');
   const expectedEventName = requireString(eventName, 'STRIPE_METER_EVENT_NAME');
   const expectedWebhookEndpointId = requireString(webhookEndpointId, 'STRIPE_WEBHOOK_ENDPOINT_ID');
-  const expectedWebhookUrl = `${requireString(appOrigin, 'APP_ORIGIN')}/api/v1/billing/webhook`;
+  const expectedWebhookUrl = `${requireString(appOrigin, 'APP_ORIGIN')}/api/webhooks/stripe`;
   const expectedMeterErrorDestinationId = requireString(
     meterErrorEventDestinationId,
     'STRIPE_METER_ERROR_EVENT_DESTINATION_ID',
   );
-  const expectedMeterErrorWebhookUrl = `${requireString(appOrigin, 'APP_ORIGIN')}/api/v1/billing/meter-errors/webhook`;
+  const expectedMeterErrorWebhookUrl = `${requireString(appOrigin, 'APP_ORIGIN')}/api/webhooks/stripe/meter-errors`;
   const expectedPriceIds = [...new Set((priceIds ?? []).map((value) => requireString(value, 'Stripe price ID')))].sort();
   const expectedSourceSha = requireString(sourceSha, 'sourceSha');
 

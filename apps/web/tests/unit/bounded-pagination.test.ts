@@ -55,17 +55,22 @@ describe('bounded pagination client', () => {
     )).rejects.toThrow('continuation limit');
   });
 
-  it('wires bounded continuation into every scheduling roster and lunch-break list consumer', () => {
-    const rosterConsumers = [
-      '../../app/dashboard/scheduling/page.tsx',
-      '../../app/dashboard/lunch-breaks/page.tsx',
-    ];
+  it('uses the bounded v2 board for scheduling while retained list screens keep bounded continuation', () => {
+    const schedulingPage = readFileSync(
+      new URL('../../app/dashboard/scheduling/page.tsx', import.meta.url),
+      'utf8',
+    );
+    expect(schedulingPage).toContain('apiV2.getScheduleBoard(');
+    expect(schedulingPage).not.toContain('fetchAllBoundedPages(');
+    expect(schedulingPage).not.toContain("'/shifts/staff-roster?limit=200'");
+    expect(schedulingPage).not.toContain('/api/v1');
 
-    for (const relativePath of rosterConsumers) {
-      const source = readFileSync(new URL(relativePath, import.meta.url), 'utf8');
-      expect(source).toContain('fetchAllBoundedPages(');
-      expect(source).toContain("'/shifts/staff-roster?limit=200'");
-    }
+    const lunchPage = readFileSync(
+      new URL('../../app/dashboard/lunch-breaks/page.tsx', import.meta.url),
+      'utf8',
+    );
+    expect(lunchPage).toContain('fetchAllBoundedPages(');
+    expect(lunchPage).toContain("'/shifts/staff-roster?limit=200'");
 
     const timeCardApi = readFileSync(
       new URL('../../app/dashboard/time-cards/time-card-api.ts', import.meta.url),
@@ -75,10 +80,6 @@ describe('bounded pagination client', () => {
     expect(timeCardApi).toContain('const LOCATION_PAGE_SIZE = 200;');
     expect(timeCardApi).toContain("'/shifts/staff-roster?limit=' + LOCATION_PAGE_SIZE");
 
-    const lunchPage = readFileSync(
-      new URL('../../app/dashboard/lunch-breaks/page.tsx', import.meta.url),
-      'utf8',
-    );
     expect(lunchPage).toContain("query.set('limit', '200')");
     expect(lunchPage).toContain('const pageRows = await fetchAllBoundedPages(');
 

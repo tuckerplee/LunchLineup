@@ -25,7 +25,7 @@ const publicBuildConfigKeys = [
   'NEXT_PUBLIC_APP_ENV',
 ];
 const publicBuildConfigValues = {
-  NEXT_PUBLIC_API_URL: '/api/v1',
+  NEXT_PUBLIC_API_URL: '/api/v2',
   NEXT_PUBLIC_OIDC_ENABLED: 'false',
   NEXT_PUBLIC_SIGNUP_MODE: 'closed_beta',
   NEXT_PUBLIC_TURNSTILE_SITE_KEY: '',
@@ -41,6 +41,28 @@ test('Compose requires a non-empty APP_ORIGIN for API startup', () => {
   const api = serviceBlock(read('docker-compose.yml'), 'api');
   assert.match(api, /APP_ORIGIN=\$\{APP_ORIGIN:\?Set public HTTPS APP_ORIGIN in \.env\}/);
   assert.doesNotMatch(api, /APP_ORIGIN=\$\{APP_ORIGIN:-\}/);
+});
+
+test('Compose trusts only local proxy networks across the API v2 compatibility hop', () => {
+  const compose = read('docker-compose.yml');
+  for (const service of ['api', 'api-v2']) {
+    assert.ok(serviceBlock(compose, service).includes(
+      '- TRUST_PROXY=${TRUST_PROXY:-loopback,linklocal,uniquelocal}',
+    ));
+  }
+  assert.match(read('.env.example'), /^TRUST_PROXY=loopback,linklocal,uniquelocal$/m);
+});
+
+test('Compose gives native API v2 session validation its direct security dependencies', () => {
+  const apiV2 = serviceBlock(read('docker-compose.yml'), 'api-v2');
+
+  assert.match(apiV2, /REDIS_URL=\$\{REDIS_URL:-redis:\/\/redis:6379\}/);
+  assert.match(apiV2, /JWT_SECRET=\$\{JWT_SECRET:\?Set JWT_SECRET in \.env\}/);
+  assert.match(apiV2, /COOKIE_SECURE=\$\{COOKIE_SECURE:-true\}/);
+  assert.match(apiV2, /LEGACY_API_BASE_URL=http:\/\/api:3000\/v1/);
+  assert.match(apiV2, /AUTH_STATE_TIMEOUT_MS=\$\{AUTH_STATE_TIMEOUT_MS:-5000\}/);
+  assert.match(apiV2, /redis:[\s\S]*condition: service_healthy/);
+  assert.doesNotMatch(apiV2, /LEGACY_IDENTITY_URL|IDENTITY_TIMEOUT_MS/);
 });
 
 test('Compose fail-closes staff invitation delivery and passes the canonical origin to the worker', () => {
@@ -252,6 +274,7 @@ function publicBuildRuntimeEnv(overrides = {}) {
 function sampleReleaseManifest(sourceSha = '0123456789abcdef0123456789abcdef01234567') {
   const services = {
     api: 'Dockerfile.api',
+    'api-v2': 'Dockerfile.api-v2',
     web: 'Dockerfile.web',
     engine: 'Dockerfile.engine',
     worker: 'Dockerfile.worker',
@@ -391,7 +414,7 @@ test('RabbitMQ persists broker state on a declared project-scoped named volume',
 test('Compose build services are tagged for release-image smoke checks', () => {
   const compose = read('docker-compose.yml');
 
-  for (const service of ['api', 'web', 'engine', 'worker', 'migrate', 'control', 'backup']) {
+  for (const service of ['api', 'api-v2', 'web', 'engine', 'worker', 'migrate', 'control', 'backup']) {
     assert.match(
       serviceBlock(compose, service),
       new RegExp(`image: "\\$\\{IMAGE_PREFIX:-lunchlineup\\}/${service}:\\$\\{IMAGE_TAG:-local\\}"`),
@@ -445,9 +468,36 @@ test('web image bakes explicit public config at build time', () => {
   }
 });
 
+test('web image bakes and runs with the sole internal v2 API proxy target', () => {
+  const dockerfile = read('infrastructure/docker/Dockerfile.web');
+  const compose = read('docker-compose.yml');
+  const webBlock = serviceBlock(compose, 'web');
+
+  for (const [key, defaultValue] of [
+    ['INTERNAL_API_V2_URL', 'http://api-v2:3002/v2'],
+  ]) {
+    assert.ok(
+      dockerfile.includes(`ARG ${key}=${defaultValue}`),
+      `Dockerfile.web must declare ${key} with the Compose service target`,
+    );
+    assert.ok(dockerfile.includes(`${key}=$${key}`), `Dockerfile.web must export ${key}`);
+    assert.ok(
+      webBlock.includes(`${key}: \${${key}:-${defaultValue}}`),
+      `Compose web build args must pass ${key}`,
+    );
+    assert.ok(
+      webBlock.includes(`- ${key}=\${${key}:-${defaultValue}}`),
+      `Compose web runtime env must pass ${key}`,
+    );
+  }
+  assert.doesNotMatch(dockerfile, /INTERNAL_API_URL/);
+  assert.doesNotMatch(webBlock, /INTERNAL_API_URL/);
+});
+
 test('Dockerfile base images are digest-pinned', () => {
   for (const dockerfile of [
     'Dockerfile.api',
+    'Dockerfile.api-v2',
     'Dockerfile.backup',
     'Dockerfile.control',
     'Dockerfile.engine',
@@ -775,7 +825,7 @@ test('only the migration container imports the shared service env file', () => {
   const smokeWriter = read('scripts/write-smoke-env.mjs');
 
   assert.match(serviceBlock(compose, 'migrate'), /env_file: \$\{COMPOSE_SERVICE_ENV_FILE:-\.env\}/);
-  for (const service of ['api', 'webhook-replay', 'worker', 'backup']) {
+  for (const service of ['api', 'api-v2', 'webhook-replay', 'worker', 'backup']) {
     const block = serviceBlock(compose, service);
     assert.doesNotMatch(block, /env_file:/);
     assert.doesNotMatch(block, /MIGRATION_DATABASE_URL/);
@@ -846,12 +896,17 @@ test('proxy config is TLS-ready, route-specific, size-limited, and sets browser 
   assert.match(compose, /CADDY_SITE_ADDRESSES/);
   assert.doesNotMatch(compose, /NEXT_PUBLIC_WS_URL|CADDY_WEBSOCKET_SOURCE/);
   assert.match(serviceBlock(compose, 'api'), /http:\/\/127\.0\.0\.1:3000\/live/);
-  assert.match(serviceBlock(compose, 'proxy'), /DEPLOY_RELEASE_SHA: "\$\{IMAGE_TAG:-local\}"/);
+  assert.match(serviceBlock(compose, 'api-v2'), /http:\/\/127\.0\.0\.1:3002\/v2\/live/);
+  assert.match(serviceBlock(compose, 'proxy'), /DEPLOY_RELEASE_SHA: "\$\{DEPLOY_RELEASE_SHA:-local\}"/);
   assert.match(caddy, /\{\$CADDY_SITE_ADDRESSES:/);
   assert.match(caddy, /X-LunchLineup-Release "\{\$DEPLOY_RELEASE_SHA:local\}"/);
-  assert.match(caddy, /handle \/health \{[\s\S]*reverse_proxy api:3000[\s\S]*\}/);
-  assert.match(caddy, /handle \/api\/health \{[\s\S]*uri strip_prefix \/api[\s\S]*reverse_proxy api:3000[\s\S]*\}/);
-  assert.match(caddy, /handle \/api\/v1\/\* \{[\s\S]*uri strip_prefix \/api[\s\S]*reverse_proxy api:3000[\s\S]*\}/);
+  assert.match(caddy, /handle \/health \{[\s\S]*rewrite \* \/v2\/ready[\s\S]*reverse_proxy api-v2:3002[\s\S]*\}/);
+  assert.match(caddy, /handle \/api\/health \{[\s\S]*rewrite \* \/v2\/ready[\s\S]*reverse_proxy api-v2:3002[\s\S]*\}/);
+  assert.match(caddy, /handle \/api\/v2\/\* \{[\s\S]*uri strip_prefix \/api[\s\S]*reverse_proxy api-v2:3002[\s\S]*\}/);
+  assert.match(caddy, /@stripeWebhook \{[\s\S]*method POST[\s\S]*path \/api\/webhooks\/stripe[\s\S]*\}[\s\S]*handle @stripeWebhook \{[\s\S]*uri replace \/api\/webhooks\/stripe \/v1\/billing\/webhook[\s\S]*reverse_proxy api:3000[\s\S]*\}/);
+  assert.match(caddy, /@stripeMeterErrorsWebhook \{[\s\S]*path \/api\/webhooks\/stripe\/meter-errors[\s\S]*\}[\s\S]*handle @stripeMeterErrorsWebhook \{[\s\S]*uri replace \/api\/webhooks\/stripe\/meter-errors \/v1\/billing\/meter-errors\/webhook[\s\S]*reverse_proxy api:3000[\s\S]*\}/);
+  assert.match(caddy, /@resendDeliveryWebhook \{[\s\S]*path \/api\/webhooks\/resend\/delivery-events[\s\S]*\}[\s\S]*handle @resendDeliveryWebhook \{[\s\S]*uri replace \/api\/webhooks\/resend\/delivery-events \/v1\/email-delivery\/provider-events[\s\S]*reverse_proxy api:3000[\s\S]*\}/);
+  assert.match(caddy, /handle \/api\/v1\/\* \{[\s\S]*respond "API version v1 has been retired\." 410[\s\S]*\}/);
   assert.match(caddy, /@betaWeb \{[\s\S]*host beta\.lunchlineup\.com[\s\S]*not path \/api\/\* \/health[\s\S]*\}/);
   assert.match(caddy, /header @betaWeb Cache-Control "private, no-store, no-transform"/);
   assert.match(caddy, /handle \{[\s\S]*reverse_proxy web:3000[\s\S]*\}/);
@@ -867,7 +922,7 @@ test('proxy config is TLS-ready, route-specific, size-limited, and sets browser 
   assert.match(caddy, /Permissions-Policy/);
   assert.match(caddyTemplate, /\{\$CADDY_SITE_ADDRESSES:/);
   assert.match(caddyTemplate, /X-LunchLineup-Release "\{\$DEPLOY_RELEASE_SHA:local\}"/);
-  assert.match(caddyTemplate, /handle \/api\/v1\/\* \{[\s\S]*uri strip_prefix \/api[\s\S]*reverse_proxy api:3000[\s\S]*\}/);
+  assert.match(caddyTemplate, /handle \/api\/v1\/\* \{[\s\S]*respond "API version v1 has been retired\." 410[\s\S]*\}/);
   assert.match(caddyTemplate, /@betaWeb \{[\s\S]*host beta\.lunchlineup\.com[\s\S]*not path \/api\/\* \/health[\s\S]*\}/);
   assert.match(caddyTemplate, /header @betaWeb Cache-Control "private, no-store, no-transform"/);
   assert.match(caddyTemplate, /request_body[\s\S]*max_size 10MB/);
@@ -1736,7 +1791,7 @@ test('smoke environment generator writes the requested env and metrics token fil
       'PASSWORD_RESET_EMAIL_OUTBOX_ENABLED',
       'COOKIE_SECURE',
       'NEXT_PUBLIC_API_URL',
-      'INTERNAL_API_URL',
+      'INTERNAL_API_V2_URL',
       'NEXT_PUBLIC_OIDC_ENABLED',
       'PUBLIC_SIGNUP_MODE',
       'NEXT_PUBLIC_SIGNUP_MODE',
@@ -1795,6 +1850,7 @@ test('DAST and load helper scripts execute real smoke tools', () => {
   assert.match(dast, /zap-baseline\.py/);
   assert.match(dast, /ZAP_IMAGE/);
   assert.match(dast, /docker run --rm/);
+  assert.match(dast, /tolower\(\$0\) ~ \/\^x-lunchlineup-release:\//);
   assert.doesNotMatch(dast, /DAST scan complete/);
 
   assert.match(load, /artilleryio\/artillery:2\.0\.33@sha256:ee382d480f5cb8473c52fe94cb8e1505a9564ce2accbc94114098e0be06dff56/);
@@ -1803,6 +1859,7 @@ test('DAST and load helper scripts execute real smoke tools', () => {
   assert.match(load, /--volume "\$OUTPUT_DIR:\/output:rw"/);
   assert.doesNotMatch(load, /\$SOURCE_ROOT:[^"\n]*:rw/);
   assert.match(load, /scripts\/artillery-smoke\.yml/);
+  assert.match(load, /tolower\(\$0\) ~ \/\^x-lunchlineup-release:\//);
   assert.doesNotMatch(load, /\bnpx\b|npm exec/);
 });
 

@@ -874,7 +874,7 @@ test('bootstrap dispatch is isolated from push-only deployment', () => {
   assert.match(deployJob, /if: github\.event_name == 'push' && github\.ref == 'refs\/heads\/main'/);
   assert.doesNotMatch(deployJob, /bootstrap-retained|bootstrap_release_registry/);
   const imagePushLines = ci.split('\n').filter((line) => line.includes('push: ${{ github.event_name'));
-  assert.equal(imagePushLines.length, 7);
+  assert.equal(imagePushLines.length, 8);
   for (const line of imagePushLines) {
     assert.match(line, /github\.event_name == 'push' && github\.ref == 'refs\/heads\/main'/);
   }

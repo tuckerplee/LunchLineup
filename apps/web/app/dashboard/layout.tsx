@@ -20,15 +20,16 @@ import {
 
 type DashboardRole = 'SUPER_ADMIN' | 'ADMIN' | 'MANAGER' | 'STAFF';
 type DashboardUser = {
-  sub: string;
+  publicUserId: string;
   role: DashboardRole;
   permissions?: string[];
-  tenantId: string;
-  sessionId: string;
+  roleLabel?: string;
+  workspaceName?: string;
+  workspaceScope: string;
+  sessionScope: string;
   email?: string | null;
   username?: string | null;
   name?: string | null;
-  tenantName?: string | null;
 };
 
 export default function DashboardLayout({ children }: { children: React.ReactNode }) {
@@ -172,7 +173,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
               }}
             >
               <Store size={14} />
-              {user?.tenantName || 'Team Workspace'}
+              {user?.workspaceName || 'Team Workspace'}
             </div>
           </div>
 

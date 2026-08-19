@@ -25,7 +25,7 @@
 
 - `production_apply_enabled = true`
 - `domain_name` with a real public production hostname, not `localhost`, `example`, or other placeholder text.
-- immutable `image_digests` for `api`, `web`, `engine`, `worker`, `control`, and `migrate`.
+- immutable `image_digests` for `api`, `api-v2`, `web`, `engine`, `worker`, `control`, and `migrate`.
 - exactly one `vm_targets` entry with role `app`, identifying VM217 with a non-empty SSH user, data volume, and real hostname or IP address; `proxmox_vms.app.vm_id` must be exactly `217`, and every other ID is rejected.
 - `network_cidr` that is a valid RFC1918 private IPv4 production network (`10.0.0.0/8`, `172.16.0.0/12`, or `192.168.0.0/16`), not `0.0.0.0/0`, `::/0`, or a public CIDR. It must equal `proxmox_network.private_cidr`, and the app target name/address must match `proxmox_vms.app`.
 - `secrets_backend` using an approved managed backend URI such as `vault://`, `op://`, `aws-secretsmanager://`, `gcp-secretmanager://`, `azure-keyvault://`, `sops://`, `age://`, `bitwarden://`, `doppler://`, or `infisical://`.

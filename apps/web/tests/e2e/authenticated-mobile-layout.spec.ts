@@ -24,7 +24,7 @@ test.describe('Authenticated mobile dashboard layout', () => {
 
   test('keeps every dashboard route within a 375px viewport with shell controls reachable', async ({ page }) => {
     await page.setViewportSize({ width: 375, height: 812 });
-    await page.route('**/api/v1/users', async (route) => {
+    await page.route('**/api/v2/users', async (route) => {
       await route.fulfill({
         status: 200,
         contentType: 'application/json',

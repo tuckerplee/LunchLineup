@@ -25,7 +25,7 @@
       "customerPayloadKey": "stripe_customer_id",
       "valuePayloadKey": "value",
       "webhookEndpointId": "<stripe-webhook-endpoint-id>",
-      "webhookUrl": "https://lunchlineup.com/api/v1/billing/webhook",
+      "webhookUrl": "https://lunchlineup.com/api/webhooks/stripe",
       "webhookEvents": [
         "checkout.session.completed",
         "customer.subscription.created",
@@ -38,7 +38,7 @@
         "invoice.finalization_failed"
       ],
       "meterErrorEventDestinationId": "<stripe-live-meter-error-event-destination-id>",
-      "meterErrorWebhookUrl": "https://lunchlineup.com/api/v1/billing/meter-errors/webhook",
+      "meterErrorWebhookUrl": "https://lunchlineup.com/api/webhooks/stripe/meter-errors",
       "meterErrorEvents": [
         "v1.billing.meter.error_report_triggered",
         "v1.billing.meter.no_meter_found"

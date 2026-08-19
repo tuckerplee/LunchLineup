@@ -66,6 +66,7 @@ export class AdminController implements OnModuleDestroy {
     private readonly userLifecycle: AdminUserLifecycleService;
     private readonly rbac: RbacService;
     private static readonly USERNAME_REGEX = /^[a-z0-9._-]{3,32}$/;
+    private static readonly PUBLIC_USER_ID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
     private static readonly OWNER_EMAIL_REGEX = /^[a-z0-9.!#$%*+/=?^_`{|}~-]+@[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$/;
     private static readonly RETAINED_RECORD_PURGE_CONFIRM = 'purge-expired-retained-records';
     private static readonly APPLICATION_DATA_PURGE_CONFIRM = 'purge-expired-application-data';
@@ -187,6 +188,31 @@ export class AdminController implements OnModuleDestroy {
             }
         }
         throw new ConflictException('Authorization or access state changed concurrently; retry the request');
+    }
+
+    private async resolveAdminUserIdentifier(
+        tx: Prisma.TransactionClient,
+        identifier: string,
+    ): Promise<{ id: string; publicId: string }> {
+        const normalized = typeof identifier === 'string' ? identifier.trim() : '';
+        if (!normalized) throw new BadRequestException('User not found');
+
+        // Retained unit and operator callers may still use old opaque IDs. All
+        // browser-visible UUIDs resolve through User.publicId first.
+        if (!AdminController.PUBLIC_USER_ID_REGEX.test(normalized)) {
+            return { id: normalized, publicId: normalized };
+        }
+        const byPublicId = await tx.user.findUnique({
+            where: { publicId: normalized },
+            select: { id: true, publicId: true },
+        });
+        if (byPublicId) return byPublicId;
+        const byStorageId = await tx.user.findUnique({
+            where: { id: normalized },
+            select: { id: true, publicId: true },
+        });
+        if (!byStorageId) throw new BadRequestException('User not found');
+        return byStorageId;
     }
 
     private auditUserIdForTenant(req: any, tenantId: string): string | null {
@@ -1161,7 +1187,7 @@ export class AdminController implements OnModuleDestroy {
             conditions.push({
                 OR: [
                     { createdAt: { lt: cursor.timestamp } },
-                    { createdAt: cursor.timestamp, id: { lt: cursor.id } },
+                    { createdAt: cursor.timestamp, publicId: { lt: cursor.id } },
                 ],
             });
         }
@@ -1171,7 +1197,7 @@ export class AdminController implements OnModuleDestroy {
 
         const rows = await this.withPlatformAdmin((tx) => tx.user.findMany({
             where,
-            orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+            orderBy: [{ createdAt: 'desc' }, { publicId: 'desc' }],
             include: {
                 tenant: {
                     select: {
@@ -1183,7 +1209,12 @@ export class AdminController implements OnModuleDestroy {
             },
             take: limit + 1,
         }));
-        const page = buildBoundedListPage(rows, limit, (user) => user.createdAt, {});
+        const page = buildBoundedListPage(
+            rows.map((user) => ({ ...user, id: user.publicId })),
+            limit,
+            (user) => user.createdAt,
+            {},
+        );
 
         return {
             data: page.data.map((user: any) => ({
@@ -1266,15 +1297,17 @@ export class AdminController implements OnModuleDestroy {
         const mutationActor = this.adminUserLifecycleActor(req);
 
         const updated = await this.withPlatformAdminUserMutation(async (tx) => {
+            const target = await this.resolveAdminUserIdentifier(tx, id);
+            const targetUserId = target.id;
             const authorizedTarget = requestedRole === undefined
                 ? await this.rbac.authorizePlatformAdminUserMutationInTransaction(
                     tx,
-                    id,
+                    targetUserId,
                     mutationActor,
                 )
                 : null;
             const existingUser = await tx.user.findUnique({
-                where: { id },
+                where: { id: targetUserId },
                 select: {
                     id: true,
                     tenantId: true,
@@ -1304,7 +1337,7 @@ export class AdminController implements OnModuleDestroy {
                 ? null
                 : await this.rbac.replaceLegacySystemRoleForPlatformAdminActorInTransaction(
                     tx,
-                    id,
+                    targetUserId,
                     existingUser.tenantId,
                     requestedRole,
                     mutationActor,
@@ -1316,7 +1349,7 @@ export class AdminController implements OnModuleDestroy {
                 await tx.passwordResetToken.updateMany({
                     where: {
                         tenantId: existingUser.tenantId,
-                        userId: id,
+                        userId: targetUserId,
                         consumedAt: null,
                     },
                     data: { consumedAt: now },
@@ -1324,7 +1357,7 @@ export class AdminController implements OnModuleDestroy {
                 await tx.passwordResetEmailOutbox.updateMany({
                     where: {
                         tenantId: existingUser.tenantId,
-                        userId: id,
+                        userId: targetUserId,
                         status: { in: ['PENDING', 'SENDING', 'FAILED'] },
                     },
                     data: {
@@ -1340,13 +1373,13 @@ export class AdminController implements OnModuleDestroy {
 
             if (Object.keys(patch).length > 0) {
                 await tx.user.update({
-                    where: { id },
+                    where: { id: targetUserId },
                     data: patch,
                 });
             }
             if (emailChanged || roleReplacement?.changed) {
                 await tx.session.updateMany({
-                    where: { userId: id, revokedAt: null },
+                    where: { userId: targetUserId, revokedAt: null },
                     data: { revokedAt: now },
                 });
             }
@@ -1357,7 +1390,7 @@ export class AdminController implements OnModuleDestroy {
                     ...this.platformAuditData(req, existingUser.tenantId),
                     action: 'USER_UPDATED',
                     resource: 'User',
-                    resourceId: id,
+                    resourceId: targetUserId,
                     oldValue: {
                         role: roleReplacement?.previousLegacyRole ?? existingUser.role,
                         emailIdentityChanged: false,
@@ -1372,13 +1405,13 @@ export class AdminController implements OnModuleDestroy {
             });
 
             return tx.user.findUniqueOrThrow({
-                where: { id },
+                where: { id: targetUserId },
                 include: { tenant: { select: { id: true, name: true, slug: true } } },
             });
         });
 
         return {
-            id: updated.id,
+            id: updated.publicId,
             name: updated.name,
             email: updated.email,
             username: updated.username,
@@ -1396,9 +1429,14 @@ export class AdminController implements OnModuleDestroy {
     ) {
         this.assertSuperAdmin(req);
         const actor = this.adminUserLifecycleActor(req);
-        return this.userMfaRecovery.reset({
-            targetUserId: id,
-            confirmation: body?.confirmation ?? '',
+        const target = await this.withPlatformAdmin((tx) => this.resolveAdminUserIdentifier(tx, id));
+        const expectedConfirmation = `reset-mfa:${id}`;
+        if (body?.confirmation !== expectedConfirmation) {
+            throw new BadRequestException(`confirmation must exactly equal ${expectedConfirmation}`);
+        }
+        const result = await this.userMfaRecovery.reset({
+            targetUserId: target.id,
+            confirmation: `reset-mfa:${target.id}`,
             reason: body?.reason ?? '',
             actorUserId: actor.userId,
             actorTenantId: actor.tenantId,
@@ -1406,6 +1444,7 @@ export class AdminController implements OnModuleDestroy {
             ipAddress: actor.ipAddress,
             userAgent: actor.userAgent,
         });
+        return { ...result, id: target.publicId };
     }
 
     @Post('users/:id/lock')
@@ -1414,10 +1453,13 @@ export class AdminController implements OnModuleDestroy {
         const minutes = Number.isFinite(body?.minutes as number) ? Math.max(1, Math.min(60 * 24 * 30, Number(body.minutes))) : 60;
         const lockedUntil = new Date(Date.now() + minutes * 60 * 1000);
         const mutationActor = this.adminUserLifecycleActor(req);
+        let publicUserId = id;
         await this.withPlatformAdminUserMutation(async (tx) => {
+            const target = await this.resolveAdminUserIdentifier(tx, id);
+            publicUserId = target.publicId;
             const authorizedTarget = await this.rbac.authorizePlatformAdminUserMutationInTransaction(
                 tx,
-                id,
+                target.id,
                 mutationActor,
             );
             const user = await tx.user.update({
@@ -1425,24 +1467,27 @@ export class AdminController implements OnModuleDestroy {
                 data: { lockedUntil, pinLockedUntil: lockedUntil },
             });
             await tx.session.updateMany({
-                where: { userId: id, revokedAt: null },
+                where: { userId: target.id, revokedAt: null },
                 data: { revokedAt: new Date() },
             });
             await tx.auditLog.create({
-                data: { tenantId: user.tenantId, ...this.platformAuditData(req, user.tenantId), action: 'USER_LOCKED', resource: 'User', resourceId: id },
+                data: { tenantId: user.tenantId, ...this.platformAuditData(req, user.tenantId), action: 'USER_LOCKED', resource: 'User', resourceId: target.id },
             });
         });
-        return { id, lockedUntil };
+        return { id: publicUserId, lockedUntil };
     }
 
     @Post('users/:id/unlock')
     async unlockUser(@Req() req: any, @Param('id') id: string) {
         this.assertSuperAdmin(req);
         const mutationActor = this.adminUserLifecycleActor(req);
+        let publicUserId = id;
         await this.withPlatformAdminUserMutation(async (tx) => {
+            const target = await this.resolveAdminUserIdentifier(tx, id);
+            publicUserId = target.publicId;
             const authorizedTarget = await this.rbac.authorizePlatformAdminUserMutationInTransaction(
                 tx,
-                id,
+                target.id,
                 mutationActor,
             );
             const user = await tx.user.update({
@@ -1450,22 +1495,26 @@ export class AdminController implements OnModuleDestroy {
                 data: { lockedUntil: null, pinLockedUntil: null, loginAttempts: 0, pinLoginAttempts: 0 },
             });
             await tx.auditLog.create({
-                data: { tenantId: user.tenantId, ...this.platformAuditData(req, user.tenantId), action: 'USER_UNLOCKED', resource: 'User', resourceId: id },
+                data: { tenantId: user.tenantId, ...this.platformAuditData(req, user.tenantId), action: 'USER_UNLOCKED', resource: 'User', resourceId: target.id },
             });
         });
-        return { id, unlocked: true };
+        return { id: publicUserId, unlocked: true };
     }
 
     @Post('users/:id/suspend')
     async suspendUser(@Req() req: any, @Param('id') id: string) {
         this.assertSuperAdmin(req);
-        return this.userLifecycle.suspend(id, this.adminUserLifecycleActor(req));
+        const target = await this.withPlatformAdmin((tx) => this.resolveAdminUserIdentifier(tx, id));
+        const result = await this.userLifecycle.suspend(target.id, this.adminUserLifecycleActor(req));
+        return { ...result, id: target.publicId };
     }
 
     @Post('users/:id/activate')
     async activateUser(@Req() req: any, @Param('id') id: string) {
         this.assertSuperAdmin(req);
-        return this.userLifecycle.activate(id, this.adminUserLifecycleActor(req));
+        const target = await this.withPlatformAdmin((tx) => this.resolveAdminUserIdentifier(tx, id));
+        const result = await this.userLifecycle.activate(target.id, this.adminUserLifecycleActor(req));
+        return { ...result, id: target.publicId };
     }
 
     @Get('audit')

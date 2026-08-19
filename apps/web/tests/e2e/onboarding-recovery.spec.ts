@@ -80,14 +80,14 @@ test.describe('Onboarding first-location recovery', () => {
     verificationCalls = 0;
     locationCalls = 0;
 
-    await page.route('**/api/v1/auth/email/send-otp', async (route) => {
+    await page.route('**/api/v2/auth/email/send-otp', async (route) => {
       await route.fulfill({
         status: 200,
         contentType: 'application/json',
         body: JSON.stringify({ success: true, onboardingChallengeToken: 'e2e-onboarding-challenge' }),
       });
     });
-    await page.route('**/api/v1/locations', async (route) => {
+    await page.route('**/api/v2/locations', async (route) => {
       locationCalls += 1;
       expect(route.request().postDataJSON()).toMatchObject({
         workspaceSlug: WORKSPACE_SLUG,
@@ -105,7 +105,7 @@ test.describe('Onboarding first-location recovery', () => {
   });
 
   test('retries a non-MFA 503 without resubmitting the single-use OTP', async ({ page }) => {
-    await page.route('**/api/v1/auth/email/verify-otp**', async (route) => {
+    await page.route('**/api/v2/auth/email/verify-otp**', async (route) => {
       verificationCalls += 1;
       await route.fulfill({
         status: 200,
@@ -134,8 +134,8 @@ test.describe('Onboarding first-location recovery', () => {
       domain: '127.0.0.1',
       path: '/',
     }]);
-    await page.unroute('**/api/v1/locations');
-    await page.route('**/api/v1/locations', async (route) => {
+    await page.unroute('**/api/v2/locations');
+    await page.route('**/api/v2/locations', async (route) => {
       locationCalls += 1;
       requestKeys.push(route.request().headers()['idempotency-key'] ?? '');
       csrfHeaders.push(route.request().headers()['x-csrf-token'] ?? '');
@@ -147,7 +147,7 @@ test.describe('Onboarding first-location recovery', () => {
           : { id: 'loc-onboarding', name: 'Downtown Diner' }),
       });
     });
-    await page.route('**/api/v1/auth/refresh', async (route) => {
+    await page.route('**/api/v2/auth/refresh', async (route) => {
       refreshCalls += 1;
       expect(route.request().headers()['x-csrf-token']).toBe('csrf-before-refresh');
       await route.fulfill({
@@ -159,7 +159,7 @@ test.describe('Onboarding first-location recovery', () => {
         body: JSON.stringify({ success: true }),
       });
     });
-    await page.route('**/api/v1/auth/email/verify-otp**', async (route) => {
+    await page.route('**/api/v2/auth/email/verify-otp**', async (route) => {
       verificationCalls += 1;
       await route.fulfill({
         status: 200,
@@ -182,8 +182,8 @@ test.describe('Onboarding first-location recovery', () => {
   test('reuses the first-location idempotency key after a successful create response is lost', async ({ page }) => {
     const requestKeys: string[] = [];
     let durableLocationCreated = false;
-    await page.unroute('**/api/v1/locations');
-    await page.route('**/api/v1/locations', async (route) => {
+    await page.unroute('**/api/v2/locations');
+    await page.route('**/api/v2/locations', async (route) => {
       requestKeys.push(route.request().headers()['idempotency-key'] ?? '');
       if (!durableLocationCreated) {
         durableLocationCreated = true;
@@ -196,7 +196,7 @@ test.describe('Onboarding first-location recovery', () => {
         body: JSON.stringify({ id: 'loc-onboarding', name: 'Downtown Diner' }),
       });
     });
-    await page.route('**/api/v1/auth/email/verify-otp**', async (route) => {
+    await page.route('**/api/v2/auth/email/verify-otp**', async (route) => {
       verificationCalls += 1;
       await route.fulfill({
         status: 200,
@@ -217,7 +217,7 @@ test.describe('Onboarding first-location recovery', () => {
   });
 
   test('retries a post-MFA 503 from persisted state without resubmitting the OTP', async ({ page }) => {
-    await page.route('**/api/v1/auth/email/verify-otp**', async (route) => {
+    await page.route('**/api/v2/auth/email/verify-otp**', async (route) => {
       verificationCalls += 1;
       await route.fulfill({
         status: 200,

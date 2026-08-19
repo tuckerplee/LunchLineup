@@ -6,29 +6,27 @@ import { parseApprovedAppOrigin, safeSameOriginReturnPath } from './lib/safe-nav
 const PROTECTED_PATH_ROOTS = ['/admin', '/dashboard'];
 const PASSWORD_RESET_PATH = '/auth/reset-password';
 const PASSWORD_RESET_TOKEN_COOKIE = 'll_password_reset_token';
-const API_URL = process.env.NEXT_PUBLIC_API_URL ?? '/api/v1';
 const AUTH_DEBUG_ENABLED = ['1', 'true', 'yes', 'on'].includes((process.env.AUTH_DEBUG ?? '').toLowerCase());
 const UNSAFE_DEBUG_VALUE = /(?:\b(?:bearer|authorization|cookie|set-cookie|password|secret|stack|token)\b|https?:\/\/|file:\/\/|\\\\|[\r\n\0<>]|localhost|127\.0\.0\.1|\.internal\b|\b(?:10|192\.168)\.\d{1,3}\.\d{1,3}|\b172\.(?:1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3})/i;
 const AUTH_FETCH_TIMEOUT_MS = 5_000;
 const AUTH_RESPONSE_LIMIT_BYTES = 64 * 1024;
-const MAX_IDENTITY_ROLES = 100;
 const MAX_ROLE_DISPLAY_NAME_LENGTH = 80;
 
 type AuthUser = {
-    sub: string;
-    role: string;
-    legacyRole: 'SUPER_ADMIN' | 'ADMIN' | 'MANAGER' | 'STAFF';
-    tenantId: string;
-    sessionId: string;
+    publicUserId: string;
+    role: 'SUPER_ADMIN' | 'ADMIN' | 'MANAGER' | 'STAFF';
+    roleLabel: string;
+    workspaceName: string;
+    workspaceScope: string;
+    sessionScope: string;
     permissions: string[];
-    roles: Array<{ id: string; name: string }>;
     mfaRequired?: boolean;
-    requiresMfa?: boolean;
     mfaVerified?: boolean;
 };
 
-const LEGACY_USER_ROLES = new Set<AuthUser['legacyRole']>(['SUPER_ADMIN', 'ADMIN', 'MANAGER', 'STAFF']);
-const SAFE_ROLE_ID = /^[A-Za-z0-9:_-]{1,64}$/;
+const LEGACY_USER_ROLES = new Set<AuthUser['role']>(['SUPER_ADMIN', 'ADMIN', 'MANAGER', 'STAFF']);
+const SAFE_PUBLIC_USER_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const SAFE_BROWSER_SCOPE = /^[A-Za-z0-9_-]{43}$/;
 const ROLE_NAME_CONTROL_CHARACTERS = /[\u0000-\u001f\u007f-\u009f]/g;
 
 type RefreshResult =
@@ -83,25 +81,16 @@ function readCookie(request: NextRequest, name: string): string | undefined {
 }
 
 function apiEndpoint(appOrigin: string, path: string): string {
-    const internalApiUrl = process.env.INTERNAL_API_URL?.trim();
-    if (internalApiUrl) {
-        const internalBase = parseServiceBase(internalApiUrl);
+    const internalApiV2Url = process.env.INTERNAL_API_V2_URL?.trim();
+    if (internalApiV2Url) {
+        const internalBase = parseServiceBase(internalApiV2Url);
         if (!internalBase) throw new Error('invalid_api_configuration');
         return `${internalBase}${path}`;
     }
 
-    if (/^https?:/i.test(API_URL)) {
-        const publicBase = parseServiceBase(API_URL);
-        if (!publicBase || new URL(publicBase).origin !== appOrigin) {
-            throw new Error('invalid_api_configuration');
-        }
-        return `${publicBase}${path}`;
-    }
-
-    const relativeBase = API_URL.startsWith('/') ? API_URL : `/${API_URL}`;
     const base = process.env.NODE_ENV === 'production'
-        ? `http://api:3000${relativeBase}`
-        : `${appOrigin}${relativeBase}`;
+        ? 'http://api-v2:3002/v2'
+        : `${appOrigin}/api/v2`;
     return `${base}${path}`;
 }
 
@@ -131,13 +120,20 @@ function parseAuthUser(payload: unknown): AuthUser | null {
     const candidate = (payload as { user?: unknown }).user;
     if (!candidate || typeof candidate !== 'object') return null;
     const user = candidate as Record<string, unknown>;
+    if (['sub', 'tenantId', 'sessionId', 'roles', 'legacyRole'].some((key) => Object.hasOwn(user, key))) {
+        return null;
+    }
     if (
-        !safeHeaderToken(user.sub)
+        typeof user.publicUserId !== 'string'
+        || !SAFE_PUBLIC_USER_ID.test(user.publicUserId)
         || typeof user.role !== 'string'
-        || typeof user.legacyRole !== 'string'
-        || !LEGACY_USER_ROLES.has(user.legacyRole as AuthUser['legacyRole'])
-        || !safeHeaderToken(user.tenantId)
-        || !safeHeaderToken(user.sessionId)
+        || !LEGACY_USER_ROLES.has(user.role as AuthUser['role'])
+        || typeof user.roleLabel !== 'string'
+        || typeof user.workspaceName !== 'string'
+        || typeof user.workspaceScope !== 'string'
+        || !SAFE_BROWSER_SCOPE.test(user.workspaceScope)
+        || typeof user.sessionScope !== 'string'
+        || !SAFE_BROWSER_SCOPE.test(user.sessionScope)
     ) {
         return null;
     }
@@ -146,31 +142,19 @@ function parseAuthUser(payload: unknown): AuthUser | null {
     if (!Array.isArray(permissions) || permissions.length > 200 || !permissions.every(safeHeaderToken)) {
         return null;
     }
-    const roles = user.roles ?? [];
-    if (!Array.isArray(roles) || roles.length > MAX_IDENTITY_ROLES) return null;
-    const normalizedRoles: Array<{ id: string; name: string }> = [];
-    for (const role of roles) {
-        if (!role || typeof role !== 'object') return null;
-        const { id, name } = role as { id?: unknown; name?: unknown };
-        if (typeof id !== 'string' || !SAFE_ROLE_ID.test(id) || typeof name !== 'string') {
-            return null;
-        }
-        normalizedRoles.push({ id, name: migrationSafeRoleName(name) });
-    }
-    for (const key of ['mfaRequired', 'requiresMfa', 'mfaVerified'] as const) {
+    for (const key of ['mfaRequired', 'mfaVerified'] as const) {
         if (user[key] !== undefined && typeof user[key] !== 'boolean') return null;
     }
 
     return {
-        sub: user.sub,
-        role: migrationSafeRoleName(user.role),
-        legacyRole: user.legacyRole as AuthUser['legacyRole'],
-        tenantId: user.tenantId,
-        sessionId: user.sessionId,
+        publicUserId: user.publicUserId,
+        role: user.role as AuthUser['role'],
+        roleLabel: migrationSafeRoleName(user.roleLabel),
+        workspaceName: migrationSafeRoleName(user.workspaceName),
+        workspaceScope: user.workspaceScope,
+        sessionScope: user.sessionScope,
         permissions: [...permissions],
-        roles: normalizedRoles,
         mfaRequired: user.mfaRequired as boolean | undefined,
-        requiresMfa: user.requiresMfa as boolean | undefined,
         mfaVerified: user.mfaVerified as boolean | undefined,
     };
 }
@@ -386,7 +370,7 @@ export async function proxy(request: NextRequest) {
         return redirectToLogin('redirect_login_missing_user_after_auth');
     }
 
-    const mfaRequired = user.mfaRequired === true || user.requiresMfa === true;
+    const mfaRequired = user.mfaRequired === true;
     const mfaVerified = user.mfaVerified === true;
     if (mfaRequired && !mfaVerified) {
         const mfaUrl = new URL('/mfa', appOrigin);
@@ -444,11 +428,24 @@ export async function proxy(request: NextRequest) {
     }
 
     const forwardedHeaders = new Headers(request.headers);
-    forwardedHeaders.set('x-user-id', user.sub);
-    forwardedHeaders.set('x-user-role', user.legacyRole);
-    forwardedHeaders.set('x-tenant-id', user.tenantId ?? '');
-    forwardedHeaders.set('x-user-permissions', permissions.join(','));
-    forwardedHeaders.set('x-user-roles', user.roles.map((role) => role.id).join(','));
+    for (const name of [
+        'x-user-id',
+        'x-user-public-id',
+        'x-user-role',
+        'x-tenant-id',
+        'x-user-permissions',
+        'x-user-roles',
+        'x-lunchlineup-user-public-id',
+        'x-lunchlineup-user-role',
+        'x-lunchlineup-workspace-scope',
+        'x-lunchlineup-session-scope',
+        'x-lunchlineup-user-permissions',
+    ]) forwardedHeaders.delete(name);
+    forwardedHeaders.set('x-lunchlineup-user-public-id', user.publicUserId);
+    forwardedHeaders.set('x-lunchlineup-user-role', user.role);
+    forwardedHeaders.set('x-lunchlineup-workspace-scope', user.workspaceScope);
+    forwardedHeaders.set('x-lunchlineup-session-scope', user.sessionScope);
+    forwardedHeaders.set('x-lunchlineup-user-permissions', permissions.join(','));
     const response = NextResponse.next({
         request: {
             headers: forwardedHeaders,

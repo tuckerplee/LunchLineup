@@ -102,7 +102,7 @@ test('production Terraform contains only the provider-backed VM217 rebuild resou
   assert.doesNotMatch(allTf, /target[.]vm_id\s*>=\s*100/);
   assert.doesNotMatch(allTf, /proxmox_vms\["data"\]|interface\s*=\s*"scsi1"/);
 
-  for (const service of ['api', 'web', 'engine', 'worker', 'control', 'migrate']) {
+  for (const service of ['api', 'api-v2', 'web', 'engine', 'worker', 'control', 'migrate']) {
     assert.match(mainTf, new RegExp(`"${service}"`));
   }
 });

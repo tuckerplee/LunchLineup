@@ -68,7 +68,8 @@ describe('schedule publish settlement UI contract', () => {
     const source = readFileSync(resolve(__dirname, '../../app/dashboard/scheduling/page.tsx'), 'utf8');
 
     expect(source).toContain('if (publishingScheduleIdRef.current) return;');
-    expect(source).toContain('`/schedules/${scheduleId}/publish/preflight`');
+    expect(source).toContain('apiV2.getSchedulePublishPlan(scheduleId)');
+    expect(source).toContain('apiV2.publishSchedule(');
     expect(source).toContain('acceptedContract: publishReview!.acceptedContract');
     expect(source).toContain('parseSchedulePublishResponse(scheduleId, publishedPayload)');
     expect(source).toContain('publishSettlementByScheduleId[schedule.id]');

@@ -13,6 +13,8 @@ process.env.NODE_ENV = 'test';
 process.env.COOKIE_SECURE = 'false';
 process.env.JWT_SECRET ||= 'payroll-full-stack-access-secret';
 process.env.JWT_REFRESH_SECRET ||= 'payroll-full-stack-refresh-secret';
+process.env.RESEND_API_KEY ||= 're_test_payroll_full_stack';
+process.env.STRIPE_SECRET_KEY ||= 'sk_test_payroll_full_stack';
 
 const require = createRequire(import.meta.url);
 require('reflect-metadata');
@@ -225,6 +227,7 @@ async function createFixture(owner, values) {
         slug: values.primarySlug,
         planTier: 'GROWTH',
         stripeSubscriptionId: `sub_payroll_primary_${values.suffix}`,
+        stripeSubscriptionCurrentPeriodEnd: new Date('2099-01-01T00:00:00.000Z'),
         status: 'ACTIVE',
         usageCredits: 5,
       },
@@ -649,7 +652,12 @@ test('real payroll HTTP/auth/services use PostgreSQL for guarded exact-once expo
       'GET',
       '/payroll/export-entitlement',
     ), 200, 'payroll export entitlement');
-    assert.deepEqual(entitlement, { creditCost: 1, eligible: true });
+    assert.equal(entitlement.creditCost, 1);
+    assert.equal(entitlement.eligible, true);
+    assert.match(
+      String(entitlement.reason),
+      /active paid subscription and separately purchased credits/i,
+    );
 
     const exportKey = `export-${values.suffix}`;
     const firstExport = assertJsonStatus(await apiRequest(

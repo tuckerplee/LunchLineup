@@ -45,6 +45,12 @@ function timeCardQuery(userId: string, canManageTeam: boolean, cursor?: string):
     return query.toString();
 }
 
+function activeTimeCardQuery(userId: string, canManageTeam: boolean): string {
+    const query = new URLSearchParams();
+    if (canManageTeam && userId) query.set('userId', userId);
+    return query.toString();
+}
+
 export type TimeCardSnapshot = {
     activeCard: TimeCard | null;
     historyResponse: Response;
@@ -52,8 +58,9 @@ export type TimeCardSnapshot = {
 
 export async function fetchTimeCardSnapshot(userId: string, canManageTeam: boolean): Promise<TimeCardSnapshot> {
     const query = timeCardQuery(userId, canManageTeam);
+    const activeQuery = activeTimeCardQuery(userId, canManageTeam);
     const [activeResponse, historyResponse] = await Promise.all([
-        fetchWithSession('/time-cards/active?' + query),
+        fetchWithSession('/time-cards/active?' + activeQuery),
         fetchWithSession('/time-cards?' + query),
     ]);
     if (!activeResponse.ok) throw new Error('Unable to load active time card.');

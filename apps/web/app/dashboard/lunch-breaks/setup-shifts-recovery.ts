@@ -468,9 +468,10 @@ function publicErrorDetails(
   payload: unknown,
   status: number,
 ): { code: SetupShiftsPublicErrorCode; remediation: string | null } | null {
-  if (!isRecord(payload) || typeof payload.code !== 'string') return null;
-  if (!(payload.code in PUBLIC_ERROR_STATUS)) return null;
-  const code = payload.code as SetupShiftsPublicErrorCode;
+  if (!isRecord(payload)) return null;
+  const candidateCode = typeof payload.legacyCode === 'string' ? payload.legacyCode : payload.code;
+  if (typeof candidateCode !== 'string' || !(candidateCode in PUBLIC_ERROR_STATUS)) return null;
+  const code = candidateCode as SetupShiftsPublicErrorCode;
   if (PUBLIC_ERROR_STATUS[code] !== status) return null;
   return {
     code,
@@ -488,6 +489,7 @@ function responseMessage(payload: unknown): string | null {
     if (messages.length > 0) return messages.join(' ');
   }
   if (typeof payload.error === 'string' && payload.error.trim()) return payload.error.trim();
+  if (typeof payload.detail === 'string' && payload.detail.trim()) return payload.detail.trim();
   return null;
 }
 

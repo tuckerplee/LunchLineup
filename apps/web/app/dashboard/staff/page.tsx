@@ -5,7 +5,7 @@ export default async function StaffPage() {
     const user = await requirePermission('users:read');
     return (
         <StaffWorkspace
-            currentUserId={user.id}
+            currentUserPublicId={user.publicUserId}
             canInvite={canPermission(user, 'users:write')}
             canAdminister={canPermission(user, 'users:admin')}
             canReadRoles={canPermission(user, 'roles:read')}

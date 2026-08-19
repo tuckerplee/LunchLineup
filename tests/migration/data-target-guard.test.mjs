@@ -205,15 +205,19 @@ test('VM107 bootstrap requires exact confirmation immediately before delete and 
   );
   assert.match(bootstrap, /upsert_if_empty_or_placeholder OTP_HMAC_SECRET/);
   assert.match(bootstrap, /upsert_env STAFF_INVITATION_OUTBOX_ENABLED "true"/);
-  assert.match(bootstrap, /upsert_env LUNCHLINEUP_STATUS_HEALTH_URL "http:\/\/api:3000\/health"/);
+  assert.match(bootstrap, /upsert_env LUNCHLINEUP_STATUS_HEALTH_URL "http:\/\/api-v2:3002\/v2\/ready"/);
   assert.match(bootstrap, /COMPOSE_PARALLEL_LIMIT="\$\{COMPOSE_PARALLEL_LIMIT:-1\}"/);
   assert.match(bootstrap, /export COMPOSE_PARALLEL_LIMIT/);
-  assert.match(bootstrap, /build_services=\(\s+web api migrate engine worker pitr-wal-provider control\s+\)/);
+  assert.match(bootstrap, /build_services=\(\s+web api api-v2 migrate engine worker pitr-wal-provider control\s+\)/);
   assert.match(bootstrap, /for service in "\$\{build_services\[@\]\}"; do\s+docker compose --env-file "\$SECRET_ENV_PATH" build "\$service"\s+done/);
   assert.match(bootstrap, /up -d --no-build "\$\{services\[@\]\}"/);
   assert.doesNotMatch(bootstrap, /up -d --build/);
   assert.match(bootstrap, /chmod 0700 "\$SECRETS_DIR"/);
   assert.match(bootstrap, /chmod 0444 "\$path"/);
+  assert.match(
+    bootstrap,
+    /docker compose --env-file "\$SECRET_ENV_PATH" up -d --no-build --no-deps postgres/,
+  );
   assert.match(bootstrap, /reconcile_disposable_database_credentials[\s\S]*ALTER ROLE[\s\S]*psql --no-psqlrc/);
   assert.match(bootstrap, /prepare_runtime_env\s+reconcile_disposable_database_credentials\s+start_stack/);
   assert.doesNotMatch(bootstrap, /psql[^\n]*(?:db_pass|app_db_pass)/);

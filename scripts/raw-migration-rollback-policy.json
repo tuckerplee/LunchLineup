@@ -310,6 +310,14 @@
       "requiresOldReleaseProof": true,
       "rationale": "credit-debt backfill, ledger compatibility triggers, and debt-first settlement functions remain during rollback; isolated old-release proof is required before production mutation."
     },
+    "packages/db/prisma/migrations/20260718_api_v2_schedule_change_sets.sql": {
+      "sha256": "b962eb04a64ccb52b6932ef3db5ae826fafd68e0d01b3200f35623fd8055b602",
+      "phase": "expand",
+      "rollbackSchema": "retain",
+      "contractPhase": "after-rollback-window",
+      "requiresOldReleaseProof": true,
+      "rationale": "API v2 change-set RLS and validation remain during rollback while the old-release ignores the new table; isolated old-release proof is required before production mutation."
+    },
     "packages/db/prisma/migrations/pre_20260715_availability_import_lifecycle.sql": {
       "sha256": "1563895292cca5540c95b88ffa22c99b82923a5f2ea295886f779f550367e70f",
       "phase": "expand",
@@ -365,6 +373,54 @@
       "contractPhase": "after-rollback-window",
       "requiresOldReleaseProof": true,
       "rationale": "nullable identity columns and canonical unique indexes remain during rollback; isolated old-release smoke proof is mandatory before production mutation."
+    },
+    "packages/db/prisma/migrations/pre_20260718_api_v2_demand_window_public_ids.sql": {
+      "sha256": "ac44045d5c8717c9dc87b5619fd557dc1c65e5871ef8ccd32bb8c526b31ea953",
+      "phase": "expand",
+      "rollbackSchema": "retain",
+      "contractPhase": "after-rollback-window",
+      "requiresOldReleaseProof": true,
+      "rationale": "demand-window public identifier backfill and old-writer-compatible default remain during rollback; isolated old-release proof is required before production mutation."
+    },
+    "packages/db/prisma/migrations/pre_20260718_api_v2_public_ids.sql": {
+      "sha256": "f752e22dc59fbdd7085100d1935426ad28c2ff7ab91d75132d122fd53cf5658b",
+      "phase": "expand",
+      "rollbackSchema": "retain",
+      "contractPhase": "after-rollback-window",
+      "requiresOldReleaseProof": true,
+      "rationale": "opaque public identifier backfills and old-writer-compatible defaults remain during rollback; isolated old-release proof is required before production mutation."
+    },
+    "packages/db/prisma/migrations/pre_20260719_api_v2_notification_public_ids.sql": {
+      "sha256": "94e98a0cd0d0a208c06a52925f9bca918b898eb3e42d76e1b586335233374cf7",
+      "phase": "expand",
+      "rollbackSchema": "retain",
+      "contractPhase": "after-rollback-window",
+      "requiresOldReleaseProof": true,
+      "rationale": "notification public identifier backfill and old-writer-compatible default remain during rollback; isolated old-release proof is required before production mutation."
+    },
+    "packages/db/prisma/migrations/pre_20260719_api_v2_payroll_public_ids.sql": {
+      "sha256": "06e66a2679408c997736252da39c4d14be0b7f172fdae97e44cab45112432028",
+      "phase": "expand",
+      "rollbackSchema": "retain",
+      "contractPhase": "after-rollback-window",
+      "requiresOldReleaseProof": true,
+      "rationale": "payroll public identifier backfill and old-writer-compatible defaults remain during rollback; isolated old-release proof is required before production mutation."
+    },
+    "packages/db/prisma/migrations/pre_20260719_api_v2_role_public_ids.sql": {
+      "sha256": "7cf9e9b453fbdec6dec21c990860306051f2e62e5ae682868b08b84b3bee008c",
+      "phase": "expand",
+      "rollbackSchema": "retain",
+      "contractPhase": "after-rollback-window",
+      "requiresOldReleaseProof": true,
+      "rationale": "role public identifier backfill and old-writer-compatible default remain during rollback; isolated old-release proof is required before production mutation."
+    },
+    "packages/db/prisma/migrations/pre_20260719_api_v2_time_card_public_ids.sql": {
+      "sha256": "1634646c0df87f32f74c6a234d15e846e10ba9d296f7108abd01c4530b79d01c",
+      "phase": "expand",
+      "rollbackSchema": "retain",
+      "contractPhase": "after-rollback-window",
+      "requiresOldReleaseProof": true,
+      "rationale": "time-card and break public identifier backfills and old-writer-compatible defaults remain during rollback; isolated old-release proof is required before production mutation."
     }
   }
 }

@@ -84,6 +84,7 @@ export async function createShiftUpdateFixture(prisma) {
           planTier: 'STARTER',
           status: 'ACTIVE',
           stripeSubscriptionId: `sub_shift_update_primary_${runId}`,
+          stripeSubscriptionCurrentPeriodEnd: new Date('2099-01-01T00:00:00.000Z'),
           usageCredits: 20,
         },
         {
@@ -93,6 +94,7 @@ export async function createShiftUpdateFixture(prisma) {
           planTier: 'STARTER',
           status: 'ACTIVE',
           stripeSubscriptionId: `sub_shift_update_isolated_${runId}`,
+          stripeSubscriptionCurrentPeriodEnd: new Date('2099-01-01T00:00:00.000Z'),
           usageCredits: 0,
         },
       ],

@@ -11,7 +11,7 @@ import {
 import { emitCandidateEvidence } from '../../scripts/launch-proof-evidence.mjs';
 import { deriveProductionImageInventory } from '../../scripts/production-image-inventory.mjs';
 
-const services = ['api', 'web', 'engine', 'worker', 'migrate', 'control', 'backup'];
+const services = ['api', 'api-v2', 'web', 'engine', 'worker', 'migrate', 'control', 'backup'];
 const sourceSha = '0123456789abcdef0123456789abcdef01234567';
 
 test('immutable release evidence contains signed image reports and exact candidate raw bundles', () => {

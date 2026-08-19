@@ -215,8 +215,8 @@ function assertSameOriginPublicApiUrl(context) {
   const value = assertRequired('NEXT_PUBLIC_API_URL');
   if (!value) return;
 
-  if (value !== '/api/v1') {
-    collector.fail('NEXT_PUBLIC_API_URL must be exactly /api/v1 for same-origin public launch.');
+  if (value !== '/api/v2') {
+    collector.fail('NEXT_PUBLIC_API_URL must be exactly /api/v2 for same-origin public launch.');
     return;
   }
 
@@ -236,8 +236,8 @@ function assertOidcRedirectUri(context, key, domain) {
     return;
   }
 
-  if (url.pathname !== '/api/v1/auth/callback') {
-    collector.fail(`${key} must end at /api/v1/auth/callback for the public API callback route.`);
+  if (url.pathname !== '/api/v2/auth/callback') {
+    collector.fail(`${key} must end at /api/v2/auth/callback for the public API callback route.`);
     return;
   }
 

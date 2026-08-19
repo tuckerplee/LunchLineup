@@ -8,7 +8,7 @@ This runbook covers OTP, password-reset email, staff-invitation email, in-app no
 
 - API: `RESEND_API_KEY`, `RESEND_WEBHOOK_SECRET`, and `EMAIL_FROM`.
 - Worker: `PASSWORD_RESET_EMAIL_OUTBOX_ENABLED=true`, `PASSWORD_RESET_OUTBOX_ENCRYPTION_KEY`, canonical `STAFF_INVITATION_OUTBOX_ENABLED=true`, the dedicated `STAFF_INVITATION_OUTBOX_ENCRYPTION_KEY`, shared `STAFF_INVITATION_MAX_ATTEMPTS`, canonical HTTPS `APP_ORIGIN`, `RESEND_API_KEY`, `EMAIL_FROM`, database URL, and platform-admin database capability.
-- Configure Resend delivery feedback to POST signed events to `/api/v1/email-delivery/provider-events`. Subscribe to bounce, complaint, and suppression events.
+- Configure Resend delivery feedback to POST signed events to `/api/webhooks/resend/delivery-events`. Caddy preserves the raw body and forwards only this fixed provider ingress to the private delivery handler; do not configure a `/api/v1/*` URL. Subscribe to bounce, complaint, and suppression events.
 
 Production startup and launch validation fail closed when the Resend API or webhook signing secret is missing or placeholder-shaped. Never log OTPs, reset URLs, webhook payloads, recipient addresses, encrypted payloads, or provider signature headers.
 
@@ -35,7 +35,7 @@ Production startup and launch validation fail closed when the Resend API or webh
 
 - `FAILED` rows retry automatically after `nextAttemptAt`; do not manually clone them.
 - Expired `SENDING` leases are reclaimable. A lease-loss error after provider handoff must not overwrite the new owner state; use the stable provider idempotency key to investigate an ambiguous outcome.
-- `DEAD_LETTERED` is terminal operator evidence. Resolve provider/configuration or recipient lifecycle causes, then create a fresh business action through the owning API instead of mutating attempts or restoring erased payloads. For staff invitations, call `POST /api/v1/users/<user-id>/invitation/reissue` with one bounded `Idempotency-Key`; the tenant-scoped Serializable transaction preserves the user, rotates to a fresh encrypted envelope and outbox/provider identity, and records the prior terminal ID/state in immutable audit history. Reuse the same key only after ambiguous response loss. If that reissued action later dead-letters, use a new key.
+- `DEAD_LETTERED` is terminal operator evidence. Resolve provider/configuration or recipient lifecycle causes, then create a fresh business action through the owning API instead of mutating attempts or restoring erased payloads. For staff invitations, call `POST /api/v2/users/<user-id>/invitation/reissue` with one bounded `Idempotency-Key`; the tenant-scoped Serializable transaction preserves the user, rotates to a fresh encrypted envelope and outbox/provider identity, and records the prior terminal ID/state in immutable audit history. Reuse the same key only after ambiguous response loss. If that reissued action later dead-letters, use a new key.
 - A complaint, hard bounce, or provider suppression blocks future OTP and password-reset handoff for that active user. Clear suppression only after the provider record and recipient ownership are verified under an approved support procedure.
 - Delivered and dead-lettered notification title/body and password-reset/webhook ciphertext are intentionally erased and cannot be reconstructed from the outbox.
 

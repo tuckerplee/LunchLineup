@@ -5,5 +5,5 @@ export default async function AdminUsersPage() {
     const user = await getServerUser();
     await requirePermission('admin_portal:access');
 
-    return <AdminUsersWorkspace currentUserId={user?.id ?? null} />;
+    return <AdminUsersWorkspace currentUserId={user?.publicUserId ?? null} />;
 }

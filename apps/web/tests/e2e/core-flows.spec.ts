@@ -37,7 +37,7 @@ async function acceptOnboardingLegalAssent(page: Page) {
 }
 
 async function mockLoginResolve(page: Page, payload: Record<string, unknown>) {
-  await page.route('**/api/v1/auth/login/resolve', async (route) => {
+  await page.route('**/api/v2/auth/login/resolve', async (route) => {
     const requestPayload = route.request().postDataJSON() as { tenantSlug?: string };
     expect(requestPayload.tenantSlug).toBe('e2e-operations');
     await route.fulfill({
@@ -89,7 +89,7 @@ test.describe('Public SaaS entrypoints', () => {
       identifier: 'e2e.admin',
       pinResetRequired: false,
     });
-    await page.route('**/api/v1/auth/pin/verify**', async (route) => {
+    await page.route('**/api/v2/auth/pin/verify**', async (route) => {
       resolvePinSubmission({
         url: route.request().url(),
         body: route.request().postData(),
@@ -135,7 +135,7 @@ test.describe('Public SaaS entrypoints', () => {
       flow: 'EMAIL_OTP',
       identifier: 'manager@example.com',
     });
-    await page.route('**/api/v1/auth/email/send-otp', async (route) => {
+    await page.route('**/api/v2/auth/email/send-otp', async (route) => {
       let payload: { email?: string; tenantSlug?: string } = {};
       try {
         payload = route.request().postDataJSON() as { email?: string; tenantSlug?: string };
@@ -150,7 +150,7 @@ test.describe('Public SaaS entrypoints', () => {
         body: JSON.stringify({ success: true }),
       });
     });
-    await page.route('**/api/v1/auth/email/verify-otp**', async (route) => {
+    await page.route('**/api/v2/auth/email/verify-otp**', async (route) => {
       resolveOtpSubmission({
         url: route.request().url(),
         body: route.request().postData(),
@@ -201,7 +201,7 @@ test.describe('Onboarding smoke flow', () => {
 
   test.beforeEach(async ({ page }) => {
     sentOnboardingOtpPayload = null;
-    await page.route('**/api/v1/auth/email/send-otp', async (route) => {
+    await page.route('**/api/v2/auth/email/send-otp', async (route) => {
       sentOnboardingOtpPayload = route.request().postDataJSON() as Record<string, unknown>;
       await route.fulfill({
         status: 200,
@@ -248,7 +248,7 @@ test.describe('Onboarding smoke flow', () => {
   test('defers first-location provisioning until required MFA is complete', async ({ page }) => {
     let locationCalls = 0;
     let locationPayload: Record<string, unknown> | null = null;
-    await page.route('**/api/v1/auth/email/verify-otp**', async (route) => {
+    await page.route('**/api/v2/auth/email/verify-otp**', async (route) => {
       expect(new URL(route.request().url()).searchParams.get('next')).toBe('/onboarding?resume=first-location');
       await route.fulfill({
         status: 200,
@@ -261,7 +261,7 @@ test.describe('Onboarding smoke flow', () => {
         }),
       });
     });
-    await page.route('**/api/v1/locations', async (route) => {
+    await page.route('**/api/v2/locations', async (route) => {
       locationCalls += 1;
       locationPayload = route.request().postDataJSON() as Record<string, unknown>;
       await route.fulfill({
@@ -302,7 +302,7 @@ test.describe('Onboarding smoke flow', () => {
       resolveVerifyPayload = resolve;
     });
 
-    await page.route('**/api/v1/auth/email/verify-otp**', async (route) => {
+    await page.route('**/api/v2/auth/email/verify-otp**', async (route) => {
       const payload = route.request().postDataJSON() as Record<string, unknown>;
       resolveVerifyPayload(payload);
       await route.fulfill({
@@ -311,7 +311,7 @@ test.describe('Onboarding smoke flow', () => {
         body: JSON.stringify({ success: true, workspaceSlug: 'test-diner-corp-a1b2c3' }),
       });
     });
-    await page.route('**/api/v1/locations', async (route) => {
+    await page.route('**/api/v2/locations', async (route) => {
       await route.fulfill({
         status: 201,
         contentType: 'application/json',

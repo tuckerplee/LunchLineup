@@ -96,6 +96,7 @@ test('real PostgreSQL semantically deduplicates concurrent unassigned setup unde
           planTier: 'STARTER',
           status: 'ACTIVE',
           stripeSubscriptionId: `sub_lunch_setup_${runId}`,
+          stripeSubscriptionCurrentPeriodEnd: new Date('2099-01-01T00:00:00.000Z'),
           usageCredits: 5,
         },
       });
@@ -234,6 +235,7 @@ test('real PostgreSQL serializes setup and normal shift writes in Tenant-then-ad
           planTier: 'STARTER',
           status: 'ACTIVE',
           stripeSubscriptionId: `sub_lunch_lock_order_${runId}`,
+          stripeSubscriptionCurrentPeriodEnd: new Date('2099-01-01T00:00:00.000Z'),
           usageCredits: 5,
         },
       });

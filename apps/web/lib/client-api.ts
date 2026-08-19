@@ -1,3 +1,7 @@
+import {
+    applicationApiOperation,
+    type ApplicationApiMethod,
+} from '@lunchlineup/api-contract';
 import { safeSameOriginReturnPath } from './safe-navigation';
 import {
     DEFAULT_JSON_RESPONSE_LIMIT_BYTES,
@@ -6,7 +10,7 @@ import {
     withRequestTimeout,
 } from './http-safety';
 
-const API = process.env.NEXT_PUBLIC_API_URL ?? '/api/v1';
+const API_V2 = '/api/v2';
 const UNSAFE_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
 let refreshPromise: Promise<Response> | null = null;
 const SAFE_JSON_CONTENT_TYPE = /^application\/(?:[a-z0-9!#$&^_.+-]+\+)?json(?:\s*;|$)/i;
@@ -37,7 +41,10 @@ export function idempotentRequestAttempt(
     return { key: keyFactory(), payloadFingerprint };
 }
 
-export function withIdempotencyKey(init: RequestInit, key: string): RequestInit {
+export function withIdempotencyKey<T extends RequestInit>(
+    init: T,
+    key: string,
+): Omit<T, 'headers'> & { headers: Headers } {
     const normalizedKey = key.trim();
     if (!normalizedKey) throw new Error('Idempotency-Key cannot be blank.');
     const headers = new Headers(init.headers);
@@ -56,16 +63,42 @@ function sortJsonValue(value: unknown): unknown {
     );
 }
 
-function toApiPath(path: string): string {
+function applicationMethod(init: RequestInit = {}): ApplicationApiMethod {
+    const method = (init.method ?? 'GET').toUpperCase();
+    if (!['GET', 'POST', 'PUT', 'PATCH', 'DELETE'].includes(method)) {
+        throw new Error('The API v2 application client does not support this HTTP method.');
+    }
+    return method as ApplicationApiMethod;
+}
+
+function toApiPath(path: string, method: ApplicationApiMethod): string {
     if (/^[a-z][a-z\d+.-]*:/i.test(path) || path.startsWith('//') || path.includes('\\')) {
         throw new Error('fetchWithSession only accepts same-origin API paths.');
     }
     const normalized = path.startsWith('/') ? path : `/${path}`;
-    return `${API}${normalized}`;
+    if (!applicationApiOperation(normalized, method)) {
+        throw new Error('The requested operation is not part of the API v2 application contract.');
+    }
+    return `${API_V2}${normalized}`;
 }
 
-export function apiPath(path: string): string {
-    return toApiPath(path);
+function toApiV2Path(input: RequestInfo | URL): string {
+    if (typeof input !== 'string') {
+        throw new Error('API v2 session fetch accepts only same-origin string paths.');
+    }
+    if (
+        !input.startsWith(`${API_V2}/`)
+        || input.startsWith('//')
+        || input.includes('\\')
+        || /^[a-z][a-z\d+.-]*:/i.test(input)
+    ) {
+        throw new Error('API v2 session fetch accepts only /api/v2 same-origin paths.');
+    }
+    return input;
+}
+
+export function apiPath(path: string, method: ApplicationApiMethod = 'GET'): string {
+    return toApiPath(path, method);
 }
 
 function getCsrfTokenFromCookie(): string {
@@ -104,7 +137,11 @@ function withSessionDefaults(init: RequestInit = {}): RequestInit {
 function refreshSession(): Promise<Response> {
     if (refreshPromise) return refreshPromise;
 
-    refreshPromise = safeFetch(toApiPath('/auth/refresh'), withSessionDefaults({ method: 'POST' }))
+    refreshPromise = safeFetch(
+        toApiPath('/auth/refresh', 'POST'),
+        withSessionDefaults({ method: 'POST' }),
+        true,
+    )
         .finally(() => {
             refreshPromise = null;
         });
@@ -145,7 +182,87 @@ function jsonResponse(status: number, message: string, retryAfterSeconds?: numbe
     });
 }
 
-async function normalizedResponse(response: Response): Promise<Response> {
+function safeProblemPayload(
+    status: number,
+    payload: Record<string, unknown> | null,
+): Record<string, unknown> | null {
+    if (
+        !payload
+        || payload.status !== status
+        || typeof payload.code !== 'string'
+        || !/^[a-z0-9_]{1,128}$/.test(payload.code)
+        || typeof payload.title !== 'string'
+        || !isSafePublicMessage(payload.title)
+        || typeof payload.detail !== 'string'
+        || !isSafePublicMessage(payload.detail)
+        || typeof payload.type !== 'string'
+        || !/^https:\/\/lunchlineup\.com\/problems\/[a-z0-9-]{1,160}$/.test(payload.type)
+    ) {
+        return null;
+    }
+    const safe: Record<string, unknown> = {
+        type: payload.type,
+        title: payload.title,
+        status,
+        detail: payload.detail,
+        message: payload.detail,
+        code: payload.code,
+    };
+    if (typeof payload.legacyCode === 'string' && /^[A-Z0-9_]{1,128}$/.test(payload.legacyCode)) {
+        safe.legacyCode = payload.legacyCode;
+    }
+    if (typeof payload.remediation === 'string' && isSafePublicMessage(payload.remediation)) {
+        safe.remediation = payload.remediation;
+    }
+    if (
+        typeof payload.retryAfterSeconds === 'number'
+        && Number.isInteger(payload.retryAfterSeconds)
+        && payload.retryAfterSeconds >= 0
+        && payload.retryAfterSeconds <= 86_400
+    ) {
+        safe.retryAfterSeconds = payload.retryAfterSeconds;
+    }
+    if (typeof payload.instance === 'string' && /^\/[^\r\n\\]{0,511}$/.test(payload.instance)) {
+        safe.instance = payload.instance;
+    }
+    if (typeof payload.requestId === 'string' && /^[A-Za-z0-9._:-]{1,128}$/.test(payload.requestId)) {
+        safe.requestId = payload.requestId;
+    }
+    if (
+        typeof payload.currentEtag === 'string'
+        && /^"schedule:[0-9a-f-]{36}:\d+"$/.test(payload.currentEtag)
+    ) {
+        safe.currentEtag = payload.currentEtag;
+    }
+    if (Array.isArray(payload.violations)) {
+        const violations = payload.violations.slice(0, 100).flatMap((entry) => {
+            if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return [];
+            const value = entry as Record<string, unknown>;
+            if (
+                typeof value.pointer !== 'string'
+                || !/^\/[^\r\n\\]{0,511}$/.test(value.pointer)
+                || typeof value.code !== 'string'
+                || !/^[a-z0-9_]{1,128}$/.test(value.code)
+                || typeof value.message !== 'string'
+                || !isSafePublicMessage(value.message)
+            ) {
+                return [];
+            }
+            return [{
+                pointer: value.pointer,
+                code: value.code,
+                message: value.message,
+            }];
+        });
+        if (violations.length > 0) safe.violations = violations;
+    }
+    return safe;
+}
+
+async function normalizedResponse(
+    response: Response,
+    preserveProblemDetails = false,
+): Promise<Response> {
     if (!isJsonResponse(response)) {
         if (response.ok) return response;
         await response.body?.cancel().catch(() => undefined);
@@ -188,6 +305,17 @@ async function normalizedResponse(response: Response): Promise<Response> {
     } catch {
         // Invalid error bodies are replaced with the status-derived public message.
     }
+    if (preserveProblemDetails) {
+        const problem = safeProblemPayload(response.status, payload);
+        if (problem) {
+            headers.set('Content-Type', 'application/problem+json');
+            return new Response(JSON.stringify(problem), {
+                status: response.status,
+                statusText: response.statusText,
+                headers,
+            });
+        }
+    }
     const candidate = typeof payload?.message === 'string'
         ? payload.message
         : typeof payload?.error === 'string'
@@ -203,10 +331,17 @@ async function normalizedResponse(response: Response): Promise<Response> {
     return jsonResponse(response.status, message, retryAfterSeconds);
 }
 
-async function safeFetch(input: RequestInfo | URL, init: RequestInit): Promise<Response> {
+async function safeFetch(
+    input: RequestInfo | URL,
+    init: RequestInit,
+    preserveProblemDetails = false,
+): Promise<Response> {
     try {
         return await withRequestTimeout(
-            async (signal) => normalizedResponse(await fetch(input, { ...init, signal })),
+            async (signal) => normalizedResponse(
+                await fetch(input, { ...init, signal }),
+                preserveProblemDetails,
+            ),
             CLIENT_REQUEST_TIMEOUT_MS,
             init.signal,
         );
@@ -228,8 +363,8 @@ function canReplayAfterRefresh(init: RequestInit): boolean {
 
 export async function fetchWithSession(path: string, init: RequestInit = {}): Promise<Response> {
     const requestInit = withSessionDefaults(init);
-    const endpoint = toApiPath(path);
-    let response = await safeFetch(endpoint, requestInit);
+    const endpoint = toApiPath(path, applicationMethod(requestInit));
+    let response = await safeFetch(endpoint, requestInit, true);
     if (response.status !== 401) return response;
 
     const refresh = await refreshSession();
@@ -243,7 +378,32 @@ export async function fetchWithSession(path: string, init: RequestInit = {}): Pr
 
     if (!canReplayAfterRefresh(requestInit)) return response;
 
-    response = await safeFetch(endpoint, withSessionDefaults(init));
+    response = await safeFetch(endpoint, withSessionDefaults(init), true);
+    if (response.status === 401 && typeof window !== 'undefined') {
+        window.location.assign(loginRedirectPath());
+    }
+    return response;
+}
+
+export async function fetchApiV2WithSession(
+    input: RequestInfo | URL,
+    init: RequestInit = {},
+): Promise<Response> {
+    const endpoint = toApiV2Path(input);
+    const requestInit = withSessionDefaults(init);
+    let response = await safeFetch(endpoint, requestInit, true);
+    if (response.status !== 401) return response;
+
+    const refresh = await refreshSession();
+    if (!refresh.ok) {
+        if (typeof window !== 'undefined') {
+            window.location.assign(loginRedirectPath());
+        }
+        return response;
+    }
+    if (!canReplayAfterRefresh(requestInit)) return response;
+
+    response = await safeFetch(endpoint, withSessionDefaults(init), true);
     if (response.status === 401 && typeof window !== 'undefined') {
         window.location.assign(loginRedirectPath());
     }
@@ -251,7 +411,8 @@ export async function fetchWithSession(path: string, init: RequestInit = {}): Pr
 }
 
 export async function fetchPublicApi(path: string, init: RequestInit = {}): Promise<Response> {
-    return safeFetch(toApiPath(path), withSessionDefaults(init));
+    const requestInit = withSessionDefaults(init);
+    return safeFetch(toApiPath(path, applicationMethod(requestInit)), requestInit, true);
 }
 
 export async function fetchApiHealth(): Promise<Response> {

@@ -11,6 +11,7 @@ import { AvailabilityPdfImport } from './AvailabilityPdfImport';
 type StaffSchedulingProfileEditorProps = {
     user: { id: string; name: string; email: string; username?: string };
     onClose: () => void;
+    showHeader?: boolean;
 };
 
 type Location = { id: string; name: string };
@@ -41,7 +42,7 @@ function timeMinutes(value: string): number {
     return hours * 60 + minutes;
 }
 
-export function StaffSchedulingProfileEditor({ user, onClose }: StaffSchedulingProfileEditorProps) {
+export function StaffSchedulingProfileEditor({ user, onClose, showHeader = true }: StaffSchedulingProfileEditorProps) {
     const [skills, setSkills] = useState<string[]>([]);
     const [skillDraft, setSkillDraft] = useState('');
     const [availability, setAvailability] = useState<AvailabilityWindow[]>([]);
@@ -205,15 +206,17 @@ export function StaffSchedulingProfileEditor({ user, onClose }: StaffSchedulingP
 
     return (
         <section className="surface-card" aria-label={`Scheduling profile for ${user.name}`} style={{ padding: '1rem', display: 'grid', gap: '1rem' }}>
-            <header style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: '1rem' }}>
-                <div>
-                    <div className="workspace-kicker">Scheduling profile</div>
-                    <h2 className="workspace-title" style={{ fontSize: '1.15rem', marginBottom: 2 }}>{user.name}</h2>
-                </div>
-                <Button type="button" variant="ghost" size="icon" onClick={onClose} title="Close scheduling profile" aria-label="Close scheduling profile">
-                    <X aria-hidden="true" size={18} />
-                </Button>
-            </header>
+            {showHeader ? (
+                <header style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: '1rem' }}>
+                    <div>
+                        <div className="workspace-kicker">Scheduling profile</div>
+                        <h2 className="workspace-title" style={{ fontSize: '1.15rem', marginBottom: 2 }}>{user.name}</h2>
+                    </div>
+                    <Button type="button" variant="ghost" size="icon" onClick={onClose} title="Close scheduling profile" aria-label="Close scheduling profile" autoFocus>
+                        <X aria-hidden="true" size={18} />
+                    </Button>
+                </header>
+            ) : null}
 
             {isProfileLoading ? <div style={{ color: 'var(--text-muted)', fontSize: '0.84rem' }}>Loading scheduling profile...</div> : !isProfileHydrated ? (
                 <div style={{ display: 'grid', gap: '0.75rem' }}>

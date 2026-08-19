@@ -5,8 +5,8 @@
     "main": "./dist/index.js",
     "types": "./dist/index.d.ts",
     "scripts": {
-        "build": "prisma generate && tsc",
-        "generate": "prisma generate",
+        "build": "prisma generate --no-hints && tsc",
+        "generate": "prisma generate --no-hints",
         "typecheck": "tsc --noEmit",
         "migrate:dev": "prisma migrate dev",
         "migrate:deploy": "prisma migrate deploy",

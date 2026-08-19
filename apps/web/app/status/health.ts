@@ -84,8 +84,8 @@ export function resolveApiHealthUrl(env: Partial<NodeJS.ProcessEnv> = process.en
   if (explicit) return explicit;
   if (env.NODE_ENV === 'production') return null;
 
-  const internalApiUrl = env.INTERNAL_API_URL ?? 'http://api:3000/v1';
-  return `${stripVersionSuffix(trimTrailingSlash(internalApiUrl))}/health`;
+  const internalApiV2Url = env.INTERNAL_API_V2_URL ?? 'http://api-v2:3002/v2';
+  return `${trimTrailingSlash(internalApiV2Url)}/ready`;
 }
 
 function normalizeHealthPayload(value: unknown): ApiHealthPayload | null {

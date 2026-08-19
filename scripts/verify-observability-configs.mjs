@@ -741,7 +741,7 @@ function findHandle(site, routePath) {
   ));
 }
 
-function validateCaddyRoute(errors, filePath, site, routePath, expectedProxy, expectedStripPrefix) {
+function validateCaddyRoute(errors, filePath, site, routePath, expectedProxy, expectedStripPrefix, expectedRewrite) {
   const routeLabel = routePath ?? 'default';
   const handle = findHandle(site, routePath);
   expect(errors, handle, `${filePath}: missing ${routeLabel} handle`);
@@ -759,9 +759,30 @@ function validateCaddyRoute(errors, filePath, site, routePath, expectedProxy, ex
       uri?.args[0] === 'strip_prefix' && uri?.args[1] === expectedStripPrefix,
       `${filePath}: ${routeLabel} must strip_prefix ${expectedStripPrefix}`,
     );
+  } else if (expectedRewrite) {
+    const rewrite = firstChild(handle, 'rewrite');
+    expect(
+      errors,
+      rewrite?.args[0] === '*' && rewrite?.args[1] === expectedRewrite,
+      `${filePath}: ${routeLabel} must rewrite to ${expectedRewrite}`,
+    );
+    expect(errors, !firstChild(handle, 'uri'), `${filePath}: ${routeLabel} must not use a URI adapter`);
   } else {
     expect(errors, !firstChild(handle, 'uri'), `${filePath}: ${routeLabel} must not rewrite the URI`);
   }
+}
+
+function validateRetiredV1Route(errors, filePath, site) {
+  const handle = findHandle(site, '/api/v1/*');
+  expect(errors, handle, `${filePath}: missing terminal /api/v1/* retirement handle`);
+  if (!handle) return;
+  const response = firstChild(handle, 'respond');
+  expect(
+    errors,
+    response?.args.includes('410') && response?.args.join(' ').includes('API version v1 has been retired.'),
+    `${filePath}: /api/v1/* must return the terminal 410 retirement response`,
+  );
+  expect(errors, !firstChild(handle, 'reverse_proxy') && !firstChild(handle, 'uri'), `${filePath}: retired v1 route must not proxy upstream`);
 }
 
 function validateSecurityHeader(errors, filePath, headerBlock, headerName, predicate, description) {
@@ -849,9 +870,9 @@ function validateCaddyfile(root, relativePath, errors, checked) {
   ));
   expect(errors, apiNoStore, `${relativePath}: /api/* responses must set Cache-Control no-store`);
 
-  validateCaddyRoute(errors, relativePath, site, '/health', 'api:3000');
-  validateCaddyRoute(errors, relativePath, site, '/api/health', 'api:3000', '/api');
-  validateCaddyRoute(errors, relativePath, site, '/api/v1/*', 'api:3000', '/api');
+  validateCaddyRoute(errors, relativePath, site, '/health', 'api-v2:3002', undefined, '/v2/ready');
+  validateCaddyRoute(errors, relativePath, site, '/api/health', 'api-v2:3002', undefined, '/v2/ready');
+  validateRetiredV1Route(errors, relativePath, site);
   validateCaddyRoute(errors, relativePath, site, undefined, 'web:3000');
 
   const handles = childDirectives(site, 'handle');

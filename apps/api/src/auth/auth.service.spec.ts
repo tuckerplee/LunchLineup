@@ -31,6 +31,7 @@ const originalEnv = {
     NEXT_PUBLIC_APP_ORIGIN: process.env.NEXT_PUBLIC_APP_ORIGIN,
     NEXT_PUBLIC_APP_URL: process.env.NEXT_PUBLIC_APP_URL,
     PLATFORM_ADMIN_DB_CONTEXT_SECRET: process.env.PLATFORM_ADMIN_DB_CONTEXT_SECRET,
+    BETA_DEMO_MFA_BYPASS_ENABLED: process.env.BETA_DEMO_MFA_BYPASS_ENABLED,
 };
 
 vi.mock('ioredis', () => ({
@@ -1742,6 +1743,98 @@ describe('AuthService – mixed auth flow', () => {
         const result = await service.loginWithUsernamePassword('LegacyUser', 'correct-horse', 'demo');
         expect(result).toHaveProperty('accessToken');
         expect(result.user.username).toBe('legacyuser');
+    });
+
+    it('marks only the configured exact beta demo password session as MFA verified', async () => {
+        process.env.BETA_DEMO_MFA_BYPASS_ENABLED = 'true';
+        const passwordHash = bcrypt.hashSync('demo', 10);
+        mockPrisma.user.findFirst.mockResolvedValue({
+            id: 'demo-admin',
+            tenantId: 't-1',
+            role: 'ADMIN',
+            email: 'demo@demo.com',
+            username: 'demo@demo.com',
+            mfaEnabled: false,
+            passwordHash,
+            loginAttempts: 0,
+            lockedUntil: null,
+            pinResetRequired: false,
+        });
+        mockRbacService.getEffectiveAccess.mockResolvedValue({
+            primaryRole: 'Demo Administrator',
+            roles: [{ id: 'demo-role', name: 'Demo Administrator' }],
+            permissions: ['auth:login_password', 'users:write'],
+        });
+        mockPrisma.session.create.mockResolvedValue({ id: 'demo-session', refreshToken: 'demo-refresh' });
+        mockPrisma.user.update.mockResolvedValue({});
+
+        const result = await service.loginWithUsernamePassword(
+            'demo@demo.com',
+            'demo',
+            'demo',
+            {},
+            { betaDemoMfaBypass: true },
+        );
+
+        expect(result.requiresMfa).toBe(false);
+        expect(mockJwtService.generateAccessToken).toHaveBeenCalledWith(expect.objectContaining({
+            sub: 'demo-admin',
+            sessionId: 'demo-session',
+            mfaVerified: true,
+        }));
+        expect((service as any).getRedis().set).toHaveBeenCalledWith(
+            'session_mfa:demo-session',
+            '1',
+            'EX',
+            expect.any(Number),
+        );
+        expect(mockPrisma.auditLog.create).toHaveBeenCalledWith({
+            data: expect.objectContaining({
+                newValue: {
+                    loginMethod: 'USERNAME_PASSWORD',
+                    mfaExemption: 'BETA_DEMO',
+                },
+            }),
+        });
+    });
+
+    it('keeps privileged MFA when the requested beta demo exemption identity does not match', async () => {
+        process.env.BETA_DEMO_MFA_BYPASS_ENABLED = 'true';
+        const passwordHash = bcrypt.hashSync('demo', 10);
+        mockPrisma.user.findFirst.mockResolvedValue({
+            id: 'other-admin',
+            tenantId: 't-1',
+            role: 'ADMIN',
+            email: 'other@demo.com',
+            username: 'other@demo.com',
+            mfaEnabled: false,
+            passwordHash,
+            loginAttempts: 0,
+            lockedUntil: null,
+            pinResetRequired: false,
+        });
+        mockRbacService.getEffectiveAccess.mockResolvedValue({
+            primaryRole: 'Admin',
+            roles: [{ id: 'admin-role', name: 'Admin' }],
+            permissions: ['auth:login_password', 'users:write'],
+        });
+        mockPrisma.session.create.mockResolvedValue({ id: 'other-session', refreshToken: 'other-refresh' });
+        mockPrisma.user.update.mockResolvedValue({});
+
+        const result = await service.loginWithUsernamePassword(
+            'other@demo.com',
+            'demo',
+            'demo',
+            {},
+            { betaDemoMfaBypass: true },
+        );
+
+        expect(result.requiresMfa).toBe(true);
+        expect(mockJwtService.generateAccessToken).toHaveBeenCalledWith(expect.objectContaining({
+            sessionId: 'other-session',
+            mfaVerified: false,
+        }));
+        expect((service as any).getRedis().set).not.toHaveBeenCalled();
     });
 
     it('records failed password attempt on invalid migrated password', async () => {

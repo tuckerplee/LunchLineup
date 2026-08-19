@@ -75,12 +75,39 @@ describe('scheduler responsive timeline contract', () => {
     expect(schedulerSource).toMatch(/catch \(error\) \{\s+onTimeSelectionError\?\.\(\(error as Error\)\.message\);/);
     expect(schedulingPageSource).toContain('onTimeSelectionError={(message) => {');
   });
+
+  it('keeps copy and move gestures separate while exposing a touch-friendly duplicate action', () => {
+    expect(schedulerSource).toContain("mode: 'move' | 'copy'");
+    expect(schedulerSource).toContain('(e.shiftKey || e.altKey) && onEventCopy');
+    expect(schedulerSource).toContain("drag.mode === 'copy' ? onEventCopy : onEventChange");
+    expect(schedulerSource).toContain('hold Shift or Alt while dragging to copy');
+    expect(schedulingPageSource).toContain('onEventCopy={capabilities.canWriteShifts && locationDataCurrent');
+    expect(schedulingPageSource).toContain('<Copy size={14} /> Duplicate shift');
+    expect(schedulingPageSource).toContain('clientId: attempt.key');
+    expect(schedulingPageSource).toContain("'Shift copy failed. The source shift was not changed.'");
+  });
 });
 
 describe('scheduler accessibility semantics', () => {
+  it('bootstraps the browser-local calendar date without server/client clock drift', () => {
+    expect(schedulingPageSource).not.toContain('const TODAY = new Date()');
+    expect(schedulingPageSource).toContain(
+      "const DATE_BOOTSTRAP_PLACEHOLDER = '2000-01-01';",
+    );
+    expect(schedulingPageSource).toContain(
+      'const [isHydrated, setIsHydrated] = useState(Boolean(requestedDate));',
+    );
+    expect(schedulingPageSource).toMatch(
+      /if \(!isHydrated\) return;\s+void loadSchedule/,
+    );
+    expect(schedulingPageSource).toContain(
+      "value={isHydrated ? selectedDate : ''}",
+    );
+  });
+
   it('names the schedule date input', () => {
     expect(schedulingPageSource).toMatch(
-      /<input aria-label="Schedule date" type="date"/,
+      /<input\s+aria-label="Schedule date"\s+type="date"/,
     );
   });
 

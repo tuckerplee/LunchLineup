@@ -1,13 +1,14 @@
 import { ImageResponse } from 'next/og';
 
-export const alt = 'LunchLineup workforce scheduling';
+export const alt = 'LunchLineup weekly schedule preview';
 export const size = { width: 1200, height: 630 };
 export const contentType = 'image/png';
 
-const shifts = [
-    { time: '9:00', name: 'Opening shift', color: '#11875d' },
-    { time: '11:30', name: 'Lunch coverage', color: '#2864dc' },
-    { time: '2:00', name: 'Afternoon handoff', color: '#cc7f06' },
+const days = ['Mon 21', 'Tue 22', 'Wed 23', 'Thu 24', 'Fri 25'];
+const team = [
+    { initials: 'MC', name: 'Maya', color: '#22B8CF', background: '#EDFBFC', border: '#9DDFE7', shifts: [true, true, true, true, true] },
+    { initials: 'JL', name: 'Jordan', color: '#2F63FF', background: '#F0F4FF', border: '#B7CAFF', shifts: [true, true, true, false, true] },
+    { initials: 'CP', name: 'Casey', color: '#7557B7', background: '#F7F3FE', border: '#D5C4F4', shifts: [false, true, true, true, false] },
 ];
 
 export default function OpenGraphImage() {
@@ -18,79 +19,118 @@ export default function OpenGraphImage() {
                     width: '100%',
                     height: '100%',
                     display: 'flex',
-                    background: '#f7f9fb',
-                    color: '#13221c',
-                    padding: 64,
+                    background: 'linear-gradient(135deg, #FFFFFF 0%, #F7F9FD 58%, #EEF3FF 100%)',
+                    color: '#07111F',
+                    padding: '54px 58px',
                     fontFamily: 'Arial, sans-serif',
                 }}
             >
-                <div style={{ width: '55%', display: 'flex', flexDirection: 'column', justifyContent: 'space-between' }}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 18 }}>
+                <div style={{ width: '43%', display: 'flex', flexDirection: 'column', justifyContent: 'space-between' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
                         <div
                             style={{
-                                width: 58,
-                                height: 58,
+                                width: 54,
+                                height: 54,
                                 display: 'flex',
                                 alignItems: 'center',
                                 justifyContent: 'center',
-                                borderRadius: 8,
-                                background: '#11875d',
-                                color: '#ffffff',
-                                fontSize: 32,
-                                fontWeight: 800,
+                                borderRadius: 13,
+                                background: 'linear-gradient(135deg, #2F63FF, #22B8CF)',
                             }}
                         >
-                            L
-                        </div>
-                        <div style={{ fontSize: 36, fontWeight: 800 }}>LunchLineup</div>
-                    </div>
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: 22 }}>
-                        <div style={{ fontSize: 62, lineHeight: 1.05, fontWeight: 800, maxWidth: 610 }}>
-                            Scheduling that keeps the day moving.
-                        </div>
-                        <div style={{ fontSize: 25, lineHeight: 1.35, color: '#4b5f55', maxWidth: 560 }}>
-                            Plan shifts, coverage, breaks, and time cards from one operational workspace.
-                        </div>
-                    </div>
-                    <div style={{ fontSize: 20, color: '#4b5f55' }}>lunchlineup.com</div>
-                </div>
-                <div
-                    style={{
-                        width: '45%',
-                        display: 'flex',
-                        flexDirection: 'column',
-                        alignSelf: 'center',
-                        background: '#ffffff',
-                        border: '2px solid #dbe3df',
-                        borderRadius: 8,
-                        padding: 30,
-                        gap: 18,
-                        boxShadow: '0 16px 44px rgba(19, 34, 28, 0.10)',
-                    }}
-                >
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                        <div style={{ fontSize: 23, fontWeight: 800 }}>Today</div>
-                        <div style={{ fontSize: 17, color: '#4b5f55' }}>Coverage ready</div>
-                    </div>
-                    {shifts.map((shift) => (
-                        <div
-                            key={shift.time}
-                            style={{
-                                display: 'flex',
-                                alignItems: 'center',
-                                gap: 16,
-                                padding: '18px 0',
-                                borderTop: '1px solid #e8eeeb',
-                            }}
-                        >
-                            <div style={{ width: 64, fontSize: 18, fontWeight: 700 }}>{shift.time}</div>
-                            <div style={{ width: 8, height: 44, borderRadius: 4, background: shift.color }} />
-                            <div style={{ display: 'flex', flexDirection: 'column', gap: 5 }}>
-                                <div style={{ fontSize: 20, fontWeight: 700 }}>{shift.name}</div>
-                                <div style={{ fontSize: 16, color: '#607168' }}>Assigned and confirmed</div>
+                            <div
+                                style={{
+                                    width: 29,
+                                    height: 23,
+                                    display: 'flex',
+                                    border: '3px solid #FFFFFF',
+                                    borderRadius: 5,
+                                    position: 'relative',
+                                }}
+                            >
+                                <div style={{ width: 17, height: 3, position: 'absolute', top: 7, left: 3, borderRadius: 2, background: '#FFFFFF' }} />
                             </div>
                         </div>
-                    ))}
+                        <div style={{ fontSize: 27, fontWeight: 800, letterSpacing: '-0.8px' }}>LunchLineup</div>
+                    </div>
+                    <div style={{ display: 'flex', flexDirection: 'column' }}>
+                        <div style={{ fontSize: 59, lineHeight: 0.98, fontWeight: 800, letterSpacing: '-3px', maxWidth: 470 }}>
+                            The schedule, already thinking ahead.
+                        </div>
+                        <div style={{ marginTop: 24, fontSize: 20, lineHeight: 1.45, color: '#526078', maxWidth: 430 }}>
+                            Availability, breaks, coverage, and time review in one clear flow.
+                        </div>
+                    </div>
+                    <div style={{ display: 'flex', gap: 22, color: '#526078', fontSize: 14, fontWeight: 700 }}>
+                        <span style={{ display: 'flex' }}>Availability in view</span>
+                        <span style={{ display: 'flex' }}>Coverage visible</span>
+                    </div>
+                </div>
+
+                <div style={{ width: '57%', paddingLeft: 38, display: 'flex', alignItems: 'center' }}>
+                    <div
+                        style={{
+                            width: '100%',
+                            height: 440,
+                            display: 'flex',
+                            flexDirection: 'column',
+                            overflow: 'hidden',
+                            border: '1px solid #CBD5E1',
+                            borderRadius: 18,
+                            background: '#FFFFFF',
+                            boxShadow: '0 24px 60px rgba(37, 57, 88, 0.14)',
+                        }}
+                    >
+                        <div
+                            style={{
+                                height: 58,
+                                padding: '0 16px',
+                                display: 'flex',
+                                alignItems: 'center',
+                                justifyContent: 'space-between',
+                                borderBottom: '1px solid #E7ECF3',
+                            }}
+                        >
+                            <div style={{ display: 'flex', gap: 8 }}>
+                                <span style={{ padding: '8px 11px', display: 'flex', border: '1px solid #D7DFE9', borderRadius: 7, color: '#344158', fontSize: 11, fontWeight: 700 }}>Downtown</span>
+                                <span style={{ padding: '8px 11px', display: 'flex', border: '1px solid #D7DFE9', borderRadius: 7, color: '#344158', fontSize: 11, fontWeight: 700 }}>Week of Jul 20</span>
+                            </div>
+                            <span style={{ padding: '8px 12px', display: 'flex', borderRadius: 7, background: '#07111F', color: '#FFFFFF', fontSize: 10, fontWeight: 800 }}>Review schedule</span>
+                        </div>
+                        <div style={{ height: 49, paddingLeft: 100, display: 'flex', borderBottom: '1px solid #E7ECF3', background: '#F7F9FC' }}>
+                            {days.map((day) => (
+                                <div key={day} style={{ width: 90, padding: '13px 7px', display: 'flex', borderLeft: '1px solid #E7ECF3', color: '#526078', fontSize: 9, fontWeight: 800 }}>{day}</div>
+                            ))}
+                        </div>
+                        {team.map((member, rowIndex) => (
+                            <div key={member.name} style={{ height: 91, display: 'flex', borderBottom: '1px solid #E7ECF3' }}>
+                                <div style={{ width: 100, padding: '17px 10px', display: 'flex', alignItems: 'center', gap: 7 }}>
+                                    <span style={{ width: 27, height: 27, display: 'flex', alignItems: 'center', justifyContent: 'center', borderRadius: 99, background: member.background, color: '#17324E', fontSize: 8, fontWeight: 800 }}>{member.initials}</span>
+                                    <span style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
+                                        <strong style={{ fontSize: 9 }}>{member.name}</strong>
+                                        <small style={{ color: '#7A8799', fontSize: 7 }}>Team</small>
+                                    </span>
+                                </div>
+                                {member.shifts.map((hasShift, index) => (
+                                    <div key={days[index]} style={{ width: 90, padding: '13px 5px', display: 'flex', borderLeft: '1px solid #E7ECF3' }}>
+                                        {hasShift ? (
+                                            <div style={{ width: '100%', padding: '8px 7px', display: 'flex', flexDirection: 'column', gap: 5, border: '1px solid ' + member.border, borderRadius: 6, background: member.background }}>
+                                                <strong style={{ color: '#17324E', fontSize: 8 }}>{8 + rowIndex}:00 - {4 + rowIndex}:00</strong>
+                                                <span style={{ color: member.color, fontSize: 7, fontWeight: 800 }}>Covered</span>
+                                            </div>
+                                        ) : (
+                                            <span style={{ margin: 'auto', display: 'flex', color: '#C1CAD6', fontSize: 10 }}>-</span>
+                                        )}
+                                    </div>
+                                ))}
+                            </div>
+                        ))}
+                        <div style={{ flex: 1, padding: '0 16px', display: 'flex', alignItems: 'center', gap: 16, color: '#68758A', fontSize: 8 }}>
+                            <span style={{ display: 'flex', color: '#17A765' }}>Covered</span>
+                            <span style={{ display: 'flex', color: '#D94A64' }}>Needs coverage</span>
+                            <span style={{ marginLeft: 'auto', display: 'flex' }}>All times in local time</span>
+                        </div>
+                    </div>
                 </div>
             </div>
         ),

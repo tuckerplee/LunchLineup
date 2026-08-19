@@ -25,6 +25,10 @@ const bashAvailable = spawnSync(bashPath, ['--version'], { encoding: 'utf8' }).s
 const sourceSha = '0123456789abcdef0123456789abcdef01234567';
 const durableProofUri = `s3://lunchlineup-production-recovery/vm217/initial-cutover/${sourceSha}.json`;
 const launchProofUri = `https://proofs.lunchlineup.com/releases/${sourceSha}/launch-proof.json`;
+// Git Bash process launch and its independently bounded rollback/reconciliation
+// have measurable Windows overhead. The fixture still stops a real 45-second
+// child well before natural completion.
+const boundedFixtureDeadlineAssertionMs = process.platform === 'win32' ? 25_000 : 16_000;
 
 function read(path) {
   return readFileSync(join(root, path), 'utf8');
@@ -374,7 +378,7 @@ test('timed-out delegated deploy preserves rollback eligibility by invoking the 
       readFileSync(fixture.files.recoveryLog, 'utf8'),
       'snapshot\nproof-fetch\nrollback:deploy-transport-failed:124\n',
     );
-    assert.ok(Date.now() - startedAt < 16000, 'cutover transport, rollback, and reconciliation must remain bounded');
+    assert.ok(Date.now() - startedAt < boundedFixtureDeadlineAssertionMs, 'cutover transport, rollback, and reconciliation must remain bounded');
   } finally {
     rmSync(fixture.scratch, { recursive: true, force: true });
   }

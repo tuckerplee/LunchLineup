@@ -94,17 +94,17 @@ async function expectAccessibleRoute(page: Page, route: string) {
 }
 
 async function mockAdminReads(page: Page) {
-  await page.route('**/api/v1/admin/stats', (route) => route.fulfill({
+  await page.route('**/api/v2/admin/stats', (route) => route.fulfill({
     status: 200,
     contentType: 'application/json',
     body: JSON.stringify({ totalTenants: 1, totalUsers: 2, activeSessions: 1, solverQueue: 0 }),
   }));
-  await page.route('**/api/v1/admin/audit?*', (route) => route.fulfill({
+  await page.route('**/api/v2/admin/audit?*', (route) => route.fulfill({
     status: 200,
     contentType: 'application/json',
     body: JSON.stringify({ data: [] }),
   }));
-  await page.route('**/api/v1/admin/health', (route) => route.fulfill({
+  await page.route('**/api/v2/admin/health', (route) => route.fulfill({
     status: 200,
     contentType: 'application/json',
     body: JSON.stringify({
@@ -113,22 +113,22 @@ async function mockAdminReads(page: Page) {
       components: [{ label: 'API', status: 'online', latencyMs: 8 }],
     }),
   }));
-  await page.route('**/api/v1/admin/tenants?*', (route) => route.fulfill({
+  await page.route('**/api/v2/admin/tenants?*', (route) => route.fulfill({
     status: 200,
     contentType: 'application/json',
     body: JSON.stringify({ data: [], pagination: emptyPagination }),
   }));
-  await page.route('**/api/v1/admin/users', (route) => route.fulfill({
+  await page.route('**/api/v2/admin/users', (route) => route.fulfill({
     status: 200,
     contentType: 'application/json',
     body: JSON.stringify({ data: [] }),
   }));
-  await page.route('**/api/v1/admin/plans', (route) => route.fulfill({
+  await page.route('**/api/v2/admin/plans', (route) => route.fulfill({
     status: 200,
     contentType: 'application/json',
     body: JSON.stringify({ data: [] }),
   }));
-  await page.route('**/api/v1/admin/credits?*', (route) => route.fulfill({
+  await page.route('**/api/v2/admin/credits?*', (route) => route.fulfill({
     status: 200,
     contentType: 'application/json',
     body: JSON.stringify({

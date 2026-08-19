@@ -23,7 +23,7 @@ const publicBuildConfigKeys = [
   'NEXT_PUBLIC_APP_ENV',
 ];
 const publicBuildConfigValues = {
-  NEXT_PUBLIC_API_URL: '/api/v1',
+  NEXT_PUBLIC_API_URL: '/api/v2',
   NEXT_PUBLIC_OIDC_ENABLED: 'false',
   NEXT_PUBLIC_SIGNUP_MODE: 'closed_beta',
   NEXT_PUBLIC_TURNSTILE_SITE_KEY: '',
@@ -61,6 +61,7 @@ function samplePublicBuildConfig() {
 function sampleReleaseManifest() {
   const services = {
     api: 'Dockerfile.api',
+    'api-v2': 'Dockerfile.api-v2',
     web: 'Dockerfile.web',
     engine: 'Dockerfile.engine',
     worker: 'Dockerfile.worker',

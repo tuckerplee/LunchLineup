@@ -3,7 +3,7 @@ import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 const configPath = resolve(__dirname, '../../next.config.js');
-const ENV_KEYS = ['INTERNAL_API_URL', 'NEXT_PUBLIC_API_URL'] as const;
+const ENV_KEYS = ['INTERNAL_API_V2_URL', 'LUNCHLINEUP_E2E_LEGACY_API_URL', 'NEXT_PUBLIC_API_URL'] as const;
 const CONFIG_LOADER = `
 const config = require(process.argv[1]);
 Promise.all([config.headers(), config.rewrites()]).then(([headers, rewrites]) => {
@@ -60,7 +60,7 @@ describe('Next.js production security configuration', () => {
   it('limits production connections to trusted configured origins', () => {
     const config = loadConfig({
       NODE_ENV: 'production',
-      NEXT_PUBLIC_API_URL: 'https://app.lunchlineup.com/api/v1',
+      NEXT_PUBLIC_API_URL: 'https://app.lunchlineup.com/api/v2',
     });
     const headers = responseHeaders(config);
     const policy = headers.get('Content-Security-Policy') ?? '';
@@ -82,7 +82,7 @@ describe('Next.js production security configuration', () => {
   it('keeps loopback connections available only for local development', () => {
     const config = loadConfig({
       NODE_ENV: 'development',
-      NEXT_PUBLIC_API_URL: '/api/v1',
+      NEXT_PUBLIC_API_URL: '/api/v2',
     });
     const headers = responseHeaders(config);
     const policy = headers.get('Content-Security-Policy') ?? '';
@@ -94,7 +94,7 @@ describe('Next.js production security configuration', () => {
   it('rejects insecure or malformed production origins', () => {
     expect(() => loadConfig({
       NODE_ENV: 'production',
-      NEXT_PUBLIC_API_URL: 'http://app.lunchlineup.com/api/v1',
+      NEXT_PUBLIC_API_URL: 'http://app.lunchlineup.com/api/v2',
     })).toThrow();
   });
 
@@ -106,8 +106,25 @@ describe('Next.js production security configuration', () => {
     expect(config.images).toEqual({ dangerouslyAllowSVG: false, remotePatterns: [] });
     expect(config.hasRedirects).toBe(false);
     expect(config.rewrites).toEqual([
-      { source: '/api/v1/:path*', destination: 'http://api:3000/v1/:path*' },
+      { source: '/api/v2/:path*', destination: 'http://api-v2:3002/v2/:path*' },
     ]);
+  });
+
+  it('permits a v1 rewrite only in the explicit local E2E fixture', () => {
+    const development = loadConfig({
+      NODE_ENV: 'development',
+      LUNCHLINEUP_E2E_LEGACY_API_URL: 'http://mock-api:3100/v1',
+    });
+    const production = loadConfig({
+      NODE_ENV: 'production',
+      LUNCHLINEUP_E2E_LEGACY_API_URL: 'http://mock-api:3100/v1',
+    });
+
+    expect(development.rewrites).toContainEqual({
+      source: '/api/v1/:path*',
+      destination: 'http://mock-api:3100/v1/:path*',
+    });
+    expect(production.rewrites).not.toContainEqual(expect.objectContaining({ source: '/api/v1/:path*' }));
   });
 
   it('prevents reset-token routes from sending a Referer or being cached', () => {

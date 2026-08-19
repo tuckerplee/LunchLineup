@@ -36,9 +36,9 @@ describe('first-location authenticated transport', () => {
 
     expect(response.status).toBe(201);
     expect(fetchMock.mock.calls.map((call) => String(call[0]))).toEqual([
-      '/api/v1/locations',
-      '/api/v1/auth/refresh',
-      '/api/v1/locations',
+      '/api/v2/locations',
+      '/api/v2/auth/refresh',
+      '/api/v2/locations',
     ]);
     expect(headersFromCall(fetchMock.mock.calls[0]).get('Idempotency-Key')).toBe('first-location-key');
     expect(headersFromCall(fetchMock.mock.calls[2]).get('Idempotency-Key')).toBe('first-location-key');
@@ -112,8 +112,8 @@ describe('first-location authenticated transport', () => {
 
     expect(response.status).toBe(401);
     expect(fetchMock.mock.calls.map((call) => String(call[0]))).toEqual([
-      '/api/v1/locations',
-      '/api/v1/auth/refresh',
+      '/api/v2/locations',
+      '/api/v2/auth/refresh',
     ]);
     expect(assign).toHaveBeenCalledWith('/auth/login?next=%2Fonboarding%3Fresume%3Dfirst-location');
     expect(fetchMock.mock.calls.some((call) => String(call[0]).includes('verify-otp'))).toBe(false);

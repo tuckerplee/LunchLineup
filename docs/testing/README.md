@@ -17,6 +17,11 @@ Run the fast migration guardrails:
 npm run test:migration
 ```
 
+The aggregate command is a deterministic, sorted, per-file runner. It emits the
+active test file and owns the full child process tree with a bounded deadline,
+so a Windows shell or provider fixture cannot leave the aggregate gate running
+without an identified in-flight test.
+
 This includes deploy-source, Compose readiness, repository hygiene, migration, and production Terraform contract tests.
 
 Run the full workspace test suite:

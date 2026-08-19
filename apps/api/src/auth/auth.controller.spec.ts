@@ -414,7 +414,12 @@ describe('AuthController', () => {
 
         await controller.verifyPassword(
             { identifier: 'demo@demo.com', password: 'demo', tenantSlug: 'demo' },
-            createRequestMock({ headers: { host: 'beta.lunchlineup.com' } }),
+            createRequestMock({
+                headers: {
+                    host: 'api:3000',
+                    'x-forwarded-host': 'beta.lunchlineup.com',
+                },
+            }),
             createResponseMock(),
         );
         expect(authService.loginWithUsernamePassword).toHaveBeenCalledWith(
@@ -423,6 +428,59 @@ describe('AuthController', () => {
             'demo',
             { ipAddress: null, userAgent: null },
         );
+
+        await expect(controller.verifyPassword(
+            { identifier: 'demo@demo.com', password: 'demo', tenantSlug: 'demo' },
+            createRequestMock({
+                headers: {
+                    host: 'beta.lunchlineup.com',
+                    'x-forwarded-host': 'evil.example',
+                },
+            }),
+            createResponseMock(),
+        )).rejects.toBeInstanceOf(ForbiddenException);
+    });
+
+    it('requests the MFA exemption only for the configured exact beta demo identity', async () => {
+        const previous = process.env.BETA_DEMO_MFA_BYPASS_ENABLED;
+        process.env.BETA_DEMO_MFA_BYPASS_ENABLED = 'true';
+        authService.loginWithUsernamePassword.mockResolvedValue({
+            accessToken: 'a',
+            refreshToken: 'r',
+            csrfToken: 'c',
+            requiresMfa: false,
+            user: { id: 'u1', role: 'ADMIN' },
+        });
+
+        try {
+            await controller.verifyPassword(
+                { identifier: 'demo@demo.com', password: 'demo', tenantSlug: 'demo' },
+                createRequestMock({ headers: { host: 'beta.lunchlineup.com' } }),
+                createResponseMock(),
+            );
+            expect(authService.loginWithUsernamePassword).toHaveBeenLastCalledWith(
+                'demo@demo.com',
+                'demo',
+                'demo',
+                { ipAddress: null, userAgent: null },
+                { betaDemoMfaBypass: true },
+            );
+
+            await controller.verifyPassword(
+                { identifier: 'other@demo.com', password: 'demo', tenantSlug: 'demo' },
+                createRequestMock({ headers: { host: 'beta.lunchlineup.com' } }),
+                createResponseMock(),
+            );
+            expect(authService.loginWithUsernamePassword).toHaveBeenLastCalledWith(
+                'other@demo.com',
+                'demo',
+                'demo',
+                { ipAddress: null, userAgent: null },
+            );
+        } finally {
+            if (previous === undefined) delete process.env.BETA_DEMO_MFA_BYPASS_ENABLED;
+            else process.env.BETA_DEMO_MFA_BYPASS_ENABLED = previous;
+        }
     });
 
     it('preserves a temporary PIN reset boundary through the generic username credential path', async () => {

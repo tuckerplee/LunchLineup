@@ -12,8 +12,8 @@ const secretKey = ['sk', 'live', 'abcdefghijklmnopqrstuvwxyz123456'].join('_');
 const webhookEndpointId = 'we_1234567890abcdef';
 const meterErrorEventDestinationId = 'ed_live_1234567890abcdef';
 const appOrigin = 'https://app.lunchlineup.test';
-const webhookUrl = `${appOrigin}/api/v1/billing/webhook`;
-const meterErrorWebhookUrl = `${appOrigin}/api/v1/billing/meter-errors/webhook`;
+const webhookUrl = `${appOrigin}/api/webhooks/stripe`;
+const meterErrorWebhookUrl = `${appOrigin}/api/webhooks/stripe/meter-errors`;
 const priceIds = ['price_enterprise1234567890', 'price_growth1234567890', 'price_starter1234567890'];
 const webhookEvents = [
   'checkout.session.completed',
@@ -202,7 +202,7 @@ test('fails closed on incompatible meter mappings, plan prices, or webhook subsc
 
 test('fails closed when the live webhook URL has the wrong host or path', async () => {
   await assert.rejects(
-    verify({ fetchImpl: fetchStripe({ webhookOverrides: { url: 'https://wrong.example/api/v1/billing/webhook' } }) }),
+    verify({ fetchImpl: fetchStripe({ webhookOverrides: { url: 'https://wrong.example/api/webhooks/stripe' } }) }),
     /URL must exactly match/,
   );
   await assert.rejects(

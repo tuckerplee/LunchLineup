@@ -17,7 +17,22 @@ This folder contains repo-level tests for the LunchLineup rebuild. These tests r
 
 ## Command
 
-Run the suite from the repo root:
+Run the suite from the repo root. The runner executes every file in sorted order with
+one Node test worker, prints the active file, and terminates an entire timed-out child
+process tree. Ordinary
+files have a 120-second deadline. The signed backup/restore recovery suite has a
+separate 600-second bounded deadline because it runs multiple serial process-tree
+simulations; the VM217 transport, initial cutover, and durable-runtime suites
+each have a separate 240-second bounded deadline, and retained rollback transport
+has a five-minute deadline, because they run complete Git Bash process-tree and
+external-recovery contracts. The transport 45-second timeout fixtures stop within
+20 seconds on Windows; cutover's rollback/reconciliation fixture stops within 25
+seconds. Set
+`LUNCHLINEUP_MIGRATION_TEST_FILE_TIMEOUT_MS` only to a bounded value
+from 10,000 through 600,000 milliseconds when a constrained runner needs one explicit
+per-file budget. The complete run also has a one-hour aggregate deadline, configurable
+only through `LUNCHLINEUP_MIGRATION_TEST_TOTAL_TIMEOUT_MS` from 60,000 through
+7,200,000 milliseconds.
 
 ```bash
 npm run test:migration

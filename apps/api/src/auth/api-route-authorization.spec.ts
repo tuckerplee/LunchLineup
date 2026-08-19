@@ -249,6 +249,13 @@ describe('externally reachable API authorization inventory', () => {
         )).toBe('schedules:write');
     });
 
+    it('keeps live subscription recovery reads behind billing read access', () => {
+        expect(Reflect.getMetadata(
+            PERMISSION_METADATA_KEY,
+            BillingController.prototype.subscriptionRecoveryAction,
+        )).toBe('billing:read');
+    });
+
     it('keeps every payroll route bound to its exact reviewed permission', () => {
         const expected = {
             exportEntitlement: 'payroll:export',

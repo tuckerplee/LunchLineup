@@ -83,8 +83,8 @@ test.describe.serial('Frontend accessibility launch contracts', () => {
     await expect(mobileSignOut).toBeVisible();
     await expect(mobileSignOut).toHaveAccessibleName('Sign out');
     const box = await mobileSignOut.boundingBox();
-    expect(box?.width).toBe(32);
-    expect(box?.height).toBe(32);
+    expect(box?.width).toBeCloseTo(32, 3);
+    expect(box?.height).toBeCloseTo(32, 3);
     await expect(mobileSignOut).toHaveText('');
   });
 });

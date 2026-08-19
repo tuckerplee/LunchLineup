@@ -8,6 +8,7 @@ const read = (path) => readFileSync(join(root, path), 'utf8');
 const schema = read('packages/db/prisma/schema.prisma');
 const preMigration = read('packages/db/prisma/migrations/pre_20260716_payroll_controls.sql');
 const migration = read('packages/db/prisma/migrations/20260716_payroll_controls.sql');
+const publicIdMigration = read('packages/db/prisma/migrations/pre_20260719_api_v2_payroll_public_ids.sql');
 
 const payrollModels = [
   'PayrollPolicyVersion',
@@ -88,6 +89,13 @@ test('generated Prisma schema has the complete payroll model catalog and time-ca
   assert.match(timeCard, /^\s+revision\s+Int\s+@default\(1\)/m);
   assert.match(timeCard, /@@unique\(\[id, tenantId\]\)/);
   assert.match(timeCard, /@@index\(\[tenantId, payrollPeriodId, status, deletedAt, id\]\)/);
+});
+
+test('payroll public-ID backfill bypasses immutable triggers only within the owner migration transaction', () => {
+  assert.match(publicIdMigration, /^SET LOCAL session_replication_role = replica;$/m);
+  assert.match(publicIdMigration, /SET LOCAL session_replication_role = replica;\s+DO \$migration\$/);
+  assert.doesNotMatch(publicIdMigration, /ALTER TABLE[\s\S]*?(?:DISABLE|ENABLE) TRIGGER/);
+  assert.doesNotMatch(publicIdMigration, /SET\s+session_replication_role\s*=\s*replica/i);
 });
 
 test('generated Prisma schema has exact payroll enum values and PAYROLL permission category', () => {

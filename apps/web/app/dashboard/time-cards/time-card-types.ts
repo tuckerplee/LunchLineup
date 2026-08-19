@@ -47,5 +47,5 @@ export type TimeCard = {
 
 export type TimeCardPage = {
     data?: TimeCard[];
-    nextCursor?: string | null;
+    pagination?: { nextCursor?: string | null };
 };

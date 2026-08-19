@@ -367,7 +367,7 @@ function getCsrfTokenFromCookie(): string {
   return pair ? decodeURIComponent(pair.split('=')[1] ?? '') : '';
 }
 
-function jsonWriteInit(method: 'POST' | 'PUT', payload: unknown): RequestInit {
+function jsonWriteInit(method: 'POST' | 'PUT', payload: unknown): RequestInit & { method: 'POST' | 'PUT' } {
   const csrfToken = getCsrfTokenFromCookie();
   return {
     method,
@@ -380,11 +380,11 @@ function jsonWriteInit(method: 'POST' | 'PUT', payload: unknown): RequestInit {
   };
 }
 
-async function fetchLunchBreakMutation(path: string, init: RequestInit): Promise<Response> {
+async function fetchLunchBreakMutation(path: string, init: RequestInit & { method: 'POST' | 'PUT' }): Promise<Response> {
   const controller = new AbortController();
   const timeout = globalThis.setTimeout(() => controller.abort(), 15_000);
   try {
-    return await fetch(apiPath(path), {
+    return await fetch(apiPath(path, init.method), {
       ...init,
       credentials: 'include',
       redirect: 'error',
@@ -519,22 +519,23 @@ export default function LunchBreaksPage() {
     if (!res.ok) throw new Error('Unable to verify the active lunch/break session.');
     const payload = (await res.json().catch(() => ({}))) as {
       user?: {
-        id?: string;
-        sub?: string;
-        tenantId?: string;
-        sessionId?: string;
+        publicUserId?: string;
+        workspaceScope?: string;
+        sessionScope?: string;
         permissions?: string[];
       };
     };
-    const userId = payload.user?.sub ?? payload.user?.id;
-    if (!userId || !payload.user?.tenantId || !payload.user.sessionId) {
+    const userId = payload.user?.publicUserId;
+    if (!userId || !payload.user?.workspaceScope || !payload.user.sessionScope) {
       throw new Error('Unable to bind lunch/break recovery to the active session.');
     }
     return {
       identity: {
-        tenantId: payload.user.tenantId,
+        // Browser recovery is scoped by non-authoritative opaque values rather
+        // than API storage identifiers.
+        tenantId: payload.user.workspaceScope,
         userId,
-        sessionId: payload.user.sessionId,
+        sessionId: payload.user.sessionScope,
       },
       permissions: Array.isArray(payload.user.permissions) ? payload.user.permissions : [],
     };

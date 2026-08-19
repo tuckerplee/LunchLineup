@@ -60,6 +60,6 @@ describe('exact payroll permission visibility', () => {
   it('gates the server route only on payroll read and passes command capabilities', () => {
     const source = readFileSync(resolve(process.cwd(), 'app/dashboard/payroll/page.tsx'), 'utf8');
     expect(source).toContain('if (!capabilities.canReadPayroll)');
-    expect(source).toContain('<PayrollWorkspace capabilities={capabilities} currentUserId={user.id} />');
+    expect(source).toContain('<PayrollWorkspace capabilities={capabilities} currentUserId={user.publicUserId} />');
   });
 });

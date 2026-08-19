@@ -163,7 +163,7 @@ test('registry-writing image job is unreachable from pull requests', () => {
   assert.match(job, /if: github\.event_name == 'push' && github\.ref == 'refs\/heads\/main'/);
   assert.match(job, /packages: write/);
   assert.match(job, /docker\/login-action@/);
-  assert.equal((job.match(/push: \$\{\{ github\.event_name == 'push' && github\.ref == 'refs\/heads\/main' \}\}/g) ?? []).length, 7);
+  assert.equal((job.match(/push: \$\{\{ github\.event_name == 'push' && github\.ref == 'refs\/heads\/main' \}\}/g) ?? []).length, 8);
 });
 
 test('load gate seeds disposable availability fixtures after health without an opt-out', () => {

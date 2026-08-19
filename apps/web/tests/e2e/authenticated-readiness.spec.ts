@@ -4,10 +4,22 @@ import { csrfHeaders, loginAsSeedAdmin, loginWithPin, runFullStack } from './sup
 
 const runMockReadiness = process.env.E2E_MOCK_API !== '0' && !runFullStack && !process.env.BASE_URL;
 const publicOnlyOverride = process.env.E2E_PUBLIC_SMOKE_ONLY === '1';
+const v2Ids = {
+  downtown: '10000000-0000-4000-8000-000000000001',
+  uptown: '10000000-0000-4000-8000-000000000002',
+  staff: '20000000-0000-4000-8000-000000000001',
+  manager: '20000000-0000-4000-8000-000000000002',
+  downtownSchedule: '30000000-0000-4000-8000-000000000001',
+  uptownSchedule: '30000000-0000-4000-8000-000000000002',
+  downtownShift: '40000000-0000-4000-8000-000000000001',
+  uptownShift: '40000000-0000-4000-8000-000000000002',
+  recoveryJob: '50000000-0000-4000-8000-000000000001',
+};
 
 async function saveDemandWindow(page: Page, date: string) {
   const editor = page.getByLabel('Schedule demand setup').first();
   await expect(editor).toBeVisible();
+  await editor.getByRole('button', { name: 'Edit demand' }).click();
   await editor.getByRole('button', { name: 'Add window' }).click();
   const row = editor.locator('.demand-editor__row').last();
   await row.getByLabel('Date').fill(date);
@@ -47,7 +59,7 @@ test.describe('Authenticated scheduling SaaS readiness', () => {
   test('logs in and proves scheduler, break generation, and time-card writes', async ({ page }) => {
     const publishKeys: string[] = [];
     const publishBodies: unknown[] = [];
-    await page.route('**/api/v1/schedules/*/publish', async (route) => {
+    await page.route('**/api/v2/schedules/*/publications', async (route) => {
       publishKeys.push(route.request().headers()['idempotency-key'] ?? '');
       publishBodies.push(route.request().postDataJSON());
       if (publishKeys.length === 1) {
@@ -87,13 +99,17 @@ test.describe('Authenticated scheduling SaaS readiness', () => {
     await expect(page.getByRole('link', { name: /Time Cards/ })).toBeVisible();
     await expect(page.getByText(/No saved shifts in this range/)).toBeVisible();
 
-    const missingBreakAttemptKey = await page.request.post('/api/v1/lunch-breaks/generate', {
+    const missingBreakAttemptKey = await page.request.post('/api/v2/break-generations', {
       headers: await csrfHeaders(page),
-      data: { shiftIds: [], persist: true },
+      data: {
+        locationId: v2Ids.downtown,
+        shiftIds: [v2Ids.downtownShift],
+        persist: true,
+      },
     });
-    expect(missingBreakAttemptKey.status()).toBe(400);
+    expect(missingBreakAttemptKey.status()).toBe(428);
     expect(await missingBreakAttemptKey.json()).toMatchObject({
-      message: expect.stringContaining('Idempotency-Key header is required'),
+      code: 'idempotency_key_required',
     });
 
     await page.getByRole('button', { name: /Add shift/ }).click();
@@ -137,7 +153,7 @@ test.describe('Authenticated scheduling SaaS readiness', () => {
     expect(publishBodies).toEqual([
       {
         acceptedContract: {
-          version: 0,
+          version: 2,
           totalConfiguredCost: 1,
           scheduleCost: 1,
           matchingWebhookDeliveryCount: 0,
@@ -147,7 +163,7 @@ test.describe('Authenticated scheduling SaaS readiness', () => {
       },
       {
         acceptedContract: {
-          version: 0,
+          version: 2,
           totalConfiguredCost: 1,
           scheduleCost: 1,
           matchingWebhookDeliveryCount: 0,
@@ -156,6 +172,17 @@ test.describe('Authenticated scheduling SaaS readiness', () => {
         },
       },
     ]);
+
+    await page.locator('.shift-block').first().click();
+    const publishedShiftEditor = page.getByRole('dialog', { name: 'Edit shift' });
+    await expect(publishedShiftEditor).toBeVisible();
+    await expect(publishedShiftEditor.getByText('Published schedule')).toBeVisible();
+    await expect(publishedShiftEditor.getByRole('button', { name: 'Save shift' })).toBeDisabled();
+    await publishedShiftEditor.getByRole('button', { name: 'Reopen schedule to edit' }).click();
+    await publishedShiftEditor.getByRole('button', { name: 'Confirm reopen schedule' }).click();
+    await expect(publishedShiftEditor.getByText('Published schedule')).toHaveCount(0);
+    await expect(publishedShiftEditor.getByRole('button', { name: 'Save shift' })).toBeEnabled();
+    await publishedShiftEditor.getByRole('button', { name: 'Close shift editor' }).click();
 
     await page.getByRole('link', { name: /Time Cards/ }).click();
     await expect(page.getByRole('heading', { name: 'Time Cards' })).toBeVisible();
@@ -180,14 +207,90 @@ test.describe('Authenticated scheduling SaaS readiness', () => {
     });
   });
 
+  test('duplicates a shift from the editor and copies it with modifier drag', async ({ page }) => {
+    await loginAsSeedAdmin(page, '/dashboard/scheduling');
+    await expect(page.getByRole('heading', { name: 'Calendar' })).toBeVisible();
+
+    await page.getByRole('button', { name: /Add shift/ }).click();
+    const createForm = page.locator('form.shift-form');
+    await createForm.locator('select').first().selectOption({ label: 'Mock Staff' });
+    await createForm.getByLabel('Start').fill('10:00');
+    await createForm.getByLabel('End').fill('18:00');
+    const sourceDate = await createForm.getByLabel('Date').inputValue();
+    await createForm.getByRole('button', { name: 'Create shift' }).click();
+    await expect(page.getByText(/Shift created and saved/)).toBeVisible();
+
+    const sourceShift = page
+      .locator('.timeline-row[data-resource-title="Mock Staff"] .shift-block')
+      .filter({ hasText: '10:00-18:00' })
+      .first();
+    await expect(sourceShift).toBeVisible();
+    await sourceShift.click();
+
+    const editDialog = page.getByRole('dialog', { name: 'Edit shift' });
+    await expect(editDialog.getByRole('button', { name: 'Duplicate shift' })).toBeVisible();
+    await editDialog.getByRole('button', { name: 'Duplicate shift' }).click();
+
+    const duplicateDialog = page.getByRole('dialog', { name: 'Create shift' });
+    const expectedNextDate = new Date(`${sourceDate}T12:00:00.000Z`);
+    expectedNextDate.setUTCDate(expectedNextDate.getUTCDate() + 1);
+    await expect(duplicateDialog.getByLabel('Date')).toHaveValue(expectedNextDate.toISOString().slice(0, 10));
+    await expect(duplicateDialog.getByLabel('Start')).toHaveValue('10:00');
+    await expect(duplicateDialog.getByLabel('End')).toHaveValue('18:00');
+    await expect(duplicateDialog.getByRole('button', { name: 'Create shift' })).toBeEnabled();
+    await duplicateDialog.getByRole('button', { name: 'Cancel' }).click();
+
+    const destinationRow = page.locator('.timeline-row[data-resource-title="Mock Manager"]');
+    await expect(destinationRow).toBeVisible();
+    const sourceBox = await sourceShift.boundingBox();
+    const destinationBox = await destinationRow.boundingBox();
+    expect(sourceBox).not.toBeNull();
+    expect(destinationBox).not.toBeNull();
+
+    const copyRequestPromise = page.waitForRequest((request) =>
+      request.method() === 'POST'
+      && /\/api\/v2\/schedules\/[0-9a-f-]{36}\/change-sets$/.test(new URL(request.url()).pathname));
+    await page.keyboard.down('Shift');
+    try {
+      await page.mouse.move(sourceBox!.x + sourceBox!.width / 2, sourceBox!.y + sourceBox!.height / 2);
+      await page.mouse.down();
+      await page.mouse.move(
+        sourceBox!.x + sourceBox!.width / 2,
+        destinationBox!.y + destinationBox!.height / 2,
+        { steps: 8 },
+      );
+      await page.mouse.up();
+    } finally {
+      await page.keyboard.up('Shift');
+    }
+
+    const copyRequest = await copyRequestPromise;
+    expect(copyRequest.headers()['idempotency-key']).toMatch(/^[0-9a-f-]{36}:shift$/i);
+    expect(copyRequest.postDataJSON()).toEqual({
+      operations: [{
+        op: 'shift.create',
+        clientId: expect.stringMatching(/^[0-9a-f-]{36}$/i),
+        userId: v2Ids.manager,
+        role: 'STAFF',
+        startTime: expect.any(String),
+        endTime: expect.any(String),
+      }],
+    });
+    await expect(page.getByText(/Shift copied at/)).toBeVisible();
+    await expect(destinationRow.locator('.shift-block').filter({ hasText: '10:00-18:00' })).toBeVisible();
+    await expect(sourceShift).toBeVisible();
+  });
+
   test('creates and edits an overnight shift inside the containing weekly draft', async ({ page }) => {
     await loginAsSeedAdmin(page, '/dashboard/scheduling?date=2026-07-11');
     await expect(page.getByRole('heading', { name: 'Calendar' })).toBeVisible();
 
     const createScheduleResponsePromise = page.waitForResponse((response) =>
-      response.request().method() === 'POST' && new URL(response.url()).pathname.endsWith('/api/v1/schedules'));
+      response.request().method() === 'POST'
+      && /\/api\/v2\/locations\/[0-9a-f-]{36}\/schedules$/.test(new URL(response.url()).pathname));
     await page.getByRole('button', { name: 'Create schedule' }).click();
-    const weeklySchedule = await (await createScheduleResponsePromise).json() as { id: string };
+    const weeklyScheduleResponse = await (await createScheduleResponsePromise).json() as { data: { id: string } };
+    const weeklySchedule = weeklyScheduleResponse.data;
     await expect(page.getByText(/Draft schedule created/)).toBeVisible();
 
     await page.getByRole('button', { name: /Add shift/ }).click();
@@ -198,29 +301,33 @@ test.describe('Authenticated scheduling SaaS readiness', () => {
     await shiftForm.getByLabel('End').fill('02:00');
 
     const createRequestPromise = page.waitForRequest((request) =>
-      request.method() === 'POST' && new URL(request.url()).pathname.endsWith('/api/v1/shifts'));
+      request.method() === 'POST'
+      && /\/api\/v2\/schedules\/[0-9a-f-]{36}\/change-sets$/.test(new URL(request.url()).pathname));
     await shiftForm.getByRole('button', { name: 'Create shift' }).click();
     const createRequest = await createRequestPromise;
-    expect(createRequest.headers()['idempotency-key']).toMatch(/^[0-9a-f-]{36}$/i);
-    const createPayload = createRequest.postDataJSON() as { scheduleId: string; startTime: string; endTime: string };
-    expect(createPayload).toMatchObject({
-      scheduleId: weeklySchedule.id,
-      startTime: '2026-07-12T02:00:00.000Z',
-      endTime: '2026-07-12T06:00:00.000Z',
-    });
+    expect(createRequest.headers()['idempotency-key']).toMatch(/^[0-9a-f-]{36}:shift$/i);
+    expect(new URL(createRequest.url()).pathname).toContain(`/api/v2/schedules/${weeklySchedule.id}/change-sets`);
+    const createPayload = createRequest.postDataJSON() as {
+      operations: Array<{ op: string; startTime: string; endTime: string }>;
+    };
+    expect(createPayload.operations).toEqual([expect.objectContaining({
+      op: 'shift.create',
+      startTime: '2026-07-12T05:00:00.000Z',
+      endTime: '2026-07-12T09:00:00.000Z',
+    })]);
     await expect(page.getByText(/Shift created and saved/)).toBeVisible();
 
     const overnightShift = page.locator('.shift-block').filter({ hasText: '22:00-02:00' }).first();
     await expect(overnightShift).toBeVisible();
     await overnightShift.click();
-    await page.getByRole('button', { name: 'Edit shift' }).click();
+    await expect(page.getByRole('dialog', { name: 'Edit shift' })).toBeVisible();
     await expect(shiftForm.getByLabel('Date')).toHaveValue('2026-07-11');
     await expect(shiftForm.getByLabel('Start')).toHaveValue('22:00');
     await expect(shiftForm.getByLabel('End')).toHaveValue('02:00');
 
     const editKeys: string[] = [];
-    await page.route('**/api/v1/shifts/*', async (route) => {
-      if (route.request().method() !== 'PUT') {
+    await page.route('**/api/v2/schedules/*/change-sets', async (route) => {
+      if (route.request().method() !== 'POST') {
         await route.continue();
         return;
       }
@@ -243,31 +350,43 @@ test.describe('Authenticated scheduling SaaS readiness', () => {
     expect(editKeys[0]).toMatch(/^[0-9a-f-]{36}$/i);
     await expect.poll(() => page.evaluate(() => window.sessionStorage.getItem('lunchlineup:shift-update-recovery:v1'))).not.toBeNull();
     const afterLostResponse = await page.request.get('/api/v1/billing/features');
-    expect(await afterLostResponse.json()).toMatchObject({ usageCredits: 499 });
+    expect(await afterLostResponse.json()).toMatchObject({ usageCredits: 500 });
 
     await page.reload();
     await expect(page.getByRole('heading', { name: 'Calendar' })).toBeVisible();
     const recoveredShift = page.locator('.shift-block').filter({ hasText: '22:00-01:30' }).first();
     await expect(recoveredShift).toBeVisible();
     await recoveredShift.click();
-    await page.getByRole('button', { name: 'Edit shift' }).click();
+    await expect(page.getByRole('dialog', { name: 'Edit shift' })).toBeVisible();
     const recoveredForm = page.locator('form.shift-form');
     const editRequestPromise = page.waitForRequest((request) =>
-      request.method() === 'PUT' && /\/api\/v1\/shifts\/[^/]+$/.test(new URL(request.url()).pathname));
+      request.method() === 'POST'
+      && /\/api\/v2\/schedules\/[0-9a-f-]{36}\/change-sets$/.test(new URL(request.url()).pathname));
     await recoveredForm.getByRole('button', { name: 'Save shift' }).click();
-    const editPayload = (await editRequestPromise).postDataJSON() as { startTime: string; endTime: string };
-    expect(editPayload).toMatchObject({
-      startTime: '2026-07-12T02:00:00.000Z',
-      endTime: '2026-07-12T05:30:00.000Z',
-    });
+    const editPayload = (await editRequestPromise).postDataJSON() as {
+      operations: Array<{
+        op: string;
+        shiftId: string;
+        startTime?: string;
+        endTime?: string;
+        userId?: string | null;
+        role?: string | null;
+      }>;
+    };
+    expect(editPayload.operations).toEqual([{
+      op: 'shift.update',
+      shiftId: expect.any(String),
+      endTime: '2026-07-12T08:30:00.000Z',
+    }]);
     await expect(page.getByText(/Shift changes saved/)).toBeVisible();
     expect(editKeys).toHaveLength(2);
     expect(editKeys[1]).toBe(editKeys[0]);
     const afterReplay = await page.request.get('/api/v1/billing/features');
-    expect(await afterReplay.json()).toMatchObject({ usageCredits: 499 });
+    expect(await afterReplay.json()).toMatchObject({ usageCredits: 500 });
     await expect.poll(() => page.evaluate(() => window.sessionStorage.getItem('lunchlineup:shift-update-recovery:v1'))).toBeNull();
 
     const editor = page.getByLabel('Schedule demand setup').first();
+    await editor.getByRole('button', { name: 'Edit demand' }).click();
     await editor.getByRole('button', { name: 'Add window' }).click();
     const demandRow = editor.locator('.demand-editor__row').last();
     await demandRow.getByLabel('Date').fill('2026-07-11');
@@ -282,8 +401,8 @@ test.describe('Authenticated scheduling SaaS readiness', () => {
       windows: Array<{ startTime: string; endTime: string; requiredStaff: number }>;
     };
     expect(demandPayload.windows).toEqual([expect.objectContaining({
-      startTime: '2026-07-12T03:00:00.000Z',
-      endTime: '2026-07-12T05:00:00.000Z',
+      startTime: '2026-07-12T06:00:00.000Z',
+      endTime: '2026-07-12T08:00:00.000Z',
       requiredStaff: 2,
     })]);
     await expect(editor.getByText('1 demand window saved.')).toBeVisible();
@@ -292,33 +411,102 @@ test.describe('Authenticated scheduling SaaS readiness', () => {
     await expect(demandRow.getByLabel('End')).toHaveValue('01:00');
   });
 
+  test('moves a draft shift in time and reassigns it with one drag', async ({ page }) => {
+    await loginAsSeedAdmin(page, '/dashboard/scheduling?date=2026-07-09');
+    await page.getByRole('button', { name: /Add shift/ }).click();
+    const shiftForm = page.locator('form.shift-form');
+    await shiftForm.locator('select').first().selectOption({ label: 'Mock Staff' });
+    await shiftForm.getByLabel('Start').fill('10:00');
+    await shiftForm.getByLabel('End').fill('18:00');
+    await shiftForm.getByRole('button', { name: 'Create shift' }).click();
+    await expect(page.getByText(/Shift created and saved/)).toBeVisible();
+
+    const shift = page.locator('.timeline-row[data-resource-title="Mock Staff"] .shift-block').filter({ hasText: '10:00-18:00' }).first();
+    const targetRow = page.locator('.timeline-row[data-resource-title="Mock Manager"]');
+    const hourCell = page.locator('.hour-label').first();
+    const [shiftBox, targetBox, hourBox] = await Promise.all([
+      shift.boundingBox(),
+      targetRow.boundingBox(),
+      hourCell.boundingBox(),
+    ]);
+    expect(shiftBox).toBeTruthy();
+    expect(targetBox).toBeTruthy();
+    expect(hourBox).toBeTruthy();
+    if (!shiftBox || !targetBox || !hourBox) return;
+
+    const updateRequest = page.waitForRequest((request) =>
+      request.method() === 'POST'
+      && /\/api\/v2\/schedules\/[0-9a-f-]{36}\/change-sets$/.test(new URL(request.url()).pathname));
+    const sourceX = shiftBox.x + Math.min(20, shiftBox.width / 3);
+    await page.mouse.move(sourceX, shiftBox.y + shiftBox.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(sourceX + hourBox.width / 2, targetBox.y + targetBox.height / 2, { steps: 8 });
+    await page.mouse.up();
+
+    const payload = (await updateRequest).postDataJSON() as {
+      operations: Array<{ userId: string; startTime: string; endTime: string }>;
+    };
+    expect(payload.operations[0].userId).toBe(v2Ids.manager);
+    expect(
+      new Date(payload.operations[0].endTime).getTime() - new Date(payload.operations[0].startTime).getTime(),
+    ).toBe(8 * 60 * 60 * 1000);
+    await expect(page.getByText(/Board change saved/)).toBeVisible();
+    await expect(targetRow.locator('.shift-block').filter({ hasText: '10:30-18:30' })).toBeVisible();
+  });
+
   test('retains the active location through break generation and refresh', async ({ page }) => {
     const locations = [
-      { id: 'loc-downtown', name: 'Downtown Diner', timezone: 'America/Los_Angeles' },
-      { id: 'loc-uptown', name: 'Uptown Diner', timezone: 'America/Los_Angeles' },
+      { id: v2Ids.downtown, name: 'Downtown Diner', timezone: 'America/Los_Angeles' },
+      { id: v2Ids.uptown, name: 'Uptown Diner', timezone: 'America/Los_Angeles' },
+    ];
+    const staff = [
+      { id: v2Ids.staff, name: 'Mock Staff', role: 'STAFF' },
+      { id: v2Ids.manager, name: 'Mock Manager', role: 'MANAGER' },
+    ];
+    const schedules = [
+      {
+        id: v2Ids.downtownSchedule,
+        locationId: v2Ids.downtown,
+        startDate: '2026-07-09T07:00:00.000Z',
+        endDate: '2026-07-10T07:00:00.000Z',
+        status: 'DRAFT',
+        publishedAt: null,
+        revision: 0,
+        etag: `"schedule:${v2Ids.downtownSchedule}:0"`,
+      },
+      {
+        id: v2Ids.uptownSchedule,
+        locationId: v2Ids.uptown,
+        startDate: '2026-07-09T07:00:00.000Z',
+        endDate: '2026-07-10T07:00:00.000Z',
+        status: 'DRAFT',
+        publishedAt: null,
+        revision: 0,
+        etag: `"schedule:${v2Ids.uptownSchedule}:0"`,
+      },
     ];
     const shifts = [
       {
-        id: 'shift-downtown',
-        locationId: 'loc-downtown',
-        scheduleId: 'schedule-downtown',
-        userId: 'user-mock-staff',
+        id: v2Ids.downtownShift,
+        locationId: v2Ids.downtown,
+        scheduleId: v2Ids.downtownSchedule,
+        userId: v2Ids.staff,
         role: 'STAFF',
         startTime: '2026-07-09T17:00:00.000Z',
         endTime: '2026-07-10T01:00:00.000Z',
         breaks: [],
-        user: { id: 'user-mock-staff', name: 'Mock Staff', role: 'STAFF' },
+        user: { id: v2Ids.staff, name: 'Mock Staff', role: 'STAFF' },
       },
       {
-        id: 'shift-uptown',
-        locationId: 'loc-uptown',
-        scheduleId: 'schedule-uptown',
-        userId: 'user-mock-manager',
+        id: v2Ids.uptownShift,
+        locationId: v2Ids.uptown,
+        scheduleId: v2Ids.uptownSchedule,
+        userId: v2Ids.manager,
         role: 'MANAGER',
         startTime: '2026-07-09T18:00:00.000Z',
         endTime: '2026-07-10T02:00:00.000Z',
         breaks: [],
-        user: { id: 'user-mock-manager', name: 'Mock Manager', role: 'MANAGER' },
+        user: { id: v2Ids.manager, name: 'Mock Manager', role: 'MANAGER' },
       },
     ];
     const requestedLocationIds: Array<string | null> = [];
@@ -329,71 +517,107 @@ test.describe('Authenticated scheduling SaaS readiness', () => {
       releaseDowntownLoad = resolve;
     });
 
-    await page.route('**/api/v1/locations**', async (route) => {
+    await page.route('**/api/v2/schedule-board?*', async (route) => {
       const url = new URL(route.request().url());
-      const match = new RegExp('^/api/v1/locations/([^/]+)$').exec(url.pathname);
-      if (match) {
-        const location = locations.find((candidate) => candidate.id === decodeURIComponent(match[1]));
-        await route.fulfill({
-          status: location ? 200 : 404,
-          contentType: 'application/json',
-          body: JSON.stringify(location ?? { message: 'Location not found.' }),
-        });
-        return;
-      }
+      const locationId = url.searchParams.get('locationId') ?? locations[0].id;
+      requestedLocationIds.push(locationId);
+      if (locationId === v2Ids.downtown) await downtownLoadGate;
+      const selectedSchedules = schedules.filter((schedule) => schedule.locationId === locationId);
+      const scheduleIds = new Set(selectedSchedules.map((schedule) => schedule.id));
       await route.fulfill({
         status: 200,
         contentType: 'application/json',
         body: JSON.stringify({
-          data: locations,
-          pagination: { limit: 200, maxLimit: 200, returned: locations.length, hasMore: false, nextCursor: null },
+          data: {
+            permissions: [
+              'locations:read',
+              'schedules:read',
+              'schedules:write',
+              'schedules:publish',
+              'shifts:read',
+              'shifts:write',
+              'shifts:delete',
+              'lunch_breaks:write',
+            ],
+            locations,
+            locationsTruncated: false,
+            selectedLocationId: locationId,
+            staff,
+            schedules: selectedSchedules,
+            shifts: shifts.filter((shift) => scheduleIds.has(shift.scheduleId)),
+            range: {
+              start: '2026-07-09T07:00:00.000Z',
+              end: '2026-07-12T07:00:00.000Z',
+            },
+          },
+          meta: { generatedAt: '2026-07-09T08:00:00.000Z' },
         }),
       });
     });
-    await page.route('**/api/v1/shifts?*', async (route) => {
-      const locationId = new URL(route.request().url()).searchParams.get('locationId');
-      requestedLocationIds.push(locationId);
-      if (locationId === 'loc-downtown') await downtownLoadGate;
-      const data = locationId ? shifts.filter((shift) => shift.locationId === locationId) : shifts;
-      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ data }) });
-    });
-    await page.route('**/api/v1/lunch-breaks/generate', async (route) => {
+    await page.route('**/api/v2/break-generations', async (route) => {
       const payload = route.request().postDataJSON() as { locationId?: string; shiftIds?: string[] };
       generatedLocationId = payload.locationId ?? '';
       generatedShiftIds = payload.shiftIds ?? [];
+      const selectedShift = shifts.find((shift) => shift.id === generatedShiftIds[0]) ?? shifts[0];
       await route.fulfill({
-        status: 201,
+        status: 200,
         contentType: 'application/json',
-        body: JSON.stringify({ persisted: true, data: [] }),
+        body: JSON.stringify({
+          locationId: generatedLocationId,
+          source: 'shared_schedule',
+          persisted: true,
+          policy: {
+            break1OffsetMinutes: 120,
+            lunchOffsetMinutes: 240,
+            break2OffsetMinutes: 360,
+            break1DurationMinutes: 10,
+            lunchDurationMinutes: 30,
+            break2DurationMinutes: 10,
+            timeStepMinutes: 5,
+          },
+          creditConsumption: { consumedCredits: 1, newBalance: 499, source: 'credits' },
+          data: [{
+            shiftId: selectedShift.id,
+            userId: selectedShift.userId,
+            employeeName: selectedShift.user.name,
+            startTime: selectedShift.startTime,
+            endTime: selectedShift.endTime,
+            breaks: [],
+          }],
+          reused: false,
+        }),
       });
     });
 
-    await loginAsSeedAdmin(page, '/dashboard/scheduling?date=2026-07-09&location=loc-uptown');
+    await loginAsSeedAdmin(page, `/dashboard/scheduling?date=2026-07-09&location=${v2Ids.uptown}`);
     await expect(page.getByRole('heading', { name: 'Calendar' })).toBeVisible();
-    await expect.poll(() => requestedLocationIds.at(-1)).toBe('loc-uptown');
+    await expect.poll(() => requestedLocationIds.at(-1)).toBe(v2Ids.uptown);
+    await expect(page.locator('.timeline-row[data-resource-title="Mock Manager"] .shift-block')).toBeVisible();
 
-    await page.getByRole('button', { name: /Add shift/ }).click();
-    const locationSelect = page.locator('form.shift-form').getByLabel('Location');
-    await expect(locationSelect).toHaveValue('loc-uptown');
+    const locationSelect = page.getByLabel('Schedule location');
+    await expect(locationSelect).toHaveValue(v2Ids.uptown);
     const requestsBeforeSwitch = requestedLocationIds.length;
-    await locationSelect.selectOption('loc-downtown');
+    await locationSelect.selectOption(v2Ids.downtown);
     await page.getByRole('button', { name: 'Advanced settings' }).click();
     const generateButton = page.getByRole('button', { name: /Generate breaks/ });
     await expect(generateButton).toBeDisabled();
     expect(generatedShiftIds).toEqual([]);
     releaseDowntownLoad?.();
-    await expect.poll(() => requestedLocationIds.at(-1)).toBe('loc-downtown');
+    await expect.poll(() => requestedLocationIds.at(-1)).toBe(v2Ids.downtown);
     await expect(generateButton).toBeEnabled();
     await generateButton.click();
 
     await expect(page.getByText(/Breaks generated and saved for 1 shift/)).toBeVisible();
-    await expect(locationSelect).toHaveValue('loc-downtown');
-    expect(generatedLocationId).toBe('loc-downtown');
-    expect(generatedShiftIds).toEqual(['shift-downtown']);
+    await expect(locationSelect).toHaveValue(v2Ids.downtown);
+    expect(generatedLocationId).toBe(v2Ids.downtown);
+    expect(generatedShiftIds).toEqual([v2Ids.downtownShift]);
     expect(requestedLocationIds.slice(requestsBeforeSwitch)).toEqual(
-      expect.arrayContaining(['loc-downtown']),
+      expect.arrayContaining([v2Ids.downtown]),
     );
-    expect(requestedLocationIds.slice(requestsBeforeSwitch).every((locationId) => locationId === 'loc-downtown')).toBe(true);
+    expect(
+      requestedLocationIds.slice(requestsBeforeSwitch).every((locationId) => locationId === v2Ids.downtown),
+      `Requests after switching location: ${requestedLocationIds.slice(requestsBeforeSwitch).join(', ')}`,
+    ).toBe(true);
   });
 
   test('keeps the selected calendar scope when an older auto-schedule job completes', async ({ page }) => {
@@ -408,25 +632,33 @@ test.describe('Authenticated scheduling SaaS readiness', () => {
       markSolvePollStarted = resolve;
     });
 
-    await page.route('**/api/v1/shifts?*', async (route) => {
+    await page.route('**/api/v2/schedule-board?*', async (route) => {
       const url = new URL(route.request().url());
-      if (url.searchParams.has('startDate')) shiftLoadStarts.push(url.searchParams.get('startDate') ?? '');
+      if (url.searchParams.has('date')) shiftLoadStarts.push(url.searchParams.get('date') ?? '');
       await route.fallback();
     });
-    await page.route('**/api/v1/schedules/*/auto-schedule/jobs/*', async (route) => {
+    await page.route('**/api/v2/schedules/*/solve-jobs/*', async (route) => {
       markSolvePollStarted?.();
       await solvePollGate;
       completedSolvePolls += 1;
       const pathParts = new URL(route.request().url()).pathname.split('/');
+      const scheduleId = pathParts.at(-3) ?? v2Ids.downtownSchedule;
+      const jobId = pathParts.at(-1) ?? v2Ids.recoveryJob;
       await route.fulfill({
         status: 200,
         contentType: 'application/json',
         body: JSON.stringify({
-          jobId: pathParts.at(-1),
+          jobId,
+          scheduleId,
+          locationId: v2Ids.downtown,
           status: 'SUCCEEDED',
           statusReason: null,
           retryCount: 0,
           resultShiftCount: 1,
+          publicationStatus: 'DRAFT',
+          startedAt: '2026-07-09T18:00:00.000Z',
+          completedAt: '2026-07-09T18:00:01.000Z',
+          statusUrl: `/api/v2/schedules/${scheduleId}/solve-jobs/${jobId}`,
         }),
       });
     });
@@ -463,30 +695,38 @@ test.describe('Authenticated scheduling SaaS readiness', () => {
     let queueRequests = 0;
     let solvePolls = 0;
     const attemptKeys: string[] = [];
-    await page.route('**/api/v1/schedules/*/auto-schedule', async (route) => {
+    let queuedScheduleId = v2Ids.downtownSchedule;
+    await page.route('**/api/v2/schedules/*/solve-jobs', async (route) => {
       queueRequests += 1;
       attemptKeys.push(route.request().headers()['idempotency-key'] ?? '');
+      queuedScheduleId = new URL(route.request().url()).pathname.split('/').at(-2) ?? queuedScheduleId;
       await route.fulfill({
         status: 202,
         contentType: 'application/json',
         body: JSON.stringify({
-          jobId: 'job-reload-recovery',
+          jobId: v2Ids.recoveryJob,
           status: 'QUEUED',
-          statusUrl: '/v1/schedules/schedule-seed/auto-schedule/jobs/job-reload-recovery',
+          statusUrl: `/api/v2/schedules/${queuedScheduleId}/solve-jobs/${v2Ids.recoveryJob}`,
         }),
       });
     });
-    await page.route('**/api/v1/schedules/*/auto-schedule/jobs/job-reload-recovery', async (route) => {
+    await page.route(`**/api/v2/schedules/*/solve-jobs/${v2Ids.recoveryJob}`, async (route) => {
       solvePolls += 1;
       await route.fulfill({
         status: 200,
         contentType: 'application/json',
         body: JSON.stringify({
-          jobId: 'job-reload-recovery',
+          jobId: v2Ids.recoveryJob,
+          scheduleId: queuedScheduleId,
+          locationId: v2Ids.downtown,
           status: solvePolls === 1 ? 'RUNNING' : 'SUCCEEDED',
           statusReason: null,
           retryCount: 0,
           resultShiftCount: 1,
+          publicationStatus: 'DRAFT',
+          startedAt: '2026-07-09T18:00:00.000Z',
+          completedAt: solvePolls === 1 ? null : '2026-07-09T18:00:01.000Z',
+          statusUrl: `/api/v2/schedules/${queuedScheduleId}/solve-jobs/${v2Ids.recoveryJob}`,
         }),
       });
     });
@@ -514,7 +754,7 @@ test.describe('Authenticated scheduling SaaS readiness', () => {
   test('renders paused resume and delinquent portal recovery from normalized billing state', async ({ page }) => {
     let recoveryAction: 'resume' | 'portal' = 'resume';
 
-    await page.route('**/api/v1/billing/features', async (route) => {
+    await page.route('**/api/v2/billing/features', async (route) => {
       await route.fulfill({
         status: 200,
         contentType: 'application/json',
@@ -589,7 +829,7 @@ test.describe('Authenticated scheduling SaaS readiness', () => {
 
     const checkoutRequestPromise = page.waitForRequest((request) => (
       request.method() === 'POST'
-      && new URL(request.url()).pathname === '/api/v1/billing/credit-packs/checkout'
+      && new URL(request.url()).pathname === '/api/v2/billing/credit-packs/checkout'
     ));
     await selectedPack.getByRole('button', { name: 'Purchase' }).click();
     const checkoutRequest = await checkoutRequestPromise;
@@ -612,7 +852,7 @@ test.describe('Authenticated scheduling SaaS readiness', () => {
   test('keeps settings writes disabled after a transient read failure until retry hydrates them', async ({ page }) => {
     let settingsReads = 0;
     let settingsWrites = 0;
-    await page.route('**/api/v1/settings', async (route) => {
+    await page.route('**/api/v2/settings', async (route) => {
       settingsReads += 1;
       if (settingsReads === 1) {
         await route.fulfill({ status: 503, contentType: 'application/json', body: JSON.stringify({ message: 'Settings temporarily unavailable.' }) });
@@ -620,7 +860,7 @@ test.describe('Authenticated scheduling SaaS readiness', () => {
       }
       await route.continue();
     });
-    await page.route('**/api/v1/settings/**', async (route) => {
+    await page.route('**/api/v2/settings/**', async (route) => {
       if (route.request().method() === 'PUT') settingsWrites += 1;
       await route.continue();
     });
@@ -645,7 +885,7 @@ test.describe('Authenticated scheduling SaaS readiness', () => {
     let demandReads = 0;
     let demandWrites = 0;
     let demandAvailable = false;
-    await page.route('**/api/v1/schedules/*/demand-windows', async (route) => {
+    await page.route('**/api/v2/schedules/*/demand-windows', async (route) => {
       if (route.request().method() === 'PUT') {
         demandWrites += 1;
         await route.continue();
@@ -664,6 +904,7 @@ test.describe('Authenticated scheduling SaaS readiness', () => {
 
     const editor = page.getByLabel('Schedule demand setup').first();
     await expect(editor.getByText('Existing demand has not been replaced.')).toBeVisible();
+    await editor.getByRole('button', { name: 'Edit demand' }).click();
     await expect(editor.getByRole('button', { name: 'Add window' })).toBeDisabled();
     await expect(editor.getByRole('button', { name: 'Save demand' })).toBeDisabled();
     expect(demandWrites).toBe(0);
@@ -720,13 +961,13 @@ test.describe('Authenticated scheduling SaaS readiness', () => {
     await expect(page.locator('.surface-muted').filter({ hasText: 'Lifecycle' }).getByText('Open')).toBeVisible();
 
     let postDeleteStatusReads = 0;
-    await page.route('**/api/v1/admin/account/status', async (route) => {
+    await page.route('**/api/v2/admin/account/status', async (route) => {
       postDeleteStatusReads += 1;
       await route.continue();
     });
     const deletionResponsePromise = page.waitForResponse((response) => (
       response.request().method() === 'DELETE'
-      && new URL(response.url()).pathname === '/api/v1/admin/account'
+      && new URL(response.url()).pathname === '/api/v2/admin/account'
     ));
     const localLogoutResponsePromise = page.waitForResponse((response) => (
       response.request().method() === 'POST'
@@ -871,7 +1112,7 @@ test.describe('Mobile schedule publish readiness', () => {
     await expect(page.locator('.scheduler-publish-row__cost').getByText('Configured total: 1 credit')).toBeVisible();
     const publishRequestPromise = page.waitForRequest((request) => (
       request.method() === 'POST'
-      && /\/api\/v1\/schedules\/[^/]+\/publish$/.test(new URL(request.url()).pathname)
+      && /\/api\/v2\/schedules\/[0-9a-f-]{36}\/publications$/.test(new URL(request.url()).pathname)
     ));
     await page.getByRole('button', { name: 'Confirm - 1 credit' }).click();
     const publishRequest = await publishRequestPromise;
@@ -879,7 +1120,7 @@ test.describe('Mobile schedule publish readiness', () => {
     expect(publishRequest.headers()['idempotency-key']).toMatch(/^[0-9a-f-]{36}$/i);
     expect(publishRequest.postDataJSON()).toEqual({
       acceptedContract: {
-        version: 0,
+        version: 1,
         totalConfiguredCost: 1,
         scheduleCost: 1,
         matchingWebhookDeliveryCount: 0,

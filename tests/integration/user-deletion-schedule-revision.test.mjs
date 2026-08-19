@@ -52,6 +52,7 @@ test('restricted user deletion revises each changed draft once and fences stale 
           planTier: 'GROWTH',
           status: 'ACTIVE',
           stripeSubscriptionId: `sub_user_delete_revision_${runId}`,
+          stripeSubscriptionCurrentPeriodEnd: new Date('2099-01-01T00:00:00.000Z'),
           usageCredits: 20,
         },
       });

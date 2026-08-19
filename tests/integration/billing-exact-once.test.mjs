@@ -125,6 +125,7 @@ CREATE TABLE public."AuditLog" (
 CREATE TABLE public."User" (
   "id" TEXT PRIMARY KEY,
   "tenantId" TEXT NOT NULL REFERENCES public."Tenant"("id"),
+  "role" TEXT NOT NULL DEFAULT 'STAFF',
   "deletedAt" TIMESTAMP(3),
   "suspendedAt" TIMESTAMP(3)
 );
@@ -264,10 +265,11 @@ test('paid-through, exact admin grant, and deterministic replay hold in real Pos
       SELECT count(*) FROM public."CreditTransaction"
       WHERE "id" = 'retained-writer-null-settlement' AND "balanceAfter" IS NULL;
     `), '1');
-    psql(container, require('node:fs').readFileSync(
+    const refundDebtMigration = require('node:fs').readFileSync(
       join(root, 'packages/db/prisma/migrations/20260717_credit_refund_debt.sql'),
       'utf8',
-    ));
+    );
+    psql(container, `BEGIN;\n${refundDebtMigration}\nCOMMIT;\n`);
     assert.equal(scalar(container, `
       SELECT count(*) FROM public."CreditTransaction"
       WHERE "debtAmount" = 0 AND "debtAfter" = 0;

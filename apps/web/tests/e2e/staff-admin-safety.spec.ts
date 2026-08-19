@@ -3,6 +3,8 @@ import { expect, test } from '@playwright/test';
 import { loginAsSeedAdmin, loginAsSeedManager, loginAsSeedSuperAdmin, runFullStack } from './support';
 
 const runMockReadiness = process.env.E2E_MOCK_API !== '0' && !runFullStack && !process.env.BASE_URL;
+const DOWNTOWN_LOCATION_ID = '10000000-0000-4000-8000-000000000001';
+const MFA_ADMIN_USER_ID = '20000000-0000-4000-8000-000000000104';
 
 test.describe('Staff and platform admin safety controls', () => {
   test.skip(runFullStack, 'Mock safety coverage is separate from full-stack tenant workflows.');
@@ -18,7 +20,7 @@ test.describe('Staff and platform admin safety controls', () => {
     let resetRequests = 0;
     let removeRequests = 0;
 
-    await page.route('**/api/v1/users?*', async (route) => {
+    await page.route('**/api/v2/users?*', async (route) => {
       await route.fulfill({
         status: 200,
         contentType: 'application/json',
@@ -38,11 +40,11 @@ test.describe('Staff and platform admin safety controls', () => {
         }),
       });
     });
-    await page.route('**/api/v1/users/user-reset/pin/reset', async (route) => {
+    await page.route('**/api/v2/users/user-reset/pin/reset', async (route) => {
       resetRequests += 1;
       await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ temporaryPin: '123456' }) });
     });
-    await page.route('**/api/v1/users/user-remove', async (route) => {
+    await page.route('**/api/v2/users/user-remove', async (route) => {
       removeRequests += 1;
       await route.fulfill({ status: 204, body: '' });
     });
@@ -50,7 +52,11 @@ test.describe('Staff and platform admin safety controls', () => {
     await loginAsSeedAdmin(page, '/dashboard/staff');
 
     const resetRow = page.getByRole('row').filter({ hasText: 'Reset Candidate' });
-    await resetRow.getByRole('button', { name: 'Reset PIN' }).click();
+    await resetRow.getByText('Reset Candidate', { exact: true }).click();
+    const resetDrawer = page.getByRole('dialog', { name: 'Manage Reset Candidate' });
+    await expect(resetDrawer).toBeVisible();
+    await expect(resetDrawer.getByText('No delegable roles available.')).toBeVisible();
+    await resetDrawer.getByRole('button', { name: 'Reset PIN' }).click();
     const resetDialog = page.getByRole('alertdialog', { name: 'Reset PIN for Reset Candidate?' });
     await expect(resetDialog).toBeVisible();
     expect(resetRequests).toBe(0);
@@ -58,12 +64,16 @@ test.describe('Staff and platform admin safety controls', () => {
     await expect(resetDialog).toHaveCount(0);
     expect(resetRequests).toBe(0);
 
-    await resetRow.getByRole('button', { name: 'Reset PIN' }).click();
+    await resetDrawer.getByRole('button', { name: 'Reset PIN' }).click();
     await page.getByRole('alertdialog').getByRole('button', { name: 'Reset PIN' }).click();
     await expect.poll(() => resetRequests).toBe(1);
+    await expect(resetDrawer.getByText('Temporary PIN:')).toContainText('123456');
+    await resetDrawer.getByRole('button', { name: 'Close staff management' }).click();
 
     const removeRow = page.getByRole('row').filter({ hasText: 'Remove Candidate' });
-    await removeRow.getByRole('button', { name: 'Remove' }).click();
+    await removeRow.getByText('Remove Candidate', { exact: true }).click();
+    const removeDrawer = page.getByRole('dialog', { name: 'Manage Remove Candidate' });
+    await removeDrawer.getByRole('button', { name: 'Remove' }).click();
     const removeDialog = page.getByRole('alertdialog', { name: 'Remove Remove Candidate?' });
     await expect(removeDialog).toBeVisible();
     expect(removeRequests).toBe(0);
@@ -82,25 +92,26 @@ test.describe('Staff and platform admin safety controls', () => {
     await expect(page.getByRole('button', { name: 'Remove' })).toHaveCount(0);
 
     const staffRow = page.getByRole('row').filter({ hasText: 'Mock Staff' });
-    await staffRow.getByRole('button', { name: 'Edit schedule profile' }).click();
+    await staffRow.getByText('Mock Staff', { exact: true }).click();
+    await expect(page.getByRole('dialog', { name: 'Manage Mock Staff' })).toBeVisible();
     const editor = page.getByRole('region', { name: 'Scheduling profile for Mock Staff' });
     await expect(editor.getByText('Availability is not configured. This staff member is unavailable to auto-scheduling.')).toBeVisible();
 
     await editor.getByLabel('Skills').fill('  Line   Cook ');
     await editor.getByRole('button', { name: 'Add skill' }).click();
     await editor.getByRole('button', { name: 'Add window' }).click();
-    await editor.getByLabel('Location').selectOption('loc-downtown');
+    await editor.getByLabel('Location').selectOption(DOWNTOWN_LOCATION_ID);
     await editor.getByLabel('Start').fill('22:00');
     await editor.getByLabel(/End/).fill('02:00');
     await expect(editor.getByText(/overnight/)).toBeVisible();
     await editor.getByRole('button', { name: 'Save profile' }).click();
     await expect(editor.getByText('Scheduling profile saved.')).toBeVisible();
 
-    await editor.getByRole('button', { name: 'Close scheduling profile' }).click();
+    await page.getByRole('dialog', { name: 'Manage Mock Staff' }).getByRole('button', { name: 'Close staff management' }).click();
     await staffRow.getByRole('button', { name: 'Edit schedule profile' }).click();
     const reopened = page.getByRole('region', { name: 'Scheduling profile for Mock Staff' });
     await expect(reopened.getByText('line cook')).toBeVisible();
-    await expect(reopened.getByLabel('Location')).toHaveValue('loc-downtown');
+    await expect(reopened.getByLabel('Location')).toHaveValue(DOWNTOWN_LOCATION_ID);
     await expect(reopened.getByLabel('Start')).toHaveValue('22:00');
     await expect(reopened.getByLabel(/End/)).toHaveValue('02:00');
   });
@@ -113,7 +124,7 @@ test.describe('Staff and platform admin safety controls', () => {
     let profileWrites = 0;
     let appliedProfile: { skills?: string[]; availability?: unknown[] } | null = null;
 
-    await page.route('**/api/v1/billing/features', async (route) => {
+    await page.route('**/api/v2/billing/features', async (route) => {
       await route.fulfill({
         status: 200,
         contentType: 'application/json',
@@ -122,7 +133,7 @@ test.describe('Staff and platform admin safety controls', () => {
         }),
       });
     });
-    await page.route('**/api/v1/availability-imports/users/user-mock-staff', async (route) => {
+    await page.route('**/api/v2/availability-imports/users/user-mock-staff', async (route) => {
       uploadRequests += 1;
       idempotencyKeys.push(route.request().headers()['idempotency-key'] ?? '');
       csrfHeaders.push(route.request().headers()['x-csrf-token'] ?? '');
@@ -146,7 +157,7 @@ test.describe('Staff and platform admin safety controls', () => {
         }),
       });
     });
-    await page.route('**/api/v1/availability-imports/availability-import-1', async (route) => {
+    await page.route('**/api/v2/availability-imports/availability-import-1', async (route) => {
       statusRequests += 1;
       const succeeded = statusRequests >= 2;
       await route.fulfill({
@@ -166,7 +177,7 @@ test.describe('Staff and platform admin safety controls', () => {
         }),
       });
     });
-    await page.route('**/api/v1/users/user-mock-staff/scheduling-profile', async (route) => {
+    await page.route('**/api/v2/users/user-mock-staff/scheduling-profile', async (route) => {
       if (route.request().method() !== 'PUT') {
         await route.continue();
         return;
@@ -226,7 +237,7 @@ test.describe('Staff and platform admin safety controls', () => {
   });
   test('defaults tenant admin invites to Staff and hides non-delegable Admin', async ({ page }) => {
     let invitedRoleId = '';
-    await page.route('**/api/v1/users/access/catalog', async (route) => {
+    await page.route('**/api/v2/users/access/catalog', async (route) => {
       await route.fulfill({
         status: 200,
         contentType: 'application/json',
@@ -240,7 +251,7 @@ test.describe('Staff and platform admin safety controls', () => {
         }),
       });
     });
-    await page.route('**/api/v1/users/invite', async (route) => {
+    await page.route('**/api/v2/users/invite', async (route) => {
       invitedRoleId = (await route.request().postDataJSON()).roleId;
       await route.fulfill({ status: 201, contentType: 'application/json', body: JSON.stringify({ id: 'new-staff', temporaryPin: '123456' }) });
     });
@@ -260,7 +271,7 @@ test.describe('Staff and platform admin safety controls', () => {
     let profileReads = 0;
     let profileWrites = 0;
     let profileAvailable = false;
-    await page.route('**/api/v1/users/user-mock-staff/scheduling-profile', async (route) => {
+    await page.route('**/api/v2/users/user-mock-staff/scheduling-profile', async (route) => {
       if (route.request().method() === 'PUT') {
         profileWrites += 1;
         await route.continue();
@@ -294,7 +305,7 @@ test.describe('Staff and platform admin safety controls', () => {
 
   test('requires an exact role name and blocks deletion while assignments exist', async ({ page }) => {
     let deleteRequests = 0;
-    await page.route('**/api/v1/users/access/catalog', async (route) => {
+    await page.route('**/api/v2/users/access/catalog', async (route) => {
       await route.fulfill({
         status: 200,
         contentType: 'application/json',
@@ -307,7 +318,7 @@ test.describe('Staff and platform admin safety controls', () => {
         }),
       });
     });
-    await page.route('**/api/v1/users/roles/role-unused', async (route) => {
+    await page.route('**/api/v2/users/roles/role-unused', async (route) => {
       deleteRequests += 1;
       await route.fulfill({ status: 204, body: '' });
     });
@@ -350,7 +361,7 @@ test.describe('Staff and platform admin safety controls', () => {
     await enrolledRow.getByRole('button').first().click();
     await expect(resetMfaButton).toBeEnabled();
 
-    const confirmation = 'reset-mfa:user-mfa-admin';
+    const confirmation = `reset-mfa:${MFA_ADMIN_USER_ID}`;
     const reason = 'Support verified account ownership.';
     const promptMessages: string[] = [];
     const promptResponses = [confirmation, reason];
@@ -360,13 +371,13 @@ test.describe('Staff and platform admin safety controls', () => {
     });
 
     const resetRequestPromise = page.waitForRequest((request) =>
-      request.method() === 'POST' && request.url().endsWith('/api/v1/admin/users/user-mfa-admin/mfa/reset'),
+      request.method() === 'POST' && request.url().endsWith(`/api/v2/admin/users/${MFA_ADMIN_USER_ID}/mfa/reset`),
     );
     await resetMfaButton.click();
     const resetRequest = await resetRequestPromise;
 
     expect(promptMessages).toEqual([
-      'Type reset-mfa:user-mfa-admin to clear MFA factors and revoke all sessions.',
+      `Type reset-mfa:${MFA_ADMIN_USER_ID} to clear MFA factors and revoke all sessions.`,
       'Enter the support reason for this MFA recovery.',
     ]);
     expect(promptResponses).toHaveLength(0);

@@ -1,5 +1,14 @@
 #!/usr/bin/env bash
 
+VM217_TRANSPORT_DEADLINES_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+VM217_BOUNDED_COMMAND_OWNER="$VM217_TRANSPORT_DEADLINES_DIR/run-bounded-command.mjs"
+VM217_BOUNDED_COMMAND_PRESERVE_MSYS_ARGUMENTS=false
+case "${OSTYPE:-}" in
+  msys*|mingw*|cygwin*)
+    VM217_BOUNDED_COMMAND_OWNER="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -W)/run-bounded-command.mjs"
+    VM217_BOUNDED_COMMAND_PRESERVE_MSYS_ARGUMENTS=true
+    ;;
+esac
 VM217_SSH_CONNECT_TIMEOUT_SECONDS="${VM217_SSH_CONNECT_TIMEOUT_SECONDS:-15}"
 VM217_SSH_COMMAND_TIMEOUT_SECONDS="${VM217_SSH_COMMAND_TIMEOUT_SECONDS:-1800}"
 VM217_MUTATION_BUDGET_SECONDS="${VM217_MUTATION_BUDGET_SECONDS:-$VM217_SSH_COMMAND_TIMEOUT_SECONDS}"
@@ -48,17 +57,26 @@ vm217_assert_mutation_cutoff() {
   fi
 }
 
+vm217_run_bounded_command_owner() {
+  if [[ "$VM217_BOUNDED_COMMAND_PRESERVE_MSYS_ARGUMENTS" == "true" ]]; then
+    MSYS2_ARG_CONV_EXCL='*' \
+      LUNCHLINEUP_BOUNDED_COMMAND_PRESERVE_MSYS_ARGUMENTS=1 \
+      node "$VM217_BOUNDED_COMMAND_OWNER" "$@"
+  else
+    node "$VM217_BOUNDED_COMMAND_OWNER" "$@"
+  fi
+}
+
 vm217_run_with_deadline() {
   local operation="$1"
   local deadline_seconds="$2"
   shift 2
   local status
 
-  if timeout \
-    --foreground \
-    --signal=TERM \
-    --kill-after="${VM217_TRANSPORT_KILL_AFTER_SECONDS}s" \
-    "${deadline_seconds}s" \
+  if vm217_run_bounded_command_owner \
+    --timeout-seconds "$deadline_seconds" \
+    --kill-after-seconds "$VM217_TRANSPORT_KILL_AFTER_SECONDS" \
+    -- \
     "$@"; then
     return 0
   else
@@ -222,7 +240,7 @@ code="$(curl --silent --show-error \
   "${production_web_url%/}/?lunchlineup_reconcile=$(date +%s)")" \
   || fail "VM217 reconciliation could not read public traffic."
 [[ "$code" == "200" ]] || fail "VM217 reconciliation public traffic did not return HTTP 200."
-traffic_release="$(awk 'BEGIN { IGNORECASE=1 } /^X-LunchLineUp-Release:/ { sub(/\r$/, ""); sub(/^[^:]+:[[:space:]]*/, ""); value=$0 } END { print value }' "$headers")"
+traffic_release="$(awk 'tolower($0) ~ /^x-lunchlineup-release:/ { value=$0; sub(/\r$/, "", value); sub(/^[^:]+:[[:space:]]*/, "", value) } END { print value }' "$headers")"
 
 active_pointer="$production_root/current"
 if [[ -L "$active_pointer" ]]; then
