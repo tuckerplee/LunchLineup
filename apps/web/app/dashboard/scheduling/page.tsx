@@ -7,7 +7,6 @@ import { Button } from '@/components/ui/button';
 import { CalendarDays, CheckCircle2, Copy, LockKeyhole, MapPin, Plus, Printer, RefreshCw, RotateCcw, Send, Settings2, WandSparkles, X } from 'lucide-react';
 import {
   ApiV2ClientError,
-  type ScheduleChangeSetRequest,
 } from '@lunchlineup/api-contract';
 import { apiV2 } from '@/lib/api-v2';
 import {
@@ -66,6 +65,8 @@ import {
   buildShiftUpdateOperation,
   shiftRoleDraftValue,
 } from './shift-change-set';
+import { ScheduleMutationFeedback } from './ScheduleMutationFeedback';
+import { useScheduleCommands } from './use-schedule-commands';
 
 const StaffScheduler = dynamic(
   () => import('@/components/scheduling/StaffScheduler').then((m) => m.StaffScheduler),
@@ -192,14 +193,6 @@ function shiftWindowError(dateValue: string, startTime: string, endTime: string,
 
 function timeValueFromIso(dateIso: string, timeZone: string): string {
   return timeValueInTimeZone(dateIso, timeZone);
-}
-
-function applyStaffToShift(shift: ShiftRecord, person: StaffRosterItem | null): ShiftRecord {
-  return {
-    ...shift,
-    userId: person?.id ?? null,
-    user: person ? { id: person.id, name: person.name, role: person.role } : null,
-  };
 }
 
 function getInitials(name: string): string {
@@ -381,7 +374,6 @@ function SchedulingContent() {
   const solveRecoveryStartedRef = useRef(new Set<string>());
   const breakGenerationAttemptRef = useRef<BreakGenerationAttempt | null>(null);
   const shiftCreateAttemptRef = useRef<IdempotentRequestAttempt | null>(null);
-  const shiftCopyAttemptsRef = useRef<Record<string, IdempotentRequestAttempt>>({});
   const shiftUpdateAttemptsRef = useRef<Record<string, IdempotentRequestAttempt>>({});
   const demandWindowAttemptsRef = useRef<Record<string, IdempotentRequestAttempt>>({});
   const scheduleCreateAttemptsRef = useRef<Record<string, IdempotentRequestAttempt>>({});
@@ -666,6 +658,43 @@ function SchedulingContent() {
     },
     [locationTimeZone, schedules],
   );
+  const {
+    commandState,
+    updateShift,
+    copyShift,
+    deleteShift,
+    undoShift,
+    dismissFeedback,
+  } = useScheduleCommands({
+    canWriteShifts: capabilities.canWriteShifts,
+    canDeleteShifts: capabilities.canDeleteShifts,
+    locationDataCurrent,
+    loadedShiftScope,
+    shifts,
+    schedules,
+    staff: schedulableStaff,
+    selectedDate,
+    viewMode,
+    selectedLocationId: shiftDraft.locationId,
+    setShifts,
+    setSchedules,
+    setError,
+    setScheduleStatus,
+    scopeIsStillSelected,
+    locationTimeZone,
+    isShiftLocked,
+    publishedScheduleForDraft,
+    scheduleLabel: scheduleWindowLabel,
+    locationName: (locationId) => locationNameById.get(locationId) ?? 'this location',
+    loadSchedule,
+    onDeleteCommitted: (shiftId) => {
+      if (editingShiftId === shiftId) {
+        setShowShiftForm(false);
+        setEditingShiftId(null);
+      }
+      setConfirmDeleteShiftId(null);
+    },
+  });
   const editingShift = useMemo(
     () => shifts.find((shift) => shift.id === editingShiftId) ?? null,
     [editingShiftId, shifts],
@@ -1510,248 +1539,6 @@ function SchedulingContent() {
     }
   };
 
-  const copyShift = async (id: string, start: string, end: string, userId: string) => {
-    if (!capabilities.canWriteShifts) return;
-    if (!locationDataCurrent || !loadedShiftScope) return;
-    const writeScope = loadedShiftScope;
-    const sourceShift = shifts.find((item) => item.id === id);
-    if (!sourceShift) {
-      setError('The source shift is no longer loaded.');
-      return;
-    }
-    const nextUserId = userId === UNASSIGNED_RESOURCE_ID ? null : userId;
-    if (nextUserId && !schedulableStaff.some((person) => person.id === nextUserId)) {
-      setError('The destination staff member is no longer available for scheduling.');
-      return;
-    }
-    const timeZone = locationTimeZone(sourceShift.locationId);
-    const targetDate = dateValueInTimeZone(start, timeZone);
-    const lockedSchedule = publishedScheduleForDraft(sourceShift.locationId, targetDate);
-    if (lockedSchedule) {
-      setError(`Published schedules are locked for ${scheduleWindowLabel(lockedSchedule, timeZone)} at ${locationNameById.get(sourceShift.locationId) ?? 'this location'}.`);
-      setScheduleStatus({ tone: 'warning', message: 'Copy the shift into a draft schedule or reopen the published target first.' });
-      return;
-    }
-    const targetDraft = containingDraftScheduleForShift(
-      schedules,
-      sourceShift.locationId,
-      start,
-      end,
-    );
-    const copyRequest = {
-      sourceShiftId: sourceShift.id,
-      locationId: sourceShift.locationId,
-      userId: nextUserId,
-      role: sourceShift.role,
-      startTime: start,
-      endTime: end,
-    };
-    const attempt = idempotentRequestAttempt(copyRequest, shiftCopyAttemptsRef.current[id]);
-    shiftCopyAttemptsRef.current[id] = attempt;
-    setError(null);
-    setScheduleStatus({ tone: 'saving', message: 'Copying shift...' });
-    try {
-      let schedule = targetDraft;
-      if (!schedule) {
-        const scheduleRange = fallbackDraftWindowForShift(start, end, timeZone);
-        const createdSchedule = await apiV2.createSchedule(
-          sourceShift.locationId,
-          { startDate: scheduleRange.start, endDate: scheduleRange.end },
-          `${attempt.key}:schedule`,
-        );
-        schedule = createdSchedule.data;
-        if (scopeIsStillSelected(writeScope)) {
-          setSchedules((current) => current.some((item) => item.id === createdSchedule.data.id)
-            ? current
-            : [...current, createdSchedule.data]);
-        }
-      }
-      const operation: ScheduleChangeSetRequest['operations'][number] = {
-        op: 'shift.create',
-        clientId: attempt.key,
-        userId: nextUserId,
-        role: sourceShift.role,
-        startTime: start,
-        endTime: end,
-      };
-      const copied = await apiV2.applyScheduleChangeSet(
-        schedule.id,
-        { operations: [operation] },
-        schedule.etag,
-        `${attempt.key}:shift`,
-      );
-      if (shiftCopyAttemptsRef.current[id]?.key === attempt.key) {
-        delete shiftCopyAttemptsRef.current[id];
-      }
-      if (!scopeIsStillSelected(writeScope)) return;
-      setSchedules((current) => current.map((item) => item.id === schedule.id
-        ? { ...item, revision: copied.data.revision, etag: copied.data.etag }
-        : item));
-      setShifts((current) => [
-        ...current.filter((item) => item.scheduleId !== schedule.id),
-        ...copied.data.shifts,
-      ]);
-      setScheduleStatus({ tone: 'saved', message: `Shift copied at ${formatStatusTime(new Date())}.` });
-    } catch (err) {
-      const rotateAttempt = requiresNewScheduleChangeSetKey(err);
-      if (rotateAttempt) delete shiftCopyAttemptsRef.current[id];
-      const reloadAuthoritativeState = rotateAttempt
-        || (err instanceof ApiV2ClientError && err.status === 412);
-      setError((err as Error).message);
-      setScheduleStatus({
-        tone: reloadAuthoritativeState ? 'warning' : 'error',
-        message: rotateAttempt
-          ? 'The copy attempt could not be replayed. Reloading the authoritative schedule before a new attempt.'
-          : err instanceof ApiV2ClientError && err.status === 412
-            ? 'The schedule changed elsewhere. Reloading the saved board.'
-            : 'Shift copy failed. The source shift was not changed.',
-      });
-      if (reloadAuthoritativeState) {
-        void loadSchedule(selectedDate, viewMode, sourceShift.locationId);
-      }
-    }
-  };
-
-  const updateShift = async (id: string, start: string, end: string, userId: string) => {
-    if (!capabilities.canWriteShifts) return;
-    if (!locationDataCurrent || !loadedShiftScope) return;
-    const writeScope = loadedShiftScope;
-    const shift = shifts.find((item) => item.id === id);
-    if (shift && isShiftLocked(shift)) {
-      setError('Published schedules are locked. Create a new draft before changing shifts.');
-      setScheduleStatus({ tone: 'warning', message: 'Published schedule shifts cannot be moved.' });
-      return;
-    }
-    const schedule = schedules.find((item) => item.id === shift?.scheduleId);
-    if (!shift || !schedule) {
-      setError('The shift schedule is no longer loaded.');
-      return;
-    }
-    const nextUserId = userId === UNASSIGNED_RESOURCE_ID ? null : userId;
-    const selectedStaff = nextUserId ? schedulableStaff.find((person) => person.id === nextUserId) ?? null : null;
-    setScheduleStatus({ tone: 'saving', message: 'Saving board change...' });
-    setShifts((previous) =>
-      previous.map((shift) => (shift.id === id ? applyStaffToShift({ ...shift, startTime: start, endTime: end }, selectedStaff) : shift)),
-    );
-    try {
-      const operation: ScheduleChangeSetRequest['operations'][number] = {
-        op: 'shift.update',
-        shiftId: id,
-        startTime: start,
-        endTime: end,
-        userId: nextUserId,
-      };
-      const updateAttempt = beginShiftUpdateAttempt(
-        window.sessionStorage,
-        id,
-        { scheduleId: schedule.id, operation },
-        shiftUpdateAttemptsRef.current[id],
-      );
-      shiftUpdateAttemptsRef.current[id] = updateAttempt;
-      const updated = await apiV2.applyScheduleChangeSet(
-        schedule.id,
-        { operations: [operation] },
-        schedule.etag,
-        updateAttempt.key,
-      );
-      clearShiftUpdateAttempt(window.sessionStorage, id, updateAttempt.key);
-      if (shiftUpdateAttemptsRef.current[id]?.key === updateAttempt.key) {
-        delete shiftUpdateAttemptsRef.current[id];
-      }
-      if (!scopeIsStillSelected(writeScope)) return;
-      setSchedules((current) => current.map((item) => item.id === schedule.id
-        ? { ...item, revision: updated.data.revision, etag: updated.data.etag }
-        : item));
-      setShifts((current) => [
-        ...current.filter((item) => item.scheduleId !== schedule.id),
-        ...updated.data.shifts,
-      ]);
-      setScheduleStatus({ tone: 'saved', message: `Board change saved at ${formatStatusTime(new Date())}.` });
-    } catch (err) {
-      const rotateAttempt = requiresNewScheduleChangeSetKey(err);
-      if (rotateAttempt) discardShiftUpdateAttempt(id);
-      setError((err as Error).message);
-      setScheduleStatus({
-        tone: rotateAttempt ? 'warning' : 'error',
-        message: rotateAttempt
-          ? 'The board attempt could not be replayed. Reloading the authoritative schedule before a new attempt.'
-          : 'Board change failed. Reloading saved schedule.',
-      });
-      void loadSchedule(selectedDate, viewMode, shiftDraft.locationId || undefined);
-    }
-  };
-
-  const deleteShift = async (id: string) => {
-    if (!capabilities.canDeleteShifts) {
-      setError('You need shift delete access to remove shifts.');
-      return;
-    }
-    if (!locationDataCurrent || !loadedShiftScope) return;
-    const writeScope = loadedShiftScope;
-    const shift = shifts.find((item) => item.id === id);
-    if (!shift) return;
-    if (isShiftLocked(shift)) {
-      setError('Published schedules are locked. Create a new draft before deleting shifts.');
-      setScheduleStatus({ tone: 'warning', message: 'Published schedule shifts cannot be deleted.' });
-      return;
-    }
-    const schedule = schedules.find((item) => item.id === shift.scheduleId);
-    if (!schedule) {
-      setError('The shift schedule is no longer loaded.');
-      return;
-    }
-    setError(null);
-    setScheduleStatus({ tone: 'saving', message: 'Deleting shift...' });
-    try {
-      const operation: ScheduleChangeSetRequest['operations'][number] = {
-        op: 'shift.delete',
-        shiftId: id,
-      };
-      const attempt = beginShiftUpdateAttempt(
-        window.sessionStorage,
-        id,
-        { scheduleId: schedule.id, operation },
-        shiftUpdateAttemptsRef.current[id],
-      );
-      shiftUpdateAttemptsRef.current[id] = attempt;
-      const deleted = await apiV2.applyScheduleChangeSet(
-        schedule.id,
-        { operations: [operation] },
-        schedule.etag,
-        attempt.key,
-      );
-      clearShiftUpdateAttempt(window.sessionStorage, id, attempt.key);
-      if (shiftUpdateAttemptsRef.current[id]?.key === attempt.key) {
-        delete shiftUpdateAttemptsRef.current[id];
-      }
-      if (!scopeIsStillSelected(writeScope)) return;
-      setSchedules((current) => current.map((item) => item.id === schedule.id
-        ? { ...item, revision: deleted.data.revision, etag: deleted.data.etag }
-        : item));
-      setShifts((current) => [
-        ...current.filter((item) => item.scheduleId !== schedule.id),
-        ...deleted.data.shifts,
-      ]);
-      if (editingShiftId === id) {
-        setShowShiftForm(false);
-        setEditingShiftId(null);
-      }
-      setConfirmDeleteShiftId(null);
-      setScheduleStatus({ tone: 'saved', message: `Shift deleted at ${formatStatusTime(new Date())}.` });
-    } catch (err) {
-      const rotateAttempt = requiresNewScheduleChangeSetKey(err);
-      if (rotateAttempt) discardShiftUpdateAttempt(id);
-      setError((err as Error).message);
-      setScheduleStatus({
-        tone: rotateAttempt ? 'warning' : 'error',
-        message: rotateAttempt
-          ? 'The delete attempt could not be replayed. Reloading the authoritative schedule before a new attempt.'
-          : 'Shift delete failed. Reloading saved schedule.',
-      });
-      void loadSchedule(selectedDate, viewMode, shiftDraft.locationId || undefined);
-    }
-  };
-
   return (
     <>
       <div className="scheduler-page">
@@ -1866,6 +1653,11 @@ function SchedulingContent() {
               {showTimeline ? 'Hide board' : 'Show board'}
             </Button>
           </header>
+          <ScheduleMutationFeedback
+            feedbackByShiftId={commandState.byShiftId}
+            onUndo={(shiftId) => void undoShift(shiftId)}
+            onDismiss={dismissFeedback}
+          />
           {showTimeline ? (
             <div className={`scheduler-calendar-shell ${capabilities.canWriteShifts ? '' : 'scheduler-calendar-shell--readonly'}`}>
               {!capabilities.canWriteShifts ? (
@@ -2607,6 +2399,50 @@ function SchedulingContent() {
           margin: 6px 0 0;
           color: var(--text-muted);
           font-size: 14px;
+        }
+
+        :global(.schedule-mutation-feedback) {
+          display: grid;
+          gap: 8px;
+          margin-top: 12px;
+        }
+
+        :global(.schedule-mutation-feedback__item) {
+          min-height: 44px;
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          gap: 10px;
+          padding: 7px 8px 7px 12px;
+          border: 1px solid #bfdbfe;
+          border-radius: var(--r-sm);
+          background: #eff6ff;
+          color: #1e3a8a;
+        }
+
+        :global(.schedule-mutation-feedback__item--failed) {
+          border-color: #fecaca;
+          background: #fff1f2;
+          color: #9f1239;
+        }
+
+        :global(.schedule-mutation-feedback__item--saved),
+        :global(.schedule-mutation-feedback__item--undone) {
+          border-color: #bbf7d0;
+          background: #f0fdf4;
+          color: #166534;
+        }
+
+        :global(.schedule-mutation-feedback__message) {
+          font-size: 13px;
+          font-weight: 750;
+        }
+
+        :global(.schedule-mutation-feedback__actions) {
+          display: inline-flex;
+          align-items: center;
+          gap: 4px;
+          flex: none;
         }
 
         .scheduler-calendar-shell {

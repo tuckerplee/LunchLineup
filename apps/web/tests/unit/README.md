@@ -49,6 +49,7 @@
 - `scheduling-publish-attempt.test.ts`: schedule publish attempt-key stability across retries and rotation for different schedules.
 - `scheduling-publish-result.test.ts`: publish status coverage for partial, failed, delivered, and no-notification outcomes.
 - `scheduling-publish-settlement.test.ts`: authoritative aggregate preflight parsing, configured-cost reconfirmation, exact-once settlement validation/copy, and 402/409/ambiguous retry policy coverage.
+- `schedule-command-reducer.test.ts`: per-shift command replacement, stale completion fencing, authoritative-save-only Undo, identity-bound dismissal, and exact placement comparison coverage.
 - `scheduling-route-access.test.tsx`: server scheduling-route coverage for the complete schedule, shift, and location read contract without admin-portal bypass.
 - `scheduling-location-scope.test.ts`: tenant-visible linked-location resolution, multi-location shift query, stale loaded-scope invalidation, response filtering, and break-generation context isolation coverage.
 - `scheduler-projection.test.ts`: compact multi-day positioning, late-week visibility, overnight clipping, and timeline offset conversion coverage.
