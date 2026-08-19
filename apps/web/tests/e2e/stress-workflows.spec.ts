@@ -66,7 +66,7 @@ async function setupPeople(page: Page) {
 
 async function shiftRows(page: Page, days = 1) {
   const { startDate, endDate } = dayWindow(new Date(), days);
-  const response = await page.request.get(`/api/v1/shifts?startDate=${encodeURIComponent(startDate)}&endDate=${encodeURIComponent(endDate)}`);
+  const response = await page.request.get(`/api/v2/shifts?startDate=${encodeURIComponent(startDate)}&endDate=${encodeURIComponent(endDate)}`);
   expect(response.ok()).toBeTruthy();
   const payload = await response.json() as { data?: Array<{ id: string; user?: { name?: string } | null; startTime: string; endTime: string }> };
   return payload.data ?? [];

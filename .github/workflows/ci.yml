@@ -740,6 +740,7 @@ jobs:
       - name: Stop smoke stack
         if: always()
         run: |
+          docker compose --env-file .env.smoke logs --tail=300 api api-v2 worker engine migrate || true
           docker compose --env-file .env.smoke down -v
           rm -f .env.smoke secrets/metrics_token
 
@@ -887,6 +888,7 @@ jobs:
       - name: Stop full-stack release images
         if: always()
         run: |
+          docker compose --env-file .env.smoke logs --tail=300 api api-v2 worker engine migrate || true
           docker compose --env-file .env.smoke down -v
           rm -f .env.smoke secrets/metrics_token
 
@@ -1009,6 +1011,7 @@ jobs:
       - name: Stop smoke stack
         if: always()
         run: |
+          docker compose --env-file .env.smoke logs --tail=300 api api-v2 worker engine migrate || true
           docker compose --env-file .env.smoke down -v
           rm -f .env.smoke secrets/metrics_token
 

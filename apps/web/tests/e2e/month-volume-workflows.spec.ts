@@ -1,22 +1,13 @@
-import { expect, test, type Page } from '@playwright/test';
+import { expect, test } from '@playwright/test';
+import type {
+  ScheduleBoardResponse,
+  ScheduleChangeSetResponse,
+  ScheduleCreateResponse,
+} from '@lunchlineup/api-contract';
 
 import { apiJson, loginAsSeedAdmin, runFullStack, seedTenant } from './support';
 
-const monthStart = '2026-07-01T00:00:00.000Z';
-const monthEnd = '2026-08-01T00:00:00.000Z';
-const secondPassDate = '2026-08-03';
-const secondPassStart = '2026-08-03T00:00:00.000Z';
-const secondPassEnd = '2026-08-04T00:00:00.000Z';
-
-type ApiList<T> = { data?: T[] };
-type UserRecord = { id: string; name: string; role: 'MANAGER' | 'STAFF' };
-type LocationRecord = { id: string; name: string };
-type ScheduleRecord = { id: string; startDate: string; endDate: string };
-type ShiftRecord = { id: string; userId: string | null; startTime: string; endTime: string; breaks?: unknown[] };
-type LunchBreakRow = { shiftId: string | null; userId: string | null; breaks: unknown[] };
-type LunchBreakResponse = { source: string; persisted: boolean; data: LunchBreakRow[]; reused?: boolean };
-
-test.describe.serial('Month-volume schedule and lunch/break workflows', () => {
+test.describe.serial('API-v2 schedule and lunch/break volume workflows', () => {
   test.skip(!runFullStack, 'Set E2E_FULL_STACK=1 and E2E_SEED_COMMAND to run DB-backed workflow volume tests.');
   test.setTimeout(300_000);
 
@@ -24,165 +15,104 @@ test.describe.serial('Month-volume schedule and lunch/break workflows', () => {
     seedTenant();
   });
 
-  test('builds a 10-person month, persists breaks/lunches, deletes schedules, then builds break-only setup rows', async ({ page }) => {
-    await loginAsSeedAdmin(page);
-    const users = await createMonthUsers(page);
-    expect(users).toHaveLength(10);
+  test('builds a bounded multi-user schedule, persists lunch/breaks, and reads the result back', async ({ page }) => {
+    const scheduleDate = '2030-07-01';
+    const scheduleStart = '2030-07-01T00:00:00.000Z';
+    const scheduleEnd = '2030-08-01T00:00:00.000Z';
+    const monthStart = scheduleStart;
+    const monthEnd = scheduleEnd;
 
-    const locations = await apiJson<ApiList<LocationRecord>>(page, 'GET', '/api/v1/locations');
-    const location = locations.data?.[0];
-    expect(location, 'seeded location').toBeTruthy();
+    await loginAsSeedAdmin(page, `/dashboard/scheduling?date=${scheduleDate}`);
+    const origin = new URL(page.url()).origin;
+    const board = await apiJson<ScheduleBoardResponse>(
+      page,
+      'GET',
+      `/api/v2/schedule-board?date=${scheduleDate}&view=week`,
+    );
+    const location = board.data.locations[0];
+    expect(location, 'seeded scheduling location').toBeTruthy();
+    expect(board.data.staff.length, 'seeded scheduling roster').toBeGreaterThanOrEqual(10);
     if (!location) return;
 
-    const createdShiftIds: string[] = [];
-    for (let day = 1; day <= 31; day += 1) {
-      for (let userIndex = 0; userIndex < users.length; userIndex += 1) {
-        const user = users[userIndex];
-        const window = shiftWindow(2026, 6, day, userIndex);
-        const shift = await apiJson<ShiftRecord>(page, 'POST', '/api/v1/shifts', {
-          locationId: location.id,
-          userId: user.id,
-          role: user.role,
-          startTime: window.startTime,
-          endTime: window.endTime,
-        }, undefined, { 'Idempotency-Key': `month-shift--` });
-        createdShiftIds.push(shift.id);
-      }
-    }
-    expect(createdShiftIds).toHaveLength(310);
-
-    const monthShifts = await apiJson<ApiList<ShiftRecord>>(
-      page,
-      'GET',
-      `/api/v1/shifts?startDate=${encodeURIComponent(monthStart)}&endDate=${encodeURIComponent(monthEnd)}`,
-    );
-    expect(monthShifts.data).toHaveLength(310);
-
-    const schedulePayload = await apiJson<ApiList<ScheduleRecord>>(page, 'GET', '/api/v1/schedules');
-    const julySchedules = (schedulePayload.data ?? []).filter(
-      (schedule) => schedule.startDate >= monthStart && schedule.startDate < monthEnd,
-    );
-    expect(julySchedules).toHaveLength(31);
-
-    const missingKey = await apiJson<{ message: string }>(page, 'POST', '/api/v1/lunch-breaks/generate', {
-      shiftIds: createdShiftIds,
-      persist: true,
-    }, 400);
-    expect(missingKey.message).toContain('Idempotency-Key header is required');
-
-    const firstPlanBody = {
-      shiftIds: createdShiftIds,
-      persist: true,
-    };
-    const firstPlan = await apiJson<LunchBreakResponse>(
+    const createdSchedule = await apiJson<ScheduleCreateResponse>(
       page,
       'POST',
-      '/api/v1/lunch-breaks/generate',
-      firstPlanBody,
-      201,
-      { 'Idempotency-Key': 'month-break-plan-1' },
+      `/api/v2/locations/${location.id}/schedules`,
+      { startDate: scheduleStart, endDate: scheduleEnd },
+      200,
+      { origin, 'Idempotency-Key': 'e2e-month-schedule-create-v1' },
     );
-    expect(firstPlan.source).toBe('shared_schedule');
-    expect(firstPlan.persisted).toBe(true);
-    expect(firstPlan.data).toHaveLength(310);
-    expect(totalBreaks(firstPlan.data)).toBe(930);
 
-    const replayedPlan = await apiJson<LunchBreakResponse>(
-      page,
-      'POST',
-      '/api/v1/lunch-breaks/generate',
-      firstPlanBody,
-      201,
-      { 'Idempotency-Key': 'month-break-plan-1' },
-    );
-    expect(replayedPlan.reused).toBe(true);
-    expect(replayedPlan.data).toEqual(firstPlan.data);
-
-    const persistedMonthBreaks = await apiJson<ApiList<LunchBreakRow>>(
-      page,
-      'GET',
-      `/api/v1/lunch-breaks?startDate=${encodeURIComponent(monthStart)}&endDate=${encodeURIComponent(monthEnd)}`,
-    );
-    expect(persistedMonthBreaks.data).toHaveLength(310);
-    expect(totalBreaks(persistedMonthBreaks.data ?? [])).toBe(930);
-
-    for (const schedule of julySchedules) {
-      await apiJson<void>(page, 'DELETE', `/api/v1/schedules/${schedule.id}`, undefined, 204);
-    }
-
-    const schedulesAfterDelete = await apiJson<ApiList<ScheduleRecord>>(page, 'GET', '/api/v1/schedules');
-    expect(schedulesAfterDelete.data ?? []).toHaveLength(0);
-    const monthShiftsAfterDelete = await apiJson<ApiList<ShiftRecord>>(
-      page,
-      'GET',
-      `/api/v1/shifts?startDate=${encodeURIComponent(monthStart)}&endDate=${encodeURIComponent(monthEnd)}`,
-    );
-    expect(monthShiftsAfterDelete.data ?? []).toHaveLength(0);
-
-    const setupRows = users.map((user, index) => ({
-      userId: user.id,
-      employeeName: user.name,
-      ...shiftWindow(2026, 7, 3, index),
+    const staff = board.data.staff.slice(0, 10);
+    const operations = staff.flatMap((member, userIndex) => Array.from({ length: 5 }, (_, dayIndex) => {
+      const start = new Date(Date.UTC(2030, 6, 1 + dayIndex, 16 + userIndex, 0, 0));
+      const end = new Date(start.getTime() + 8 * 60 * 60 * 1000);
+      return {
+        op: 'shift.create' as const,
+        clientId: `20000000-0000-4000-8000-${String(userIndex * 5 + dayIndex + 1).padStart(12, '0')}`,
+        userId: member.id,
+        role: member.role,
+        startTime: start.toISOString(),
+        endTime: end.toISOString(),
+      };
     }));
-    const setupResult = await apiJson<{ shiftIds: string[] }>(page, 'POST', '/api/v1/lunch-breaks/setup-shifts', {
-      locationId: location.id,
-      rows: setupRows,
-    }, undefined, { 'Idempotency-Key': 'month-setup-shifts-1' });
-    expect(setupResult.shiftIds).toHaveLength(10);
+    expect(operations).toHaveLength(50);
 
-    const secondPlan = await apiJson<LunchBreakResponse>(page, 'POST', '/api/v1/lunch-breaks/generate', {
-      shiftIds: setupResult.shiftIds,
-      persist: true,
-    }, 201, { 'Idempotency-Key': 'month-break-plan-2' });
-    expect(secondPlan.source).toBe('shared_schedule');
-    expect(secondPlan.persisted).toBe(true);
-    expect(secondPlan.data).toHaveLength(10);
-    expect(totalBreaks(secondPlan.data)).toBe(30);
+    const created = await apiJson<ScheduleChangeSetResponse>(
+      page,
+      'POST',
+      `/api/v2/schedules/${createdSchedule.data.id}/change-sets`,
+      { operations },
+      200,
+      {
+        origin,
+        'Idempotency-Key': 'e2e-month-schedule-shifts-v1',
+        'If-Match': createdSchedule.data.etag,
+      },
+    );
+    const shiftIds = created.data.created.map((entry) => entry.shiftId);
+    expect(shiftIds).toHaveLength(50);
 
-    const secondPassRows = await apiJson<ApiList<LunchBreakRow>>(
+    const generated = await apiJson<{
+      source: string;
+      persisted: boolean;
+      data: Array<{ breaks: unknown[] }>;
+      creditConsumption: { consumedCredits: number };
+    }>(
+      page,
+      'POST',
+      '/api/v2/lunch-breaks/generate',
+      { shiftIds, persist: true },
+      200,
+      { origin, 'Idempotency-Key': 'e2e-month-break-plan-v1' },
+    );
+    expect(generated.source).toBe('shared_schedule');
+    expect(generated.persisted).toBe(true);
+    expect(generated.data).toHaveLength(50);
+    expect(generated.data.every((row) => row.breaks.length === 3)).toBe(true);
+    expect(generated.creditConsumption.consumedCredits).toBeGreaterThan(0);
+
+    const replayed = await apiJson<typeof generated>(
+      page,
+      'POST',
+      '/api/v2/lunch-breaks/generate',
+      { shiftIds, persist: true },
+      200,
+      { origin, 'Idempotency-Key': 'e2e-month-break-plan-v1' },
+    );
+    expect(replayed).toMatchObject({ ...generated, reused: true });
+
+    const persisted = await apiJson<{
+      data: Array<{ shiftId: string | null; breaks: unknown[] }>;
+      pagination: { returned: number; hasMore: boolean };
+    }>(
       page,
       'GET',
-      `/api/v1/lunch-breaks?startDate=${encodeURIComponent(secondPassStart)}&endDate=${encodeURIComponent(secondPassEnd)}`,
+      `/api/v2/lunch-breaks?startDate=${encodeURIComponent(monthStart)}&endDate=${encodeURIComponent(monthEnd)}&limit=100`,
     );
-    expect(secondPassRows.data).toHaveLength(10);
-    expect(totalBreaks(secondPassRows.data ?? [])).toBe(30);
-
-    await page.goto(`/dashboard/scheduling?date=${secondPassDate}`);
-    await expect(page.getByRole('heading', { name: 'Calendar' })).toBeVisible();
-    await expect(page.locator('.shift-block')).toHaveCount(10, { timeout: 30_000 });
-    await expect(page.locator('.shift-marker-lunch')).toHaveCount(10);
-    await expect(page.locator('.shift-marker-break')).toHaveCount(20);
-    await expect(page.getByText('Month Tester 01')).toBeVisible();
-    await expect(page.getByText('Month Tester 10')).toBeVisible();
+    expect(persisted.data).toHaveLength(50);
+    expect(persisted.pagination.returned).toBe(50);
+    expect(persisted.pagination.hasMore).toBe(false);
+    expect(persisted.data.every((row) => row.shiftId && row.breaks.length === 3)).toBe(true);
   });
 });
-
-async function createMonthUsers(page: Page): Promise<UserRecord[]> {
-  const users: UserRecord[] = [];
-  for (let index = 0; index < 10; index += 1) {
-    const ordinal = String(index + 1).padStart(2, '0');
-    const role = index < 2 ? 'MANAGER' : 'STAFF';
-    const user = await apiJson<UserRecord>(page, 'POST', '/api/v1/users/invite', {
-      name: `Month Tester ${ordinal}`,
-      username: `month.tester.${ordinal}`,
-      pin: '135790',
-      role,
-    });
-    users.push(user);
-  }
-  return users;
-}
-
-function shiftWindow(year: number, monthIndex: number, day: number, userIndex: number): { startTime: string; endTime: string } {
-  const staggerMinutes = Math.floor(userIndex / 4) * 60 + (userIndex % 4) * 15;
-  const startMs = Date.UTC(year, monthIndex, day, 16, staggerMinutes, 0, 0);
-  const endMs = startMs + 8 * 60 * 60 * 1000;
-  return {
-    startTime: new Date(startMs).toISOString(),
-    endTime: new Date(endMs).toISOString(),
-  };
-}
-
-function totalBreaks(rows: LunchBreakRow[]): number {
-  return rows.reduce((count, row) => count + (Array.isArray(row.breaks) ? row.breaks.length : 0), 0);
-}

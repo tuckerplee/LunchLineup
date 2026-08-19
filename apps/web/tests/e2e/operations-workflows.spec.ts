@@ -25,7 +25,7 @@ async function inviteStaff(page: import('@playwright/test').Page, name: string, 
 
 async function shiftOwner(page: import('@playwright/test').Page): Promise<string | null> {
   const { startDate, endDate } = dayWindow();
-  const response = await page.request.get(`/api/v1/shifts?startDate=${encodeURIComponent(startDate)}&endDate=${encodeURIComponent(endDate)}`);
+  const response = await page.request.get(`/api/v2/shifts?startDate=${encodeURIComponent(startDate)}&endDate=${encodeURIComponent(endDate)}`);
   expect(response.ok()).toBeTruthy();
   const payload = await response.json() as { data?: Array<{ user?: { name?: string } | null }> };
   return payload.data?.[0]?.user?.name ?? null;
@@ -79,7 +79,7 @@ test.describe.serial('Full-stack operations workflows', () => {
     await expect(page.locator('.shift-marker-lunch')).toBeVisible();
 
     const { startDate, endDate } = dayWindow();
-    const breaksResponse = await page.request.get(`/api/v1/lunch-breaks?startDate=${encodeURIComponent(startDate)}&endDate=${encodeURIComponent(endDate)}`);
+    const breaksResponse = await page.request.get(`/api/v2/lunch-breaks?startDate=${encodeURIComponent(startDate)}&endDate=${encodeURIComponent(endDate)}`);
     expect(breaksResponse.ok()).toBeTruthy();
     const breaksPayload = await breaksResponse.json() as { data?: Array<{ breaks?: unknown[] }> };
     expect(breaksPayload.data?.[0]?.breaks?.length).toBeGreaterThanOrEqual(3);
