@@ -35,7 +35,7 @@ function digest(bytes) {
   return createHash('sha256').update(bytes).digest('hex');
 }
 
-function providerRuntimePath() {
+function providerRuntimePath(targetDirectory) {
   if (process.platform === 'win32') return process.execPath;
   for (const candidate of ['/usr/bin/node', '/usr/local/bin/node', process.execPath]) {
     try {
@@ -45,6 +45,20 @@ function providerRuntimePath() {
     } catch {
       // Try the next runner-provided Node executable.
     }
+  }
+  const copiedRuntime = join(targetDirectory, 'provider-node');
+  const install = spawnSync('sudo', [
+    '--non-interactive',
+    'install',
+    '-o', 'root',
+    '-g', 'root',
+    '-m', '755',
+    process.execPath,
+    copiedRuntime,
+  ], { encoding: 'utf8' });
+  if (install.status === 0) {
+    const stat = statSync(copiedRuntime);
+    if (stat.uid === 0 && (stat.mode & 0o111) !== 0 && (stat.mode & 0o022) === 0) return copiedRuntime;
   }
   throw new Error('CI compatibility fixture requires a root-owned Node runtime.');
 }
@@ -258,7 +272,7 @@ function createFixture({ cloneEnvOverrides } = {}) {
   for (const operation of ['network', 'run', 'container', 'ps', 'rm']) {
     writeMode(join(scratch, operation), fakeRuntimeProgram(operation), 0o700);
   }
-  const providerRuntime = providerRuntimePath();
+  const providerRuntime = providerRuntimePath(scratch);
   const fixture = {
     scratch, old, candidate, cloneEnv, productionEnv, evidenceDir, proof,
     providerLog, providerResultPath, providerRuntime,
