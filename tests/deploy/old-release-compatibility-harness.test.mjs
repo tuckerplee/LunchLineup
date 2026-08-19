@@ -8,6 +8,8 @@ import {
   mkdtempSync,
   readFileSync,
   rmSync,
+  realpathSync,
+  statSync,
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -31,6 +33,20 @@ const fixedSmokeScript = 'node --test --test-concurrency=1 tests/integration/*.t
 
 function digest(bytes) {
   return createHash('sha256').update(bytes).digest('hex');
+}
+
+function providerRuntimePath() {
+  if (process.platform === 'win32') return process.execPath;
+  for (const candidate of ['/usr/bin/node', '/usr/local/bin/node', process.execPath]) {
+    try {
+      const runtime = realpathSync(candidate);
+      const stat = statSync(runtime);
+      if (stat.uid === 0 && (stat.mode & 0o111) !== 0 && (stat.mode & 0o022) === 0) return runtime;
+    } catch {
+      // Try the next runner-provided Node executable.
+    }
+  }
+  throw new Error('CI compatibility fixture requires a root-owned Node runtime.');
 }
 
 function packageLock(name) {
@@ -242,11 +258,11 @@ function createFixture({ cloneEnvOverrides } = {}) {
   for (const operation of ['network', 'run', 'container', 'ps', 'rm']) {
     writeMode(join(scratch, operation), fakeRuntimeProgram(operation), 0o700);
   }
+  const providerRuntime = providerRuntimePath();
   const fixture = {
     scratch, old, candidate, cloneEnv, productionEnv, evidenceDir, proof,
-    providerLog, providerResultPath,
-    providerRuntime: process.execPath,
-    providerRuntimeSha256: digest(readFileSync(process.execPath)),
+    providerLog, providerResultPath, providerRuntime,
+    providerRuntimeSha256: digest(readFileSync(providerRuntime)),
   };
   writeMode(providerResultPath, `${JSON.stringify(providerResult(fixture))}\n`, 0o600);
   return fixture;
