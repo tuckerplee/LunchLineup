@@ -40,6 +40,7 @@ describe('time-card workspace permission contract', () => {
     expect(workspaceSource).not.toContain('nextLocations[0]');
     expect(workspaceSource).toContain('Team Time selected person');
     expect(workspaceSource).toContain("...(isTeamTime ? { userId: selectedUserId } : {}),");
+    expect(workspaceSource).toContain('Boolean(canReadLocations && selectedLocationId && activeLocationId && selectedLocationId === activeLocationId)');
   });
 
   it('clears person and location drafts before a different target can write', () => {

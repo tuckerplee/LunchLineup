@@ -77,8 +77,7 @@ export function TimeCardsWorkspace({ canManageTeam, canReadLocations, canWriteTi
     });
     const activeLocationId = activeCardForSelectedUser?.locationId ?? activeCardForSelectedUser?.location?.id ?? '';
     const teamClockOutTargetIsExplicit = !isTeamTime
-        || !canReadLocations
-        || Boolean(selectedLocationId && activeLocationId && selectedLocationId === activeLocationId);
+        || Boolean(canReadLocations && selectedLocationId && activeLocationId && selectedLocationId === activeLocationId);
 
     const loadReferenceData = useCallback(async () => {
         const [staffRows, locationPage] = await Promise.all([
@@ -472,7 +471,7 @@ export function TimeCardsWorkspace({ canManageTeam, canReadLocations, canWriteTi
                     ) : null}
                     {isTeamTime && !canReadLocations ? (
                         <div role="note" style={{ fontSize: '0.78rem', color: '#8a4b0f', fontWeight: 700 }}>
-                            Team Time clock-ins require location access.
+                            Team Time writes require location access.
                         </div>
                     ) : null}
 
