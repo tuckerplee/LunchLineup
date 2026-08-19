@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { PlanTier, TenantStatus } from '@lunchlineup/db';
 import { TenantPrismaService } from '../database/tenant-prisma.service';
 import { FeatureAccessService, TenantFeatureConfig } from './feature-access.service';
@@ -15,6 +15,12 @@ function buildPrismaMock(overrides: Record<string, any> = {}) {
             findUnique: vi.fn().mockResolvedValue(null),
             upsert: vi.fn().mockResolvedValue({}),
         },
+        creditTransaction: {
+            findUnique: vi.fn().mockResolvedValue(null),
+        },
+        auditLog: {
+            findUnique: vi.fn().mockResolvedValue(null),
+        },
         ...overrides,
     };
     prisma.$transaction = vi.fn(async (operation: (tx: any) => Promise<unknown>) => operation(prisma));
@@ -28,6 +34,15 @@ describe('FeatureAccessService', () => {
         recordCreditDebitInTransaction: ReturnType<typeof vi.fn>;
     };
     let service: FeatureAccessService;
+    const originalInternalBetaEnabled = process.env.INTERNAL_BETA_ENTITLEMENTS_ENABLED;
+    const originalAppOrigin = process.env.APP_ORIGIN;
+
+    afterEach(() => {
+        if (originalInternalBetaEnabled === undefined) delete process.env.INTERNAL_BETA_ENTITLEMENTS_ENABLED;
+        else process.env.INTERNAL_BETA_ENTITLEMENTS_ENABLED = originalInternalBetaEnabled;
+        if (originalAppOrigin === undefined) delete process.env.APP_ORIGIN;
+        else process.env.APP_ORIGIN = originalAppOrigin;
+    });
 
     beforeEach(() => {
         prisma = buildPrismaMock();
@@ -126,6 +141,141 @@ describe('FeatureAccessService', () => {
             'tenant-1',
             'scheduling',
         )).rejects.toThrow(/active paid subscription/i);
+    });
+
+    it('enables only scheduling for an approved, unexpired internal beta trial with exact ledger provenance', async () => {
+        process.env.INTERNAL_BETA_ENTITLEMENTS_ENABLED = 'true';
+        process.env.APP_ORIGIN = 'https://beta.lunchlineup.com';
+        const approvedAt = new Date(Date.now() - 60_000);
+        const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000);
+        const trialEndsAt = new Date(expiresAt.getTime() + 24 * 60 * 60 * 1000);
+        const ledgerReason = 'Internal beta scheduling entitlement: Pilot tenant';
+        const transactionId = 'admin-credit-grant-beta-1';
+        const auditId = `${transactionId}-internal-beta-audit`;
+        const entitlement = {
+            version: 1,
+            source: 'internal_beta',
+            status: 'ACTIVE',
+            features: ['scheduling'],
+            grantId: transactionId,
+            auditId,
+            creditTransactionId: transactionId,
+            creditsGranted: 5,
+            ledgerReason,
+            reason: 'Pilot tenant',
+            approvedAt: approvedAt.toISOString(),
+            approvedByUserId: 'platform-admin',
+            expiresAt: expiresAt.toISOString(),
+        };
+        prisma.tenant.findUniqueOrThrow.mockResolvedValue({
+            id: 'tenant-1',
+            planTier: PlanTier.STARTER,
+            status: TenantStatus.TRIAL,
+            trialEndsAt,
+            usageCredits: 5,
+            creditDebt: 0,
+            stripeSubscriptionId: null,
+            stripeSubscriptionCurrentPeriodEnd: null,
+        });
+        prisma.tenantSetting.findUnique.mockImplementation(async (args: any) => (
+            args.where.tenantId_key.key === 'internal_beta_entitlement'
+                ? { value: entitlement }
+                : null
+        ));
+        prisma.creditTransaction.findUnique.mockResolvedValue({
+            tenantId: 'tenant-1',
+            amount: 5,
+            debtAmount: 0,
+            reason: ledgerReason,
+            balanceAfter: 5,
+            debtAfter: 0,
+        });
+        prisma.auditLog.findUnique.mockResolvedValue({
+            tenantId: 'tenant-1',
+            action: 'INTERNAL_BETA_ENTITLEMENT_GRANTED',
+            resource: 'TenantSetting',
+            resourceId: transactionId,
+            newValue: { entitlement },
+        });
+
+        const matrix = await service.resolveTenantFeatures('tenant-1');
+
+        expect(matrix.stripeSubscriptionActive).toBe(false);
+        expect(matrix.features.scheduling).toMatchObject({
+            enabled: true,
+            source: 'credits',
+            creditCost: 1,
+        });
+        expect(matrix.features.scheduling.reason).toMatch(/approved internal beta grant/i);
+        expect(matrix.features.lunch_breaks.enabled).toBe(false);
+        expect(matrix.features.time_cards.enabled).toBe(false);
+        expect(matrix.features.webhooks.enabled).toBe(false);
+        await expect(service.assertFeatureEntitled('tenant-1', 'scheduling')).resolves.toMatchObject({
+            enabled: true,
+            source: 'credits',
+        });
+
+        prisma.auditLog.findUnique.mockResolvedValue(null);
+        const missingAudit = await service.resolveTenantFeatures('tenant-1');
+        expect(missingAudit.features.scheduling.enabled).toBe(false);
+    });
+
+    it('fails closed when beta provenance does not match the stored credit ledger', async () => {
+        process.env.INTERNAL_BETA_ENTITLEMENTS_ENABLED = 'true';
+        process.env.APP_ORIGIN = 'https://beta.lunchlineup.com';
+        const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000);
+        const transactionId = 'grant-1';
+        const auditId = `${transactionId}-internal-beta-audit`;
+        const entitlement = {
+            version: 1,
+            source: 'internal_beta',
+            status: 'ACTIVE',
+            features: ['scheduling'],
+            grantId: transactionId,
+            auditId,
+            creditTransactionId: transactionId,
+            creditsGranted: 50,
+            ledgerReason: 'Internal beta scheduling entitlement: Pilot tenant',
+            reason: 'Pilot tenant',
+            approvedAt: new Date(Date.now() - 60_000).toISOString(),
+            approvedByUserId: 'platform-admin',
+            expiresAt: expiresAt.toISOString(),
+        };
+        prisma.tenant.findUniqueOrThrow.mockResolvedValue({
+            id: 'tenant-1',
+            planTier: PlanTier.STARTER,
+            status: TenantStatus.TRIAL,
+            trialEndsAt: new Date(expiresAt.getTime() + 60_000),
+            usageCredits: 50,
+            creditDebt: 0,
+            stripeSubscriptionId: null,
+            stripeSubscriptionCurrentPeriodEnd: null,
+        });
+        prisma.tenantSetting.findUnique.mockImplementation(async (args: any) => (
+            args.where.tenantId_key.key === 'internal_beta_entitlement'
+                ? { value: entitlement }
+                : null
+        ));
+        prisma.creditTransaction.findUnique.mockResolvedValue({
+            tenantId: 'tenant-1',
+            amount: 49,
+            debtAmount: 0,
+            reason: 'Internal beta scheduling entitlement: Pilot tenant',
+            balanceAfter: 50,
+            debtAfter: 0,
+        });
+        prisma.auditLog.findUnique.mockResolvedValue({
+            tenantId: 'tenant-1',
+            action: 'INTERNAL_BETA_ENTITLEMENT_GRANTED',
+            resource: 'TenantSetting',
+            resourceId: transactionId,
+            newValue: { entitlement },
+        });
+
+        const matrix = await service.resolveTenantFeatures('tenant-1');
+
+        expect(matrix.features.scheduling.enabled).toBe(false);
+        expect(matrix.features.scheduling.reason).toMatch(/active paid subscription/i);
     });
 
     it('does not enable paid plan features after the trial expires', async () => {

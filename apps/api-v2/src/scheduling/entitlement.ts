@@ -1,5 +1,6 @@
 import type { Prisma } from '@prisma/client';
 import type { TenantTransaction } from '../platform/database';
+import { assertFeatureEntitled } from '../platform/feature-entitlement';
 import { ProblemError } from '../platform/problem';
 
 const DEFAULT_SCHEDULING_PLANS = new Set(['STARTER', 'GROWTH', 'ENTERPRISE']);
@@ -67,12 +68,8 @@ export async function assertSchedulingEntitled(
     && paidThrough instanceof Date
     && paidThrough > now;
   if (!activeSubscription) {
-    throw new ProblemError(
-      403,
-      'scheduling_not_entitled',
-      'Scheduling requires a current active paid subscription.',
-      'Scheduling unavailable',
-    );
+    await assertFeatureEntitled(transaction, tenantId, 'scheduling', false);
+    return;
   }
 
   const planCode = String(tenant.planTier).toUpperCase();

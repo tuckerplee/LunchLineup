@@ -28,6 +28,7 @@ import { applyOnboardingSignupAttemptRetention } from '../auth/onboarding-signup
 import { TenantAccountLifecycleService, type TenantLifecycleActor, type TenantRetentionStage } from './tenant-account-lifecycle.service';
 import { RbacService } from '../auth/rbac.service';
 import { TenantProvisioningService } from './tenant-provisioning.service';
+import { InternalBetaEntitlementService } from './internal-beta-entitlement.service';
 import { TenantExportService } from './tenant-export.service';
 import { AdminUserMfaRecoveryService } from './admin-user-mfa-recovery.service';
 import { AdminUserLifecycleService, type AdminUserLifecycleActor } from './admin-user-lifecycle.service';
@@ -61,6 +62,7 @@ export class AdminController implements OnModuleDestroy {
     private readonly tenantDb: TenantPrismaService;
     private readonly tenantAccountLifecycle: TenantAccountLifecycleService;
     private readonly tenantProvisioning: TenantProvisioningService;
+    private readonly internalBetaEntitlement: InternalBetaEntitlementService;
     private readonly tenantExport: TenantExportService;
     private readonly userMfaRecovery: AdminUserMfaRecoveryService;
     private readonly userLifecycle: AdminUserLifecycleService;
@@ -88,6 +90,12 @@ export class AdminController implements OnModuleDestroy {
         this.userLifecycle = new AdminUserLifecycleService(this.tenantDb, this.rbac);
         this.tenantAccountLifecycle = new TenantAccountLifecycleService(this.tenantDb, this.stripeBilling);
         this.tenantProvisioning = new TenantProvisioningService(
+            this.tenantDb,
+            this.rbac,
+        );
+        this.internalBetaEntitlement = new InternalBetaEntitlementService(
+            this.configService,
+            this.meteringService,
             this.tenantDb,
             this.rbac,
         );
@@ -630,6 +638,23 @@ export class AdminController implements OnModuleDestroy {
             ownerEmail,
             auditActor: this.platformAuditAttribution(req),
         });
+    }
+
+    @Post('tenants/:id/internal-beta-entitlement')
+    @HttpCode(HttpStatus.CREATED)
+    async grantInternalBetaEntitlement(
+        @Req() req: any,
+        @Param('id') tenantId: string,
+        @Body() body: { credits: number; expiresAt: string; reason: string },
+        @Headers('idempotency-key') idempotencyKey?: string,
+    ) {
+        this.assertSuperAdmin(req);
+        return this.internalBetaEntitlement.grant(
+            tenantId,
+            body,
+            idempotencyKey,
+            this.adminUserLifecycleActor(req),
+        );
     }
 
     @Put('tenants/:id')

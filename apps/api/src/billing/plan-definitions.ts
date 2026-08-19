@@ -45,6 +45,128 @@ export interface TenantFeatureConfig {
     features?: Partial<Record<FeatureKey, { source?: 'plan' | 'stripe' | 'credits' | 'manual' | 'disabled'; enabled?: boolean; reason?: string }>>;
 }
 
+export const INTERNAL_BETA_ENTITLEMENT_KEY = 'internal_beta_entitlement';
+export const INTERNAL_BETA_ENTITLEMENTS_ENABLED_ENV = 'INTERNAL_BETA_ENTITLEMENTS_ENABLED';
+export const INTERNAL_BETA_ORIGIN = 'https://beta.lunchlineup.com';
+export const INTERNAL_BETA_MAX_CREDITS = 1_000;
+export const INTERNAL_BETA_MAX_DAYS = 90;
+
+export type InternalBetaSchedulingEntitlement = {
+    version: 1;
+    source: 'internal_beta';
+    status: 'ACTIVE';
+    features: ['scheduling'];
+    grantId: string;
+    auditId: string;
+    creditTransactionId: string;
+    creditsGranted: number;
+    ledgerReason: string;
+    reason: string;
+    approvedAt: string;
+    approvedByUserId: string;
+    expiresAt: string;
+};
+
+function isNonEmptyBoundedString(value: unknown, maximumLength: number): value is string {
+    return typeof value === 'string'
+        && value.trim().length > 0
+        && value.length <= maximumLength
+        && !/[\u0000-\u001f\u007f]/.test(value);
+}
+
+function parseStoredDate(value: unknown): Date | null {
+    if (typeof value !== 'string' || !value.trim()) return null;
+    const parsed = new Date(value);
+    return Number.isFinite(parsed.getTime()) ? parsed : null;
+}
+
+export function internalBetaEntitlementsRuntimeEnabled(
+    env: Partial<Pick<NodeJS.ProcessEnv, 'INTERNAL_BETA_ENTITLEMENTS_ENABLED' | 'APP_ORIGIN'>> = process.env,
+): boolean {
+    if (env.INTERNAL_BETA_ENTITLEMENTS_ENABLED?.trim().toLowerCase() !== 'true') return false;
+    try {
+        const origin = new URL(env.APP_ORIGIN ?? '');
+        return origin.origin === INTERNAL_BETA_ORIGIN
+            && origin.pathname === '/'
+            && !origin.search
+            && !origin.hash
+            && !origin.username
+            && !origin.password;
+    } catch {
+        return false;
+    }
+}
+
+export function parseActiveInternalBetaSchedulingEntitlement(
+    value: Prisma.JsonValue | null | undefined,
+    now = new Date(),
+): InternalBetaSchedulingEntitlement | null {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+    const grant = value as Record<string, unknown>;
+    const approvedAt = parseStoredDate(grant.approvedAt);
+    const expiresAt = parseStoredDate(grant.expiresAt);
+    if (
+        grant.version !== 1
+        || grant.source !== 'internal_beta'
+        || grant.status !== 'ACTIVE'
+        || !Array.isArray(grant.features)
+        || grant.features.length !== 1
+        || grant.features[0] !== 'scheduling'
+        || !isNonEmptyBoundedString(grant.grantId, 255)
+        || grant.auditId !== `${grant.grantId}-internal-beta-audit`
+        || grant.creditTransactionId !== grant.grantId
+        || !Number.isSafeInteger(grant.creditsGranted)
+        || Number(grant.creditsGranted) < 1
+        || Number(grant.creditsGranted) > INTERNAL_BETA_MAX_CREDITS
+        || !isNonEmptyBoundedString(grant.ledgerReason, 500)
+        || !isNonEmptyBoundedString(grant.reason, 240)
+        || !isNonEmptyBoundedString(grant.approvedByUserId, 255)
+        || !approvedAt
+        || !expiresAt
+        || approvedAt > now
+        || expiresAt <= now
+        || expiresAt <= approvedAt
+    ) {
+        return null;
+    }
+    return grant as InternalBetaSchedulingEntitlement;
+}
+
+export function internalBetaGrantAuditMatches(
+    grant: InternalBetaSchedulingEntitlement,
+    audit: {
+        tenantId: string;
+        action: string;
+        resource: string;
+        resourceId: string | null;
+        newValue: Prisma.JsonValue | null;
+    } | null,
+    tenantId: string,
+): boolean {
+    const value = audit?.newValue;
+    const storedEntitlement = value
+        && typeof value === 'object'
+        && !Array.isArray(value)
+        && value.entitlement
+        && typeof value.entitlement === 'object'
+        && !Array.isArray(value.entitlement)
+        ? value.entitlement as Record<string, unknown>
+        : null;
+    return audit?.tenantId === tenantId
+        && audit.action === 'INTERNAL_BETA_ENTITLEMENT_GRANTED'
+        && audit.resource === 'TenantSetting'
+        && audit.resourceId === grant.grantId
+        && storedEntitlement?.grantId === grant.grantId
+        && storedEntitlement.auditId === grant.auditId
+        && storedEntitlement.creditTransactionId === grant.creditTransactionId
+        && storedEntitlement.creditsGranted === grant.creditsGranted
+        && storedEntitlement.ledgerReason === grant.ledgerReason
+        && storedEntitlement.reason === grant.reason
+        && storedEntitlement.approvedAt === grant.approvedAt
+        && storedEntitlement.approvedByUserId === grant.approvedByUserId
+        && storedEntitlement.expiresAt === grant.expiresAt;
+}
+
 export interface PlanDefinitionResponse {
     id: string;
     code: string;

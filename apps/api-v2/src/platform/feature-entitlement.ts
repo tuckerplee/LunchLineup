@@ -16,6 +16,158 @@ const DEFAULT_FEATURES: Record<string, readonly BillableFeature[]> = {
   ENTERPRISE: ['scheduling', 'lunch_breaks', 'time_cards'],
 };
 
+const INTERNAL_BETA_ENTITLEMENT_KEY = 'internal_beta_entitlement';
+const INTERNAL_BETA_ORIGIN = 'https://beta.lunchlineup.com';
+const INTERNAL_BETA_MAX_CREDITS = 1_000;
+
+type InternalBetaSchedulingEntitlement = {
+  grantId: string;
+  auditId: string;
+  creditTransactionId: string;
+  creditsGranted: number;
+  ledgerReason: string;
+  reason: string;
+  approvedAt: string;
+  approvedByUserId: string;
+  expiresAt: string;
+};
+
+function internalBetaRuntimeEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
+  if (env.INTERNAL_BETA_ENTITLEMENTS_ENABLED?.trim().toLowerCase() !== 'true') return false;
+  try {
+    const origin = new URL(env.APP_ORIGIN ?? '');
+    return origin.origin === INTERNAL_BETA_ORIGIN
+      && origin.pathname === '/'
+      && !origin.search
+      && !origin.hash
+      && !origin.username
+      && !origin.password;
+  } catch {
+    return false;
+  }
+}
+
+function boundedPrintable(value: unknown, maximum: number): value is string {
+  return typeof value === 'string'
+    && value.trim().length > 0
+    && value.length <= maximum
+    && !/[\u0000-\u001f\u007f]/.test(value);
+}
+
+function activeInternalBetaGrant(
+  value: Prisma.JsonValue | null | undefined,
+  now: Date,
+): InternalBetaSchedulingEntitlement | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const grant = value as Record<string, unknown>;
+  const approvedAt = typeof grant.approvedAt === 'string' ? new Date(grant.approvedAt) : null;
+  const expiresAt = typeof grant.expiresAt === 'string' ? new Date(grant.expiresAt) : null;
+  if (
+    grant.version !== 1
+    || grant.source !== 'internal_beta'
+    || grant.status !== 'ACTIVE'
+    || !Array.isArray(grant.features)
+    || grant.features.length !== 1
+    || grant.features[0] !== 'scheduling'
+    || !boundedPrintable(grant.grantId, 255)
+    || grant.auditId !== `${grant.grantId}-internal-beta-audit`
+    || grant.creditTransactionId !== grant.grantId
+    || !Number.isSafeInteger(grant.creditsGranted)
+    || Number(grant.creditsGranted) < 1
+    || Number(grant.creditsGranted) > INTERNAL_BETA_MAX_CREDITS
+    || !boundedPrintable(grant.ledgerReason, 500)
+    || !boundedPrintable(grant.reason, 240)
+    || !boundedPrintable(grant.approvedByUserId, 255)
+    || !approvedAt
+    || !Number.isFinite(approvedAt.getTime())
+    || approvedAt > now
+    || !expiresAt
+    || !Number.isFinite(expiresAt.getTime())
+    || expiresAt <= now
+    || expiresAt <= approvedAt
+  ) {
+    return null;
+  }
+  return grant as unknown as InternalBetaSchedulingEntitlement;
+}
+
+async function hasActiveInternalBetaSchedulingEntitlement(
+  transaction: TenantTransaction,
+  tenantId: string,
+  tenant: {
+    planTier: string;
+    status: string;
+    trialEndsAt: Date | null;
+  },
+  setting: { value: Prisma.JsonValue } | null,
+  now: Date,
+): Promise<boolean> {
+  if (!internalBetaRuntimeEnabled()) return false;
+  const grant = activeInternalBetaGrant(setting?.value, now);
+  if (
+    !grant
+    || planCode(tenant.planTier) === 'FREE'
+    || tenant.status !== 'TRIAL'
+    || !(tenant.trialEndsAt instanceof Date)
+    || tenant.trialEndsAt <= now
+    || new Date(grant.expiresAt) > tenant.trialEndsAt
+  ) {
+    return false;
+  }
+  const [credit, audit] = await Promise.all([
+    transaction.creditTransaction.findUnique({
+      where: { id: grant.creditTransactionId },
+      select: {
+        tenantId: true,
+        amount: true,
+        debtAmount: true,
+        reason: true,
+        balanceAfter: true,
+        debtAfter: true,
+      },
+    }),
+    transaction.auditLog.findUnique({
+      where: { id: grant.auditId },
+      select: {
+        tenantId: true,
+        action: true,
+        resource: true,
+        resourceId: true,
+        newValue: true,
+      },
+    }),
+  ]);
+  const auditValue = audit?.newValue;
+  const auditedGrant = auditValue
+    && typeof auditValue === 'object'
+    && !Array.isArray(auditValue)
+    && auditValue.entitlement
+    && typeof auditValue.entitlement === 'object'
+    && !Array.isArray(auditValue.entitlement)
+    ? auditValue.entitlement as Record<string, unknown>
+    : null;
+  return credit?.tenantId === tenantId
+    && credit.amount === grant.creditsGranted
+    && credit.debtAmount === 0
+    && credit.reason === grant.ledgerReason
+    && Number.isSafeInteger(credit.balanceAfter)
+    && Number(credit.balanceAfter) >= 0
+    && credit.debtAfter === 0
+    && audit?.tenantId === tenantId
+    && audit.action === 'INTERNAL_BETA_ENTITLEMENT_GRANTED'
+    && audit.resource === 'TenantSetting'
+    && audit.resourceId === grant.grantId
+    && auditedGrant?.grantId === grant.grantId
+    && auditedGrant.auditId === grant.auditId
+    && auditedGrant.creditTransactionId === grant.creditTransactionId
+    && auditedGrant.creditsGranted === grant.creditsGranted
+    && auditedGrant.ledgerReason === grant.ledgerReason
+    && auditedGrant.reason === grant.reason
+    && auditedGrant.approvedAt === grant.approvedAt
+    && auditedGrant.approvedByUserId === grant.approvedByUserId
+    && auditedGrant.expiresAt === grant.expiresAt;
+}
+
 function featureDetail(feature: BillableFeature, billable: boolean): string {
   if (feature === 'time_cards') {
     return billable
@@ -81,7 +233,7 @@ export async function assertFeatureEntitled(
   billable: boolean,
 ): Promise<FeatureEntitlement | null> {
   await lockTenantForFeature(transaction, tenantId);
-  const [tenant, setting] = await Promise.all([
+  const [tenant, setting, internalBetaSetting] = await Promise.all([
     transaction.tenant.findFirst({
       where: { id: tenantId, deletedAt: null },
       select: {
@@ -89,6 +241,7 @@ export async function assertFeatureEntitled(
         status: true,
         stripeSubscriptionId: true,
         stripeSubscriptionCurrentPeriodEnd: true,
+        trialEndsAt: true,
         usageCredits: true,
         creditDebt: true,
       },
@@ -97,6 +250,12 @@ export async function assertFeatureEntitled(
       where: { tenantId_key: { tenantId, key: 'feature_access' } },
       select: { value: true },
     }),
+    internalBetaRuntimeEnabled()
+      ? transaction.tenantSetting.findUnique({
+        where: { tenantId_key: { tenantId, key: INTERNAL_BETA_ENTITLEMENT_KEY } },
+        select: { value: true },
+      })
+      : Promise.resolve(null),
   ]);
   if (!tenant) throw failure(feature, billable);
 
@@ -112,11 +271,20 @@ export async function assertFeatureEntitled(
     );
   }
 
+  const now = new Date();
   const activeSubscription = tenant.status === 'ACTIVE'
     && Boolean(tenant.stripeSubscriptionId?.trim())
     && tenant.stripeSubscriptionCurrentPeriodEnd instanceof Date
-    && tenant.stripeSubscriptionCurrentPeriodEnd > new Date();
-  if (!activeSubscription) throw failure(feature, billable);
+    && tenant.stripeSubscriptionCurrentPeriodEnd > now;
+  const internalBetaActive = feature === 'scheduling'
+    && await hasActiveInternalBetaSchedulingEntitlement(
+      transaction,
+      tenantId,
+      tenant,
+      internalBetaSetting,
+      now,
+    );
+  if (!activeSubscription && !internalBetaActive) throw failure(feature, billable);
 
   const code = planCode(tenant.planTier);
   const plan = await transaction.planDefinition.findUnique({

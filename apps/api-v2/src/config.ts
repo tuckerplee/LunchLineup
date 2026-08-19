@@ -128,6 +128,16 @@ function trustProxy(value: string | undefined): boolean | number | string[] {
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): ApiV2Config {
   const appOrigin = normalizedOrigin(env.APP_ORIGIN ?? 'http://localhost:3000');
+  const internalBetaEntitlementsEnabled = booleanSetting(
+    env.INTERNAL_BETA_ENTITLEMENTS_ENABLED,
+    false,
+    'INTERNAL_BETA_ENTITLEMENTS_ENABLED',
+  );
+  if (internalBetaEntitlementsEnabled && appOrigin !== 'https://beta.lunchlineup.com') {
+    throw new Error(
+      'INTERNAL_BETA_ENTITLEMENTS_ENABLED may only be enabled for https://beta.lunchlineup.com.',
+    );
+  }
   const origins = new Set<string>([appOrigin]);
   for (const entry of (env.ALLOWED_ORIGINS ?? '').split(',')) {
     if (entry.trim()) origins.add(normalizedOrigin(entry.trim()));

@@ -11,7 +11,8 @@
 - `contract-helpers.ts`: ETag, idempotency, canonical hashing, UTC parsing, and case-preserving shift-role validation.
 - `demand-window.service.test.ts`: proof that v2 exposes only opaque UUID demand-window identifiers.
 - `demand-window.service.ts`: native bounded demand reads and atomic revision-fenced replacement.
-- `entitlement.ts`: zero-settlement scheduling entitlement check.
+- `entitlement.ts`: zero-settlement scheduling authorization that preserves the existing paid-plan rules and delegates only the non-paid beta fallback to the shared native feature-entitlement owner.
+- `entitlement.test.ts`: paid default-plan regression proof plus exact runtime, trial, expiry, and credit-ledger proof for the internal beta scheduling fallback.
 - `idempotency-replay.test.ts`: response-loss replay proof for demand replacement and schedule reopening.
 - `legacy-scheduling.bridge.ts`: bounded public-ID translation for retained publication settlement and solver subsystems.
 - `legacy-scheduling.bridge.test.ts`: proof that retained calls cannot leak internal scheduling identifiers through v2.

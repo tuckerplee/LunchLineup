@@ -229,6 +229,20 @@ export function validateProductionEnvironment(env: NodeJS.ProcessEnv = process.e
         }
     }
 
+    if (env.INTERNAL_BETA_ENTITLEMENTS_ENABLED?.trim().toLowerCase() === 'true') {
+        let appHostname = '';
+        let domainHostname = '';
+        try {
+            appHostname = new URL(resolvePublicAppOrigin(env)).hostname.toLowerCase();
+            domainHostname = hostnameFromAllowedHost(normalizeAllowedHost(env.DOMAIN ?? ''));
+        } catch {
+            // The primary origin and domain checks report their own validation errors.
+        }
+        if (appHostname !== BETA_DEMO_HOST || domainHostname !== BETA_DEMO_HOST) {
+            errors.push('INTERNAL_BETA_ENTITLEMENTS_ENABLED may only be enabled for beta.lunchlineup.com.');
+        }
+    }
+
     try {
         readCsv(env.ALLOWED_HOSTS).forEach(normalizeAllowedHost);
     } catch {

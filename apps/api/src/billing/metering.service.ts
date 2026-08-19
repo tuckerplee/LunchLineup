@@ -27,6 +27,15 @@ export type PositiveCreditSettlement = CreditGrantSettlement & {
     debtAfter: number;
 };
 
+export function administrativeCreditGrantTransactionId(
+    tenantId: string,
+    idempotencyKey: string,
+): string {
+    return `admin-credit-grant-${createHash('sha256')
+        .update(`${tenantId}:${idempotencyKey}`, 'utf8')
+        .digest('hex')}`;
+}
+
 @Injectable()
 export class MeteringService {
     private readonly logger = new Logger(MeteringService.name);
@@ -62,9 +71,10 @@ export class MeteringService {
         }
 
         const normalizedKey = this.normalizeCreditGrantIdempotencyKey(idempotencyKey);
-        const transactionId = `admin-credit-grant-${createHash('sha256')
-            .update(`${normalizedTenantId}:${normalizedKey}`, 'utf8')
-            .digest('hex')}`;
+        const transactionId = administrativeCreditGrantTransactionId(
+            normalizedTenantId,
+            normalizedKey,
+        );
 
         const settlement = await this.recordPositiveCreditSettlementInTransaction(tx, {
             tenantId: normalizedTenantId,

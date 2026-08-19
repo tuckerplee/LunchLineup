@@ -99,7 +99,7 @@ const EXPECTED_ROUTE_COUNTS: Record<string, number> = {
     PayrollController: 17,
     WebhookEndpointsController: 5,
     AuthController: 20,
-    AdminController: 34,
+    AdminController: 35,
 };
 
 const EXPECTED_PUBLIC_ROUTES = [
@@ -186,7 +186,7 @@ describe('externally reachable API authorization inventory', () => {
             routes.filter((route) => route.controller === controller).length,
         ]));
         expect(counts).toEqual(EXPECTED_ROUTE_COUNTS);
-        expect(routes).toHaveLength(154);
+        expect(routes).toHaveLength(155);
     });
 
     it('keeps authentication, authorization, and abuse controls registered globally', () => {

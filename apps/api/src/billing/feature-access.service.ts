@@ -1,5 +1,5 @@
 import { ForbiddenException, Injectable, Optional } from '@nestjs/common';
-import { PrismaClient } from '@prisma/client';
+import { Prisma, PrismaClient } from '@prisma/client';
 import { TenantPrismaService, TenantPrismaTransaction } from '../database/tenant-prisma.service';
 import { MeteringService } from './metering.service';
 import {
@@ -8,6 +8,10 @@ import {
     FEATURE_CREDIT_COST,
     FEATURE_KEYS,
     hasNonBlankStripeSubscriptionId,
+    INTERNAL_BETA_ENTITLEMENT_KEY,
+    internalBetaGrantAuditMatches,
+    internalBetaEntitlementsRuntimeEnabled,
+    parseActiveInternalBetaSchedulingEntitlement,
     resolveEffectiveTenantEntitlement,
     TenantFeatureConfig,
     TenantPlanCode,
@@ -59,8 +63,9 @@ export class FeatureAccessService {
     }
 
     async getFeatureMatrix(tenantId: string): Promise<FeatureMatrix> {
-        const { tenant, featureConfig } = await this.tenantDb.withTenant(tenantId, async (tx) => {
-            const [tenant, featureConfig] = await Promise.all([
+        const internalBetaRuntimeEnabled = internalBetaEntitlementsRuntimeEnabled();
+        const { tenant, featureConfig, internalBetaSchedulingActive } = await this.tenantDb.withTenant(tenantId, async (tx) => {
+            const [tenant, featureConfig, internalBetaSetting] = await Promise.all([
                 tx.tenant.findUniqueOrThrow({
                     where: { id: tenantId },
                     select: {
@@ -75,8 +80,22 @@ export class FeatureAccessService {
                     },
                 }),
                 this.loadTenantFeatureConfig(tx, tenantId),
+                internalBetaRuntimeEnabled
+                    ? this.loadInternalBetaEntitlement(tx, tenantId)
+                    : Promise.resolve(null),
             ]);
-            return { tenant, featureConfig };
+            return {
+                tenant,
+                featureConfig,
+                internalBetaSchedulingActive: internalBetaRuntimeEnabled
+                    ? await this.hasActiveInternalBetaSchedulingEntitlement(
+                        tx,
+                        tenantId,
+                        tenant,
+                        internalBetaSetting,
+                    )
+                    : false,
+            };
         });
         const effectiveEntitlement = resolveEffectiveTenantEntitlement(tenant);
         const plan = await resolveTenantPlanDefinition(this.prisma, effectiveEntitlement.planCode);
@@ -84,7 +103,14 @@ export class FeatureAccessService {
         const features = Object.fromEntries(
             FEATURE_KEYS.map((feature) => [
                 feature,
-                this.resolveFeature(tenant, feature, featureConfig, plan),
+                this.resolveFeature(
+                    tenant,
+                    feature,
+                    featureConfig,
+                    plan,
+                    true,
+                    internalBetaSchedulingActive,
+                ),
             ]),
         ) as Record<FeatureKey, FeatureResolution>;
         const planCode = (plan?.code ?? effectiveEntitlement.planCode).toUpperCase();
@@ -152,7 +178,8 @@ export class FeatureAccessService {
         requireBillableCredits: boolean,
     ): Promise<FeatureResolution> {
         await this.lockTenantInTransaction(tx, tenantId);
-        const [tenant, featureConfig] = await Promise.all([
+        const internalBetaRuntimeEnabled = internalBetaEntitlementsRuntimeEnabled();
+        const [tenant, featureConfig, internalBetaSetting] = await Promise.all([
             tx.tenant.findUniqueOrThrow({
                 where: { id: tenantId },
                 select: {
@@ -167,7 +194,18 @@ export class FeatureAccessService {
                 },
             }),
             this.loadTenantFeatureConfig(tx, tenantId),
+            internalBetaRuntimeEnabled
+                ? this.loadInternalBetaEntitlement(tx, tenantId)
+                : Promise.resolve(null),
         ]);
+        const internalBetaSchedulingActive = internalBetaRuntimeEnabled
+            ? await this.hasActiveInternalBetaSchedulingEntitlement(
+                tx,
+                tenantId,
+                tenant,
+                internalBetaSetting,
+            )
+            : false;
         const effectiveEntitlement = resolveEffectiveTenantEntitlement(tenant);
         const plan = await resolveTenantPlanDefinition(tx, effectiveEntitlement.planCode);
         const resolution = this.resolveFeature(
@@ -176,6 +214,7 @@ export class FeatureAccessService {
             featureConfig,
             plan,
             requireBillableCredits,
+            internalBetaSchedulingActive,
         );
         if (!resolution.enabled) {
             throw new ForbiddenException(resolution.reason);
@@ -242,6 +281,76 @@ export class FeatureAccessService {
         return config;
     }
 
+    private async loadInternalBetaEntitlement(
+        tx: TenantPrismaTransaction,
+        tenantId: string,
+    ) {
+        return tx.tenantSetting.findUnique({
+            where: {
+                tenantId_key: {
+                    tenantId,
+                    key: INTERNAL_BETA_ENTITLEMENT_KEY,
+                },
+            },
+            select: { value: true },
+        });
+    }
+
+    private async hasActiveInternalBetaSchedulingEntitlement(
+        tx: TenantPrismaTransaction,
+        tenantId: string,
+        tenant: {
+            planTier: TenantPlanTier;
+            status: TenantStatusValue;
+            trialEndsAt: Date | null;
+        },
+        setting: { value: Prisma.JsonValue } | null,
+        now = new Date(),
+    ): Promise<boolean> {
+        const grant = parseActiveInternalBetaSchedulingEntitlement(setting?.value, now);
+        if (
+            !grant
+            || tenant.planTier === 'FREE'
+            || tenant.status !== 'TRIAL'
+            || !(tenant.trialEndsAt instanceof Date)
+            || tenant.trialEndsAt <= now
+            || new Date(grant.expiresAt) > tenant.trialEndsAt
+        ) {
+            return false;
+        }
+        const [credit, audit] = await Promise.all([
+            tx.creditTransaction.findUnique({
+                where: { id: grant.creditTransactionId },
+                select: {
+                    tenantId: true,
+                    amount: true,
+                    debtAmount: true,
+                    reason: true,
+                    balanceAfter: true,
+                    debtAfter: true,
+                },
+            }),
+            tx.auditLog.findUnique({
+                where: { id: grant.auditId },
+                select: {
+                    tenantId: true,
+                    action: true,
+                    resource: true,
+                    resourceId: true,
+                    newValue: true,
+                },
+            }),
+        ]);
+        return credit?.tenantId === tenantId
+            && credit.amount === grant.creditsGranted
+            && credit.debtAmount === 0
+            && credit.reason === grant.ledgerReason
+            && Number.isSafeInteger(credit.balanceAfter)
+            && Number(credit.balanceAfter) >= 0
+            && credit.debtAfter === 0
+            && internalBetaGrantAuditMatches(grant, audit, tenantId);
+    }
+
     private resolveFeature(
         tenant: {
             planTier: TenantPlanTier;
@@ -256,11 +365,13 @@ export class FeatureAccessService {
         featureConfig: TenantFeatureConfig | null,
         plan: Awaited<ReturnType<typeof resolveTenantPlanDefinition>> | null,
         requireBillableCredits = true,
+        internalBetaSchedulingActive = false,
     ): FeatureResolution {
         const creditCost = FEATURE_CREDIT_COST[feature];
         const effectiveEntitlement = resolveEffectiveTenantEntitlement(tenant);
         const includedByPlan = coercePlanFeatureKeys(plan?.metadata ?? null, effectiveEntitlement.planCode).includes(feature);
         const paidSubscriptionActive = effectiveEntitlement.source === 'paid_subscription';
+        const internalBetaActive = feature === 'scheduling' && internalBetaSchedulingActive;
         const override = featureConfig?.features?.[feature];
 
         if (override?.source === 'disabled' || override?.enabled === false) {
@@ -272,7 +383,7 @@ export class FeatureAccessService {
             };
         }
 
-        if (!paidSubscriptionActive) {
+        if (!paidSubscriptionActive && !internalBetaActive) {
             return {
                 enabled: false,
                 source: 'disabled',
@@ -322,9 +433,13 @@ export class FeatureAccessService {
         return {
             enabled: true,
             source: 'credits',
-            reason: requireBillableCredits
-                ? `Enabled by active paid subscription and separately purchased credits (${creditCost} credit per billable use).`
-                : 'Entitled by active paid subscription for a zero-settlement control, read, or recovery operation.',
+            reason: internalBetaActive
+                ? requireBillableCredits
+                    ? `Enabled by an approved internal beta grant and finite ledger credits (${creditCost} credit per billable use).`
+                    : 'Entitled by an approved, unexpired internal beta grant for a zero-settlement control, read, or recovery operation.'
+                : requireBillableCredits
+                    ? `Enabled by active paid subscription and separately purchased credits (${creditCost} credit per billable use).`
+                    : 'Entitled by active paid subscription for a zero-settlement control, read, or recovery operation.',
             creditCost,
         };
     }

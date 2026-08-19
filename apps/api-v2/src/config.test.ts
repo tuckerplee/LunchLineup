@@ -66,6 +66,27 @@ describe('API v2 runtime configuration', () => {
     })).toThrow(/integer between 1 and 8/);
   });
 
+  it('permits internal beta entitlements only on the exact beta origin', () => {
+    expect(() => loadConfig({
+      APP_ORIGIN: 'https://beta.lunchlineup.com',
+      LEGACY_API_BASE_URL: 'http://api:3000/v1',
+      JWT_SECRET: 'test-api-v2-jwt-secret',
+      INTERNAL_BETA_ENTITLEMENTS_ENABLED: 'true',
+    })).not.toThrow();
+    expect(() => loadConfig({
+      APP_ORIGIN: 'https://app.lunchlineup.com',
+      LEGACY_API_BASE_URL: 'http://api:3000/v1',
+      JWT_SECRET: 'test-api-v2-jwt-secret',
+      INTERNAL_BETA_ENTITLEMENTS_ENABLED: 'true',
+    })).toThrow(/INTERNAL_BETA_ENTITLEMENTS_ENABLED/);
+    expect(() => loadConfig({
+      APP_ORIGIN: 'https://beta.lunchlineup.com',
+      LEGACY_API_BASE_URL: 'http://api:3000/v1',
+      JWT_SECRET: 'test-api-v2-jwt-secret',
+      INTERNAL_BETA_ENTITLEMENTS_ENABLED: 'sometimes',
+    })).toThrow(/boolean/);
+  });
+
   it('only permits SSO-only workspace policy when every OIDC dependency is configured', () => {
     expect(loadConfig({
       APP_ORIGIN: 'https://beta.lunchlineup.com',
