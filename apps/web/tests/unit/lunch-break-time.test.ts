@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   lunchBreakDayWindow,
+  lunchBreakShiftDraft,
   lunchBreakShiftRange,
   lunchBreakTimeValue,
   resolveLunchBreakInstant,
@@ -15,14 +16,14 @@ describe('lunch break location time helpers', () => {
   });
 
   it('persists wall-clock setup shifts in the selected location timezone', () => {
-    expect(lunchBreakShiftRange('2026-07-09', '09:00', '17:00', 'America/Los_Angeles')).toEqual({
+    expect(lunchBreakShiftRange('2026-07-09', '09:00', '17:00', 0, 'America/Los_Angeles')).toEqual({
       startIso: '2026-07-09T16:00:00.000Z',
       endIso: '2026-07-10T00:00:00.000Z',
     });
   });
 
   it('keeps overnight shifts on local calendar boundaries', () => {
-    const range = lunchBreakShiftRange('2026-11-01', '22:00', '02:00', 'America/Los_Angeles');
+    const range = lunchBreakShiftRange('2026-11-01', '22:00', '02:00', 1, 'America/Los_Angeles');
     expect(range).toEqual({
       startIso: '2026-11-02T06:00:00.000Z',
       endIso: '2026-11-02T10:00:00.000Z',
@@ -31,5 +32,28 @@ describe('lunch break location time helpers', () => {
       '2026-11-02T09:30:00.000Z',
     );
     expect(lunchBreakTimeValue(range!.startIso, 'America/Los_Angeles')).toBe('22:00');
+  });
+
+  it('round-trips an overnight 23:00-07:00 interval with an explicit next-day end', () => {
+    const range = lunchBreakShiftRange('2026-07-09', '23:00', '07:00', 1, 'America/Los_Angeles');
+    expect(range).toEqual({
+      startIso: '2026-07-10T06:00:00.000Z',
+      endIso: '2026-07-10T14:00:00.000Z',
+    });
+    expect(lunchBreakShiftDraft(range!.startIso, range!.endIso, 'America/Los_Angeles')).toEqual({
+      dateValue: '2026-07-09',
+      startTime: '23:00',
+      endTime: '07:00',
+      endDayOffset: 1,
+    });
+  });
+
+  it('fails closed instead of inferring or clamping an invalid same-day overnight range', () => {
+    expect(lunchBreakShiftRange('2026-07-09', '23:00', '07:00', 0, 'America/Los_Angeles')).toBeNull();
+    expect(lunchBreakShiftDraft(
+      '2026-07-10T06:00:00.000Z',
+      '2026-07-12T14:00:00.000Z',
+      'America/Los_Angeles',
+    )).toBeNull();
   });
 });

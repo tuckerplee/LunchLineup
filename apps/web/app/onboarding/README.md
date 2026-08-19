@@ -9,7 +9,7 @@ Public SaaS signup route for creating a tenant workspace from an email OTP.
 - `challenge.ts`: pure signup mode, OTP payload, structured API-error, and network-recovery helpers, including explicit Terms/Privacy assent and opaque durable onboarding challenge fields.
 - `first-location-recovery.ts`: session-scoped, non-secret first-location retry contract with a stable idempotency key, expiry, and success cleanup helpers.
 - `first-location-transport.ts`: authenticated first-location POST using bounded single-flight session refresh and idempotency-gated replay.
-- `page.tsx`: semantic, Enter-submittable client onboarding form with focused live errors and status updates; production closed beta renders a clear access state instead of a disabled form, while enabled modes retain the opaque server challenge in memory and resume workspace-bound first-location provisioning after MFA, lost responses, or transient failures.
+- `page.tsx`: semantic, Enter-submittable client onboarding form with focused live errors and status updates plus an honest read-only schedule preview; production closed beta renders a clear access state instead of a disabled form, while enabled modes retain the opaque server challenge in memory and resume workspace-bound first-location provisioning after MFA, lost responses, or transient failures.
 
 ## Notes
 

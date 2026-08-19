@@ -1,6 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import Link from 'next/link';
 import { AnimatePresence, motion } from 'framer-motion';
 import { Button } from '@/components/ui/button';
 import {
@@ -14,10 +15,12 @@ import { getWorkspaceCapabilities, hasLunchBreakReadAccess, hasPermission } from
 import { dateValueInTimeZone, safeTimeZone } from '@/lib/location-timezone';
 import {
   lunchBreakDayWindow,
+  lunchBreakShiftDraft,
   lunchBreakShiftLabel,
   lunchBreakShiftRange,
   lunchBreakTimeValue,
   resolveLunchBreakInstant,
+  type LunchBreakShiftDayOffset,
 } from './lunch-break-time';
 import {
   claimLunchBreakDayLoadRequest,
@@ -135,6 +138,7 @@ type ManualShiftRow = {
   employeeName: string;
   startTime: string;
   endTime: string;
+  endDayOffset: LunchBreakShiftDayOffset;
 };
 
 type SetupShiftRow = {
@@ -143,16 +147,14 @@ type SetupShiftRow = {
   employeeId: string;
   employeeName: string;
   role: string;
+  source: 'schedule' | 'temporary';
+  dateValue: string;
   startTime: string;
   endTime: string;
-};
-
-type SetupDragState = {
-  rowId: string;
-  startX: number;
-  trackWidth: number;
-  originalStartMinutes: number;
-  durationMinutes: number;
+  endDayOffset: LunchBreakShiftDayOffset;
+  originalStartIso: string | null;
+  originalEndIso: string | null;
+  intervalError: string | null;
 };
 
 type PlanPreviewSegment = {
@@ -184,6 +186,7 @@ type AutoCalendarRow = {
   shiftLabel: string;
   shiftLeftPct: number;
   shiftWidthPct: number;
+  overnight: boolean;
   segments: AutoCalendarSegment[];
 };
 
@@ -334,13 +337,6 @@ function timeValueToMinutes(timeValue: string): number {
   return Number(match[1]) * 60 + Number(match[2]);
 }
 
-function minutesToTimeValue(totalMinutes: number): string {
-  const bounded = Math.max(0, Math.min(24 * 60 - 1, Math.round(totalMinutes)));
-  const hh = String(Math.floor(bounded / 60)).padStart(2, '0');
-  const mm = String(bounded % 60).padStart(2, '0');
-  return `${hh}:${mm}`;
-}
-
 function defaultManualShifts(): ManualShiftRow[] {
   return [];
 }
@@ -448,8 +444,8 @@ export default function LunchBreaksPage() {
   const [autoGuideStep, setAutoGuideStep] = useState<1 | 2 | 3 | 4 | 5>(1);
   const [availableEmployees, setAvailableEmployees] = useState<EmployeeCard[]>([]);
   const [selectedAutoEmployeeIds, setSelectedAutoEmployeeIds] = useState<string[]>([]);
+  const [staffSearch, setStaffSearch] = useState('');
   const [setupShiftRows, setSetupShiftRows] = useState<SetupShiftRow[]>([]);
-  const [setupDrag, setSetupDrag] = useState<SetupDragState | null>(null);
   const [setupShiftsBusyOwner, setSetupShiftsBusyOwner] = useState<LunchBreakMutationBusyOwner | null>(null);
   const [setupShiftError, setSetupShiftError] = useState<{
     message: string;
@@ -588,8 +584,8 @@ export default function LunchBreaksPage() {
     setAutoGuideStep(1);
     setAvailableEmployees([]);
     setSelectedAutoEmployeeIds([]);
+    setStaffSearch('');
     setSetupShiftRows([]);
-    setSetupDrag(null);
     setSetupShiftError(null);
     setIsLoadingEmployees(false);
     setHasTriedScheduleImport(false);
@@ -768,14 +764,30 @@ export default function LunchBreaksPage() {
     && schedulingFeature.creditCost > 0
     ? schedulingFeature.creditCost
     : null;
-  const setupShiftsBillingBlockReason = capabilities.canReadBilling && (
-    !schedulingFeature?.enabled
-    || schedulingFeature.source !== 'credits'
-    || setupShiftsCreditCost === null
-    || (features?.usageCredits ?? 0) < setupShiftsCreditCost
-  )
-    ? schedulingFeature?.reason || 'Setup shifts require an active paid subscription and configured usage credits.'
-    : null;
+  const setupShiftsBillingBlockReason = !capabilities.canReadBilling
+    ? 'Billing read access is required to verify the exact setup-shift credit cost before saving.'
+    : (
+        !schedulingFeature?.enabled
+        || schedulingFeature.source !== 'credits'
+        || setupShiftsCreditCost === null
+        || (features?.usageCredits ?? 0) < setupShiftsCreditCost
+      )
+      ? schedulingFeature?.reason || 'Setup shifts require an active paid subscription and configured usage credits.'
+      : null;
+  const setupShiftRecordCount = setupShiftRows.length;
+  const hasInvalidSetupShiftRows = setupShiftRows.some((row) => (
+    Boolean(row.intervalError)
+    || (row.source === 'temporary' && !lunchBreakShiftRange(
+      row.dateValue,
+      row.startTime,
+      row.endTime,
+      row.endDayOffset,
+      activeTimeZone,
+    ))
+  ));
+  const setupShiftMutationLabel = setupShiftsCreditCost === null
+    ? `Save ${setupShiftRecordCount} setup shift record${setupShiftRecordCount === 1 ? '' : 's'} · exact cost unavailable`
+    : `Save ${setupShiftRecordCount} setup shift record${setupShiftRecordCount === 1 ? '' : 's'} · exactly ${setupShiftsCreditCost} usage credit${setupShiftsCreditCost === 1 ? '' : 's'}`;
 
   const selectDayScope = useCallback((dateValue: string, locationId: string) => {
     if (lunchBreakDaySelectionMatches({ locationId, dateValue }, desiredDayScopeRef.current)) return;
@@ -1071,6 +1083,7 @@ export default function LunchBreaksPage() {
         employeeName: `Employee ${nextIndex}`,
         startTime: '05:00',
         endTime: '13:00',
+        endDayOffset: 0,
       },
     ]);
   }, [canWriteLunchBreaks, manualShifts.length]);
@@ -1106,7 +1119,13 @@ export default function LunchBreaksPage() {
     setError(null);
     try {
       const shifts = manualShifts.map((row) => {
-        const range = lunchBreakShiftRange(mutationScope.dateValue, row.startTime, row.endTime, mutationTimeZone);
+        const range = lunchBreakShiftRange(
+          mutationScope.dateValue,
+          row.startTime,
+          row.endTime,
+          row.endDayOffset,
+          mutationTimeZone,
+        );
         if (!range) {
           throw new Error(`Invalid shift time for ${row.employeeName || 'employee'}.`);
         }
@@ -1265,6 +1284,7 @@ export default function LunchBreaksPage() {
         shiftLabel: lunchBreakShiftLabel(row.startTime, row.endTime, activeTimeZone),
         shiftLeftPct: clamp(shiftLeftPct, 0, 96),
         shiftWidthPct: clamp(shiftWidthPct, 4, 100),
+        overnight: lunchBreakShiftDraft(row.startTime, row.endTime, activeTimeZone)?.endDayOffset === 1,
         segments: segments.map((segment) => ({
           ...segment,
           leftPct: clamp(segment.leftPct, 0, 96),
@@ -1419,7 +1439,7 @@ export default function LunchBreaksPage() {
     () =>
       manualShifts.map((row) => {
         const rawStart = timeValueToMinutes(row.startTime);
-        const rawEnd = timeValueToMinutes(row.endTime);
+        const rawEnd = timeValueToMinutes(row.endTime) + row.endDayOffset * 24 * 60;
         const clampedStart = clamp(rawStart, setupTimelineStart, setupTimelineEnd - 30);
         const clampedEnd = clamp(Math.max(rawEnd, clampedStart + 30), clampedStart + 30, setupTimelineEnd);
         const leftPct = ((clampedStart - setupTimelineStart) / setupTimelineWindow) * 100;
@@ -1427,9 +1447,10 @@ export default function LunchBreaksPage() {
         return {
           id: row.id,
           employeeName: row.employeeName || 'Unassigned',
-          shiftLabel: `${row.startTime} - ${row.endTime}`,
+          shiftLabel: `${row.startTime} - ${row.endTime}${row.endDayOffset === 1 ? ' · Overnight' : ''}`,
           shiftLeftPct: leftPct,
           shiftWidthPct: widthPct,
+          overnight: row.endDayOffset === 1,
         };
       }),
     [manualShifts, setupTimelineEnd, setupTimelineStart, setupTimelineWindow],
@@ -1439,6 +1460,15 @@ export default function LunchBreaksPage() {
     () => (scheduledEmployees.length > 0 ? scheduledEmployees : availableEmployees),
     [availableEmployees, scheduledEmployees],
   );
+
+  const visibleStep3EmployeePool = useMemo(() => {
+    const query = staffSearch.trim().toLocaleLowerCase();
+    if (!query) return step3EmployeePool;
+    return step3EmployeePool.filter((employee) => (
+      employee.name.toLocaleLowerCase().includes(query)
+      || employee.role?.toLocaleLowerCase().includes(query)
+    ));
+  }, [staffSearch, step3EmployeePool]);
 
   useEffect(() => {
     if (!(isAutoMode && autoGuideStep === 3)) return;
@@ -1471,15 +1501,24 @@ export default function LunchBreaksPage() {
       const selectedIds = new Set(selectedAutoEmployeeIds);
       const selectedRows = dayRows.filter((row) => selectedIds.has(row.userId ?? row.shiftId));
       if (selectedRows.length > 0) {
-        return selectedRows.map((row) => ({
-          id: row.shiftId,
-          shiftId: row.shiftId,
-          employeeId: row.userId ?? row.shiftId,
-          employeeName: row.employeeName,
-          role: selectedAutoEmployees.find((employee) => employee.id === (row.userId ?? row.shiftId))?.role ?? 'Scheduled',
-          startTime: lunchBreakTimeValue(row.startTime, activeTimeZone),
-          endTime: lunchBreakTimeValue(row.endTime, activeTimeZone),
-        }));
+        return selectedRows.map((row) => {
+          const interval = lunchBreakShiftDraft(row.startTime, row.endTime, activeTimeZone);
+          return {
+            id: row.shiftId,
+            shiftId: row.shiftId,
+            employeeId: row.userId ?? row.shiftId,
+            employeeName: row.employeeName,
+            role: selectedAutoEmployees.find((employee) => employee.id === (row.userId ?? row.shiftId))?.role ?? 'Scheduled',
+            source: 'schedule' as const,
+            dateValue: interval?.dateValue ?? selectedDate,
+            startTime: interval?.startTime ?? lunchBreakTimeValue(row.startTime, activeTimeZone),
+            endTime: interval?.endTime ?? lunchBreakTimeValue(row.endTime, activeTimeZone),
+            endDayOffset: interval?.endDayOffset ?? 0,
+            originalStartIso: row.startTime,
+            originalEndIso: row.endTime,
+            intervalError: interval ? null : 'This scheduled shift crosses more than one local day and cannot be rewritten here.',
+          };
+        });
       }
 
       return selectedAutoEmployees.map((employee, index) => ({
@@ -1488,11 +1527,17 @@ export default function LunchBreaksPage() {
         employeeId: employee.id,
         employeeName: employee.name,
         role: employee.role ?? 'Staff',
+        source: 'temporary' as const,
+        dateValue: selectedDate,
         startTime: '05:00',
         endTime: '13:00',
+        endDayOffset: 0 as const,
+        originalStartIso: null,
+        originalEndIso: null,
+        intervalError: null,
       }));
     });
-  }, [activeTimeZone, autoGuideStep, dayRows, isAutoMode, selectedAutoEmployeeIds, selectedAutoEmployees]);
+  }, [activeTimeZone, autoGuideStep, dayRows, isAutoMode, selectedAutoEmployeeIds, selectedAutoEmployees, selectedDate]);
 
   const applySetupShifts = useCallback(async () => {
     if (!canWriteLunchBreaks) {
@@ -1521,6 +1566,38 @@ export default function LunchBreaksPage() {
       setError(setupShiftsBillingBlockReason);
       return;
     }
+    const invalidSetupRow = setupShiftRows.find((row) => (
+      Boolean(row.intervalError)
+      || (row.source === 'temporary' && !lunchBreakShiftRange(
+        row.dateValue,
+        row.startTime,
+        row.endTime,
+        row.endDayOffset,
+        activeTimeZone,
+      ))
+    ));
+    if (invalidSetupRow) {
+      setError(`${invalidSetupRow.employeeName}: ${invalidSetupRow.intervalError ?? 'the temporary shift end must be after its start on the selected local day.'}`);
+      return;
+    }
+    if (setupShiftsCreditCost === null) {
+      setError('The exact setup-shift credit cost is unavailable. No shifts were saved.');
+      return;
+    }
+    const scheduledRecordCount = setupShiftRows.filter((row) => row.source === 'schedule').length;
+    const temporaryRecordCount = setupShiftRows.length - scheduledRecordCount;
+    const actionParts = [
+      scheduledRecordCount > 0
+        ? `save ${scheduledRecordCount} unchanged schedule-backed shift record${scheduledRecordCount === 1 ? '' : 's'}`
+        : null,
+      temporaryRecordCount > 0
+        ? `create ${temporaryRecordCount} temporary shift record${temporaryRecordCount === 1 ? '' : 's'}`
+        : null,
+    ].filter((part): part is string => Boolean(part));
+    const creditLabel = `${setupShiftsCreditCost} usage credit${setupShiftsCreditCost === 1 ? '' : 's'}`;
+    if (!window.confirm(`Confirm setup: ${actionParts.join(' and ')} for ${selectedDateLabel}. This uses exactly ${creditLabel}.`)) {
+      return;
+    }
     const persistedUserIds = new Set<string>([
       ...availableEmployees.map((employee) => employee.id),
       ...dayRows.map((row) => row.userId).filter((value): value is string => Boolean(value)),
@@ -1536,7 +1613,17 @@ export default function LunchBreaksPage() {
       setError(null);
       setSetupShiftError(null);
       const rows: SetupShiftsRequestBody['rows'] = setupShiftRows.map((setupRow) => {
-        const range = lunchBreakShiftRange(mutationScope.dateValue, setupRow.startTime, setupRow.endTime, mutationTimeZone);
+        const range = setupRow.source === 'schedule'
+          && setupRow.originalStartIso
+          && setupRow.originalEndIso
+          ? { startIso: setupRow.originalStartIso, endIso: setupRow.originalEndIso }
+          : lunchBreakShiftRange(
+              setupRow.dateValue,
+              setupRow.startTime,
+              setupRow.endTime,
+              setupRow.endDayOffset,
+              mutationTimeZone,
+            );
         if (!range) {
           throw new Error(`Invalid shift time for ${setupRow.employeeName}.`);
         }
@@ -1615,56 +1702,11 @@ export default function LunchBreaksPage() {
     selectedShiftId,
     sessionIdentity,
     setupShiftsBillingBlockReason,
+    setupShiftsCreditCost,
     setupShiftRows,
+    selectedDateLabel,
     updateDaySession,
   ]);
-
-  const startSetupDrag = useCallback((event: { clientX: number; currentTarget: EventTarget & HTMLButtonElement }, row: SetupShiftRow) => {
-    if (!canWriteLunchBreaks || isApplyingSetupShifts) return;
-    const trackEl = (event.currentTarget.parentElement as HTMLElement | null);
-    if (!trackEl) return;
-    const trackBounds = trackEl.getBoundingClientRect();
-    const startMinutes = timeValueToMinutes(row.startTime);
-    const endMinutes = timeValueToMinutes(row.endTime);
-    const durationMinutes = Math.max(30, endMinutes - startMinutes);
-    setSetupDrag({
-      rowId: row.id,
-      startX: event.clientX,
-      trackWidth: Math.max(1, trackBounds.width),
-      originalStartMinutes: startMinutes,
-      durationMinutes,
-    });
-  }, [canWriteLunchBreaks, isApplyingSetupShifts]);
-
-  const onSetupDragMove = useCallback((event: { clientX: number }) => {
-    if (!canWriteLunchBreaks || isApplyingSetupShifts) return;
-    if (!setupDrag) return;
-    const deltaPx = event.clientX - setupDrag.startX;
-    const deltaMinutesRaw = (deltaPx / setupDrag.trackWidth) * setupTimelineWindow;
-    const deltaMinutes = Math.round(deltaMinutesRaw / 15) * 15;
-    const earliestStart = setupTimelineStart;
-    const latestStart = setupTimelineEnd - setupDrag.durationMinutes;
-    const nextStartMinutes = clamp(setupDrag.originalStartMinutes + deltaMinutes, earliestStart, latestStart);
-    const nextEndMinutes = nextStartMinutes + setupDrag.durationMinutes;
-
-    setSetupShiftRows((prev) =>
-      prev.map((row) =>
-        row.id === setupDrag.rowId
-          ? {
-              ...row,
-              startTime: minutesToTimeValue(nextStartMinutes),
-              endTime: minutesToTimeValue(nextEndMinutes),
-            }
-          : row,
-      ),
-    );
-  }, [canWriteLunchBreaks, isApplyingSetupShifts, setupDrag, setupTimelineWindow]);
-
-  const endSetupDrag = useCallback(() => {
-    if (!canWriteLunchBreaks) return;
-    if (!setupDrag) return;
-    setSetupDrag(null);
-  }, [canWriteLunchBreaks, setupDrag]);
 
   useEffect(() => {
     if (!(isAutoMode && autoGuideStep === 3)) return;
@@ -2237,7 +2279,7 @@ export default function LunchBreaksPage() {
                       Back
                     </Button>
                     <Button size="sm" onClick={() => setAutoGuideStep(3)}>
-                      Continue
+                      Select staff
                     </Button>
                   </div>
                 </motion.div>
@@ -2281,11 +2323,53 @@ export default function LunchBreaksPage() {
                     <div style={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>
                       Select who should be included in this lunch and break plan.
                     </div>
+                    <div style={{ display: 'flex', gap: 8, alignItems: 'end', flexWrap: 'wrap' }}>
+                      <label style={{ display: 'grid', gap: 4, flex: '1 1 220px', fontSize: '0.7rem', fontWeight: 700, color: 'var(--text-secondary)' }}>
+                        Search staff
+                        <input
+                          type="search"
+                          value={staffSearch}
+                          onChange={(event) => setStaffSearch(event.target.value)}
+                          placeholder="Name or role"
+                          style={{
+                            width: '100%',
+                            border: '1px solid var(--border)',
+                            borderRadius: 8,
+                            background: '#ffffff',
+                            color: 'var(--text-primary)',
+                            padding: '0.4rem 0.5rem',
+                            fontSize: '0.78rem',
+                          }}
+                        />
+                      </label>
+                      {scheduledEmployees.length > 0 ? (
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="sm"
+                          onClick={() => setSelectedAutoEmployeeIds(scheduledEmployees.map((employee) => employee.id))}
+                        >
+                          Select scheduled ({scheduledEmployees.length})
+                        </Button>
+                      ) : null}
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        onClick={() => setSelectedAutoEmployeeIds([])}
+                        disabled={selectedAutoEmployeeIds.length === 0}
+                      >
+                        Clear selection
+                      </Button>
+                    </div>
+                    <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>
+                      Showing {visibleStep3EmployeePool.length} of {step3EmployeePool.length} staff
+                    </div>
                     {isLoadingEmployees ? (
                       <div style={{ fontSize: '0.78rem', color: 'var(--text-secondary)' }}>Loading employees...</div>
                     ) : (
                       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(96px, 1fr))', gap: 6 }}>
-                        {step3EmployeePool.slice(0, 24).map((employee) => {
+                        {visibleStep3EmployeePool.map((employee) => {
                           const isSelected = selectedAutoEmployeeIds.includes(employee.id);
                           return (
                             <button
@@ -2337,6 +2421,9 @@ export default function LunchBreaksPage() {
                         })}
                       </div>
                     )}
+                    {!isLoadingEmployees && step3EmployeePool.length > 0 && visibleStep3EmployeePool.length === 0 ? (
+                      <div style={{ fontSize: '0.78rem', color: '#b45309' }}>No staff match this search.</div>
+                    ) : null}
                     {!isLoadingEmployees ? (
                       <div style={{ fontSize: '0.74rem', color: selectedAutoEmployeeIds.length > 0 ? '#166534' : '#b45309' }}>
                         {selectedAutoEmployeeIds.length > 0
@@ -2359,7 +2446,7 @@ export default function LunchBreaksPage() {
                       onClick={() => setAutoGuideStep(4)}
                       disabled={step3EmployeePool.length > 0 && selectedAutoEmployeeIds.length === 0}
                     >
-                      Next
+                      Review {selectedAutoEmployeeIds.length} shift{selectedAutoEmployeeIds.length === 1 ? '' : 's'}
                     </Button>
                   </div>
                 </motion.div>
@@ -2389,23 +2476,20 @@ export default function LunchBreaksPage() {
                     tabIndex={-1}
                     style={{ margin: 0, fontSize: '1.2rem', color: 'var(--text-primary)', borderRadius: 6 }}
                   >
-                    Adjust who works when
+                    Review shifts before planning
                   </h1>
                   <p style={{ margin: 0, fontSize: '0.84rem', color: 'var(--text-secondary)' }}>
-                    Fine-tune shifts before planning breaks. Drag blocks to move times, or edit names and times manually.
+                    Schedule-backed times are read-only here and must be corrected in Calendar. Temporary shifts stay explicit and reviewable before they are saved.
                   </p>
 
                   <div
                     className="surface-muted"
-                    onMouseMove={onSetupDragMove}
-                    onMouseUp={endSetupDrag}
-                    onMouseLeave={endSetupDrag}
                     style={{ borderRadius: 12, padding: '0.75rem', display: 'grid', gap: 8 }}
                   >
                     <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, alignItems: 'center' }}>
                       <div style={{ fontSize: '0.8rem', fontWeight: 800, color: 'var(--text-primary)' }}>Shift preview</div>
                       <div id="setup-shift-preview-help" style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>
-                        Drag blocks, or focus one and use Left, Right, Home, or End to move its shift window.
+                        Preview only. This canvas never changes shift times.
                       </div>
                     </div>
 
@@ -2421,10 +2505,12 @@ export default function LunchBreaksPage() {
                         {setupShiftRows.map((row) => {
                           const rawStart = timeValueToMinutes(row.startTime);
                           const rawEnd = timeValueToMinutes(row.endTime);
-                          const clampedStart = clamp(rawStart, setupTimelineStart, setupTimelineEnd - 30);
-                          const clampedEnd = clamp(Math.max(rawEnd, clampedStart + 30), clampedStart + 30, setupTimelineEnd);
-                          const duration = clampedEnd - clampedStart;
-                          const leftPct = ((clampedStart - setupTimelineStart) / setupTimelineWindow) * 100;
+                          const isOvernight = row.endDayOffset === 1;
+                          const isOutsidePreview = isOvernight
+                            || rawStart < setupTimelineStart
+                            || rawEnd > setupTimelineEnd;
+                          const duration = rawEnd - rawStart;
+                          const leftPct = ((rawStart - setupTimelineStart) / setupTimelineWindow) * 100;
                           const widthPct = (duration / setupTimelineWindow) * 100;
                           return (
                             <div
@@ -2441,63 +2527,39 @@ export default function LunchBreaksPage() {
                                 <div style={{ fontSize: '0.75rem', fontWeight: 700, color: 'var(--text-primary)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
                                   {row.employeeName}
                                 </div>
-                                <div style={{ fontSize: '0.66rem', color: 'var(--text-muted)' }}>{row.role}</div>
+                                <div style={{ fontSize: '0.66rem', color: 'var(--text-muted)' }}>
+                                  {row.role} · {row.source === 'schedule' ? 'Schedule-backed' : 'Temporary shift'}
+                                </div>
                               </div>
                               <div style={{ position: 'relative', height: 32, borderRadius: 10, border: '1px solid #d6e0f3', background: '#ffffff' }}>
-                                <button
-                                  type="button"
-                                  role="slider"
-                                  disabled={isApplyingSetupShifts}
-                                  aria-label={`Shift window for ${row.employeeName}`}
-                                  aria-describedby="setup-shift-preview-help"
-                                  aria-valuemin={setupTimelineStart}
-                                  aria-valuemax={setupTimelineEnd - duration}
-                                  aria-valuenow={clampedStart}
-                                  aria-valuetext={`${minutesToTimeValue(clampedStart)} to ${minutesToTimeValue(clampedEnd)}`}
-                                  onMouseDown={(event) => startSetupDrag(event, row)}
-                                  onKeyDown={(event) => {
-                                    if (isApplyingSetupShifts) return;
-                                    if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
-                                    event.preventDefault();
-                                    const nextStart = event.key === 'Home'
-                                      ? setupTimelineStart
-                                      : event.key === 'End'
-                                        ? setupTimelineEnd - duration
-                                        : clamp(
-                                            clampedStart + (event.key === 'ArrowRight' ? 15 : -15),
-                                            setupTimelineStart,
-                                            setupTimelineEnd - duration,
-                                          );
-                                    const nextEnd = nextStart + duration;
-                                    setSetupShiftRows((prev) =>
-                                      prev.map((candidate) =>
-                                        candidate.id === row.id
-                                          ? { ...candidate, startTime: minutesToTimeValue(nextStart), endTime: minutesToTimeValue(nextEnd) }
-                                          : candidate,
-                                      ),
-                                    );
-                                  }}
-                                  style={{
-                                    position: 'absolute',
-                                    left: `${leftPct}%`,
-                                    width: `${Math.max(widthPct, 8)}%`,
-                                    top: 4,
-                                    bottom: 4,
-                                    borderRadius: 8,
-                                    background: '#dce9ff',
-                                    border: '1px solid #8fb0ef',
-                                    color: '#23458c',
-                                    display: 'grid',
-                                    placeItems: 'center',
-                                    cursor: 'grab',
-                                    fontSize: '0.66rem',
-                                    fontWeight: 700,
-                                    userSelect: 'none',
-                                    padding: 0,
-                                  }}
-                                >
-                                  {minutesToTimeValue(clampedStart)}-{minutesToTimeValue(clampedEnd)}
-                                </button>
+                                {isOutsidePreview ? (
+                                  <div style={{ height: '100%', display: 'grid', placeItems: 'center', paddingInline: 8, color: '#23458c', fontSize: '0.66rem', fontWeight: 750 }}>
+                                    {isOvernight
+                                      ? `Overnight · ${row.startTime} to ${row.endTime} next day`
+                                      : `Outside 05:00-22:00 preview · ${row.startTime}-${row.endTime}`}
+                                  </div>
+                                ) : (
+                                  <div
+                                    aria-label={`Preview of ${row.employeeName} shift from ${row.startTime} to ${row.endTime}`}
+                                    style={{
+                                      position: 'absolute',
+                                      left: `${leftPct}%`,
+                                      width: `${Math.max(widthPct, 8)}%`,
+                                      top: 4,
+                                      bottom: 4,
+                                      borderRadius: 8,
+                                      background: '#dce9ff',
+                                      border: '1px solid #8fb0ef',
+                                      color: '#23458c',
+                                      display: 'grid',
+                                      placeItems: 'center',
+                                      fontSize: '0.66rem',
+                                      fontWeight: 700,
+                                    }}
+                                  >
+                                    {row.startTime}-{row.endTime}
+                                  </div>
+                                )}
                               </div>
                             </div>
                           );
@@ -2511,91 +2573,105 @@ export default function LunchBreaksPage() {
                   </div>
 
                   <div className="surface-muted" style={{ borderRadius: 12, padding: '0.75rem', display: 'grid', gap: 8 }}>
-                    <div style={{ fontSize: '0.8rem', fontWeight: 800, color: 'var(--text-primary)' }}>Manual edit</div>
-                    <div style={{ display: 'grid', gap: 8, minWidth: 0 }}>
-                      {setupShiftRows.map((row) => (
-                        <fieldset
-                          key={`manual-${row.id}`}
-                          style={{
-                            border: 0,
-                            padding: 0,
-                            margin: 0,
-                            display: 'grid',
-                            gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))',
-                            gap: 8,
-                            alignItems: 'end',
-                            minWidth: 0,
-                          }}
-                        >
-                          <legend style={{ width: '100%', marginBottom: 4, fontSize: '0.76rem', fontWeight: 700, color: 'var(--text-primary)' }}>
-                            {row.employeeName}
-                          </legend>
-                          <label style={{ display: 'grid', gap: 4, minWidth: 0, fontSize: '0.7rem', fontWeight: 700, color: 'var(--text-secondary)' }}>
-                            Start time
-                            <input
-                              type="time"
-                              aria-label={`Start time for ${row.employeeName}`}
-                              value={row.startTime}
-                              disabled={isApplyingSetupShifts}
-                              onChange={(event) =>
-                                setSetupShiftRows((prev) =>
-                                  prev.map((candidate) => {
-                                    if (candidate.id !== row.id) return candidate;
-                                    const nextStart = event.target.value;
-                                    const nextStartMin = timeValueToMinutes(nextStart);
-                                    const currentEndMin = timeValueToMinutes(candidate.endTime);
-                                    const nextEnd = currentEndMin <= nextStartMin ? minutesToTimeValue(nextStartMin + 30) : candidate.endTime;
-                                    return { ...candidate, startTime: nextStart, endTime: nextEnd };
-                                  }),
-                                )
-                              }
-                              style={{
-                                minWidth: 0,
-                                width: '100%',
-                                border: '1px solid var(--border)',
-                                borderRadius: 8,
-                                background: '#ffffff',
-                                color: 'var(--text-primary)',
-                                padding: '0.36rem 0.45rem',
-                                fontSize: '0.78rem',
-                              }}
-                            />
-                          </label>
-                          <label style={{ display: 'grid', gap: 4, minWidth: 0, fontSize: '0.7rem', fontWeight: 700, color: 'var(--text-secondary)' }}>
-                            End time
-                            <input
-                              type="time"
-                              aria-label={`End time for ${row.employeeName}`}
-                              value={row.endTime}
-                              disabled={isApplyingSetupShifts}
-                              onChange={(event) =>
-                                setSetupShiftRows((prev) =>
-                                  prev.map((candidate) => {
-                                    if (candidate.id !== row.id) return candidate;
-                                    const nextEnd = event.target.value;
-                                    const startMin = timeValueToMinutes(candidate.startTime);
-                                    const endMin = timeValueToMinutes(nextEnd);
-                                    return {
-                                      ...candidate,
-                                      endTime: endMin <= startMin ? minutesToTimeValue(startMin + 30) : nextEnd,
-                                    };
-                                  }),
-                                )
-                              }
-                              style={{
-                                minWidth: 0,
-                                width: '100%',
-                                border: '1px solid var(--border)',
-                                borderRadius: 8,
-                                background: '#ffffff',
-                                color: 'var(--text-primary)',
-                                padding: '0.36rem 0.45rem',
-                                fontSize: '0.78rem',
-                              }}
-                            />
-                          </label>
-                        </fieldset>
-                      ))}
+                    <div style={{ fontSize: '0.8rem', fontWeight: 800, color: 'var(--text-primary)' }}>Shift records</div>
+                    <div style={{ display: 'grid', gap: 10, minWidth: 0 }}>
+                      {setupShiftRows.map((row) => {
+                        const temporaryRangeIsInvalid = row.source === 'temporary' && !lunchBreakShiftRange(
+                          row.dateValue,
+                          row.startTime,
+                          row.endTime,
+                          row.endDayOffset,
+                          activeTimeZone,
+                        );
+                        return (
+                          <fieldset
+                            key={`record-${row.id}`}
+                            style={{
+                              border: '1px solid #d6e0f3',
+                              borderRadius: 10,
+                              padding: '0.65rem',
+                              margin: 0,
+                              display: 'grid',
+                              gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))',
+                              gap: 8,
+                              alignItems: 'end',
+                              minWidth: 0,
+                            }}
+                          >
+                            <legend style={{ width: '100%', paddingInline: 4, marginBottom: 4, fontSize: '0.76rem', fontWeight: 700, color: 'var(--text-primary)' }}>
+                              {row.employeeName} · {row.source === 'schedule' ? 'Schedule-backed' : 'Temporary shift'}
+                              {row.endDayOffset === 1 ? ' · Overnight' : ''}
+                            </legend>
+                            <label style={{ display: 'grid', gap: 4, minWidth: 0, fontSize: '0.7rem', fontWeight: 700, color: 'var(--text-secondary)' }}>
+                              Shift date
+                              <input
+                                type="date"
+                                aria-label={`Shift date for ${row.employeeName}`}
+                                value={row.dateValue}
+                                disabled
+                                style={{ minWidth: 0, width: '100%', border: '1px solid var(--border)', borderRadius: 8, background: '#f6f8fc', color: 'var(--text-primary)', padding: '0.36rem 0.45rem', fontSize: '0.78rem' }}
+                              />
+                            </label>
+                            <label style={{ display: 'grid', gap: 4, minWidth: 0, fontSize: '0.7rem', fontWeight: 700, color: 'var(--text-secondary)' }}>
+                              Start time
+                              <input
+                                type="time"
+                                aria-label={`Start time for ${row.employeeName}`}
+                                value={row.startTime}
+                                disabled={isApplyingSetupShifts || row.source === 'schedule'}
+                                onChange={(event) => setSetupShiftRows((prev) => prev.map((candidate) => (
+                                  candidate.id === row.id && candidate.source === 'temporary'
+                                    ? { ...candidate, startTime: event.target.value }
+                                    : candidate
+                                )))}
+                                style={{ minWidth: 0, width: '100%', border: '1px solid var(--border)', borderRadius: 8, background: row.source === 'schedule' ? '#f6f8fc' : '#ffffff', color: 'var(--text-primary)', padding: '0.36rem 0.45rem', fontSize: '0.78rem' }}
+                              />
+                            </label>
+                            <label style={{ display: 'grid', gap: 4, minWidth: 0, fontSize: '0.7rem', fontWeight: 700, color: 'var(--text-secondary)' }}>
+                              End day
+                              <select
+                                aria-label={`End day for ${row.employeeName}`}
+                                value={row.endDayOffset}
+                                disabled={isApplyingSetupShifts || row.source === 'schedule'}
+                                onChange={(event) => setSetupShiftRows((prev) => prev.map((candidate) => (
+                                  candidate.id === row.id && candidate.source === 'temporary'
+                                    ? { ...candidate, endDayOffset: Number(event.target.value) as LunchBreakShiftDayOffset }
+                                    : candidate
+                                )))}
+                                style={{ minWidth: 0, width: '100%', border: '1px solid var(--border)', borderRadius: 8, background: row.source === 'schedule' ? '#f6f8fc' : '#ffffff', color: 'var(--text-primary)', padding: '0.36rem 0.45rem', fontSize: '0.78rem' }}
+                              >
+                                <option value={0}>Same day</option>
+                                <option value={1}>Next day (overnight)</option>
+                              </select>
+                            </label>
+                            <label style={{ display: 'grid', gap: 4, minWidth: 0, fontSize: '0.7rem', fontWeight: 700, color: 'var(--text-secondary)' }}>
+                              End time
+                              <input
+                                type="time"
+                                aria-label={`End time for ${row.employeeName}`}
+                                value={row.endTime}
+                                disabled={isApplyingSetupShifts || row.source === 'schedule'}
+                                onChange={(event) => setSetupShiftRows((prev) => prev.map((candidate) => (
+                                  candidate.id === row.id && candidate.source === 'temporary'
+                                    ? { ...candidate, endTime: event.target.value }
+                                    : candidate
+                                )))}
+                                style={{ minWidth: 0, width: '100%', border: '1px solid var(--border)', borderRadius: 8, background: row.source === 'schedule' ? '#f6f8fc' : '#ffffff', color: 'var(--text-primary)', padding: '0.36rem 0.45rem', fontSize: '0.78rem' }}
+                              />
+                            </label>
+                            {row.source === 'schedule' ? (
+                              <div style={{ gridColumn: '1 / -1', fontSize: '0.72rem', color: 'var(--text-secondary)' }}>
+                                Shift times are owned by Calendar. <Link href="/dashboard/scheduling" style={{ color: '#234ed9', fontWeight: 750 }}>Open Calendar to correct this shift</Link>.
+                              </div>
+                            ) : null}
+                            {row.intervalError || temporaryRangeIsInvalid ? (
+                              <div role="alert" style={{ gridColumn: '1 / -1', fontSize: '0.72rem', color: '#b45309' }}>
+                                {row.intervalError ?? 'End must be after start. Choose Next day for an overnight shift.'}
+                              </div>
+                            ) : null}
+                          </fieldset>
+                        );
+                      })}
                     </div>
                   </div>
 
@@ -2612,7 +2688,7 @@ export default function LunchBreaksPage() {
                   >
                     {setupShiftsBillingBlockReason
                       ?? (setupShiftsCreditCost
-                        ? `Saving setup shifts uses ${setupShiftsCreditCost} separately purchased usage credit${setupShiftsCreditCost === 1 ? '' : 's'} and requires an active paid subscription. Unchanged retries recover the same attempt.`
+                        ? `The confirmed action saves exactly ${setupShiftRecordCount} setup shift record${setupShiftRecordCount === 1 ? '' : 's'} and uses exactly ${setupShiftsCreditCost} separately purchased usage credit${setupShiftsCreditCost === 1 ? '' : 's'}. Unchanged retries recover the same attempt.`
                         : 'Saving setup shifts is billable and requires an active paid subscription plus separately purchased usage credits. Unchanged retries recover the same attempt.')}
                   </div>
 
@@ -2656,10 +2732,11 @@ export default function LunchBreaksPage() {
                         || isApplyingSetupShifts
                         || !canWriteLoadedDay
                         || !capabilities.canWriteShifts
+                        || hasInvalidSetupShiftRows
                         || Boolean(setupShiftsBillingBlockReason)
                       }
                     >
-                      {isApplyingSetupShifts ? 'Saving setup shifts...' : 'Continue to planner'}
+                      {isApplyingSetupShifts ? `Saving ${setupShiftRecordCount} setup shift record${setupShiftRecordCount === 1 ? '' : 's'}...` : setupShiftMutationLabel}
                     </Button>
                   </div>
                 </motion.div>
@@ -2804,17 +2881,6 @@ export default function LunchBreaksPage() {
                     {hasSchedulingEnabled ? 'Using schedule data as source of truth' : 'Running in manual-first mode'}
                   </p>
                 </div>
-                <div className="schedule-toggle-group">
-                  {['Timeline', 'Staff', 'Conflicts'].map((label, index) => (
-                    <button
-                      key={label}
-                      type="button"
-                      className={`schedule-toggle ${index === 0 ? 'is-active' : ''}`}
-                    >
-                      {label}
-                    </button>
-                  ))}
-                </div>
               </div>
 
               <div className="time-ruler">
@@ -2864,6 +2930,7 @@ export default function LunchBreaksPage() {
                               <div className="row-info">
                                 <div className="row-name">{row.employeeName}</div>
                                 <div className="row-time">{row.shiftLabel}</div>
+                                {row.overnight ? <div className="row-status">Overnight</div> : null}
                                 <div className={`row-status ${row.segments.length > 0 ? 'is-healthy' : 'is-risk'}`}>
                                   {row.segments.length > 0 ? `${row.segments.length} planned event${row.segments.length === 1 ? '' : 's'}` : 'Needs review'}
                                 </div>
@@ -2972,7 +3039,7 @@ export default function LunchBreaksPage() {
                           <div className="row-info">
                             <div className="row-name">{row.employeeName}</div>
                             <div className="row-time">{row.shiftLabel}</div>
-                            <div className="row-status is-healthy">Draft shift</div>
+                            <div className="row-status is-healthy">{row.overnight ? 'Overnight temporary shift' : 'Temporary shift draft'}</div>
                           </div>
                         </div>
                         <div className="row-track">
@@ -3056,6 +3123,9 @@ export default function LunchBreaksPage() {
                     </div>
                     <div style={{ fontSize: '0.76rem', color: 'var(--text-secondary)' }}>
                       {selectedRow.userId ? 'Linked from scheduling shift' : 'Open shift assignment'}
+                    </div>
+                    <div style={{ fontSize: '0.72rem', color: 'var(--text-secondary)' }}>
+                      Shift times are read-only here. <Link href="/dashboard/scheduling" style={{ color: '#234ed9', fontWeight: 750 }}>Open Calendar to correct the shift</Link>.
                     </div>
                   </div>
 
@@ -3193,7 +3263,7 @@ export default function LunchBreaksPage() {
                               fontSize: '0.82rem',
                             }}
                           />
-                          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr auto', gap: 8, alignItems: 'end' }}>
+                          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(120px, 1fr))', gap: 8, alignItems: 'end' }}>
                             <label style={{ display: 'grid', gap: 4 }}>
                               <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>Start</span>
                               <input
@@ -3209,6 +3279,25 @@ export default function LunchBreaksPage() {
                                   fontSize: '0.78rem',
                                 }}
                               />
+                            </label>
+                            <label style={{ display: 'grid', gap: 4 }}>
+                              <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>End day</span>
+                              <select
+                                aria-label={`End day for ${row.employeeName}`}
+                                value={row.endDayOffset}
+                                onChange={(event) => updateManualShift(row.id, { endDayOffset: Number(event.target.value) as LunchBreakShiftDayOffset })}
+                                style={{
+                                  border: '1px solid var(--border)',
+                                  borderRadius: 8,
+                                  background: '#ffffff',
+                                  color: 'var(--text-primary)',
+                                  padding: '0.34rem 0.4rem',
+                                  fontSize: '0.78rem',
+                                }}
+                              >
+                                <option value={0}>Same day</option>
+                                <option value={1}>Next day (overnight)</option>
+                              </select>
                             </label>
                             <label style={{ display: 'grid', gap: 4 }}>
                               <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>End</span>
@@ -3230,6 +3319,11 @@ export default function LunchBreaksPage() {
                               Remove
                             </Button>
                           </div>
+                          {row.endDayOffset === 1 ? (
+                            <div style={{ fontSize: '0.72rem', color: '#234ed9', fontWeight: 750 }}>
+                              Overnight · {row.startTime} to {row.endTime} next day
+                            </div>
+                          ) : null}
                         </div>
                       ))}
                     </div>

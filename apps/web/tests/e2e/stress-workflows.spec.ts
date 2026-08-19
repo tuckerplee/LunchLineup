@@ -167,9 +167,14 @@ async function expectScopeBPlannerReset(page: Page) {
 
 async function expectScopeBRowsInGuide(page: Page) {
   await page.getByRole('button', { name: 'Auto Break' }).click();
-  await page.getByRole('button', { name: 'Continue' }).click();
+  await page.getByRole('button', { name: 'Select staff' }).click();
   await expect(page.getByRole('button', { name: /Scope B Staff/ })).toBeVisible();
   await expect(page.getByText('Scope A Staff', { exact: true })).toHaveCount(0);
+}
+
+async function submitConfirmedLunchSetup(page: Page) {
+  page.once('dialog', async (dialog) => dialog.accept());
+  await page.getByRole('button', { name: /Save \d+ setup shift records? · exactly \d+ usage credits?/ }).click();
 }
 
 test.describe('Lunch setup editor safety', () => {
@@ -270,7 +275,7 @@ test.describe('Lunch setup editor safety', () => {
     const dateHeading = page.getByRole('heading', { name: /Start with today/ });
     await expect(dateHeading).toBeFocused();
     await expectAccessibleGuidedScreen(page);
-    await page.getByRole('button', { name: 'Continue' }).click();
+    await page.getByRole('button', { name: 'Select staff' }).click();
 
     const scheduleHeading = page.getByRole('heading', { name: /Ready to create today/ });
     await expect(scheduleHeading).toBeFocused();
@@ -280,24 +285,24 @@ test.describe('Lunch setup editor safety', () => {
     await employeeToggle.focus();
     await page.keyboard.press('Space');
     await expect(employeeToggle).toHaveAttribute('aria-pressed', 'false');
-    await expect(page.getByRole('button', { name: 'Next' })).toBeDisabled();
+    await expect(page.getByRole('button', { name: /Review 0 shifts/ })).toBeDisabled();
     await page.keyboard.press('Space');
     await expect(employeeToggle).toHaveAttribute('aria-pressed', 'true');
-    await page.getByRole('button', { name: 'Next' }).click();
+    await page.getByRole('button', { name: 'Review 1 shift' }).click();
 
-    const editorHeading = page.getByRole('heading', { name: 'Adjust who works when' });
+    const editorHeading = page.getByRole('heading', { name: 'Review shifts before planning' });
     await expect(editorHeading).toBeFocused();
     await expectAccessibleGuidedScreen(page);
-    const shiftSlider = page.getByRole('slider', { name: 'Shift window for Mock Staff' });
-    await expect(shiftSlider).toHaveAttribute('aria-valuetext', '06:00 to 14:00');
-    await shiftSlider.focus();
-    await page.keyboard.press('ArrowRight');
-    await expect(shiftSlider).toHaveAttribute('aria-valuetext', '06:15 to 14:15');
-    await expect(page.getByLabel('Start time for Mock Staff')).toHaveValue('06:15');
-    await expect(page.getByLabel('End time for Mock Staff')).toHaveValue('14:15');
+    await expect(page.getByRole('slider')).toHaveCount(0);
+    await expect(page.getByLabel('Start time for Mock Staff')).toHaveValue('06:00');
+    await expect(page.getByLabel('Start time for Mock Staff')).toBeDisabled();
+    await expect(page.getByLabel('End time for Mock Staff')).toHaveValue('14:00');
+    await expect(page.getByLabel('End time for Mock Staff')).toBeDisabled();
+    await expect(page.getByRole('link', { name: 'Open Calendar to correct this shift' })).toBeVisible();
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
 
-    const continueButton = page.getByRole('button', { name: 'Continue to planner' });
+    const continueButton = page.getByRole('button', { name: 'Save 1 setup shift record · exactly 1 usage credit' });
+    page.once('dialog', async (dialog) => dialog.accept());
     await continueButton.click();
     await expect(page.getByRole('alert').filter({ hasText: 'Subscription and credits required' })).toBeVisible();
     await expect(continueButton).toBeFocused();
@@ -316,6 +321,7 @@ test.describe('Lunch setup editor safety', () => {
     expect(retained?.[0]?.expiresAt).toBeLessThanOrEqual(Date.now() + SETUP_SHIFTS_RECOVERY_TTL_MS);
     expect(JSON.stringify(retained)).not.toMatch(/requestBody|rows|Mock Staff|user-mock-staff|loc-downtown/);
 
+    page.once('dialog', async (dialog) => dialog.accept());
     await continueButton.click();
     await expect(page.getByRole('heading', { name: /Lunch & break canvas/ })).toBeFocused();
     await expectAccessibleGuidedScreen(page);
@@ -396,10 +402,10 @@ test.describe('Lunch setup editor safety', () => {
 
     const submitVisibleSetup = async (staffName: string) => {
       await page.getByRole('button', { name: 'Auto Break' }).click();
-      await page.getByRole('button', { name: 'Continue' }).click();
+      await page.getByRole('button', { name: 'Select staff' }).click();
       await expect(page.getByRole('button', { name: new RegExp(staffName) })).toBeVisible();
-      await page.getByRole('button', { name: 'Next' }).click();
-      await page.getByRole('button', { name: 'Continue to planner' }).click();
+      await page.getByRole('button', { name: /Review \d+ shifts?/ }).click();
+      await submitConfirmedLunchSetup(page);
     };
 
     await loginAsSeedAdmin(page, '/dashboard/lunch-breaks');
@@ -508,10 +514,10 @@ test.describe('Lunch setup editor safety', () => {
     await loginAsSeedAdmin(page, '/dashboard/lunch-breaks');
     await expect.poll(() => dayRequestLocations).toEqual(['loc-downtown']);
     await page.getByRole('button', { name: 'Auto Break' }).click();
-    await page.getByRole('button', { name: 'Continue' }).click();
+    await page.getByRole('button', { name: 'Select staff' }).click();
     await expect(page.getByRole('button', { name: /Scope A Staff/ })).toBeVisible();
-    await page.getByRole('button', { name: 'Next' }).click();
-    await page.getByRole('button', { name: 'Continue to planner' }).click();
+    await page.getByRole('button', { name: /Review \d+ shifts?/ }).click();
+    await submitConfirmedLunchSetup(page);
     await expect.poll(() => setupCalls.length).toBe(1);
 
     await page.getByLabel('Location').selectOption('loc-uptown');
@@ -519,14 +525,15 @@ test.describe('Lunch setup editor safety', () => {
     releaseUptownRead?.();
     await expectScopeBPlannerReset(page);
     await expectScopeBRowsInGuide(page);
-    await page.getByRole('button', { name: 'Next' }).click();
-    const continueB = page.getByRole('button', { name: 'Continue to planner' });
+    await page.getByRole('button', { name: /Review \d+ shifts?/ }).click();
+    const continueB = page.getByRole('button', { name: /Save \d+ setup shift records? · exactly \d+ usage credits?/ });
+    page.once('dialog', async (dialog) => dialog.accept());
     await continueB.click();
     await expect.poll(() => setupCalls.filter((call) => call.locationId === 'loc-uptown').length).toBe(1);
 
     releaseSetupA?.();
     await expect.poll(() => setupResponses.get('loc-downtown') ?? 0).toBe(1);
-    await expect(page.getByRole('button', { name: 'Saving setup shifts...' })).toBeDisabled();
+    await expect(page.getByRole('button', { name: /Saving \d+ setup shift records?\.\.\./ })).toBeDisabled();
     releaseSetupB?.();
     await expect(page.getByRole('heading', { name: /Lunch & break canvas/ })).toBeVisible();
 
@@ -590,9 +597,9 @@ test.describe('Lunch setup editor safety', () => {
 
     await loginAsSeedAdmin(page, '/dashboard/lunch-breaks');
     await page.getByRole('button', { name: 'Auto Break' }).click();
-    await page.getByRole('button', { name: 'Continue' }).click();
-    await page.getByRole('button', { name: 'Next' }).click();
-    await page.getByRole('button', { name: 'Continue to planner' }).click();
+    await page.getByRole('button', { name: 'Select staff' }).click();
+    await page.getByRole('button', { name: /Review \d+ shifts?/ }).click();
+    await submitConfirmedLunchSetup(page);
     await expect(page.getByRole('heading', { name: /Lunch & break canvas/ })).toBeVisible();
     await page.getByRole('button', { name: 'Generate Lunch & Break Plan' }).first().click();
     await expect.poll(() => generationCalls.length).toBe(1);
@@ -600,8 +607,8 @@ test.describe('Lunch setup editor safety', () => {
     await page.getByLabel('Location').selectOption('loc-uptown');
     await expectScopeBPlannerReset(page);
     await expectScopeBRowsInGuide(page);
-    await page.getByRole('button', { name: 'Next' }).click();
-    await page.getByRole('button', { name: 'Continue to planner' }).click();
+    await page.getByRole('button', { name: /Review \d+ shifts?/ }).click();
+    await submitConfirmedLunchSetup(page);
     await expect(page.getByRole('heading', { name: /Lunch & break canvas/ })).toBeVisible();
     const generateB = page.getByRole('button', { name: 'Generate Lunch & Break Plan' }).first();
     await generateB.click();
@@ -781,7 +788,7 @@ test.describe('Lunch setup editor safety', () => {
     await expect(dateGuide.getByText('Harbor Grill', { exact: true })).toBeVisible();
     await expect(page.getByText('2 shifts available for this day')).toBeVisible();
     await expectAccessibleGuidedScreen(page);
-    await page.getByRole('button', { name: 'Continue' }).click();
+    await page.getByRole('button', { name: 'Select staff' }).click();
     await expect(page.getByText('Downtown One', { exact: true })).toBeVisible();
     await expect(page.getByText('Downtown Two', { exact: true })).toBeVisible();
     await expectAccessibleGuidedScreen(page);
@@ -874,13 +881,13 @@ test.describe.serial('Stress operations workflows', () => {
     await expect(autoBreak).toHaveCount(1);
     await autoBreak.click();
     await expect(page.getByText('1 shifts available for this day')).toBeVisible();
-    await page.getByRole('button', { name: 'Continue' }).click();
+    await page.getByRole('button', { name: 'Select staff' }).click();
     await expect(page.getByText('Stress Manager')).toBeVisible();
     await page.getByRole('button', { name: 'Back' }).click();
     await expect(page.getByText('1 shifts available for this day')).toBeVisible();
-    await page.getByRole('button', { name: 'Continue' }).click();
-    await page.getByRole('button', { name: 'Next' }).click();
-    await page.getByRole('button', { name: 'Continue to planner' }).click();
+    await page.getByRole('button', { name: 'Select staff' }).click();
+    await page.getByRole('button', { name: /Review \d+ shifts?/ }).click();
+    await submitConfirmedLunchSetup(page);
     await expect(page.getByRole('heading', { name: /Lunch & break canvas/ })).toBeVisible();
     await page.getByRole('button', { name: 'Generate Lunch & Break Plan' }).click();
     await expect(page.getByText('Meals assigned: 1')).toBeVisible();

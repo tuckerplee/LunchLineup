@@ -24,7 +24,10 @@ function scopedRow(locationId: string) {
   };
 }
 
-async function installLunchScopes(context: BrowserContext) {
+async function installLunchScopes(
+  context: BrowserContext,
+  rowsForLocation: (locationId: string) => ReturnType<typeof scopedRow>[] = (locationId) => [scopedRow(locationId)],
+) {
   await context.route(/\/api\/v2\/locations\?limit=200$/, async (route) => {
     await route.fulfill({
       status: 200,
@@ -44,7 +47,7 @@ async function installLunchScopes(context: BrowserContext) {
       status: 200,
       contentType: 'application/json',
       body: JSON.stringify({
-        data: [scopedRow(locationId)],
+        data: rowsForLocation(locationId),
         pagination: { hasMore: false, nextCursor: null },
       }),
     });
@@ -53,20 +56,94 @@ async function installLunchScopes(context: BrowserContext) {
 
 async function openSetupReview(page: Page, staffName: string) {
   await page.getByRole('button', { name: 'Auto Break' }).click();
-  await page.getByRole('button', { name: 'Continue' }).click();
+  await page.getByRole('button', { name: 'Select staff' }).click();
   await expect(page.getByRole('button', { name: new RegExp(staffName) })).toBeVisible();
-  await page.getByRole('button', { name: 'Next' }).click();
-  await expect(page.getByRole('button', { name: 'Continue to planner' })).toBeEnabled();
+  await page.getByRole('button', { name: /Review \d+ shifts?/ }).click();
+  await expect(page.getByRole('button', { name: /Save \d+ setup shift records? · exactly \d+ usage credits?/ })).toBeEnabled();
 }
 
 async function enterPlanner(page: Page, staffName: string) {
   await openSetupReview(page, staffName);
-  await page.getByRole('button', { name: 'Continue to planner' }).click();
+  page.once('dialog', async (dialog) => dialog.accept());
+  await page.getByRole('button', { name: /Save \d+ setup shift records? · exactly \d+ usage credits?/ }).click();
   await expect(page.getByRole('heading', { name: /Lunch & break canvas/ })).toBeVisible();
 }
 
 test.describe('Lunch/break durable recovery', () => {
   test.skip(runFullStack, 'The focused recovery contract uses deterministic local API routes.');
+
+  test('preserves a schedule-backed overnight shift and requires exact-cost confirmation before setup mutation', async ({ context, page }) => {
+    const overnight = {
+      ...scopedRow('loc-downtown'),
+      shiftId: 'shift-overnight',
+      userId: 'user-overnight',
+      employeeName: 'Night Staff',
+      startTime: '2026-07-17T06:00:00.000Z',
+      endTime: '2026-07-17T14:00:00.000Z',
+    };
+    await installLunchScopes(context, () => [overnight]);
+    const setupBodies: Array<{ rows: Array<{ startTime: string; endTime: string }> }> = [];
+    await context.route('**/api/v2/lunch-breaks/setup-shifts', async (route) => {
+      setupBodies.push(route.request().postDataJSON() as { rows: Array<{ startTime: string; endTime: string }> });
+      await route.fulfill({
+        status: 201,
+        contentType: 'application/json',
+        body: JSON.stringify({ shiftIds: ['shift-overnight'] }),
+      });
+    });
+
+    await loginAsSeedAdmin(page, '/dashboard/lunch-breaks');
+    await openSetupReview(page, 'Night Staff');
+
+    await expect(page.getByText('Overnight · 23:00 to 07:00 next day')).toBeVisible();
+    await expect(page.getByLabel('Start time for Night Staff')).toHaveValue('23:00');
+    await expect(page.getByLabel('Start time for Night Staff')).toBeDisabled();
+    await expect(page.getByLabel('End day for Night Staff')).toHaveValue('1');
+    await expect(page.getByLabel('End day for Night Staff')).toBeDisabled();
+    await expect(page.getByLabel('End time for Night Staff')).toHaveValue('07:00');
+    await expect(page.getByLabel('End time for Night Staff')).toBeDisabled();
+    await expect(page.getByRole('slider')).toHaveCount(0);
+    await expect(page.getByRole('link', { name: 'Open Calendar to correct this shift' })).toHaveAttribute('href', '/dashboard/scheduling');
+    expect(setupBodies).toHaveLength(0);
+
+    page.once('dialog', async (dialog) => {
+      expect(dialog.message()).toContain('save 1 unchanged schedule-backed shift record');
+      expect(dialog.message()).toContain('uses exactly 1 usage credit');
+      await dialog.accept();
+    });
+    await page.getByRole('button', { name: 'Save 1 setup shift record · exactly 1 usage credit' }).click();
+    await expect(page.getByRole('heading', { name: /Lunch & break canvas/ })).toBeVisible();
+
+    expect(setupBodies).toHaveLength(1);
+    expect(setupBodies[0].rows).toEqual([expect.objectContaining({
+      startTime: overnight.startTime,
+      endTime: overnight.endTime,
+    })]);
+    await expect(page.locator('.schedule-header .schedule-toggle')).toHaveCount(0);
+  });
+
+  test('shows and searches every scheduled staff member beyond the former 24-person cap', async ({ context, page }) => {
+    await installLunchScopes(context, (locationId) => Array.from({ length: 30 }, (_, index) => ({
+      ...scopedRow(locationId),
+      shiftId: `shift-${index + 1}`,
+      userId: `user-${index + 1}`,
+      employeeName: `Roster Person ${String(index + 1).padStart(2, '0')}`,
+    })));
+
+    await loginAsSeedAdmin(page, '/dashboard/lunch-breaks');
+    await page.getByRole('button', { name: 'Auto Break' }).click();
+    await page.getByRole('button', { name: 'Select staff' }).click();
+
+    await expect(page.getByText('Showing 30 of 30 staff')).toBeVisible();
+    await expect(page.getByRole('button', { name: /Roster Person 30/ })).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Select scheduled (30)' })).toBeVisible();
+    await page.getByLabel('Search staff').fill('Roster Person 30');
+    await expect(page.getByText('Showing 1 of 30 staff')).toBeVisible();
+    await expect(page.getByRole('button', { name: /Roster Person 30/ })).toBeVisible();
+    await page.getByRole('button', { name: 'Clear selection' }).click();
+    await page.getByRole('button', { name: 'Select scheduled (30)' }).click();
+    await expect(page.getByText('30 selected')).toBeVisible();
+  });
 
   test('reuses one generation A key and debit across A-to-B-to-A, lost response, and reload', async ({ context, page }) => {
     await installLunchScopes(context);
@@ -202,9 +279,11 @@ test.describe('Lunch/break durable recovery', () => {
     await openSetupReview(page, 'Scope A Staff');
     await openSetupReview(secondPage, 'Scope A Staff');
 
+    page.once('dialog', async (dialog) => dialog.accept());
+    secondPage.once('dialog', async (dialog) => dialog.accept());
     await Promise.all([
-      page.getByRole('button', { name: 'Continue to planner' }).click(),
-      secondPage.getByRole('button', { name: 'Continue to planner' }).click(),
+      page.getByRole('button', { name: /Save \d+ setup shift records? · exactly \d+ usage credits?/ }).click(),
+      secondPage.getByRole('button', { name: /Save \d+ setup shift records? · exactly \d+ usage credits?/ }).click(),
     ]);
     await expect(page.getByRole('heading', { name: /Lunch & break canvas/ })).toBeVisible();
     await expect(secondPage.getByRole('heading', { name: /Lunch & break canvas/ })).toBeVisible();

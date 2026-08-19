@@ -33,7 +33,9 @@ describe('lunch break location contract', () => {
     expect(setupSubmission).toBeGreaterThan(-1);
     expect(setupRecoveryLocation).toBeGreaterThan(setupSubmission);
     expect(pageSource).toContain('lunchBreakDayWindow(dateValue, timeZone)');
-    expect(pageSource).toContain('lunchBreakShiftRange(mutationScope.dateValue, setupRow.startTime, setupRow.endTime, mutationTimeZone)');
+    expect(pageSource).toContain('setupRow.endDayOffset');
+    expect(pageSource).toContain('setupRow.originalStartIso');
+    expect(pageSource).toContain('setupRow.originalEndIso');
     expect(pageSource).toContain('const requestBody: ShiftBreakUpdateRequestBody = { locationId: writeScope.locationId, breaks };');
     expect(pageSource).toContain("withIdempotencyKey(jsonWriteInit('PUT', retainedBody), idempotencyKey)");
   });

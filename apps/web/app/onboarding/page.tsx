@@ -441,7 +441,7 @@ export default function OnboardingPage() {
                             <div className="onb-preview__toolbar">
                                 <div>
                                     <div className="onb-preview__title">Frontline lunch schedule</div>
-                                    <div className="onb-preview__meta">Drag break cards to rebalance coverage</div>
+                                    <div className="onb-preview__meta">Review break placement before publishing</div>
                                 </div>
                                 <div className="onb-preview__coverage">
                                     <span>Coverage</span>

@@ -27,7 +27,8 @@
 - `lunch-break-generation-recovery.test.ts`: durable full-intent generation identity across A-to-B-to-A, lost responses, reload/storage loss, payload-free persistence, same-key/one-debit recovery after subscription, separate-credit, and rolled-back persistence failures, same-session ninth-attempt preservation plus oldest-key retry, and opaque session-partitioned capacity.
 - `logout-route.test.ts`: same-origin logout proxy coverage for refresh-cookie forwarding, authoritative cookie clearing, ambiguous failure preservation, and cross-origin rejection.
 - `next-config-security.test.ts`: isolated production config coverage for CSP origin allowlisting, development-only loopback access, transport headers, reset-route no-referrer/no-store policy, source-map and framework disclosure controls, local-only images, API rewrites, and the absence of custom redirects.
-- `lunch-break-time.test.ts`: location-scoped lunch/break day, wall-clock, DST, and overnight-shift conversion coverage.
+- `lunch-break-time.test.ts`: location-scoped lunch/break day, wall-clock, DST, explicit same/next-day validation, and byte-stable 23:00-07:00 overnight round-trip coverage.
+- `lunch-break-ux-safety.test.ts`: source-contract coverage for immutable schedule-backed shift times, Calendar correction routing, uncapped searchable staff, exact record/credit confirmation, fake-control removal, and honest onboarding copy.
 - `manual-shift-schedule.test.ts`: containing weekly-draft selection, too-short draft rejection, and DST-aware overnight fallback-window coverage.
 - `latest-request.test.ts`: deterministic request-generation coverage proving superseded and explicitly invalidated completions are rejected.
 - `mfa-page.test.ts`: MFA CSRF, accessible dynamic-error announcements, support-backed privileged-account recovery, plus mandatory-enrollment recovery-code normalization, in-memory handling, copy/print, acknowledgment, and redirect-gating coverage.

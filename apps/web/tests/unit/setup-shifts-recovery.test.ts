@@ -491,7 +491,8 @@ describe('setup-shifts response-loss recovery', () => {
     );
     expect(source).toContain("fetchLunchBreakMutation('/lunch-breaks/setup-shifts'");
     expect(source).toContain("withIdempotencyKey(jsonWriteInit('POST', retainedRequestBody), idempotencyKey)");
-    expect(source).toContain("isApplyingSetupShifts ? 'Saving setup shifts...' : 'Continue to planner'");
+    expect(source).toContain('setupShiftMutationLabel');
+    expect(source).toContain('window.confirm(`Confirm setup:');
   });
 });
 

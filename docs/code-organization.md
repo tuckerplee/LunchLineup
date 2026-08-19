@@ -2,7 +2,7 @@
 
 This is the production-readiness maintainability map for the rebuild checkout. It records source files that are large enough to hide mixed ownership, duplicated policy, or hard-to-test control flow.
 
-Line counts were refreshed on 2026-08-18 during beta launch consolidation from non-generated `apps/` and `packages/` source files, excluding tests, specs, build output, legacy `old/`, and generated artifacts. The hygiene suite now requires every non-generated source file over 500 lines to appear in this document.
+Line counts were refreshed on 2026-08-18 during beta launch consolidation from non-generated `apps/` and `packages/` source files, excluding tests, specs, build output, legacy `old/`, and generated artifacts. The Lunch & Breaks hotspot count and mitigation note were refreshed on 2026-08-18. The hygiene suite now requires every non-generated source file over 500 lines to appear in this document.
 Tests and specs remain outside that mandatory threshold but may be listed when their fixture ownership is itself a material risk.
 
 ## Status
@@ -15,7 +15,7 @@ Tests and specs remain outside that mandatory threshold but may be listed when t
 
 | File | Lines | Status | Risk | Next extraction |
 | --- | ---: | --- | --- | --- |
-| `apps/web/app/dashboard/lunch-breaks/page.tsx` | 3340 | Deferred | Page owns date math, session storage, data loading, manual shift setup, planner state, policy editing, break generation, and rendering. This blocks isolated tests for the lunch/break workflow. | Split into `lib/lunch-breaks` pure time/session helpers, data hooks, and smaller panel components before feature expansion. |
+| `apps/web/app/dashboard/lunch-breaks/page.tsx` | 3434 | Deferred | Absolute interval math is isolated and the launch path now keeps schedule-backed shifts immutable, but the page still owns session storage, data loading, searchable setup state, planner state, policy editing, break generation, and rendering. The concentrated state remains costly to review despite focused safety contracts. | Extract roster/setup state and panels next, then move data loading and mutation orchestration into hooks while retaining `lunch-break-time.ts` as the pure absolute-interval owner. |
 | `apps/api/src/admin/admin.controller.ts` | 2335 | Deferred | One controller owns platform stats, tenants, users, audit, credits, plans, health checks, validation, and Prisma transaction policy. Endpoint ownership is too broad for public SaaS admin risk. | Move tenant, user, plan, credit, and health orchestration into dedicated services; keep the controller as transport glue. |
 | `apps/web/app/dashboard/scheduling/page.tsx` | 2718 | Deferred | Scheduling page still combines loading, shift window math, staff normalization, modal state, timeline rendering, solve, and publication workflows. Direct board persistence and recovery now live in a separate command hook. | Split publish, solve, and form workflows from the route page while keeping scope guards and command recovery in explicit owners. |
 | `apps/web/app/dashboard/scheduling/use-schedule-commands.ts` | 656 | Extracted | Direct board move, copy, delete, optimistic rollback, ambiguous-response reconciliation, and inverse aggregate Undo are owned by one command/recovery hook. | Keep command identity and scope fencing here; split transport adapters from UI feedback only if additional workflows make the hook non-cohesive. |
