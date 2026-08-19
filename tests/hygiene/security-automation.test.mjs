@@ -42,7 +42,7 @@ test('CI uploads mandatory Semgrep and CodeQL analyses with least privilege', ()
     /^semgrep\/semgrep:\d+\.\d+\.\d+@sha256:[a-f0-9]{64}$/,
   );
   assert.match(scan.run, /--env HOME=\/tmp\/semgrep-home/);
-  assert.match(scan.run, /semgrep scan --config p\/default --error --sarif --output semgrep\.sarif/);
+  assert.match(scan.run, /semgrep scan --config p\/default --baseline-commit origin\/main --error --sarif --output semgrep\.sarif/);
 
   const semgrepUpload = stepByName(sast, 'Upload Semgrep SARIF');
   assert.equal(

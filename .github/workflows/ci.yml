@@ -144,6 +144,8 @@ jobs:
       security-events: write
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          fetch-depth: 0
       - name: Run digest-pinned Semgrep and retain its exit status
         id: semgrep
         env:
@@ -156,7 +158,7 @@ jobs:
             --volume "$PWD:/src" \
             --workdir /src \
             "$SEMGREP_IMAGE" \
-            semgrep scan --config p/default --error --sarif --output semgrep.sarif .
+            semgrep scan --config p/default --baseline-commit origin/main --error --sarif --output semgrep.sarif .
           scan_status=$?
           set -e
           echo "exit-code=$scan_status" >> "$GITHUB_OUTPUT"

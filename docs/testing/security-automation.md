@@ -4,12 +4,12 @@ The source-neutral `.ci/pipeline.json` runs on the internal CI appliance. The ac
 
 The GitHub workflow defines two independent source scanners:
 
-- Semgrep runs from a versioned, digest-pinned container, writes SARIF, uploads it through the SHA-pinned GitHub CodeQL upload action, and then enforces the scanner exit code.
+- Semgrep runs from a versioned, digest-pinned container, compares the candidate against the fetched `origin/main` baseline, writes only newly introduced findings to SARIF, uploads them through the SHA-pinned GitHub CodeQL upload action, and then enforces the scanner exit code. Existing findings remain visible in GitHub code scanning and are not silently dismissed; every new finding blocks the candidate until fixed or explicitly reviewed outside CI.
 - CodeQL runs `security-extended` analysis for JavaScript/TypeScript and Python, waits for GitHub to process each upload, and fails the job if extraction, analysis, or upload fails.
 
 Both jobs have only `contents: read`, plus `security-events: write` for result upload. CodeQL also has `actions: read` for workflow metadata. The workflow default is `contents: read`; release jobs declare any additional write permissions locally.
 
-The unit and release chain requires Semgrep, CodeQL, and the production dependency audit. Its pull-request path also rejects newly introduced high or critical vulnerable dependencies. Semgrep runs as the GitHub runner UID with a writable container-only home, keeping SARIF writable without granting root or weakening findings.
+The unit and release chain requires Semgrep, CodeQL, and the production dependency audit. Its pull-request path also rejects newly introduced high or critical vulnerable dependencies. Semgrep runs as the GitHub runner UID with a writable container-only home, keeping SARIF writable without granting root or weakening findings. The SAST checkout fetches full history so `origin/main` is an auditable baseline rather than a mutable local snapshot.
 
 ## Dependency Updates
 
