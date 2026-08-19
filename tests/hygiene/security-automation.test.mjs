@@ -41,6 +41,7 @@ test('CI uploads mandatory Semgrep and CodeQL analyses with least privilege', ()
     scan.env.SEMGREP_IMAGE,
     /^semgrep\/semgrep:\d+\.\d+\.\d+@sha256:[a-f0-9]{64}$/,
   );
+  assert.match(scan.run, /--env HOME=\/tmp\/semgrep-home/);
   assert.match(scan.run, /semgrep scan --config p\/default --error --sarif --output semgrep\.sarif/);
 
   const semgrepUpload = stepByName(sast, 'Upload Semgrep SARIF');
@@ -80,14 +81,18 @@ test('CI uploads mandatory Semgrep and CodeQL analyses with least privilege', ()
 
 test('dependency review remains fail-closed and GitHub dependency scheduling stays disabled', () => {
   const workflow = load('.github/workflows/ci.yml');
+  const internalPipeline = JSON.parse(read('.ci/pipeline.json'));
   const dependencyReview = workflow.jobs['dependency-audit'].steps.find(
     (step) => step.uses === 'actions/dependency-review-action@' + dependencyReviewSha,
   );
+  const internalAudit = internalPipeline.steps.find((step) => step.name === 'Verify production dependency closure');
 
   assert.ok(dependencyReview);
   assert.equal(dependencyReview.if, "github.event_name == 'pull_request'");
   assert.equal(dependencyReview.with['fail-on-severity'], 'high');
   assert.equal(dependencyReview['continue-on-error'], undefined);
+  assert.equal(internalAudit.run, 'npm run audit:prod');
+  assert.equal(internalAudit.timeout_seconds, 300);
 
   assert.equal(existsSync(join(root, '.github/dependabot.yml')), false);
 });

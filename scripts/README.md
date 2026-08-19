@@ -12,6 +12,7 @@
 - `bounded-child-process.mjs`: cross-platform bounded child-process owner that terminates complete detached process trees with TERM then KILL and emits secret-free failures.
 - `build-release-bundle.mjs`: builds a source-bound rollback bundle from exact deployed inputs, retaining only an immutable runtime-secret descriptor and never runtime secret bytes.
 - `build-launch-proof-manifest.mjs`: deterministically builds one secret-free launch proof from all six required source-bound, hash-bound, immutable HTTPS evidence artifacts and rejects stale, detached, duplicate, mutable, or secret-like input.
+- `build-internal-beta-candidate-proof.mjs`: writes the immutable internal-beta candidate receipt only when the exact remote branch SHA, canonical beta build identity with exact `closed_beta` signup, complete digest-pinned image manifest, and every required source, security, integration, release-image E2E, DAST, load, SBOM, and Trivy job are successful.
 - `bootstrap-production-admin.mjs`: reconciles production system RBAC and creates the initial admin only when the monitored address is absent; deploy replay never restores an existing admin role, deletion state, or assignment, and refuses unavailable bootstrap tenants.
 - `bootstrap-vm107-dev.sh`: disposable VM107 dev bootstrap and optional Postgres restore helper.
 - `chaos-experiment.sh`: destructive or resilience experiment helper.

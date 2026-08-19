@@ -25,6 +25,11 @@
       "timeout_seconds": 1800
     },
     {
+      "name": "Verify production dependency closure",
+      "run": "npm run audit:prod",
+      "timeout_seconds": 300
+    },
+    {
       "name": "Lint, typecheck, and migration checks",
       "run": "npm run lint && npm run typecheck && npm run test:migration && node scripts/verify-observability-configs.mjs --root . --tool-mode container",
       "timeout_seconds": 2400

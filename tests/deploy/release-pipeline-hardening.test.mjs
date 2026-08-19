@@ -62,22 +62,24 @@ test('Stage 10 integration tests inherit the migration platform-admin capability
   assert.match(integration, /- name: "10\. Integration Tests"[\s\S]*run: npm run test:integration/);
 });
 
-test('mandatory integration gates pull requests, develop pushes, and main without publishing non-main images', () => {
+test('mandatory integration gates all review branches while image publication is limited to exact release candidates', () => {
   const workflow = yaml.load(read('.github/workflows/ci.yml'));
   const integration = workflow.jobs['integration-tests'];
   const buildImages = workflow.jobs['build-images'];
-  const mainOnly = "github.event_name == 'push' && github.ref == 'refs/heads/main'";
-  const runsFor = (job, eventName, ref) => {
+  const releaseCandidates = "(github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/internal-beta-candidate')) || (github.event_name == 'workflow_dispatch' && inputs.internal_beta_candidate == true)";
+  const runsFor = (job, eventName, ref, internalBetaCandidate = false) => {
     if (!Object.hasOwn(job, 'if')) return true;
-    assert.equal(job.if, mainOnly);
-    return eventName === 'push' && ref === 'refs/heads/main';
+    assert.equal(job.if, releaseCandidates);
+    return (eventName === 'push' && ['refs/heads/main', 'refs/heads/internal-beta-candidate'].includes(ref))
+      || (eventName === 'workflow_dispatch' && internalBetaCandidate);
   };
 
-  assert.deepEqual(workflow.on.pull_request.branches, ['main', 'develop']);
-  assert.deepEqual(workflow.on.push.branches, ['main', 'develop']);
+  assert.deepEqual(workflow.on.pull_request.branches, ['main', 'develop', 'internal-beta-candidate']);
+  assert.deepEqual(workflow.on.push.branches, ['main', 'develop', 'internal-beta-candidate']);
+  assert.equal(workflow.on.workflow_dispatch.inputs.internal_beta_candidate.default, false);
   assert.equal(integration.needs, 'unit-tests');
   assert.equal(buildImages.needs, 'unit-tests');
-  assert.equal(buildImages.if, mainOnly);
+  assert.equal(buildImages.if, releaseCandidates);
 
   assert.equal(runsFor(integration, 'pull_request', 'refs/pull/1/merge'), true);
   assert.equal(runsFor(integration, 'push', 'refs/heads/develop'), true);
@@ -85,6 +87,9 @@ test('mandatory integration gates pull requests, develop pushes, and main withou
   assert.equal(runsFor(buildImages, 'pull_request', 'refs/pull/1/merge'), false);
   assert.equal(runsFor(buildImages, 'push', 'refs/heads/develop'), false);
   assert.equal(runsFor(buildImages, 'push', 'refs/heads/main'), true);
+  assert.equal(runsFor(buildImages, 'push', 'refs/heads/internal-beta-candidate'), true);
+  assert.equal(runsFor(buildImages, 'workflow_dispatch', 'refs/heads/codex/internal-beta-launch', false), false);
+  assert.equal(runsFor(buildImages, 'workflow_dispatch', 'refs/heads/codex/internal-beta-launch', true), true);
 });
 
 test('deployment contract bundle retains every release Dockerfile', () => {
@@ -157,13 +162,15 @@ test('release CI requires every retained archive input to be tracked', () => {
 });
 
 test('registry-writing image job is unreachable from pull requests', () => {
-  const workflow = read('.github/workflows/ci.yml');
-  const job = workflowJob(workflow, 'build-images', 'integration-tests');
+  const workflow = yaml.load(read('.github/workflows/ci.yml'));
+  const buildImages = workflow.jobs['build-images'];
+  const expected = "${{ (github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/internal-beta-candidate')) || (github.event_name == 'workflow_dispatch' && inputs.internal_beta_candidate == true) }}";
+  const imageBuilds = buildImages.steps.filter((step) => step.uses?.startsWith('docker/build-push-action@'));
 
-  assert.match(job, /if: github\.event_name == 'push' && github\.ref == 'refs\/heads\/main'/);
-  assert.match(job, /packages: write/);
-  assert.match(job, /docker\/login-action@/);
-  assert.equal((job.match(/push: \$\{\{ github\.event_name == 'push' && github\.ref == 'refs\/heads\/main' \}\}/g) ?? []).length, 8);
+  assert.deepEqual(buildImages.permissions, { contents: 'read', packages: 'write' });
+  assert.ok(buildImages.steps.some((step) => step.uses?.startsWith('docker/login-action@')));
+  assert.equal(imageBuilds.length, 8);
+  for (const step of imageBuilds) assert.equal(step.with.push, expected);
 });
 
 test('load gate seeds disposable availability fixtures after health without an opt-out', () => {
@@ -237,6 +244,90 @@ test('candidate DAST and load bundles are uploaded, downloaded, and verified bef
   assert.match(validate, /--load-dir \.release\/candidate-load/);
   assert.match(validate, /--zap-image "\$ZAP_IMAGE"/);
   assert.match(validate, /--artillery-image "\$ARTILLERY_IMAGE"/);
+});
+
+test('full-stack release-image E2E runs every spec that declares DB-backed coverage', () => {
+  const workflow = yaml.load(read('.github/workflows/ci.yml'));
+  const fullstack = workflow.jobs['fullstack-e2e'];
+  const runStep = fullstack.steps.find((step) => step.name === 'Run DB-backed Playwright workflows');
+  const e2eRoot = resolve(root, 'apps/web/tests/e2e');
+  const requiredSpecs = readdirSync(e2eRoot)
+    .filter((name) => name.endsWith('.spec.ts'))
+    .filter((name) => read(`apps/web/tests/e2e/${name}`).includes('test.skip(!runFullStack'))
+    .sort();
+
+  assert.deepEqual(requiredSpecs, [
+    'month-volume-workflows.spec.ts',
+    'operations-workflows.spec.ts',
+    'stress-workflows.spec.ts',
+    'tenant-admin-workflows.spec.ts',
+  ]);
+  assert.equal(fullstack.env.E2E_FULL_STACK, '1');
+  assert.equal(fullstack.env.E2E_MOCK_API, '0');
+  assert.equal(fullstack['continue-on-error'], undefined);
+  assert.ok(runStep, 'missing DB-backed full-stack Playwright step');
+  assert.equal(runStep['continue-on-error'], undefined);
+  for (const spec of requiredSpecs) assert.match(runStep.run, new RegExp(`tests/e2e/${spec.replaceAll('.', '\\.')}`));
+});
+
+test('internal beta proof requires every exact-SHA release, security, and runtime gate', () => {
+  const workflow = yaml.load(read('.github/workflows/ci.yml'));
+  const proof = workflow.jobs['internal-beta-candidate-proof'];
+  const expectedNeeds = [
+    'static-analysis',
+    'terraform-validation',
+    'sast',
+    'codeql',
+    'dependency-audit',
+    'unit-tests',
+    'build-images',
+    'integration-tests',
+    'dast',
+    'e2e-tests',
+    'fullstack-e2e',
+    'load-test',
+    'production-image-inventory',
+    'sbom',
+    'trivy-scan',
+  ];
+  const source = proof.steps.find((step) => step.name === 'Prove exact remote candidate source');
+  const evidence = proof.steps.find((step) => step.name === 'Reverify all source-bound security and runtime evidence');
+  const build = proof.steps.find((step) => step.name === 'Build exact internal beta candidate proof');
+  const upload = proof.steps.find((step) => step.uses?.startsWith('actions/upload-artifact@'));
+
+  assert.deepEqual(proof.needs, expectedNeeds);
+  assert.match(proof.if, /refs\/heads\/internal-beta-candidate/);
+  assert.match(proof.if, /workflow_dispatch/);
+  assert.match(proof.if, /inputs\.internal_beta_candidate == true/);
+  assert.doesNotMatch(proof.if, /always\(\)/);
+  assert.match(source.run, /test "\$\(git rev-parse HEAD\)" = "\$GITHUB_SHA"/);
+  assert.match(source.run, /git ls-remote --exit-code origin "\$GITHUB_REF"/);
+  assert.match(source.run, /test "\$remote_sha" = "\$GITHUB_SHA"/);
+  assert.match(evidence.run, /verify-trivy-release-reports\.mjs/);
+  assert.match(evidence.run, /verify-sbom-release-reports\.mjs/);
+  assert.match(evidence.run, /verify-bundle dast/);
+  assert.match(evidence.run, /verify-bundle load/);
+  assert.match(build.run, /build-internal-beta-candidate-proof\.mjs/);
+  for (const gate of expectedNeeds) assert.match(build.env.INTERNAL_BETA_GATE_RESULTS, new RegExp(`"${gate}":"`));
+  assert.match(upload.with.name, /internal-beta-candidate-proof-/);
+  assert.equal(upload.with['retention-days'], 90);
+});
+
+test('internal beta images bind canonical beta public configuration without production fallback', () => {
+  const source = read('.github/workflows/ci.yml');
+  const workflow = yaml.load(source);
+  const build = workflow.jobs['build-images'];
+  const verify = build.steps.find((step) => step.name === 'Verify web public build config');
+  const manifest = build.steps.find((step) => step.name === 'Write immutable release manifest');
+
+  assert.equal(workflow.env.RELEASE_TARGET.includes("'internal-beta'"), true);
+  assert.equal(verify.env.INTERNAL_BETA_DOMAIN, '${{ vars.INTERNAL_BETA_DOMAIN }}');
+  assert.match(verify.run, /test "\$INTERNAL_BETA_DOMAIN" = "beta\.lunchlineup\.com"/);
+  assert.match(verify.run, /test "\$INTERNAL_BETA_API_HEALTH_URL" = "https:\/\/beta\.lunchlineup\.com\/health"/);
+  assert.match(verify.run, /test "\$INTERNAL_BETA_NEXT_PUBLIC_SIGNUP_MODE" = "closed_beta"/);
+  assert.match(verify.run, /test "\$DOMAIN" = "\$INTERNAL_BETA_DOMAIN"/);
+  assert.match(manifest.run, /"releaseTarget": "\$\{RELEASE_TARGET\}"/);
+  assert.match(manifest.run, /"sourceSha": "\$\{GITHUB_SHA\}"/);
 });
 
 test('production deploy publishes a deterministic deployed-input content digest', () => {

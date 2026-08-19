@@ -237,7 +237,7 @@ test('Postgres only acknowledges production WAL after encrypted remote durabilit
   assert.match(common, /cgroup\.events/);
   assert.match(common, /kill -STOP/);
   assert.match(common, /ownership domain could not be proven empty/);
-  assert.match(common, /timeout \\\n\s*--signal=TERM \\\n\s*--kill-after=/);
+  assert.match(common, /timeout \\\r?\n\s*--signal=TERM \\\r?\n\s*--kill-after=/);
   assert.doesNotMatch(common, /--foreground/);
   assert.match(common, /PITR_MC_CONFIG_FILE="\$\{PITR_MC_CONFIG_DIR\}\/config\.json"/);
   assert.match(common, /chmod 0600 "\$\{PITR_MC_CONFIG_FILE\}"/);

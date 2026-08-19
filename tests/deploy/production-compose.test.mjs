@@ -464,7 +464,7 @@ test('web image bakes explicit public config at build time', () => {
     assert.ok(dockerfile.includes(`${key}=$${key}`), `Dockerfile.web must export ${key}`);
     assert.ok(webBlock.includes(`${key}: \${${key}:-`), `Compose web build args must pass ${key}`);
     assert.ok(webBlock.includes(`- ${key}=\${${key}:-`), `Compose web runtime env must pass ${key}`);
-    assert.ok(ci.includes(`${key}=\${{ vars.${key}`), `CI web build args must pass ${key}`);
+    assert.ok(ci.includes(`${key}=\${{ env.RELEASE_${key} }}`), `CI web build args must pass release-scoped ${key}`);
   }
 });
 
