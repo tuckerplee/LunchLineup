@@ -3,6 +3,7 @@ import type {
   ScheduleBoardResponse,
   ScheduleChangeSetResponse,
   ScheduleCreateResponse,
+  StaffInvitationResponse,
 } from '@lunchlineup/api-contract';
 
 import { apiJson, loginAsSeedAdmin, runFullStack, seedTenant } from './support';
@@ -44,6 +45,25 @@ test.describe.serial('API-v2 schedule and lunch/break volume workflows', () => {
     );
 
     const staff = board.data.staff.slice(0, 10);
+    for (let index = staff.length; index < 10; index += 1) {
+      const ordinal = String(index + 1).padStart(2, '0');
+      const invited = await apiJson<StaffInvitationResponse>(
+        page,
+        'POST',
+        '/api/v2/users/invite',
+        {
+          name: `Month Tester ${ordinal}`,
+          username: `month.tester.${ordinal}`,
+          pin: '135790',
+          role: 'STAFF',
+        },
+        201,
+        { origin, 'Idempotency-Key': `e2e-month-user-${ordinal}-v1` },
+      );
+      if (invited.role !== 'STAFF') throw new Error(`Native invite returned unexpected role for ${invited.username}.`);
+      staff.push({ id: invited.id, name: invited.name, role: 'STAFF' });
+    }
+    expect(staff).toHaveLength(10);
     const operations = staff.flatMap((member, userIndex) => Array.from({ length: 5 }, (_, dayIndex) => {
       const start = new Date(Date.UTC(2030, 6, 1 + dayIndex, 16 + userIndex, 0, 0));
       const end = new Date(start.getTime() + 8 * 60 * 60 * 1000);
