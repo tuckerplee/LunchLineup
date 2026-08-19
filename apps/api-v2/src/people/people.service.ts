@@ -14,6 +14,7 @@ import type {
   StaffInvitationResponse,
   StaffLegacyRole,
   StaffMember,
+  StaffAvailabilityException,
   StaffSchedulingProfile,
   StaffSchedulingProfileRequest,
 } from '@lunchlineup/api-contract';
@@ -43,6 +44,7 @@ const DEFAULT_LIST_LIMIT = 50;
 const MAX_LIST_LIMIT = 200;
 const MAX_SKILLS = 50;
 const MAX_AVAILABILITY_WINDOWS = 21;
+const MAX_AVAILABILITY_EXCEPTIONS = 366;
 const MAX_SKILL_LENGTH = 64;
 const USERNAME = /^[a-z0-9._-]{3,32}$/;
 const EMAIL = /^[a-z0-9.!#$%*+/=?^_`{|}~-]+@[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$/;
@@ -58,6 +60,15 @@ type AvailabilityWindow = {
   endTimeMinutes: number;
 };
 type AvailabilityScope = { locationId: string | null; days: number[] };
+type AvailabilityException = Omit<StaffAvailabilityException, 'allDay'> & { allDay: boolean };
+type StoredAvailabilityException = {
+  locationId: string | null;
+  localDate: Date;
+  kind: 'AVAILABLE' | 'UNAVAILABLE';
+  startTimeMinutes: number;
+  endTimeMinutes: number;
+};
+type AvailabilityDateScope = { locationId: string | null; date: string };
 
 function problem(status: number, code: string, detail: string, title?: string): ProblemError {
   return new ProblemError(status, code, detail, title ?? 'Request could not be completed');
@@ -234,7 +245,38 @@ function effectivePlanCode(tenant: {
   return paid || trial ? plan : 'FREE';
 }
 
-function normalizedProfile(body: StaffSchedulingProfileRequest): { skills: string[]; availability: AvailabilityWindow[] } {
+function normalizedLocalDate(value: unknown, field: string): string {
+  if (typeof value !== 'string') {
+    throw problem(422, 'invalid_scheduling_profile', `${field} must use YYYY-MM-DD.`, 'Scheduling profile validation failed');
+  }
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
+  if (!match) {
+    throw problem(422, 'invalid_scheduling_profile', `${field} must use YYYY-MM-DD.`, 'Scheduling profile validation failed');
+  }
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  const parsed = new Date(Date.UTC(year, month - 1, day));
+  if (
+    year < 1970 || year > 2100
+    || parsed.getUTCFullYear() !== year
+    || parsed.getUTCMonth() !== month - 1
+    || parsed.getUTCDate() !== day
+  ) {
+    throw problem(422, 'invalid_scheduling_profile', `${field} is not a supported calendar date.`, 'Scheduling profile validation failed');
+  }
+  return value;
+}
+
+function localDateValue(value: Date): string {
+  return value.toISOString().slice(0, 10);
+}
+
+function normalizedProfile(body: StaffSchedulingProfileRequest): {
+  skills: string[];
+  availability: AvailabilityWindow[];
+  availabilityExceptions: AvailabilityException[] | undefined;
+} {
   if (!Array.isArray(body.skills) || !Array.isArray(body.availability)) {
     throw problem(422, 'invalid_scheduling_profile', 'skills and availability must be arrays.', 'Scheduling profile validation failed');
   }
@@ -267,7 +309,52 @@ function normalizedProfile(body: StaffSchedulingProfileRequest): { skills: strin
     || left.startTimeMinutes - right.startTimeMinutes
     || left.endTimeMinutes - right.endTimeMinutes
     || (left.locationId ?? '').localeCompare(right.locationId ?? ''));
-  return { skills, availability };
+  const availabilityExceptions = body.availabilityExceptions === undefined
+    ? undefined
+    : body.availabilityExceptions.map((raw, index): AvailabilityException => {
+      const date = normalizedLocalDate(raw.date, `availabilityExceptions[${index}].date`);
+      const start = Number(raw.startTimeMinutes);
+      const end = Number(raw.endTimeMinutes);
+      const allDay = raw.allDay === true;
+      if (
+        (raw.kind !== 'AVAILABLE' && raw.kind !== 'UNAVAILABLE')
+        || !Number.isInteger(start)
+        || !Number.isInteger(end)
+        || start < 0
+        || start >= 1440
+        || end < 1
+        || end > 1440
+        || start >= end
+        || allDay !== (start === 0 && end === 1440)
+      ) {
+        throw problem(422, 'invalid_scheduling_profile', `availabilityExceptions[${index}] is invalid.`, 'Scheduling profile validation failed');
+      }
+      return {
+        locationId: raw.locationId ?? null,
+        date,
+        kind: raw.kind,
+        allDay,
+        startTimeMinutes: start,
+        endTimeMinutes: end,
+      };
+    });
+  if ((availabilityExceptions?.length ?? 0) > MAX_AVAILABILITY_EXCEPTIONS) {
+    throw problem(422, 'invalid_scheduling_profile', `A scheduling profile supports at most ${MAX_AVAILABILITY_EXCEPTIONS} dated exceptions.`, 'Scheduling profile validation failed');
+  }
+  if (availabilityExceptions) {
+    const keys = availabilityExceptions.map((entry) => [
+      entry.locationId ?? '*', entry.date, entry.kind, entry.startTimeMinutes, entry.endTimeMinutes,
+    ].join(':'));
+    if (new Set(keys).size !== keys.length) {
+      throw problem(422, 'invalid_scheduling_profile', 'availabilityExceptions contains duplicate windows.', 'Scheduling profile validation failed');
+    }
+    availabilityExceptions.sort((left, right) => left.date.localeCompare(right.date)
+      || left.startTimeMinutes - right.startTimeMinutes
+      || left.endTimeMinutes - right.endTimeMinutes
+      || left.kind.localeCompare(right.kind)
+      || (left.locationId ?? '').localeCompare(right.locationId ?? ''));
+  }
+  return { skills, availability, availabilityExceptions };
 }
 
 function availabilityScopes(before: AvailabilityWindow[], after: AvailabilityWindow[]): AvailabilityScope[] {
@@ -305,11 +392,42 @@ function availabilityScopes(before: AvailabilityWindow[], after: AvailabilityWin
   }));
 }
 
+function availabilityDateScopes(
+  before: StoredAvailabilityException[],
+  after: StoredAvailabilityException[],
+): AvailabilityDateScope[] {
+  const grouped = (rows: StoredAvailabilityException[]) => {
+    const values = new Map<string, string[]>();
+    for (const row of rows) {
+      const key = `${row.locationId ?? '*'}:${localDateValue(row.localDate)}`;
+      const entries = values.get(key) ?? [];
+      entries.push(`${row.kind}:${row.startTimeMinutes}:${row.endTimeMinutes}`);
+      values.set(key, entries);
+    }
+    for (const entries of values.values()) entries.sort();
+    return values;
+  };
+  const previous = grouped(before);
+  const replacement = grouped(after);
+  const changed: AvailabilityDateScope[] = [];
+  for (const key of new Set([...previous.keys(), ...replacement.keys()])) {
+    if (JSON.stringify(previous.get(key) ?? []) === JSON.stringify(replacement.get(key) ?? [])) continue;
+    const separator = key.lastIndexOf(':');
+    changed.push({
+      locationId: key.slice(0, separator) === '*' ? null : key.slice(0, separator),
+      date: key.slice(separator + 1),
+    });
+  }
+  return changed.sort((left, right) => left.date.localeCompare(right.date)
+    || (left.locationId ?? '').localeCompare(right.locationId ?? ''));
+}
+
 async function invalidateAffectedDraftSchedules(
   transaction: TenantTransaction,
   tenantId: string,
   changedSkills: string[],
   changedAvailability: AvailabilityScope[],
+  changedAvailabilityDates: AvailabilityDateScope[] = [],
 ): Promise<void> {
   const predicates: Prisma.Sql[] = [];
   if (changedSkills.length > 0) predicates.push(Prisma.sql`TRUE`);
@@ -328,6 +446,17 @@ async function invalidateAffectedDraftSchedules(
         ) AS local_day
         WHERE EXTRACT(DOW FROM local_day)::int IN (${Prisma.join(scope.days)})
       )
+    `);
+  }
+  for (const scope of changedAvailabilityDates) {
+    const locationCondition = scope.locationId === null
+      ? Prisma.sql`TRUE`
+      : Prisma.sql`schedule."locationId" = ${scope.locationId}`;
+    predicates.push(Prisma.sql`
+      (${locationCondition})
+      AND ${scope.date}::date BETWEEN
+        (schedule."startDate" AT TIME ZONE 'UTC' AT TIME ZONE location."timezone")::date
+        AND ((schedule."endDate" - INTERVAL '1 millisecond') AT TIME ZONE 'UTC' AT TIME ZONE location."timezone")::date
     `);
   }
   if (predicates.length === 0) return;
@@ -501,7 +630,7 @@ export class PeopleService {
         select: { id: true, publicId: true, name: true },
       });
       if (!user) throw problem(404, 'staff_not_found', 'The selected schedulable staff member was not found.', 'Staff member not found');
-      const [skills, availability] = await Promise.all([
+      const [skills, availability, availabilityExceptions] = await Promise.all([
         transaction.staffSkill.findMany({
           where: { tenantId: identity.tenantId, userId: user.id },
           select: { skill: true },
@@ -515,7 +644,29 @@ export class PeopleService {
           },
           orderBy: [{ dayOfWeek: 'asc' }, { startTimeMinutes: 'asc' }, { locationId: 'asc' }],
         }),
+        transaction.staffAvailabilityException.findMany({
+          where: { tenantId: identity.tenantId, userId: user.id },
+          select: {
+            locationId: true,
+            localDate: true,
+            kind: true,
+            startTimeMinutes: true,
+            endTimeMinutes: true,
+            location: { select: { publicId: true } },
+          },
+          orderBy: [
+            { localDate: 'asc' },
+            { startTimeMinutes: 'asc' },
+            { endTimeMinutes: 'asc' },
+            { kind: 'asc' },
+            { locationId: 'asc' },
+          ],
+          take: MAX_AVAILABILITY_EXCEPTIONS + 1,
+        }),
       ]);
+      if (availabilityExceptions.length > MAX_AVAILABILITY_EXCEPTIONS) {
+        throw problem(422, 'scheduling_profile_too_large', 'The staff scheduling profile has too many dated exceptions.', 'Scheduling profile is too large');
+      }
       return {
         user: { id: user.publicId, name: user.name },
         skills: skills.map((row) => row.skill),
@@ -525,7 +676,16 @@ export class PeopleService {
           startTimeMinutes: row.startTimeMinutes,
           endTimeMinutes: row.endTimeMinutes,
         })),
-        availabilityConfigured: availability.length > 0,
+        availabilityExceptions: availabilityExceptions.map((row) => ({
+          locationId: row.location?.publicId ?? null,
+          date: localDateValue(row.localDate),
+          kind: row.kind,
+          allDay: row.startTimeMinutes === 0 && row.endTimeMinutes === 1440,
+          startTimeMinutes: row.startTimeMinutes,
+          endTimeMinutes: row.endTimeMinutes,
+        })),
+        availabilityConfigured: availability.length > 0
+          || availabilityExceptions.some((row) => row.kind === 'AVAILABLE'),
       };
     });
   }
@@ -546,8 +706,10 @@ export class PeopleService {
       await transaction.$executeRaw(Prisma.sql`
         SELECT pg_advisory_xact_lock(hashtextextended(${`lunchlineup:scheduling:${identity.tenantId}`}, 0))
       `);
-      const requestedLocationPublicIds = [...new Set(profile.availability
-        .map((window) => window.locationId)
+      const requestedLocationPublicIds = [...new Set([
+        ...profile.availability.map((window) => window.locationId),
+        ...(profile.availabilityExceptions ?? []).map((window) => window.locationId),
+      ]
         .filter((value): value is string => Boolean(value)))];
       const locations = requestedLocationPublicIds.length === 0 ? [] : await transaction.location.findMany({
         where: { tenantId: identity.tenantId, publicId: { in: requestedLocationPublicIds }, deletedAt: null },
@@ -560,6 +722,13 @@ export class PeopleService {
       const replacement = profile.availability.map((window) => ({
         ...window,
         locationId: window.locationId ? internalLocationByPublicId.get(window.locationId) ?? null : null,
+      }));
+      const requestedExceptionReplacement: StoredAvailabilityException[] | undefined = profile.availabilityExceptions?.map((window) => ({
+        locationId: window.locationId ? internalLocationByPublicId.get(window.locationId) ?? null : null,
+        localDate: new Date(`${window.date}T00:00:00.000Z`),
+        kind: window.kind,
+        startTimeMinutes: window.startTimeMinutes,
+        endTimeMinutes: window.endTimeMinutes,
       }));
       const users = await transaction.$queryRaw<Array<{ id: string }>>(Prisma.sql`
         SELECT "id" FROM "User"
@@ -580,7 +749,7 @@ export class PeopleService {
           throw problem(422, 'location_not_found', 'Every availability location must be an active workspace location.', 'Scheduling profile validation failed');
         }
       }
-      const [existingSkills, existingAvailability] = await Promise.all([
+      const [existingSkills, existingAvailability, existingAvailabilityExceptions] = await Promise.all([
         transaction.staffSkill.findMany({
           where: { tenantId: identity.tenantId, userId: user.id },
           select: { skill: true }, orderBy: { skill: 'asc' },
@@ -589,7 +758,36 @@ export class PeopleService {
           where: { tenantId: identity.tenantId, userId: user.id },
           select: { locationId: true, dayOfWeek: true, startTimeMinutes: true, endTimeMinutes: true },
         }),
+        transaction.staffAvailabilityException.findMany({
+          where: { tenantId: identity.tenantId, userId: user.id },
+          select: {
+            locationId: true,
+            localDate: true,
+            kind: true,
+            startTimeMinutes: true,
+            endTimeMinutes: true,
+            location: { select: { publicId: true } },
+          },
+          orderBy: [
+            { localDate: 'asc' },
+            { startTimeMinutes: 'asc' },
+            { endTimeMinutes: 'asc' },
+            { kind: 'asc' },
+            { locationId: 'asc' },
+          ],
+          take: MAX_AVAILABILITY_EXCEPTIONS + 1,
+        }),
       ]);
+      if (existingAvailabilityExceptions.length > MAX_AVAILABILITY_EXCEPTIONS) {
+        throw problem(422, 'scheduling_profile_too_large', 'The staff scheduling profile has too many dated exceptions.', 'Scheduling profile is too large');
+      }
+      const exceptionReplacement = requestedExceptionReplacement ?? existingAvailabilityExceptions.map((row) => ({
+        locationId: row.locationId,
+        localDate: row.localDate,
+        kind: row.kind,
+        startTimeMinutes: row.startTimeMinutes,
+        endTimeMinutes: row.endTimeMinutes,
+      }));
       const previousSkills = existingSkills.map((row) => row.skill).sort();
       const changedSkills = [...new Set([
         ...previousSkills.filter((skill) => !profile.skills.includes(skill)),
@@ -600,9 +798,17 @@ export class PeopleService {
         identity.tenantId,
         changedSkills,
         availabilityScopes(existingAvailability, replacement),
+        requestedExceptionReplacement === undefined
+          ? []
+          : availabilityDateScopes(existingAvailabilityExceptions, exceptionReplacement),
       );
       await transaction.staffAvailability.deleteMany({ where: { tenantId: identity.tenantId, userId: user.id } });
       await transaction.staffSkill.deleteMany({ where: { tenantId: identity.tenantId, userId: user.id } });
+      if (requestedExceptionReplacement !== undefined) {
+        await transaction.staffAvailabilityException.deleteMany({
+          where: { tenantId: identity.tenantId, userId: user.id },
+        });
+      }
       if (profile.skills.length > 0) {
         await transaction.staffSkill.createMany({ data: profile.skills.map((skill) => ({ tenantId: identity.tenantId, userId: user.id, skill })) });
       }
@@ -611,11 +817,30 @@ export class PeopleService {
           data: replacement.map((window) => ({ tenantId: identity.tenantId, userId: user.id, ...window })),
         });
       }
+      if (requestedExceptionReplacement && requestedExceptionReplacement.length > 0) {
+        await transaction.staffAvailabilityException.createMany({
+          data: requestedExceptionReplacement.map((window) => ({
+            tenantId: identity.tenantId,
+            userId: user.id,
+            ...window,
+          })),
+        });
+      }
+      const publicAvailabilityExceptions = profile.availabilityExceptions ?? existingAvailabilityExceptions.map((row) => ({
+        locationId: row.location?.publicId ?? null,
+        date: localDateValue(row.localDate),
+        kind: row.kind,
+        allDay: row.startTimeMinutes === 0 && row.endTimeMinutes === 1440,
+        startTimeMinutes: row.startTimeMinutes,
+        endTimeMinutes: row.endTimeMinutes,
+      }));
       return {
         user: { id: user.publicId, name: user.name },
         skills: profile.skills,
         availability: profile.availability,
-        availabilityConfigured: profile.availability.length > 0,
+        availabilityExceptions: publicAvailabilityExceptions,
+        availabilityConfigured: profile.availability.length > 0
+          || publicAvailabilityExceptions.some((row) => row.kind === 'AVAILABLE'),
       };
     });
   }

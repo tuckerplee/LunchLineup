@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   assertAvailabilityWindow,
   availabilityTime,
+  availabilityWithExceptionsCoversLocalSegment,
   availabilityWindowCoversLocalSegment,
   availabilityWindowsCoverLocalSegment,
 } from './schedule-availability';
@@ -33,5 +34,52 @@ describe('schedule availability windows', () => {
       windows[0],
       { dayOfWeek: 1, startTimeMinutes: 12 * 60 + 1, endTimeMinutes: 17 * 60 },
     ], 'Monday', 9 * 60, 17 * 60)).toBe(false);
+  });
+
+  it('lets dated available windows replace the recurring rule for one local date', () => {
+    const recurring = [{ dayOfWeek: 1, startTimeMinutes: 9 * 60, endTimeMinutes: 17 * 60 }];
+    const exceptions = [{
+      localDate: '2026-03-09',
+      kind: 'AVAILABLE' as const,
+      startTimeMinutes: 12 * 60,
+      endTimeMinutes: 20 * 60,
+    }];
+
+    expect(availabilityWithExceptionsCoversLocalSegment(
+      recurring, exceptions, '2026-03-09', 'Monday', 12 * 60, 20 * 60,
+    )).toBe(true);
+    expect(availabilityWithExceptionsCoversLocalSegment(
+      recurring, exceptions, '2026-03-09', 'Monday', 9 * 60, 10 * 60,
+    )).toBe(false);
+    expect(availabilityWithExceptionsCoversLocalSegment(
+      recurring, exceptions, '2026-03-16', 'Monday', 9 * 60, 17 * 60,
+    )).toBe(true);
+  });
+
+  it('makes partial and all-day time off win over recurring or dated availability', () => {
+    const recurring = [{ dayOfWeek: 2, startTimeMinutes: 9 * 60, endTimeMinutes: 17 * 60 }];
+    const partialTimeOff = [{
+      localDate: '2026-03-10',
+      kind: 'UNAVAILABLE' as const,
+      startTimeMinutes: 12 * 60,
+      endTimeMinutes: 13 * 60,
+    }];
+    expect(availabilityWithExceptionsCoversLocalSegment(
+      recurring, partialTimeOff, '2026-03-10', 'Tuesday', 9 * 60, 12 * 60,
+    )).toBe(true);
+    expect(availabilityWithExceptionsCoversLocalSegment(
+      recurring, partialTimeOff, '2026-03-10', 'Tuesday', 9 * 60, 17 * 60,
+    )).toBe(false);
+    expect(availabilityWithExceptionsCoversLocalSegment(
+      recurring,
+      [
+        { localDate: '2026-03-10', kind: 'AVAILABLE', startTimeMinutes: 0, endTimeMinutes: 1440 },
+        { localDate: '2026-03-10', kind: 'UNAVAILABLE', startTimeMinutes: 0, endTimeMinutes: 1440 },
+      ],
+      '2026-03-10',
+      'Tuesday',
+      0,
+      1440,
+    )).toBe(false);
   });
 });

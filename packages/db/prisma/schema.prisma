@@ -41,6 +41,7 @@ model Tenant {
   scheduleSolveJobs             ScheduleSolveJob[]
   lunchBreakGenerationRequests  LunchBreakGenerationRequest[]
   staffAvailabilities           StaffAvailability[]
+  staffAvailabilityExceptions   StaffAvailabilityException[]
   staffSkills                   StaffSkill[]
   scheduleDemandWindows         ScheduleDemandWindow[]
   scheduleChangeSets            ScheduleChangeSet[]
@@ -197,10 +198,11 @@ model User {
   suspendedAt                    DateTime?
   deletedAt                      DateTime?
 
-  tenant                       Tenant                     @relation(fields: [tenantId], references: [id])
+  tenant                       Tenant                       @relation(fields: [tenantId], references: [id])
   sessions                     Session[]
   shifts                       Shift[]
   staffAvailabilities          StaffAvailability[]
+  staffAvailabilityExceptions  StaffAvailabilityException[]
   staffSkills                  StaffSkill[]
   timeCards                    TimeCard[]
   auditLogs                    AuditLog[]
@@ -212,8 +214,8 @@ model User {
   onboardingSignupAttempts     OnboardingSignupAttempt[]
   notificationOutbox           NotificationOutbox[]
   staffInvitationOutbox        StaffInvitationOutbox[]
-  requestedAvailabilityImports AvailabilityImportJob[]    @relation("AvailabilityImportRequester")
-  availabilityImports          AvailabilityImportJob[]    @relation("AvailabilityImportTarget")
+  requestedAvailabilityImports AvailabilityImportJob[]      @relation("AvailabilityImportRequester")
+  availabilityImports          AvailabilityImportJob[]      @relation("AvailabilityImportTarget")
 
   @@unique([id, tenantId])
   @@unique([tenantId, email])
@@ -545,13 +547,14 @@ model Location {
   updatedAt              DateTime  @updatedAt
   deletedAt              DateTime?
 
-  tenant                Tenant                 @relation(fields: [tenantId], references: [id])
-  shifts                Shift[]
-  schedules             Schedule[]
-  scheduleSolveJobs     ScheduleSolveJob[]
-  staffAvailabilities   StaffAvailability[]
-  scheduleDemandWindows ScheduleDemandWindow[]
-  timeCards             TimeCard[]
+  tenant                      Tenant                       @relation(fields: [tenantId], references: [id])
+  shifts                      Shift[]
+  schedules                   Schedule[]
+  scheduleSolveJobs           ScheduleSolveJob[]
+  staffAvailabilities         StaffAvailability[]
+  staffAvailabilityExceptions StaffAvailabilityException[]
+  scheduleDemandWindows       ScheduleDemandWindow[]
+  timeCards                   TimeCard[]
 
   @@unique([id, tenantId])
   @@unique([tenantId, creationRequestKeyHash])
@@ -683,6 +686,34 @@ model StaffAvailability {
   @@index([locationId])
   @@index([tenantId, userId, dayOfWeek, startTimeMinutes])
   @@index([tenantId, locationId, dayOfWeek, startTimeMinutes])
+}
+
+enum StaffAvailabilityExceptionKind {
+  AVAILABLE
+  UNAVAILABLE
+}
+
+model StaffAvailabilityException {
+  id               String                         @id @default(uuid())
+  tenantId         String
+  userId           String
+  locationId       String?
+  localDate        DateTime                       @db.Date
+  kind             StaffAvailabilityExceptionKind
+  startTimeMinutes Int
+  endTimeMinutes   Int
+  createdAt        DateTime                       @default(now())
+  updatedAt        DateTime                       @updatedAt
+
+  tenant   Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  user     User      @relation(fields: [userId, tenantId], references: [id, tenantId], onDelete: Cascade)
+  location Location? @relation(fields: [locationId, tenantId], references: [id, tenantId], onDelete: Cascade)
+
+  @@index([tenantId])
+  @@index([userId])
+  @@index([locationId])
+  @@index([tenantId, userId, localDate, startTimeMinutes])
+  @@index([tenantId, locationId, localDate, startTimeMinutes])
 }
 
 enum AvailabilityImportStatus {

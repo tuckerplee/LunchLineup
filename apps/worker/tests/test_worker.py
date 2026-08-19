@@ -492,6 +492,43 @@ class WorkerMessageTests(unittest.IsolatedAsyncioTestCase):
                 },
             })
 
+    def test_rejects_availability_exception_outside_staff_and_local_date_scope(self):
+        base = {
+            "schedule_id": "sch-1",
+            "tenant_id": "tenant-1",
+            "location_id": "loc-1",
+            "start_date": "2026-03-09T08:00:00.000Z",
+            "end_date": "2026-03-10T08:00:00.000Z",
+            "draft_revision": 0,
+            "input_shift_snapshot": [],
+            "staff_ids": ["u1"],
+            "timezone": "America/Los_Angeles",
+        }
+        with self.assertRaises(main.NonRetryableJobError):
+            main.validate_solve_payload({
+                **base,
+                "availability_exceptions": {
+                    "u2": [{
+                        "local_date": "2026-03-09",
+                        "kind": "UNAVAILABLE",
+                        "start_time_minutes": 0,
+                        "end_time_minutes": 1440,
+                    }],
+                },
+            })
+        with self.assertRaises(main.NonRetryableJobError):
+            main.validate_solve_payload({
+                **base,
+                "availability_exceptions": {
+                    "u1": [{
+                        "local_date": "2026-03-11",
+                        "kind": "UNAVAILABLE",
+                        "start_time_minutes": 0,
+                        "end_time_minutes": 1440,
+                    }],
+                },
+            })
+
     def test_rejects_staff_skills_for_unknown_staff(self):
         with self.assertRaises(main.NonRetryableJobError):
             main.validate_solve_payload({
@@ -607,6 +644,12 @@ class WorkerMessageTests(unittest.IsolatedAsyncioTestCase):
                 "input_shift_snapshot": [],
                 "staff_ids": ["u1"],
                 "availability": {"u1": []},
+                "availability_exceptions": {"u1": [{
+                    "local_date": "2026-03-09",
+                    "kind": "UNAVAILABLE",
+                    "start_time_minutes": 720,
+                    "end_time_minutes": 780,
+                }]},
                 "availability_configured": {"u1": False},
                 "staff_skills": {"u1": ["lead"]},
                 "skill_requirements": {"lead": 1},
@@ -650,6 +693,12 @@ class WorkerMessageTests(unittest.IsolatedAsyncioTestCase):
             "skill": "lead",
         }])
         self.assertEqual(constraints["timezone"], "America/Los_Angeles")
+        self.assertEqual(constraints["availability_exceptions"], {"u1": [{
+            "local_date": "2026-03-09",
+            "kind": "UNAVAILABLE",
+            "start_time_minutes": 720,
+            "end_time_minutes": 780,
+        }]})
         self.assertEqual(len(request.existing_weekly_minutes), 1)
         self.assertEqual(request.existing_weekly_minutes[0].staff_id, "u1")
         self.assertEqual(request.existing_weekly_minutes[0].week_start_date, "2026-03-09")

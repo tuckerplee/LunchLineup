@@ -3,7 +3,7 @@
 ## Files
 
 - `README.md`: this Prisma folder guide.
-- `schema.prisma`: canonical Prisma schema for tenants including authoritative Stripe paid-through state, legal holds, durable tenant-deletion billing claims/backoff/fencing, users, auth/RBAC, schedules, time cards, immutable payroll controls, billing with immutable wallet settlement results, notifications/webhooks, tenant exports including cleanup ownership fields/indexes, encrypted staff-invitation intents, and availability-import jobs with nullable encrypted source envelopes for upgrade-compatible recovery.
+- `schema.prisma`: canonical Prisma schema for tenants including authoritative Stripe paid-through state, legal holds, durable tenant-deletion billing claims/backoff/fencing, users, auth/RBAC, schedules, recurring and local-date staff availability/time-off, time cards, immutable payroll controls, billing with immutable wallet settlement results, notifications/webhooks, tenant exports including cleanup ownership fields/indexes, encrypted staff-invitation intents, and availability-import jobs with nullable encrypted source envelopes for upgrade-compatible recovery.
 - `seed.ts`: development seed helper for baseline permissions, system admin RBAC, tenant data, and initial admin data; it requires `DATA_TARGET_ENV=test`, `disposable`, or `development` before loading Prisma and has no production override.
 - `migrations/`: SQL migrations and database initialization helpers applied to Postgres.
 

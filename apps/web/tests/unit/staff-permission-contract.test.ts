@@ -31,4 +31,17 @@ describe('staff workspace permission contract', () => {
     expect(workspaceSource).not.toContain('canManage: boolean');
     expect(workspaceSource).not.toContain('find((role) => role.isDefault)');
   });
+
+  it('keeps dated availability and time off on the typed scheduling profile client', () => {
+    const editorSource = readFileSync(resolve(staffRoot, 'StaffSchedulingProfileEditor.tsx'), 'utf8');
+
+    expect(editorSource).toContain('StaffAvailabilityException');
+    expect(editorSource).toContain('StaffSchedulingProfileRequest');
+    expect(editorSource).toContain('Dated availability &amp; time off');
+    expect(editorSource).toContain('Available windows replace the weekly rule for that local date. Unavailable windows always block scheduling.');
+    expect(editorSource).toContain('body: JSON.stringify({ skills, availability: nextAvailability, availabilityExceptions })');
+    expect(editorSource).toContain("kind: 'UNAVAILABLE'");
+    expect(editorSource).toContain('startTimeMinutes: 0');
+    expect(editorSource).toContain('endTimeMinutes: 1440');
+  });
 });

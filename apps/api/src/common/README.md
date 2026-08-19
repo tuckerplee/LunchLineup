@@ -10,8 +10,8 @@
 - `health.service.spec.ts`: tests for API dependency health reporting, shared rate-limit script readiness, bounded RabbitMQ failures, probe coalescing/cache expiry, dependency-free liveness, dependency metrics, and degraded HTTP status.
 - `health.service.ts`: coalesced and briefly cached database, Redis including the shared rate-limit script, and RabbitMQ readiness checks for `/health` plus dependency metric updates; container autoheal uses the dependency-free `/live` controller route.
 - `logger.ts`: Winston logger setup.
-- `location-timezone.spec.ts`: regression coverage for DST boundaries, local dates, and overnight local-day splitting.
-- `location-timezone.ts`: IANA timezone validation, local-date boundary conversion, formatting, and local-day range splitting.
+- `location-timezone.spec.ts`: regression coverage for DST boundaries, exact local-date labels, and overnight local-day splitting.
+- `location-timezone.ts`: IANA timezone validation, local-date boundary conversion, formatting, and local-day range splitting that retains each segment's calendar date.
 - `metrics.controller.spec.ts`: tests for protected metrics access.
 - `metrics.controller.ts`: Prometheus metrics endpoint controller.
 - `metrics.interceptor.spec.ts`: tests for global HTTP request metric recording and unmatched-path privacy/cardinality protection.

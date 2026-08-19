@@ -82,7 +82,7 @@ test.describe('Staff and platform admin safety controls', () => {
     await expect(removeRow).toHaveCount(0);
   });
 
-  test('allows managers to edit skills and location-scoped overnight availability without admin controls', async ({ page }) => {
+  test('allows managers to edit recurring and dated location availability without admin controls', async ({ page }) => {
     await loginAsSeedManager(page, '/dashboard/staff');
 
     await expect(page.getByText('Invite team member')).toBeVisible();
@@ -95,7 +95,7 @@ test.describe('Staff and platform admin safety controls', () => {
     await staffRow.getByText('Mock Staff', { exact: true }).click();
     await expect(page.getByRole('dialog', { name: 'Manage Mock Staff' })).toBeVisible();
     const editor = page.getByRole('region', { name: 'Scheduling profile for Mock Staff' });
-    await expect(editor.getByText('Availability is not configured. This staff member is unavailable to auto-scheduling.')).toBeVisible();
+    await expect(editor.getByText('No recurring availability is configured. This staff member is unavailable except on dates with an Available exception.')).toBeVisible();
 
     await editor.getByLabel('Skills').fill('  Line   Cook ');
     await editor.getByRole('button', { name: 'Add skill' }).click();
@@ -104,6 +104,14 @@ test.describe('Staff and platform admin safety controls', () => {
     await editor.getByLabel('Start').fill('22:00');
     await editor.getByLabel(/End/).fill('02:00');
     await expect(editor.getByText(/overnight/)).toBeVisible();
+    await editor.getByRole('button', { name: 'Add exception' }).click();
+    const datedException = editor.getByRole('group', { name: 'Dated availability exception 1' });
+    await datedException.getByLabel('Local date').fill('2026-03-12');
+    await datedException.getByLabel('Location').selectOption(DOWNTOWN_LOCATION_ID);
+    await datedException.getByRole('combobox').nth(1).selectOption('AVAILABLE');
+    await datedException.getByLabel('All day').uncheck();
+    await datedException.getByLabel('Start').fill('12:00');
+    await datedException.getByLabel('End').fill('14:00');
     await editor.getByRole('button', { name: 'Save profile' }).click();
     await expect(editor.getByText('Scheduling profile saved.')).toBeVisible();
 
@@ -111,9 +119,16 @@ test.describe('Staff and platform admin safety controls', () => {
     await staffRow.getByRole('button', { name: 'Edit schedule profile' }).click();
     const reopened = page.getByRole('region', { name: 'Scheduling profile for Mock Staff' });
     await expect(reopened.getByText('line cook')).toBeVisible();
-    await expect(reopened.getByLabel('Location')).toHaveValue(DOWNTOWN_LOCATION_ID);
-    await expect(reopened.getByLabel('Start')).toHaveValue('22:00');
-    await expect(reopened.getByLabel(/End/)).toHaveValue('02:00');
+    await expect(reopened.getByLabel('Location').first()).toHaveValue(DOWNTOWN_LOCATION_ID);
+    await expect(reopened.getByLabel('Start').first()).toHaveValue('22:00');
+    await expect(reopened.getByLabel(/End/).first()).toHaveValue('02:00');
+    const reopenedException = reopened.getByRole('group', { name: 'Dated availability exception 1' });
+    await expect(reopenedException.getByLabel('Local date')).toHaveValue('2026-03-12');
+    await expect(reopenedException.getByLabel('Location')).toHaveValue(DOWNTOWN_LOCATION_ID);
+    await expect(reopenedException.getByRole('combobox').nth(1)).toHaveValue('AVAILABLE');
+    await expect(reopenedException.getByLabel('All day')).not.toBeChecked();
+    await expect(reopenedException.getByLabel('Start')).toHaveValue('12:00');
+    await expect(reopenedException.getByLabel('End')).toHaveValue('14:00');
   });
 
   test('reviews and explicitly applies a PDF import with one stable paid attempt', async ({ page }) => {
@@ -122,7 +137,11 @@ test.describe('Staff and platform admin safety controls', () => {
     let uploadRequests = 0;
     let statusRequests = 0;
     let profileWrites = 0;
-    let appliedProfile: { skills?: string[]; availability?: unknown[] } | null = null;
+    let appliedProfile: {
+      skills?: string[];
+      availability?: unknown[];
+      availabilityExceptions?: unknown[];
+    } | null = null;
 
     await page.route('**/api/v2/billing/features', async (route) => {
       await route.fulfill({
@@ -190,6 +209,7 @@ test.describe('Staff and platform admin safety controls', () => {
         body: JSON.stringify({
           skills: appliedProfile?.skills ?? [],
           availability: appliedProfile?.availability ?? [],
+          availabilityExceptions: appliedProfile?.availabilityExceptions ?? [],
           availabilityConfigured: true,
         }),
       });
@@ -233,6 +253,7 @@ test.describe('Staff and platform admin safety controls', () => {
         startTimeMinutes: 540,
         endTimeMinutes: 1020,
       }],
+      availabilityExceptions: [],
     });
   });
   test('defaults tenant admin invites to Staff and hides non-delegable Admin', async ({ page }) => {

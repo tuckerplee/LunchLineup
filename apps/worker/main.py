@@ -10,7 +10,7 @@ from __future__ import annotations
 import asyncio
 from collections import OrderedDict
 from dataclasses import dataclass, field
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 import hashlib
 import json
 import logging
@@ -420,6 +420,29 @@ class AvailabilityRule(BaseModel):
     end_time: str = Field(..., min_length=4, max_length=8)
 
 
+class AvailabilityExceptionRule(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    local_date: str = Field(..., min_length=10, max_length=10, pattern=r"^\d{4}-\d{2}-\d{2}$")
+    kind: str = Field(..., min_length=9, max_length=11)
+    start_time_minutes: int = Field(..., ge=0, le=1439)
+    end_time_minutes: int = Field(..., ge=1, le=1440)
+
+    @model_validator(mode="after")
+    def validate_exception(self) -> "AvailabilityExceptionRule":
+        try:
+            parsed = date.fromisoformat(self.local_date)
+        except ValueError as exc:
+            raise ValueError("availability exception local_date must be a calendar date") from exc
+        if parsed.year < 1970 or parsed.year > 2100:
+            raise ValueError("availability exception local_date is outside the supported range")
+        if self.kind not in {"AVAILABLE", "UNAVAILABLE"}:
+            raise ValueError("availability exception kind is invalid")
+        if self.start_time_minutes >= self.end_time_minutes:
+            raise ValueError("availability exception end_time_minutes must be after start_time_minutes")
+        return self
+
+
 class DemandWindow(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -460,6 +483,7 @@ class SolvePayload(BaseModel):
     staff_ids: list[str] = Field(..., min_length=1)
     constraints: dict[str, Any] = Field(default_factory=dict)
     availability: dict[str, list[AvailabilityRule]] = Field(default_factory=dict)
+    availability_exceptions: dict[str, list[AvailabilityExceptionRule]] = Field(default_factory=dict)
     availability_configured: dict[str, bool] = Field(default_factory=dict)
     staff_skills: dict[str, list[str]] = Field(default_factory=dict)
     skill_requirements: dict[str, Any] = Field(default_factory=dict)
@@ -504,6 +528,12 @@ class SolvePayload(BaseModel):
         unknown_staff = set(self.availability) - set(self.staff_ids)
         if unknown_staff:
             raise ValueError("availability includes staff outside staff_ids")
+        unknown_exception_staff = set(self.availability_exceptions) - set(self.staff_ids)
+        if unknown_exception_staff:
+            raise ValueError("availability_exceptions includes staff outside staff_ids")
+        for rules in self.availability_exceptions.values():
+            if len(rules) > 366:
+                raise ValueError("availability_exceptions cannot exceed 366 entries per staff member")
         unknown_configured_staff = set(self.availability_configured) - set(self.staff_ids)
         if unknown_configured_staff:
             raise ValueError("availability_configured includes staff outside staff_ids")
@@ -555,9 +585,16 @@ class SolvePayload(BaseModel):
                 if isinstance(minutes, bool) or not isinstance(minutes, int) or not 0 <= minutes <= 10_080:
                     raise ValueError("existing_weekly_minutes values must be whole minutes from 0 to 10080")
         try:
-            ZoneInfo(self.timezone)
+            schedule_time_zone = ZoneInfo(self.timezone)
         except (ZoneInfoNotFoundError, ValueError) as exc:
             raise ValueError("timezone must be a valid IANA timezone") from exc
+        first_local_date = start_date.astimezone(schedule_time_zone).date()
+        final_local_date = (end_date - timedelta(microseconds=1)).astimezone(schedule_time_zone).date()
+        for rules in self.availability_exceptions.values():
+            for rule in rules:
+                parsed = date.fromisoformat(rule.local_date)
+                if parsed < first_local_date or parsed > final_local_date:
+                    raise ValueError("availability_exceptions must stay inside the schedule local-date window")
         return self
 
 
@@ -623,6 +660,11 @@ async def handle_solve_job(
 
     constraints = dict(solve_payload.constraints)
     constraints["timezone"] = solve_payload.timezone
+    if solve_payload.availability_exceptions:
+        constraints["availability_exceptions"] = {
+            staff_id: [rule.model_dump() for rule in rules]
+            for staff_id, rules in solve_payload.availability_exceptions.items()
+        }
     if solve_payload.skill_requirements:
         constraints["skill_requirements"] = solve_payload.skill_requirements
     if solve_payload.daily_demand is not None:

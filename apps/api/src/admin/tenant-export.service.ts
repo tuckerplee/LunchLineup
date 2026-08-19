@@ -328,6 +328,23 @@ export const TENANT_EXPORT_COLLECTIONS: readonly ExportCollection[] = [
     },
   },
   {
+    model: "StaffAvailabilityException",
+    name: "staffAvailabilityExceptions",
+    delegate: "staffAvailabilityException",
+    where: (tenantId) => ({ tenantId }),
+    select: {
+      id: true,
+      userId: true,
+      locationId: true,
+      localDate: true,
+      kind: true,
+      startTimeMinutes: true,
+      endTimeMinutes: true,
+      createdAt: true,
+      updatedAt: true,
+    },
+  },
+  {
     model: "StaffSkill",
     name: "staffSkills",
     delegate: "staffSkill",

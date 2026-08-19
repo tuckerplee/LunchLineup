@@ -10,6 +10,12 @@ const persistedInputsMigrationUrl = new URL(
   '../../packages/db/prisma/migrations/20260709_schedule_solve_persisted_inputs.sql',
   import.meta.url,
 );
+const availabilityExceptionsMigrationUrl = new URL(
+  '../../packages/db/prisma/migrations/20260818_staff_availability_exceptions.sql',
+  import.meta.url,
+);
+const prismaSchemaUrl = new URL('../../packages/db/prisma/schema.prisma', import.meta.url);
+const migrationReadmeUrl = new URL('../../packages/db/prisma/migrations/README.md', import.meta.url);
 
 test('historical raw replay accepts supported overnight availability', async () => {
   const sql = await readFile(persistedInputsMigrationUrl, 'utf8');
@@ -45,4 +51,27 @@ test('staff scheduling inputs remain tenant-isolated and relation-bound', async 
   assert.match(sql, /StaffAvailability_userId_tenantId_fkey/);
   assert.match(sql, /StaffAvailability_locationId_tenantId_fkey/);
   assert.match(sql, /StaffSkill_userId_tenantId_fkey/);
+});
+
+test('dated availability exceptions are date-bound, tenant-isolated, and indexed by scope', async () => {
+  const [sql, schema, readme] = await Promise.all([
+    readFile(availabilityExceptionsMigrationUrl, 'utf8'),
+    readFile(prismaSchemaUrl, 'utf8'),
+    readFile(migrationReadmeUrl, 'utf8'),
+  ]);
+
+  assert.match(schema, /enum StaffAvailabilityExceptionKind\s*{\s*AVAILABLE\s*UNAVAILABLE\s*}/);
+  assert.match(schema, /model StaffAvailabilityException\s*{[\s\S]*localDate\s+DateTime\s+@db\.Date/);
+  assert.match(schema, /model StaffAvailabilityException\s*{[\s\S]*@@index\(\[tenantId, userId, localDate, startTimeMinutes\]\)/);
+  assert.match(schema, /model StaffAvailabilityException\s*{[\s\S]*@@index\(\[tenantId, locationId, localDate, startTimeMinutes\]\)/);
+
+  assert.match(sql, /"localDate" BETWEEN DATE '1970-01-01' AND DATE '2100-12-31'/);
+  assert.match(sql, /"startTimeMinutes" BETWEEN 0 AND 1439/);
+  assert.match(sql, /"endTimeMinutes" BETWEEN 1 AND 1440/);
+  assert.match(sql, /"startTimeMinutes" < "endTimeMinutes"/);
+  assert.match(sql, /COALESCE\("locationId", ''\)/);
+  assert.match(sql, /ALTER TABLE "StaffAvailabilityException" ENABLE ROW LEVEL SECURITY/);
+  assert.match(sql, /ALTER TABLE "StaffAvailabilityException" FORCE ROW LEVEL SECURITY/);
+  assert.match(sql, /CREATE POLICY staff_availability_exception_isolation_policy[\s\S]*"tenantId" = \(SELECT get_current_tenant\(\)\)[\s\S]*WITH CHECK/);
+  assert.match(readme, /20260818_staff_availability_exceptions\.sql/);
 });

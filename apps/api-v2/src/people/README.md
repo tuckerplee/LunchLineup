@@ -12,6 +12,6 @@ This folder owns the native API-02 People surface: tenant staff directory and pr
 - `identifier-translation.test.ts`: request, response, path, and fail-closed tests for that translation seam.
 - `invitation-outbox.ts`: encrypted durable invitation-command producer, retry/reissue state, and delivery response projection.
 - `invitation-outbox.test.ts`: encryption and configuration fail-closed tests for invitation command production.
-- `people.service.ts`: native People resource orchestration, public serialization, scheduling-profile persistence, access-role and staff-deactivation lifecycle, and PIN flows.
-- `people.service.test.ts`: public-identifier, catalog, cursor, and resolver service tests.
-- `routes.ts`: typed Fastify routes, HTTP-level permission checks, CSRF, and MFA boundaries for native People operations.
+- `people.service.ts`: native People resource orchestration, public serialization, atomic recurring and local-date availability-exception persistence, exact affected-draft invalidation, access-role and staff-deactivation lifecycle, and PIN flows.
+- `people.service.test.ts`: public-identifier, catalog, cursor, resolver, dated-exception mapping, atomic replacement/exact-draft invalidation, and local-date/time-boundary validation tests.
+- `routes.ts`: typed Fastify routes, HTTP-level permission checks, CSRF, and MFA boundaries for native People operations, including protected scheduling-profile exception writes.

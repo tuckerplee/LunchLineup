@@ -1755,30 +1755,43 @@ const server = http.createServer(async (req, res) => {
         sendJson(res, 404, { message: 'User not found.' });
         return;
       }
-      const profile = state.schedulingProfiles.get(staffMember.id) ?? { skills: [], availability: [] };
+      const storedProfile = state.schedulingProfiles.get(staffMember.id);
+      const profile = {
+        skills: storedProfile?.skills ?? [],
+        availability: storedProfile?.availability ?? [],
+        availabilityExceptions: storedProfile?.availabilityExceptions ?? [],
+      };
       sendJson(res, 200, {
         user: { id: staffMember.id, name: staffMember.name },
         ...profile,
-        availabilityConfigured: profile.availability.length > 0,
+        availabilityConfigured: profile.availability.length > 0
+          || profile.availabilityExceptions.some((entry) => entry.kind === 'AVAILABLE'),
       });
       return;
     }
     if (schedulingProfileMatch && req.method === 'PUT') {
       const staffMember = state.staff.find((candidate) => candidate.id === schedulingProfileMatch[1]);
       const body = await readBody(req);
-      if (!staffMember || !Array.isArray(body.skills) || !Array.isArray(body.availability)) {
+      if (
+        !staffMember
+        || !Array.isArray(body.skills)
+        || !Array.isArray(body.availability)
+        || !Array.isArray(body.availabilityExceptions)
+      ) {
         sendJson(res, 400, { message: 'Invalid scheduling profile.' });
         return;
       }
       const profile = {
         skills: [...new Set(body.skills.map((skill) => String(skill).trim().replace(/\s+/g, ' ').toLowerCase()))].sort(),
         availability: body.availability,
+        availabilityExceptions: body.availabilityExceptions,
       };
       state.schedulingProfiles.set(staffMember.id, profile);
       sendJson(res, 200, {
         user: { id: staffMember.id },
         ...profile,
-        availabilityConfigured: profile.availability.length > 0,
+        availabilityConfigured: profile.availability.length > 0
+          || profile.availabilityExceptions.some((entry) => entry.kind === 'AVAILABLE'),
       });
       return;
     }

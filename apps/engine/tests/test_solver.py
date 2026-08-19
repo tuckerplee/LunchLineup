@@ -472,6 +472,7 @@ class TestConstraintSolver:
 
         assert self.solver._is_available(
             availability,
+            None,
             "alice",
             datetime(2026, 3, 9, 22, tzinfo=time_zone),
             datetime(2026, 3, 9, 22, tzinfo=time_zone),
@@ -479,6 +480,7 @@ class TestConstraintSolver:
         ) is True
         assert self.solver._is_available(
             availability,
+            None,
             "alice",
             datetime(2026, 3, 9, 22, tzinfo=time_zone),
             datetime(2026, 3, 9, 22, tzinfo=time_zone),
@@ -493,10 +495,66 @@ class TestConstraintSolver:
 
         assert self.solver._is_available(
             availability,
+            None,
             "alice",
             datetime(2026, 10, 31, 22, tzinfo=time_zone),
             datetime(2026, 10, 31, 22, tzinfo=time_zone),
             datetime(2026, 11, 1, 2, tzinfo=time_zone),
+        ) is True
+
+    def test_dated_availability_replaces_recurring_and_time_off_wins(self):
+        time_zone = ZoneInfo("America/Los_Angeles")
+        availability = self.solver._normalize_availability({
+            "alice": [{"day_of_week": "Tuesday", "start_time": "09:00", "end_time": "17:00"}],
+        }, ["alice"])
+        exceptions = self.solver._normalize_availability_exceptions({
+            "alice": [
+                {
+                    "local_date": "2026-03-10",
+                    "kind": "AVAILABLE",
+                    "start_time_minutes": 12 * 60,
+                    "end_time_minutes": 20 * 60,
+                },
+                {
+                    "local_date": "2026-03-10",
+                    "kind": "UNAVAILABLE",
+                    "start_time_minutes": 15 * 60,
+                    "end_time_minutes": 16 * 60,
+                },
+            ],
+        }, ["alice"])
+
+        assert self.solver._is_available(
+            availability,
+            exceptions,
+            "alice",
+            datetime(2026, 3, 10, 12, tzinfo=time_zone),
+            datetime(2026, 3, 10, 12, tzinfo=time_zone),
+            datetime(2026, 3, 10, 15, tzinfo=time_zone),
+        ) is True
+        assert self.solver._is_available(
+            self.solver._normalize_availability({"alice": []}, ["alice"]),
+            exceptions,
+            "alice",
+            datetime(2026, 3, 10, 12, tzinfo=time_zone),
+            datetime(2026, 3, 10, 12, tzinfo=time_zone),
+            datetime(2026, 3, 10, 15, tzinfo=time_zone),
+        ) is True
+        assert self.solver._is_available(
+            availability,
+            exceptions,
+            "alice",
+            datetime(2026, 3, 10, 12, tzinfo=time_zone),
+            datetime(2026, 3, 10, 12, tzinfo=time_zone),
+            datetime(2026, 3, 10, 17, tzinfo=time_zone),
+        ) is False
+        assert self.solver._is_available(
+            availability,
+            exceptions,
+            "alice",
+            datetime(2026, 3, 17, 9, tzinfo=time_zone),
+            datetime(2026, 3, 17, 9, tzinfo=time_zone),
+            datetime(2026, 3, 17, 17, tzinfo=time_zone),
         ) is True
 
     def test_skill_requirements_assign_qualified_staff(self):

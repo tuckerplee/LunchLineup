@@ -21,6 +21,7 @@ MAX_DEMAND_WINDOWS = 500
 STAFF_ID_RE = re.compile(r"^[A-Za-z0-9._:@+-]{1,128}$")
 ALLOWED_CONSTRAINTS = {
     "availability",
+    "availability_exceptions",
     "break_rules",
     "daily_demand",
     "demand_windows",
@@ -235,6 +236,9 @@ class ConstraintSolver:
                 raise ValueError("max_hours_per_week does not allow one full shift")
             break_calculator = BreakCalculator(constraints.get("break_rules") or self.config.get("break_rules"))
             availability = self._normalize_availability(constraints.get("availability"), staff_ids)
+            availability_exceptions = self._normalize_availability_exceptions(
+                constraints.get("availability_exceptions"), staff_ids,
+            )
             daily_demand = self._normalize_daily_demand(constraints.get("daily_demand"))
             staff_skills = self._normalize_staff_skills(constraints.get("staff_skills"), staff_ids)
             existing_weekly_minutes = self._normalize_existing_weekly_minutes(
@@ -260,6 +264,7 @@ class ConstraintSolver:
                 demand_windows,
                 schedule_time_zone,
                 availability,
+                availability_exceptions,
                 staff_skills,
                 existing_weekly_minutes,
                 existing_shift_intervals,
@@ -277,6 +282,7 @@ class ConstraintSolver:
             staff_skills,
             skill_requirements,
             availability,
+            availability_exceptions,
             shift_duration_hours,
             break_calculator,
         )
@@ -309,8 +315,9 @@ class ConstraintSolver:
             shift_start = current_date.replace(hour=9, minute=0, second=0, microsecond=0)
             shift_end = shift_start + timedelta(hours=shift_duration_hours)
             for staff_id in staff_ids:
-                if availability is not None and not self._is_available(
+                if (availability is not None or availability_exceptions is not None) and not self._is_available(
                     availability,
+                    availability_exceptions,
                     staff_id,
                     current_date,
                     shift_start,
@@ -567,6 +574,7 @@ class ConstraintSolver:
         demand_windows: List[Dict[str, Any]],
         schedule_time_zone: ZoneInfo,
         availability: Optional[Dict[str, List[Dict[str, Any]]]],
+        availability_exceptions: Optional[Dict[str, Dict[str, List[Dict[str, Any]]]]],
         staff_skills: Dict[str, set[str]],
         existing_weekly_minutes: Dict[str, Dict[str, int]],
         existing_shift_intervals: Dict[str, List[tuple[datetime, datetime]]],
@@ -581,8 +589,9 @@ class ConstraintSolver:
             available_staff = [
                 staff_id
                 for staff_id in staff_ids
-                if availability is None or self._is_available(
+                if (availability is None and availability_exceptions is None) or self._is_available(
                     availability,
+                    availability_exceptions,
                     staff_id,
                     local_start,
                     local_start,
@@ -638,8 +647,9 @@ class ConstraintSolver:
             local_start = slot["start_time"].astimezone(schedule_time_zone)
             local_end = slot["end_time"].astimezone(schedule_time_zone)
             for staff_id in staff_ids:
-                if availability is not None and not self._is_available(
+                if (availability is not None or availability_exceptions is not None) and not self._is_available(
                     availability,
+                    availability_exceptions,
                     staff_id,
                     local_start,
                     local_start,
@@ -1180,6 +1190,7 @@ class ConstraintSolver:
         staff_skills: Dict[str, set[str]],
         skill_requirements: Dict[str, Dict[str, int]],
         availability: Optional[Dict[str, List[Dict[str, Any]]]],
+        availability_exceptions: Optional[Dict[str, Dict[str, List[Dict[str, Any]]]]],
         shift_duration_hours: float,
         break_calculator: BreakCalculator,
     ) -> List[Dict[str, Any]]:
@@ -1191,7 +1202,9 @@ class ConstraintSolver:
             available_staff = [
                 staff_id
                 for staff_id in staff_ids
-                if availability is None or self._is_available(availability, staff_id, current_date, shift_start, shift_end)
+                if (availability is None and availability_exceptions is None) or self._is_available(
+                    availability, availability_exceptions, staff_id, current_date, shift_start, shift_end,
+                )
             ]
             relief = 1 if break_calculator.requires_relief(shift_start, shift_end) else 0
             coverage_required = self._coverage_for_day(daily_demand, current_date, min_coverage)
@@ -1255,6 +1268,66 @@ class ConstraintSolver:
                     raise ValueError("availability start_time and end_time cannot be equal")
         return normalized
 
+    def _normalize_availability_exceptions(
+        self,
+        availability_exceptions: Optional[Any],
+        staff_ids: Iterable[str],
+    ) -> Optional[Dict[str, Dict[str, List[Dict[str, Any]]]]]:
+        if availability_exceptions is None:
+            return None
+        if not isinstance(availability_exceptions, dict):
+            raise ValueError("availability_exceptions must be an object keyed by staff id")
+
+        staff_id_set = set(staff_ids)
+        normalized: Dict[str, Dict[str, List[Dict[str, Any]]]] = {}
+        for staff_id, rules in availability_exceptions.items():
+            if staff_id not in staff_id_set:
+                raise ValueError("availability_exceptions includes a staff id outside staff_ids")
+            if not isinstance(rules, list):
+                raise ValueError("availability_exceptions rules must be lists")
+            if len(rules) > 366:
+                raise ValueError("availability_exceptions cannot exceed 366 rules per staff member")
+            by_date: Dict[str, List[Dict[str, Any]]] = {}
+            seen = set()
+            for rule in rules:
+                if not isinstance(rule, dict):
+                    raise ValueError("availability exception rule must be an object")
+                local_date = rule.get("local_date")
+                try:
+                    parsed_date = date.fromisoformat(local_date) if isinstance(local_date, str) else None
+                except ValueError as exc:
+                    raise ValueError("availability exception local_date must use YYYY-MM-DD") from exc
+                if parsed_date is None or parsed_date.year < 1970 or parsed_date.year > 2100:
+                    raise ValueError("availability exception local_date is outside the supported range")
+                kind = rule.get("kind")
+                if kind not in {"AVAILABLE", "UNAVAILABLE"}:
+                    raise ValueError("availability exception kind must be AVAILABLE or UNAVAILABLE")
+                start_minute = rule.get("start_time_minutes")
+                end_minute = rule.get("end_time_minutes")
+                if (
+                    isinstance(start_minute, bool)
+                    or not isinstance(start_minute, int)
+                    or isinstance(end_minute, bool)
+                    or not isinstance(end_minute, int)
+                    or start_minute < 0
+                    or start_minute >= 1440
+                    or end_minute < 1
+                    or end_minute > 1440
+                    or start_minute >= end_minute
+                ):
+                    raise ValueError("availability exception time window is invalid")
+                key = (local_date, kind, start_minute, end_minute)
+                if key in seen:
+                    raise ValueError("availability_exceptions contains duplicate rules")
+                seen.add(key)
+                by_date.setdefault(local_date, []).append({
+                    "kind": kind,
+                    "start_minute": start_minute,
+                    "end_minute": end_minute,
+                })
+            normalized[staff_id] = by_date
+        return normalized
+
     def _parse_day(self, value: Any) -> int:
         if isinstance(value, int) and 0 <= value <= 6:
             return value
@@ -1283,22 +1356,57 @@ class ConstraintSolver:
 
     def _is_available(
         self,
-        availability: Dict[str, List[Dict[str, Any]]],
+        availability: Optional[Dict[str, List[Dict[str, Any]]]],
+        availability_exceptions: Optional[Dict[str, Dict[str, List[Dict[str, Any]]]]],
         staff_id: str,
         current_date: datetime,
         shift_start: datetime,
         shift_end: datetime,
     ) -> bool:
-        rules = availability.get(staff_id, [])
-        if staff_id not in availability:
-            return True
-        if not rules:
-            return False
+        rules = availability.get(staff_id, []) if availability is not None else []
+        recurring_configured = availability is not None and staff_id in availability
+        exceptions_by_date = availability_exceptions.get(staff_id, {}) if availability_exceptions else {}
         del current_date
-        for weekday, start_minute, end_minute in self._availability_segments(shift_start, shift_end):
-            if not self._availability_rules_cover(rules, weekday, start_minute, end_minute):
+        for local_date, weekday, start_minute, end_minute in self._availability_segments(shift_start, shift_end):
+            dated = exceptions_by_date.get(local_date, [])
+            available = [entry for entry in dated if entry["kind"] == "AVAILABLE"]
+            if available:
+                base_covered = self._minute_windows_cover(available, start_minute, end_minute)
+            elif recurring_configured:
+                base_covered = bool(rules) and self._availability_rules_cover(
+                    rules, weekday, start_minute, end_minute,
+                )
+            else:
+                base_covered = True
+            if not base_covered:
+                return False
+            if any(
+                entry["kind"] == "UNAVAILABLE"
+                and entry["start_minute"] < end_minute
+                and entry["end_minute"] > start_minute
+                for entry in dated
+            ):
                 return False
         return True
+
+    def _minute_windows_cover(
+        self,
+        rules: List[Dict[str, Any]],
+        start_minute: int,
+        end_minute: int,
+    ) -> bool:
+        covered_until = start_minute
+        for rule in sorted(rules, key=lambda entry: (entry["start_minute"], entry["end_minute"])):
+            interval_start = rule["start_minute"]
+            interval_end = rule["end_minute"]
+            if interval_end <= covered_until:
+                continue
+            if interval_start > covered_until:
+                return False
+            covered_until = interval_end
+            if covered_until >= end_minute:
+                return True
+        return False
 
     def _availability_rules_cover(
         self,
@@ -1336,12 +1444,13 @@ class ConstraintSolver:
         self,
         shift_start: datetime,
         shift_end: datetime,
-    ) -> Iterable[tuple[int, int, int]]:
+    ) -> Iterable[tuple[str, int, int, int]]:
         cursor = shift_start
         while cursor < shift_end:
             next_midnight = datetime.combine(cursor.date() + timedelta(days=1), time.min, tzinfo=cursor.tzinfo)
             segment_end = min(shift_end, next_midnight)
             yield (
+                cursor.date().isoformat(),
                 cursor.weekday(),
                 cursor.hour * 60 + cursor.minute,
                 1440 if segment_end == next_midnight else segment_end.hour * 60 + segment_end.minute,

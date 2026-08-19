@@ -132,11 +132,11 @@ async function harness(identityResponse: SessionIdentity = identity) {
     get: vi.fn(async () => staffMember),
     schedulingProfile: vi.fn(async () => ({
       user: { id: staffMember.id, name: staffMember.name },
-      skills: [], availability: [], availabilityConfigured: false,
+      skills: [], availability: [], availabilityExceptions: [], availabilityConfigured: false,
     })),
     replaceSchedulingProfile: vi.fn(async () => ({
       user: { id: staffMember.id, name: staffMember.name },
-      skills: [], availability: [], availabilityConfigured: false,
+      skills: [], availability: [], availabilityExceptions: [], availabilityConfigured: false,
     })),
     invite: vi.fn(async () => ({
       ...staffMember,
@@ -476,6 +476,19 @@ describe('API v2 HTTP contract', () => {
     expect(browserSessionProperties.roles).toBeUndefined();
     expect(document.paths['/v2/users/{userId}/scheduling-profile'].put.operationId)
       .toBe('updateStaffSchedulingProfile');
+    const schedulingProfileExceptionSchema = document.paths['/v2/users/{userId}/scheduling-profile'].put
+      .requestBody.content['application/json'].schema.properties.availabilityExceptions.items;
+    expect(schedulingProfileExceptionSchema.required).toEqual(expect.arrayContaining([
+      'locationId',
+      'date',
+      'kind',
+      'allDay',
+      'startTimeMinutes',
+      'endTimeMinutes',
+    ]));
+    expect(schedulingProfileExceptionSchema.properties.date.pattern).toBe('^\\d{4}-\\d{2}-\\d{2}$');
+    expect(JSON.stringify(schedulingProfileExceptionSchema.properties.kind)).toContain('AVAILABLE');
+    expect(JSON.stringify(schedulingProfileExceptionSchema.properties.kind)).toContain('UNAVAILABLE');
     expect(document.paths['/v2/schedules'].get.operationId).toBe('listScheduleSummaries');
     expect(document.paths['/v2/shifts'].get.operationId).toBe('listShiftSummaries');
     expect(document.paths['/v2/shifts/staff-roster'].get.operationId).toBe('listStaffRoster');
@@ -609,6 +622,59 @@ describe('API v2 HTTP contract', () => {
     expect(response.headers['x-lunchlineup-compatibility-owner']).toBeUndefined();
     expect(people.list).toHaveBeenCalledWith(identity, { limit: '1' });
     expect(retainedApplication).not.toHaveBeenCalled();
+  });
+
+  it('forwards dated availability through the protected native People profile contract', async () => {
+    const { app, people, retainedApplication } = await harness();
+    const payload = {
+      skills: ['expo'],
+      availability: [],
+      availabilityExceptions: [{
+        locationId: '34aa4812-63f5-4e5c-8b3a-06b564987a1f',
+        date: '2026-08-21',
+        kind: 'UNAVAILABLE',
+        allDay: true,
+        startTimeMinutes: 0,
+        endTimeMinutes: 1440,
+      }],
+    };
+    const response = await app.inject({
+      method: 'PUT',
+      url: '/v2/users/f6776d21-bb21-4c35-a6ed-5da8df5ed238/scheduling-profile',
+      headers: {
+        cookie: 'access_token=test; csrf_token=abcdefghijklmnop',
+        origin: 'https://beta.lunchlineup.com',
+        'x-csrf-token': 'abcdefghijklmnop',
+        'content-type': 'application/json',
+      },
+      payload,
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(people.replaceSchedulingProfile).toHaveBeenCalledWith(identity, identity.publicUserId, payload);
+    expect(retainedApplication).not.toHaveBeenCalled();
+  });
+
+  it('requires live users:write authority before changing dated availability', async () => {
+    const deniedIdentity = {
+      ...identity,
+      permissions: identity.permissions.filter((permission) => permission !== 'users:write'),
+    };
+    const { app, people } = await harness(deniedIdentity);
+    const response = await app.inject({
+      method: 'PUT',
+      url: '/v2/users/f6776d21-bb21-4c35-a6ed-5da8df5ed238/scheduling-profile',
+      headers: {
+        cookie: 'access_token=test; csrf_token=abcdefghijklmnop',
+        origin: 'https://beta.lunchlineup.com',
+        'x-csrf-token': 'abcdefghijklmnop',
+        'content-type': 'application/json',
+      },
+      payload: { skills: [], availability: [], availabilityExceptions: [] },
+    });
+
+    expect(response.statusCode).toBe(403);
+    expect(people.replaceSchedulingProfile).not.toHaveBeenCalled();
   });
 
   it('serves operations read models with public identifiers and no retained hop', async () => {

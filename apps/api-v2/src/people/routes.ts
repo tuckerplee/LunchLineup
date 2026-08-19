@@ -215,7 +215,7 @@ export async function registerPeopleRoutes(
     schema: {
       operationId: 'getStaffSchedulingProfile',
       summary: 'Read one staff scheduling profile',
-      description: 'Reads one active schedulable staff profile with public location UUID references.',
+      description: 'Reads recurring availability plus tenant-scoped, local-date availability and time-off exceptions using public location UUID references.',
       tags: ['People'],
       params: StaffPathSchema,
       response: { 200: StaffSchedulingProfileSchema, ...PeopleRouteProblemResponses },
@@ -235,7 +235,7 @@ export async function registerPeopleRoutes(
     schema: {
       operationId: 'updateStaffSchedulingProfile',
       summary: 'Replace one staff scheduling profile',
-      description: 'Atomically replaces staff skills and availability and invalidates only affected draft schedules.',
+      description: 'Atomically replaces staff skills, recurring availability and local-date exceptions, then invalidates only affected draft schedules.',
       tags: ['People'],
       params: StaffPathSchema,
       body: StaffSchedulingProfileRequestSchema,

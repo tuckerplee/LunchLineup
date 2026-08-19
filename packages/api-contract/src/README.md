@@ -16,7 +16,7 @@
 - `operations.ts`: native operational read-model and lunch/break planning schemas.
 - `payroll.ts`: native payroll policy, period, evidence, export, and reconciliation schemas.
 - `payroll.test.ts`: payroll public-ID and strict request-contract regressions.
-- `people.ts`: native tenant people-directory and employment-lifecycle schemas.
+- `people.ts`: native tenant people-directory, employment-lifecycle, recurring scheduling-profile, and strict local-date availability/time-off exception schemas.
 - `scheduling.ts`: scheduling schemas, request/response contracts, and RFC 9457 Problem Details.
 - `scheduling.test.ts`: focused schema and generated-client contract tests.
 - `settings.ts`: native workspace-settings aggregate, update schemas, and Problem Details responses.

@@ -7,7 +7,7 @@
 - `config.ts`: validated runtime configuration.
 - `main.ts`: bounded process startup and shutdown.
 - `server.ts`: Fastify assembly, OpenAPI, health, and module registration.
-- `server.test.ts`: HTTP contract, OpenAPI, route-level security, and machine-readable scheduling conflict tests.
+- `server.test.ts`: HTTP contract, OpenAPI, route-level security, machine-readable scheduling conflicts, and MFA-protected dated staff availability/time-off writes.
 - `application/`: explicit non-scheduling browser API routes and their API-02 compatibility ownership.
 - `locations/`: native API-02 tenant-location lifecycle and public-ID boundary.
 - `notifications/`: native tenant notification feed and read-state boundary with opaque public IDs.

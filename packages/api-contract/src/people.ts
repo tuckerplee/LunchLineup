@@ -1,5 +1,5 @@
 import { Static, Type } from '@sinclair/typebox';
-import { InstantSchema, ProblemDetailsSchema, UuidSchema } from './scheduling';
+import { InstantSchema, LocalDateSchema, ProblemDetailsSchema, UuidSchema } from './scheduling';
 
 export const StaffLegacyRoleSchema = Type.Union([
   Type.Literal('SUPER_ADMIN'),
@@ -115,6 +115,22 @@ export const StaffAvailabilityWindowSchema = Type.Object({
   endTimeMinutes: Type.Integer({ minimum: 0, maximum: 1439 }),
 });
 
+export const StaffAvailabilityExceptionKindSchema = Type.Union([
+  Type.Literal('AVAILABLE'),
+  Type.Literal('UNAVAILABLE'),
+]);
+
+export const StaffAvailabilityExceptionSchema = Type.Object({
+  locationId: Type.Union([UuidSchema, Type.Null()]),
+  date: LocalDateSchema,
+  kind: StaffAvailabilityExceptionKindSchema,
+  allDay: Type.Boolean(),
+  startTimeMinutes: Type.Integer({ minimum: 0, maximum: 1439 }),
+  endTimeMinutes: Type.Integer({ minimum: 1, maximum: 1440 }),
+});
+
+export type StaffAvailabilityException = Static<typeof StaffAvailabilityExceptionSchema>;
+
 export const StaffSchedulingProfileSchema = Type.Object({
   user: Type.Object({
     id: UuidSchema,
@@ -122,6 +138,7 @@ export const StaffSchedulingProfileSchema = Type.Object({
   }),
   skills: Type.Array(Type.String({ minLength: 1, maxLength: 64 }), { maxItems: 50 }),
   availability: Type.Array(StaffAvailabilityWindowSchema, { maxItems: 21 }),
+  availabilityExceptions: Type.Array(StaffAvailabilityExceptionSchema, { maxItems: 366 }),
   availabilityConfigured: Type.Boolean(),
 });
 
@@ -130,6 +147,9 @@ export type StaffSchedulingProfile = Static<typeof StaffSchedulingProfileSchema>
 export const StaffSchedulingProfileRequestSchema = Type.Object({
   skills: Type.Array(Type.String({ minLength: 1, maxLength: 64 }), { maxItems: 50 }),
   availability: Type.Array(StaffAvailabilityWindowSchema, { maxItems: 21 }),
+  // Optional during the additive rollout so an older browser replacing weekly
+  // availability cannot silently erase dated exceptions it never loaded.
+  availabilityExceptions: Type.Optional(Type.Array(StaffAvailabilityExceptionSchema, { maxItems: 366 })),
 }, { additionalProperties: false });
 
 export type StaffSchedulingProfileRequest = Static<typeof StaffSchedulingProfileRequestSchema>;

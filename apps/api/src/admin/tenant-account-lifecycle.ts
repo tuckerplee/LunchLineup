@@ -385,6 +385,7 @@ export async function purgeTenantApplicationData(
         scheduleSolveJobs: count(await tx.scheduleSolveJob.deleteMany({ where: { tenantId: tenant.id } })),
         scheduleDemandWindows: count(await tx.scheduleDemandWindow.deleteMany({ where: { tenantId: tenant.id } })),
         shifts: count(await tx.shift.deleteMany({ where: { tenantId: tenant.id } })),
+        staffAvailabilityExceptions: count(await tx.staffAvailabilityException.deleteMany({ where: { tenantId: tenant.id } })),
         staffAvailabilities: count(await tx.staffAvailability.deleteMany({ where: { tenantId: tenant.id } })),
         staffSkills: count(await tx.staffSkill.deleteMany({ where: { tenantId: tenant.id } })),
         schedules: count(await tx.schedule.deleteMany({ where: { tenantId: tenant.id } })),
@@ -471,6 +472,9 @@ export async function purgeTenantOwnedRecords(tx: Prisma.TransactionClient, tena
             where: { tenantId },
         })),
         shifts: count(await tx.shift.deleteMany({
+            where: { tenantId },
+        })),
+        staffAvailabilityExceptions: count(await tx.staffAvailabilityException.deleteMany({
             where: { tenantId },
         })),
         staffAvailabilities: count(await tx.staffAvailability.deleteMany({

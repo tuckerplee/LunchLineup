@@ -10,7 +10,7 @@ Tenant staff and role-management UI.
 - `invitation-delivery.ts`: strict public invitation-delivery response parsing, PII-free view states, terminal retry/reissue policy, date labels, and stable recovery-key reuse.
 - `README.md`: this staff workspace folder guide.
 - `page.tsx`: permission-gated server route that supplies separate invitation, destructive-administration, role-reading, role-assignment, and role-management capabilities.
-- `StaffSchedulingProfileEditor.tsx`: manager-facing scheduling-profile editor that suggests a visible username or email identifier for PDF import, with fail-closed hydration, the existing atomic profile save path, bounded location labels, preserved unavailable assignments, overnight windows, and manual editing.
+- `StaffSchedulingProfileEditor.tsx`: manager-facing scheduling-profile editor that suggests a visible username or email identifier for PDF import, with fail-closed hydration, one atomic profile save path, bounded location labels, preserved unavailable assignments, recurring overnight windows, and location-aware dated availability/time-off editing with explicit precedence copy.
 - `StaffWorkspace.tsx`: responsive staff directory with paginated invitation delivery status, bounded status-request concurrency, stable idempotent retry/reissue attempts, a mobile-safe invitation form/table, role catalog/profile management, separate assignment controls, and admin-only PIN reset/removal confirmations.
 - `use-invitation-delivery.ts`: invitation status hydration, bounded active-state polling, manual refresh, duplicate-click exclusion, and session-stable idempotent retry/dead-letter reissue orchestration.
 - `role-deletion-confirmation.ts`: exact-name custom-role deletion contract with assignment-count blocking.

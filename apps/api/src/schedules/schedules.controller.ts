@@ -40,6 +40,7 @@ import {
     parseOptionalBoundedDate,
 } from "../common/bounded-pagination";
 import {
+    dateValueInTimeZone,
     formatDateInTimeZone,
     localDateBoundaryUtc,
     normalizeTimeZone,
@@ -77,10 +78,12 @@ import {
     type SchedulePublishSettlement,
 } from "./schedule-publish-settlement";
 import {
+    assertAvailabilityException,
     assertAvailabilityWindow,
     availabilityDayName,
     availabilityTime,
-    availabilityWindowsCoverLocalSegment,
+    availabilityWithExceptionsCoversLocalSegment,
+    type PersistedAvailabilityException,
     type PersistedAvailabilityWindow,
 } from "./schedule-availability";
 import {
@@ -218,14 +221,26 @@ type StaffAvailabilityPayload = {
     end_time: string;
 };
 
+type StaffAvailabilityExceptionPayload = {
+    local_date: string;
+    kind: 'AVAILABLE' | 'UNAVAILABLE';
+    start_time_minutes: number;
+    end_time_minutes: number;
+};
+
 type StaffSnapshot = {
     id: string;
     skills: string[];
     availabilityConfigured: boolean;
     availability: StaffAvailabilityPayload[];
+    availabilityExceptions: StaffAvailabilityExceptionPayload[];
 };
 
 type AvailabilityRow = PersistedAvailabilityWindow & {
+    userId: string;
+};
+
+type AvailabilityExceptionRow = PersistedAvailabilityException & {
     userId: string;
 };
 
@@ -259,6 +274,7 @@ type PersistedScheduleInputs = {
     staffSnapshot: StaffSnapshot[];
     demandSnapshot: DemandSnapshot[];
     availability: Record<string, StaffAvailabilityPayload[]>;
+    availabilityExceptions: Record<string, StaffAvailabilityExceptionPayload[]>;
     availabilityConfigured: Record<string, boolean>;
     staffSkills: Record<string, string[]>;
     dailyDemand: Record<string, number>;
@@ -330,6 +346,7 @@ const AUTO_SCHEDULE_CONSTRAINTS = new Set([
 const DATE_ONLY_RE = /^(\d{4})-(\d{2})-(\d{2})$/;
 const UTC_INSTANT_RE = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2})(?:\.\d{1,3})?)?Z$/;
 const MAX_AUTO_SCHEDULE_AVAILABILITY_RULES_PER_STAFF = 21;
+const MAX_AUTO_SCHEDULE_AVAILABILITY_EXCEPTIONS_PER_STAFF = 366;
 const MAX_AUTO_SCHEDULE_DEMAND_WINDOWS = 500;
 const MAX_AUTO_SCHEDULE_EXISTING_SHIFTS = 10_000;
 const DEFAULT_MAX_HOURS_PER_WEEK = 40;
@@ -907,6 +924,7 @@ export class SchedulesController implements OnModuleInit, OnModuleDestroy {
                 staff_ids: staffIds,
                 constraints,
                 availability: persistedInputs.availability,
+                availability_exceptions: persistedInputs.availabilityExceptions,
                 availability_configured: persistedInputs.availabilityConfigured,
                 staff_skills: persistedInputs.staffSkills,
                 daily_demand: persistedInputs.dailyDemand,
@@ -1042,12 +1060,14 @@ export class SchedulesController implements OnModuleInit, OnModuleDestroy {
                 skills: [],
                 availabilityConfigured: false,
                 availability: [],
+                availabilityExceptions: [],
             }]));
         if (staffIds.length === 0) {
             return {
                 staffSnapshot: [],
                 demandSnapshot: [],
                 availability: {},
+                availabilityExceptions: {},
                 availabilityConfigured: {},
                 staffSkills: {},
                 dailyDemand: {},
@@ -1079,6 +1099,45 @@ export class SchedulesController implements OnModuleInit, OnModuleDestroy {
                 end_time: availabilityTime(row.endTimeMinutes, "availability endTimeMinutes"),
             });
             staff.availabilityConfigured = true;
+        }
+        const firstLocalDate = dateValueInTimeZone(scheduleStart, timeZone);
+        const finalLocalDate = dateValueInTimeZone(new Date(scheduleEnd.getTime() - 1), timeZone);
+        const availabilityExceptionRows = await tx.$queryRaw<AvailabilityExceptionRow[]>`
+            SELECT
+              "userId",
+              to_char("localDate", 'YYYY-MM-DD') AS "localDate",
+              "kind"::text AS "kind",
+              "startTimeMinutes",
+              "endTimeMinutes"
+            FROM "StaffAvailabilityException"
+            WHERE "tenantId" = ${tenantId}
+              AND "userId" IN (${Prisma.join(staffIds)})
+              AND ("locationId" IS NULL OR "locationId" = ${locationId})
+              AND "localDate" BETWEEN ${firstLocalDate}::date AND ${finalLocalDate}::date
+            ORDER BY "userId" ASC, "localDate" ASC, "startTimeMinutes" ASC, "endTimeMinutes" ASC, "kind" ASC
+        `;
+        for (const row of availabilityExceptionRows) {
+            const staff = staffSnapshot.get(row.userId);
+            if (!staff)
+                continue;
+            const payload = {
+                local_date: row.localDate,
+                kind: row.kind,
+                start_time_minutes: row.startTimeMinutes,
+                end_time_minutes: row.endTimeMinutes,
+            };
+            if (staff.availabilityExceptions.some((entry) => (
+                entry.local_date === payload.local_date
+                && entry.kind === payload.kind
+                && entry.start_time_minutes === payload.start_time_minutes
+                && entry.end_time_minutes === payload.end_time_minutes
+            ))) continue;
+            if (staff.availabilityExceptions.length >= MAX_AUTO_SCHEDULE_AVAILABILITY_EXCEPTIONS_PER_STAFF) {
+                throw new BadRequestException("Dated availability exceptions cannot exceed 366 entries per staff member.");
+            }
+            assertAvailabilityException(row);
+            staff.availabilityExceptions.push(payload);
+            if (row.kind === 'AVAILABLE') staff.availabilityConfigured = true;
         }
         const skillRows = await tx.$queryRaw<StaffSkillRow[]>`
             SELECT "userId", "skill"
@@ -1172,12 +1231,14 @@ export class SchedulesController implements OnModuleInit, OnModuleDestroy {
         }
         const staff = Array.from(staffSnapshot.values());
         const availability = Object.fromEntries(staff.map((entry) => [entry.id, entry.availability]));
+        const availabilityExceptions = Object.fromEntries(staff.map((entry) => [entry.id, entry.availabilityExceptions]));
         const availabilityConfigured = Object.fromEntries(staff.map((entry) => [entry.id, entry.availabilityConfigured]));
         const staffSkills = Object.fromEntries(staff.map((entry) => [entry.id, entry.skills]));
         return {
             staffSnapshot: staff,
             demandSnapshot,
             availability,
+            availabilityExceptions,
             availabilityConfigured,
             staffSkills,
             dailyDemand,
@@ -1945,6 +2006,15 @@ export class SchedulesController implements OnModuleInit, OnModuleDestroy {
             .filter((userId): userId is string => Boolean(userId))));
         if (assignedUserIds.length === 0)
             return;
+        const localDates = shifts.flatMap((shift) => (
+            splitInstantRangeByLocalDay(shift.startTime, shift.endTime, timeZone)
+                .map((segment) => segment.localDate)
+        )).sort();
+        const firstLocalDate = localDates[0];
+        const finalLocalDate = localDates.at(-1);
+        if (!firstLocalDate || !finalLocalDate) {
+            throw new BadRequestException('Assigned shifts must contain valid local-time segments.');
+        }
         const availabilityRows = await tx.$queryRaw<AvailabilityRow[]>`
             SELECT "userId", "dayOfWeek", "startTimeMinutes", "endTimeMinutes"
             FROM "StaffAvailability"
@@ -1953,6 +2023,20 @@ export class SchedulesController implements OnModuleInit, OnModuleDestroy {
               AND ("locationId" IS NULL OR "locationId" = ${locationId})
             ORDER BY "userId" ASC, "dayOfWeek" ASC, "startTimeMinutes" ASC
         `;
+        const availabilityExceptionRows = await tx.$queryRaw<AvailabilityExceptionRow[]>`
+            SELECT
+              "userId",
+              to_char("localDate", 'YYYY-MM-DD') AS "localDate",
+              "kind"::text AS "kind",
+              "startTimeMinutes",
+              "endTimeMinutes"
+            FROM "StaffAvailabilityException"
+            WHERE "tenantId" = ${tenantId}
+              AND "userId" IN (${Prisma.join(assignedUserIds)})
+              AND ("locationId" IS NULL OR "locationId" = ${locationId})
+              AND "localDate" BETWEEN ${firstLocalDate}::date AND ${finalLocalDate}::date
+            ORDER BY "userId" ASC, "localDate" ASC, "startTimeMinutes" ASC, "endTimeMinutes" ASC, "kind" ASC
+        `;
         const availabilityByUser = new Map<string, PersistedAvailabilityWindow[]>();
         for (const row of availabilityRows) {
             assertAvailabilityWindow(row);
@@ -1960,17 +2044,39 @@ export class SchedulesController implements OnModuleInit, OnModuleDestroy {
             rows.push(row);
             availabilityByUser.set(row.userId, rows);
         }
+        const availabilityExceptionsByUser = new Map<string, PersistedAvailabilityException[]>();
+        for (const row of availabilityExceptionRows) {
+            assertAvailabilityException(row);
+            const rows = availabilityExceptionsByUser.get(row.userId) ?? [];
+            if (rows.length >= MAX_AUTO_SCHEDULE_AVAILABILITY_EXCEPTIONS_PER_STAFF) {
+                throw new BadRequestException('Dated availability exceptions cannot exceed 366 entries per staff member.');
+            }
+            rows.push(row);
+            availabilityExceptionsByUser.set(row.userId, rows);
+        }
         for (const shift of shifts) {
             if (!shift.userId)
                 continue;
-            const rows = availabilityByUser.get(shift.userId);
-            if (!rows?.length) {
-                throw new BadRequestException(`Shift ${shift.id} is assigned to staff with no applicable configured availability.`);
-            }
+            const rows = availabilityByUser.get(shift.userId) ?? [];
+            const exceptions = availabilityExceptionsByUser.get(shift.userId) ?? [];
             for (const segment of splitInstantRangeByLocalDay(shift.startTime, shift.endTime, timeZone)) {
-                const covered = availabilityWindowsCoverLocalSegment(rows, segment.weekday, segment.startMinutes, segment.endMinutes);
+                const dated = exceptions.filter((entry) => entry.localDate === segment.localDate);
+                if (!rows.length && !dated.some((entry) => entry.kind === 'AVAILABLE')) {
+                    throw new BadRequestException(`Shift ${shift.id} is assigned to staff with no applicable configured availability.`);
+                }
+                const covered = availabilityWithExceptionsCoversLocalSegment(
+                    rows,
+                    exceptions,
+                    segment.localDate,
+                    segment.weekday,
+                    segment.startMinutes,
+                    segment.endMinutes,
+                );
                 if (!covered) {
-                    throw new BadRequestException(`Shift ${shift.id} is outside configured staff availability.`);
+                    const datedConflict = dated.length > 0;
+                    throw new BadRequestException(datedConflict
+                        ? `Shift ${shift.id} conflicts with dated staff availability or time off.`
+                        : `Shift ${shift.id} is outside configured staff availability.`);
                 }
             }
         }

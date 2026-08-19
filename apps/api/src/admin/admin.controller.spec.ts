@@ -389,6 +389,7 @@ function buildTenantLifecyclePrisma() {
         },
         location: { findMany: vi.fn().mockResolvedValue([]) },
         user: { findMany: vi.fn().mockResolvedValue([]) },
+        staffAvailabilityException: { findMany: vi.fn().mockResolvedValue([]) },
         staffAvailability: { findMany: vi.fn().mockResolvedValue([]) },
         staffSkill: { findMany: vi.fn().mockResolvedValue([]) },
         schedule: { findMany: vi.fn().mockResolvedValue([]) },
@@ -510,6 +511,7 @@ function buildRetentionPrisma() {
         scheduleSolveJob: { deleteMany: deleteManyMock(17) },
         scheduleDemandWindow: { deleteMany: deleteManyMock(19) },
         shift: { deleteMany: deleteManyMock(5) },
+        staffAvailabilityException: { deleteMany: deleteManyMock(34) },
         staffAvailability: { deleteMany: deleteManyMock(20) },
         staffSkill: { deleteMany: deleteManyMock(21) },
         schedule: { deleteMany: deleteManyMock(6) },
@@ -1792,6 +1794,7 @@ describe('AdminController retained-record expiry', () => {
         expect(prisma.timeCard.deleteMany).toHaveBeenCalledWith({ where: { tenantId: 'tenant-expired' } });
         expect(prisma.scheduleSolveJob.deleteMany).toHaveBeenCalledWith({ where: { tenantId: 'tenant-expired' } });
         expect(prisma.scheduleDemandWindow.deleteMany).toHaveBeenCalledWith({ where: { tenantId: 'tenant-expired' } });
+        expect(prisma.staffAvailabilityException.deleteMany).toHaveBeenCalledWith({ where: { tenantId: 'tenant-expired' } });
         expect(prisma.staffAvailability.deleteMany).toHaveBeenCalledWith({ where: { tenantId: 'tenant-expired' } });
         expect(prisma.staffSkill.deleteMany).toHaveBeenCalledWith({ where: { tenantId: 'tenant-expired' } });
         expect(prisma.stripeUsageEvent.deleteMany).toHaveBeenCalledWith({ where: { tenantId: 'tenant-expired' } });
@@ -1809,6 +1812,12 @@ describe('AdminController retained-record expiry', () => {
             prisma.schedule.deleteMany.mock.invocationCallOrder[0],
         );
         expect(prisma.scheduleDemandWindow.deleteMany.mock.invocationCallOrder[0]).toBeLessThan(
+            prisma.location.deleteMany.mock.invocationCallOrder[0],
+        );
+        expect(prisma.staffAvailabilityException.deleteMany.mock.invocationCallOrder[0]).toBeLessThan(
+            prisma.user.deleteMany.mock.invocationCallOrder[0],
+        );
+        expect(prisma.staffAvailabilityException.deleteMany.mock.invocationCallOrder[0]).toBeLessThan(
             prisma.location.deleteMany.mock.invocationCallOrder[0],
         );
         expect(prisma.staffAvailability.deleteMany.mock.invocationCallOrder[0]).toBeLessThan(
@@ -1852,6 +1861,7 @@ describe('AdminController retained-record expiry', () => {
                 availabilityImportJobs: 28,
                 scheduleSolveJobs: 17,
                 scheduleDemandWindows: 19,
+                staffAvailabilityExceptions: 34,
                 staffAvailabilities: 20,
                 staffSkills: 21,
                 stripeUsageEvents: 18,
@@ -2006,6 +2016,7 @@ describe('AdminController retained-record expiry', () => {
                 availabilityImportJobs: 28,
                 stripeUsageEvents: 18,
                 scheduleDemandWindows: 19,
+                staffAvailabilityExceptions: 34,
                 staffAvailabilities: 20,
                 staffSkills: 21,
                 creditTransactions: 11,

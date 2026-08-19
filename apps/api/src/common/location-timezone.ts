@@ -77,11 +77,11 @@ export function splitInstantRangeByLocalDay(
     startValue: Date | string,
     endValue: Date | string,
     timeZoneValue: unknown,
-): Array<{ weekday: string; startMinutes: number; endMinutes: number }> {
+): Array<{ localDate: string; weekday: string; startMinutes: number; endMinutes: number }> {
     const timeZone = normalizeTimeZone(timeZoneValue);
     const start = requiredDate(startValue);
     const end = requiredDate(endValue);
-    const segments: Array<{ weekday: string; startMinutes: number; endMinutes: number }> = [];
+    const segments: Array<{ localDate: string; weekday: string; startMinutes: number; endMinutes: number }> = [];
     let cursor = start;
     while (cursor < end) {
         const parts = zonedParts(cursor, timeZone);
@@ -93,6 +93,7 @@ export function splitInstantRangeByLocalDay(
         const endParts = zonedParts(segmentEnd, timeZone);
         const crossesBoundary = segmentEnd.getTime() === nextBoundary.getTime();
         segments.push({
+            localDate: `${parts.year}-${pad(parts.month)}-${pad(parts.day)}`,
             weekday: weekdayNameInTimeZone(cursor, timeZone),
             startMinutes: parts.hour * 60 + parts.minute,
             endMinutes: crossesBoundary ? 1440 : endParts.hour * 60 + endParts.minute,

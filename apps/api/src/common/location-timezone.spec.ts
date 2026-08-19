@@ -24,8 +24,8 @@ describe('location timezone helpers', () => {
             '2026-03-10T10:00:00.000Z',
             'America/Los_Angeles',
         )).toEqual([
-            { weekday: 'Monday', startMinutes: 1380, endMinutes: 1440 },
-            { weekday: 'Tuesday', startMinutes: 0, endMinutes: 180 },
+            { localDate: '2026-03-09', weekday: 'Monday', startMinutes: 1380, endMinutes: 1440 },
+            { localDate: '2026-03-10', weekday: 'Tuesday', startMinutes: 0, endMinutes: 180 },
         ]);
     });
 });

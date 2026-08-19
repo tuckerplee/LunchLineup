@@ -2,6 +2,11 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { CalendarClock, Plus, RefreshCw, Save, Trash2, X } from 'lucide-react';
+import type {
+    StaffAvailabilityException,
+    StaffSchedulingProfile,
+    StaffSchedulingProfileRequest,
+} from '@lunchlineup/api-contract';
 
 import { Button } from '@/components/ui/button';
 import { fetchJsonWithSession } from '@/lib/client-api';
@@ -19,17 +24,9 @@ type LocationPage = {
     data?: Location[];
     pagination?: { hasMore?: boolean; nextCursor?: string | null };
 };
-type AvailabilityWindow = {
-    locationId: string | null;
-    dayOfWeek: number;
-    startTimeMinutes: number;
-    endTimeMinutes: number;
-};
-type SchedulingProfile = {
-    skills: string[];
-    availability: AvailabilityWindow[];
-    availabilityConfigured: boolean;
-};
+type AvailabilityWindow = StaffSchedulingProfileRequest['availability'][number];
+type AvailabilityException = StaffAvailabilityException;
+type SchedulingProfile = StaffSchedulingProfile;
 
 const DAYS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
 
@@ -42,10 +39,16 @@ function timeMinutes(value: string): number {
     return hours * 60 + minutes;
 }
 
+function localToday(): string {
+    const now = new Date();
+    return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+}
+
 export function StaffSchedulingProfileEditor({ user, onClose, showHeader = true }: StaffSchedulingProfileEditorProps) {
     const [skills, setSkills] = useState<string[]>([]);
     const [skillDraft, setSkillDraft] = useState('');
     const [availability, setAvailability] = useState<AvailabilityWindow[]>([]);
+    const [availabilityExceptions, setAvailabilityExceptions] = useState<AvailabilityException[]>([]);
     const [locations, setLocations] = useState<Location[]>([]);
     const [isProfileLoading, setIsProfileLoading] = useState(true);
     const [isProfileHydrated, setIsProfileHydrated] = useState(false);
@@ -73,6 +76,7 @@ export function StaffSchedulingProfileEditor({ user, onClose, showHeader = true 
             if (requestId !== profileLoadRequestRef.current) return;
             setSkills(profile.skills);
             setAvailability(profile.availability);
+            setAvailabilityExceptions(profile.availabilityExceptions ?? []);
             setSkillDraft('');
             setIsProfileHydrated(true);
         } catch (loadError) {
@@ -123,10 +127,10 @@ export function StaffSchedulingProfileEditor({ user, onClose, showHeader = true 
 
     const missingLocationIds = useMemo(() => {
         const loadedIds = new Set(locations.map((location) => location.id));
-        return [...new Set(availability
+        return [...new Set([...availability, ...availabilityExceptions]
             .map((window) => window.locationId)
             .filter((locationId): locationId is string => Boolean(locationId) && !loadedIds.has(locationId as string)))];
-    }, [availability, locations]);
+    }, [availability, availabilityExceptions, locations]);
 
     const addSkill = useCallback(() => {
         if (!isProfileHydrated) return;
@@ -167,6 +171,31 @@ export function StaffSchedulingProfileEditor({ user, onClose, showHeader = true 
         setMessage(null);
     }, [isProfileHydrated]);
 
+    const addAvailabilityException = useCallback(() => {
+        if (!isProfileHydrated) return;
+        if (availabilityExceptions.length >= 366) {
+            setError('A staff profile can have at most 366 dated availability exceptions.');
+            return;
+        }
+        setAvailabilityExceptions((current) => [...current, {
+            locationId: null,
+            date: localToday(),
+            kind: 'UNAVAILABLE',
+            allDay: true,
+            startTimeMinutes: 0,
+            endTimeMinutes: 1440,
+        }]);
+        setMessage(null);
+    }, [availabilityExceptions.length, isProfileHydrated]);
+
+    const updateAvailabilityException = useCallback((index: number, changes: Partial<AvailabilityException>) => {
+        if (!isProfileHydrated) return;
+        setAvailabilityExceptions((current) => current.map((entry, entryIndex) => (
+            entryIndex === index ? { ...entry, ...changes } : entry
+        )));
+        setMessage(null);
+    }, [isProfileHydrated]);
+
     const save = useCallback(async (
         nextAvailability: AvailabilityWindow[] = availability,
         successMessage?: string,
@@ -182,11 +211,12 @@ export function StaffSchedulingProfileEditor({ user, onClose, showHeader = true 
                 {
                     method: 'PUT',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ skills, availability: nextAvailability }),
+                    body: JSON.stringify({ skills, availability: nextAvailability, availabilityExceptions }),
                 },
             );
             setSkills(profile.skills);
             setAvailability(profile.availability);
+            setAvailabilityExceptions(profile.availabilityExceptions ?? []);
             setMessage(successMessage ?? (profile.availabilityConfigured
                 ? 'Scheduling profile saved.'
                 : 'Profile saved. This staff member remains unavailable to auto-scheduling.'));
@@ -198,7 +228,7 @@ export function StaffSchedulingProfileEditor({ user, onClose, showHeader = true 
             setIsSaving(false);
             saveInFlightRef.current = false;
         }
-    }, [availability, isProfileHydrated, skills, user.id]);
+    }, [availability, availabilityExceptions, isProfileHydrated, skills, user.id]);
 
     const applyImportedAvailability = useCallback((importedAvailability: AvailabilityWindow[]) => (
         save(importedAvailability, 'Imported availability applied and scheduling profile saved.')
@@ -293,7 +323,7 @@ export function StaffSchedulingProfileEditor({ user, onClose, showHeader = true 
                         </div>
                         {availability.length === 0 ? (
                             <div role="status" style={{ border: '1px solid #e8b04d', background: '#fff8e8', color: '#6f4a00', padding: '0.75rem', borderRadius: 6, fontSize: '0.82rem' }}>
-                                Availability is not configured. This staff member is unavailable to auto-scheduling.
+                                No recurring availability is configured. This staff member is unavailable except on dates with an Available exception.
                             </div>
                         ) : null}
                         {isLocationsLoading ? (
@@ -344,6 +374,81 @@ export function StaffSchedulingProfileEditor({ user, onClose, showHeader = true 
                                         <input type="time" value={timeValue(window.endTimeMinutes)} onChange={(event) => updateAvailability(index, { endTimeMinutes: timeMinutes(event.target.value) })} style={{ height: 36, border: '1px solid var(--border)', borderRadius: 6, padding: '0 0.45rem' }} />
                                     </label>
                                     <Button type="button" variant="ghost" size="icon" disabled={!isProfileHydrated} onClick={() => setAvailability((current) => current.filter((_, windowIndex) => windowIndex !== index))} title="Remove availability window" aria-label="Remove availability window" style={{ width: 34, height: 34 }}>
+                                        <Trash2 aria-hidden="true" size={15} />
+                                    </Button>
+                                </div>
+                            ))}
+                        </div>
+                    </div>
+
+                    <div style={{ display: 'grid', gap: '0.65rem' }}>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '0.75rem' }}>
+                            <div>
+                                <div style={{ fontSize: '0.78rem', fontWeight: 700 }}>Dated availability &amp; time off</div>
+                                <div style={{ color: 'var(--text-muted)', fontSize: '0.72rem', marginTop: 2 }}>
+                                    Available windows replace the weekly rule for that local date. Unavailable windows always block scheduling.
+                                </div>
+                            </div>
+                            <Button type="button" size="sm" variant="outline" onClick={addAvailabilityException} disabled={!isProfileHydrated}>
+                                <Plus aria-hidden="true" size={14} /> Add exception
+                            </Button>
+                        </div>
+                        {availabilityExceptions.length === 0 ? (
+                            <div role="status" className="surface-muted" style={{ padding: '0.75rem', fontSize: '0.8rem', color: 'var(--text-muted)' }}>
+                                No dated exceptions or time off entered.
+                            </div>
+                        ) : null}
+                        <div style={{ display: 'grid', gap: '0.55rem' }}>
+                            {availabilityExceptions.map((entry, index) => (
+                                <div
+                                    key={`${index}-${entry.date}-${entry.kind}-${entry.startTimeMinutes}`}
+                                    role="group"
+                                    aria-label={`Dated availability exception ${index + 1}`}
+                                    className="surface-muted"
+                                    style={{ padding: '0.7rem', display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(135px, 1fr))', gap: '0.5rem', alignItems: 'end' }}
+                                >
+                                    <label style={{ display: 'grid', gap: '0.25rem', fontSize: '0.7rem', fontWeight: 700 }}>
+                                        Local date
+                                        <input type="date" min="1970-01-01" max="2100-12-31" value={entry.date} onChange={(event) => updateAvailabilityException(index, { date: event.target.value })} style={{ height: 36, border: '1px solid var(--border)', borderRadius: 6, padding: '0 0.45rem' }} />
+                                    </label>
+                                    <label style={{ display: 'grid', gap: '0.25rem', fontSize: '0.7rem', fontWeight: 700 }}>
+                                        Location
+                                        <select value={entry.locationId ?? ''} disabled={isLocationsLoading || Boolean(locationLoadError)} onChange={(event) => updateAvailabilityException(index, { locationId: event.target.value || null })} style={{ height: 36, border: '1px solid var(--border)', borderRadius: 6, padding: '0 0.45rem', background: '#fff' }}>
+                                            <option value="">All locations</option>
+                                            {locations.map((location) => <option key={location.id} value={location.id}>{location.name}</option>)}
+                                            {missingLocationIds.map((locationId) => <option key={locationId} value={locationId}>Location unavailable ({locationId})</option>)}
+                                        </select>
+                                    </label>
+                                    <label style={{ display: 'grid', gap: '0.25rem', fontSize: '0.7rem', fontWeight: 700 }}>
+                                        Exception
+                                        <select value={entry.kind} onChange={(event) => updateAvailabilityException(index, { kind: event.target.value as AvailabilityException['kind'] })} style={{ height: 36, border: '1px solid var(--border)', borderRadius: 6, padding: '0 0.45rem', background: '#fff' }}>
+                                            <option value="UNAVAILABLE">Unavailable / time off</option>
+                                            <option value="AVAILABLE">Available instead</option>
+                                        </select>
+                                    </label>
+                                    <label style={{ display: 'flex', minHeight: 36, alignItems: 'center', gap: '0.45rem', fontSize: '0.72rem', fontWeight: 700 }}>
+                                        <input
+                                            type="checkbox"
+                                            checked={entry.allDay}
+                                            onChange={(event) => updateAvailabilityException(index, event.target.checked
+                                                ? { allDay: true, startTimeMinutes: 0, endTimeMinutes: 1440 }
+                                                : { allDay: false, startTimeMinutes: 540, endTimeMinutes: 1020 })}
+                                        />
+                                        All day
+                                    </label>
+                                    {!entry.allDay ? (
+                                        <>
+                                            <label style={{ display: 'grid', gap: '0.25rem', fontSize: '0.7rem', fontWeight: 700 }}>
+                                                Start
+                                                <input type="time" value={timeValue(entry.startTimeMinutes)} onChange={(event) => updateAvailabilityException(index, { startTimeMinutes: timeMinutes(event.target.value) })} style={{ height: 36, border: '1px solid var(--border)', borderRadius: 6, padding: '0 0.45rem' }} />
+                                            </label>
+                                            <label style={{ display: 'grid', gap: '0.25rem', fontSize: '0.7rem', fontWeight: 700 }}>
+                                                End
+                                                <input type="time" value={timeValue(entry.endTimeMinutes)} onChange={(event) => updateAvailabilityException(index, { endTimeMinutes: timeMinutes(event.target.value) })} style={{ height: 36, border: '1px solid var(--border)', borderRadius: 6, padding: '0 0.45rem' }} />
+                                            </label>
+                                        </>
+                                    ) : null}
+                                    <Button type="button" variant="ghost" size="icon" disabled={!isProfileHydrated} onClick={() => setAvailabilityExceptions((current) => current.filter((_, entryIndex) => entryIndex !== index))} title="Remove dated availability exception" aria-label="Remove dated availability exception" style={{ width: 34, height: 34 }}>
                                         <Trash2 aria-hidden="true" size={15} />
                                     </Button>
                                 </div>

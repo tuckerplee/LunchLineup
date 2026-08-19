@@ -47,6 +47,7 @@ function buildTransaction() {
         scheduleSolveJob: { deleteMany: deleteMany() },
         scheduleDemandWindow: { deleteMany: deleteMany() },
         shift: { deleteMany: deleteMany() },
+        staffAvailabilityException: { deleteMany: deleteMany() },
         staffAvailability: { deleteMany: deleteMany() },
         staffSkill: { deleteMany: deleteMany() },
         schedule: { deleteMany: deleteMany() },

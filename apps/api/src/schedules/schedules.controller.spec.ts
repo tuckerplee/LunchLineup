@@ -29,6 +29,7 @@ describe("SchedulesController", () => {
   let meteringService: any;
   let webhooksService: any;
   let persistedAvailabilityRows: any[];
+  let persistedAvailabilityExceptionRows: any[];
   let persistedSkillRows: any[];
   let persistedDemandRows: any[];
   let persistedDraftShiftRows: any[];
@@ -114,6 +115,7 @@ describe("SchedulesController", () => {
       }),
     };
     persistedAvailabilityRows = [];
+    persistedAvailabilityExceptionRows = [];
     persistedSkillRows = [];
     persistedDemandRows = [];
     persistedDraftShiftRows = [];
@@ -166,6 +168,9 @@ describe("SchedulesController", () => {
         }
         if (sql.includes('FROM "StaffAvailability"')) {
           return persistedAvailabilityRows;
+        }
+        if (sql.includes('FROM "StaffAvailabilityException"')) {
+          return persistedAvailabilityExceptionRows;
         }
         if (sql.includes('FROM "StaffSkill"')) {
           return persistedSkillRows;
@@ -580,7 +585,7 @@ describe("SchedulesController", () => {
     }, "schedule-publish-test", publishBody());
 
     expect(prisma.$transaction).toHaveBeenCalledTimes(2);
-    expect(tx.$queryRaw).toHaveBeenCalledTimes(6);
+    expect(tx.$queryRaw).toHaveBeenCalledTimes(7);
     expect(tx.schedule.updateMany).toHaveBeenCalledWith({
       where: {
         id: "sch-1",
@@ -1752,6 +1757,58 @@ describe("SchedulesController", () => {
     )).resolves.toBeUndefined();
   });
 
+  it("rejects publishing a shift that overlaps location-local dated time off", async () => {
+    persistedAvailabilityRows = [
+      { userId: "u1", dayOfWeek: 2, startTimeMinutes: 9 * 60, endTimeMinutes: 17 * 60 },
+    ];
+    persistedAvailabilityExceptionRows = [{
+      userId: "u1",
+      localDate: "2026-03-10",
+      kind: "UNAVAILABLE",
+      startTimeMinutes: 0,
+      endTimeMinutes: 1440,
+    }];
+
+    await expect((controller as any).assertAssignedShiftsWithinAvailability(
+      tx,
+      "tenant-1",
+      "loc-1",
+      "America/Los_Angeles",
+      [{
+        id: "time-off-conflict",
+        userId: "u1",
+        startTime: new Date("2026-03-10T17:00:00.000Z"),
+        endTime: new Date("2026-03-10T21:00:00.000Z"),
+        breaks: [],
+      }],
+    )).rejects.toThrow("conflicts with dated staff availability or time off");
+  });
+
+  it("accepts a dated available override when recurring availability is empty", async () => {
+    persistedAvailabilityRows = [];
+    persistedAvailabilityExceptionRows = [{
+      userId: "u1",
+      localDate: "2026-03-10",
+      kind: "AVAILABLE",
+      startTimeMinutes: 9 * 60,
+      endTimeMinutes: 17 * 60,
+    }];
+
+    await expect((controller as any).assertAssignedShiftsWithinAvailability(
+      tx,
+      "tenant-1",
+      "loc-1",
+      "America/Los_Angeles",
+      [{
+        id: "dated-available",
+        userId: "u1",
+        startTime: new Date("2026-03-10T17:00:00.000Z"),
+        endTime: new Date("2026-03-11T00:00:00.000Z"),
+        breaks: [],
+      }],
+    )).resolves.toBeUndefined();
+  });
+
   it("accepts Monday overnight availability through Tuesday 02:00 during publish validation", async () => {
     persistedAvailabilityRows = [
       {
@@ -1761,7 +1818,6 @@ describe("SchedulesController", () => {
         endTimeMinutes: 2 * 60,
       },
     ];
-
     await expect(
       (controller as any).assertAssignedShiftsWithinAvailability(
         tx,
@@ -1892,6 +1948,7 @@ describe("SchedulesController", () => {
           constraints: { min_floor_coverage: 1, shift_duration_hours: 8 },
           availability: { u1: [], u2: [] },
           availability_configured: { u1: false, u2: false },
+          availability_exceptions: { u1: [], u2: [] },
           staff_skills: { u1: [], u2: [] },
           daily_demand: { Tuesday: 1 },
           skill_requirements: {},
@@ -2156,6 +2213,22 @@ describe("SchedulesController", () => {
         endTimeMinutes: 1020,
       },
     ];
+    persistedAvailabilityExceptionRows = [
+      {
+        userId: "u1",
+        localDate: "2026-03-10",
+        kind: "UNAVAILABLE",
+        startTimeMinutes: 12 * 60,
+        endTimeMinutes: 13 * 60,
+      },
+      {
+        userId: "u1",
+        localDate: "2026-03-10",
+        kind: "UNAVAILABLE",
+        startTimeMinutes: 12 * 60,
+        endTimeMinutes: 13 * 60,
+      },
+    ];
     persistedSkillRows = [
       { userId: "u1", skill: "expo" },
       { userId: "u1", skill: "line" },
@@ -2211,6 +2284,15 @@ describe("SchedulesController", () => {
             ],
             u2: [],
           },
+          availability_exceptions: {
+            u1: [{
+              local_date: "2026-03-10",
+              kind: "UNAVAILABLE",
+              start_time_minutes: 720,
+              end_time_minutes: 780,
+            }],
+            u2: [],
+          },
           staff_skills: { u1: ["expo", "line"], u2: [] },
           daily_demand: { Tuesday: 2 },
           skill_requirements: { Tuesday: { expo: 2 } },
@@ -2256,8 +2338,14 @@ describe("SchedulesController", () => {
           availability: [
             { day_of_week: "Monday", start_time: "09:00", end_time: "17:00" },
           ],
+          availabilityExceptions: [{
+            local_date: "2026-03-10",
+            kind: "UNAVAILABLE",
+            start_time_minutes: 720,
+            end_time_minutes: 780,
+          }],
         },
-        { id: "u2", skills: [], availabilityConfigured: false, availability: [] },
+        { id: "u2", skills: [], availabilityConfigured: false, availability: [], availabilityExceptions: [] },
       ],
     });
     expect(parsedJsonParams).toContainEqual({

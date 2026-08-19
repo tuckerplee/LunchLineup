@@ -8,6 +8,13 @@ export type PersistedAvailabilityWindow = {
     endTimeMinutes: number;
 };
 
+export type PersistedAvailabilityException = {
+    localDate: string;
+    kind: 'AVAILABLE' | 'UNAVAILABLE';
+    startTimeMinutes: number;
+    endTimeMinutes: number;
+};
+
 export function assertAvailabilityWindow(window: PersistedAvailabilityWindow): void {
     const day = Number(window.dayOfWeek);
     const start = Number(window.startTimeMinutes);
@@ -26,6 +33,50 @@ export function assertAvailabilityWindow(window: PersistedAvailabilityWindow): v
     ) {
         throw new BadRequestException('Invalid availability window. Use distinct minute values from 0 to 1439.');
     }
+}
+
+export function assertAvailabilityException(exception: PersistedAvailabilityException): void {
+    const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(exception.localDate);
+    const year = Number(match?.[1]);
+    const month = Number(match?.[2]);
+    const day = Number(match?.[3]);
+    const parsed = new Date(Date.UTC(year, month - 1, day));
+    if (
+        !match
+        || year < 1970
+        || year > 2100
+        || parsed.getUTCFullYear() !== year
+        || parsed.getUTCMonth() !== month - 1
+        || parsed.getUTCDate() !== day
+        || (exception.kind !== 'AVAILABLE' && exception.kind !== 'UNAVAILABLE')
+        || !Number.isInteger(exception.startTimeMinutes)
+        || !Number.isInteger(exception.endTimeMinutes)
+        || exception.startTimeMinutes < 0
+        || exception.startTimeMinutes >= 1440
+        || exception.endTimeMinutes < 1
+        || exception.endTimeMinutes > 1440
+        || exception.startTimeMinutes >= exception.endTimeMinutes
+    ) {
+        throw new BadRequestException('Invalid dated availability exception.');
+    }
+}
+
+function minuteWindowsCoverLocalSegment(
+    windows: Array<{ startTimeMinutes: number; endTimeMinutes: number }>,
+    segmentStartMinutes: number,
+    segmentEndMinutes: number,
+): boolean {
+    let coveredUntil = segmentStartMinutes;
+    for (const window of [...windows].sort((left, right) => (
+        left.startTimeMinutes - right.startTimeMinutes
+        || left.endTimeMinutes - right.endTimeMinutes
+    ))) {
+        if (window.endTimeMinutes <= coveredUntil) continue;
+        if (window.startTimeMinutes > coveredUntil) return false;
+        coveredUntil = window.endTimeMinutes;
+        if (coveredUntil >= segmentEndMinutes) return true;
+    }
+    return false;
 }
 
 export function availabilityDayName(dayOfWeek: number): string {
@@ -103,4 +154,43 @@ export function availabilityWindowsCoverLocalSegment(
         if (coveredUntil >= segmentEndMinutes) return true;
     }
     return false;
+}
+
+/**
+ * Local-date exceptions take deterministic precedence over weekly rules:
+ * one or more AVAILABLE windows replace weekly availability for that date,
+ * then every UNAVAILABLE window subtracts from the selected base.
+ */
+export function availabilityWithExceptionsCoversLocalSegment(
+    recurringWindows: PersistedAvailabilityWindow[],
+    exceptions: PersistedAvailabilityException[],
+    localDate: string,
+    weekday: string,
+    segmentStartMinutes: number,
+    segmentEndMinutes: number,
+): boolean {
+    if (
+        !Number.isInteger(segmentStartMinutes)
+        || !Number.isInteger(segmentEndMinutes)
+        || segmentStartMinutes < 0
+        || segmentEndMinutes > 1440
+        || segmentEndMinutes <= segmentStartMinutes
+    ) {
+        throw new BadRequestException('Invalid local availability segment.');
+    }
+    const dated = exceptions.filter((entry) => entry.localDate === localDate);
+    for (const entry of dated) assertAvailabilityException(entry);
+    const available = dated.filter((entry) => entry.kind === 'AVAILABLE');
+    const baseCovered = available.length > 0
+        ? minuteWindowsCoverLocalSegment(available, segmentStartMinutes, segmentEndMinutes)
+        : availabilityWindowsCoverLocalSegment(
+            recurringWindows,
+            weekday,
+            segmentStartMinutes,
+            segmentEndMinutes,
+        );
+    if (!baseCovered) return false;
+    return !dated.some((entry) => entry.kind === 'UNAVAILABLE'
+        && entry.startTimeMinutes < segmentEndMinutes
+        && entry.endTimeMinutes > segmentStartMinutes);
 }

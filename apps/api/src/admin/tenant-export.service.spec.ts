@@ -314,6 +314,22 @@ describe("TenantExportService durable jobs", () => {
     await rm(directory, { recursive: true, force: true });
   });
 
+  it("includes dated availability exceptions in tenant-owned exports", () => {
+    expect(TENANT_EXPORT_COLLECTIONS).toContainEqual(expect.objectContaining({
+      model: "StaffAvailabilityException",
+      name: "staffAvailabilityExceptions",
+      delegate: "staffAvailabilityException",
+      select: expect.objectContaining({
+        userId: true,
+        locationId: true,
+        localDate: true,
+        kind: true,
+        startTimeMinutes: true,
+        endTimeMinutes: true,
+      }),
+    }));
+  });
+
   it("survives an API restart and completes on another replica with bounded cursor pages", async () => {
     const users = Array.from({ length: 1_000 }, (_, index) => ({
       id: `user-${String(index).padStart(5, "0")}`,
