@@ -57,9 +57,13 @@ EVIDENCE_PATH="$OUTPUT_DIR/load-evidence-$SOURCE_SHA.json"
 rm -f "$ARTILLERY_REPORT_PATH" "$AVAILABILITY_IMPORT_RESULT_PATH" "$EVIDENCE_PATH"
 
 echo "Running candidate-bound Artillery smoke load test against $TARGET_URL..."
+# The pinned Artillery image has a passwd entry only for its built-in users;
+# mapping the host UID makes Node's os.userInfo() fail with ENOENT.  This is
+# an isolated, read-only source mount and a dedicated output volume, so run
+# the disposable load tool as root to keep its identity resolvable.
 set +e
 docker run --rm \
-  --user "$(id -u):$(id -g)" \
+  --user 0:0 \
   --env HOME=/tmp/artillery-home \
   --network host \
   --volume "$SOURCE_ROOT:/workspace:ro" \

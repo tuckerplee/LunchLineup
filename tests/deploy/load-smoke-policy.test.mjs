@@ -83,6 +83,7 @@ test('load helper uses the immutable Artillery runner without runtime package re
     /artilleryio\/artillery:2\.0\.33@sha256:ee382d480f5cb8473c52fe94cb8e1505a9564ce2accbc94114098e0be06dff56/,
   );
   assert.match(launcher, /docker run --rm/);
+  assert.match(launcher, /--user 0:0/);
   assert.match(launcher, /--network host/);
   assert.match(launcher, /--volume "\$SOURCE_ROOT:\/workspace:ro"/);
   assert.match(launcher, /--volume "\$OUTPUT_DIR:\/output:rw"/);
