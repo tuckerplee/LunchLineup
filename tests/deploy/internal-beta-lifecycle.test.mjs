@@ -8,7 +8,7 @@ import { fileURLToPath } from 'node:url';
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 
 function read(path) {
-  return readFileSync(join(root, path), 'utf8');
+  return readFileSync(join(root, path), 'utf8').replace(/\r\n/g, '\n');
 }
 
 function commandWorks(command, args) {
