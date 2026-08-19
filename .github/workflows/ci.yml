@@ -814,6 +814,25 @@ jobs:
           tests/e2e/month-volume-workflows.spec.ts
           tests/e2e/stress-workflows.spec.ts
           tests/e2e/tenant-admin-workflows.spec.ts
+      - name: Run launch-blocking internal-beta interaction proof
+        working-directory: apps/web
+        env:
+          E2E_CANDIDATE_SHA: ${{ github.sha }}
+        run: npx playwright test --config=playwright.interaction-proof.config.ts
+      - name: Reject missing or skipped interaction proof cases
+        working-directory: apps/web
+        run: >-
+          node tests/e2e/verify-internal-beta-interaction-proof.mjs
+          --report "test-results/internal-beta-interaction-proof-$GITHUB_SHA/results.json"
+          --source-sha "$GITHUB_SHA"
+          --output "test-results/internal-beta-interaction-proof-$GITHUB_SHA/proof.json"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: ${{ always() }}
+        with:
+          name: internal-beta-interaction-proof-${{ github.sha }}
+          path: apps/web/test-results/internal-beta-interaction-proof-${{ github.sha }}/
+          if-no-files-found: error
+          retention-days: 90
       - name: Stop full-stack release images
         if: always()
         run: |

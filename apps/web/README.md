@@ -21,6 +21,7 @@ Next.js frontend for the LunchLineup platform. The web app is deployed as the `w
 - `next.config.js` - Next.js configuration for the internal API rewrite, local-only images, production browser hardening, and CSP/header policy.
 - `package.json` - Web package scripts and dependencies.
 - `playwright.config.ts` - Browser test configuration with serialized mock-state runs, automatic safe ports, an explicit dependency-health probe, and a validated signup-mode override for rendered onboarding gates.
+- `playwright.interaction-proof.config.ts` - launch-only exact-SHA desktop/touch Playwright configuration with mandatory trace, video, screenshot, JSON, JUnit, and HTML evidence.
 - `postcss.config.js` - PostCSS configuration.
 - `tailwind.config.js` - Tailwind configuration.
 - `tsconfig.json` - TypeScript configuration.
