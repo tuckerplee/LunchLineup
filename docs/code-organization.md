@@ -87,7 +87,7 @@ Tests and specs remain outside that mandatory threshold but may be listed when t
 
 | File | Lines | Status | Risk | Next extraction |
 | --- | ---: | --- | --- | --- |
-| `.github/workflows/ci.yml` | 3033 | Deferred | One workflow owns static analysis, Terraform, Semgrep/CodeQL security analysis, dependency audit, unit/integration/E2E tests, eight image builds, release registry state, runtime secret materialization, retained evidence, staging, production deployment, smoke, and rollback. Repeated variable and artifact mappings can drift between release phases. | Extract validation and image publication into reusable workflows, then move production input binding/deploy/rollback into one separately reviewed reusable workflow with a shared configuration contract. |
+| `.github/workflows/ci.yml` | 3043 | Deferred | One workflow owns static analysis, Terraform, Semgrep/CodeQL security analysis, dependency audit, unit/integration/E2E tests, eight image builds, release registry state, runtime secret materialization, retained evidence, staging, production deployment, smoke, and rollback. Repeated variable and artifact mappings can drift between release phases. | Extract validation and image publication into reusable workflows, then move production input binding/deploy/rollback into one separately reviewed reusable workflow with a shared configuration contract. |
 
 ## Completed Infrastructure Extractions
 
