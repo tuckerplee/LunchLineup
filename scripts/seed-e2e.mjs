@@ -11,6 +11,8 @@ const adminUsername = process.env.E2E_ADMIN_USERNAME ?? 'e2e.admin';
 const adminPin = process.env.E2E_ADMIN_PIN ?? '246810';
 const superAdminUsername = process.env.E2E_SUPER_ADMIN_USERNAME ?? 'e2e.superadmin';
 const superAdminPin = process.env.E2E_SUPER_ADMIN_PIN ?? '864200';
+const adminMfaSecret = process.env.E2E_ADMIN_MFA_SECRET ?? 'JBSWY3DPEHPK3PXP';
+const superAdminMfaSecret = process.env.E2E_SUPER_ADMIN_MFA_SECRET ?? 'JBSWY3DPEHPK3PXP';
 const loadSmokeUsername = process.env.E2E_LOAD_SMOKE_USERNAME ?? 'e2e.load';
 const loadSmokePin = process.env.E2E_LOAD_SMOKE_PIN ?? '246812';
 const loadSmokeMfaSecret = process.env.E2E_LOAD_SMOKE_MFA_SECRET ?? 'JBSWY3DPEHPK3PXP';
@@ -177,7 +179,13 @@ async function resetTenantData(tenantId) {
 
   await prisma.session.deleteMany({ where: { userId: { in: userIds } } });
   await prisma.notification.deleteMany({ where: { tenantId } });
-  await prisma.auditLog.deleteMany({ where: { tenantId } });
+  // The disposable E2E tenant is reset before every DB-backed spec. Preserve
+  // the production append-only trigger while using its explicit retention
+  // capability for this isolated test tenant's old evidence.
+  await prisma.$transaction(async (transaction) => {
+    await transaction.$executeRaw`SELECT set_config('app.allow_audit_log_delete', 'retention_expired', true)`;
+    await transaction.auditLog.deleteMany({ where: { tenantId } });
+  });
   await prisma.timeCard.deleteMany({ where: { tenantId } });
   await prisma.break.deleteMany({ where: { shift: { tenantId } } });
   await prisma.shift.deleteMany({ where: { tenantId } });
@@ -250,6 +258,12 @@ async function main() {
   if (!/^[A-Z2-7]+=*$/i.test(loadSmokeMfaSecret)) {
     throw new Error('E2E_LOAD_SMOKE_MFA_SECRET must be a base32 TOTP secret.');
   }
+  if (!/^[A-Z2-7]+=*$/i.test(adminMfaSecret)) {
+    throw new Error('E2E_ADMIN_MFA_SECRET must be a base32 TOTP secret.');
+  }
+  if (!/^[A-Z2-7]+=*$/i.test(superAdminMfaSecret)) {
+    throw new Error('E2E_SUPER_ADMIN_MFA_SECRET must be a base32 TOTP secret.');
+  }
 
   await ensurePermissionCatalog();
 
@@ -318,6 +332,8 @@ async function main() {
       pinHash: hashPin(adminPin),
       pinSetAt: new Date(),
       pinResetRequired: false,
+      mfaEnabled: true,
+      mfaSecret: adminMfaSecret,
     },
   });
 
@@ -366,6 +382,8 @@ async function main() {
       pinHash: hashPin(superAdminPin),
       pinSetAt: new Date(),
       pinResetRequired: false,
+      mfaEnabled: true,
+      mfaSecret: superAdminMfaSecret,
     },
   });
 

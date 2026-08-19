@@ -26,6 +26,7 @@ http://127.0.0.1:2015 {
 		Referrer-Policy "strict-origin-when-cross-origin"
 		Permissions-Policy "camera=(), microphone=(), geolocation=(), payment=()"
 		X-Permitted-Cross-Domain-Policies "none"
+		-X-Powered-By
 		-Server
 	}
 

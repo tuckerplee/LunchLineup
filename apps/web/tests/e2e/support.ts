@@ -1,3 +1,4 @@
+import { createHmac } from 'node:crypto';
 import { execSync } from 'node:child_process';
 import path from 'node:path';
 
@@ -12,6 +13,8 @@ export const e2eManagerUsername = process.env.E2E_MANAGER_USERNAME ?? 'e2e.manag
 export const e2eManagerPin = process.env.E2E_MANAGER_PIN ?? '112233';
 export const e2eSuperAdminUsername = process.env.E2E_SUPER_ADMIN_USERNAME ?? 'e2e.superadmin';
 export const e2eSuperAdminPin = process.env.E2E_SUPER_ADMIN_PIN ?? '864200';
+export const e2eAdminMfaSecret = process.env.E2E_ADMIN_MFA_SECRET ?? 'JBSWY3DPEHPK3PXP';
+export const e2eSuperAdminMfaSecret = process.env.E2E_SUPER_ADMIN_MFA_SECRET ?? 'JBSWY3DPEHPK3PXP';
 
 export function seedTenant() {
   const seedCommand = process.env.E2E_SEED_COMMAND;
@@ -38,6 +41,38 @@ export function dayWindow(date = new Date(), days = 1): { startDate: string; end
 
 function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function decodeBase32(secret: string): Buffer {
+  const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
+  const normalized = secret.replace(/=+$/g, '').replace(/\s+/g, '').toUpperCase();
+  let bits = 0;
+  let value = 0;
+  const bytes: number[] = [];
+  for (const character of normalized) {
+    const index = alphabet.indexOf(character);
+    if (index < 0) throw new Error('E2E MFA secret is not valid base32.');
+    value = (value << 5) | index;
+    bits += 5;
+    if (bits >= 8) {
+      bits -= 8;
+      bytes.push((value >>> bits) & 0xff);
+    }
+  }
+  return Buffer.from(bytes);
+}
+
+function totpCode(secret: string, now = Date.now()): string {
+  const counter = Math.floor(now / 30_000);
+  const message = Buffer.alloc(8);
+  message.writeBigUInt64BE(BigInt(counter));
+  const digest = createHmac('sha1', decodeBase32(secret)).update(message).digest();
+  const offset = digest[digest.length - 1] & 0x0f;
+  const value = ((digest[offset] & 0x7f) << 24)
+    | ((digest[offset + 1] & 0xff) << 16)
+    | ((digest[offset + 2] & 0xff) << 8)
+    | (digest[offset + 3] & 0xff);
+  return String(value % 1_000_000).padStart(6, '0');
 }
 
 export async function loginWithPin(
@@ -67,6 +102,14 @@ export async function loginWithPin(
   } else {
     await page.getByLabel('PIN').fill(options.pin);
     await page.getByRole('button', { name: 'Sign in with PIN' }).click();
+  }
+  await page.waitForURL(/\/(?:mfa|dashboard|admin)(?:[/?#].*)?$/, { timeout: 10_000 });
+  if (new URL(page.url()).pathname === '/mfa') {
+    const secret = options.username === e2eSuperAdminUsername
+      ? e2eSuperAdminMfaSecret
+      : e2eAdminMfaSecret;
+    await page.getByLabel('Authentication code').fill(totpCode(secret));
+    await page.getByRole('button', { name: 'Verify and continue' }).click();
   }
   await expect(page).toHaveURL(new RegExp(`${escapeRegExp(expectedPath)}(?:[?#].*)?$`));
 }

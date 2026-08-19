@@ -936,6 +936,7 @@ test('proxy config is TLS-ready, route-specific, size-limited, and sets browser 
   assert.match(caddy, /script-src 'self' https:\/\/challenges\.cloudflare\.com https:\/\/static\.cloudflareinsights\.com 'unsafe-inline'/);
   assert.match(caddy, /frame-src 'self' https:\/\/challenges\.cloudflare\.com/);
   assert.match(caddy, /X-Content-Type-Options "nosniff"/);
+  assert.match(caddy, /-X-Powered-By/);
   assert.match(caddy, /X-Frame-Options "DENY"/);
   assert.match(caddy, /Permissions-Policy/);
   assert.match(caddyTemplate, /\{\$CADDY_SITE_ADDRESSES:/);
@@ -950,6 +951,7 @@ test('proxy config is TLS-ready, route-specific, size-limited, and sets browser 
   assert.match(caddyTemplate, /script-src 'self' https:\/\/challenges\.cloudflare\.com https:\/\/static\.cloudflareinsights\.com 'unsafe-inline'/);
   assert.match(caddyTemplate, /frame-src 'self' https:\/\/challenges\.cloudflare\.com/);
   assert.match(caddyTemplate, /Permissions-Policy/);
+  assert.match(caddyTemplate, /-X-Powered-By/);
   assert.doesNotMatch(caddyTemplate, /\{\{|\}\}/);
   assert.doesNotMatch(caddyTemplate, /X-XSS-Protection/);
 });

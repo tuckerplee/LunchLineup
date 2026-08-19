@@ -38,7 +38,10 @@ export class AvailabilityImportsController {
             files: 1,
             fields: 1,
             fieldSize: 256,
-            parts: 2,
+            // The API-v2 retained bridge forwards the original multipart
+            // buffer; allow the file, identity field, and the bridge's
+            // bounded framing part while still capping files and fields.
+            parts: 3,
         },
     }))
     async create(
