@@ -267,6 +267,8 @@ test('full-stack release-image E2E runs every spec that declares DB-backed cover
   assert.equal(fullstack['continue-on-error'], undefined);
   assert.ok(runStep, 'missing DB-backed full-stack Playwright step');
   assert.equal(runStep['continue-on-error'], undefined);
+  const contractBuildStep = fullstack.steps.find((step) => step.run === 'npm run build --workspace @lunchlineup/api-contract');
+  assert.ok(contractBuildStep, 'full-stack Playwright must build the shared API contract package first');
   for (const spec of requiredSpecs) assert.match(runStep.run, new RegExp(`tests/e2e/${spec.replaceAll('.', '\\.')}`));
 });
 
