@@ -170,13 +170,14 @@ export const APPLICATION_API_OPERATIONS = [
 ] as const satisfies readonly ApplicationApiOperation[];
 
 const operationMatchers = APPLICATION_API_OPERATIONS.map((operation) => {
-  const pattern = operation.path
-    .split('/')
-    .map((segment) => (segment.startsWith(':') ? '[^/]+' : segment.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')))
-    .join('/');
+  const segments = operation.path.split('/');
   return {
     operation,
-    matcher: new RegExp(`^${pattern}$`),
+    matcher: (pathname: string) => {
+      const actualSegments = pathname.split('/');
+      return segments.length === actualSegments.length
+        && segments.every((segment, index) => segment.startsWith(':') || segment === actualSegments[index]);
+    },
   };
 });
 
@@ -214,6 +215,6 @@ export function applicationApiOperation(
   const pathname = normalizedLogicalPath(path);
   if (!pathname) return null;
   return operationMatchers.find(({ operation, matcher }) => (
-    (method === undefined || operation.method === method) && matcher.test(pathname)
+    (method === undefined || operation.method === method) && matcher(pathname)
   ))?.operation ?? null;
 }
