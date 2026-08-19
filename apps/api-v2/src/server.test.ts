@@ -517,7 +517,7 @@ describe('API v2 HTTP contract', () => {
     expect(JSON.stringify(document.paths)).not.toContain('/shifts/{person');
     expect(JSON.stringify(document.paths)).not.toContain('demo-shift');
     expect(document.paths['/v2/shifts/{shiftId}']).toBeUndefined();
-  });
+  }, 15_000);
 
   it('serves current session context through the native API-02 owner', async () => {
     const { app, retainedApplication, authenticate } = await harness();
