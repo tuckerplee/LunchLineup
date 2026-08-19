@@ -616,10 +616,23 @@ test('production StripeService retains the lease through late success, then read
       userAgent: 'tenant-deletion-reverse-completion-test',
     }, { confirmation: slug }).finally(() => { firstRequestSettled = true; });
     await bounded(firstProviderEntered, 3_000, 'first deletion request never entered Stripe mutation');
-    await new Promise((resolveWait) => setTimeout(resolveWait, 400));
+    // The provider transport deliberately outlives the short lease.  Under
+    // CI contention the first heartbeat can be queued behind the readback,
+    // so wait for the durable renewal rather than asserting on one fixed
+    // event-loop slice.
+    let duringLateSuccess;
+    await bounded((async () => {
+      const deadline = Date.now() + 2_000;
+      while (Date.now() < deadline) {
+        assert.equal(firstRequestSettled, false, 'request must remain active while transport is active');
+        duringLateSuccess = await readEvidence();
+        if (duringLateSuccess.reconciliation.leaseExpiresAt > new Date()) return;
+        await new Promise((resolveWait) => setTimeout(resolveWait, 25));
+      }
+      throw new Error('heartbeat did not renew through late success');
+    })(), 3_000, 'heartbeat renewal did not become visible during late success');
     assert.equal(firstRequestSettled, false, 'request must remain active after deadline while transport is active');
 
-    const duringLateSuccess = await readEvidence();
     assert.ok(duringLateSuccess.reconciliation.leaseOwner, 'active transport must retain its lease owner');
     assert.ok(duringLateSuccess.reconciliation.leaseToken, 'active transport must retain its fence token');
     assert.ok(duringLateSuccess.reconciliation.leaseExpiresAt > new Date(), 'heartbeat must renew through late success');
