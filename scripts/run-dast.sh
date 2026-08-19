@@ -62,6 +62,7 @@ set +e
 # volume so ZAP can create zap.yaml without depending on host identity.
 docker run --rm \
   --user 0:0 \
+  --network host \
   --env HOME=/zap/wrk \
   --env ZAP_HOME=/zap/wrk \
   --env JAVA_TOOL_OPTIONS=-Duser.home=/zap/wrk \

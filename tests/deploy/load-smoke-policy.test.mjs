@@ -255,6 +255,7 @@ test('cookie runner uses configured origin and billing preflight before uploads'
     assert.equal(upload.options.headers['X-CSRF-Token'], 'csrf-value');
     assert.match(upload.options.headers.Cookie, /access_token=access-value/);
     assert.equal(Object.hasOwn(upload.options.headers, 'Authorization'), false);
+    assert.equal(upload.options.body.get('staffIdentity'), 'staff-1');
     assert.ok(billingIndex >= 0 && billingIndex < uploadIndex);
     assert.ok(upload.options.body instanceof FormData);
   } finally {

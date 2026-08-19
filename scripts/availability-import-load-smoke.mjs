@@ -143,7 +143,16 @@ async function requestJson(url, options, expectedStatus) {
     throw new Error("Availability import API response exceeded the bounded size.");
   }
   if (response.status !== expectedStatus) {
-    throw new Error("Availability import API returned HTTP " + response.status + ".");
+    let detail = "";
+    try {
+      const payload = JSON.parse(text);
+      const candidates = [payload?.message, payload?.error, payload?.code, payload?.detail];
+      detail = candidates.find((value) => typeof value === "string" && value.trim())?.trim() || "";
+    } catch {
+      detail = text.trim();
+    }
+    const boundedDetail = detail.replace(/[\u0000-\u001f\u007f]/g, " ").replace(/\s+/g, " ").slice(0, 240);
+    throw new Error("Availability import API returned HTTP " + response.status + (boundedDetail ? ": " + boundedDetail : "."));
   }
   try {
     return responseData(JSON.parse(text));
@@ -312,9 +321,11 @@ async function submitAndWait({
   timeoutMs,
   pollIntervalMs,
   userId,
+  staffIdentity,
 }) {
   const form = new FormData();
   form.append("file", new Blob([pdfBytes], { type: "application/pdf" }), "availability-load-smoke.pdf");
+  form.append("staffIdentity", staffIdentity);
   const idempotencyKey = "availability-load-smoke-" + Date.now() + "-" + sequence + "-" + randomUUID();
   const created = await requestJson(
     apiBase + "/availability-imports/users/" + encodeURIComponent(userId),
@@ -457,6 +468,7 @@ export async function runAvailabilityImportLoadSmoke() {
           timeoutMs: timeoutSeconds * 1000,
           pollIntervalMs,
           userId: targetUser.id,
+          staffIdentity: targetUser.pdfIdentity,
         });
       } catch (error) {
         stopped = true;

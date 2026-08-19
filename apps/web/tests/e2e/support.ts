@@ -55,9 +55,19 @@ export async function loginWithPin(
   await page.goto(`/auth/login?tenantSlug=${encodeURIComponent(e2eTenantSlug)}&next=${encodeURIComponent(next)}`);
   await page.getByLabel('Work email or username').fill(options.username);
   await page.getByRole('button', { name: 'Continue' }).click();
-  await expect(page.getByRole('heading', { name: 'Enter your PIN' })).toBeVisible();
-  await page.getByLabel('PIN').fill(options.pin);
-  await page.getByRole('button', { name: 'Sign in with PIN' }).click();
+  await expect(page.getByRole('heading', { name: /Enter your (?:PIN|password)/i })).toBeVisible();
+  const passwordStep = page.getByPlaceholder('Enter password');
+  if (await passwordStep.isVisible()) {
+    // Account-blind resolution intentionally selects the migrated-password
+    // compatibility step for usernames. PIN-only E2E fixtures are accepted
+    // by the password endpoint as a numeric credential, so keep this helper
+    // valid for both the staged browser flow and legacy PIN fixtures.
+    await passwordStep.fill(options.pin);
+    await page.getByRole('button', { name: 'Sign in with password' }).click();
+  } else {
+    await page.getByLabel('PIN').fill(options.pin);
+    await page.getByRole('button', { name: 'Sign in with PIN' }).click();
+  }
   await expect(page).toHaveURL(new RegExp(`${escapeRegExp(expectedPath)}(?:[?#].*)?$`));
 }
 
