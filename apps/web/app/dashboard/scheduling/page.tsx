@@ -291,14 +291,18 @@ function solveStatusLabel(job: ScheduleSolveJobSnapshot): string {
   return status;
 }
 
-function shiftToEvent(shift: ShiftRecord): StaffScheduleEvent {
+function shiftToEvent(shift: ShiftRecord, locked = false): StaffScheduleEvent {
   return {
     id: shift.id,
     resourceId: shift.userId ?? UNASSIGNED_RESOURCE_ID,
     title: normalizeRole(shift.role ?? shift.user?.role),
     start: shift.startTime,
     end: shift.endTime,
-    extendedProps: { role: normalizeRole(shift.role ?? shift.user?.role) },
+    extendedProps: {
+      role: normalizeRole(shift.role ?? shift.user?.role),
+      locked,
+      published: locked,
+    },
   };
 }
 
@@ -316,8 +320,8 @@ function breakToEvents(shift: ShiftRecord): StaffScheduleEvent[] {
   }));
 }
 
-function shiftsToEvents(shifts: ShiftRecord[]): StaffScheduleEvent[] {
-  return shifts.flatMap((shift) => [shiftToEvent(shift), ...breakToEvents(shift)]);
+function shiftsToEvents(shifts: ShiftRecord[], isLocked: (shift: ShiftRecord) => boolean): StaffScheduleEvent[] {
+  return shifts.flatMap((shift) => [shiftToEvent(shift, isLocked(shift)), ...breakToEvents(shift)]);
 }
 
 function keepFocusInsideDialog(event: ReactKeyboardEvent<HTMLElement>) {
@@ -594,12 +598,22 @@ function SchedulingContent() {
 
   const openShifts = useMemo(() => shifts.filter((shift) => !shift.userId), [shifts]);
   const visibleShifts = openFocus ? openShifts : shifts;
+  const scheduleStatusById = useMemo(
+    () => new Map(schedules.map((schedule) => [schedule.id, schedule.status])),
+    [schedules],
+  );
   const visibleResources = useMemo(() => {
     if (!openFocus) return resources;
     return resources.filter((resource) => resource.id === UNASSIGNED_RESOURCE_ID);
   }, [openFocus, resources]);
 
-  const scheduleEvents = useMemo(() => shiftsToEvents(visibleShifts), [visibleShifts]);
+  const scheduleEvents = useMemo(
+    () => shiftsToEvents(
+      visibleShifts,
+      (shift) => Boolean(shift.scheduleId && scheduleStatusById.get(shift.scheduleId) === 'PUBLISHED'),
+    ),
+    [scheduleStatusById, visibleShifts],
+  );
 
   const dateLabel = useMemo(
     () => {
@@ -611,10 +625,6 @@ function SchedulingContent() {
   );
 
   const visibleRange = useMemo(() => viewRange(selectedDate, viewMode, activeTimeZone), [activeTimeZone, selectedDate, viewMode]);
-  const scheduleStatusById = useMemo(
-    () => new Map(schedules.map((schedule) => [schedule.id, schedule.status])),
-    [schedules],
-  );
   const locationNameById = useMemo(
     () => new Map(locations.map((location) => [location.id, location.name])),
     [locations],

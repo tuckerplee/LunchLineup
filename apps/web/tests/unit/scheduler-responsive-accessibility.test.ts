@@ -16,6 +16,10 @@ const schedulingPageSource = readFileSync(
   resolve(webRoot, 'app/dashboard/scheduling/page.tsx'),
   'utf8',
 );
+const scheduleCommandSource = readFileSync(
+  resolve(webRoot, 'app/dashboard/scheduling/use-schedule-commands.ts'),
+  'utf8',
+);
 
 function contrastRatio(foreground: string, background: string): number {
   const luminance = (hex: string) => {
@@ -83,8 +87,8 @@ describe('scheduler responsive timeline contract', () => {
     expect(schedulerSource).toContain('Shift- or Alt-drag to copy');
     expect(schedulingPageSource).toContain('onEventCopy={capabilities.canWriteShifts && locationDataCurrent');
     expect(schedulingPageSource).toContain('<Copy size={14} /> Duplicate shift');
-    expect(schedulingPageSource).toContain('clientId: attempt.key');
-    expect(schedulingPageSource).toContain("'Shift copy failed. The source shift was not changed.'");
+    expect(scheduleCommandSource).toContain('clientId: attempt.key');
+    expect(scheduleCommandSource).toContain("'The shift could not be copied.'");
   });
 
   it('keeps gesture activation and cancellation inside the mounted board', () => {
