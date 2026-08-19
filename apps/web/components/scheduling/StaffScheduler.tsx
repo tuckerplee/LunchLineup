@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useEffect, useId, useMemo, useRef, useState } from 'react';
 import { formatTimeInTimeZone, instantToWallClockDate, wallClockDateToIso } from '@/lib/location-timezone';
 import {
     dateForTimelineOffset,
@@ -9,6 +9,15 @@ import {
     timelineOffsetForDate,
     type SchedulerTimelineViewMode,
 } from './scheduler-projection';
+import {
+    SCHEDULER_TOUCH_ACTIVATION_DELAY_MS,
+    resolveSchedulerDrop,
+    schedulerBoardId,
+    schedulerDeltaHours,
+    schedulerDroppableId,
+    schedulerPointerActivated,
+    type SchedulerGestureMode,
+} from './scheduler-gesture';
 
 interface StaffResource {
     id: string;
@@ -24,7 +33,13 @@ export interface StaffScheduleEvent {
     title: string;
     start: string;
     end: string;
-    extendedProps: { role: string; kind?: 'shift' | 'lunch' | 'break'; conflict?: string };
+    extendedProps: {
+        role: string;
+        kind?: 'shift' | 'lunch' | 'break';
+        conflict?: string;
+        locked?: boolean;
+        published?: boolean;
+    };
 }
 
 export type SchedulerViewMode = SchedulerTimelineViewMode;
@@ -32,13 +47,27 @@ export type SchedulerViewMode = SchedulerTimelineViewMode;
 type CoverageTone = 'healthy' | 'risk' | 'critical';
 
 type DragState = {
-    eventId: string;
-    mode: 'move' | 'copy';
+    event: StaffScheduleEvent;
+    mode: SchedulerGestureMode;
+    phase: 'pending' | 'active';
+    pointerId: number;
+    pointerType: string;
+    handle: HTMLButtonElement;
     startX: number;
     startY: number;
+    currentX: number;
     currentY: number;
     originalStart: Date;
     originalEnd: Date;
+    targetResourceId: string | null;
+    insideBoard: boolean;
+};
+
+type MoveDialogState = {
+    event: StaffScheduleEvent;
+    mode: SchedulerGestureMode;
+    resourceId: string;
+    offsetMinutes: string;
 };
 
 type ShiftActionState = {
@@ -103,13 +132,21 @@ function clamp(n: number, min: number, max: number): number {
 }
 
 export function StaffScheduler({ resources, events, viewMode, initialDate, timeZone, compactWindow = true, onEventChange, onEventCopy, onEventSelect, onEventDelete, onSlotSelect, onTimeSelectionError }: StaffSchedulerProps) {
+    const reactBoardId = useId();
+    const boardId = useMemo(() => schedulerBoardId(reactBoardId), [reactBoardId]);
     const [drag, setDrag] = useState<DragState | null>(null);
-    const [dragDeltaHours, setDragDeltaHours] = useState(0);
+    const dragRef = useRef<DragState | null>(null);
+    const touchActivationTimerRef = useRef<number | null>(null);
+    const suppressHandleClickRef = useRef(false);
+    const [moveDialog, setMoveDialog] = useState<MoveDialogState | null>(null);
     const [shiftAction, setShiftAction] = useState<ShiftActionState | null>(null);
     const [pendingDeleteEventId, setPendingDeleteEventId] = useState<string | null>(null);
+    const schedulerRootRef = useRef<HTMLDivElement | null>(null);
     const timelineScrollRef = useRef<HTMLDivElement | null>(null);
     const resourceListRef = useRef<HTMLDivElement | null>(null);
-    const suppressShiftClickRef = useRef(false);
+    const resourceRowRefs = useRef(new Map<string, HTMLDivElement>());
+    const shiftHandleRefs = useRef(new Map<string, HTMLButtonElement>());
+    const moveDialogResourceRef = useRef<HTMLSelectElement | null>(null);
     const [viewportWidth, setViewportWidth] = useState(0);
 
     const dayCount = viewMode === 'day' ? 1 : viewMode === 'threeDay' ? 3 : 7;
@@ -190,7 +227,13 @@ export function StaffScheduler({ resources, events, viewMode, initialDate, timeZ
             });
 
         const breaks = events.filter((event) => event.extendedProps.kind === 'break' || event.extendedProps.kind === 'lunch');
-        const markers = new Map<string, Array<{ leftPct: number; widthPct: number; kind: 'lunch' | 'break'; conflict?: string }>>();
+        const markers = new Map<string, Array<{
+            leftPct: number;
+            widthPct: number;
+            kind: 'lunch' | 'break';
+            conflict?: string;
+            ariaLabel: string;
+        }>>();
 
         for (const breakEvent of breaks) {
             const breakStart = instantToWallClockDate(breakEvent.start, timeZone);
@@ -215,6 +258,7 @@ export function StaffScheduler({ resources, events, viewMode, initialDate, timeZ
                     widthPct: clamp(widthPct, 6, 100),
                     kind: breakEvent.extendedProps.kind as 'lunch' | 'break',
                     conflict: breakEvent.extendedProps.conflict,
+                    ariaLabel: `${breakEvent.extendedProps.kind === 'lunch' ? 'Meal' : 'Break'} ${formatTimeInTimeZone(breakEvent.start, timeZone, false)} to ${formatTimeInTimeZone(breakEvent.end, timeZone, false)}${breakEvent.extendedProps.conflict ? `, conflict: ${breakEvent.extendedProps.conflict}` : ''}`,
                 });
                 markers.set(owner.segmentKey, existing);
             }
@@ -222,101 +266,319 @@ export function StaffScheduler({ resources, events, viewMode, initialDate, timeZ
 
         return { positionedShifts: shifts, breakMarkersByShift: markers };
     }, [dayStarts, events, hourWidth, maxHour, minHour, timeZone]);
-    const dragHint = useMemo(() => {
-        if (!drag) return 'Drag to move, hold Shift or Alt while dragging to copy, or click a shift to edit.';
-        if (dragDeltaHours === 0) return drag.mode === 'copy'
-            ? 'Release on another staff row to copy this shift.'
-            : 'Release on a staff row to reassign without changing time.';
-        const minutes = Math.round(Math.abs(dragDeltaHours) * 60);
-        const duration = minutes < 60
-            ? `${minutes} minutes`
-            : `${Math.floor(minutes / 60)}h${minutes % 60 ? ` ${minutes % 60}m` : ''}`;
-        return `Release to ${drag.mode === 'copy' ? 'copy' : 'save'} ${duration} ${dragDeltaHours > 0 ? 'later' : 'earlier'}.`;
-    }, [drag, dragDeltaHours]);
+    const isEventLocked = (event: StaffScheduleEvent) =>
+        Boolean(event.extendedProps.locked || event.extendedProps.published);
 
-    const handleDragStart = (e: React.PointerEvent<HTMLButtonElement>, event: StaffScheduleEvent) => {
-        const mode = (e.shiftKey || e.altKey) && onEventCopy ? 'copy' : 'move';
-        if (event.extendedProps.kind || (mode === 'copy' ? !onEventCopy : !onEventChange) || e.button !== 0) return;
-        const originalStart = instantToWallClockDate(event.start, timeZone);
-        const originalEnd = instantToWallClockDate(event.end, timeZone);
-        e.currentTarget.setPointerCapture(e.pointerId);
-        setShiftAction(null);
-        setPendingDeleteEventId(null);
-        suppressShiftClickRef.current = false;
-        setDrag({ eventId: event.id, mode, startX: e.clientX, startY: e.clientY, currentY: e.clientY, originalStart, originalEnd });
-        setDragDeltaHours(0);
+    const setCurrentDrag = (next: DragState | null) => {
+        dragRef.current = next;
+        setDrag(next);
     };
 
-    const handlePointerMove = (e: React.PointerEvent) => {
-        if (!drag) return;
-        const deltaPx = e.clientX - drag.startX;
-        const deltaY = e.clientY - drag.startY;
-        const deltaHours = Math.round((deltaPx / hourWidth) * 4) / 4;
-        if (deltaHours !== 0 || Math.abs(deltaY) > 4) suppressShiftClickRef.current = true;
-        setDrag((current) => (current ? { ...current, currentY: e.clientY } : current));
-        setDragDeltaHours(deltaHours);
+    const clearTouchActivationTimer = () => {
+        if (touchActivationTimerRef.current === null) return;
+        window.clearTimeout(touchActivationTimerRef.current);
+        touchActivationTimerRef.current = null;
+    };
+
+    const releaseDragCapture = (current: DragState | null) => {
+        if (!current) return;
+        try {
+            if (current.handle.hasPointerCapture(current.pointerId)) {
+                current.handle.releasePointerCapture(current.pointerId);
+            }
+        } catch {
+            // A detached handle has already lost capture; cancellation remains local and callback-free.
+        }
+    };
+
+    const cancelDrag = (suppressHandleClick = true) => {
+        const current = dragRef.current;
+        if (!current) return;
+        clearTouchActivationTimer();
+        dragRef.current = null;
+        setDrag(null);
+        suppressHandleClickRef.current = suppressHandleClick;
+        releaseDragCapture(current);
     };
 
     const findResourceIdAtPoint = (clientX: number, clientY: number): string | null => {
-        const rows = Array.from(document.querySelectorAll<HTMLElement>('[data-resource-id]'));
-        const row = rows.find((candidate) => {
-            const rect = candidate.getBoundingClientRect();
-            return clientY >= rect.top && clientY <= rect.bottom && clientX >= rect.left && clientX <= rect.right;
+        for (const [resourceId, row] of resourceRowRefs.current) {
+            const rect = row.getBoundingClientRect();
+            if (clientY >= rect.top && clientY <= rect.bottom && clientX >= rect.left && clientX <= rect.right) {
+                return resourceId;
+            }
+        }
+        return null;
+    };
+
+    const resolveShiftedTimes = (event: StaffScheduleEvent, deltaHours: number) => {
+        const originalStart = instantToWallClockDate(event.start, timeZone);
+        const originalEnd = instantToWallClockDate(event.end, timeZone);
+        if (deltaHours === 0) {
+            return { start: originalStart, end: originalEnd, startIso: event.start, endIso: event.end };
+        }
+        const originalOffset = timelineOffsetForDate(originalStart, dayStarts, minHour, maxHour);
+        if (originalOffset === null) return null;
+        const nextOffset = originalOffset + deltaHours;
+        if (nextOffset < 0 || nextOffset >= totalHours) return null;
+        const start = dateForTimelineOffset(nextOffset, dayStarts, minHour, maxHour);
+        const deltaMs = start.getTime() - originalStart.getTime();
+        const end = new Date(originalEnd.getTime() + deltaMs);
+        return {
+            start,
+            end,
+            startIso: wallClockDateToIso(start, timeZone),
+            endIso: wallClockDateToIso(end, timeZone),
+        };
+    };
+
+    const buildDragPreview = (current: DragState) => {
+        const deltaHours = schedulerDeltaHours(current.currentX - current.startX, hourWidth);
+        const callbackAvailable = current.mode === 'copy' ? Boolean(onEventCopy) : Boolean(onEventChange);
+        const decision = resolveSchedulerDrop({
+            active: current.phase === 'active',
+            insideBoard: current.insideBoard,
+            locked: isEventLocked(current.event),
+            callbackAvailable,
+            sourceResourceId: current.event.resourceId,
+            targetResourceId: current.targetResourceId,
+            deltaHours,
         });
-        return row?.dataset.resourceId ?? null;
+        const sourceTitle = resources.find((resource) => resource.id === current.event.resourceId)?.title ?? 'current staff member';
+        const targetTitle = resources.find((resource) => resource.id === current.targetResourceId)?.title ?? 'outside the schedule';
+        try {
+            const shifted = resolveShiftedTimes(current.event, deltaHours);
+            if (!shifted) {
+                return {
+                    decision: { kind: 'cancel', reason: 'outside-board' } as const,
+                    deltaHours,
+                    label: `Cannot ${current.mode} ${current.event.title}: the target time is outside this board.`,
+                    shifted: null,
+                    errorMessage: null,
+                    sourceTitle,
+                    targetTitle,
+                };
+            }
+            const verb = current.mode === 'copy' ? 'Copy' : 'Move';
+            const startLabel = `${String(shifted.start.getHours()).padStart(2, '0')}:${String(shifted.start.getMinutes()).padStart(2, '0')}`;
+            const endLabel = `${String(shifted.end.getHours()).padStart(2, '0')}:${String(shifted.end.getMinutes()).padStart(2, '0')}`;
+            const label = decision.kind === 'apply'
+                ? `${verb} ${current.event.title} from ${sourceTitle} to ${targetTitle}, ${startLabel} to ${endLabel}.`
+                : `Cannot ${current.mode} ${current.event.title} to ${targetTitle}, ${startLabel} to ${endLabel}.`;
+            return { decision, deltaHours, label, shifted, errorMessage: null, sourceTitle, targetTitle };
+        } catch (error) {
+            const errorMessage = (error as Error).message;
+            return {
+                decision: { kind: 'cancel', reason: 'unavailable' } as const,
+                deltaHours,
+                label: `Cannot ${current.mode} ${current.event.title}: ${errorMessage}`,
+                shifted: null,
+                errorMessage,
+                sourceTitle,
+                targetTitle,
+            };
+        }
     };
 
-    const handlePointerUp = (e?: React.PointerEvent) => {
-        if (!drag) return;
+    const dragPreview = drag?.phase === 'active' ? buildDragPreview(drag) : null;
+    const dragHint = drag?.phase === 'active'
+        ? dragPreview?.label ?? 'Release on a valid staff row or press Escape to cancel.'
+        : drag?.pointerType === 'touch'
+            ? 'Keep holding the move handle to start; release to cancel.'
+            : 'Use a shift card for details. Use its move handle to drag, copy, or open keyboard controls.';
 
-        let newResourceId: string | null = null;
-        if (e) {
-            newResourceId = findResourceIdAtPoint(e.clientX, e.clientY);
+    const handleDragStart = (e: React.PointerEvent<HTMLButtonElement>, event: StaffScheduleEvent) => {
+        const mode: SchedulerGestureMode = (e.shiftKey || e.altKey) && onEventCopy ? 'copy' : 'move';
+        if (event.extendedProps.kind || isEventLocked(event) || (mode === 'copy' ? !onEventCopy : !onEventChange) || e.button !== 0) return;
+        e.stopPropagation();
+        setShiftAction(null);
+        setPendingDeleteEventId(null);
+        setMoveDialog(null);
+        suppressHandleClickRef.current = false;
+        const next: DragState = {
+            event,
+            mode,
+            phase: 'pending',
+            pointerId: e.pointerId,
+            pointerType: e.pointerType,
+            handle: e.currentTarget,
+            startX: e.clientX,
+            startY: e.clientY,
+            currentX: e.clientX,
+            currentY: e.clientY,
+            originalStart: instantToWallClockDate(event.start, timeZone),
+            originalEnd: instantToWallClockDate(event.end, timeZone),
+            targetResourceId: event.resourceId,
+            insideBoard: true,
+        };
+        try {
+            e.currentTarget.setPointerCapture(e.pointerId);
+        } catch {
+            // Synthetic component tests may not establish a native active-pointer record.
         }
-
-        if (dragDeltaHours !== 0) {
-            const originalOffset = timelineOffsetForDate(drag.originalStart, dayStarts, minHour, maxHour);
-            const newStart = originalOffset === null
-                ? new Date(drag.originalStart.getTime() + dragDeltaHours * 3600000)
-                : dateForTimelineOffset(originalOffset + dragDeltaHours, dayStarts, minHour, maxHour);
-            const deltaMs = newStart.getTime() - drag.originalStart.getTime();
-            const newEnd = new Date(drag.originalEnd.getTime() + deltaMs);
-            const event = events.find((ev) => ev.id === drag.eventId);
-            if (event) {
-                try {
-                    const startIso = wallClockDateToIso(newStart, timeZone);
-                    const endIso = wallClockDateToIso(newEnd, timeZone);
-                    const applyChange = drag.mode === 'copy' ? onEventCopy : onEventChange;
-                    applyChange?.(event.id, startIso, endIso, newResourceId ?? event.resourceId);
-                } catch (error) {
-                    onTimeSelectionError?.((error as Error).message);
-                }
-            }
-        } else if (newResourceId) {
-            const event = events.find((ev) => ev.id === drag.eventId);
-            if (event && newResourceId !== event.resourceId) {
-                const applyChange = drag.mode === 'copy' ? onEventCopy : onEventChange;
-                applyChange?.(event.id, event.start, event.end, newResourceId);
-            }
+        setCurrentDrag(next);
+        if (e.pointerType === 'touch') {
+            touchActivationTimerRef.current = window.setTimeout(() => {
+                const pending = dragRef.current;
+                if (!pending || pending.pointerId !== e.pointerId || pending.phase !== 'pending') return;
+                suppressHandleClickRef.current = true;
+                setCurrentDrag({ ...pending, phase: 'active' });
+            }, SCHEDULER_TOUCH_ACTIVATION_DELAY_MS);
         }
-
-        setDrag(null);
-        setDragDeltaHours(0);
     };
 
-    const cancelDrag = () => {
-        if (!drag) return;
-        suppressShiftClickRef.current = true;
+    const handlePointerMove = (e: React.PointerEvent) => {
+        const current = dragRef.current;
+        if (!current || e.pointerId !== current.pointerId) return;
+        const targetResourceId = findResourceIdAtPoint(e.clientX, e.clientY);
+        const mode: SchedulerGestureMode = (e.shiftKey || e.altKey) && onEventCopy ? 'copy' : 'move';
+        const movedEnough = schedulerPointerActivated(current.startX, current.startY, e.clientX, e.clientY);
+        if (current.phase === 'pending' && current.pointerType === 'touch' && movedEnough) {
+            cancelDrag(true);
+            return;
+        }
+        const phase = current.phase === 'active' || movedEnough ? 'active' : 'pending';
+        if (phase === 'active') {
+            clearTouchActivationTimer();
+            suppressHandleClickRef.current = true;
+            e.preventDefault();
+        }
+        setCurrentDrag({
+            ...current,
+            mode,
+            phase,
+            currentX: e.clientX,
+            currentY: e.clientY,
+            targetResourceId,
+            insideBoard: targetResourceId !== null,
+        });
+    };
+
+    const handlePointerUp = (e: React.PointerEvent) => {
+        const current = dragRef.current;
+        if (!current || e.pointerId !== current.pointerId) return;
+        const targetResourceId = findResourceIdAtPoint(e.clientX, e.clientY);
+        const completed: DragState = {
+            ...current,
+            currentX: e.clientX,
+            currentY: e.clientY,
+            targetResourceId,
+            insideBoard: targetResourceId !== null,
+        };
+        if (completed.phase !== 'active') {
+            cancelDrag(false);
+            return;
+        }
+        const preview = buildDragPreview(completed);
+        clearTouchActivationTimer();
+        dragRef.current = null;
         setDrag(null);
-        setDragDeltaHours(0);
+        suppressHandleClickRef.current = true;
+        releaseDragCapture(current);
+        if (preview.decision.kind !== 'apply' || !preview.shifted) {
+            if (preview.errorMessage) onTimeSelectionError?.(preview.errorMessage);
+            return;
+        }
+        const applyChange = completed.mode === 'copy' ? onEventCopy : onEventChange;
+        applyChange?.(
+            completed.event.id,
+            preview.shifted.startIso,
+            preview.shifted.endIso,
+            preview.decision.resourceId,
+        );
+    };
+
+    useEffect(() => {
+        if (!drag && !moveDialog) return;
+        const handleKeyDown = (event: KeyboardEvent) => {
+            if (event.key !== 'Escape') return;
+            event.preventDefault();
+            if (dragRef.current) cancelDrag(true);
+            if (moveDialog) {
+                const eventId = moveDialog.event.id;
+                setMoveDialog(null);
+                window.setTimeout(() => shiftHandleRefs.current.get(eventId)?.focus(), 0);
+            }
+        };
+        const handleWindowBlur = () => cancelDrag(true);
+        window.addEventListener('keydown', handleKeyDown);
+        window.addEventListener('blur', handleWindowBlur);
+        return () => {
+            window.removeEventListener('keydown', handleKeyDown);
+            window.removeEventListener('blur', handleWindowBlur);
+        };
+    }, [drag, moveDialog]);
+
+    useEffect(() => () => {
+        clearTouchActivationTimer();
+        dragRef.current = null;
+    }, []);
+
+    useEffect(() => {
+        if (!moveDialog) return;
+        moveDialogResourceRef.current?.focus();
+    }, [moveDialog]);
+
+    const openMoveDialog = (event: StaffScheduleEvent) => {
+        if (isEventLocked(event) || !onEventChange) return;
+        setShiftAction(null);
+        setPendingDeleteEventId(null);
+        setMoveDialog({ event, mode: 'move', resourceId: event.resourceId, offsetMinutes: '0' });
+    };
+
+    const closeMoveDialog = () => {
+        const eventId = moveDialog?.event.id;
+        setMoveDialog(null);
+        window.setTimeout(() => {
+            if (eventId) shiftHandleRefs.current.get(eventId)?.focus();
+        }, 0);
+    };
+
+    const handleMoveDialogSubmit = (e: React.FormEvent) => {
+        e.preventDefault();
+        if (!moveDialog || isEventLocked(moveDialog.event)) return;
+        const offsetMinutes = Number(moveDialog.offsetMinutes);
+        if (!Number.isFinite(offsetMinutes) || offsetMinutes % 15 !== 0) return;
+        const decision = resolveSchedulerDrop({
+            active: true,
+            insideBoard: resources.some((resource) => resource.id === moveDialog.resourceId),
+            locked: false,
+            callbackAvailable: moveDialog.mode === 'copy' ? Boolean(onEventCopy) : Boolean(onEventChange),
+            sourceResourceId: moveDialog.event.resourceId,
+            targetResourceId: moveDialog.resourceId,
+            deltaHours: offsetMinutes / 60,
+        });
+        if (decision.kind !== 'apply') return;
+        try {
+            const shifted = resolveShiftedTimes(moveDialog.event, offsetMinutes / 60);
+            if (!shifted) return;
+            const applyChange = moveDialog.mode === 'copy' ? onEventCopy : onEventChange;
+            applyChange?.(moveDialog.event.id, shifted.startIso, shifted.endIso, decision.resourceId);
+            closeMoveDialog();
+        } catch (error) {
+            onTimeSelectionError?.((error as Error).message);
+        }
+    };
+
+    const trapMoveDialogFocus = (event: React.KeyboardEvent<HTMLFormElement>) => {
+        if (event.key !== 'Tab') return;
+        const focusable = Array.from(event.currentTarget.querySelectorAll<HTMLElement>(
+            'button:not([disabled]), select:not([disabled]), input:not([disabled])',
+        ));
+        const first = focusable[0];
+        const last = focusable[focusable.length - 1];
+        if (!first || !last) return;
+        if (event.shiftKey && document.activeElement === first) {
+            event.preventDefault();
+            last.focus();
+        } else if (!event.shiftKey && document.activeElement === last) {
+            event.preventDefault();
+            first.focus();
+        }
     };
 
     const handleShiftClick = (e: React.MouseEvent, event: StaffScheduleEvent) => {
         e.stopPropagation();
-        if (dragDeltaHours !== 0 || suppressShiftClickRef.current) {
-            suppressShiftClickRef.current = false;
-            return;
-        }
         if (onEventSelect) {
             setShiftAction(null);
             setPendingDeleteEventId(null);
@@ -368,10 +630,46 @@ export function StaffScheduler({ resources, events, viewMode, initialDate, timeZ
     const formatActionTime = (dateIso: string) =>
         formatTimeInTimeZone(dateIso, timeZone);
 
+    const draggedPositionedEvent = drag?.phase === 'active'
+        ? positionedShifts.find((event) => event.id === drag.event.id)
+        : null;
+    const moveDialogOffsetMinutes = moveDialog ? Number(moveDialog.offsetMinutes) : 0;
+    const moveDialogDecision = moveDialog
+        ? resolveSchedulerDrop({
+            active: true,
+            insideBoard: resources.some((resource) => resource.id === moveDialog.resourceId),
+            locked: isEventLocked(moveDialog.event),
+            callbackAvailable: moveDialog.mode === 'copy' ? Boolean(onEventCopy) : Boolean(onEventChange),
+            sourceResourceId: moveDialog.event.resourceId,
+            targetResourceId: moveDialog.resourceId,
+            deltaHours: moveDialogOffsetMinutes / 60,
+        })
+        : null;
+    let moveDialogPreview = '';
+    if (moveDialog && Number.isFinite(moveDialogOffsetMinutes) && moveDialogOffsetMinutes % 15 === 0) {
+        try {
+            const shifted = resolveShiftedTimes(moveDialog.event, moveDialogOffsetMinutes / 60);
+            const person = resources.find((resource) => resource.id === moveDialog.resourceId)?.title ?? 'unknown staff member';
+            if (shifted) {
+                moveDialogPreview = `${moveDialog.mode === 'copy' ? 'Copy' : 'Move'} to ${person}, ${String(shifted.start.getHours()).padStart(2, '0')}:${String(shifted.start.getMinutes()).padStart(2, '0')} to ${String(shifted.end.getHours()).padStart(2, '0')}:${String(shifted.end.getMinutes()).padStart(2, '0')}.`;
+            }
+        } catch (error) {
+            moveDialogPreview = (error as Error).message;
+        }
+    }
+
     return (
-        <div className="scheduler-root" onPointerMove={handlePointerMove} onPointerUp={handlePointerUp} onPointerCancel={cancelDrag}>
+        <div
+            id={boardId}
+            ref={schedulerRootRef}
+            className="scheduler-root"
+            data-scheduler-board-id={boardId}
+            onPointerMove={handlePointerMove}
+            onPointerUp={handlePointerUp}
+            onPointerCancel={() => cancelDrag(true)}
+        >
             <div className="scheduler-status">
-                <span id="scheduler-timeline-instructions">{dragHint}</span>
+                <span id={`${boardId}-instructions`} role="status" aria-live="polite">{dragHint}</span>
                 <span>{currentLabel}</span>
             </div>
 
@@ -411,7 +709,7 @@ export function StaffScheduler({ resources, events, viewMode, initialDate, timeZ
                     ref={timelineScrollRef}
                     role="region"
                     aria-label={currentLabel + ' staff schedule timeline'}
-                    aria-describedby="scheduler-timeline-instructions"
+                    aria-describedby={`${boardId}-instructions`}
                     tabIndex={0}
                     onScroll={handleTimelineScroll}
                     style={{ overflowX: allowsHorizontalScroll ? 'auto' : 'hidden' }}
@@ -440,9 +738,18 @@ export function StaffScheduler({ resources, events, viewMode, initialDate, timeZ
                                 return (
                                     <div
                                         key={resource.id}
-                                        className="timeline-row"
+                                        ref={(node) => {
+                                            if (node) resourceRowRefs.current.set(resource.id, node);
+                                            else resourceRowRefs.current.delete(resource.id);
+                                        }}
+                                        className={`timeline-row ${drag?.phase === 'active' && drag.targetResourceId === resource.id
+                                            ? dragPreview?.decision.kind === 'apply'
+                                                ? 'timeline-row--drop-valid'
+                                                : 'timeline-row--drop-invalid'
+                                            : ''}`}
                                         data-resource-id={resource.id}
                                         data-resource-title={resource.title}
+                                        data-scheduler-droppable-id={schedulerDroppableId(boardId, resource.id)}
                                         role="listitem"
                                         aria-label={resource.title + ', ' + resource.role + ', schedule timeline'}
                                         onClick={(ev) => handleSlotClick(ev, resource.id)}
@@ -464,49 +771,113 @@ export function StaffScheduler({ resources, events, viewMode, initialDate, timeZ
                                             const colors = ROLE_PALETTE[event.extendedProps.role] ?? ROLE_PALETTE.DEFAULT;
                                             const start = formatTimeInTimeZone(event.start, timeZone, false);
                                             const end = formatTimeInTimeZone(event.end, timeZone, false);
-                                            const isDragged = drag?.eventId === event.id;
-                                            const offsetPx = isDragged ? dragDeltaHours * hourWidth : 0;
-                                            const offsetY = isDragged ? drag.currentY - drag.startY : 0;
-                                            const left = clamp(event.left + offsetPx, 0, Math.max(0, timelineWidth - event.width));
+                                            const locked = isEventLocked(event);
+                                            const isSourceGhost = drag?.phase === 'active' && drag.event.id === event.id;
+                                            const canMove = !locked && Boolean(onEventChange);
 
                                             return (
-                                                <button
+                                                <div
                                                     key={event.segmentKey}
-                                                    type="button"
-                                                    onPointerDown={(ev) => handleDragStart(ev, event)}
-                                                    onClick={(ev) => handleShiftClick(ev, event)}
-                                                    className="shift-block"
-                                                    aria-label={`Edit ${event.title} shift, ${start} to ${end}`}
-                                                    title={`${event.title}, ${start} to ${end}. Click to edit, drag to move, or hold Shift or Alt while dragging to copy.`}
+                                                    className={`shift-block ${isSourceGhost ? 'shift-block--source-ghost' : ''} ${locked ? 'shift-block--locked' : ''}`}
+                                                    data-shift-event-id={event.id}
                                                     style={{
-                                                        left,
+                                                        left: event.left,
                                                         width: event.width,
                                                         background: colors.bg,
                                                         borderLeftColor: colors.border,
                                                         color: colors.text,
-                                                        opacity: isDragged ? 0.8 : 1,
-                                                        transform: isDragged ? `translateY(${offsetY}px)` : undefined,
-                                                        zIndex: isDragged ? 7 : undefined,
                                                     }}
                                                 >
-                                                    <span className="shift-time">{`${start}-${end}`}</span>
-                                                    {viewMode !== 'week' ? <span className="shift-role">{event.extendedProps.role}</span> : null}
-                                                    {breakMarkersByShift.get(event.segmentKey)?.length ? (
-                                                        <div className="shift-markers" aria-hidden="true">
-                                                            {breakMarkersByShift.get(event.segmentKey)?.map((marker, i) => (
-                                                                <span
-                                                                    key={`${event.segmentKey}-marker-${i}`}
-                                                                    className={`shift-marker ${marker.kind === 'lunch' ? 'shift-marker-lunch' : 'shift-marker-break'} ${marker.conflict ? 'shift-marker-conflict' : ''}`}
-                                                                    style={{ left: `${marker.leftPct}%`, width: `${marker.widthPct}%` }}
-                                                                >
-                                                                    {marker.kind === 'lunch' ? 'M' : 'B'}
-                                                                </span>
-                                                            ))}
-                                                        </div>
-                                                    ) : null}
-                                                </button>
+                                                    <button
+                                                        type="button"
+                                                        onClick={(ev) => handleShiftClick(ev, event)}
+                                                        className="shift-details-button"
+                                                        aria-label={`${locked ? 'View' : 'Edit'} ${event.title} shift, ${start} to ${end}${locked ? ', published' : ''}`}
+                                                        title={`${event.title}, ${start} to ${end}. Click for ${locked ? 'published shift details' : 'details or editing'}.`}
+                                                    >
+                                                        <span className="shift-time">{`${start}-${end}`}</span>
+                                                        {viewMode !== 'week' ? <span className="shift-role">{event.extendedProps.role}</span> : null}
+                                                        {breakMarkersByShift.get(event.segmentKey)?.length ? (
+                                                            <span className="shift-markers" role="list" aria-label="Shift breaks">
+                                                                {breakMarkersByShift.get(event.segmentKey)?.map((marker, i) => (
+                                                                    <span
+                                                                        key={`${event.segmentKey}-marker-${i}`}
+                                                                        role="listitem"
+                                                                        aria-label={marker.ariaLabel}
+                                                                        className={`shift-marker ${marker.kind === 'lunch' ? 'shift-marker-lunch' : 'shift-marker-break'} ${marker.conflict ? 'shift-marker-conflict' : ''}`}
+                                                                        style={{ left: `${marker.leftPct}%`, width: `${marker.widthPct}%` }}
+                                                                    >
+                                                                        <span aria-hidden="true">{marker.kind === 'lunch' ? 'M' : 'B'}</span>
+                                                                    </span>
+                                                                ))}
+                                                            </span>
+                                                        ) : null}
+                                                    </button>
+                                                    <button
+                                                        ref={(node) => {
+                                                            if (node) shiftHandleRefs.current.set(event.id, node);
+                                                        }}
+                                                        type="button"
+                                                        className="shift-drag-handle"
+                                                        disabled={!canMove}
+                                                        aria-label={locked
+                                                            ? `${event.title} is published and cannot be moved`
+                                                            : canMove
+                                                                ? `Move or copy ${event.title}`
+                                                                : `${event.title} cannot be moved`}
+                                                        aria-describedby={`${boardId}-instructions`}
+                                                        title={locked ? 'Published shift: open details to reopen it before moving.' : 'Drag to move. Shift- or Alt-drag to copy. Click or press Enter for keyboard controls.'}
+                                                        onPointerDown={(ev) => handleDragStart(ev, event)}
+                                                        onLostPointerCapture={() => cancelDrag(true)}
+                                                        onBlur={() => {
+                                                            if (dragRef.current?.event.id === event.id) cancelDrag(true);
+                                                        }}
+                                                        onKeyDown={(ev) => {
+                                                            if (ev.key !== 'Enter' && ev.key !== ' ') return;
+                                                            ev.preventDefault();
+                                                            ev.stopPropagation();
+                                                            openMoveDialog(event);
+                                                        }}
+                                                        onClick={(ev) => {
+                                                            ev.preventDefault();
+                                                            ev.stopPropagation();
+                                                            if (suppressHandleClickRef.current) {
+                                                                suppressHandleClickRef.current = false;
+                                                                return;
+                                                            }
+                                                            openMoveDialog(event);
+                                                        }}
+                                                    >
+                                                        <span aria-hidden="true">⠿</span>
+                                                    </button>
+                                                </div>
                                             );
                                         })}
+                                        {drag?.phase === 'active'
+                                            && draggedPositionedEvent
+                                            && dragPreview?.shifted
+                                            && drag.targetResourceId === resource.id ? (
+                                                <div
+                                                    className={`shift-drag-preview ${dragPreview.decision.kind === 'apply' ? 'shift-drag-preview--valid' : 'shift-drag-preview--invalid'}`}
+                                                    aria-hidden="true"
+                                                    style={{
+                                                        left: clamp(
+                                                            draggedPositionedEvent.left + dragPreview.deltaHours * hourWidth,
+                                                            0,
+                                                            Math.max(0, timelineWidth - draggedPositionedEvent.width),
+                                                        ),
+                                                        width: draggedPositionedEvent.width,
+                                                        background: (ROLE_PALETTE[drag.event.extendedProps.role] ?? ROLE_PALETTE.DEFAULT).bg,
+                                                        borderLeftColor: (ROLE_PALETTE[drag.event.extendedProps.role] ?? ROLE_PALETTE.DEFAULT).border,
+                                                        color: (ROLE_PALETTE[drag.event.extendedProps.role] ?? ROLE_PALETTE.DEFAULT).text,
+                                                    }}
+                                                >
+                                                    <span className="shift-time">
+                                                        {`${String(dragPreview.shifted.start.getHours()).padStart(2, '0')}:${String(dragPreview.shifted.start.getMinutes()).padStart(2, '0')}-${String(dragPreview.shifted.end.getHours()).padStart(2, '0')}:${String(dragPreview.shifted.end.getMinutes()).padStart(2, '0')}`}
+                                                    </span>
+                                                    <span className="shift-preview-action">{drag.mode === 'copy' ? 'Copy' : 'Move'} to {dragPreview.targetTitle}</span>
+                                                </div>
+                                            ) : null}
                                         {shiftAction && shiftAction.event.resourceId === resource.id ? (
                                             <div className="shift-action-popover" style={{ left: shiftAction.left, top: shiftAction.top }} onClick={(ev) => ev.stopPropagation()}>
                                                 <div>
@@ -521,9 +892,9 @@ export function StaffScheduler({ resources, events, viewMode, initialDate, timeZ
                                                         setPendingDeleteEventId(null);
                                                     }}
                                                 >
-                                                    Edit shift
+                                                    {isEventLocked(shiftAction.event) ? 'View shift details' : 'Edit shift'}
                                                 </button>
-                                                {onEventDelete ? (
+                                                {onEventDelete && !isEventLocked(shiftAction.event) ? (
                                                     <button
                                                         type="button"
                                                         className="shift-action-delete"
@@ -561,6 +932,89 @@ export function StaffScheduler({ resources, events, viewMode, initialDate, timeZ
                     </div>
                 </div>
             </div>
+
+            {moveDialog ? (
+                <div
+                    className="shift-move-dialog-backdrop"
+                    onMouseDown={(event) => {
+                        if (event.target === event.currentTarget) closeMoveDialog();
+                    }}
+                >
+                    <form
+                        className="shift-move-dialog"
+                        role="dialog"
+                        aria-modal="true"
+                        aria-labelledby={`${boardId}-move-dialog-title`}
+                        aria-describedby={`${boardId}-move-dialog-description`}
+                        onSubmit={handleMoveDialogSubmit}
+                        onKeyDown={trapMoveDialogFocus}
+                        onMouseDown={(event) => event.stopPropagation()}
+                    >
+                        <div className="shift-move-dialog__heading">
+                            <div>
+                                <h2 id={`${boardId}-move-dialog-title`}>Move or copy shift</h2>
+                                <p id={`${boardId}-move-dialog-description`}>
+                                    {moveDialog.event.title}, {formatActionTime(moveDialog.event.start)} to {formatActionTime(moveDialog.event.end)}.
+                                </p>
+                            </div>
+                            <button type="button" className="shift-move-dialog__close" aria-label="Close move shift dialog" onClick={closeMoveDialog}>×</button>
+                        </div>
+
+                        {onEventCopy ? (
+                            <label>
+                                Action
+                                <select
+                                    value={moveDialog.mode}
+                                    onChange={(event) => setMoveDialog((current) => current ? { ...current, mode: event.target.value as SchedulerGestureMode } : current)}
+                                >
+                                    <option value="move">Move</option>
+                                    <option value="copy">Copy</option>
+                                </select>
+                            </label>
+                        ) : null}
+
+                        <label>
+                            Team member
+                            <select
+                                ref={moveDialogResourceRef}
+                                value={moveDialog.resourceId}
+                                onChange={(event) => setMoveDialog((current) => current ? { ...current, resourceId: event.target.value } : current)}
+                            >
+                                {resources.map((resource) => (
+                                    <option key={resource.id} value={resource.id}>{resource.title}</option>
+                                ))}
+                            </select>
+                        </label>
+
+                        <label>
+                            Time adjustment in minutes
+                            <input
+                                type="number"
+                                step="15"
+                                min={-totalHours * 60}
+                                max={totalHours * 60}
+                                value={moveDialog.offsetMinutes}
+                                onChange={(event) => setMoveDialog((current) => current ? { ...current, offsetMinutes: event.target.value } : current)}
+                            />
+                        </label>
+
+                        <p className="shift-move-dialog__preview" role="status" aria-live="polite">
+                            {moveDialogPreview || 'Choose a staff member or a 15-minute time adjustment.'}
+                        </p>
+
+                        <div className="shift-move-dialog__actions">
+                            <button type="button" onClick={closeMoveDialog}>Cancel</button>
+                            <button
+                                type="submit"
+                                className="shift-move-dialog__apply"
+                                disabled={moveDialogDecision?.kind !== 'apply' || !moveDialogPreview}
+                            >
+                                Apply {moveDialog.mode}
+                            </button>
+                        </div>
+                    </form>
+                </div>
+            ) : null}
 
             <style jsx>{`
                 .scheduler-root {
@@ -640,11 +1094,11 @@ export function StaffScheduler({ resources, events, viewMode, initialDate, timeZ
                     position: sticky;
                     top: 0;
                     z-index: 3;
-                    height: 46px;
+                    height: 52px;
                     display: flex;
                     align-items: center;
                     padding: 0 10px;
-                    font-size: 0.72rem;
+                    font-size: 0.78rem;
                     font-weight: 700;
                     text-transform: uppercase;
                     letter-spacing: 0;
@@ -660,7 +1114,7 @@ export function StaffScheduler({ resources, events, viewMode, initialDate, timeZ
                 }
 
                 .resource-row-name {
-                    height: 42px;
+                    height: 56px;
                     display: flex;
                     align-items: center;
                     gap: 8px;
@@ -669,25 +1123,25 @@ export function StaffScheduler({ resources, events, viewMode, initialDate, timeZ
                 }
 
                 .avatar {
-                    width: 26px;
-                    height: 26px;
+                    width: 32px;
+                    height: 32px;
                     border-radius: 50%;
                     border: 1px solid;
                     display: grid;
                     place-items: center;
-                    font-size: 0.56rem;
+                    font-size: 0.66rem;
                     font-weight: 700;
                 }
 
                 .resource-name {
-                    font-size: 0.73rem;
+                    font-size: 0.8rem;
                     font-weight: 700;
                     line-height: 1.1;
                     color: #1f2d49;
                 }
 
                 .resource-role {
-                    font-size: 0.56rem;
+                    font-size: 0.65rem;
                     font-weight: 700;
                     text-transform: uppercase;
                     letter-spacing: 0;
@@ -711,7 +1165,7 @@ export function StaffScheduler({ resources, events, viewMode, initialDate, timeZ
                     position: sticky;
                     top: 0;
                     z-index: 4;
-                    height: 46px;
+                    height: 52px;
                     border-bottom: 1px solid #dce4f1;
                     background: #f9fbff;
                 }
@@ -719,11 +1173,11 @@ export function StaffScheduler({ resources, events, viewMode, initialDate, timeZ
                 .day-header {
                     position: absolute;
                     top: 0;
-                    height: 22px;
+                    height: 26px;
                     display: flex;
                     align-items: center;
                     justify-content: center;
-                    font-size: 0.68rem;
+                    font-size: 0.72rem;
                     font-weight: 700;
                     color: #3f5278;
                     border-right: 1px solid #dce4f1;
@@ -731,12 +1185,12 @@ export function StaffScheduler({ resources, events, viewMode, initialDate, timeZ
 
                 .hour-label {
                     position: absolute;
-                    top: 22px;
-                    height: 24px;
+                    top: 26px;
+                    height: 26px;
                     display: flex;
                     align-items: center;
                     justify-content: center;
-                    font-size: 0.58rem;
+                    font-size: 0.65rem;
                     color: #526381;
                     border-right: 1px solid #eef2fb;
                 }
@@ -747,10 +1201,21 @@ export function StaffScheduler({ resources, events, viewMode, initialDate, timeZ
 
                 .timeline-row {
                     position: relative;
-                    height: 42px;
+                    height: 56px;
                     border-bottom: 1px solid #e6ecf7;
                     background: #fff;
                     cursor: crosshair;
+                    transition: box-shadow 120ms ease, background 120ms ease;
+                }
+
+                .timeline-row--drop-valid {
+                    background: #edfdf5;
+                    box-shadow: inset 0 0 0 3px #17b26a;
+                }
+
+                .timeline-row--drop-invalid {
+                    background: #fff1f2;
+                    box-shadow: inset 0 0 0 3px #e74867;
                 }
 
                 .timeline-grid {
@@ -768,22 +1233,114 @@ export function StaffScheduler({ resources, events, viewMode, initialDate, timeZ
 
                 .shift-block {
                     position: absolute;
-                    top: 4px;
-                    bottom: 4px;
-                    border: none;
-                    border-left: 3px solid;
-                    border-radius: 4px;
+                    top: 6px;
+                    bottom: 6px;
+                    border-left: 4px solid;
+                    border-radius: 6px;
+                    user-select: none;
+                    overflow: hidden;
+                }
+
+                .shift-block--source-ghost {
+                    opacity: 0.38;
+                    outline: 2px dashed currentColor;
+                    outline-offset: -2px;
+                }
+
+                .shift-block--source-ghost > * {
+                    pointer-events: none;
+                }
+
+                .shift-block--locked {
+                    background-image: repeating-linear-gradient(135deg, transparent 0, transparent 7px, rgba(82, 99, 129, 0.08) 7px, rgba(82, 99, 129, 0.08) 12px);
+                }
+
+                .shift-details-button {
+                    position: absolute;
+                    inset: 0;
+                    width: 100%;
+                    border: 0;
+                    border-radius: inherit;
+                    background: transparent;
+                    color: inherit;
                     display: flex;
                     flex-direction: column;
                     justify-content: center;
                     align-items: flex-start;
-                    gap: 1px;
-                    padding: 0 6px;
+                    gap: 2px;
+                    padding: 4px 40px 4px 8px;
                     text-align: left;
+                    cursor: pointer;
+                    touch-action: pan-x pan-y;
+                    overflow: hidden;
+                }
+
+                .shift-details-button:focus-visible,
+                .shift-drag-handle:focus-visible {
+                    outline: 3px solid #234ed9;
+                    outline-offset: -3px;
+                }
+
+                .shift-drag-handle {
+                    position: absolute;
+                    z-index: 2;
+                    top: 4px;
+                    right: 4px;
+                    bottom: 4px;
+                    width: 32px;
+                    min-width: 32px;
+                    border: 1px solid rgba(31, 45, 73, 0.3);
+                    border-radius: 5px;
+                    background: rgba(255, 255, 255, 0.82);
+                    color: #1f2d49;
+                    display: grid;
+                    place-items: center;
+                    font-size: 1rem;
+                    font-weight: 900;
+                    line-height: 1;
                     cursor: grab;
                     touch-action: none;
-                    user-select: none;
+                }
+
+                .shift-drag-handle:active {
+                    cursor: grabbing;
+                }
+
+                .shift-drag-handle:disabled {
+                    cursor: not-allowed;
+                    opacity: 0.5;
+                }
+
+                .shift-drag-preview {
+                    position: absolute;
+                    z-index: 7;
+                    top: 6px;
+                    bottom: 6px;
+                    border-left: 4px solid;
+                    border-radius: 6px;
+                    padding: 5px 8px;
+                    display: flex;
+                    flex-direction: column;
+                    justify-content: center;
+                    gap: 2px;
+                    pointer-events: none;
                     overflow: hidden;
+                    box-shadow: 0 8px 20px rgba(31, 45, 73, 0.2);
+                }
+
+                .shift-drag-preview--valid {
+                    outline: 3px solid #17b26a;
+                }
+
+                .shift-drag-preview--invalid {
+                    outline: 3px solid #e74867;
+                    filter: grayscale(0.35);
+                }
+
+                .shift-preview-action {
+                    font-size: 0.65rem;
+                    font-weight: 800;
+                    white-space: nowrap;
                 }
 
                 .shift-action-popover {
@@ -819,12 +1376,12 @@ export function StaffScheduler({ resources, events, viewMode, initialDate, timeZ
                 }
 
                 .shift-action-popover button {
-                    height: 30px;
+                    min-height: 40px;
                     border: 1px solid #dce4f1;
                     border-radius: 6px;
                     background: #f9fbff;
                     color: #1f2d49;
-                    font-size: 0.72rem;
+                    font-size: 0.76rem;
                     font-weight: 800;
                     cursor: pointer;
                 }
@@ -846,18 +1403,14 @@ export function StaffScheduler({ resources, events, viewMode, initialDate, timeZ
                     border-color: #fda4af;
                 }
 
-                .shift-block:active {
-                    cursor: grabbing;
-                }
-
                 .shift-time {
-                    font-size: 0.63rem;
+                    font-size: 0.72rem;
                     font-weight: 700;
                     white-space: nowrap;
                 }
 
                 .shift-role {
-                    font-size: 0.54rem;
+                    font-size: 0.62rem;
                     text-transform: uppercase;
                     letter-spacing: 0;
                     opacity: 0.85;
@@ -866,20 +1419,21 @@ export function StaffScheduler({ resources, events, viewMode, initialDate, timeZ
 
                 .shift-markers {
                     position: absolute;
-                    left: 4px;
-                    right: 4px;
-                    bottom: 2px;
-                    height: 8px;
+                    left: 8px;
+                    right: 40px;
+                    bottom: 3px;
+                    height: 12px;
                     pointer-events: none;
                 }
 
                 .shift-marker {
                     position: absolute;
-                    height: 8px;
+                    min-width: 12px;
+                    height: 12px;
                     border-radius: 999px;
-                    font-size: 0.46rem;
+                    font-size: 0.56rem;
                     font-weight: 800;
-                    line-height: 8px;
+                    line-height: 10px;
                     text-align: center;
                     color: #244362;
                     background: #b9d5ff;
@@ -902,6 +1456,111 @@ export function StaffScheduler({ resources, events, viewMode, initialDate, timeZ
                     color: #8f2e3b;
                 }
 
+                .shift-move-dialog-backdrop {
+                    position: fixed;
+                    inset: 0;
+                    z-index: 80;
+                    display: grid;
+                    place-items: center;
+                    padding: 20px;
+                    background: rgba(16, 24, 40, 0.48);
+                }
+
+                .shift-move-dialog {
+                    width: min(440px, 100%);
+                    max-height: calc(100vh - 40px);
+                    overflow: auto;
+                    display: grid;
+                    gap: 14px;
+                    border: 1px solid #cfd9ec;
+                    border-radius: 12px;
+                    background: #fff;
+                    box-shadow: 0 24px 64px rgba(31, 45, 73, 0.28);
+                    padding: 18px;
+                    color: #1f2d49;
+                }
+
+                .shift-move-dialog__heading {
+                    display: flex;
+                    justify-content: space-between;
+                    align-items: flex-start;
+                    gap: 12px;
+                }
+
+                .shift-move-dialog h2,
+                .shift-move-dialog p {
+                    margin: 0;
+                }
+
+                .shift-move-dialog h2 {
+                    font-size: 1.05rem;
+                }
+
+                .shift-move-dialog__heading p {
+                    margin-top: 4px;
+                    color: #526381;
+                    font-size: 0.82rem;
+                }
+
+                .shift-move-dialog label {
+                    display: grid;
+                    gap: 6px;
+                    font-size: 0.8rem;
+                    font-weight: 800;
+                }
+
+                .shift-move-dialog select,
+                .shift-move-dialog input,
+                .shift-move-dialog button {
+                    min-height: 44px;
+                    border: 1px solid #cfd9ec;
+                    border-radius: 7px;
+                    background: #fff;
+                    color: #1f2d49;
+                    font: inherit;
+                    padding: 0 10px;
+                }
+
+                .shift-move-dialog__close {
+                    width: 44px;
+                    padding: 0 !important;
+                    font-size: 1.5rem !important;
+                    cursor: pointer;
+                }
+
+                .shift-move-dialog__preview {
+                    min-height: 42px;
+                    border-radius: 7px;
+                    background: #eef4ff;
+                    color: #234ed9;
+                    padding: 10px;
+                    font-size: 0.82rem;
+                    font-weight: 800;
+                }
+
+                .shift-move-dialog__actions {
+                    display: flex;
+                    justify-content: flex-end;
+                    gap: 10px;
+                }
+
+                .shift-move-dialog__actions button {
+                    min-width: 96px;
+                    cursor: pointer;
+                }
+
+                .shift-move-dialog__actions .shift-move-dialog__apply {
+                    border-color: #234ed9;
+                    background: #234ed9;
+                    color: #fff;
+                    font-weight: 800;
+                }
+
+                .shift-move-dialog__actions button:disabled {
+                    cursor: not-allowed;
+                    opacity: 0.5;
+                }
+
                 @media (max-width: 700px) {
                     .timeline-workspace {
                         grid-template-columns: 112px minmax(0, 1fr);
@@ -918,9 +1577,9 @@ export function StaffScheduler({ resources, events, viewMode, initialDate, timeZ
                     }
 
                     .avatar {
-                        width: 24px;
-                        height: 24px;
-                        flex: 0 0 24px;
+                        width: 30px;
+                        height: 30px;
+                        flex: 0 0 30px;
                     }
 
                     .resource-name,

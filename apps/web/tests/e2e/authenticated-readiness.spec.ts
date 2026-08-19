@@ -243,8 +243,10 @@ test.describe('Authenticated scheduling SaaS readiness', () => {
     await duplicateDialog.getByRole('button', { name: 'Cancel' }).click();
 
     const destinationRow = page.locator('.timeline-row[data-resource-title="Mock Manager"]');
+    const sourceHandle = sourceShift.locator('.shift-drag-handle');
     await expect(destinationRow).toBeVisible();
-    const sourceBox = await sourceShift.boundingBox();
+    await expect(sourceHandle).toBeVisible();
+    const sourceBox = await sourceHandle.boundingBox();
     const destinationBox = await destinationRow.boundingBox();
     expect(sourceBox).not.toBeNull();
     expect(destinationBox).not.toBeNull();
@@ -424,10 +426,11 @@ test.describe('Authenticated scheduling SaaS readiness', () => {
     await expect(page.getByText(/Shift created and saved/)).toBeVisible();
 
     const shift = page.locator('.timeline-row[data-resource-title="Mock Staff"] .shift-block').filter({ hasText: '10:00-18:00' }).first();
+    const shiftHandle = shift.locator('.shift-drag-handle');
     const targetRow = page.locator('.timeline-row[data-resource-title="Mock Manager"]');
     const hourCell = page.locator('.hour-label').first();
     const [shiftBox, targetBox, hourBox] = await Promise.all([
-      shift.boundingBox(),
+      shiftHandle.boundingBox(),
       targetRow.boundingBox(),
       hourCell.boundingBox(),
     ]);

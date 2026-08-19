@@ -4,7 +4,7 @@
 
 - `README.md`: this E2E test folder guide.
 - `authenticated-mobile-layout.spec.ts`: 375px authenticated regression covering document width, all dashboard routes, scroll-contained staff controls, horizontal navigation, and shell controls.
-- `authenticated-readiness.spec.ts`: default authenticated readiness gate with bounded/exact location fixtures, scoped scheduling, editor and modifier-drag shift duplication, resumable solve polling, shift-update response-loss replay, lunch/break idempotency, time cards, paid-subscription plus separate-credit billing, settings recovery, deletion receipts, and MFA coverage.
+- `authenticated-readiness.spec.ts`: default authenticated readiness gate with bounded/exact location fixtures, scoped scheduling, details-card plus explicit-handle move/copy gestures, resumable solve polling, shift-update response-loss replay, lunch/break idempotency, time cards, paid-subscription plus separate-credit billing, settings recovery, deletion receipts, and MFA coverage.
 - `core-flows.spec.ts`: public entrypoint, onboarding, login, and unauthenticated redirect smoke tests.
 - `frontend-accessibility.spec.ts`: rendered Enter-submit onboarding, deterministic error focus, notification-dialog focus trap/Escape restoration, roving settings tabs, pack-specific purchase names, and fixed-size mobile sign-out coverage.
 - `homepage-modern.spec.ts`: public homepage product-story, actionable-path, accessible perspective-tab, and desktop/mobile document-containment coverage.

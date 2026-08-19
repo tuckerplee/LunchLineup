@@ -37,6 +37,7 @@ playwright-report/
 test-results/
 apps/web/playwright-report/
 apps/web/test-results/
+apps/web/storybook-static/
 output/playwright/
 .release/
 

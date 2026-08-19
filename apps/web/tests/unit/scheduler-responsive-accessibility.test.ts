@@ -61,7 +61,7 @@ describe('scheduler responsive timeline contract', () => {
     expect(schedulerSource).toContain(
       "style={{ overflowX: allowsHorizontalScroll ? 'auto' : 'hidden' }}",
     );
-    expect(schedulerSource).toContain('aria-describedby="scheduler-timeline-instructions"');
+    expect(schedulerSource).toContain('aria-describedby={`${boardId}-instructions`}');
     expect(schedulerSource).toContain('tabIndex={0}');
     expect(schedulerSource).not.toContain(
       "style={{ overflowX: viewMode === 'week' ? 'auto' : 'hidden' }}",
@@ -70,21 +70,34 @@ describe('scheduler responsive timeline contract', () => {
 
   it('fails closed before graphical DST ambiguity can trigger a shift mutation', () => {
     expect(schedulerSource).toContain('onTimeSelectionError?: (message: string) => void');
-    expect(schedulerSource).toContain('const startIso = wallClockDateToIso(newStart, timeZone)');
-    expect(schedulerSource).toContain('const endIso = wallClockDateToIso(newEnd, timeZone)');
+    expect(schedulerSource).toContain('startIso: wallClockDateToIso(start, timeZone)');
+    expect(schedulerSource).toContain('endIso: wallClockDateToIso(end, timeZone)');
     expect(schedulerSource).toMatch(/catch \(error\) \{\s+onTimeSelectionError\?\.\(\(error as Error\)\.message\);/);
     expect(schedulingPageSource).toContain('onTimeSelectionError={(message) => {');
   });
 
   it('keeps copy and move gestures separate while exposing a touch-friendly duplicate action', () => {
-    expect(schedulerSource).toContain("mode: 'move' | 'copy'");
+    expect(schedulerSource).toContain('type SchedulerGestureMode');
     expect(schedulerSource).toContain('(e.shiftKey || e.altKey) && onEventCopy');
-    expect(schedulerSource).toContain("drag.mode === 'copy' ? onEventCopy : onEventChange");
-    expect(schedulerSource).toContain('hold Shift or Alt while dragging to copy');
+    expect(schedulerSource).toContain("completed.mode === 'copy' ? onEventCopy : onEventChange");
+    expect(schedulerSource).toContain('Shift- or Alt-drag to copy');
     expect(schedulingPageSource).toContain('onEventCopy={capabilities.canWriteShifts && locationDataCurrent');
     expect(schedulingPageSource).toContain('<Copy size={14} /> Duplicate shift');
     expect(schedulingPageSource).toContain('clientId: attempt.key');
     expect(schedulingPageSource).toContain("'Shift copy failed. The source shift was not changed.'");
+  });
+
+  it('keeps gesture activation and cancellation inside the mounted board', () => {
+    expect(schedulerSource).toContain('className="shift-drag-handle"');
+    expect(schedulerSource).toContain('schedulerPointerActivated(current.startX');
+    expect(schedulerSource).toContain('SCHEDULER_TOUCH_ACTIVATION_DELAY_MS');
+    expect(schedulerSource).toContain('data-scheduler-droppable-id={schedulerDroppableId(boardId, resource.id)}');
+    expect(schedulerSource).toContain('resourceRowRefs.current');
+    expect(schedulerSource).not.toContain('document.querySelectorAll');
+    expect(schedulerSource).toContain('onPointerCancel={() => cancelDrag(true)}');
+    expect(schedulerSource).toContain('onLostPointerCapture={() => cancelDrag(true)}');
+    expect(schedulerSource).toContain("window.addEventListener('blur', handleWindowBlur)");
+    expect(schedulerSource).toContain("if (event.key !== 'Escape') return");
   });
 });
 
@@ -128,9 +141,20 @@ describe('scheduler accessibility semantics', () => {
   });
 
   it('keeps compact scheduler labels above the WCAG AA contrast threshold', () => {
-    expect(schedulerSource.match(/color: #526381;/g)).toHaveLength(4);
+    expect(schedulerSource.match(/color: #526381;/g)?.length).toBeGreaterThanOrEqual(4);
     expect(schedulerSource).toContain("color: '#1f2d49'");
     expect(contrastRatio('#526381', '#f9fbff')).toBeGreaterThanOrEqual(4.5);
     expect(contrastRatio('#1f2d49', '#ffffff')).toBeGreaterThanOrEqual(4.5);
+  });
+
+  it('separates details, pointer, keyboard, published-lock, and break semantics', () => {
+    expect(schedulerSource).toContain('className="shift-details-button"');
+    expect(schedulerSource).toContain('touch-action: pan-x pan-y');
+    expect(schedulerSource).toContain('role="dialog"');
+    expect(schedulerSource).toContain('Time adjustment in minutes');
+    expect(schedulerSource).toContain('disabled={!canMove}');
+    expect(schedulerSource).toContain("Boolean(event.extendedProps.locked || event.extendedProps.published)");
+    expect(schedulerSource).toContain('role="list" aria-label="Shift breaks"');
+    expect(schedulerSource).toContain('aria-label={marker.ariaLabel}');
   });
 });
