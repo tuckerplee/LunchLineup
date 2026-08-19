@@ -4,6 +4,8 @@ import {
   clearShiftUpdateAttempt,
   readShiftUpdateRecoveries,
   readShiftUpdateRecoveryPayload,
+  scheduleChangeSetAttemptRequiresRotation,
+  SHIFT_UPDATE_RECOVERY_KEY,
 } from '../../app/dashboard/scheduling/shift-update-recovery';
 import {
   buildShiftUpdateOperation,
@@ -51,6 +53,24 @@ describe('shift update response-loss recovery', () => {
     const storage = memoryStorage();
     beginShiftUpdateAttempt(storage, 'shift-1', { endTime: '21:00' }, null, () => 'attempt-1', 1_000);
     expect(readShiftUpdateRecoveries(storage, 24 * 60 * 60 * 1000 + 1_001)).toEqual([]);
+  });
+
+  it('rejects persisted keys that the scheduling API cannot accept', () => {
+    const storage = memoryStorage();
+    storage.setItem(SHIFT_UPDATE_RECOVERY_KEY, JSON.stringify([
+      { shiftId: 'short', attempt: { key: 'short', payloadFingerprint: '{}' }, updatedAt: 1_000 },
+      { shiftId: 'long', attempt: { key: 'a'.repeat(201), payloadFingerprint: '{}' }, updatedAt: 1_000 },
+      { shiftId: 'unsafe', attempt: { key: 'unsafe key', payloadFingerprint: '{}' }, updatedAt: 1_000 },
+    ]));
+
+    expect(readShiftUpdateRecoveries(storage, 2_000)).toEqual([]);
+  });
+
+  it('rotates only for terminal idempotency replay conflicts', () => {
+    expect(scheduleChangeSetAttemptRequiresRotation(409, 'idempotency_key_reused')).toBe(true);
+    expect(scheduleChangeSetAttemptRequiresRotation(409, 'idempotency_result_unavailable')).toBe(true);
+    expect(scheduleChangeSetAttemptRequiresRotation(409, 'concurrent_change')).toBe(false);
+    expect(scheduleChangeSetAttemptRequiresRotation(412, 'stale_schedule_revision')).toBe(false);
   });
 
   it('recovers the exact partial operation for a same-key response-loss replay', () => {

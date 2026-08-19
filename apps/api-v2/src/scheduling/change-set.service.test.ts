@@ -23,30 +23,40 @@ const identity: SessionIdentity = {
   mfaRequired: true,
 };
 
+const storedResponse = {
+  data: {
+    changeSetId: '62e5c71b-d3fd-4226-842e-ad84ae79173e',
+    scheduleId,
+    baseRevision: 4,
+    revision: 5,
+    etag: `"schedule:${scheduleId}:5"`,
+    shifts: [],
+    created: [],
+  },
+};
+
+function replayDatabase(requestHashValue: string, response: unknown = storedResponse) {
+  const transaction = {
+    scheduleChangeSet: {
+      findUnique: vi.fn(async () => ({
+        requestHash: requestHashValue,
+        response,
+      })),
+    },
+  };
+  return {
+    transaction,
+    database: {
+      withTenant: vi.fn(async (_tenantId, operation) => operation(transaction)),
+    },
+  };
+}
+
 describe('schedule change-set idempotency replay', () => {
   it('returns the committed result when a reloaded board sends a newer If-Match', async () => {
-    const storedResponse = {
-      data: {
-        changeSetId: '62e5c71b-d3fd-4226-842e-ad84ae79173e',
-        scheduleId,
-        baseRevision: 4,
-        revision: 5,
-        etag: `"schedule:${scheduleId}:5"`,
-        shifts: [],
-        created: [],
-      },
-    };
-    const transaction = {
-      scheduleChangeSet: {
-        findUnique: vi.fn(async () => ({
-          requestHash: requestHash({ schedulePublicId: scheduleId, body }),
-          response: storedResponse,
-        })),
-      },
-    };
-    const database = {
-      withTenant: vi.fn(async (_tenantId, operation) => operation(transaction)),
-    };
+    const { database, transaction } = replayDatabase(
+      requestHash({ schedulePublicId: scheduleId, body }),
+    );
     const service = new ScheduleChangeSetService(database as never);
 
     await expect(service.apply(identity, scheduleId, body, {
@@ -60,5 +70,51 @@ describe('schedule change-set idempotency replay', () => {
       expect.any(Function),
       expect.objectContaining({ isolationLevel: expect.anything() }),
     );
+  });
+
+  it('rejects a reused key before evaluating a different change payload', async () => {
+    const { database, transaction } = replayDatabase(
+      requestHash({ schedulePublicId: scheduleId, body }),
+    );
+    const service = new ScheduleChangeSetService(database as never);
+    const changedBody: ScheduleChangeSetRequest = {
+      operations: [{
+        op: 'shift.delete',
+        shiftId: '2fef54b7-e51f-4301-8650-e89b9534be5c',
+      }],
+    };
+
+    await expect(service.apply(identity, scheduleId, changedBody, {
+      ifMatch: `"schedule:${scheduleId}:5"`,
+      idempotencyKey: 'response-loss-attempt-1',
+    })).rejects.toMatchObject({
+      status: 409,
+      code: 'idempotency_key_reused',
+    });
+
+    expect(transaction.scheduleChangeSet.findUnique).toHaveBeenCalledTimes(1);
+  });
+
+  it('fails closed when the exact replay record has an incomplete response', async () => {
+    const { database, transaction } = replayDatabase(
+      requestHash({ schedulePublicId: scheduleId, body }),
+      {
+        data: {
+          ...storedResponse.data,
+          etag: undefined,
+        },
+      },
+    );
+    const service = new ScheduleChangeSetService(database as never);
+
+    await expect(service.apply(identity, scheduleId, body, {
+      ifMatch: `"schedule:${scheduleId}:5"`,
+      idempotencyKey: 'response-loss-attempt-1',
+    })).rejects.toMatchObject({
+      status: 409,
+      code: 'idempotency_result_unavailable',
+    });
+
+    expect(transaction.scheduleChangeSet.findUnique).toHaveBeenCalledTimes(1);
   });
 });

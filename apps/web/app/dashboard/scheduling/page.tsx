@@ -60,6 +60,7 @@ import {
   beginShiftUpdateAttempt,
   clearShiftUpdateAttempt,
   readShiftUpdateRecoveryPayload,
+  scheduleChangeSetAttemptRequiresRotation,
 } from './shift-update-recovery';
 import {
   buildShiftUpdateOperation,
@@ -128,6 +129,12 @@ type ShiftDraft = {
   endTime: string;
 };
 const UNASSIGNED_RESOURCE_ID = 'unassigned';
+
+function requiresNewScheduleChangeSetKey(error: unknown): boolean {
+  return error instanceof ApiV2ClientError
+    && scheduleChangeSetAttemptRequiresRotation(error.status, error.problem.code);
+}
+
 const SCHEDULABLE_SHIFT_ROLES: Array<{ value: SchedulableShiftRole; label: string }> = [
   { value: 'STAFF', label: 'Staff' },
   { value: 'MANAGER', label: 'Manager' },
@@ -390,6 +397,11 @@ function SchedulingContent() {
   const [loadedShiftScope, setLoadedShiftScope] = useState<LocationShiftScope | null>(null);
   const [permissions, setPermissions] = useState<string[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const discardShiftUpdateAttempt = (shiftId: string) => {
+    const attempt = shiftUpdateAttemptsRef.current[shiftId];
+    if (attempt) clearShiftUpdateAttempt(window.sessionStorage, shiftId, attempt.key);
+    delete shiftUpdateAttemptsRef.current[shiftId];
+  };
   useEffect(() => {
     const browserDate = requestedDate ?? toDateInputValue(new Date());
     selectedDateRef.current = browserDate;
@@ -842,14 +854,26 @@ function SchedulingContent() {
         role: 'STAFF',
       }));
     } catch (err) {
+      const rotateAttempt = requiresNewScheduleChangeSetKey(err);
+      if (rotateAttempt) {
+        if (editingShiftId) {
+          discardShiftUpdateAttempt(editingShiftId);
+        } else {
+          shiftCreateAttemptRef.current = null;
+        }
+      }
+      const reloadAuthoritativeState = rotateAttempt
+        || (err instanceof ApiV2ClientError && err.status === 412);
       setError((err as Error).message);
       setScheduleStatus({
-        tone: err instanceof ApiV2ClientError && err.status === 412 ? 'warning' : 'error',
-        message: err instanceof ApiV2ClientError && err.status === 412
-          ? 'The schedule changed elsewhere. Reloading the saved board.'
-          : 'Shift save failed. Schedule was not changed.',
+        tone: reloadAuthoritativeState ? 'warning' : 'error',
+        message: rotateAttempt
+          ? 'The saved attempt could not be replayed. Reloading the authoritative schedule before a new attempt.'
+          : err instanceof ApiV2ClientError && err.status === 412
+            ? 'The schedule changed elsewhere. Reloading the saved board.'
+            : 'Shift save failed. Schedule was not changed.',
       });
-      if (err instanceof ApiV2ClientError && err.status === 412) {
+      if (reloadAuthoritativeState) {
         void loadSchedule(selectedDate, viewMode, shiftDraft.locationId || undefined);
       }
     }
@@ -1569,14 +1593,20 @@ function SchedulingContent() {
       ]);
       setScheduleStatus({ tone: 'saved', message: `Shift copied at ${formatStatusTime(new Date())}.` });
     } catch (err) {
+      const rotateAttempt = requiresNewScheduleChangeSetKey(err);
+      if (rotateAttempt) delete shiftCopyAttemptsRef.current[id];
+      const reloadAuthoritativeState = rotateAttempt
+        || (err instanceof ApiV2ClientError && err.status === 412);
       setError((err as Error).message);
       setScheduleStatus({
-        tone: err instanceof ApiV2ClientError && err.status === 412 ? 'warning' : 'error',
-        message: err instanceof ApiV2ClientError && err.status === 412
-          ? 'The schedule changed elsewhere. Reloading the saved board.'
-          : 'Shift copy failed. The source shift was not changed.',
+        tone: reloadAuthoritativeState ? 'warning' : 'error',
+        message: rotateAttempt
+          ? 'The copy attempt could not be replayed. Reloading the authoritative schedule before a new attempt.'
+          : err instanceof ApiV2ClientError && err.status === 412
+            ? 'The schedule changed elsewhere. Reloading the saved board.'
+            : 'Shift copy failed. The source shift was not changed.',
       });
-      if (err instanceof ApiV2ClientError && err.status === 412) {
+      if (reloadAuthoritativeState) {
         void loadSchedule(selectedDate, viewMode, sourceShift.locationId);
       }
     }
@@ -1638,8 +1668,15 @@ function SchedulingContent() {
       ]);
       setScheduleStatus({ tone: 'saved', message: `Board change saved at ${formatStatusTime(new Date())}.` });
     } catch (err) {
+      const rotateAttempt = requiresNewScheduleChangeSetKey(err);
+      if (rotateAttempt) discardShiftUpdateAttempt(id);
       setError((err as Error).message);
-      setScheduleStatus({ tone: 'error', message: 'Board change failed. Reloading saved schedule.' });
+      setScheduleStatus({
+        tone: rotateAttempt ? 'warning' : 'error',
+        message: rotateAttempt
+          ? 'The board attempt could not be replayed. Reloading the authoritative schedule before a new attempt.'
+          : 'Board change failed. Reloading saved schedule.',
+      });
       void loadSchedule(selectedDate, viewMode, shiftDraft.locationId || undefined);
     }
   };
@@ -1702,8 +1739,15 @@ function SchedulingContent() {
       setConfirmDeleteShiftId(null);
       setScheduleStatus({ tone: 'saved', message: `Shift deleted at ${formatStatusTime(new Date())}.` });
     } catch (err) {
+      const rotateAttempt = requiresNewScheduleChangeSetKey(err);
+      if (rotateAttempt) discardShiftUpdateAttempt(id);
       setError((err as Error).message);
-      setScheduleStatus({ tone: 'error', message: 'Shift delete failed. Reloading saved schedule.' });
+      setScheduleStatus({
+        tone: rotateAttempt ? 'warning' : 'error',
+        message: rotateAttempt
+          ? 'The delete attempt could not be replayed. Reloading the authoritative schedule before a new attempt.'
+          : 'Shift delete failed. Reloading saved schedule.',
+      });
       void loadSchedule(selectedDate, viewMode, shiftDraft.locationId || undefined);
     }
   };

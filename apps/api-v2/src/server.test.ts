@@ -1096,6 +1096,56 @@ describe('API v2 HTTP contract', () => {
     });
   });
 
+  it.each([
+    {
+      code: 'idempotency_key_reused',
+      error: new ProblemError(
+        409,
+        'idempotency_key_reused',
+        'Idempotency-Key was already used for a different schedule change.',
+        'Idempotency conflict',
+      ),
+    },
+    {
+      code: 'idempotency_result_unavailable',
+      error: new ProblemError(
+        409,
+        'idempotency_result_unavailable',
+        'The stored idempotent result is unavailable. Use a new Idempotency-Key.',
+        'Idempotency conflict',
+      ),
+    },
+    {
+      code: 'concurrent_change',
+      error: Object.assign(new Error('transaction write conflict'), { code: 'P2034' }),
+    },
+  ])('returns a machine-readable HTTP 409 for $code', async ({ code, error }) => {
+    const { app, apply } = await harness();
+    apply.mockRejectedValueOnce(error);
+    const response = await app.inject({
+      method: 'POST',
+      url: '/v2/schedules/88d8d86a-7e8d-4246-8ad3-eb7eedb44c1e/change-sets',
+      headers: {
+        cookie: 'access_token=test; csrf_token=abcdefghijklmnop',
+        origin: 'https://beta.lunchlineup.com',
+        'x-csrf-token': 'abcdefghijklmnop',
+        'content-type': 'application/json',
+        'idempotency-key': '4daaf25a-92d7-4fba-975c-f54e4ce15c4a',
+        'if-match': '"schedule:88d8d86a-7e8d-4246-8ad3-eb7eedb44c1e:4"',
+      },
+      payload: {
+        operations: [{
+          op: 'shift.delete',
+          shiftId: 'bdcbf0a0-674c-45d3-a69a-fdb9b28c9b2f',
+        }],
+      },
+    });
+
+    expect(response.statusCode).toBe(409);
+    expect(response.headers['content-type']).toContain('application/problem+json');
+    expect(response.json()).toMatchObject({ status: 409, code });
+  });
+
   it('replaces demand through the aggregate schedule resource with ETag and idempotency', async () => {
     const { app, demandReplace } = await harness();
     const response = await app.inject({

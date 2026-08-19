@@ -49,9 +49,27 @@ function mappedDatabaseProblem(error: unknown): ProblemError | null {
       return new ProblemError(404, 'resource_not_found', 'The requested resource was not found.', 'Not found');
     }
   }
-  const code = typeof error === 'object' && error !== null && 'code' in error
-    ? String((error as { code?: unknown }).code)
-    : '';
+  const candidate = typeof error === 'object' && error !== null
+    ? error as { code?: unknown; meta?: { code?: unknown } }
+    : null;
+  const code = candidate?.code === undefined
+    ? ''
+    : String(candidate.code);
+  const databaseCode = candidate?.meta?.code === undefined
+    ? ''
+    : String(candidate.meta.code);
+  if (
+    code === 'P2034'
+    || ['40001', '40P01'].includes(code)
+    || (code === 'P2010' && ['40001', '40P01'].includes(databaseCode))
+  ) {
+    return new ProblemError(
+      409,
+      'concurrent_change',
+      'Another scheduling change committed at the same time. Reload and retry.',
+      'Concurrent change',
+    );
+  }
   if (code === '23P01') {
     return new ProblemError(
       422,
@@ -66,14 +84,6 @@ function mappedDatabaseProblem(error: unknown): ProblemError | null {
       'schedule_invariant_failed',
       'The requested schedule change violates a persisted scheduling rule.',
       'Schedule validation failed',
-    );
-  }
-  if (code === '40001') {
-    return new ProblemError(
-      409,
-      'concurrent_change',
-      'Another scheduling change committed at the same time. Reload and retry.',
-      'Concurrent change',
     );
   }
   return null;

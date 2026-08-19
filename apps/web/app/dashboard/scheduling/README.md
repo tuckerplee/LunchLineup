@@ -16,7 +16,7 @@
 - `publish-result.ts`: pure delivered, pending, and terminal-failure notification outcome mapping used by the workspace status banner.
 - `publish-settlement.ts`: strict versioned publish-preflight/settlement parsing, aggregate configured-cost copy, contract-drift comparison, and status-aware retry policy.
 - `shift-change-set.ts`: pure partial-update builder that preserves custom shift-role labels and omits unchanged aggregate fields.
-- `shift-update-recovery.ts`: validated payload-bound shift-update attempt replay and matching-response cleanup across authentication refresh, response loss, and browser reload.
+- `shift-update-recovery.ts`: API-contract-valid payload-bound shift-update replay, matching-response cleanup, and terminal 409 key rotation across authentication refresh, response loss, and browser reload.
 - `print/`: old-style printable schedule route; see `print/README.md`.
 
 ## Notes

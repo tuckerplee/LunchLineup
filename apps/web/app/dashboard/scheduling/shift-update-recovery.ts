@@ -20,6 +20,18 @@ type ShiftUpdateOperation = Extract<
 
 const RECOVERY_TTL_MS = 24 * 60 * 60 * 1000;
 const MAX_RECOVERIES = 100;
+const SAFE_IDEMPOTENCY_KEY = /^[A-Za-z0-9._:-]{8,200}$/;
+const UNREPLAYABLE_IDEMPOTENCY_CODES = new Set([
+  'idempotency_key_reused',
+  'idempotency_result_unavailable',
+]);
+
+export function scheduleChangeSetAttemptRequiresRotation(
+  status: number | undefined,
+  code: string | undefined,
+): boolean {
+  return status === 409 && typeof code === 'string' && UNREPLAYABLE_IDEMPOTENCY_CODES.has(code);
+}
 
 export function readShiftUpdateRecoveries(
   storage: StorageLike,
@@ -33,9 +45,7 @@ export function readShiftUpdateRecoveries(
       && typeof entry.shiftId === 'string'
       && entry.shiftId.length > 0
       && typeof entry.attempt?.key === 'string'
-      && entry.attempt.key.length > 0
-      && entry.attempt.key.length <= 255
-      && !/[^\x20-\x7E]/.test(entry.attempt.key)
+      && SAFE_IDEMPOTENCY_KEY.test(entry.attempt.key)
       && typeof entry.attempt.payloadFingerprint === 'string'
       && typeof entry.updatedAt === 'number'
       && now >= entry.updatedAt

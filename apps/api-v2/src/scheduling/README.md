@@ -6,7 +6,7 @@
 - `board.service.ts`: one bounded tenant board query for locations, roster, schedules, and shifts.
 - `change-set-plan.ts`: pure final-state planner and overlap validator.
 - `change-set-plan.test.ts`: final-state swap, overlap, and operation-planning tests.
-- `change-set.service.test.ts`: response-loss replay proof across refreshed board revisions.
+- `change-set.service.test.ts`: response-loss replay across refreshed board revisions plus changed-payload and damaged-result 409 proofs.
 - `change-set.service.ts`: serialized, idempotent, revision-fenced aggregate transaction.
 - `contract-helpers.ts`: ETag, idempotency, canonical hashing, UTC parsing, and case-preserving shift-role validation.
 - `demand-window.service.test.ts`: proof that v2 exposes only opaque UUID demand-window identifiers.
