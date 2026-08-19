@@ -379,10 +379,10 @@ export function DashboardWorkspace() {
             });
         }
 
-        if (capabilities.canWriteShifts && (overview?.openShiftCount ?? 0) > 0) {
+        if (capabilities.canWriteShifts && overview?.openShiftCount != null && overview.openShiftCount > 0) {
             tasks.push({
                 href: '/dashboard/scheduling?focus=open',
-                label: `Assign ${formatCount(overview?.openShiftCount ?? 0, 'open shift')}`,
+                label: `Assign ${formatCount(overview.openShiftCount, 'open shift')}`,
                 detail: 'Close coverage gaps before the next shift starts.',
                 priority: 'urgent',
             });
@@ -453,7 +453,7 @@ export function DashboardWorkspace() {
             href: '/dashboard/staff',
             label: 'Team',
             value: isLoading ? 'Loading…' : overview?.staffCount == null ? 'Unavailable' : formatCount(overview.staffCount, 'person', 'people'),
-            detail: isLoading ? 'Checking team totals.' : overview?.managerCount == null ? 'Team totals could not be loaded.' : formatCount(overview.managerCount, 'manager'),
+            detail: isLoading ? 'Checking team totals.' : overview?.managerCount == null ? 'Staff totals could not be loaded.' : formatCount(overview.managerCount, 'manager'),
         } : null,
         capabilities.canReadLocations ? {
             href: '/dashboard/locations',
