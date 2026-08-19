@@ -19,12 +19,12 @@ distributor:
 storage:
   trace:
     backend: local
-    local:
-      path: /var/tempo/traces
     wal:
       path: /var/tempo/wal
+    local:
+      path: /var/tempo/blocks
 
-compactor:
+backend_worker:
   compaction:
     block_retention: 720h # 30 days
 
@@ -37,4 +37,10 @@ metrics_generator:
     path: /var/tempo/generator/wal
 
 overrides:
-  metrics_generator_processors: [service-graphs, span-metrics]
+  defaults:
+    metrics_generator:
+      processors: [service-graphs, span-metrics]
+      generate_native_histograms: both
+
+usage_report:
+  reporting_enabled: false

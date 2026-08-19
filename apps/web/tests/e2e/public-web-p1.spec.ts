@@ -239,7 +239,7 @@ test.describe('validated public-web P1 regressions', () => {
     });
 
     await loginAsSeedAdmin(page, '/dashboard');
-    const coverageCard = page.getByRole('link', { name: 'Schedule Unavailable Coverage', exact: true });
+    const coverageCard = page.getByRole('link', { name: /Schedule Unavailable Coverage/ });
     const locationsCard = page.getByRole('link', { name: /^Locations 1 location/ });
 
     await expect(coverageCard).toContainText('Unavailable');

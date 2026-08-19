@@ -16,6 +16,8 @@ coverage/
 **/.coverage
 *.log
 *.tsbuildinfo
+**/*.tsbuildinfo
+**/.turbo/
 __pycache__/
 *.py[cod]
 apps/web/.next/

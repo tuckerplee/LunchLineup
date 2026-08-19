@@ -725,7 +725,7 @@ services:
     <<: *read-only-runtime
     tmpfs:
       - /tmp:rw,noexec,nosuid,nodev,size=16m,mode=1777
-    image: redis:7-alpine@sha256:6ab0b6e7381779332f97b8ca76193e45b0756f38d4c0dcda72dbb3c32061ab99
+    image: redis:7-alpine@sha256:e7723ff73d963f5cc6d9c4643ea3d989527a402a319239054e9472a7fb9219a2
     volumes:
       - redis_data:/data
       - ./infrastructure/redis/redis.conf.template:/usr/local/etc/redis/redis.conf:ro
@@ -747,7 +747,7 @@ services:
     pids_limit: 512
     tmpfs:
       - /tmp:rw,noexec,nosuid,nodev,size=32m,mode=1777
-    image: rabbitmq:3-management-alpine@sha256:606d8c0d6b3c18d1da9afc53bc7cdb2a8d5486df91b5a9830e9e07626c9ae281
+    image: rabbitmq:4-management-alpine@sha256:002a875e96365eeed67be445becfd240947ca82279103b592a859ea7a8e2a746
     volumes:
       - rabbitmq_data:/var/lib/rabbitmq
     networks:
@@ -1103,7 +1103,7 @@ services:
     pids_limit: 512
     tmpfs:
       - /tmp:rw,noexec,nosuid,nodev,size=32m,mode=1777
-    image: grafana/tempo:2.10.8@sha256:f0561deb1c68ec44d6e6e7e4487f30106c4e5e768642077695b37958b105812a
+    image: grafana/tempo:3.0.3@sha256:0296560ac66f8a3600d7fb3014a52c189d4d9c3549ad6ff441bf2409855d68d5
     volumes:
       - ./infrastructure/tempo/tempo-config.yml:/etc/tempo/config.yml:ro
       - tempo_data:/var/tempo

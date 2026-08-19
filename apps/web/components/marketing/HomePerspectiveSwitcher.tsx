@@ -121,7 +121,7 @@ export function HomePerspectiveSwitcher() {
             role="tabpanel"
             aria-labelledby={id + '-' + active.key + '-tab'}
             className={styles.perspectivePanel}
-            initial={{ opacity: 0, y: 8 }}
+            initial={false}
             animate={{ opacity: 1, y: 0 }}
             transition={{ duration: 0.24, ease: [0.2, 0.8, 0.2, 1] }}
           >

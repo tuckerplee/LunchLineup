@@ -1,6 +1,6 @@
 # infrastructure/docker/Dockerfile.api
 # Stage 1: Build
-FROM node:22-alpine@sha256:16e22a550f3863206a3f701448c45f7912c6896a62de43add43bb9c86130c3e2 AS builder
+FROM node:22-alpine@sha256:c610fcdfb1d5b4740dd70c284ed3cb16bb857e0f7166196e36a5501df7a3aa32 AS builder
 WORKDIR /app
 ENV NPM_CONFIG_AUDIT=false \
     NPM_CONFIG_FUND=false \
@@ -41,7 +41,7 @@ RUN if [ -d /app/apps/api/dist ]; then \
     fi
 
 # Stage 2: Runtime — copy built artifacts + node_modules from builder
-FROM node:22-alpine@sha256:16e22a550f3863206a3f701448c45f7912c6896a62de43add43bb9c86130c3e2 AS runner
+FROM node:22-alpine@sha256:c610fcdfb1d5b4740dd70c284ed3cb16bb857e0f7166196e36a5501df7a3aa32 AS runner
 WORKDIR /app
 ENV NODE_ENV=production
 ENV HOME=/home/node TMPDIR=/tmp CHECKPOINT_DISABLE=1 NO_UPDATE_NOTIFIER=1 PRISMA_HIDE_UPDATE_MESSAGE=true
@@ -72,6 +72,12 @@ RUN ./node_modules/.bin/prisma generate --schema=/app/packages/db/prisma/schema.
 # workspace-only dev tooling (including Storybook/Vite and their transitive
 # parsers) after Prisma generation so the shipped image is production-only.
 RUN npm prune --omit=dev --ignore-scripts --no-audit --no-fund
+
+# The production process invokes node directly. Keep npm/corepack out of the
+# shipped image so the builder's package-manager tree cannot become a runtime
+# vulnerability surface.
+RUN rm -rf /usr/local/lib/node_modules/npm /usr/local/lib/node_modules/corepack \
+    && rm -f /usr/local/bin/npm /usr/local/bin/npx /usr/local/bin/corepack
 
 # Seed the named export volume with ownership for the non-root API process.
 RUN mkdir -p /var/lib/lunchlineup/tenant-exports \

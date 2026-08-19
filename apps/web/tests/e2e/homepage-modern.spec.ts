@@ -13,7 +13,7 @@ test.describe('modern public homepage', () => {
     await expect(page.getByText('Availability in view', { exact: true })).toBeVisible();
     await expect(page.getByRole('link', { name: 'See how it works' })).toHaveAttribute('href', '#workflow');
     const mobileNavigationToggle = page.getByLabel('Open navigation');
-    if (await mobileNavigationToggle.count()) {
+    if (await mobileNavigationToggle.boundingBox()) {
       await mobileNavigationToggle.click();
     }
     await expect(page.getByRole('link', { name: 'Sign in', exact: true }).first()).toHaveAttribute('href', '/auth/login');

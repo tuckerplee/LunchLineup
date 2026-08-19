@@ -43,6 +43,14 @@ test('Compose requires a non-empty APP_ORIGIN for API startup', () => {
   assert.doesNotMatch(api, /APP_ORIGIN=\$\{APP_ORIGIN:-\}/);
 });
 
+test('API production image keeps every runtime-imported telemetry and HTTP package out of devDependencies', () => {
+  const packageJson = JSON.parse(readFileSync(join(root, 'apps/api/package.json'), 'utf8'));
+  for (const dependency of ['express', 'prom-client']) {
+    assert.ok(packageJson.dependencies?.[dependency], `${dependency} must be a production dependency`);
+    assert.equal(packageJson.devDependencies?.[dependency], undefined, `${dependency} must not be pruned as a dev dependency`);
+  }
+});
+
 test('Compose trusts only local proxy networks across the API v2 compatibility hop', () => {
   const compose = read('docker-compose.yml');
   for (const service of ['api', 'api-v2']) {
@@ -566,8 +574,8 @@ test('CI service containers are digest-pinned', () => {
 
   assert.deepEqual(imageRefs.sort(), [
     'postgres:16-alpine@sha256:cf78e76683b9ca8c5733cbbdce6c9262b45b6767934dd0a95e671f9a0fc20685',
-    'rabbitmq:3-alpine@sha256:d7af1c87c5f1eda13fcfca06db452bf3aeab6619fc3358b68535c0c02c4e52bc',
-    'redis:7-alpine@sha256:6ab0b6e7381779332f97b8ca76193e45b0756f38d4c0dcda72dbb3c32061ab99',
+    'rabbitmq:4-alpine@sha256:ae585b93b24b77f7281320c7d1e62b3098acba91eb14b1e53a9716584c95c7e9',
+    'redis:7-alpine@sha256:e7723ff73d963f5cc6d9c4643ea3d989527a402a319239054e9472a7fb9219a2',
   ].sort());
 
   for (const ref of imageRefs) {

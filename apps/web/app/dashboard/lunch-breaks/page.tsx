@@ -2464,6 +2464,8 @@ export default function LunchBreaksPage() {
                     minWidth: 0,
                     maxWidth: '100%',
                     marginInline: 'auto',
+                    position: 'relative',
+                    isolation: 'isolate',
                     border: '1px solid #cfe0ff',
                     borderRadius: 14,
                     background: 'linear-gradient(180deg, #f7faff 0%, #eef4ff 100%)',
@@ -2684,6 +2686,9 @@ export default function LunchBreaksPage() {
                     style={{
                       borderRadius: 10,
                       padding: '0.65rem 0.75rem',
+                      minWidth: 0,
+                      position: 'relative',
+                      zIndex: 0,
                       color: setupShiftsBillingBlockReason ? '#b45309' : 'var(--text-secondary)',
                       fontSize: '0.76rem',
                       fontWeight: 650,
@@ -2721,7 +2726,7 @@ export default function LunchBreaksPage() {
                     </div>
                   ) : null}
 
-                  <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, alignItems: 'center', flexWrap: 'wrap', minWidth: 0, position: 'relative', zIndex: 1 }}>
                     <Button variant="outline" size="sm" onClick={() => setAutoGuideStep(3)} disabled={isApplyingSetupShifts}>
                       Back
                     </Button>
