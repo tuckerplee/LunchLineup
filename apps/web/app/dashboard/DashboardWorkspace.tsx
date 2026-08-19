@@ -523,7 +523,7 @@ export function DashboardWorkspace() {
                 </div>
 
                 {capabilities.canReadScheduling ? (
-                    <div className="manager-coverage-strip" aria-label="Daily shift coverage">
+                    <div className="manager-coverage-strip" role="region" aria-label="Daily shift coverage" tabIndex={0}>
                         {isLoading ? <span>Loading daily coverage…</span> : overview?.coverageDays?.map((day) => (
                             <span key={day.day} className={`manager-coverage-day manager-coverage-${day.tone}`}>
                                 <strong>{day.day}</strong><small>{day.status}</small>

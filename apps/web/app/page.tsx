@@ -104,7 +104,12 @@ function Header({ primaryAction }: { primaryAction: PrimaryAction }) {
 
 function StaffAvailabilityVisual() {
   return (
-    <div className={styles.peopleVisual} role="group" aria-label="Staff, availability, and locations preview">
+    <div
+      className={styles.peopleVisual}
+      role="group"
+      aria-label="Staff, availability, and locations preview"
+      tabIndex={0}
+    >
       <div className={styles.peopleTopline}><span>Team</span><span>Availability</span><span>Location</span></div>
       {[
         ['MC', 'Maya Chen', 'Available', 'Downtown'],
@@ -187,7 +192,7 @@ export default function HomePage() {
             <h2>A clear flow from plan to review.</h2>
             <p>Each step keeps the next one close, so the work reads as a sequence instead of a stack of disconnected tools.</p>
           </div>
-          <div className={styles.workflowLine}>
+          <div className={styles.workflowLine} role="region" aria-label="Five-step workflow" tabIndex={0}>
             {WORKFLOW_STEPS.map((step, index) => (
               <article className={styles.workflowStep} key={step.number}>
                 <span className={styles.stepNumber}>{step.number}</span>

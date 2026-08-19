@@ -700,7 +700,16 @@ jobs:
           pull_release_image backup "$BACKUP_IMAGE_REF"
           docker compose --env-file .env.smoke pull proxy pgbouncer postgres redis rabbitmq
       - name: Start smoke stack
-        run: docker compose --env-file .env.smoke up -d --no-build --pull never migrate proxy web api api-v2 engine worker pgbouncer postgres redis rabbitmq
+        run: |
+          set -euo pipefail
+          if docker compose --env-file .env.smoke up -d --no-build --pull never migrate proxy web api api-v2 engine worker pgbouncer postgres redis rabbitmq; then
+            :
+          else
+            status=$?
+            docker compose ps -a
+            docker compose logs --tail=200 api api-v2 engine worker web migrate || true
+            exit "$status"
+          fi
       - name: Wait for smoke target
         run: |
           for attempt in {1..60}; do
@@ -828,7 +837,16 @@ jobs:
           pull_release_image backup "$BACKUP_IMAGE_REF"
           docker compose --env-file .env.smoke pull proxy pgbouncer postgres redis rabbitmq
       - name: Start full-stack release images
-        run: docker compose --env-file .env.smoke up -d --no-build --pull never migrate proxy web api api-v2 engine worker pgbouncer postgres redis rabbitmq
+        run: |
+          set -euo pipefail
+          if docker compose --env-file .env.smoke up -d --no-build --pull never migrate proxy web api api-v2 engine worker pgbouncer postgres redis rabbitmq; then
+            :
+          else
+            status=$?
+            docker compose ps -a
+            docker compose logs --tail=200 api api-v2 engine worker web migrate || true
+            exit "$status"
+          fi
       - name: Wait for full-stack target
         run: |
           for attempt in {1..60}; do
@@ -935,7 +953,16 @@ jobs:
           pull_release_image backup "$BACKUP_IMAGE_REF"
           docker compose --env-file .env.smoke pull proxy pgbouncer postgres redis rabbitmq
       - name: Start smoke stack
-        run: docker compose --env-file .env.smoke up -d --no-build --pull never migrate proxy web api api-v2 engine worker pgbouncer postgres redis rabbitmq
+        run: |
+          set -euo pipefail
+          if docker compose --env-file .env.smoke up -d --no-build --pull never migrate proxy web api api-v2 engine worker pgbouncer postgres redis rabbitmq; then
+            :
+          else
+            status=$?
+            docker compose ps -a
+            docker compose logs --tail=200 api api-v2 engine worker web migrate || true
+            exit "$status"
+          fi
       - name: Wait for smoke target
         run: |
           for attempt in {1..60}; do

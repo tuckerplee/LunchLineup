@@ -2047,7 +2047,7 @@ export default function LunchBreaksPage() {
             padding: '1.25rem',
           }}
         >
-          <div style={{ width: 'min(880px, 100%)', display: 'grid', gap: 14 }}>
+          <div style={{ width: 'min(880px, 100%)', minWidth: 0, maxWidth: '100%', display: 'grid', gap: 14 }}>
             <AnimatePresence mode="wait">
               {plannerMode === null ? (
                 <motion.div
@@ -2461,6 +2461,8 @@ export default function LunchBreaksPage() {
                   transition={{ duration: 0.22 }}
                   style={{
                     width: 'min(980px, 100%)',
+                    minWidth: 0,
+                    maxWidth: '100%',
                     marginInline: 'auto',
                     border: '1px solid #cfe0ff',
                     borderRadius: 14,
@@ -2468,6 +2470,7 @@ export default function LunchBreaksPage() {
                     padding: '1rem',
                     display: 'grid',
                     gap: 12,
+                    overflowWrap: 'anywhere',
                   }}
                 >
                   <div className="workspace-kicker">Auto break setup</div>
@@ -2486,14 +2489,14 @@ export default function LunchBreaksPage() {
                     className="surface-muted"
                     style={{ borderRadius: 12, padding: '0.75rem', display: 'grid', gap: 8 }}
                   >
-                    <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, alignItems: 'center' }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, alignItems: 'center', flexWrap: 'wrap', minWidth: 0 }}>
                       <div style={{ fontSize: '0.8rem', fontWeight: 800, color: 'var(--text-primary)' }}>Shift preview</div>
                       <div id="setup-shift-preview-help" style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>
                         Preview only. This canvas never changes shift times.
                       </div>
                     </div>
 
-                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr 1fr', fontSize: '0.66rem', color: 'var(--text-muted)', fontWeight: 700 }}>
+                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, minmax(0, 1fr))', minWidth: 0, fontSize: '0.66rem', color: 'var(--text-muted)', fontWeight: 700 }}>
                       <span>5:00</span>
                       <span style={{ textAlign: 'center' }}>11:00</span>
                       <span style={{ textAlign: 'center' }}>16:00</span>
@@ -2531,7 +2534,7 @@ export default function LunchBreaksPage() {
                                   {row.role} · {row.source === 'schedule' ? 'Schedule-backed' : 'Temporary shift'}
                                 </div>
                               </div>
-                              <div style={{ position: 'relative', height: 32, borderRadius: 10, border: '1px solid #d6e0f3', background: '#ffffff' }}>
+                              <div style={{ position: 'relative', minWidth: 0, overflow: 'hidden', height: 32, borderRadius: 10, border: '1px solid #d6e0f3', background: '#ffffff' }}>
                                 {isOutsidePreview ? (
                                   <div style={{ height: '100%', display: 'grid', placeItems: 'center', paddingInline: 8, color: '#23458c', fontSize: '0.66rem', fontWeight: 750 }}>
                                     {isOvernight
@@ -2557,7 +2560,7 @@ export default function LunchBreaksPage() {
                                       fontWeight: 700,
                                     }}
                                   >
-                                    {row.startTime}-{row.endTime}
+                                    <span style={{ minWidth: 0, maxWidth: '100%', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{row.startTime}-{row.endTime}</span>
                                   </div>
                                 )}
                               </div>
@@ -2592,13 +2595,13 @@ export default function LunchBreaksPage() {
                               padding: '0.65rem',
                               margin: 0,
                               display: 'grid',
-                              gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))',
+                              gridTemplateColumns: 'repeat(auto-fit, minmax(min(140px, 100%), 1fr))',
                               gap: 8,
                               alignItems: 'end',
                               minWidth: 0,
                             }}
                           >
-                            <legend style={{ width: '100%', paddingInline: 4, marginBottom: 4, fontSize: '0.76rem', fontWeight: 700, color: 'var(--text-primary)' }}>
+                            <legend style={{ width: '100%', minWidth: 0, paddingInline: 4, marginBottom: 4, fontSize: '0.76rem', fontWeight: 700, color: 'var(--text-primary)', overflowWrap: 'anywhere' }}>
                               {row.employeeName} · {row.source === 'schedule' ? 'Schedule-backed' : 'Temporary shift'}
                               {row.endDayOffset === 1 ? ' · Overnight' : ''}
                             </legend>

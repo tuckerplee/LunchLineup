@@ -12,6 +12,10 @@ test.describe('modern public homepage', () => {
     await expect(page.getByRole('heading', { level: 1, name: HOME_HEADING })).toBeVisible();
     await expect(page.getByText('Availability in view', { exact: true })).toBeVisible();
     await expect(page.getByRole('link', { name: 'See how it works' })).toHaveAttribute('href', '#workflow');
+    const mobileNavigationToggle = page.getByLabel('Open navigation');
+    if (await mobileNavigationToggle.count()) {
+      await mobileNavigationToggle.click();
+    }
     await expect(page.getByRole('link', { name: 'Sign in', exact: true }).first()).toHaveAttribute('href', '/auth/login');
 
     const createWorkspace = page.getByRole('link', { name: 'Create your workspace' });
