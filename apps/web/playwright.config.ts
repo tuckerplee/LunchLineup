@@ -76,6 +76,7 @@ const webServer = process.env.BASE_URL
                     NEXT_PUBLIC_API_URL: '/api/v2',
                     NEXT_PUBLIC_SIGNUP_MODE: mockSignupMode,
                     NEXT_PUBLIC_SUPPORT_CONTACT_EMAIL: 'support@lunchlineup.test',
+                    STAFF_INVITATION_OUTBOX_ENABLED: 'true',
                 }
                 : undefined,
         },

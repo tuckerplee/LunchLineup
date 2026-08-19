@@ -61,6 +61,7 @@
 - `shift-update-recovery.test.ts`: partial aggregate shift-update construction with exact custom-role preservation plus API-valid same-payload/key replay, terminal 409 rotation, matching-response cleanup, and expiry coverage.
 - `staff-action-confirmation.test.ts`: destructive staff PIN-reset and removal confirmation copy coverage.
 - `staff-invitation-delivery.test.ts`: exact lowercase invitation status parsing, malformed-data rejection, terminal retry/reissue policy, PII-free view state, date labels, and stable recovery-key coverage.
+- `staff-onboarding.test.ts`: email/PIN payload allowlists, fail-closed email availability, cryptographic PIN shape, role-draft comparison, credential acknowledgement/copy wiring, and explicit role Save/Cancel contracts.
 - `stale-request-wiring-contract.test.ts`: static wiring coverage for immediate time-card invalidation and current-scope-only schedule printing.
 - `status-health.test.ts`: unit coverage for public status health endpoint URL resolution.
 - `tenant-edit-contract.test.ts`: credit-free tenant create/edit payload allowlists, static wallet display, and dedicated Admin Credits/billing/lifecycle guidance coverage.

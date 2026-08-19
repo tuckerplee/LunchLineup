@@ -16,6 +16,7 @@ describe('staff workspace permission contract', () => {
     expect(pageSource).toContain("canAssignRoles={canPermission(user, 'roles:assign')}");
     expect(pageSource).toContain("canManageRoles={canPermission(user, 'roles:write')}");
     expect(pageSource).toContain("canManageSchedulingProfiles={canPermission(user, 'users:write')}");
+    expect(pageSource).toContain('emailInvitationAvailable={emailInvitationEnabledFromEnv(process.env.STAFF_INVITATION_OUTBOX_ENABLED)}');
     expect(pageSource).not.toContain("canPermission(user, 'roles:write') || canPermission(user, 'roles:assign')");
     expect(workspaceSource).toContain('{canInvite ? (');
     expect(workspaceSource).toContain("...(canAdminister || canManageSchedulingProfiles ? ['Actions'] : [])");

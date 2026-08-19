@@ -85,8 +85,8 @@ test.describe('Staff and platform admin safety controls', () => {
   test('allows managers to edit recurring and dated location availability without admin controls', async ({ page }) => {
     await loginAsSeedManager(page, '/dashboard/staff');
 
-    await expect(page.getByText('Invite team member')).toBeVisible();
-    await expect(page.getByRole('button', { name: 'Invite' })).toBeVisible();
+    await expect(page.getByText('Add team member')).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Create team member' })).toBeVisible();
     await expect(page.getByRole('columnheader', { name: 'Actions' })).toBeVisible();
     await expect(page.getByRole('button', { name: 'Reset PIN' })).toHaveCount(0);
     await expect(page.getByRole('button', { name: 'Remove' })).toHaveCount(0);
@@ -283,8 +283,9 @@ test.describe('Staff and platform admin safety controls', () => {
     await expect(roleSelector.getByRole('option', { name: 'Staff' })).toHaveCount(1);
     await expect(roleSelector.getByRole('option', { name: 'Admin' })).toHaveCount(0);
     await page.getByLabel('Full name').fill('Launch Staff');
-    await page.getByLabel('Username').fill('launch.staff');
-    await page.getByRole('button', { name: 'Invite' }).click();
+    await page.getByLabel('Username', { exact: true }).fill('launch.staff');
+    await page.getByLabel('Temporary PIN', { exact: true }).fill('123456');
+    await page.getByRole('button', { name: 'Create team member' }).click();
     await expect.poll(() => invitedRoleId).toBe('role-staff');
   });
 

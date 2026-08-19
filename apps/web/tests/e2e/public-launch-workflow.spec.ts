@@ -271,23 +271,26 @@ test.describe('Public launch workflow gaps', () => {
     });
 
     await loginAsSeedAdmin(page, '/dashboard/staff');
-    const inviteForm = page.getByRole('form', { name: 'Invite team member' });
-    await inviteForm.getByLabel('Login method').selectOption('username');
+    const inviteForm = page.getByRole('form', { name: 'Add team member' });
     const roleSelector = inviteForm.getByLabel('Role');
     await expect(roleSelector.getByRole('option', { name: 'Staff' })).toHaveCount(1);
     await roleSelector.selectOption({ label: 'Staff' });
-    await inviteForm.getByLabel('Username').fill('launch.staff');
-    await inviteForm.getByLabel('Temporary PIN').fill('135790');
+    await inviteForm.getByLabel('Username', { exact: true }).fill('launch.staff');
+    await inviteForm.getByLabel('Temporary PIN', { exact: true }).fill('135790');
     await inviteForm.getByLabel('Full name').fill('Launch Staff');
     await expect(inviteForm.getByLabel('Full name')).toHaveValue('Launch Staff');
     await inviteForm.getByLabel('Full name').press('Enter');
-    await expect(page.getByRole('status')).toContainText('Temporary PIN:');
+    const credentials = page.getByRole('dialog', { name: 'Save temporary credentials' });
+    await expect(credentials.getByLabel('Created temporary PIN')).toHaveText('135790');
+    await credentials.getByLabel('I have copied and stored these credentials securely.').check();
+    await credentials.getByRole('button', { name: 'Done' }).click();
 
     await inviteForm.getByLabel('Full name').fill('Duplicate Staff');
-    await inviteForm.getByLabel('Username').fill('launch.staff');
-    await inviteForm.getByLabel('Temporary PIN').press('Enter');
+    await inviteForm.getByLabel('Username', { exact: true }).fill('launch.staff');
+    await inviteForm.getByLabel('Temporary PIN', { exact: true }).fill('246810');
+    await inviteForm.getByLabel('Temporary PIN', { exact: true }).press('Enter');
     await expect(page.locator('div[role=alert]').filter({ hasText: 'Username already exists.' })).toHaveText('Username already exists.');
-    await expect(page.getByRole('status')).toHaveCount(0);
+    await expect(page.getByRole('dialog', { name: 'Save temporary credentials' })).toHaveCount(0);
   });
 
   test('announces password-reset request, failure, and success without a blank recovery page', async ({ page }) => {

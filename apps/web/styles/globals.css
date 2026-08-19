@@ -1107,6 +1107,196 @@ textarea.form-input {
   min-width: 0;
   max-width: 100%;
 }
+
+.staff-invite-form {
+  display: grid;
+  gap: 12px;
+}
+
+.staff-onboarding__methods {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.staff-onboarding__methods legend {
+  grid-column: 1 / -1;
+  margin-bottom: 2px;
+  color: var(--text-muted);
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.staff-onboarding__methods > label {
+  min-width: 0;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  background: #fff;
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  cursor: pointer;
+}
+
+.staff-onboarding__methods > label:has(input:checked) {
+  border-color: #7ca0eb;
+  box-shadow: 0 0 0 2px rgba(36, 74, 168, 0.1);
+}
+
+.staff-onboarding__methods > label:has(input:disabled) {
+  background: #f4f5f8;
+  color: var(--text-muted);
+  cursor: not-allowed;
+}
+
+.staff-onboarding__methods input {
+  margin-top: 3px;
+}
+
+.staff-onboarding__methods span,
+.staff-onboarding__methods small {
+  display: grid;
+  gap: 3px;
+}
+
+.staff-onboarding__methods small {
+  color: var(--text-muted);
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1.35;
+}
+
+.staff-onboarding__availability {
+  padding: 9px 11px;
+  border: 1px solid #e3bc72;
+  border-radius: var(--r-sm);
+  background: #fff8e8;
+  color: #6f4a00;
+  display: grid;
+  gap: 2px;
+  font-size: 12px;
+}
+
+.staff-onboarding__availability--ready {
+  border-color: #9ed4b5;
+  background: #edf9f2;
+  color: #17633b;
+}
+
+.staff-onboarding__fields {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.staff-onboarding__fields > label {
+  min-width: 0;
+  display: grid;
+  gap: 5px;
+  color: var(--text-muted);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.staff-onboarding__wide-field {
+  grid-column: 1 / -1;
+}
+
+.staff-onboarding__pin-field {
+  display: grid;
+  grid-template-columns: minmax(110px, 1fr) auto;
+  gap: 8px;
+}
+
+.staff-onboarding__submit-row,
+.staff-role-draft-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.staff-onboarding__message,
+.staff-role-message {
+  padding: 9px 11px;
+  border: 1px solid #9ed4b5;
+  border-radius: var(--r-sm);
+  background: #edf9f2;
+  color: #17633b;
+  font-size: 12px;
+}
+
+.staff-onboarding__message--error,
+.staff-role-message--error {
+  border-color: #f2a6b6;
+  background: #fff2f5;
+  color: #8f1833;
+}
+
+.staff-onboarding__credentials {
+  padding: 14px;
+  border: 1px solid #e3bc72;
+  border-radius: var(--r-sm);
+  background: #fff8e8;
+  display: grid;
+  gap: 12px;
+}
+
+.staff-onboarding__credentials p {
+  margin: 3px 0 0;
+  color: #6f4a00;
+  font-size: 12px;
+}
+
+.staff-onboarding__credentials dl {
+  margin: 0;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.staff-onboarding__credentials dl > div {
+  padding: 9px 10px;
+  border: 1px solid #eed49f;
+  border-radius: var(--r-sm);
+  background: #fff;
+}
+
+.staff-onboarding__credentials dt {
+  color: var(--text-muted);
+  font-size: 11px;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.staff-onboarding__credentials dd {
+  margin: 3px 0 0;
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+  font-size: 16px;
+  font-weight: 800;
+  overflow-wrap: anywhere;
+}
+
+.staff-onboarding__acknowledgement {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  color: var(--text-primary);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.staff-onboarding__acknowledgement input {
+  margin-top: 2px;
+}
 .staff-role-layout {
   display: grid;
   grid-template-columns: minmax(0, 1.1fr) minmax(0, 1.4fr);
@@ -2030,6 +2220,23 @@ textarea.form-input {
     width: 100%;
     min-width: 0;
     max-width: 100%;
+  }
+
+  .staff-onboarding__methods,
+  .staff-onboarding__fields,
+  .staff-onboarding__credentials dl,
+  .staff-onboarding__pin-field {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .staff-onboarding__wide-field {
+    grid-column: auto;
+  }
+
+  .staff-onboarding__submit-row > button,
+  .staff-onboarding__credentials > button,
+  .staff-role-draft-actions > button {
+    width: 100%;
   }
 
   .staff-table-scroll {

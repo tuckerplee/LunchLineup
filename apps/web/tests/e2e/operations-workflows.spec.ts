@@ -11,11 +11,15 @@ import type {
 import { apiJson, dayWindow, loginAsSeedAdmin, runFullStack, seedTenant } from './support';
 
 async function inviteStaff(page: import('@playwright/test').Page, name: string, username: string, role: 'Manager' | 'Staff') {
-  await page.getByPlaceholder('Full name').fill(name);
-  await page.getByPlaceholder('username (lowercase)').fill(username);
-  await page.getByPlaceholder('PIN (optional)').fill('135790');
-  await page.locator('select').nth(1).selectOption({ label: role });
-  await page.getByRole('button', { name: 'Invite' }).click();
+  const form = page.getByRole('form', { name: 'Add team member' });
+  await form.getByLabel('Full name').fill(name);
+  await form.getByLabel('Username', { exact: true }).fill(username);
+  await form.getByLabel('Temporary PIN', { exact: true }).fill('135790');
+  await form.getByLabel('Role').selectOption({ label: role });
+  await form.getByRole('button', { name: 'Create team member' }).click();
+  const credentials = page.getByRole('dialog', { name: 'Save temporary credentials' });
+  await credentials.getByLabel('I have copied and stored these credentials securely.').check();
+  await credentials.getByRole('button', { name: 'Done' }).click();
   await expect(page.getByText(name)).toBeVisible();
 }
 

@@ -11,8 +11,15 @@ import {
 } from '@/lib/user-directory-pagination';
 import { buildStaffActionConfirmation, type StaffAction } from './staff-action-confirmation';
 import { buildRoleDeletionConfirmation, canConfirmRoleDeletion } from './role-deletion-confirmation';
+import { AddTeamMemberForm, type AddTeamMemberResult } from './AddTeamMemberForm';
 import { InvitationDeliveryStatus } from './InvitationDeliveryStatus';
 import { StaffSchedulingProfileEditor } from './StaffSchedulingProfileEditor';
+import {
+    resolveEmailInvitationAvailability,
+    sameRoleSelection,
+    type StaffInvitationPayload,
+    type StaffOnboardingMethod,
+} from './staff-onboarding';
 import { useInvitationDelivery } from './use-invitation-delivery';
 
 type StaffWorkspaceProps = {
@@ -23,6 +30,7 @@ type StaffWorkspaceProps = {
     canAssignRoles: boolean;
     canManageRoles: boolean;
     canManageSchedulingProfiles: boolean;
+    emailInvitationAvailable: boolean;
 };
 
 type AssignedRole = {
@@ -161,7 +169,7 @@ function parseDirectorySummary(value: unknown): UserDirectorySummary {
     return payload as UserDirectorySummary;
 }
 
-export function StaffWorkspace({ currentUserPublicId, canInvite, canAdminister, canReadRoles, canAssignRoles, canManageRoles, canManageSchedulingProfiles }: StaffWorkspaceProps) {
+export function StaffWorkspace({ currentUserPublicId, canInvite, canAdminister, canReadRoles, canAssignRoles, canManageRoles, canManageSchedulingProfiles, emailInvitationAvailable }: StaffWorkspaceProps) {
     const [users, setUsers] = useState<StaffUser[]>([]);
     const [directorySummary, setDirectorySummary] = useState<UserDirectorySummary | null>(null);
     const [nextCursor, setNextCursor] = useState<string | null>(null);
@@ -178,15 +186,12 @@ export function StaffWorkspace({ currentUserPublicId, canInvite, canAdminister, 
     const [pendingRoleDeletion, setPendingRoleDeletion] = useState<RoleCatalogItem | null>(null);
     const [roleDeletionName, setRoleDeletionName] = useState('');
     const [schedulingProfileUser, setSchedulingProfileUser] = useState<StaffUser | null>(null);
+    const [roleDrafts, setRoleDrafts] = useState<Record<string, string[]>>({});
+    const [roleAssignmentMessages, setRoleAssignmentMessages] = useState<Record<string, { kind: 'error' | 'notice'; text: string }>>({});
     const canOpenStaffDrawer = canManageSchedulingProfiles || canAdminister || (canAssignRoles && canReadRoles);
 
-    const [inviteName, setInviteName] = useState('');
-    const [inviteEmail, setInviteEmail] = useState('');
-    const [inviteUsername, setInviteUsername] = useState('');
-    const [invitePin, setInvitePin] = useState('');
-    const [inviteRoleId, setInviteRoleId] = useState('');
-    const [inviteLoginType, setInviteLoginType] = useState<'email' | 'username'>('username');
-    const [isInviting, setIsInviting] = useState(false);
+    const [defaultInviteRoleId, setDefaultInviteRoleId] = useState('');
+    const [isEmailInvitationAvailable, setIsEmailInvitationAvailable] = useState(emailInvitationAvailable);
     const [lastTemporaryPin, setLastTemporaryPin] = useState<string | null>(null);
     const [lastTemporaryPinUserId, setLastTemporaryPinUserId] = useState<string | null>(null);
     const [lastInvitationUserId, setLastInvitationUserId] = useState<string | null>(null);
@@ -228,7 +233,12 @@ export function StaffWorkspace({ currentUserPublicId, canInvite, canAdminister, 
             const usersPayload = (await usersRes.json()) as UserDirectoryPage;
             const summaryPayload = parseDirectorySummary(usersPayload.summary);
             const accessPayload = accessRes
-                ? (await accessRes.json()) as { roles?: RoleCatalogItem[]; permissions?: PermissionCatalogItem[]; defaultInviteRoleId?: string | null }
+                ? (await accessRes.json()) as {
+                    roles?: RoleCatalogItem[];
+                    permissions?: PermissionCatalogItem[];
+                    defaultInviteRoleId?: string | null;
+                    emailInvitationAvailable?: unknown;
+                }
                 : { roles: [], permissions: [] };
             const cursor = continuationCursor(usersPayload.pagination);
 
@@ -241,21 +251,25 @@ export function StaffWorkspace({ currentUserPublicId, canInvite, canAdminister, 
             setUserPageCursors([null]);
             setRoles(accessPayload.roles ?? []);
             setPermissions(accessPayload.permissions ?? []);
+            setRoleDrafts({});
+            setRoleAssignmentMessages({});
+            setIsEmailInvitationAvailable(resolveEmailInvitationAvailability(
+                accessPayload.emailInvitationAvailable,
+                emailInvitationAvailable,
+            ));
 
             const delegableRoles = (accessPayload.roles ?? []).filter((role) => role.canDelegate);
             const defaultInviteRole = delegableRoles.find((role) => role.id === accessPayload.defaultInviteRoleId)
                 ?? delegableRoles.find((role) => role.legacyRole === 'STAFF')
                 ?? delegableRoles[0];
-            if (defaultInviteRole) {
-                setInviteRoleId((current) => current || defaultInviteRole.id);
-            }
+            setDefaultInviteRoleId(defaultInviteRole?.id ?? '');
             void refreshInvitationStatuses(staffUsers);
         } catch (err) {
             setError((err as Error).message);
         } finally {
             setIsLoading(false);
         }
-    }, [canReadRoles, refreshInvitationStatuses]);
+    }, [canReadRoles, emailInvitationAvailable, refreshInvitationStatuses]);
 
     useEffect(() => {
         void loadWorkspace();
@@ -274,6 +288,8 @@ export function StaffWorkspace({ currentUserPublicId, canInvite, canAdminister, 
             setNextCursor(followingCursor);
             setHasMoreUsers(Boolean(followingCursor));
             setUserPageIndex(targetPageIndex);
+            setRoleDrafts({});
+            setRoleAssignmentMessages({});
             setUserPageCursors((current) => {
                 const next = current.slice(0, targetPageIndex);
                 next[targetPageIndex] = cursor;
@@ -304,37 +320,13 @@ export function StaffWorkspace({ currentUserPublicId, canInvite, canAdminister, 
         setEditorPermissionKeys([]);
     }, []);
 
-    const inviteUser = useCallback(async () => {
-        if (!inviteName.trim()) {
-            setError('Name is required.');
-            return;
-        }
-        if (canReadRoles && !inviteRoleId) {
-            setError('Choose a role.');
-            return;
-        }
-        if (inviteLoginType === 'email' && !inviteEmail.trim()) {
-            setError('Email is required for email login.');
-            return;
-        }
-        if (inviteLoginType === 'username' && !inviteUsername.trim()) {
-            setError('Username is required for PIN login.');
-            return;
-        }
-
-        setIsInviting(true);
-        setError(null);
-        setLastTemporaryPin(null);
-        setLastTemporaryPinUserId(null);
+    const inviteUser = useCallback(async (
+        invitation: StaffInvitationPayload,
+        method: StaffOnboardingMethod,
+    ): Promise<AddTeamMemberResult> => {
         setLastInvitationUserId(null);
         try {
-            const res = await fetchWithSession('/users/invite', jsonWriteInit('POST', {
-                name: inviteName.trim(),
-                email: inviteLoginType === 'email' ? inviteEmail.trim() || undefined : undefined,
-                username: inviteLoginType === 'username' ? inviteUsername.trim() || undefined : undefined,
-                pin: inviteLoginType === 'username' ? invitePin.trim() || undefined : undefined,
-                ...(inviteRoleId ? { roleId: inviteRoleId } : {}),
-            }));
+            const res = await fetchWithSession('/users/invite', jsonWriteInit('POST', invitation));
             const payload = (await res.json().catch(() => ({}))) as {
                 id?: unknown;
                 temporaryPin?: string;
@@ -344,46 +336,76 @@ export function StaffWorkspace({ currentUserPublicId, canInvite, canAdminister, 
             if (!res.ok) throw new Error(payload.message ?? 'Failed to create staff member.');
 
             const invitedUserId = typeof payload.id === 'string' && payload.id ? payload.id : null;
-            if (invitedUserId) {
+            if (method === 'email' && invitedUserId) {
                 setLastInvitationUserId(invitedUserId);
                 recordInvitationResponse(invitedUserId, payload);
             }
 
-            setInviteName('');
-            setInviteEmail('');
-            setInviteUsername('');
-            setInvitePin('');
-            setInviteLoginType('username');
-            setLastTemporaryPin(payload.temporaryPin ?? null);
-            setLastTemporaryPinUserId(invitedUserId);
             await loadWorkspace();
+            return { temporaryPin: payload.temporaryPin ?? null };
         } catch (err) {
-            setError((err as Error).message);
-        } finally {
-            setIsInviting(false);
+            throw err instanceof Error ? err : new Error('Failed to create staff member.');
         }
-    }, [canReadRoles, inviteEmail, inviteLoginType, inviteName, invitePin, inviteRoleId, inviteUsername, loadWorkspace, recordInvitationResponse]);
+    }, [loadWorkspace, recordInvitationResponse]);
 
     const updateUserRoles = useCallback(async (userId: string, roleIds: string[]) => {
         setIsSaving(userId);
-        setError(null);
+        setRoleAssignmentMessages((current) => {
+            const next = { ...current };
+            delete next[userId];
+            return next;
+        });
         try {
             const res = await fetchWithSession(`/users/${userId}/access`, jsonWriteInit('PUT', { roleIds }));
             const payload = (await res.json().catch(() => ({}))) as { assignedRoles?: AssignedRole[]; message?: string };
             if (!res.ok) throw new Error(payload.message ?? 'Failed to update user access.');
+            if (!Array.isArray(payload.assignedRoles)) throw new Error('Unable to confirm the saved access roles. Refresh and try again.');
             const assignedRoles = payload.assignedRoles;
             setUsers((prev) => prev.map((user) => (
-                user.id === userId ? { ...user, assignedRoles: assignedRoles ?? user.assignedRoles } : user
+                user.id === userId ? { ...user, assignedRoles } : user
             )));
             setSchedulingProfileUser((current) => current?.id === userId
-                ? { ...current, assignedRoles: assignedRoles ?? current.assignedRoles }
+                ? { ...current, assignedRoles }
                 : current);
+            setRoleDrafts((current) => {
+                const next = { ...current };
+                delete next[userId];
+                return next;
+            });
+            setRoleAssignmentMessages((current) => ({
+                ...current,
+                [userId]: { kind: 'notice', text: 'Access roles saved.' },
+            }));
         } catch (err) {
-            setError((err as Error).message);
+            setRoleAssignmentMessages((current) => ({
+                ...current,
+                [userId]: { kind: 'error', text: (err as Error).message },
+            }));
         } finally {
             setIsSaving(null);
         }
     }, []);
+
+    const stageUserRoles = (userId: string, roleIds: string[]) => {
+        setRoleDrafts((current) => ({ ...current, [userId]: roleIds }));
+        setRoleAssignmentMessages((current) => {
+            const next = { ...current };
+            delete next[userId];
+            return next;
+        });
+    };
+
+    const cancelUserRoleDraft = (userId: string) => {
+        setRoleDrafts((current) => {
+            const next = { ...current };
+            delete next[userId];
+            return next;
+        });
+        setRoleAssignmentMessages((current) => ({
+            ...current,
+            [userId]: { kind: 'notice', text: 'Unsaved role changes cancelled.' },
+        }));
+    };
 
     const resetPin = useCallback(async (id: string) => {
         setIsSaving(id);
@@ -481,6 +503,13 @@ export function StaffWorkspace({ currentUserPublicId, canInvite, canAdminister, 
         }
     }, [editorRoleId, loadWorkspace, resetRoleEditor]);
 
+    const drawerAssignedRoleIds = schedulingProfileUser?.assignedRoles.map((role) => role.id) ?? [];
+    const drawerDraftRoleIds = schedulingProfileUser
+        ? (roleDrafts[schedulingProfileUser.id] ?? drawerAssignedRoleIds)
+        : [];
+    const drawerRoleDraftChanged = !sameRoleSelection(drawerAssignedRoleIds, drawerDraftRoleIds);
+    const drawerRoleMessage = schedulingProfileUser ? roleAssignmentMessages[schedulingProfileUser.id] : undefined;
+
     return (
         <div className="staff-workspace" style={{ display: 'flex', flexDirection: 'column', gap: '1rem', maxWidth: 1320 }}>
             <section className="surface-card" style={{ padding: '1rem', display: 'grid', gap: '0.9rem' }}>
@@ -513,83 +542,17 @@ export function StaffWorkspace({ currentUserPublicId, canInvite, canAdminister, 
                 </div>
 
                 {canInvite ? (
-                    <div className="surface-muted" style={{ padding: '0.8rem', display: 'grid', gap: '0.6rem' }}>
-                        <div style={{ fontSize: '0.82rem', fontWeight: 700, color: 'var(--text-primary)' }}>Invite team member</div>
-                        <form
-                            className="staff-invite-form"
-                            aria-label="Invite team member"
-                            onSubmit={(event) => {
-                                event.preventDefault();
-                                void inviteUser();
-                            }}
-                            style={{ display: 'grid', gridTemplateColumns: '140px minmax(0, 1fr) minmax(0, 1fr) 140px 160px auto', gap: '0.5rem' }}
-                        >
-                            <select
-                                aria-label="Login method"
-                                value={inviteLoginType}
-                                onChange={(e) => setInviteLoginType(e.target.value as 'email' | 'username')}
-                                style={{ border: '1px solid var(--border)', borderRadius: 8, padding: '0.42rem 0.5rem', background: '#fff', color: 'var(--text-primary)' }}
-                            >
-                                <option value="username">Username + PIN</option>
-                                <option value="email">Email + OTP</option>
-                            </select>
-                            <input
-                                type="text"
-                                value={inviteName}
-                                onChange={(e) => setInviteName(e.target.value)}
-                                aria-label="Full name"
-                                style={{ border: '1px solid var(--border)', borderRadius: 8, padding: '0.42rem 0.5rem', background: '#fff', color: 'var(--text-primary)' }}
-                            />
-                            {inviteLoginType === 'email' ? (
-                                <input
-                                    type="email"
-                                    value={inviteEmail}
-                                    onChange={(e) => setInviteEmail(e.target.value)}
-                                    aria-label="Work email"
-                                    style={{ border: '1px solid var(--border)', borderRadius: 8, padding: '0.42rem 0.5rem', background: '#fff', color: 'var(--text-primary)' }}
-                                />
-                            ) : (
-                                <input
-                                    type="text"
-                                    value={inviteUsername}
-                                    onChange={(e) => setInviteUsername(e.target.value)}
-                                    aria-label="Username"
-                                    style={{ border: '1px solid var(--border)', borderRadius: 8, padding: '0.42rem 0.5rem', background: '#fff', color: 'var(--text-primary)' }}
-                                />
-                            )}
-                            <input
-                                type="text"
-                                value={invitePin}
-                                onChange={(e) => setInvitePin(e.target.value.replace(/\D/g, '').slice(0, 8))}
-                                aria-label="Temporary PIN"
-                                disabled={inviteLoginType !== 'username'}
-                                style={{ border: '1px solid var(--border)', borderRadius: 8, padding: '0.42rem 0.5rem', background: '#fff', color: 'var(--text-primary)' }}
-                            />
-                            {canReadRoles ? (
-                                <select
-                                    aria-label="Role"
-                                    value={inviteRoleId}
-                                    onChange={(e) => setInviteRoleId(e.target.value)}
-                                    style={{ border: '1px solid var(--border)', borderRadius: 8, padding: '0.42rem 0.5rem', background: '#fff', color: 'var(--text-primary)' }}
-                                >
-                                    {delegableRoles.map((role) => (
-                                        <option key={role.id} value={role.id}>{role.name}</option>
-                                    ))}
-                                </select>
-                            ) : null}
-                            <Button type="submit" size="sm" disabled={isInviting || isLoading}>
-                                {isInviting ? 'Creating...' : 'Invite'}
-                            </Button>
-                        </form>
-                        {lastTemporaryPin ? (
-                            <div style={{ fontSize: '0.78rem', color: '#7a2e14' }} role="status">
-                                Temporary PIN: <strong>{lastTemporaryPin}</strong> (share securely; require reset after first sign-in)
-                            </div>
-                        ) : null}
-                        {lastInvitationUserId && invitationDeliveries[lastInvitationUserId] ? (
+                    <AddTeamMemberForm
+                        roles={delegableRoles}
+                        defaultRoleId={defaultInviteRoleId}
+                        canChooseRole={canReadRoles}
+                        emailInvitationAvailable={isEmailInvitationAvailable}
+                        isLoading={isLoading}
+                        onSubmit={inviteUser}
+                        invitationDelivery={lastInvitationUserId && invitationDeliveries[lastInvitationUserId] ? (
                             <div style={{ borderTop: '1px solid var(--border)', paddingTop: '0.65rem', display: 'grid', gap: '0.35rem' }}>
                                 <div style={{ fontSize: '0.76rem', fontWeight: 800, color: 'var(--text-primary)' }}>
-                                    Invitation delivery
+                                    Last email invitation delivery
                                 </div>
                                 <InvitationDeliveryStatus
                                     state={invitationDeliveries[lastInvitationUserId]}
@@ -599,7 +562,7 @@ export function StaffWorkspace({ currentUserPublicId, canInvite, canAdminister, 
                                 />
                             </div>
                         ) : null}
-                    </div>
+                    />
                 ) : null}
             </section>
 
@@ -637,7 +600,12 @@ export function StaffWorkspace({ currentUserPublicId, canInvite, canAdminister, 
                         </tr>
                     </thead>
                     <tbody>
-                        {users.map((user, index) => (
+                        {users.map((user, index) => {
+                            const assignedRoleIds = user.assignedRoles.map((role) => role.id);
+                            const draftRoleIds = roleDrafts[user.id] ?? assignedRoleIds;
+                            const roleDraftChanged = !sameRoleSelection(assignedRoleIds, draftRoleIds);
+                            const roleMessage = roleAssignmentMessages[user.id];
+                            return (
                             <tr
                                 key={user.id}
                                 className={canOpenStaffDrawer ? 'staff-directory-row staff-directory-row--interactive' : 'staff-directory-row'}
@@ -706,21 +674,53 @@ export function StaffWorkspace({ currentUserPublicId, canInvite, canAdminister, 
                                             ))}
                                         </div>
                                         {canAssignRoles && canReadRoles && user.id !== currentUserPublicId ? (
-                                            <select
-                                                multiple
-                                                aria-label={`Assigned roles for ${user.name}`}
-                                                value={user.assignedRoles.map((role) => role.id)}
-                                                onChange={(event) => {
-                                                    const nextRoleIds = Array.from(event.currentTarget.selectedOptions).map((option) => option.value);
-                                                    void updateUserRoles(user.id, nextRoleIds);
-                                                }}
-                                                disabled={isSaving === user.id}
-                                                style={{ minHeight: 86, border: '1px solid var(--border)', borderRadius: 8, padding: '0.45rem', background: '#fff', color: 'var(--text-primary)' }}
-                                            >
-                                                {delegableRoles.map((role) => (
-                                                    <option key={role.id} value={role.id}>{role.name}</option>
-                                                ))}
-                                            </select>
+                                            <div role="group" aria-label={`Role changes for ${user.name}`} style={{ display: 'grid', gap: '0.4rem' }}>
+                                                <select
+                                                    multiple
+                                                    aria-label={`Assigned roles for ${user.name}`}
+                                                    value={draftRoleIds}
+                                                    onChange={(event) => {
+                                                        const nextRoleIds = Array.from(event.currentTarget.selectedOptions).map((option) => option.value);
+                                                        stageUserRoles(user.id, nextRoleIds);
+                                                    }}
+                                                    disabled={isSaving === user.id}
+                                                    style={{ minHeight: 86, border: '1px solid var(--border)', borderRadius: 8, padding: '0.45rem', background: '#fff', color: 'var(--text-primary)' }}
+                                                >
+                                                    {delegableRoles.map((role) => (
+                                                        <option key={role.id} value={role.id}>{role.name}</option>
+                                                    ))}
+                                                </select>
+                                                {roleDraftChanged ? (
+                                                    <span style={{ fontSize: '0.72rem', color: '#7a5200' }} role="status">Unsaved role changes</span>
+                                                ) : null}
+                                                <div className="staff-role-draft-actions">
+                                                    <Button
+                                                        type="button"
+                                                        size="sm"
+                                                        disabled={!roleDraftChanged || isSaving === user.id}
+                                                        onClick={() => void updateUserRoles(user.id, draftRoleIds)}
+                                                    >
+                                                        {isSaving === user.id ? 'Saving...' : 'Save roles'}
+                                                    </Button>
+                                                    <Button
+                                                        type="button"
+                                                        size="sm"
+                                                        variant="outline"
+                                                        disabled={!roleDraftChanged || isSaving === user.id}
+                                                        onClick={() => cancelUserRoleDraft(user.id)}
+                                                    >
+                                                        Cancel
+                                                    </Button>
+                                                </div>
+                                                {roleMessage ? (
+                                                    <div
+                                                        className={roleMessage.kind === 'error' ? 'staff-role-message staff-role-message--error' : 'staff-role-message'}
+                                                        role={roleMessage.kind === 'error' ? 'alert' : 'status'}
+                                                    >
+                                                        {roleMessage.text}
+                                                    </div>
+                                                ) : null}
+                                            </div>
                                         ) : null}
                                     </div>
                                 </td>
@@ -749,7 +749,8 @@ export function StaffWorkspace({ currentUserPublicId, canInvite, canAdminister, 
                                     </td>
                                 ) : null}
                             </tr>
-                        ))}
+                            );
+                        })}
                         {!isLoading && users.length === 0 ? (
                             <tr>
                                 <td colSpan={3 + (canAdminister ? 1 : 0) + (canAdminister || canManageSchedulingProfiles ? 1 : 0)} style={{ padding: '1rem', fontSize: '0.84rem', color: 'var(--text-muted)' }}>
@@ -834,28 +835,56 @@ export function StaffWorkspace({ currentUserPublicId, canInvite, canAdminister, 
                                         <>
                                             <strong>Change roles</strong>
                                             {delegableRoles.length > 0 ? (
-                                                <div role="group" aria-label={`Manage roles for ${schedulingProfileUser.name}`}>
-                                                    {delegableRoles.map((role) => {
-                                                        const checked = schedulingProfileUser.assignedRoles.some((assignedRole) => assignedRole.id === role.id);
-                                                        return (
+                                                <>
+                                                    <div role="group" aria-label={`Manage roles for ${schedulingProfileUser.name}`}>
+                                                        {delegableRoles.map((role) => (
                                                             <label key={role.id}>
                                                                 <input
                                                                     type="checkbox"
-                                                                    checked={checked}
+                                                                    checked={drawerDraftRoleIds.includes(role.id)}
                                                                     disabled={isSaving === schedulingProfileUser.id}
                                                                     onChange={(event) => {
-                                                                        const currentRoleIds = schedulingProfileUser.assignedRoles.map((assignedRole) => assignedRole.id);
                                                                         const nextRoleIds = event.target.checked
-                                                                            ? Array.from(new Set([...currentRoleIds, role.id]))
-                                                                            : currentRoleIds.filter((roleId) => roleId !== role.id);
-                                                                        void updateUserRoles(schedulingProfileUser.id, nextRoleIds);
+                                                                            ? Array.from(new Set([...drawerDraftRoleIds, role.id]))
+                                                                            : drawerDraftRoleIds.filter((roleId) => roleId !== role.id);
+                                                                        stageUserRoles(schedulingProfileUser.id, nextRoleIds);
                                                                     }}
                                                                 />
                                                                 <span>{role.name}</span>
                                                             </label>
-                                                        );
-                                                    })}
-                                                </div>
+                                                        ))}
+                                                    </div>
+                                                    {drawerRoleDraftChanged ? (
+                                                        <span className="staff-profile-drawer__empty" role="status">Unsaved role changes</span>
+                                                    ) : null}
+                                                    <div className="staff-role-draft-actions">
+                                                        <Button
+                                                            type="button"
+                                                            size="sm"
+                                                            disabled={!drawerRoleDraftChanged || isSaving === schedulingProfileUser.id}
+                                                            onClick={() => void updateUserRoles(schedulingProfileUser.id, drawerDraftRoleIds)}
+                                                        >
+                                                            {isSaving === schedulingProfileUser.id ? 'Saving...' : 'Save roles'}
+                                                        </Button>
+                                                        <Button
+                                                            type="button"
+                                                            size="sm"
+                                                            variant="outline"
+                                                            disabled={!drawerRoleDraftChanged || isSaving === schedulingProfileUser.id}
+                                                            onClick={() => cancelUserRoleDraft(schedulingProfileUser.id)}
+                                                        >
+                                                            Cancel
+                                                        </Button>
+                                                    </div>
+                                                    {drawerRoleMessage ? (
+                                                        <div
+                                                            className={drawerRoleMessage.kind === 'error' ? 'staff-role-message staff-role-message--error' : 'staff-role-message'}
+                                                            role={drawerRoleMessage.kind === 'error' ? 'alert' : 'status'}
+                                                        >
+                                                            {drawerRoleMessage.text}
+                                                        </div>
+                                                    ) : null}
+                                                </>
                                             ) : <span className="staff-profile-drawer__empty">No delegable roles available.</span>}
                                         </>
                                     ) : null}
