@@ -551,6 +551,7 @@ test('release-built observability and proxy binaries enforce patched dependency 
   assert.match(proxy, /cat > main\.go[\s\S]*go mod tidy[\s\S]*CGO_ENABLED=0 go build/);
   assert.match(tempo, /4aeafc237b8d9a8d62e45735131e8a89eb741a00/);
   assert.match(tempo, /main\.Version=2\.10\.3/);
+  assert.match(tempo, /go build -mod=mod -trimpath/);
   for (const dependency of [
     'github.com/antchfx/xpath@v1.3.6',
     'github.com/apache/thrift@v0.23.0',

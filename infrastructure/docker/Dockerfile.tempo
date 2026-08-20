@@ -20,7 +20,7 @@ RUN go get github.com/buger/jsonparser@v1.1.2 \
       golang.org/x/net@v0.56.0 \
       golang.org/x/text@v0.39.0 \
       google.golang.org/grpc@v1.82.1
-RUN CGO_ENABLED=0 GOAMD64=v2 go build -trimpath \
+RUN CGO_ENABLED=0 GOAMD64=v2 go build -mod=mod -trimpath \
     -ldflags '-s -w -X main.Branch=HEAD -X main.Revision=4aeafc237b8d9a8d62e45735131e8a89eb741a00 -X main.Version=2.10.3' \
     -o /out/tempo ./cmd/tempo
 
