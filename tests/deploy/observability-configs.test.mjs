@@ -414,6 +414,12 @@ test('observability verifier exposes digest-pinned container fallback commands',
     'rules',
     ...PROMETHEUS_RULE_TEST_FILES.map((relativePath) => relativePath.split('/').at(-1)),
   ]);
+  const logCollector = byId.get('otel-logs-config');
+  assert.equal(logCollector.hostCommand.env.PROMTAIL_HOST, 'lunchlineup-host');
+  assert.deepEqual(logCollector.containerCommand.args.slice(2, 4), [
+    '-e',
+    'PROMTAIL_HOST=lunchlineup-host',
+  ]);
 });
 
 test('observability tool auto mode reports pinned Docker fallbacks when host tools are unavailable', () => {

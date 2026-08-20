@@ -175,10 +175,11 @@ function readYaml(root, relativePath, errors, checked) {
   }
 }
 
-function commandSpec(command, args) {
+function commandSpec(command, args, options = {}) {
   return {
     command,
     args: args.map((arg) => String(arg)),
+    env: options.env,
   };
 }
 
@@ -231,7 +232,10 @@ function missingExecutable(result) {
 }
 
 function runToolCommand(command, root, runner) {
-  return normalizeToolResult(runner(command.command, command.args, { cwd: root }));
+  return normalizeToolResult(runner(command.command, command.args, {
+    cwd: root,
+    env: command.env ? { ...process.env, ...command.env } : undefined,
+  }));
 }
 
 function toolAvailable(tool, root, runner) {
@@ -421,24 +425,34 @@ export function buildObservabilityToolCommands(options = {}) {
     ...[
       [OBSERVABILITY_FILES.otelCollector, 'otel-traces-config'],
       [OBSERVABILITY_FILES.logCollector, 'otel-logs-config'],
-    ].map(([relativePath, id]) => ({
-      id,
-      tool: 'otelcol-contrib',
-      label: relativePath,
-      hostCommand: commandSpec('otelcol-contrib', ['validate', '--config', join(root, relativePath)]),
-      containerCommand: commandSpec('docker', [
-        'run',
-        '--rm',
-        '-v',
-        dockerVolume(root, relativePath, containerPaths.otelCollectorConfig),
-        '--entrypoint',
-        '/otelcol-contrib',
-        OBSERVABILITY_TOOL_IMAGES.otelCollector,
-        'validate',
-        '--config',
-        containerPaths.otelCollectorConfig,
-      ]),
-    })),
+    ].map(([relativePath, id]) => {
+      const environment = relativePath === OBSERVABILITY_FILES.logCollector
+        ? { PROMTAIL_HOST: 'lunchlineup-host' }
+        : undefined;
+      return {
+        id,
+        tool: 'otelcol-contrib',
+        label: relativePath,
+        hostCommand: commandSpec(
+          'otelcol-contrib',
+          ['validate', '--config', join(root, relativePath)],
+          { env: environment },
+        ),
+        containerCommand: commandSpec('docker', [
+          'run',
+          '--rm',
+          ...(environment ? ['-e', 'PROMTAIL_HOST=lunchlineup-host'] : []),
+          '-v',
+          dockerVolume(root, relativePath, containerPaths.otelCollectorConfig),
+          '--entrypoint',
+          '/otelcol-contrib',
+          OBSERVABILITY_TOOL_IMAGES.otelCollector,
+          'validate',
+          '--config',
+          containerPaths.otelCollectorConfig,
+        ]),
+      };
+    }),
   ];
 }
 
