@@ -548,6 +548,7 @@ test('release-built observability and proxy binaries enforce patched dependency 
   assert.match(proxy, /e2eee6a7fce366321294c9c2a79f3146891dcbdf/);
   assert.match(proxy, /github\.com\/caddyserver\/caddy\/v2@v2\.11\.4/);
   assert.match(proxy, /CustomVersion=v2\.11\.4-lunchlineup/);
+  assert.match(proxy, /cat > main\.go[\s\S]*go mod tidy[\s\S]*CGO_ENABLED=0 go build/);
   assert.match(tempo, /4aeafc237b8d9a8d62e45735131e8a89eb741a00/);
   assert.match(tempo, /main\.Version=2\.10\.3/);
   for (const dependency of [

@@ -21,6 +21,7 @@ func main() {
 	caddycmd.Main()
 }
 GO
+go mod tidy
 CGO_ENABLED=0 go build -trimpath \
   -ldflags '-s -w -X github.com/caddyserver/caddy/v2.CustomVersion=v2.11.4-lunchlineup' \
   -o /out/caddy .
