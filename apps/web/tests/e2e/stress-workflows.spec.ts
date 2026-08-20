@@ -89,8 +89,12 @@ async function createShiftFromToolbar(page: Page, staffName: string, start = '09
 async function dragShiftToRow(page: Page, timeText: string, targetRowTitle: string) {
   const shiftBlock = page.locator('.shift-block').filter({ hasText: timeText }).first();
   await expect(shiftBlock).toBeVisible();
-  const sourceBox = await shiftBlock.locator('.shift-drag-handle').boundingBox();
-  const targetBox = await page.locator(`.timeline-row[data-resource-title="${targetRowTitle}"]`).boundingBox();
+  const sourceHandle = shiftBlock.locator('.shift-drag-handle');
+  const targetRow = page.locator(`.timeline-row[data-resource-title="${targetRowTitle}"]`);
+  await targetRow.scrollIntoViewIfNeeded();
+  await sourceHandle.scrollIntoViewIfNeeded();
+  const sourceBox = await sourceHandle.boundingBox();
+  const targetBox = await targetRow.boundingBox();
   expect(sourceBox).toBeTruthy();
   expect(targetBox).toBeTruthy();
   if (!sourceBox || !targetBox) return;

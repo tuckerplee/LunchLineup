@@ -28,7 +28,11 @@ test.describe.serial('Tenant and admin SaaS workflows', () => {
     await expect(page.getByRole('heading', { name: 'Manager dashboard' })).toBeVisible();
     await expect(page.getByRole('link', { name: 'Admin Console' })).toHaveCount(0);
 
-    await page.goto('/admin/tenants');
+    const denial = await page.request.get('/admin/tenants', { maxRedirects: 0 });
+    expect([307, 308]).toContain(denial.status());
+    expect(new URL(denial.headers().location).pathname).toBe('/dashboard');
+
+    await page.goto('/dashboard');
     await expect(page).toHaveURL(/\/dashboard(?:[?#].*)?$/);
     await expect(page.getByRole('heading', { name: 'Manager dashboard' })).toBeVisible();
   });
