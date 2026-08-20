@@ -934,9 +934,13 @@ test('example env and deploy helpers do not encode copyable weak secrets', () =>
 
 test('CI smoke jobs use the shared smoke environment generator', () => {
   const ci = read('.github/workflows/ci.yml');
+  const compose = read('docker-compose.yml');
   const smokeWriter = read('scripts/write-smoke-env.mjs');
 
   assert.equal((ci.match(/node scripts\/write-smoke-env\.mjs \.env\.smoke/g) ?? []).length, 3);
+  assert.match(ci, /E2E_FULL_STACK=1[\s\S]*E2E_PREAUTH_IP_LIMIT=120[\s\S]*E2E_PREAUTH_IDENTIFIER_LIMIT=30/);
+  assert.equal((ci.match(/E2E_PREAUTH_IDENTIFIER_LIMIT=30/g) ?? []).length, 1);
+  assert.match(compose, /api:[\s\S]*DATA_TARGET_ENV=\$\{DATA_TARGET_ENV:-development\}[\s\S]*E2E_FULL_STACK=\$\{E2E_FULL_STACK:-0\}[\s\S]*E2E_PREAUTH_IP_LIMIT=\$\{E2E_PREAUTH_IP_LIMIT:-\}[\s\S]*E2E_PREAUTH_IDENTIFIER_LIMIT=\$\{E2E_PREAUTH_IDENTIFIER_LIMIT:-\}/);
   assert.equal((ci.match(/docker pull "\$ref"/g) ?? []).length, 3);
   assert.ok((ci.match(/node scripts\/verify-release-artifacts\.mjs \.release\/release-manifest\.json --source-sha "\$GITHUB_SHA"/g) ?? []).length >= 3);
   assert.ok((ci.match(/actions\/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093/g) ?? []).length >= 10);

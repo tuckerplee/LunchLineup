@@ -416,10 +416,12 @@ test('candidate DAST and load evidence bind served release, immutable images, ra
   const scratch = mkdtempSync(join(tmpdir(), 'lunchlineup-candidate-evidence-'));
   try {
     const zapReport = join(scratch, 'zap.json');
+    const warningZapReport = join(scratch, 'warning-zap.json');
     const zapHtml = join(scratch, 'zap.html');
     const artilleryResult = join(scratch, 'artillery.json');
     const availabilityResult = join(scratch, 'availability.json');
     writeFileSync(zapReport, JSON.stringify({ site: [{ alerts: [] }] }));
+    writeFileSync(warningZapReport, JSON.stringify({ site: [{ alerts: [{ riskcode: '2', riskdesc: 'Medium (High)', instances: [{ uri: 'https://lunchlineup.example/api' }] }] }] }));
     writeFileSync(zapHtml, '<!doctype html><title>ZAP report</title>');
     writeFileSync(artilleryResult, JSON.stringify({ aggregate: { counters: { 'http.requests': 8, 'http.codes.200': 8, 'vusers.failed': 0 }, summaries: { 'http.response_time': { p99: 999 } } } }));
     writeFileSync(availabilityResult, JSON.stringify({ status: 'passed', requestCount: 2 }));
@@ -461,10 +463,11 @@ test('candidate DAST and load evidence bind served release, immutable images, ra
     const warningOnlyDast = emitCandidateEvidence('dast', {
       ...base,
       'command-exit-code': '2',
-      'raw-report': zapReport,
+      'raw-report': warningZapReport,
       'raw-html': zapHtml,
     });
     assert.equal(warningOnlyDast.status, 'passed');
+    assert.deepEqual(warningOnlyDast.dast.findingCounts, { informational: 0, low: 0, medium: 1, high: 0, critical: 0 });
     assert.throws(() => verifyFetchedEvidenceArtifact('dast', bytes({ ...dast, servedReleaseSha: 'b'.repeat(40) }), dastEntry, releaseManifest), /servedReleaseSha/);
     assert.throws(() => verifyFetchedEvidenceArtifact('dast', bytes({ ...dast, tool: { ...dast.tool, image: 'zaproxy/zaproxy:stable' } }), dastEntry, releaseManifest), /immutable image reference/);
     assert.throws(() => verifyFetchedEvidenceArtifact('dast', bytes({ ...dast, raw: {} }), dastEntry, releaseManifest), /raw\.report/);

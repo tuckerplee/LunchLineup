@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { BadRequestException, ForbiddenException, UnauthorizedException } from '@nestjs/common';
 import { AuthController } from './auth.controller';
+import { resolvePreAuthThrottleLimits } from './pre-auth-throttle.config';
 import { JwtAuthGuard } from './jwt-auth.guard';
 import { ALLOW_AUTHENTICATED_METADATA_KEY } from './require-permission.decorator';
 import { PUBLIC_LEGAL_MANIFEST } from '@lunchlineup/config';
@@ -65,6 +66,30 @@ describe('AuthController', () => {
             sendPasswordReset: vi.fn(),
         };
         controller = new AuthController(authService, otpService, emailService);
+    });
+
+    it('keeps production pre-auth throttles fixed and isolates higher E2E capacity', () => {
+        expect(resolvePreAuthThrottleLimits({})).toEqual({ ip: 30, identifier: 5 });
+        expect(resolvePreAuthThrottleLimits({
+            NODE_ENV: 'test',
+            DATA_TARGET_ENV: 'test',
+            E2E_FULL_STACK: '1',
+            E2E_PREAUTH_IP_LIMIT: '120',
+            E2E_PREAUTH_IDENTIFIER_LIMIT: '30',
+        })).toEqual({ ip: 120, identifier: 30 });
+
+        expect(() => resolvePreAuthThrottleLimits({
+            NODE_ENV: 'production',
+            DATA_TARGET_ENV: 'production',
+            E2E_FULL_STACK: '1',
+            E2E_PREAUTH_IDENTIFIER_LIMIT: '30',
+        })).toThrow(/isolated full-stack test environment/);
+        expect(() => resolvePreAuthThrottleLimits({
+            NODE_ENV: 'test',
+            DATA_TARGET_ENV: 'test',
+            E2E_FULL_STACK: '1',
+            E2E_PREAUTH_IDENTIFIER_LIMIT: '501',
+        })).toThrow(/between 5 and 500/);
     });
 
     it('resolves login flow for identifier', async () => {

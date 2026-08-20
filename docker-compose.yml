@@ -138,6 +138,10 @@ services:
       - telemetry
     environment:
       - NODE_ENV=${NODE_ENV:-production}
+      - DATA_TARGET_ENV=${DATA_TARGET_ENV:-development}
+      - E2E_FULL_STACK=${E2E_FULL_STACK:-0}
+      - E2E_PREAUTH_IP_LIMIT=${E2E_PREAUTH_IP_LIMIT:-}
+      - E2E_PREAUTH_IDENTIFIER_LIMIT=${E2E_PREAUTH_IDENTIFIER_LIMIT:-}
       - PORT=3000
       - DOMAIN=${DOMAIN:?Set DOMAIN in .env}
       - ALLOWED_HOSTS=${ALLOWED_HOSTS:-}

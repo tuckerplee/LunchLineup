@@ -927,8 +927,18 @@ function zapCounts(report) {
     if (Array.isArray(value)) return value.forEach(visit);
     if (Array.isArray(value.alerts)) {
       for (const alert of value.alerts) {
-        const risk = String(alert.riskdesc ?? alert.risk ?? alert.riskcode ?? '').toLowerCase();
-        const severity = risk.includes('critical') || risk === '4' ? 'critical' : risk.includes('high') || risk === '3' ? 'high' : risk.includes('medium') || risk === '2' ? 'medium' : risk.includes('low') || risk === '1' ? 'low' : 'informational';
+        const riskCode = String(alert.riskcode ?? '').trim();
+        const riskLabel = String(alert.risk ?? alert.riskdesc ?? '').trim().toLowerCase();
+        const labelSeverity = /^(critical|high|medium|low|informational|info)\b/u.exec(riskLabel)?.[1];
+        const severity = riskCode === '4' || (!riskCode && labelSeverity === 'critical')
+          ? 'critical'
+          : riskCode === '3' || (!riskCode && labelSeverity === 'high')
+            ? 'high'
+            : riskCode === '2' || (!riskCode && labelSeverity === 'medium')
+              ? 'medium'
+              : riskCode === '1' || (!riskCode && labelSeverity === 'low')
+                ? 'low'
+                : 'informational';
         counts[severity] += Array.isArray(alert.instances) && alert.instances.length ? alert.instances.length : 1;
       }
     }

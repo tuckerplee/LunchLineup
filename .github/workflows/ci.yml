@@ -939,7 +939,13 @@ jobs:
           name: release-manifest
           path: .release
       - name: Prepare full-stack environment
-        run: node scripts/write-smoke-env.mjs .env.smoke
+        run: |
+          node scripts/write-smoke-env.mjs .env.smoke
+          cat >> .env.smoke <<'EOF'
+          E2E_FULL_STACK=1
+          E2E_PREAUTH_IP_LIMIT=120
+          E2E_PREAUTH_IDENTIFIER_LIMIT=30
+          EOF
       - name: Verify release manifest
         run: node scripts/verify-release-artifacts.mjs .release/release-manifest.json --source-sha "$GITHUB_SHA"
       - name: Pull release stack by digest

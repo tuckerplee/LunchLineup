@@ -8,19 +8,21 @@ import { Response, Request } from 'express';
 import { Res } from '@nestjs/common';
 import { AllowAuthenticated } from './require-permission.decorator';
 import { operationalErrorDiagnostics, type OperationalErrorCategory } from './operational-error';
+import { resolvePreAuthThrottleLimits } from './pre-auth-throttle.config';
 
 const Public = () => SetMetadata('isPublic', true);
 const ACCESS_TOKEN_COOKIE_MAX_AGE_MS = 30 * 60 * 1000;
 const REFRESH_TOKEN_COOKIE_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
 const OIDC_CORRELATION_COOKIE = 'oidc_correlation';
 const AuthThrottle = () => Throttle({ auth: { ttl: 15 * 60 * 1000, limit: 5 } });
+const preAuthThrottleLimits = resolvePreAuthThrottleLimits();
 const RefreshThrottle = () => Throttle({
     refreshIp: { ttl: 15 * 60 * 1000, limit: 100 },
     refreshCredential: { ttl: 15 * 60 * 1000, limit: 5 },
 });
 const PreAuthThrottle = () => Throttle({
-    authIp: { ttl: 15 * 60 * 1000, limit: 30 },
-    authIdentifier: { ttl: 15 * 60 * 1000, limit: 5 },
+    authIp: { ttl: 15 * 60 * 1000, limit: preAuthThrottleLimits.ip },
+    authIdentifier: { ttl: 15 * 60 * 1000, limit: preAuthThrottleLimits.identifier },
 });
 const MAX_ONBOARDING_TENANT_NAME_LENGTH = 80;
 const HTML_SIGNIFICANT_EMAIL_CHARS = /[<>&"']/;
