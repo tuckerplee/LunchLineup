@@ -159,7 +159,10 @@ test('backup is a required CI release and deploy artifact', () => {
   assert.match(ci, /backup_ref: \$\{\{ steps\.release_manifest\.outputs\.backup_ref \}\}/);
   assert.match(ci, /"backup": \{ "ref": "\$\{BACKUP_REF\}"/);
   assert.match(verifier, /requiredServices = \[[^\]]*'backup'/);
-  assert.match(verifier, /\|backup\)/);
+  assert.match(
+    verifier,
+    /appComposeImagePattern\s*=\s*[\s\S]{0,500}\(\?:[^)]*\bbackup\b[^)]*\)/,
+  );
   assert.match(deploy, /required_services = \[[^\]]*"backup"/);
   assert.match(deploy, /BACKUP_RELEASE_ENV_PATH/);
   assert.match(deploy, /backup_release_env_ok/);

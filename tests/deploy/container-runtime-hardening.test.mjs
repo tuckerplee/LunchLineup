@@ -138,7 +138,8 @@ test('availability PDF parsing runs in a secret-free no-network container bounda
   assert.ok(compose.services.worker.volumes.includes('parser_ipc:/run/lunchlineup-parser'));
   assert.equal(compose.services.worker.depends_on['pdf-parser'].condition, 'service_healthy');
   assert.equal(compose.services.worker.healthcheck.start_period, "15s");
-  assert.match(compose.services.worker.healthcheck.test.at(-1), /lunchlineup_pdf_parser_ready/);
+  assert.equal(compose.services.worker.healthcheck.test.at(-1), 'src.healthcheck');
+  assert.match(read('apps/worker/src/healthcheck.py'), /lunchlineup_pdf_parser_ready/);
   assert.ok(compose.services.worker.environment.includes("PARSER_SOCKET_PATH=/run/lunchlineup-parser/parser.sock"));
   assert.ok(compose.services.worker.environment.some((entry) => entry.startsWith("WORKER_PDF_PARSER_HEALTH_POLL_SECONDS=")));
   assert.match(read("apps/worker/main.py"), /run_pdf_parser_health_loop/);

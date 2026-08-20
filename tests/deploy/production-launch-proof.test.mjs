@@ -68,6 +68,13 @@ function sampleReleaseManifest() {
     migrate: 'Dockerfile.migrations',
     control: 'Dockerfile.control',
     backup: 'Dockerfile.backup',
+    proxy: 'Dockerfile.proxy',
+    pgbouncer: 'Dockerfile.pgbouncer',
+    postgres: 'Dockerfile.postgres',
+    'node-exporter': 'Dockerfile.node-exporter',
+    loki: 'Dockerfile.loki',
+    tempo: 'Dockerfile.tempo',
+    grafana: 'Dockerfile.grafana',
   };
 
   return {
@@ -83,7 +90,7 @@ function sampleReleaseManifest() {
     deploymentContract: buildDeploymentContract(root),
     images: Object.fromEntries(
       Object.entries(services).map(([service, dockerfile], index) => {
-        const digest = `sha256:${String(index + 1).repeat(64)}`;
+        const digest = `sha256:${(index + 1).toString(16).repeat(64)}`;
         return [
           service,
           {

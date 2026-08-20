@@ -11,6 +11,10 @@ import { writeReleaseIndex } from '../../scripts/signed-release-authenticity.mjs
 
 const root = fileURLToPath(new URL('../..', import.meta.url));
 const sha = 'a'.repeat(40);
+const releaseImageServices = [
+  'api', 'api-v2', 'web', 'engine', 'worker', 'migrate', 'control', 'backup',
+  'proxy', 'pgbouncer', 'postgres', 'node-exporter', 'loki', 'tempo', 'grafana',
+];
 const certificateIdentity = 'https://github.com/tuckerplee/LunchLineup/.github/workflows/ci.yml@refs/heads/main';
 const oidcIssuer = 'https://token.actions.githubusercontent.com';
 const { privateKey: fixturePrivateKey, publicKey: fixturePublicKey } = generateKeyPairSync('ed25519');
@@ -874,7 +878,7 @@ test('bootstrap dispatch is isolated from push-only deployment', () => {
   assert.match(deployJob, /if: github\.event_name == 'push' && github\.ref == 'refs\/heads\/main'/);
   assert.doesNotMatch(deployJob, /bootstrap-retained|bootstrap_release_registry/);
   const imagePushLines = ci.split('\n').filter((line) => line.trimStart().startsWith('push: ${{'));
-  assert.equal(imagePushLines.length, 8);
+  assert.equal(imagePushLines.length, releaseImageServices.length);
   for (const line of imagePushLines) {
     assert.match(line, /github\.event_name == 'push' && \(github\.ref == 'refs\/heads\/main' \|\| github\.ref == 'refs\/heads\/internal-beta-candidate'\)/);
     assert.match(line, /github\.event_name == 'workflow_dispatch' && inputs\.internal_beta_candidate == true/);

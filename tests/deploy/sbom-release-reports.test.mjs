@@ -10,7 +10,10 @@ import { buildReleaseImageReportEvidence } from '../../scripts/write-release-ima
 
 const root = resolve(import.meta.dirname, '../..');
 const fakeCosign = join(root, 'tests/deploy/fake-cosign-release-report.mjs');
-const releaseServices = ['api', 'api-v2', 'web', 'engine', 'worker', 'migrate', 'control', 'backup'];
+const releaseServices = [
+  'api', 'api-v2', 'web', 'engine', 'worker', 'migrate', 'control', 'backup',
+  'proxy', 'pgbouncer', 'postgres', 'node-exporter', 'loki', 'tempo', 'grafana',
+];
 const sourceSha = '0123456789abcdef0123456789abcdef01234567';
 const certificateIdentity = 'https://github.com/tuckerplee/LunchLineup/.github/workflows/ci.yml@refs/heads/main';
 const oidcIssuer = 'https://token.actions.githubusercontent.com';
@@ -24,7 +27,7 @@ test('SBOM verifier requires trusted signatures and exact release-image attestat
   const reportsDir = join(scratch, 'reports');
   const manifestPath = join(scratch, 'release-manifest.json');
   const images = Object.fromEntries(releaseServices.map((service, index) => {
-    const digest = `sha256:${String(index + 1).repeat(64)}`;
+    const digest = `sha256:${(index + 1).toString(16).repeat(64)}`;
     return [service, {
       ref: `ghcr.io/tuckerplee/lunchlineup/${service}:${sourceSha}@${digest}`,
       digest,

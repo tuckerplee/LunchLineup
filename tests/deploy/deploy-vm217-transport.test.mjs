@@ -628,7 +628,7 @@ test('VM217 transport deadlines use the shared complete process-tree owner', () 
 
 test('shared reconciliation uses the real Compose proxy/pdf-parser contract and rejects missing, unhealthy, or mixed services', { skip: !bashAvailable }, () => {
   const contract = realComposeReconciliationContract();
-  assert.match(contract.services.proxy.image, /^caddy:2-alpine@sha256:[a-f0-9]{64}$/);
+  assert.equal(contract.services.proxy.image, `lunchlineup-release/proxy:${sourceSha}`);
   assert.equal(contract.services['pdf-parser'].image, `lunchlineup-release/worker:${sourceSha}`);
   assert.ok(Object.keys(contract.services).length >= 20, 'real production Compose must contribute the complete default service inventory');
   for (const service of ['postgres', 'redis', 'rabbitmq', 'prometheus', 'alertmanager', 'loki', 'promtail', 'otel-collector', 'tempo', 'grafana']) {

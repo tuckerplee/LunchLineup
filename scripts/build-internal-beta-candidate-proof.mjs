@@ -20,7 +20,10 @@ export const requiredInternalBetaGates = [
   'trivy-scan',
 ];
 
-const requiredServices = ['api', 'api-v2', 'web', 'engine', 'worker', 'migrate', 'control', 'backup'];
+const requiredServices = [
+  'api', 'api-v2', 'web', 'engine', 'worker', 'migrate', 'control', 'backup',
+  'proxy', 'pgbouncer', 'postgres', 'node-exporter', 'loki', 'tempo', 'grafana',
+];
 const fullShaPattern = /^[a-f0-9]{40}$/;
 const digestPattern = /^sha256:[a-f0-9]{64}$/;
 const repositoryPattern = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;

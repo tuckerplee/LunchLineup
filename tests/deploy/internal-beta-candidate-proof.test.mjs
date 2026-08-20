@@ -9,7 +9,10 @@ const sourceSha = 'a'.repeat(40);
 const repository = 'tuckerplee/LunchLineup';
 const runId = '123456';
 const workflowRun = `https://github.com/${repository}/actions/runs/${runId}`;
-const services = ['api', 'api-v2', 'web', 'engine', 'worker', 'migrate', 'control', 'backup'];
+const services = [
+  'api', 'api-v2', 'web', 'engine', 'worker', 'migrate', 'control', 'backup',
+  'proxy', 'pgbouncer', 'postgres', 'node-exporter', 'loki', 'tempo', 'grafana',
+];
 
 function manifest(overrides = {}) {
   const digest = `sha256:${'b'.repeat(64)}`;

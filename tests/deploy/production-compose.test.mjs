@@ -625,7 +625,12 @@ test('worker metrics endpoint is healthchecked and scraped', () => {
   assert.match(compose, /worker:[\s\S]*WORKER_SCHEDULE_SOLVE_EXECUTION_LEASE_SECONDS=\$\{WORKER_SCHEDULE_SOLVE_EXECUTION_LEASE_SECONDS:-300\}/);
   assert.match(compose, /worker:[\s\S]*WORKER_QUEUE_DEPTH_POLL_SECONDS=\$\{WORKER_QUEUE_DEPTH_POLL_SECONDS:-15\}/);
   assert.match(worker, /test: \[ "CMD", "python", "-m", "src\.healthcheck" \]/);
-  assert.match(workerHealthcheck, /http:\/\/127\.0\.0\.1:\{port\}\/metrics/);
+  assert.match(workerHealthcheck, /HTTPConnection\("127\.0\.0\.1", port, timeout=3\)/);
+  assert.match(
+    workerHealthcheck,
+    /connection\.request\("GET", "\/metrics", headers=\{"Host": "127\.0\.0\.1"\}\)/,
+  );
+  assert.doesNotMatch(workerHealthcheck, /urllib|urlopen/);
   assert.match(worker, /PASSWORD_RESET_EMAIL_OUTBOX_ENABLED:\?Set PASSWORD_RESET_EMAIL_OUTBOX_ENABLED=true in \.env/);
   assert.match(workerHealthcheck, /lunchlineup_password_reset_email/);
   assert.match(workerHealthcheck, /lunchlineup_staff_invitation/);
