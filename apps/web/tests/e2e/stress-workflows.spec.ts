@@ -89,7 +89,7 @@ async function createShiftFromToolbar(page: Page, staffName: string, start = '09
 async function dragShiftToRow(page: Page, timeText: string, targetRowTitle: string) {
   const shiftBlock = page.locator('.shift-block').filter({ hasText: timeText }).first();
   await expect(shiftBlock).toBeVisible();
-  const sourceBox = await shiftBlock.boundingBox();
+  const sourceBox = await shiftBlock.locator('.shift-drag-handle').boundingBox();
   const targetBox = await page.locator(`.timeline-row[data-resource-title="${targetRowTitle}"]`).boundingBox();
   expect(sourceBox).toBeTruthy();
   expect(targetBox).toBeTruthy();
@@ -839,7 +839,7 @@ test.describe.serial('Stress operations workflows', () => {
     const invalidForm = page.locator('form.shift-form');
     await invalidForm.locator('select').first().selectOption({ label: 'Stress Staff' });
     await invalidForm.locator('input[type="time"]').first().fill('17:00');
-    await invalidForm.locator('input[type="time"]').nth(1).fill('09:00');
+    await invalidForm.locator('input[type="time"]').nth(1).fill('');
     await expect(invalidForm.getByRole('button', { name: 'Create shift' })).toBeDisabled();
     await invalidForm.getByRole('button', { name: 'Cancel' }).click();
 

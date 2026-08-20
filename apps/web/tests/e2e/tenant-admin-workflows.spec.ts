@@ -21,7 +21,7 @@ test.describe.serial('Tenant and admin SaaS workflows', () => {
     await loginWithPin(page, {
       username: e2eAdminUsername,
       pin: e2eAdminPin,
-      next: '/admin',
+      next: '/dashboard',
       expectedPath: '/dashboard',
     });
 

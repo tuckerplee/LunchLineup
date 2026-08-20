@@ -821,6 +821,10 @@ function verifyCandidateDast(artifact, entry, label) {
   candidateRaw(raw, 'htmlReport', `${label}.raw`);
   if (entry.rawReportSha256 !== undefined && raw.report.sha256 !== entry.rawReportSha256) throw new Error(`${label}.raw.report.sha256 does not match the launch-proof claim.`);
   const dast = requireObject(requiredValue(artifact, ['dast'], `${label}.dast`), `${label}.dast`);
+  const scannerExitCode = Number(requiredValue(dast, ['scannerExitCode'], `${label}.dast.scannerExitCode`));
+  if (![0, 2].includes(scannerExitCode)) {
+    throw new Error(`${label}.dast.scannerExitCode must be 0 or the documented warning-only code 2.`);
+  }
   const counts = requireObject(requiredValue(dast, ['findingCounts'], `${label}.dast.findingCounts`), `${label}.dast.findingCounts`);
   for (const severity of ['informational', 'low', 'medium', 'high', 'critical']) {
     const count = Number(requiredValue(counts, [severity], `${label}.dast.findingCounts.${severity}`));
@@ -974,6 +978,10 @@ export function emitCandidateEvidence(kind, options) {
     summary: `${kind} candidate evidence for ${sourceSha}.`,
   };
   if (kind === 'dast') {
+    const scannerExitCode = Number(options['scanner-exit-code']);
+    if (!Number.isInteger(scannerExitCode) || scannerExitCode < 0) {
+      throw new Error('scannerExitCode must be a non-negative integer.');
+    }
     const report = rawFile(options['raw-report']);
     const htmlReport = rawFile(options['raw-html']);
     const counts = zapCounts(readJson(options['raw-report'], 'ZAP report'));
@@ -981,12 +989,12 @@ export function emitCandidateEvidence(kind, options) {
       report: { sha256: report.sha256, bytes: report.bytes.byteLength },
       htmlReport: { sha256: htmlReport.sha256, bytes: htmlReport.bytes.byteLength },
     };
-    evidence.dast = { findingCounts: counts, severityThreshold: { high: 0, critical: 0 } };
+    evidence.dast = { scannerExitCode, findingCounts: counts, severityThreshold: { high: 0, critical: 0 } };
     // ZAP baseline exits 2 when it finds warning-only alerts.  Warnings remain
     // in the retained report; the launch threshold is explicitly zero HIGH or
     // CRITICAL findings, so accept only the documented warning exit alongside
     // a clean severity count and exact release binding.
-    if ([0, 2].includes(commandExitCode) && servedReleaseSha === sourceSha && counts.high === 0 && counts.critical === 0) evidence.status = 'passed';
+    if (commandExitCode === 0 && [0, 2].includes(scannerExitCode) && servedReleaseSha === sourceSha && counts.high === 0 && counts.critical === 0) evidence.status = 'passed';
   } else if (kind === 'load') {
     const artillery = rawFile(options['raw-result']);
     const availability = rawFile(options['availability-result']);

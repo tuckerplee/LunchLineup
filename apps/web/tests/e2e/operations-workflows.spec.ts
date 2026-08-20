@@ -60,7 +60,7 @@ test.describe.serial('Full-stack operations workflows', () => {
     await expect(shiftBlock).toBeVisible();
     await expect.poll(() => shiftOwner(page)).toBe('Jordan Shift');
 
-    const sourceBox = await shiftBlock.boundingBox();
+    const sourceBox = await shiftBlock.locator('.shift-drag-handle').boundingBox();
     const targetBox = await page.locator('.timeline-row[data-resource-title="Casey Manager"]').boundingBox();
     expect(sourceBox).toBeTruthy();
     expect(targetBox).toBeTruthy();

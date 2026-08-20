@@ -432,6 +432,7 @@ test('candidate DAST and load evidence bind served release, immutable images, ra
       'served-release-sha': sourceSha,
       'tool-image': image,
       'command-exit-code': '0',
+      'scanner-exit-code': '0',
       command: 'scripts/candidate-proof.sh https://lunchlineup.example/health',
     };
     const dast = emitCandidateEvidence('dast', { ...base, 'raw-report': zapReport, 'raw-html': zapHtml });
@@ -462,15 +463,35 @@ test('candidate DAST and load evidence bind served release, immutable images, ra
     }));
     const warningOnlyDast = emitCandidateEvidence('dast', {
       ...base,
-      'command-exit-code': '2',
+      'scanner-exit-code': '2',
       'raw-report': warningZapReport,
       'raw-html': zapHtml,
     });
     assert.equal(warningOnlyDast.status, 'passed');
+    assert.equal(warningOnlyDast.commandExitCode, 0);
+    assert.equal(warningOnlyDast.dast.scannerExitCode, 2);
     assert.deepEqual(warningOnlyDast.dast.findingCounts, { informational: 0, low: 0, medium: 1, high: 0, critical: 0 });
+    assert.equal(emitCandidateEvidence('dast', {
+      ...base,
+      'command-exit-code': '2',
+      'scanner-exit-code': '2',
+      'raw-report': warningZapReport,
+      'raw-html': zapHtml,
+    }).status, 'failed');
+    const warningDastEvidence = join(scratch, 'warning-dast-evidence.json');
+    writeFileSync(warningDastEvidence, bytes(warningOnlyDast));
+    assert.doesNotThrow(() => verifyCandidateEvidenceBundle('dast', {
+      evidence: warningDastEvidence,
+      'raw-report': warningZapReport,
+      'raw-html': zapHtml,
+      'expected-source-sha': sourceSha,
+      'expected-tool-image': image,
+      'max-age-seconds': 300,
+    }));
     assert.throws(() => verifyFetchedEvidenceArtifact('dast', bytes({ ...dast, servedReleaseSha: 'b'.repeat(40) }), dastEntry, releaseManifest), /servedReleaseSha/);
     assert.throws(() => verifyFetchedEvidenceArtifact('dast', bytes({ ...dast, tool: { ...dast.tool, image: 'zaproxy/zaproxy:stable' } }), dastEntry, releaseManifest), /immutable image reference/);
     assert.throws(() => verifyFetchedEvidenceArtifact('dast', bytes({ ...dast, raw: {} }), dastEntry, releaseManifest), /raw\.report/);
+    assert.throws(() => verifyFetchedEvidenceArtifact('dast', bytes({ ...dast, dast: { ...dast.dast, scannerExitCode: 1 } }), dastEntry, releaseManifest), /scannerExitCode/);
     assert.throws(() => verifyFetchedEvidenceArtifact('dast', bytes({ ...dast, dast: { ...dast.dast, findingCounts: { ...dast.dast.findingCounts, high: 1 } } }), dastEntry, releaseManifest), /zero high and critical/);
     assert.throws(() => verifyFetchedEvidenceArtifact('load', bytes({ ...load, load: { ...load.load, p99Ms: 1000 } }), loadEntry, releaseManifest), /p99Ms must be below/);
     assert.throws(() => verifyFetchedEvidenceArtifact('load', bytes({ ...load, raw: { ...load.raw, artilleryResult: { ...load.raw.artilleryResult, sha256: '0'.repeat(64) } } }), loadEntry, releaseManifest), /artilleryResult\.sha256 does not match/);
@@ -535,6 +556,8 @@ test('candidate evidence helpers reject mutable ZAP images and emit the canonica
   assert.match(dast, /--served-release-sha/);
   assert.match(dast, /--raw-report/);
   assert.match(dast, /--raw-html/);
+  assert.match(dast, /--command-exit-code "\$command_exit"/);
+  assert.match(dast, /--scanner-exit-code "\$scan_exit"/);
   assert.match(dast, /--volume "\$SOURCE_ROOT:\/workspace:ro"/);
   assert.match(dast, /--volume "\$OUTPUT_DIR:\/zap\/wrk:rw"/);
   assert.doesNotMatch(dast, /\$SOURCE_ROOT:[^"\n]*:rw/);

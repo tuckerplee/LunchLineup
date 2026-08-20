@@ -79,6 +79,10 @@ served_release_sha="$(printf '%s\n' "$headers" | awk 'tolower($0) ~ /^x-lunchlin
 if [[ $header_exit -ne 0 ]]; then
   scan_exit=1
 fi
+command_exit="$scan_exit"
+if [[ $scan_exit -eq 0 || $scan_exit -eq 2 ]]; then
+  command_exit=0
+fi
 
 set +e
 node scripts/launch-proof-evidence.mjs emit dast \
@@ -88,7 +92,8 @@ node scripts/launch-proof-evidence.mjs emit dast \
   --tool-image "$ZAP_IMAGE" \
   --raw-report "$RAW_REPORT_PATH" \
   --raw-html "$HTML_REPORT_PATH" \
-  --command-exit-code "$scan_exit" \
+  --command-exit-code "$command_exit" \
+  --scanner-exit-code "$scan_exit" \
   --command "scripts/run-dast.sh $TARGET_URL" \
   --output "$EVIDENCE_PATH"
 evidence_exit=$?

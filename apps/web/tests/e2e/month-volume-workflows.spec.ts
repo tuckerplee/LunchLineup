@@ -102,7 +102,7 @@ test.describe.serial('API-v2 schedule and lunch/break volume workflows', () => {
       page,
       'POST',
       '/api/v2/lunch-breaks/generate',
-      { shiftIds, persist: true },
+      { shiftIds, locationId: location.id, persist: true },
       200,
       { origin, 'Idempotency-Key': 'e2e-month-break-plan-v1' },
     );
@@ -116,7 +116,7 @@ test.describe.serial('API-v2 schedule and lunch/break volume workflows', () => {
       page,
       'POST',
       '/api/v2/lunch-breaks/generate',
-      { shiftIds, persist: true },
+      { shiftIds, locationId: location.id, persist: true },
       200,
       { origin, 'Idempotency-Key': 'e2e-month-break-plan-v1' },
     );

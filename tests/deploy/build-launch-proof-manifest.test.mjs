@@ -79,6 +79,7 @@ function artifact(kind, overrides = {}) {
       htmlReport: { sha256: 'a'.repeat(64), bytes: 128 },
     },
     dast: {
+      scannerExitCode: 0,
       findingCounts: { informational: 0, low: 0, medium: 0, high: 0, critical: 0 },
       severityThreshold: { high: 0, critical: 0 },
     },
