@@ -9,6 +9,13 @@ RUN git init /src \
     && git checkout --detach 4aeafc237b8d9a8d62e45735131e8a89eb741a00 \
     && test "$(git rev-parse HEAD)" = "4aeafc237b8d9a8d62e45735131e8a89eb741a00"
 WORKDIR /src
+RUN sed -i \
+      -e '/tsdb_errors "github.com\/prometheus\/prometheus\/tsdb\/errors"/d' \
+      -e 's/return tsdb_errors\.NewMulti(/return errors.Join(/' \
+      -e 's/)\.Err()/)/' \
+      modules/generator/storage/instance.go \
+    && grep -F 'return errors.Join(' modules/generator/storage/instance.go \
+    && ! grep -F 'prometheus/tsdb/errors' modules/generator/storage/instance.go
 RUN go get github.com/buger/jsonparser@v1.1.2 \
       github.com/antchfx/xpath@v1.3.6 \
       github.com/go-jose/go-jose/v4@v4.1.4 \
