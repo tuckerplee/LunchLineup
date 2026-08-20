@@ -1,7 +1,4 @@
 const isProduction = process.env.NODE_ENV === 'production';
-const turnstileOrigin = 'https://challenges.cloudflare.com';
-const cloudflareAnalyticsScriptOrigin = 'https://static.cloudflareinsights.com';
-const cloudflareAnalyticsConnectOrigin = 'https://cloudflareinsights.com';
 
 function serverHttpUrl(value, label) {
     const url = new URL(value);
@@ -11,69 +8,29 @@ function serverHttpUrl(value, label) {
     return url.toString().replace(/\/$/, '');
 }
 
-function browserOrigin(value) {
-    if (!value || value.startsWith('/')) return null;
+function validatePublicBrowserUrl(value) {
+    if (!value || value.startsWith('/')) return;
     try {
         const url = new URL(value);
-        if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password) {
-            throw new Error('unsupported browser origin');
+        const allowedProtocols = isProduction ? ['https:'] : ['http:', 'https:'];
+        if (!allowedProtocols.includes(url.protocol) || url.username || url.password) {
+            throw new Error('unsupported public browser URL');
         }
-        return url.origin;
     } catch {
-        throw new Error('Public browser URLs must be relative or use HTTP(S)');
+        throw new Error('NEXT_PUBLIC_API_URL must be relative or use an approved HTTP(S) origin');
     }
-}
-
-function requireBrowserProtocol(origin, label, allowedProtocols) {
-    if (!origin) return null;
-    if (!allowedProtocols.includes(new URL(origin).protocol)) {
-        throw new Error(`${label} must be relative or use ${allowedProtocols.join(' or ')}`);
-    }
-    return origin;
 }
 
 const internalApiV2Url = serverHttpUrl(
     process.env.INTERNAL_API_V2_URL || 'http://api-v2:3002/v2',
     'INTERNAL_API_V2_URL',
 );
+validatePublicBrowserUrl(process.env.NEXT_PUBLIC_API_URL);
 // Legacy rewrites exist only in the explicit local E2E fixture. Production
 // never reads this value, so a public v1 route cannot be re-enabled by env.
 const localE2eLegacyApiUrl = !isProduction && process.env.LUNCHLINEUP_E2E_LEGACY_API_URL
     ? serverHttpUrl(process.env.LUNCHLINEUP_E2E_LEGACY_API_URL, 'LUNCHLINEUP_E2E_LEGACY_API_URL')
     : null;
-const configuredConnectOrigins = [
-    requireBrowserProtocol(
-        browserOrigin(process.env.NEXT_PUBLIC_API_URL),
-        'NEXT_PUBLIC_API_URL',
-        isProduction ? ['https:'] : ['http:', 'https:'],
-    ),
-].filter(Boolean);
-const developmentConnectOrigins = isProduction
-    ? []
-    : ['http://localhost:*', 'http://127.0.0.1:*'];
-const connectSources = [
-    "'self'",
-    turnstileOrigin,
-    cloudflareAnalyticsConnectOrigin,
-    ...configuredConnectOrigins,
-    ...developmentConnectOrigins,
-];
-const contentSecurityPolicy = [
-    "default-src 'self'",
-    "base-uri 'self'",
-    "object-src 'none'",
-    "frame-ancestors 'none'",
-    `frame-src 'self' ${turnstileOrigin}`,
-    "form-action 'self'",
-    "img-src 'self' data: blob:",
-    "font-src 'self' data:",
-    "style-src 'self' 'unsafe-inline'",
-    `script-src 'self' ${turnstileOrigin} ${cloudflareAnalyticsScriptOrigin} 'unsafe-inline'${isProduction ? '' : " 'unsafe-eval'"}`,
-    "script-src-attr 'none'",
-    `connect-src ${[...new Set(connectSources)].join(' ')}`,
-    ...(isProduction ? ['upgrade-insecure-requests'] : []),
-].join('; ');
-
 /** @type {import('next').NextConfig} */
 const nextConfig = {
     reactStrictMode: true,
@@ -91,10 +48,6 @@ const nextConfig = {
             {
                 source: '/(.*)',
                 headers: [
-                    {
-                        key: 'Content-Security-Policy',
-                        value: contentSecurityPolicy,
-                    },
                     {
                         key: 'X-Frame-Options',
                         value: 'DENY',

@@ -12,6 +12,7 @@ import { mkdir, open, readdir, stat, unlink } from 'fs/promises';
 import { basename, extname, join, resolve, sep } from 'path';
 
 import { FeatureAccessService } from '../billing/feature-access.service';
+import { runSerializableMutationWithRetry } from '../auth/serializable-mutation';
 import { TenantPrismaService } from '../database/tenant-prisma.service';
 import { AvailabilityImportPublisher } from './availability-imports.publisher';
 
@@ -284,7 +285,8 @@ export class AvailabilityImportsService implements OnModuleInit, OnModuleDestroy
         let row: ImportRow;
         let replayed = false;
         try {
-            const prepared = await this.tenantDb.withTenant(args.tenantId, async (tx: any) => {
+            const prepared = await runSerializableMutationWithRetry(
+                () => this.tenantDb.withTenant(args.tenantId, async (tx: any) => {
                 const existing = await tx.availabilityImportJob.findUnique({
                     where: { tenantId_requestKeyHash: { tenantId: args.tenantId, requestKeyHash } },
                 });
@@ -361,7 +363,9 @@ export class AvailabilityImportsService implements OnModuleInit, OnModuleDestroy
                     data: { creditConsumption },
                 });
                 return { row: updated as ImportRow, replayed: false };
-            }, { isolationLevel: 'Serializable' });
+                }, { isolationLevel: 'Serializable' }),
+                { conflictMessage: 'Availability import changed concurrently; retry the request.' },
+            );
             row = prepared.row;
             replayed = prepared.replayed;
         } catch (error) {

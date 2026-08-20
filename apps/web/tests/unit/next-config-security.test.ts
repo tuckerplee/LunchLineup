@@ -57,41 +57,27 @@ function responseHeaders(config: ConfigSnapshot, source = '/(.*)') {
 }
 
 describe('Next.js production security configuration', () => {
-  it('limits production connections to trusted configured origins', () => {
+  it('leaves per-request CSP ownership to the nonce-generating proxy', () => {
     const config = loadConfig({
       NODE_ENV: 'production',
       NEXT_PUBLIC_API_URL: 'https://app.lunchlineup.com/api/v2',
     });
     const headers = responseHeaders(config);
-    const policy = headers.get('Content-Security-Policy') ?? '';
-    expect(policy).toContain(
-      "connect-src 'self' https://challenges.cloudflare.com https://cloudflareinsights.com https://app.lunchlineup.com",
-    );
-    expect(policy).toContain(
-      "script-src 'self' https://challenges.cloudflare.com https://static.cloudflareinsights.com",
-    );
-    expect(policy).not.toMatch(/connect-src[^;]*\shttps:\s/);
-    expect(policy).not.toMatch(/connect-src[^;]*\swss?:\/\//);
-    expect(policy).not.toContain('localhost');
-    expect(policy).not.toContain('127.0.0.1');
-    expect(policy).not.toContain("'unsafe-eval'");
-    expect(policy).toContain("script-src-attr 'none'");
+    expect(headers.has('Content-Security-Policy')).toBe(false);
     expect(headers.get('Strict-Transport-Security')).toBe('max-age=31536000; includeSubDomains; preload');
   });
 
-  it('keeps loopback connections available only for local development', () => {
+  it('keeps local development free of a conflicting static CSP', () => {
     const config = loadConfig({
       NODE_ENV: 'development',
       NEXT_PUBLIC_API_URL: '/api/v2',
     });
     const headers = responseHeaders(config);
-    const policy = headers.get('Content-Security-Policy') ?? '';
-    expect(policy).toContain('http://localhost:*');
-    expect(policy).not.toMatch(/connect-src[^;]*\swss?:\/\//);
+    expect(headers.has('Content-Security-Policy')).toBe(false);
     expect(headers.has('Strict-Transport-Security')).toBe(false);
   });
 
-  it('rejects insecure or malformed production origins', () => {
+  it('rejects insecure or malformed production browser API origins', () => {
     expect(() => loadConfig({
       NODE_ENV: 'production',
       NEXT_PUBLIC_API_URL: 'http://app.lunchlineup.com/api/v2',

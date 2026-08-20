@@ -189,6 +189,8 @@ async function resetTenantData(tenantId) {
   await prisma.timeCard.deleteMany({ where: { tenantId } });
   await prisma.break.deleteMany({ where: { shift: { tenantId } } });
   await prisma.shift.deleteMany({ where: { tenantId } });
+  await prisma.scheduleSolveJob.deleteMany({ where: { tenantId } });
+  await prisma.scheduleChangeSet.deleteMany({ where: { tenantId } });
   await prisma.schedule.deleteMany({ where: { tenantId } });
   await prisma.location.deleteMany({ where: { tenantId } });
   await prisma.webhookEndpoint.deleteMany({ where: { tenantId } });
@@ -395,24 +397,32 @@ async function main() {
     },
   });
 
-  const staff = await prisma.user.create({
-    data: {
-      tenantId: tenant.id,
-      email: null,
-      username: staffUsername,
-      name: 'Staff One',
-      role: 'STAFF',
-      pinResetRequired: false,
-    },
-  });
-
-  await prisma.roleAssignment.create({
-    data: {
-      tenantId: tenant.id,
-      userId: staff.id,
-      roleId: staffRole.id,
-    },
-  });
+  const seededStaff = [
+    { username: staffUsername, name: 'Staff One' },
+    ...Array.from({ length: 9 }, (_, index) => ({
+      username: `staff-${index + 2}`,
+      name: `Staff ${index + 2}`,
+    })),
+  ];
+  for (const member of seededStaff) {
+    const staff = await prisma.user.create({
+      data: {
+        tenantId: tenant.id,
+        email: null,
+        username: member.username,
+        name: member.name,
+        role: 'STAFF',
+        pinResetRequired: false,
+      },
+    });
+    await prisma.roleAssignment.create({
+      data: {
+        tenantId: tenant.id,
+        userId: staff.id,
+        roleId: staffRole.id,
+      },
+    });
+  }
 
   const location = await prisma.location.create({
     data: {

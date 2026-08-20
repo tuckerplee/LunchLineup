@@ -3076,6 +3076,7 @@ jobs:
           output: .release/trivy/${{ matrix.service }}.trivy.json
           scanners: 'vuln'
           severity: 'CRITICAL,HIGH'
+          trivyignores: '.trivyignore.yaml'
           exit-code: '0'
       - name: Bind Trivy report to release manifest
         env:

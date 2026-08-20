@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { hasLunchBreakReadAccess, hasSchedulingReadAccess } from './lib/permissions';
 import { readBoundedJson, withRequestTimeout } from './lib/http-safety';
 import { parseApprovedAppOrigin, safeSameOriginReturnPath } from './lib/safe-navigation';
+import { createContentSecurityPolicy } from './lib/content-security-policy';
 
 const PROTECTED_PATH_ROOTS = ['/admin', '/dashboard'];
 const PASSWORD_RESET_PATH = '/auth/reset-password';
@@ -192,6 +193,17 @@ function shouldDebugAuth(request: NextRequest): boolean {
 
 export async function proxy(request: NextRequest) {
     const { pathname } = request.nextUrl;
+    const { nonce, policy: contentSecurityPolicy } = createContentSecurityPolicy();
+    const securedRequestHeaders = new Headers(request.headers);
+    securedRequestHeaders.set('Content-Security-Policy', contentSecurityPolicy);
+    securedRequestHeaders.set('x-nonce', nonce);
+    const secureResponse = (response: NextResponse) => {
+        response.headers.set('Content-Security-Policy', contentSecurityPolicy);
+        return response;
+    };
+    const nextResponse = (headers = securedRequestHeaders) => secureResponse(NextResponse.next({
+        request: { headers },
+    }));
     const startedAt = Date.now();
     const requestId = `${startedAt.toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
     const debugEnabled = shouldDebugAuth(request);
@@ -209,13 +221,13 @@ export async function proxy(request: NextRequest) {
     };
     const serviceUnavailable = (event: string, details: Record<string, unknown> = {}) => {
         authDebug(event, details);
-        return new NextResponse('Authentication service temporarily unavailable. Please retry.', {
+        return secureResponse(new NextResponse('Authentication service temporarily unavailable. Please retry.', {
             status: 503,
             headers: {
                 'Cache-Control': 'no-store',
                 'Retry-After': '5',
             },
-        });
+        }));
     };
 
     if (pathname === PASSWORD_RESET_PATH) {
@@ -235,18 +247,18 @@ export async function proxy(request: NextRequest) {
                 maxAge: token ? 15 * 60 : 0,
             });
             authDebug('scrub_password_reset_token', { accepted: Boolean(token) });
-            return response;
+            return secureResponse(response);
         }
 
-        const response = NextResponse.next();
+        const response = nextResponse();
         response.headers.set('Cache-Control', 'no-store');
         response.headers.set('Referrer-Policy', 'no-referrer');
-        return response;
+        return secureResponse(response);
     }
 
     if (!isProtectedPath(pathname)) {
         authDebug('allow_unprotected_path');
-        return NextResponse.next();
+        return nextResponse();
     }
 
     const appOrigin = approvedAppOrigin(request);
@@ -260,7 +272,7 @@ export async function proxy(request: NextRequest) {
         response.cookies.delete('refresh_token');
         response.cookies.delete('csrf_token');
         authDebug(event, { next: returnPath });
-        return response;
+        return secureResponse(response);
     };
     const refreshSession = async (): Promise<RefreshResult> => {
         const refreshToken = readCookie(request, 'refresh_token');
@@ -313,7 +325,7 @@ export async function proxy(request: NextRequest) {
             response.headers.append('set-cookie', cookie);
         }
         authDebug('auth_refresh_rotated', { to: returnPath });
-        return { outcome: 'refreshed', response };
+        return { outcome: 'refreshed', response: secureResponse(response) };
     };
     const accessToken = readCookie(request, 'access_token');
 
@@ -376,7 +388,7 @@ export async function proxy(request: NextRequest) {
         const mfaUrl = new URL('/mfa', appOrigin);
         mfaUrl.searchParams.set('next', returnPath);
         authDebug('redirect_mfa_required', { role: user.role, next: returnPath });
-        return NextResponse.redirect(mfaUrl);
+        return secureResponse(NextResponse.redirect(mfaUrl));
     }
 
     const permissions = Array.isArray(user.permissions) ? user.permissions : [];
@@ -388,46 +400,46 @@ export async function proxy(request: NextRequest) {
     if (!isSuperAdmin && pathname.startsWith('/admin')) {
         const dashboardUrl = new URL('/dashboard', appOrigin);
         authDebug('redirect_non_super_admin_to_dashboard', { role: user.role });
-        return NextResponse.redirect(dashboardUrl);
+        return secureResponse(NextResponse.redirect(dashboardUrl));
     }
 
     if (pathname.startsWith('/dashboard/scheduling') && !canReadScheduling) {
         const dashboardUrl = new URL('/dashboard', appOrigin);
         authDebug('redirect_scheduling_forbidden', { role: user.role });
-        return NextResponse.redirect(dashboardUrl);
+        return secureResponse(NextResponse.redirect(dashboardUrl));
     }
 
     if (pathname.startsWith('/dashboard/lunch-breaks') && !canReadLunchBreaks) {
         const dashboardUrl = new URL('/dashboard', appOrigin);
         authDebug('redirect_lunch_breaks_forbidden', { role: user.role });
-        return NextResponse.redirect(dashboardUrl);
+        return secureResponse(NextResponse.redirect(dashboardUrl));
     }
 
     if (pathname.startsWith('/dashboard/settings') && !hasPermission('settings:read')) {
         const dashboardUrl = new URL('/dashboard', appOrigin);
         authDebug('redirect_settings_forbidden', { role: user.role });
-        return NextResponse.redirect(dashboardUrl);
+        return secureResponse(NextResponse.redirect(dashboardUrl));
     }
 
     if (pathname.startsWith('/dashboard/staff') && !hasPermission('users:read')) {
         const dashboardUrl = new URL('/dashboard', appOrigin);
         authDebug('redirect_staff_restricted_area', { role: user.role });
-        return NextResponse.redirect(dashboardUrl);
+        return secureResponse(NextResponse.redirect(dashboardUrl));
     }
 
     if (pathname.startsWith('/dashboard/time-cards') && !hasPermission('time_cards:read')) {
         const dashboardUrl = new URL('/dashboard', appOrigin);
         authDebug('redirect_time_cards_forbidden', { role: user.role });
-        return NextResponse.redirect(dashboardUrl);
+        return secureResponse(NextResponse.redirect(dashboardUrl));
     }
 
     if (pathname.startsWith('/dashboard/locations') && !hasPermission('locations:read')) {
         const dashboardUrl = new URL('/dashboard', appOrigin);
         authDebug('redirect_locations_forbidden', { role: user.role });
-        return NextResponse.redirect(dashboardUrl);
+        return secureResponse(NextResponse.redirect(dashboardUrl));
     }
 
-    const forwardedHeaders = new Headers(request.headers);
+    const forwardedHeaders = new Headers(securedRequestHeaders);
     for (const name of [
         'x-user-id',
         'x-user-public-id',
@@ -446,19 +458,13 @@ export async function proxy(request: NextRequest) {
     forwardedHeaders.set('x-lunchlineup-workspace-scope', user.workspaceScope);
     forwardedHeaders.set('x-lunchlineup-session-scope', user.sessionScope);
     forwardedHeaders.set('x-lunchlineup-user-permissions', permissions.join(','));
-    const response = NextResponse.next({
-        request: {
-            headers: forwardedHeaders,
-        },
-    });
+    const response = nextResponse(forwardedHeaders);
     authDebug('allow_authenticated', { role: user.role });
-    return response;
+    return secureResponse(response);
 }
 
 export const config = {
     matcher: [
-        '/admin/:path*',
-        '/dashboard/:path*',
-        '/auth/reset-password',
+        '/((?!api(?:/|$)|_next/static|_next/image|favicon\\.ico|favicon\\.svg|.*\\.(?:svg|png|jpg|jpeg|gif|webp|avif|ico|css|js|map|woff2?|ttf)$).*)',
     ],
 };

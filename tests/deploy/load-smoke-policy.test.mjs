@@ -98,6 +98,11 @@ test('availability-import load smoke is mandatory, authenticated, and independen
   const launcher = read('scripts/load-test.sh');
   const seed = read('scripts/seed-e2e.mjs');
 
+  assert.match(seed, /scheduleSolveJob\.deleteMany\(\{ where: \{ tenantId \} \}\)/);
+  assert.match(seed, /scheduleChangeSet\.deleteMany\(\{ where: \{ tenantId \} \}\)/);
+  assert.ok(seed.indexOf('scheduleChangeSet.deleteMany') < seed.indexOf('schedule.deleteMany'));
+  assert.match(seed, /Array\.from\(\{ length: 9 \}/);
+
   assert.equal(boundedInteger('CONCURRENCY', '2', 2, 2, 4), 2);
   assert.throws(() => boundedInteger('CONCURRENCY', '1', 2, 2, 4), /2 through 4/);
   assert.throws(() => boundedInteger('REQUESTS', '13', 4, 2, 12), /2 through 12/);

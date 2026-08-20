@@ -16,9 +16,9 @@ Next.js frontend for the LunchLineup platform. The web app is deployed as the `w
 - `test-results/` - Generated Playwright test artifacts when retained locally.
 - `tests/` - Playwright and frontend behavior tests.
 - `middleware.ts` - Legacy Next.js middleware entry tracked in Git history; runtime auth logic has moved to `proxy.ts`.
-- `proxy.ts` - Next.js request proxy for auth, exact public crawler/social metadata routes, strict bounded identity parsing with delimiter-safe role-ID forwarding and migration-safe role display names, approved-origin redirects, shared workspace permission prerequisites, and dashboard/admin redirects.
+- `proxy.ts` - Next.js request proxy for per-request nonce CSP, auth, exact public crawler/social metadata routes, strict bounded identity parsing with delimiter-safe role-ID forwarding and migration-safe role display names, approved-origin redirects, shared workspace permission prerequisites, and dashboard/admin redirects.
 - `next-env.d.ts` - Generated Next.js TypeScript ambient declarations.
-- `next.config.js` - Next.js configuration for the internal API rewrite, local-only images, production browser hardening, and CSP/header policy.
+- `next.config.js` - Next.js configuration for the internal API rewrite, local-only images, and static production browser headers; per-request CSP is owned by `proxy.ts`.
 - `package.json` - Web package scripts and dependencies.
 - `playwright.config.ts` - Browser test configuration with serialized mock-state runs, automatic safe ports, an explicit dependency-health probe, and a validated signup-mode override for rendered onboarding gates.
 - `playwright.interaction-proof.config.ts` - launch-only exact-SHA desktop/touch Playwright configuration with mandatory trace, video, screenshot, JSON, JUnit, and HTML evidence.

@@ -1,6 +1,7 @@
 import { NextRequest } from 'next/server';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
+import { buildContentSecurityPolicy } from '../../lib/content-security-policy';
 import { config, proxy } from '../../proxy';
 
 function makeRequest(path: string, cookie?: string): NextRequest {
@@ -110,12 +111,31 @@ describe('web auth proxy', () => {
     expect(setCookie.toLowerCase()).toContain('samesite=strict');
   });
 
-  it('matches only protected roots and the reset-token exchange route', () => {
+  it('matches every rendered route while excluding APIs and static assets', () => {
     expect(config.matcher).toEqual([
-      '/admin/:path*',
-      '/dashboard/:path*',
-      '/auth/reset-password',
+      '/((?!api(?:/|$)|_next/static|_next/image|favicon\\.ico|favicon\\.svg|.*\\.(?:svg|png|jpg|jpeg|gif|webp|avif|ico|css|js|map|woff2?|ttf)$).*)',
     ]);
+  });
+
+  it('generates a strict nonce CSP for rendered pages without inline script execution', async () => {
+    vi.stubEnv('NODE_ENV', 'production');
+    vi.stubEnv('NEXT_PUBLIC_API_URL', 'https://app.lunchlineup.com/api/v2');
+    const response = await proxy(makeRequest('/privacy'));
+    const policy = response.headers.get('content-security-policy') ?? '';
+
+    expect(policy).toMatch(/script-src 'self' 'nonce-[A-Za-z0-9+/]{22}==' 'strict-dynamic'/);
+    expect(policy).toContain('https://challenges.cloudflare.com');
+    expect(policy).toContain('https://static.cloudflareinsights.com');
+    expect(policy).toContain('connect-src');
+    expect(policy).toContain('https://app.lunchlineup.com');
+    expect(policy).not.toMatch(/script-src[^;]*'unsafe-inline'/);
+    expect(policy).not.toContain("'unsafe-eval'");
+    expect(response.headers.get('x-middleware-request-content-security-policy')).toBe(policy);
+    expect(response.headers.get('x-middleware-request-x-nonce')).toBeTruthy();
+  });
+
+  it('rejects malformed nonce input at the CSP ownership boundary', () => {
+    expect(() => buildContentSecurityPolicy('not-a-nonce')).toThrow('invalid_csp_nonce');
   });
 
   it('refreshes expired access tokens with the CSRF cookie/header contract', async () => {

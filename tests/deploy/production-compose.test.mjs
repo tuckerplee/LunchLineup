@@ -546,9 +546,30 @@ test('release-built observability and proxy binaries enforce patched dependency 
   const collector = read('infrastructure/docker/Dockerfile.otel-collector');
 
   assert.match(proxy, /e2eee6a7fce366321294c9c2a79f3146891dcbdf/);
+  assert.match(proxy, /github\.com\/caddyserver\/caddy\/v2@v2\.11\.4/);
   assert.match(proxy, /CustomVersion=v2\.11\.4-lunchlineup/);
   assert.match(tempo, /4aeafc237b8d9a8d62e45735131e8a89eb741a00/);
   assert.match(tempo, /main\.Version=2\.10\.3/);
+  for (const dependency of [
+    'github.com/antchfx/xpath@v1.3.6',
+    'github.com/apache/thrift@v0.23.0',
+    'github.com/buger/jsonparser@v1.1.2',
+    'github.com/go-jose/go-jose/v4@v4.1.4',
+    'github.com/prometheus/prometheus@v0.311.3',
+    'go.opentelemetry.io/otel@v1.43.0',
+    'go.opentelemetry.io/otel/sdk@v1.43.0',
+    'golang.org/x/crypto@v0.52.0',
+    'golang.org/x/net@v0.56.0',
+    'golang.org/x/text@v0.39.0',
+    'google.golang.org/grpc@v1.82.1',
+  ]) {
+    assert.match(tempo, new RegExp(dependency.replaceAll('.', '\\.'), 'u'));
+  }
+  const trivyIgnore = read('.trivyignore.yaml');
+  assert.match(trivyIgnore, /CVE-2026-28377/);
+  assert.match(trivyIgnore, /pkg:golang\/github\.com\/grafana\/tempo@v0\.0\.0-20260317172644-4aeafc237b8d/);
+  assert.match(trivyIgnore, /expired_at: 2026-09-30/);
+  assert.match(read('.github/workflows/ci.yml'), /trivyignores: '\.trivyignore\.yaml'/);
   for (const dockerfile of [grafana, alertmanager, collector]) {
     assert.match(dockerfile, /golang\.org\/x\/mod@v0\.40\.0/);
   }
@@ -860,11 +881,8 @@ test('proxy config is TLS-ready, route-specific, size-limited, and sets browser 
   assert.match(caddy, /handle \{[\s\S]*reverse_proxy web:3000[\s\S]*\}/);
   assert.match(caddy, /request_body[\s\S]*max_size 10MB/);
   assert.match(caddy, /Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"/);
-  assert.match(caddy, /Content-Security-Policy/);
-  assert.match(caddy, /connect-src 'self' https:\/\/challenges\.cloudflare\.com https:\/\/cloudflareinsights\.com;/);
+  assert.doesNotMatch(caddy, /Content-Security-Policy/);
   assert.doesNotMatch(caddy, /handle \/ws\/\*|CADDY_WEBSOCKET_SOURCE|wss?:\/\//);
-  assert.match(caddy, /script-src 'self' https:\/\/challenges\.cloudflare\.com https:\/\/static\.cloudflareinsights\.com 'unsafe-inline'/);
-  assert.match(caddy, /frame-src 'self' https:\/\/challenges\.cloudflare\.com/);
   assert.match(caddy, /X-Content-Type-Options "nosniff"/);
   assert.match(caddy, /-X-Powered-By/);
   assert.match(caddy, /X-Frame-Options "DENY"/);
@@ -875,11 +893,8 @@ test('proxy config is TLS-ready, route-specific, size-limited, and sets browser 
   assert.match(caddyTemplate, /@betaWeb \{[\s\S]*host beta\.lunchlineup\.com[\s\S]*not path \/api\/\* \/health[\s\S]*\}/);
   assert.match(caddyTemplate, /header @betaWeb Cache-Control "private, no-store, no-transform"/);
   assert.match(caddyTemplate, /request_body[\s\S]*max_size 10MB/);
-  assert.match(caddyTemplate, /Content-Security-Policy/);
-  assert.match(caddyTemplate, /connect-src 'self' https:\/\/challenges\.cloudflare\.com https:\/\/cloudflareinsights\.com;/);
+  assert.doesNotMatch(caddyTemplate, /Content-Security-Policy/);
   assert.doesNotMatch(caddyTemplate, /handle \/ws\/\*|CADDY_WEBSOCKET_SOURCE|wss?:\/\//);
-  assert.match(caddyTemplate, /script-src 'self' https:\/\/challenges\.cloudflare\.com https:\/\/static\.cloudflareinsights\.com 'unsafe-inline'/);
-  assert.match(caddyTemplate, /frame-src 'self' https:\/\/challenges\.cloudflare\.com/);
   assert.match(caddyTemplate, /Permissions-Policy/);
   assert.match(caddyTemplate, /-X-Powered-By/);
   assert.doesNotMatch(caddyTemplate, /\{\{|\}\}/);
@@ -1798,8 +1813,10 @@ test('smoke environment generator help is read-only', () => {
 test('DAST and load helper scripts execute real smoke tools', () => {
   const dast = read('scripts/run-dast.sh');
   const load = read('scripts/load-test.sh');
+  const zapRules = read('.zap-rules.tsv');
 
   assert.match(dast, /zap-baseline\.py/);
+  assert.match(zapRules, /^90005\s+IGNORE\s+/m);
   assert.match(dast, /ZAP_IMAGE/);
   assert.match(dast, /docker run --rm/);
   assert.match(dast, /tolower\(\$0\) ~ \/\^x-lunchlineup-release:\//);

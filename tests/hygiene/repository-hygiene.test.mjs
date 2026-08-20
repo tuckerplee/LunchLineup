@@ -204,12 +204,11 @@ test('Caddy applies public SaaS browser and API cache hardening headers', () => 
   const caddy = read('infrastructure/caddy/Caddyfile');
   const template = read('infrastructure/caddy/Caddyfile.template');
   const nextConfig = read('apps/web/next.config.js');
+  const proxy = read('apps/web/proxy.ts');
+  const contentSecurityPolicy = read('apps/web/lib/content-security-policy.ts');
 
   for (const config of [caddy, template]) {
-    assert.match(config, /Content-Security-Policy .*script-src-attr 'none'/);
-    assert.match(config, /script-src 'self' https:\/\/challenges\.cloudflare\.com https:\/\/static\.cloudflareinsights\.com 'unsafe-inline'/);
-    assert.match(config, /frame-src 'self' https:\/\/challenges\.cloudflare\.com/);
-    assert.match(config, /connect-src 'self' https:\/\/challenges\.cloudflare\.com https:\/\/cloudflareinsights\.com;/);
+    assert.doesNotMatch(config, /Content-Security-Policy/);
     assert.doesNotMatch(config, /NEXT_PUBLIC_WS_URL|CADDY_WEBSOCKET_SOURCE|handle \/ws\/\*|wss?:\/\//);
     assert.match(config, /Cross-Origin-Opener-Policy "same-origin"/);
     assert.match(config, /Cross-Origin-Resource-Policy "same-origin"/);
@@ -218,14 +217,15 @@ test('Caddy applies public SaaS browser and API cache hardening headers', () => 
     assert.doesNotMatch(config, /Access-Control-Allow-Origin "\*"/);
   }
 
-  assert.match(nextConfig, /script-src 'self' \$\{turnstileOrigin\} \$\{cloudflareAnalyticsScriptOrigin\} 'unsafe-inline'/);
-  assert.match(nextConfig, /frame-src 'self' \$\{turnstileOrigin\}/);
-  assert.match(nextConfig, /const connectSources = \[/);
-  assert.match(nextConfig, /browserOrigin\(process\.env\.NEXT_PUBLIC_API_URL\)/);
-  assert.doesNotMatch(nextConfig, /NEXT_PUBLIC_WS_URL|wss?:\/\//);
-  assert.match(nextConfig, /developmentConnectOrigins = isProduction\s*\? \[\]/);
-  assert.match(nextConfig, /connect-src.*new Set\(connectSources\)/);
-  assert.doesNotMatch(nextConfig, /connect-src[^\n]*https: wss:/);
+  assert.doesNotMatch(nextConfig, /Content-Security-Policy/);
+  assert.match(proxy, /createContentSecurityPolicy\(\)/);
+  assert.match(contentSecurityPolicy, /'nonce-\$\{nonce\}' 'strict-dynamic'/);
+  assert.match(contentSecurityPolicy, /frame-src 'self' \$\{TURNSTILE_ORIGIN\}/);
+  assert.match(contentSecurityPolicy, /configuredBrowserApiOrigin\(\)/);
+  assert.doesNotMatch(contentSecurityPolicy, /script-src[^\n]*unsafe-inline/);
+  assert.doesNotMatch(contentSecurityPolicy, /NEXT_PUBLIC_WS_URL|wss?:\/\//);
+  assert.match(contentSecurityPolicy, /connect-src.*new Set\(connectSources\)/);
+  assert.doesNotMatch(contentSecurityPolicy, /connect-src[^\n]*https: wss:/);
 });
 
 test('example environment avoids unsafe broker defaults', () => {

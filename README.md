@@ -78,6 +78,7 @@ lunchlineup/
 - `.github/`: active GitHub Actions CI/CD, exact-SHA internal-beta candidate proof, and security automation.
 - `.gitattributes`: Git path attributes and line-ending normalization rules.
 - `.gitignore`: Git ignore rules for local, generated, and sensitive files.
+- `.trivyignore.yaml`: narrow, expiring vulnerability suppressions bound to exact package identities and documented fixed-source provenance.
 - `.zap-rules.tsv`: OWASP ZAP baseline scan rule severity configuration.
 - `README.md`: this project overview and repository map.
 - `apps/`: application workspaces for web, API, engine, worker, and control-plane services.

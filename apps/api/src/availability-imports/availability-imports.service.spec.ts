@@ -280,6 +280,50 @@ describe('AvailabilityImportsService', () => {
         expect(publisher.kick).not.toHaveBeenCalled();
     });
 
+    it('retries one serializable conflict and replays the durable import without a duplicate debit', async () => {
+        const file = {
+            buffer: Buffer.from('%PDF-1.7\n'),
+            mimetype: 'application/pdf',
+            originalname: 'availability.pdf',
+            size: 9,
+        };
+        const identityHash = availabilityImportDocumentIdentityHash('staff-1');
+        const existing = {
+            id: 'import-existing',
+            userId: 'user-1',
+            requestHash: identityHash,
+            targetIdentityHash: identityHash,
+            fileSha256: createHash('sha256').update(file.buffer).digest('hex'),
+            status: 'PENDING',
+            parsedAvailability: null,
+            resultErasedAt: null,
+            failureCode: null,
+            creditConsumption: { consumedCredits: 1 },
+            createdAt: new Date('2026-08-20T12:00:00.000Z'),
+            completedAt: null,
+        };
+        tx.availabilityImportJob.findUnique.mockResolvedValue(existing);
+        tx.availabilityImportJob.findFirst.mockResolvedValue(existing);
+        tenantDb.withTenant
+            .mockRejectedValueOnce({ code: 'P2010', meta: { code: '40001' } })
+            .mockImplementation(async (_tenantId: string, operation: (client: any) => Promise<unknown>) => operation(tx));
+        const service = new AvailabilityImportsService(tenantDb, featureAccess, publisher);
+
+        await expect(service.createImport({
+            tenantId: 'tenant-1',
+            requestedByUserId: 'manager-1',
+            userId: 'user-1',
+            idempotencyKey: 'concurrent-request',
+            staffIdentity: 'staff-1',
+            file,
+        })).resolves.toMatchObject({ id: 'import-existing', status: 'PENDING' });
+
+        expect(tenantDb.withTenant).toHaveBeenCalledTimes(3);
+        expect(featureAccess.recordFeatureUsageInTransaction).not.toHaveBeenCalled();
+        expect(tx.availabilityImportJob.create).not.toHaveBeenCalled();
+        expect(publisher.kick).toHaveBeenCalledOnce();
+    });
+
     it('withholds a succeeded result after completion-based retention erases its payload', async () => {
         const service = new AvailabilityImportsService(tenantDb, featureAccess, publisher);
         const completedAt = new Date('2026-07-14T12:00:00.000Z');
