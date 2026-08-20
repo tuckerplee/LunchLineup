@@ -812,7 +812,7 @@ jobs:
           else
             status=$?
             docker compose ps -a
-            docker compose logs --tail=200 api api-v2 engine worker web migrate || true
+            docker compose logs --tail=200 api api-v2 engine pdf-parser worker web migrate || true
             exit "$status"
           fi
       - name: Wait for smoke target
@@ -845,7 +845,7 @@ jobs:
       - name: Stop smoke stack
         if: always()
         run: |
-          docker compose --env-file .env.smoke logs --tail=300 api api-v2 worker engine migrate || true
+          docker compose --env-file .env.smoke logs --tail=300 api api-v2 pdf-parser worker engine migrate || true
           docker compose --env-file .env.smoke down -v
           rm -f .env.smoke secrets/metrics_token
 
@@ -950,7 +950,7 @@ jobs:
           else
             status=$?
             docker compose ps -a
-            docker compose logs --tail=200 api api-v2 engine worker web migrate || true
+            docker compose logs --tail=200 api api-v2 engine pdf-parser worker web migrate || true
             exit "$status"
           fi
       - name: Wait for full-stack target
@@ -993,7 +993,7 @@ jobs:
       - name: Stop full-stack release images
         if: always()
         run: |
-          docker compose --env-file .env.smoke logs --tail=300 api api-v2 worker engine migrate || true
+          docker compose --env-file .env.smoke logs --tail=300 api api-v2 pdf-parser worker engine migrate || true
           docker compose --env-file .env.smoke down -v
           rm -f .env.smoke secrets/metrics_token
 
@@ -1067,7 +1067,7 @@ jobs:
           else
             status=$?
             docker compose ps -a
-            docker compose logs --tail=200 api api-v2 engine worker web migrate || true
+            docker compose logs --tail=200 api api-v2 engine pdf-parser worker web migrate || true
             exit "$status"
           fi
       - name: Wait for smoke target
@@ -1116,7 +1116,7 @@ jobs:
       - name: Stop smoke stack
         if: always()
         run: |
-          docker compose --env-file .env.smoke logs --tail=300 api api-v2 worker engine migrate || true
+          docker compose --env-file .env.smoke logs --tail=300 api api-v2 pdf-parser worker engine migrate || true
           docker compose --env-file .env.smoke down -v
           rm -f .env.smoke secrets/metrics_token
 

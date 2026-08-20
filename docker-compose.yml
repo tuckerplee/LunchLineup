@@ -1217,7 +1217,7 @@ volumes:
     driver_opts:
       type: tmpfs
       device: tmpfs
-      o: size=1048576,mode=0700,uid=10001,gid=10001,noexec,nosuid,nodev
+      o: size=1048576,mode=0700,uid=65532,gid=65532,noexec,nosuid,nodev
 
 secrets:
   control_plane_admin_token:

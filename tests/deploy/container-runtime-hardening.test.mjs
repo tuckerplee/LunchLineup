@@ -159,10 +159,12 @@ test('availability PDF parsing runs in a secret-free no-network container bounda
   }
 
   const ipcOptions = compose.volumes.parser_ipc.driver_opts.o;
+  const workerDockerfile = read('infrastructure/docker/Dockerfile.worker');
   assert.match(ipcOptions, /size=1048576/);
   assert.match(ipcOptions, /mode=0700/);
-  assert.match(ipcOptions, /uid=10001/);
-  assert.match(ipcOptions, /gid=10001/);
+  assert.match(workerDockerfile, /USER 65532:65532/);
+  assert.match(ipcOptions, /uid=65532/);
+  assert.match(ipcOptions, /gid=65532/);
   assert.match(ipcOptions, /noexec/);
   assert.match(ipcOptions, /nosuid/);
   assert.match(ipcOptions, /nodev/);
