@@ -9,6 +9,9 @@ export const OBSERVABILITY_FILES = Object.freeze({
   compose: 'docker-compose.yml',
   caddy: 'infrastructure/caddy/Caddyfile',
   caddyTemplate: 'infrastructure/caddy/Caddyfile.template',
+  webContentSecurityPolicy: 'apps/web/lib/content-security-policy.ts',
+  webProxy: 'apps/web/proxy.ts',
+  webLayout: 'apps/web/app/layout.tsx',
   prometheus: 'infrastructure/prometheus/prometheus.yml',
   prometheusAlerts: 'infrastructure/prometheus/alerts/lunchlineup.yml',
   alertmanager: 'infrastructure/alertmanager/alertmanager.yml',
@@ -877,20 +880,6 @@ function validateCaddyfile(root, relativePath, errors, checked) {
       (value) => value === 'max-age=31536000; includeSubDomains; preload',
       'set the preload HSTS policy',
     );
-    validateSecurityHeader(
-      errors,
-      relativePath,
-      headerBlock,
-      'Content-Security-Policy',
-      (value) => (
-        value.includes("default-src 'self'")
-        && value.includes("object-src 'none'")
-        && value.includes("frame-ancestors 'none'")
-        && value.includes('https://challenges.cloudflare.com')
-        && value.includes('upgrade-insecure-requests')
-      ),
-      'include the required CSP directives',
-    );
     validateSecurityHeader(errors, relativePath, headerBlock, 'X-Content-Type-Options', (value) => value === 'nosniff', 'disable MIME sniffing');
     validateSecurityHeader(errors, relativePath, headerBlock, 'X-Frame-Options', (value) => value === 'DENY', 'deny framing');
     validateSecurityHeader(
@@ -918,6 +907,62 @@ function validateCaddyfile(root, relativePath, errors, checked) {
 
   const handles = childDirectives(site, 'handle');
   expect(errors, handles[handles.length - 1]?.args.length === 0, `${relativePath}: default web handle must remain last`);
+}
+
+function validateWebContentSecurityPolicy(root, errors, checked) {
+  const policyPath = OBSERVABILITY_FILES.webContentSecurityPolicy;
+  const proxyPath = OBSERVABILITY_FILES.webProxy;
+  const layoutPath = OBSERVABILITY_FILES.webLayout;
+  const policy = readText(root, policyPath, errors, checked);
+  const proxy = readText(root, proxyPath, errors, checked);
+  const layout = readText(root, layoutPath, errors, checked);
+
+  const requiredPolicyTokens = [
+    "randomBytes(16).toString('base64')",
+    '/^[A-Za-z0-9+/]{22}==$/.test(nonce)',
+    'https://challenges.cloudflare.com',
+    'https://static.cloudflareinsights.com',
+    'https://cloudflareinsights.com',
+    '"default-src \'self\'"',
+    '"object-src \'none\'"',
+    '"frame-ancestors \'none\'"',
+    "`script-src 'self' 'nonce-${nonce}' 'strict-dynamic'",
+    '"script-src-attr \'none\'"',
+    "['upgrade-insecure-requests']",
+  ];
+  for (const token of requiredPolicyTokens) {
+    expect(errors, policy.includes(token), `${policyPath}: missing required CSP contract ${token}`);
+  }
+  expect(
+    errors,
+    !policy.match(/script-src[^\n]*unsafe-inline/),
+    `${policyPath}: script-src must not allow unsafe-inline`,
+  );
+
+  const requiredProxyTokens = [
+    "createContentSecurityPolicy()",
+    "securedRequestHeaders.set('Content-Security-Policy', contentSecurityPolicy)",
+    "securedRequestHeaders.set('x-nonce', nonce)",
+    "response.headers.set('Content-Security-Policy', contentSecurityPolicy)",
+    "(?!api(?:/|$)|_next/static|_next/image",
+  ];
+  for (const token of requiredProxyTokens) {
+    expect(errors, proxy.includes(token), `${proxyPath}: missing required CSP integration ${token}`);
+  }
+  expect(
+    errors,
+    layout.includes("export const dynamic = 'force-dynamic'"),
+    `${layoutPath}: nonce-backed pages must be force-dynamic`,
+  );
+
+  for (const caddyPath of [OBSERVABILITY_FILES.caddy, OBSERVABILITY_FILES.caddyTemplate]) {
+    const caddy = readFileSync(join(root, caddyPath), 'utf8');
+    expect(
+      errors,
+      !caddy.includes('Content-Security-Policy'),
+      `${caddyPath}: CSP must have one owner in the nonce-aware web runtime`,
+    );
+  }
 }
 
 function validateComposeObservability(compose, errors) {
@@ -1303,6 +1348,7 @@ export function validateObservabilityConfigs(options = {}) {
 
   validateCaddyfile(root, OBSERVABILITY_FILES.caddy, errors, checked);
   validateCaddyfile(root, OBSERVABILITY_FILES.caddyTemplate, errors, checked);
+  validateWebContentSecurityPolicy(root, errors, checked);
   validatePublicWebProbe(root, errors, checked);
 
   if (compose) {

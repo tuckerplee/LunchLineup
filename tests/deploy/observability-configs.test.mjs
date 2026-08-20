@@ -422,6 +422,35 @@ test('observability verifier exposes digest-pinned container fallback commands',
   ]);
 });
 
+test('observability verifier rejects weakened or multiply-owned CSP', () => {
+  const fixtureRoot = createObservabilityFixture();
+
+  try {
+    replaceInFixture(
+      fixtureRoot,
+      OBSERVABILITY_FILES.webContentSecurityPolicy,
+      "'strict-dynamic'",
+      "'unsafe-inline'",
+    );
+    replaceInFixture(
+      fixtureRoot,
+      OBSERVABILITY_FILES.caddy,
+      'Strict-Transport-Security',
+      'Content-Security-Policy "default-src \'self\'"\n        Strict-Transport-Security',
+    );
+
+    const result = validateObservabilityConfigs({ root: fixtureRoot });
+    const errors = result.errors.join('\n');
+
+    assert.equal(result.ok, false);
+    assert.match(errors, /missing required CSP contract/);
+    assert.match(errors, /script-src must not allow unsafe-inline/);
+    assert.match(errors, /CSP must have one owner in the nonce-aware web runtime/);
+  } finally {
+    rmSync(fixtureRoot, { recursive: true, force: true });
+  }
+});
+
 test('observability tool auto mode reports pinned Docker fallbacks when host tools are unavailable', () => {
   const result = spawnSync(process.execPath, [verifierPath, '--root', root, '--tool-mode', 'auto'], {
     encoding: 'utf8',
