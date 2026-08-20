@@ -65,6 +65,7 @@ test('immutable release evidence contains signed image reports and exact candida
     const dastEvidence = emitCandidateEvidence('dast', {
       ...common,
       'tool-image': zapImage,
+      'scanner-exit-code': '0',
       'raw-report': dastJson,
       'raw-html': dastHtml,
     });
