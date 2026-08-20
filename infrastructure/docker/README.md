@@ -8,7 +8,7 @@
 - `Dockerfile.backup`: required release image for encrypted Postgres backups, request-scoped WAL/lifecycle/PITR provider jobs, S3/rclone offsite copy, and textfile metrics.
 - `Dockerfile.control`: out-of-band control plane image.
 - `Dockerfile.engine`: Python scheduling engine image.
-- `Dockerfile.grafana`: Grafana runtime rebuilt with the fixed Tempo dependency and unused vulnerable bundled data-source executables removed.
+- `Dockerfile.grafana`: Grafana runtime rebuilt with the fixed Tempo dependency, an application-only static-root assembly, and unused vulnerable bundled data-source executables removed.
 - `Dockerfile.loki`: exact Loki release source rebuilt with the patched Go toolchain.
 - `Dockerfile.migrations`: database migration image with Prisma tooling and `psql` for restricted application-role provisioning.
 - `Dockerfile.node-exporter`: exact node-exporter release source rebuilt with the patched Go toolchain.
@@ -18,6 +18,7 @@
 - `Dockerfile.tempo`: exact Tempo release source rebuilt with the patched Go toolchain.
 - `Dockerfile.web`: Next.js web image.
 - `Dockerfile.worker`: background worker image.
+- `grafana-healthcheck.go`: static loopback health probe used by the shell-free Grafana runtime.
 
 ## API Runtime Note
 

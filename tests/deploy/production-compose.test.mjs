@@ -523,6 +523,18 @@ test('Dockerfile base images are digest-pinned', () => {
   assert.match(backupDockerfile, /apk add --no-cache[^\n]*aws-cli[^\n]*rclone/);
 });
 
+test('Grafana runtime assembles only application assets over the static base', () => {
+  const dockerfile = read('infrastructure/docker/Dockerfile.grafana');
+  const compose = read('docker-compose.yml');
+  assert.match(dockerfile, /COPY --from=upstream \/usr\/share\/grafana \/rootfs\/usr\/share\/grafana/);
+  assert.match(dockerfile, /COPY --from=upstream \/etc\/grafana \/rootfs\/etc\/grafana/);
+  assert.match(dockerfile, /COPY --from=rootfs \/rootfs\/usr\/share\/grafana \/usr\/share\/grafana/);
+  assert.match(dockerfile, /COPY --from=rootfs \/rootfs\/etc\/grafana \/etc\/grafana/);
+  assert.match(dockerfile, /COPY --from=build \/out\/grafana-healthcheck \/usr\/local\/bin\/grafana-healthcheck/);
+  assert.doesNotMatch(dockerfile, /COPY --from=(?:upstream|rootfs) \/(?: \/rootfs\/|rootfs\/ \/)/);
+  assert.match(compose, /test: \[ "CMD", "\/usr\/local\/bin\/grafana-healthcheck" \]/);
+});
+
 test('Compose external third-party service images are digest-pinned', () => {
   const compose = read('docker-compose.yml');
 

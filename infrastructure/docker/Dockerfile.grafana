@@ -21,18 +21,28 @@ RUN go mod edit -droprequire=github.com/grafana/tempo \
     && CGO_ENABLED=0 GOWORK=off go build -mod=mod -buildvcs=false -trimpath -tags oss \
       -ldflags '-s -w -X main.version=13.1.4 -X main.commit=afdab62868c728d60df3f87657e68c8ed6dbb926' \
       -o /out/grafana ./pkg/cmd/grafana
+COPY infrastructure/docker/grafana-healthcheck.go /src/grafana-healthcheck.go
+RUN CGO_ENABLED=0 go build -buildvcs=false -trimpath -ldflags '-s -w' \
+      -o /out/grafana-healthcheck /src/grafana-healthcheck.go
 
 FROM grafana/grafana:13.1.4-distroless@sha256:246165bbf0b5b516299129fd11e8675420a98ee9c57bdbdf979f235dfeb82c5c AS upstream
 FROM cgr.dev/chainguard/wolfi-base@sha256:fdcd31a2db35958c251ea22e80cda72a8222228114e736ec7dd9c94452a2dc51 AS rootfs
 USER root
-COPY --from=upstream / /rootfs/
+COPY --from=upstream /usr/share/grafana /rootfs/usr/share/grafana
+COPY --from=upstream /etc/grafana /rootfs/etc/grafana
 RUN rm -rf \
       /rootfs/usr/share/grafana/data/plugins-bundled/elasticsearch \
       /rootfs/usr/share/grafana/data/plugins-bundled/zipkin
 COPY --from=build /out/grafana /rootfs/usr/share/grafana/bin/grafana
+RUN mkdir -p /rootfs/var/lib/grafana /rootfs/var/log/grafana \
+    && chown -R 472:0 /rootfs/var/lib/grafana /rootfs/var/log/grafana
 
 FROM cgr.dev/chainguard/static@sha256:f68e3a8244c7d0f4cd56635aaff8e6a533cf6cc3850d8fb339567a5782d6a0b0
-COPY --from=rootfs /rootfs/ /
+COPY --from=rootfs /rootfs/usr/share/grafana /usr/share/grafana
+COPY --from=rootfs /rootfs/etc/grafana /etc/grafana
+COPY --from=rootfs /rootfs/var/lib/grafana /var/lib/grafana
+COPY --from=rootfs /rootfs/var/log/grafana /var/log/grafana
+COPY --from=build /out/grafana-healthcheck /usr/local/bin/grafana-healthcheck
 ENV PATH=/usr/share/grafana/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
     SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt \
     GF_PATHS_CONFIG=/etc/grafana/grafana.ini \
