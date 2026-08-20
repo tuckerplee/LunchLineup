@@ -407,12 +407,16 @@ test('production StripeService retains the lease through late success, then read
   const digest = (value) => createHash('sha256').update(value).digest('hex');
   let releaseFirstProvider;
   let markFirstProviderEntered;
+  let markFirstProviderAborted;
   let markFirstProviderCompleted;
   const firstProviderRelease = new Promise((resolveRelease) => {
     releaseFirstProvider = resolveRelease;
   });
   const firstProviderEntered = new Promise((resolveEntered) => {
     markFirstProviderEntered = resolveEntered;
+  });
+  const firstProviderAborted = new Promise((resolveAborted) => {
+    markFirstProviderAborted = resolveAborted;
   });
   const firstProviderCompleted = new Promise((resolveCompleted) => {
     markFirstProviderCompleted = resolveCompleted;
@@ -500,6 +504,11 @@ test('production StripeService retains the lease through late success, then read
         assert.equal(providerTenantId, tenantId);
         providerCallCount += 1;
         providerContexts.push(context);
+        if (providerCallCount === 1) {
+          const markAborted = () => markFirstProviderAborted();
+          if (context.signal.aborted) markAborted();
+          else context.signal.addEventListener('abort', markAborted, { once: true });
+        }
         try {
           return await stripeService.finalizeTenantBillingForPurge(providerTenantId, context);
         } finally {
@@ -616,10 +625,10 @@ test('production StripeService retains the lease through late success, then read
       userAgent: 'tenant-deletion-reverse-completion-test',
     }, { confirmation: slug }).finally(() => { firstRequestSettled = true; });
     await bounded(firstProviderEntered, 3_000, 'first deletion request never entered Stripe mutation');
-    // The provider transport deliberately outlives the short lease.  Under
-    // CI contention the first heartbeat can be queued behind the readback,
-    // so wait for the durable renewal rather than asserting on one fixed
-    // event-loop slice.
+    // The provider transport must outlive the configured attempt deadline.
+    // A lease renewal can happen before that deadline, especially under CI
+    // contention, so wait for the provider's actual abort signal first.
+    await bounded(firstProviderAborted, 3_000, 'first Stripe mutation never observed its attempt deadline');
     let duringLateSuccess;
     await bounded((async () => {
       const deadline = Date.now() + 2_000;

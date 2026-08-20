@@ -1,0 +1,20 @@
+# syntax=docker/dockerfile:1.7
+
+FROM golang:1.26.6-alpine3.23@sha256:e57c41c1d5864341031181b0db34b9a537bb5773eb6428e4e5bdaea0f9135406 AS build
+RUN apk add --no-cache git
+RUN git init /src \
+    && cd /src \
+    && git remote add origin https://github.com/caddyserver/caddy.git \
+    && git fetch --depth 1 origin 551f793700fe1550845c824470b623fd1aa03d36 \
+    && git checkout --detach 551f793700fe1550845c824470b623fd1aa03d36 \
+    && test "$(git rev-parse HEAD)" = "551f793700fe1550845c824470b623fd1aa03d36"
+WORKDIR /src
+RUN go get golang.org/x/net@v0.56.0 golang.org/x/text@v0.39.0 google.golang.org/grpc@v1.82.1 \
+    && CGO_ENABLED=0 go build -trimpath \
+      -ldflags '-s -w -X github.com/caddyserver/caddy/v2.CustomVersion=v2.10.2-lunchlineup' \
+      -o /out/caddy ./cmd/caddy
+
+FROM caddy:2-alpine@sha256:5f5c8640aae01df9654968d946d8f1a56c497f1dd5c5cda4cf95ab7c14d58648
+RUN apk upgrade --no-cache \
+    && apk del --no-cache curl
+COPY --from=build /out/caddy /usr/bin/caddy

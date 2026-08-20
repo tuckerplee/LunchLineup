@@ -3,7 +3,9 @@
 ## Files
 
 - `README.md`: this log-shipping configuration guide.
-- `promtail-config.yml`: Docker JSON log scraper with persistent positions, bounded retries, and Loki delivery.
+- `promtail-config.yml`: OpenTelemetry Collector filelog pipeline with persistent offsets, bounded retries, and Loki OTLP delivery.
+
+The Compose service name remains `promtail` to preserve operator scripts and volume continuity, but it runs the already-gated OpenTelemetry Collector distribution instead of the retired Promtail binary.
 
 ## Runtime Boundary
 

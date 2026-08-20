@@ -42,7 +42,10 @@ services:
       - NET_BIND_SERVICE
     tmpfs:
       - /tmp:rw,noexec,nosuid,nodev,size=16m,mode=1777
-    image: caddy:2-alpine@sha256:5f5c8640aae01df9654968d946d8f1a56c497f1dd5c5cda4cf95ab7c14d58648
+    image: "${IMAGE_PREFIX:-lunchlineup}/proxy:${IMAGE_TAG:-local}"
+    build:
+      context: .
+      dockerfile: infrastructure/docker/Dockerfile.proxy
     ports:
       - "${PROXY_HTTP_BIND:-127.0.0.1}:${PROXY_HTTP_PORT:-80}:80"
       - "${PROXY_HTTPS_BIND:-127.0.0.1}:${PROXY_HTTPS_PORT:-443}:443"
@@ -359,7 +362,7 @@ services:
       - OTEL_EXPORTER_OTLP_TRACES_ENDPOINT=http://otel-collector:4318/v1/traces
       - OTEL_DEPLOYMENT_ENVIRONMENT=production
     healthcheck:
-      test: [ "CMD-SHELL", "curl -fsS http://127.0.0.1:8000/health > /dev/null" ]
+      test: [ "CMD", "python", "-c", "import urllib.request; response = urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3); assert response.status == 200; response.close()" ]
       interval: 15s
       timeout: 5s
       retries: 3
@@ -495,33 +498,7 @@ services:
       - availability_uploads:/app/uploads
       - parser_ipc:/run/lunchlineup-parser
     healthcheck:
-      test:
-        - CMD-SHELL
-        - |
-          metrics="$$(curl -fsS http://127.0.0.1:$${WORKER_METRICS_PORT:-3003}/metrics)" || exit 1
-          printf '%s\n' "$$metrics" | grep -Eq '^lunchlineup_pdf_parser_ready 1(\.0+)?[[:space:]]*$$' || exit 1
-          if [ "$${PASSWORD_RESET_EMAIL_OUTBOX_ENABLED:-false}" = "true" ]; then
-            printf '%s\n' "$$metrics" | grep -Eq '^lunchlineup_password_reset_email_sweep_running 1(\.0+)?[[:space:]]*$$' || exit 1
-            printf '%s\n' "$$metrics" | grep -Eq '^lunchlineup_password_reset_email_sweep_ready 1(\.0+)?[[:space:]]*$$' || exit 1
-            printf '%s\n' "$$metrics" | grep -Eq '^lunchlineup_password_reset_email_systemic_provider_failure 0(\.0+)?[[:space:]]*$$' || exit 1
-            last_success="$$(printf '%s\n' "$$metrics" | awk '$$1 == "lunchlineup_password_reset_email_sweep_last_success_unixtime" && $$2 > 0 { printf "%.0f\n", $$2; exit }')"
-            [ -n "$$last_success" ] || exit 1
-            last_success="$${last_success%%.*}"
-            now="$$(date +%s)"
-            age="$$((now - last_success))"
-            [ "$$age" -ge 0 ] && [ "$$age" -le "$${PASSWORD_RESET_EMAIL_SWEEP_MAX_STALENESS_SECONDS:-60}" ] || exit 1
-          fi
-          if [ "$${STAFF_INVITATION_OUTBOX_ENABLED:-false}" = "true" ]; then
-            printf '%s\n' "$$metrics" | grep -Eq '^lunchlineup_staff_invitation_sweep_running 1(\.0+)?[[:space:]]*$$' || exit 1
-            printf '%s\n' "$$metrics" | grep -Eq '^lunchlineup_staff_invitation_sweep_ready 1(\.0+)?[[:space:]]*$$' || exit 1
-            printf '%s\n' "$$metrics" | grep -Eq '^lunchlineup_staff_invitation_systemic_provider_failure 0(\.0+)?[[:space:]]*$$' || exit 1
-            invitation_last_success="$$(printf '%s\n' "$$metrics" | awk '$$1 == "lunchlineup_staff_invitation_sweep_last_success_unixtime" && $$2 > 0 { printf "%.0f\n", $$2; exit }')"
-            [ -n "$$invitation_last_success" ] || exit 1
-            invitation_last_success="$${invitation_last_success%%.*}"
-            invitation_now="$$(date +%s)"
-            invitation_age="$$((invitation_now - invitation_last_success))"
-            [ "$$invitation_age" -ge 0 ] && [ "$$invitation_age" -le "$${STAFF_INVITATION_SWEEP_MAX_STALENESS_SECONDS:-60}" ] || exit 1
-          fi
+      test: [ "CMD", "python", "-m", "src.healthcheck" ]
       interval: 15s
       timeout: 5s
       retries: 3
@@ -545,7 +522,10 @@ services:
     tmpfs:
       - /tmp:rw,noexec,nosuid,nodev,size=16m,mode=1777
       - /etc/pgbouncer:rw,noexec,nosuid,nodev,size=4m,mode=1777
-    image: edoburu/pgbouncer:v1.25.2-p0@sha256:7d7a27d9e90985cab5cf42256f5c13a3120baa4b055b69df37beb272b89b2340
+    image: "${IMAGE_PREFIX:-lunchlineup}/pgbouncer:${IMAGE_TAG:-local}"
+    build:
+      context: .
+      dockerfile: infrastructure/docker/Dockerfile.pgbouncer
     networks:
       - data
     environment:
@@ -692,7 +672,10 @@ services:
     tmpfs:
       - /tmp:rw,noexec,nosuid,nodev,size=64m,mode=1777
       - /var/run/postgresql:rw,noexec,nosuid,nodev,size=16m,mode=1777
-    image: postgres:16-alpine@sha256:cf78e76683b9ca8c5733cbbdce6c9262b45b6767934dd0a95e671f9a0fc20685
+    image: "${IMAGE_PREFIX:-lunchlineup}/postgres:${IMAGE_TAG:-local}"
+    build:
+      context: .
+      dockerfile: infrastructure/docker/Dockerfile.postgres
     volumes:
       - postgres_data:/var/lib/postgresql/data
       - ./infrastructure/postgres/postgresql.conf:/etc/postgresql/postgresql.conf:ro
@@ -1020,7 +1003,10 @@ services:
     <<: *locked-runtime
     tmpfs:
       - /tmp:rw,noexec,nosuid,nodev,size=16m,mode=1777
-    image: prom/node-exporter:v1.12.1-distroless@sha256:8c9bac11973b94b59be88d6e11fee4429aa743c8846cdc75d65b18db33f6a106
+    image: "${IMAGE_PREFIX:-lunchlineup}/node-exporter:${IMAGE_TAG:-local}"
+    build:
+      context: .
+      dockerfile: infrastructure/docker/Dockerfile.node-exporter
     command:
       - '--path.rootfs=/host'
       - '--collector.filesystem.mount-points-exclude=^/(dev|proc|sys|run/credentials/.+|var/lib/docker/.+)($$|/)'
@@ -1041,7 +1027,10 @@ services:
     pids_limit: 512
     tmpfs:
       - /tmp:rw,noexec,nosuid,nodev,size=32m,mode=1777
-    image: grafana/loki:3.7.6@sha256:efd47c67f9bac88ca29bcf8cb997d9ab29d1848bd0aff579282295542a745952
+    image: "${IMAGE_PREFIX:-lunchlineup}/loki:${IMAGE_TAG:-local}"
+    build:
+      context: .
+      dockerfile: infrastructure/docker/Dockerfile.loki
     volumes:
       - ./infrastructure/loki/loki-config.yml:/etc/loki/local-config.yaml:ro
       - loki_data:/loki
@@ -1055,19 +1044,20 @@ services:
       retries: 3
     restart: unless-stopped
 
-  # Observability: read-only Docker JSON log shipping
+  # Observability: read-only Docker JSON log shipping through the gated
+  # OpenTelemetry Collector distribution.
   promtail:
     <<: *locked-runtime
     tmpfs:
       - /tmp:rw,noexec,nosuid,nodev,size=16m,mode=1777
-    image: grafana/promtail:3.6.11@sha256:a761cb834cfaeee29745440d4884d6748f0a08d8f68928db1d707018c1dcfbe9
-    command: -config.file=/etc/promtail/config.yml -config.expand-env=true
+    image: otel/opentelemetry-collector-contrib@sha256:1f2c54a30e713fac6b3ae77a1ec84010c2007e29ced8ec666214fc2f6739c1cc
+    command: [ "--config=/etc/otelcol-contrib/promtail-config.yml" ]
     environment:
       - PROMTAIL_HOST=${PROMTAIL_HOST:-lunchlineup-host}
     volumes:
-      - ./infrastructure/promtail/promtail-config.yml:/etc/promtail/config.yml:ro
+      - ./infrastructure/promtail/promtail-config.yml:/etc/otelcol-contrib/promtail-config.yml:ro
       - /var/lib/docker/containers:/var/lib/docker/containers:ro
-      - promtail_positions:/run/promtail
+      - promtail_positions:/var/lib/otelcol/file_storage
     networks:
       - management
     depends_on:
@@ -1103,7 +1093,10 @@ services:
     pids_limit: 512
     tmpfs:
       - /tmp:rw,noexec,nosuid,nodev,size=32m,mode=1777
-    image: grafana/tempo:3.0.3@sha256:0296560ac66f8a3600d7fb3014a52c189d4d9c3549ad6ff441bf2409855d68d5
+    image: "${IMAGE_PREFIX:-lunchlineup}/tempo:${IMAGE_TAG:-local}"
+    build:
+      context: .
+      dockerfile: infrastructure/docker/Dockerfile.tempo
     volumes:
       - ./infrastructure/tempo/tempo-config.yml:/etc/tempo/config.yml:ro
       - tempo_data:/var/tempo
@@ -1125,7 +1118,10 @@ services:
     pids_limit: 512
     tmpfs:
       - /tmp:rw,noexec,nosuid,nodev,size=64m,mode=1777
-    image: grafana/grafana:13.1.4-distroless@sha256:246165bbf0b5b516299129fd11e8675420a98ee9c57bdbdf979f235dfeb82c5c
+    image: "${IMAGE_PREFIX:-lunchlineup}/grafana:${IMAGE_TAG:-local}"
+    build:
+      context: .
+      dockerfile: infrastructure/docker/Dockerfile.grafana
     ports:
       - "127.0.0.1:3002:3000"
     volumes:

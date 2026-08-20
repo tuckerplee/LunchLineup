@@ -12,6 +12,8 @@ export const OBSERVABILITY_FILES = Object.freeze({
   prometheus: 'infrastructure/prometheus/prometheus.yml',
   prometheusAlerts: 'infrastructure/prometheus/alerts/lunchlineup.yml',
   alertmanager: 'infrastructure/alertmanager/alertmanager.yml',
+  otelCollector: 'infrastructure/otel-collector/otel-collector-config.yml',
+  logCollector: 'infrastructure/promtail/promtail-config.yml',
   publicWebProbe: 'infrastructure/control/public-web-probe.sh',
   publicWebProbeEnv: 'infrastructure/systemd/lunchlineup-public-web-probe.env.example',
   publicWebProbeService: 'infrastructure/systemd/lunchlineup-public-web-probe.service',
@@ -22,6 +24,7 @@ export const OBSERVABILITY_TOOL_IMAGES = Object.freeze({
   caddy: 'caddy:2-alpine@sha256:5f5c8640aae01df9654968d946d8f1a56c497f1dd5c5cda4cf95ab7c14d58648',
   prometheus: 'prom/prometheus:v3.14.0-distroless@sha256:50c707e96da5ade383cb1707790576480485e93de06aa60ad8802cb5f744bd0a',
   alertmanager: 'prom/alertmanager:v0.34.0@sha256:690c7b525f4367aa91f73e2f91c632206d32e97c6384bdbf2fb7a861b420340d',
+  otelCollector: 'otel/opentelemetry-collector-contrib:0.159.0@sha256:1f2c54a30e713fac6b3ae77a1ec84010c2007e29ced8ec666214fc2f6739c1cc',
 });
 
 export const OBSERVABILITY_TOOL_MODES = Object.freeze(['off', 'auto', 'host', 'container']);
@@ -35,6 +38,7 @@ export const PROMETHEUS_RULE_TEST_FILES = Object.freeze([
 const scriptDir = dirname(fileURLToPath(import.meta.url));
 const defaultRoot = resolve(scriptDir, '..');
 const digestPinnedImageRefPattern = /^[^\s]+:[^:@\s]+@sha256:[a-f0-9]{64}$/i;
+const releaseBuiltImageRefPattern = /^\$\{IMAGE_PREFIX:-lunchlineup\}\/[a-z0-9-]+:\$\{IMAGE_TAG:-local\}$/;
 const durationPattern = /^(?:0|[1-9][0-9]*)(?:ms|s|m|h|d|w|y)$/;
 const containerPaths = Object.freeze({
   caddyConfig: '/etc/caddy/Caddyfile',
@@ -44,11 +48,13 @@ const containerPaths = Object.freeze({
   prometheusCredentials: '/run/secrets/metrics_token',
   prometheusRuleTestsDir: '/etc/prometheus/alerts/tests',
   alertmanagerConfig: '/etc/alertmanager/alertmanager.yml',
+  otelCollectorConfig: '/etc/otelcol-contrib/config.yml',
 });
 const toolVersionArgs = Object.freeze({
   caddy: ['version'],
   promtool: ['--version'],
   amtool: ['--version'],
+  'otelcol-contrib': ['--version'],
 });
 const expectedScrapeJobs = Object.freeze({
   prometheus: {
@@ -412,6 +418,27 @@ export function buildObservabilityToolCommands(options = {}) {
         containerPaths.alertmanagerConfig,
       ]),
     },
+    ...[
+      [OBSERVABILITY_FILES.otelCollector, 'otel-traces-config'],
+      [OBSERVABILITY_FILES.logCollector, 'otel-logs-config'],
+    ].map(([relativePath, id]) => ({
+      id,
+      tool: 'otelcol-contrib',
+      label: relativePath,
+      hostCommand: commandSpec('otelcol-contrib', ['validate', '--config', join(root, relativePath)]),
+      containerCommand: commandSpec('docker', [
+        'run',
+        '--rm',
+        '-v',
+        dockerVolume(root, relativePath, containerPaths.otelCollectorConfig),
+        '--entrypoint',
+        '/otelcol-contrib',
+        OBSERVABILITY_TOOL_IMAGES.otelCollector,
+        'validate',
+        '--config',
+        containerPaths.otelCollectorConfig,
+      ]),
+    })),
   ];
 }
 
@@ -889,10 +916,14 @@ function validateComposeObservability(compose, errors) {
     if (!service) {
       continue;
     }
+    const image = String(service.image ?? '');
+    const dockerfile = String(asMap(service.build).dockerfile ?? '');
+    const releaseBuilt = releaseBuiltImageRefPattern.test(image)
+      && dockerfile === `infrastructure/docker/Dockerfile.${serviceName}`;
     expect(
       errors,
-      digestPinnedImageRefPattern.test(String(service.image ?? '')),
-      `docker-compose.yml: ${serviceName} image must be tag and digest pinned`,
+      digestPinnedImageRefPattern.test(image) || releaseBuilt,
+      `docker-compose.yml: ${serviceName} image must be external-digest-pinned or release-manifest-built`,
     );
   }
 
@@ -1253,6 +1284,8 @@ export function validateObservabilityConfigs(options = {}) {
   const prometheus = readYaml(root, OBSERVABILITY_FILES.prometheus, errors, checked);
   const alertRules = readYaml(root, OBSERVABILITY_FILES.prometheusAlerts, errors, checked);
   const alertmanager = readYaml(root, OBSERVABILITY_FILES.alertmanager, errors, checked);
+  readYaml(root, OBSERVABILITY_FILES.otelCollector, errors, checked);
+  readYaml(root, OBSERVABILITY_FILES.logCollector, errors, checked);
 
   validateCaddyfile(root, OBSERVABILITY_FILES.caddy, errors, checked);
   validateCaddyfile(root, OBSERVABILITY_FILES.caddyTemplate, errors, checked);

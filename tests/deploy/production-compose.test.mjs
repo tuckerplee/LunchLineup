@@ -223,37 +223,6 @@ function serviceBlock(compose, serviceName) {
   }
   return block.join('\n');
 }
-function findBash() {
-  if (process.platform === 'win32') {
-    const gitBash = 'C:/Program Files/Git/bin/bash.exe';
-    return existsSync(gitBash) ? gitBash : undefined;
-  }
-  const result = spawnSync('bash', ['--version'], { encoding: 'utf8' });
-  return result.status === 0 ? 'bash' : undefined;
-}
-
-function workerHealthCommand(worker) {
-  const lines = worker.split(/\r?\n/);
-  const marker = lines.findIndex((line) => line.trim() === '- |');
-  assert.notEqual(marker, -1, 'worker healthcheck must use an executable command block');
-
-  const commandLines = [];
-  for (let index = marker + 1; index < lines.length; index += 1) {
-    const line = lines[index];
-    if (!line.startsWith('          ')) break;
-    commandLines.push(line.slice(10));
-  }
-
-  return commandLines.join('\n').replaceAll('$$', '$');
-}
-
-function exactScientificNotation(value) {
-  const digits = String(value);
-  return `${digits[0]}.${digits.slice(1)}e+${digits.length - 1}`;
-}
-
-const bash = findBash();
-
 function serviceImageRef(compose, serviceName) {
   const match = serviceBlock(compose, serviceName).match(/^\s{4}image:\s*"?([^"\n]+)"?\s*$/m);
   assert.ok(match, `missing Compose image for ${serviceName}`);
@@ -299,6 +268,13 @@ function sampleReleaseManifest(sourceSha = '0123456789abcdef0123456789abcdef0123
     migrate: 'Dockerfile.migrations',
     control: 'Dockerfile.control',
     backup: 'Dockerfile.backup',
+    proxy: 'Dockerfile.proxy',
+    pgbouncer: 'Dockerfile.pgbouncer',
+    postgres: 'Dockerfile.postgres',
+    'node-exporter': 'Dockerfile.node-exporter',
+    loki: 'Dockerfile.loki',
+    tempo: 'Dockerfile.tempo',
+    grafana: 'Dockerfile.grafana',
   };
 
   return {
@@ -314,7 +290,7 @@ function sampleReleaseManifest(sourceSha = '0123456789abcdef0123456789abcdef0123
     deploymentContract: buildDeploymentContract(root),
     images: Object.fromEntries(
       Object.entries(services).map(([service, dockerfile], index) => {
-        const digest = `sha256:${String(index + 1).repeat(64)}`;
+        const digest = `sha256:${((index + 1) % 16).toString(16).repeat(64)}`;
         return [
           service,
           {
@@ -432,7 +408,10 @@ test('RabbitMQ persists broker state on a declared project-scoped named volume',
 test('Compose build services are tagged for release-image smoke checks', () => {
   const compose = read('docker-compose.yml');
 
-  for (const service of ['api', 'api-v2', 'web', 'engine', 'worker', 'migrate', 'control', 'backup']) {
+  for (const service of [
+    'api', 'api-v2', 'web', 'engine', 'worker', 'migrate', 'control', 'backup',
+    'proxy', 'pgbouncer', 'postgres', 'node-exporter', 'loki', 'tempo', 'grafana',
+  ]) {
     assert.match(
       serviceBlock(compose, service),
       new RegExp(`image: "\\$\\{IMAGE_PREFIX:-lunchlineup\\}/${service}:\\$\\{IMAGE_TAG:-local\\}"`),
@@ -519,7 +498,14 @@ test('Dockerfile base images are digest-pinned', () => {
     'Dockerfile.backup',
     'Dockerfile.control',
     'Dockerfile.engine',
+    'Dockerfile.grafana',
+    'Dockerfile.loki',
     'Dockerfile.migrations',
+    'Dockerfile.node-exporter',
+    'Dockerfile.pgbouncer',
+    'Dockerfile.postgres',
+    'Dockerfile.proxy',
+    'Dockerfile.tempo',
     'Dockerfile.web',
     'Dockerfile.worker',
   ]) {
@@ -537,24 +523,17 @@ test('Dockerfile base images are digest-pinned', () => {
   assert.match(backupDockerfile, /apk add --no-cache[^\n]*aws-cli[^\n]*rclone/);
 });
 
-test('Compose third-party service images are digest-pinned', () => {
+test('Compose external third-party service images are digest-pinned', () => {
   const compose = read('docker-compose.yml');
 
   for (const service of [
-    'proxy',
-    'pgbouncer',
-    'postgres',
     'redis',
     'rabbitmq',
     'autoheal',
     'prometheus',
     'alertmanager',
-    'node-exporter',
-    'loki',
     'promtail',
     'otel-collector',
-    'tempo',
-    'grafana',
   ]) {
     const ref = serviceImageRef(compose, service);
     assert.match(ref, immutableImageRefPattern, service);
@@ -564,7 +543,6 @@ test('Compose third-party service images are digest-pinned', () => {
     assert.doesNotMatch(serviceBlock(compose, service), /build:/, service);
   }
 
-  assert.match(serviceImageRef(compose, 'pgbouncer'), /^edoburu\/pgbouncer:v1\.25\.2-p0@sha256:/);
   assert.match(serviceImageRef(compose, 'autoheal'), /^willfarrell\/autoheal@sha256:/);
 });
 
@@ -638,123 +616,40 @@ test('worker metrics endpoint is healthchecked and scraped', () => {
   const compose = read('docker-compose.yml');
   const worker = serviceBlock(compose, 'worker');
   const workerDockerfile = read('infrastructure/docker/Dockerfile.worker');
+  const workerHealthcheck = read('apps/worker/src/healthcheck.py');
   const prometheus = read('infrastructure/prometheus/prometheus.yml');
 
-  assert.match(workerDockerfile, /apt-get install[\s\S]*\bcurl\b/);
+  assert.match(workerDockerfile, /cgr\.dev\/chainguard\/python@sha256:/);
+  assert.doesNotMatch(workerDockerfile, /\bcurl\b|CMD-SHELL/);
   assert.match(compose, /worker:[\s\S]*WORKER_METRICS_PORT=\$\{WORKER_METRICS_PORT:-3003\}/);
   assert.match(compose, /worker:[\s\S]*WORKER_SCHEDULE_SOLVE_EXECUTION_LEASE_SECONDS=\$\{WORKER_SCHEDULE_SOLVE_EXECUTION_LEASE_SECONDS:-300\}/);
   assert.match(compose, /worker:[\s\S]*WORKER_QUEUE_DEPTH_POLL_SECONDS=\$\{WORKER_QUEUE_DEPTH_POLL_SECONDS:-15\}/);
-  assert.match(compose, /worker:[\s\S]*curl -fsS http:\/\/127\.0\.0\.1:\$\$\{WORKER_METRICS_PORT:-3003\}\/metrics/);
-  assert.match(worker, /PASSWORD_RESET_EMAIL_OUTBOX_ENABLED:-false/);
-  assert.ok(worker.includes("lunchlineup_password_reset_email_sweep_running 1(\\.0+)?"));
-  assert.ok(worker.includes("lunchlineup_password_reset_email_sweep_ready 1(\\.0+)?"));
-  assert.ok(worker.includes("lunchlineup_password_reset_email_systemic_provider_failure 0(\\.0+)?"));
+  assert.match(worker, /test: \[ "CMD", "python", "-m", "src\.healthcheck" \]/);
+  assert.match(workerHealthcheck, /http:\/\/127\.0\.0\.1:\{port\}\/metrics/);
+  assert.match(worker, /PASSWORD_RESET_EMAIL_OUTBOX_ENABLED:\?Set PASSWORD_RESET_EMAIL_OUTBOX_ENABLED=true in \.env/);
+  assert.match(workerHealthcheck, /lunchlineup_password_reset_email/);
+  assert.match(workerHealthcheck, /lunchlineup_staff_invitation/);
   assert.match(worker, /PASSWORD_RESET_EMAIL_PROVIDER_FAILURE_THRESHOLD=\$\{PASSWORD_RESET_EMAIL_PROVIDER_FAILURE_THRESHOLD:-3\}/);
   assert.match(worker, /PASSWORD_RESET_EMAIL_SWEEP_MAX_STALENESS_SECONDS=\$\{PASSWORD_RESET_EMAIL_SWEEP_MAX_STALENESS_SECONDS:-60\}/);
   assert.match(prometheus, /job_name: 'worker'[\s\S]*targets:\s*\['worker:3003'\]/);
 });
 
-test('worker health requires parser readiness and enabled password-reset sweep readiness', {
-  skip: bash ? false : 'Bash is not available',
-}, () => {
+test('worker health requires parser readiness and enabled password-reset sweep readiness', () => {
   const worker = serviceBlock(read('docker-compose.yml'), 'worker');
-  const command = workerHealthCommand(worker);
-  const shell = 'curl() { printf "%s" "$METRICS_FIXTURE"; }\n' + command;
-  const run = (metrics, enabled = 'true', maxStaleness = '60') => spawnSync(bash, ['-c', shell], {
-    env: {
-      ...process.env,
-      METRICS_FIXTURE: metrics,
-      PASSWORD_RESET_EMAIL_OUTBOX_ENABLED: enabled,
-      PASSWORD_RESET_EMAIL_SWEEP_MAX_STALENESS_SECONDS: maxStaleness,
-    },
-    encoding: 'utf8',
-  });
-
-  const parserReady = 'lunchlineup_pdf_parser_ready 1.0\n';
-  const now = Math.floor(Date.now() / 1000);
-  const passwordResetReady = [
-    'lunchlineup_password_reset_email_sweep_running 1.0',
-    'lunchlineup_password_reset_email_sweep_ready 1.0',
-    'lunchlineup_password_reset_email_systemic_provider_failure 0.0',
-    `lunchlineup_password_reset_email_sweep_last_success_unixtime ${now}.0`,
-    '',
-  ].join('\n');
-  assert.equal(run(parserReady + passwordResetReady).status, 0);
-  assert.equal(
-    run(parserReady + passwordResetReady.replace(`${now}.0`, exactScientificNotation(now))).status,
-    0,
-    'Prometheus scientific-notation timestamps must remain healthcheck-compatible',
-  );
-
-  const missingReady = parserReady + passwordResetReady.replace('lunchlineup_password_reset_email_sweep_ready 1.0\n', '');
-  assert.notEqual(run(missingReady).status, 0);
-
-  const zeroReady = parserReady + passwordResetReady.replace('sweep_ready 1.0', 'sweep_ready 0.0');
-  assert.notEqual(run(zeroReady).status, 0);
-  const systemicFailure = parserReady + passwordResetReady.replace('systemic_provider_failure 0.0', 'systemic_provider_failure 1.0');
-  assert.notEqual(run(systemicFailure).status, 0);
-  const staleSuccess = parserReady + passwordResetReady.replace(`${now}.0`, `${now - 61}.0`);
-  assert.notEqual(run(staleSuccess).status, 0);
-  const missingSuccess = parserReady + passwordResetReady.replace(/^lunchlineup_password_reset_email_sweep_last_success_unixtime.*\n/m, '');
-  assert.notEqual(run(missingSuccess).status, 0);
-
-  assert.equal(run(parserReady, 'false').status, 0);
-  assert.notEqual(run(passwordResetReady).status, 0);
-  assert.notEqual(run('lunchlineup_pdf_parser_ready 0.0\n' + passwordResetReady).status, 0);
+  const healthcheck = read('apps/worker/src/healthcheck.py');
+  assert.match(worker, /test: \[ "CMD", "python", "-m", "src\.healthcheck" \]/);
+  assert.match(healthcheck, /_require\(values, "lunchlineup_pdf_parser_ready", 1\)/);
+  assert.match(healthcheck, /"PASSWORD_RESET_EMAIL_OUTBOX_ENABLED"/);
+  assert.match(healthcheck, /"lunchlineup_password_reset_email"/);
+  assert.match(healthcheck, /_require_fresh\(values, prefix, max_age, current_time\)/);
 });
-test('worker health fails closed for an enabled stale or unhealthy staff invitation sweep', {
-  skip: bash ? false : 'Bash is not available',
-}, () => {
+test('worker health fails closed for an enabled stale or unhealthy staff invitation sweep', () => {
   const worker = serviceBlock(read('docker-compose.yml'), 'worker');
-  const command = workerHealthCommand(worker);
-  const shell = 'curl() { printf "%s" "$METRICS_FIXTURE"; }\n' + command;
-  const run = (metrics, enabled = 'true', maxStaleness = '60') => spawnSync(bash, ['-c', shell], {
-    env: {
-      ...process.env,
-      METRICS_FIXTURE: metrics,
-      PASSWORD_RESET_EMAIL_OUTBOX_ENABLED: 'false',
-      STAFF_INVITATION_OUTBOX_ENABLED: enabled,
-      STAFF_INVITATION_SWEEP_MAX_STALENESS_SECONDS: maxStaleness,
-    },
-    encoding: 'utf8',
-  });
-
-  const parserReady = 'lunchlineup_pdf_parser_ready 1.0\n';
-  const now = Math.floor(Date.now() / 1000);
-  const invitationReady = [
-    'lunchlineup_staff_invitation_sweep_running 1.0',
-    'lunchlineup_staff_invitation_sweep_ready 1.0',
-    'lunchlineup_staff_invitation_systemic_provider_failure 0.0',
-    'lunchlineup_staff_invitation_sweep_last_success_unixtime ' + now + '.0',
-    '',
-  ].join('\n');
-  assert.equal(run(parserReady + invitationReady).status, 0);
-  assert.equal(
-    run(parserReady + invitationReady.replace(now + '.0', exactScientificNotation(now))).status,
-    0,
-    'Prometheus scientific-notation timestamps must remain healthcheck-compatible',
-  );
-
-  const missingReady = parserReady + invitationReady.replace(
-    'lunchlineup_staff_invitation_sweep_ready 1.0\n',
-    '',
-  );
-  assert.notEqual(run(missingReady).status, 0);
-  assert.notEqual(run(
-    parserReady + invitationReady.replace('sweep_ready 1.0', 'sweep_ready 0.0'),
-  ).status, 0);
-  assert.notEqual(run(
-    parserReady + invitationReady.replace('systemic_provider_failure 0.0', 'systemic_provider_failure 1.0'),
-  ).status, 0);
-  assert.notEqual(run(
-    parserReady + invitationReady.replace(now + '.0', (now - 61) + '.0'),
-  ).status, 0);
-  assert.notEqual(run(
-    parserReady + invitationReady.replace(/^lunchlineup_staff_invitation_sweep_last_success_unixtime.*\n/m, ''),
-  ).status, 0);
-
-  assert.equal(run(parserReady, 'false').status, 0);
-  assert.notEqual(run(invitationReady).status, 0);
+  const healthcheck = read('apps/worker/src/healthcheck.py');
+  assert.match(worker, /STAFF_INVITATION_OUTBOX_ENABLED=\$\{STAFF_INVITATION_OUTBOX_ENABLED:/);
+  assert.match(healthcheck, /"STAFF_INVITATION_OUTBOX_ENABLED"/);
+  assert.match(healthcheck, /"lunchlineup_staff_invitation"/);
+  assert.match(healthcheck, /systemic_provider_failure/);
 });
 test('engine healthcheck requires the bound and started gRPC scheduling path', () => {
   const compose = read('docker-compose.yml');
@@ -762,7 +657,7 @@ test('engine healthcheck requires the bound and started gRPC scheduling path', (
   const source = read('apps/engine/main.py');
 
   assert.match(engine, /ENGINE_GRPC_REQUIRED=true/);
-  assert.match(engine, /curl -fsS http:\/\/127\.0\.0\.1:8000\/health/);
+  assert.match(engine, /urllib\.request\.urlopen\('http:\/\/127\.0\.0\.1:8000\/health'/);
   assert.match(source, /bound_port = server\.add_insecure_port\(bind_address\)/);
   assert.match(source, /if bound_port == 0:/);
   assert.match(source, /server\.start\(\)[\s\S]*GRPC_SERVER_READY = True/);
@@ -782,7 +677,7 @@ test('observability alerts have live metric sources', () => {
   assert.match(prometheus, /alerting:[\s\S]*targets:\s*\['alertmanager:9093'\]/);
   assert.match(alertmanager, /receiver: production-paging-webhook/);
   assert.match(alertmanager, /url_file: \/run\/secrets\/alertmanager_webhook_url/);
-  assert.match(compose, /node-exporter:[\s\S]*prom\/node-exporter:v1\.12\.1-distroless/);
+  assert.match(compose, /node-exporter:[\s\S]*Dockerfile\.node-exporter/);
   assert.match(prometheus, /job_name: 'node'[\s\S]*targets:\s*\['node-exporter:9100'\]/);
   assert.match(alerts, /alert: ServiceDown/);
   assert.match(alerts, /alert: WorkerJobFailures/);

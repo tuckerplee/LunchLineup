@@ -280,6 +280,13 @@ jobs:
       migrate_ref: ${{ steps.release_manifest.outputs.migrate_ref }}
       control_ref: ${{ steps.release_manifest.outputs.control_ref }}
       backup_ref: ${{ steps.release_manifest.outputs.backup_ref }}
+      proxy_ref: ${{ steps.release_manifest.outputs.proxy_ref }}
+      pgbouncer_ref: ${{ steps.release_manifest.outputs.pgbouncer_ref }}
+      postgres_ref: ${{ steps.release_manifest.outputs.postgres_ref }}
+      node_exporter_ref: ${{ steps.release_manifest.outputs.node_exporter_ref }}
+      loki_ref: ${{ steps.release_manifest.outputs.loki_ref }}
+      tempo_ref: ${{ steps.release_manifest.outputs.tempo_ref }}
+      grafana_ref: ${{ steps.release_manifest.outputs.grafana_ref }}
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
       - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
@@ -457,6 +464,76 @@ jobs:
           tags: ${{ env.IMAGE_PREFIX }}/backup:${{ github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+      - name: Build & Push Proxy
+        id: build_proxy
+        uses: docker/build-push-action@ca052bb54ab0790a636c9b5f226502c73d547a25 # v5
+        with:
+          context: .
+          file: infrastructure/docker/Dockerfile.proxy
+          push: ${{ (github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/internal-beta-candidate')) || (github.event_name == 'workflow_dispatch' && inputs.internal_beta_candidate == true) }}
+          tags: ${{ env.IMAGE_PREFIX }}/proxy:${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: Build & Push PgBouncer
+        id: build_pgbouncer
+        uses: docker/build-push-action@ca052bb54ab0790a636c9b5f226502c73d547a25 # v5
+        with:
+          context: .
+          file: infrastructure/docker/Dockerfile.pgbouncer
+          push: ${{ (github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/internal-beta-candidate')) || (github.event_name == 'workflow_dispatch' && inputs.internal_beta_candidate == true) }}
+          tags: ${{ env.IMAGE_PREFIX }}/pgbouncer:${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: Build & Push Postgres
+        id: build_postgres
+        uses: docker/build-push-action@ca052bb54ab0790a636c9b5f226502c73d547a25 # v5
+        with:
+          context: .
+          file: infrastructure/docker/Dockerfile.postgres
+          push: ${{ (github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/internal-beta-candidate')) || (github.event_name == 'workflow_dispatch' && inputs.internal_beta_candidate == true) }}
+          tags: ${{ env.IMAGE_PREFIX }}/postgres:${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: Build & Push Node Exporter
+        id: build_node_exporter
+        uses: docker/build-push-action@ca052bb54ab0790a636c9b5f226502c73d547a25 # v5
+        with:
+          context: .
+          file: infrastructure/docker/Dockerfile.node-exporter
+          push: ${{ (github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/internal-beta-candidate')) || (github.event_name == 'workflow_dispatch' && inputs.internal_beta_candidate == true) }}
+          tags: ${{ env.IMAGE_PREFIX }}/node-exporter:${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: Build & Push Loki
+        id: build_loki
+        uses: docker/build-push-action@ca052bb54ab0790a636c9b5f226502c73d547a25 # v5
+        with:
+          context: .
+          file: infrastructure/docker/Dockerfile.loki
+          push: ${{ (github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/internal-beta-candidate')) || (github.event_name == 'workflow_dispatch' && inputs.internal_beta_candidate == true) }}
+          tags: ${{ env.IMAGE_PREFIX }}/loki:${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: Build & Push Tempo
+        id: build_tempo
+        uses: docker/build-push-action@ca052bb54ab0790a636c9b5f226502c73d547a25 # v5
+        with:
+          context: .
+          file: infrastructure/docker/Dockerfile.tempo
+          push: ${{ (github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/internal-beta-candidate')) || (github.event_name == 'workflow_dispatch' && inputs.internal_beta_candidate == true) }}
+          tags: ${{ env.IMAGE_PREFIX }}/tempo:${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: Build & Push Grafana
+        id: build_grafana
+        uses: docker/build-push-action@ca052bb54ab0790a636c9b5f226502c73d547a25 # v5
+        with:
+          context: .
+          file: infrastructure/docker/Dockerfile.grafana
+          push: ${{ (github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/internal-beta-candidate')) || (github.event_name == 'workflow_dispatch' && inputs.internal_beta_candidate == true) }}
+          tags: ${{ env.IMAGE_PREFIX }}/grafana:${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
       - name: Write immutable release manifest
         id: release_manifest
         env:
@@ -468,6 +545,13 @@ jobs:
           MIGRATE_DIGEST: ${{ steps.build_migrate.outputs.digest }}
           CONTROL_DIGEST: ${{ steps.build_control.outputs.digest }}
           BACKUP_DIGEST: ${{ steps.build_backup.outputs.digest }}
+          PROXY_DIGEST: ${{ steps.build_proxy.outputs.digest }}
+          PGBOUNCER_DIGEST: ${{ steps.build_pgbouncer.outputs.digest }}
+          POSTGRES_DIGEST: ${{ steps.build_postgres.outputs.digest }}
+          NODE_EXPORTER_DIGEST: ${{ steps.build_node_exporter.outputs.digest }}
+          LOKI_DIGEST: ${{ steps.build_loki.outputs.digest }}
+          TEMPO_DIGEST: ${{ steps.build_tempo.outputs.digest }}
+          GRAFANA_DIGEST: ${{ steps.build_grafana.outputs.digest }}
           DOMAIN: ${{ env.RELEASE_DOMAIN }}
           PRODUCTION_API_HEALTH_URL: ${{ env.RELEASE_API_HEALTH_URL }}
           NEXT_PUBLIC_API_URL: ${{ env.RELEASE_NEXT_PUBLIC_API_URL }}
@@ -521,6 +605,13 @@ jobs:
           MIGRATE_REF="${IMAGE_PREFIX}/migrate:${GITHUB_SHA}@${MIGRATE_DIGEST}"
           CONTROL_REF="${IMAGE_PREFIX}/control:${GITHUB_SHA}@${CONTROL_DIGEST}"
           BACKUP_REF="${IMAGE_PREFIX}/backup:${GITHUB_SHA}@${BACKUP_DIGEST}"
+          PROXY_REF="${IMAGE_PREFIX}/proxy:${GITHUB_SHA}@${PROXY_DIGEST}"
+          PGBOUNCER_REF="${IMAGE_PREFIX}/pgbouncer:${GITHUB_SHA}@${PGBOUNCER_DIGEST}"
+          POSTGRES_REF="${IMAGE_PREFIX}/postgres:${GITHUB_SHA}@${POSTGRES_DIGEST}"
+          NODE_EXPORTER_REF="${IMAGE_PREFIX}/node-exporter:${GITHUB_SHA}@${NODE_EXPORTER_DIGEST}"
+          LOKI_REF="${IMAGE_PREFIX}/loki:${GITHUB_SHA}@${LOKI_DIGEST}"
+          TEMPO_REF="${IMAGE_PREFIX}/tempo:${GITHUB_SHA}@${TEMPO_DIGEST}"
+          GRAFANA_REF="${IMAGE_PREFIX}/grafana:${GITHUB_SHA}@${GRAFANA_DIGEST}"
           cat > .release/release-manifest.json <<JSON
           {
             "version": 1,
@@ -539,7 +630,14 @@ jobs:
               "worker": { "ref": "${WORKER_REF}", "digest": "${WORKER_DIGEST}", "dockerfile": "infrastructure/docker/Dockerfile.worker" },
               "migrate": { "ref": "${MIGRATE_REF}", "digest": "${MIGRATE_DIGEST}", "dockerfile": "infrastructure/docker/Dockerfile.migrations" },
               "control": { "ref": "${CONTROL_REF}", "digest": "${CONTROL_DIGEST}", "dockerfile": "infrastructure/docker/Dockerfile.control" },
-              "backup": { "ref": "${BACKUP_REF}", "digest": "${BACKUP_DIGEST}", "dockerfile": "infrastructure/docker/Dockerfile.backup" }
+              "backup": { "ref": "${BACKUP_REF}", "digest": "${BACKUP_DIGEST}", "dockerfile": "infrastructure/docker/Dockerfile.backup" },
+              "proxy": { "ref": "${PROXY_REF}", "digest": "${PROXY_DIGEST}", "dockerfile": "infrastructure/docker/Dockerfile.proxy" },
+              "pgbouncer": { "ref": "${PGBOUNCER_REF}", "digest": "${PGBOUNCER_DIGEST}", "dockerfile": "infrastructure/docker/Dockerfile.pgbouncer" },
+              "postgres": { "ref": "${POSTGRES_REF}", "digest": "${POSTGRES_DIGEST}", "dockerfile": "infrastructure/docker/Dockerfile.postgres" },
+              "node-exporter": { "ref": "${NODE_EXPORTER_REF}", "digest": "${NODE_EXPORTER_DIGEST}", "dockerfile": "infrastructure/docker/Dockerfile.node-exporter" },
+              "loki": { "ref": "${LOKI_REF}", "digest": "${LOKI_DIGEST}", "dockerfile": "infrastructure/docker/Dockerfile.loki" },
+              "tempo": { "ref": "${TEMPO_REF}", "digest": "${TEMPO_DIGEST}", "dockerfile": "infrastructure/docker/Dockerfile.tempo" },
+              "grafana": { "ref": "${GRAFANA_REF}", "digest": "${GRAFANA_DIGEST}", "dockerfile": "infrastructure/docker/Dockerfile.grafana" }
             }
           }
           JSON
@@ -552,6 +650,13 @@ jobs:
             echo "migrate_ref=${MIGRATE_REF}"
             echo "control_ref=${CONTROL_REF}"
             echo "backup_ref=${BACKUP_REF}"
+            echo "proxy_ref=${PROXY_REF}"
+            echo "pgbouncer_ref=${PGBOUNCER_REF}"
+            echo "postgres_ref=${POSTGRES_REF}"
+            echo "node_exporter_ref=${NODE_EXPORTER_REF}"
+            echo "loki_ref=${LOKI_REF}"
+            echo "tempo_ref=${TEMPO_REF}"
+            echo "grafana_ref=${GRAFANA_REF}"
           } >> "$GITHUB_OUTPUT"
           node scripts/verify-release-artifacts.mjs .release/release-manifest.json --source-sha "$GITHUB_SHA"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4

@@ -1,21 +1,33 @@
-FROM python:3.11-slim@sha256:9c900dea9e8fb7e16277c179b555cc72d29a352dbc33cff48ad5a0412fd5bfc7
-ENV HOME=/home/lunchlineup TMPDIR=/tmp PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 PIP_DISABLE_PIP_VERSION_CHECK=1 PIP_ROOT_USER_ACTION=ignore
-RUN groupadd --gid 10001 lunchlineup \
-    && useradd --uid 10001 --gid lunchlineup --create-home --home-dir /home/lunchlineup --shell /usr/sbin/nologin lunchlineup
+FROM cgr.dev/chainguard/python@sha256:5a2c58619a41d1c1c1b474ee6238c15ad0fd9d7a572f9b521976a5f9b8909e12 AS builder
+
+USER 0
+ENV PATH=/opt/venv/bin:/usr/local/sbin:/usr/local/bin:/usr/bin:/usr/sbin:/sbin:/bin \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PIP_ROOT_USER_ACTION=ignore
 WORKDIR /app
 COPY apps/worker/requirements.txt .
-RUN if [ -f /etc/dpkg/dpkg.cfg.d/docker ]; then sed -i '\|^path-exclude[[:space:]]\+/usr/share/man/|d' /etc/dpkg/dpkg.cfg.d/docker; fi \
-    && apt-get update \
-    && apt-get upgrade -y --no-install-recommends \
-    && apt-get install -y --no-install-recommends build-essential curl \
-    && rm -rf /var/lib/apt/lists/*
-RUN pip install --no-cache-dir -r requirements.txt
-RUN apt-get purge -y --auto-remove build-essential && rm -rf /var/lib/apt/lists/*
+RUN python -m venv /opt/venv \
+    && pip install --no-cache-dir -r requirements.txt \
+    && pip uninstall -y pip setuptools wheel
 COPY apps/worker/ .
 COPY packages/shared-types/proto/solver.proto .
-RUN python -m grpc_tools.protoc -I. --python_out=. --grpc_python_out=. solver.proto
-RUN mkdir -p /app/uploads /run/lunchlineup-parser && chown -R lunchlineup:lunchlineup /app /run/lunchlineup-parser && chmod 0700 /run/lunchlineup-parser
-USER lunchlineup:lunchlineup
+RUN python -m grpc_tools.protoc -I. --python_out=. --grpc_python_out=. solver.proto \
+    && mkdir -p /app/uploads /run/lunchlineup-parser
+
+FROM cgr.dev/chainguard/python@sha256:6d71f8dbd199350964ce8b10d50fb9d4d8e2bd50316f3a1821dbdc6eef5252fb
+
+ENV HOME=/home/nonroot \
+    PATH=/opt/venv/bin:/usr/local/sbin:/usr/local/bin:/usr/bin:/usr/sbin:/sbin:/bin \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1
+WORKDIR /app
+COPY --from=builder --chown=65532:65532 /opt/venv /opt/venv
+COPY --from=builder --chown=65532:65532 /app /app
+COPY --from=builder --chown=65532:65532 /run/lunchlineup-parser /run/lunchlineup-parser
+USER 65532:65532
+ENTRYPOINT []
 
 EXPOSE 3003
 CMD ["python", "main.py"]

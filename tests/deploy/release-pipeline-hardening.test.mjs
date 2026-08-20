@@ -169,7 +169,7 @@ test('registry-writing image job is unreachable from pull requests', () => {
 
   assert.deepEqual(buildImages.permissions, { contents: 'read', packages: 'write' });
   assert.ok(buildImages.steps.some((step) => step.uses?.startsWith('docker/login-action@')));
-  assert.equal(imageBuilds.length, 8);
+  assert.equal(imageBuilds.length, 15);
   for (const step of imageBuilds) assert.equal(step.with.push, expected);
 });
 

@@ -111,7 +111,8 @@ test('application logs and traces have private, deploy-gated observability paths
   assert.match(compose, /promtail:[\s\S]*?\/var\/lib\/docker\/containers:\/var\/lib\/docker\/containers:ro/);
   assert.doesNotMatch(compose, /promtail:[\s\S]*?\/var\/run\/docker\.sock/);
   assert.match(collector, /endpoint: http:\/\/tempo:4318/);
-  assert.match(promtail, /url: http:\/\/loki:3100\/loki\/api\/v1\/push/);
+  assert.match(promtail, /endpoint: http:\/\/loki:3100\/otlp/);
+  assert.match(promtail, /storage: file_storage/);
   for (const service of ['api', 'engine', 'worker']) {
     const block = compose.match(new RegExp(`^  ${service}:\\r?\\n[\\s\\S]*?(?=^  [a-zA-Z0-9_-]+:\\r?$)`, 'm'))?.[0] ?? '';
     assert.match(block, /OTEL_EXPORTER_OTLP_TRACES_ENDPOINT=http:\/\/otel-collector:4318\/v1\/traces/);
@@ -138,8 +139,10 @@ test('isolated PDF parser runtime loss is healthchecked, alerted, and dashboarde
   const dashboard = JSON.parse(readFileSync(join(root, 'infrastructure/grafana/dashboards/platform-overview.json'), 'utf8'));
   const compose = readFileSync(join(root, 'docker-compose.yml'), 'utf8');
   const worker = readFileSync(join(root, 'apps/worker/src/parser_health.py'), 'utf8');
+  const workerHealthcheck = readFileSync(join(root, 'apps/worker/src/healthcheck.py'), 'utf8');
 
-  assert.match(compose, /lunchlineup_pdf_parser_ready 1/);
+  assert.match(compose, /python", "-m", "src\.healthcheck/);
+  assert.match(workerHealthcheck, /lunchlineup_pdf_parser_ready/);
   assert.match(worker, /lunchlineup_pdf_parser_ready/);
   assert.match(worker, /lunchlineup_pdf_parser_health_probe_failures_total/);
   assert.match(alerts, /alert: PdfParserUnavailable[\s\S]*lunchlineup_pdf_parser_ready\{job="worker"\} == 0[\s\S]*for: 2m/);
@@ -367,6 +370,8 @@ test('observability verifier exposes digest-pinned container fallback commands',
     'alertmanager-config',
     'caddy-config',
     'caddy-template',
+    'otel-logs-config',
+    'otel-traces-config',
     'prometheus-config',
     'prometheus-rule-tests',
     'prometheus-rules',

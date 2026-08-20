@@ -16,7 +16,7 @@
 - `pgbouncer/`: database connection pooler configuration.
 - `postgres/`: Postgres runtime configuration.
 - `prometheus/`: Prometheus scrape configuration.
-- `promtail/`: read-only Docker JSON log shipping to Loki.
+- `promtail/`: read-only Docker JSON log shipping to Loki through the OpenTelemetry Collector filelog pipeline.
 - `rabbitmq/`: RabbitMQ broker configuration.
 - `redis/`: Redis cache/session configuration.
 - `systemd/`: host-level units for encrypted backup, public edge availability, and safe retained-record scheduler installation.

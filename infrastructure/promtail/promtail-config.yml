@@ -1,31 +1,54 @@
-server:
-  http_listen_port: 9080
-  grpc_listen_port: 0
+extensions:
+  health_check:
+    endpoint: 0.0.0.0:13133
+  file_storage:
+    directory: /var/lib/otelcol/file_storage
+    create_directory: true
 
-positions:
-  filename: /run/promtail/positions.yml
+receivers:
+  filelog/docker:
+    include:
+      - /var/lib/docker/containers/*/*-json.log
+    include_file_path: true
+    start_at: end
+    storage: file_storage
 
-clients:
-  - url: http://loki:3100/loki/api/v1/push
-    batchwait: 1s
-    batchsize: 1048576
-    backoff_config:
-      min_period: 500ms
-      max_period: 5m
-      max_retries: 10
+processors:
+  memory_limiter:
+    check_interval: 1s
+    limit_mib: 128
+    spike_limit_mib: 32
+  resource/host:
+    attributes:
+      - key: host.name
+        value: ${env:PROMTAIL_HOST}
+        action: upsert
+      - key: service.namespace
+        value: lunchlineup
+        action: upsert
+  batch:
+    timeout: 1s
+    send_batch_size: 1024
 
-scrape_configs:
-  - job_name: lunchlineup-containers
-    static_configs:
-      - targets: [localhost]
-        labels:
-          job: lunchlineup
-          host: ${PROMTAIL_HOST}
-          __path__: /var/lib/docker/containers/*/*-json.log
-    pipeline_stages:
-      - docker: {}
-    relabel_configs:
-      - source_labels: [__path__]
-        regex: /var/lib/docker/containers/([^/]+)/.*
-        target_label: container_id
-        replacement: $1
+exporters:
+  otlphttp/loki:
+    endpoint: http://loki:3100/otlp
+    tls:
+      insecure: true
+    sending_queue:
+      enabled: true
+      queue_size: 2048
+      storage: file_storage
+    retry_on_failure:
+      enabled: true
+      initial_interval: 1s
+      max_interval: 30s
+      max_elapsed_time: 300s
+
+service:
+  extensions: [health_check, file_storage]
+  pipelines:
+    logs:
+      receivers: [filelog/docker]
+      processors: [memory_limiter, resource/host, batch]
+      exporters: [otlphttp/loki]

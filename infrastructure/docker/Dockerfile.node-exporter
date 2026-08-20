@@ -1,0 +1,17 @@
+# syntax=docker/dockerfile:1.7
+
+FROM golang:1.26.6-alpine3.23@sha256:e57c41c1d5864341031181b0db34b9a537bb5773eb6428e4e5bdaea0f9135406 AS build
+RUN apk add --no-cache git
+RUN git init /src \
+    && cd /src \
+    && git remote add origin https://github.com/prometheus/node_exporter.git \
+    && git fetch --depth 1 origin 6044da783597cc3b57aef7580ddcdcff58a4ee99 \
+    && git checkout --detach 6044da783597cc3b57aef7580ddcdcff58a4ee99 \
+    && test "$(git rev-parse HEAD)" = "6044da783597cc3b57aef7580ddcdcff58a4ee99"
+WORKDIR /src
+RUN CGO_ENABLED=0 go build -trimpath -tags netgo \
+    -ldflags '-s -w -X github.com/prometheus/common/version.Version=1.12.1 -X github.com/prometheus/common/version.Revision=6044da783597cc3b57aef7580ddcdcff58a4ee99 -X github.com/prometheus/common/version.Branch=HEAD -X github.com/prometheus/common/version.BuildUser=lunchlineup -X github.com/prometheus/common/version.BuildDate=2026-08-20' \
+    -o /out/node_exporter .
+
+FROM prom/node-exporter:v1.12.1-distroless@sha256:8c9bac11973b94b59be88d6e11fee4429aa743c8846cdc75d65b18db33f6a106
+COPY --from=build /out/node_exporter /bin/node_exporter

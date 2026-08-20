@@ -1,0 +1,47 @@
+# syntax=docker/dockerfile:1.7
+
+FROM golang:1.26.6-alpine3.23@sha256:e57c41c1d5864341031181b0db34b9a537bb5773eb6428e4e5bdaea0f9135406 AS build
+RUN apk add --no-cache git
+RUN git init /src/grafana \
+    && cd /src/grafana \
+    && git remote add origin https://github.com/grafana/grafana.git \
+    && git fetch --depth 1 origin afdab62868c728d60df3f87657e68c8ed6dbb926 \
+    && git checkout --detach afdab62868c728d60df3f87657e68c8ed6dbb926 \
+    && test "$(git rev-parse HEAD)" = "afdab62868c728d60df3f87657e68c8ed6dbb926" \
+    && git init /src/tempo \
+    && cd /src/tempo \
+    && git remote add origin https://github.com/grafana/tempo.git \
+    && git fetch --depth 1 origin 9ce71d29b791b6a3ee7397038a85d8afc3a250fd \
+    && git checkout --detach 9ce71d29b791b6a3ee7397038a85d8afc3a250fd \
+    && test "$(git rev-parse HEAD)" = "9ce71d29b791b6a3ee7397038a85d8afc3a250fd"
+WORKDIR /src/grafana
+RUN go mod edit -droprequire=github.com/grafana/tempo \
+    && go mod edit -require=github.com/grafana/tempo@v2.10.2+incompatible \
+    && go mod edit -replace=github.com/grafana/tempo@v2.10.2+incompatible=/src/tempo \
+    && CGO_ENABLED=0 GOWORK=off go build -mod=mod -buildvcs=false -trimpath -tags oss \
+      -ldflags '-s -w -X main.version=13.1.4 -X main.commit=afdab62868c728d60df3f87657e68c8ed6dbb926' \
+      -o /out/grafana ./pkg/cmd/grafana
+
+FROM grafana/grafana:13.1.4-distroless@sha256:246165bbf0b5b516299129fd11e8675420a98ee9c57bdbdf979f235dfeb82c5c AS upstream
+FROM cgr.dev/chainguard/wolfi-base@sha256:fdcd31a2db35958c251ea22e80cda72a8222228114e736ec7dd9c94452a2dc51 AS rootfs
+USER root
+COPY --from=upstream / /rootfs/
+RUN rm -rf \
+      /rootfs/usr/share/grafana/data/plugins-bundled/elasticsearch \
+      /rootfs/usr/share/grafana/data/plugins-bundled/zipkin
+COPY --from=build /out/grafana /rootfs/usr/share/grafana/bin/grafana
+
+FROM cgr.dev/chainguard/static@sha256:f68e3a8244c7d0f4cd56635aaff8e6a533cf6cc3850d8fb339567a5782d6a0b0
+COPY --from=rootfs /rootfs/ /
+ENV PATH=/usr/share/grafana/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
+    SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt \
+    GF_PATHS_CONFIG=/etc/grafana/grafana.ini \
+    GF_PATHS_DATA=/var/lib/grafana \
+    GF_PATHS_HOME=/usr/share/grafana \
+    GF_PATHS_LOGS=/var/log/grafana \
+    GF_PATHS_PLUGINS=/var/lib/grafana/plugins \
+    GF_PATHS_PROVISIONING=/etc/grafana/provisioning
+USER 472
+WORKDIR /usr/share/grafana
+ENTRYPOINT [ "/usr/share/grafana/bin/grafana", "server", "--homepath=/usr/share/grafana", "--config=/etc/grafana/grafana.ini", "--packaging=docker" ]
+CMD [ "cfg:default.log.mode=console" ]

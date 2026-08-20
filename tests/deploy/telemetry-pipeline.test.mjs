@@ -34,18 +34,19 @@ test('collector applies memory protection, batching, queued retry, and exports t
   assert.match(config, /receivers: \[otlp\][\s\S]*processors: \[memory_limiter, batch\][\s\S]*exporters: \[otlphttp\/tempo\]/);
 });
 
-test('Promtail ships Docker JSON logs without the Docker control socket or a host port', () => {
+test('the Promtail compatibility service ships Docker JSON logs through the clean OTel collector', () => {
   const compose = read('docker-compose.yml');
   const config = read('infrastructure/promtail/promtail-config.yml');
   const block = compose.match(/  promtail:[\s\S]*?(?=\n  [a-z-]+:|\nnetworks:)/)?.[0] ?? '';
 
-  assert.match(block, /grafana\/promtail:3\.6\.11@sha256:[a-f0-9]{64}/);
+  assert.match(block, /otel\/opentelemetry-collector-contrib@sha256:[a-f0-9]{64}/);
   assert.match(block, /\/var\/lib\/docker\/containers:\/var\/lib\/docker\/containers:ro/);
   assert.doesNotMatch(block, /docker\.sock/);
   assert.doesNotMatch(block, /\n\s+ports:/);
-  assert.match(config, /__path__: \/var\/lib\/docker\/containers\/\*\/\*-json\.log/);
-  assert.match(config, /docker: \{\}/);
-  assert.match(config, /url: http:\/\/loki:3100\/loki\/api\/v1\/push/);
+  assert.match(config, /\/var\/lib\/docker\/containers\/\*\/\*-json\.log/);
+  assert.match(config, /storage: file_storage/);
+  assert.match(config, /endpoint: http:\/\/loki:3100\/otlp/);
+  assert.match(config, /receivers: \[filelog\/docker\][\s\S]*exporters: \[otlphttp\/loki\]/);
 });
 
 test('Python tracers propagate W3C context across the worker-engine gRPC boundary', () => {

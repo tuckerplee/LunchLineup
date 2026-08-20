@@ -8,13 +8,16 @@ import { deriveProductionImageInventory } from '../../scripts/production-image-i
 
 const root = resolve(import.meta.dirname, '../..');
 const sourceSha = '0123456789abcdef0123456789abcdef01234567';
-const releaseServices = ['api', 'api-v2', 'web', 'engine', 'worker', 'migrate', 'control', 'backup'];
+const releaseServices = [
+  'api', 'api-v2', 'web', 'engine', 'worker', 'migrate', 'control', 'backup',
+  'proxy', 'pgbouncer', 'postgres', 'node-exporter', 'loki', 'tempo', 'grafana',
+];
 
 function releaseManifest() {
   return {
     sourceSha,
     images: Object.fromEntries(releaseServices.map((service, index) => {
-      const digest = `sha256:${String(index + 1).repeat(64)}`;
+      const digest = `sha256:${((index + 1) % 16).toString(16).repeat(64)}`;
       return [service, { ref: `ghcr.io/tuckerplee/lunchlineup/${service}:${sourceSha}@${digest}`, digest }];
     })),
   };
@@ -35,8 +38,7 @@ test('production image inventory covers every Compose image without a second har
 
     const byService = new Map(inventory.images.flatMap((image) => image.composeServices.map((service) => [service, image])));
     for (const service of [
-      'proxy', 'pgbouncer', 'postgres', 'redis', 'rabbitmq', 'prometheus', 'alertmanager',
-      'grafana', 'loki', 'tempo', 'autoheal', 'node-exporter', 'promtail', 'otel-collector',
+      'redis', 'rabbitmq', 'prometheus', 'alertmanager', 'autoheal', 'promtail', 'otel-collector',
     ]) assert.equal(byService.get(service)?.source, 'compose', `${service} must be a scanned third-party image`);
     for (const service of releaseServices) assert.equal(byService.get(service)?.source, 'release-manifest');
 
