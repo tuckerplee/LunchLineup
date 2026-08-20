@@ -552,6 +552,7 @@ test('release-built observability and proxy binaries enforce patched dependency 
   for (const dockerfile of [grafana, alertmanager, collector]) {
     assert.match(dockerfile, /golang\.org\/x\/mod@v0\.40\.0/);
   }
+  assert.match(alertmanager, /cd ui\/app[\s\S]*npm ci[\s\S]*npm run build/);
   assert.match(collector, /builder --skip-compilation --config=\/src\/otelcol-builder\.yaml/);
 });
 
