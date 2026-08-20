@@ -1,9 +1,9 @@
 from __future__ import annotations
 
+import http.client
 import math
 import os
 import time
-import urllib.request
 
 
 def _enabled(name: str) -> bool:
@@ -67,10 +67,18 @@ def check(payload: str, *, now: float | None = None) -> None:
 
 def main() -> None:
     port = int(os.getenv("WORKER_METRICS_PORT", "3003"))
-    with urllib.request.urlopen(f"http://127.0.0.1:{port}/metrics", timeout=3) as response:
+    connection = http.client.HTTPConnection("127.0.0.1", port, timeout=3)
+    try:
+        connection.request("GET", "/metrics", headers={"Host": "127.0.0.1"})
+        response = connection.getresponse()
         if response.status != 200:
             raise RuntimeError("worker metrics endpoint is unavailable")
-        payload = response.read(2_000_000).decode("utf-8", errors="strict")
+        payload_bytes = response.read(2_000_001)
+        if len(payload_bytes) > 2_000_000:
+            raise RuntimeError("worker metrics payload exceeds the healthcheck limit")
+        payload = payload_bytes.decode("utf-8", errors="strict")
+    finally:
+        connection.close()
     check(payload)
 
 
