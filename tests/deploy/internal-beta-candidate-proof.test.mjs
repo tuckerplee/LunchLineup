@@ -12,6 +12,7 @@ const workflowRun = `https://github.com/${repository}/actions/runs/${runId}`;
 const services = [
   'api', 'api-v2', 'web', 'engine', 'worker', 'migrate', 'control', 'backup',
   'proxy', 'pgbouncer', 'postgres', 'node-exporter', 'loki', 'tempo', 'grafana',
+  'alertmanager', 'otel-collector',
 ];
 
 function manifest(overrides = {}) {

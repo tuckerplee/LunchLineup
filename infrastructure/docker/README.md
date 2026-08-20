@@ -3,6 +3,7 @@
 ## Files
 
 - `README.md`: this Docker folder guide.
+- `Dockerfile.alertmanager`: exact Alertmanager release rebuilt with the patched Go module toolchain dependency.
 - `Dockerfile.api`: NestJS API build and runtime image.
 - `Dockerfile.api-v2`: contract-first Fastify tenant API image with generated contract and Prisma runtime artifacts.
 - `Dockerfile.backup`: required release image for encrypted Postgres backups, request-scoped WAL/lifecycle/PITR provider jobs, S3/rclone offsite copy, and textfile metrics.
@@ -12,6 +13,7 @@
 - `Dockerfile.loki`: exact Loki release source rebuilt with the patched Go toolchain.
 - `Dockerfile.migrations`: database migration image with Prisma tooling and `psql` for restricted application-role provisioning.
 - `Dockerfile.node-exporter`: exact node-exporter release source rebuilt with the patched Go toolchain.
+- `Dockerfile.otel-collector`: minimal OpenTelemetry Collector distribution rebuilt with the patched Go module toolchain dependency.
 - `Dockerfile.pgbouncer`: PgBouncer runtime with current Alpine security packages.
 - `Dockerfile.postgres`: Postgres 16 runtime with current Alpine packages and `su-exec` replacing the vulnerable `gosu` helper.
 - `Dockerfile.proxy`: exact Caddy release source rebuilt with patched Go dependencies and current Alpine security packages.
@@ -19,6 +21,7 @@
 - `Dockerfile.web`: Next.js web image.
 - `Dockerfile.worker`: background worker image.
 - `grafana-healthcheck.go`: static loopback health probe used by the shell-free Grafana runtime.
+- `otelcol-builder.yaml`: minimal collector component manifest shared by the trace and log-shipping services.
 
 ## API Runtime Note
 
@@ -38,6 +41,6 @@ The release-built Caddy image retains upstream's UID-0 entrypoint so existing na
 
 Every `FROM` line must use a tag plus immutable `@sha256:` digest. `scripts/verify-release-artifacts.mjs` and `tests/deploy/production-compose.test.mjs` fail if a Dockerfile uses tag-only, `latest`, or otherwise mutable base image refs.
 
-Release-built vendor images fetch exact upstream Git commits, compile with the digest-pinned patched toolchain, and enter the same signed manifest, SBOM, and fail-closed Trivy gates as application images. This keeps service configuration compatible while avoiding mutable vendor tags or vulnerability exceptions.
+Release-built vendor images fetch exact upstream Git commits or exact component module versions, compile with the digest-pinned patched toolchain, and enter the same signed manifest, SBOM, and fail-closed Trivy gates as application images. This includes Alertmanager and the minimal OpenTelemetry Collector shared by trace and log shipping, so vendor release lag cannot bypass the candidate vulnerability policy.
 
 `Dockerfile.backup` includes `pg_dump`, zstd, GPG, AWS CLI, rclone, Node.js, GNU coreutils, and a client built from the pinned MinIO source revision with a digest-pinned current Go builder. Fixed UID/GID `70` is retained for Postgres-compatible PITR staging. The same immutable image owns logical backup, base-backup, restore, request-scoped WAL upload, and lifecycle-audit jobs. CI publishes it with the application images, and the release manifest verifier requires its digest before deployment.

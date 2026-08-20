@@ -29,8 +29,13 @@ required_services=(
   postgres redis rabbitmq control prometheus alertmanager node-exporter loki
   promtail otel-collector tempo grafana autoheal
 )
-candidate_image_services=(web api webhook-replay engine pdf-parser worker pitr-wal-provider api-v2 control)
-build_services=(web api api-v2 migrate engine worker pitr-wal-provider control)
+candidate_image_services=(
+  web api webhook-replay engine pdf-parser worker pitr-wal-provider api-v2 control
+  alertmanager promtail otel-collector
+)
+build_services=(
+  web api api-v2 migrate engine worker pitr-wal-provider control alertmanager otel-collector
+)
 
 current_check="startup"
 scratch_dir=""

@@ -5,13 +5,13 @@ RUN apk add --no-cache git
 RUN git init /src \
     && cd /src \
     && git remote add origin https://github.com/grafana/tempo.git \
-    && git fetch --depth 1 origin 1900ed7bb5cad1a3edc285783d7d4ac4278337dc \
-    && git checkout --detach 1900ed7bb5cad1a3edc285783d7d4ac4278337dc \
-    && test "$(git rev-parse HEAD)" = "1900ed7bb5cad1a3edc285783d7d4ac4278337dc"
+    && git fetch --depth 1 origin 4aeafc237b8d9a8d62e45735131e8a89eb741a00 \
+    && git checkout --detach 4aeafc237b8d9a8d62e45735131e8a89eb741a00 \
+    && test "$(git rev-parse HEAD)" = "4aeafc237b8d9a8d62e45735131e8a89eb741a00"
 WORKDIR /src
 RUN CGO_ENABLED=0 GOAMD64=v2 go build -trimpath \
-    -ldflags '-s -w -X main.Branch=HEAD -X main.Revision=1900ed7bb5cad1a3edc285783d7d4ac4278337dc -X main.Version=3.0.3' \
+    -ldflags '-s -w -X main.Branch=HEAD -X main.Revision=4aeafc237b8d9a8d62e45735131e8a89eb741a00 -X main.Version=2.10.3' \
     -o /out/tempo ./cmd/tempo
 
-FROM grafana/tempo:3.0.3@sha256:0296560ac66f8a3600d7fb3014a52c189d4d9c3549ad6ff441bf2409855d68d5
+FROM grafana/tempo:2.10.3@sha256:cac9de2ac9f6da8efca5b64b690a7cb8c786a0c49cac7b4517dd1b0089a6c703
 COPY --from=build /out/tempo /tempo

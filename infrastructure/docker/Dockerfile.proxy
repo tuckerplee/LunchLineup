@@ -5,13 +5,13 @@ RUN apk add --no-cache git
 RUN git init /src \
     && cd /src \
     && git remote add origin https://github.com/caddyserver/caddy.git \
-    && git fetch --depth 1 origin 551f793700fe1550845c824470b623fd1aa03d36 \
-    && git checkout --detach 551f793700fe1550845c824470b623fd1aa03d36 \
-    && test "$(git rev-parse HEAD)" = "551f793700fe1550845c824470b623fd1aa03d36"
+    && git fetch --depth 1 origin e2eee6a7fce366321294c9c2a79f3146891dcbdf \
+    && git checkout --detach e2eee6a7fce366321294c9c2a79f3146891dcbdf \
+    && test "$(git rev-parse HEAD)" = "e2eee6a7fce366321294c9c2a79f3146891dcbdf"
 WORKDIR /src
 RUN go get golang.org/x/net@v0.56.0 golang.org/x/text@v0.39.0 google.golang.org/grpc@v1.82.1 \
     && CGO_ENABLED=0 go build -trimpath \
-      -ldflags '-s -w -X github.com/caddyserver/caddy/v2.CustomVersion=v2.10.2-lunchlineup' \
+      -ldflags '-s -w -X github.com/caddyserver/caddy/v2.CustomVersion=v2.11.4-lunchlineup' \
       -o /out/caddy ./cmd/caddy
 
 FROM caddy:2-alpine@sha256:5f5c8640aae01df9654968d946d8f1a56c497f1dd5c5cda4cf95ab7c14d58648

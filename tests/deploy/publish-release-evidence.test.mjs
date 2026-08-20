@@ -14,6 +14,7 @@ import { deriveProductionImageInventory } from '../../scripts/production-image-i
 const services = [
   'api', 'api-v2', 'web', 'engine', 'worker', 'migrate', 'control', 'backup',
   'proxy', 'pgbouncer', 'postgres', 'node-exporter', 'loki', 'tempo', 'grafana',
+  'alertmanager', 'otel-collector',
 ];
 const sourceSha = '0123456789abcdef0123456789abcdef01234567';
 
@@ -32,7 +33,7 @@ test('immutable release evidence contains signed image reports and exact candida
     mkdirSync(dastDir);
     mkdirSync(loadDir);
     const images = Object.fromEntries(services.map((service, index) => {
-      const digest = `sha256:${(index + 1).toString(16).repeat(64)}`;
+      const digest = `sha256:${((index + 1) % 16).toString(16).repeat(64)}`;
       return [service, { ref: `ghcr.io/tuckerplee/lunchlineup/${service}:${sourceSha}@${digest}`, digest }];
     }));
     writeFileSync(manifestPath, `${JSON.stringify({ sourceSha, images })}\n`);

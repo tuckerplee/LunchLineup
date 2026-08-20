@@ -275,6 +275,8 @@ function sampleReleaseManifest(sourceSha = '0123456789abcdef0123456789abcdef0123
     loki: 'Dockerfile.loki',
     tempo: 'Dockerfile.tempo',
     grafana: 'Dockerfile.grafana',
+    alertmanager: 'Dockerfile.alertmanager',
+    'otel-collector': 'Dockerfile.otel-collector',
   };
 
   return {
@@ -411,6 +413,7 @@ test('Compose build services are tagged for release-image smoke checks', () => {
   for (const service of [
     'api', 'api-v2', 'web', 'engine', 'worker', 'migrate', 'control', 'backup',
     'proxy', 'pgbouncer', 'postgres', 'node-exporter', 'loki', 'tempo', 'grafana',
+    'alertmanager', 'otel-collector',
   ]) {
     assert.match(
       serviceBlock(compose, service),
@@ -535,6 +538,23 @@ test('Grafana runtime assembles only application assets over the static base', (
   assert.match(compose, /test: \[ "CMD", "\/usr\/local\/bin\/grafana-healthcheck" \]/);
 });
 
+test('release-built observability and proxy binaries enforce patched dependency floors', () => {
+  const proxy = read('infrastructure/docker/Dockerfile.proxy');
+  const tempo = read('infrastructure/docker/Dockerfile.tempo');
+  const grafana = read('infrastructure/docker/Dockerfile.grafana');
+  const alertmanager = read('infrastructure/docker/Dockerfile.alertmanager');
+  const collector = read('infrastructure/docker/Dockerfile.otel-collector');
+
+  assert.match(proxy, /e2eee6a7fce366321294c9c2a79f3146891dcbdf/);
+  assert.match(proxy, /CustomVersion=v2\.11\.4-lunchlineup/);
+  assert.match(tempo, /4aeafc237b8d9a8d62e45735131e8a89eb741a00/);
+  assert.match(tempo, /main\.Version=2\.10\.3/);
+  for (const dockerfile of [grafana, alertmanager, collector]) {
+    assert.match(dockerfile, /golang\.org\/x\/mod@v0\.40\.0/);
+  }
+  assert.match(collector, /builder --skip-compilation --config=\/src\/otelcol-builder\.yaml/);
+});
+
 test('Compose external third-party service images are digest-pinned', () => {
   const compose = read('docker-compose.yml');
 
@@ -543,9 +563,6 @@ test('Compose external third-party service images are digest-pinned', () => {
     'rabbitmq',
     'autoheal',
     'prometheus',
-    'alertmanager',
-    'promtail',
-    'otel-collector',
   ]) {
     const ref = serviceImageRef(compose, service);
     assert.match(ref, immutableImageRefPattern, service);
@@ -687,7 +704,7 @@ test('observability alerts have live metric sources', () => {
   const alerts = read('infrastructure/prometheus/alerts/lunchlineup.yml');
   const alertmanager = read('infrastructure/alertmanager/alertmanager.yml');
 
-  assert.match(compose, /alertmanager:[\s\S]*prom\/alertmanager:v0\.34\.0/);
+  assert.match(compose, /alertmanager:[\s\S]*Dockerfile\.alertmanager/);
   assert.match(compose, /alertmanager:[\s\S]*alertmanager_webhook_url/);
   assert.match(compose, /alertmanager_webhook_url:[\s\S]*ALERTMANAGER_WEBHOOK_URL_FILE/);
   assert.match(prometheus, /environment: lunchlineup-compose/);

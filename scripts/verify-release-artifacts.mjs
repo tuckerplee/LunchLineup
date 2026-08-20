@@ -7,6 +7,7 @@ import { buildDeploymentContract } from './write-deployment-contract.mjs';
 const requiredServices = [
   'api', 'api-v2', 'web', 'engine', 'worker', 'migrate', 'control', 'backup',
   'proxy', 'pgbouncer', 'postgres', 'node-exporter', 'loki', 'tempo', 'grafana',
+  'alertmanager', 'otel-collector',
 ];
 const publicBuildConfigKeys = [
   'NEXT_PUBLIC_API_URL',
@@ -22,7 +23,7 @@ const publicBuildConfigKeys = [
 ];
 const digestSuffixPattern = /@sha256:[a-f0-9]{64}$/i;
 const appComposeImagePattern =
-  /^\$\{IMAGE_PREFIX:-lunchlineup\}\/(?:api|api-v2|web|engine|worker|migrate|control|backup|proxy|pgbouncer|postgres|node-exporter|loki|tempo|grafana):\$\{IMAGE_TAG:-local\}$/;
+  /^\$\{IMAGE_PREFIX:-lunchlineup\}\/(?:api|api-v2|web|engine|worker|migrate|control|backup|proxy|pgbouncer|postgres|node-exporter|loki|tempo|grafana|alertmanager|otel-collector):\$\{IMAGE_TAG:-local\}$/;
 const requiredLaunchProofEntries = ['runtimeEnv', 'dast', 'load', 'drDrill', 'pitrDrill', 'alertRoute'];
 const placeholderProofPattern = /(change_me|replace_me|example|placeholder|todo|skipped|not_applicable|n\/a|dummy|fake)/i;
 const forbiddenCommandPatterns = [

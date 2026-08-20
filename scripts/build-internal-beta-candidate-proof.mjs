@@ -23,6 +23,7 @@ export const requiredInternalBetaGates = [
 const requiredServices = [
   'api', 'api-v2', 'web', 'engine', 'worker', 'migrate', 'control', 'backup',
   'proxy', 'pgbouncer', 'postgres', 'node-exporter', 'loki', 'tempo', 'grafana',
+  'alertmanager', 'otel-collector',
 ];
 const fullShaPattern = /^[a-f0-9]{40}$/;
 const digestPattern = /^sha256:[a-f0-9]{64}$/;

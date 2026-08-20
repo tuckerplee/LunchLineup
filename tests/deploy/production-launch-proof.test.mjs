@@ -75,6 +75,8 @@ function sampleReleaseManifest() {
     loki: 'Dockerfile.loki',
     tempo: 'Dockerfile.tempo',
     grafana: 'Dockerfile.grafana',
+    alertmanager: 'Dockerfile.alertmanager',
+    'otel-collector': 'Dockerfile.otel-collector',
   };
 
   return {
@@ -90,7 +92,7 @@ function sampleReleaseManifest() {
     deploymentContract: buildDeploymentContract(root),
     images: Object.fromEntries(
       Object.entries(services).map(([service, dockerfile], index) => {
-        const digest = `sha256:${(index + 1).toString(16).repeat(64)}`;
+        const digest = `sha256:${((index + 1) % 16).toString(16).repeat(64)}`;
         return [
           service,
           {

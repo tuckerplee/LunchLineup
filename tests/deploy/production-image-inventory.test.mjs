@@ -11,6 +11,7 @@ const sourceSha = '0123456789abcdef0123456789abcdef01234567';
 const releaseServices = [
   'api', 'api-v2', 'web', 'engine', 'worker', 'migrate', 'control', 'backup',
   'proxy', 'pgbouncer', 'postgres', 'node-exporter', 'loki', 'tempo', 'grafana',
+  'alertmanager', 'otel-collector',
 ];
 
 function releaseManifest() {
@@ -38,7 +39,7 @@ test('production image inventory covers every Compose image without a second har
 
     const byService = new Map(inventory.images.flatMap((image) => image.composeServices.map((service) => [service, image])));
     for (const service of [
-      'redis', 'rabbitmq', 'prometheus', 'alertmanager', 'autoheal', 'promtail', 'otel-collector',
+      'redis', 'rabbitmq', 'prometheus', 'autoheal',
     ]) assert.equal(byService.get(service)?.source, 'compose', `${service} must be a scanned third-party image`);
     for (const service of releaseServices) assert.equal(byService.get(service)?.source, 'release-manifest');
 

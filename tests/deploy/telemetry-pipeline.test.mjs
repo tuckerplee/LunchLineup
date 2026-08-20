@@ -9,7 +9,7 @@ const read = (path) => readFileSync(join(root, path), 'utf8');
 
 test('Compose keeps trace ingestion internal and wires all application tracers', () => {
   const compose = read('docker-compose.yml');
-  assert.match(compose, /otel-collector:[\s\S]*opentelemetry-collector-contrib:0\.159\.0@sha256:[a-f0-9]{64}/);
+  assert.match(compose, /otel-collector:[\s\S]*Dockerfile\.otel-collector/);
   assert.match(compose, /telemetry:[\s\S]*internal: true/);
   assert.doesNotMatch(compose.match(/  otel-collector:[\s\S]*?(?=\n  [a-z-]+:|\nnetworks:)/)?.[0] ?? '', /\n\s+ports:/);
 
@@ -39,7 +39,7 @@ test('the Promtail compatibility service ships Docker JSON logs through the clea
   const config = read('infrastructure/promtail/promtail-config.yml');
   const block = compose.match(/  promtail:[\s\S]*?(?=\n  [a-z-]+:|\nnetworks:)/)?.[0] ?? '';
 
-  assert.match(block, /otel\/opentelemetry-collector-contrib@sha256:[a-f0-9]{64}/);
+  assert.match(block, /\$\{IMAGE_PREFIX:-lunchlineup\}\/otel-collector:\$\{IMAGE_TAG:-local\}/);
   assert.match(block, /\/var\/lib\/docker\/containers:\/var\/lib\/docker\/containers:ro/);
   assert.doesNotMatch(block, /docker\.sock/);
   assert.doesNotMatch(block, /\n\s+ports:/);

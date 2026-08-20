@@ -18,6 +18,7 @@ WORKDIR /src/grafana
 RUN go mod edit -droprequire=github.com/grafana/tempo \
     && go mod edit -require=github.com/grafana/tempo@v2.10.2+incompatible \
     && go mod edit -replace=github.com/grafana/tempo@v2.10.2+incompatible=/src/tempo \
+    && go get golang.org/x/mod@v0.40.0 \
     && CGO_ENABLED=0 GOWORK=off go build -mod=mod -buildvcs=false -trimpath -tags oss \
       -ldflags '-s -w -X main.version=13.1.4 -X main.commit=afdab62868c728d60df3f87657e68c8ed6dbb926' \
       -o /out/grafana ./pkg/cmd/grafana

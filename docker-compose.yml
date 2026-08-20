@@ -976,7 +976,10 @@ services:
     <<: *locked-runtime
     tmpfs:
       - /tmp:rw,noexec,nosuid,nodev,size=16m,mode=1777
-    image: prom/alertmanager:v0.34.0@sha256:690c7b525f4367aa91f73e2f91c632206d32e97c6384bdbf2fb7a861b420340d
+    image: "${IMAGE_PREFIX:-lunchlineup}/alertmanager:${IMAGE_TAG:-local}"
+    build:
+      context: .
+      dockerfile: infrastructure/docker/Dockerfile.alertmanager
     ports:
       - "127.0.0.1:9093:9093"
     volumes:
@@ -1050,7 +1053,7 @@ services:
     <<: *locked-runtime
     tmpfs:
       - /tmp:rw,noexec,nosuid,nodev,size=16m,mode=1777
-    image: otel/opentelemetry-collector-contrib@sha256:1f2c54a30e713fac6b3ae77a1ec84010c2007e29ced8ec666214fc2f6739c1cc
+    image: "${IMAGE_PREFIX:-lunchlineup}/otel-collector:${IMAGE_TAG:-local}"
     command: [ "--config=/etc/otelcol-contrib/promtail-config.yml" ]
     environment:
       - PROMTAIL_HOST=${PROMTAIL_HOST:-lunchlineup-host}
@@ -1073,7 +1076,10 @@ services:
     pids_limit: 512
     tmpfs:
       - /tmp:rw,noexec,nosuid,nodev,size=32m,mode=1777
-    image: otel/opentelemetry-collector-contrib:0.159.0@sha256:1f2c54a30e713fac6b3ae77a1ec84010c2007e29ced8ec666214fc2f6739c1cc
+    image: "${IMAGE_PREFIX:-lunchlineup}/otel-collector:${IMAGE_TAG:-local}"
+    build:
+      context: .
+      dockerfile: infrastructure/docker/Dockerfile.otel-collector
     command: [ "--config=/etc/otelcol-contrib/config.yml" ]
     volumes:
       - ./infrastructure/otel-collector/otel-collector-config.yml:/etc/otelcol-contrib/config.yml:ro

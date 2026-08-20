@@ -267,7 +267,7 @@ jobs:
     needs: unit-tests
     if: (github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/internal-beta-candidate')) || (github.event_name == 'workflow_dispatch' && inputs.internal_beta_candidate == true)
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    timeout-minutes: 120
     permissions:
       contents: read
       packages: write
@@ -287,6 +287,8 @@ jobs:
       loki_ref: ${{ steps.release_manifest.outputs.loki_ref }}
       tempo_ref: ${{ steps.release_manifest.outputs.tempo_ref }}
       grafana_ref: ${{ steps.release_manifest.outputs.grafana_ref }}
+      alertmanager_ref: ${{ steps.release_manifest.outputs.alertmanager_ref }}
+      otel_collector_ref: ${{ steps.release_manifest.outputs.otel_collector_ref }}
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
       - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
@@ -534,6 +536,26 @@ jobs:
           tags: ${{ env.IMAGE_PREFIX }}/grafana:${{ github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+      - name: Build & Push Alertmanager
+        id: build_alertmanager
+        uses: docker/build-push-action@ca052bb54ab0790a636c9b5f226502c73d547a25 # v5
+        with:
+          context: .
+          file: infrastructure/docker/Dockerfile.alertmanager
+          push: ${{ (github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/internal-beta-candidate')) || (github.event_name == 'workflow_dispatch' && inputs.internal_beta_candidate == true) }}
+          tags: ${{ env.IMAGE_PREFIX }}/alertmanager:${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: Build & Push OpenTelemetry Collector
+        id: build_otel_collector
+        uses: docker/build-push-action@ca052bb54ab0790a636c9b5f226502c73d547a25 # v5
+        with:
+          context: .
+          file: infrastructure/docker/Dockerfile.otel-collector
+          push: ${{ (github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/internal-beta-candidate')) || (github.event_name == 'workflow_dispatch' && inputs.internal_beta_candidate == true) }}
+          tags: ${{ env.IMAGE_PREFIX }}/otel-collector:${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
       - name: Write immutable release manifest
         id: release_manifest
         env:
@@ -552,6 +574,8 @@ jobs:
           LOKI_DIGEST: ${{ steps.build_loki.outputs.digest }}
           TEMPO_DIGEST: ${{ steps.build_tempo.outputs.digest }}
           GRAFANA_DIGEST: ${{ steps.build_grafana.outputs.digest }}
+          ALERTMANAGER_DIGEST: ${{ steps.build_alertmanager.outputs.digest }}
+          OTEL_COLLECTOR_DIGEST: ${{ steps.build_otel_collector.outputs.digest }}
           DOMAIN: ${{ env.RELEASE_DOMAIN }}
           PRODUCTION_API_HEALTH_URL: ${{ env.RELEASE_API_HEALTH_URL }}
           NEXT_PUBLIC_API_URL: ${{ env.RELEASE_NEXT_PUBLIC_API_URL }}
@@ -612,6 +636,8 @@ jobs:
           LOKI_REF="${IMAGE_PREFIX}/loki:${GITHUB_SHA}@${LOKI_DIGEST}"
           TEMPO_REF="${IMAGE_PREFIX}/tempo:${GITHUB_SHA}@${TEMPO_DIGEST}"
           GRAFANA_REF="${IMAGE_PREFIX}/grafana:${GITHUB_SHA}@${GRAFANA_DIGEST}"
+          ALERTMANAGER_REF="${IMAGE_PREFIX}/alertmanager:${GITHUB_SHA}@${ALERTMANAGER_DIGEST}"
+          OTEL_COLLECTOR_REF="${IMAGE_PREFIX}/otel-collector:${GITHUB_SHA}@${OTEL_COLLECTOR_DIGEST}"
           cat > .release/release-manifest.json <<JSON
           {
             "version": 1,
@@ -637,7 +663,9 @@ jobs:
               "node-exporter": { "ref": "${NODE_EXPORTER_REF}", "digest": "${NODE_EXPORTER_DIGEST}", "dockerfile": "infrastructure/docker/Dockerfile.node-exporter" },
               "loki": { "ref": "${LOKI_REF}", "digest": "${LOKI_DIGEST}", "dockerfile": "infrastructure/docker/Dockerfile.loki" },
               "tempo": { "ref": "${TEMPO_REF}", "digest": "${TEMPO_DIGEST}", "dockerfile": "infrastructure/docker/Dockerfile.tempo" },
-              "grafana": { "ref": "${GRAFANA_REF}", "digest": "${GRAFANA_DIGEST}", "dockerfile": "infrastructure/docker/Dockerfile.grafana" }
+              "grafana": { "ref": "${GRAFANA_REF}", "digest": "${GRAFANA_DIGEST}", "dockerfile": "infrastructure/docker/Dockerfile.grafana" },
+              "alertmanager": { "ref": "${ALERTMANAGER_REF}", "digest": "${ALERTMANAGER_DIGEST}", "dockerfile": "infrastructure/docker/Dockerfile.alertmanager" },
+              "otel-collector": { "ref": "${OTEL_COLLECTOR_REF}", "digest": "${OTEL_COLLECTOR_DIGEST}", "dockerfile": "infrastructure/docker/Dockerfile.otel-collector" }
             }
           }
           JSON
@@ -657,6 +685,8 @@ jobs:
             echo "loki_ref=${LOKI_REF}"
             echo "tempo_ref=${TEMPO_REF}"
             echo "grafana_ref=${GRAFANA_REF}"
+            echo "alertmanager_ref=${ALERTMANAGER_REF}"
+            echo "otel_collector_ref=${OTEL_COLLECTOR_REF}"
           } >> "$GITHUB_OUTPUT"
           node scripts/verify-release-artifacts.mjs .release/release-manifest.json --source-sha "$GITHUB_SHA"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
