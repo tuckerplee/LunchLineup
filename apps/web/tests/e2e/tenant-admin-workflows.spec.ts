@@ -41,24 +41,24 @@ test.describe.serial('Tenant and admin SaaS workflows', () => {
     await loginAsSeedSuperAdmin(page, '/admin');
 
     await expect(page.getByRole('heading', { name: 'System Overview' })).toBeVisible();
-    await expect(page.getByRole('link', { name: 'Admin Overview' })).toBeVisible();
-    await expect(page.getByRole('link', { name: 'Calendar' })).toBeVisible();
+    await expect(page.getByRole('link', { name: 'Admin Overview', exact: true })).toBeVisible();
+    await expect(page.getByRole('link', { name: 'Calendar', exact: true })).toBeVisible();
 
-    await page.getByRole('link', { name: 'Tenants' }).click();
+    await page.getByRole('link', { name: 'Tenants', exact: true }).click();
     await expect(page).toHaveURL(/\/admin\/tenants/);
     await expect(page.getByRole('heading', { name: 'Tenants' })).toBeVisible();
     await expect(page.getByText('E2E Operations Diner')).toBeVisible();
     await page.getByLabel('Search').fill('e2e-operations');
     await expect(page.getByText('e2e-operations')).toBeVisible();
 
-    await page.getByRole('link', { name: 'Users' }).click();
+    await page.getByRole('link', { name: 'Users', exact: true }).click();
     await expect(page).toHaveURL(/\/admin\/users/);
     await expect(page.getByRole('heading', { name: 'Users' })).toBeVisible();
     await expect(page.getByText('E2E Admin')).toBeVisible();
     await expect(page.getByText('E2E Super Admin')).toBeVisible();
     await expect(page.getByText(e2eSuperAdminUsername)).toBeVisible();
 
-    await page.getByRole('link', { name: 'Calendar' }).click();
+    await page.getByRole('link', { name: 'Calendar', exact: true }).click();
     await expect(page).toHaveURL(/\/dashboard\/scheduling/);
     await expect(page.getByRole('heading', { name: 'Calendar' })).toBeVisible();
   });
