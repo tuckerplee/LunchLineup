@@ -5,31 +5,20 @@ RUN apk add --no-cache git
 RUN git init /src \
     && cd /src \
     && git remote add origin https://github.com/grafana/tempo.git \
-    && git fetch --depth 1 origin 4aeafc237b8d9a8d62e45735131e8a89eb741a00 \
-    && git checkout --detach 4aeafc237b8d9a8d62e45735131e8a89eb741a00 \
-    && test "$(git rev-parse HEAD)" = "4aeafc237b8d9a8d62e45735131e8a89eb741a00"
+    && git fetch --depth 1 origin f0f3ed59197bfe9f54f3b0f8015ccca112f9e544 \
+    && git checkout --detach f0f3ed59197bfe9f54f3b0f8015ccca112f9e544 \
+    && test "$(git rev-parse HEAD)" = "f0f3ed59197bfe9f54f3b0f8015ccca112f9e544"
 WORKDIR /src
-RUN sed -i \
-      -e '/tsdb_errors "github.com\/prometheus\/prometheus\/tsdb\/errors"/d' \
-      -e 's/return tsdb_errors\.NewMulti(/return errors.Join(/' \
-      -e 's/)\.Err()/)/' \
-      modules/generator/storage/instance.go \
-    && grep -F 'return errors.Join(' modules/generator/storage/instance.go \
-    && ! grep -F 'prometheus/tsdb/errors' modules/generator/storage/instance.go
-RUN go get github.com/buger/jsonparser@v1.1.2 \
-      github.com/antchfx/xpath@v1.3.6 \
-      github.com/go-jose/go-jose/v4@v4.1.4 \
-      github.com/apache/thrift@v0.23.0 \
-      github.com/prometheus/prometheus@v0.311.3 \
-      go.opentelemetry.io/otel@v1.43.0 \
-      go.opentelemetry.io/otel/sdk@v1.43.0 \
-      golang.org/x/crypto@v0.53.0 \
-      golang.org/x/net@v0.56.0 \
-      golang.org/x/text@v0.39.0 \
-      google.golang.org/grpc@v1.82.1
-RUN CGO_ENABLED=0 GOAMD64=v2 go build -mod=mod -trimpath \
-    -ldflags '-s -w -X main.Branch=HEAD -X main.Revision=4aeafc237b8d9a8d62e45735131e8a89eb741a00 -X main.Version=2.10.3' \
+RUN grep -F 'github.com/prometheus/prometheus v0.311.3' go.mod \
+    && grep -F 'go.opentelemetry.io/otel v1.44.0' go.mod \
+    && grep -F 'go.opentelemetry.io/otel/sdk v1.43.0' go.mod \
+    && grep -F 'google.golang.org/grpc v1.82.1' go.mod \
+    && grep -F 'golang.org/x/crypto v0.53.0' go.mod \
+    && grep -F 'golang.org/x/net v0.56.0' go.mod \
+    && grep -F 'golang.org/x/text v0.39.0' go.mod
+RUN CGO_ENABLED=0 GOAMD64=v2 go build -trimpath \
+    -ldflags '-s -w -X main.Branch=HEAD -X main.Revision=f0f3ed59197bfe9f54f3b0f8015ccca112f9e544 -X main.Version=2.10.8' \
     -o /out/tempo ./cmd/tempo
 
-FROM grafana/tempo:2.10.3@sha256:cac9de2ac9f6da8efca5b64b690a7cb8c786a0c49cac7b4517dd1b0089a6c703
+FROM grafana/tempo:2.10.8@sha256:f0561deb1c68ec44d6e6e7e4487f30106c4e5e768642077695b37958b105812a
 COPY --from=build /out/tempo /tempo

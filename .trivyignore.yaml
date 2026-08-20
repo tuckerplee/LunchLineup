@@ -1,6 +1,6 @@
 vulnerabilities:
   - id: CVE-2026-28377
     purls:
-      - "pkg:golang/github.com/grafana/tempo@v0.0.0-20260317172644-4aeafc237b8d"
+      - "pkg:golang/github.com/grafana/tempo@v0.0.0-20260813170847-f0f3ed59197b"
     expired_at: 2026-09-30
-    statement: Tempo is built from the exact v2.10.3 commit containing the upstream fix; its unsuffixed v2 module is reported as a pseudo-version by Go build metadata.
+    statement: Tempo is built from the exact v2.10.8 commit containing the upstream fix; its unsuffixed v2 module is reported as a pseudo-version by Go build metadata.

@@ -549,29 +549,23 @@ test('release-built observability and proxy binaries enforce patched dependency 
   assert.match(proxy, /github\.com\/caddyserver\/caddy\/v2@v2\.11\.4/);
   assert.match(proxy, /CustomVersion=v2\.11\.4-lunchlineup/);
   assert.match(proxy, /cat > main\.go[\s\S]*go mod tidy[\s\S]*CGO_ENABLED=0 go build/);
-  assert.match(tempo, /4aeafc237b8d9a8d62e45735131e8a89eb741a00/);
-  assert.match(tempo, /main\.Version=2\.10\.3/);
-  assert.match(tempo, /go build -mod=mod -trimpath/);
-  assert.match(tempo, /return errors\.Join/);
-  assert.match(tempo, /! grep -F 'prometheus\/tsdb\/errors'/);
+  assert.match(tempo, /f0f3ed59197bfe9f54f3b0f8015ccca112f9e544/);
+  assert.match(tempo, /main\.Version=2\.10\.8/);
+  assert.match(tempo, /grafana\/tempo:2\.10\.8@sha256:f0561deb1c68ec44d6e6e7e4487f30106c4e5e768642077695b37958b105812a/);
   for (const dependency of [
-    'github.com/antchfx/xpath@v1.3.6',
-    'github.com/apache/thrift@v0.23.0',
-    'github.com/buger/jsonparser@v1.1.2',
-    'github.com/go-jose/go-jose/v4@v4.1.4',
-    'github.com/prometheus/prometheus@v0.311.3',
-    'go.opentelemetry.io/otel@v1.43.0',
-    'go.opentelemetry.io/otel/sdk@v1.43.0',
-    'golang.org/x/crypto@v0.53.0',
-    'golang.org/x/net@v0.56.0',
-    'golang.org/x/text@v0.39.0',
-    'google.golang.org/grpc@v1.82.1',
+    'github.com/prometheus/prometheus v0.311.3',
+    'go.opentelemetry.io/otel v1.44.0',
+    'go.opentelemetry.io/otel/sdk v1.43.0',
+    'golang.org/x/crypto v0.53.0',
+    'golang.org/x/net v0.56.0',
+    'golang.org/x/text v0.39.0',
+    'google.golang.org/grpc v1.82.1',
   ]) {
     assert.match(tempo, new RegExp(dependency.replaceAll('.', '\\.'), 'u'));
   }
   const trivyIgnore = read('.trivyignore.yaml');
   assert.match(trivyIgnore, /CVE-2026-28377/);
-  assert.match(trivyIgnore, /pkg:golang\/github\.com\/grafana\/tempo@v0\.0\.0-20260317172644-4aeafc237b8d/);
+  assert.match(trivyIgnore, /pkg:golang\/github\.com\/grafana\/tempo@v0\.0\.0-20260813170847-f0f3ed59197b/);
   assert.match(trivyIgnore, /expired_at: 2026-09-30/);
   assert.match(read('.github/workflows/ci.yml'), /trivyignores: '\.trivyignore\.yaml'/);
   for (const dockerfile of [grafana, alertmanager, collector]) {
