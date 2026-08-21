@@ -47,9 +47,10 @@ test.describe.serial('Tenant and admin SaaS workflows', () => {
     await page.getByRole('link', { name: 'Tenants', exact: true }).click();
     await expect(page).toHaveURL(/\/admin\/tenants/);
     await expect(page.getByRole('heading', { name: 'Tenants' })).toBeVisible();
-    await expect(page.getByText('E2E Operations Diner')).toBeVisible();
+    const operationsTenantRow = page.getByRole('row').filter({ hasText: 'E2E Operations Diner' });
+    await expect(operationsTenantRow).toBeVisible();
     await page.getByLabel('Search').fill('e2e-operations');
-    await expect(page.getByText('e2e-operations')).toBeVisible();
+    await expect(operationsTenantRow).toContainText('e2e-operations');
 
     await page.getByRole('link', { name: 'Users', exact: true }).click();
     await expect(page).toHaveURL(/\/admin\/users/);

@@ -154,7 +154,7 @@ test.describe('Internal beta desktop interaction proof', () => {
 
     await page.getByRole('link', { name: /Lunch & Breaks/ }).click();
     await expect(page.getByRole('heading', { name: /Lunch & Breaks|Choose how to start today/ })).toBeVisible();
-    await page.getByRole('button', { name: 'Auto Break' }).click();
+    await page.getByRole('button', { name: /Auto Break|Import from Scheduling System/ }).click();
     await page.getByRole('button', { name: 'Select staff' }).click();
     await page.getByRole('button', { name: 'Review 1 shift' }).click();
     await expect(page.getByText('Staff One · Schedule-backed · Overnight')).toBeVisible();

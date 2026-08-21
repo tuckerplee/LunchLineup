@@ -881,7 +881,7 @@ test.describe.serial('Stress operations workflows', () => {
     await expect.poll(async () => (await shiftRows(page))[0]?.user?.name ?? null).toBe('Stress Manager');
 
     await page.getByRole('link', { name: /Lunch & Breaks/ }).click();
-    const autoBreak = page.locator('button').filter({ hasText: 'Auto Break' });
+    const autoBreak = page.getByRole('button', { name: /Auto Break|Import from Scheduling System/ });
     await expect(autoBreak).toHaveCount(1);
     await autoBreak.click();
     await expect(page.getByText('1 shifts available for this day')).toBeVisible();

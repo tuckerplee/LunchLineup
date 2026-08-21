@@ -85,7 +85,7 @@ test.describe.serial('Full-stack operations workflows', () => {
     expect(breaksPayload.data?.[0]?.breaks?.length).toBeGreaterThanOrEqual(3);
 
     await page.getByRole('link', { name: /Lunch & Breaks/ }).click();
-    await page.getByRole('button', { name: /Auto Break/ }).click();
+    await page.getByRole('button', { name: /Auto Break|Import from Scheduling System/ }).click();
     await page.getByRole('button', { name: 'Select staff' }).click();
     await expect(page.getByText('Casey Manager')).toBeVisible();
     await page.getByRole('button', { name: /Review \d+ shifts?/ }).click();
