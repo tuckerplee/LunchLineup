@@ -388,6 +388,7 @@ function SchedulingContent() {
   const solveGenerationRef = useRef(0);
   const selectedLocationRef = useRef(initialLocationId);
   const selectedDateRef = useRef(initialDateValue);
+  const hasAlignedInitialLocationDateRef = useRef(Boolean(requestedDate));
   const viewModeRef = useRef<SchedulerViewMode>('threeDay');
   const [shiftDraft, setShiftDraft] = useState<ShiftDraft>({ ...DEFAULT_SHIFT_DRAFT, shiftDate: initialDateValue });
   const [loadedShiftScope, setLoadedShiftScope] = useState<LocationShiftScope | null>(null);
@@ -496,6 +497,31 @@ function SchedulingContent() {
       }
       if (requestId !== latestLoadRequestRef.current) return;
       const primaryLocationId = payload.data.selectedLocationId ?? '';
+      const primaryLocation = payload.data.locations.find((location) => location.id === primaryLocationId)
+        ?? payload.data.locations[0];
+      if (!hasAlignedInitialLocationDateRef.current) {
+        hasAlignedInitialLocationDateRef.current = true;
+        const locationDate = dateValueInTimeZone(
+          new Date().toISOString(),
+          safeTimeZone(primaryLocation?.timezone),
+        );
+        if (locationDate !== dateValue) {
+          selectedDateRef.current = locationDate;
+          selectedLocationRef.current = primaryLocationId;
+          setPermissions(effectivePermissions);
+          setStaff(payload.data.staff.slice().sort((left, right) =>
+            left.name.localeCompare(right.name) || left.id.localeCompare(right.id)
+          ));
+          setLocations(payload.data.locations);
+          setSelectedDate(locationDate);
+          setShiftDraft((current) => ({
+            ...current,
+            shiftDate: locationDate,
+            ...(primaryLocationId ? { locationId: primaryLocationId } : {}),
+          }));
+          return;
+        }
+      }
       selectedLocationRef.current = primaryLocationId;
       setPermissions(effectivePermissions);
       setStaff(payload.data.staff.slice().sort((left, right) =>
@@ -945,6 +971,10 @@ function SchedulingContent() {
   const openCreateShift = () => {
     if (!capabilities.canWriteShifts) {
       setError('You have read-only schedule access.');
+      return;
+    }
+    if (!locationDataCurrent) {
+      setError('Wait for the selected location and date to finish loading before adding a shift.');
       return;
     }
     const firstStaff = schedulableStaff[0] ?? null;
@@ -1611,7 +1641,7 @@ function SchedulingContent() {
             </Button>
 
             {capabilities.canWriteShifts ? (
-              <Button variant="secondary" onClick={openCreateShift}>
+              <Button variant="secondary" onClick={openCreateShift} disabled={!locationDataCurrent}>
                 <Plus size={16} />
                 Add shift
               </Button>

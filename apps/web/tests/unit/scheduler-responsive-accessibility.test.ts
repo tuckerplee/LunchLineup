@@ -106,7 +106,7 @@ describe('scheduler responsive timeline contract', () => {
 });
 
 describe('scheduler accessibility semantics', () => {
-  it('bootstraps the browser-local calendar date without server/client clock drift', () => {
+  it('bootstraps safely, then aligns the initial calendar date to the selected location timezone', () => {
     expect(schedulingPageSource).not.toContain('const TODAY = new Date()');
     expect(schedulingPageSource).toContain(
       "const DATE_BOOTSTRAP_PLACEHOLDER = '2000-01-01';",
@@ -116,6 +116,15 @@ describe('scheduler accessibility semantics', () => {
     );
     expect(schedulingPageSource).toMatch(
       /if \(!isHydrated\) return;\s+void loadSchedule/,
+    );
+    expect(schedulingPageSource).toContain(
+      'const hasAlignedInitialLocationDateRef = useRef(Boolean(requestedDate));',
+    );
+    expect(schedulingPageSource).toContain(
+      'const locationDate = dateValueInTimeZone(',
+    );
+    expect(schedulingPageSource).toContain(
+      '<Button variant="secondary" onClick={openCreateShift} disabled={!locationDataCurrent}>',
     );
     expect(schedulingPageSource).toContain(
       "value={isHydrated ? selectedDate : ''}",
