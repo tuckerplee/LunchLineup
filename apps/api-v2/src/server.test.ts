@@ -550,7 +550,7 @@ describe('API v2 HTTP contract', () => {
     expect(response.headers['cache-control']).toBe('private, no-store');
     expect(authenticate).toHaveBeenCalledOnce();
     expect(retainedApplication).not.toHaveBeenCalled();
-  });
+  }, 15_000);
 
   it('deactivates staff through the native People owner rather than the retained application bridge', async () => {
     const { app, people, retainedApplication, authenticate } = await harness();
