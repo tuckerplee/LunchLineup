@@ -7,7 +7,6 @@ import yaml from 'js-yaml';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const codeqlActionSha = '641a925cfafe92d0fdf8b239ba4053e3f8d99d6d';
-const dependencyReviewSha = '2031cfc080254a8a887f58cffee85186f0e49e48';
 
 function read(path) {
   return readFileSync(join(root, path), 'utf8');
@@ -79,18 +78,16 @@ test('CI uploads mandatory Semgrep and CodeQL analyses with least privilege', ()
   assert.equal(workflow.jobs['build-images'].needs, 'unit-tests');
 });
 
-test('dependency review remains fail-closed and GitHub dependency scheduling stays disabled', () => {
+test('dependency audit remains local and GitHub dependency scheduling stays disabled', () => {
   const workflow = load('.github/workflows/ci.yml');
   const internalPipeline = JSON.parse(read('.ci/pipeline.json'));
   const dependencyReview = workflow.jobs['dependency-audit'].steps.find(
-    (step) => step.uses === 'actions/dependency-review-action@' + dependencyReviewSha,
+    (step) => step.uses?.startsWith('actions/dependency-review-action@'),
   );
   const internalAudit = internalPipeline.steps.find((step) => step.name === 'Verify production dependency closure');
 
-  assert.ok(dependencyReview);
-  assert.equal(dependencyReview.if, "github.event_name == 'pull_request'");
-  assert.equal(dependencyReview.with['fail-on-severity'], 'high');
-  assert.equal(dependencyReview['continue-on-error'], undefined);
+  assert.equal(workflow.on.pull_request, undefined);
+  assert.equal(dependencyReview, undefined);
   assert.equal(internalAudit.run, 'npm run audit:prod');
   assert.equal(internalAudit.timeout_seconds, 300);
 

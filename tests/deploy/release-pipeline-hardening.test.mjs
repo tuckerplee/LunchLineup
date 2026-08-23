@@ -62,7 +62,7 @@ test('Stage 10 integration tests inherit the migration platform-admin capability
   assert.match(integration, /- name: "10\. Integration Tests"[\s\S]*run: npm run test:integration/);
 });
 
-test('mandatory integration gates all review branches while image publication is limited to exact release candidates', () => {
+test('local CI gates trusted branches while image publication is limited to exact release candidates', () => {
   const workflow = yaml.load(read('.github/workflows/ci.yml'));
   const integration = workflow.jobs['integration-tests'];
   const buildImages = workflow.jobs['build-images'];
@@ -74,22 +74,28 @@ test('mandatory integration gates all review branches while image publication is
       || (eventName === 'workflow_dispatch' && internalBetaCandidate);
   };
 
-  assert.deepEqual(workflow.on.pull_request.branches, ['main', 'develop', 'internal-beta-candidate']);
+  assert.equal(workflow.on.pull_request, undefined);
   assert.deepEqual(workflow.on.push.branches, ['main', 'develop', 'internal-beta-candidate']);
   assert.equal(workflow.on.workflow_dispatch.inputs.internal_beta_candidate.default, false);
   assert.equal(integration.needs, 'unit-tests');
   assert.equal(buildImages.needs, 'unit-tests');
   assert.equal(buildImages.if, releaseCandidates);
 
-  assert.equal(runsFor(integration, 'pull_request', 'refs/pull/1/merge'), true);
   assert.equal(runsFor(integration, 'push', 'refs/heads/develop'), true);
   assert.equal(runsFor(integration, 'push', 'refs/heads/main'), true);
-  assert.equal(runsFor(buildImages, 'pull_request', 'refs/pull/1/merge'), false);
   assert.equal(runsFor(buildImages, 'push', 'refs/heads/develop'), false);
   assert.equal(runsFor(buildImages, 'push', 'refs/heads/main'), true);
   assert.equal(runsFor(buildImages, 'push', 'refs/heads/internal-beta-candidate'), true);
   assert.equal(runsFor(buildImages, 'workflow_dispatch', 'refs/heads/codex/internal-beta-launch', false), false);
   assert.equal(runsFor(buildImages, 'workflow_dispatch', 'refs/heads/codex/internal-beta-launch', true), true);
+
+  for (const [name, job] of Object.entries(workflow.jobs)) {
+    assert.deepEqual(
+      job['runs-on'],
+      ['self-hosted', 'linux', 'x64', 'proxmoxz', 'ci'],
+      `${name} must execute on the local ProxmoxZ CI appliance`,
+    );
+  }
 });
 
 test('deployment contract bundle retains every release Dockerfile', () => {

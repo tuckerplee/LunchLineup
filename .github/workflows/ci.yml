@@ -3,8 +3,6 @@ name: LunchLineup CI/CD
 on:
   push:
     branches: [ main, develop, internal-beta-candidate ]
-  pull_request:
-    branches: [ main, develop, internal-beta-candidate ]
   schedule:
     - cron: '23 9 * * 1'
   workflow_dispatch:
@@ -82,7 +80,7 @@ jobs:
   manual-production-operation-policy:
     name: "Validate Manual Production Operation"
     if: github.event_name == 'workflow_dispatch'
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, x64, proxmoxz, ci]
     timeout-minutes: 5
     permissions:
       contents: read
@@ -101,7 +99,7 @@ jobs:
   # --- Stage 1-2: Static Analysis ---
   static-analysis:
     name: "Stage 1-2: Lint, Format & Type Check"
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, x64, proxmoxz, ci]
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
@@ -124,7 +122,7 @@ jobs:
   terraform-validation:
     name: "Terraform: Format, Validate & Test"
     needs: static-analysis
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, x64, proxmoxz, ci]
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
@@ -139,7 +137,7 @@ jobs:
   # --- Stage 3: SAST Security Scan ---
   sast:
     name: "Stage 3: SAST (Semgrep)"
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, x64, proxmoxz, ci]
     timeout-minutes: 30
     permissions:
       contents: read
@@ -180,7 +178,7 @@ jobs:
 
   codeql:
     name: "Stage 3: CodeQL (${{ matrix.language }})"
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, x64, proxmoxz, ci]
     timeout-minutes: 30
     permissions:
       actions: read
@@ -207,15 +205,10 @@ jobs:
   # --- Stage 4: Dependency Audit ---
   dependency-audit:
     # --- Stage 4: Dependency Audit ---
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, x64, proxmoxz, ci]
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
-      - name: Reject newly introduced vulnerable dependencies
-        if: github.event_name == 'pull_request'
-        uses: actions/dependency-review-action@2031cfc080254a8a887f58cffee85186f0e49e48 # v4.9.0
-        with:
-          fail-on-severity: high
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: '22'
@@ -234,7 +227,7 @@ jobs:
   unit-tests:
     name: "Stage 5: Unit Tests"
     needs: [static-analysis, sast, codeql, dependency-audit]
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, x64, proxmoxz, ci]
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
@@ -266,7 +259,7 @@ jobs:
     name: "Stage 6-7: Build Docker Images"
     needs: unit-tests
     if: (github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/internal-beta-candidate')) || (github.event_name == 'workflow_dispatch' && inputs.internal_beta_candidate == true)
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, x64, proxmoxz, ci]
     timeout-minutes: 120
     permissions:
       contents: read
@@ -701,7 +694,7 @@ jobs:
   integration-tests:
     name: "Stage 8-10: Integration Tests (Ephemeral Stack)"
     needs: unit-tests
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, x64, proxmoxz, ci]
     timeout-minutes: 45
     services:
       postgres:
@@ -776,7 +769,7 @@ jobs:
   dast:
     # --- Stage 11: DAST (OWASP ZAP) ---
     needs: [integration-tests, build-images]
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, x64, proxmoxz, ci]
     timeout-minutes: 45
     permissions:
       contents: read
@@ -883,7 +876,7 @@ jobs:
   e2e-tests:
     # --- Stage 12: E2E Tests (Playwright) ---
     needs: integration-tests
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, x64, proxmoxz, ci]
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
@@ -906,7 +899,7 @@ jobs:
   fullstack-e2e:
     name: "Stage 12b: Full-Stack E2E (Release Images)"
     needs: [integration-tests, build-images]
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, x64, proxmoxz, ci]
     timeout-minutes: 60
     permissions:
       contents: read
@@ -1049,7 +1042,7 @@ jobs:
   load-test:
     # --- Stage 13: Load Test Smoke ---
     needs: [integration-tests, build-images]
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, x64, proxmoxz, ci]
     timeout-minutes: 45
     permissions:
       contents: read
@@ -1172,7 +1165,7 @@ jobs:
     name: "Bootstrap Production Release Registry"
     needs: manual-production-operation-policy
     if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && inputs.bootstrap_release_registry == true && inputs.emergency_production_rollback != true
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, x64, proxmoxz, ci]
     timeout-minutes: 20
     environment: production
     permissions:
@@ -1245,7 +1238,7 @@ jobs:
     name: "Protected Emergency Production Rollback"
     needs: manual-production-operation-policy
     if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && inputs.emergency_production_rollback == true && inputs.bootstrap_release_registry != true
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, x64, proxmoxz, ci]
     timeout-minutes: 100
     environment: production
     permissions:
@@ -1820,7 +1813,7 @@ jobs:
   validate-release-gates:
     name: "Release Gate Configuration"
     needs: [e2e-tests, fullstack-e2e, load-test, dast, trivy-scan, sbom, build-images, terraform-validation]
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, x64, proxmoxz, ci]
     timeout-minutes: 30
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     permissions:
@@ -1915,7 +1908,7 @@ jobs:
   deploy-staging:
     name: "Stage 14-15: Deploy & Smoke Test Staging"
     needs: validate-release-gates
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, x64, proxmoxz, ci]
     timeout-minutes: 30
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     environment: staging
@@ -1964,7 +1957,7 @@ jobs:
   deploy-production:
     name: "Stage 16-19: Guarded Production Release Transaction"
     needs: deploy-staging
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, x64, proxmoxz, ci]
     timeout-minutes: 200
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     environment: production
@@ -2933,7 +2926,7 @@ jobs:
   production-image-inventory:
     name: "Resolve Release Image Inventory"
     needs: build-images
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, x64, proxmoxz, ci]
     timeout-minutes: 20
     if: (github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/internal-beta-candidate')) || (github.event_name == 'workflow_dispatch' && inputs.internal_beta_candidate == true)
     outputs:
@@ -2957,7 +2950,7 @@ jobs:
   sbom:
     name: "Generate SBOM (${{ matrix.service }})"
     needs: [build-images, production-image-inventory]
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, x64, proxmoxz, ci]
     timeout-minutes: 45
     if: (github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/internal-beta-candidate')) || (github.event_name == 'workflow_dispatch' && inputs.internal_beta_candidate == true)
     permissions:
@@ -3045,7 +3038,7 @@ jobs:
   trivy-scan:
     name: "Container Vulnerability Scan (Trivy)"
     needs: [build-images, sbom, production-image-inventory]
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, x64, proxmoxz, ci]
     timeout-minutes: 45
     if: (github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/internal-beta-candidate')) || (github.event_name == 'workflow_dispatch' && inputs.internal_beta_candidate == true)
     permissions:
@@ -3154,7 +3147,7 @@ jobs:
       - sbom
       - trivy-scan
     if: (github.event_name == 'push' && github.ref == 'refs/heads/internal-beta-candidate') || (github.event_name == 'workflow_dispatch' && inputs.internal_beta_candidate == true)
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, x64, proxmoxz, ci]
     timeout-minutes: 30
     permissions:
       contents: read

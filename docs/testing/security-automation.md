@@ -1,6 +1,6 @@
 # Security Automation
 
-The source-neutral `.ci/pipeline.json` runs on the internal CI appliance. The active GitHub workflow adds review security analysis, immutable release images, and protected release gates. A push to `internal-beta-candidate`, or an explicit `internal_beta_candidate=true` workflow dispatch from a branch, must complete the entire release chain and emit an exact-SHA candidate proof before the beta is eligible to deploy.
+The source-neutral `.ci/pipeline.json` runs on the internal CI appliance. GitHub coordinates security analysis, immutable release images, and protected release gates, while every workflow job runs on the repository-scoped ProxmoxZ appliance through `[self-hosted, linux, x64, proxmoxz, ci]`. The public repository has no `pull_request` workflow trigger, so fork code cannot execute on the local runner. A trusted push to `internal-beta-candidate`, or an explicit `internal_beta_candidate=true` workflow dispatch from a branch, must complete the entire release chain and emit an exact-SHA candidate proof before the beta is eligible to deploy.
 
 The GitHub workflow defines two independent source scanners:
 
@@ -9,7 +9,7 @@ The GitHub workflow defines two independent source scanners:
 
 Both jobs have only `contents: read`, plus `security-events: write` for result upload. CodeQL also has `actions: read` for workflow metadata. The workflow default is `contents: read`; release jobs declare any additional write permissions locally.
 
-The unit and release chain requires Semgrep, CodeQL, and the production dependency audit. Its pull-request path also rejects newly introduced high or critical vulnerable dependencies. Semgrep runs as the GitHub runner UID with a writable container-only home, keeping SARIF writable without granting root or weakening findings. The SAST checkout fetches full history so `origin/main` is an auditable baseline rather than a mutable local snapshot.
+The unit and release chain requires Semgrep, CodeQL, and the production dependency audit. Semgrep runs as the local runner UID with a writable container-only home, keeping SARIF writable without granting root or weakening findings. The SAST checkout fetches full history so `origin/main` is an auditable baseline rather than a mutable local snapshot.
 
 ## Dependency Updates
 

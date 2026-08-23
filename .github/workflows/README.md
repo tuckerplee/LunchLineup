@@ -3,9 +3,9 @@
 ## Files
 
 - `README.md`: this workflow folder guide.
-- `ci.yml`: pull-request, scheduled, main release, protected deploy with an absolute setup-to-cleanup deadline owner, smoke, and rollback pipeline.
+- `ci.yml`: trusted-push, scheduled, main release, protected deploy with an absolute setup-to-cleanup deadline owner, smoke, and rollback pipeline on the ProxmoxZ self-hosted runner.
 
-All external actions must use immutable 40-character commit SHAs. The CI security stage uploads Semgrep SARIF and CodeQL JavaScript/TypeScript and Python results to GitHub code scanning; downstream build work requires those jobs to succeed.
+Every job selects `[self-hosted, linux, x64, proxmoxz, ci]`; GitHub coordinates workflow state and artifact/security services but supplies no hosted compute. Because the repository is public, `pull_request` is intentionally not a trigger, preventing fork-controlled code from reaching the local runner. All external actions must use immutable 40-character commit SHAs. The CI security stage uploads Semgrep SARIF and CodeQL JavaScript/TypeScript and Python results to GitHub code scanning; downstream build work requires those jobs to succeed.
 
 Stage 11 requires repository variable `ZAP_IMAGE` to be an immutable `name[:tag]@sha256:<64hex>` reference and invokes `run-dast.sh` directly. Stage 13 invokes `load-test.sh` for immutable Artillery coverage and authenticated availability-import concurrency. Both helpers mount the checkout read-only, write only to validated runner-temporary directories, upload exact source-SHA-named canonical/raw bundles through pinned artifact actions, and require bundle revalidation before immutable release publication.
 
