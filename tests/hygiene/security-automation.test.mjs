@@ -83,18 +83,24 @@ test('CI uploads mandatory Semgrep and CodeQL analyses with least privilege', ()
   assert.equal(workflow.jobs['build-images'].needs, 'unit-tests');
 });
 
-test('dependency audit remains local and GitHub dependency scheduling stays disabled', () => {
+test('internal appliance executes dependency and release qualification gates while GitHub scheduling stays disabled', () => {
   const workflow = load('.github/workflows/ci.yml');
   const internalPipeline = JSON.parse(read('.ci/pipeline.json'));
   const dependencyReview = workflow.jobs['dependency-audit'].steps.find(
     (step) => step.uses?.startsWith('actions/dependency-review-action@'),
   );
-  const internalAudit = internalPipeline.steps.find((step) => step.name === 'Verify production dependency closure');
+  const internalAudit = internalPipeline.steps.find((step) => step.name === 'Verify source, dependency, and license gates');
+  const internalRelease = internalPipeline.steps.find((step) => step.name === 'Build and qualify exact release images locally');
+  const receipt = internalPipeline.steps.find((step) => step.name === 'Emit exact internal beta candidate receipt');
 
   assert.equal(workflow.on.pull_request, undefined);
   assert.equal(dependencyReview, undefined);
-  assert.equal(internalAudit.run, 'npm run audit:prod');
-  assert.equal(internalAudit.timeout_seconds, 300);
+  assert.match(internalAudit.run, /npm run audit:prod/);
+  assert.match(internalAudit.run, /license-checker/);
+  assert.match(internalAudit.run, /source-validation/);
+  assert.match(internalRelease.run, /run-internal-beta-release-qualification\.sh/);
+  assert.match(receipt.run, /build-internal-ci-candidate-receipt\.mjs/);
+  assert.ok(internalPipeline.artifacts.includes('.release/internal-ci/**'));
 
   assert.equal(existsSync(join(root, '.github/dependabot.yml')), false);
 });

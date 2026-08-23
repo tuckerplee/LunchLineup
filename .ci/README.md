@@ -5,6 +5,6 @@ This directory defines source-neutral validation for LunchLineup on the internal
 - `README.md` - documents this directory and its safety boundary.
 - `pipeline.json` - declares triggers, worker requirements, validation steps, timeouts, and artifacts.
 
-Source validation only. The declared `containers` capability is required for disposable validator and PostgreSQL fixtures. This pipeline never deploys, restarts, seeds, audits, or connects to the live LunchLineup service.
+The internal-beta candidate path executes source validation, active Semgrep SAST, disposable PostgreSQL/Redis/RabbitMQ integration, exact-SHA release-image builds, DB-backed browser workflows, interaction proof, DAST, load qualification, SBOM, Trivy, and a checksum-bound candidate receipt. Its containers and generated data are job-private and disposable; it never deploys, restarts, seeds, or connects to the live LunchLineup service.
 
-Internal source control is the authoritative trigger for this source-neutral pipeline. The separate active GitHub workflow owns review security scans, immutable release artifacts, internal-beta candidate proof, and protected production release gates. Scheduled Dependabot configuration remains absent.
+Internal source control is the authoritative trigger for this source-neutral pipeline. GitHub Actions is disabled and is not a release gate. The appliance retains logs and checksum-manifested artifacts for 30 days; the candidate receipt binds its exact internal Git SHA, pipeline contract digest, release-image IDs, interaction proof, and security evidence.

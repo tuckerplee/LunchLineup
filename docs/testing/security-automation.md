@@ -2,7 +2,7 @@
 
 The authoritative CI path is the source-neutral `.ci/pipeline.json` executed by the internal CI appliance from its internal Git repository. Repository-level GitHub Actions is disabled. The GitHub workflow definitions and the controls below are retained for review and rollback reference; they are not a live execution dependency. A push to the internal `ci` remote must pass the local pipeline for the exact candidate SHA before the beta is eligible to deploy.
 
-The GitHub workflow defines two independent source scanners:
+The retained GitHub workflow documents the former GitHub-only source scanners. The live Semgrep scan is executed and retained by the internal appliance; GitHub SARIF and CodeQL uploads are not part of candidate acceptance.
 
 - Semgrep runs from a versioned, digest-pinned container, compares the candidate against the fetched `origin/main` baseline, writes only newly introduced findings to SARIF, uploads them through the SHA-pinned GitHub CodeQL upload action, and then enforces the scanner exit code. Existing findings remain visible in GitHub code scanning and are not silently dismissed; every new finding blocks the candidate until fixed or explicitly reviewed outside CI.
 - CodeQL runs `security-extended` analysis for JavaScript/TypeScript and Python, waits for GitHub to process each upload, and fails the job if extraction, analysis, or upload fails.
