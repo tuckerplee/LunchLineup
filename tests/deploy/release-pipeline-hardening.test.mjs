@@ -295,6 +295,7 @@ test('internal beta proof requires every exact-SHA release, security, and runtim
   ];
   const source = proof.steps.find((step) => step.name === 'Prove exact remote candidate source');
   const evidence = proof.steps.find((step) => step.name === 'Reverify all source-bound security and runtime evidence');
+  const interactionReceipt = proof.steps.find((step) => step.name === 'Reverify exact-SHA interaction proof receipt');
   const build = proof.steps.find((step) => step.name === 'Build exact internal beta candidate proof');
   const upload = proof.steps.find((step) => step.uses?.startsWith('actions/upload-artifact@'));
 
@@ -310,6 +311,8 @@ test('internal beta proof requires every exact-SHA release, security, and runtim
   assert.match(evidence.run, /verify-sbom-release-reports\.mjs/);
   assert.match(evidence.run, /verify-bundle dast/);
   assert.match(evidence.run, /verify-bundle load/);
+  assert.match(interactionReceipt.run, /verify-internal-beta-interaction-proof\.mjs/);
+  assert.match(interactionReceipt.run, /--source-sha "\$GITHUB_SHA"/);
   assert.match(build.run, /build-internal-beta-candidate-proof\.mjs/);
   for (const gate of expectedNeeds) assert.match(build.env.INTERNAL_BETA_GATE_RESULTS, new RegExp(`"${gate}":"`));
   assert.match(upload.with.name, /internal-beta-candidate-proof-/);

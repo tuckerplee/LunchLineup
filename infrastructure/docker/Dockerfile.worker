@@ -1,4 +1,4 @@
-FROM cgr.dev/chainguard/python@sha256:5a2c58619a41d1c1c1b474ee6238c15ad0fd9d7a572f9b521976a5f9b8909e12 AS builder
+FROM cgr.dev/chainguard/python@sha256:3175d3562cd6fbdf92c574a5f937bbb5a78f04da130d76dead3a5628b1383f80 AS builder
 
 USER 0
 ENV PATH=/opt/venv/bin:/usr/local/sbin:/usr/local/bin:/usr/bin:/usr/sbin:/sbin:/bin \
@@ -16,7 +16,7 @@ COPY packages/shared-types/proto/solver.proto .
 RUN python -m grpc_tools.protoc -I. --python_out=. --grpc_python_out=. solver.proto \
     && mkdir -p /app/uploads /run/lunchlineup-parser
 
-FROM cgr.dev/chainguard/python@sha256:6d71f8dbd199350964ce8b10d50fb9d4d8e2bd50316f3a1821dbdc6eef5252fb
+FROM cgr.dev/chainguard/python@sha256:d812438658b47b73cb4c089f4cca09bca1ba50f6cd1843133864ee074d9ec49b
 
 ENV HOME=/home/nonroot \
     PATH=/opt/venv/bin:/usr/local/sbin:/usr/local/bin:/usr/bin:/usr/sbin:/sbin:/bin \

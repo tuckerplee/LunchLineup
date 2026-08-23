@@ -56,16 +56,31 @@ test('release-image full-stack lane runs and retains exact-SHA interaction evide
   const fullstack = workflow.jobs['fullstack-e2e'];
   const run = fullstack.steps.find((step) => step.name === 'Run launch-blocking internal-beta interaction proof');
   const verify = fullstack.steps.find((step) => step.name === 'Reject missing or skipped interaction proof cases');
+  const dbUpload = fullstack.steps.find((step) => step.with?.name === 'fullstack-playwright-evidence-${{ github.sha }}');
   const upload = fullstack.steps.find((step) => step.with?.name === 'internal-beta-interaction-proof-${{ github.sha }}');
   assert.ok(run);
   assert.equal(run.env.E2E_CANDIDATE_SHA, '${{ github.sha }}');
   assert.match(run.run, /playwright\.interaction-proof\.config\.ts/);
   assert.match(verify.run, /verify-internal-beta-interaction-proof\.mjs/);
   assert.match(verify.run, /--source-sha "\$GITHUB_SHA"/);
-  assert.equal(upload.if, '${{ always() }}');
+  assert.equal(dbUpload.if, '${{ always() }}');
+  assert.equal(dbUpload.with['if-no-files-found'], 'warn');
+  assert.match(dbUpload.with.path, /apps\/web\/playwright-report/);
+  assert.match(dbUpload.with.path, /apps\/web\/test-results/);
+  assert.equal(upload.if, "${{ always() && steps.interaction-proof.outcome == 'success' }}");
   assert.equal(upload.with['if-no-files-found'], 'error');
   assert.equal(upload.with['retention-days'], 90);
   assert.match(upload.with.path, /internal-beta-interaction-proof-\$\{\{ github\.sha \}\}/);
+});
+
+test('DB-backed scheduling readback follows authoritative shift ids instead of runner-local dates', () => {
+  const source = read('apps/web/tests/e2e/stress-workflows.spec.ts');
+  assert.doesNotMatch(source, /dayWindow\s*\(\s*new Date\s*\(/);
+  assert.doesNotMatch(source, /async function shiftRows/);
+  assert.match(source, /shiftRowById\(page: Page, scheduleId: string, shiftId: string\)/);
+  assert.match(source, /data\.created\[0\]\?\.shiftId/);
+  assert.match(source, /scheduleId, limit: '200'/);
+  assert.match(source, /captureSuccessfulChangeSet/);
 });
 
 test('critical interaction source contains no skip and names every launch contract', () => {

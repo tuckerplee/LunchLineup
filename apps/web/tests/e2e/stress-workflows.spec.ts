@@ -1,13 +1,14 @@
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { expect, test, type Page } from '@playwright/test';
+import type { ScheduleChangeSetResponse } from '@lunchlineup/api-contract';
 
 import {
   SETUP_SHIFTS_RECOVERY_KEY,
   SETUP_SHIFTS_RECOVERY_TTL_MS,
 } from '../../app/dashboard/lunch-breaks/setup-shifts-recovery';
 import { SHIFT_BREAK_UPDATE_RECOVERY_KEY_PREFIX } from '../../app/dashboard/lunch-breaks/shift-break-update-recovery';
-import { dayWindow, loginAsSeedAdmin, repoRoot, runFullStack, seedTenant } from './support';
+import { loginAsSeedAdmin, repoRoot, runFullStack, seedTenant } from './support';
 
 const axeSource = readFileSync(path.join(repoRoot, 'node_modules', 'axe-core', 'axe.min.js'), 'utf8');
 const DOWNTOWN_LOCATION_ID = '10000000-0000-4000-8000-000000000001';
@@ -64,12 +65,43 @@ async function setupPeople(page: Page) {
   await inviteStaff(page, 'Stress Manager', 'stress.manager', 'Manager');
 }
 
-async function shiftRows(page: Page, days = 1) {
-  const { startDate, endDate } = dayWindow(new Date(), days);
-  const response = await page.request.get(`/api/v2/shifts?startDate=${encodeURIComponent(startDate)}&endDate=${encodeURIComponent(endDate)}`);
+type ShiftReadback = {
+  id: string;
+  user?: { name?: string } | null;
+  startTime: string;
+  endTime: string;
+};
+
+async function shiftRowById(page: Page, scheduleId: string, shiftId: string) {
+  const query = new URLSearchParams({ scheduleId, limit: '200' });
+  const response = await page.request.get(`/api/v2/shifts?${query.toString()}`);
   expect(response.ok()).toBeTruthy();
-  const payload = await response.json() as { data?: Array<{ id: string; user?: { name?: string } | null; startTime: string; endTime: string }> };
-  return payload.data ?? [];
+  const payload = await response.json() as { data?: ShiftReadback[] };
+  return (payload.data ?? []).find((shift) => shift.id === shiftId) ?? null;
+}
+
+async function captureSuccessfulChangeSet(page: Page, action: () => Promise<void>) {
+  const responsePromise = page.waitForResponse((response) => {
+    const url = new URL(response.url());
+    return response.request().method() === 'POST'
+      && /^\/api\/v2\/schedules\/[^/]+\/change-sets$/.test(url.pathname);
+  });
+  await action();
+  const response = await responsePromise;
+  expect(response.status(), `change-set response for ${response.url()}`).toBe(200);
+  const payload = await response.json() as ScheduleChangeSetResponse;
+  expect(payload.data.scheduleId, 'authoritative change-set schedule id').toBeTruthy();
+  return payload;
+}
+
+async function submitCreatedShift(page: Page, form: ReturnType<Page['locator']>) {
+  const payload = await captureSuccessfulChangeSet(page, async () => {
+    await form.getByRole('button', { name: 'Create shift' }).click();
+  });
+  const shiftId = payload.data.created[0]?.shiftId;
+  expect(shiftId, 'authoritative created shift id').toBeTruthy();
+  if (!shiftId) throw new Error('Successful shift.create response omitted data.created[0].shiftId.');
+  return { scheduleId: payload.data.scheduleId, shiftId };
 }
 
 async function createShiftFromToolbar(page: Page, staffName: string, start = '09:00', end = '17:00') {
@@ -83,7 +115,7 @@ async function createShiftFromToolbar(page: Page, staffName: string, start = '09
   }
   await shiftForm.locator('input[type="time"]').first().fill(start);
   await shiftForm.locator('input[type="time"]').nth(1).fill(end);
-  await shiftForm.getByRole('button', { name: 'Create shift' }).click();
+  return submitCreatedShift(page, shiftForm);
 }
 
 async function dragShiftToRow(page: Page, timeText: string, targetRowTitle: string) {
@@ -100,10 +132,12 @@ async function dragShiftToRow(page: Page, timeText: string, targetRowTitle: stri
   if (!sourceBox || !targetBox) return;
 
   const sourceX = sourceBox.x + sourceBox.width / 2;
-  await page.mouse.move(sourceX, sourceBox.y + sourceBox.height / 2);
-  await page.mouse.down();
-  await page.mouse.move(sourceX, targetBox.y + targetBox.height / 2, { steps: 10 });
-  await page.mouse.up();
+  await captureSuccessfulChangeSet(page, async () => {
+    await page.mouse.move(sourceX, sourceBox.y + sourceBox.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(sourceX, targetBox.y + targetBox.height / 2, { steps: 10 });
+    await page.mouse.up();
+  });
 }
 
 async function openScheduling(page: Page) {
@@ -847,16 +881,19 @@ test.describe.serial('Stress operations workflows', () => {
     await expect(invalidForm.getByRole('button', { name: 'Create shift' })).toBeDisabled();
     await invalidForm.getByRole('button', { name: 'Cancel' }).click();
 
-    await createShiftFromToolbar(page, 'Stress Staff', '09:00', '17:00');
+    const firstShift = await createShiftFromToolbar(page, 'Stress Staff', '09:00', '17:00');
     await expect(page.locator('.shift-block').filter({ hasText: '09:00-17:00' })).toBeVisible();
-    await expect.poll(async () => (await shiftRows(page))[0]?.user?.name ?? null).toBe('Stress Staff');
+    await expect.poll(async () => Boolean(await shiftRowById(page, firstShift.scheduleId, firstShift.shiftId))).toBe(true);
+    await expect.poll(async () => (await shiftRowById(page, firstShift.scheduleId, firstShift.shiftId))?.user?.name ?? null).toBe('Stress Staff');
 
     await dragShiftToRow(page, '09:00-17:00', 'Open Shifts');
-    await expect.poll(async () => (await shiftRows(page))[0]?.user?.name ?? null).toBe(null);
+    await expect.poll(async () => Boolean(await shiftRowById(page, firstShift.scheduleId, firstShift.shiftId))).toBe(true);
+    await expect.poll(async () => (await shiftRowById(page, firstShift.scheduleId, firstShift.shiftId))?.user?.name ?? null).toBe(null);
     await expect(page.locator('.timeline-row[data-resource-title="Open Shifts"]').filter({ hasText: '09:00-17:00' })).toBeVisible();
 
     await dragShiftToRow(page, '09:00-17:00', 'Stress Manager');
-    await expect.poll(async () => (await shiftRows(page))[0]?.user?.name ?? null).toBe('Stress Manager');
+    await expect.poll(async () => Boolean(await shiftRowById(page, firstShift.scheduleId, firstShift.shiftId))).toBe(true);
+    await expect.poll(async () => (await shiftRowById(page, firstShift.scheduleId, firstShift.shiftId))?.user?.name ?? null).toBe('Stress Manager');
     await expect(page.locator('.timeline-row[data-resource-title="Stress Manager"]').filter({ hasText: '09:00-17:00' })).toBeVisible();
 
     const staffRow = page.locator('.timeline-row[data-resource-title="Stress Staff"]');
@@ -869,16 +906,18 @@ test.describe.serial('Stress operations workflows', () => {
     await expect(slotForm).toBeVisible();
     await slotForm.locator('input[type="time"]').first().fill('12:00');
     await slotForm.locator('input[type="time"]').nth(1).fill('16:00');
-    await slotForm.getByRole('button', { name: 'Create shift' }).click();
+    const secondShift = await submitCreatedShift(page, slotForm);
     await expect(page.locator('.shift-block').filter({ hasText: '12:00-16:00' })).toBeVisible();
-    await expect.poll(async () => (await shiftRows(page, 3)).length).toBe(2);
+    await expect.poll(async () => Boolean(await shiftRowById(page, firstShift.scheduleId, firstShift.shiftId))).toBe(true);
+    await expect.poll(async () => Boolean(await shiftRowById(page, secondShift.scheduleId, secondShift.shiftId))).toBe(true);
   });
 
   test('B path: recovery flow handles lunch setup churn and time-card mistakes', async ({ page }) => {
     await setupPeople(page);
     await openScheduling(page);
-    await createShiftFromToolbar(page, 'Stress Manager', '09:00', '17:00');
-    await expect.poll(async () => (await shiftRows(page))[0]?.user?.name ?? null).toBe('Stress Manager');
+    const shift = await createShiftFromToolbar(page, 'Stress Manager', '09:00', '17:00');
+    await expect.poll(async () => Boolean(await shiftRowById(page, shift.scheduleId, shift.shiftId))).toBe(true);
+    await expect.poll(async () => (await shiftRowById(page, shift.scheduleId, shift.shiftId))?.user?.name ?? null).toBe('Stress Manager');
 
     await page.getByRole('link', { name: /Lunch & Breaks/ }).click();
     const autoBreak = page.getByRole('button', { name: /Auto Break|Import from Scheduling System/ });

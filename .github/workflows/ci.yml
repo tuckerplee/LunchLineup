@@ -1000,6 +1000,7 @@ jobs:
           docker compose logs --tail=150
           exit 1
       - name: Run DB-backed Playwright workflows
+        id: db-playwright
         working-directory: apps/web
         run: >-
           npx playwright test --project=chromium --workers=1
@@ -1007,12 +1008,23 @@ jobs:
           tests/e2e/month-volume-workflows.spec.ts
           tests/e2e/stress-workflows.spec.ts
           tests/e2e/tenant-admin-workflows.spec.ts
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: ${{ always() }}
+        with:
+          name: fullstack-playwright-evidence-${{ github.sha }}
+          path: |
+            apps/web/playwright-report/
+            apps/web/test-results/
+          if-no-files-found: warn
+          retention-days: 30
       - name: Run launch-blocking internal-beta interaction proof
+        id: interaction-proof
         working-directory: apps/web
         env:
           E2E_CANDIDATE_SHA: ${{ github.sha }}
         run: npx playwright test --config=playwright.interaction-proof.config.ts
       - name: Reject missing or skipped interaction proof cases
+        id: interaction-proof-receipt
         working-directory: apps/web
         run: >-
           node tests/e2e/verify-internal-beta-interaction-proof.mjs
@@ -1020,7 +1032,7 @@ jobs:
           --source-sha "$GITHUB_SHA"
           --output "test-results/internal-beta-interaction-proof-$GITHUB_SHA/proof.json"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        if: ${{ always() }}
+        if: ${{ always() && steps.interaction-proof.outcome == 'success' }}
         with:
           name: internal-beta-interaction-proof-${{ github.sha }}
           path: apps/web/test-results/internal-beta-interaction-proof-${{ github.sha }}/
@@ -3182,8 +3194,18 @@ jobs:
         with:
           name: release-manifest
           path: .release
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: internal-beta-interaction-proof-${{ github.sha }}
+          path: .release/internal-beta-interaction-proof
       - name: Verify exact internal beta release manifest
         run: node scripts/verify-release-artifacts.mjs .release/release-manifest.json --source-sha "$GITHUB_SHA"
+      - name: Reverify exact-SHA interaction proof receipt
+        run: >-
+          node apps/web/tests/e2e/verify-internal-beta-interaction-proof.mjs
+          --report ".release/internal-beta-interaction-proof/results.json"
+          --source-sha "$GITHUB_SHA"
+          --output ".release/internal-beta-interaction-proof-reverified-$GITHUB_SHA.json"
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           pattern: trivy-release-*
@@ -3240,6 +3262,7 @@ jobs:
           name: internal-beta-candidate-proof-${{ github.sha }}
           path: |
             .release/internal-beta-candidate-proof-${{ github.sha }}.json
+            .release/internal-beta-interaction-proof-reverified-${{ github.sha }}.json
             .release/release-manifest.json
             .release/deployment-contract.bundle.json
           if-no-files-found: error
