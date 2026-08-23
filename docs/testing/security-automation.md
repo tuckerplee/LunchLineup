@@ -1,6 +1,6 @@
 # Security Automation
 
-The source-neutral `.ci/pipeline.json` runs on the internal CI appliance. GitHub coordinates security analysis, immutable release images, and protected release gates, while every workflow job runs on the repository-scoped ProxmoxZ appliance through `[self-hosted, linux, x64, proxmoxz, ci]`. The public repository has no `pull_request` workflow trigger, so fork code cannot execute on the local runner. A trusted push to `internal-beta-candidate`, or an explicit `internal_beta_candidate=true` workflow dispatch from a branch, must complete the entire release chain and emit an exact-SHA candidate proof before the beta is eligible to deploy.
+The authoritative CI path is the source-neutral `.ci/pipeline.json` executed by the internal CI appliance from its internal Git repository. Repository-level GitHub Actions is disabled. The GitHub workflow definitions and the controls below are retained for review and rollback reference; they are not a live execution dependency. A push to the internal `ci` remote must pass the local pipeline for the exact candidate SHA before the beta is eligible to deploy.
 
 The GitHub workflow defines two independent source scanners:
 
@@ -21,8 +21,8 @@ The exact production npm audit remains the installed-tree launch gate. Internal 
 
 Verify outside the repository that:
 
-- GitHub Actions is enabled and allowed to publish packages and security events for this pinned workflow.
-- The protected `internal-beta-candidate` branch requires `Internal Beta: Exact Candidate Launch Proof` and the non-artifact review checks before update.
+- GitHub Actions remains disabled; restoring it requires an explicit operational decision and a review of every external action and credential boundary below.
+- GitHub branch protection does not require checks from the disabled workflow; candidate acceptance is recorded by the internal CI appliance instead.
 - Repository variables define the full `INTERNAL_BETA_*` public build contract; the workflow requires the canonical `beta.lunchlineup.com` origin and health URL, same-origin `/api/v2`, production browser safeguards, monitored contacts, and exact `closed_beta` signup until counsel-approved, versioned Terms permit a policy change.
 - No scheduled Dependabot configuration exists.
 - Secret scanning and push protection remain enabled, and every reported secret alert is reviewed by an authorized operator.

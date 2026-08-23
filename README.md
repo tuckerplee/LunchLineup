@@ -75,7 +75,7 @@ lunchlineup/
 - `.dockerignore`: Docker build ignore rules.
 - `.env.example`: local environment variable template.
 - `.ci/`: source-neutral internal CI pipeline and validation documentation.
-- `.github/`: active GitHub Actions CI/CD, exact-SHA internal-beta candidate proof, and security automation.
+- `.github/`: disabled GitHub Actions definitions retained only for review and rollback reference.
 - `.gitattributes`: Git path attributes and line-ending normalization rules.
 - `.gitignore`: Git ignore rules for local, generated, and sensitive files.
 - `.trivyignore.yaml`: narrow, expiring vulnerability suppressions bound to exact package identities and documented fixed-source provenance.
