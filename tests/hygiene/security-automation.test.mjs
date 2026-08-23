@@ -90,6 +90,7 @@ test('internal appliance executes dependency and release qualification gates whi
     (step) => step.uses?.startsWith('actions/dependency-review-action@'),
   );
   const internalAudit = internalPipeline.steps.find((step) => step.name === 'Verify source, dependency, and license gates');
+  const internalSast = internalPipeline.steps.find((step) => step.name === 'Run active local Semgrep SAST');
   const internalRelease = internalPipeline.steps.find((step) => step.name === 'Build and qualify exact release images locally');
   const receipt = internalPipeline.steps.find((step) => step.name === 'Emit exact internal beta candidate receipt');
 
@@ -98,6 +99,9 @@ test('internal appliance executes dependency and release qualification gates whi
   assert.match(internalAudit.run, /npm run audit:prod/);
   assert.match(internalAudit.run, /license-checker/);
   assert.match(internalAudit.run, /source-validation/);
+  assert.match(internalSast.run, /git merge-base --is-ancestor origin\/main HEAD/);
+  assert.match(internalSast.run, /--baseline-commit origin\/main --error --sarif --output \$evidence\/delta\.sarif/);
+  assert.match(internalSast.run, /--sarif --output \$evidence\/full\.sarif/);
   assert.match(internalRelease.run, /run-internal-beta-release-qualification\.sh/);
   assert.match(receipt.run, /build-internal-ci-candidate-receipt\.mjs/);
   assert.ok(internalPipeline.artifacts.includes('.release/internal-ci/**'));

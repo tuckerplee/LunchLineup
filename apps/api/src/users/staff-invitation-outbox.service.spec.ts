@@ -77,6 +77,7 @@ describe('StaffInvitationOutboxService', () => {
             'aes-256-gcm',
             Buffer.from(contractFixture.keyHex, 'hex'),
             Buffer.from(contractFixture.nonceBase64, 'base64'),
+            { authTagLength: 16 },
         );
         decipher.setAAD(aad);
         decipher.setAuthTag(Buffer.from(contractFixture.tagBase64, 'base64'));
@@ -116,7 +117,7 @@ describe('StaffInvitationOutboxService', () => {
             purpose: data.purpose,
             payloadVersion: data.payloadVersion,
         });
-        const decipher = createDecipheriv('aes-256-gcm', key, data.encryptionNonce);
+        const decipher = createDecipheriv('aes-256-gcm', key, data.encryptionNonce, { authTagLength: 16 });
         decipher.setAAD(aad);
         decipher.setAuthTag(data.encryptionTag);
         const plaintext = Buffer.concat([
@@ -129,7 +130,7 @@ describe('StaffInvitationOutboxService', () => {
         });
         expect(created.id).toBe(data.id);
 
-        const wrong = createDecipheriv('aes-256-gcm', key, data.encryptionNonce);
+        const wrong = createDecipheriv('aes-256-gcm', key, data.encryptionNonce, { authTagLength: 16 });
         wrong.setAAD(staffInvitationOutboxAad({
             tenantId: 'tenant-2',
             outboxId: data.id,
@@ -355,7 +356,7 @@ describe('StaffInvitationOutboxService', () => {
             }),
         });
         const mutation = tx.staffInvitationOutbox.updateMany.mock.calls[0][0].data;
-        const decipher = createDecipheriv('aes-256-gcm', key, mutation.encryptionNonce);
+        const decipher = createDecipheriv('aes-256-gcm', key, mutation.encryptionNonce, { authTagLength: 16 });
         decipher.setAAD(staffInvitationOutboxAad({
             tenantId: 'tenant-1',
             outboxId: mutation.id,

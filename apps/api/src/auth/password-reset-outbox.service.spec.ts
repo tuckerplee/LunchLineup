@@ -56,6 +56,7 @@ function decrypt(serializedEnvelope: string): Record<string, string> {
         'aes-256-gcm',
         encryptionKey,
         Buffer.from(envelope.iv, 'base64'),
+        { authTagLength: 16 },
     );
     decipher.setAuthTag(Buffer.from(envelope.tag, 'base64'));
     const plaintext = Buffer.concat([

@@ -75,7 +75,7 @@ function parseMfaSecret(value) {
 }
 
 function decryptEnvelope(envelope, key) {
-  const decipher = crypto.createDecipheriv('aes-256-gcm', key, Buffer.from(envelope.iv, 'base64url'));
+  const decipher = crypto.createDecipheriv('aes-256-gcm', key, Buffer.from(envelope.iv, 'base64url'), { authTagLength: 16 });
   decipher.setAuthTag(Buffer.from(envelope.tag, 'base64url'));
   return Buffer.concat([
     decipher.update(Buffer.from(envelope.ciphertext, 'base64url')),

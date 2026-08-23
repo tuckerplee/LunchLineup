@@ -29,6 +29,14 @@ if (manifest.sourceSha !== sourceSha || manifest.sourceRef !== sourceRef || Obje
 const interactionPath = join(evidenceRoot, 'interaction-proof.json');
 const interaction = readJson(interactionPath);
 if (interaction.sourceSha !== sourceSha) throw new Error('Interaction proof source SHA mismatch.');
+const semgrepFullPath = join(evidenceRoot, 'semgrep', 'full.sarif');
+const semgrepDeltaPath = join(evidenceRoot, 'semgrep', 'delta.sarif');
+function semgrepReport(path) {
+  const report = readJson(path);
+  const findings = (report.runs ?? []).flatMap((run) => run.results ?? []);
+  return { path: path.slice(evidenceRoot.length + 1).replaceAll('\\', '/'), sha256: sha256(path), findings: findings.length };
+}
+const semgrep = { full: semgrepReport(semgrepFullPath), delta: semgrepReport(semgrepDeltaPath) };
 const inventory = [];
 function collect(path) {
   for (const entry of readdirSync(path)) {
@@ -52,7 +60,7 @@ const receipt = {
   testInventory: { interactionCases: Object.values(interaction.cases ?? {}).flatMap(Object.keys).length },
   interactionProof: { sha256: sha256(interactionPath), path: basename(interactionPath) },
   releaseManifest: { sha256: sha256(manifestPath), images: manifest.images },
-  securityReports: inventory.filter(({ path }) => /^(semgrep|sbom|trivy|dast|load)\//.test(path)),
+  securityReports: { semgrep, reports: inventory.filter(({ path }) => /^(semgrep|sbom|trivy|dast|load)\//.test(path)) },
   evidenceInventory: inventory,
 };
 const output = join(evidenceRoot, `internal-beta-candidate-receipt-${sourceSha}.json`);

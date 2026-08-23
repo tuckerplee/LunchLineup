@@ -128,6 +128,7 @@ export class WebhookDeliveryCrypto {
             ENCRYPTION_ALGORITHM,
             key,
             Buffer.from(envelope.iv, 'base64'),
+            { authTagLength: 16 },
         );
         decipher.setAuthTag(Buffer.from(envelope.tag, 'base64'));
         return Buffer.concat([

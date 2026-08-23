@@ -2228,7 +2228,7 @@ export class AuthService implements OnModuleDestroy {
         const candidates = isCurrent ? keys.filter((key) => key.ref === keyRef) : keys;
         for (const key of candidates) {
             try {
-                const decipher = crypto.createDecipheriv('aes-256-gcm', key.value, Buffer.from(ivRaw, 'base64url'));
+                const decipher = crypto.createDecipheriv('aes-256-gcm', key.value, Buffer.from(ivRaw, 'base64url'), { authTagLength: 16 });
                 decipher.setAuthTag(Buffer.from(tagRaw, 'base64url'));
                 return Buffer.concat([
                     decipher.update(Buffer.from(ciphertextRaw, 'base64url')),

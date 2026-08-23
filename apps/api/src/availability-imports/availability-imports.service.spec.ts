@@ -164,7 +164,7 @@ describe('AvailabilityImportsService', () => {
             expect(envelope.includes(file.buffer)).toBe(false);
             const nonce = envelope.subarray(5, 17);
             const tag = envelope.subarray(17, 33);
-            const decipher = createDecipheriv('aes-256-gcm', encryptionKey, nonce);
+            const decipher = createDecipheriv('aes-256-gcm', encryptionKey, nonce, { authTagLength: 16 });
             const sourceBinding = {
                 envelopeVersion: 3,
                 tenantId: 'tenant-1',
@@ -188,7 +188,7 @@ describe('AvailabilityImportsService', () => {
                 { ...sourceBinding, requestHash: '1'.repeat(64) },
                 { ...sourceBinding, targetIdentityHash: '2'.repeat(64) },
             ]) {
-                const tamperedDecipher = createDecipheriv('aes-256-gcm', encryptionKey, nonce);
+                const tamperedDecipher = createDecipheriv('aes-256-gcm', encryptionKey, nonce, { authTagLength: 16 });
                 tamperedDecipher.setAAD(availabilityImportSourceAad(tamperedBinding));
                 tamperedDecipher.setAuthTag(tag);
                 tamperedDecipher.update(envelope.subarray(33));
