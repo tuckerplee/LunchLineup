@@ -190,6 +190,11 @@ jobs:
         language: [javascript-typescript, python]
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - name: Set up Node for TypeScript extraction
+        if: matrix.language == 'javascript-typescript'
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '22'
       - name: Initialize CodeQL
         uses: github/codeql-action/init@641a925cfafe92d0fdf8b239ba4053e3f8d99d6d # v3
         with:

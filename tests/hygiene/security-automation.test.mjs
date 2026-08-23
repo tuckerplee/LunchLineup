@@ -65,6 +65,11 @@ test('CI uploads mandatory Semgrep and CodeQL analyses with least privilege', ()
   assert.equal(codeql.strategy['fail-fast'], false);
   assert.deepEqual(codeql.strategy.matrix.language, ['javascript-typescript', 'python']);
 
+  const nodeSetup = stepByName(codeql, 'Set up Node for TypeScript extraction');
+  assert.equal(nodeSetup.if, "matrix.language == 'javascript-typescript'");
+  assert.match(nodeSetup.uses, /^actions\/setup-node@[a-f0-9]{40}$/);
+  assert.equal(nodeSetup.with['node-version'], '22');
+
   const init = stepByName(codeql, 'Initialize CodeQL');
   const analyze = stepByName(codeql, 'Analyze and upload CodeQL results');
   assert.equal(init.uses, 'github/codeql-action/init@' + codeqlActionSha);
