@@ -446,6 +446,9 @@ test('internal beta local pipeline keeps isolated source, active scanners, exact
   assert.match(semgrepOwner, /mode" == delta.*source_mount_mode=rw/);
   assert.match(semgrepOwner, /docker run --rm --user 0:0/);
   assert.match(semgrepOwner, /--clone "\$scan_source" --purpose scan --require-clean/);
+  const codeqlOwner = read('scripts/run-internal-ci-codeql.sh');
+  assert.match(codeqlOwner, /readonly codeql_ram_mb=6144/);
+  assert.match(codeqlOwner, /database analyze .*--ram="\$codeql_ram_mb"/);
   const lifecycle = read('scripts/internal-beta-lifecycle.sh');
   assert.match(lifecycle, /verify_signed_internal_ci_candidate/);
   assert.match(lifecycle, /load_and_verify_candidate_images/);

@@ -75,7 +75,7 @@
 - `compose-image-inventory.mjs`: derives exact service and shared-image ownership from resolved Compose JSON and the reviewed runtime contract.
 - `export-internal-ci-release-images.sh`: saves and reproducibly compresses every unique qualified image with ID, digest, size, and consumer metadata.
 - `install-internal-ci-dependencies.sh`: verifies the exact build clone and performs the one locked dependency installation.
-- `run-internal-ci-codeql.sh`: builds job-private CodeQL databases and emits separate JavaScript/TypeScript and Python gates.
+- `run-internal-ci-codeql.sh`: builds job-private CodeQL databases with a fixed 6 GiB analysis budget and emits separate JavaScript/TypeScript and Python gates.
 - `run-internal-ci-image-scan.sh`: scans every exact release archive with pinned Syft or Trivy and delegates coverage verification.
 - `run-internal-ci-mock-playwright.sh`: runs and retains the complete Chromium/Firefox mock browser lane outside source evidence.
 - `run-internal-ci-test-gate.sh`: owns the discrete JavaScript, engine, worker, and source-build qualification commands.
