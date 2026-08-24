@@ -26,6 +26,12 @@ test('internal beta qualification environment module loads before validating arg
   assert.doesNotMatch(result.stderr, /does not provide an export named 'resolve'/);
 });
 
+test('release image export normalizes Podman bare image IDs before binding evidence', () => {
+  const exporter = read('scripts/export-internal-ci-release-images.sh');
+  assert.match(exporter, /if \[\[ "\$local_id" =~ \^\[a-f0-9\]\{64\}\$ \]\]; then local_id="sha256:\$local_id"; fi/);
+  assert.match(exporter, /\[\[ "\$local_id" =~ \^sha256:\[a-f0-9\]\{64\}\$ \]\] \|\| exit 1/);
+});
+
 function workflowJob(workflow, jobName, nextJobName) {
   const start = workflow.indexOf(`  ${jobName}:`);
   const end = workflow.indexOf(`\n  ${nextJobName}:`, start + 1);
