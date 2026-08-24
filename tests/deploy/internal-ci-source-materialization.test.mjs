@@ -13,7 +13,7 @@ function fixture() {
   mkdirSync(join(workspace,'.ci')); writeFileSync(join(workspace,'.ci/pipeline.json'),'{}\n'); writeFileSync(join(workspace,'README.md'),'main\n'); git(workspace,'add','.'); git(workspace,'commit','-m','main'); git(workspace,'branch','-M','main'); git(workspace,'push','-u','origin','main');
   git(workspace,'checkout','-b','internal-beta-candidate'); writeFileSync(join(workspace,'candidate.txt'),'candidate\n'); git(workspace,'add','.'); git(workspace,'commit','-m','candidate'); git(workspace,'push','-u','origin','internal-beta-candidate'); git(workspace,'fetch','origin');
   const sha=git(workspace,'rev-parse','HEAD'), artifact=join(workspace,'.release','internal-ci',sha), runRoot=join(runner,'lunchlineup-source-run-1');
-  const env={...process.env,CI_COMMIT_SHA:sha,CI_REF:'refs/heads/internal-beta-candidate',CI_RUN_ID:'run-1',CI_RUN_ATTEMPT:'1',CI_REPOSITORY:'tuckerplee/LunchLineup',RUNNER_TEMP:runner};
+  const env={...process.env,CI_COMMIT_SHA:sha,CI_REF:'refs/heads/internal-beta-candidate',CI_RUN_ID:'run-1',CI_RUN_ATTEMPT:'1',CI_REPOSITORY:'lunchlineup',RUNNER_TEMP:runner};
   return {scratch,remote,workspace,runner,sha,artifact,runRoot,env,args:['--artifact-root',artifact,'--run-root',runRoot]};
 }
 const run=(f,env=f.env)=>spawnSync(process.execPath,[script,...f.args],{cwd:f.workspace,env,encoding:'utf8'});

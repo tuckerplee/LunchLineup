@@ -8,7 +8,7 @@ const materializationStartedAt = new Date(Date.now() - 1).toISOString();
 const option = (name) => { const i = argv.indexOf(name); return i < 0 ? '' : argv[i + 1] ?? ''; };
 const artifactRoot = resolve(option('--artifact-root'));
 const runRoot = resolve(option('--run-root'));
-const sha = process.env.CI_COMMIT_SHA ?? '', ref = process.env.CI_REF ?? '', runId = process.env.CI_RUN_ID ?? '', repository = process.env.CI_REPOSITORY ?? '';
+const sha = process.env.CI_COMMIT_SHA ?? '', ref = process.env.CI_REF ?? '', runId = process.env.CI_RUN_ID ?? '', controllerRepository = process.env.CI_REPOSITORY ?? '', repository = 'tuckerplee/LunchLineup';
 const workspace = realpathSync(process.cwd());
 const gitEnvironment = Object.fromEntries(Object.entries(process.env).filter(([key]) => !['GIT_DIR', 'GIT_WORK_TREE', 'GIT_INDEX_FILE', 'GIT_OBJECT_DIRECTORY', 'GIT_ALTERNATE_OBJECT_DIRECTORIES'].includes(key)));
 const git = (cwd, ...args) => execFileSync('git', args, { cwd, env: gitEnvironment, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
@@ -20,7 +20,7 @@ const assertDirectory = (path, name) => { if (!existsSync(path) || lstatSync(pat
 const assertClean = (cwd) => { execFileSync('git', ['diff', '--quiet'], { cwd, env: gitEnvironment }); execFileSync('git', ['diff', '--cached', '--quiet'], { cwd, env: gitEnvironment }); if (git(cwd, 'status', '--porcelain=v1', '--untracked-files=all')) throw new Error('Source is not clean.'); };
 const expectedRunRoot = process.env.RUNNER_TEMP ? resolve(process.env.RUNNER_TEMP, `lunchlineup-source-${runId}`) : '';
 const expectedArtifactRoot = resolve(workspace, '.release', 'internal-ci', sha);
-if (!/^[a-f0-9]{40}$/.test(sha) || ref !== 'refs/heads/internal-beta-candidate' || repository !== 'tuckerplee/LunchLineup' || !/^[A-Za-z0-9._-]+$/.test(runId) || Number(process.env.CI_RUN_ATTEMPT) !== 1 || !option('--artifact-root') || !option('--run-root') || runRoot !== expectedRunRoot || artifactRoot !== expectedArtifactRoot || existsSync(runRoot) || existsSync(artifactRoot)) throw new Error('Exact identity and unused job-private --artifact-root/--run-root are required.');
+if (!/^[a-f0-9]{40}$/.test(sha) || ref !== 'refs/heads/internal-beta-candidate' || controllerRepository !== 'lunchlineup' || !/^[A-Za-z0-9._-]+$/.test(runId) || Number(process.env.CI_RUN_ATTEMPT) !== 1 || !option('--artifact-root') || !option('--run-root') || runRoot !== expectedRunRoot || artifactRoot !== expectedArtifactRoot || existsSync(runRoot) || existsSync(artifactRoot)) throw new Error('Exact identity and unused job-private --artifact-root/--run-root are required.');
 const originalGitDir = realpathSync(git(workspace, 'rev-parse', '--absolute-git-dir'));
 if (existsSync(resolve(originalGitDir, 'objects/info/alternates'))) throw new Error('Original checkout Git alternates are forbidden.');
 const headSha = git(workspace, 'rev-parse', 'HEAD'), remoteCandidateSha = git(workspace, 'rev-parse', 'refs/remotes/origin/internal-beta-candidate'), baselineSha = git(workspace, 'rev-parse', 'refs/remotes/origin/main');
