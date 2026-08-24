@@ -465,6 +465,10 @@ test('internal beta local pipeline keeps isolated source, active scanners, exact
     'run-internal-ci-semgrep.sh',
     'run-internal-ci-terraform.sh',
   ]) assert.match(read(`scripts/${owner}`), /^#!\/usr\/bin\/env bash\r?\nset -euo pipefail\r?\numask 077\r?\n/);
+  const nextEnvironment = read('apps/web/next-env.d.ts');
+  assert.match(nextEnvironment, /import "\.\/.next\/types\/routes\.d\.ts";/);
+  assert.match(nextEnvironment, /import "\.\/.next\/types\/root-params\.d\.ts";/);
+  assert.doesNotMatch(nextEnvironment, /\.next\/dev\/types\/routes\.d\.ts/);
   const testGate = read('scripts/run-internal-ci-test-gate.sh');
   assert.match(testGate, /javascript\) npx turbo run test >/);
   assert.doesNotMatch(testGate, /turbo run test -- --coverage|unittest discover/);
