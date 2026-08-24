@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, statSync, writeFileSync } from 'node:fs';
 import { relative, resolve } from 'node:path';
+import { pathToFileURL } from 'node:url';
 
 const argv = process.argv.slice(2);
 const materializationStartedAt = new Date(Date.now() - 1).toISOString();
@@ -25,16 +26,19 @@ const originalGitDir = realpathSync(git(workspace, 'rev-parse', '--absolute-git-
 if (existsSync(resolve(originalGitDir, 'objects/info/alternates'))) throw new Error('Original checkout Git alternates are forbidden.');
 const headSha = git(workspace, 'rev-parse', 'HEAD'), remoteCandidateSha = git(workspace, 'rev-parse', 'refs/remotes/origin/internal-beta-candidate'), baselineSha = git(workspace, 'rev-parse', 'refs/remotes/origin/main');
 if (headSha !== sha || remoteCandidateSha !== sha) throw new Error('Candidate identity mismatch.');
-assertClean(workspace); git(workspace, 'merge-base', '--is-ancestor', baselineSha, sha);
+assertClean(workspace); if (baselineSha === sha) throw new Error('Baseline main must be distinct from the candidate.'); git(workspace, 'merge-base', '--is-ancestor', baselineSha, sha);
 const treeSha = git(workspace, 'rev-parse', 'HEAD^{tree}'), baselineTreeSha = git(workspace, 'rev-parse', `${baselineSha}^{tree}`), initialPipeline = createHash('sha256').update(readFileSync(resolve(workspace, '.ci/pipeline.json'))).digest('hex');
-const authoritativeRemote = git(workspace, 'remote', 'get-url', 'origin');
+const verifiedCheckoutTransport = pathToFileURL(workspace).href;
 mkdirSync(runRoot, { recursive: true, mode: 0o700 });
 assertDirectory(runRoot, 'run root');
 const realRunRoot = realpathSync(runRoot);
 const clone = (name) => {
   const path = resolve(realRunRoot, name);
   if (path !== resolve(realRunRoot, name)) throw new Error(`${name} clone escapes run root.`);
-  execFileSync('git', ['clone', '--no-local', '--no-hardlinks', authoritativeRemote, path], { env: gitEnvironment, stdio: 'ignore' });
+  mkdirSync(path, { mode: 0o700 });
+  execFileSync('git', ['init', '--quiet', path], { env: gitEnvironment, stdio: 'ignore' });
+  execFileSync('git', ['remote', 'add', 'origin', verifiedCheckoutTransport], { cwd: path, env: gitEnvironment, stdio: 'ignore' });
+  execFileSync('git', ['fetch', '--quiet', '--no-tags', '--force', 'origin', '+refs/remotes/origin/internal-beta-candidate:refs/remotes/origin/internal-beta-candidate', '+refs/remotes/origin/main:refs/remotes/origin/main'], { cwd: path, env: gitEnvironment, stdio: 'ignore' });
   execFileSync('git', ['checkout', '--detach', sha], { cwd: path, env: gitEnvironment, stdio: 'ignore' });
   execFileSync('git', ['reset', '--hard', sha], { cwd: path, env: gitEnvironment, stdio: 'ignore' });
   execFileSync('git', ['clean', '-ffdx'], { cwd: path, env: gitEnvironment, stdio: 'ignore' });
