@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
+umask 077
 
 name=${1:?gate name is required}
 log_relative=${2:?artifact-relative log path is required}

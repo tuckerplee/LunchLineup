@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
+umask 077
 [[ "${1:-}" == --source-context && -n "${2:-}" && "${3:-}" == --mode && "${4:-}" =~ ^(full|delta)$ && $# == 4 ]] || { echo 'Usage: run-internal-ci-semgrep.sh --source-context <context.json> --mode <full|delta>' >&2; exit 64; }
 context=$2; mode=$4; workspace=$PWD; artifact_root="$workspace/.release/internal-ci/${CI_COMMIT_SHA:?}"; source_root="${RUNNER_TEMP:?}/lunchlineup-source-${CI_RUN_ID:?}"; scan_source="$source_root/scan"; build_root="$source_root/build"
 test "$context" = "$source_root/source-context.json"; node "$build_root/scripts/verify-internal-ci-source-clone.mjs" --proof "$artifact_root/source/source-proof.json" --clone "$scan_source" --purpose scan --require-clean >/dev/null

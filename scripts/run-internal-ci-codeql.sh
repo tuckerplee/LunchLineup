@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
+umask 077
 [[ "${1:-}" == --source-context && -n "${2:-}" && "${3:-}" == --language && "${4:-}" =~ ^(javascript-typescript|python)$ && $# == 4 ]] || { echo 'Usage: run-internal-ci-codeql.sh --source-context <context.json> --language <javascript-typescript|python>' >&2; exit 64; }
 context=$2; language=$4; : "${CODEQL_CLI:?}" "${CODEQL_BUNDLE_SHA256:?}"
 readonly codeql_ram_mb=6144

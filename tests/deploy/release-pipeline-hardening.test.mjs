@@ -458,6 +458,13 @@ test('internal beta local pipeline keeps isolated source, active scanners, exact
   const evidenceOwner = read('scripts/internal-ci-evidence.mjs');
   assert.doesNotMatch(evidenceOwner, /existsSync\(output\)/);
   assert.match(evidenceOwner, /writeFileSync\(output, stableJson\(value\), \{ flag: 'wx', mode: 0o600 \}\)/);
+  for (const owner of [
+    'install-internal-ci-dependencies.sh',
+    'run-internal-ci-build-gate.sh',
+    'run-internal-ci-codeql.sh',
+    'run-internal-ci-semgrep.sh',
+    'run-internal-ci-terraform.sh',
+  ]) assert.match(read(`scripts/${owner}`), /^#!\/usr\/bin\/env bash\r?\nset -euo pipefail\r?\numask 077\r?\n/);
   const testGate = read('scripts/run-internal-ci-test-gate.sh');
   assert.match(testGate, /javascript\) npx turbo run test >/);
   assert.doesNotMatch(testGate, /turbo run test -- --coverage|unittest discover/);
