@@ -244,7 +244,7 @@ prepare_runtime_env() {
   upsert_if_empty_or_placeholder STRIPE_METER_ERROR_EVENT_DESTINATION_ID "ed_dev_$(generated_secret 12)"
   upsert_if_empty_or_placeholder STRIPE_METER_ID "mtr_dev_$(generated_secret 12)"
 
-  local db_user db_pass db_name app_db_user app_db_pass rabbit_user rabbit_pass
+  local db_user db_pass db_name app_db_user app_db_pass rabbit_user rabbit_pass public_build_config_sha
   db_user="$(env_value POSTGRES_USER)"
   db_pass="$(env_value POSTGRES_PASSWORD)"
   db_name="$(env_value POSTGRES_DB)"
@@ -252,11 +252,20 @@ prepare_runtime_env() {
   app_db_pass="$(env_value APP_DB_PASSWORD)"
   rabbit_user="$(env_value RABBITMQ_USER)"
   rabbit_pass="$(env_value RABBITMQ_PASSWORD)"
+  public_build_config_sha="$(
+    NEXT_PUBLIC_API_URL=/api/v2 \
+    NEXT_PUBLIC_APP_ORIGIN="$PUBLIC_APP_ORIGIN" \
+    NEXT_PUBLIC_APP_URL="$PUBLIC_APP_ORIGIN" \
+    NEXT_PUBLIC_APP_ENV=development \
+    NEXT_PUBLIC_SIGNUP_MODE=closed_beta \
+    node -e 'const {createHash}=require("node:crypto"); const values={NEXT_PUBLIC_API_URL:process.env.NEXT_PUBLIC_API_URL,NEXT_PUBLIC_APP_ORIGIN:process.env.NEXT_PUBLIC_APP_ORIGIN,NEXT_PUBLIC_APP_URL:process.env.NEXT_PUBLIC_APP_URL,NEXT_PUBLIC_APP_ENV:process.env.NEXT_PUBLIC_APP_ENV,NEXT_PUBLIC_SIGNUP_MODE:process.env.NEXT_PUBLIC_SIGNUP_MODE}; const ordered=Object.fromEntries(Object.keys(values).sort().map((key)=>[key,values[key]])); process.stdout.write(createHash("sha256").update(`${JSON.stringify(ordered,null,2)}\n`).digest("hex"));'
+  )"
 
   upsert_env NODE_ENV development
   upsert_env IMAGE_TAG "$source_sha"
   upsert_env DEPLOY_RELEASE_SHA "$source_sha"
   upsert_env MIGRATION_SOURCE_SHA "$source_sha"
+  upsert_env PUBLIC_BUILD_CONFIG_SHA256 "$public_build_config_sha"
   upsert_env DATA_TARGET_ENV disposable
   upsert_env DOMAIN "$HOST_HEADER"
   upsert_env CADDY_SITE_ADDRESSES "http://${HOST_HEADER}:80, http://lunchlineup-dev.proxmox1.lan:80, http://lunchlineup-dev-vm.proxmox1.lan:80, http://10.231.10.108:80, http://localhost:80, http://127.0.0.1:80, http://proxy:80"
@@ -288,6 +297,8 @@ prepare_runtime_env() {
   upsert_env NEXT_PUBLIC_APP_URL "$PUBLIC_APP_ORIGIN"
   upsert_env NEXT_PUBLIC_APP_ENV "development"
   upsert_env NEXT_PUBLIC_API_URL "/api/v2"
+  upsert_env NEXT_PUBLIC_SIGNUP_MODE "closed_beta"
+  upsert_env PUBLIC_SIGNUP_MODE "closed_beta"
   upsert_env INTERNAL_API_V2_URL "http://api-v2:3002/v2"
   upsert_env LUNCHLINEUP_STATUS_HEALTH_URL "http://api-v2:3002/v2/ready"
   upsert_env NEXT_PUBLIC_OIDC_ENABLED false
