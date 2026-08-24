@@ -8,7 +8,7 @@ output="$artifact_root/semgrep"; mkdir -p "$output" "$artifact_root/results" "$a
 args=(semgrep scan --config p/default --metrics=off --sarif --output "/out/$mode.sarif")
 if [[ "$mode" == delta ]]; then baseline_sha=$(node -e 'const p=JSON.parse(require("fs").readFileSync(process.argv[1]));process.stdout.write(p.baselineSha)' "$artifact_root/source/source-proof.json"); args+=(--baseline-commit "$baseline_sha" --error); fi
 args+=(.)
-docker run --rm --user "$(id -u):$(id -g)" --env HOME=/tmp/semgrep-home --volume "$scan_source:/src:ro" --volume "$output:/out:rw" --workdir /src "$SEMGREP_IMAGE" "${args[@]}"
+docker run --rm --user 0:0 --env HOME=/tmp/semgrep-home --volume "$scan_source:/src:ro" --volume "$output:/out:rw" --workdir /src "$SEMGREP_IMAGE" "${args[@]}"
 gate="semgrep-$mode"
 node "$build_root/scripts/verify-internal-ci-semgrep.mjs" --source-context "$context" --mode "$mode" --scanner-image "$SEMGREP_IMAGE" --report "$output/$mode.sarif" --details "$artifact_root/details/$gate.json"
 node "$build_root/scripts/write-internal-ci-command-result.mjs" --name "$gate" --source-context "$context" --started-at "$started_at" --output "$artifact_root/results/$gate.json"

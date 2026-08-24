@@ -441,6 +441,7 @@ test('internal beta local pipeline keeps isolated source, active scanners, exact
   assert.match(materializer, /clone\('scan'\)/);
   assert.match(materializer, /clone\('build'\)/);
   assert.match(materializer, /scanClonePath === buildClonePath/);
+  assert.match(read('scripts/run-internal-ci-semgrep.sh'), /docker run --rm --user 0:0/);
   const lifecycle = read('scripts/internal-beta-lifecycle.sh');
   assert.match(lifecycle, /verify_signed_internal_ci_candidate/);
   assert.match(lifecycle, /load_and_verify_candidate_images/);
