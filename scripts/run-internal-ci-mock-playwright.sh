@@ -11,7 +11,7 @@ mapfile -t changed_paths < <(git diff --name-only)
 [[ "${#changed_paths[@]}" -eq 1 && "${changed_paths[0]}" == apps/web/next-env.d.ts ]] || { printf 'Unexpected tracked mutations after mock Playwright: %s\n' "${changed_paths[*]:-(none)}" >&2; exit 1; }
 node - <<'NODE'
 const fs = require('node:fs');
-const expected = '/// <reference types="next" />\n/// <reference types="next/image-types/global" />\nimport "./.next/dev/types/routes.d.ts";\n\n// NOTE: This file should not be edited\n// see https://nextjs.org/docs/app/api-reference/config/typescript for more information.\n';
+const expected = '/// <reference types="next" />\n/// <reference types="next/image-types/global" />\nimport "./.next/dev/types/routes.d.ts";\nimport "./.next/dev/types/root-params.d.ts";\n\n// NOTE: This file should not be edited\n// see https://nextjs.org/docs/app/api-reference/config/typescript for more information.\n';
 if (fs.readFileSync('next-env.d.ts', 'utf8') !== expected) throw new Error('Next dev produced an unexpected next-env.d.ts mutation.');
 NODE
 git restore --source=HEAD -- apps/web/next-env.d.ts

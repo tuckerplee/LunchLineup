@@ -474,6 +474,7 @@ test('internal beta local pipeline keeps isolated source, active scanners, exact
   assert.match(mockPlaywright, /Next dev produced an unexpected next-env\.d\.ts mutation/);
   assert.match(mockPlaywright, /git restore --source=HEAD -- apps\/web\/next-env\.d\.ts/);
   assert.match(mockPlaywright, /--purpose build --require-clean/);
+  assert.match(read('apps/web/next.config.js'), /agentRules: false/);
   const testGate = read('scripts/run-internal-ci-test-gate.sh');
   assert.match(testGate, /javascript\) npx turbo run test >/);
   assert.doesNotMatch(testGate, /turbo run test -- --coverage|unittest discover/);

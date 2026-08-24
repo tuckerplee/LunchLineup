@@ -34,6 +34,7 @@ const localE2eLegacyApiUrl = !isProduction && process.env.LUNCHLINEUP_E2E_LEGACY
 /** @type {import('next').NextConfig} */
 const nextConfig = {
     reactStrictMode: true,
+    agentRules: false,
     devIndicators: false,
     poweredByHeader: false,
     productionBrowserSourceMaps: false,
