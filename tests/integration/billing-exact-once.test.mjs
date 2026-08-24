@@ -186,7 +186,8 @@ print(json.dumps(output))
 `;
 
 function workerProbe(databaseUrl, mode, tenantId, importId, token) {
-  const run = spawnSync('python', [
+  const python = process.env.PYTHON || 'python3';
+  const run = spawnSync(python, [
     '-c', pythonWorkerProbe,
     join(root, 'apps/worker/src'), mode, tenantId, importId, token,
   ], {

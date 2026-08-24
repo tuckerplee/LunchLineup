@@ -502,6 +502,9 @@ test('internal beta local pipeline keeps isolated source, active scanners, exact
   assert.match(integrationGate, /DATABASE_URL="postgresql:\/\/lunchlineup_ci_app:/);
   assert.match(integrationGate, /PYTHON="\$venv\/bin\/python"/);
   assert.match(integrationGate, /for resource in "\$postgres" "\$redis" "\$rabbitmq"/);
+  const billingIntegration = read('tests/integration/billing-exact-once.test.mjs');
+  assert.match(billingIntegration, /process\.env\.PYTHON \|\| 'python3'/);
+  assert.doesNotMatch(billingIntegration, /spawnSync\('python'/);
   const qualificationEnv = read('scripts/write-internal-beta-qualification-env.mjs');
   assert.match(qualificationEnv, /COMPOSE_SERVICE_ENV_FILE:output/);
   assert.match(qualificationEnv, /PITR_WAL_OBJECT_STORE_SECRETS_DIR/);
