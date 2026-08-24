@@ -529,6 +529,8 @@ test('Dockerfile base images are digest-pinned', () => {
 test('Grafana runtime assembles only application assets over the static base', () => {
   const dockerfile = read('infrastructure/docker/Dockerfile.grafana');
   const compose = read('docker-compose.yml');
+  assert.match(dockerfile, /ENV GOTMPDIR=\/src\/\.go-tmp/);
+  assert.match(dockerfile, /RUN mkdir -p "\$GOTMPDIR"/);
   assert.match(dockerfile, /COPY --from=upstream \/usr\/share\/grafana \/rootfs\/usr\/share\/grafana/);
   assert.match(dockerfile, /COPY --from=upstream \/etc\/grafana \/rootfs\/etc\/grafana/);
   assert.match(dockerfile, /COPY --from=rootfs \/rootfs\/usr\/share\/grafana \/usr\/share\/grafana/);
