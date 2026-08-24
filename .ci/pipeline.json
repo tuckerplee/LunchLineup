@@ -14,10 +14,8 @@
     "tags": [],
     "manual": true
   },
-  "environment": {
-    "NODE_VERSION": "22.23.2"
-  },
   "env": {
+    "NODE_VERSION": "22.23.2",
     "NODE_OPTIONS": "--max-old-space-size=4096"
   },
   "steps": [
