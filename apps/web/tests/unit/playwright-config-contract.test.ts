@@ -4,7 +4,8 @@ import { describe, expect, it } from 'vitest';
 
 const playwrightConfig = readFileSync(resolve(__dirname, '../../playwright.config.ts'), 'utf8');
 const mockApi = readFileSync(resolve(__dirname, '../e2e/mock-api.mjs'), 'utf8');
-const ciWorkflow = readFileSync(resolve(__dirname, '../../../../.github/workflows/ci.yml'), 'utf8');
+const internalPipeline = JSON.parse(readFileSync(resolve(__dirname, '../../../../.ci/pipeline.json'), 'utf8')) as { steps: Array<{ name: string; run: string }> };
+const mockPlaywrightRunner = readFileSync(resolve(__dirname, '../../../../scripts/run-internal-ci-mock-playwright.sh'), 'utf8');
 
 describe('Playwright mock harness contract', () => {
   it('uses a development Next server for the shared mock API', () => {
@@ -57,13 +58,10 @@ describe('Playwright mock harness contract', () => {
   });
 
   it('does not run a production web build before the default CI mock suite', () => {
-    const e2eJobStart = ciWorkflow.indexOf('  e2e-tests:');
-    const fullStackJobStart = ciWorkflow.indexOf('  fullstack-e2e:', e2eJobStart);
-    const e2eJob = ciWorkflow.slice(e2eJobStart, fullStackJobStart);
-
-    expect(e2eJobStart).toBeGreaterThanOrEqual(0);
-    expect(fullStackJobStart).toBeGreaterThan(e2eJobStart);
-    expect(e2eJob).toContain('run: npm run test:e2e --workspace @lunchlineup/web');
-    expect(e2eJob).not.toContain('npm run build --workspace @lunchlineup/web');
+    const e2eStep = internalPipeline.steps.find((step) => step.name === 'Mock Playwright');
+    expect(e2eStep?.run).toContain('run-internal-ci-mock-playwright.sh');
+    expect(mockPlaywrightRunner).toContain('E2E_FULL_STACK=0 E2E_MOCK_API=1');
+    expect(mockPlaywrightRunner).toContain('npx playwright test --reporter=json');
+    expect(mockPlaywrightRunner).not.toContain('npm run build --workspace @lunchlineup/web');
   });
 });

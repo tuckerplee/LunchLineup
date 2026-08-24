@@ -9,3 +9,4 @@ opentelemetry-exporter-otlp-proto-http==1.43.0
 pypdf==6.16.1
 psycopg[binary]==3.3.4
 cryptography==50.0.0
+pytest==8.4.2

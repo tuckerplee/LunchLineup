@@ -19,6 +19,7 @@ coverage/
 **/*.tsbuildinfo
 **/.turbo/
 __pycache__/
+**/.pytest_cache/
 *.py[cod]
 apps/web/.next/
 apps/web/playwright-report/

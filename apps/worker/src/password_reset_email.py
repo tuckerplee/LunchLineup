@@ -628,10 +628,7 @@ async def run_password_reset_email_loop(store: ResetEmailStore | None = None) ->
                     SWEEP_READY.set(0)
                     SWEEP_SYSTEMIC_PROVIDER_FAILURE.set(1)
                     if not provider_outage_logged:
-                        logger.error(
-                            "Password reset email provider outage threshold reached recent_failures=%s",
-                            result["recent_provider_failures"],
-                        )
+                        logger.error("Password reset email provider outage threshold reached")
                     provider_outage_logged = True
                 else:
                     if provider_outage_logged:

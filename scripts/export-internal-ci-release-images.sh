@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
+umask 077
 [[ "${1:-}" == --source-context && -n "${2:-}" && "${3:-}" == --inventory && -n "${4:-}" && "${5:-}" == --image-directory && -n "${6:-}" && $# == 6 ]] || { echo 'Usage: export-internal-ci-release-images.sh --source-context <context> --inventory <json> --image-directory <dir>' >&2; exit 64; }
 context=$2; inventory=$4; image_dir=$6; source_root="${RUNNER_TEMP:?}/lunchlineup-source-${CI_RUN_ID:?}"; build_root="$source_root/build"; temporary="$RUNNER_TEMP/lunchlineup-image-export-$CI_RUN_ID"; test "$context" = "$source_root/source-context.json"; test ! -e "$temporary"; mkdir -p "$temporary" "$image_dir"; trap 'rm -rf -- "$temporary"' EXIT
 node -e 'const x=JSON.parse(require("fs").readFileSync(process.argv[1]));for(const [name,v] of Object.entries(x.images)) process.stdout.write([name,v.resolvedRef,Buffer.from(JSON.stringify(v.composeServices)).toString("base64")].join("\t")+"\n")' "$inventory" | while IFS=$'\t' read -r name ref services64; do

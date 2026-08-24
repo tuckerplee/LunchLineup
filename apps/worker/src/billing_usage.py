@@ -586,12 +586,7 @@ async def run_billing_usage_loop() -> None:
         try:
             result = await run_billing_usage_cycle()
             if result["processed"] or result["failed"] or result["requeued"]:
-                logger.info(
-                    "Billing usage sweep processed=%s failed=%s requeued=%s",
-                    result["processed"],
-                    result["failed"],
-                    result["requeued"],
-                )
+                logger.info("Billing usage sweep completed with activity")
         except asyncio.CancelledError:
             raise
         except Exception as exc:
