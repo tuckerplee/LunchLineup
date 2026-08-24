@@ -454,6 +454,10 @@ test('internal beta local pipeline keeps isolated source, active scanners, exact
   assert.match(e2eSupport, /execFileSync\('docker'/);
   const seedSummary = read('scripts/seed-e2e.mjs').slice(read('scripts/seed-e2e.mjs').indexOf('console.log(JSON.stringify({'));
   assert.doesNotMatch(seedSummary, /adminPin|superAdminPin|loadSmokePin|MfaSecret/);
+  assert.doesNotMatch(seedSummary, /adminUsername|superAdminUsername|loadSmokeUsername|staffUsername/);
+  const evidenceOwner = read('scripts/internal-ci-evidence.mjs');
+  assert.doesNotMatch(evidenceOwner, /existsSync\(output\)/);
+  assert.match(evidenceOwner, /writeFileSync\(output, stableJson\(value\), \{ flag: 'wx', mode: 0o600 \}\)/);
   const lifecycle = read('scripts/internal-beta-lifecycle.sh');
   assert.match(lifecycle, /verify_signed_internal_ci_candidate/);
   assert.match(lifecycle, /load_and_verify_candidate_images/);

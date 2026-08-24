@@ -83,7 +83,6 @@ export function writeExclusiveJson(path, value, { root } = {}) {
   const output = resolve(path), base = realpathSync(root);
   if (!inside(base, output)) throw new Error('Evidence output must be beneath root.');
   mkdirSync(dirname(output), { recursive: true, mode: 0o700 }); assertNoSymlinkComponents(dirname(output), base);
-  if (existsSync(output)) throw new Error('Evidence output already exists.');
   writeFileSync(output, stableJson(value), { flag: 'wx', mode: 0o600 });
 }
 

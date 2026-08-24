@@ -434,10 +434,7 @@ async function main() {
 
   console.log(JSON.stringify({
     tenant: tenant.slug,
-    adminUsername,
-    superAdminUsername,
-    loadSmokeUsername,
-    staffUsername,
+    seededAccountCount: 4,
     stripeSubscriptionStatus: tenant.status,
     creditSourceAttestation: 'admin-credit-grant',
     walletCredits: tenant.usageCredits,
