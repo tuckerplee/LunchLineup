@@ -441,7 +441,11 @@ test('internal beta local pipeline keeps isolated source, active scanners, exact
   assert.match(materializer, /clone\('scan'\)/);
   assert.match(materializer, /clone\('build'\)/);
   assert.match(materializer, /scanClonePath === buildClonePath/);
-  assert.match(read('scripts/run-internal-ci-semgrep.sh'), /docker run --rm --user 0:0/);
+  const semgrepOwner = read('scripts/run-internal-ci-semgrep.sh');
+  assert.match(semgrepOwner, /source_mount_mode=ro/);
+  assert.match(semgrepOwner, /mode" == delta.*source_mount_mode=rw/);
+  assert.match(semgrepOwner, /docker run --rm --user 0:0/);
+  assert.match(semgrepOwner, /--clone "\$scan_source" --purpose scan --require-clean/);
   const lifecycle = read('scripts/internal-beta-lifecycle.sh');
   assert.match(lifecycle, /verify_signed_internal_ci_candidate/);
   assert.match(lifecycle, /load_and_verify_candidate_images/);
