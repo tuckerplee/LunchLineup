@@ -1,5 +1,6 @@
 {
   "repository": "tuckerplee/LunchLineup",
+  "repositoryId": "lunchlineup",
   "candidateRef": "refs/heads/internal-beta-candidate",
   "approvedPipelineSha256": "7b887635d5cf826d9f44074a6e1b3dd9bc05e519bbe33cf3b8a95c7d79e81c8b",
   "requiredGates": [
@@ -34,5 +35,6 @@
     "artifact-integrity"
   ],
   "receiptValiditySeconds": 259200,
+  "maxQualificationAgeSeconds": 93600,
   "signingKeyId": "lunchlineup-beta-2026-01"
 }
