@@ -30,6 +30,8 @@ ARG NEXT_PUBLIC_DPA_CONTACT_EMAIL=privacy@lunchlineup.example
 ARG NEXT_PUBLIC_APP_ORIGIN=http://localhost:3000
 ARG NEXT_PUBLIC_APP_URL=http://localhost:3000
 ARG NEXT_PUBLIC_APP_ENV=production
+ARG DEPLOY_RELEASE_SHA
+ARG PUBLIC_BUILD_CONFIG_SHA256
 
 ENV NEXT_PUBLIC_API_URL=$NEXT_PUBLIC_API_URL \
     INTERNAL_API_V2_URL=$INTERNAL_API_V2_URL \
@@ -49,6 +51,8 @@ COPY . .
 RUN npm ci --prefer-offline || npm ci
 
 RUN npx turbo run build --env-mode=loose --filter=@lunchlineup/web
+
+RUN node -e 'const fs=require("node:fs"); const contract={sourceSha:process.env.DEPLOY_RELEASE_SHA,publicBuildConfigSha256:process.env.PUBLIC_BUILD_CONFIG_SHA256,nextPublicApiUrl:process.env.NEXT_PUBLIC_API_URL,nextPublicAppOrigin:process.env.NEXT_PUBLIC_APP_ORIGIN,nextPublicAppUrl:process.env.NEXT_PUBLIC_APP_URL,nextPublicAppEnv:process.env.NEXT_PUBLIC_APP_ENV,nextPublicSignupMode:process.env.NEXT_PUBLIC_SIGNUP_MODE}; if(!/^[a-f0-9]{40}$/.test(contract.sourceSha||"")||!/^[a-f0-9]{64}$/.test(contract.publicBuildConfigSha256||"")) throw new Error("exact public build identity required"); fs.mkdirSync("/app/apps/web/public/.well-known",{recursive:true}); fs.writeFileSync("/app/apps/web/public/.well-known/lunchlineup-build.json",JSON.stringify(contract)+"\n",{flag:"wx"});'
 
 # Stage 2: Runtime
 FROM node:22-alpine@sha256:c610fcdfb1d5b4740dd70c284ed3cb16bb857e0f7166196e36a5501df7a3aa32 AS runner

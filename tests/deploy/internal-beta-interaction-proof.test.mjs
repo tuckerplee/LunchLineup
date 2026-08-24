@@ -13,10 +13,16 @@ import {
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const read = (relativePath) => readFileSync(path.join(root, relativePath), 'utf8');
 const sourceSha = 'a'.repeat(40);
+const releaseBindings = {
+  candidateTreeSha: 'b'.repeat(40),
+  releaseManifestSha256: 'c'.repeat(64),
+  webImageId: `sha256:${'d'.repeat(64)}`,
+  publicBuildConfigSha256: 'e'.repeat(64),
+};
 
 function report(overrides = {}) {
   return {
-    config: { metadata: { candidateSha: sourceSha } },
+    config: { metadata: { candidateSha: sourceSha, ...releaseBindings } },
     suites: [...requiredInteractionProofCases].map(([projectName, titles]) => ({
       specs: titles.map((title) => ({
         title,
@@ -28,11 +34,15 @@ function report(overrides = {}) {
 }
 
 test('interaction proof verifier requires every unskipped desktop and touch case exactly once', () => {
-  const proof = verifyInteractionProofReport(report(), sourceSha);
+  const proof = verifyInteractionProofReport(report(), sourceSha, releaseBindings);
   assert.equal(proof.sourceSha, sourceSha);
   assert.equal(Object.keys(proof.cases['interaction-desktop']).length, 4);
   assert.equal(Object.keys(proof.cases['interaction-touch']).length, 1);
   assert.deepEqual(proof.artifactPolicy, { trace: 'on', video: 'on', screenshot: 'on' });
+  assert.equal(proof.candidateTreeSha, releaseBindings.candidateTreeSha);
+  assert.equal(proof.releaseManifestSha256, releaseBindings.releaseManifestSha256);
+  assert.equal(proof.webImageId, releaseBindings.webImageId);
+  assert.equal(proof.publicBuildConfigSha256, releaseBindings.publicBuildConfigSha256);
 
   const skipped = report();
   skipped.suites[0].specs[0].tests[0].expectedStatus = 'skipped';
@@ -49,10 +59,15 @@ test('interaction proof verifier requires every unskipped desktop and touch case
   const wrongSha = report();
   wrongSha.config.metadata.candidateSha = 'b'.repeat(40);
   assert.throws(() => verifyInteractionProofReport(wrongSha, sourceSha), /candidate SHA/);
+  for (const key of Object.keys(releaseBindings)) {
+    const wrongBinding = report();
+    wrongBinding.config.metadata[key] = 'wrong';
+    assert.throws(() => verifyInteractionProofReport(wrongBinding, sourceSha, releaseBindings), new RegExp(key));
+  }
 });
 
 test('release-image full-stack lane runs and retains exact-SHA interaction evidence', () => {
-  const workflow = yaml.load(read('.github/workflows/ci.yml'));
+  const workflow = yaml.load(read('docs/legacy/github-actions-ci.yml'));
   const fullstack = workflow.jobs['fullstack-e2e'];
   const run = fullstack.steps.find((step) => step.name === 'Run launch-blocking internal-beta interaction proof');
   const verify = fullstack.steps.find((step) => step.name === 'Reject missing or skipped interaction proof cases');
@@ -99,4 +114,7 @@ test('critical interaction source contains no skip and names every launch contra
   assert.match(config, /video: 'on'/);
   assert.match(config, /retries: 0/);
   assert.match(config, /candidateSha/);
+  for (const binding of ['candidateTreeSha', 'releaseManifestSha256', 'webImageId', 'publicBuildConfigSha256']) {
+    assert.match(config, new RegExp(binding));
+  }
 });

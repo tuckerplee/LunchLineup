@@ -58,6 +58,36 @@
 - `raw-migration-inventory.mjs`: builds the exact byte-digested pre/post raw SQL inventory, owns deterministic dependency ordering, skips superseded historical files, and rejects migration-owned transaction boundaries.
 - `raw-migration-ledger.mjs`: serializes raw migration sessions with a Postgres advisory lock and records exact path/digest/byte/source receipts atomically with each migration, including authenticated historical bootstrap and unknown-commit recovery.
 - `record-internal-ci-gate.mjs`: writes a source-SHA-bound successful local-CI gate marker after a completed qualification stage.
+- `internal-ci-evidence.mjs`: shared fail-closed evidence path, regular-file, hashing, inventory, and exclusive JSON receipt helpers.
+- `build-internal-ci-artifact-manifest.mjs`: writes the bounded, hash-complete artifact inventory used by the candidate receipt.
+- `build-internal-ci-candidate-receipt.mjs`: builds the unsigned, source-context-bound internal-beta candidate receipt from exact gate and manifest evidence.
+- `write-internal-ci-release-manifest.mjs`: records digest-pinned Compose runtime images and their retained CI archives.
+- `internal-ci-policy.mjs`: canonical required internal-beta gate policy.
+- `internal-ci-source-context.mjs`: validates the job-private materialized-source context and exact clone identity.
+- `materialize-internal-ci-source.mjs`: materializes independent verified scan and build clones and writes the retained source proof.
+- `run-internal-ci-build-gate.sh`: runs one named build-clone gate and records a source-proof-bound receipt.
+- `run-internal-ci-terraform.sh`: runs the pinned Terraform validation suite from the isolated build clone.
+- `verify-internal-ci-source-clone.mjs`: verifies a downstream build or scan clone against the retained source proof.
+- `verify-internal-ci-candidate-receipt.mjs`: verifies an externally signed candidate receipt, exact policy, and retained manifest bindings.
+- `run-internal-ci-semgrep.sh`: runs pinned Semgrep analysis from the isolated scan clone.
+- `verify-internal-ci-semgrep.mjs`: validates retained Semgrep reports against the materialized source identity.
+- `build-internal-ci-candidate-bundle.mjs`: creates the allowlisted deterministic deployment bundle and detached descriptor.
+- `compose-image-inventory.mjs`: derives exact service and shared-image ownership from resolved Compose JSON and the reviewed runtime contract.
+- `export-internal-ci-release-images.sh`: saves and reproducibly compresses every unique qualified image with ID, digest, size, and consumer metadata.
+- `install-internal-ci-dependencies.sh`: verifies the exact build clone and performs the one locked dependency installation.
+- `run-internal-ci-codeql.sh`: builds job-private CodeQL databases and emits separate JavaScript/TypeScript and Python gates.
+- `run-internal-ci-image-scan.sh`: scans every exact release archive with pinned Syft or Trivy and delegates coverage verification.
+- `run-internal-ci-mock-playwright.sh`: runs and retains the complete Chromium/Firefox mock browser lane outside source evidence.
+- `run-internal-ci-test-gate.sh`: owns the discrete JavaScript, engine, worker, and source-build qualification commands.
+- `verify-internal-beta-public-build.mjs`: exact-compares the web image embedded beta public-build contract to source identity.
+- `verify-internal-ci-codeql.mjs`: rejects failed, unapproved, expired, duplicate, or stale CodeQL evidence.
+- `verify-internal-ci-image-reports.mjs`: enforces complete per-archive SBOM/Trivy coverage and zero HIGH/CRITICAL vulnerabilities.
+- `verify-internal-ci-production-inventory.mjs`: reconciles the release manifest against resolved Compose services and shared images.
+- `verify-internal-ci-release-stack.mjs`: verifies the complete qualification stack service, health, and exact local image IDs.
+- `verify-internal-ci-unsigned-receipt.mjs`: performs the candidate-side pre-signing receipt identity check before the external signer.
+- `write-internal-beta-qualification-env.mjs`: writes the job-private canonical beta build/runtime environment and public config digest.
+- `write-internal-ci-command-result.mjs`: records a successful controller-attempt and exact-source command result consumed by the gate writer.
+- `write-internal-ci-runtime-gate-details.mjs`: binds canonical DAST/load evidence to the release manifest and exact candidate.
 - `release-bundle-registry.mjs`: creates, publishes, resolves, and explicitly repoints immutable secret-free release bundles plus signed indexes; S3 publication requires versioning, default and per-object COMPLIANCE Object Lock, unconditional object/version deletion denial, tag-scoped obsolete-object expiry plus bounded noncurrent retention that cannot expire active recovery material, and exact provider version/bytes/checksum/retention readback before pointer advance; pointer/signature writes use provider-side conditions, authenticated immutable split-pair repair, one unknown-state reconciliation, idempotent target handling, and competing-pointer refusal; Cosign binds trusted workflow identity, issuer, source SHA, immutable objects, and bundle digest.
 - `signed-report-provenance.mjs`: verifies Sigstore keyless report signatures for every image and exact OCI attestations for writable first-party registry images against the trusted workflow identity, issuer, digest, and canonical evidence.
 - `signed-release-authenticity.mjs`: owns the deterministic signed-index contract, exact signer policy, and bundle digest binding; every artifact and Sigstore bundle is opened once, copied to a private mode-0600 snapshot, and only those exact bytes are hashed, parsed, and passed to fail-closed `cosign verify-blob`.

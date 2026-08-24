@@ -67,13 +67,18 @@ test('internal beta launch is bound to VM107, a clean pushed SHA, and candidate 
   assert.match(lifecycle, /verify-resend-readiness\.mjs/);
   assert.match(lifecycle, /compose run --rm --no-deps --pull never/);
   assert.match(lifecycle, /"providerAccepted": true/);
-  const buildCall = lifecycle.lastIndexOf('\n  build_candidate_images\n');
-  const providerCall = lifecycle.lastIndexOf('\nverify_resend_provider\n');
-  const launchBranch = lifecycle.lastIndexOf('\nif [[ "$ACTION" == launch ]]; then');
-  assert.notEqual(buildCall, -1);
+  const providerCall = lifecycle.lastIndexOf('  verify_resend_provider\n');
+  const launchBranch = lifecycle.lastIndexOf('  if [[ "$ACTION" == launch ]]; then');
   assert.notEqual(providerCall, -1);
   assert.notEqual(launchBranch, -1);
-  assert.ok(buildCall < providerCall);
+  assert.equal(lifecycle.includes('build_candidate_images'), false);
+  assert.match(lifecycle, /VM107 must only load qualified CI image archives/);
+  for (const token of ['BETA_CANDIDATE_RECEIPT_FILE', 'BETA_CANDIDATE_SIGNATURE_FILE', 'BETA_RELEASE_MANIFEST_FILE', 'BETA_ARTIFACT_MANIFEST_FILE', 'BETA_RELEASE_IMAGE_DIR', 'BETA_CI_PUBLIC_KEY_FILE', 'BETA_CI_POLICY_FILE']) {
+    assert.match(lifecycle, new RegExp(token));
+  }
+  const receiptCall = lifecycle.lastIndexOf('  verify_signed_internal_ci_candidate\n');
+  assert.notEqual(receiptCall, -1);
+  assert.ok(receiptCall < providerCall);
   assert.ok(providerCall < launchBranch);
 });
 

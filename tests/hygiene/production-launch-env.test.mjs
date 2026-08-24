@@ -126,6 +126,8 @@ function validEnv(overrides = {}) {
   const values = {
     NODE_ENV: 'production',
     DATA_TARGET_ENV: 'production',
+    DEPLOY_RELEASE_SHA: '0123456789abcdef0123456789abcdef01234567',
+    PUBLIC_BUILD_CONFIG_SHA256: 'cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc',
     MIGRATION_PRODUCTION_CONFIRM: 'apply-lunchlineup-production-migrations',
     DOMAIN: 'lunchlineup.com',
     PRODUCTION_API_HEALTH_URL: 'https://lunchlineup.com/api/health',

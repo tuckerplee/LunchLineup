@@ -39,7 +39,7 @@ function runChild(command, args, options) {
 
 test('VM217 production deploy gates success on public and required internal health', () => {
   const script = read('scripts/deploy-vm217-remote.sh');
-  const ci = read('.github/workflows/ci.yml');
+  const ci = read('docs/legacy/github-actions-ci.yml');
   const requiredServices = ['pdf-parser', 'worker', 'engine', 'webhook-replay', 'prometheus', 'alertmanager'];
 
   assert.match(script, /HEALTH_URL="\$\{HEALTH_URL:-\}"/);
@@ -111,7 +111,7 @@ test('VM217 alert gate verifies fresh loopback Alertmanager state before proof a
 });
 
 test('production releases for the same workflow and ref serialize without cancellation', () => {
-  const ci = read('.github/workflows/ci.yml');
+  const ci = read('docs/legacy/github-actions-ci.yml');
   const concurrencyStart = ci.indexOf('concurrency:');
   const jobsStart = ci.indexOf('\njobs:', concurrencyStart);
   const concurrency = ci.slice(concurrencyStart, jobsStart);
@@ -124,7 +124,7 @@ test('production releases for the same workflow and ref serialize without cancel
 
 test('production rollback is durably armed in a completed step before remote mutation', () => {
   const script = read('scripts/deploy-vm217-remote.sh');
-  const ci = read('.github/workflows/ci.yml');
+  const ci = read('docs/legacy/github-actions-ci.yml');
   const productionStart = script.indexOf('run_production_release_deploy()');
   const productionEnd = script.indexOf('run_development_source_deploy()', productionStart);
   const productionDeploy = script.slice(productionStart, productionEnd);
@@ -849,7 +849,7 @@ test('release pointers advance only after retained proof and use staged atomic w
 });
 
 test('fresh-runner DAST and load jobs pull every started third-party image before pull-never startup', () => {
-  const ci = read('.github/workflows/ci.yml');
+  const ci = read('docs/legacy/github-actions-ci.yml');
   const requiredPull = 'docker compose --env-file .env.smoke pull proxy pgbouncer postgres redis rabbitmq';
   const startup = 'docker compose --env-file .env.smoke up -d --no-build --pull never migrate proxy web api api-v2 engine worker pgbouncer postgres redis rabbitmq';
 
@@ -861,7 +861,7 @@ test('fresh-runner DAST and load jobs pull every started third-party image befor
 });
 
 test('production workflow carries the verified proof digest into deploy and smoke', () => {
-  const ci = read('.github/workflows/ci.yml');
+  const ci = read('docs/legacy/github-actions-ci.yml');
 
   assert.match(ci, /id: launch_proof/);
   assert.match(ci, /launch_proof_sha256="\$\(sha256sum "\$launch_proof"/);

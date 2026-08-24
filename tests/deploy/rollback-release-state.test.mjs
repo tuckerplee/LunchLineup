@@ -314,7 +314,7 @@ test('real retained bundles materialize old and current roots for exact compatib
 });
 
 test('CI retains one validated baseline and routes every post-arm failure through the approved job', () => {
-  const ci = readFileSync(join(root, '.github/workflows/ci.yml'), 'utf8');
+  const ci = readFileSync(join(root, 'docs/legacy/github-actions-ci.yml'), 'utf8');
   const automaticDeploy = ci.slice(
     ci.indexOf('  deploy-production:'),
     ci.indexOf('  production-image-inventory:'),

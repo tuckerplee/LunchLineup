@@ -149,7 +149,7 @@ test('systemd runs the deployed backup image daily without pulls or dependency m
 });
 
 test('backup is a required CI release and deploy artifact', () => {
-  const ci = read('.github/workflows/ci.yml');
+  const ci = read('docs/legacy/github-actions-ci.yml');
   const verifier = read('scripts/verify-release-artifacts.mjs');
   const deploy = read('scripts/deploy-vm217-remote.sh');
   const dockerfile = read('infrastructure/docker/Dockerfile.backup');

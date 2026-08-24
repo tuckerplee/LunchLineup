@@ -23,7 +23,7 @@ function workflowJob(workflow, jobName, nextJobName) {
 }
 
 test('license policy uses only the locked local executable with registry access disabled', () => {
-  const workflow = read('.github/workflows/ci.yml');
+  const workflow = read('docs/legacy/github-actions-ci.yml');
   const packageJson = JSON.parse(read('package.json'));
   const packageLock = JSON.parse(read('package-lock.json'));
 
@@ -35,7 +35,7 @@ test('license policy uses only the locked local executable with registry access 
 });
 
 test('static analysis validates observability configs and Prometheus fixtures in pinned container mode', () => {
-  const workflow = read('.github/workflows/ci.yml');
+  const workflow = read('docs/legacy/github-actions-ci.yml');
   const staticAnalysis = workflowJob(workflow, 'static-analysis', 'terraform-validation');
   const migration = staticAnalysis.indexOf('- name: "2b. Migration SaaS and hygiene tests"');
   const observability = staticAnalysis.indexOf('- name: "2c. Validate observability configs and Prometheus rule fixtures"');
@@ -48,7 +48,7 @@ test('static analysis validates observability configs and Prometheus fixtures in
 });
 
 test('Stage 10 integration tests inherit the migration platform-admin capability', () => {
-  const workflow = read('.github/workflows/ci.yml');
+  const workflow = read('docs/legacy/github-actions-ci.yml');
   const integration = workflowJob(workflow, 'integration-tests', 'dast');
   const migrationSecret = integration.match(
     /- name: "9\. Run Migrations"[\s\S]*?PLATFORM_ADMIN_DB_CONTEXT_SECRET: ([^\n]+)/,
@@ -63,7 +63,7 @@ test('Stage 10 integration tests inherit the migration platform-admin capability
 });
 
 test('local CI gates trusted branches while image publication is limited to exact release candidates', () => {
-  const workflow = yaml.load(read('.github/workflows/ci.yml'));
+  const workflow = yaml.load(read('docs/legacy/github-actions-ci.yml'));
   const integration = workflow.jobs['integration-tests'];
   const buildImages = workflow.jobs['build-images'];
   const releaseCandidates = "(github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/internal-beta-candidate')) || (github.event_name == 'workflow_dispatch' && inputs.internal_beta_candidate == true)";
@@ -156,7 +156,7 @@ test('deployment contract is an exact secret-free compatibility and rollback sou
 });
 
 test('release CI requires every retained archive input to be tracked', () => {
-  const workflow = read('.github/workflows/ci.yml');
+  const workflow = read('docs/legacy/github-actions-ci.yml');
   assert.match(
     workflow,
     /deployment_contract="\$\(RELEASE_REQUIRE_TRACKED_INPUTS=true node scripts\/write-deployment-contract\.mjs --bundle-output \.release\/deployment-contract\.bundle\.json\)"/,
@@ -168,7 +168,7 @@ test('release CI requires every retained archive input to be tracked', () => {
 });
 
 test('registry-writing image job is unreachable from pull requests', () => {
-  const workflow = yaml.load(read('.github/workflows/ci.yml'));
+  const workflow = yaml.load(read('docs/legacy/github-actions-ci.yml'));
   const buildImages = workflow.jobs['build-images'];
   const expected = "${{ (github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/internal-beta-candidate')) || (github.event_name == 'workflow_dispatch' && inputs.internal_beta_candidate == true) }}";
   const imageBuilds = buildImages.steps.filter((step) => step.uses?.startsWith('docker/build-push-action@'));
@@ -180,7 +180,7 @@ test('registry-writing image job is unreachable from pull requests', () => {
 });
 
 test('load gate seeds disposable availability fixtures after health without an opt-out', () => {
-  const workflow = read('.github/workflows/ci.yml');
+  const workflow = read('docs/legacy/github-actions-ci.yml');
   const job = workflowJob(workflow, 'load-test', 'bootstrap-release-registry');
   const healthStep = job.indexOf('- name: Wait for smoke target');
   const seedStep = job.indexOf('- name: Seed mandatory availability-import load fixtures');
@@ -198,7 +198,7 @@ test('load gate seeds disposable availability fixtures after health without an o
 });
 
 test('load gate runs the mandatory availability smoke with exact bounded CI inputs', () => {
-  const workflow = read('.github/workflows/ci.yml');
+  const workflow = read('docs/legacy/github-actions-ci.yml');
   const job = workflowJob(workflow, 'load-test', 'bootstrap-release-registry');
   const smokeStep = job.indexOf('- name: Run mandatory load and availability-import smoke');
   const stopStep = job.indexOf('- name: Stop smoke stack');
@@ -222,7 +222,7 @@ test('load gate runs the mandatory availability smoke with exact bounded CI inpu
 });
 
 test('candidate DAST and load bundles are uploaded, downloaded, and verified before immutable publication', () => {
-  const workflow = read('.github/workflows/ci.yml');
+  const workflow = read('docs/legacy/github-actions-ci.yml');
   const dast = workflowJob(workflow, 'dast', 'e2e-tests');
   const load = workflowJob(workflow, 'load-test', 'bootstrap-release-registry');
   const validate = workflowJob(workflow, 'validate-release-gates', 'deploy-staging');
@@ -254,7 +254,7 @@ test('candidate DAST and load bundles are uploaded, downloaded, and verified bef
 });
 
 test('full-stack release-image E2E runs every spec that declares DB-backed coverage', () => {
-  const workflow = yaml.load(read('.github/workflows/ci.yml'));
+  const workflow = yaml.load(read('docs/legacy/github-actions-ci.yml'));
   const fullstack = workflow.jobs['fullstack-e2e'];
   const runStep = fullstack.steps.find((step) => step.name === 'Run DB-backed Playwright workflows');
   const e2eRoot = resolve(root, 'apps/web/tests/e2e');
@@ -280,7 +280,7 @@ test('full-stack release-image E2E runs every spec that declares DB-backed cover
 });
 
 test('internal beta proof requires every exact-SHA release, security, and runtime gate', () => {
-  const workflow = yaml.load(read('.github/workflows/ci.yml'));
+  const workflow = yaml.load(read('docs/legacy/github-actions-ci.yml'));
   const proof = workflow.jobs['internal-beta-candidate-proof'];
   const expectedNeeds = [
     'static-analysis',
@@ -326,7 +326,7 @@ test('internal beta proof requires every exact-SHA release, security, and runtim
 });
 
 test('internal beta images bind canonical beta public configuration without production fallback', () => {
-  const source = read('.github/workflows/ci.yml');
+  const source = read('docs/legacy/github-actions-ci.yml');
   const workflow = yaml.load(source);
   const build = workflow.jobs['build-images'];
   const verify = build.steps.find((step) => step.name === 'Verify web public build config');
@@ -343,7 +343,7 @@ test('internal beta images bind canonical beta public configuration without prod
 });
 
 test('production deploy publishes a deterministic deployed-input content digest', () => {
-  const workflow = read('.github/workflows/ci.yml');
+  const workflow = read('docs/legacy/github-actions-ci.yml');
   const deploy = workflowJob(workflow, 'deploy-production', 'production-image-inventory');
   const digestStep = deploy.indexOf('id: deployed_inputs_content_digest');
   const uploadStep = deploy.indexOf('id: upload_deployed_inputs');
@@ -363,7 +363,7 @@ test('production deploy publishes a deterministic deployed-input content digest'
 });
 
 test('same-gate production smoke exact-compares content before using deployed inputs', () => {
-  const workflow = read('.github/workflows/ci.yml');
+  const workflow = read('docs/legacy/github-actions-ci.yml');
   const deploy = workflowJob(workflow, 'deploy-production', 'production-image-inventory');
   const smoke = deploy.slice(
     deploy.indexOf('name: Verify exact deployed release inputs for same-gate smoke'),
@@ -428,4 +428,23 @@ test('deployed-input content digest detects file-byte and relative-path tamperin
   } finally {
     rmSync(temporaryRoot, { recursive: true, force: true });
   }
+});
+
+test('internal beta local pipeline keeps isolated source, active scanners, exact archives, and signed VM107 launch', () => {
+  const pipeline = JSON.parse(read('.ci/pipeline.json'));
+  const serialized = JSON.stringify(pipeline);
+  assert.deepEqual(pipeline.triggers.branches, ['internal-beta-candidate']);
+  assert.match(pipeline.steps[0].run, /materialize-internal-ci-source\.mjs/);
+  for (const owner of ['run-internal-ci-semgrep.sh', 'run-internal-ci-codeql.sh', 'run-internal-ci-terraform.sh', 'run-internal-ci-mock-playwright.sh', 'run-internal-beta-release-qualification.sh', 'build-internal-ci-artifact-manifest.mjs', 'build-internal-ci-candidate-receipt.mjs']) assert.match(serialized, new RegExp(owner.replaceAll('.', '\\.')));
+  assert.doesNotMatch(serialized, /chmod -R a\+rwx|\$PWD:\/src|BETA_BUILD_IMAGES=true/);
+  const materializer = read('scripts/materialize-internal-ci-source.mjs');
+  assert.match(materializer, /clone\('scan'\)/);
+  assert.match(materializer, /clone\('build'\)/);
+  assert.match(materializer, /scanClonePath === buildClonePath/);
+  const lifecycle = read('scripts/internal-beta-lifecycle.sh');
+  assert.match(lifecycle, /verify_signed_internal_ci_candidate/);
+  assert.match(lifecycle, /load_and_verify_candidate_images/);
+  assert.match(lifecycle, /archive digest mismatch/);
+  assert.match(lifecycle, /loaded image ID mismatch/);
+  assert.match(lifecycle, /VM107 must only load qualified CI image archives/);
 });

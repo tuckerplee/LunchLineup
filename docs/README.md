@@ -10,7 +10,9 @@
 - `code-organization.md`: current oversized/tangled source hotspot map and extraction routing.
 - `saas-ui-overhaul.md`: SaaS user-interface overhaul notes.
 - `compliance/`: compliance documentation.
+- `legacy/`: non-executable historical automation retained for review.
 - `runbooks/`: operational runbooks, including the VM107 disposable-server restore and `internal-beta-operations.md` launch/pause paths.
+- `operations/`: signed local-CI candidate qualification, bundle transfer, VM107 exact-image activation, readiness, and pause procedures.
 - `testing/`: testing and migration control documentation.
 
 ## Current Focus

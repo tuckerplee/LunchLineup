@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+set -euo pipefail
+[[ "${1:-}" == --receipt && -n "${2:-}" && "${3:-}" == --signature && -n "${4:-}" && $# == 4 ]] || { echo 'Usage: lunchlineup-sign-receipt --receipt <receipt.json> --signature <signature.json>' >&2; exit 64; }
+exec /usr/bin/node /usr/local/libexec/custom-ci/lunchlineup-sign-receipt.mjs --receipt "$2" --signature "$4" --policy /etc/custom-ci/policies/lunchlineup-internal-beta.json --private-key /etc/custom-ci/keys/lunchlineup-beta-ed25519.pem

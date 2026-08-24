@@ -43,7 +43,7 @@ test('production image inventory covers every Compose image without a second har
     ]) assert.equal(byService.get(service)?.source, 'compose', `${service} must be a scanned third-party image`);
     for (const service of releaseServices) assert.equal(byService.get(service)?.source, 'release-manifest');
 
-    const ci = readFileSync(join(root, '.github/workflows/ci.yml'), 'utf8');
+    const ci = readFileSync(join(root, 'docs/legacy/github-actions-ci.yml'), 'utf8');
     assert.match(ci, /production-image-inventory\.mjs --manifest \.release\/release-manifest\.json --github-matrix-output/);
     assert.equal((ci.match(/fromJSON\(needs\.production-image-inventory\.outputs\.matrix\)/g) ?? []).length, 2);
     assert.doesNotMatch(ci, /service: \[api, api-v2, web, engine, worker, migrate, control, backup\]/);

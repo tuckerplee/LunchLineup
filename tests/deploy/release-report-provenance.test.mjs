@@ -14,7 +14,7 @@ function jobBlock(workflow, name, nextName = null) {
 }
 
 test('Compose-derived release reports are signed, first-party-attested, reverified, and archived immutably', () => {
-  const ci = read('.github/workflows/ci.yml');
+  const ci = read('docs/legacy/github-actions-ci.yml');
   const aggregate = jobBlock(ci, 'validate-release-gates', 'deploy-staging');
   const sbom = jobBlock(ci, 'sbom', 'trivy-scan');
   const trivy = jobBlock(ci, 'trivy-scan');

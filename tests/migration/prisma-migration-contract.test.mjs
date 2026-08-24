@@ -680,7 +680,7 @@ test('development seed refuses accidental production execution', () => {
 test('deployment applies raw SQL migrations after Postgres starts', () => {
   const compose = read('docker-compose.yml');
   const migrationDockerfile = read('infrastructure/docker/Dockerfile.migrations');
-  const ci = read('.github/workflows/ci.yml');
+  const ci = read('docs/legacy/github-actions-ci.yml');
   const migrationScript = read('scripts/apply-db-migrations.mjs');
   const adminBootstrap = read('scripts/bootstrap-production-admin.mjs');
 
@@ -946,7 +946,7 @@ test('deduplicates Stripe usage before Prisma enforces logical identity', () => 
   assert.match(migrationsReadme, /pre_20260712_stripe_usage_logical_identity\.sql/);
 });
 test('integration replay uses the owner migration URL', () => {
-  const ci = read('.github/workflows/ci.yml');
+  const ci = read('docs/legacy/github-actions-ci.yml');
   const workflow = yaml.load(ci);
   const integration = read('tests/integration/ephemeral-stack.test.mjs');
   const migrationStep = workflow.jobs['integration-tests'].steps.find(

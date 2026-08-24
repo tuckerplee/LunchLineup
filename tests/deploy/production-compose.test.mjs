@@ -439,7 +439,7 @@ test('production web runtime receives the validated public status health URL', (
 test('web image bakes explicit public config at build time', () => {
   const dockerfile = read('infrastructure/docker/Dockerfile.web');
   const compose = read('docker-compose.yml');
-  const ci = read('.github/workflows/ci.yml');
+  const ci = read('docs/legacy/github-actions-ci.yml');
   const webBlock = serviceBlock(compose, 'web');
   const publicBuildKeys = [
     'NEXT_PUBLIC_API_URL',
@@ -567,7 +567,7 @@ test('release-built observability and proxy binaries enforce patched dependency 
   assert.match(trivyIgnore, /CVE-2026-28377/);
   assert.match(trivyIgnore, /pkg:golang\/github\.com\/grafana\/tempo@v0\.0\.0-20260813170847-f0f3ed59197b/);
   assert.match(trivyIgnore, /expired_at: 2026-09-30/);
-  assert.match(read('.github/workflows/ci.yml'), /trivyignores: '\.trivyignore\.yaml'/);
+  assert.match(read('docs/legacy/github-actions-ci.yml'), /trivyignores: '\.trivyignore\.yaml'/);
   for (const dockerfile of [grafana, alertmanager, collector]) {
     assert.match(dockerfile, /golang\.org\/x\/mod@v0\.40\.0/);
   }
@@ -596,7 +596,7 @@ test('Compose external third-party service images are digest-pinned', () => {
 });
 
 test('CI service containers are digest-pinned', () => {
-  const ci = read('.github/workflows/ci.yml');
+  const ci = read('docs/legacy/github-actions-ci.yml');
   const imageRefs = [...ci.matchAll(/^ {8}image:\s*"?([^"\r\n]+)"?\s*$/gm)].map((match) => match[1]);
 
   assert.deepEqual(imageRefs.sort(), [
@@ -777,7 +777,7 @@ test('control plane defaults private and protects operational endpoints with an 
 
 test('database migrations gate API and worker startup', () => {
   const compose = read('docker-compose.yml');
-  const ci = read('.github/workflows/ci.yml');
+  const ci = read('docs/legacy/github-actions-ci.yml');
 
   assert.match(serviceBlock(compose, 'api'), /migrate:[\s\S]*condition: service_completed_successfully/);
   assert.match(serviceBlock(compose, 'worker'), /migrate:[\s\S]*condition: service_completed_successfully/);
@@ -933,7 +933,7 @@ test('example env and deploy helpers do not encode copyable weak secrets', () =>
 });
 
 test('CI smoke jobs use the shared smoke environment generator', () => {
-  const ci = read('.github/workflows/ci.yml');
+  const ci = read('docs/legacy/github-actions-ci.yml');
   const compose = read('docker-compose.yml');
   const smokeWriter = read('scripts/write-smoke-env.mjs');
 
@@ -971,7 +971,7 @@ test('CI smoke jobs use the shared smoke environment generator', () => {
 });
 
 test('main branch release jobs fail closed when required deployment variables are missing', () => {
-  const ci = read('.github/workflows/ci.yml');
+  const ci = read('docs/legacy/github-actions-ci.yml');
   const releaseGateStart = ci.indexOf('  validate-release-gates:');
   const stagingStart = ci.indexOf('  deploy-staging:');
   const productionStart = ci.indexOf('  deploy-production:');
@@ -1090,7 +1090,7 @@ test('main branch release jobs fail closed when required deployment variables ar
 });
 
 test('private release-image consumers authenticate to GHCR on each fresh runner', () => {
-  const ci = read('.github/workflows/ci.yml');
+  const ci = read('docs/legacy/github-actions-ci.yml');
   for (const [job, nextJob] of [
     ['dast', 'e2e-tests'],
     ['fullstack-e2e', 'load-test'],
@@ -1244,7 +1244,7 @@ test('release artifact verifier accepts pinned manifests and rejects mutable dep
       const workflowPath = join(scratch, `${name}-ci.yml`);
       writeFileSync(
         workflowPath,
-        read('.github/workflows/ci.yml').replaceAll('bash scripts/deploy-vm217-transport.sh', replacement),
+        read('docs/legacy/github-actions-ci.yml').replaceAll('bash scripts/deploy-vm217-transport.sh', replacement),
       );
       const helperWorkflowResult = spawnSync(
         process.execPath,
@@ -1268,7 +1268,7 @@ test('release artifact verifier accepts pinned manifests and rejects mutable dep
       );
     }
 
-    const productionWorkflow = read('.github/workflows/ci.yml');
+    const productionWorkflow = read('docs/legacy/github-actions-ci.yml');
     for (const [name, insertedExecution] of [
       ['inserted-bash-c', '          bash -c "$MUTABLE_DEPLOY_COMMAND"'],
       ['inserted-sh-c', '          sh -c "$MUTABLE_DEPLOY_COMMAND"'],
@@ -1942,7 +1942,7 @@ test('Prometheus alerts point at checked-in runbooks and cover backup freshness'
 });
 
 test('production smoke verifies canonical public HTML release identity before publishing success evidence', () => {
-  const ci = read('.github/workflows/ci.yml');
+  const ci = read('docs/legacy/github-actions-ci.yml');
   const smoke = ci.slice(
     ci.indexOf('  deploy-production:'),
     ci.indexOf('  production-image-inventory:'),

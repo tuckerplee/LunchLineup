@@ -19,7 +19,7 @@ import {
 } from '../../scripts/validate-production-deploy-deadlines.mjs';
 
 const root = resolve(import.meta.dirname, '../..');
-const workflow = yaml.load(readFileSync(join(root, '.github/workflows/ci.yml'), 'utf8'));
+const workflow = yaml.load(readFileSync(join(root, 'docs/legacy/github-actions-ci.yml'), 'utf8'));
 const deploy = workflow.jobs['deploy-production'];
 const step = (name) => deploy.steps.find((candidate) => candidate.name === name);
 const aggregateStep = step('17. Guarded production deploy; Reconcile exact VM217 active release, services, and legacy traffic state; cleanup');

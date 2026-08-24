@@ -1,0 +1,115 @@
+{
+  "version": 1,
+  "kind": "lunchlineup-internal-beta-runtime-services",
+  "profile": "ops",
+  "services": {
+    "proxy": {
+      "state": "healthy",
+      "requiredOnVm107": true
+    },
+    "web": {
+      "state": "healthy",
+      "requiredOnVm107": true
+    },
+    "api": {
+      "state": "healthy",
+      "requiredOnVm107": true
+    },
+    "webhook-replay": {
+      "state": "healthy",
+      "requiredOnVm107": true
+    },
+    "migrate": {
+      "state": "one-shot",
+      "requiredOnVm107": true
+    },
+    "engine": {
+      "state": "healthy",
+      "requiredOnVm107": true
+    },
+    "pdf-parser": {
+      "state": "healthy",
+      "requiredOnVm107": true
+    },
+    "worker": {
+      "state": "healthy",
+      "requiredOnVm107": true
+    },
+    "pgbouncer": {
+      "state": "running",
+      "requiredOnVm107": true
+    },
+    "pitr-wal-provider": {
+      "state": "running",
+      "requiredOnVm107": true
+    },
+    "api-v2": {
+      "state": "healthy",
+      "requiredOnVm107": true
+    },
+    "pitr-lifecycle-audit": {
+      "state": "one-shot",
+      "requiredOnVm107": false
+    },
+    "postgres": {
+      "state": "healthy",
+      "requiredOnVm107": true
+    },
+    "redis": {
+      "state": "healthy",
+      "requiredOnVm107": true
+    },
+    "rabbitmq": {
+      "state": "healthy",
+      "requiredOnVm107": true
+    },
+    "control": {
+      "state": "healthy",
+      "requiredOnVm107": true
+    },
+    "autoheal": {
+      "state": "running",
+      "requiredOnVm107": true
+    },
+    "prometheus": {
+      "state": "healthy",
+      "requiredOnVm107": true
+    },
+    "backup": {
+      "state": "one-shot",
+      "requiredOnVm107": false
+    },
+    "pitr-base-backup": {
+      "state": "one-shot",
+      "requiredOnVm107": false
+    },
+    "alertmanager": {
+      "state": "healthy",
+      "requiredOnVm107": true
+    },
+    "node-exporter": {
+      "state": "running",
+      "requiredOnVm107": true
+    },
+    "loki": {
+      "state": "healthy",
+      "requiredOnVm107": true
+    },
+    "promtail": {
+      "state": "running",
+      "requiredOnVm107": true
+    },
+    "otel-collector": {
+      "state": "running",
+      "requiredOnVm107": true
+    },
+    "tempo": {
+      "state": "healthy",
+      "requiredOnVm107": true
+    },
+    "grafana": {
+      "state": "healthy",
+      "requiredOnVm107": true
+    }
+  }
+}

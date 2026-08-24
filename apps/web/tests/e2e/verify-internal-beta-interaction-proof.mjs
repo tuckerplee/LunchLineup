@@ -26,10 +26,13 @@ function collectSpecs(suites, output = []) {
   return output;
 }
 
-export function verifyInteractionProofReport(report, sourceSha) {
+export function verifyInteractionProofReport(report, sourceSha, bindings = {}) {
   if (!/^[a-f0-9]{40}$/.test(sourceSha)) fail('source SHA must be an exact lowercase 40-character Git SHA.');
   if (!report || typeof report !== 'object' || Array.isArray(report)) fail('Playwright JSON report must be an object.');
   if (report.config?.metadata?.candidateSha !== sourceSha) fail('Playwright report candidate SHA does not match the requested source SHA.');
+  for (const [key, value] of Object.entries(bindings)) {
+    if (report.config?.metadata?.[key] !== value) fail(`Playwright report ${key} does not match the requested release identity.`);
+  }
   const specs = collectSpecs(report.suites);
   const observed = [];
   for (const spec of specs) {
@@ -54,6 +57,7 @@ export function verifyInteractionProofReport(report, sourceSha) {
     version: 1,
     kind: 'lunchlineup-internal-beta-interaction-proof',
     sourceSha,
+    ...bindings,
     cases: Object.fromEntries([...requiredInteractionProofCases].map(([project, titles]) => [
       project,
       Object.fromEntries(titles.map((title) => [title, 'passed'])),
@@ -71,10 +75,17 @@ function argument(name) {
 function run() {
   const reportPath = argument('--report');
   const sourceSha = argument('--source-sha');
+  const treeSha = argument('--tree-sha');
+  const releaseManifestPath = argument('--release-manifest');
+  const webImageId = argument('--web-image-id');
+  const publicBuildConfigSha256 = argument('--public-build-config-sha256');
   const outputPath = argument('--output');
   if (existsSync(outputPath)) fail('output path already exists.');
   const reportBytes = readFileSync(reportPath);
-  const proof = verifyInteractionProofReport(JSON.parse(reportBytes.toString('utf8')), sourceSha);
+  if (!/^[a-f0-9]{40}$/.test(treeSha) || !/^sha256:[a-f0-9]{64}$/.test(webImageId) || !/^[a-f0-9]{64}$/.test(publicBuildConfigSha256)) fail('release identity arguments are malformed.');
+  const releaseManifestBytes = readFileSync(releaseManifestPath);
+  const releaseManifestSha256 = createHash('sha256').update(releaseManifestBytes).digest('hex');
+  const proof = verifyInteractionProofReport(JSON.parse(reportBytes.toString('utf8')), sourceSha, { candidateTreeSha: treeSha, releaseManifestSha256, webImageId, publicBuildConfigSha256 });
   proof.playwrightReportSha256 = createHash('sha256').update(reportBytes).digest('hex');
   writeFileSync(outputPath, `${JSON.stringify(proof, null, 2)}\n`, { flag: 'wx', mode: 0o600 });
   console.log(`internal_beta_interaction_proof_ok source_sha=${sourceSha} report_sha256=${proof.playwrightReportSha256}`);

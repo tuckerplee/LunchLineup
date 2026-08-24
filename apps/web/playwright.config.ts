@@ -1,4 +1,5 @@
 import { defineConfig, devices } from '@playwright/test';
+import { resolve } from 'node:path';
 
 const AUTOMATIC_PORT_BASE = 4300;
 const AUTOMATIC_PORT_PAIR_COUNT = 300;
@@ -38,6 +39,7 @@ if (useMockApi && e2ePort === mockApiPort) {
 }
 const useNextDevServer = useMockApi || process.env.E2E_USE_NEXT_DEV === '1';
 const serializeMockApiTests = useMockApi;
+const artifactRoot = process.env.E2E_ARTIFACT_ROOT ? resolve(process.env.E2E_ARTIFACT_ROOT) : '';
 const mockSignupMode = process.env.E2E_SIGNUP_MODE?.trim().toLowerCase() || 'open';
 if (!['closed_beta', 'invite_only', 'open'].includes(mockSignupMode)) {
     throw new Error(`E2E_SIGNUP_MODE must be closed_beta, invite_only, or open; received ${JSON.stringify(mockSignupMode)}.`);
@@ -93,9 +95,10 @@ export default defineConfig({
     retries: process.env.CI ? 2 : 0,
     workers: serializeMockApiTests || process.env.CI ? 1 : undefined,
     reporter: [
-        ['html', { outputFolder: 'playwright-report' }],
-        ['junit', { outputFile: 'test-results/junit.xml' }],
+        ['html', { outputFolder: artifactRoot ? resolve(artifactRoot, 'report') : 'playwright-report' }],
+        ['junit', { outputFile: artifactRoot ? resolve(artifactRoot, 'results/junit.xml') : 'test-results/junit.xml' }],
     ],
+    outputDir: artifactRoot ? resolve(artifactRoot, 'results/artifacts') : 'test-results',
     use: {
         baseURL: process.env.BASE_URL || localBaseUrl,
         trace: 'on-first-retry',

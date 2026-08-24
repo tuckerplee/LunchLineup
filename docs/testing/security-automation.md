@@ -1,15 +1,15 @@
 # Security Automation
 
-The authoritative CI path is the source-neutral `.ci/pipeline.json` executed by the internal CI appliance from its internal Git repository. Repository-level GitHub Actions is disabled. The GitHub workflow definitions and the controls below are retained for review and rollback reference; they are not a live execution dependency. A push to the internal `ci` remote must pass the local pipeline for the exact candidate SHA before the beta is eligible to deploy.
+The authoritative CI path is the source-neutral `.ci/pipeline.json` executed by the internal CI appliance from its internal Git repository. Repository-level GitHub Actions is disabled, and `.github/workflows/` contains no executable YAML. The former workflow is retained at `docs/legacy/github-actions-ci.yml` for historical review only. A push to the internal `ci` remote must pass the local pipeline for the exact candidate SHA before the beta is eligible to deploy; GitHub is a source mirror only.
 
-The retained GitHub workflow documents the former GitHub-only source scanners. The live Semgrep scan is executed and retained by the internal appliance; GitHub SARIF and CodeQL uploads are not part of candidate acceptance.
+The retained GitHub workflow documents the former GitHub-only source scanners. Live Semgrep and both CodeQL languages execute on the internal appliance from the isolated scan clone; GitHub SARIF and CodeQL uploads are not part of candidate acceptance.
 
-- Semgrep runs from a versioned, digest-pinned container, compares the candidate against the fetched `origin/main` baseline, writes only newly introduced findings to SARIF, uploads them through the SHA-pinned GitHub CodeQL upload action, and then enforces the scanner exit code. Existing findings remain visible in GitHub code scanning and are not silently dismissed; every new finding blocks the candidate until fixed or explicitly reviewed outside CI.
-- CodeQL runs `security-extended` analysis for JavaScript/TypeScript and Python, waits for GitHub to process each upload, and fails the job if extraction, analysis, or upload fails.
+- Internal Semgrep runs from a versioned, digest-pinned container, scans the complete candidate, compares it with the fetched `origin/main` baseline, retains both SARIF reports, and enforces each scanner result locally.
+- Internal CodeQL runs `security-extended` analysis for JavaScript/TypeScript and Python, retains the SARIF reports, and fails qualification if extraction or analysis fails.
 
-Both jobs have only `contents: read`, plus `security-events: write` for result upload. CodeQL also has `actions: read` for workflow metadata. The workflow default is `contents: read`; release jobs declare any additional write permissions locally.
+The historical GitHub permissions and uploads are documentation only and produce no release evidence.
 
-The unit and release chain requires Semgrep, CodeQL, and the production dependency audit. Semgrep runs as the local runner UID with a writable container-only home, keeping SARIF writable without granting root or weakening findings. The SAST checkout fetches full history so `origin/main` is an auditable baseline rather than a mutable local snapshot.
+The unit and release chain requires Semgrep, CodeQL, and the production dependency audit. Semgrep receives a read-only scan clone and a dedicated writable output directory. CodeQL databases live under `RUNNER_TEMP`, use the reviewed bundle digest, and reject findings outside the checked-in expiring baseline. The scan clone contains the exact retained `origin/main` object used by both delta policies.
 
 ## Dependency Updates
 

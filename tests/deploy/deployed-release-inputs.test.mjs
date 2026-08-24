@@ -131,7 +131,7 @@ test('release bundle persists only immutable runtime secret metadata', () => {
 });
 
 test('workflow publishes only from run-attempt-scoped deployed input artifacts', () => {
-  const workflow = readFileSync(join(root, '.github/workflows/ci.yml'), 'utf8');
+  const workflow = readFileSync(join(root, 'docs/legacy/github-actions-ci.yml'), 'utf8');
   const productionTransaction = workflow.slice(
     workflow.indexOf('  deploy-production:'),
     workflow.indexOf('  production-image-inventory:'),
@@ -210,7 +210,7 @@ test('create consumes the retained proof URI only through an owner-protected fil
 test('production binding argv spy rejects raw and base64 proof URI exposure', () => {
   const scratch = mkdtempSync(join(tmpdir(), 'll-deployed-input-argv-spy-'));
   try {
-    const workflow = readFileSync(join(root, '.github/workflows/ci.yml'), 'utf8').replaceAll('\r\n', '\n');
+    const workflow = readFileSync(join(root, 'docs/legacy/github-actions-ci.yml'), 'utf8').replaceAll('\r\n', '\n');
     const bindingStep = workflow.slice(
       workflow.indexOf('      - name: Bind exact production deployment inputs'),
       workflow.indexOf('      - name: Verify production deployment inputs'),

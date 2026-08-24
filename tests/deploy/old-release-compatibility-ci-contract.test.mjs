@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const harness = join(root, 'scripts', 'old-release-compatibility-harness.mjs');
-const workflow = join(root, '.github', 'workflows', 'ci.yml');
+const workflow = join(root, 'docs', 'legacy', 'github-actions-ci.yml');
 
 // Planck's workflow wiring must supply every value from protected CI/provider
 // state. Candidate and retained release checkouts may supply only clone roots,

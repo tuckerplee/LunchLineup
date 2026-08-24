@@ -92,6 +92,8 @@ services:
         NEXT_PUBLIC_APP_ORIGIN: ${NEXT_PUBLIC_APP_ORIGIN:-http://localhost:3000}
         NEXT_PUBLIC_APP_URL: ${NEXT_PUBLIC_APP_URL:-http://localhost:3000}
         NEXT_PUBLIC_APP_ENV: ${NEXT_PUBLIC_APP_ENV:-production}
+        DEPLOY_RELEASE_SHA: ${DEPLOY_RELEASE_SHA:?Set DEPLOY_RELEASE_SHA in .env}
+        PUBLIC_BUILD_CONFIG_SHA256: ${PUBLIC_BUILD_CONFIG_SHA256:?Set PUBLIC_BUILD_CONFIG_SHA256 in .env}
     networks:
       - app
     environment:

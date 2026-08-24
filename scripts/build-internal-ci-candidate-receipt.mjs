@@ -1,69 +1,16 @@
-import { createHash } from 'node:crypto';
-import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
-import { basename, dirname, join, resolve } from 'node:path';
-
-const sourceSha = process.env.CI_COMMIT_SHA ?? '';
-const sourceRef = process.env.CI_REF ?? '';
-const runId = process.env.CI_RUN_ID ?? '';
-const repository = process.env.CI_REPOSITORY ?? '';
-const evidenceRoot = resolve(process.argv[2] ?? '');
-if (!/^[a-f0-9]{40}$/.test(sourceSha) || sourceRef !== 'refs/heads/internal-beta-candidate' || !runId || !repository || !existsSync(evidenceRoot)) {
-  throw new Error('Internal candidate receipt requires exact Custom CI source identity and evidence root.');
-}
-const sha256 = (path) => createHash('sha256').update(readFileSync(path)).digest('hex');
-const readJson = (path) => JSON.parse(readFileSync(path, 'utf8'));
-const requiredGates = ['source-validation', 'dependency-license', 'sast', 'integration', 'release-images', 'fullstack-e2e', 'interaction-proof', 'dast', 'load', 'sbom', 'trivy'];
-const gates = Object.fromEntries(requiredGates.map((name) => {
-  const path = join(evidenceRoot, 'gates', `${name}.json`);
-  const gate = readJson(path);
-  if (gate.name !== name || gate.status !== 'passed' || gate.sourceSha !== sourceSha || gate.attempts !== 1) {
-    throw new Error(`Gate ${name} is missing, stale, skipped, retried, or failed.`);
-  }
-  return [name, gate];
-}));
-const manifestPath = join(evidenceRoot, 'release-manifest.json');
-const manifest = readJson(manifestPath);
-if (manifest.sourceSha !== sourceSha || manifest.sourceRef !== sourceRef || Object.keys(manifest.images ?? {}).length !== 17) {
-  throw new Error('Release manifest is not exact and complete.');
-}
-const interactionPath = join(evidenceRoot, 'interaction-proof.json');
-const interaction = readJson(interactionPath);
-if (interaction.sourceSha !== sourceSha) throw new Error('Interaction proof source SHA mismatch.');
-const semgrepFullPath = join(evidenceRoot, 'semgrep', 'full.sarif');
-const semgrepDeltaPath = join(evidenceRoot, 'semgrep', 'delta.sarif');
-function semgrepReport(path) {
-  const report = readJson(path);
-  const findings = (report.runs ?? []).flatMap((run) => run.results ?? []);
-  return { path: path.slice(evidenceRoot.length + 1).replaceAll('\\', '/'), sha256: sha256(path), findings: findings.length };
-}
-const semgrep = { full: semgrepReport(semgrepFullPath), delta: semgrepReport(semgrepDeltaPath) };
-const inventory = [];
-function collect(path) {
-  for (const entry of readdirSync(path)) {
-    const child = join(path, entry);
-    if (statSync(child).isDirectory()) collect(child);
-    else inventory.push({ path: child.slice(evidenceRoot.length + 1).replaceAll('\\', '/'), sha256: sha256(child) });
-  }
-}
-collect(evidenceRoot);
-const pipelinePath = resolve('.ci/pipeline.json');
-const receipt = {
-  version: 1,
-  kind: 'lunchlineup-internal-beta-candidate-receipt',
-  status: 'passed',
-  repository,
-  source: { sha: sourceSha, ref: sourceRef, event: process.env.CI_EVENT },
-  ci: { runId, pipelineSha256: sha256(pipelinePath) },
-  startedAt: gates['source-validation'].startedAt,
-  completedAt: new Date().toISOString(),
-  gates: Object.fromEntries(requiredGates.map((name) => [name, 'passed'])),
-  testInventory: { interactionCases: Object.values(interaction.cases ?? {}).flatMap(Object.keys).length },
-  interactionProof: { sha256: sha256(interactionPath), path: basename(interactionPath) },
-  releaseManifest: { sha256: sha256(manifestPath), images: manifest.images },
-  securityReports: { semgrep, reports: inventory.filter(({ path }) => /^(semgrep|sbom|trivy|dast|load)\//.test(path)) },
-  evidenceInventory: inventory,
-};
-const output = join(evidenceRoot, `internal-beta-candidate-receipt-${sourceSha}.json`);
-mkdirSync(dirname(output), { recursive: true });
-writeFileSync(output, `${JSON.stringify(receipt, null, 2)}\n`, { encoding: 'utf8', flag: 'wx', mode: 0o600 });
-console.log(`internal_beta_candidate_receipt_ok source_sha=${sourceSha} receipt_sha256=${sha256(output)}`);
+import { readdirSync, readFileSync } from 'node:fs';
+import { basename, resolve } from 'node:path';
+import { REQUIRED_INTERNAL_BETA_GATES } from './internal-ci-policy.mjs';
+import { readInternalCiSourceContext } from './internal-ci-source-context.mjs';
+import { readJsonEvidence, sha256File, statRegularEvidenceFile, writeExclusiveJson } from './internal-ci-evidence.mjs';
+const args=process.argv.slice(2),one=(f)=>{const i=args.indexOf(f);return i<0?'':args[i+1]??'';},required=['--source-context','--source-proof','--gate-directory','--release-manifest','--interaction-proof','--artifact-manifest','--output']; if(required.some((f)=>!one(f))) throw new Error(`Usage requires ${required.join(', ')}.`);
+const context=readInternalCiSourceContext(resolve(one('--source-context'))),root=context.evidenceRoot,proofPath=resolve(one('--source-proof')),gateDirectory=resolve(one('--gate-directory')),manifestPath=resolve(one('--release-manifest')),interactionPath=resolve(one('--interaction-proof')),artifactPath=resolve(one('--artifact-manifest')); const proof=readJsonEvidence(proofPath,root,'source proof'),manifest=readJsonEvidence(manifestPath,root,'release manifest'),interaction=readJsonEvidence(interactionPath,root,'interaction proof'),artifact=readJsonEvidence(artifactPath,root,'artifact manifest');
+const proofSha=await sha256File(proofPath,root),manifestSha=await sha256File(manifestPath,root),interactionSha=await sha256File(interactionPath,root),artifactSha=await sha256File(artifactPath,root); if(proof.sourceSha!==context.sourceSha||proof.treeSha!==context.treeSha||proof.baselineSha!==context.baselineSha||proof.pipelineSha256!==context.pipelineSha256||manifest.sourceSha!==context.sourceSha||manifest.treeSha!==context.treeSha||manifest.pipelineSha256!==context.pipelineSha256||artifact.sourceSha!==context.sourceSha||artifact.treeSha!==context.treeSha||artifact.runId!==context.runId||interaction.sourceSha!==context.sourceSha||interaction.candidateTreeSha!==context.treeSha||interaction.releaseManifestSha256!==manifestSha) throw new Error('Candidate receipt inputs are not exact-source bound.');
+const actualGateFiles=readdirSync(gateDirectory).filter((n)=>n.endsWith('.json')).sort(),expectedGateFiles=REQUIRED_INTERNAL_BETA_GATES.map((n)=>`${n}.json`).sort(); if(JSON.stringify(actualGateFiles)!==JSON.stringify(expectedGateFiles)) throw new Error('Gate directory must contain the exact required inventory.');
+const artifactFiles=new Map(artifact.files.map((x)=>[x.path,x])),assertListed=async(path,label)=>{const item=statRegularEvidenceFile(path,root),listed=artifactFiles.get(item.path),actualSha=await sha256File(path,root);if(!listed||listed.sha256!==actualSha||listed.bytes!==item.bytes)throw new Error(`${label} is absent from the artifact manifest.`);return item;},gates={}; for(const name of REQUIRED_INTERNAL_BETA_GATES){const path=resolve(gateDirectory,`${name}.json`),gate=readJsonEvidence(path,root,`gate ${name}`); if(gate.version!==2||gate.kind!=='lunchlineup-internal-ci-gate'||gate.name!==name||gate.status!=='passed'||gate.repository!==context.repository||gate.sourceRef!==context.sourceRef||gate.sourceSha!==context.sourceSha||gate.treeSha!==context.treeSha||gate.baselineSha!==context.baselineSha||gate.runId!==context.runId||gate.pipelineSha256!==context.pipelineSha256||gate.sourceProofSha256!==proofSha||gate.attempt!==1||!Array.isArray(gate.evidence)||!gate.evidence.length) throw new Error(`Invalid gate ${name}.`); for(const evidence of gate.evidence){const listed=artifactFiles.get(evidence.path); if(name==='artifact-integrity'&&evidence.path===statRegularEvidenceFile(artifactPath,root).path){if(evidence.sha256!==artifactSha||evidence.bytes!==statRegularEvidenceFile(artifactPath,root).bytes)throw new Error('Artifact-integrity gate does not bind the artifact manifest.');continue;} if(!listed||listed.sha256!==evidence.sha256||listed.bytes!==evidence.bytes) throw new Error(`Gate evidence absent from artifact manifest: ${name}:${evidence.path}`);} if(name!=='artifact-integrity')await assertListed(path,`Gate receipt ${name}`); gates[name]={path:statRegularEvidenceFile(path,root).path,sha256:await sha256File(path,root),status:'passed',evidence:gate.evidence};}
+const details=(name)=>readJsonEvidence(resolve(root,`details/${name}.json`),root,`${name} details`),semgrepFull=details('semgrep-full'),semgrepDelta=details('semgrep-delta'),codeqlJs=details('codeql-javascript-typescript'),codeqlPy=details('codeql-python'),trivy=details('trivy'),sbomSummary=readJsonEvidence(resolve(root,'sbom/summary.json'),root,'SBOM summary'),trivySummary=readJsonEvidence(resolve(root,'trivy/summary.json'),root,'Trivy summary'); if(semgrepDelta.findings!==0||codeqlJs.unapprovedFindings!==0||codeqlPy.unapprovedFindings!==0||trivy.high!==0||trivy.critical!==0) throw new Error('Security qualification is not clean.');
+await assertListed(proofPath,'Source proof'); await assertListed(manifestPath,'Release manifest'); await assertListed(interactionPath,'Interaction proof'); await assertListed(resolve(root,'sbom/summary.json'),'SBOM summary'); await assertListed(resolve(root,'trivy/summary.json'),'Trivy summary');
+const imageNames=Object.keys(manifest.images).sort(); if(JSON.stringify(Object.keys(sbomSummary.reports??{}).sort())!==JSON.stringify(imageNames)||JSON.stringify(Object.keys(trivySummary.reports??{}).sort())!==JSON.stringify(imageNames)) throw new Error('Release image scan coverage is not exact.'); for(const name of imageNames){const image=manifest.images[name]; await assertListed(resolve(root,image.archive.path),`Image archive ${name}`); for(const summary of [sbomSummary,trivySummary]){const report=summary.reports[name]; if(report.archiveSha256!==image.archive.sha256||report.localImageId!==image.localImageId||report.imageRef!==image.resolvedRef) throw new Error(`Image report binding mismatch: ${name}`); await assertListed(resolve(root,report.report.path),`Image report ${name}`);}}
+const expectedPublic={NEXT_PUBLIC_API_URL:'/api/v2',NEXT_PUBLIC_APP_ORIGIN:'https://beta.lunchlineup.com',NEXT_PUBLIC_APP_URL:'https://beta.lunchlineup.com',NEXT_PUBLIC_APP_ENV:'production',NEXT_PUBLIC_SIGNUP_MODE:'closed_beta'}; if(JSON.stringify(manifest.publicBuildConfig.values)!==JSON.stringify(expectedPublic)||interaction.publicBuildConfigSha256!==manifest.publicBuildConfig.sha256||interaction.webImageId!==manifest.images[manifest.services.web.imageArtifact].localImageId) throw new Error('Public build or interaction proof binding mismatch.');
+const issuedAt=new Date().toISOString(),expiresAt=new Date(Date.now()+72*60*60*1000).toISOString(),receipt={version:2,kind:'lunchlineup-internal-beta-candidate-receipt',status:'passed',repository:context.repository,source:{ref:context.sourceRef,sha:context.sourceSha,treeSha:context.treeSha,remoteCandidateSha:context.remoteCandidateSha,baselineSha:context.baselineSha},ci:{runId:context.runId,runAttempt:1,pipelineSha256:context.pipelineSha256,sourceProofSha256:proofSha},publicBuildConfig:manifest.publicBuildConfig,gates,releaseManifest:{path:statRegularEvidenceFile(manifestPath,root).path,sha256:manifestSha},interactionProof:{path:statRegularEvidenceFile(interactionPath,root).path,sha256:interactionSha},artifactManifest:{path:statRegularEvidenceFile(artifactPath,root).path,sha256:artifactSha,rootSha256:artifact.rootSha256},securitySummary:{semgrepFullFindings:semgrepFull.findings,semgrepDeltaFindings:semgrepDelta.findings,codeqlUnapprovedFindings:codeqlJs.unapprovedFindings+codeqlPy.unapprovedFindings,trivyHigh:trivy.high,trivyCritical:trivy.critical},issuedAt,expiresAt};
+if(/(?:secret|password|private[_-]?key|access[_-]?key|api[_-]?key|token)/i.test(Object.keys(receipt).join(','))) throw new Error('Receipt contains forbidden secret-shaped data.'); writeExclusiveJson(resolve(one('--output')),receipt,{root});

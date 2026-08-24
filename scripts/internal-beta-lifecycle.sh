@@ -8,7 +8,15 @@ ACTION="${1:-verify}"
 APP_DIR="${APP_DIR:-/opt/lunchlineup}"
 RUNTIME_ENV="${BETA_RUNTIME_ENV_FILE:-/opt/lunchlineup-secrets/runtime.env}"
 SOURCE_SHA="${BETA_CANDIDATE_SHA:-}"
-CANDIDATE_REF="${BETA_CANDIDATE_REF:-origin/main}"
+CANDIDATE_REF="${BETA_CANDIDATE_REF:-origin/internal-beta-candidate}"
+CANDIDATE_RECEIPT="${BETA_CANDIDATE_RECEIPT_FILE:-/opt/lunchlineup-release/candidate-receipt.json}"
+CANDIDATE_SIGNATURE="${BETA_CANDIDATE_SIGNATURE_FILE:-/opt/lunchlineup-release/candidate-receipt.sig.json}"
+RELEASE_MANIFEST="${BETA_RELEASE_MANIFEST_FILE:-/opt/lunchlineup-release/release-manifest.json}"
+ARTIFACT_MANIFEST="${BETA_ARTIFACT_MANIFEST_FILE:-/opt/lunchlineup-release/artifact-manifest.json}"
+RELEASE_IMAGE_DIR="${BETA_RELEASE_IMAGE_DIR:-/opt/lunchlineup-release/images}"
+CI_PUBLIC_KEY="${BETA_CI_PUBLIC_KEY_FILE:-/etc/lunchlineup/trust/internal-ci-receipt-current.pem}"
+CI_POLICY="${BETA_CI_POLICY_FILE:-/etc/lunchlineup/trust/internal-beta-policy.json}"
+CI_RECEIPT_VERIFIER="${BETA_CI_RECEIPT_VERIFIER:-/usr/local/libexec/lunchlineup/verify-internal-ci-candidate-receipt.mjs}"
 COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME:-lunchlineup}"
 EXPECTED_HOSTNAME="${BETA_EXPECTED_HOSTNAME:-lunchlineup-dev}"
 BETA_HOST="${BETA_HOST:-beta.lunchlineup.com}"
@@ -29,13 +37,7 @@ required_services=(
   postgres redis rabbitmq control prometheus alertmanager node-exporter loki
   promtail otel-collector tempo grafana autoheal
 )
-candidate_image_services=(
-  web api webhook-replay engine pdf-parser worker pitr-wal-provider api-v2 control
-  alertmanager promtail otel-collector
-)
-build_services=(
-  web api api-v2 migrate engine worker pitr-wal-provider control alertmanager otel-collector
-)
+all_image_ids_matched=false
 
 current_check="startup"
 scratch_dir=""
@@ -51,10 +53,6 @@ on_exit() {
   fi
   exit "$status"
 }
-trap on_exit EXIT
-trap 'exit 130' INT
-trap 'exit 143' TERM
-
 fail() {
   echo "internal_beta_readiness_failed action=$ACTION check=$current_check detail=$1" >&2
   exit 1
@@ -147,6 +145,7 @@ validate_inputs() {
       || fail "runtime env must be a regular non-symlink file"
   fi
   require_boolean BETA_BUILD_IMAGES "$BUILD_IMAGES"
+  [[ "$BUILD_IMAGES" == false ]] || fail "VM107 must only load qualified CI image archives; image builds are forbidden"
   require_boolean BETA_RUN_BACKUP_RESTORE_PROOF "$RUN_BACKUP_RESTORE_PROOF"
   require_bounded_integer BETA_START_TIMEOUT_SECONDS "$START_TIMEOUT_SECONDS" 60 1800
   require_bounded_integer BETA_COMMAND_TIMEOUT_SECONDS "$COMMAND_TIMEOUT_SECONDS" 10 1800
@@ -156,7 +155,7 @@ validate_inputs() {
   require_bounded_integer BETA_BACKUP_PROOF_MAX_AGE_SECONDS "$BACKUP_PROOF_MAX_AGE_SECONDS" 60 86400
   require_beta_proof_path BETA_BACKUP_RESTORE_PROOF_PATH "$BACKUP_PROOF_PATH"
   require_beta_proof_path BETA_READINESS_PROOF_PATH "$READINESS_PROOF_PATH"
-  for command_name in docker git curl grep cut awk timeout mktemp stat date hostname wc cmp sed tr sha256sum dirname cat tail sleep; do
+  for command_name in docker git curl grep cut awk timeout mktemp stat date hostname wc cmp sed tr sha256sum dirname cat tail sleep realpath node; do
     require_command "$command_name"
   done
 
@@ -172,6 +171,70 @@ validate_inputs() {
     || fail "BETA_CANDIDATE_REF must be an origin remote-tracking ref"
   git check-ref-format "refs/remotes/$CANDIDATE_REF" >/dev/null \
     || fail "BETA_CANDIDATE_REF is invalid"
+}
+
+require_root_owned_input() {
+  local path="$1" approved_root="$2" label="$3" mode owner actual approved_real
+  actual="$(realpath -e -- "$path")"; approved_real="$(realpath -e -- "$approved_root")"
+  [[ "$path" == "$actual" && "$actual" == "$approved_real"/* && -f "$actual" && ! -L "$actual" && -s "$actual" ]] \
+    || fail "$label must be a nonempty regular file under $approved_root"
+  owner="$(stat -c '%u' "$actual")"; mode="$(stat -c '%a' "$actual")"
+  [[ "$owner" == 0 ]] || fail "$label must be root-owned"
+  (( (8#$mode & 022) == 0 )) || fail "$label must not be group- or world-writable"
+}
+
+verify_signed_internal_ci_candidate() {
+  current_check="signed_internal_ci_candidate"
+  require_root_owned_input "$CANDIDATE_RECEIPT" /opt/lunchlineup-release candidate-receipt
+  require_root_owned_input "$CANDIDATE_SIGNATURE" /opt/lunchlineup-release candidate-signature
+  require_root_owned_input "$RELEASE_MANIFEST" /opt/lunchlineup-release release-manifest
+  require_root_owned_input "$ARTIFACT_MANIFEST" /opt/lunchlineup-release artifact-manifest
+  require_root_owned_input "$CI_PUBLIC_KEY" /etc/lunchlineup/trust internal-ci-public-key
+  require_root_owned_input "$CI_POLICY" /etc/lunchlineup/trust internal-ci-policy
+  [[ "$CI_RECEIPT_VERIFIER" == /usr/local/libexec/lunchlineup/verify-internal-ci-candidate-receipt.mjs ]]
+  require_root_owned_input "$CI_RECEIPT_VERIFIER" /usr/local/libexec/lunchlineup receipt-verifier
+  node "$CI_RECEIPT_VERIFIER" --receipt "$CANDIDATE_RECEIPT" --signature "$CANDIDATE_SIGNATURE" \
+    --public-key "$CI_PUBLIC_KEY" --approved-policy "$CI_POLICY" \
+    --release-manifest "$RELEASE_MANIFEST" --artifact-manifest "$ARTIFACT_MANIFEST" \
+    --expected-source-sha "$SOURCE_SHA"
+}
+
+load_and_verify_candidate_images() {
+  current_check="candidate_images"
+  local release_root image_prefix artifact_name archive_relative archive_sha archive_bytes expected_id resolved_ref archive_path candidate_tag existing_id actual_bytes actual_sha
+  release_root="$(dirname "$RELEASE_MANIFEST")"
+  [[ "$RELEASE_IMAGE_DIR" == "$release_root/images" && -d "$RELEASE_IMAGE_DIR" && ! -L "$RELEASE_IMAGE_DIR" ]] \
+    || fail "release image directory must be the bundle images directory"
+  image_prefix="$(env_value IMAGE_PREFIX)"
+  [[ "$image_prefix" =~ ^[a-z0-9][a-z0-9._/-]*$ ]] || fail "IMAGE_PREFIX is invalid"
+  while IFS=$'\t' read -r artifact_name archive_relative archive_sha archive_bytes expected_id resolved_ref; do
+    [[ "$artifact_name" =~ ^[a-z0-9-]+$ && "$archive_relative" == "images/$artifact_name.tar.gz" \
+      && "$archive_sha" =~ ^[a-f0-9]{64}$ && "$archive_bytes" =~ ^[1-9][0-9]*$ \
+      && "$expected_id" =~ ^sha256:[a-f0-9]{64}$ ]] || fail "release image manifest entry is invalid"
+    archive_path="$release_root/$archive_relative"
+    require_root_owned_input "$archive_path" "$RELEASE_IMAGE_DIR" "image-$artifact_name"
+    actual_bytes="$(stat -c '%s' "$archive_path")"
+    [[ "$actual_bytes" == "$archive_bytes" ]] || fail "image archive byte count mismatch for $artifact_name"
+    actual_sha="$(sha256sum "$archive_path" | awk '{print $1}')"
+    [[ "$actual_sha" == "$archive_sha" ]] || fail "image archive digest mismatch for $artifact_name"
+    candidate_tag="$image_prefix/$artifact_name:$SOURCE_SHA"
+    existing_id="$(docker image inspect --format '{{.Id}}' "$candidate_tag" 2>/dev/null || true)"
+    [[ -z "$existing_id" || "$existing_id" == "$expected_id" ]] || fail "candidate image tag conflicts for $artifact_name"
+    timeout --foreground "${COMMAND_TIMEOUT_SECONDS}s" docker load --input "$archive_path" >/dev/null || fail "candidate image archive did not load for $artifact_name"
+    docker image inspect "$expected_id" >/dev/null 2>&1 || fail "loaded image ID mismatch for $artifact_name"
+    docker image tag "$expected_id" "$candidate_tag"
+    [[ "$(docker image inspect --format '{{.Id}}' "$candidate_tag")" == "$expected_id" ]] || fail "candidate image tag verification failed for $artifact_name"
+    if [[ "$resolved_ref" == "$candidate_tag" ]]; then
+      [[ "$(docker image inspect --format '{{.Id}}' "$resolved_ref")" == "$expected_id" ]] || fail "Compose image ID mismatch for $artifact_name"
+    fi
+  done < <(node - "$RELEASE_MANIFEST" <<'NODE'
+const manifest=JSON.parse(require('node:fs').readFileSync(process.argv[2]));
+for (const [name,image] of Object.entries(manifest.images ?? {})) {
+  process.stdout.write([name,image.archive?.path,image.archive?.sha256,image.archive?.bytes,image.localImageId,image.resolvedRef].join('\t')+'\n');
+}
+NODE
+  )
+  all_image_ids_matched=true
 }
 
 ensure_scratch_dir() {
@@ -247,15 +310,6 @@ verify_source_and_runtime() {
   compose config --quiet
 }
 
-build_candidate_images() {
-  [[ "$BUILD_IMAGES" == true ]] || return
-  current_check="candidate_images_build"
-  local service
-  for service in "${build_services[@]}"; do
-    compose build "$service"
-  done
-}
-
 launch_services() {
   current_check="compose_launch"
   compose --profile ops up -d --no-build --pull never --remove-orphans "${required_services[@]}"
@@ -274,7 +328,7 @@ verify_migration() {
 }
 
 services_ready() {
-  local service container_id state health image
+  local service container_id state health image expected_id
   for service in "${required_services[@]}"; do
     container_id="$(compose ps -q "$service")"
     [[ -n "$container_id" ]] || return 1
@@ -283,10 +337,17 @@ services_ready() {
     health="$(container_value "$container_id" '{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}')"
     [[ "$health" == healthy || "$health" == none ]] || return 1
   done
-  for service in "${candidate_image_services[@]}"; do
+  for service in "${required_services[@]}"; do
     container_id="$(compose ps -q "$service")"
-    image="$(container_value "$container_id" '{{.Config.Image}}')"
-    [[ "$image" == *":$SOURCE_SHA" ]] || return 1
+    image="$(container_value "$container_id" '{{.Image}}')"
+    expected_id="$(node - "$RELEASE_MANIFEST" "$service" <<'NODE'
+const [manifestPath,service]=process.argv.slice(2);
+const manifest=JSON.parse(require('node:fs').readFileSync(manifestPath));
+const binding=manifest.services?.[service];
+process.stdout.write(manifest.images?.[binding?.imageArtifact]?.localImageId ?? '');
+NODE
+)"
+    [[ "$expected_id" =~ ^sha256:[a-f0-9]{64}$ && "$image" == "$expected_id" ]] || return 1
   done
 }
 
@@ -454,12 +515,22 @@ run_backup_restore_proof() {
 
 write_readiness_proof() {
   current_check="readiness_proof"
-  local proof_dir proof_tmp checked_at backup_proof_sha
+  local proof_dir proof_tmp checked_at backup_proof_sha receipt_sha signature_key_id release_manifest_sha artifact_manifest_sha artifact_root_sha pipeline_sha
   proof_dir="$(dirname "$READINESS_PROOF_PATH")"
   mkdir -p "$proof_dir"
   chmod 0700 "$proof_dir"
   backup_proof_sha="$(sha256sum "$BACKUP_PROOF_PATH" | awk '{print $1}')"
   [[ "$backup_proof_sha" =~ ^[a-f0-9]{64}$ ]] || fail "backup proof digest is invalid"
+  receipt_sha="$(sha256sum "$CANDIDATE_RECEIPT" | awk '{print $1}')"
+  release_manifest_sha="$(sha256sum "$RELEASE_MANIFEST" | awk '{print $1}')"
+  artifact_manifest_sha="$(sha256sum "$ARTIFACT_MANIFEST" | awk '{print $1}')"
+  signature_key_id="$(node -e 'process.stdout.write(JSON.parse(require("fs").readFileSync(process.argv[1])).keyId)' "$CANDIDATE_SIGNATURE")"
+  artifact_root_sha="$(node -e 'process.stdout.write(JSON.parse(require("fs").readFileSync(process.argv[1])).rootSha256)' "$ARTIFACT_MANIFEST")"
+  pipeline_sha="$(node -e 'process.stdout.write(JSON.parse(require("fs").readFileSync(process.argv[1])).ci.pipelineSha256)' "$CANDIDATE_RECEIPT")"
+  [[ "$receipt_sha" =~ ^[a-f0-9]{64}$ && "$release_manifest_sha" =~ ^[a-f0-9]{64}$ \
+    && "$artifact_manifest_sha" =~ ^[a-f0-9]{64}$ && "$artifact_root_sha" =~ ^[a-f0-9]{64}$ \
+    && "$pipeline_sha" =~ ^[a-f0-9]{64}$ && -n "$signature_key_id" && "$all_image_ids_matched" == true ]] \
+    || fail "signed release provenance is incomplete"
   proof_tmp="$(mktemp "$proof_dir/.internal-beta-readiness.XXXXXX")"
   checked_at="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
   cat > "$proof_tmp" <<JSON
@@ -478,7 +549,15 @@ write_readiness_proof() {
   "resendProviderAccepted": true,
   "outboxesReady": true,
   "launchCriticalAlertsClear": true,
-  "backupRestoreProofSha256": "$backup_proof_sha"
+  "backupRestoreProofSha256": "$backup_proof_sha",
+  "candidateReceiptSha256": "$receipt_sha",
+  "candidateReceiptSignatureKeyId": "$signature_key_id",
+  "releaseManifestSha256": "$release_manifest_sha",
+  "artifactManifestSha256": "$artifact_manifest_sha",
+  "artifactRootSha256": "$artifact_root_sha",
+  "pipelineSha256": "$pipeline_sha",
+  "allImageIdsMatched": true,
+  "receiptValidAtLaunch": true
 }
 JSON
   chmod 0600 "$proof_tmp"
@@ -514,41 +593,43 @@ pause_services() {
   echo "internal_beta_paused_ok sha=$SOURCE_SHA data_preserved=true vm_onboot_unchanged=true"
 }
 
-validate_inputs
+main() {
+  trap on_exit EXIT
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
+  validate_inputs
+  if [[ "$ACTION" == pause ]]; then
+    current_check="pause_source_identity"
+    [[ "$(git -C "$APP_DIR" rev-parse HEAD)" == "$SOURCE_SHA" ]] \
+      || fail "checkout does not match the requested pause candidate"
+    pause_services
+    return
+  fi
+  verify_signed_internal_ci_candidate
+  verify_source_and_runtime
+  load_and_verify_candidate_images
+  verify_resend_provider
+  if [[ "$ACTION" == launch ]]; then
+    launch_services
+    wait_for_services
+    verify_migration
+    verify_http_surfaces
+    run_backup_restore_proof
+    verify_monitoring_and_outboxes
+    write_readiness_proof
+  else
+    wait_for_services
+    verify_migration
+    verify_http_surfaces
+    run_backup_restore_proof
+    verify_monitoring_and_outboxes
+    verify_deployed_marker
+    write_readiness_proof
+  fi
+  completed=true
+  echo "internal_beta_readiness_ok action=$ACTION sha=$SOURCE_SHA proof=$READINESS_PROOF_PATH vm_onboot_unchanged=true"
+}
 
-if [[ "$ACTION" == pause ]]; then
-  current_check="pause_source_identity"
-  [[ "$(git -C "$APP_DIR" rev-parse HEAD)" == "$SOURCE_SHA" ]] \
-    || fail "checkout does not match the requested pause candidate"
-  pause_services
-  exit 0
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+  main "$@"
 fi
-
-verify_source_and_runtime
-
-if [[ "$ACTION" == launch ]]; then
-  build_candidate_images
-fi
-
-verify_resend_provider
-
-if [[ "$ACTION" == launch ]]; then
-  launch_services
-  wait_for_services
-  verify_migration
-  verify_http_surfaces
-  run_backup_restore_proof
-  verify_monitoring_and_outboxes
-  write_readiness_proof
-else
-  wait_for_services
-  verify_migration
-  verify_http_surfaces
-  run_backup_restore_proof
-  verify_monitoring_and_outboxes
-  verify_deployed_marker
-  write_readiness_proof
-fi
-
-completed=true
-echo "internal_beta_readiness_ok action=$ACTION sha=$SOURCE_SHA proof=$READINESS_PROOF_PATH vm_onboot_unchanged=true"

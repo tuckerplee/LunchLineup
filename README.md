@@ -50,7 +50,7 @@ LunchLineup utilizes a **Turborepo** monorepo structure, orchestrating a suite o
 
 ```text
 lunchlineup/
-├── .github/               # Active GitHub CI/CD, release-candidate, and security workflows
+├── .github/               # GitHub metadata only; no executable Actions workflows
 ├── apps/
 │   ├── web/               # Next.js user-facing frontend
 │   ├── api/               # Retained NestJS API v1
@@ -75,7 +75,7 @@ lunchlineup/
 - `.dockerignore`: Docker build ignore rules.
 - `.env.example`: local environment variable template.
 - `.ci/`: source-neutral internal CI pipeline and validation documentation.
-- `.github/`: disabled GitHub Actions definitions retained only for review and rollback reference.
+- `.github/`: GitHub metadata and CodeQL scope configuration; no executable Actions workflows.
 - `.gitattributes`: Git path attributes and line-ending normalization rules.
 - `.gitignore`: Git ignore rules for local, generated, and sensitive files.
 - `.trivyignore.yaml`: narrow, expiring vulnerability suppressions bound to exact package identities and documented fixed-source provenance.
@@ -91,6 +91,7 @@ lunchlineup/
 - `package.json`: root workspace scripts and dependency metadata.
 - `packages/`: shared database, configuration, RBAC, type, and UI packages.
 - `scripts/`: operational, migration, deploy, and recovery scripts.
+- `security/`: reviewed local-CI scanner baselines and their inventory.
 - `task.md`: historical 12-month rebuild roadmap; current launch gates live in `docs/runbooks/production-readiness.md`.
 - `tests/`: repository-level deploy, hygiene, integration, and migration tests.
 - `tsconfig.base.json`: shared TypeScript compiler baseline.

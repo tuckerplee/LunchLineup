@@ -8,7 +8,9 @@
 
 - `alertmanager/`: private Alertmanager routing configuration.
 - `caddy/`: Caddy reverse proxy configuration for the Docker Compose edge service.
+- `ci/`: local-CI runtime service inventory used for exact release qualification.
 - `control/`: host-side bounded public edge probe and control observability scripts.
+- `custom-ci/`: reviewed external receipt-signing helper, policy, and installation contract.
 - `docker/`: Dockerfiles for application service images.
 - `grafana/`: Grafana provisioning configuration.
 - `loki/`: Loki log storage configuration.

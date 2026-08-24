@@ -60,7 +60,7 @@ function parseArgs(argv) {
     deploymentRoot: process.cwd(),
     dockerfileDir: 'infrastructure/docker',
     composeFile: 'docker-compose.yml',
-    workflowFile: '.github/workflows/ci.yml',
+    workflowFile: 'docs/legacy/github-actions-ci.yml',
   };
 
   for (let index = 0; index < argv.length; index += 1) {

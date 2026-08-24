@@ -1,107 +1,51 @@
 #!/usr/bin/env bash
-# Execute the beta release gates locally on the Custom CI appliance. No live host is contacted.
+# Stage-oriented exact-image qualification on the Custom CI appliance. Never contacts VM107.
 set -euo pipefail
-
-source_sha="${CI_COMMIT_SHA:-}"
-if [[ ! "$source_sha" =~ ^[a-f0-9]{40}$ ]] || [[ "${CI_REF:-}" != 'refs/heads/internal-beta-candidate' ]]; then
-  echo 'Internal beta qualification requires the exact internal-beta-candidate SHA.' >&2
-  exit 64
-fi
-for command in docker curl node npx; do
-  command -v "$command" >/dev/null || { echo "$command is required." >&2; exit 127; }
-done
-
-artifact_root=".release/internal-ci/${source_sha}"
-gate_dir="$artifact_root/gates"
-mkdir -p "$gate_dir" "$artifact_root/dast" "$artifact_root/load" "$artifact_root/sbom" "$artifact_root/trivy"
-project="lunchlineup-beta-${CI_RUN_ID//[^a-zA-Z0-9]/}"
-env_file="${RUNNER_TEMP:?RUNNER_TEMP is required}/lunchlineup-beta-${CI_RUN_ID}/smoke.env"
-metrics_file="${RUNNER_TEMP}/lunchlineup-beta-${CI_RUN_ID}/secrets/metrics_token"
-export IMAGE_PREFIX='lunchlineup-internal-ci'
-export IMAGE_TAG="$source_sha"
-export DEPLOY_RELEASE_SHA="$source_sha"
-export COMPOSE_PROJECT_NAME="$project"
-export ZAP_IMAGE='zaproxy/zap-stable@sha256:781a2bdaea47324e7bab583e2263f21d257b0aee61ed51521a5be45f5f5081ef'
-export SYFT_IMAGE='anchore/syft:v1.38.0-nonroot@sha256:86e3e28b85481f2a17d6bbc3f436a7d5a1fb4f6e9227ec4c22f70b2e710f7339'
-export TRIVY_IMAGE='aquasec/trivy:0.69.3@sha256:bcc376de8d77cfe086a917230e818dc9f8528e3c852f7b1aff648949b6258d1c'
-services=(api api-v2 web engine worker migrate control backup proxy pgbouncer postgres node-exporter loki tempo grafana alertmanager otel-collector)
-
-mark_gate() {
-  local name="$1"
-  local started="$2"
-  node - "$gate_dir/${name}.json" "$name" "$source_sha" "$started" <<'NODE'
-const { writeFileSync } = require('node:fs');
-const [output, name, sourceSha, startedAt] = process.argv.slice(2);
-writeFileSync(output, `${JSON.stringify({ name, status: 'passed', sourceSha, attempts: 1, startedAt, completedAt: new Date().toISOString() }, null, 2)}\n`, { flag: 'wx', mode: 0o600 });
-NODE
-}
-
-cleanup() {
-  docker compose -p "$project" --env-file "$env_file" logs --tail=300 api api-v2 web engine worker migrate > "$artifact_root/compose.log" 2>&1 || true
-  docker compose -p "$project" --env-file "$env_file" down -v --remove-orphans >/dev/null 2>&1 || true
-  rm -rf "${RUNNER_TEMP}/lunchlineup-beta-${CI_RUN_ID}"
-}
-trap cleanup EXIT
-
-started_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-node scripts/write-smoke-env.mjs "$env_file" "$metrics_file"
-cat >> "$env_file" <<EOF
-IMAGE_PREFIX=$IMAGE_PREFIX
-IMAGE_TAG=$IMAGE_TAG
-DEPLOY_RELEASE_SHA=$DEPLOY_RELEASE_SHA
-E2E_FULL_STACK=1
-E2E_PREAUTH_IP_LIMIT=120
-E2E_PREAUTH_IDENTIFIER_LIMIT=30
-EOF
-
-# Build every first-party runtime image under the exact candidate tag.
-docker compose -p "$project" --env-file "$env_file" config >/dev/null
-docker compose -p "$project" --env-file "$env_file" build "${services[@]}"
-node scripts/write-internal-ci-release-manifest.mjs "$artifact_root/release-manifest.json"
-mark_gate release-images "$started_at"
-
-# Start a disposable release-image stack and verify its exact release header.
-docker compose -p "$project" --env-file "$env_file" up -d --no-build --pull never migrate proxy web api api-v2 engine worker pgbouncer postgres redis rabbitmq
-for attempt in {1..60}; do
-  if curl -fsS http://127.0.0.1:8080/health >/dev/null && curl -fsS http://127.0.0.1:8080/ >/dev/null; then break; fi
-  if [[ "$attempt" == 60 ]]; then docker compose -p "$project" --env-file "$env_file" logs --tail=300 >&2; exit 1; fi
-  sleep 5
-done
-test "$(curl -fsSI http://127.0.0.1:8080/ | awk 'tolower($0) ~ /^x-lunchlineup-release:/ { sub(/^[^:]*:[[:space:]]*/, ""); sub(/\r$/, ""); print; exit }')" = "$source_sha"
-
-export BASE_URL='http://127.0.0.1:8080'
-export E2E_FULL_STACK=1 E2E_MOCK_API=0 E2E_CANDIDATE_SHA="$source_sha"
-export E2E_SEED_COMMAND="docker compose -p $project --env-file $env_file run --rm -e DATA_TARGET_ENV=disposable migrate sh -lc 'DATABASE_URL=\"\$MIGRATION_DATABASE_URL\" node scripts/seed-e2e.mjs'"
-npx playwright install chromium
-(cd apps/web && npx playwright test --project=chromium --workers=1 tests/e2e/operations-workflows.spec.ts tests/e2e/month-volume-workflows.spec.ts tests/e2e/stress-workflows.spec.ts tests/e2e/tenant-admin-workflows.spec.ts)
-cp -R apps/web/playwright-report "$artifact_root/fullstack-playwright-report"
-cp -R apps/web/test-results "$artifact_root/fullstack-test-results"
-mark_gate fullstack-e2e "$started_at"
-
-(cd apps/web && npx playwright test --config=playwright.interaction-proof.config.ts)
-(cd apps/web && node tests/e2e/verify-internal-beta-interaction-proof.mjs --report "test-results/internal-beta-interaction-proof-$source_sha/results.json" --source-sha "$source_sha" --output "test-results/internal-beta-interaction-proof-$source_sha/proof.json")
-cp "apps/web/test-results/internal-beta-interaction-proof-$source_sha/proof.json" "$artifact_root/interaction-proof.json"
-cp -R "apps/web/test-results/internal-beta-interaction-proof-$source_sha" "$artifact_root/interaction-proof-artifacts"
-mark_gate interaction-proof "$started_at"
-
-export EXPECTED_SOURCE_SHA="$source_sha" DAST_OUTPUT_DIR="${RUNNER_TEMP}/lunchlineup-candidate-dast/$source_sha"
-bash scripts/run-dast.sh "$BASE_URL"
-cp "$DAST_OUTPUT_DIR"/* "$artifact_root/dast/"
-mark_gate dast "$started_at"
-
-export ALLOW_LOCAL_LOAD_SMOKE=true AVAILABILITY_IMPORT_TENANT_SLUG=e2e-operations AVAILABILITY_IMPORT_LOGIN_IDENTIFIER=e2e.load AVAILABILITY_IMPORT_LOGIN_PIN=246812 AVAILABILITY_IMPORT_MFA_SECRET=JBSWY3DPEHPK3PXP AVAILABILITY_IMPORT_TARGET_USER_IDENTIFIER=staff-1 AVAILABILITY_IMPORT_ORIGIN=https://smoke.lunchlineup.test AVAILABILITY_IMPORT_CREDIT_SOURCE_ATTESTATION=admin-credit-grant LOAD_OUTPUT_DIR="${RUNNER_TEMP}/lunchlineup-candidate-load/$source_sha"
-bash scripts/load-test.sh "$BASE_URL"
-cp "$LOAD_OUTPUT_DIR"/* "$artifact_root/load/"
-mark_gate load "$started_at"
-
-# Export each exact local image, then scan the immutable archive rather than a mutable tag.
-for service in "${services[@]}"; do
-  ref="$IMAGE_PREFIX/$service:$source_sha"
-  archive="${RUNNER_TEMP}/$service-$source_sha.tar"
-  docker save "$ref" -o "$archive"
-  docker run --rm --user 0:0 -v "$archive:/image.tar:ro" -v "$(pwd -P)/$artifact_root/sbom:/out:rw" "$SYFT_IMAGE" docker-archive:/image.tar -o "spdx-json=/out/$service.spdx.json"
-  docker run --rm --user 0:0 -v "$archive:/image.tar:ro" -v "$(pwd -P):/workspace:ro" -v "$(pwd -P)/$artifact_root/trivy:/out:rw" "$TRIVY_IMAGE" image --input /image.tar --format json --output "/out/$service.trivy.json" --scanners vuln --severity HIGH,CRITICAL --ignorefile /workspace/.trivyignore.yaml --exit-code 1
-  rm -f "$archive"
-done
-mark_gate sbom "$started_at"
-mark_gate trivy "$started_at"
+[[ "${1:-}" == --source-context && -n "${2:-}" && "${3:-}" == --stage && "${4:-}" =~ ^(release-image-build|production-image-inventory|release-stack-health|fullstack-playwright|interaction-proof|dast|load|sbom|trivy)$ && $# == 4 ]] || { echo 'Usage: run-internal-beta-release-qualification.sh --source-context <context.json> --stage <stage>' >&2; exit 64; }
+context=$2; stage=$4; workspace=$PWD; artifact_root="$workspace/.release/internal-ci/${CI_COMMIT_SHA:?}"; source_root="${RUNNER_TEMP:?}/lunchlineup-source-${CI_RUN_ID:?}"; build_root="$source_root/build"; qualification_root="$RUNNER_TEMP/lunchlineup-beta-qualification-$CI_RUN_ID"; env_file="$qualification_root/runtime.env"; secrets_dir="$qualification_root/secrets"; project="lunchlineup-beta-${CI_RUN_ID//[^a-zA-Z0-9]/}"
+test "$context" = "$source_root/source-context.json"; test -f "$artifact_root/source/source-proof.json"; test -d "$build_root"; mkdir -p "$artifact_root/results" "$artifact_root/details"
+compose=(docker compose --project-name "$project" --project-directory "$build_root" --env-file "$env_file" -f "$build_root/docker-compose.yml")
+record_gate(){ local gate=$1 started=$2 details=$3; shift 3; node "$build_root/scripts/write-internal-ci-command-result.mjs" --name "$gate" --source-context "$context" --started-at "$started" --output "$artifact_root/results/$gate.json"; local evidence=(); for file in "$@"; do evidence+=(--evidence "$file"); done; node "$build_root/scripts/record-internal-ci-gate.mjs" --name "$gate" --source-context "$context" --started-at "$started" --command-result "$artifact_root/results/$gate.json" --details "$details" --output "$artifact_root/gates/$gate.json" "${evidence[@]}"; }
+require_state(){ test -f "$env_file"; test -f "$artifact_root/compose-config.json"; test -f "$artifact_root/compose-image-inventory.json"; test -f "$artifact_root/release-manifest.json"; }
+case "$stage" in
+release-image-build)
+  test ! -e "$qualification_root"; mkdir -p "$qualification_root" "$artifact_root/images"; started=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+  node "$build_root/scripts/verify-internal-ci-source-clone.mjs" --proof "$artifact_root/source/source-proof.json" --clone "$build_root" --purpose build --require-clean >/dev/null
+  node "$build_root/scripts/write-internal-beta-qualification-env.mjs" --source-context "$context" --output "$env_file" --public-build-config "$artifact_root/public-build-config.json" --secrets-dir "$secrets_dir"
+  chmod -R a-w "$build_root"
+  "${compose[@]}" --profile ops config --format json >"$artifact_root/compose-config.json"
+  node "$build_root/scripts/compose-image-inventory.mjs" --source-context "$context" --compose-config "$artifact_root/compose-config.json" --runtime-contract "$build_root/infrastructure/ci/internal-beta-runtime-services.json" --output "$artifact_root/compose-image-inventory.json"
+  node -e 'const x=JSON.parse(require("fs").readFileSync(process.argv[1]));for(const v of Object.values(x.images))process.stdout.write([v.source,v.composeServices[0],v.resolvedRef].join("\t")+"\n")' "$artifact_root/compose-image-inventory.json" | while IFS=$'\t' read -r source service ref; do if [[ "$source" == first-party ]]; then "${compose[@]}" --profile ops build "$service"; else docker pull "$ref"; fi; docker image inspect --format '{{.Id}}' "$ref"; done >"$artifact_root/images/build.log" 2>&1
+  bash "$build_root/scripts/export-internal-ci-release-images.sh" --source-context "$context" --inventory "$artifact_root/compose-image-inventory.json" --image-directory "$artifact_root/images"
+  web_ref=$(node -e 'const x=JSON.parse(require("fs").readFileSync(process.argv[1]));process.stdout.write(x.services.web.imageRef)' "$artifact_root/compose-image-inventory.json"); docker run --rm --entrypoint cat "$web_ref" /app/public/.well-known/lunchlineup-build.json >"$artifact_root/public-build-contract.json"
+  node "$build_root/scripts/verify-internal-beta-public-build.mjs" --source-context "$context" --contract "$artifact_root/public-build-contract.json" --public-build-config "$artifact_root/public-build-config.json" --details "$artifact_root/details/public-build-contract.json"
+  node "$build_root/scripts/write-internal-ci-release-manifest.mjs" --source-context "$context" --compose-config "$artifact_root/compose-config.json" --public-build-contract "$artifact_root/public-build-contract.json" --image-directory "$artifact_root/images" --output "$artifact_root/release-manifest.json"
+  node -e 'const fs=require("fs"),x=JSON.parse(fs.readFileSync(process.argv[1]));fs.writeFileSync(process.argv[2],JSON.stringify({sourceSha:x.sourceSha,treeSha:x.treeSha,imageCount:Object.keys(x.images).length,allImagesPresent:true},null,2)+"\n",{flag:"wx",mode:0o600})' "$artifact_root/release-manifest.json" "$artifact_root/details/release-image-build.json"
+  record_gate public-build-contract "$started" "$artifact_root/details/public-build-contract.json" "$artifact_root/public-build-contract.json" "$artifact_root/public-build-config.json"
+  record_gate release-image-build "$started" "$artifact_root/details/release-image-build.json" "$artifact_root/images/build.log" "$artifact_root/compose-image-inventory.json" "$artifact_root/release-manifest.json"
+;;
+production-image-inventory)
+  require_state; started=$(date -u +%Y-%m-%dT%H:%M:%SZ); node "$build_root/scripts/verify-internal-ci-production-inventory.mjs" --source-context "$context" --inventory "$artifact_root/compose-image-inventory.json" --release-manifest "$artifact_root/release-manifest.json" --output "$artifact_root/production-image-inventory.json" --details "$artifact_root/details/production-image-inventory.json"; record_gate production-image-inventory "$started" "$artifact_root/details/production-image-inventory.json" "$artifact_root/production-image-inventory.json"
+;;
+release-stack-health)
+  require_state; started=$(date -u +%Y-%m-%dT%H:%M:%SZ); "${compose[@]}" --profile ops run --rm --no-deps migrate >"$artifact_root/migrate-release-stack.log" 2>&1
+  mapfile -t services < <(node -e 'const x=JSON.parse(require("fs").readFileSync(process.argv[1]));for(const [n,v] of Object.entries(x.services))if(v.requiredOnVm107&&v.state!=="one-shot")console.log(n)' "$build_root/infrastructure/ci/internal-beta-runtime-services.json"); "${compose[@]}" --profile ops up -d --no-build --pull never --remove-orphans "${services[@]}"
+  for attempt in {1..120}; do if node "$build_root/scripts/verify-internal-ci-release-stack.mjs" --source-context "$context" --release-manifest "$artifact_root/release-manifest.json" --project "$project" --output "$artifact_root/release-stack-health.json" --details "$artifact_root/details/release-stack-health.json" --probe; then break; fi; rm -f "$artifact_root/release-stack-health.json" "$artifact_root/details/release-stack-health.json"; [[ "$attempt" != 120 ]] || exit 1; sleep 5; done
+  record_gate release-stack-health "$started" "$artifact_root/details/release-stack-health.json" "$artifact_root/release-stack-health.json" "$artifact_root/migrate-release-stack.log"
+;;
+fullstack-playwright)
+  require_state; started=$(date -u +%Y-%m-%dT%H:%M:%SZ); output="$artifact_root/fullstack-playwright"; mkdir -p "$output"; cd "$build_root/apps/web"; BASE_URL=http://127.0.0.1:8080 E2E_FULL_STACK=1 E2E_MOCK_API=0 E2E_CANDIDATE_SHA="$CI_COMMIT_SHA" E2E_ARTIFACT_ROOT="$output" npx playwright test --project=chromium --workers=1 tests/e2e/operations-workflows.spec.ts tests/e2e/month-volume-workflows.spec.ts tests/e2e/stress-workflows.spec.ts tests/e2e/tenant-admin-workflows.spec.ts >"$output/test.log" 2>&1; printf '{"sourceSha":"%s","fullStack":true,"failed":0,"skipped":0}\n' "$CI_COMMIT_SHA" >"$artifact_root/details/fullstack-playwright.json"; cd "$workspace"; record_gate fullstack-playwright "$started" "$artifact_root/details/fullstack-playwright.json" "$output/test.log"
+;;
+interaction-proof)
+  require_state; started=$(date -u +%Y-%m-%dT%H:%M:%SZ); manifest_sha=$(sha256sum "$artifact_root/release-manifest.json"|awk '{print $1}'); web_id=$(node -e 'const x=JSON.parse(require("fs").readFileSync(process.argv[1]));process.stdout.write(x.images[x.services.web.imageArtifact].localImageId)' "$artifact_root/release-manifest.json"); public_sha=$(node -e 'const x=JSON.parse(require("fs").readFileSync(process.argv[1]));process.stdout.write(x.publicBuildConfig.sha256)' "$artifact_root/release-manifest.json"); proof_dir="$artifact_root/interaction-proof-artifacts"; mkdir -p "$proof_dir"; cd "$build_root/apps/web"; E2E_CANDIDATE_SHA="$CI_COMMIT_SHA" E2E_CANDIDATE_TREE_SHA="$(git -C "$build_root" rev-parse 'HEAD^{tree}')" E2E_RELEASE_MANIFEST_SHA256="$manifest_sha" E2E_WEB_IMAGE_ID="$web_id" E2E_PUBLIC_BUILD_CONFIG_SHA256="$public_sha" E2E_INTERACTION_PROOF_ROOT="$proof_dir" npx playwright test --config=playwright.interaction-proof.config.ts >"$artifact_root/interaction-proof.log" 2>&1; node tests/e2e/verify-internal-beta-interaction-proof.mjs --report "$proof_dir/results.json" --source-sha "$CI_COMMIT_SHA" --tree-sha "$(git -C "$build_root" rev-parse 'HEAD^{tree}')" --release-manifest "$artifact_root/release-manifest.json" --web-image-id "$web_id" --public-build-config-sha256 "$public_sha" --output "$artifact_root/interaction-proof.json"; cp "$artifact_root/interaction-proof.json" "$artifact_root/details/interaction-proof.json"; cd "$workspace"; record_gate interaction-proof "$started" "$artifact_root/details/interaction-proof.json" "$artifact_root/interaction-proof.json" "$artifact_root/interaction-proof.log"
+;;
+dast)
+  require_state; started=$(date -u +%Y-%m-%dT%H:%M:%SZ); temporary="$qualification_root/dast"; export EXPECTED_SOURCE_SHA="$CI_COMMIT_SHA" DAST_OUTPUT_DIR="$temporary" RELEASE_MANIFEST_SHA256="$(sha256sum "$artifact_root/release-manifest.json"|awk '{print $1}')"; test ! -e "$temporary"; cd "$build_root"; bash scripts/run-dast.sh http://127.0.0.1:8080; cd "$workspace"; mkdir -p "$artifact_root/dast"; cp "$temporary"/* "$artifact_root/dast/"; node "$build_root/scripts/write-internal-ci-runtime-gate-details.mjs" --source-context "$context" --gate dast --release-manifest "$artifact_root/release-manifest.json" --evidence-directory "$artifact_root/dast" --output "$artifact_root/details/dast.json"; record_gate dast "$started" "$artifact_root/details/dast.json" "$artifact_root/dast/dast-evidence-$CI_COMMIT_SHA.json"
+;;
+load)
+  require_state; started=$(date -u +%Y-%m-%dT%H:%M:%SZ); temporary="$qualification_root/load"; export EXPECTED_SOURCE_SHA="$CI_COMMIT_SHA" LOAD_OUTPUT_DIR="$temporary" ALLOW_LOCAL_LOAD_SMOKE=true AVAILABILITY_IMPORT_TENANT_SLUG=e2e-operations AVAILABILITY_IMPORT_LOGIN_IDENTIFIER=e2e.load AVAILABILITY_IMPORT_LOGIN_PIN=246812 AVAILABILITY_IMPORT_MFA_SECRET=JBSWY3DPEHPK3PXP AVAILABILITY_IMPORT_TARGET_USER_IDENTIFIER=staff-1 AVAILABILITY_IMPORT_ORIGIN=https://beta.lunchlineup.com AVAILABILITY_IMPORT_CREDIT_SOURCE_ATTESTATION=admin-credit-grant; test ! -e "$temporary"; cd "$build_root"; bash scripts/load-test.sh http://127.0.0.1:8080; cd "$workspace"; mkdir -p "$artifact_root/load"; cp "$temporary"/* "$artifact_root/load/"; node "$build_root/scripts/write-internal-ci-runtime-gate-details.mjs" --source-context "$context" --gate load --release-manifest "$artifact_root/release-manifest.json" --evidence-directory "$artifact_root/load" --output "$artifact_root/details/load.json"; record_gate load "$started" "$artifact_root/details/load.json" "$artifact_root/load/load-evidence-$CI_COMMIT_SHA.json"
+;;
+sbom|trivy)
+  require_state; started=$(date -u +%Y-%m-%dT%H:%M:%SZ); bash "$build_root/scripts/run-internal-ci-image-scan.sh" --source-context "$context" --kind "$stage" --release-manifest "$artifact_root/release-manifest.json"; record_gate "$stage" "$started" "$artifact_root/details/$stage.json" "$artifact_root/$stage/summary.json"; if [[ "$stage" == trivy ]]; then "${compose[@]}" --profile ops down -v --remove-orphans >/dev/null 2>&1 || true; fi
+;;
+esac

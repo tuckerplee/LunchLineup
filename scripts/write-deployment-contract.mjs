@@ -8,7 +8,7 @@ import { fileURLToPath } from 'node:url';
 const defaultRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 export const retainedContractProfile = 'lunchlineup-release-rollback-compatibility-v2';
 export const retainedExactFiles = [
-  '.github/workflows/ci.yml',
+  'docs/legacy/github-actions-ci.yml',
   'docker-compose.yml',
   'package-lock.json',
   'package.json',
@@ -38,7 +38,7 @@ export const retainedDirectoryRoots = [
   'tests/integration',
 ];
 export const requiredRetainedPaths = [
-  '.github/workflows/ci.yml',
+  'docs/legacy/github-actions-ci.yml',
   'apps/api/package.json',
   'apps/api/tsconfig.json',
   'apps/control-plane/package.json',

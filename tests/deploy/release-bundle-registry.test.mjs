@@ -811,7 +811,7 @@ test('release registry and materializer reject persisted runtime secret bytes', 
 });
 
 test('CI bootstraps and retains one validated baseline before centralized rollback can arm', () => {
-  const ci = readFileSync(join(root, '.github/workflows/ci.yml'), 'utf8');
+  const ci = readFileSync(join(root, 'docs/legacy/github-actions-ci.yml'), 'utf8');
   const bootstrap = ci.indexOf('name: Bootstrap registry from verified current-live retained bundle');
   const firstResolve = ci.indexOf('name: Resolve and materialize previous successful release bundle', bootstrap);
   const candidateMutation = ci.indexOf('name: "17. Guarded production deploy;');
@@ -861,7 +861,7 @@ test('old release compatibility proof requires isolated clone, exact SHAs, and p
   assert.throws(() => verifyOldReleaseCompatibility({ ...proof, database: { isolatedClone: false, productionMutated: false } }, { previousSha: sha, candidateSha: 'b'.repeat(40) }), /isolated clone/);
 });
 test('bootstrap dispatch is isolated from push-only deployment', () => {
-  const ci = readFileSync(join(root, '.github/workflows/ci.yml'), 'utf8');
+  const ci = readFileSync(join(root, 'docs/legacy/github-actions-ci.yml'), 'utf8');
   const bootstrapStart = ci.indexOf('  bootstrap-release-registry:');
   const emergencyStart = ci.indexOf('  emergency-production-rollback:');
   const releaseGateStart = ci.indexOf('  validate-release-gates:');

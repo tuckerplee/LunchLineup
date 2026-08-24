@@ -587,7 +587,7 @@ trap 'case "$BASH_COMMAND" in *vm217_run_scp*release\\ manifest\\ upload*) VM217
 
 test('shared reconciliation proves exact retained pointer, service owner, public release, and legacy traffic', () => {
   const deadlines = read('scripts/vm217-transport-deadlines.sh');
-  const ci = read('.github/workflows/ci.yml');
+  const ci = read('docs/legacy/github-actions-ci.yml');
   assert.match(deadlines, /active_target" == "\$production_root\/releases\/\$active_sha"/);
   assert.match(deadlines, /docker compose[\s\S]*config --format json/);
   assert.match(deadlines, /service\.get\("profiles"\)/);

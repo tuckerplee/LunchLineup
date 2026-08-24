@@ -252,7 +252,7 @@ test('requires launch proof to match the live meter identity and aggregation', a
 });
 
 test('production workflow performs live Stripe verification before deploy mutation', () => {
-  const ci = readFileSync(join(root, '.github/workflows/ci.yml'), 'utf8');
+  const ci = readFileSync(join(root, 'docs/legacy/github-actions-ci.yml'), 'utf8');
   const stripeGate = ci.indexOf('Verify live Stripe meter configuration');
   const deployMutation = ci.indexOf('id: production_deploy');
 

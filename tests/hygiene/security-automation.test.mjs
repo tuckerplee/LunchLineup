@@ -20,9 +20,9 @@ function stepByName(job, name) {
   return job.steps.find((step) => step.name === name);
 }
 
-test('CI uploads mandatory Semgrep and CodeQL analyses with least privilege', () => {
-  const source = read('.github/workflows/ci.yml');
-  const workflow = load('.github/workflows/ci.yml');
+test('historical GitHub scanner definitions remain reviewable but non-executable', () => {
+  const source = read('docs/legacy/github-actions-ci.yml');
+  const workflow = load('docs/legacy/github-actions-ci.yml');
   const sast = workflow.jobs.sast;
   const codeql = workflow.jobs.codeql;
 
@@ -84,35 +84,48 @@ test('CI uploads mandatory Semgrep and CodeQL analyses with least privilege', ()
 });
 
 test('internal appliance executes dependency and release qualification gates while GitHub scheduling stays disabled', () => {
-  const workflow = load('.github/workflows/ci.yml');
+  const workflow = load('docs/legacy/github-actions-ci.yml');
   const internalPipeline = JSON.parse(read('.ci/pipeline.json'));
   const dependencyReview = workflow.jobs['dependency-audit'].steps.find(
     (step) => step.uses?.startsWith('actions/dependency-review-action@'),
   );
-  const internalAudit = internalPipeline.steps.find((step) => step.name === 'Verify source, dependency, and license gates');
-  const internalSast = internalPipeline.steps.find((step) => step.name === 'Run active local Semgrep SAST');
-  const internalRelease = internalPipeline.steps.find((step) => step.name === 'Build and qualify exact release images locally');
-  const receipt = internalPipeline.steps.find((step) => step.name === 'Emit exact internal beta candidate receipt');
+  const requiredStepNames = [
+    'Materialize and verify exact candidate source', 'Install locked JavaScript dependencies',
+    'Dependency audit', 'License policy', 'Lint', 'Typecheck', 'Migration and hygiene tests',
+    'Observability validation', 'Terraform validation', 'Semgrep full inventory',
+    'Semgrep baseline delta', 'CodeQL JavaScript/TypeScript', 'CodeQL Python',
+    'JavaScript unit suites', 'Engine Python unit suite', 'Worker Python unit suite',
+    'Source build', 'Mock Playwright', 'Disposable database integration',
+    'Canonical beta release-image build', 'Production image inventory', 'Release stack health',
+    'DB-backed Playwright', 'Interaction proof', 'DAST', 'Load qualification', 'SBOM', 'Trivy',
+    'Artifact integrity manifest', 'Candidate receipt construction',
+    'External policy verification and signing', 'Signature self-verification',
+  ];
 
   assert.equal(workflow.on.pull_request, undefined);
   assert.equal(dependencyReview, undefined);
-  assert.match(internalAudit.run, /npm run audit:prod/);
-  assert.match(internalAudit.run, /license-checker/);
-  assert.match(internalAudit.run, /source-validation/);
-  assert.match(internalSast.run, /git merge-base --is-ancestor origin\/main HEAD/);
-  assert.match(internalSast.run, /--baseline-commit origin\/main --error --sarif --output \$evidence\/delta\.sarif/);
-  assert.match(internalSast.run, /--sarif --output \$evidence\/full\.sarif/);
-  assert.match(internalRelease.run, /run-internal-beta-release-qualification\.sh/);
-  assert.match(receipt.run, /build-internal-ci-candidate-receipt\.mjs/);
+  assert.deepEqual(internalPipeline.triggers.branches, ['internal-beta-candidate']);
+  assert.deepEqual(internalPipeline.steps.map(({ name }) => name), requiredStepNames);
+  assert.match(internalPipeline.steps[0].run, /materialize-internal-ci-source\.mjs/);
+  for (const step of internalPipeline.steps.slice(1)) assert.match(step.run, /scripts\/[A-Za-z0-9._-]+/);
+  const serialized = JSON.stringify(internalPipeline);
+  assert.doesNotMatch(serialized, /chmod -R a\+rwx|\$PWD:\/src|--source-proof .*record-internal-ci-gate/);
+  assert.ok(internalPipeline.steps.find(({ name }) => name === 'Candidate receipt construction').run.includes('build-internal-ci-candidate-receipt.mjs'));
+  assert.ok(internalPipeline.steps.find(({ name }) => name === 'External policy verification and signing').run.includes('lunchlineup-sign-receipt'));
+  assert.ok(internalPipeline.steps.find(({ name }) => name === 'Signature self-verification').run.includes('verify-internal-ci-candidate-receipt.mjs'));
   assert.ok(internalPipeline.artifacts.includes('.release/internal-ci/**'));
 
   assert.equal(existsSync(join(root, '.github/dependabot.yml')), false);
+  assert.equal(existsSync(join(root, '.github/workflows/ci.yml')), false);
+  assert.equal(existsSync(join(root, 'docs/legacy/github-actions-ci.yml')), true);
 });
 
 test('all external actions are immutable and CodeQL uses the reviewed source scope', () => {
   const workflowDirectory = join(root, '.github/workflows');
   const workflowFiles = readdirSync(workflowDirectory)
     .filter((file) => /\.ya?ml$/.test(file));
+
+  assert.deepEqual(workflowFiles, []);
 
   const unpinned = [];
   for (const file of workflowFiles) {

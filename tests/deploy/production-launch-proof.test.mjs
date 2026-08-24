@@ -194,7 +194,7 @@ function writePolicyFixture(scratch) {
   );
   writeFileSync(
     workflowPath,
-    read('.github/workflows/ci.yml'),
+    read('docs/legacy/github-actions-ci.yml'),
   );
 
   return ['--dockerfile-dir', dockerfileDir, '--compose-file', composePath, '--workflow-file', workflowPath];
@@ -415,7 +415,7 @@ exit 79
 });
 
 test('production workflow requires launch proof before production deploy mutation', () => {
-  const ci = read('.github/workflows/ci.yml');
+  const ci = read('docs/legacy/github-actions-ci.yml');
   const proofGateIndex = ci.indexOf('Verify production launch proof artifact');
   const deployIndex = ci.indexOf('name: "17. Guarded production deploy;');
 

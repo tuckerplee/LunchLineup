@@ -1,0 +1,12 @@
+import { lstatSync, readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
+import { readInternalCiSourceContext } from './internal-ci-source-context.mjs';
+import { sha256File, statRegularEvidenceFile, writeExclusiveJson } from './internal-ci-evidence.mjs';
+const args=process.argv.slice(2); const one=(flag)=>{const i=args.indexOf(flag);return i<0?'':args[i+1]??'';};
+const context=readInternalCiSourceContext(resolve(one('--source-context'))), mode=one('--mode'), scannerImage=one('--scanner-image'), reportPath=resolve(one('--report')), detailsPath=resolve(one('--details'));
+if(!['full','delta'].includes(mode)||!/^semgrep\/semgrep:1\.169\.0@sha256:[a-f0-9]{64}$/.test(scannerImage)||lstatSync(reportPath).isSymbolicLink()) throw new Error('Invalid Semgrep verification arguments.');
+const item=statRegularEvidenceFile(reportPath,context.evidenceRoot), sarif=JSON.parse(readFileSync(reportPath,'utf8'));
+if(!Array.isArray(sarif.runs)||sarif.runs.length===0||sarif.runs.some((run)=>run?.invocations?.some((invocation)=>invocation.executionSuccessful===false))) throw new Error('Semgrep SARIF execution failed.');
+const findings=sarif.runs.flatMap((run)=>run.results??[]).length; if(mode==='delta'&&findings!==0) throw new Error('Semgrep delta findings must be zero.');
+const details={sourceSha:context.sourceSha,treeSha:context.treeSha,scanner:'semgrep',scannerImage,findings,report:{path:item.path,sha256:await sha256File(reportPath,context.evidenceRoot),bytes:item.bytes}}; if(mode==='delta') details.baselineSha=context.baselineSha;
+writeExclusiveJson(detailsPath,details,{root:context.evidenceRoot});

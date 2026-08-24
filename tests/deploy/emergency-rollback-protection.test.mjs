@@ -6,7 +6,7 @@ import yaml from 'js-yaml';
 
 const root = resolve(import.meta.dirname, '../..');
 const read = (path) => readFileSync(join(root, path), 'utf8');
-const workflow = yaml.load(read('.github/workflows/ci.yml'));
+const workflow = yaml.load(read('docs/legacy/github-actions-ci.yml'));
 const jobs = workflow.jobs;
 const emergency = jobs['emergency-production-rollback'];
 const step = (name) => emergency.steps.find((value) => value.name === name);

@@ -5,7 +5,7 @@ import test from 'node:test';
 import yaml from 'js-yaml';
 
 const root = resolve(import.meta.dirname, '../..');
-const ciText = readFileSync(join(root, '.github/workflows/ci.yml'), 'utf8');
+const ciText = readFileSync(join(root, 'docs/legacy/github-actions-ci.yml'), 'utf8');
 const workflow = yaml.load(ciText);
 const emergency = workflow.jobs['emergency-production-rollback'];
 const deploy = workflow.jobs['deploy-production'];

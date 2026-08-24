@@ -173,14 +173,14 @@ test('root ignore rules cover generated and sensitive rebuild artifacts', () => 
 });
 
 test('CI runs migration hygiene before build and deploy stages', () => {
-  const ci = read('.github/workflows/ci.yml');
+  const ci = read('docs/legacy/github-actions-ci.yml');
   assert.match(ci, /npm run typecheck/);
   assert.match(ci, /npm run test:migration/);
   assert.match(ci, /github\.sha/);
 });
 
 test('CI gates release images on the worker Python unit suite', () => {
-  const ci = read('.github/workflows/ci.yml');
+  const ci = read('docs/legacy/github-actions-ci.yml');
   const workflow = yaml.load(ci);
   const workerStep = workflow.jobs['unit-tests'].steps.find((step) => step.name === 'Run worker unit tests');
   assert.equal(workerStep['working-directory'], 'apps/worker');
@@ -246,7 +246,7 @@ test('Compose app services consume validated encoded container-local database UR
 });
 
 test('GitHub Actions execute external actions only by immutable commit SHA', () => {
-  const workflow = read('.github/workflows/ci.yml');
+  const workflow = read('docs/legacy/github-actions-ci.yml');
   const references = [...workflow.matchAll(/^\s*(?:-\s*)?uses:\s*([^\s#]+)/gm)]
     .map((match) => match[1])
     .filter((reference) => !reference.startsWith('./'));
