@@ -478,8 +478,10 @@ test('internal beta local pipeline keeps isolated source, active scanners, exact
   const integrationPermissionsGate = read('scripts/run-internal-ci-integration.sh');
   assert.match(integrationPermissionsGate, /runtime_root=\$\(realpath -e "\$\{XDG_RUNTIME_DIR:\?\}"\)/);
   assert.match(integrationPermissionsGate, /case "\$rootless_netns" in "\$runtime_root"\/\*/);
+  assert.match(integrationPermissionsGate, /\/usr\/bin\/podman system migrate >\/dev\/null/);
   assert.match(integrationPermissionsGate, /test ! -L "\$rootless_netns"; rm -rf -- "\$rootless_netns"/);
-  assert.match(integrationPermissionsGate, /cleanup\r?\ndocker network create/);
+  assert.doesNotMatch(integrationPermissionsGate, /docker network create|docker network inspect/);
+  assert.equal((integrationPermissionsGate.match(/--network slirp4netns/g) ?? []).length, 3);
   assert.match(integrationPermissionsGate, /rabbitmq_port=.*\r?\numask 077\r?\nfor attempt/);
   const testGate = read('scripts/run-internal-ci-test-gate.sh');
   assert.match(testGate, /javascript\) npx turbo run test >/);
@@ -489,7 +491,7 @@ test('internal beta local pipeline keeps isolated source, active scanners, exact
   assert.match(integrationGate, /APP_DB_USER=lunchlineup_ci_app/);
   assert.match(integrationGate, /DATABASE_URL="postgresql:\/\/lunchlineup_ci_app:/);
   assert.match(integrationGate, /PYTHON="\$venv\/bin\/python"/);
-  assert.match(integrationGate, /docker network inspect "\$network"/);
+  assert.match(integrationGate, /for resource in "\$postgres" "\$redis" "\$rabbitmq"/);
   const qualificationEnv = read('scripts/write-internal-beta-qualification-env.mjs');
   assert.match(qualificationEnv, /COMPOSE_SERVICE_ENV_FILE:output/);
   assert.match(qualificationEnv, /PITR_WAL_OBJECT_STORE_SECRETS_DIR/);
