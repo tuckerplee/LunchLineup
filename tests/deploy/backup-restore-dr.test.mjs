@@ -987,9 +987,9 @@ test('DR drill kills a TERM-ignoring fetch adapter tree before failed-output cle
 set -euo pipefail
 setsid --wait bash -c '
   trap "" TERM
-  printf '%s\n' "$$" > "$FAKE_FETCH_CHILD_PID_FILE"
+  printf "%s\\n" "$$" > "$FAKE_FETCH_CHILD_PID_FILE"
   sleep 7
-  printf 'delayed rewrite\n' > "$DR_FETCH_BACKUP_OUTPUT"
+  printf "delayed rewrite\\n" > "$DR_FETCH_BACKUP_OUTPUT"
   while :; do sleep 1; done
 ' &
 child=$!
@@ -1054,9 +1054,9 @@ test('DR drill kills a setsid readback descendant before retrieved-output cleanu
 set -euo pipefail
 setsid --wait bash -c '
   trap "" TERM
-  printf '%s\n' "$$" > "$FAKE_READBACK_CHILD_PID_FILE"
+  printf "%s\\n" "$$" > "$FAKE_READBACK_CHILD_PID_FILE"
   sleep 7
-  printf 'delayed readback rewrite\n' > "$DR_READBACK_OUTPUT"
+  printf "delayed readback rewrite\\n" > "$DR_READBACK_OUTPUT"
   while :; do sleep 1; done
 ' &
 child=$!
