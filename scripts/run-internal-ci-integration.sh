@@ -9,7 +9,8 @@ runtime_root=''
 cleanup(){ docker rm -f "$postgres" "$redis" "$rabbitmq" >/dev/null 2>&1 || true; if [[ -n "$runtime_root" && -e "$runtime_root" && ! -L "$runtime_root" ]]; then case "$runtime_root" in /tmp/llr.*) rm -rf -- "$runtime_root";; esac; fi; }; trap cleanup EXIT
 umask 022
 controller_runtime_root=$(realpath -e "${XDG_RUNTIME_DIR:?}")
-case "$controller_runtime_root" in "$(realpath -e "$RUNNER_TEMP")"/*) ;; *) echo 'Controller rootless runtime escaped RUNNER_TEMP.' >&2; exit 1;; esac
+controller_private_root=$(realpath -e "$RUNNER_TEMP/..")
+case "$controller_runtime_root" in "$controller_private_root"/*) ;; *) echo 'Controller rootless runtime escaped the private run root.' >&2; exit 1;; esac
 runtime_root=$(mktemp -d /tmp/llr.XXXXXX)
 test ! -L "$runtime_root"; chmod 700 "$runtime_root"; export XDG_RUNTIME_DIR="$runtime_root"
 rootless_netns="$runtime_root/containers/networks/rootless-netns"

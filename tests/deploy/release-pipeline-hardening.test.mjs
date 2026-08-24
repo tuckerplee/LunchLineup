@@ -477,7 +477,8 @@ test('internal beta local pipeline keeps isolated source, active scanners, exact
   assert.match(read('apps/web/next.config.js'), /agentRules: false/);
   const integrationPermissionsGate = read('scripts/run-internal-ci-integration.sh');
   assert.match(integrationPermissionsGate, /controller_runtime_root=\$\(realpath -e "\$\{XDG_RUNTIME_DIR:\?\}"\)/);
-  assert.match(integrationPermissionsGate, /case "\$controller_runtime_root" in "\$\(realpath -e "\$RUNNER_TEMP"\)"\/\*/);
+  assert.match(integrationPermissionsGate, /controller_private_root=\$\(realpath -e "\$RUNNER_TEMP\/\.\."\)/);
+  assert.match(integrationPermissionsGate, /case "\$controller_runtime_root" in "\$controller_private_root"\/\*/);
   assert.match(integrationPermissionsGate, /runtime_root=\$\(mktemp -d \/tmp\/llr\.XXXXXX\)/);
   assert.match(integrationPermissionsGate, /export XDG_RUNTIME_DIR="\$runtime_root"/);
   assert.match(integrationPermissionsGate, /case "\$rootless_netns" in "\$runtime_root"\/\*/);
