@@ -1,10 +1,11 @@
 #!/usr/bin/env node
 import { createHash } from 'node:crypto';
-import { lstatSync, readFileSync, writeFileSync } from 'node:fs';
+import { writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { TextDecoder } from 'node:util';
 import { fileURLToPath } from 'node:url';
 import { verifyFetchedEvidenceArtifact } from './launch-proof-evidence.mjs';
+import { readRegularEvidenceSnapshot } from './internal-ci-evidence.mjs';
 
 export const REQUIRED_EVIDENCE_KINDS = Object.freeze([
   'runtimeEnv',
@@ -347,16 +348,12 @@ function buildEvidenceEntry(descriptorValue, sourceSha, generatedAt, maxAgeSecon
   const normalizedDescriptor = { ...descriptor, kind, uri, producer, retentionClass };
   assertSecretFree(normalizedDescriptor, label);
 
-  let stats;
+  let bytes;
   try {
-    stats = lstatSync(path);
+    bytes = readRegularEvidenceSnapshot(path, dirname(path), { maxBytes: MAX_EVIDENCE_BYTES }).bytes;
   } catch {
-    throw new Error(`${label}.path is missing: ${path}.`);
+    throw new Error(`${label}.path must be a bounded regular evidence file: ${path}.`);
   }
-  if (!stats.isFile() || stats.isSymbolicLink()) throw new Error(`${label}.path must be a regular evidence file.`);
-  if (stats.size === 0) throw new Error(`${label}.path must not be empty.`);
-  if (stats.size > MAX_EVIDENCE_BYTES) throw new Error(`${label}.path exceeds ${MAX_EVIDENCE_BYTES} bytes.`);
-  const bytes = readFileSync(path);
   if (bytes.byteLength === 0) throw new Error(`${label}.path must not be empty.`);
   const artifact = parseSecretFreeJson(bytes, `${label}.artifact`);
   requireAttachedEvidence(artifact, normalizedDescriptor, sourceSha, capturedAt, label);

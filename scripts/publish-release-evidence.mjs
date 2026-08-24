@@ -1,10 +1,10 @@
 #!/usr/bin/env node
 import { createHash } from 'node:crypto';
-import { readFileSync, statSync } from 'node:fs';
-import { basename, join, resolve } from 'node:path';
+import { basename, dirname, join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { verifyCandidateEvidenceBundle } from './launch-proof-evidence.mjs';
 import { deriveProductionImageInventory } from './production-image-inventory.mjs';
+import { readRegularEvidenceSnapshot } from './internal-ci-evidence.mjs';
 
 const apiVersion = '2022-11-28';
 
@@ -18,15 +18,13 @@ function sha256(bytes) {
 
 function readAsset(path) {
   const resolved = resolve(path);
-  let stat;
   let bytes;
   try {
-    stat = statSync(resolved);
-    bytes = readFileSync(resolved);
+    bytes = readRegularEvidenceSnapshot(resolved, dirname(resolved)).bytes;
   } catch {
     fail(`Release evidence asset is missing or unreadable: ${resolved}`);
   }
-  if (!stat.isFile() || stat.size < 1) fail(`Release evidence asset must be a non-empty file: ${resolved}`);
+  if (bytes.length < 1) fail(`Release evidence asset must be a non-empty file: ${resolved}`);
   return {
     name: basename(resolved),
     path: resolved,

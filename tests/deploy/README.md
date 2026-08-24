@@ -24,6 +24,7 @@
 - `internal-beta-lifecycle.test.mjs`: verifies VM107 browser-beta exact pushed-candidate checkout, clean/runtime/image/migration identity, required service health, portable direct/public release-header proof, real delivery/alert routing, Prometheus outbox/critical-alert gates, bounded encrypted isolated restore proof with cleanup, data-preserving pause, and adjacent runbook inventory.
 - `internal-beta-receipt-enforcement.test.mjs`: behaviorally verifies signed-receipt and exact-image enforcement order before VM107 provider or service mutations.
 - `internal-ci-candidate-receipt.test.mjs`: adversarially verifies the exact 29-gate, artifact, security, image-scan, public-build, and interaction receipt boundary.
+- `internal-ci-codeql.test.mjs`: adversarially verifies exact tool-bound two-field CodeQL fingerprints, reviewed expiry, duplicate rejection, and failed scanner evidence.
 - `internal-ci-gate-receipt.test.mjs`: adversarially verifies command-result, attempt, source, evidence-root, and exclusive gate receipt enforcement.
 - `internal-ci-receipt-signature.test.mjs`: verifies detached Ed25519 signatures, external policy identity, replay resistance, and exact image archives with ephemeral test keys.
 - `internal-ci-release-manifest.test.mjs`: adversarially verifies Compose service drift, shared images, immutable third-party refs, public builds, and exact archives.

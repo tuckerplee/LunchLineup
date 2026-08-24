@@ -63,6 +63,32 @@ function validatePublicHtmlUrl(url) {
   }
 }
 
+async function readBoundedResponse(response, maximumBytes, allowBufferedTestDouble = false) {
+  const declared = response.headers.get('content-length');
+  if (declared !== null && (!/^\d+$/.test(declared) || Number(declared) > maximumBytes)) throw new Error(`external health response exceeds ${maximumBytes} bytes.`);
+  if (!response.body?.getReader) {
+    if (!allowBufferedTestDouble || typeof response.arrayBuffer !== 'function') throw new Error('external health response does not expose a bounded stream.');
+    const bytes = Buffer.from(await response.arrayBuffer());
+    if (bytes.length > maximumBytes) throw new Error(`external health response exceeds ${maximumBytes} bytes.`);
+    return bytes;
+  }
+  const reader = response.body.getReader();
+  const chunks = [];
+  let bytes = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      bytes += value.byteLength;
+      if (bytes > maximumBytes) throw new Error(`external health response exceeds ${maximumBytes} bytes.`);
+      chunks.push(Buffer.from(value));
+    }
+  } finally {
+    reader.releaseLock();
+  }
+  return Buffer.concat(chunks, bytes);
+}
+
 export async function probeExternalHealthRelease({
   healthUrl,
   expectedReleaseSha,
@@ -85,7 +111,7 @@ export async function probeExternalHealthRelease({
   let bodyBytes;
   try {
     response = await fetchImpl(url, externalHealthRequestOptions(environment, controller.signal));
-    bodyBytes = Buffer.from(await response.arrayBuffer());
+    bodyBytes = await readBoundedResponse(response, expectPublicHtml ? 1024 * 1024 : 64 * 1024, fetchImpl !== fetch);
   } catch (error) {
     if (controller.signal.aborted) throw new Error(`external health request timed out after ${timeoutMs}ms.`);
     throw error;
@@ -141,7 +167,7 @@ async function main() {
   }
   const proof = await probeExternalHealthRelease({ healthUrl, expectedReleaseSha, expectPublicHtml });
   const bytes = `${JSON.stringify(proof, null, 2)}\n`;
-  if (outputPath) writeFileSync(outputPath, bytes, { mode: 0o600 });
+  if (outputPath) writeFileSync(outputPath, bytes, { flag: 'wx', mode: 0o600 });
   process.stdout.write(bytes);
 }
 

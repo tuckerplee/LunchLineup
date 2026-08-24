@@ -1487,7 +1487,10 @@ const server = http.createServer(async (req, res) => {
       const body = await readBody(req);
       const identifier = String(body.identifier ?? body.email ?? adminUsername).trim().toLowerCase();
       const account = state.usersByUsername.get(identifier);
-      if (!account || body.tenantSlug !== tenantSlug || (body.pin && body.pin !== account.pin)) {
+      const validCredential = pathname === '/v1/auth/email/verify-otp'
+        ? String(body.code ?? '') === '123456'
+        : String(body.pin ?? body.password ?? '') === account?.pin;
+      if (!account || body.tenantSlug !== tenantSlug || !validCredential) {
         if (url.searchParams.get('redirect') === '1') {
           sendText(res, 303, '', { location: `/auth/login?tenantSlug=${tenantSlug}&step=pin&error=invalid` });
         } else {

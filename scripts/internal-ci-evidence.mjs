@@ -35,6 +35,28 @@ export function relativeEvidencePath(path, root) {
 
 export function statRegularEvidenceFile(path, root) { const itemPath = relativeEvidencePath(path, root), stat = lstatSync(path); if (stat.isSymbolicLink() || !stat.isFile()) throw new Error('Evidence must be a regular file.'); return { path: itemPath, bytes: stat.size }; }
 
+export function readRegularEvidenceSnapshot(path, root, { maxBytes = 64 * 1024 * 1024 } = {}) {
+  if (!Number.isSafeInteger(maxBytes) || maxBytes < 1 || maxBytes > 64 * 1024 * 1024) throw new Error('Invalid evidence snapshot limit.');
+  const item = statRegularEvidenceFile(path, root);
+  const fd = openSync(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+  try {
+    const before = fstatSync(fd);
+    if (!before.isFile() || before.size > maxBytes) throw new Error('Evidence snapshot is not a bounded regular file.');
+    const bytes = Buffer.allocUnsafe(before.size);
+    let position = 0;
+    while (position < before.size) {
+      const count = readSync(fd, bytes, position, before.size - position, position);
+      if (!count) break;
+      position += count;
+    }
+    const after = fstatSync(fd);
+    if (position !== before.size || before.dev !== after.dev || before.ino !== after.ino || before.size !== after.size || before.mtimeMs !== after.mtimeMs) throw new Error('Evidence changed while reading.');
+    const finalPath = lstatSync(path);
+    if (finalPath.isSymbolicLink() || finalPath.dev !== before.dev || finalPath.ino !== before.ino || finalPath.size !== before.size || finalPath.mtimeMs !== before.mtimeMs) throw new Error('Evidence path changed while reading.');
+    return { ...item, bytes };
+  } finally { closeSync(fd); }
+}
+
 export async function sha256File(path, root) {
   if (root) statRegularEvidenceFile(path, root);
   const fd = openSync(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
@@ -53,7 +75,7 @@ export async function sha256File(path, root) {
   } finally { closeSync(fd); }
 }
 
-export function readJsonEvidence(path, root, label = 'JSON evidence') { statRegularEvidenceFile(path, root); const value = JSON.parse(readFileSync(path, 'utf8')); assertNoAbsoluteHostPaths(value, label); return value; }
+export function readJsonEvidence(path, root, label = 'JSON evidence') { const snapshot = readRegularEvidenceSnapshot(path, root); const value = JSON.parse(snapshot.bytes.toString('utf8')); assertNoAbsoluteHostPaths(value, label); return value; }
 
 export function writeExclusiveJson(path, value, { root } = {}) {
   if (!root) throw new Error('Evidence root is required.');

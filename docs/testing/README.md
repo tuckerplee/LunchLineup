@@ -65,7 +65,7 @@ CI DAST and load smoke generate `.env.smoke`, download `release-manifest.json`, 
 Run DB-backed public SaaS workflows against an isolated stack:
 
 ```bash
-DATA_TARGET_ENV=disposable E2E_FULL_STACK=1 E2E_SEED_COMMAND="npm run seed:e2e" npm --workspace @lunchlineup/web run test:e2e
+DATA_TARGET_ENV=disposable E2E_FULL_STACK=1 E2E_COMPOSE_PROJECT_NAME=lunchlineup-e2e E2E_COMPOSE_ENV_FILE="$PWD/.env.smoke" npm --workspace @lunchlineup/web run test:e2e
 ```
 
 The disposable seed requires `DATA_TARGET_ENV=test` or `disposable` and has no production override. It creates separate tenant admin and super-admin PIN users. The full-stack E2E layer uses those accounts to cover tenant dashboard access, schedule editing, lunch/break generation, time cards, platform-admin denial for tenant admins, and super-admin tenant/user inspection.

@@ -46,6 +46,13 @@ test('external health probe remains public when Cloudflare Access credentials ar
   });
 });
 
+test('external health probe rejects oversized declared and streamed bodies', async () => {
+  const headers = { get: (name) => name.toLowerCase() === 'content-length' ? '65537' : name.toLowerCase() === 'x-lunchlineup-release' ? sourceSha : null };
+  await assert.rejects(probeExternalHealthRelease({ healthUrl, expectedReleaseSha: sourceSha, fetchImpl: async () => ({ status: 200, headers, arrayBuffer: async () => new ArrayBuffer(0) }) }), /exceeds 65536 bytes/);
+  const body = Buffer.alloc(65_537, 1);
+  await assert.rejects(probeExternalHealthRelease({ healthUrl, expectedReleaseSha: sourceSha, fetchImpl: async () => ({ status: 200, headers: { get: (name) => name.toLowerCase() === 'x-lunchlineup-release' ? sourceSha : null }, arrayBuffer: async () => body }) }), /exceeds 65536 bytes/);
+});
+
 test('external health probe sends a complete Cloudflare Access service-token pair', async () => {
   const clientId = 'test-client-id';
   const clientSecret = 'test-client-secret';

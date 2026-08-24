@@ -1,7 +1,8 @@
 import { createHash, createHmac, randomUUID } from "node:crypto";
-import { readFile, stat, writeFile } from "node:fs/promises";
-import { resolve } from "node:path";
+import { writeFile } from "node:fs/promises";
+import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { readRegularEvidenceSnapshot } from "./internal-ci-evidence.mjs";
 
 const MAX_PDF_BYTES = 5 * 1024 * 1024;
 const MAX_RESPONSE_BYTES = 64 * 1024;
@@ -436,11 +437,11 @@ export async function runAvailabilityImportLoadSmoke() {
   let sourcePdfMode;
   if (suppliedPdfPath) {
     const pdfPath = resolve(suppliedPdfPath);
-    const metadata = await stat(pdfPath);
-    if (!metadata.isFile() || metadata.size <= 5 || metadata.size > MAX_PDF_BYTES) {
+    const snapshot = readRegularEvidenceSnapshot(pdfPath, dirname(pdfPath), { maxBytes: MAX_PDF_BYTES });
+    if (snapshot.bytes.length <= 5) {
       throw new Error("AVAILABILITY_IMPORT_PDF_PATH must be a regular PDF no larger than 5 MiB.");
     }
-    pdfBytes = await readFile(pdfPath);
+    pdfBytes = snapshot.bytes;
     sourcePdfMode = "provided";
   } else {
     pdfBytes = createDeterministicAvailabilityPdf(targetUser.pdfIdentity);

@@ -1,12 +1,13 @@
 import { execFileSync } from 'node:child_process';
-import { existsSync, lstatSync, readFileSync, statSync } from 'node:fs';
-import { isAbsolute, relative, resolve, sep } from 'node:path';
+import { existsSync, lstatSync, statSync } from 'node:fs';
+import { dirname, isAbsolute, relative, resolve, sep } from 'node:path';
+import { readRegularEvidenceSnapshot } from './internal-ci-evidence.mjs';
 
 const argv = process.argv.slice(2);
 const option = (name) => { const i = argv.indexOf(name); return i < 0 ? '' : argv[i + 1] ?? ''; };
 const proofPath = resolve(option('--proof')), clone = resolve(option('--clone')), purpose = option('--purpose');
 if (!['scan', 'build'].includes(purpose) || !existsSync(proofPath) || lstatSync(proofPath).isSymbolicLink() || !statSync(proofPath).isFile() || !existsSync(clone)) throw new Error('Usage: --proof <path> --clone <path> --purpose <scan|build> [--require-clean]');
-const proof = JSON.parse(readFileSync(proofPath, 'utf8'));
+const proof = JSON.parse(readRegularEvidenceSnapshot(proofPath, dirname(proofPath), { maxBytes: 1024 * 1024 }).bytes.toString('utf8'));
 if (proof.version !== 1 || proof.kind !== 'lunchlineup-internal-ci-source-proof' || proof.status !== 'passed' || proof.repository !== 'tuckerplee/LunchLineup' || proof.sourceRef !== 'refs/heads/internal-beta-candidate' || !/^[a-f0-9]{40}$/.test(proof.sourceSha ?? '') || !/^[a-f0-9]{40}$/.test(proof.treeSha ?? '') || proof.remoteCandidateSha !== proof.sourceSha || !/^[a-f0-9]{40}$/.test(proof.baselineSha ?? '')) throw new Error('Invalid source proof.');
 const gitEnvironment = Object.fromEntries(Object.entries(process.env).filter(([key]) => !['GIT_DIR', 'GIT_WORK_TREE', 'GIT_INDEX_FILE', 'GIT_OBJECT_DIRECTORY', 'GIT_ALTERNATE_OBJECT_DIRECTORIES'].includes(key)));
 const git = (...args) => execFileSync('git', args, { cwd: clone, env: gitEnvironment, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();

@@ -1,7 +1,8 @@
 import { createHash } from 'node:crypto';
-import { accessSync, constants, existsSync, readFileSync, realpathSync, statSync } from 'node:fs';
-import { isAbsolute, relative, resolve, sep } from 'node:path';
+import { existsSync, realpathSync } from 'node:fs';
+import { dirname, isAbsolute, relative, resolve, sep } from 'node:path';
 import { PLACEHOLDER_RE } from './production-launch-policy-shared.mjs';
+import { readRegularEvidenceSnapshot } from './internal-ci-evidence.mjs';
 
 const COMPOSE_SECRET_SOURCE_KEYS = [
   'CONTROL_PLANE_ADMIN_TOKEN_SECRET_FILE',
@@ -193,9 +194,7 @@ export function createManagedSecretPolicy(context, {
     for (const file of files) {
       let content;
       try {
-        accessSync(file.path, constants.R_OK);
-        if (!statSync(file.path).isFile()) throw new Error('not a file');
-        content = readFileSync(file.path);
+        content = readRegularEvidenceSnapshot(file.path, dirname(file.path), { maxBytes: 1024 * 1024 }).bytes;
       } catch {
         collector.fail(`${file.role} must exist and be a readable file on the deployment host.`);
         continue;

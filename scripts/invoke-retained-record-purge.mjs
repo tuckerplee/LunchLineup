@@ -1,8 +1,9 @@
 #!/usr/bin/env node
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import {
   closeSync,
   existsSync,
+  fsyncSync,
   mkdirSync,
   openSync,
   readFileSync,
@@ -10,7 +11,7 @@ import {
   unlinkSync,
   writeFileSync,
 } from "node:fs";
-import { dirname, isAbsolute, join, resolve } from "node:path";
+import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 
 const RETAINED_RECORD_CONFIRM = "purge-expired-retained-records";
@@ -223,7 +224,14 @@ function endpointUrl() {
     );
   }
 
-  if (!url.pathname.endsWith("/api/v2/admin/retention/purge-expired")) {
+  if (url.username || url.password || url.search || url.hash) {
+    throw new Error("RETENTION_PURGE_URL must not contain credentials, a query, or a fragment.");
+  }
+  if (url.protocol === "https:" && url.origin !== "https://lunchlineup.com") {
+    throw new Error("RETENTION_PURGE_URL must use the canonical LunchLineup origin.");
+  }
+
+  if (url.pathname !== "/api/v2/admin/retention/purge-expired") {
     throw new Error(
       "RETENTION_PURGE_URL must target /api/v2/admin/retention/purge-expired.",
     );
@@ -644,9 +652,21 @@ function atomicWriteJson(path, payload) {
 
 function atomicWrite(path, contents) {
   ensureParent(path);
-  const temporary = `${path}.${process.pid}.tmp`;
-  writeFileSync(temporary, contents, "utf8");
-  renameSync(temporary, path);
+  const output = resolve(path);
+  const temporary = join(dirname(output), `.${basename(output)}.${process.pid}.${randomUUID()}.tmp`);
+  let handle;
+  try {
+    handle = openSync(temporary, "wx", 0o600);
+    writeFileSync(handle, contents, "utf8");
+    fsyncSync(handle);
+    closeSync(handle);
+    handle = undefined;
+    renameSync(temporary, output);
+  } catch (error) {
+    if (handle !== undefined) closeSync(handle);
+    try { unlinkSync(temporary); } catch {}
+    throw error;
+  }
 }
 
 function ensureParent(path) {

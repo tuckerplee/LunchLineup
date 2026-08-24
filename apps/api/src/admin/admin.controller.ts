@@ -280,7 +280,8 @@ export class AdminController implements OnModuleDestroy {
         return value
             .toLowerCase()
             .replace(/[^a-z0-9]+/g, '-')
-            .replace(/^-+|-+$/g, '')
+            .replace(/^-/, '')
+            .replace(/-$/, '')
             .slice(0, 64);
     }
 
@@ -1286,7 +1287,7 @@ export class AdminController implements OnModuleDestroy {
             const email = (body.email ?? '').trim().toLowerCase();
             if (!email) patch.email = null;
             else {
-                if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) throw new BadRequestException('Invalid email');
+                if (email.length > 254 || !AdminController.OWNER_EMAIL_REGEX.test(email)) throw new BadRequestException('Invalid email');
                 patch.email = email;
             }
         }

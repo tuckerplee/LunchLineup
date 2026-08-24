@@ -449,6 +449,11 @@ test('internal beta local pipeline keeps isolated source, active scanners, exact
   const codeqlOwner = read('scripts/run-internal-ci-codeql.sh');
   assert.match(codeqlOwner, /readonly codeql_ram_mb=6144/);
   assert.match(codeqlOwner, /database analyze .*--ram="\$codeql_ram_mb"/);
+  const e2eSupport = read('apps/web/tests/e2e/support.ts');
+  assert.doesNotMatch(e2eSupport, /E2E_SEED_COMMAND|execSync/);
+  assert.match(e2eSupport, /execFileSync\('docker'/);
+  const seedSummary = read('scripts/seed-e2e.mjs').slice(read('scripts/seed-e2e.mjs').indexOf('console.log(JSON.stringify({'));
+  assert.doesNotMatch(seedSummary, /adminPin|superAdminPin|loadSmokePin|MfaSecret/);
   const lifecycle = read('scripts/internal-beta-lifecycle.sh');
   assert.match(lifecycle, /verify_signed_internal_ci_candidate/);
   assert.match(lifecycle, /load_and_verify_candidate_images/);

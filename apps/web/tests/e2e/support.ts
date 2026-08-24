@@ -1,5 +1,5 @@
 import { createHmac } from 'node:crypto';
-import { execSync } from 'node:child_process';
+import { execFileSync } from 'node:child_process';
 import path from 'node:path';
 
 import { expect, type Page } from '@playwright/test';
@@ -17,11 +17,12 @@ export const e2eAdminMfaSecret = process.env.E2E_ADMIN_MFA_SECRET ?? 'JBSWY3DPEH
 export const e2eSuperAdminMfaSecret = process.env.E2E_SUPER_ADMIN_MFA_SECRET ?? 'JBSWY3DPEHPK3PXP';
 
 export function seedTenant() {
-  const seedCommand = process.env.E2E_SEED_COMMAND;
-  if (!seedCommand) {
-    throw new Error('E2E_SEED_COMMAND is required when E2E_FULL_STACK=1.');
+  const project = process.env.E2E_COMPOSE_PROJECT_NAME ?? '';
+  const envFile = process.env.E2E_COMPOSE_ENV_FILE ?? '';
+  if (!/^[a-z0-9][a-z0-9_-]{0,62}$/.test(project) || !path.isAbsolute(envFile)) {
+    throw new Error('E2E_COMPOSE_PROJECT_NAME and an absolute E2E_COMPOSE_ENV_FILE are required when E2E_FULL_STACK=1.');
   }
-  execSync(seedCommand, {
+  execFileSync('docker', ['compose', '--project-name', project, '--project-directory', repoRoot, '--env-file', envFile, '-f', path.join(repoRoot, 'docker-compose.yml'), '--profile', 'ops', 'run', '--rm', '--no-deps', '-e', 'DATA_TARGET_ENV=disposable', 'migrate', 'sh', '-lc', 'DATABASE_URL="$MIGRATION_DATABASE_URL" node scripts/seed-e2e.mjs'], {
     cwd: repoRoot,
     env: process.env,
     stdio: 'inherit',

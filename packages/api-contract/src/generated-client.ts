@@ -62,7 +62,10 @@ export class ApiV2ClientError extends Error {
 }
 
 function normalizeBaseUrl(value: string): string {
-  const normalized = value.trim().replace(/\/+$/, '');
+  const trimmed = value.trim();
+  let end = trimmed.length;
+  while (end > 0 && trimmed.charCodeAt(end - 1) === 47) end -= 1;
+  const normalized = trimmed.slice(0, end);
   if (!normalized.startsWith('/') || normalized.startsWith('//') || normalized.includes('\\')) {
     throw new Error('API v2 client requires a same-origin base path.');
   }
