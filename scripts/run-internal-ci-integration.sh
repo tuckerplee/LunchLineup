@@ -7,6 +7,10 @@ test "$context" = "$source_root/source-context.json"; node "$build_root/scripts/
 suffix="${CI_RUN_ID//[^a-zA-Z0-9]/}"; network="lunchlineup-integration-$suffix"; postgres="${network}-postgres"; redis="${network}-redis"; rabbitmq="${network}-rabbitmq"; output="$artifact_root/integration"; venv="$RUNNER_TEMP/lunchlineup-integration-venv-$CI_RUN_ID"; mkdir -p "$output" "$artifact_root/results" "$artifact_root/details"; started_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 cleanup(){ docker rm -f "$postgres" "$redis" "$rabbitmq" >/dev/null 2>&1 || true; docker network rm "$network" >/dev/null 2>&1 || true; }; trap cleanup EXIT
 umask 022
+runtime_root=$(realpath -e "${XDG_RUNTIME_DIR:?}")
+rootless_netns="$runtime_root/containers/networks/rootless-netns"
+case "$rootless_netns" in "$runtime_root"/*) ;; *) echo 'Rootless network runtime escaped XDG_RUNTIME_DIR.' >&2; exit 1;; esac
+if [[ -e "$rootless_netns" || -L "$rootless_netns" ]]; then test ! -L "$rootless_netns"; rm -rf -- "$rootless_netns"; fi
 cleanup
 docker network create "$network" >/dev/null
 pg_password="pg_$(openssl rand -hex 24)"; app_password="app_$(openssl rand -hex 24)"; mq_password="mq_$(openssl rand -hex 24)"

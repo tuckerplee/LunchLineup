@@ -476,7 +476,10 @@ test('internal beta local pipeline keeps isolated source, active scanners, exact
   assert.match(mockPlaywright, /--purpose build --require-clean/);
   assert.match(read('apps/web/next.config.js'), /agentRules: false/);
   const integrationPermissionsGate = read('scripts/run-internal-ci-integration.sh');
-  assert.match(integrationPermissionsGate, /umask 022\r?\ncleanup\r?\ndocker network create/);
+  assert.match(integrationPermissionsGate, /runtime_root=\$\(realpath -e "\$\{XDG_RUNTIME_DIR:\?\}"\)/);
+  assert.match(integrationPermissionsGate, /case "\$rootless_netns" in "\$runtime_root"\/\*/);
+  assert.match(integrationPermissionsGate, /test ! -L "\$rootless_netns"; rm -rf -- "\$rootless_netns"/);
+  assert.match(integrationPermissionsGate, /cleanup\r?\ndocker network create/);
   assert.match(integrationPermissionsGate, /rabbitmq_port=.*\r?\numask 077\r?\nfor attempt/);
   const testGate = read('scripts/run-internal-ci-test-gate.sh');
   assert.match(testGate, /javascript\) npx turbo run test >/);
