@@ -1,7 +1,7 @@
 {
   "repository": "tuckerplee/LunchLineup",
   "candidateRef": "refs/heads/internal-beta-candidate",
-  "approvedPipelineSha256": "2c003cefefde77e35c32f229e95b11dd31288bec431d727a340f63d3a7401bb7",
+  "approvedPipelineSha256": "2061c46559176ae390f9ebdacee378240d71d67b3dd0cb70c2428bac92fdee69",
   "requiredGates": [
     "source-identity",
     "dependency-audit",

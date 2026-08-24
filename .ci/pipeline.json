@@ -16,7 +16,9 @@
   },
   "env": {
     "NODE_VERSION": "22.23.2",
-    "NODE_OPTIONS": "--max-old-space-size=4096"
+    "NODE_OPTIONS": "--max-old-space-size=4096",
+    "CODEQL_CLI": "/opt/codeql/current/codeql",
+    "CODEQL_BUNDLE_SHA256": "f2a7f47f049b9de51977c02c7900b6e2af7587b50aef530a68975a97b136dfd4"
   },
   "steps": [
     {
