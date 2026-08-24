@@ -523,6 +523,7 @@ test('internal beta local pipeline keeps isolated source, active scanners, exact
   assert.doesNotMatch(qualificationEnv, /PITR_WAL_PROVIDER_OBJECT_STORE_SECRETS_DIR/);
   const qualification = read('scripts/run-internal-beta-release-qualification.sh');
   assert.doesNotMatch(qualification, /--project-directory|--pull never/);
+  assert.match(qualification, /project_suffix=\$\{CI_RUN_ID,,\}; project_suffix=\$\{project_suffix\/\/\[\^a-z0-9\]\//);
   assert.match(qualification, /BASE_URL=http:\/\/127\.0\.0\.1:8080 E2E_FULL_STACK=1 E2E_MOCK_API=0 E2E_COMPOSE_PROJECT_NAME="\$project" E2E_COMPOSE_ENV_FILE="\$env_file"/);
   assert.match(qualification, /ZAP_IMAGE='ghcr\.io\/zaproxy\/zaproxy:stable@sha256:[a-f0-9]{64}'/);
   assert.match(qualification, /AVAILABILITY_IMPORT_ORIGIN=http:\/\/127\.0\.0\.1:8080/);
