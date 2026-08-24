@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
@@ -13,6 +14,17 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 function read(relativePath) {
   return readFileSync(resolve(root, relativePath), 'utf8');
 }
+
+test('internal beta qualification environment module loads before validating arguments', () => {
+  const result = spawnSync(process.execPath, ['scripts/write-internal-beta-qualification-env.mjs'], {
+    cwd: root,
+    encoding: 'utf8',
+    windowsHide: true,
+  });
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /Qualification environment arguments are required/);
+  assert.doesNotMatch(result.stderr, /does not provide an export named 'resolve'/);
+});
 
 function workflowJob(workflow, jobName, nextJobName) {
   const start = workflow.indexOf(`  ${jobName}:`);

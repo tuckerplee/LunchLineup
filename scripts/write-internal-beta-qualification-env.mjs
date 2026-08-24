@@ -1,9 +1,12 @@
 import { createHash, randomBytes } from 'node:crypto';
-import { mkdirSync, resolve, writeFileSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { mkdirSync, writeFileSync } from 'node:fs';
+import { dirname, join, resolve } from 'node:path';
 import { readInternalCiSourceContext } from './internal-ci-source-context.mjs';
 import { stableJson, writeExclusiveJson } from './internal-ci-evidence.mjs';
-const args=process.argv.slice(2), one=(f)=>{const i=args.indexOf(f);return i<0?'':args[i+1]??'';}; const context=readInternalCiSourceContext(resolve(one('--source-context'))), output=resolve(one('--output')), publicOutput=resolve(one('--public-build-config')), secretsDir=resolve(one('--secrets-dir')); if(!one('--output')||!one('--public-build-config')||!one('--secrets-dir')) throw new Error('Qualification environment arguments are required.');
+const args=process.argv.slice(2), one=(f)=>{const i=args.indexOf(f);return i<0?'':args[i+1]??'';};
+const sourceContext=one('--source-context'), outputArgument=one('--output'), publicOutputArgument=one('--public-build-config'), secretsArgument=one('--secrets-dir');
+if(!sourceContext||!outputArgument||!publicOutputArgument||!secretsArgument) throw new Error('Qualification environment arguments are required.');
+const context=readInternalCiSourceContext(resolve(sourceContext)), output=resolve(outputArgument), publicOutput=resolve(publicOutputArgument), secretsDir=resolve(secretsArgument);
 const secret=(prefix,bytes=32)=>`${prefix}${randomBytes(bytes).toString('base64url')}`; const pg=secret('pg_'), appPg=secret('app_pg_'), mq=secret('mq_');
 const publicValues={NEXT_PUBLIC_API_URL:'/api/v2',NEXT_PUBLIC_APP_ORIGIN:'https://beta.lunchlineup.com',NEXT_PUBLIC_APP_URL:'https://beta.lunchlineup.com',NEXT_PUBLIC_APP_ENV:'production',NEXT_PUBLIC_SIGNUP_MODE:'closed_beta'}; const publicBytes=stableJson(publicValues), publicSha=createHash('sha256').update(publicBytes).digest('hex');
 mkdirSync(dirname(output),{recursive:true,mode:0o700}); mkdirSync(secretsDir,{recursive:true,mode:0o700});
