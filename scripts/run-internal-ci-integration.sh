@@ -27,7 +27,11 @@ container run -d --name "$redis" --network slirp4netns:port_handler=slirp4netns 
 container run -d --name "$rabbitmq" --network slirp4netns:port_handler=slirp4netns -p 127.0.0.1::5672 -e RABBITMQ_DEFAULT_USER=lunchlineup_ci -e RABBITMQ_DEFAULT_PASS="$mq_password" rabbitmq:4-alpine@sha256:ae585b93b24b77f7281320c7d1e62b3098acba91eb14b1e53a9716584c95c7e9 >/dev/null
 postgres_port=$(container port "$postgres" 5432/tcp | awk -F: 'NR==1{print $NF}'); redis_port=$(container port "$redis" 6379/tcp | awk -F: 'NR==1{print $NF}'); rabbitmq_port=$(container port "$rabbitmq" 5672/tcp | awk -F: 'NR==1{print $NF}')
 umask 077
-for attempt in {1..60}; do if container exec "$postgres" pg_isready -U root -d lunchlineup_test >/dev/null && container exec "$redis" redis-cli ping >/dev/null && container exec "$rabbitmq" rabbitmq-diagnostics -q ping >/dev/null; then break; fi; [[ "$attempt" != 60 ]] || exit 1; sleep 2; done
+for attempt in {1..60}; do
+  for resource in "$postgres" "$redis" "$rabbitmq"; do test "$(container inspect --format '{{.State.Running}}' "$resource")" = true || { container logs --tail 100 "$resource" >&2 || true; exit 1; }; done
+  if container exec "$postgres" pg_isready -U root -d lunchlineup_test >/dev/null && container exec "$redis" redis-cli ping >/dev/null && container exec "$rabbitmq" sh -c 'nc -z 127.0.0.1 5672' >/dev/null; then break; fi
+  [[ "$attempt" != 60 ]] || exit 1; sleep 2
+done
 test ! -e "$venv"; python3 -m venv "$venv"; trap 'cleanup; rm -rf -- "$venv"' EXIT; "$venv/bin/pip" install --requirement "$build_root/apps/engine/requirements.txt" --requirement "$build_root/apps/worker/requirements.txt" >"$output/pip.log" 2>&1; cd "$build_root"
 export APP_DB_USER=lunchlineup_ci_app APP_DB_PASSWORD="$app_password" POSTGRES_USER=root POSTGRES_PASSWORD="$pg_password" DATABASE_URL="postgresql://lunchlineup_ci_app:$app_password@127.0.0.1:$postgres_port/lunchlineup_test" MIGRATION_DATABASE_URL="postgresql://root:$pg_password@127.0.0.1:$postgres_port/lunchlineup_test" PLATFORM_ADMIN_DB_CONTEXT_SECRET='ci-platform-admin-capability-secret-1234567890' REDIS_URL="redis://127.0.0.1:$redis_port" RABBITMQ_URL="amqp://lunchlineup_ci:$mq_password@127.0.0.1:$rabbitmq_port/%2f" ENGINE_GRPC_URL='127.0.0.1:50051' DATA_TARGET_ENV=disposable MIGRATION_SOURCE_SHA="$CI_COMMIT_SHA" WEBHOOK_DELIVERY_ENCRYPTION_KEY_CURRENT='0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef' PYTHON="$venv/bin/python"
 node scripts/apply-db-migrations.mjs >"$output/migrations.log" 2>&1; npm run test:integration >"$output/tests.log" 2>&1

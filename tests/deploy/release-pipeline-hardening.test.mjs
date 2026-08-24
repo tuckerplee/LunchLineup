@@ -486,6 +486,9 @@ test('internal beta local pipeline keeps isolated source, active scanners, exact
   assert.match(integrationPermissionsGate, /case "\$rootless_netns" in "\$runtime_root"\/\*/);
   assert.match(integrationPermissionsGate, /container system migrate >\/dev\/null/);
   assert.match(integrationPermissionsGate, /container system reset --force >\/dev\/null/);
+  assert.match(integrationPermissionsGate, /container inspect --format '\{\{\.State\.Running\}\}'/);
+  assert.match(integrationPermissionsGate, /container exec "\$rabbitmq" sh -c 'nc -z 127\.0\.0\.1 5672'/);
+  assert.doesNotMatch(integrationPermissionsGate, /rabbitmq-diagnostics/);
   assert.match(integrationPermissionsGate, /test ! -L "\$rootless_netns"; rm -rf -- "\$rootless_netns"/);
   assert.doesNotMatch(integrationPermissionsGate, /docker network create|docker network inspect/);
   assert.equal((integrationPermissionsGate.match(/--network slirp4netns:port_handler=slirp4netns/g) ?? []).length, 3);
