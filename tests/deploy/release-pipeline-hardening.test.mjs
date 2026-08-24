@@ -485,6 +485,7 @@ test('internal beta local pipeline keeps isolated source, active scanners, exact
   assert.match(integrationPermissionsGate, /container\(\)\{ \/usr\/bin\/podman --root "\$graph_root" --runroot "\$container_run_root" "\$@"; \}/);
   assert.match(integrationPermissionsGate, /case "\$rootless_netns" in "\$runtime_root"\/\*/);
   assert.match(integrationPermissionsGate, /container system migrate >\/dev\/null/);
+  assert.match(integrationPermissionsGate, /container system reset --force >\/dev\/null/);
   assert.match(integrationPermissionsGate, /test ! -L "\$rootless_netns"; rm -rf -- "\$rootless_netns"/);
   assert.doesNotMatch(integrationPermissionsGate, /docker network create|docker network inspect/);
   assert.equal((integrationPermissionsGate.match(/--network slirp4netns:port_handler=slirp4netns/g) ?? []).length, 3);
