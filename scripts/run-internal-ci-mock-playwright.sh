@@ -14,7 +14,7 @@ const fs = require('node:fs');
 const expected = '/// <reference types="next" />\n/// <reference types="next/image-types/global" />\nimport "./.next/dev/types/routes.d.ts";\nimport "./.next/dev/types/root-params.d.ts";\n\n// NOTE: This file should not be edited\n// see https://nextjs.org/docs/app/api-reference/config/typescript for more information.\n';
 if (fs.readFileSync('next-env.d.ts', 'utf8') !== expected) throw new Error('Next dev produced an unexpected next-env.d.ts mutation.');
 NODE
-git restore --source=HEAD -- apps/web/next-env.d.ts
+git -C "$build_root" restore --source=HEAD -- apps/web/next-env.d.ts
 node "$build_root/scripts/verify-internal-ci-source-clone.mjs" --proof "$artifact_root/source/source-proof.json" --clone "$build_root" --purpose build --require-clean >/dev/null
 node - "$output/results.json" "$artifact_root/details/mock-playwright.json" "$CI_COMMIT_SHA" <<'NODE'
 const fs=require('node:fs');const [reportPath,output,sourceSha]=process.argv.slice(2),report=JSON.parse(fs.readFileSync(reportPath));const stats=report.stats??{};for(const key of ['expected','skipped','unexpected','flaky'])if(!Number.isSafeInteger(stats[key])||stats[key]<0)throw new Error('Invalid Playwright JSON statistics.');if(stats.unexpected!==0)throw new Error('Mock Playwright has unexpected failures.');fs.writeFileSync(output,JSON.stringify({sourceSha,browsers:['chromium','firefox'],fullStack:false,mockApi:true,passed:stats.expected,failed:stats.unexpected,skipped:stats.skipped,flaky:stats.flaky},null,2)+'\n',{flag:'wx',mode:0o600});
