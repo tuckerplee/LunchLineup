@@ -11,6 +11,17 @@ cleanup_failed_stage(){ local status=$?; if [[ "$status" -ne 0 && -f "$env_file"
 trap cleanup_failed_stage EXIT
 record_gate(){ local gate=$1 started=$2 details=$3; shift 3; node "$build_root/scripts/write-internal-ci-command-result.mjs" --name "$gate" --source-context "$context" --started-at "$started" --output "$artifact_root/results/$gate.json"; local evidence=(); for file in "$@"; do evidence+=(--evidence "$file"); done; node "$build_root/scripts/record-internal-ci-gate.mjs" --name "$gate" --source-context "$context" --started-at "$started" --command-result "$artifact_root/results/$gate.json" --details "$details" --output "$artifact_root/gates/$gate.json" "${evidence[@]}"; }
 require_state(){ test -f "$env_file"; test -f "$artifact_root/compose-config.json"; test -f "$artifact_root/compose-image-inventory.json"; test -f "$artifact_root/release-manifest.json"; }
+prepare_podman_egress_networks(){
+  local docker_version network full_name
+  docker_version=$(docker --version 2>&1)
+  [[ "$docker_version" == *podman* ]] || return 0
+  for network in alertmanager-egress pitr-egress outbound-egress; do
+    full_name="${project}_${network}"
+    if docker network exists "$full_name"; then echo "Refusing pre-existing qualification network: $full_name" >&2; return 1; fi
+    docker network create --label "io.podman.compose.project=$project" --label "com.docker.compose.project=$project" --driver bridge --opt isolate=true "$full_name" >/dev/null
+    [[ "$(docker network inspect --format '{{ index .Options "isolate" }}' "$full_name")" == true ]]
+  done
+}
 case "$stage" in
 release-image-build)
   test ! -e "$qualification_root"; mkdir -p "$qualification_root" "$artifact_root/images"; started=$(date -u +%Y-%m-%dT%H:%M:%SZ)
@@ -32,7 +43,7 @@ production-image-inventory)
   require_state; started=$(date -u +%Y-%m-%dT%H:%M:%SZ); node "$build_root/scripts/verify-internal-ci-production-inventory.mjs" --source-context "$context" --inventory "$artifact_root/compose-image-inventory.json" --release-manifest "$artifact_root/release-manifest.json" --output "$artifact_root/production-image-inventory.json" --details "$artifact_root/details/production-image-inventory.json"; record_gate production-image-inventory "$started" "$artifact_root/details/production-image-inventory.json" "$artifact_root/production-image-inventory.json"
 ;;
 release-stack-health)
-  require_state; started=$(date -u +%Y-%m-%dT%H:%M:%SZ); "${compose[@]}" --profile ops up -d --no-build --no-deps pitr-wal-provider postgres
+  require_state; started=$(date -u +%Y-%m-%dT%H:%M:%SZ); prepare_podman_egress_networks; "${compose[@]}" --profile ops up -d --no-build --no-deps pitr-wal-provider postgres
   for attempt in {1..60}; do postgres_id=$(docker ps -a --filter "label=com.docker.compose.project=$project" --filter label=com.docker.compose.service=postgres --format '{{.ID}}' | head -n1); [[ -n "$postgres_id" && "$(docker inspect --format '{{.State.Health.Status}}' "$postgres_id")" == healthy ]] && break; [[ "$attempt" != 60 ]] || exit 1; sleep 2; done
   "${compose[@]}" --profile ops run --rm --no-deps migrate >"$artifact_root/migrate-release-stack.log" 2>&1
   mapfile -t services < <(node -e 'const x=JSON.parse(require("fs").readFileSync(process.argv[1]));for(const [n,v] of Object.entries(x.services))if(v.requiredOnVm107&&v.state!=="one-shot"&&!new Set(["autoheal","node-exporter","promtail"]).has(n))console.log(n)' "$build_root/infrastructure/ci/internal-beta-runtime-services.json"); "${compose[@]}" --profile ops up -d --no-build --no-deps --remove-orphans "${services[@]}"

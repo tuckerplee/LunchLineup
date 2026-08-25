@@ -32,6 +32,24 @@ test('release image export normalizes Podman bare image IDs before binding evide
   assert.match(exporter, /\[\[ "\$local_id" =~ \^sha256:\[a-f0-9\]\{64\}\$ \]\] \|\| exit 1/);
 });
 
+test('local release health pre-creates isolated Podman egress networks without changing production Compose', () => {
+  const qualification = read('scripts/run-internal-beta-release-qualification.sh');
+  const helper = qualification.slice(
+    qualification.indexOf('prepare_podman_egress_networks(){'),
+    qualification.indexOf('\ncase "$stage" in'),
+  );
+  const health = qualification.slice(
+    qualification.indexOf('release-stack-health)'),
+    qualification.indexOf('\nfullstack-playwright)'),
+  );
+
+  assert.match(helper, /alertmanager-egress pitr-egress outbound-egress/);
+  assert.match(helper, /docker network create[^\n]+--driver bridge --opt isolate=true/);
+  assert.match(helper, /Refusing pre-existing qualification network/);
+  assert.doesNotMatch(helper, /com\.docker\.network\.bridge\.enable_icc/);
+  assert.ok(health.indexOf('prepare_podman_egress_networks') < health.indexOf('compose[@]}" --profile ops up'));
+});
+
 function workflowJob(workflow, jobName, nextJobName) {
   const start = workflow.indexOf(`  ${jobName}:`);
   const end = workflow.indexOf(`\n  ${nextJobName}:`, start + 1);
