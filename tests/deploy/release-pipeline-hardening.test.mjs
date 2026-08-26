@@ -533,6 +533,9 @@ test('internal beta local pipeline keeps isolated source, active scanners, exact
   assert.match(testGate, /javascript\) npx turbo run test >/);
   assert.doesNotMatch(testGate, /turbo run test -- --coverage|unittest discover/);
   assert.match(testGate, /worker.*python" -m pytest.*worker-junit\.xml/s);
+  assert.match(testGate, /--cov-report="json:\$output\/coverage\.json"/);
+  assert.match(testGate, /percent<90/);
+  assert.match(testGate, /coveragePercent:percent,coverageThreshold:90/);
   const integrationGate = read('scripts/run-internal-ci-integration.sh');
   assert.match(integrationGate, /APP_DB_USER=lunchlineup_ci_app/);
   assert.match(integrationGate, /DATABASE_URL="postgresql:\/\/lunchlineup_ci_app:/);
@@ -555,6 +558,9 @@ test('internal beta local pipeline keeps isolated source, active scanners, exact
   assert.match(qualification, /BASE_URL=http:\/\/127\.0\.0\.1:8080 E2E_FULL_STACK=1 E2E_MOCK_API=0 E2E_COMPOSE_PROJECT_NAME="\$project" E2E_COMPOSE_ENV_FILE="\$env_file"/);
   assert.match(qualification, /ZAP_IMAGE='ghcr\.io\/zaproxy\/zaproxy:stable@sha256:[a-f0-9]{64}'/);
   assert.match(qualification, /AVAILABILITY_IMPORT_ORIGIN=http:\/\/127\.0\.0\.1:8080/);
+  assert.match(qualification, /\/usr\/bin\/podman healthcheck run "\$container_id"/);
+  assert.match(qualification, /run_podman_healthcheck "\$postgres_id"/);
+  assert.match(qualification, /run_project_podman_healthchecks/);
   const imageScan = read('scripts/run-internal-ci-image-scan.sh');
   assert.match(imageScan, /lunchlineup-trivy-cache-/);
   assert.match(imageScan, /--exit-code 1/);

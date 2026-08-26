@@ -116,6 +116,17 @@ class TestConstraintSolver:
         assert result["feasible"] is False
         assert "No staff" in result["reason"]
 
+    @pytest.mark.parametrize("staff_ids", ["alice", [123], ["invalid staff id"]])
+    def test_rejects_malformed_staff_ids(self, staff_ids):
+        result = self.solver.solve(
+            staff_ids=staff_ids,
+            start_date="2026-03-10",
+            end_date="2026-03-17",
+        )
+
+        assert result["feasible"] is False
+        assert "staff_ids" in result["reason"]
+
     def test_returns_infeasible_for_invalid_date_range(self):
         result = self.solver.solve(
             staff_ids=["s1", "s2"],
