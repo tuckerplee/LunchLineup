@@ -546,6 +546,8 @@ test('internal beta local pipeline keeps isolated source, active scanners, exact
   assert.doesNotMatch(billingIntegration, /spawnSync\('python'/);
   const qualificationEnv = read('scripts/write-internal-beta-qualification-env.mjs');
   assert.match(qualificationEnv, /COMPOSE_SERVICE_ENV_FILE:output/);
+  assert.match(qualificationEnv, /DEPLOY_MIGRATION_MODE:'apply'/);
+  assert.doesNotMatch(qualificationEnv, /DEPLOY_MIGRATION_MODE:\s*['"`]\$\{/);
   assert.match(qualificationEnv, /PITR_WAL_OBJECT_STORE_SECRETS_DIR/);
   assert.doesNotMatch(qualificationEnv, /PITR_WAL_PROVIDER_OBJECT_STORE_SECRETS_DIR/);
   const qualification = read('scripts/run-internal-beta-release-qualification.sh');
