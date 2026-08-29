@@ -15,4 +15,4 @@ opentelemetry-exporter-otlp-proto-http==1.43.0
 pytest==8.4.2
 pytest-cov==7.0.0
 ortools==9.15.6755
-protobuf==6.33.6
+protobuf==7.35.1
