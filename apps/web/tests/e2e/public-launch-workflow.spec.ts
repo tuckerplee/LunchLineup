@@ -4,10 +4,9 @@ import { loginAsSeedAdmin, runFullStack } from './support';
 
 const runMockReadiness = process.env.E2E_MOCK_API !== '0' && !runFullStack && !process.env.BASE_URL;
 
-test.describe('Public launch workflow gaps', () => {
+test.describe('Public launch workflow gaps', { tag: '@desktop-chromium' }, () => {
   test.skip(runFullStack, 'Mock workflow coverage is separate from DB-backed full-stack coverage.');
   test.skip(!runMockReadiness, 'Workflow coverage requires the local mock API.');
-  test.skip(({ browserName, isMobile }) => browserName !== 'chromium' || isMobile, 'Focused mutable workflow coverage runs once in desktop Chromium.');
 
   test.beforeEach(async ({ page }) => {
     const response = await page.request.post('/api/v1/__e2e/reset');

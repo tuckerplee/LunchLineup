@@ -862,8 +862,7 @@ test.describe('Lunch setup editor safety', () => {
   });
 });
 
-test.describe.serial('Stress operations workflows', () => {
-  test.skip(!runFullStack, 'Set E2E_FULL_STACK=1 and E2E_SEED_COMMAND to run DB-backed workflow stress tests.');
+test.describe.serial('Stress operations workflows', { tag: '@full-stack' }, () => {
 
   test.beforeEach(async () => {
     await seedTenant();

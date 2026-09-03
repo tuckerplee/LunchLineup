@@ -35,6 +35,7 @@ function manifest(overrides = {}) {
         NEXT_PUBLIC_APP_URL: 'https://beta.lunchlineup.com',
         NEXT_PUBLIC_APP_ENV: 'production',
         NEXT_PUBLIC_SIGNUP_MODE: 'closed_beta',
+        NEXT_PUBLIC_OIDC_ENABLED: 'false',
       },
     },
     images: Object.fromEntries(services.map((service) => [service, {

@@ -6,12 +6,10 @@ import {
   e2eSuperAdminUsername,
   loginAsSeedSuperAdmin,
   loginWithPin,
-  runFullStack,
   seedTenant,
 } from './support';
 
-test.describe.serial('Tenant and admin SaaS workflows', () => {
-  test.skip(!runFullStack, 'Set E2E_FULL_STACK=1 and E2E_SEED_COMMAND to run DB-backed tenant/admin workflows.');
+test.describe.serial('Tenant and admin SaaS workflows', { tag: '@full-stack' }, () => {
 
   test.beforeEach(() => {
     seedTenant();

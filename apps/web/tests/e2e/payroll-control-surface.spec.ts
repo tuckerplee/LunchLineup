@@ -290,10 +290,9 @@ async function payrollBrowserStorage(page: Page) {
   });
 }
 
-test.describe('Payroll control surface', () => {
+test.describe('Payroll control surface', { tag: '@chromium' }, () => {
   test.skip(runFullStack, 'The mock-backed payroll surface has deterministic evidence fixtures.');
   test.skip(!runMockReadiness, 'Payroll control-surface smoke requires the local mock API.');
-  test.skip(({ browserName }) => browserName !== 'chromium', 'Desktop and mobile Chromium cover this deterministic surface.');
 
   test.beforeEach(async ({ page }) => {
     const response = await page.request.post('/api/v1/__e2e/reset');

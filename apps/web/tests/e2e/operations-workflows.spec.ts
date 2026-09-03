@@ -8,7 +8,7 @@ import type {
   SchedulePublishPlanResponse,
 } from '@lunchlineup/api-contract';
 
-import { apiJson, dayWindow, loginAsSeedAdmin, runFullStack, seedTenant } from './support';
+import { apiJson, dayWindow, loginAsSeedAdmin, seedTenant } from './support';
 
 async function inviteStaff(page: import('@playwright/test').Page, name: string, username: string, role: 'Manager' | 'Staff') {
   const form = page.getByRole('form', { name: 'Add team member' });
@@ -31,8 +31,7 @@ async function shiftOwner(page: import('@playwright/test').Page): Promise<string
   return payload.data?.[0]?.user?.name ?? null;
 }
 
-test.describe.serial('Full-stack operations workflows', () => {
-  test.skip(!runFullStack, 'Set E2E_FULL_STACK=1 and E2E_SEED_COMMAND to run DB-backed workflow E2E.');
+test.describe.serial('Full-stack operations workflows', { tag: '@full-stack' }, () => {
 
   test.beforeEach(() => {
     seedTenant();

@@ -44,10 +44,9 @@ async function routeCatalog(page: Page, emailInvitationAvailable: boolean) {
   });
 }
 
-test.describe('Staff onboarding', () => {
+test.describe('Staff onboarding', { tag: '@chromium' }, () => {
   test.skip(runFullStack, 'Focused onboarding UX coverage uses deterministic mock delivery readiness.');
   test.skip(!runMockReadiness, 'Focused onboarding UX coverage requires the local mock API.');
-  test.skip(({ browserName }) => browserName !== 'chromium', 'Focused onboarding coverage runs once in Chromium.');
 
   test.beforeEach(async ({ page }) => {
     const response = await page.request.post('/api/v1/__e2e/reset');

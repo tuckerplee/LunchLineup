@@ -13,10 +13,9 @@ function clockInWrites(page: Page): Array<Record<string, unknown>> {
   return writes;
 }
 
-test.describe('Time Card target safety', () => {
+test.describe('Time Card target safety', { tag: '@desktop-chromium' }, () => {
   test.skip(runFullStack, 'The focused target-safety proof uses the resettable local mock API.');
   test.skip(!runMockTimeCardSafety, 'The focused target-safety proof runs with the local mock API.');
-  test.skip(({ browserName, isMobile }) => browserName !== 'chromium' || isMobile, 'Run once on desktop Chromium.');
 
   test.beforeEach(async ({ page }) => {
     const response = await page.request.post('/api/v1/__e2e/reset');

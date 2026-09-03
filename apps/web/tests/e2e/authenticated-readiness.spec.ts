@@ -46,10 +46,9 @@ test('E2E configuration includes an authenticated readiness layer', () => {
   ).toBeTruthy();
 });
 
-test.describe('Authenticated scheduling SaaS readiness', () => {
+test.describe('Authenticated scheduling SaaS readiness', { tag: '@desktop-chromium' }, () => {
   test.skip(runFullStack, 'DB-backed authenticated specs cover this path when E2E_FULL_STACK=1.');
   test.skip(!runMockReadiness, 'Mock API readiness runs only when Playwright starts the local web app.');
-  test.skip(({ browserName, isMobile }) => browserName !== 'chromium' || isMobile, 'Authenticated readiness mutates shared mock state and runs once on desktop Chromium.');
 
   test.beforeEach(async ({ page }) => {
     const response = await page.request.post('/api/v1/__e2e/reset');
@@ -970,20 +969,10 @@ test.describe('Authenticated scheduling SaaS readiness', () => {
       postDeleteStatusReads += 1;
       await route.continue();
     });
-    const deletionResponsePromise = page.waitForResponse((response) => (
+    const deletionReceiptPromise = page.waitForResponse((response) => (
       response.request().method() === 'DELETE'
       && new URL(response.url()).pathname === '/api/v2/admin/account'
-    ));
-    const localLogoutResponsePromise = page.waitForResponse((response) => (
-      response.request().method() === 'POST'
-      && new URL(response.url()).pathname === '/auth/logout'
-    ));
-
-    await page.getByLabel('Confirm workspace slug').nth(1).fill('e2e-operations');
-    await page.getByRole('button', { name: 'Request deletion' }).click();
-
-    const deletionResponse = await deletionResponsePromise;
-    const deletionPayload = await deletionResponse.json() as {
+    )).then(async (response) => response.json() as Promise<{
       id: string;
       slug: string;
       deletionRequestedAt: string;
@@ -993,7 +982,16 @@ test.describe('Authenticated scheduling SaaS readiness', () => {
         securityLogEligibleAt: string;
         fullDatabasePurgeEligibleAt: string;
       };
-    };
+    }>);
+    const localLogoutResponsePromise = page.waitForResponse((response) => (
+      response.request().method() === 'POST'
+      && new URL(response.url()).pathname === '/auth/logout'
+    ));
+
+    await page.getByLabel('Confirm workspace slug').nth(1).fill('e2e-operations');
+    await page.getByRole('button', { name: 'Request deletion' }).click();
+
+    const deletionPayload = await deletionReceiptPromise;
     const localLogoutResponse = await localLogoutResponsePromise;
     expect(localLogoutResponse.status()).toBe(204);
     await expect(page).toHaveURL(/\/auth\/account-deleted$/);
@@ -1091,10 +1089,9 @@ test.describe('Authenticated scheduling SaaS readiness', () => {
   });
 });
 
-test.describe('Mobile schedule publish readiness', () => {
+test.describe('Mobile schedule publish readiness', { tag: '@mobile-chromium' }, () => {
   test.skip(runFullStack, 'DB-backed authenticated specs cover this path when E2E_FULL_STACK=1.');
   test.skip(!runMockReadiness, 'Mock API readiness runs only when Playwright starts the local web app.');
-  test.skip(({ browserName, isMobile }) => browserName !== 'chromium' || !isMobile, 'Runs on the configured mobile Chromium project.');
 
   test.beforeEach(async ({ page }) => {
     const response = await page.request.post('/api/v1/__e2e/reset');

@@ -6,10 +6,9 @@ import type {
   StaffInvitationResponse,
 } from '@lunchlineup/api-contract';
 
-import { apiJson, loginAsSeedAdmin, runFullStack, seedTenant } from './support';
+import { apiJson, loginAsSeedAdmin, seedTenant } from './support';
 
-test.describe.serial('API-v2 schedule and lunch/break volume workflows', () => {
-  test.skip(!runFullStack, 'Set E2E_FULL_STACK=1 and E2E_SEED_COMMAND to run DB-backed workflow volume tests.');
+test.describe.serial('API-v2 schedule and lunch/break volume workflows', { tag: '@full-stack' }, () => {
   test.setTimeout(300_000);
 
   test.beforeEach(() => {

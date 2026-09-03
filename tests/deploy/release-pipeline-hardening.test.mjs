@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { copyFileSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import test from 'node:test';
@@ -24,6 +24,42 @@ test('internal beta qualification environment module loads before validating arg
   assert.notEqual(result.status, 0);
   assert.match(result.stderr, /Qualification environment arguments are required/);
   assert.doesNotMatch(result.stderr, /does not provide an export named 'resolve'/);
+});
+
+test('internal beta qualification environment materializes every Compose default explicitly', () => {
+  const scratch = mkdtempSync(join(tmpdir(), 'll-qualification-env-'));
+  try {
+    const artifact = join(scratch, 'artifact');
+    const runner = join(scratch, 'runner');
+    const runRoot = join(runner, 'lunchlineup-source-run-1');
+    const scan = join(runRoot, 'scan');
+    const build = join(runRoot, 'build');
+    const sourceDirectory = join(artifact, 'source');
+    for (const path of [artifact, scan, build, sourceDirectory]) mkdirSync(path, { recursive: true });
+    copyFileSync(resolve(root, 'docker-compose.yml'), join(build, 'docker-compose.yml'));
+    const sourceSha = '1'.repeat(40);
+    const treeSha = '2'.repeat(40);
+    const baselineSha = '3'.repeat(40);
+    const pipelineSha256 = '4'.repeat(64);
+    const proofPath = join(sourceDirectory, 'source-proof.json');
+    writeFileSync(proofPath, JSON.stringify({ version: 1, kind: 'lunchlineup-internal-ci-source-proof', status: 'passed', repository: 'tuckerplee/LunchLineup', sourceRef: 'refs/heads/internal-beta-candidate', sourceSha, remoteCandidateSha: sourceSha, treeSha, baselineRef: 'refs/heads/main', baselineSha, baselineTreeSha: baselineSha, pipelineSha256, runId: 'run-1', originalCheckoutClean: true, scanCloneVerified: true, buildCloneVerified: true, gitAlternatesRejected: true, verifiedAt: new Date().toISOString() }));
+    const contextPath = join(runRoot, 'source-context.json');
+    writeFileSync(contextPath, JSON.stringify({ version: 1, kind: 'lunchlineup-internal-ci-source-context', repository: 'tuckerplee/LunchLineup', runId: 'run-1', runRoot, sourceRef: 'refs/heads/internal-beta-candidate', sourceSha, treeSha, remoteCandidateSha: sourceSha, baselineRef: 'refs/heads/main', baselineSha, pipelineSha256, sourceProofPath: proofPath, scanSourcePath: scan, buildSourcePath: build, artifactRoot: artifact, evidenceRoot: artifact }));
+    const output = join(runRoot, 'runtime.env');
+    const publicOutput = join(artifact, 'public-build-config.json');
+    const result = spawnSync(process.execPath, ['scripts/write-internal-beta-qualification-env.mjs', '--source-context', contextPath, '--output', output, '--public-build-config', publicOutput, '--secrets-dir', join(runRoot, 'secrets')], { cwd: root, encoding: 'utf8', windowsHide: true, env: { ...process.env, CI_COMMIT_SHA: sourceSha, CI_RUN_ID: 'run-1', RUNNER_TEMP: runner } });
+    assert.equal(result.status, 0, result.stderr);
+    const environment = new Map(readFileSync(output, 'utf8').trimEnd().split('\n').map((line) => { const separator = line.indexOf('='); return [line.slice(0, separator), line.slice(separator + 1)]; }));
+    const compose = readFileSync(resolve(root, 'docker-compose.yml'), 'utf8');
+    for (const match of compose.matchAll(/\$\{([A-Za-z_][A-Za-z0-9_]*):-([^}]*)\}/g)) {
+      if (match.index > 0 && compose[match.index - 1] === '$') continue;
+      assert.ok(environment.has(match[1]), `missing explicit Compose value for ${match[1]}`);
+    }
+    for (const name of ['NEXT_PUBLIC_TURNSTILE_SITE_KEY', 'MFA_SECRET_ENCRYPTION_KEY_PREVIOUS', 'MFA_SECRET_ENCRYPTION_KEY', 'WEBHOOK_DELIVERY_ENCRYPTION_KEY_PREVIOUS', 'OIDC_ISSUER_URL', 'OIDC_CLIENT_ID', 'OIDC_CLIENT_SECRET', 'OIDC_REDIRECT_URI', 'TURNSTILE_SECRET_KEY', 'PUBLIC_SIGNUP_INVITE_CODES']) assert.equal(environment.get(name), '');
+    assert.deepEqual(JSON.parse(readFileSync(publicOutput, 'utf8')).values, { NEXT_PUBLIC_API_URL: '/api/v2', NEXT_PUBLIC_APP_ENV: 'production', NEXT_PUBLIC_APP_ORIGIN: 'https://beta.lunchlineup.com', NEXT_PUBLIC_APP_URL: 'https://beta.lunchlineup.com', NEXT_PUBLIC_OIDC_ENABLED: 'false', NEXT_PUBLIC_SIGNUP_MODE: 'closed_beta' });
+  } finally {
+    rmSync(scratch, { recursive: true, force: true });
+  }
 });
 
 test('release image export normalizes Podman bare image IDs before binding evidence', () => {
@@ -296,7 +332,7 @@ test('full-stack release-image E2E runs every spec that declares DB-backed cover
   const e2eRoot = resolve(root, 'apps/web/tests/e2e');
   const requiredSpecs = readdirSync(e2eRoot)
     .filter((name) => name.endsWith('.spec.ts'))
-    .filter((name) => read(`apps/web/tests/e2e/${name}`).includes('test.skip(!runFullStack'))
+    .filter((name) => read(`apps/web/tests/e2e/${name}`).includes("tag: '@full-stack'"))
     .sort();
 
   assert.deepEqual(requiredSpecs, [
@@ -510,6 +546,17 @@ test('internal beta local pipeline keeps isolated source, active scanners, exact
   assert.match(mockPlaywright, /Next dev produced an unexpected next-env\.d\.ts mutation/);
   assert.match(mockPlaywright, /git -C "\$build_root" restore --source=HEAD -- apps\/web\/next-env\.d\.ts/);
   assert.match(mockPlaywright, /--purpose build --require-clean/);
+  assert.match(mockPlaywright, /stats\.unexpected!==0\|\|stats\.skipped!==0\|\|stats\.flaky!==0/);
+  assert.match(mockPlaywright, /E2E_SIGNUP_MODE=closed_beta/);
+  const playwrightConfig = read('apps/web/playwright.config.ts');
+  for (const tag of ['@full-stack', '@closed-beta', '@turnstile', '@chromium', '@desktop-chromium', '@mobile-chromium']) {
+    assert.match(playwrightConfig, new RegExp(tag));
+  }
+  for (const fullStackSpec of ['month-volume-workflows.spec.ts', 'operations-workflows.spec.ts', 'stress-workflows.spec.ts', 'tenant-admin-workflows.spec.ts']) {
+    const source = read(`apps/web/tests/e2e/${fullStackSpec}`);
+    assert.match(source, /tag: '@full-stack'/);
+    assert.doesNotMatch(source, /test\.skip\(!runFullStack/);
+  }
   assert.match(read('apps/web/next.config.js'), /agentRules: false/);
   const integrationPermissionsGate = read('scripts/run-internal-ci-integration.sh');
   assert.match(integrationPermissionsGate, /controller_runtime_root=\$\(realpath -e "\$\{XDG_RUNTIME_DIR:\?\}"\)/);
@@ -548,21 +595,40 @@ test('internal beta local pipeline keeps isolated source, active scanners, exact
   assert.match(qualificationEnv, /COMPOSE_SERVICE_ENV_FILE:output/);
   assert.match(qualificationEnv, /DEPLOY_MIGRATION_MODE:'apply'/);
   assert.doesNotMatch(qualificationEnv, /DEPLOY_MIGRATION_MODE:\s*['"`]\$\{/);
+  assert.match(qualificationEnv, /NEXT_PUBLIC_OIDC_ENABLED:'false'/);
+  assert.match(qualificationEnv, /NEXT_PUBLIC_TURNSTILE_SITE_KEY:''/);
+  assert.doesNotMatch(qualificationEnv, /NEXT_PUBLIC_TURNSTILE_SITE_KEY:\s*['"`]\$\{/);
+  assert.match(qualificationEnv, /composeText\.matchAll/);
+  assert.match(qualificationEnv, /const env=\{\.\.\.composeDefaults/);
+  assert.match(qualificationEnv, /canonicalConflictOverrides=new Set\(\['NEXT_PUBLIC_APP_ORIGIN','NEXT_PUBLIC_APP_URL'\]\)/);
   assert.match(qualificationEnv, /PITR_WAL_OBJECT_STORE_SECRETS_DIR/);
   assert.doesNotMatch(qualificationEnv, /PITR_WAL_PROVIDER_OBJECT_STORE_SECRETS_DIR/);
   const qualification = read('scripts/run-internal-beta-release-qualification.sh');
   assert.doesNotMatch(qualification, /--project-directory|--pull never/);
   assert.match(qualification, /project_suffix=\$\{CI_RUN_ID,,\}; project_suffix=\$\{project_suffix\/\/\[\^a-z0-9\]\//);
-  assert.match(qualification, /cleanup_failed_stage\(\).*--profile ops down -v --remove-orphans/);
+  assert.match(qualification, /cleanup_stage\(\).*--profile ops down -v --remove-orphans/);
+  assert.match(qualification, /qualification_real.*runner_real\/lunchlineup-beta-qualification-\$CI_RUN_ID/);
+  assert.match(qualification, /rm -rf -- "\$qualification_real"/);
   assert.match(qualification, /PLAYWRIGHT_JSON_OUTPUT_NAME="\$output\/results\.json"/);
-  assert.match(qualification, /stats\.unexpected!==0\|\|stats\.flaky!==0/);
+  assert.match(qualification, /stats\.unexpected!==0\|\|stats\.skipped!==0\|\|stats\.flaky!==0/);
   assert.doesNotMatch(qualification, /"failed":0,"skipped":0/);
-  assert.match(qualification, /BASE_URL=http:\/\/127\.0\.0\.1:8080 E2E_FULL_STACK=1 E2E_MOCK_API=0 E2E_COMPOSE_PROJECT_NAME="\$project" E2E_COMPOSE_ENV_FILE="\$env_file"/);
+  assert.match(qualification, /BASE_URL=http:\/\/127\.0\.0\.1:8080 E2E_FULL_STACK=1 E2E_MOCK_API=0 E2E_SIGNUP_MODE=closed_beta E2E_COMPOSE_PROJECT_NAME="\$project" E2E_COMPOSE_ENV_FILE="\$env_file"/);
   assert.match(qualification, /ZAP_IMAGE='ghcr\.io\/zaproxy\/zaproxy:stable@sha256:[a-f0-9]{64}'/);
   assert.match(qualification, /AVAILABILITY_IMPORT_ORIGIN=http:\/\/127\.0\.0\.1:8080/);
   assert.match(qualification, /\/usr\/bin\/podman healthcheck run "\$container_id"/);
   assert.match(qualification, /run_podman_healthcheck "\$postgres_id"/);
   assert.match(qualification, /run_project_podman_healthchecks/);
+  const webDockerfile = read('infrastructure/docker/Dockerfile.web');
+  for (const field of ['nextPublicOidcEnabled', 'nextPublicTurnstileSiteKey', 'nextPublicPrivacyContactEmail', 'nextPublicSupportContactEmail', 'nextPublicDpaContactEmail']) {
+    assert.match(webDockerfile, new RegExp(field));
+  }
+  assert.match(read('scripts/verify-internal-beta-public-build.mjs'), /stableJson\(config\.values\).*stableJson\(expectedValues\)/);
+  assert.match(read('scripts/build-internal-ci-candidate-receipt.mjs'), /expectedPublicSha=createHash\('sha256'\)\.update\(stableJson\(expectedPublic\)\)/);
+  assert.match(read('scripts/verify-internal-ci-candidate-receipt.mjs'), /manifest\.publicBuildConfig\?\.sha256!==expectedPublicSha/);
+  assert.match(read('infrastructure/custom-ci/lunchlineup-sign-receipt.mjs'), /Built web public contract is outside signing policy/);
+  const bundleBuilder = read('scripts/build-internal-ci-candidate-bundle.mjs');
+  assert.match(bundleBuilder, /finally\{for\(const path of \[tempTar,compressed\]\)/);
+  assert.match(bundleBuilder, /if\(!finalized\).*\[output,descriptor\]/);
   const imageScan = read('scripts/run-internal-ci-image-scan.sh');
   assert.match(imageScan, /lunchlineup-trivy-cache-/);
   assert.match(imageScan, /--exit-code 1/);

@@ -58,8 +58,7 @@ async function expectRetrySuccess(page: Page) {
   await expect.poll(() => page.evaluate(() => window.localStorage.getItem('lunchlineup:last-workspace-slug'))).toBe(WORKSPACE_SLUG);
 }
 
-test.describe('Closed beta onboarding', () => {
-  test.skip(process.env.E2E_SIGNUP_MODE !== 'closed_beta', 'Rendered closed-beta coverage requires E2E_SIGNUP_MODE=closed_beta.');
+test.describe('Closed beta onboarding', { tag: '@closed-beta' }, () => {
 
   test('renders a closed beta access state without an unusable signup form', async ({ page }) => {
     await page.goto('/onboarding');

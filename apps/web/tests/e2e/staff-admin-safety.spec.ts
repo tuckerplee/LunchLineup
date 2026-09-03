@@ -6,10 +6,9 @@ const runMockReadiness = process.env.E2E_MOCK_API !== '0' && !runFullStack && !p
 const DOWNTOWN_LOCATION_ID = '10000000-0000-4000-8000-000000000001';
 const MFA_ADMIN_USER_ID = '20000000-0000-4000-8000-000000000104';
 
-test.describe('Staff and platform admin safety controls', () => {
+test.describe('Staff and platform admin safety controls', { tag: '@chromium' }, () => {
   test.skip(runFullStack, 'Mock safety coverage is separate from full-stack tenant workflows.');
   test.skip(!runMockReadiness, 'Safety coverage requires Playwright to start the local mock API.');
-  test.skip(({ browserName }) => browserName !== 'chromium', 'Focused safety coverage runs once in Chromium.');
 
   test.beforeEach(async ({ page }) => {
     const response = await page.request.post('/api/v1/__e2e/reset');

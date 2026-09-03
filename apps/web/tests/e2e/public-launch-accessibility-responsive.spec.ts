@@ -140,10 +140,9 @@ async function mockAdminReads(page: Page) {
   }));
 }
 
-test.describe('Bounded public launch accessibility and responsive gate', () => {
+test.describe('Bounded public launch accessibility and responsive gate', { tag: '@chromium' }, () => {
   test.skip(runFullStack, 'Mock browser accessibility coverage is separate from DB-backed workflows.');
   test.skip(!runMockReadiness, 'This browser gate requires the local mock API.');
-  test.skip(({ browserName }) => browserName !== 'chromium', 'Runs on desktop and mobile Chromium projects.');
 
   test.beforeEach(async ({ page }) => {
     const response = await page.request.post('/api/v1/__e2e/reset');

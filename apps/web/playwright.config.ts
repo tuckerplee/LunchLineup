@@ -44,6 +44,12 @@ const mockSignupMode = process.env.E2E_SIGNUP_MODE?.trim().toLowerCase() || 'ope
 if (!['closed_beta', 'invite_only', 'open'].includes(mockSignupMode)) {
     throw new Error(`E2E_SIGNUP_MODE must be closed_beta, invite_only, or open; received ${JSON.stringify(mockSignupMode)}.`);
 }
+const modeGrepInvert = [
+    ...(!runFullStack ? [/@full-stack/] : []),
+    ...(mockSignupMode !== 'closed_beta' ? [/@closed-beta/] : []),
+    ...(!process.env.NEXT_PUBLIC_TURNSTILE_SITE_KEY ? [/@turnstile/] : []),
+];
+const excludedFor = (...patterns: RegExp[]): RegExp[] => [...modeGrepInvert, ...patterns];
 const webCommand = process.env.E2E_WEB_COMMAND
     ?? (useNextDevServer
         ? `npm run dev -- -H 127.0.0.1 -p ${e2ePort}`
@@ -110,16 +116,19 @@ export default defineConfig({
         {
             name: 'chromium',
             use: { ...devices['Desktop Chrome'] },
+            grepInvert: excludedFor(/@mobile-chromium/),
         },
         // Cross-browser on CI
         {
             name: 'firefox',
             use: { ...devices['Desktop Firefox'] },
+            grepInvert: excludedFor(/@chromium/, /@desktop-chromium/, /@mobile-chromium/),
         },
         // Mobile viewport sanity check
         {
             name: 'Mobile Chrome',
             use: { ...devices['Pixel 5'] },
+            grepInvert: excludedFor(/@desktop-chromium/),
         },
     ],
     webServer,

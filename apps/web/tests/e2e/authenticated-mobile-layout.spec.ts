@@ -14,13 +14,9 @@ const dashboardRoutes = [
   '/dashboard/settings',
 ] as const;
 
-test.describe('Authenticated mobile dashboard layout', () => {
+test.describe('Authenticated mobile dashboard layout', { tag: '@desktop-chromium' }, () => {
   test.skip(runFullStack, 'Full-stack responsive coverage runs separately from the mock readiness layer.');
   test.skip(!runMockReadiness, 'Mobile layout readiness requires Playwright to start the local mock API.');
-  test.skip(
-    ({ browserName, isMobile }) => browserName !== 'chromium' || isMobile,
-    'Runs once in desktop Chromium with an explicit mobile-sized CSS viewport.',
-  );
 
   for (const viewport of [{ width: 375, height: 812 }, { width: 768, height: 900 }]) {
   test(`keeps the permission-aware manager shell reachable at ${viewport.width}px`, async ({ page }) => {

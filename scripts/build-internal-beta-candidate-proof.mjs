@@ -110,6 +110,9 @@ function verifyManifest(manifest, sourceSha, workflowRun) {
   if (publicValues?.NEXT_PUBLIC_SIGNUP_MODE !== 'closed_beta') {
     fail('beta web images must keep signup in exact closed_beta mode.');
   }
+  if (publicValues?.NEXT_PUBLIC_OIDC_ENABLED !== 'false') {
+    fail('beta web images must keep browser OIDC disabled.');
+  }
 
   if (!manifest.images || typeof manifest.images !== 'object' || Array.isArray(manifest.images)) {
     fail('release manifest images must be an object.');

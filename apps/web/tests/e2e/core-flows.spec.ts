@@ -293,9 +293,7 @@ test.describe('Onboarding smoke flow', () => {
     });
   });
 
-  test('open signup with Turnstile sends challenge tokens with OTP requests', async ({ page }) => {
-    test.skip(!process.env.NEXT_PUBLIC_TURNSTILE_SITE_KEY, 'requires NEXT_PUBLIC_TURNSTILE_SITE_KEY at build time');
-
+  test('open signup with Turnstile sends challenge tokens with OTP requests', { tag: '@turnstile' }, async ({ page }) => {
     await installTurnstileStub(page);
     let resolveVerifyPayload!: (payload: Record<string, unknown>) => void;
     const verifyPayloadPromise = new Promise<Record<string, unknown>>((resolve) => {
@@ -354,9 +352,7 @@ test.describe('Onboarding smoke flow', () => {
     });
   });
 
-  test('open signup blocks when the Turnstile script is unavailable', async ({ page }) => {
-    test.skip(!process.env.NEXT_PUBLIC_TURNSTILE_SITE_KEY, 'requires NEXT_PUBLIC_TURNSTILE_SITE_KEY at build time');
-
+  test('open signup blocks when the Turnstile script is unavailable', { tag: '@turnstile' }, async ({ page }) => {
     await page.route('https://challenges.cloudflare.com/**', async (route) => {
       await route.abort();
     });
