@@ -8,7 +8,7 @@ set -euo pipefail
 
 APP_DIR="${APP_DIR:-/opt/lunchlineup}"
 REPO_URL="${REPO_URL:-https://github.com/tuckerplee/LunchLineup.git}"
-BRANCH="${BRANCH:-migration-testing-baseline}"
+BRANCH="${BRANCH:-main}"
 CANDIDATE_SHA="${CANDIDATE_SHA:-}"
 SECRETS_DIR="${SECRETS_DIR:-/opt/lunchlineup-secrets}"
 SECRET_ENV_PATH="${SECRET_ENV_PATH:-$SECRETS_DIR/runtime.env}"

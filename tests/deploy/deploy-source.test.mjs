@@ -260,7 +260,7 @@ test('disposable VM107 restore is documented and tied to GitHub deploy proof', (
   const runbooksReadme = read('docs/runbooks/README.md');
   const scriptsReadme = read('scripts/README.md');
 
-  assert.match(script, /migration-testing-baseline/);
+  assert.match(script, /BRANCH="\$\{BRANCH:-main\}"/);
   assert.match(script, /DEPLOYED_GIT_SHA/);
   assert.match(script, /BACKUP_FILE/);
   assert.match(script, /dev\.lunchlineup\.com/);
