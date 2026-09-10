@@ -16,7 +16,8 @@
     "NODE_VERSION": "22.23.2",
     "NODE_OPTIONS": "--max-old-space-size=4096",
     "CODEQL_CLI": "/opt/codeql/bundle-2.26.2/codeql",
-    "CODEQL_BUNDLE_SHA256": "cb361567fa1bdb9d322da4240f621b36f245e4d7bb97db3c3a2ad7f743c8e8e7"
+    "CODEQL_BUNDLE_SHA256": "cb361567fa1bdb9d322da4240f621b36f245e4d7bb97db3c3a2ad7f743c8e8e7",
+    "LUNCHLINEUP_DEVELOPMENT_QA": "1"
   },
   "artifacts": [
     ".release/internal-ci/**"
