@@ -21,6 +21,7 @@ runtime_root=""
 cleanup(){
   status=$?; cleanup_status=0
   if [[ -f "$artifact_root/fullstack-target.json" ]]; then
+    "${compose[@]}" --profile ops logs --tail 120 >"$artifact_root/development-runtime-final.log" 2>&1 || true
     "${compose[@]}" --profile ops down -v --remove-orphans >"$artifact_root/development-cleanup.log" 2>&1 || cleanup_status=$?
   fi
   if [[ -n "$runtime_root" && -d "$runtime_root" && ! -L "$runtime_root" && "$(cat "$runtime_root/owner")" == "$CI_RUN_ID" ]]; then
@@ -46,6 +47,8 @@ for(const name of ['api-v2','web','worker','engine','proxy'])include(name);
 const seen=new Set(),lines=[];for(const name of [...selected].sort()){const s=config.services[name];if(seen.has(s.image))continue;seen.add(s.image);lines.push([s.build?'build':'pull',name,s.image].join('\t'));}
 fs.writeFileSync(out,lines.join('\n')+'\n',{flag:'wx'});
 config.services=Object.fromEntries([...selected].map(name=>{const service=config.services[name];delete service.depends_on;return [name,service];}));
+// Use the application's existing isolated browser-test throttle configuration.
+Object.assign(config.services.api.environment,{NODE_ENV:'test',DATA_TARGET_ENV:'test',E2E_FULL_STACK:'1',E2E_PREAUTH_IP_LIMIT:'120',E2E_PREAUTH_IDENTIFIER_LIMIT:'30'});
 fs.writeFileSync(runtimePath,JSON.stringify(config),{flag:'wx',mode:0o600});
 NODE
 export LUNCHLINEUP_DEV_COMPOSE="$qualification_root/development-compose.json"
@@ -76,6 +79,14 @@ done
 while IFS=$'\t' read -r action service image; do
   case "$service" in migrate|postgres|redis|rabbitmq|pitr-wal-provider) continue;; esac
   build_image "$action" "$service" "$image"
+  if [[ "$service" == api ]]; then
+    "${compose[@]}" --profile ops up -d --no-build --no-deps api >>"$artifact_root/development-start.log" 2>&1
+    for attempt in {1..60}; do
+      if curl --silent --fail --max-time 3 http://127.0.0.1:4000/live >/dev/null; then break; fi
+      [[ "$attempt" != 60 ]] || { echo 'Retained API startup failed'; exit 1; }
+      sleep 2
+    done
+  fi
 done <"$artifact_root/development-images.tsv" >>"$artifact_root/development-build.log" 2>&1
 "${compose[@]}" --profile ops up -d --no-build --no-deps engine api api-v2 pdf-parser worker web proxy >>"$artifact_root/development-start.log" 2>&1
 for attempt in {1..120}; do
