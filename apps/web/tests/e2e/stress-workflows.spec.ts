@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
-import { expect, test, type Page } from '@playwright/test';
+import { expect, test, type Page, type Route } from '@playwright/test';
 import type { ScheduleChangeSetResponse } from '@lunchlineup/api-contract';
 
 import {
@@ -81,17 +81,33 @@ async function shiftRowById(page: Page, scheduleId: string, shiftId: string) {
 }
 
 async function captureSuccessfulChangeSet(page: Page, action: () => Promise<void>) {
-  const responsePromise = page.waitForResponse((response) => {
-    const url = new URL(response.url());
-    return response.request().method() === 'POST'
-      && /^\/api\/v2\/schedules\/[^/]+\/change-sets$/.test(url.pathname);
-  });
-  await action();
-  const response = await responsePromise;
-  expect(response.status(), `change-set response for ${response.url()}`).toBe(200);
-  const payload = await response.json() as ScheduleChangeSetResponse;
-  expect(payload.data.scheduleId, 'authoritative change-set schedule id').toBeTruthy();
-  return payload;
+  const endpoint = /\/api\/v2\/schedules\/[^/]+\/change-sets$/;
+  let resolve!: (payload: ScheduleChangeSetResponse) => void;
+  let reject!: (error: unknown) => void;
+  const captured = new Promise<ScheduleChangeSetResponse>((ok, fail) => { resolve = ok; reject = fail; });
+  const handler = async (route: Route) => {
+    if (route.request().method() !== 'POST') return route.continue();
+    try {
+      // Forward exactly one real mutation. Capture its body before the browser
+      // releases the protocol resource, then deliver the unchanged response.
+      const response = await route.fetch({ maxRetries: 0 });
+      const payload = await response.json() as ScheduleChangeSetResponse;
+      await route.fulfill({ response });
+      expect(response.status(), 'real change-set response').toBe(200);
+      expect(payload.data.scheduleId, 'authoritative change-set schedule id').toBeTruthy();
+      resolve(payload);
+    } catch (error) {
+      reject(error);
+      await route.abort().catch(() => undefined);
+    }
+  };
+  await page.route(endpoint, handler);
+  try {
+    const [payload] = await Promise.all([captured, action()]);
+    return payload;
+  } finally {
+    await page.unroute(endpoint, handler);
+  }
 }
 
 async function submitCreatedShift(page: Page, form: ReturnType<Page['locator']>) {
