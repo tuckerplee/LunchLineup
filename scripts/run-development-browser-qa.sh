@@ -17,16 +17,25 @@ node "$build_root/scripts/verify-internal-ci-source-clone.mjs" --proof "$artifac
 export PATH="$build_root/scripts/ci-container-bin:$PATH"
 compose=(docker compose --project-name "$project" --env-file "$env_file" -f "$build_root/docker-compose.yml")
 mkdir -- "$qualification_root"
+runtime_root=""
 cleanup(){
   status=$?; cleanup_status=0
   if [[ -f "$artifact_root/fullstack-target.json" ]]; then
     "${compose[@]}" --profile ops down -v --remove-orphans >"$artifact_root/development-cleanup.log" 2>&1 || cleanup_status=$?
+  fi
+  if [[ -n "$runtime_root" && -d "$runtime_root" && ! -L "$runtime_root" && "$(cat "$runtime_root/owner")" == "$CI_RUN_ID" ]]; then
+    rm -rf -- "$runtime_root"
   fi
   trap - EXIT
   if [[ "$status" == 0 && "$cleanup_status" != 0 ]]; then exit "$cleanup_status"; fi
   exit "$status"
 }
 trap cleanup EXIT
+# Unix sockets require a short path; image/volume storage remains in the bounded controller store.
+runtime_root=$(mktemp -d /tmp/llr.XXXXXX)
+printf '%s\n' "$CI_RUN_ID" >"$runtime_root/owner"
+mkdir "$runtime_root/containers"
+export XDG_RUNTIME_DIR="$runtime_root" LUNCHLINEUP_DEV_RUNTIME="$runtime_root"
 node "$build_root/scripts/write-internal-beta-qualification-env.mjs" --source-context "$context" --output "$env_file" --public-build-config "$artifact_root/public-build-config.json" --secrets-dir "$qualification_root/secrets"
 "${compose[@]}" --profile ops config --format json >"$artifact_root/compose-config.json"
 python3 "$build_root/scripts/check-internal-ci-target.py" fullstack
@@ -62,7 +71,7 @@ for attempt in {1..120}; do
 done
 output="$artifact_root/fullstack-playwright"; mkdir -- "$output"
 cd "$build_root/apps/web"
-BASE_URL=http://127.0.0.1:8080 E2E_FULL_STACK=1 E2E_MOCK_API=0 E2E_SIGNUP_MODE=closed_beta E2E_COMPOSE_PROJECT_NAME="$project" E2E_COMPOSE_ENV_FILE="$env_file" E2E_CANDIDATE_SHA="$CI_COMMIT_SHA" E2E_ARTIFACT_ROOT="$output" PLAYWRIGHT_JSON_OUTPUT_NAME="$output/results.json" npx playwright test --reporter=json --project=chromium --workers=1 --retries=0 tests/e2e/operations-workflows.spec.ts tests/e2e/month-volume-workflows.spec.ts tests/e2e/stress-workflows.spec.ts tests/e2e/tenant-admin-workflows.spec.ts tests/e2e/staff-repair-acceptance.spec.ts >"$output/test.log" 2>&1
+BASE_URL=http://127.0.0.1:8080 E2E_FULL_STACK=1 E2E_MOCK_API=0 E2E_SIGNUP_MODE=closed_beta E2E_COMPOSE_PROJECT_NAME="$project" E2E_COMPOSE_ENV_FILE="$env_file" E2E_CANDIDATE_SHA="$CI_COMMIT_SHA" E2E_ARTIFACT_ROOT="$output" PLAYWRIGHT_JSON_OUTPUT_NAME="$output/results.json" npx playwright test --reporter=json --project=chromium --workers=1 --retries=0 --trace=retain-on-failure tests/e2e/operations-workflows.spec.ts tests/e2e/month-volume-workflows.spec.ts tests/e2e/stress-workflows.spec.ts tests/e2e/tenant-admin-workflows.spec.ts tests/e2e/staff-repair-acceptance.spec.ts >"$output/test.log" 2>&1
 node - "$output/results.json" <<'NODE'
 const report=JSON.parse(require('node:fs').readFileSync(process.argv[2]));const s=report.stats;
 if(!s||!(s.expected>0)||s.unexpected!==0||s.skipped!==0||s.flaky!==0)throw new Error('Development browser acceptance failed or incomplete');

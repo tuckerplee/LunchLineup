@@ -8,4 +8,12 @@ root="/var/lib/custom-ci/runs/$CI_RUN_ID/tmp"
 for path in "$root/containers/graphroot" "$root/containers/runroot"; do
   [[ -d "$path" && "$(realpath -e "$path")" == "$path" ]] || exit 64
 done
-exec /usr/bin/podman --root "$root/containers/graphroot" --runroot "$root/containers/runroot" "$@"
+runroot="$root/containers/runroot"
+if [[ "${LUNCHLINEUP_DEVELOPMENT_QA:-}" == 1 && -n "${LUNCHLINEUP_DEV_RUNTIME:-}" ]]; then
+  runtime=$LUNCHLINEUP_DEV_RUNTIME
+  [[ "$runtime" =~ ^/tmp/llr\.[A-Za-z0-9]{6}$ && -d "$runtime" && ! -L "$runtime" ]] || exit 64
+  [[ "$(stat -c %u "$runtime")" == "$UID" && "$(cat "$runtime/owner")" == "$CI_RUN_ID" ]] || exit 64
+  [[ -d "$runtime/containers" && "$(realpath -e "$runtime/containers")" == "$runtime/containers" ]] || exit 64
+  runroot="$runtime/containers"
+fi
+exec /usr/bin/podman --root "$root/containers/graphroot" --runroot "$runroot" "$@"
