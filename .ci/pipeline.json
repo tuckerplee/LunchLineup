@@ -22,7 +22,7 @@
   "artifacts": [
     ".release/internal-ci/**"
   ],
-  "name": "Disposable development browser QA \u2014 backend suite recorded separately",
+  "name": "Disposable development QA \u2014 no release signing or deployment",
   "timeout_seconds": 14400,
   "steps": [
     {
@@ -37,8 +37,13 @@
     },
     {
       "name": "Build contracts, typecheck web, and check repair helpers",
-      "run": "set -euo pipefail; build_root=\"$RUNNER_TEMP/lunchlineup-source-$CI_RUN_ID/build\"; cd \"$build_root\"; npm run build --workspace @lunchlineup/api-contract; npm run build --workspace @lunchlineup/config; npm run typecheck --workspace @lunchlineup/web; (cd apps/web && npx vitest run --project=unit tests/unit/settings-request.test.ts tests/unit/profile-save-state.test.ts tests/unit/staff-action-confirmation.test.ts); npx playwright install chromium",
+      "run": "set -euo pipefail; build_root=\"$RUNNER_TEMP/lunchlineup-source-$CI_RUN_ID/build\"; cd \"$build_root\"; npm run build --workspace @lunchlineup/api-contract; npm run build --workspace @lunchlineup/config; npm run typecheck --workspace @lunchlineup/web; (cd apps/web && npx vitest run --project=unit tests/unit/settings-request.test.ts tests/unit/profile-save-state.test.ts tests/unit/staff-action-confirmation.test.ts tests/unit/time-card-mutation-result.test.ts); npx playwright install chromium",
       "timeout_seconds": 1200
+    },
+    {
+      "name": "Disposable database integration",
+      "run": "set -euo pipefail; source_context=\"$RUNNER_TEMP/lunchlineup-source-$CI_RUN_ID/source-context.json\"; build_root=\"$RUNNER_TEMP/lunchlineup-source-$CI_RUN_ID/build\"; test -f \"$source_context\"; test -d \"$build_root\"; bash \"$build_root/scripts/run-internal-ci-integration.sh\" --source-context \"$source_context\"",
+      "timeout_seconds": 3600
     },
     {
       "name": "Run disposable application browser tests",

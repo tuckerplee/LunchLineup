@@ -12,6 +12,7 @@ import {
     locationContinuation,
 } from './time-card-api';
 import { formatTimeCardTimestamp } from './time-card-format';
+import { isTimeCardValidationRejection } from './time-card-mutation-result';
 import {
     ClockInRequestKey,
     isClockInTargetExplicit,
@@ -335,6 +336,12 @@ export function TimeCardsWorkspace({ canManageTeam, canReadLocations, canWriteTi
             setNotes('');
             await loadCards(selectedUserId, view);
         } catch (saveError) {
+            if (isTimeCardValidationRejection(saveError)) {
+                // A rejected input did not commit; retain the draft and explain
+                // how to correct it. Lost responses still require readback.
+                setError(saveError.message);
+                return;
+            }
             const refreshedCards = await loadCards(selectedUserId, view);
             const confirmed = refreshedCards?.find((card) => card.id === activeCardForSelectedUser.id && card.clockOutAt);
             if (confirmed) {
