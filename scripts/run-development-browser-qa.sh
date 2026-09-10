@@ -41,27 +41,39 @@ node "$build_root/scripts/write-internal-beta-qualification-env.mjs" --source-co
 python3 "$build_root/scripts/check-internal-ci-target.py" fullstack
 node - "$artifact_root/compose-config.json" "$artifact_root/development-images.tsv" <<'NODE'
 const fs=require('node:fs');const [configPath,out]=process.argv.slice(2),config=JSON.parse(fs.readFileSync(configPath));
-const selected=new Set();function include(name){if(selected.has(name))return;const service=config.services[name];if(!service)throw new Error(`Missing development service ${name}`);selected.add(name);for(const dep of Object.keys(service.depends_on??{}))include(dep);}
+const selected=new Set();function include(name){if(selected.has(name))return;const service=config.services[name];if(!service)throw new Error(`Missing development service ${name}`);selected.add(name);for(const dep of Object.keys(service.depends_on??{})){if(dep==='pitr-wal-provider'&&String(config.services.postgres.environment.PITR_ENABLED)==='false')continue;include(dep);}}
 for(const name of ['api-v2','web','worker','engine','proxy'])include(name);
 const seen=new Set(),lines=[];for(const name of [...selected].sort()){const s=config.services[name];if(seen.has(s.image))continue;seen.add(s.image);lines.push([s.build?'build':'pull',name,s.image].join('\t'));}
 fs.writeFileSync(out,lines.join('\n')+'\n',{flag:'wx'});
 NODE
-while IFS=$'\t' read -r action service image; do
+build_image(){
+  local action=$1 service=$2 image=$3
   printf 'Development image: %s\n' "$service"
   if [[ "$action" == build ]]; then "${compose[@]}" --profile ops build "$service"; else docker pull "$image"; fi
   docker image inspect --format '{{.Id}}' "$image"
+}
+# Prove fresh database setup before spending time building application images.
+while IFS=$'\t' read -r action service image; do
+  case "$service" in migrate|postgres|redis|rabbitmq|pitr-wal-provider) build_image "$action" "$service" "$image";; esac
 done <"$artifact_root/development-images.tsv" >"$artifact_root/development-build.log" 2>&1
 # These are job-private networks from the existing manifest, with Podman isolation.
 for network in alertmanager-egress pitr-egress outbound-egress; do
   docker network create --label "io.podman.compose.project=$project" --label "com.docker.compose.project=$project" --driver bridge --opt isolate=true "${project}_${network}" >/dev/null
 done
-"${compose[@]}" --profile ops up -d --no-build --no-deps pitr-wal-provider postgres redis rabbitmq >"$artifact_root/development-start.log" 2>&1
+if awk -F '\t' '$2 == "pitr-wal-provider" { found=1 } END { exit !found }' "$artifact_root/development-images.tsv"; then
+  "${compose[@]}" --profile ops up -d --no-build --no-deps pitr-wal-provider >"$artifact_root/development-start.log" 2>&1
+fi
+"${compose[@]}" --profile ops up -d --no-build --no-deps postgres redis rabbitmq >"$artifact_root/development-start.log" 2>&1
 for attempt in {1..60}; do
   if "${compose[@]}" exec -T postgres pg_isready -U lunchlineup_ci_admin -d lunchlineup_ci >/dev/null 2>&1; then break; fi
   [[ "$attempt" != 60 ]] || exit 1
   sleep 2
 done
-"${compose[@]}" --profile ops run --rm --no-deps migrate >"$artifact_root/development-migrations.log" 2>&1
+"${compose[@]}" --profile ops run --rm --no-deps -e NODE_ENV=test -e APP_ENV=test -e DEPLOY_ENV=test -e NEXT_PUBLIC_APP_ENV=test migrate >"$artifact_root/development-migrations.log" 2>&1
+while IFS=$'\t' read -r action service image; do
+  case "$service" in migrate|postgres|redis|rabbitmq|pitr-wal-provider) continue;; esac
+  build_image "$action" "$service" "$image"
+done <"$artifact_root/development-images.tsv" >>"$artifact_root/development-build.log" 2>&1
 "${compose[@]}" --profile ops up -d --no-build --no-deps engine api api-v2 pdf-parser worker web proxy >>"$artifact_root/development-start.log" 2>&1
 for attempt in {1..120}; do
   status=$(curl --silent --max-time 5 --output /dev/null --write-out '%{http_code}' http://127.0.0.1:8080/auth/login || true)
