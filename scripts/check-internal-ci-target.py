@@ -89,9 +89,10 @@ def main():
             for row in rows:
                 if project in json.dumps(row):
                     raise ValueError(f'refusing pre-existing qualification {resource}')
-        require_ports_free((8080, 4000, 8443))
+        https_port = 18443 if os.environ.get('LUNCHLINEUP_DEVELOPMENT_QA') == '1' else 8443
+        require_ports_free((8080, 4000, https_port))
         receipt.update(database='lunchlineup_ci', store=str(store), project=project,
-                       volumes=volumes, browserEndpoint='http://127.0.0.1:8080',
+                       volumes=volumes, httpsPort=https_port, browserEndpoint='http://127.0.0.1:8080',
                        runtimeEnvironment=str(Path(os.environ['RUNNER_TEMP']) / f'lunchlineup-beta-qualification-{run_id}/runtime.env'))
         if mode == 'stack-start':
             prior = json.loads((artifact / 'fullstack-target.json').read_text())
