@@ -14,6 +14,7 @@ const { TenantDatabase } = require('../../apps/api-v2/src/platform/database.ts')
 // Run only on the approved disposable integration database. Elevated setup is
 // separate; every operation being proved uses the restricted application role.
 test('People mutations preserve stale writes, replay identity, and suspended staff history', async () => {
+  assert.equal(process.env.DATA_TARGET_ENV, 'disposable');
   const owner = createPrisma(requireServiceUrl('MIGRATION_DATABASE_URL').toString());
   const app = createPrisma(requireServiceUrl('DATABASE_URL').toString());
   const tenantId = `people-mutations-${randomUUID()}`;
@@ -34,7 +35,7 @@ test('People mutations preserve stale writes, replay identity, and suspended sta
       [admin, 'ADMIN', ['users:read', 'users:write', 'users:admin', 'auth:login_pin']],
       [employee, 'STAFF', ['auth:login_pin']],
     ]) {
-      const role = await owner.role.create({ data: { tenantId, name: legacyRole, slug: legacyRole.toLowerCase(), legacyRole, isSystem: true } });
+      const role = await owner.role.create({ data: { tenantId, name: legacyRole === 'ADMIN' ? 'Admin' : 'Staff', slug: legacyRole.toLowerCase(), legacyRole, isSystem: true } });
       roles.push(role);
       for (const key of keys) {
         const permission = await owner.permission.findUniqueOrThrow({ where: { key } });
@@ -93,15 +94,9 @@ test('People mutations preserve stale writes, replay identity, and suspended sta
     await assert.rejects(() => service.setSuspended(identity, employee.publicId, { suspended: true, expectedSuspendedAt: null }), e => e.status === 403);
     assert.equal((await owner.user.findUniqueOrThrow({ where: { id: employee.id } })).suspendedAt, null);
   } finally {
-    const tenantIds = [tenantId, otherTenantId];
-    for (const model of ['auditLog', 'tenantSetting', 'staffAvailabilityException', 'staffAvailability', 'staffSkill', 'timeCard', 'shift', 'schedule', 'location', 'roleAssignment']) {
-      await owner[model].deleteMany({ where: { tenantId: { in: tenantIds } } });
-    }
-    await owner.session.deleteMany({ where: { user: { tenantId: { in: tenantIds } } } });
-    await owner.user.deleteMany({ where: { tenantId: { in: tenantIds } } });
-    await owner.rolePermission.deleteMany({ where: { roleId: { in: roles.map(role => role.id) } } });
-    await owner.role.deleteMany({ where: { tenantId: { in: tenantIds } } });
-    await owner.tenant.deleteMany({ where: { id: { in: tenantIds } } });
+    // Audit history is deliberately append-only, even for the fixture owner.
+    // The controller destroys this entire run-private database after the suite;
+    // retain these uniquely named fixtures until then rather than bypassing it.
     await Promise.all([owner.$disconnect(), app.$disconnect()]);
   }
 });
