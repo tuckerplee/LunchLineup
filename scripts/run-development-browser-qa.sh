@@ -39,13 +39,16 @@ export XDG_RUNTIME_DIR="$runtime_root" LUNCHLINEUP_DEV_RUNTIME="$runtime_root"
 node "$build_root/scripts/write-internal-beta-qualification-env.mjs" --source-context "$context" --output "$env_file" --public-build-config "$artifact_root/public-build-config.json" --secrets-dir "$qualification_root/secrets"
 "${compose[@]}" --profile ops config --format json >"$artifact_root/compose-config.json"
 python3 "$build_root/scripts/check-internal-ci-target.py" fullstack
-node - "$artifact_root/compose-config.json" "$artifact_root/development-images.tsv" <<'NODE'
-const fs=require('node:fs');const [configPath,out]=process.argv.slice(2),config=JSON.parse(fs.readFileSync(configPath));
+node - "$artifact_root/compose-config.json" "$artifact_root/development-images.tsv" "$qualification_root/development-compose.json" <<'NODE'
+const fs=require('node:fs');const [configPath,out,runtimePath]=process.argv.slice(2),config=JSON.parse(fs.readFileSync(configPath));
 const selected=new Set();function include(name){if(selected.has(name))return;const service=config.services[name];if(!service)throw new Error(`Missing development service ${name}`);selected.add(name);for(const dep of Object.keys(service.depends_on??{})){if(dep==='pitr-wal-provider'&&String(config.services.postgres.environment.PITR_ENABLED)==='false')continue;include(dep);}}
 for(const name of ['api-v2','web','worker','engine','proxy'])include(name);
 const seen=new Set(),lines=[];for(const name of [...selected].sort()){const s=config.services[name];if(seen.has(s.image))continue;seen.add(s.image);lines.push([s.build?'build':'pull',name,s.image].join('\t'));}
 fs.writeFileSync(out,lines.join('\n')+'\n',{flag:'wx'});
+config.services=Object.fromEntries([...selected].map(name=>{const service=config.services[name];delete service.depends_on;return [name,service];}));
+fs.writeFileSync(runtimePath,JSON.stringify(config),{flag:'wx',mode:0o600});
 NODE
+export LUNCHLINEUP_DEV_COMPOSE="$qualification_root/development-compose.json"
 build_image(){
   local action=$1 service=$2 image=$3
   printf 'Development image: %s\n' "$service"
@@ -66,7 +69,7 @@ fi
 "${compose[@]}" --profile ops up -d --no-build --no-deps postgres redis rabbitmq >"$artifact_root/development-start.log" 2>&1
 for attempt in {1..60}; do
   if "${compose[@]}" exec -T postgres pg_isready -U lunchlineup_ci_admin -d lunchlineup_ci >/dev/null 2>&1; then break; fi
-  [[ "$attempt" != 60 ]] || exit 1
+  [[ "$attempt" != 60 ]] || { "${compose[@]}" logs --tail 80 >"$artifact_root/development-runtime.log" 2>&1; exit 1; }
   sleep 2
 done
 "${compose[@]}" --profile ops run --rm --no-deps -e NODE_ENV=test -e APP_ENV=test -e DEPLOY_ENV=test -e NEXT_PUBLIC_APP_ENV=test migrate >"$artifact_root/development-migrations.log" 2>&1
@@ -77,7 +80,8 @@ done <"$artifact_root/development-images.tsv" >>"$artifact_root/development-buil
 "${compose[@]}" --profile ops up -d --no-build --no-deps engine api api-v2 pdf-parser worker web proxy >>"$artifact_root/development-start.log" 2>&1
 for attempt in {1..120}; do
   status=$(curl --silent --max-time 5 --output /dev/null --write-out '%{http_code}' http://127.0.0.1:8080/auth/login || true)
-  if [[ "$status" == 200 ]]; then break; fi
+  api_status=$(curl --silent --max-time 5 --output /dev/null --write-out '%{http_code}' http://127.0.0.1:8080/api/v2/ready || true)
+  if [[ "$status" == 200 && "$api_status" == 200 ]]; then break; fi
   [[ "$attempt" != 120 ]] || { "${compose[@]}" logs --tail 80 >"$artifact_root/development-runtime.log" 2>&1; exit 1; }
   sleep 2
 done
