@@ -46,19 +46,9 @@
       "timeout_seconds": 3600
     },
     {
-      "name": "Canonical beta release-image build",
-      "run": "set -euo pipefail; source_context=\"$RUNNER_TEMP/lunchlineup-source-$CI_RUN_ID/source-context.json\"; build_root=\"$RUNNER_TEMP/lunchlineup-source-$CI_RUN_ID/build\"; test -f \"$source_context\"; test -d \"$build_root\"; bash \"$build_root/scripts/run-internal-beta-release-qualification.sh\" --source-context \"$source_context\" --stage release-image-build",
-      "timeout_seconds": 7200
-    },
-    {
-      "name": "Release stack health",
-      "run": "set -euo pipefail; source_context=\"$RUNNER_TEMP/lunchlineup-source-$CI_RUN_ID/source-context.json\"; build_root=\"$RUNNER_TEMP/lunchlineup-source-$CI_RUN_ID/build\"; test -f \"$source_context\"; test -d \"$build_root\"; bash \"$build_root/scripts/run-internal-beta-release-qualification.sh\" --source-context \"$source_context\" --stage release-stack-health",
-      "timeout_seconds": 3600
-    },
-    {
-      "name": "DB-backed Playwright",
-      "run": "set -euo pipefail; source_context=\"$RUNNER_TEMP/lunchlineup-source-$CI_RUN_ID/source-context.json\"; build_root=\"$RUNNER_TEMP/lunchlineup-source-$CI_RUN_ID/build\"; test -f \"$source_context\"; test -d \"$build_root\"; bash \"$build_root/scripts/run-internal-beta-release-qualification.sh\" --source-context \"$source_context\" --stage fullstack-playwright",
-      "timeout_seconds": 5400
+      "name": "Run disposable application browser tests",
+      "run": "set -euo pipefail; build_root=\"$RUNNER_TEMP/lunchlineup-source-$CI_RUN_ID/build\"; bash \"$build_root/scripts/run-development-browser-qa.sh\" --source-context \"$RUNNER_TEMP/lunchlineup-source-$CI_RUN_ID/source-context.json\"",
+      "timeout_seconds": 9000
     }
   ]
 }
