@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
+import { breakTimingIssue } from './break-timing-validation';
 import { AnimatePresence, motion } from 'framer-motion';
 import { Button } from '@/components/ui/button';
 import {
@@ -774,6 +775,16 @@ export default function LunchBreaksPage() {
       )
       ? schedulingFeature?.reason || 'Setup shifts require an active paid subscription and configured usage credits.'
       : null;
+  const generationCreditCost = capabilities.canReadBilling && lunchBreakFeature?.enabled
+    && Number.isSafeInteger(lunchBreakFeature.creditCost) && (lunchBreakFeature.creditCost ?? -1) >= 0
+    ? lunchBreakFeature.creditCost : null;
+  const confirmGeneration = useCallback((count: number, persisted: boolean) => {
+    if (generationCreditCost === null) {
+      setError('The exact generation cost is unavailable. Refresh billing information before generating.');
+      return false;
+    }
+    return window.confirm(`Generate a lunch and break plan for ${count} shift${count === 1 ? '' : 's'}? This uses exactly ${generationCreditCost} usage credit${generationCreditCost === 1 ? '' : 's'}.${persisted ? ' Existing break assignments for these shifts will be replaced.' : ' This creates a preview.'} Unchanged retries recover the same request.`);
+  }, [generationCreditCost]);
   const setupShiftRecordCount = setupShiftRows.length;
   const hasInvalidSetupShiftRows = setupShiftRows.some((row) => (
     Boolean(row.intervalError)
@@ -898,6 +909,8 @@ export default function LunchBreaksPage() {
       );
 
       try {
+        const timingIssue = breakTimingIssue(row, activeTimeZone);
+        if (timingIssue) throw new Error(`${row.employeeName}: ${timingIssue}`);
         const breaks: ShiftBreakUpdateRequestBody['breaks'] = BREAK_KEYS.map((key) => {
           const current = row[key];
           if (current.skipped) {
@@ -1022,6 +1035,8 @@ export default function LunchBreaksPage() {
       return;
     }
 
+    if (!confirmGeneration(selectedRows.length, true)) return;
+
     const mutationScope = desiredDayScopeRef.current;
     const mutationTimeZone = activeTimeZone;
     const busyOwner = claimLunchBreakMutationBusyOwner(mutationScope, mutationBusyRequestRef.current);
@@ -1051,7 +1066,10 @@ export default function LunchBreaksPage() {
           const response = await fetchLunchBreakMutation('/lunch-breaks/generate', {
             ...withIdempotencyKey(jsonWriteInit('POST', retainedBody), idempotencyKey),
           });
-          if (!response.ok) throw new Error('Failed to generate lunch/break assignments for this day.');
+          if (!response.ok) {
+            const problem = await response.json().catch(() => null) as { detail?: string } | null;
+            throw new Error(problem?.detail || 'Generation could not be confirmed. Retry unchanged entries to recover this request.');
+          }
           return response.json() as Promise<GenerateResponse>;
         },
       );
@@ -1071,7 +1089,7 @@ export default function LunchBreaksPage() {
         releaseLunchBreakMutationBusyOwner(currentOwner, busyOwner)
       ));
     }
-  }, [activeTimeZone, canWriteLoadedDay, canWriteLunchBreaks, commitActiveDayScope, dayRows, hasSchedulingEnabled, loadDayRows, policy, policyLoaded, selectedAutoEmployeeIds, selectedShiftId, sessionIdentity, updateDaySession]);
+  }, [activeTimeZone, canWriteLoadedDay, canWriteLunchBreaks, confirmGeneration, commitActiveDayScope, dayRows, hasSchedulingEnabled, loadDayRows, policy, policyLoaded, selectedAutoEmployeeIds, selectedShiftId, sessionIdentity, updateDaySession]);
 
   const addManualShift = useCallback(() => {
     if (!canWriteLunchBreaks) return;
@@ -1140,6 +1158,7 @@ export default function LunchBreaksPage() {
         throw new Error('Add at least one employee shift to generate a lunch/break plan.');
       }
 
+      if (!confirmGeneration(shifts.length, false)) return;
       const requestBody = {
         shifts,
         persist: false,
@@ -1161,7 +1180,10 @@ export default function LunchBreaksPage() {
           const response = await fetchLunchBreakMutation('/lunch-breaks/generate', {
             ...withIdempotencyKey(jsonWriteInit('POST', retainedBody), idempotencyKey),
           });
-          if (!response.ok) throw new Error('Failed to generate lunch/breaks from manual shifts.');
+          if (!response.ok) {
+            const problem = await response.json().catch(() => null) as { detail?: string } | null;
+            throw new Error(problem?.detail || 'Generation could not be confirmed. Retry unchanged entries to recover this request.');
+          }
           return response.json() as Promise<GenerateResponse>;
         },
       );
@@ -1177,7 +1199,7 @@ export default function LunchBreaksPage() {
         releaseLunchBreakMutationBusyOwner(currentOwner, busyOwner)
       ));
     }
-  }, [activeTimeZone, canWriteLoadedDay, canWriteLunchBreaks, commitActiveDayScope, manualShifts, policy, sessionIdentity]);
+  }, [activeTimeZone, canWriteLoadedDay, canWriteLunchBreaks, confirmGeneration, commitActiveDayScope, manualShifts, policy, sessionIdentity]);
 
   useEffect(() => {
     setSelectedShiftId((current) => {
@@ -1209,6 +1231,7 @@ export default function LunchBreaksPage() {
   const mealRiskCount = dayRows.filter((row) => row.lunch.skipped || !row.lunch.time).length;
   const breakRiskCount = dayRows.filter(
     (row) =>
+      Boolean(breakTimingIssue(row, activeTimeZone)) ||
       (!row.break1.skipped && !row.break1.time) ||
       (!row.break2.skipped && !row.break2.time),
   ).length;
@@ -1222,6 +1245,7 @@ export default function LunchBreaksPage() {
     (row) =>
       row.lunch.skipped ||
       !row.lunch.time ||
+      Boolean(breakTimingIssue(row, activeTimeZone)) ||
       (!row.break1.skipped && !row.break1.time) ||
       (!row.break2.skipped && !row.break2.time),
   ).length;
@@ -1655,7 +1679,7 @@ export default function LunchBreaksPage() {
           window.localStorage,
           async (retainedRequestBody, idempotencyKey) => {
             const res = await fetchLunchBreakMutation('/lunch-breaks/setup-shifts', {
-              ...withIdempotencyKey(jsonWriteInit('POST', retainedRequestBody), idempotencyKey),
+              ...withIdempotencyKey(jsonWriteInit('POST', { ...retainedRequestBody, rows: retainedRequestBody.rows.map(({ shiftId, ...row }) => ({ ...row, ...(shiftId ? { shiftId } : {}) })) }), idempotencyKey),
             });
             return readSetupShiftsResponse(res);
           },
@@ -1886,6 +1910,7 @@ export default function LunchBreaksPage() {
               </h1>
             )}
             <p className="workspace-subtitle">Generate compliant lunches and staggered breaks for the selected day.</p>
+            {canWriteLunchBreaks ? <p style={{ fontSize: '0.8rem' }}>{generationCreditCost === null ? 'Exact generation cost unavailable; generation is blocked.' : `Generation uses exactly ${generationCreditCost} usage credit${generationCreditCost === 1 ? '' : 's'} per request. Review and confirm before generating.`}</p> : null}
             <div style={{ marginTop: 4, fontSize: '0.78rem', color: 'var(--text-muted)', fontWeight: 700 }}>
               {selectedDateLabel} break plan
             </div>
@@ -1977,7 +2002,7 @@ export default function LunchBreaksPage() {
             {mealRiskCount > 0 ? `${mealRiskCount} meal windows missing` : 'Meals covered'}
           </div>
           <div className="surface-muted" style={{ padding: '0.38rem 0.58rem', fontSize: '0.78rem', color: breakRiskCount > 0 ? '#b45309' : '#166534' }}>
-            {breakRiskCount > 0 ? `${breakRiskCount} break timings unresolved` : 'Break timings healthy'}
+            {!canWriteLoadedDay || dayRows.length === 0 ? 'Break timings not verified' : breakRiskCount > 0 ? `${breakRiskCount} break timings unresolved` : 'Break timings checked'}
           </div>
         </div>
 
@@ -2717,9 +2742,10 @@ export default function LunchBreaksPage() {
                           ? 'Subscription and credits required'
                           : setupShiftError.code === 'SETUP_SHIFTS_CONFLICT' || setupShiftError.status === 409
                             ? 'Setup request conflict'
-                            : 'Setup shifts were not saved'}
+                            : 'Setup save could not be confirmed'}
                       </strong>
                       <div style={{ marginTop: 3 }}>{setupShiftError.message}</div>
+                      <div style={{ marginTop: 3 }}>Retry with the same entries to recover this request without creating duplicate shifts or charging again.</div>
                       {setupShiftError.remediation ? (
                         <div style={{ marginTop: 3 }}>{setupShiftError.remediation}</div>
                       ) : null}
@@ -2939,7 +2965,7 @@ export default function LunchBreaksPage() {
                                 <div className="row-name">{row.employeeName}</div>
                                 <div className="row-time">{row.shiftLabel}</div>
                                 {row.overnight ? <div className="row-status">Overnight</div> : null}
-                                <div className={`row-status ${row.segments.length > 0 ? 'is-healthy' : 'is-risk'}`}>
+                                <div className={`row-status ${row.segments.length > 0 && !breakTimingIssue(dayRows.find((item) => item.shiftId === row.id)!, activeTimeZone) ? 'is-healthy' : 'is-risk'}`}>
                                   {row.segments.length > 0 ? `${row.segments.length} planned event${row.segments.length === 1 ? '' : 's'}` : 'Needs review'}
                                 </div>
                               </div>
@@ -3018,7 +3044,14 @@ export default function LunchBreaksPage() {
                             variant="outline"
                             size="sm"
                             onClick={() => {
-                              void importScheduleShifts();
+                              void importScheduleShifts().then((rows) => {
+                                if (rows.length > 0) {
+                                  setSelectedAutoEmployeeIds(rows.map((row) => row.userId ?? row.shiftId));
+                                  setPlannerMode('auto');
+                                  setAutoGuideStep(5);
+                                  updateDaySession({ mode: 'auto', autoSetupComplete: true });
+                                }
+                              });
                             }}
                           >
                             Import schedule shifts
@@ -3245,7 +3278,14 @@ export default function LunchBreaksPage() {
                     variant="outline"
                     size="sm"
                     onClick={() => {
-                      void importScheduleShifts();
+                      void importScheduleShifts().then((rows) => {
+                                if (rows.length > 0) {
+                                  setSelectedAutoEmployeeIds(rows.map((row) => row.userId ?? row.shiftId));
+                                  setPlannerMode('auto');
+                                  setAutoGuideStep(5);
+                                  updateDaySession({ mode: 'auto', autoSetupComplete: true });
+                                }
+                              });
                     }}
                   >
                     Import schedule shifts

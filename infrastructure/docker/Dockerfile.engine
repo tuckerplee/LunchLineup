@@ -26,6 +26,7 @@ WORKDIR /app
 COPY --from=builder --chown=65532:65532 /opt/venv /opt/venv
 COPY --from=builder --chown=65532:65532 /app /app
 USER 65532:65532
+RUN ["/opt/venv/bin/python", "-c", "from zoneinfo import ZoneInfo; ZoneInfo('America/Los_Angeles'); ZoneInfo('UTC')"]
 ENTRYPOINT []
 
 EXPOSE 8000 50051

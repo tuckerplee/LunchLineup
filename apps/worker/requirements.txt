@@ -1,4 +1,5 @@
 aio-pika==9.6.2
+tzdata==2026.3
 pydantic==2.13.4
 grpcio==1.81.0
 grpcio-tools==1.81.0

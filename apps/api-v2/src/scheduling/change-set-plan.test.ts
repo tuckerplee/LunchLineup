@@ -156,3 +156,20 @@ describe('schedule change-set final-state planner', () => {
     }));
   });
 });
+
+describe('overnight start-day ownership', () => {
+  const overnight = () => shift(shiftAId, userA, '2026-07-19T22:00:00Z', '2026-07-20T02:00:00Z');
+  const input = () => ({ scheduleStart, scheduleEnd, currentShifts: [overnight()], externalShifts: [], usersByPublicId: new Map([[userA.publicId, userA]]), operations: [{ op: 'shift.update' as const, shiftId: shiftAId, role: 'Lead' }] });
+  it('allows an overnight shift in its start-day schedule', () => {
+    expect(planScheduleChangeSet(input()).finalShifts).toHaveLength(1);
+  });
+  it('rejects an overlap with a shift owned by the next schedule', () => {
+    expect(() => planScheduleChangeSet({ ...input(), externalShifts: [{ internalId: 'next-day', userInternalId: userA.internalId, startTime: new Date('2026-07-20T01:00:00Z'), endTime: new Date('2026-07-20T05:00:00Z') }] })).toThrow();
+  });
+  it('allows an adjacent next-day shift without overlap', () => {
+    expect(planScheduleChangeSet({ ...input(), externalShifts: [{ internalId: 'next-day', userInternalId: userA.internalId, startTime: new Date('2026-07-20T02:00:00Z'), endTime: new Date('2026-07-20T05:00:00Z') }] }).finalShifts).toHaveLength(1);
+  });
+  it.each([['2026-07-20T00:00:00Z','2026-07-20T04:00:00Z'], ['2026-07-19T22:00:00Z','2026-07-21T00:00:00Z']])('rejects another start-day or an overlong shift', (start, end) => {
+    expect(() => planScheduleChangeSet({ ...input(), currentShifts: [shift(shiftAId,userA,start,end)] })).toThrow();
+  });
+});

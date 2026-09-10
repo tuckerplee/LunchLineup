@@ -885,7 +885,7 @@ describe('ShiftsController', () => {
                 status: 'DRAFT',
                 deletedAt: null,
                 startDate: { lte: new Date('2026-03-11T02:00:00.000Z') },
-                endDate: { gte: new Date('2026-03-11T06:00:00.000Z') },
+                endDate: { gt: new Date('2026-03-11T02:00:00.000Z') },
             },
             orderBy: [{ startDate: 'desc' }, { endDate: 'asc' }],
             select: { id: true, locationId: true, status: true, startDate: true, endDate: true },
@@ -896,7 +896,7 @@ describe('ShiftsController', () => {
         });
     });
 
-    it('creates a containing two-day draft for an overnight shift when none exists', async () => {
+    it('creates a start-day draft for an overnight shift when none exists', async () => {
         prisma.schedule.findFirst
             .mockResolvedValueOnce(null)
             .mockResolvedValueOnce(null);
@@ -924,7 +924,7 @@ describe('ShiftsController', () => {
                 status: 'DRAFT',
                 deletedAt: null,
                 startDate: { lte: new Date('2026-03-11T02:00:00.000Z') },
-                endDate: { gte: new Date('2026-03-11T06:00:00.000Z') },
+                endDate: { gt: new Date('2026-03-11T02:00:00.000Z') },
             },
             orderBy: [{ startDate: 'desc' }, { endDate: 'asc' }],
             select: { id: true, locationId: true, status: true, startDate: true, endDate: true },
@@ -934,7 +934,7 @@ describe('ShiftsController', () => {
                 tenantId: 'tenant-1',
                 locationId: 'loc-1',
                 deletedAt: null,
-                startDate: { lt: new Date('2026-03-12T04:00:00.000Z') },
+                startDate: { lt: new Date('2026-03-11T04:00:00.000Z') },
                 endDate: { gt: new Date('2026-03-10T04:00:00.000Z') },
             },
             select: { id: true, status: true },
@@ -944,7 +944,7 @@ describe('ShiftsController', () => {
                 tenantId: 'tenant-1',
                 locationId: 'loc-1',
                 startDate: new Date('2026-03-10T04:00:00.000Z'),
-                endDate: new Date('2026-03-12T04:00:00.000Z'),
+                endDate: new Date('2026-03-11T04:00:00.000Z'),
                 status: 'DRAFT',
             },
             select: { id: true },
@@ -956,7 +956,7 @@ describe('ShiftsController', () => {
         });
     });
 
-    it('does not create a fallback over an overlapping draft that is too short', async () => {
+    it('does not create a fallback over a draft that does not own the start', async () => {
         prisma.schedule.findFirst
             .mockResolvedValueOnce(null)
             .mockResolvedValueOnce({ id: 'schedule-day', status: 'DRAFT' });
@@ -968,7 +968,7 @@ describe('ShiftsController', () => {
                 endTime: '2026-03-11T06:00:00.000Z',
             },
             { user: { tenantId: 'tenant-1' } },
-        )).rejects.toThrow('An existing draft schedule does not contain the full shift interval.');
+        )).rejects.toThrow('An existing draft does not own this shift start.');
 
         expect(prisma.schedule.create).not.toHaveBeenCalled();
         expect(prisma.shift.create).not.toHaveBeenCalled();
@@ -1097,7 +1097,7 @@ describe('ShiftsController', () => {
         expect(prisma.schedule.updateMany).not.toHaveBeenCalled();
     });
 
-    it('rejects moving a shift past its stored schedule end', async () => {
+    it('rejects moving a shift start past its stored schedule end', async () => {
         prisma.shift.findFirst.mockResolvedValue({
             id: 'shift-1',
             scheduleId: 'schedule-1',
@@ -1116,7 +1116,7 @@ describe('ShiftsController', () => {
 
         await expect(updateShift(
             'shift-1',
-            { endTime: '2026-03-11T04:00:01.000Z' },
+            { startTime: '2026-03-11T04:00:00.000Z', endTime: '2026-03-11T06:00:00.000Z' },
             { user: { tenantId: 'tenant-1' } },
         )).rejects.toThrow('Shift must stay within its schedule window.');
 

@@ -1,5 +1,7 @@
 # Internal Beta Operations
 
+> **2026-09-08 operating hold:** VM107 stays stopped. The source-building bootstrap below is retired and now refuses execution. Build only on a storage-bounded CI runner, retain current and rollback image digests, and deploy without building. Historical commands below are not authorization to resume launch. See the host storage/retention runbook before any maintenance.
+
 ## Scope
 
 This is the VM107-only launch, verification, pause, and resume contract for `https://beta.lunchlineup.com`. VM106 and every production target are out of scope and must not be changed.

@@ -36,6 +36,7 @@ type LocationRow = {
 };
 
 type LockedLocation = {
+  updatedAt: Date;
   id: string;
   publicId: string;
   timezone: string;
@@ -383,9 +384,14 @@ export class LocationService {
     body: LocationUpdateRequest,
   ): Promise<LocationRecord> {
     const input = parseUpdate(body);
+    if (!body.expectedUpdatedAt) throw new ProblemError(428, 'location_version_required', 'Cancel this edit and refresh Locations before trying again.', 'Location version required');
     return this.database.withTenant(identity.tenantId, async (transaction) => {
       const current = await this.lockActiveLocation(transaction, identity.tenantId, locationPublicId);
       if (!current) throw new ProblemError(404, 'location_not_found', 'The selected location was not found.', 'Location not found');
+
+      if (body.expectedUpdatedAt !== current.updatedAt.toISOString()) {
+        throw new ProblemError(409, 'location_changed', 'This location changed while you were editing. Your draft has not been saved. Cancel this edit and refresh Locations before trying again.', 'Location changed');
+      }
 
       const timezoneChanged = input.timezone !== current.timezone;
       if (timezoneChanged) await this.assertTimezoneCanChange(transaction, identity.tenantId, current.id);
@@ -513,7 +519,7 @@ export class LocationService {
     locationPublicId: string,
   ): Promise<LockedLocation | null> {
     const rows = await transaction.$queryRaw<LockedLocation[]>(Prisma.sql`
-      SELECT "id", "publicId"::text AS "publicId", "timezone"
+      SELECT "id", "publicId"::text AS "publicId", "timezone", "updatedAt"
       FROM "Location"
       WHERE "tenantId" = ${tenantId}
         AND "publicId" = CAST(${locationPublicId} AS uuid)

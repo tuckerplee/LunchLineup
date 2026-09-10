@@ -30,6 +30,7 @@ import { RbacService } from '../auth/rbac.service';
 import { TenantProvisioningService } from './tenant-provisioning.service';
 import { InternalBetaEntitlementService } from './internal-beta-entitlement.service';
 import { TenantExportService } from './tenant-export.service';
+import { AdminUserPinRecoveryService } from './admin-user-pin-recovery.service';
 import { AdminUserMfaRecoveryService } from './admin-user-mfa-recovery.service';
 import { AdminUserLifecycleService, type AdminUserLifecycleActor } from './admin-user-lifecycle.service';
 import { applyStaffInvitationOutboxRetention } from '../users/staff-invitation-outbox.service';
@@ -1445,6 +1446,15 @@ export class AdminController implements OnModuleDestroy {
             status: this.mapUserStatus(updated),
             tenant: updated.tenant,
         };
+    }
+
+    @Post('users/:id/pin/reset')
+    @Header('Cache-Control', 'no-store')
+    async resetUserPin(@Req() req: any, @Param('id') id: string) {
+        this.assertSuperAdmin(req);
+        const actor = this.adminUserLifecycleActor(req);
+        const target = await this.withPlatformAdmin((tx) => this.resolveAdminUserIdentifier(tx, id));
+        return new AdminUserPinRecoveryService(this.tenantDb, this.rbac).reset(target.id, actor);
     }
 
     @Post('users/:id/mfa/reset')

@@ -598,6 +598,11 @@ main() {
   trap 'exit 130' INT
   trap 'exit 143' TERM
   validate_inputs
+  # Image loading, lifecycle operations, and scheduled pruning share one owner.
+  # Keep this lock path in sync with lunchlineup-storage-maintenance.
+  require_command flock
+  exec 9>/run/lock/lunchlineup-deploy.lock
+  flock -n 9 || fail "another deployment or storage cleanup owns VM107"
   if [[ "$ACTION" == pause ]]; then
     current_check="pause_source_identity"
     [[ "$(git -C "$APP_DIR" rev-parse HEAD)" == "$SOURCE_SHA" ]] \

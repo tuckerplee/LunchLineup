@@ -13,6 +13,9 @@ export type DashboardNotification = {
 };
 
 type NotificationsMenuProps = {
+  error?: string | null;
+  busy?: boolean;
+  onRetry: () => void | Promise<void>;
   notificationsOpen: boolean;
   notifications: DashboardNotification[];
   unreadCount: number;
@@ -41,6 +44,7 @@ function formatRelative(timestamp: string): string {
 }
 
 export function NotificationsMenu({
+  error, busy, onRetry,
   notificationsOpen,
   notifications,
   unreadCount,
@@ -181,7 +185,7 @@ export function NotificationsMenu({
               <button
                 type="button"
                 onClick={() => void onMarkAllAsRead()}
-                disabled={unreadCount === 0}
+                disabled={busy || unreadCount === 0}
                 style={{
                   border: 'none',
                   background: 'transparent',
@@ -195,10 +199,14 @@ export function NotificationsMenu({
               </button>
             </div>
           </div>
+          {error ? <div role="alert" style={{ color: '#b42318', fontSize: '0.8rem' }}>
+            {error} <button type="button" disabled={busy} onClick={() => void onRetry()}>Retry notifications</button>
+          </div> : null}
           {notifications.map((item) => (
             <button
               key={item.id}
               type="button"
+              disabled={busy || Boolean(item.readAt)}
               onClick={() => void onMarkOneAsRead(item.id)}
               className="surface-muted"
               style={{
@@ -224,7 +232,7 @@ export function NotificationsMenu({
               </span>
             </button>
           ))}
-          {notifications.length === 0 ? (
+          {notifications.length === 0 && !error ? (
             <div className="surface-muted" style={{ padding: '0.65rem', fontSize: '0.75rem', color: 'var(--text-muted)', fontWeight: 600 }}>
               No notifications yet.
             </div>

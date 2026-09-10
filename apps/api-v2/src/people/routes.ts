@@ -1,4 +1,7 @@
 import {
+  StaffLifecycleRequestSchema,
+  StaffLifecycleResponseSchema,
+  type StaffLifecycleRequest,
   AccessCatalogResponseSchema,
   AccessRoleRequestSchema,
   AccessRoleResponseSchema,
@@ -17,6 +20,8 @@ import {
   StaffInvitationResponseSchema,
   StaffDirectoryMemberSchema,
   StaffPathSchema,
+  StaffIdentityRequestSchema,
+  type StaffIdentityRequest,
   StaffSchedulingProfileRequestSchema,
   StaffSchedulingProfileSchema,
   SuccessResponseSchema,
@@ -40,6 +45,7 @@ export type PeopleRouteDependencies = {
     | 'list'
     | 'accessCatalog'
     | 'get'
+    | 'updateIdentity'
     | 'schedulingProfile'
     | 'replaceSchedulingProfile'
     | 'invite'
@@ -48,7 +54,9 @@ export type PeopleRouteDependencies = {
     | 'reissueInvitation'
     | 'resetPin'
     | 'replaceOwnPin'
-    | 'deactivate'
+    | 'remove'
+    | 'lifecycle'
+    | 'setSuspended'
     | 'access'
     | 'replaceAccess'
     | 'createRole'
@@ -130,7 +138,7 @@ export async function registerPeopleRoutes(
     assertUnsafeRequestSecurity(request, dependencies.config);
     const identity = await authenticate(request, reply, dependencies, { mfa: true });
     requirePermissions(identity, ['users:write']);
-    const response = await dependencies.people.invite(identity, request.body);
+    const response = await dependencies.people.invite(identity, request.body, header(request, 'idempotency-key'));
     reply.code(201).header('Cache-Control', 'private, no-store');
     return response;
   });
@@ -209,6 +217,21 @@ export async function registerPeopleRoutes(
     await dependencies.people.replaceOwnPin(identity, request.body.currentPin, request.body.newPin);
     reply.header('Cache-Control', 'private, no-store');
     return { success: true as const };
+  });
+
+  app.put<{ Params: { userId: string }; Body: StaffIdentityRequest }>('/v2/users/:userId/identity', {
+    schema: {
+      operationId: 'updateStaffIdentity', tags: ['People'],
+      params: StaffPathSchema, body: StaffIdentityRequestSchema,
+      response: { 200: StaffDirectoryMemberSchema, ...PeopleRouteProblemResponses },
+    },
+  }, async (request, reply) => {
+    assertUnsafeRequestSecurity(request, dependencies.config);
+    const identity = await authenticate(request, reply, dependencies, { mfa: true });
+    requirePermissions(identity, ['users:admin']);
+    const response = await dependencies.people.updateIdentity(identity, request.params.userId, request.body);
+    reply.header('Cache-Control', 'private, no-store');
+    return response;
   });
 
   app.get<{ Params: { userId: string } }>('/v2/users/:userId/scheduling-profile', {
@@ -385,10 +408,32 @@ export async function registerPeopleRoutes(
     return response;
   });
 
+  app.get<{ Params: { userId: string } }>('/v2/users/:userId/lifecycle', {
+    schema: { operationId: 'getStaffLifecycle', tags: ['People'], params: StaffPathSchema,
+      response: { 200: StaffLifecycleResponseSchema, ...PeopleRouteProblemResponses } },
+  }, async (request, reply) => {
+    const identity = await authenticate(request, reply, dependencies, { mfa: true });
+    requirePermissions(identity, ['users:admin']);
+    reply.header('Cache-Control', 'private, no-store');
+    return dependencies.people.lifecycle(identity, request.params.userId);
+  });
+
+  app.put<{ Params: { userId: string }; Body: StaffLifecycleRequest }>('/v2/users/:userId/lifecycle', {
+    schema: { operationId: 'setStaffSuspension', tags: ['People'], params: StaffPathSchema,
+      body: StaffLifecycleRequestSchema,
+      response: { 200: StaffLifecycleResponseSchema, ...PeopleRouteProblemResponses } },
+  }, async (request, reply) => {
+    assertUnsafeRequestSecurity(request, dependencies.config);
+    const identity = await authenticate(request, reply, dependencies, { mfa: true });
+    requirePermissions(identity, ['users:admin']);
+    reply.header('Cache-Control', 'private, no-store');
+    return dependencies.people.setSuspended(identity, request.params.userId, request.body);
+  });
+
   app.delete<{ Params: { userId: string } }>('/v2/users/:userId', {
     schema: {
       operationId: 'deleteStaffMember',
-      summary: 'Deactivate a staff member',
+      summary: 'Permanently remove a staff member',
       description: 'Tombstones one staff account and atomically clears its editable schedule and availability-import lifecycle state.',
       tags: ['People'],
       params: StaffPathSchema,
@@ -398,7 +443,7 @@ export async function registerPeopleRoutes(
     assertUnsafeRequestSecurity(request, dependencies.config);
     const identity = await authenticate(request, reply, dependencies, { mfa: true });
     requirePermissions(identity, ['users:admin']);
-    await dependencies.people.deactivate(identity, request.params.userId);
+    await dependencies.people.remove(identity, request.params.userId);
     reply.code(204).header('Cache-Control', 'private, no-store').send();
   });
 }
