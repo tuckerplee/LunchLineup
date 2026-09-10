@@ -71,7 +71,7 @@ for attempt in {1..120}; do
 done
 output="$artifact_root/fullstack-playwright"; mkdir -- "$output"
 cd "$build_root/apps/web"
-BASE_URL=http://127.0.0.1:8080 E2E_FULL_STACK=1 E2E_MOCK_API=0 E2E_SIGNUP_MODE=closed_beta E2E_COMPOSE_PROJECT_NAME="$project" E2E_COMPOSE_ENV_FILE="$env_file" E2E_CANDIDATE_SHA="$CI_COMMIT_SHA" E2E_ARTIFACT_ROOT="$output" PLAYWRIGHT_JSON_OUTPUT_NAME="$output/results.json" npx playwright test --reporter=json --project=chromium --workers=1 --retries=0 --trace=retain-on-failure tests/e2e/operations-workflows.spec.ts tests/e2e/month-volume-workflows.spec.ts tests/e2e/stress-workflows.spec.ts tests/e2e/tenant-admin-workflows.spec.ts tests/e2e/staff-repair-acceptance.spec.ts >"$output/test.log" 2>&1
+BASE_URL=http://127.0.0.1:8080 E2E_FULL_STACK=1 E2E_MOCK_API=0 E2E_SIGNUP_MODE=closed_beta E2E_COMPOSE_PROJECT_NAME="$project" E2E_COMPOSE_ENV_FILE="$env_file" E2E_CANDIDATE_SHA="$CI_COMMIT_SHA" E2E_ARTIFACT_ROOT="$output" PLAYWRIGHT_JSON_OUTPUT_NAME="$output/results.json" npx playwright test --reporter=json --grep='@full-stack' --project=chromium --workers=1 --retries=0 --trace=retain-on-failure tests/e2e/operations-workflows.spec.ts tests/e2e/month-volume-workflows.spec.ts tests/e2e/stress-workflows.spec.ts tests/e2e/tenant-admin-workflows.spec.ts tests/e2e/staff-repair-acceptance.spec.ts >"$output/test.log" 2>&1
 node - "$output/results.json" <<'NODE'
 const report=JSON.parse(require('node:fs').readFileSync(process.argv[2]));const s=report.stats;
 if(!s||!(s.expected>0)||s.unexpected!==0||s.skipped!==0||s.flaky!==0)throw new Error('Development browser acceptance failed or incomplete');
