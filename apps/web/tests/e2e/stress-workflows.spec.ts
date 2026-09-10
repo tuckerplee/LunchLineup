@@ -947,7 +947,13 @@ test.describe.serial('Stress operations workflows', { tag: '@full-stack' }, () =
     await page.getByRole('button', { name: /Review \d+ shifts?/ }).click();
     await submitConfirmedLunchSetup(page);
     await expect(page.getByRole('heading', { name: /Lunch & break canvas/ })).toBeVisible();
-    await page.getByRole('button', { name: 'Generate Lunch & Break Plan' }).click();
+    const confirmationPromise = page.waitForEvent('dialog');
+    const generationClick = page.getByRole('button', { name: 'Generate Lunch & Break Plan' }).click();
+    const confirmation = await confirmationPromise;
+    expect(confirmation.type()).toBe('confirm');
+    expect(confirmation.message()).toMatch(/Generate a lunch and break plan for 1 shift\? This uses exactly \d+ usage credits?/);
+    await confirmation.accept();
+    await generationClick;
     await expect(page.getByText('Meals assigned: 1')).toBeVisible();
     await expect(page.getByText('Breaks assigned: 2')).toBeVisible();
 
