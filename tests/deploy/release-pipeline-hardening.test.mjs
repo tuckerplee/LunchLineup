@@ -603,7 +603,7 @@ test('internal beta local pipeline keeps isolated source, active scanners, exact
   assert.match(qualification, /BASE_URL=http:\/\/127\.0\.0\.1:8080 E2E_FULL_STACK=1 E2E_MOCK_API=0 E2E_SIGNUP_MODE=closed_beta E2E_COMPOSE_PROJECT_NAME="\$project" E2E_COMPOSE_ENV_FILE="\$env_file"/);
   assert.match(qualification, /ZAP_IMAGE='ghcr\.io\/zaproxy\/zaproxy:stable@sha256:[a-f0-9]{64}'/);
   assert.match(qualification, /AVAILABILITY_IMPORT_ORIGIN=http:\/\/127\.0\.0\.1:8080/);
-  assert.match(qualification, /\/usr\/bin\/podman healthcheck run "\$container_id"/);
+  assert.match(qualification, /podman healthcheck run "\$container_id"/);
   assert.match(qualification, /run_podman_healthcheck "\$postgres_id"/);
   assert.match(qualification, /run_project_podman_healthchecks/);
   const webDockerfile = read('infrastructure/docker/Dockerfile.web');

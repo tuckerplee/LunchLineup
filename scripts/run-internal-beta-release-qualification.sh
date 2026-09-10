@@ -6,6 +6,7 @@ umask 077
 context=$2; stage=$4; workspace=$PWD; artifact_root="$workspace/.release/internal-ci/${CI_COMMIT_SHA:?}"; source_root="${RUNNER_TEMP:?}/lunchlineup-source-${CI_RUN_ID:?}"; build_root="$source_root/build"; qualification_root="$RUNNER_TEMP/lunchlineup-beta-qualification-$CI_RUN_ID"; env_file="$qualification_root/runtime.env"; secrets_dir="$qualification_root/secrets"
 project_suffix=${CI_RUN_ID,,}; project_suffix=${project_suffix//[^a-z0-9]/}; test -n "$project_suffix"; project="lunchlineup-beta-$project_suffix"
 test "$context" = "$source_root/source-context.json"; test -f "$artifact_root/source/source-proof.json"; test -d "$build_root"; mkdir -p "$artifact_root/results" "$artifact_root/details"
+export PATH="$build_root/scripts/ci-container-bin:$PATH"
 compose=(docker compose --project-name "$project" --env-file "$env_file" -f "$build_root/docker-compose.yml")
 remove_qualification_root(){ local runner_real qualification_real; [[ -e "$qualification_root" ]] || return 0; runner_real=$(realpath "$RUNNER_TEMP"); qualification_real=$(realpath "$qualification_root"); [[ "$qualification_real" == "$runner_real/lunchlineup-beta-qualification-$CI_RUN_ID" && "$qualification_real" != "$runner_real" ]] || { echo 'Qualification cleanup path is outside the exact job-private root.' >&2; return 1; }; rm -rf -- "$qualification_real"; [[ ! -e "$qualification_root" ]]; }
 cleanup_stage(){ local status=$? cleanup_status=0; if [[ "$status" -ne 0 || "$stage" == trivy ]]; then if [[ -f "$env_file" && -f "$artifact_root/fullstack-target.json" ]]; then "${compose[@]}" --profile ops down -v --remove-orphans >/dev/null 2>&1 || cleanup_status=1; fi; remove_qualification_root || cleanup_status=1; fi; trap - EXIT; if [[ "$status" -eq 0 && "$cleanup_status" -ne 0 ]]; then exit "$cleanup_status"; fi; exit "$status"; }
@@ -35,7 +36,7 @@ prepare_podman_egress_networks(){
 run_podman_healthcheck(){
   local container_id=${1:?}
   docker --version 2>&1 | grep -qi podman || return 0
-  timeout 30s /usr/bin/podman healthcheck run "$container_id" >/dev/null 2>&1 || true
+  timeout 30s podman healthcheck run "$container_id" >/dev/null 2>&1 || true
 }
 run_project_podman_healthchecks(){
   local container_id
