@@ -22,7 +22,9 @@ describe('time-card workspace permission contract', () => {
     const apiSource = readFileSync(resolve(timeCardsRoot, 'time-card-api.ts'), 'utf8');
 
     expect(apiSource).toContain("if (!activeResponse.ok) throw new Error('Unable to load active time card.');");
-    expect(workspaceSource).toContain('setCanStartNewTimeCard(snapshot.historyResponse.ok);');
+    expect(workspaceSource).toContain('setCanStartNewTimeCard(false);');
+    expect(workspaceSource).toContain("if (!Array.isArray(page.data)) throw new Error('Time card history could not be verified.');");
+    expect(workspaceSource).toContain('setCanStartNewTimeCard(true);');
     expect(workspaceSource).toContain('You can still clock out an open card.');
     expect(workspaceSource).toContain('const canClockIn = clockInTargetIsExplicit && hasCurrentCards && canStartNewTimeCard;');
     expect(workspaceSource).toContain('const canClockOut = Boolean(activeCardForSelectedUser && hasCurrentCards && teamClockOutTargetIsExplicit);');

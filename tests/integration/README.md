@@ -49,3 +49,5 @@ npm run test:integration
 ```
 
 Tenant-scoped setup and verification statements use explicit transactions because `set_current_tenant` is transaction-local. The queue test generates Python clients from the checked-in `solver.proto` in a temporary directory, starts the established engine and worker entrypoints, uses unique queue/job identifiers, and removes processes, queues, generated files, and database rows in `finally` cleanup. The shift mutation tests require both URLs: their controller uses the restricted application role while fixture setup/readback and disposable audit cleanup use the migration owner.
+
+- `api-v2-people-mutations-native.test.mjs`: recovery and acceptance regression checks.

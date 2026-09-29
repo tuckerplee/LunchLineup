@@ -5,7 +5,7 @@ import type {
   WorkspaceSettings,
   WorkspaceTeamSettingsUpdate,
 } from '@lunchlineup/api-contract';
-import type { Prisma } from '@prisma/client';
+import { Prisma } from '@prisma/client';
 import type { ApiV2Config } from '../config';
 import type { TenantDatabase, TenantTransaction } from '../platform/database';
 import { ProblemError } from '../platform/problem';
@@ -168,6 +168,7 @@ export class WorkspaceSettingsService {
     const slug = body.slug === undefined ? undefined : requiredText(body.slug, 'slug', 128).toLowerCase();
     const timezone = body.timezone === undefined ? undefined : normalizeTimeZone(body.timezone);
     return this.database.withTenant(identity.tenantId, async (transaction) => {
+      await this.lock(transaction, identity.tenantId);
       const current = await this.read(transaction, identity.tenantId);
       const tenant = name === undefined && slug === undefined
         ? current.general
@@ -191,6 +192,7 @@ export class WorkspaceSettingsService {
     body: WorkspaceTeamSettingsUpdate,
   ): Promise<WorkspaceSettings> {
     return this.database.withTenant(identity.tenantId, async (transaction) => {
+      await this.lock(transaction, identity.tenantId);
       const current = await this.read(transaction, identity.tenantId);
       const next: WorkspaceSettings = {
         general: current.general,
@@ -211,6 +213,7 @@ export class WorkspaceSettingsService {
   ): Promise<WorkspaceSettings> {
     const issuer = body.oidcIssuerUrl === undefined ? undefined : normalizeOidcIssuerUrl(body.oidcIssuerUrl);
     return this.database.withTenant(identity.tenantId, async (transaction) => {
+      await this.lock(transaction, identity.tenantId);
       const current = await this.read(transaction, identity.tenantId);
       const next: WorkspaceSettings = {
         general: current.general,
@@ -248,6 +251,14 @@ export class WorkspaceSettingsService {
       }
       return next;
     });
+  }
+
+  private async lock(transaction: TenantTransaction, tenantId: string): Promise<void> {
+    // Sections share one JSON aggregate; serialize reads and writes, including
+    // first creation, so a concurrent Team save cannot erase Security changes.
+    await transaction.$executeRaw(Prisma.sql`
+      SELECT pg_advisory_xact_lock(hashtextextended(${`lunchlineup:settings:${tenantId}`}, 0))
+    `);
   }
 
   private async read(transaction: TenantTransaction, tenantId: string): Promise<WorkspaceSettings> {

@@ -29,3 +29,8 @@ Use `internal-beta-operations.md` to turn the intentionally offline VM107 beta i
 Use `production-readiness.md` before public SaaS production deploys. It is the preferred `operator_runbook_url` for the Terraform production readiness gate and the release-manifest deploy gate.
 
 Use `data-retention-delete-export.md` for account lifecycle, privacy export, tenant archive, and tenant deletion requests during beta.
+
+- `production-qualification-bridge.md`: scoped application repair or disposable qualification support.
+
+- `2.0-validation-plan.md` - defines isolated testing over months while production stays untouched.
+- `2.0-workflow-acceptance.md` - tracks all 84 current-candidate workflow acceptance dispositions.

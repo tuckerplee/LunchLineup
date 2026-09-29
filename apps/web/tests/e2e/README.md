@@ -57,3 +57,7 @@ $env:PLAYWRIGHT_PORT='4310'
 $env:PLAYWRIGHT_API_PORT='4311'
 npm.cmd run test:e2e --workspace @lunchlineup/web -- --project=chromium authenticated-readiness.spec.ts
 ```
+
+- `settings-recovery-acceptance.spec.ts`: recovery and acceptance regression checks.
+
+- `staff-repair-acceptance.spec.ts`: recovery and acceptance regression checks.

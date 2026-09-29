@@ -81,6 +81,25 @@ describe('AvailabilityImportPublisher', () => {
         const reconcileSql = tx.$executeRaw.mock.calls[0][0].strings.join(' ');
         expect(reconcileSql).toContain('"attempts" > 0');
         expect(reconcileSql).toContain('"startedAt" IS NOT NULL');
+        expect(reconcileSql).toContain('"status" <> \'PENDING\'');
+        const recoverySql = tx.$executeRaw.mock.calls[1][0].strings.join(' ');
+        expect(recoverySql).toContain('job."status" = \'RUNNING\'');
+        expect(recoverySql).toContain('job."executionLeaseUntil" <= CURRENT_TIMESTAMP');
+        expect(recoverySql).toContain('job."expiresAt" > CURRENT_TIMESTAMP');
+        expect(recoverySql).toContain('FOR UPDATE SKIP LOCKED');
+        expect(recoverySql).toContain('"executionToken" = NULL');
+        expect(recoverySql).toContain('"publicationStatus" = \'PENDING\'');
+    });
+
+    it('fails closed without claiming or sending when execution recovery fails', async () => {
+        const publisher = new AvailabilityImportPublisher(tenantDb);
+        const publish = vi.spyOn(publisher as any, 'publishMessage').mockResolvedValue(undefined);
+        tx.$executeRaw.mockResolvedValueOnce(0).mockRejectedValueOnce(new Error('database unavailable'));
+
+        await expect((publisher as any).publishPending()).rejects.toThrow('database unavailable');
+
+        expect(tx.$queryRaw).not.toHaveBeenCalled();
+        expect(publish).not.toHaveBeenCalled();
     });
 
     it('records broker failure only in publication metadata', async () => {

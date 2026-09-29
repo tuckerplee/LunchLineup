@@ -63,3 +63,11 @@ Tenant exports are durable asynchronous NDJSON jobs. PostgreSQL persists request
 The same repeatable-read export covers time-card payroll-period/time-zone/revision state plus payroll policy versions, periods, approvals, locked entries, amendments and decisions, operation audit summaries, export batches and lines, reconciliation receipts, events, and current line states. Cursor pages contain only stable identity fields; each full projection is fetched and streamed separately, and JSON strings are emitted in bounded chunks so one valid record larger than 4 MiB does not fail the export. Every collection is tenant-filtered and stably ordered. Request hashes, operation identifiers, lock request hashes, and stored idempotency responses remain internal; customer-visible rows retain actors, decisions, timestamps, statuses, counts, external references, and evidence hashes needed to audit payroll operations.
 
 Platform tenant and credit-list reads are bounded keyset pages ordered by createdAt and id, fetch limit plus one, and reject malformed limits, cursors, and overlong or control-character searches before querying. Tenant search exposes only existing name and slug fields. Credit balances and ledger history have independent cursors, and responses expose page metadata without claiming global totals.
+
+- `account-deletion-receipt.controller.spec.ts`: recovery and acceptance regression checks.
+
+- `account-deletion-receipt.controller.ts`: scoped application repair or disposable qualification support.
+
+- `admin-user-pin-recovery.service.spec.ts`: recovery and acceptance regression checks.
+
+- `admin-user-pin-recovery.service.ts`: scoped application repair or disposable qualification support.

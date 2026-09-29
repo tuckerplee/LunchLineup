@@ -12,3 +12,5 @@
 - `serialization.ts`: database-to-public operational and lunch/break response mapping.
 
 This module owns the API-02 Operations surface directly through tenant-RLS transactions. It deliberately accepts and returns only public UUIDs, enforces bounded requests, and never calls the retained application bridge. Paid write paths use one tenant-first scheduling lock, immutable credit settlement, idempotency replay, and draft-schedule revision fencing.
+
+- `lunch-breaks.service.test.ts`: recovery and acceptance regression checks.

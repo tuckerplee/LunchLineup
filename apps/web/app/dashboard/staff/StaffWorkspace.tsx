@@ -3,7 +3,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from 'react';
 import { CalendarClock, RotateCcw, Trash2, UserMinus, X } from 'lucide-react';
 import { Button } from '@/components/ui/button';
-import { fetchWithSession, idempotentRequestAttempt, withIdempotencyKey, type IdempotentRequestAttempt } from '@/lib/client-api';
+import { fetchWithSession, withIdempotencyKey } from '@/lib/client-api';
+import { acknowledgeCorruptInvitationRecovery, clearInvitationRecovery, invitationRecoveryStorageKey, prepareInvitationRecovery, readInvitationRecovery, type InvitationRecovery } from './invitation-recovery';
 import {
     continuationCursor,
     type UserDirectoryPageMetadata,
@@ -26,6 +27,7 @@ import { useInvitationDelivery } from './use-invitation-delivery';
 
 type StaffWorkspaceProps = {
     currentUserPublicId: string;
+    creationRecoveryScope: string;
     canInvite: boolean;
     canAdminister: boolean;
     canReadRoles: boolean;
@@ -172,7 +174,7 @@ function parseDirectorySummary(value: unknown): UserDirectorySummary {
     return payload as UserDirectorySummary;
 }
 
-export function StaffWorkspace({ currentUserPublicId, canInvite, canAdminister, canReadRoles, canAssignRoles, canManageRoles, canManageSchedulingProfiles, emailInvitationAvailable }: StaffWorkspaceProps) {
+export function StaffWorkspace({ currentUserPublicId, creationRecoveryScope, canInvite, canAdminister, canReadRoles, canAssignRoles, canManageRoles, canManageSchedulingProfiles, emailInvitationAvailable }: StaffWorkspaceProps) {
     const [users, setUsers] = useState<StaffUser[]>([]);
     const [directorySummary, setDirectorySummary] = useState<UserDirectorySummary | null>(null);
     const [nextCursor, setNextCursor] = useState<string | null>(null);
@@ -324,37 +326,112 @@ export function StaffWorkspace({ currentUserPublicId, canInvite, canAdminister, 
     }, []);
 
     const [identityUserId, setIdentityUserId] = useState<string | null>(null);
-    const inviteAttempt = useRef<IdempotentRequestAttempt | null>(null);
+    const inviteInFlight = useRef(false);
+    const [invitationRecovery, setInvitationRecovery] = useState<InvitationRecovery | null>(null);
+    const [invitationRecoveryError, setInvitationRecoveryError] = useState<string | null>(null);
+    const [recoveryReview, setRecoveryReview] = useState<{ raw: string | null } | null>(null);
+    useEffect(() => {
+        setRecoveryReview(null);
+        try {
+            setInvitationRecovery(readInvitationRecovery(sessionStorage, creationRecoveryScope));
+            setInvitationRecoveryError(null);
+        } catch {
+            setInvitationRecoveryError('Staff creation recovery is unavailable. Review the directory before retrying; creation is blocked until recovery storage is available.');
+        }
+    }, [creationRecoveryScope]);
+
+    const repairInvitationRecovery = useCallback(async () => {
+        if (inviteInFlight.current) return;
+        if (!recoveryReview) {
+            const raw = sessionStorage.getItem(invitationRecoveryStorageKey(creationRecoveryScope));
+            const response = await fetchWithSession(userDirectoryPagePath()).catch(() => {
+                throw new Error('Directory refresh failed. Recovery storage is unchanged.');
+            });
+            if (!response.ok) throw new Error('Directory refresh failed. Recovery storage is unchanged.');
+            const payload = await response.json() as UserDirectoryPage;
+            if (!Array.isArray(payload.data)) throw new Error('Directory refresh could not be confirmed.');
+            const cursor = continuationCursor(payload.pagination);
+            setUsers(toStaffUsers(payload.data));
+            setDirectorySummary(parseDirectorySummary(payload.summary));
+            setNextCursor(cursor);
+            setHasMoreUsers(Boolean(cursor));
+            setUserPageIndex(0);
+            setUserPageCursors([null]);
+            setRecoveryReview({ raw });
+            return;
+        }
+        if (!window.confirm('Have you reviewed the refreshed staff directory, including additional pages, for an earlier employee creation? Clearing unreadable recovery details loses its retry key. Manage an existing employee rather than creating them again.')) return;
+        try {
+            acknowledgeCorruptInvitationRecovery(sessionStorage, creationRecoveryScope, recoveryReview.raw);
+            setInvitationRecovery(readInvitationRecovery(sessionStorage, creationRecoveryScope));
+            setInvitationRecoveryError(null);
+        } finally {
+            setRecoveryReview(null);
+        }
+    }, [creationRecoveryScope, recoveryReview]);
 
     const inviteUser = useCallback(async (
         invitation: StaffInvitationPayload,
         method: StaffOnboardingMethod,
     ): Promise<AddTeamMemberResult> => {
         setLastInvitationUserId(null);
+        if (inviteInFlight.current) throw new Error('Staff creation is already awaiting confirmation.');
+        inviteInFlight.current = true;
         try {
-            inviteAttempt.current = idempotentRequestAttempt(invitation, inviteAttempt.current);
-            const res = await fetchWithSession('/users/invite', withIdempotencyKey(jsonWriteInit('POST', invitation), inviteAttempt.current.key));
+            const previousAttempt = readInvitationRecovery(sessionStorage, creationRecoveryScope);
+            const attempt = prepareInvitationRecovery(sessionStorage, creationRecoveryScope, invitation);
+            setInvitationRecovery(attempt);
+            const res = await fetchWithSession('/users/invite', withIdempotencyKey(jsonWriteInit('POST', invitation), attempt.key));
             const payload = (await res.json().catch(() => ({}))) as {
                 id?: unknown;
                 temporaryPin?: string;
                 message?: string;
                 invitationDelivery?: unknown;
             };
-            if (!res.ok) throw new Error(payload.message ?? 'Failed to create staff member.');
+            if (!res.ok) {
+                // Retain conflicts: a recovered account may now have changed credentials.
+                if (!previousAttempt && res.status >= 400 && res.status < 500 && ![408, 409, 429].includes(res.status)) {
+                    clearInvitationRecovery(sessionStorage, creationRecoveryScope, attempt.key);
+                    setInvitationRecovery(null);
+                }
+                throw new Error(payload.message ?? 'Staff creation was rejected.');
+            }
 
             const invitedUserId = typeof payload.id === 'string' && payload.id ? payload.id : null;
+            if (!invitedUserId) throw new Error('Creation outcome is unknown. Retry the original details to confirm the employee.');
             if (method === 'email' && invitedUserId) {
                 setLastInvitationUserId(invitedUserId);
                 recordInvitationResponse(invitedUserId, payload);
             }
 
             await loadWorkspace();
-            inviteAttempt.current = null;
+            clearInvitationRecovery(sessionStorage, creationRecoveryScope, attempt.key);
+            setInvitationRecovery(null);
             return { temporaryPin: payload.temporaryPin ?? null };
         } catch (err) {
             throw err instanceof Error ? err : new Error('Failed to create staff member.');
+        } finally {
+            inviteInFlight.current = false;
         }
-    }, [loadWorkspace, recordInvitationResponse]);
+    }, [creationRecoveryScope, loadWorkspace, recordInvitationResponse]);
+
+    const resolveInvitationRecovery = useCallback(async () => {
+        const attempt = readInvitationRecovery(sessionStorage, creationRecoveryScope);
+        if (!attempt || inviteInFlight.current) return;
+        const found = users.find(user => attempt.details.username
+            ? user.username === attempt.details.username : user.email === attempt.details.email);
+        if (!found) throw new Error('Find the employee in the directory first. If they are not present, retry the original creation details.');
+        const res = await fetchWithSession(`/users/${found.id}`);
+        if (!res.ok) throw new Error('The existing employee could not be confirmed. Recovery details are retained.');
+        const saved = await res.json() as { id?: string; username?: string; email?: string };
+        if (saved.id !== found.id || (attempt.details.username
+            ? saved.username !== attempt.details.username : saved.email !== attempt.details.email)) {
+            throw new Error('The employee login changed. Recovery details are retained.');
+        }
+        if (!window.confirm('The employee already exists. Clear this creation retry and manage their access from the directory? Reset an unavailable PIN before sharing credentials.')) return;
+        clearInvitationRecovery(sessionStorage, creationRecoveryScope, attempt.key);
+        setInvitationRecovery(null);
+    }, [creationRecoveryScope, users]);
 
     const updateUserRoles = useCallback(async (userId: string, roleIds: string[]) => {
         setIsSaving(userId);
@@ -560,6 +637,11 @@ export function StaffWorkspace({ currentUserPublicId, canInvite, canAdminister, 
                         emailInvitationAvailable={isEmailInvitationAvailable}
                         isLoading={isLoading}
                         onSubmit={inviteUser}
+                        recovery={invitationRecovery}
+                        recoveryError={invitationRecoveryError}
+                        recoveryRepairReady={Boolean(recoveryReview)}
+                        onRepairRecovery={repairInvitationRecovery}
+                        onResolveRecovery={resolveInvitationRecovery}
                         invitationDelivery={lastInvitationUserId && invitationDeliveries[lastInvitationUserId] ? (
                             <div style={{ borderTop: '1px solid var(--border)', paddingTop: '0.65rem', display: 'grid', gap: '0.35rem' }}>
                                 <div style={{ fontSize: '0.76rem', fontWeight: 800, color: 'var(--text-primary)' }}>

@@ -110,3 +110,5 @@
 - `rls_relation_hardening.sql`: forces RLS for tenant-owned tables and adds relationship-based RLS for sessions, role joins, and breaks.
 
 These SQL files are part of the rebuild migration contract. Apply new forward migrations to already-created dev databases instead of relying only on edits to older seed migrations. Files prefixed with `pre_` run before `prisma db push`; they must safely no-op when their target table does not exist and stage existing data before the canonical schema adds required columns. The runner excludes legacy files fully superseded by the canonical schema and explicit forward reconciliation. It installs `20260712_tenant_context_helpers.sql` first, then `20260709_platform_admin_rls.sql`, before timestamped migrations whose policies call either helper.
+
+- `20260908_overnight_start_day_ownership.sql`: scoped application repair or disposable qualification support.

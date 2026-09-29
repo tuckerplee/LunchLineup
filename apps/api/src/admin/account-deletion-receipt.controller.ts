@@ -11,11 +11,11 @@ const tokenHash = (token: string) => createHash('sha256').update(token).digest('
 
 @Controller({ path: 'account-deletion', version: '1' })
 @UseGuards(JwtAuthGuard)
-@RequirePermission('tenant_account:lifecycle')
 export class AccountDeletionReceiptController {
   constructor(private readonly database: TenantPrismaService) {}
 
   @Post('prepare')
+  @RequirePermission('tenant_account:lifecycle')
   @HttpCode(200)
   @Header('Cache-Control', 'private, no-store')
   async prepare(@Req() request: any, @Body() body: { confirmation?: unknown }) {

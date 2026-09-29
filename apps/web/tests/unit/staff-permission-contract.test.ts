@@ -40,7 +40,8 @@ describe('staff workspace permission contract', () => {
     expect(editorSource).toContain('StaffSchedulingProfileRequest');
     expect(editorSource).toContain('Dated availability &amp; time off');
     expect(editorSource).toContain('Available windows replace the weekly rule for that local date. Unavailable windows always block scheduling.');
-    expect(editorSource).toContain('body: JSON.stringify({ skills, availability: nextAvailability, availabilityExceptions })');
+    expect(editorSource).toContain('const draft = { skills, availability: nextAvailability, availabilityExceptions, expectedVersion: version };');
+    expect(editorSource).toContain('body: JSON.stringify(draft)');
     expect(editorSource).toContain("kind: 'UNAVAILABLE'");
     expect(editorSource).toContain('startTimeMinutes: 0');
     expect(editorSource).toContain('endTimeMinutes: 1440');

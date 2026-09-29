@@ -10,3 +10,7 @@ Only `internal-beta-candidate` enters this 32-stage release-qualification pipeli
 The path executes active Semgrep and CodeQL, Terraform, discrete source/unit/integration/browser gates, canonical beta image construction, complete Compose inventory and health, DAST, load, per-image SBOM/Trivy, and a bounded artifact manifest. A root-owned external policy and Ed25519 signer approve the final receipt; candidate code never receives the private key. Qualification retains a transfer bundle but does not contact or power on VM107.
 
 Internal source control is the authoritative trigger for this source-neutral pipeline. GitHub Actions is disabled and is not a release gate. The appliance retains logs and checksum-manifested artifacts for 30 days; the candidate receipt binds its exact internal Git SHA, pipeline contract digest, release-image IDs, interaction proof, and security evidence.
+
+- `development-browser.pipeline.json`: scoped application repair or disposable qualification support.
+
+- `development-qa.pipeline.json`: scoped application repair or disposable qualification support.

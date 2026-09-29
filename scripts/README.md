@@ -294,3 +294,11 @@ The wrapper validates the requested VM217 entry in the supplied pinned `known_ho
 A successful initial cutover does not seed, relax, or bypass the retained release registry. Independently retain the now-live v2 release bundle, then use the existing exact-header `bootstrap_release_registry` workflow before any later candidate deploy. Until that bootstrap succeeds, later deployment remains blocked. Retain the external legacy snapshot and proof through registry bootstrap and a successful v2 rollback drill.
 
 See `docs/runbooks/production-readiness.md` for the operator invocation contract. Do not use this wrapper after a v2 registry baseline exists.
+
+- `check-internal-ci-storage.py`: scoped application repair or disposable qualification support.
+
+- `check-internal-ci-target.py`: scoped application repair or disposable qualification support.
+
+- `ci-container-bin/`: scoped application repair or disposable qualification support.
+
+- `run-development-browser-qa.sh`: scoped application repair or disposable qualification support.

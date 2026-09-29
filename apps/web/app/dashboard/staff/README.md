@@ -17,3 +17,11 @@ Tenant staff and role-management UI.
 - `use-invitation-delivery.ts`: invitation status hydration, bounded active-state polling, manual refresh, duplicate-click exclusion, and session-stable idempotent retry/dead-letter reissue orchestration.
 - `role-deletion-confirmation.ts`: exact-name custom-role deletion contract with assignment-count blocking.
 - `staff-action-confirmation.ts`: copy contract for explicit PIN-reset and staff-removal confirmations.
+
+- `StaffIdentityEditor.tsx`: scoped application repair or disposable qualification support.
+
+- `StaffLifecyclePanel.tsx`: scoped application repair or disposable qualification support.
+
+- `invitation-recovery.ts`: scoped application repair or disposable qualification support.
+
+- `profile-save-state.ts`: scoped application repair or disposable qualification support.

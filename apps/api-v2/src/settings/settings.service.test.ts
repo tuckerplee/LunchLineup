@@ -22,6 +22,7 @@ function harness(initialValue: unknown = null, oidcSsoAvailable = false) {
     slug: 'harbor-main',
   };
   const transaction = {
+    $executeRaw: vi.fn(async () => 1),
     tenant: {
       findUnique: vi.fn(async () => ({ ...tenant })),
       update: vi.fn(async ({ data }: { data: Partial<typeof tenant> }) => {

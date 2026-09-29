@@ -7,6 +7,7 @@ export default async function StaffPage() {
     return (
         <StaffWorkspace
             currentUserPublicId={user.publicUserId}
+            creationRecoveryScope={`${user.workspaceScope}:${user.sessionScope}`}
             canInvite={canPermission(user, 'users:write')}
             canAdminister={canPermission(user, 'users:admin')}
             canReadRoles={canPermission(user, 'roles:read')}

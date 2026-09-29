@@ -77,6 +77,7 @@ export class AvailabilityImportPublisher implements OnModuleInit, OnModuleDestro
 
     private async publishPending(): Promise<void> {
         await this.reconcileWorkerAccepted();
+        await this.recoverExpiredExecutions();
         const claimed = await this.claim();
         await Promise.all(claimed.map((publication) => this.publishClaim(publication)));
     }
@@ -94,8 +95,41 @@ export class AvailabilityImportPublisher implements OnModuleInit, OnModuleDestro
                 "queuedAt" = COALESCE("queuedAt", "startedAt", CURRENT_TIMESTAMP),
                 "updatedAt" = CURRENT_TIMESTAMP
             WHERE "publicationStatus" <> 'PUBLISHED'
+              AND "status" <> 'PENDING'
               AND "attempts" > 0
               AND "startedAt" IS NOT NULL
+        `));
+    }
+
+    private async recoverExpiredExecutions(): Promise<void> {
+        // A confirmed broker message can disappear after its worker crashes. Revoke
+        // only an expired execution owner, then reuse the durable publication path.
+        // Source bytes and the original debit remain intact; workers still validate
+        // tenant/employee eligibility and exact settlement under their normal locks.
+        await this.tenantDb.withPlatformAdmin((tx: any) => tx.$executeRaw(Prisma.sql`
+            WITH candidates AS (
+                SELECT job."id"
+                FROM "AvailabilityImportJob" AS job
+                WHERE job."status" = 'RUNNING'
+                  AND job."expiresAt" > CURRENT_TIMESTAMP
+                  AND job."executionLeaseUntil" <= CURRENT_TIMESTAMP
+                ORDER BY job."executionLeaseUntil", job."id"
+                FOR UPDATE SKIP LOCKED
+                LIMIT ${PUBLISH_BATCH_SIZE}
+            )
+            UPDATE "AvailabilityImportJob" AS job
+            SET "status" = 'PENDING',
+                "executionToken" = NULL,
+                "executionLeaseUntil" = NULL,
+                "publicationStatus" = 'PENDING',
+                "publishToken" = NULL,
+                "publishLeaseUntil" = NULL,
+                "publicationAmbiguous" = FALSE,
+                "publishLastError" = NULL,
+                "nextPublishAt" = CURRENT_TIMESTAMP,
+                "updatedAt" = CURRENT_TIMESTAMP
+            FROM candidates
+            WHERE job."id" = candidates."id"
         `));
     }
 

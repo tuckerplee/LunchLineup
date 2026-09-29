@@ -74,3 +74,15 @@
 - `time-card-request.test.ts`: selected-employee active-card ownership, stable request keys, fail-closed explicit target policy, signed-in-user binding, and target-aware mutation-label coverage.
 - `user-directory-pagination.test.ts`: fixed-size user pages, cursor validation, bounded Previous/Next staff navigation, and aggregate dashboard count contracts.
 - `workspace-slug.test.ts`: unit coverage for canonical generated-workspace slug persistence and login fallback reads.
+
+- `break-timing-validation.test.ts`: recovery and acceptance regression checks.
+
+- `invitation-recovery.test.ts`: recovery and acceptance regression checks.
+
+- `profile-save-state.test.ts`: recovery and acceptance regression checks.
+
+- `settings-request.test.ts`: recovery and acceptance regression checks.
+
+- `settings-save-state.test.ts`: recovery and acceptance regression checks.
+
+- `time-card-mutation-result.test.ts`: recovery and acceptance regression checks.

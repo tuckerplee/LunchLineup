@@ -490,7 +490,9 @@ describe('setup-shifts response-loss recovery', () => {
       'utf8',
     );
     expect(source).toContain("fetchLunchBreakMutation('/lunch-breaks/setup-shifts'");
-    expect(source).toContain("withIdempotencyKey(jsonWriteInit('POST', retainedRequestBody), idempotencyKey)");
+    expect(source).toMatch(/withIdempotencyKey\(jsonWriteInit\('POST', \{ \.\.\.retainedRequestBody, rows: retainedRequestBody\.rows\.map/);
+    expect(source).toContain("...(shiftId ? { shiftId } : {})");
+    expect(source).toContain("}), idempotencyKey)");
     expect(source).toContain('setupShiftMutationLabel');
     expect(source).toContain('window.confirm(`Confirm setup:');
   });

@@ -1,10 +1,22 @@
 # Production Readiness Runbook
 
+## Current authority and blocked production bridge — 2026-09-29
+
+**This repository does not currently have an approved executable public-production qualification or deployment path.** `.ci/pipeline.json` on the internal CI appliance is authoritative. GitHub is a source mirror; GitHub Actions is disabled, and `.github/workflows/` contains documentation only. The live internal pipeline qualifies an **internal-beta** candidate and signs its receipt with the separately managed Ed25519 policy. It does not produce an approved production release, power on VM107, or authorize launch.
+
+The estate owner records identify public production as **ProxmoxS VM4014, `10.224.40.30`**, running the legacy PHP/MariaDB application at `/var/www/html`. Its owner runfile is retained locally under `Proxmox2/hosts/lunchlineup-prod/RUNFILE.md`; that folder name does not change the runfile's estate identity. Proxmox1 VM106 is the protected legacy source/rollback reference. VM107 is the held private rewrite environment at `10.231.10.108`, reached through CT940 using `dev.lunchlineup.com` or `lunchlineup-dev.proxmox1.lan`. These are recorded ownership and routing boundaries, not fresh live-health evidence. Do not move development work onto VM4014 or use VM106 for migration experiments.
+
+The GitHub production-environment, GitHub OIDC/Sigstore, VM217, and workflow dispatch procedures retained below are **historical design contracts, inapplicable to the current execution path**. They cannot establish current production readiness, and their commands must not be run as a current cutover procedure. VM217 is not established as the public target by the current estate owner records. Do not re-enable Actions, redirect the VM217 transports at VM4014, or repoint public routes to reconcile this mismatch.
+
+Complete the [production qualification bridge gate matrix](production-qualification-bridge.md) before proposing public activation. Preserve every recovery, secret, immutable-artifact, verification, resource-limit, legal, and rollback guarantee below when implementing that bridge. Missing executable ownership or evidence blocks promotion; an internal-beta receipt, synthetic provider fixtures, or successful development QA cannot substitute. The incident launch hold remains in force; production readiness work does not itself release it.
+
+## Retained production safety requirements and historical procedure reference
+
 Production database recovery requires both the existing encrypted logical dump and the independent PostgreSQL PITR path in `postgres-pitr-recovery.md`. The validated runtime and migration URLs must target the Compose `postgres:5432/POSTGRES_DB` service that those recovery jobs protect; an external authoritative database requires a separate, explicitly validated recovery architecture. Do not launch with PITR disabled or without a manually verified remote base backup and WAL segment.
 
 ## Purpose
 
-Use this runbook before any public SaaS production deploy. It proves the deploy is sourced from GitHub, uses immutable artifacts, has real secrets and backup storage, and has alert routes that point to actionable runbooks.
+Use the current bridge matrix to assess public SaaS production readiness. The retained design below specifies immutable artifacts, real secrets and backup storage, actionable alerts, and recovery guarantees; its former GitHub/VM217 execution mechanics require a reviewed replacement before use.
 
 ## Required Inputs
 

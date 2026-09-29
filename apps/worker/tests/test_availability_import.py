@@ -432,6 +432,37 @@ class RetentionCursor:
 
 
 class AvailabilityImportStoreTests(unittest.TestCase):
+    def test_republished_orphan_preserves_debit_and_rejects_the_revoked_worker(self):
+        # Publisher recovery leaves the original source/reservation and revokes
+        # the crashed worker's token before returning the job to PENDING.
+        state = LeaseRaceState()
+        payload = availability_import_store.ImportPayload("import-1", "tenant-1")
+        original_ledger = dict(state.ledger)
+        with patch.object(
+            availability_import_store,
+            "_connect",
+            side_effect=lambda: FakeConnection(LeaseRaceCursor(state)),
+        ):
+            for action in (
+                lambda: availability_import_store.complete_import(payload, "crashed-worker", PUBLIC_IDENTITY_HASH, []),
+                lambda: availability_import_store.terminalize_import(payload, "crashed-worker", "FAILED", "TRANSIENT_FAILURE"),
+            ):
+                with self.assertRaisesRegex(availability_import_store.AvailabilityImportRejected, "ownership changed"):
+                    action()
+            replacement = availability_import_store.claim_import(payload, 0, "replacement-worker")
+            self.assertEqual(replacement.execution_token, "replacement-worker")
+            self.assertIsNotNone(replacement.encrypted_source_payload)
+            with self.assertRaises(availability_import_store.AvailabilityImportBusy):
+                availability_import_store.claim_import(payload, 0, "duplicate-delivery")
+            with self.assertRaisesRegex(availability_import_store.AvailabilityImportRejected, "ownership changed"):
+                availability_import_store.complete_import(payload, "crashed-worker", PUBLIC_IDENTITY_HASH, [])
+            availability_import_store.complete_import(payload, "replacement-worker", PUBLIC_IDENTITY_HASH, [])
+
+        self.assertEqual(state.status, "SUCCEEDED")
+        self.assertEqual(state.ledger, original_ledger)
+        self.assertEqual(state.refund_attempts, 0)
+        self.assertEqual(state.wallet_updates, 0)
+
     def test_claim_rejects_a_refunded_late_delivery_without_overwriting_terminal_ownership(self):
         cursor = ClaimCursor(has_refund=True)
         payload = availability_import_store.ImportPayload("import-1", "tenant-1")

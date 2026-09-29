@@ -2,8 +2,9 @@
 
 import type { CSSProperties, KeyboardEvent } from 'react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { fetchJsonWithSession, fetchWithSession } from '@/lib/client-api';
+import { ApiRequestError, fetchJsonWithSession, fetchWithSession } from '@/lib/client-api';
 import { generalSettingsRequest, teamSettingsRequest } from './settings-request';
+import { reconcileSettingsSave, saveSettingsWithReadback, type SettingsSection, type SettingsSaveResult } from './settings-save-state';
 import { BillingSettingsPanel } from './BillingSettingsPanel';
 import { AccountLifecyclePanel } from './AccountLifecyclePanel';
 import { MfaEnrollmentPanel } from './MfaEnrollmentPanel';
@@ -82,7 +83,7 @@ async function writeJson<T>(path: string, payload: unknown): Promise<T> {
         const message = typeof (responsePayload as { message?: unknown }).message === 'string'
             ? String((responsePayload as { message: string }).message)
             : `Request failed (${response.status})`;
-        throw new Error(message);
+        throw new ApiRequestError(message, response.status);
     }
     return responsePayload as T;
 }
@@ -224,6 +225,9 @@ export function SettingsWorkspace({
     const [teamSaving, setTeamSaving] = useState(false);
     const [securitySaving, setSecuritySaving] = useState(false);
     const [pinSaving, setPinSaving] = useState(false);
+    const [pendingSave, setPendingSave] = useState<{ section: SettingsSection; payload: Record<string, unknown> } | null>(null);
+    const [checkingSave, setCheckingSave] = useState(false);
+    const settingsWriteRef = useRef(false);
 
     const [currentPin, setCurrentPin] = useState('');
     const [newPin, setNewPin] = useState('');
@@ -249,14 +253,14 @@ export function SettingsWorkspace({
         resumeSubscription,
         purchaseCreditPack,
     } = useBillingSettings({ canReadBilling, canManageBilling });
-    const loadSettings = useCallback(async () => {
+    const loadSettings = useCallback(async (): Promise<boolean> => {
         const requestId = ++settingsLoadRequestRef.current;
         setIsLoading(true);
         setIsSettingsHydrated(false);
         setLoadError(null);
         try {
-            const payload = await fetchJsonWithSession<unknown>('/settings');
-            if (requestId !== settingsLoadRequestRef.current) return;
+            const payload = await fetchJsonWithSession<unknown>('/settings', { cache: 'no-store' });
+            if (requestId !== settingsLoadRequestRef.current) return false;
             const root = unwrapSettings(payload);
             const general = firstRecord([root], ['general', 'workspace', 'organization', 'profile', 'tenant']);
             const team = firstRecord([root], ['team', 'defaults', 'inviteDefaults', 'workflows']);
@@ -279,9 +283,11 @@ export function SettingsWorkspace({
                 ssoOnly: readBoolean([security, root], ['ssoOidcOnly', 'ssoOnly', 'ssoRequired', 'oidcOnly']),
             });
             setIsSettingsHydrated(true);
+            return true;
         } catch (error) {
-            if (requestId !== settingsLoadRequestRef.current) return;
+            if (requestId !== settingsLoadRequestRef.current) return false;
             setLoadError(error instanceof Error ? error.message : 'Unable to load settings.');
+            return false;
         } finally {
             if (requestId === settingsLoadRequestRef.current) setIsLoading(false);
         }
@@ -337,9 +343,70 @@ export function SettingsWorkspace({
         if (isLoading) return 'Loading live settings...';
         return `${workspaceName} · Configure organization defaults, team behavior, billing, and security`;
     }, [isLoading, workspaceName]);
-    const canMutateSettings = canWriteSettings && isSettingsHydrated && !isLoading;
+    const canMutateSettings = canWriteSettings && isSettingsHydrated && !isLoading
+        && !pendingSave && !generalSaving && !teamSaving && !securitySaving;
 
-    const saveGeneral = useCallback(async () => {
+    const showSaveResult = (section: SettingsSection, result: SettingsSaveResult) => {
+        const notice: Banner = result.kind === 'confirmed'
+            ? { tone: 'success', text: result.recovered ? 'Saved settings match your submitted changes. Confirmed by a fresh read.' : `${section[0].toUpperCase()}${section.slice(1)} settings saved.` }
+            : { tone: 'error', text: result.message };
+        ({ general: setGeneralNotice, team: setTeamNotice, security: setSecurityNotice })[section](notice);
+    };
+
+    const performSettingsSave = async (section: SettingsSection, payload: Record<string, unknown>) => {
+        if (settingsWriteRef.current || pendingSave) return;
+        settingsWriteRef.current = true;
+        const setSaving = ({ general: setGeneralSaving, team: setTeamSaving, security: setSecuritySaving })[section];
+        const setNotice = ({ general: setGeneralNotice, team: setTeamNotice, security: setSecurityNotice })[section];
+        setSaving(true);
+        setNotice(null);
+        try {
+            const result = await saveSettingsWithReadback(section, payload,
+                () => writeJson(`/settings/${section}`, payload),
+                () => fetchJsonWithSession('/settings', { cache: 'no-store' }));
+            if (result.kind === 'uncertain') setPendingSave({ section, payload });
+            showSaveResult(section, result);
+        } finally {
+            setSaving(false);
+            settingsWriteRef.current = false;
+        }
+    };
+
+    const checkSavedSettings = async () => {
+        if (!pendingSave || settingsWriteRef.current) return;
+        settingsWriteRef.current = true;
+        setCheckingSave(true);
+        try {
+            const result = await reconcileSettingsSave(pendingSave.section, pendingSave.payload,
+                () => fetchJsonWithSession('/settings', { cache: 'no-store' }));
+            showSaveResult(pendingSave.section, result);
+            if (result.kind === 'confirmed') setPendingSave(null);
+        } finally {
+            setCheckingSave(false);
+            settingsWriteRef.current = false;
+        }
+    };
+
+    const discardUnconfirmedDraft = async () => {
+        if (!pendingSave || settingsWriteRef.current) return;
+        if (!window.confirm('Discard your unconfirmed draft and load the current saved settings? The earlier request may have committed. Review the loaded values before making another change.')) return;
+        settingsWriteRef.current = true;
+        setCheckingSave(true);
+        try {
+            if (await loadSettings()) {
+                const section = pendingSave.section;
+                setPendingSave(null);
+                ({ general: setGeneralNotice, team: setTeamNotice, security: setSecurityNotice })[section]({
+                    tone: 'success', text: 'Current saved settings loaded. Your unconfirmed draft was discarded.',
+                });
+            }
+        } finally {
+            setCheckingSave(false);
+            settingsWriteRef.current = false;
+        }
+    };
+
+    const saveGeneral = async () => {
         if (!canMutateSettings) {
             setGeneralNotice({ tone: 'error', text: isSettingsHydrated ? 'You have read-only settings access.' : 'Reload settings before saving.' });
             return;
@@ -355,60 +422,27 @@ export function SettingsWorkspace({
             return;
         }
 
-        setGeneralSaving(true);
-        setGeneralNotice(null);
-        try {
-            await writeJson('/settings/general', generalSettingsRequest(generalForm));
-            setGeneralNotice({ tone: 'success', text: 'General settings saved.' });
-        } catch (error) {
-            setGeneralNotice({ tone: 'error', text: error instanceof Error ? error.message : 'Unable to save general settings.' });
-        } finally {
-            setGeneralSaving(false);
-        }
-    }, [canMutateSettings, generalForm.organizationName, generalForm.slug, generalForm.timezone, isSettingsHydrated]);
+        await performSettingsSave('general', generalSettingsRequest(generalForm));
+    };
 
-    const saveTeam = useCallback(async () => {
-        if (!canMutateSettings) {
-            setTeamNotice({ tone: 'error', text: isSettingsHydrated ? 'You have read-only settings access.' : 'Reload settings before saving.' });
-            return;
-        }
-        setTeamSaving(true);
-        setTeamNotice(null);
-        try {
-            await writeJson('/settings/team', teamSettingsRequest(teamForm));
-            setTeamNotice({ tone: 'success', text: 'Team settings saved.' });
-        } catch (error) {
-            setTeamNotice({ tone: 'error', text: error instanceof Error ? error.message : 'Unable to save team settings.' });
-        } finally {
-            setTeamSaving(false);
-        }
-    }, [canMutateSettings, isSettingsHydrated, teamForm.defaultRole, teamForm.shiftApprovalPolicy]);
-    const saveSecurity = useCallback(async () => {
-        if (!canMutateSettings) {
-            setSecurityNotice({ tone: 'error', text: isSettingsHydrated ? 'You have read-only settings access.' : 'Reload settings before saving.' });
-            return;
-        }
+    const saveTeam = async () => {
+        if (!canMutateSettings) return;
+        await performSettingsSave('team', teamSettingsRequest(teamForm));
+    };
+
+    const saveSecurity = async () => {
+        if (!canMutateSettings) return;
         const timeout = Number(securityForm.sessionTimeoutMinutes);
-        if (!Number.isFinite(timeout) || timeout <= 0) {
-            setSecurityNotice({ tone: 'error', text: 'Session timeout must be a valid number of minutes.' });
+        if (!Number.isInteger(timeout) || timeout < 5 || timeout > 1440) {
+            setSecurityNotice({ tone: 'error', text: 'Session timeout must be a whole number from 5 to 1440 minutes.' });
             return;
         }
-
-        setSecuritySaving(true);
-        setSecurityNotice(null);
-        try {
-            await writeJson('/settings/security', {
-                requireMfaForAll: securityForm.requireMfa,
-                sessionTimeoutMinutes: timeout,
-                ssoOidcOnly: securityForm.ssoOnly,
-            });
-            setSecurityNotice({ tone: 'success', text: 'Security settings saved.' });
-        } catch (error) {
-            setSecurityNotice({ tone: 'error', text: error instanceof Error ? error.message : 'Unable to save security settings.' });
-        } finally {
-            setSecuritySaving(false);
-        }
-    }, [canMutateSettings, isSettingsHydrated, securityForm.requireMfa, securityForm.sessionTimeoutMinutes, securityForm.ssoOnly]);
+        await performSettingsSave('security', {
+            requireMfaForAll: securityForm.requireMfa,
+            sessionTimeoutMinutes: timeout,
+            ssoOidcOnly: securityForm.ssoOnly,
+        });
+    };
 
     const updatePin = useCallback(async () => {
         const normalizedCurrentPin = currentPin.replace(/\D/g, '');
@@ -467,8 +501,20 @@ export function SettingsWorkspace({
             {loadError ? (
                 <div style={{ ...noticeStyle('error'), display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '0.75rem', flexWrap: 'wrap' }} role="alert">
                     <span>{loadError} Settings changes are disabled until the current values load.</span>
-                    <button type="button" className="btn btn-secondary btn-sm" onClick={() => void loadSettings()} disabled={isLoading}>
+                    <button type="button" className="btn btn-secondary btn-sm" onClick={() => void loadSettings()} disabled={isLoading || Boolean(pendingSave)}>
                         {isLoading ? 'Retrying...' : 'Retry settings load'}
+                    </button>
+                </div>
+            ) : null}
+
+            {pendingSave ? (
+                <div style={noticeStyle('error')} role="alert">
+                    <p>The {pendingSave.section} save outcome is unknown. Changes are paused while your submitted draft is retained.</p>
+                    <button type="button" className="btn btn-secondary btn-sm" onClick={() => void checkSavedSettings()} disabled={checkingSave}>
+                        {checkingSave ? 'Checking...' : 'Check saved settings'}
+                    </button>
+                    <button type="button" className="btn btn-secondary btn-sm" onClick={() => void discardUnconfirmedDraft()} disabled={checkingSave || isLoading}>
+                        Discard draft and load saved settings
                     </button>
                 </div>
             ) : null}
