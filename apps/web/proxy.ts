@@ -1,7 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { hasLunchBreakReadAccess, hasSchedulingReadAccess } from './lib/permissions';
 import { readBoundedJson, withRequestTimeout } from './lib/http-safety';
-import { parseApprovedAppOrigin, safeSameOriginReturnPath } from './lib/safe-navigation';
+import { safeSameOriginReturnPath } from './lib/safe-navigation';
+import { approvedServerAppOrigin } from './lib/server-app-origin';
 import { createContentSecurityPolicy } from './lib/content-security-policy';
 
 const PROTECTED_PATH_ROOTS = ['/admin', '/dashboard'];
@@ -46,12 +47,9 @@ function safePasswordResetToken(value: string | null): string | null {
 
 function approvedAppOrigin(request: NextRequest): string | null {
     const configured = process.env.NEXT_PUBLIC_APP_ORIGIN?.trim()
-        || process.env.NEXT_PUBLIC_APP_URL?.trim();
-    if (configured) {
-        return parseApprovedAppOrigin(configured, process.env.NODE_ENV === 'production');
-    }
-    if (process.env.NODE_ENV === 'production') return null;
-    return parseApprovedAppOrigin(request.nextUrl.origin, false);
+        ? process.env.NEXT_PUBLIC_APP_ORIGIN
+        : process.env.NEXT_PUBLIC_APP_URL;
+    return approvedServerAppOrigin(configured, request.nextUrl.origin);
 }
 
 function parseServiceBase(value: string): string | null {

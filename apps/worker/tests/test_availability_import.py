@@ -56,6 +56,8 @@ class ClaimCursor:
         plan_tier="GROWTH",
         configured_balance=4,
         debit_balance_after=4,
+        attempts=0,
+        lease_active=False,
     ):
         self.has_refund = has_refund
         self.target_active = target_active
@@ -67,6 +69,8 @@ class ClaimCursor:
         self.plan_tier = plan_tier
         self.configured_balance = configured_balance
         self.debit_balance_after = debit_balance_after
+        self.attempts = attempts
+        self.lease_active = lease_active
         self.calls = []
         self.result = None
         self.rowcount = 1
@@ -101,7 +105,7 @@ class ClaimCursor:
                 b"LLAI" + bytes([self.envelope_version]) + b"encrypted-source",
                 {"consumedCredits": 1, "newBalance": self.configured_balance},
                 self.execution_token,
-                False,
+                self.lease_active,
                 PUBLIC_IDENTITY_HASH,
                 ACCOUNT_IDENTITY_HASH,
                 "user-1",
@@ -116,6 +120,7 @@ class ClaimCursor:
                 1 if self.has_refund else None,
                 "Availability PDF import refund (import-1)" if self.has_refund else None,
                 5 if self.has_refund else None,
+                self.attempts,
             )
 
     def fetchone(self):
@@ -137,6 +142,8 @@ class TerminalState:
         self.debit_amount = debit_amount
         self.execution_token = execution_token
         self.lease_active = lease_active
+        self.unexpired = True
+        self.attempts = 0
         self.refund_count = 0
         self.refund_attempts = 0
         self.wallet_updates = 0
@@ -176,7 +183,7 @@ class TerminalCursor:
                 PUBLIC_IDENTITY_HASH,
                 ACCOUNT_IDENTITY_HASH,
                 "user-1",
-                True,
+                self.state.unexpired,
                 self.state.debit_count,
                 "tenant-1" if self.state.debit_count else None,
                 self.state.debit_amount if self.state.debit_count else None,
@@ -187,6 +194,7 @@ class TerminalCursor:
                 -self.state.debit_amount if self.state.refund_count else None,
                 "Availability PDF import refund (import-1)" if self.state.refund_count else None,
                 5 if self.state.refund_count else None,
+                self.state.attempts,
             )
         elif "FROM public.settle_positive_credit_value" in compact:
             self.state.refund_attempts += 1
@@ -279,6 +287,7 @@ class LeaseRaceCursor:
                 refund[1] if refund else None,
                 refund[2] if refund else None,
                 refund[3] if refund else None,
+                getattr(self.state, 'attempts', 0),
             )
         elif "FROM public.settle_positive_credit_value" in compact:
             self.state.refund_attempts += 1
@@ -388,6 +397,7 @@ class RetryHandoffRaceCursor:
                     None,
                     None,
                     None,
+                    getattr(self.state, 'attempts', 0),
                 )
         elif compact.startswith('UPDATE "AvailabilityImportJob"'):
             with self.state.lock:
@@ -432,6 +442,13 @@ class RetentionCursor:
 
 
 class AvailabilityImportStoreTests(unittest.TestCase):
+    def setUp(self):
+        self.saved_retention_cursor = availability_import_store._RETENTION_SWEEP_CURSOR
+        availability_import_store._RETENTION_SWEEP_CURSOR = None
+
+    def tearDown(self):
+        availability_import_store._RETENTION_SWEEP_CURSOR = self.saved_retention_cursor
+
     def test_republished_orphan_preserves_debit_and_rejects_the_revoked_worker(self):
         # Publisher recovery leaves the original source/reservation and revokes
         # the crashed worker's token before returning the job to PENDING.
@@ -510,6 +527,33 @@ class AvailabilityImportStoreTests(unittest.TestCase):
         self.assertEqual(claimed.target_identity_hash, ACCOUNT_IDENTITY_HASH)
         self.assertIsNotNone(claimed.path)
         self.assertEqual(update_params[:2], (3, "execution-token"))
+
+    def test_lowered_broker_retry_count_cannot_reset_durable_attempts(self):
+        cursor = ClaimCursor(attempts=2)
+        payload = availability_import_store.ImportPayload("import-1", "tenant-1")
+        with patch.object(availability_import_store, "_connect", return_value=FakeConnection(cursor)):
+            claimed = availability_import_store.claim_import(payload, 0, "new-owner")
+        self.assertEqual(claimed.effective_retry_count, 2)
+        update = next(params for sql, params in cursor.calls if sql.startswith('UPDATE "AvailabilityImportJob"'))
+        self.assertEqual(update[0], 3)
+
+    def test_durable_retry_budget_rejects_exhausted_recovery_before_another_execution(self):
+        cursor = ClaimCursor(attempts=4)
+        payload = availability_import_store.ImportPayload("import-1", "tenant-1")
+        with patch.dict(os.environ, {"WORKER_MAX_RETRIES": "3"}), patch.object(
+            availability_import_store, "_connect", return_value=FakeConnection(cursor)
+        ), self.assertRaisesRegex(availability_import_store.AvailabilityImportRejected, "durable retry budget"):
+            availability_import_store.claim_import(payload, 0, "new-owner")
+        self.assertFalse(any(sql.startswith('UPDATE "AvailabilityImportJob"') for sql, _ in cursor.calls))
+
+    def test_exhausted_duplicate_never_overrides_a_live_owner(self):
+        cursor = ClaimCursor(status="RUNNING", execution_token="live-owner", lease_active=True, attempts=4)
+        payload = availability_import_store.ImportPayload("import-1", "tenant-1")
+        with patch.object(availability_import_store, "_connect", return_value=FakeConnection(cursor)), self.assertRaises(
+            availability_import_store.AvailabilityImportBusy
+        ):
+            availability_import_store.claim_import(payload, 0, "duplicate")
+        self.assertFalse(any(sql.startswith('UPDATE "AvailabilityImportJob"') for sql, _ in cursor.calls))
 
     def test_claim_fails_closed_for_missing_or_expired_authoritative_paid_through_even_with_credits(self):
         payload = availability_import_store.ImportPayload("import-1", "tenant-1")
@@ -750,20 +794,20 @@ class AvailabilityImportStoreTests(unittest.TestCase):
         )
 
     def test_retention_is_completion_based_and_erases_terminal_payloads_after_24_hours(self):
-        source = inspect.getsource(availability_import_store.sweep_expired_imports)
+        source = inspect.getsource(availability_import_store._select_retention_batch)
 
         self.assertIn('"completedAt" <= CURRENT_TIMESTAMP - INTERVAL \'24 hours\'', source)
         self.assertIn("'CANCELLED'", source)
 
     def test_malformed_oldest_retention_row_does_not_starve_later_rows(self):
         rows = [
-            ("import-1", "tenant-1", STORAGE_KEY, "PENDING"),
-            ("import-2", "tenant-2", None, "SUCCEEDED"),
+            ("import-1", "tenant-1", STORAGE_KEY, "PENDING", True, 0),
+            ("import-2", "tenant-2", None, "SUCCEEDED", True, 1),
         ]
         cursor = RetentionCursor(rows)
         visited = []
 
-        def sweep_row(payload, storage_key, status):
+        def sweep_row(payload, storage_key, status, expired):
             visited.append((payload.import_id, storage_key, status))
             if payload.import_id == "import-1":
                 raise availability_import_store.AvailabilityImportRejected("malformed settlement")
@@ -793,10 +837,62 @@ class AvailabilityImportStoreTests(unittest.TestCase):
             ],
         )
         selection = cursor.calls[1][0]
-        self.assertIn('THEN "updatedAt"', selection)
+        self.assertIn('ORDER BY "retentionPriority", "id"', selection)
         self.assertIn("FOR UPDATE SKIP LOCKED", selection)
 
-    def test_retention_erases_an_expired_source_even_when_terminal_settlement_is_malformed(self):
+    def test_full_poison_batch_rotates_to_later_sources_and_wraps_to_retry_failures(self):
+        rows = [(f"import-{index}", "tenant-1", f"{index:08d}-1111-1111-1111-111111111111.pdf", "RUNNING", True, 0)
+                for index in range(1, 5)]
+        eligible = {row[0]: row for row in rows}
+        selected_after = []
+        visited = []
+        class Cursor:
+            def __enter__(self): return self
+            def __exit__(self, *args): return False
+            def execute(self, sql, params=None):
+                if 'FROM "AvailabilityImportJob"' in sql:
+                    priority, _, last_id, limit = params
+                    after = (priority, last_id) if priority is not None else None
+                    selected_after.append(after)
+                    ordered = sorted(eligible.values(), key=lambda row: (row[5], row[0]))
+                    self.result = [row for row in ordered if after is None or (row[5], row[0]) > after][:limit]
+            def fetchall(self): return self.result
+        with tempfile.TemporaryDirectory() as root, patch.dict(os.environ, {
+            "WORKER_UPLOAD_ROOT": root, "PLATFORM_ADMIN_DB_CONTEXT_SECRET": "capability",
+            "WORKER_AVAILABILITY_RETENTION_BATCH_SIZE": "2",
+        }), patch.object(availability_import_store, "_connect", side_effect=lambda: FakeConnection(Cursor())):
+            for row in rows: (Path(root) / row[2]).write_bytes(b"retained source")
+            def hard_erase(payload):
+                visited.append(payload.import_id)
+                if payload.import_id in {"import-1", "import-2"}: raise OSError("persistent unlink failure")
+                row = eligible.pop(payload.import_id)
+                (Path(root) / row[2]).unlink()
+                return True
+            with patch.object(availability_import_store, "_erase_hard_expired_import_source", side_effect=hard_erase), patch.object(
+                availability_import_store, "terminalize_import"
+            ), patch.object(availability_import_store, "_erase_retained_import_source"):
+                with self.assertRaises(availability_import_store.AvailabilityImportRetentionSweepFailed):
+                    availability_import_store.sweep_expired_imports()
+                # Each eligible row is acted on only once by the age-first path.
+                with patch.object(availability_import_store, "_sweep_expired_import", side_effect=lambda payload, *_:
+                                  hard_erase(payload)):
+                    self.assertEqual(availability_import_store.sweep_expired_imports(), 2)
+                    with self.assertRaises(availability_import_store.AvailabilityImportRetentionSweepFailed):
+                        availability_import_store.sweep_expired_imports()
+            self.assertTrue(all((Path(root) / row[2]).exists() for row in rows[:2]))
+            self.assertTrue(all(not (Path(root) / row[2]).exists() for row in rows[2:]))
+            self.assertEqual(visited, ["import-1", "import-2", "import-3", "import-4", "import-1", "import-2"])
+            self.assertEqual(selected_after, [None, (0, "import-2"), (0, "import-4"), None])
+            before = availability_import_store._RETENTION_SWEEP_CURSOR
+            with patch.object(availability_import_store, "_select_retention_batch", side_effect=RuntimeError("selection failed")):
+                with self.assertRaisesRegex(RuntimeError, "selection failed"):
+                    availability_import_store.sweep_expired_imports()
+            self.assertEqual(availability_import_store._RETENTION_SWEEP_CURSOR, before)
+            eligible.clear()
+            self.assertEqual(availability_import_store.sweep_expired_imports(), 0)
+            self.assertIsNone(availability_import_store._RETENTION_SWEEP_CURSOR)
+
+    def test_retention_preserves_an_expired_source_when_terminal_settlement_fails(self):
         payload = availability_import_store.ImportPayload("import-1", "tenant-1")
         with patch.object(
             availability_import_store,
@@ -807,7 +903,7 @@ class AvailabilityImportStoreTests(unittest.TestCase):
         ), patch.object(
             availability_import_store,
             "_erase_retained_import_source",
-        ) as erase:
+        ) as erase, patch.object(availability_import_store, "_erase_hard_expired_import_source") as hard_erase:
             with self.assertRaises(availability_import_store.AvailabilityImportRejected):
                 availability_import_store._sweep_expired_import(
                     payload,
@@ -815,16 +911,178 @@ class AvailabilityImportStoreTests(unittest.TestCase):
                     "PENDING",
                 )
 
-        erase.assert_called_once_with(
-            payload,
-            availability_import_store.resolve_storage_key(STORAGE_KEY),
-        )
+        erase.assert_not_called()
+        self.assertEqual(hard_erase.call_count, 2)
+
+    def test_hard_source_erasure_needs_a_committed_age_match_and_current_key(self):
+        payload = availability_import_store.ImportPayload("import-1", "tenant-1")
+        for row in (None, (None,), (STORAGE_KEY,)):
+            cursor = MagicMock()
+            cursor.rowcount = 1
+            cursor.__enter__.return_value = cursor
+            cursor.fetchone.return_value = row
+            committed = []
+            class CommittedConnection(FakeConnection):
+                def __exit__(self, *args):
+                    committed.append(True)
+                    return super().__exit__(*args)
+            current_path = MagicMock()
+            def resolve(key):
+                self.assertEqual(committed, [True])
+                self.assertEqual(key, STORAGE_KEY)
+                return current_path
+            with patch.object(availability_import_store, "_connect", return_value=CommittedConnection(cursor)), patch.object(
+                availability_import_store, "resolve_storage_key", side_effect=resolve
+            ) as resolve_key:
+                availability_import_store._erase_hard_expired_import_source(payload)
+            if row == (STORAGE_KEY,):
+                current_path.unlink.assert_called_once_with(missing_ok=True)
+            else:
+                resolve_key.assert_not_called()
+            sql, params = cursor.execute.call_args_list[1].args
+            self.assertIn('"createdAt" <= CURRENT_TIMESTAMP - INTERVAL \'24 hours\'', sql)
+            self.assertIn('FOR UPDATE', sql)
+            self.assertEqual(params, ("import-1", "tenant-1", "tenant-1"))
+            mutation = sql.split('SET ')[1].split('FROM expired_source')[0]
+            self.assertEqual(' '.join(mutation.split()), '"encryptedSourcePayload" = NULL')
+            if row == (STORAGE_KEY,):
+                final_sql, final_params = cursor.execute.call_args.args
+                self.assertIn('AND "storageKey" = %s', final_sql)
+                self.assertEqual(final_params, ("import-1", "tenant-1", STORAGE_KEY))
+
+    def test_hard_source_erasure_never_unlinks_if_database_commit_fails(self):
+        payload = availability_import_store.ImportPayload("import-1", "tenant-1")
+        cursor = MagicMock()
+        cursor.rowcount = 1
+        cursor.__enter__.return_value = cursor
+        cursor.fetchone.return_value = (STORAGE_KEY,)
+        class FailedCommit(FakeConnection):
+            def __exit__(self, *args):
+                raise RuntimeError("commit failed")
+        with patch.object(availability_import_store, "_connect", return_value=FailedCommit(cursor)), patch.object(
+            availability_import_store, "resolve_storage_key"
+        ) as resolve, self.assertRaisesRegex(RuntimeError, "commit failed"):
+            availability_import_store._erase_hard_expired_import_source(payload)
+        resolve.assert_not_called()
+
+    def test_hard_source_unlink_or_final_database_failure_keeps_a_retry_pointer(self):
+        payload = availability_import_store.ImportPayload("import-1", "tenant-1")
+        for failure_kind in ("unlink", "database"):
+            state = SimpleNamespace(key=STORAGE_KEY, envelope=b"encrypted source", fail_clear=failure_kind == "database",
+                                    status="RUNNING", owner="old-owner", debit=-1, refunds=0)
+            class Cursor:
+                def __enter__(self): return self
+                def __exit__(self, *args): return False
+                def execute(self, sql, params=None):
+                    if 'WITH expired_source' in sql:
+                        self.result = (state.key,) if state.key is not None or state.envelope is not None else None
+                        state.envelope = None
+                    elif 'SET "storageKey" = NULL' in sql:
+                        if state.fail_clear: raise RuntimeError("final clear failed")
+                        self.rowcount = 1 if state.key == params[2] else 0
+                        if self.rowcount: state.key = None
+                def fetchone(self): return self.result
+            def settle(*args):
+                state.status = "FAILED"
+                state.owner = None
+                state.refunds += 1
+            with tempfile.TemporaryDirectory() as root, patch.dict(os.environ, {"WORKER_UPLOAD_ROOT": root}), patch.object(
+                availability_import_store, "_connect", side_effect=lambda: FakeConnection(Cursor())
+            ), patch.object(availability_import_store, "terminalize_import", side_effect=settle) as terminalize, patch.object(
+                availability_import_store, "_erase_retained_import_source"
+            ):
+                path = Path(root) / STORAGE_KEY
+                path.write_bytes(b"local source")
+                if failure_kind == "unlink":
+                    with patch.object(Path, "unlink", side_effect=OSError("unlink failed")), self.assertRaisesRegex(OSError, "unlink failed"):
+                        availability_import_store._sweep_expired_import(payload, None, "RUNNING", True)
+                    self.assertTrue(path.exists())
+                else:
+                    with self.assertRaisesRegex(RuntimeError, "final clear failed"):
+                        availability_import_store._sweep_expired_import(payload, None, "RUNNING", True)
+                    self.assertFalse(path.exists())
+                self.assertEqual(state.key, STORAGE_KEY)
+                self.assertIsNone(state.envelope)
+                terminalize.assert_not_called()
+                self.assertEqual((state.status, state.owner, state.debit, state.refunds), ("RUNNING", "old-owner", -1, 0))
+                # A retained key remains a source-bearing sweep candidate even
+                # when its encrypted body or its file has already disappeared.
+                state.fail_clear = False
+                availability_import_store._sweep_expired_import(payload, None, "RUNNING", True)
+                self.assertFalse(path.exists())
+                self.assertIsNone(state.key)
+                self.assertEqual((state.status, state.owner, state.debit, state.refunds), ("FAILED", None, -1, 1))
+
+    def test_hard_source_final_compare_and_set_preserves_a_changed_current_key(self):
+        payload = availability_import_store.ImportPayload("import-1", "tenant-1")
+        replacement = "22222222-2222-2222-2222-222222222222.pdf"
+        state = SimpleNamespace(key=STORAGE_KEY)
+        class Cursor:
+            def __enter__(self): return self
+            def __exit__(self, *args): return False
+            def execute(self, sql, params=None):
+                if 'WITH expired_source' in sql: self.result = (state.key,)
+                elif 'SET "storageKey" = NULL' in sql:
+                    self.rowcount = 1 if state.key == params[2] else 0
+                    if self.rowcount: state.key = None
+            def fetchone(self): return self.result
+        original_unlink = Path.unlink
+        def replace_after_unlink(path, **options):
+            original_unlink(path, **options)
+            state.key = replacement
+        with tempfile.TemporaryDirectory() as root, patch.dict(os.environ, {"WORKER_UPLOAD_ROOT": root}), patch.object(
+            availability_import_store, "_connect", side_effect=lambda: FakeConnection(Cursor())
+        ):
+            (Path(root) / STORAGE_KEY).write_bytes(b"old source")
+            other = Path(root) / replacement
+            other.write_bytes(b"new current source")
+            with patch.object(Path, "unlink", replace_after_unlink), self.assertRaises(availability_import_store.AvailabilityImportBusy):
+                availability_import_store._erase_hard_expired_import_source(payload)
+            self.assertEqual(state.key, replacement)
+            self.assertEqual(other.read_bytes(), b"new current source")
+
+    def test_hard_source_only_candidate_never_changes_job_expiration_or_uses_stale_path(self):
+        payload = availability_import_store.ImportPayload("import-1", "tenant-1")
+        with patch.object(availability_import_store, "_erase_hard_expired_import_source") as hard, patch.object(
+            availability_import_store, "terminalize_import"
+        ) as settle, patch.object(availability_import_store, "_erase_retained_import_source") as ordinary:
+            availability_import_store._sweep_expired_import(payload, "stale-key.pdf", "RUNNING", False)
+        hard.assert_called_once_with(payload)
+        settle.assert_not_called()
+        ordinary.assert_not_called()
+
+    def test_hard_source_erasure_deletes_current_file_and_preserves_stale_local_replica(self):
+        payload = availability_import_store.ImportPayload("import-1", "tenant-1")
+        stale_key = "22222222-2222-2222-2222-222222222222.pdf"
+        cursor = MagicMock()
+        cursor.rowcount = 1
+        cursor.__enter__.return_value = cursor
+        cursor.fetchone.return_value = (STORAGE_KEY,)
+        with tempfile.TemporaryDirectory() as root, patch.dict(os.environ, {"WORKER_UPLOAD_ROOT": root}), patch.object(
+            availability_import_store, "_connect", return_value=FakeConnection(cursor)
+        ):
+            current = Path(root) / STORAGE_KEY
+            stale = Path(root) / stale_key
+            current.write_bytes(b"current encrypted source")
+            stale.write_bytes(b"unrelated local replica")
+            availability_import_store._sweep_expired_import(payload, stale_key, "RUNNING", False)
+            self.assertFalse(current.exists())
+            self.assertEqual(stale.read_bytes(), b"unrelated local replica")
+
+    def test_retention_keeps_both_settlement_and_hard_erasure_failures_observable(self):
+        primary = RuntimeError("settlement unavailable")
+        cleanup = OSError("hard erasure unavailable")
+        with patch.object(availability_import_store, "terminalize_import", side_effect=primary), patch.object(
+            availability_import_store, "_erase_hard_expired_import_source", side_effect=[False, cleanup]
+        ), self.assertRaises(ExceptionGroup) as caught:
+            availability_import_store._sweep_expired_import(availability_import_store.ImportPayload("import-1", "tenant-1"), None, "RUNNING")
+        self.assertEqual(caught.exception.exceptions, (primary, cleanup))
 
     def test_retention_source_erasure_never_changes_status_or_billing_rows(self):
         source = inspect.getsource(availability_import_store._erase_retained_import_source)
 
         self.assertIn('"encryptedSourcePayload" = NULL', source)
-        self.assertIn('"resultErasedAt" = COALESCE("resultErasedAt", CURRENT_TIMESTAMP)', source)
+        self.assertIn('THEN COALESCE("resultErasedAt", CURRENT_TIMESTAMP)', source)
         self.assertNotIn('UPDATE "Tenant"', source)
         self.assertNotIn('INSERT INTO "CreditTransaction"', source)
         self.assertNotIn('SET "status"', source)
@@ -919,6 +1177,23 @@ class AvailabilityImportStoreTests(unittest.TestCase):
         self.assertEqual(expired.status, "FAILED")
         self.assertEqual(expired.refund_attempts, 1)
         self.assertEqual(expired.wallet_updates, 1)
+
+    def test_expired_null_lease_foreign_token_settles_once_but_live_lease_stays_fenced(self):
+        payload = availability_import_store.ImportPayload("import-1", "tenant-1")
+        for lease_active in (None, True):
+            state = TerminalState(execution_token="old-owner", lease_active=lease_active)
+            state.status = "RUNNING"
+            state.unexpired = False
+            with patch.object(availability_import_store, "_connect", side_effect=lambda: FakeConnection(TerminalCursor(state))):
+                if lease_active is True:
+                    with self.assertRaises(availability_import_store.AvailabilityImportRejected):
+                        availability_import_store.terminalize_import(payload, None, "FAILED", "EXPIRED")
+                    self.assertEqual(state.refund_attempts, 0)
+                else:
+                    availability_import_store.terminalize_import(payload, None, "FAILED", "EXPIRED")
+                    availability_import_store.terminalize_import(payload, None, "FAILED", "EXPIRED")
+                    self.assertEqual(state.refund_attempts, 1)
+                    self.assertEqual(state.status, "FAILED")
 
     def test_concurrent_terminalization_refunds_and_increments_the_wallet_once(self):
         state = TerminalState()
@@ -1069,6 +1344,50 @@ def valid_parser_result():
 
 
 class AvailabilityImportOrchestrationTests(unittest.IsolatedAsyncioTestCase):
+
+    async def test_parser_failure_propagates_the_effective_durable_retry_budget(self):
+        payload = availability_import_store.ImportPayload("import-1", "tenant-1")
+        claimed = availability_import_store.ClaimedImport(payload, "owner", None, "a" * 64, 9, "claimed", effective_retry_count=2)
+        with patch.object(availability_import, "claim_import", return_value=claimed), patch.object(
+            availability_import, "_parse_claimed_source", side_effect=RuntimeError("parser unavailable")
+        ):
+            with self.assertRaises(availability_import_store.AvailabilityImportRetryable) as caught:
+                await availability_import.process_availability_import({"import_id": "import-1", "tenant_id": "tenant-1"}, 0)
+        self.assertEqual(caught.exception.effective_retry_count, 2)
+
+    async def test_queue_handoff_uses_effective_budget_instead_of_lowered_envelope(self):
+        import json
+        import main
+        payload = availability_import_store.ImportPayload("import-1", "tenant-1")
+        failure = availability_import_store.AvailabilityImportRetryable("parser failed", payload, "owner", 2)
+        message = SimpleNamespace(body=json.dumps({"type": "pdf.parse", "job_id": "import-1", "retry_count": 0,
+            "payload": {"import_id": "import-1", "tenant_id": "tenant-1"}}).encode(), message_id="import-1",
+            ack=AsyncMock(), nack=AsyncMock())
+        channel = SimpleNamespace(default_exchange=object())
+        with patch.object(main, "process_message", side_effect=failure), patch.object(main, "MAX_RETRIES", 3), patch.object(
+            main, "publish_retry", new_callable=AsyncMock
+        ) as publish, patch.object(main, "try_mark_schedule_status_from_message", new_callable=AsyncMock) as mark:
+            await main.handle_queue_message(channel, message)
+        self.assertEqual(publish.call_args.args[2], 3)
+        self.assertEqual(mark.call_args.args[3], 3)
+        message.ack.assert_awaited_once()
+
+    async def test_queue_exhaustion_uses_effective_budget_without_publishing_another_retry(self):
+        import json
+        import main
+        payload = availability_import_store.ImportPayload("import-1", "tenant-1")
+        failure = availability_import_store.AvailabilityImportRetryable("parser failed", payload, "owner", 3)
+        message = SimpleNamespace(body=json.dumps({"type": "pdf.parse", "job_id": "import-1", "retry_count": 0,
+            "payload": {"import_id": "import-1", "tenant_id": "tenant-1"}}).encode(), message_id="import-1")
+        with patch.object(main, "process_message", side_effect=failure), patch.object(main, "MAX_RETRIES", 3), patch.object(
+            main, "publish_retry", new_callable=AsyncMock
+        ) as publish, patch.object(main, "try_mark_schedule_status_from_message", new_callable=AsyncMock) as mark, patch.object(
+            main, "reject_to_solver_dlq", new_callable=AsyncMock
+        ) as reject:
+            await main.handle_queue_message(SimpleNamespace(), message)
+        publish.assert_not_called()
+        self.assertEqual(mark.call_args.args[1], "DEAD_LETTERED")
+        reject.assert_awaited_once()
 
     async def test_dead_letter_settlement_poison_erases_owned_source_without_looping(self):
         payload = availability_import_store.ImportPayload("import-1", "tenant-1")

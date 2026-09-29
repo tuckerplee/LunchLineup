@@ -25,7 +25,7 @@ function config() {
   return { services: {
     'api-v2': service(['app'], { api: {} }),
     api: service(['app', 'outbound-egress'], { postgres: {}, migrate: {} }),
-    web: service(['app']), worker: service(['data', 'outbound-egress'], { 'pdf-parser': {} }),
+    web: { ...service(['app']), environment: { NODE_ENV: 'production', NEXT_PUBLIC_APP_ORIGIN: 'http://127.0.0.1:8080', NEXT_PUBLIC_APP_URL: 'http://127.0.0.1:8080' } }, worker: service(['data', 'outbound-egress'], { 'pdf-parser': {} }),
     engine: service(['data']), proxy: { ...service(['app', 'external']), ports: [{ host_ip: '127.0.0.1', published: '8080', target: 80, protocol: 'tcp' }] },
     postgres: service(['data']), migrate: service(['data']),
     'pdf-parser': { image: 'fixture:parser', network_mode: 'none', cap_drop: ['ALL'] },
@@ -39,7 +39,7 @@ function fixture(options, verify) {
     options.modifyConfig?.(input);
     const paths = ['config.json', 'images.tsv', 'runtime.json', 'development-network-policy.json'].map(name => join(root, name));
     writeFileSync(paths[0], JSON.stringify(input));
-    const rendered = spawnSync(process.execPath, ['-', ...paths, project], { input: render, encoding: 'utf8', timeout: 5_000, env: { ...process.env, CI_RUN_ID: runId, CI_COMMIT_SHA: sha } });
+    const rendered = spawnSync(process.execPath, ['-', ...paths, project], { input: render, encoding: 'utf8', timeout: 5_000, env: { ...process.env, LUNCHLINEUP_DEVELOPMENT_QA: options.qaFlag ?? '1', CI_RUN_ID: runId, CI_COMMIT_SHA: sha } });
     if (options.renderFails) {
       assert.notEqual(rendered.status, 0);
       assert.equal(existsSync(paths[2]), false);
@@ -83,6 +83,8 @@ test('runtime networks deny egress while retaining named service links, loopback
   fixture({}, ({ root, result, runtime, policy, commands }) => {
     assert.equal(result.status, 0, result.stderr);
     assert.equal(runtime.services['pdf-parser'].network_mode, 'none');
+    assert.deepEqual(runtime.services.web.environment, { NODE_ENV: 'production', NEXT_PUBLIC_APP_ORIGIN: 'http://127.0.0.1:8080', NEXT_PUBLIC_APP_URL: 'http://127.0.0.1:8080', LUNCHLINEUP_DEVELOPMENT_QA: '1', DATA_TARGET_ENV: 'disposable', APP_ENV: 'test', DEPLOY_ENV: 'test' });
+    assert.equal(runtime.services['api-v2'].environment.LUNCHLINEUP_DEVELOPMENT_QA, undefined);
     assert.deepEqual(runtime.services.proxy.ports, [{ host_ip: '127.0.0.1', published: '8080', target: 80, protocol: 'tcp' }]);
     assert.equal(runtime.networks.unused, undefined);
     for (const network of Object.values(runtime.networks)) {
@@ -138,3 +140,12 @@ test('network preparation precedes every runtime Compose startup and leaves imag
   assert.ok(source.indexOf('build_image "$action" "$service" "$image"') < gate);
   assert.match(source, /docker network create --internal/);
 });
+
+for (const [description, modifyConfig] of [
+  ['public HTTP web origin', value => { value.services.web.environment.NEXT_PUBLIC_APP_ORIGIN = 'http://lunchlineup.com'; }],
+  ['localhost web origin', value => { value.services.web.environment.NEXT_PUBLIC_APP_ORIGIN = 'http://localhost:8080'; }],
+  ['alternate local port', value => { value.services.web.environment.NEXT_PUBLIC_APP_ORIGIN = 'http://127.0.0.1:8081'; }],
+  ['mismatched web URL', value => { value.services.web.environment.NEXT_PUBLIC_APP_URL = 'https://beta.lunchlineup.com'; }],
+  ['missing optimized runtime mode', value => { value.services.web.environment.NODE_ENV = 'test'; }],
+]) test(`disposable web admission refuses ${description}`, () => fixture({ modifyConfig, renderFails: true }));
+test('disposable web admission requires the explicit development wrapper flag', () => fixture({ qaFlag: '0', renderFails: true }));

@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 
 import { readBoundedJson, withRequestTimeout } from '../../../lib/http-safety';
-import { parseApprovedAppOrigin } from '../../../lib/safe-navigation';
+import { approvedServerAppOrigin } from '../../../lib/server-app-origin';
 
 const AUTH_FETCH_TIMEOUT_MS = 5_000;
 const AUTH_RESPONSE_LIMIT_BYTES = 8 * 1024;
@@ -26,21 +26,16 @@ function parseServiceBase(value: string): string | null {
 
 function approvedAppOrigin(request: NextRequest): string | null {
   const configured = process.env.NEXT_PUBLIC_APP_ORIGIN?.trim()
-    || process.env.NEXT_PUBLIC_APP_URL?.trim()
-    || process.env.APP_ORIGIN?.trim();
-  if (configured) {
-    return parseApprovedAppOrigin(configured, process.env.NODE_ENV === 'production');
-  }
-  if (process.env.NODE_ENV === 'production') return null;
-
+    ? process.env.NEXT_PUBLIC_APP_ORIGIN
+    : process.env.NEXT_PUBLIC_APP_URL?.trim()
+      ? process.env.NEXT_PUBLIC_APP_URL : process.env.APP_ORIGIN;
   const forwardedHost = request.headers.get('x-forwarded-host')?.split(',')[0]?.trim();
   const host = forwardedHost || request.headers.get('host');
   const forwardedProtocol = request.headers.get('x-forwarded-proto')?.split(',')[0]?.trim();
   const protocol = forwardedProtocol || request.nextUrl.protocol.replace(':', '');
-  if (host && (protocol === 'https' || protocol === 'http')) {
-    return parseApprovedAppOrigin(`${protocol}://${host}`, false);
-  }
-  return parseApprovedAppOrigin(request.nextUrl.origin, false);
+  const fallback = host && (protocol === 'https' || protocol === 'http')
+    ? `${protocol}://${host}` : request.nextUrl.origin;
+  return approvedServerAppOrigin(configured, fallback);
 }
 
 function apiBase(appOrigin: string): string | null {

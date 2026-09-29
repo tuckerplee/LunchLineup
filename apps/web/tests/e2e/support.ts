@@ -2,7 +2,7 @@ import { createHmac } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import path from 'node:path';
 
-import { expect, type Page } from '@playwright/test';
+import { expect, type Page, type Response } from '@playwright/test';
 
 export const repoRoot = path.resolve(process.cwd(), '../..');
 export const runFullStack = process.env.E2E_FULL_STACK === '1';
@@ -89,35 +89,59 @@ export async function loginWithPin(
   const next = options.next ?? '/dashboard/staff';
   const expectedPath = options.expectedPath ?? next;
 
-  await page.goto(`/auth/login?tenantSlug=${encodeURIComponent(e2eTenantSlug)}&next=${encodeURIComponent(next)}`);
-  await page.getByLabel('Work email or username').fill(options.username);
-  await page.getByRole('button', { name: 'Continue' }).click();
-  await expect(page.getByRole('heading', { name: /Enter your (?:PIN|password)/i })).toBeVisible();
-  const passwordStep = page.getByPlaceholder('Enter password');
-  if (await passwordStep.isVisible()) {
-    // Account-blind resolution intentionally selects the migrated-password
-    // compatibility step for usernames. PIN-only E2E fixtures are accepted
-    // by the password endpoint as a numeric credential, so keep this helper
-    // valid for both the staged browser flow and legacy PIN fixtures.
-    await passwordStep.fill(options.pin);
-    await page.getByRole('button', { name: 'Sign in with password' }).click();
-  } else {
-    await page.getByLabel('PIN').fill(options.pin);
-    await page.getByRole('button', { name: 'Sign in with PIN' }).click();
+  let unavailableDestination = false;
+  const recordUnavailable = (response: Response) => {
+    if (response.status() === 503 && new URL(response.url()).pathname === expectedPath) {
+      unavailableDestination = true;
+    }
+  };
+  page.on('response', recordUnavailable);
+  try {
+    const loginResponse = await page.goto(`/auth/login?tenantSlug=${encodeURIComponent(e2eTenantSlug)}&next=${encodeURIComponent(next)}`);
+    if (loginResponse?.status() === 503) throw new Error('Seeded login received HTTP 503 from the authentication page.');
+    await page.getByLabel('Work email or username').fill(options.username);
+    await page.getByRole('button', { name: 'Continue' }).click();
+    await expect(page.getByRole('heading', { name: /Enter your (?:PIN|password)/i })).toBeVisible();
+    const passwordStep = page.getByPlaceholder('Enter password');
+    if (await passwordStep.isVisible()) {
+      // Account-blind resolution intentionally selects the migrated-password
+      // compatibility step for usernames. PIN-only E2E fixtures are accepted
+      // by the password endpoint as a numeric credential, so keep this helper
+      // valid for both the staged browser flow and legacy PIN fixtures.
+      await passwordStep.fill(options.pin);
+      await page.getByRole('button', { name: 'Sign in with password' }).click();
+    } else {
+      await page.getByLabel('PIN').fill(options.pin);
+      await page.getByRole('button', { name: 'Sign in with PIN' }).click();
+    }
+    await page.waitForURL(/\/(?:mfa|dashboard|admin)(?:[/?#].*)?$/, { timeout: 10_000 });
+    // A caller that explicitly expects the MFA route is testing the gate itself
+    // (including the unenrolled enrollment screen), so leave that session at
+    // the gate for the test to drive.  Ordinary authenticated helpers continue
+    // through an enrolled seeded TOTP challenge automatically.
+    if (new URL(page.url()).pathname === '/mfa' && expectedPath !== '/mfa') {
+      const secret = options.username === e2eSuperAdminUsername
+        ? e2eSuperAdminMfaSecret
+        : e2eAdminMfaSecret;
+      await page.getByLabel('Authentication code').fill(totpCode(secret));
+      await page.getByRole('button', { name: 'Verify and continue' }).click();
+    }
+    await expect(page).toHaveURL(new RegExp(`${escapeRegExp(expectedPath)}(?:[?#].*)?$`));
+    // A matching URL can still be a middleware 503 response. Require the actual
+    // authenticated layout before a caller starts interacting with its content.
+    if (unavailableDestination) throw new Error('Seeded login received HTTP 503 at its authenticated destination.');
+    const body = await page.locator('body').innerText();
+    if (body.includes('Authentication service temporarily unavailable. Please retry.')) {
+      throw new Error('Seeded login reached an unavailable authentication boundary instead of the authenticated application.');
+    }
+    if (expectedPath === '/dashboard' || expectedPath.startsWith('/dashboard/')) {
+      await expect(page.getByRole('complementary', { name: 'Sidebar navigation', includeHidden: true }), 'Seeded login did not render the authenticated dashboard shell.').toBeAttached();
+    } else if (expectedPath === '/admin' || expectedPath.startsWith('/admin/')) {
+      await expect(page.getByRole('complementary', { name: 'Admin sidebar', includeHidden: true }), 'Seeded login did not render the authenticated admin shell.').toBeAttached();
+    }
+  } finally {
+    page.off('response', recordUnavailable);
   }
-  await page.waitForURL(/\/(?:mfa|dashboard|admin)(?:[/?#].*)?$/, { timeout: 10_000 });
-  // A caller that explicitly expects the MFA route is testing the gate itself
-  // (including the unenrolled enrollment screen), so leave that session at
-  // the gate for the test to drive.  Ordinary authenticated helpers continue
-  // through an enrolled seeded TOTP challenge automatically.
-  if (new URL(page.url()).pathname === '/mfa' && expectedPath !== '/mfa') {
-    const secret = options.username === e2eSuperAdminUsername
-      ? e2eSuperAdminMfaSecret
-      : e2eAdminMfaSecret;
-    await page.getByLabel('Authentication code').fill(totpCode(secret));
-    await page.getByRole('button', { name: 'Verify and continue' }).click();
-  }
-  await expect(page).toHaveURL(new RegExp(`${escapeRegExp(expectedPath)}(?:[?#].*)?$`));
 }
 
 export async function loginAsSeedAdmin(page: Page, next = '/dashboard/staff') {

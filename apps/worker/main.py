@@ -54,6 +54,7 @@ from src.staff_invitation_outbox import (
 from src.availability_import import (
     AvailabilityImportBusy,
     AvailabilityImportRejected,
+    AvailabilityImportRetryable,
     mark_import_retry,
     process_availability_import,
     run_availability_import_retention_loop,
@@ -2668,6 +2669,8 @@ async def handle_queue_message(channel: Any, message: Any) -> None:
         raise
     except Exception as exc:
         retry_count = read_retry_count(message.body)
+        if isinstance(exc, AvailabilityImportRetryable) and exc.effective_retry_count is not None:
+            retry_count = max(retry_count, exc.effective_retry_count)
         job_type = read_job_type(message.body)
         if retry_count >= MAX_RETRIES:
             try:

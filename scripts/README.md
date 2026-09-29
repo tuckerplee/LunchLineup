@@ -301,6 +301,6 @@ See `docs/runbooks/production-readiness.md` for the operator invocation contract
 
 - `ci-container-bin/`: scoped application repair or disposable qualification support.
 
-- `run-development-browser-qa.sh`: scoped application repair or disposable qualification support.
+- `run-development-browser-qa.sh`: one disposable application/browser job with private storage, verified internal networks and container routes, synthetic providers, and exact cleanup receipts. Only its generated web override injects the four server markers admitting `http://127.0.0.1:8080` to authentication; canonical runtime configuration keeps production HTTPS enforcement.
 
 - `check-development-browser-isolation.ts`: disposable QA isolation and evidence checks.

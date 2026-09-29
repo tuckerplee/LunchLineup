@@ -161,6 +161,10 @@ fs.writeFileSync(out,lines.join('\n')+'\n',{flag:'wx'});
 config.services=Object.fromEntries([...selected].map(name=>{const service=config.services[name];delete service.depends_on;return [name,service];}));
 // Use the application's existing isolated browser-test throttle configuration.
 Object.assign(config.services.api.environment,{NODE_ENV:'test',DATA_TARGET_ENV:'test',E2E_FULL_STACK:'1',E2E_PREAUTH_IP_LIMIT:'120',E2E_PREAUTH_IDENTIFIER_LIMIT:'30'});
+// Only this disposable development wrapper admits the exact local HTTP origin
+// to server authentication. Keep the optimized Next runtime in production mode.
+if(process.env.LUNCHLINEUP_DEVELOPMENT_QA!=='1'||config.services.web.environment.NODE_ENV!=='production'||config.services.web.environment.NEXT_PUBLIC_APP_ORIGIN!=='http://127.0.0.1:8080'||config.services.web.environment.NEXT_PUBLIC_APP_URL!=='http://127.0.0.1:8080')throw new Error('Disposable web origin admission requires the exact local production-build configuration.');
+Object.assign(config.services.web.environment,{LUNCHLINEUP_DEVELOPMENT_QA:'1',DATA_TARGET_ENV:'disposable',APP_ENV:'test',DEPLOY_ENV:'test'});
 // Runtime isolation is independent of provider flags and synthetic credentials.
 // Build/pull traffic remains unrestricted and needs separate qualification;
 // these runtime receipts do not qualify or restrict build-time networking.

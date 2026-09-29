@@ -8,6 +8,7 @@ import json
 import os
 from pathlib import Path
 import re
+import threading
 from typing import Any
 
 from prometheus_client import Counter, Gauge
@@ -19,6 +20,9 @@ STORAGE_KEY_RE = re.compile(r"^[a-f0-9-]{36}\.pdf$", re.IGNORECASE)
 TERMINAL_STATUSES = {"SUCCEEDED", "FAILED", "DEAD_LETTERED", "CANCELLED"}
 ENCRYPTED_SOURCE_MAGIC = b"LLAI"
 MIN_AAD_BOUND_ENVELOPE_VERSION = 3
+_RETENTION_SWEEP_LOCK = threading.Lock()
+_RETENTION_SWEEP_CURSOR: tuple[int, str] | None = None
+
 RETENTION_SWEEP_FAILURES = Counter(
     "lunchlineup_availability_import_retention_sweep_failures_total",
     "Availability import retention sweeps with one or more failed rows",
@@ -42,10 +46,12 @@ class AvailabilityImportRejected(RuntimeError):
 
 
 class AvailabilityImportRetryable(RuntimeError):
-    def __init__(self, message: str, payload: "ImportPayload", execution_token: str | None = None):
+    def __init__(self, message: str, payload: "ImportPayload", execution_token: str | None = None,
+                 effective_retry_count: int | None = None):
         super().__init__(message)
         self.payload = payload
         self.execution_token = execution_token
+        self.effective_retry_count = effective_retry_count
 
 
 class AvailabilityImportBusy(RuntimeError):
@@ -73,6 +79,7 @@ class ClaimedImport:
     encrypted_source_payload: bytes | None = None
     request_identity_hash: str = ""
     target_identity_hash: str = ""
+    effective_retry_count: int = 0
 
 
 @dataclass(frozen=True)
@@ -99,6 +106,7 @@ class LockedImportState:
     refund_amount: int | None
     refund_reason: str | None
     refund_balance_after: int | None
+    attempts: int
 
 
 def validate_import_payload(raw: Any) -> ImportPayload:
@@ -140,8 +148,17 @@ def claim_import(payload: ImportPayload, retry_count: int, token: str) -> Claime
                 raise AvailabilityImportRejected("availability import requires an active paid subscription")
             if not _has_paid_credit_reservation(state, payload):
                 raise AvailabilityImportRejected("availability import is missing its paid credit reservation")
-            if state.status == "RUNNING" and state.lease_active and state.execution_token != token:
+            if state.lease_active and state.execution_token != token:
                 raise AvailabilityImportBusy("availability import already has an active execution owner")
+            # A stale/lowered broker envelope cannot reset durable consumption.
+            # Check after live ownership so duplicates cannot settle a live job.
+            try:
+                maximum_retries = max(0, min(10, int(os.getenv("WORKER_MAX_RETRIES", "3"))))
+            except ValueError:
+                maximum_retries = 3
+            if state.attempts >= maximum_retries + 1:
+                raise AvailabilityImportRejected("availability import exhausted its durable retry budget")
+            effective_retry_count = max(retry_count, state.attempts)
 
             path = None
             if state.storage_key:
@@ -162,7 +179,7 @@ def claim_import(payload: ImportPayload, retry_count: int, token: str) -> Claime
                 WHERE "id" = %s AND "tenantId" = %s
                   AND "status" NOT IN ('SUCCEEDED', 'FAILED', 'DEAD_LETTERED', 'CANCELLED')
                 """,
-                (retry_count + 1, token, payload.import_id, payload.tenant_id),
+                (effective_retry_count + 1, token, payload.import_id, payload.tenant_id),
             )
             if cursor.rowcount != 1:
                 raise AvailabilityImportRejected("availability import execution ownership changed")
@@ -176,6 +193,7 @@ def claim_import(payload: ImportPayload, retry_count: int, token: str) -> Claime
                 state.encrypted_source_payload,
                 state.request_identity_hash,
                 state.target_identity_hash,
+                effective_retry_count,
             )
 
 
@@ -272,7 +290,7 @@ def mark_retrying(
                 """
                 UPDATE "AvailabilityImportJob"
                 SET "status" = 'RETRYING',
-                    "attempts" = %s,
+                    "attempts" = GREATEST("attempts", %s),
                     "executionToken" = NULL,
                     "executionLeaseUntil" = NULL,
                     "failureCode" = 'TRANSIENT_FAILURE',
@@ -313,7 +331,10 @@ def terminalize_import(
                     _authoritative_refund_amount(state, payload, require_existing=True)
                 return None
             if token is None:
-                owns_execution = state.execution_token is None or state.lease_active is False
+                owns_execution = (
+                    state.execution_token is None or state.lease_active is False
+                    or (state.lease_active is None and not state.unexpired)
+                )
             else:
                 owns_execution = state.execution_token == token
             if not owns_execution:
@@ -379,6 +400,7 @@ def terminalize_import(
                       WHEN %s::text IS NULL THEN
                           "executionToken" IS NULL
                           OR "executionLeaseUntil" <= CURRENT_TIMESTAMP
+                          OR ("executionLeaseUntil" IS NULL AND "expiresAt" <= CURRENT_TIMESTAMP)
                       ELSE "executionToken" = %s
                   END
                 """,
@@ -527,6 +549,43 @@ async def _run_retention_sweep() -> int:
 
 
 def sweep_expired_imports() -> int:
+    with _RETENTION_SWEEP_LOCK:
+        return _sweep_expired_import_batch()
+
+
+def _select_retention_batch(cursor: Any, batch_size: int, after: tuple[int, str] | None):
+    priority = """CASE WHEN "createdAt" <= CURRENT_TIMESTAMP - INTERVAL '24 hours'
+        AND ("storageKey" IS NOT NULL OR "encryptedSourcePayload" IS NOT NULL)
+        THEN 0 ELSE 1 END"""
+    cursor.execute(
+        f"""
+        SELECT "id", "tenantId", "storageKey", "status", "expiresAt" <= CURRENT_TIMESTAMP,
+               {priority} AS "retentionPriority"
+        FROM "AvailabilityImportJob"
+        WHERE ((
+            "createdAt" <= CURRENT_TIMESTAMP - INTERVAL '24 hours'
+            AND ("storageKey" IS NOT NULL OR "encryptedSourcePayload" IS NOT NULL)
+        ) OR (
+            "status" NOT IN ('SUCCEEDED', 'FAILED', 'DEAD_LETTERED', 'CANCELLED')
+            AND "expiresAt" <= CURRENT_TIMESTAMP
+        ) OR (
+            "status" IN ('SUCCEEDED', 'FAILED', 'DEAD_LETTERED', 'CANCELLED')
+            AND "completedAt" <= CURRENT_TIMESTAMP - INTERVAL '24 hours'
+            AND ("parsedAvailability" IS NOT NULL OR "storageKey" IS NOT NULL
+                 OR "encryptedSourcePayload" IS NOT NULL OR "resultErasedAt" IS NULL)
+        ))
+        AND (%s::integer IS NULL OR ({priority}, "id") > (%s::integer, %s::text))
+        ORDER BY "retentionPriority", "id"
+        LIMIT %s
+        FOR UPDATE SKIP LOCKED
+        """,
+        (after[0] if after else None, after[0] if after else None, after[1] if after else None, batch_size),
+    )
+    return cursor.fetchall()
+
+
+def _sweep_expired_import_batch() -> int:
+    global _RETENTION_SWEEP_CURSOR
     capability = os.getenv("PLATFORM_ADMIN_DB_CONTEXT_SECRET", "").strip()
     if not capability:
         return 0
@@ -534,44 +593,20 @@ def sweep_expired_imports() -> int:
     with _connect() as connection:
         with connection.cursor() as cursor:
             cursor.execute("SELECT set_current_platform_admin(true, %s)", (capability,))
-            cursor.execute(
-                """
-                SELECT "id", "tenantId", "storageKey", "status"
-                FROM "AvailabilityImportJob"
-                WHERE (
-                    "status" NOT IN ('SUCCEEDED', 'FAILED', 'DEAD_LETTERED', 'CANCELLED')
-                    AND "expiresAt" <= CURRENT_TIMESTAMP
-                ) OR (
-                    "status" IN ('SUCCEEDED', 'FAILED', 'DEAD_LETTERED', 'CANCELLED')
-                    AND "completedAt" <= CURRENT_TIMESTAMP - INTERVAL '24 hours'
-                    AND (
-                        "parsedAvailability" IS NOT NULL
-                        OR "storageKey" IS NOT NULL
-                        OR "encryptedSourcePayload" IS NOT NULL
-                        OR "resultErasedAt" IS NULL
-                    )
-                )
-                ORDER BY
-                    CASE
-                        WHEN "status" NOT IN ('SUCCEEDED', 'FAILED', 'DEAD_LETTERED', 'CANCELLED')
-                            THEN "updatedAt"
-                        ELSE "completedAt"
-                    END,
-                    COALESCE("completedAt", "expiresAt"),
-                    "id"
-                LIMIT %s
-                FOR UPDATE SKIP LOCKED
-                """,
-                (batch_size,),
-            )
-            rows = cursor.fetchall()
+            rows = _select_retention_batch(cursor, batch_size, _RETENTION_SWEEP_CURSOR)
+            if not rows and _RETENTION_SWEEP_CURSOR is not None:
+                rows = _select_retention_batch(cursor, batch_size, None)
+    # Selection must commit before advancing. Advance even if every row fails,
+    # without changing durable job timestamps, budgets or ownership.
+    _RETENTION_SWEEP_CURSOR = (int(rows[-1][5]), str(rows[-1][0])) if rows else None
     failures: list[Exception] = []
-    for import_id, tenant_id, storage_key, status in rows:
+    for import_id, tenant_id, storage_key, status, expired, _priority in rows:
         try:
             _sweep_expired_import(
                 ImportPayload(str(import_id), str(tenant_id)),
                 str(storage_key) if storage_key is not None else None,
                 str(status),
+                bool(expired),
             )
         except Exception as exc:
             failures.append(exc)
@@ -586,7 +621,15 @@ def _sweep_expired_import(
     payload: ImportPayload,
     storage_key: str | None,
     status: str,
+    expired: bool = True,
 ) -> None:
+    # Hard-overdue source deletion must finish before any terminal transition
+    # can erase its durable key (terminal rows cannot legally retain raw keys).
+    if _erase_hard_expired_import_source(payload):
+        storage_key = None  # Hard erasure already consumed the current key.
+    if not expired and status not in TERMINAL_STATUSES:
+        # A hard-source-only candidate is not a job-expiration decision.
+        return
     path = None
     if storage_key:
         try:
@@ -597,8 +640,63 @@ def _sweep_expired_import(
         if status not in TERMINAL_STATUSES:
             terminal_path = terminalize_import(payload, None, "FAILED", "EXPIRED")
             path = terminal_path or path
-    finally:
         _erase_retained_import_source(payload, path)
+    except Exception as settlement_error:
+        # Recovery bytes survive unsettled young jobs, but never gain an
+        # extension beyond the independent DB-created raw-source deadline.
+        try:
+            _erase_hard_expired_import_source(payload)
+        except Exception as cleanup_error:
+            raise ExceptionGroup("Availability settlement and hard-source cleanup both failed", [settlement_error, cleanup_error])
+        raise
+    else:
+        _erase_hard_expired_import_source(payload)
+
+
+def _erase_hard_expired_import_source(payload: ImportPayload) -> bool:
+    with _connect() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute("SELECT set_current_tenant(%s)", (payload.tenant_id,))
+            cursor.execute(
+                """
+                WITH expired_source AS (
+                    SELECT "id", "storageKey"
+                    FROM "AvailabilityImportJob"
+                    WHERE "id" = %s AND "tenantId" = %s
+                      AND "createdAt" <= CURRENT_TIMESTAMP - INTERVAL '24 hours'
+                      AND ("storageKey" IS NOT NULL OR "encryptedSourcePayload" IS NOT NULL)
+                    FOR UPDATE
+                )
+                UPDATE "AvailabilityImportJob" job
+                SET "encryptedSourcePayload" = NULL
+                FROM expired_source
+                WHERE job."id" = expired_source."id" AND job."tenantId" = %s
+                RETURNING expired_source."storageKey"
+                """,
+                (payload.import_id, payload.tenant_id, payload.tenant_id),
+            )
+            row = cursor.fetchone()
+    # Keep the durable current key until unlink succeeds. Every failure leaves
+    # an age-qualified retry pointer, including a failed final database clear.
+    if row is not None and row[0] is not None:
+        storage_key = str(row[0])
+        resolve_storage_key(storage_key).unlink(missing_ok=True)
+        with _connect() as connection:
+            with connection.cursor() as cursor:
+                cursor.execute("SELECT set_current_tenant(%s)", (payload.tenant_id,))
+                cursor.execute(
+                    """
+                    UPDATE "AvailabilityImportJob"
+                    SET "storageKey" = NULL
+                    WHERE "id" = %s AND "tenantId" = %s
+                      AND "createdAt" <= CURRENT_TIMESTAMP - INTERVAL '24 hours'
+                      AND "storageKey" = %s
+                    """,
+                    (payload.import_id, payload.tenant_id, storage_key),
+                )
+                if cursor.rowcount != 1:
+                    raise AvailabilityImportBusy("availability source changed before its erased pointer could be cleared")
+    return row is not None
 
 
 def _erase_retained_import_source(payload: ImportPayload, path: Path | None) -> None:
@@ -612,23 +710,23 @@ def _erase_retained_import_source(payload: ImportPayload, path: Path | None) -> 
                     UPDATE "AvailabilityImportJob"
                     SET "parsedAvailability" = CASE
                             WHEN "status" IN ('SUCCEEDED', 'FAILED', 'DEAD_LETTERED', 'CANCELLED')
+                                 AND "completedAt" <= CURRENT_TIMESTAMP - INTERVAL '24 hours'
                                 THEN NULL
                             ELSE "parsedAvailability"
                         END,
                         "storageKey" = NULL,
-                        "resultErasedAt" = COALESCE("resultErasedAt", CURRENT_TIMESTAMP),
+                        "resultErasedAt" = CASE
+                            WHEN "completedAt" <= CURRENT_TIMESTAMP - INTERVAL '24 hours'
+                                THEN COALESCE("resultErasedAt", CURRENT_TIMESTAMP)
+                            ELSE "resultErasedAt"
+                        END,
                         "encryptedSourcePayload" = NULL,
                         "updatedAt" = CURRENT_TIMESTAMP
                     WHERE "id" = %s AND "tenantId" = %s
                       AND (
-                          (
-                              "status" NOT IN ('SUCCEEDED', 'FAILED', 'DEAD_LETTERED', 'CANCELLED')
-                              AND "expiresAt" <= CURRENT_TIMESTAMP
-                          )
-                          OR (
-                              "status" IN ('SUCCEEDED', 'FAILED', 'DEAD_LETTERED', 'CANCELLED')
-                              AND "completedAt" <= CURRENT_TIMESTAMP - INTERVAL '24 hours'
-                          )
+                          "status" IN ('SUCCEEDED', 'FAILED', 'DEAD_LETTERED', 'CANCELLED')
+                          AND ("expiresAt" <= CURRENT_TIMESTAMP
+                               OR "completedAt" <= CURRENT_TIMESTAMP - INTERVAL '24 hours')
                       )
                     """,
                     (payload.import_id, payload.tenant_id),
@@ -772,7 +870,8 @@ def _lock_job(cursor: Any, payload: ImportPayload) -> LockedImportState | None:
             (
                 SELECT MIN(refund."balanceAfter") FROM "CreditTransaction" refund
                 WHERE refund."id" = 'feature-refund-availability-import:' || job."id"
-            ) AS "refundBalanceAfter"
+            ) AS "refundBalanceAfter",
+            job."attempts"
         FROM "AvailabilityImportJob" job
         WHERE job."id" = %s
           AND job."tenantId" = %s
@@ -806,6 +905,7 @@ def _lock_job(cursor: Any, payload: ImportPayload) -> LockedImportState | None:
         refund_amount=int(row[19]) if row[19] is not None else None,
         refund_reason=str(row[20]) if row[20] is not None else None,
         refund_balance_after=int(row[21]) if row[21] is not None else None,
+        attempts=int(row[22]),
     )
 
 

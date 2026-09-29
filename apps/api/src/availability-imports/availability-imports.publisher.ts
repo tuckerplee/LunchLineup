@@ -23,7 +23,15 @@ type ClaimedPublication = {
     tenantId: string;
     publishToken: string;
     publishAttempts: number;
+    attempts: number;
 };
+
+function workerInteger(name: string, fallback: number, minimum: number, maximum: number): number {
+    const value = process.env[name]?.trim() ?? String(fallback);
+    if (!/^[+-]?\d(?:_?\d)*$/.test(value)) return fallback;
+    const parsed = BigInt(value.replaceAll('_', ''));
+    return parsed < BigInt(minimum) ? minimum : parsed > BigInt(maximum) ? maximum : Number(parsed);
+}
 
 @Injectable()
 export class AvailabilityImportPublisher implements OnModuleInit, OnModuleDestroy {
@@ -103,17 +111,31 @@ export class AvailabilityImportPublisher implements OnModuleInit, OnModuleDestro
 
     private async recoverExpiredExecutions(): Promise<void> {
         // A confirmed broker message can disappear after its worker crashes. Revoke
-        // only an expired execution owner, then reuse the durable publication path.
+        // expired owners or stale missing ownership, then reuse durable publication.
         // Source bytes and the original debit remain intact; workers still validate
         // tenant/employee eligibility and exact settlement under their normal locks.
+        const retryGraceSeconds = Math.max(
+            workerInteger('WORKER_RETRY_BACKOFF_1_SECONDS', 5, 1, 300),
+            workerInteger('WORKER_RETRY_BACKOFF_2_SECONDS', 30, 1, 900),
+            workerInteger('WORKER_RETRY_BACKOFF_3_SECONDS', 120, 1, 3600),
+        ) + 60;
         await this.tenantDb.withPlatformAdmin((tx: any) => tx.$executeRaw(Prisma.sql`
             WITH candidates AS (
                 SELECT job."id"
                 FROM "AvailabilityImportJob" AS job
-                WHERE job."status" = 'RUNNING'
-                  AND job."expiresAt" > CURRENT_TIMESTAMP
-                  AND job."executionLeaseUntil" <= CURRENT_TIMESTAMP
-                ORDER BY job."executionLeaseUntil", job."id"
+                WHERE job."expiresAt" > CURRENT_TIMESTAMP
+                  AND (
+                    (job."status" = 'RUNNING' AND (
+                      job."executionLeaseUntil" <= CURRENT_TIMESTAMP
+                      OR (job."executionLeaseUntil" IS NULL
+                          AND job."updatedAt" <= CURRENT_TIMESTAMP - INTERVAL '60 seconds')
+                    ))
+                    OR (job."status" = 'RETRYING'
+                        AND job."executionToken" IS NULL
+                        AND job."executionLeaseUntil" IS NULL
+                        AND job."updatedAt" <= CURRENT_TIMESTAMP - (${retryGraceSeconds} * INTERVAL '1 second'))
+                  )
+                ORDER BY job."updatedAt", job."id"
                 FOR UPDATE SKIP LOCKED
                 LIMIT ${PUBLISH_BATCH_SIZE}
             )
@@ -172,13 +194,17 @@ export class AvailabilityImportPublisher implements OnModuleInit, OnModuleDestro
                 job."id",
                 job."tenantId",
                 job."publishToken",
-                job."publishAttempts"
+                job."publishAttempts",
+                job."attempts"
         `));
     }
 
     private async publishClaim(claim: ClaimedPublication): Promise<void> {
         try {
-            await this.publishMessage(claim.tenantId, claim.id);
+            // RUNNING attempts counts its crashed execution; RETRYING attempts
+            // counts failed executions. Both resume at that durable retry budget.
+            const retryCount = Math.min(claim.attempts, workerInteger('WORKER_MAX_RETRIES', 3, 0, 10));
+            await this.publishMessage(claim.tenantId, claim.id, retryCount);
         } catch (error) {
             await this.markFailed(claim, error);
             return;
@@ -240,7 +266,7 @@ export class AvailabilityImportPublisher implements OnModuleInit, OnModuleDestro
         }
     }
 
-    private async publishMessage(tenantId: string, importId: string): Promise<void> {
+    private async publishMessage(tenantId: string, importId: string, retryCount: number): Promise<void> {
         const rabbitUrl = process.env.RABBITMQ_URL;
         if (!rabbitUrl) throw new Error('RabbitMQ URL is not configured');
         const queueName = process.env.WORKER_QUEUE_NAME || 'lunchlineup.jobs';
@@ -280,7 +306,7 @@ export class AvailabilityImportPublisher implements OnModuleInit, OnModuleDestro
                 const body = Buffer.from(JSON.stringify({
                     type: 'pdf.parse',
                     job_id: importId,
-                    retry_count: 0,
+                    retry_count: retryCount,
                     payload: { import_id: importId, tenant_id: tenantId },
                 }));
                 if (!channel.sendToQueue(queueName, body, {
