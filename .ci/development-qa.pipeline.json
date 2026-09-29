@@ -37,7 +37,7 @@
     },
     {
       "name": "Build contracts, typecheck web, and check repair helpers",
-      "run": "set -euo pipefail; build_root=\"$RUNNER_TEMP/lunchlineup-source-$CI_RUN_ID/build\"; cd \"$build_root\"; npm run build --workspace @lunchlineup/api-contract; npm run build --workspace @lunchlineup/config; npm run build --workspace @lunchlineup/rbac; npm run typecheck --workspace @lunchlineup/web; (cd apps/web && npx vitest run --project=unit tests/unit/settings-request.test.ts tests/unit/settings-save-state.test.ts tests/unit/invitation-recovery.test.ts tests/unit/profile-save-state.test.ts tests/unit/staff-action-confirmation.test.ts tests/unit/time-card-mutation-result.test.ts); npx playwright install chromium",
+      "run": "set -euo pipefail; build_root=\"$RUNNER_TEMP/lunchlineup-source-$CI_RUN_ID/build\"; cd \"$build_root\"; npm run build --workspace @lunchlineup/api-contract; npm run build --workspace @lunchlineup/config; npm run build --workspace @lunchlineup/rbac; npm run test --workspace @lunchlineup/api-contract; npm run typecheck --workspace @lunchlineup/web; (cd apps/web && npx vitest run --project=unit tests/unit/settings-request.test.ts tests/unit/settings-save-state.test.ts tests/unit/invitation-recovery.test.ts tests/unit/profile-save-state.test.ts tests/unit/staff-action-confirmation.test.ts tests/unit/time-card-mutation-result.test.ts); npx playwright install chromium",
       "timeout_seconds": 1200
     },
     {
