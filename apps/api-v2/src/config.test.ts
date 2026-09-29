@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import Fastify from 'fastify';
 import { loadConfig } from './config';
 
 function config(trustProxy: string) {
@@ -19,13 +20,36 @@ describe('API v2 runtime configuration', () => {
     ]);
   });
 
-  it('accepts bounded hop counts and explicit IP or CIDR networks', () => {
-    expect(config('2').trustProxy).toBe(2);
+  it('accepts explicit IP or CIDR networks', () => {
     expect(config('127.0.0.1, 10.0.0.0/8, fd00::/8').trustProxy).toEqual([
       '127.0.0.1',
       '10.0.0.0/8',
       'fd00::/8',
     ]);
+  });
+
+  it('rejects permissive or unsupported hop-only proxy settings with actionable guidance', () => {
+    for (const value of ['true', '1', '2', '10', '11']) {
+      expect(() => config(value)).toThrow(/TRUST_PROXY.*trusted named networks, IP addresses, or CIDRs/);
+    }
+    for (const value of ['', 'false', '0']) expect(config(value).trustProxy).toBe(false);
+  });
+
+  it.each([
+    ['false', '127.0.0.1', '127.0.0.1'],
+    ['127.0.0.1', '127.0.0.1', '198.51.100.2'],
+    ['127.0.0.1', '203.0.113.9', '203.0.113.9'],
+  ])('uses forwarded IP only behind an explicitly trusted peer (%s, %s)', async (setting, peer, expectedIp) => {
+    const app = Fastify({ trustProxy: config(setting).trustProxy });
+    app.get('/proxy-proof', request => ({ ip: request.ip }));
+    try {
+      const response = await app.inject({ method: 'GET', url: '/proxy-proof', remoteAddress: peer,
+        headers: { 'x-forwarded-for': '192.0.2.1, 198.51.100.2' } });
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toEqual({ ip: expectedIp });
+    } finally {
+      await app.close();
+    }
   });
 
   it('rejects wildcards and invalid CIDR ranges', () => {

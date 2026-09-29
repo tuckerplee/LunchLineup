@@ -19,14 +19,106 @@ compose=(docker compose --project-name "$project" --env-file "$env_file" -f "$bu
 mkdir -- "$qualification_root"
 runtime_root=""
 cleanup(){
-  status=$?; cleanup_status=0
+  status=$?; cleanup_status=0; down_status=0
   if [[ -f "$artifact_root/fullstack-target.json" ]]; then
-    "${compose[@]}" --profile ops logs --tail 120 >"$artifact_root/development-runtime-final.log" 2>&1 || true
-    "${compose[@]}" --profile ops down -v --remove-orphans >"$artifact_root/development-cleanup.log" 2>&1 || cleanup_status=$?
+    timeout --kill-after=5s 30s "${compose[@]}" --profile ops logs --tail 120 >"$artifact_root/development-runtime-final.log" 2>&1 || true
+    timeout --kill-after=5s 60s "${compose[@]}" --profile ops down -v --remove-orphans >"$artifact_root/development-cleanup.log" 2>&1 || down_status=$?
   fi
-  if [[ -n "$runtime_root" && -d "$runtime_root" && ! -L "$runtime_root" && "$(cat "$runtime_root/owner")" == "$CI_RUN_ID" ]]; then
-    rm -rf -- "$runtime_root"
+  # The adapter fixes every read to this controller run's private store. Keep
+  # the short runroot available until independent readback proves no survivor.
+  containers_status=0; volumes_status=0; networks_status=0
+  timeout --kill-after=5s 30s docker ps -a --format json >"$artifact_root/development-cleanup-containers.json" 2>"$artifact_root/development-cleanup-containers.log" || containers_status=$?
+  timeout --kill-after=5s 30s docker volume ls --format json >"$artifact_root/development-cleanup-volumes.json" 2>"$artifact_root/development-cleanup-volumes.log" || volumes_status=$?
+  timeout --kill-after=5s 30s docker network ls --format json >"$artifact_root/development-cleanup-networks.json" 2>"$artifact_root/development-cleanup-networks.log" || networks_status=$?
+  python3 - "$artifact_root" "$project" "$CI_RUN_ID" "$CI_COMMIT_SHA" "$runtime_root" "$status" "$down_status" "$containers_status" "$volumes_status" "$networks_status" <<'PY' || cleanup_status=$?
+import datetime, errno, json, socket, sys
+from pathlib import Path
+root, project, run_id, source_sha, runtime_root = sys.argv[1:6]
+primary_status, down_status, *read_statuses = map(int, sys.argv[6:])
+root = Path(root)
+absence = {}
+errors = []
+for resource, read_status in zip(('containers', 'volumes', 'networks'), read_statuses):
+    absent = False
+    if read_status == 0:
+        try:
+            rows = json.loads((root / f'development-cleanup-{resource}.json').read_text())
+            if not isinstance(rows, list) or any(not isinstance(row, dict) for row in rows):
+                raise ValueError('invalid inventory')
+            def owned(row):
+                labels = row.get('Labels', row.get('labels', {})) or {}
+                if isinstance(labels, str):
+                    labels = dict(part.split('=', 1) for part in labels.split(',') if '=' in part)
+                if not isinstance(labels, dict):
+                    raise ValueError('invalid labels')
+                if any(labels.get(key) == project for key in ('com.docker.compose.project', 'io.podman.compose.project')):
+                    return True
+                names = row.get('Names', row.get('names', row.get('Name', row.get('name'))))
+                if isinstance(names, str):
+                    names = [names]
+                if not isinstance(names, list) or any(not isinstance(name, str) for name in names):
+                    raise ValueError('invalid names')
+                return any(name.lstrip('/') == project or name.lstrip('/').startswith((project + '_', project + '-')) for name in names)
+            absent = not any(owned(row) for row in rows)
+        except (OSError, ValueError, TypeError):
+            errors.append(f'{resource}_inventory_unverified')
+    else:
+        errors.append(f'{resource}_readback_failed')
+    absence[resource] = absent
+ports = {}
+for port in (4000, 8080, 18443):
+    with socket.socket() as probe:
+        probe.settimeout(1)
+        ports[str(port)] = probe.connect_ex(('127.0.0.1', port)) == errno.ECONNREFUSED
+passed = down_status == 0 and all(absence.values()) and all(ports.values()) and not errors
+receipt = dict(version=1, runId=run_id, sourceSha=source_sha, project=project,
+               completedAt=datetime.datetime.now(datetime.timezone.utc).isoformat(),
+               primaryExitCode=primary_status,
+               cleanupCommand='timeout --kill-after=5s 60s docker compose --project-name <project> --env-file <run-private-env> -f <candidate-compose> --profile ops down -v --remove-orphans',
+               cleanupAttempted=(root / 'fullstack-target.json').is_file(),
+               cleanupExitCode=down_status,
+               inventoryCommands=['docker ps -a --format json', 'docker volume ls --format json', 'docker network ls --format json'],
+               inventoryExitCodes=dict(zip(('containers', 'volumes', 'networks'), read_statuses)),
+               ownedResourceAbsence=absence, loopbackPortsClosed=ports,
+               runtimeDirectory=runtime_root, runtimePreservationRequired=not passed,
+               errors=errors, resourceAbsenceVerified=passed, cleanupVerified=False)
+with (root / 'development-cleanup-receipt.json').open('x') as output:
+    json.dump(receipt, output, indent=2)
+    output.write('\n')
+sys.exit(0 if passed else 1)
+PY
+  runtime_outcome=not-created
+  if [[ "$cleanup_status" == 0 && -n "$runtime_root" && -d "$runtime_root" && ! -L "$runtime_root" && "$(cat "$runtime_root/owner")" == "$CI_RUN_ID" ]]; then
+    runtime_outcome=removed
+    rm -rf -- "$runtime_root" || { cleanup_status=$?; runtime_outcome=removal-failed; }
+    if [[ -e "$runtime_root" ]]; then cleanup_status=1; runtime_outcome=removal-failed; fi
+  elif [[ -n "$runtime_root" ]]; then
+    runtime_outcome=preserved
+    [[ "$cleanup_status" != 0 ]] || runtime_outcome=ownership-unverified
+    cleanup_status=1
+    printf 'Development cleanup is unverified; preserving run-owned runtime directory: %s\n' "$runtime_root" >&2
   fi
+  python3 - "$artifact_root/development-cleanup-receipt.json" "$cleanup_status" "$runtime_outcome" <<'PY' || cleanup_status=$?
+import datetime, json, sys
+from pathlib import Path
+path = Path(sys.argv[1])
+status = int(sys.argv[2])
+outcome = sys.argv[3]
+receipt = json.loads(path.read_text())
+receipt['runtimeDirectoryOutcome'] = outcome
+receipt['runtimeDirectoryRemoved'] = outcome == 'removed'
+receipt['runtimePreservationRequired'] = outcome in ('preserved', 'removal-failed', 'ownership-unverified')
+receipt['cleanupVerified'] = receipt['resourceAbsenceVerified'] and status == 0 and outcome in ('removed', 'not-created')
+receipt['finalCleanupExitCode'] = status
+receipt['completedAt'] = datetime.datetime.now(datetime.timezone.utc).isoformat()
+if outcome in ('removal-failed', 'ownership-unverified'):
+    receipt['errors'].append('runtime_' + outcome.replace('-', '_'))
+temporary = path.with_suffix('.final.json')
+with temporary.open('x') as output:
+    json.dump(receipt, output, indent=2)
+    output.write('\n')
+temporary.replace(path)
+PY
   trap - EXIT
   if [[ "$status" == 0 && "$cleanup_status" != 0 ]]; then exit "$cleanup_status"; fi
   exit "$status"

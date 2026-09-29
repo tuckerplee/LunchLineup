@@ -6,9 +6,9 @@ import { StripeExceptionFilter } from './stripe-exception.filter';
 
 describe('Stripe exception boundary', () => {
     it.each([
-        new Stripe.errors.StripeAuthenticationError({ message: 'private provider credential', statusCode: 401 }),
-        new Stripe.errors.StripePermissionError({ message: 'private provider permission', statusCode: 403 }),
-        new Stripe.errors.StripeConnectionError({ message: 'private provider connection' }),
+        new Stripe.errors.StripeAuthenticationError({ type: 'authentication_error', message: 'private provider credential', statusCode: 401 }),
+        new Stripe.errors.StripePermissionError({ type: 'invalid_request_error', message: 'private provider permission', statusCode: 403 }),
+        new Stripe.errors.StripeConnectionError({ type: 'api_error', message: 'private provider connection' }),
     ])('returns a sanitized service failure instead of an application authentication failure', exception => {
         const log = vi.spyOn(Logger.prototype, 'error').mockImplementation(() => undefined);
         const response = { status: vi.fn().mockReturnThis(), json: vi.fn() };

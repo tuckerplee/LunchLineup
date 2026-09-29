@@ -68,10 +68,10 @@ describe('AvailabilityImportsService', () => {
     it('cancels an unfinished import and refunds once; repeated cancellation does not settle again', async () => {
         const row = { id: 'import-1', userId: 'user-1', status: 'PENDING', createdAt: new Date(), storageKey: null };
         tx.availabilityImportJob.findFirst.mockImplementation(async () => row);
-        tx.availabilityImportJob.updateMany = vi.fn(async ({ data }) => { Object.assign(row, data); return { count: 1 }; });
-        tx.creditTransaction.findFirst = vi.fn(async ({ where }) => where.id.startsWith('feature-usage') ? { amount: -1 } : null);
+        tx.availabilityImportJob.updateMany = vi.fn(async ({ data }: { data: { status: string; failureCode?: string; completedAt?: Date } }) => { Object.assign(row, data); return { count: 1 }; });
+        tx.creditTransaction.findFirst = vi.fn(async ({ where }: { where: { id: string } }) => where.id.startsWith('feature-usage') ? { amount: -1 } : null);
         tx.creditTransaction.findMany.mockResolvedValue([{ id: 'feature-usage-availability-import:import-1', amount: -1 }, { id: 'feature-refund-availability-import:import-1', amount: 0, debtAmount: -1 }]);
-        tx.$queryRaw = vi.fn(async (query) => String(query).includes('settle_positive') ? [{ creditedValue: 1, replayed: false }] : []);
+        tx.$queryRaw = vi.fn(async (query: TemplateStringsArray) => String(query).includes('settle_positive') ? [{ creditedValue: 1, replayed: false }] : []);
         tx.auditLog = { create: vi.fn() };
         featureAccess.lockTenantInTransaction = vi.fn();
         const service = new AvailabilityImportsService(tenantDb, featureAccess, publisher);
@@ -79,7 +79,7 @@ describe('AvailabilityImportsService', () => {
         await service.cancelImport('tenant-1', 'actor', 'import-1');
         expect(tx.availabilityImportJob.updateMany).toHaveBeenCalledOnce();
         expect(tx.auditLog.create).toHaveBeenCalledOnce();
-        expect(tx.$queryRaw.mock.calls.filter(([query]) => String(query).includes('settle_positive'))).toHaveLength(1);
+        expect(tx.$queryRaw.mock.calls.filter(([query]: [TemplateStringsArray]) => String(query).includes('settle_positive'))).toHaveLength(1);
     });
 
     it('does not cancel an import that completed first', async () => {
