@@ -66,7 +66,7 @@ test('API-01 uses one explicit shared route catalog and no wildcard compatibilit
   const routes = read('apps/api-v2/src/application/routes.ts');
   const operationCount = [...catalog.matchAll(/\{ operationId: '/g)].length;
 
-  assert.equal(operationCount, 121);
+  assert.equal(operationCount, 128);
   assert.match(routes, /APPLICATION_API_OPERATIONS/);
   assert.match(routes, /url: `\/v2\$\{operation\.path\}`/);
   assert.doesNotMatch(routes, /\/v2\/\*/);
@@ -150,6 +150,9 @@ test('API-02 owns People natively with public role/user UUIDs and native staff d
     'getStaffSchedulingProfile',
     'updateStaffSchedulingProfile',
     'getStaffMember',
+    'updateStaffIdentity',
+    'getStaffLifecycle',
+    'setStaffSuspension',
     'createStaffInvitation',
     'getStaffInvitation',
     'retryStaffInvitation',
@@ -168,7 +171,8 @@ test('API-02 owns People natively with public role/user UUIDs and native staff d
   assert.match(server, /new PeopleService\(database, config\)/);
   assert.match(server, /new PeopleIdentifierTranslator\(people\)/);
   assert.match(routes, /registerPeopleRoutes/);
-  assert.match(routes, /deactivate\(identity, request\.params\.userId\)/);
+  assert.match(routes, /remove\(identity, request\.params\.userId\)/);
+  assert.match(routes, /setSuspended\(identity, request\.params\.userId, request\.body\)/);
   assert.match(service, /publicId: true/);
   assert.match(service, /anonymizeDeletedUser/);
   assert.match(service, /deleteAvailabilityImportStorageKeys/);

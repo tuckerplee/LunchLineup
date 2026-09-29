@@ -1,5 +1,7 @@
 # Production Readiness Runbook
 
+**Current user scope:** keep public legacy VM4014 online until LunchLineup 2.0 has been fully tested for months. The immediate outcome is isolated, long-duration 2.0 qualification. Production migration and activation are entirely deferred. No production access, test traffic, settings, runtime, data, recovery, or routing action is authorized. The production bridge below is future source planning only; references to external production verification do not authorize performing it now.
+
 ## Current authority and blocked production bridge — 2026-09-29
 
 **This repository does not currently have an approved executable public-production qualification or deployment path.** `.ci/pipeline.json` on the internal CI appliance is authoritative. GitHub is a source mirror; GitHub Actions is disabled, and `.github/workflows/` contains documentation only. The live internal pipeline qualifies an **internal-beta** candidate and signs its receipt with the separately managed Ed25519 policy. It does not produce an approved production release, power on VM107, or authorize launch.

@@ -1,5 +1,7 @@
 # Production qualification bridge — blocked until reviewed and evidenced
 
+**Current user scope:** keep public legacy VM4014 online until LunchLineup 2.0 has been fully tested for months. The immediate outcome is isolated, long-duration 2.0 qualification. Production migration and activation are entirely deferred. No production access, test traffic, settings, runtime, data, recovery, or routing action is authorized. The production bridge below is future source planning only; references to external production verification do not authorize performing it now.
+
 The immediate scope is isolated LunchLineup 2.0 qualification followed by months of testing. The user explicitly requires VM4014 to remain online and production to remain completely untouched: no production access, traffic, settings, routing, deployment, migration, or provider mutations. Future public-cutover gates below are deferred requirements, not work authorized in this phase. It does not approve a signer, enable release CI, authorize a VM start or public cutover, or change routing. The current `.ci/pipeline.json` qualifies internal-beta artifacts only. GitHub is a source mirror and Actions is disabled. Retain the security and recovery requirements in [production readiness](production-readiness.md) and [deployment rollback](deployment-rollback.md); their former GitHub/VM217 commands are historical.
 
 ## Recorded target and ownership boundaries

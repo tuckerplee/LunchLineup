@@ -429,6 +429,14 @@
       "contractPhase": "after-rollback-window",
       "requiresOldReleaseProof": true,
       "rationale": "time-card and break public identifier backfills and old-writer-compatible defaults remain during rollback; isolated old-release proof is required before production mutation."
+    },
+    "packages/db/prisma/migrations/20260908_overnight_start_day_ownership.sql": {
+      "sha256": "2868aace2f4c3773ec0baf1ab3a11869c4f71b9bb7ca6821a35a5f9e1498ad18",
+      "phase": "expand-contract",
+      "rollbackSchema": "retain",
+      "contractPhase": "compatibility-proven-inline",
+      "requiresOldReleaseProof": true,
+      "rationale": "Replaces schedule-window triggers with start-day ownership and a 24-hour duration bound while retaining candidate schema during rollback; old-release proof must cover existing supported writes, candidate-created overnight rows, demand ownership and schedule edits before compatibility is accepted."
     }
   }
 }

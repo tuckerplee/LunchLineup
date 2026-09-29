@@ -1,5 +1,7 @@
 # Runbook: Deployment Rollback
 
+**Current user scope:** keep public legacy VM4014 online until LunchLineup 2.0 has been fully tested for months. The immediate outcome is isolated, long-duration 2.0 qualification. Production migration and activation are entirely deferred. No production access, test traffic, settings, runtime, data, recovery, or routing action is authorized. The production bridge below is future source planning only; references to external production verification do not authorize performing it now.
+
 ## Current incident boundary — 2026-09-29
 
 **The GitHub/VM217 automatic and emergency rollback procedures below are historical design contracts, not an available rollback path for current public production.** GitHub Actions is disabled; `.ci/pipeline.json` is the authoritative internal-beta qualification pipeline and has no approved public-production mutation or rollback stage. Do not dispatch the historical workflow, re-enable Actions, or invoke VM217 transports against a different host.
