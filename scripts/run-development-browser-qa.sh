@@ -255,12 +255,26 @@ for(const row of inventory){
   if(!owned)continue;
   const id=row.Id??row.ID??row.id;
   if(!/^[a-f0-9]{64}$/.test(id))throw new Error('Runtime container immutable ID is missing.');
-  const rows=json(['inspect',id]);
+  const rawInspect=read(['inspect',id]),rawInspection=write(`${id}-raw-inspect.json`,rawInspect);
+  let rows;try{rows=JSON.parse(rawInspect);}catch{throw new Error('Runtime container inspection JSON is malformed.');}
   if(!Array.isArray(rows)||rows.length!==1)throw new Error('Runtime container inspection is incomplete.');
   const actual=rows[0],boundLabels=actual.Config?.Labels??{},service=boundLabels['com.docker.compose.service']??boundLabels['io.podman.compose.service'];
   if(actual.Id!==id||actual.State?.Running!==true||boundLabels['com.docker.compose.project']!==policy.project||!Object.hasOwn(policy.services,service)||services.has(service))throw new Error('Unexpected, duplicate, or inactive runtime container.');
   services.add(service);
-  const declared=policy.services[service],networks=actual.NetworkSettings?.Networks??{},attachments=Object.keys(networks).sort();
+  const declared=policy.services[service],networks=actual.NetworkSettings?.Networks??{};
+  let attachments=Object.keys(networks).sort();
+  // Podman 5.4.2 emits a zero-valued none pseudo-network via setDefaultNetworks:
+  // https://github.com/containers/podman/blob/v5.4.2/libpod/networking_common.go#L222-L265
+  // Dummy field schema: https://github.com/containers/podman/blob/v5.4.2/libpod/define/container_inspect.go#L660-L706
+  if(declared.networkMode==='none'){
+    if(actual.HostConfig?.NetworkMode!=='none')throw new Error('Parser network mode is not none.');
+    if(attachments.length){
+      const dummy=networks.none,strings=new Set(['EndpointID','Gateway','IPAddress','IPv6Gateway','GlobalIPv6Address','MacAddress']),prefixes=new Set(['IPPrefixLen','GlobalIPv6PrefixLen']),arrays=new Set(['Aliases','Links','SecondaryIPAddresses','SecondaryIPv6Addresses','AdditionalMACAddresses']),maps=new Set(['DriverOpts','IPAMConfig']);
+      const zero=(key,value)=>strings.has(key)?value==='':prefixes.has(key)?value===0:arrays.has(key)?value===null||(Array.isArray(value)&&value.length===0):maps.has(key)?value===null||(value&&typeof value==='object'&&!Array.isArray(value)&&Object.keys(value).length===0):false;
+      if(attachments.length!==1||attachments[0]!=='none'||!dummy||typeof dummy!=='object'||Array.isArray(dummy)||dummy.NetworkID!=='none'||Object.entries(dummy).some(([key,value])=>key!=='NetworkID'&&!zero(key,value)))throw new Error('Parser none pseudo-network is not an empty Podman dummy.');
+      attachments=[];
+    }
+  }
   const expected=declared.networks.map(key=>config.networks[key].name).sort();
   if(JSON.stringify(attachments)!==JSON.stringify(expected))throw new Error(`Unexpected runtime network attachment: ${service}`);
   if(declared.networkMode==='none'&&actual.HostConfig?.NetworkMode!=='none')throw new Error('Parser network mode is not none.');
@@ -273,12 +287,21 @@ for(const row of inventory){
   const routeReader=['engine','worker','pdf-parser'].includes(service)?['/opt/venv/bin/python','-c','import pathlib, sys; sys.stdout.write(pathlib.Path(sys.argv[1]).read_text())']:['cat'];
   const v4=read(['exec',id,...routeReader,'/proc/net/route']),v6=read(['exec',id,...routeReader,'/proc/net/ipv6_route']);
   const ipv4Routes=write(`${service}-ipv4-routes.txt`,v4),ipv6Routes=write(`${service}-ipv6-routes.txt`,v6);
+  let interfaces=null;
+  if(declared.networkMode==='none'){
+    const dev=read(['exec',id,...routeReader,'/proc/net/dev']);interfaces=write(`${service}-interfaces.txt`,dev);
+    const lines=dev.trim().split('\n');
+    if(lines.length<3||!/^Inter-/.test(lines[0])||!lines[1].includes('face'))throw new Error('Parser interface readback is malformed.');
+    const names=lines.slice(2).map(line=>{const match=line.match(/^\s*([^: ]+):\s*(.*)$/);if(!match||match[2].trim().split(/\s+/).length!==16||!match[2].trim().split(/\s+/).every(value=>/^\d+$/.test(value)))throw new Error('Parser interface readback is malformed.');return match[1];});
+    if(JSON.stringify(names)!==JSON.stringify(['lo']))throw new Error('Parser has a non-loopback interface.');
+  }
   const v4Rows=v4.trim().split('\n');
   if(!/^Iface\s+Destination\s+Gateway\s+Flags/.test(v4Rows.shift()??''))throw new Error('IPv4 route readback is malformed.');
+  if(declared.networkMode==='none'&&v4Rows.length)throw new Error('Parser has IPv4 route entries.');
   for(const line of v4Rows){const fields=line.trim().split(/\s+/);if(fields.length<8||! /^[a-f0-9]{8}$/i.test(fields[1])||! /^[a-f0-9]{8}$/i.test(fields[7]))throw new Error('IPv4 route readback is malformed.');if(fields[1]==='00000000'&&fields[7]==='00000000')throw new Error(`IPv4 default route remains: ${service}`);}
-  for(const line of v6.split('\n').filter(line=>line.trim())){const fields=line.trim().split(/\s+/);if(fields.length!==10||! /^[a-f0-9]{32}$/i.test(fields[0])||! /^[a-f0-9]{2}$/i.test(fields[1])||! /^[a-f0-9]{8}$/i.test(fields[8]))throw new Error('IPv6 route readback is malformed.');const rejected=(parseInt(fields[8],16)&0x200)!==0;if(/^0{32}$/.test(fields[0])&&fields[1]==='00'&&!rejected)throw new Error(`Usable IPv6 default route remains: ${service}`);}
+  for(const line of v6.split('\n').filter(line=>line.trim())){const fields=line.trim().split(/\s+/);if(fields.length!==10||! /^[a-f0-9]{32}$/i.test(fields[0])||! /^[a-f0-9]{2}$/i.test(fields[1])||! /^[a-f0-9]{8}$/i.test(fields[8]))throw new Error('IPv6 route readback is malformed.');if(declared.networkMode==='none'&&fields[9]!=='lo')throw new Error('Parser IPv6 route has non-loopback interface.');const rejected=(parseInt(fields[8],16)&0x200)!==0;if(/^0{32}$/.test(fields[0])&&fields[1]==='00'&&!rejected)throw new Error(`Usable IPv6 default route remains: ${service}`);}
   const inspectProof=write(`${service}-attachment.json`,{containerId:id,project:policy.project,service,imageRef:config.services[service].image,imageId:'sha256:'+imageId,networkMode:actual.HostConfig?.NetworkMode,attachments:attachments.map(name=>({name,networkId:networks[name].NetworkID})),running:true});
-  containers.push({service,containerId:id,imageId:'sha256:'+imageId,attachments:inspectProof,ipv4Routes,ipv6Routes,noIpv4DefaultRoute:true,noUsableIpv6DefaultRoute:true});
+  containers.push({service,containerId:id,imageId:'sha256:'+imageId,attachments:inspectProof,rawInspection,interfaces,ipv4Routes,ipv6Routes,noIpv4DefaultRoute:true,noUsableIpv6DefaultRoute:true});
 }
 for(const service of required.split(','))if(!services.has(service))throw new Error(`Required runtime service is missing: ${service}`);
 write('proof.json',{version:1,runId:policy.runId,sourceSha:policy.sourceSha,project:policy.project,phase,checkedAt:new Date().toISOString(),scope:'running-application-containers-only',buildTrafficQualified:false,noExternalProbePerformed:true,containers});
