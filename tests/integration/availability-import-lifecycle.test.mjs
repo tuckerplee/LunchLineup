@@ -11,6 +11,7 @@ const require = createRequire(import.meta.url);
 require('ts-node/register/transpile-only');
 require('tsconfig-paths/register');
 const { AvailabilityImportPublisher } = require('../../apps/api/src/availability-imports/availability-imports.publisher.ts');
+const { TenantPrismaService } = require('../../apps/api/src/database/tenant-prisma.service.ts');
 
 function migrationDatabaseUrl() {
   const value = process.env.MIGRATION_DATABASE_URL;
@@ -20,6 +21,8 @@ function migrationDatabaseUrl() {
 
 test('publisher automatically republishes expired execution owners without touching live, expired or cancelled work', async () => {
   const prisma = new PrismaClient({ datasources: { db: { url: migrationDatabaseUrl() } } });
+  assert.ok(process.env.DATABASE_URL, 'restricted DATABASE_URL is required for publisher mutation proof');
+  const app = new PrismaClient({ datasources: { db: { url: process.env.DATABASE_URL } } });
   const suffix = randomUUID();
   const tenantId = `tenant-orphan-${suffix}`;
   const userId = `user-orphan-${suffix}`;
@@ -27,15 +30,19 @@ test('publisher automatically republishes expired execution owners without touch
   const source = Buffer.concat([Buffer.from('LLAI\x03', 'binary'), Buffer.alloc(29, 0x5a)]);
   const ids = Object.fromEntries(['orphan', 'live', 'expired', 'cancelled'].map(kind => [kind, `${kind}-${suffix}`]));
   const published = [];
-  const publisher = new AvailabilityImportPublisher({
-    withPlatformAdmin: operation => operation(prisma),
-    withTenant: (_tenantId, operation) => operation(prisma),
-  });
+  const publisher = new AvailabilityImportPublisher(new TenantPrismaService(app));
   publisher.publishMessage = async (_tenantId, id) => {
     published.push(id);
     throw new Error('first publication is uncertain');
   };
+  let originalFailure;
   try {
+    const [role] = await app.$queryRaw`SELECT current_user AS name, rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user`;
+    assert.equal(role.rolsuper, false);
+    assert.equal(role.rolbypassrls, false);
+    assert.notEqual(role.name, new URL(migrationDatabaseUrl()).username);
+    // Owner credentials create synthetic fixtures only. The actual publisher
+    // runs through the production context owner on the restricted app role.
     await prisma.$executeRaw`
       INSERT INTO "Tenant" ("id", "name", "slug", "status", "planTier", "stripeSubscriptionId", "stripeSubscriptionCurrentPeriodEnd", "createdAt", "updatedAt")
       VALUES (${tenantId}, 'Orphan Recovery', ${`orphan-${suffix}`}, 'ACTIVE'::"TenantStatus", 'GROWTH'::"PlanTier", ${`sub-${suffix}`}, CURRENT_TIMESTAMP + INTERVAL '1 day', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
@@ -95,9 +102,28 @@ test('publisher automatically republishes expired execution owners without touch
     assert.equal(retry.publishAttempts, 2);
     assert.equal(published.filter(id => id === ids.orphan).length, 2);
     assert.equal(await prisma.creditTransaction.count({ where: { tenantId } }), 4);
+  } catch (error) {
+    originalFailure = error;
+    throw error;
   } finally {
-    await prisma.$executeRaw`DELETE FROM "Tenant" WHERE "id" = ${tenantId}`;
-    await prisma.$disconnect();
+    try {
+      // Exact synthetic fixture teardown only; ledger rows do not cascade.
+      // Session-local owner bypass is never used by the publisher being proved.
+      await prisma.$transaction(async tx => {
+        await tx.$executeRawUnsafe('SET LOCAL session_replication_role = replica');
+        await tx.availabilityImportJob.deleteMany({ where: { tenantId, id: { in: Object.values(ids) } } });
+        await tx.creditTransaction.deleteMany({ where: {
+          tenantId, id: { in: Object.values(ids).map(id => `feature-usage-availability-import:${id}`) },
+        } });
+        await tx.user.deleteMany({ where: { tenantId, id: userId } });
+        await tx.tenant.deleteMany({ where: { id: tenantId } });
+      });
+    } catch (cleanupFailure) {
+      if (originalFailure) throw new AggregateError([originalFailure, cleanupFailure], 'Publisher proof and synthetic cleanup both failed');
+      throw cleanupFailure;
+    } finally {
+      await Promise.all([prisma.$disconnect(), app.$disconnect()]);
+    }
   }
 });
 

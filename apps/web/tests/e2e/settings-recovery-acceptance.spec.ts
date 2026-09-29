@@ -56,7 +56,7 @@ test.describe.serial('Settings recovery acceptance', { tag: '@full-stack' }, () 
         });
     }
 
-    test('retains the submitted draft and prevents a second write while readback is unavailable', async ({ page }) => {
+    test('retains the submitted draft and prevents a second write while readback is unavailable', async ({ page }, testInfo) => {
         await loginAsSeedAdmin(page, '/dashboard/settings');
         await expect(page.getByRole('button', { name: 'Save Changes', exact: true })).toBeEnabled();
         await page.getByLabel('Organization Name').fill('Readback retry workspace');
@@ -74,11 +74,13 @@ test.describe.serial('Settings recovery acceptance', { tag: '@full-stack' }, () 
         await expect(page.getByRole('button', { name: 'Check saved settings' })).toBeVisible();
         await expect(page.getByRole('button', { name: 'Save Changes', exact: true })).toBeDisabled();
         await expect(page.getByLabel('Organization Name')).toHaveValue('Readback retry workspace');
+        await page.screenshot({ path: testInfo.outputPath('settings-unknown-retained.png'), fullPage: true });
         await page.unroute('**/api/v2/settings');
         await page.getByRole('button', { name: 'Check saved settings' }).click();
         await expect(page.getByText('Saved settings match your submitted changes. Confirmed by a fresh read.', { exact: true })).toBeVisible();
         await expect(page.getByRole('button', { name: 'Save Changes', exact: true })).toBeEnabled();
         expect(writes).toBe(1);
+        await page.screenshot({ path: testInfo.outputPath('settings-readback-confirmed.png'), fullPage: true });
     });
 
     test('lets a user resolve an uncommitted save by explicitly discarding the retained draft', async ({ page }) => {
