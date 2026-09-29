@@ -22,16 +22,17 @@ function fixture(modify = () => {}, verify) {
   const root = mkdtempSync(join(tmpdir(), 'lunchlineup-attachment-test-'));
   try {
     const identity = { sourceSha: 'a'.repeat(40), runId: 'attachment-fixture', project };
-    const config = { services: { api: { image: 'fixture:api' }, 'pdf-parser': { image: 'fixture:parser' } }, networks: { app: { name: network } } };
-    const policy = { ...identity, services: { api: { networks: ['app'] }, 'pdf-parser': { networks: [], networkMode: 'none' } } };
+    const serviceNames = ['api', 'pdf-parser', 'engine', 'worker'];
+    const config = { services: Object.fromEntries(serviceNames.map(service => [service, { image: `fixture:${service}`, environment: { PROVIDER_API_KEY: 'fixture-provider-secret' } }])), networks: { app: { name: network } } };
+    const policy = { ...identity, services: Object.fromEntries(serviceNames.map(service => [service, service === 'pdf-parser' ? { networks: [], networkMode: 'none' } : { networks: ['app'] }])) };
     const proof = { ...identity, networks: [{ name: network, networkId: id(network) }] };
-    const state = { inventory: [], containers: {}, images: {}, routes: {}, required: 'api,pdf-parser', policy, proof };
-    for (const service of ['api', 'pdf-parser']) {
+    const state = { inventory: [], containers: {}, images: {}, routes: {}, required: serviceNames.join(','), policy, proof };
+    for (const service of serviceNames) {
       const containerId = id(service), imageId = id(`image-${service}`);
       state.inventory.push({ Id: containerId, Names: [`${project}_${service}_1`], Labels: { 'com.docker.compose.project': project } });
-      state.containers[containerId] = { Id: containerId, Image: `sha256:${imageId}`, State: { Running: true }, Config: { Labels: { 'com.docker.compose.project': project, 'com.docker.compose.service': service } }, HostConfig: { NetworkMode: service === 'api' ? network : 'none' }, NetworkSettings: { Networks: service === 'api' ? { [network]: { NetworkID: id(network) } } : {} } };
+      state.containers[containerId] = { Id: containerId, Image: `sha256:${imageId}`, State: { Running: true }, Config: { Labels: { 'com.docker.compose.project': project, 'com.docker.compose.service': service } }, HostConfig: { NetworkMode: service !== 'pdf-parser' ? network : 'none' }, NetworkSettings: { Networks: service !== 'pdf-parser' ? { [network]: { NetworkID: id(network) } } : {} } };
       state.images[config.services[service].image] = { Id: imageId };
-      state.routes[containerId] = { '/proc/net/route': service === 'api' ? v4 : v4.split('\n')[0] + '\n', '/proc/net/ipv6_route': rejectedV6 };
+      state.routes[containerId] = { '/proc/net/route': service !== 'pdf-parser' ? v4 : v4.split('\n')[0] + '\n', '/proc/net/ipv6_route': rejectedV6 };
     }
     modify(state);
     const bin = join(root, 'bin'), output = join(root, 'output'); mkdirSync(bin); mkdirSync(output);
@@ -44,7 +45,7 @@ let value;
 if(args[0]==='ps')value=state.inventory;
 else if(args[0]==='inspect')value=[state.containers[args[1]]];
 else if(args[0]==='image'&&args[1]==='inspect')value=[state.images[args[2]]];
-else if(args[0]==='exec'&&args[2]==='cat'&&['/proc/net/route','/proc/net/ipv6_route'].includes(args[3])){process.stdout.write(state.routes[args[1]][args[3]]);process.exit(0);}
+else if(args[0]==='exec'){const python=['engine','worker','pdf-parser'].some(service=>state.containers[args[1]].Config.Labels['com.docker.compose.service']===service),path=args.at(-1);if(python?(args[2]!=='/opt/venv/bin/python'||args[3]!=='-c'):(args[2]!=='cat'))process.exit(93);if(!['/proc/net/route','/proc/net/ipv6_route'].includes(path))process.exit(94);if(state.failExec===args[1]){process.stdout.write('partial route output');process.stderr.write('fixture route reader failed fixture-provider-secret');process.exit(127);}process.stdout.write(state.routes[args[1]][path]);process.exit(0);}
 else process.exit(92);
 process.stdout.write(JSON.stringify(value));
 `, { mode: 0o700 });
@@ -59,14 +60,17 @@ test('actual attachment admission binds immutable container/image/network IDs an
   const proof = JSON.parse(readFileSync(join(output, 'proof.json'), 'utf8'));
   assert.equal(proof.buildTrafficQualified, false);
   assert.equal(proof.noExternalProbePerformed, true);
-  assert.equal(proof.containers.length, 2);
+  assert.equal(proof.containers.length, 4);
   for (const container of proof.containers) for (const artifact of [container.attachments, container.ipv4Routes, container.ipv6Routes]) {
     const bytes = readFileSync(join(output, artifact.artifact));
     assert.equal(createHash('sha256').update(bytes).digest('hex'), artifact.sha256);
     assert.equal(bytes.length, artifact.bytes);
   }
   assert.deepEqual(commands[0], ['ps', '--no-trunc', '--format', 'json']);
-  assert.ok(commands.filter(args => args[0] === 'exec').every(args => args[2] === 'cat' && args[3].startsWith('/proc/net/')));
+  for (const args of commands.filter(args => args[0] === 'exec')) {
+    assert.ok(args.at(-1).startsWith('/proc/net/'));
+    assert.equal(args[2], args[1] === id('api') ? 'cat' : '/opt/venv/bin/python');
+  }
   assert.deepEqual(JSON.parse(readFileSync(join(output, 'pdf-parser-attachment.json'), 'utf8')).attachments, []);
 }));
 
@@ -104,3 +108,15 @@ test('attachment admission runs after early API startup before later sorted imag
   assert.ok(final > early);
   assert.ok(fixtures > final);
 });
+
+test('failed distroless route command retains sanitized command arguments and output before rejecting proof', () => fixture(state => { state.failExec = id('engine'); }, ({ result, output }) => {
+  assert.notEqual(result.status, 0);
+  assert.equal(existsSync(join(output, 'proof.json')), false);
+  const failed = JSON.parse(readFileSync(join(output, 'failed-command.json'), 'utf8'));
+  assert.equal(failed.status, 127);
+  assert.equal(failed.stdout, 'partial route output');
+  assert.equal(failed.stderr, 'fixture route reader failed [REDACTED]');
+  assert.ok(!JSON.stringify(failed).includes('fixture-provider-secret'));
+  assert.deepEqual(failed.args.slice(0, 4), ['exec', id('engine'), '/opt/venv/bin/python', '-c']);
+  assert.equal(failed.args.at(-1), '/proc/net/route');
+}));

@@ -23,6 +23,7 @@ function fixture(options, verify) {
     writeFileSync(join(runtime, 'owner'), options.owner ?? 'cleanup-fixture');
     writeFileSync(join(runtime, 'state'), 'retain until absence proven');
     writeFileSync(join(artifact, 'fullstack-target.json'), '{}');
+    writeFileSync(join(root, 'development-compose.json'), JSON.stringify({ services: { api: {}, worker: {}, migrate: {} } }));
     for (const resource of ['containers', 'volumes', 'networks']) writeFileSync(join(root, `${resource}.json`), options[resource] ?? '[]');
     // These stubs receive every Docker/Compose invocation. No daemon, SSH,
     // application, external socket or real listener is involved.
@@ -60,6 +61,7 @@ class socket:
     const result = spawnSync('/bin/bash', ['-c', `set -euo pipefail
 artifact_root="$FIXTURE_ROOT/artifacts"
 runtime_root="$FIXTURE_ROOT/runtime"
+qualification_root="$FIXTURE_ROOT"
 project='${project}'
 CI_RUN_ID=cleanup-fixture
 CI_COMMIT_SHA=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
@@ -83,7 +85,7 @@ exit "$FIXTURE_PRIMARY_STATUS"
     assert.equal(receipt.runId, 'cleanup-fixture');
     assert.equal(receipt.sourceSha, 'a'.repeat(40));
     assert.equal(receipt.primaryExitCode, options.primaryStatus ?? 0);
-    verify({ result, receipt, runtime });
+    verify({ result, receipt, runtime, commands, artifact });
   } finally { rmSync(root, { recursive: true, force: true }); }
 }
 
@@ -156,3 +158,14 @@ for (const options of [{ removeFailure: true }, { owner: 'another-run' }]) {
     });
   });
 }
+
+test('pre-down logs select only existing declared project services and exclude absent or completed migrate', () => {
+  const labels = service => ({ 'com.docker.compose.project': project, 'com.docker.compose.service': service });
+  fixture({ primaryStatus: 31, containers: JSON.stringify([{ Names: [`${project}_api_1`], Labels: labels('api') }, { Names: [`${project}_migrate_1`], Labels: labels('migrate') }, { Names: ['foreign_worker_1'], Labels: { ...labels('worker'), 'com.docker.compose.project': 'foreign' } }]) }, ({ result, commands, artifact }) => {
+    assert.equal(result.status, 31);
+    const log = commands.split('\n').find(command => command.includes(' logs '));
+    assert.ok(log.endsWith('logs --tail 120 api'), log);
+    assert.equal(readFileSync(join(artifact, 'development-final-log-services.txt'), 'utf8'), 'api\n');
+    assert.ok(commands.indexOf(' logs ') < commands.indexOf(' down '));
+  });
+});

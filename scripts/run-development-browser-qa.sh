@@ -27,7 +27,21 @@ runtime_root=""
 cleanup(){
   status=$?; cleanup_status=0; down_status=0
   if [[ -f "$artifact_root/fullstack-target.json" ]]; then
-    timeout --kill-after=5s 30s "${compose[@]}" --profile ops logs --tail 120 >"$artifact_root/development-runtime-final.log" 2>&1 || true
+    # Collect only existing declared runtime services; one-shot migrate may be absent.
+    if timeout --kill-after=5s 30s docker ps -a --format json >"$artifact_root/development-final-log-containers.json" 2>"$artifact_root/development-final-log-collection.log" &&
+       node - "${qualification_root:-}/development-compose.json" "$artifact_root/development-final-log-containers.json" "$project" >"$artifact_root/development-final-log-services.txt" 2>>"$artifact_root/development-final-log-collection.log" <<'NODE'
+const fs=require('node:fs'),[configPath,inventoryPath,project]=process.argv.slice(2),config=JSON.parse(fs.readFileSync(configPath)),rows=JSON.parse(fs.readFileSync(inventoryPath));
+if(!Array.isArray(rows))throw new Error('Log container inventory malformed.');
+const services=new Set();
+for(const row of rows){let labels=row.Labels??row.labels??{};if(typeof labels==='string')labels=Object.fromEntries(labels.split(',').filter(part=>part.includes('=')).map(part=>part.split(/=(.*)/s).slice(0,2)));if(labels['com.docker.compose.project']!==project&&labels['io.podman.compose.project']!==project)continue;const service=labels['com.docker.compose.service']??labels['io.podman.compose.service'];if(service!=='migrate'&&/^[a-z][a-z0-9-]*$/.test(service)&&Object.hasOwn(config.services,service))services.add(service);}
+for(const service of [...services].sort())console.log(service);
+NODE
+    then
+      mapfile -t log_services <"$artifact_root/development-final-log-services.txt"
+      if (( ${#log_services[@]} )); then
+        timeout --kill-after=5s 30s "${compose[@]}" --profile ops logs --tail 120 "${log_services[@]}" >"$artifact_root/development-runtime-final.log" 2>&1 || true
+      fi
+    fi
     timeout --kill-after=5s 60s "${compose[@]}" --profile ops down -v --remove-orphans >"$artifact_root/development-cleanup.log" 2>&1 || down_status=$?
   fi
   # The adapter fixes every read to this controller run's private store. Keep
@@ -219,9 +233,11 @@ const [configPath,policyPath,networkProofPath,root,phase,required]=process.argv.
 const config=JSON.parse(fs.readFileSync(configPath)),policy=JSON.parse(fs.readFileSync(policyPath)),networkProof=JSON.parse(fs.readFileSync(networkProofPath));
 if(policy.sourceSha!==networkProof.sourceSha||policy.runId!==networkProof.runId||policy.project!==networkProof.project)throw new Error('Runtime network proof identity changed.');
 const networkIds=new Map(networkProof.networks.map(network=>[network.name,network.networkId])),services=new Set(),containers=[];
+const secretValues=Object.values(config.services).flatMap(service=>Object.entries(service.environment??{}).filter(([key,value])=>/secret|token|password|credential|(?:^|_)key(?:$|_)/i.test(key)&&typeof value==='string'&&value.length>=4).map(([,value])=>value)).sort((a,b)=>b.length-a.length);
+function redact(value){let text=String(value??'');for(const secret of secretValues)text=text.split(secret).join('[REDACTED]');return text;}
 function read(args){
   const result=spawnSync('docker',args,{encoding:'utf8',timeout:30000,killSignal:'SIGKILL'});
-  if(result.error||result.status!==0)throw new Error(`Private container readback failed: ${args[0]}`);
+  if(result.error||result.status!==0){write('failed-command.json',{command:'docker',args,status:result.status,signal:result.signal,error:result.error?redact(result.error.message):null,stdout:redact(result.stdout),stderr:redact(result.stderr)});throw new Error(`Private container readback failed: ${args[0]}`);}
   return result.stdout;
 }
 function json(args){try{return JSON.parse(read(args));}catch{throw new Error(`Private container JSON readback failed: ${args[0]}`);}}
@@ -254,7 +270,8 @@ for(const row of inventory){
   const normalized=value=>String(value).replace(/^sha256:/,'');
   const imageId=normalized(actual.Image);
   if(!/^[a-f0-9]{64}$/.test(imageId)||imageId!==normalized(imageRows[0].Id))throw new Error('Runtime container image differs from its current declared image.');
-  const v4=read(['exec',id,'cat','/proc/net/route']),v6=read(['exec',id,'cat','/proc/net/ipv6_route']);
+  const routeReader=['engine','worker','pdf-parser'].includes(service)?['/opt/venv/bin/python','-c','import pathlib, sys; sys.stdout.write(pathlib.Path(sys.argv[1]).read_text())']:['cat'];
+  const v4=read(['exec',id,...routeReader,'/proc/net/route']),v6=read(['exec',id,...routeReader,'/proc/net/ipv6_route']);
   const ipv4Routes=write(`${service}-ipv4-routes.txt`,v4),ipv6Routes=write(`${service}-ipv6-routes.txt`,v6);
   const v4Rows=v4.trim().split('\n');
   if(!/^Iface\s+Destination\s+Gateway\s+Flags/.test(v4Rows.shift()??''))throw new Error('IPv4 route readback is malformed.');
