@@ -1,9 +1,16 @@
 import { describe, expect, it, vi } from 'vitest';
 import { QA_ORIGIN, requireQaBaseUrl, requireQaContextOptions, requireQaResponse, requireQaUrl } from '../e2e/qa-isolation-policy';
 import { QaIsolationGuard } from '../e2e/qa-isolation-controls';
-import { qaBrowserLaunchOptions } from '../e2e/qa-loopback-proxy';
+import { qaBrowserLaunchOptions, requireQaConnectAuthority } from '../e2e/qa-loopback-proxy';
 
 describe('disposable development QA network boundary', () => {
+    it('allows only the exact fixed local CONNECT transport authority', () => {
+        expect(() => requireQaConnectAuthority('127.0.0.1:8080')).not.toThrow();
+        for (const authority of [undefined, 'localhost:8080', '127.0.0.1:4000', '127.0.0.1:18443',
+            '127.0.0.1:08080', 'http://127.0.0.1:8080', '127.0.0.1:8080/', 'user@127.0.0.1:8080', '[::1]:8080']) {
+            expect(() => requireQaConnectAuthority(authority)).toThrow(/CONNECT/);
+        }
+    });
     it('requires the exact loopback origin and fixed approved port', () => {
         expect(requireQaBaseUrl(QA_ORIGIN)).toBe(QA_ORIGIN);
         for (const value of [undefined, 'http://localhost:8080', 'http://127.0.0.1:4000', 'https://127.0.0.1:18443', 'https://beta.lunchlineup.com']) {

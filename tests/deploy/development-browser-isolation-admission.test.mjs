@@ -19,7 +19,7 @@ const proof = () => ({
   deniedTrapConnections: 0,
   optionOverrideProof: { attempts: 3, rejectedBeforeCreation: 3, factoryCalls: 0, deniedTrapConnections: 0 },
   checkpoints: Array.from({ length: 10 }, (_, index) => ({ case: `case-${index}`, deniedTrapHits: 0, deniedTrapConnections: 0 })),
-  proxy: { upstream: { hostname: '127.0.0.1', port: 8080 }, stoppedAt: new Date().toISOString() },
+  proxy: { upstream: { hostname: '127.0.0.1', port: 8080 }, stoppedAt: new Date().toISOString(), approvedConnects: 1, openUpstreamSockets: 0, socketsClosed: true },
   ownedHarness: { syntheticTarget: { serverClosed: true }, deniedTrap: { serverClosed: true }, browserClosed: true },
 });
 
@@ -51,6 +51,9 @@ for (const [name, mutate] of [
   ['unverified cleanup', value => { value.cleanupVerified = false; }],
   ['open browser', value => { value.ownedHarness.browserClosed = false; }],
   ['wrong proxy upstream', value => { value.proxy.upstream.hostname = 'other.invalid'; }],
+  ['unproven local transport', value => { value.proxy.approvedConnects = 0; }],
+  ['open upstream socket', value => { value.proxy.openUpstreamSockets = 1; }],
+  ['unclosed proxy sockets', value => { value.proxy.socketsClosed = false; }],
   ['release claim', value => { value.releaseQualified = true; }],
 ]) test(`runtime admission rejects ${name}`, () => {
   const value = proof(); mutate(value);

@@ -1,12 +1,18 @@
 import { createServer, request as httpRequest, type IncomingHttpHeaders, type ClientRequest } from 'node:http';
-import type { AddressInfo, Socket } from 'node:net';
+import { connect as tcpConnect, type AddressInfo, type Socket } from 'node:net';
 import type { LaunchOptions } from '@playwright/test';
 import { QA_ORIGIN, requireQaContextOptions, requireQaUrl } from './qa-isolation-policy';
 
+export function requireQaConnectAuthority(authority: string | undefined): void {
+    if (authority !== '127.0.0.1:8080') throw new Error('Proxy denied CONNECT outside the fixed local application transport.');
+}
+
 export async function startQaLoopbackProxy() {
     const evidence = { version: 1, pid: process.pid, startedAt: new Date().toISOString(), stoppedAt: '',
-        approvedOrigin: QA_ORIGIN, upstream: { hostname: '127.0.0.1', port: 8080 }, listenOrigin: '', denials: [] as string[] };
+        approvedOrigin: QA_ORIGIN, upstream: { hostname: '127.0.0.1', port: 8080 }, listenOrigin: '',
+        approvedConnects: 0, openUpstreamSockets: 0, socketsClosed: false, denials: [] as string[] };
     const sockets = new Set<Socket>();
+    const upstreamSockets = new Set<Socket>();
     const upstreamRequests = new Set<ClientRequest>();
     const server = createServer((incoming, outgoing) => {
         let url: URL;
@@ -28,6 +34,14 @@ export async function startQaLoopbackProxy() {
             response.pipe(outgoing);
         });
         upstreamRequests.add(upstream);
+        upstream.on('socket', socket => {
+            upstreamSockets.add(socket);
+            evidence.openUpstreamSockets = upstreamSockets.size;
+            socket.once('close', () => {
+                upstreamSockets.delete(socket);
+                evidence.openUpstreamSockets = upstreamSockets.size;
+            });
+        });
         upstream.on('close', () => upstreamRequests.delete(upstream));
         upstream.on('error', () => { if (!outgoing.headersSent) outgoing.writeHead(502); outgoing.end('QA endpoint unavailable.'); });
         incoming.on('aborted', () => upstream.destroy());
@@ -35,9 +49,37 @@ export async function startQaLoopbackProxy() {
         incoming.pipe(upstream);
     });
     server.on('connection', socket => { sockets.add(socket); socket.on('close', () => sockets.delete(socket)); });
-    server.on('connect', (_incoming, socket) => {
-        evidence.denials.push('Proxy denied CONNECT; disposable development QA is HTTP only.');
-        socket.end('HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n');
+    server.on('connect', (incoming, socket, head) => {
+        try { requireQaConnectAuthority(incoming.url); }
+        catch (failure) {
+            evidence.denials.push((failure as Error).message);
+            socket.end('HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n');
+            return;
+        }
+        // Playwright's API/Route.fetch transport uses CONNECT even for HTTP.
+        // Never parse, resolve or forward its authority: connect to this literal
+        // endpoint only. This cannot provide an arbitrary-host/port tunnel.
+        const upstream = tcpConnect({ host: '127.0.0.1', port: 8080 });
+        upstreamSockets.add(upstream);
+        evidence.openUpstreamSockets = upstreamSockets.size;
+        const deadline = setTimeout(() => { upstream.destroy(); socket.destroy(); }, 5000);
+        upstream.once('connect', () => {
+            clearTimeout(deadline);
+            evidence.approvedConnects += 1;
+            socket.write('HTTP/1.1 200 Connection Established\r\n\r\n');
+            if (head.length) upstream.write(head);
+            socket.pipe(upstream);
+            upstream.pipe(socket);
+        });
+        upstream.on('error', () => socket.destroy());
+        socket.on('error', () => upstream.destroy());
+        socket.on('close', () => upstream.destroy());
+        upstream.on('close', () => {
+            clearTimeout(deadline);
+            upstreamSockets.delete(upstream);
+            evidence.openUpstreamSockets = upstreamSockets.size;
+            socket.destroy();
+        });
     });
     server.on('upgrade', (_incoming, socket) => {
         evidence.denials.push('Proxy denied an unexpected protocol upgrade.');
@@ -55,12 +97,16 @@ export async function startQaLoopbackProxy() {
         async close() {
             await new Promise<void>((resolve, reject) => {
                 const timeout = setTimeout(() => reject(new Error('QA proxy close deadline exceeded.')), 5000);
+                const upstreamClosed = Promise.all([...upstreamSockets].map(upstream => new Promise<void>(done => upstream.once('close', () => done()))));
                 upstreamRequests.forEach(upstream => upstream.destroy());
+                upstreamSockets.forEach(upstream => upstream.destroy());
                 sockets.forEach(socket => socket.destroy());
-                server.close(() => { clearTimeout(timeout); resolve(); });
+                server.close(() => { void upstreamClosed.then(() => { clearTimeout(timeout); resolve(); }); });
                 server.closeAllConnections();
             });
             evidence.stoppedAt = new Date().toISOString();
+            evidence.socketsClosed = sockets.size === 0 && upstreamSockets.size === 0;
+            if (!evidence.socketsClosed) throw new Error('QA proxy teardown retained an owned socket.');
         },
     };
 }

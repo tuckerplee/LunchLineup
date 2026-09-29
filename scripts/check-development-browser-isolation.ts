@@ -58,6 +58,7 @@ try {
     const page = await context.newPage();
     await page.goto('/okay');
     assert.equal(await page.title(), 'Local isolation fixture');
+    assert.ok(proxy.evidence.approvedConnects > 0, 'Guarded page fetch must prove the exact approved CONNECT transport');
     checkpoint('approved page request');
     await assert.rejects(page.goto('/denied', { timeout: 5000 }));
     checkpoint('terminal page redirect');
@@ -67,6 +68,9 @@ try {
     await page.route('**/custom-fallback', route => route.fallback());
     await assert.rejects(page.goto('/custom-fallback', { timeout: 5000 }));
     checkpoint('custom fallback redirect');
+    const connectsBeforeApi = proxy.evidence.approvedConnects;
+    assert.equal((await context.request.get('/okay')).status(), 200);
+    assert.ok(proxy.evidence.approvedConnects > connectsBeforeApi, 'Guarded API request must prove the exact approved CONNECT transport');
     await assert.rejects(context.request.get('/denied'));
     await assert.rejects(context.request.get(`${trapOrigin}/trap`));
     checkpoint('context API redirect and direct denied destination');
@@ -128,7 +132,7 @@ try {
     status = 'passed';
 } finally {
     const cleanup = await Promise.allSettled([browser?.close(), proxy?.close(), close(target), close(trap)]);
-    const cleanupVerified = cleanup.every(result => result.status === 'fulfilled');
+    const cleanupVerified = cleanup.every(result => result.status === 'fulfilled') && (proxy?.evidence.socketsClosed ?? true);
     if (!cleanupVerified) status = 'failed';
     const path = resolve(output);
     await mkdir(dirname(path), { recursive: true });
