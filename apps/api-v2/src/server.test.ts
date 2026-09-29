@@ -134,6 +134,7 @@ async function harness(identityResponse: SessionIdentity = identity) {
       user: { id: staffMember.id, name: staffMember.name },
       skills: [], availability: [], availabilityExceptions: [], availabilityConfigured: false,
     })),
+    updateIdentity: vi.fn(),
     replaceSchedulingProfile: vi.fn(async () => ({
       user: { id: staffMember.id, name: staffMember.name },
       skills: [], availability: [], availabilityExceptions: [], availabilityConfigured: false,
@@ -157,7 +158,9 @@ async function harness(identityResponse: SessionIdentity = identity) {
       id: staffMember.id, username: 'casey', temporaryPin: '123456', pinResetRequired: true as const,
     })),
     replaceOwnPin: vi.fn(async () => undefined),
-    deactivate: vi.fn(async () => undefined),
+    lifecycle: vi.fn(),
+    setSuspended: vi.fn(),
+    remove: vi.fn(async () => undefined),
     access: vi.fn(async () => ({
       primaryRole: 'Staff', roles: [{ id: '2680ed8d-a36a-43ea-b83a-5f4ebf9bea4f', name: 'Staff', isSystem: true, legacyRole: 'STAFF' as const }], permissions: ['users:read'],
     })),
@@ -552,7 +555,28 @@ describe('API v2 HTTP contract', () => {
     expect(retainedApplication).not.toHaveBeenCalled();
   }, 15_000);
 
-  it('deactivates staff through the native People owner rather than the retained application bridge', async () => {
+  it('routes account-state reads and writes to the native owner with a required precondition', async () => {
+    const { app, people, retainedApplication } = await harness();
+    const user = await people.get(identity, identity.publicUserId);
+    const state = { user, futureAssignmentCount: 0, futureAssignments: [] };
+    people.lifecycle.mockResolvedValue(state);
+    people.setSuspended.mockResolvedValue(state);
+    const url = `/v2/users/${identity.publicUserId}/lifecycle`;
+    const read = await app.inject({ method: 'GET', url });
+    expect(read.statusCode).toBe(200);
+    expect(people.lifecycle).toHaveBeenCalledWith(identity, identity.publicUserId);
+    const missing = await app.inject({ method: 'PUT', url, payload: { suspended: true } });
+    expect(missing.statusCode).toBe(422);
+    expect(people.setSuspended).not.toHaveBeenCalled();
+    const body = { suspended: true, expectedSuspendedAt: null };
+    const write = await app.inject({ method: 'PUT', url, payload: body });
+    expect(write.statusCode).toBe(200);
+    expect(write.headers['cache-control']).toBe('private, no-store');
+    expect(people.setSuspended).toHaveBeenCalledWith(identity, identity.publicUserId, body);
+    expect(retainedApplication).not.toHaveBeenCalled();
+  });
+
+  it('permanently removes staff through the native People owner rather than the retained application bridge', async () => {
     const { app, people, retainedApplication, authenticate } = await harness();
     const response = await app.inject({
       method: 'DELETE',
@@ -561,7 +585,7 @@ describe('API v2 HTTP contract', () => {
 
     expect(response.statusCode).toBe(204);
     expect(response.headers['cache-control']).toBe('private, no-store');
-    expect(people.deactivate).toHaveBeenCalledWith(identity, identity.publicUserId);
+    expect(people.remove).toHaveBeenCalledWith(identity, identity.publicUserId);
     expect(retainedApplication).not.toHaveBeenCalled();
     expect(authenticate).toHaveBeenCalledOnce();
   });

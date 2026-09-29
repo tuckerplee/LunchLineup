@@ -18,6 +18,7 @@ function authUser(overrides: Partial<{
   workspaceName: string;
   workspaceScope: string;
   sessionScope: string;
+  pinResetRequired: boolean;
   permissions: string[];
   roles: Array<{ id: string; name: string }>;
 }> = {}) {
@@ -28,6 +29,7 @@ function authUser(overrides: Partial<{
     workspaceName: overrides.workspaceName ?? 'Demo Workspace',
     workspaceScope: overrides.workspaceScope ?? 'A'.repeat(43),
     sessionScope: overrides.sessionScope ?? 'B'.repeat(43),
+    pinResetRequired: overrides.pinResetRequired ?? false,
     permissions: overrides.permissions ?? ['dashboard:access', 'shifts:read'],
   };
 }
@@ -38,6 +40,22 @@ describe('web auth proxy', () => {
     vi.unstubAllEnvs();
     vi.unstubAllGlobals();
     vi.restoreAllMocks();
+  });
+
+  it.each(['/dashboard', '/dashboard/time-cards', '/admin/users'])('requires PIN rotation before opening %s', async path => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify({ user: authUser({ pinResetRequired: true }) }), { status: 200 })));
+    const response = await proxy(makeRequest(path, 'access_token=token'));
+    const redirect = new URL(response.headers.get('location') ?? 'http://missing');
+    expect(redirect.pathname).toBe('/auth/reset-pin');
+    expect(redirect.searchParams.get('next')).toBe(path);
+  });
+
+  it('fails closed when the identity response omits the PIN restriction state', async () => {
+    const user: any = authUser();
+    delete user.pinResetRequired;
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify({ user }), { status: 200 })));
+    const response = await proxy(makeRequest('/dashboard', 'access_token=token'));
+    expect(response.status).toBe(503);
   });
 
   it('preserves the protected route query string in login redirects', async () => {

@@ -228,7 +228,7 @@ export class DemandWindowService {
             }],
           );
         }
-        if (startTime < schedule.startDate || endTime > schedule.endDate) {
+        if (startTime < schedule.startDate || startTime >= schedule.endDate || endTime <= startTime || endTime.getTime() - startTime.getTime() > 86_400_000) {
           throw new ProblemError(
             422,
             'demand_outside_schedule',

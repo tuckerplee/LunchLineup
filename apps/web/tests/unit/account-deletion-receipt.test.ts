@@ -22,6 +22,7 @@ describe('account deletion receipt', () => {
       id: 'tenant-secret-id',
       slug: 'private-workspace',
       token: 'secret-token',
+      deletionState: 'FINALIZED',
       deletionRequestedAt: '2026-07-13T12:00:00-07:00',
       retention: {
         applicationDataEligibleAt: '2026-08-12T19:00:00.000Z',
@@ -64,6 +65,7 @@ describe('account deletion receipt', () => {
   it('round-trips a versioned tab receipt and rejects malformed storage', () => {
     const storage = memoryStorage();
     const receipt = accountDeletionReceiptFromResponse({
+      deletionState: 'FINALIZED',
       deletionRequestedAt: '2026-07-13T19:00:00.000Z',
       retention: { fullDatabasePurgeEligibleAt: '2033-07-13T19:00:00.000Z' },
     });
@@ -78,4 +80,8 @@ describe('account deletion receipt', () => {
     expect(readAccountDeletionReceipt(memoryStorage('{not-json'))).toBeNull();
     expect(readAccountDeletionReceipt(memoryStorage(JSON.stringify({ version: 2, receipt })))).toBeNull();
   });
+});
+
+it('does not manufacture a finalized receipt from an empty response', () => {
+  expect(() => accountDeletionReceiptFromResponse({})).toThrow('not been confirmed');
 });

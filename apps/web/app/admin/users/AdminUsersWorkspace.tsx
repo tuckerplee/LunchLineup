@@ -377,13 +377,15 @@ export function AdminUsersWorkspace({ currentUserId }: WorkspaceProps) {
     }, [form, refreshUsers, selectedUser]);
 
     const resetPin = useCallback(async () => {
-        if (!selectedUser || selectedUser.status === 'DELETED') return;
+        if (!selectedUser || isSelf || !selectedUser.username || selectedUser.status === 'DELETED' || selectedUser.status === 'SUSPENDED') return;
+        if (!window.confirm(`Reset the PIN for ${selectedUser.name}? This signs them out of all sessions.`)) return;
         setSavingKey(`pin:${selectedUser.id}`);
         setMessage(null);
         try {
             const payload = await writeJson<{ temporaryPin?: string; username?: string; pinResetRequired?: boolean }>(
-                `/users/${selectedUser.id}/pin/reset`,
+                `/admin/users/${selectedUser.id}/pin/reset`,
                 'POST',
+                {},
             );
             setTemporaryPin(payload.temporaryPin ?? null);
             setMessage({ tone: 'success', text: `PIN reset for ${selectedUser.name}.` });
@@ -393,7 +395,7 @@ export function AdminUsersWorkspace({ currentUserId }: WorkspaceProps) {
         } finally {
             setSavingKey(null);
         }
-    }, [refreshUsers, selectedUser]);
+    }, [isSelf, refreshUsers, selectedUser]);
 
     const resetMfa = useCallback(async () => {
         if (!selectedUser || isSelf || !selectedUser.mfaEnabled || !canMutateAdminUserLifecycle(selectedUser.status) || selectedUser.status === 'SUSPENDED') return;
@@ -487,7 +489,7 @@ export function AdminUsersWorkspace({ currentUserId }: WorkspaceProps) {
 
     const actionDisabled = loading || !selectedUser;
     const saveDisabled = actionDisabled || selectedIsDeleted || savingKey === `save:${selectedUser?.id ?? ''}`;
-    const pinDisabled = actionDisabled || selectedIsDeleted || savingKey === `pin:${selectedUser?.id ?? ''}`;
+    const pinDisabled = actionDisabled || isSelf || !selectedUser?.username || selectedUser?.status === 'SUSPENDED' || selectedIsDeleted || savingKey === `pin:${selectedUser?.id ?? ''}`;
     const mfaDisabled = actionDisabled || isSelf || !selectedUser?.mfaEnabled || selectedUser?.status === 'SUSPENDED' || selectedIsDeleted || savingKey === `mfa:${selectedUser?.id ?? ''}`;
     const lockDisabled = actionDisabled || isSelf || selectedUser?.status === 'SUSPENDED' || selectedIsDeleted || savingKey === `lock:${selectedUser?.id ?? ''}`;
     const suspendDisabled = actionDisabled || selectedIsDeleted || (isSelf && selectedUser?.status !== 'SUSPENDED') || savingKey === `suspend:${selectedUser?.id ?? ''}`;

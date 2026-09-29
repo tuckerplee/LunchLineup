@@ -825,7 +825,7 @@ class AvailabilityImportStoreTests(unittest.TestCase):
         self.assertEqual(state.refund_attempts, 1)
         terminal_sql = inspect.getsource(availability_import_store.terminalize_import)
         self.assertIn('"encryptedSourcePayload" = NULL', terminal_sql)
-        self.assertIn('WHEN %s IS NULL THEN', terminal_sql)
+        self.assertIn('WHEN %s::text IS NULL THEN', terminal_sql)
         self.assertIn('"executionLeaseUntil" <= CURRENT_TIMESTAMP', terminal_sql)
         self.assertIn('ELSE "executionToken" = %s', terminal_sql)
         self.assertIn('credit."debtAfter" = 0', inspect.getsource(availability_import_store._lock_job))

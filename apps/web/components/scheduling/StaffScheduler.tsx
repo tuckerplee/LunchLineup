@@ -131,7 +131,7 @@ function clamp(n: number, min: number, max: number): number {
     return Math.max(min, Math.min(max, n));
 }
 
-export function StaffScheduler({ resources, events, viewMode, initialDate, timeZone, compactWindow = true, onEventChange, onEventCopy, onEventSelect, onEventDelete, onSlotSelect, onTimeSelectionError }: StaffSchedulerProps) {
+export function StaffScheduler({ resources, events, viewMode, initialDate, timeZone, compactWindow = false, onEventChange, onEventCopy, onEventSelect, onEventDelete, onSlotSelect, onTimeSelectionError }: StaffSchedulerProps) {
     const reactBoardId = useId();
     const boardId = useMemo(() => schedulerBoardId(reactBoardId), [reactBoardId]);
     const [drag, setDrag] = useState<DragState | null>(null);
@@ -964,6 +964,7 @@ export function StaffScheduler({ resources, events, viewMode, initialDate, timeZ
                             <label>
                                 Action
                                 <select
+                                    aria-label="Action"
                                     value={moveDialog.mode}
                                     onChange={(event) => setMoveDialog((current) => current ? { ...current, mode: event.target.value as SchedulerGestureMode } : current)}
                                 >
@@ -976,6 +977,7 @@ export function StaffScheduler({ resources, events, viewMode, initialDate, timeZ
                         <label>
                             Team member
                             <select
+                                aria-label="Team member"
                                 ref={moveDialogResourceRef}
                                 value={moveDialog.resourceId}
                                 onChange={(event) => setMoveDialog((current) => current ? { ...current, resourceId: event.target.value } : current)}
@@ -990,6 +992,7 @@ export function StaffScheduler({ resources, events, viewMode, initialDate, timeZ
                             Time adjustment in minutes
                             <input
                                 type="number"
+                                aria-label="Time adjustment in minutes"
                                 step="15"
                                 min={-totalHours * 60}
                                 max={totalHours * 60}

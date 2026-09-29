@@ -565,7 +565,7 @@ export class LunchBreakService {
       if (existing.status === 'PENDING' && existing.claimExpiresAt && existing.claimExpiresAt > now) {
         throw problem(409, 'generation_in_progress', 'Lunch and break generation is already in progress for this Idempotency-Key.', 'Conflict');
       }
-      if (existing.status === 'FAILED' && existing.failureStatus !== 403 && (existing.failureStatus ?? 500) < 500) {
+      if (existing.status === 'FAILED' && existing.failureStatus !== 403 && existing.failureStatus !== 409 && (existing.failureStatus ?? 500) < 500) {
         throw problem(existing.failureStatus ?? 422, 'generation_previously_rejected', existing.failureMessage || 'The previous lunch and break generation request was rejected.', 'Request rejected');
       }
       const reclaimed = await transaction.lunchBreakGenerationRequest.updateMany({
@@ -695,7 +695,7 @@ export class LunchBreakService {
         || row.startTime.toISOString() !== snapshot.startTime
         || row.endTime.toISOString() !== snapshot.endTime
         || row.updatedAt.toISOString() !== snapshot.updatedAt
-        || row.schedule?.status !== 'DRAFT';
+        || (row.scheduleId !== null && row.schedule?.status !== 'DRAFT');
     });
     if (changed || current.length !== prepared.snapshot.length) {
       throw problem(409, 'generation_scope_changed', 'One or more selected shifts changed after lunch and break calculation. Reload and retry.', 'Concurrent change');
@@ -920,10 +920,10 @@ export class LunchBreakService {
           const existing = row.shiftId ? existingByPublicId.get(row.shiftId) ?? null : null;
           const startTime = parseUtcInstant(row.startTime, '/rows/startTime');
           const endTime = parseUtcInstant(row.endTime, '/rows/endTime');
-          if (endTime <= startTime) {
+          if (endTime <= startTime || endTime.getTime() - startTime.getTime() > 86_400_000) {
             throw problem(422, 'invalid_setup_shifts', 'Setup shift end time must be after start time.', 'Setup shift validation failed');
           }
-          if (existing?.schedule && (startTime < existing.schedule.startDate || endTime > existing.schedule.endDate)) {
+          if (existing?.schedule && (startTime < existing.schedule.startDate || startTime >= existing.schedule.endDate)) {
             throw problem(422, 'invalid_setup_shifts', 'A setup shift must remain inside its draft schedule window.', 'Setup shift validation failed');
           }
           const nextUserId = row.userId === undefined

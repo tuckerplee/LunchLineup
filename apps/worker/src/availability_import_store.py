@@ -280,7 +280,7 @@ def mark_retrying(
                 WHERE "id" = %s AND "tenantId" = %s
                   AND "status" NOT IN ('SUCCEEDED', 'FAILED', 'DEAD_LETTERED', 'CANCELLED')
                   AND CASE
-                      WHEN %s IS NULL THEN
+                      WHEN %s::text IS NULL THEN
                           "executionToken" IS NULL
                           OR "executionLeaseUntil" <= CURRENT_TIMESTAMP
                       ELSE "executionToken" = %s
@@ -376,7 +376,7 @@ def terminalize_import(
                 WHERE "id" = %s AND "tenantId" = %s
                   AND "status" NOT IN ('SUCCEEDED', 'FAILED', 'DEAD_LETTERED', 'CANCELLED')
                   AND CASE
-                      WHEN %s IS NULL THEN
+                      WHEN %s::text IS NULL THEN
                           "executionToken" IS NULL
                           OR "executionLeaseUntil" <= CURRENT_TIMESTAMP
                       ELSE "executionToken" = %s
@@ -464,7 +464,7 @@ def erase_owned_import_source(payload: ImportPayload, token: str | None) -> Path
                       OR (
                           "status" NOT IN ('SUCCEEDED', 'FAILED', 'DEAD_LETTERED', 'CANCELLED')
                           AND CASE
-                              WHEN %s IS NULL THEN
+                              WHEN %s::text IS NULL THEN
                                   "executionToken" IS NULL
                                   OR "executionLeaseUntil" <= CURRENT_TIMESTAMP
                               ELSE "executionToken" = %s

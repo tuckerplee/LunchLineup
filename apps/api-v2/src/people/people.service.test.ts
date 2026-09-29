@@ -1,3 +1,4 @@
+import { profileVersion } from './profile-version';
 import type { SessionIdentity } from '@lunchlineup/api-contract';
 import { describe, expect, it, vi } from 'vitest';
 import { PeopleService } from './people.service';
@@ -171,6 +172,7 @@ describe('native API v2 people service', () => {
     const { instance } = service(transaction);
 
     await expect(instance.schedulingProfile(identity, publicUserId)).resolves.toEqual({
+      version: expect.stringMatching(/^[a-f0-9]{64}$/),
       user: { id: publicUserId, name: 'Casey' },
       skills: ['expo'],
       availability: [{
@@ -285,6 +287,15 @@ describe('native API v2 people service', () => {
     const { instance, withTenant } = service(transaction);
 
     await expect(instance.replaceSchedulingProfile(identity, publicUserId, {
+      skills: ['expo'], availability: [], expectedVersion: '0'.repeat(64),
+    })).rejects.toMatchObject({ status: 409, code: 'scheduling_profile_changed' });
+    expect(transaction.staffSkill.deleteMany).not.toHaveBeenCalled();
+    expect(transaction.staffAvailability.deleteMany).not.toHaveBeenCalled();
+    expect(transaction.schedule.updateMany).not.toHaveBeenCalled();
+    const expectedVersion = profileVersion('user-storage-1', ['expo'], [], await transaction.staffAvailabilityException.findMany());
+
+    await expect(instance.replaceSchedulingProfile(identity, publicUserId, {
+      expectedVersion,
       skills: ['expo'],
       availability: [],
       availabilityExceptions: [{
@@ -377,6 +388,41 @@ describe('native API v2 people service', () => {
         endTimeMinutes: 1440,
       }],
     })).rejects.toMatchObject({ status: 422, code: 'invalid_scheduling_profile' });
+    expect(withTenant).not.toHaveBeenCalled();
+  });
+});
+
+
+describe('staff creation recovery boundaries', () => {
+  it('rejects recovery requests without an explicit PIN before opening a transaction', async () => {
+    const { instance, withTenant } = service({});
+    await expect(instance.invite(identity, { name: 'Casey', username: 'casey', role: 'STAFF' }, 'request-1'))
+      .rejects.toMatchObject({ status: 422, code: 'invalid_pin' });
+    expect(withTenant).not.toHaveBeenCalled();
+  });
+
+  it('rejects a changed payload for a completed request without attempting another create', async () => {
+    const create = vi.fn();
+    const { instance } = service({
+      tenantSetting: { findUnique: vi.fn(async () => ({ value: { fingerprint: 'different' } })) },
+      user: { create },
+    });
+    await expect(instance.invite(identity, { name: 'Casey', username: 'casey', pin: '123456', role: 'STAFF' }, 'request-1'))
+      .rejects.toMatchObject({ status: 409, code: 'staff_request_conflict' });
+    expect(create).not.toHaveBeenCalled();
+  });
+});
+
+
+describe('staff identity validation', () => {
+  it.each([
+    { name: ' ', username: 'casey', email: '' },
+    { name: 'Casey', username: 'casey', email: 'casey@example.test' },
+    { name: 'Casey', username: 'invalid username', email: '' },
+  ])('rejects invalid identity edits before mutation', async (body) => {
+    const { instance, withTenant } = service({});
+    await expect(instance.updateIdentity(identity, publicUserId, { ...body, expectedVersion: 'a'.repeat(64) }))
+      .rejects.toMatchObject({ status: 422, code: 'invalid_staff' });
     expect(withTenant).not.toHaveBeenCalled();
   });
 });

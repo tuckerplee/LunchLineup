@@ -1,4 +1,5 @@
-import { randomBytes, randomInt, scryptSync, timingSafeEqual } from 'node:crypto';
+import { profileVersion } from './profile-version';
+import { createHash, randomBytes, randomInt, scryptSync, timingSafeEqual } from 'node:crypto';
 import { Prisma, type UserRole } from '@prisma/client';
 import type {
   AccessCatalogResponse,
@@ -14,6 +15,9 @@ import type {
   StaffInvitationResponse,
   StaffLegacyRole,
   StaffMember,
+  StaffLifecycleRequest,
+  StaffLifecycleResponse,
+  StaffIdentityRequest,
   StaffAvailabilityException,
   StaffSchedulingProfile,
   StaffSchedulingProfileRequest,
@@ -74,6 +78,10 @@ function problem(status: number, code: string, detail: string, title?: string): 
   return new ProblemError(status, code, detail, title ?? 'Request could not be completed');
 }
 
+function identityVersion(row: { name: string; email: string | null; username: string | null }): string {
+  return createHash('sha256').update(JSON.stringify([row.name, row.email ?? '', row.username ?? ''])).digest('hex');
+}
+
 function publicUser(row: {
   publicId: string;
   name: string;
@@ -82,9 +90,12 @@ function publicUser(row: {
   role: UserRole;
   pinHash: string | null;
   pinResetRequired: boolean;
+  suspendedAt?: Date | null;
 }, roles: readonly RoleWithPermissions[]): StaffMember {
   return {
     id: row.publicId,
+    identityVersion: identityVersion(row),
+    suspendedAt: row.suspendedAt?.toISOString() ?? null,
     name: row.name,
     email: safeEmail(row.email),
     username: row.username ?? '',
@@ -525,6 +536,7 @@ export class PeopleService {
           role: true,
           pinHash: true,
           pinResetRequired: true,
+          suspendedAt: true,
         },
       });
       const hasMore = rows.length > limit;
@@ -608,12 +620,55 @@ export class PeopleService {
         where: { tenantId: identity.tenantId, publicId: userPublicId, deletedAt: null },
         select: {
           id: true, publicId: true, name: true, email: true, username: true,
-          role: true, pinHash: true, pinResetRequired: true,
+          role: true, pinHash: true, pinResetRequired: true, suspendedAt: true,
         },
       });
       if (!user) throw problem(404, 'staff_not_found', 'The selected staff member was not found.', 'Staff member not found');
       const roles = await this.assignedRolesForUsers(transaction, identity.tenantId, [user.id]);
       return publicUser(user, roles.get(user.id) ?? []);
+    });
+  }
+
+  async updateIdentity(identity: SessionIdentity, userPublicId: string, body: StaffIdentityRequest): Promise<StaffMember> {
+    const name = body.name.trim();
+    const email = body.email.trim().toLowerCase();
+    const username = body.username.trim().toLowerCase();
+    if (!name || (email && !EMAIL.test(email)) || (username && !USERNAME.test(username)) || Boolean(email) === Boolean(username)) {
+      throw problem(422, 'invalid_staff', 'Provide a name and one valid login identity.', 'Staff validation failed');
+    }
+    return withSerializable(this.database, identity.tenantId, async (transaction) => {
+      const internalId = await this.resolveUser(transaction, identity.tenantId, userPublicId);
+      const authority = await authorizeMutation(transaction, identity, 'users:admin', { targetUserId: internalId });
+      assertCanAdministerTarget(authority.actor, authority.actorAccess, authority.target!, authority.targetAccess!, 'Use account settings to edit your own identity.');
+      const user = await transaction.user.findFirst({ where: { id: internalId, tenantId: identity.tenantId, deletedAt: null } });
+      if (!user) throw problem(404, 'staff_not_found', 'Staff member was not found.', 'Staff member not found');
+      const unchanged = user.name === name && (user.email ?? '') === email && (user.username ?? '') === username;
+      if (!unchanged && body.expectedVersion !== identityVersion(user)) {
+        throw problem(409, 'staff_identity_conflict', 'This identity changed. Reload the saved identity before applying your edits.', 'Staff conflict');
+      }
+      if (Boolean(user.username) !== Boolean(username)) throw problem(422, 'login_method_change', 'Keep the existing login method when editing identity.', 'Staff validation failed');
+      if ((user.email ?? '') !== email) throw problem(422, 'email_reverification_required', 'Email sign-in changes require a verified account recovery flow.', 'Staff validation failed');
+      const loginChanged = (user.username ?? '') !== username;
+      if (loginChanged && user.oidcSubject) throw problem(409, 'external_identity_managed', 'This login is managed by your identity provider. Update it there.', 'Staff conflict');
+      if (loginChanged) {
+        const duplicate = await transaction.user.findFirst({ where: {
+          tenantId: identity.tenantId, id: { not: internalId }, ...(email ? { email } : { username }),
+        }, select: { id: true } });
+        if (duplicate) throw problem(409, 'staff_already_exists', 'A staff member already uses this login identity.', 'Staff conflict');
+      }
+      const saved = unchanged ? user : await transaction.user.update({ where: { id: internalId }, data: { name, email: email || null, username: username || null } });
+      if (!unchanged) {
+        const sessions = loginChanged ? await transaction.session.updateMany({ where: { userId: internalId, revokedAt: null }, data: { revokedAt: new Date() } }) : { count: 0 };
+        if (loginChanged) await this.invalidateReactivatedCredentials(transaction, identity.tenantId, internalId, new Date());
+        await transaction.auditLog.create({ data: {
+          tenantId: identity.tenantId, userId: identity.sub, ...requestAudit(identity),
+          action: 'USER_IDENTITY_UPDATED', resource: 'User', resourceId: internalId,
+          oldValue: { name: user.name, email: user.email, username: user.username },
+          newValue: { name, email: email || null, username: username || null, sessionsRevoked: sessions.count },
+        } });
+      }
+      const roles = await this.assignedRolesForUsers(transaction, identity.tenantId, [internalId]);
+      return publicUser(saved, roles.get(internalId) ?? []);
     });
   }
 
@@ -668,6 +723,7 @@ export class PeopleService {
         throw problem(422, 'scheduling_profile_too_large', 'The staff scheduling profile has too many dated exceptions.', 'Scheduling profile is too large');
       }
       return {
+        version: profileVersion(user.id, skills.map(row => row.skill), availability, availabilityExceptions),
         user: { id: user.publicId, name: user.name },
         skills: skills.map((row) => row.skill),
         availability: availability.map((row) => ({
@@ -687,7 +743,7 @@ export class PeopleService {
         availabilityConfigured: availability.length > 0
           || availabilityExceptions.some((row) => row.kind === 'AVAILABLE'),
       };
-    });
+    }, { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead });
   }
 
   async replaceSchedulingProfile(
@@ -696,6 +752,7 @@ export class PeopleService {
     body: StaffSchedulingProfileRequest,
   ): Promise<StaffSchedulingProfile> {
     const profile = normalizedProfile(body);
+    if (!body.expectedVersion) throw problem(428, 'profile_version_required', 'Reload this profile before saving.', 'Profile version required');
     return this.database.withTenant(identity.tenantId, async (transaction) => {
       const user = await transaction.user.findFirst({
         where: { tenantId: identity.tenantId, publicId: userPublicId, deletedAt: null },
@@ -781,6 +838,10 @@ export class PeopleService {
       if (existingAvailabilityExceptions.length > MAX_AVAILABILITY_EXCEPTIONS) {
         throw problem(422, 'scheduling_profile_too_large', 'The staff scheduling profile has too many dated exceptions.', 'Scheduling profile is too large');
       }
+      const currentVersion = profileVersion(user.id, existingSkills.map(row => row.skill), existingAvailability, existingAvailabilityExceptions);
+      if (body.expectedVersion !== currentVersion) {
+        throw problem(409, 'scheduling_profile_changed', 'This profile changed while you were editing. Your draft has not been saved. Reload the current profile before making your changes again.', 'Scheduling profile changed');
+      }
       const exceptionReplacement = requestedExceptionReplacement ?? existingAvailabilityExceptions.map((row) => ({
         locationId: row.locationId,
         localDate: row.localDate,
@@ -835,6 +896,7 @@ export class PeopleService {
         endTimeMinutes: row.endTimeMinutes,
       }));
       return {
+        version: profileVersion(user.id, profile.skills, replacement, exceptionReplacement),
         user: { id: user.publicId, name: user.name },
         skills: profile.skills,
         availability: profile.availability,
@@ -845,7 +907,7 @@ export class PeopleService {
     });
   }
 
-  async invite(identity: SessionIdentity, body: StaffInvitationRequest): Promise<StaffInvitationResponse> {
+  async invite(identity: SessionIdentity, body: StaffInvitationRequest, idempotencyKey?: string): Promise<StaffInvitationResponse> {
     const name = body.name.trim();
     const email = body.email?.trim().toLowerCase() ?? '';
     const username = body.username?.trim().toLowerCase() ?? '';
@@ -856,7 +918,32 @@ export class PeopleService {
     if (username && !USERNAME.test(username)) throw problem(422, 'invalid_staff', 'Username is invalid.', 'Staff validation failed');
     if (requestedPin && !PIN.test(requestedPin)) throw problem(422, 'invalid_pin', 'PIN must be 4 through 8 numeric digits.', 'Staff validation failed');
     if (email && username) throw problem(422, 'invalid_staff', 'Choose email login or username login, not both.', 'Staff validation failed');
+    if (idempotencyKey && (idempotencyKey.length > 255 || /[^\x20-\x7E]/.test(idempotencyKey))) {
+      throw problem(422, 'invalid_idempotency_key', 'Invalid request key.', 'Staff validation failed');
+    }
+    if (idempotencyKey && username && !requestedPin) {
+      throw problem(422, 'invalid_pin', 'Choose a PIN before submitting a recoverable staff request.', 'Staff validation failed');
+    }
+    const receiptKey = idempotencyKey ? `staff-create:${createHash('sha256').update(JSON.stringify([identity.sub, idempotencyKey])).digest('hex')}` : null;
+    // Never persist the PIN or a fast hash of it in a recovery receipt.
+    const fingerprint = createHash('sha256').update(JSON.stringify([name, email, username, body.roleId ?? null, body.role ?? null])).digest('hex');
     return withSerializable(this.database, identity.tenantId, async (transaction) => {
+      if (receiptKey) {
+        const receipt = await transaction.tenantSetting.findUnique({
+          where: { tenantId_key: { tenantId: identity.tenantId, key: receiptKey } },
+        });
+        if (receipt) {
+          const saved = receipt.value as unknown as { fingerprint: string; userId: string; response: StaffInvitationResponse };
+          if (saved.fingerprint !== fingerprint) throw problem(409, 'staff_request_conflict', 'Retry with the original staff details.', 'Staff conflict');
+          const authority = await authorizeMutation(transaction, identity, 'users:write', { targetUserId: saved.userId });
+          assertCanAdministerTarget(authority.actor, authority.actorAccess, authority.target!, authority.targetAccess!, 'You cannot recover your own invitation.');
+          const user = await transaction.user.findFirst({ where: { id: saved.userId, tenantId: identity.tenantId, deletedAt: null, suspendedAt: null } });
+          if (!user || (username && (!user.pinHash || user.username !== username || !verifiesPin(requestedPin, user.pinHash)))) {
+            throw problem(409, 'staff_request_changed', 'The created account has changed. Review its current access before continuing.', 'Staff conflict');
+          }
+          return { ...saved.response, temporaryPin: username ? requestedPin : null };
+        }
+      }
       const existing = await transaction.user.findFirst({
         where: { tenantId: identity.tenantId, ...(email ? { email } : { username }), },
         select: { id: true, deletedAt: true },
@@ -918,7 +1005,7 @@ export class PeopleService {
       }
       const now = new Date();
       const generatedPin = username ? (requestedPin || temporaryPin()) : null;
-      const credentials = generatedPin ? pinData(generatedPin, !requestedPin, now) : {
+      const credentials = generatedPin ? pinData(generatedPin, true, now) : {
         pinHash: null, pinSetAt: null, pinResetRequired: false, pinLoginAttempts: 0, pinLockedUntil: null,
       };
       const data = {
@@ -956,12 +1043,19 @@ export class PeopleService {
           resourceId: user.id,
         },
       });
-      return {
+      const response: StaffInvitationResponse = {
         ...publicUser(user, [selected]),
-        temporaryPin: generatedPin,
+        temporaryPin: null,
         invitationDelivery,
         status: 'INVITED',
       };
+      if (receiptKey) {
+        await transaction.tenantSetting.create({ data: {
+          tenantId: identity.tenantId, key: receiptKey,
+          value: { fingerprint, userId: user.id, response } as unknown as Prisma.InputJsonValue,
+        } });
+      }
+      return { ...response, temporaryPin: generatedPin };
     });
   }
 
@@ -1069,14 +1163,70 @@ export class PeopleService {
     });
   }
 
+  async lifecycle(identity: SessionIdentity, userPublicId: string): Promise<StaffLifecycleResponse> {
+    return withSerializable(this.database, identity.tenantId, async (transaction) => {
+      const internalId = await this.resolveUser(transaction, identity.tenantId, userPublicId);
+      const authority = await authorizeMutation(transaction, identity, 'users:admin', { targetUserId: internalId });
+      assertCanAdministerTarget(authority.actor, authority.actorAccess, authority.target!, authority.targetAccess!, 'You cannot change your own account state.');
+      return this.lifecycleResponse(transaction, identity.tenantId, internalId);
+    });
+  }
+
+  async setSuspended(identity: SessionIdentity, userPublicId: string, body: StaffLifecycleRequest): Promise<StaffLifecycleResponse> {
+    return withSerializable(this.database, identity.tenantId, async (transaction) => {
+      const internalId = await this.resolveUser(transaction, identity.tenantId, userPublicId);
+      const authority = await authorizeMutation(transaction, identity, 'users:admin', { targetUserId: internalId });
+      const target = authority.target!;
+      assertCanAdministerTarget(authority.actor, authority.actorAccess, target, authority.targetAccess!, 'You cannot change your own account state.');
+      const currentlySuspended = Boolean(target.suspendedAt);
+      // An unchanged retry is safe, but cannot reverse a newer state transition.
+      if (currentlySuspended !== body.suspended) {
+        if (body.expectedSuspendedAt !== (target.suspendedAt?.toISOString() ?? null)) {
+          throw problem(409, 'staff_state_changed', 'This account state changed. Review it before trying again.', 'Staff conflict');
+        }
+        if (!body.suspended) await this.assertUserCapacity(transaction, identity.tenantId);
+        await transaction.$executeRaw(Prisma.sql`SELECT pg_advisory_xact_lock(hashtextextended(${`lunchlineup:scheduling:${identity.tenantId}`}, 0))`);
+        const now = new Date();
+        await transaction.user.update({ where: { id: internalId }, data: { suspendedAt: body.suspended ? now : null } });
+        // Revoke sessions on both transitions; no old session can revive on reactivation.
+        await this.invalidateReactivatedCredentials(transaction, identity.tenantId, internalId, now);
+        // Eligibility affects scheduling drafts, but never rewrite published history or assignments.
+        await invalidateAffectedDraftSchedules(transaction, identity.tenantId, ['account-eligibility'], []);
+        await transaction.auditLog.create({ data: {
+          tenantId: identity.tenantId, userId: identity.sub, ...requestAudit(identity),
+          action: body.suspended ? 'USER_SUSPENDED' : 'USER_REACTIVATED', resource: 'User', resourceId: internalId,
+          oldValue: { suspendedAt: target.suspendedAt?.toISOString() ?? null },
+          newValue: { suspendedAt: body.suspended ? now.toISOString() : null },
+        } });
+      }
+      return this.lifecycleResponse(transaction, identity.tenantId, internalId);
+    });
+  }
+
+  private async lifecycleResponse(transaction: TenantTransaction, tenantId: string, userId: string): Promise<StaffLifecycleResponse> {
+    const user = await transaction.user.findFirstOrThrow({ where: { id: userId, tenantId, deletedAt: null } });
+    const where = { tenantId, userId, deletedAt: null, endTime: { gt: new Date() } };
+    const [roles, futureAssignmentCount, shifts] = await Promise.all([
+      this.assignedRolesForUsers(transaction, tenantId, [userId]),
+      transaction.shift.count({ where }),
+      transaction.shift.findMany({ where, take: 100, orderBy: [{ startTime: 'asc' }, { id: 'asc' }],
+        select: { publicId: true, startTime: true, endTime: true,
+          location: { select: { name: true, timezone: true } }, schedule: { select: { status: true } } } }),
+    ]);
+    return { user: publicUser(user, roles.get(userId) ?? []), futureAssignmentCount,
+      futureAssignments: shifts.map(shift => ({ id: shift.publicId, startTime: shift.startTime.toISOString(),
+        endTime: shift.endTime.toISOString(), locationName: shift.location.name, timezone: shift.location.timezone,
+        scheduleStatus: shift.schedule?.status ?? null })) };
+  }
+
   /**
-   * Deactivates one staff account through the native People transaction. The
+   * Permanently removes one staff account through the native People transaction. The
    * cleanup preserves immutable operational history, clears editable schedule
    * assignments, settles abandoned availability-import credits, tombstones
    * credentials/PII, and removes only validated local source files after the
    * transaction commits.
    */
-  async deactivate(identity: SessionIdentity, userPublicId: string): Promise<void> {
+  async remove(identity: SessionIdentity, userPublicId: string): Promise<void> {
     const storageKeys = await withSerializable(this.database, identity.tenantId, async (transaction) => {
       const internalId = await this.resolveUser(transaction, identity.tenantId, userPublicId);
       const authority = await authorizeMutation(transaction, identity, 'users:admin', { targetUserId: internalId });
@@ -1085,7 +1235,7 @@ export class PeopleService {
         authority.actorAccess,
         authority.target!,
         authority.targetAccess!,
-        'You cannot deactivate your own account.',
+        'You cannot permanently remove your own account.',
       );
       const cleanup = await anonymizeDeletedUser(transaction, identity.tenantId, internalId, new Date());
       await transaction.auditLog.create({

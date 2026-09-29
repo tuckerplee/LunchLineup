@@ -192,6 +192,11 @@ async function resetTenantData(tenantId) {
   await prisma.scheduleSolveJob.deleteMany({ where: { tenantId } });
   await prisma.scheduleChangeSet.deleteMany({ where: { tenantId } });
   await prisma.schedule.deleteMany({ where: { tenantId } });
+  // Real profile edits leave composite user/location references. Clear those
+  // disposable fixture rows before deleting their parent locations and users.
+  await prisma.staffAvailabilityException.deleteMany({ where: { tenantId } });
+  await prisma.staffAvailability.deleteMany({ where: { tenantId } });
+  await prisma.staffSkill.deleteMany({ where: { tenantId } });
   await prisma.location.deleteMany({ where: { tenantId } });
   await prisma.webhookEndpoint.deleteMany({ where: { tenantId } });
   await prisma.billingEvent.deleteMany({ where: { tenantId } });

@@ -18,8 +18,10 @@ describe('staff destructive action confirmations', () => {
   it('warns that staff removal immediately revokes workspace access', () => {
     const confirmation = buildStaffActionConfirmation('remove', { name: 'Jordan Kim' });
 
-    expect(confirmation.title).toBe('Remove Jordan Kim?');
+    expect(confirmation.title).toBe('Permanently remove Jordan Kim?');
     expect(confirmation.description).toContain('immediately lose access');
-    expect(confirmation.confirmLabel).toBe('Remove staff member');
+    expect(confirmation.confirmLabel).toBe('Remove permanently');
+    expect(confirmation.description).toContain('anonymizes identity');
+    expect(confirmation.description).toContain('Deactivate employee');
   });
 });

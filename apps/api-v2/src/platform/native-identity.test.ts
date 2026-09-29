@@ -41,6 +41,8 @@ function signedAccessToken(): string {
 function request(token = signedAccessToken(), authorization?: string): FastifyRequest {
   return {
     id: 'request-1',
+    method: 'GET',
+    url: '/v2/auth/me',
     headers: authorization === undefined ? {} : { authorization },
     cookies: { access_token: token },
   } as unknown as FastifyRequest;
@@ -165,6 +167,25 @@ describe('native API v2 identity', () => {
     await expect(adapter.authenticate(request(), reply())).resolves.toMatchObject({
       pinResetRequired: true,
     });
+  });
+
+  it.each([
+    ['GET', '/v2/locations'], ['GET', '/v2/notifications'], ['POST', '/v2/users'],
+    ['GET', '/v2/users/me/pin'], ['POST', '/v2/users/me/pin'],
+  ])('blocks temporary PIN sessions from %s %s before route work', async (method, url) => {
+    const { database, mfaSessions } = fixture({ pinResetRequired: true });
+    const adapter = new NativeIdentityAdapter(config, database as never, mfaSessions);
+    await expect(adapter.authenticate({ ...request(), method, url } as FastifyRequest, reply()))
+      .rejects.toMatchObject({ status: 403, code: 'pin_rotation_required' });
+  });
+
+  it.each([
+    ['GET', '/v2/auth/me'], ['POST', '/v2/auth/refresh'], ['POST', '/v2/auth/logout'], ['PUT', '/v2/users/me/pin'],
+  ])('preserves temporary PIN recovery through %s %s', async (method, url) => {
+    const { database, mfaSessions } = fixture({ pinResetRequired: true });
+    const adapter = new NativeIdentityAdapter(config, database as never, mfaSessions);
+    await expect(adapter.authenticate({ ...request(), method, url } as FastifyRequest, reply()))
+      .resolves.toMatchObject({ pinResetRequired: true });
   });
 
   it('fails closed when tenant session state or MFA state is unavailable', async () => {

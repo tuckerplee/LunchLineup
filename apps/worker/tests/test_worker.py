@@ -521,7 +521,7 @@ class WorkerMessageTests(unittest.IsolatedAsyncioTestCase):
                 **base,
                 "availability_exceptions": {
                     "u1": [{
-                        "local_date": "2026-03-11",
+                        "local_date": "2026-03-12",
                         "kind": "UNAVAILABLE",
                         "start_time_minutes": 0,
                         "end_time_minutes": 1440,
@@ -2728,3 +2728,19 @@ class WorkerMessageTests(unittest.IsolatedAsyncioTestCase):
                 )
 if __name__ == "__main__":
     unittest.main()
+
+class TestOvernightOwnership(unittest.TestCase):
+    def test_worker_accepts_owned_overnight_and_next_day_conflict_inputs(self):
+        payload = solve_payload().model_dump()
+        payload['demand_windows'] = [{'id':'night','start_time':'2026-03-09T22:00:00Z','end_time':'2026-03-10T02:00:00Z','required_staff':1}]
+        payload['existing_shifts'] = [{'id':'next','staff_id':'u1','location_id':'loc-2','start_time':'2026-03-10T01:00:00Z','end_time':'2026-03-10T05:00:00Z'}]
+        parsed = main.SolvePayload.model_validate(payload)
+        with self.assertRaises(main.NonRetryableJobError):
+            main.normalize_solved_shifts(parsed, solved_response(solved_shift(start_time='2026-03-09T22:00:00Z',end_time='2026-03-10T02:00:00Z')))
+        payload['existing_shifts'] = []
+        shifts = main.normalize_solved_shifts(main.SolvePayload.model_validate(payload), solved_response(solved_shift(start_time='2026-03-09T22:00:00Z',end_time='2026-03-10T02:00:00Z')))
+        self.assertEqual(len(shifts), 1)
+
+    def test_worker_rejects_wrong_start_day(self):
+        with self.assertRaises(main.NonRetryableJobError):
+            main.normalize_solved_shifts(solve_payload(), solved_response(solved_shift(start_time='2026-03-10T00:00:00Z',end_time='2026-03-10T04:00:00Z')))

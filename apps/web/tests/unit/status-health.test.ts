@@ -126,3 +126,14 @@ describe('status incident derivation', () => {
     });
   });
 });
+
+
+describe('API v2 readiness contract', () => {
+  it.each([200, 503])('only accepts successful readiness as a partial health signal (HTTP %i)', async (status) => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify({ status: 'ok', service: 'api-v2' }), {
+      status, headers: { 'content-type': 'application/json' },
+    })));
+    expect(await readApiHealth({ LUNCHLINEUP_STATUS_HEALTH_URL: 'http://qa/v2/ready' }))
+      .toMatchObject({ status: status === 200 ? 'reachable' : 'degraded', payload: null });
+  });
+});

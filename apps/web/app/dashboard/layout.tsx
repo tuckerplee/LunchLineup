@@ -40,6 +40,8 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
   const [notificationsOpen, setNotificationsOpen] = useState(false);
   const [notifications, setNotifications] = useState<DashboardNotification[]>([]);
   const [unreadCount, setUnreadCount] = useState(0);
+  const [notificationError, setNotificationError] = useState<string | null>(null);
+  const [notificationBusy, setNotificationBusy] = useState(false);
 
   function getCsrfToken(): string {
     if (typeof document === 'undefined') return '';
@@ -65,10 +67,10 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
         if (cancelled) return;
         setNotifications(feed.data ?? []);
         setUnreadCount(feed.unreadCount ?? 0);
+          setNotificationError(null);
       } catch {
         if (!cancelled) {
-          setNotifications([]);
-          setUnreadCount(0);
+          setNotificationError('Notifications could not be refreshed. Previously loaded messages may be out of date.');
         }
       }
     }
@@ -79,11 +81,11 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
         if (!cancelled) {
           setNotifications(feed.data ?? []);
           setUnreadCount(feed.unreadCount ?? 0);
+          setNotificationError(null);
         }
       } catch {
         if (!cancelled) {
-          setNotifications([]);
-          setUnreadCount(0);
+          setNotificationError('Notifications could not be refreshed. Previously loaded messages may be out of date.');
         }
       }
     }
@@ -100,6 +102,11 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
   }, []);
 
   async function markOneAsRead(notificationId: string) {
+    if (notifications.find((item) => item.id === notificationId)?.readAt) return;
+    if (notificationBusy) return;
+    setNotificationBusy(true);
+    setNotificationError(null);
+    try {
     const csrf = getCsrfToken();
     const response = await fetchWithSession('/notifications/read', {
       method: 'POST',
@@ -109,13 +116,19 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
       },
       body: JSON.stringify({ ids: [notificationId] }),
     });
-    if (!response.ok) return;
+    if (!response.ok) throw new Error('Notification update could not be confirmed. Retry to refresh the saved state.');
 
     setNotifications((current) => current.map((item) => (item.id === notificationId ? { ...item, readAt: new Date().toISOString() } : item)));
     setUnreadCount((count) => Math.max(0, count - 1));
+    } catch { setNotificationError('Notification update could not be confirmed. Retry to refresh the saved state.'); }
+    finally { setNotificationBusy(false); }
   }
 
   async function markAllAsRead() {
+    if (notificationBusy) return;
+    setNotificationBusy(true);
+    setNotificationError(null);
+    try {
     const csrf = getCsrfToken();
     const response = await fetchWithSession('/notifications/read-all', {
       method: 'POST',
@@ -123,10 +136,12 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
         ...(csrf ? { 'x-csrf-token': csrf } : {}),
       },
     });
-    if (!response.ok) return;
+    if (!response.ok) throw new Error('Notification update could not be confirmed. Retry to refresh the saved state.');
 
     setNotifications((current) => current.map((item) => (item.readAt ? item : { ...item, readAt: new Date().toISOString() })));
     setUnreadCount(0);
+    } catch { setNotificationError('Notification update could not be confirmed. Retry to refresh the saved state.'); }
+    finally { setNotificationBusy(false); }
   }
 
   const visibleNavItems = useMemo(() => getVisibleDashboardNavItems(user?.permissions), [user?.permissions]);
@@ -258,6 +273,18 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
               <LogOut size={16} aria-hidden="true" />
             </Link>
             <NotificationsMenu
+              error={notificationError}
+              busy={notificationBusy}
+              onRetry={async () => {
+                setNotificationBusy(true);
+                try {
+                  const feed = await fetchJsonWithSession<{ data: DashboardNotification[]; unreadCount: number }>('/notifications?status=all&limit=20');
+                  setNotifications(feed.data ?? []);
+                  setUnreadCount(feed.unreadCount ?? 0);
+                  setNotificationError(null);
+                } catch { setNotificationError('Notifications are still unavailable. Please retry.'); }
+                finally { setNotificationBusy(false); }
+              }}
               notificationsOpen={notificationsOpen}
               notifications={notifications}
               unreadCount={unreadCount}

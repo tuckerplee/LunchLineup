@@ -59,7 +59,7 @@ describe('shift update invariants', () => {
             new Date('2026-03-10T16:00:00.000Z'),
         )).toThrow(ConflictException);
         expect(() => assertShiftUpdateWithinSchedule(
-            new Date('2026-03-10T17:00:00.000Z'),
+            new Date('2026-03-11T04:00:00.000Z'),
             new Date('2026-03-11T05:00:00.000Z'),
             {
                 startDate: new Date('2026-03-10T04:00:00.000Z'),

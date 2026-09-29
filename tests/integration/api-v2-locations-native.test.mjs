@@ -97,7 +97,11 @@ test('native API v2 locations use the restricted RLS role, public UUIDs, durable
       },
     });
 
+    const beforeUpdate = await service.get(actor, created.id);
+    await assert.rejects(() => service.update(actor, created.id, { name: 'Missing precondition', timezone: beforeUpdate.timezone }),
+      error => error?.status === 428);
     const updated = await service.update(actor, created.id, {
+      expectedUpdatedAt: beforeUpdate.updatedAt,
       name: 'Native Location Proof Updated',
       address: null,
       timezone: 'America/Denver',
@@ -105,6 +109,14 @@ test('native API v2 locations use the restricted RLS role, public UUIDs, durable
     assert.equal(updated.id, created.id);
     assert.equal(updated.timezone, 'America/Denver');
     assert.equal(updated.address, null);
+    const savedRows = await owner.location.findUniqueOrThrow({ where: { id: ownerLocation.id } });
+    await assert.rejects(() => service.update(actor, created.id, {
+      name: 'Stale second manager', address: 'Overwritten', timezone: beforeUpdate.timezone,
+      expectedUpdatedAt: beforeUpdate.updatedAt,
+    }), error => error?.status === 409);
+    assert.deepEqual(await owner.location.findUniqueOrThrow({ where: { id: ownerLocation.id } }), savedRows);
+    assert.deepEqual(await service.get(actor, created.id), updated);
+
     assert.equal((await owner.schedule.findUniqueOrThrow({ where: { id: scheduleId } })).revision, 8);
 
     const publicToInternal = await service.resolvePublicIds(tenantId, [created.id]);

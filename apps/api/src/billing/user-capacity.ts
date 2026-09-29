@@ -1,4 +1,5 @@
 import { BadRequestException, ServiceUnavailableException } from '@nestjs/common';
+import { PlanTier } from '@prisma/client';
 import { resolveEffectiveTenantEntitlement, resolveTenantPlanDefinition } from './plan-definitions';
 
 type PrismaLike = {
@@ -117,7 +118,8 @@ export async function assertPlanUserLimitChangeAllowsExistingTenants(
     planCode: string,
     userLimit: number | null,
 ): Promise<void> {
-    if (userLimit === null) {
+    // Catalog-only plans cannot be assigned to Tenant.planTier until that enum supports them.
+    if (userLimit === null || !Object.values(PlanTier).some((tier) => tier === planCode)) {
         return;
     }
 

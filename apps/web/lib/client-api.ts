@@ -117,6 +117,11 @@ function withSessionDefaults(init: RequestInit = {}): RequestInit {
     const headers = new Headers(init.headers);
     const csrfToken = getCsrfTokenFromCookie();
 
+    // A bodyless action must not advertise a JSON document to the API parser.
+    if (init.body == null && /^application\/json(?:\s*;|$)/i.test(headers.get('content-type') ?? '')) {
+        headers.delete('content-type');
+    }
+
     if (UNSAFE_METHODS.has(method)) {
         if (csrfToken) {
             headers.set('x-csrf-token', csrfToken);

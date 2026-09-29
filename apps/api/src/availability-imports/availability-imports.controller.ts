@@ -64,6 +64,13 @@ export class AvailabilityImportsController {
         });
     }
 
+    @Post(':id/cancel')
+    @HttpCode(HttpStatus.OK)
+    @RequirePermission('users:write')
+    cancel(@Req() req: AuthenticatedRequest, @Param('id') id: string) {
+        return this.imports.cancelImport(req.user.tenantId, req.user.sub, id);
+    }
+
     @Get(':id')
     @RequirePermission('users:write')
     get(@Req() req: AuthenticatedRequest, @Param('id') id: string) {

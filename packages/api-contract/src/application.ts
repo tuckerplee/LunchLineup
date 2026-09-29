@@ -36,6 +36,8 @@ const MiB = 1024 * 1024;
  * v1 proxy.
  */
 export const APPLICATION_API_OPERATIONS = [
+  { operationId: 'prepareAccountDeletionReceipt', method: 'POST', path: '/account-deletion/prepare', tag: 'Settings', summary: 'Prepare a short-lived deletion receipt lookup', bodyLimitBytes: 2048 },
+  { operationId: 'readAccountDeletionReceipt', method: 'POST', path: '/account-deletion/receipt', tag: 'Authentication', summary: 'Recover deletion confirmation using a short-lived receipt capability', bodyLimitBytes: 2048 },
   { operationId: 'resolveLoginMethod', method: 'POST', path: '/auth/login/resolve', tag: 'Authentication', summary: 'Resolve the configured sign-in method' },
   { operationId: 'verifyPasswordLogin', method: 'POST', path: '/auth/password/verify', tag: 'Authentication', summary: 'Verify a password sign-in challenge' },
   { operationId: 'requestPasswordReset', method: 'POST', path: '/auth/password/reset/request', tag: 'Authentication', summary: 'Request password recovery' },
@@ -65,6 +67,9 @@ export const APPLICATION_API_OPERATIONS = [
   { operationId: 'getAccessCatalog', method: 'GET', path: '/users/access/catalog', tag: 'People', summary: 'Read the access-role catalog', native: true },
   { operationId: 'getStaffSchedulingProfile', method: 'GET', path: '/users/:userId/scheduling-profile', tag: 'People', summary: 'Read one staff scheduling profile', native: true },
   { operationId: 'updateStaffSchedulingProfile', method: 'PUT', path: '/users/:userId/scheduling-profile', tag: 'People', summary: 'Replace one staff scheduling profile', native: true },
+  { operationId: 'updateStaffIdentity', method: 'PUT', path: '/users/:userId/identity', tag: 'People', summary: 'Update staff identity with a concurrency check', native: true },
+  { operationId: 'getStaffLifecycle', method: 'GET', path: '/users/:userId/lifecycle', tag: 'People', summary: 'Review staff account state and future assignments', native: true },
+  { operationId: 'setStaffSuspension', method: 'PUT', path: '/users/:userId/lifecycle', tag: 'People', summary: 'Suspend or reactivate staff without deleting identity', native: true },
   { operationId: 'getStaffMember', method: 'GET', path: '/users/:userId', tag: 'People', summary: 'Read one staff member', native: true },
   { operationId: 'createStaffInvitation', method: 'POST', path: '/users/invite', tag: 'People', summary: 'Invite a staff member', native: true },
   { operationId: 'getStaffInvitation', method: 'GET', path: '/users/:userId/invitation', tag: 'People', summary: 'Read invitation delivery state', native: true },
@@ -72,7 +77,7 @@ export const APPLICATION_API_OPERATIONS = [
   { operationId: 'reissueStaffInvitation', method: 'POST', path: '/users/:userId/invitation/reissue', tag: 'People', summary: 'Reissue an invitation', native: true },
   { operationId: 'resetStaffPin', method: 'POST', path: '/users/:userId/pin/reset', tag: 'People', summary: 'Reset a staff PIN', native: true },
   { operationId: 'replaceCurrentPin', method: 'PUT', path: '/users/me/pin', tag: 'People', summary: 'Replace the current user PIN', native: true },
-  { operationId: 'deleteStaffMember', method: 'DELETE', path: '/users/:userId', tag: 'People', summary: 'Deactivate a staff member', native: true },
+  { operationId: 'deleteStaffMember', method: 'DELETE', path: '/users/:userId', tag: 'People', summary: 'Permanently remove a staff member', native: true },
   { operationId: 'getStaffAccess', method: 'GET', path: '/users/:userId/access', tag: 'People', summary: 'Read one staff access assignment', native: true },
   { operationId: 'updateStaffAccess', method: 'PUT', path: '/users/:userId/access', tag: 'People', summary: 'Replace one staff access assignment', native: true },
   { operationId: 'createAccessRole', method: 'POST', path: '/users/roles', tag: 'People', summary: 'Create an access role', native: true },
@@ -134,6 +139,7 @@ export const APPLICATION_API_OPERATIONS = [
   { operationId: 'resumeSubscription', method: 'POST', path: '/billing/resume', tag: 'Billing', summary: 'Resume a subscription' },
 
   { operationId: 'createAvailabilityImport', method: 'POST', path: '/availability-imports/users/:userId', tag: 'Imports', summary: 'Create a staff availability import', bodyLimitBytes: 10 * MiB },
+  { operationId: 'cancelAvailabilityImport', method: 'POST', path: '/availability-imports/:importId/cancel', tag: 'Imports', summary: 'Cancel an unfinished availability import' },
   { operationId: 'getAvailabilityImport', method: 'GET', path: '/availability-imports/:importId', tag: 'Imports', summary: 'Read one availability import' },
 
   { operationId: 'getAdminStats', method: 'GET', path: '/admin/stats', tag: 'Administration', summary: 'Read platform statistics' },
@@ -154,6 +160,7 @@ export const APPLICATION_API_OPERATIONS = [
   { operationId: 'deleteTenantAccount', method: 'DELETE', path: '/admin/account', tag: 'Administration', summary: 'Request tenant account deletion' },
   { operationId: 'listAdminUsers', method: 'GET', path: '/admin/users', tag: 'Administration', summary: 'List platform users' },
   { operationId: 'updateAdminUser', method: 'PUT', path: '/admin/users/:userId', tag: 'Administration', summary: 'Replace a platform user' },
+  { operationId: 'resetAdminUserPin', method: 'POST', path: '/admin/users/:userId/pin/reset', tag: 'Administration', summary: 'Reset a platform-user PIN' },
   { operationId: 'resetAdminUserMfa', method: 'POST', path: '/admin/users/:userId/mfa/reset', tag: 'Administration', summary: 'Reset platform-user MFA' },
   { operationId: 'lockAdminUser', method: 'POST', path: '/admin/users/:userId/lock', tag: 'Administration', summary: 'Lock a platform user' },
   { operationId: 'unlockAdminUser', method: 'POST', path: '/admin/users/:userId/unlock', tag: 'Administration', summary: 'Unlock a platform user' },

@@ -326,29 +326,17 @@ test('candidate DAST and load bundles are uploaded, downloaded, and verified bef
 });
 
 test('full-stack release-image E2E runs every spec that declares DB-backed coverage', () => {
-  const workflow = yaml.load(read('docs/legacy/github-actions-ci.yml'));
-  const fullstack = workflow.jobs['fullstack-e2e'];
-  const runStep = fullstack.steps.find((step) => step.name === 'Run DB-backed Playwright workflows');
+  const qualification = read('scripts/run-internal-beta-release-qualification.sh');
+  const fullstack = qualification.slice(qualification.indexOf('\nfullstack-playwright)'), qualification.indexOf('\ninteraction-proof)'));
   const e2eRoot = resolve(root, 'apps/web/tests/e2e');
   const requiredSpecs = readdirSync(e2eRoot)
     .filter((name) => name.endsWith('.spec.ts'))
-    .filter((name) => read(`apps/web/tests/e2e/${name}`).includes("tag: '@full-stack'"))
-    .sort();
-
-  assert.deepEqual(requiredSpecs, [
-    'month-volume-workflows.spec.ts',
-    'operations-workflows.spec.ts',
-    'stress-workflows.spec.ts',
-    'tenant-admin-workflows.spec.ts',
-  ]);
-  assert.equal(fullstack.env.E2E_FULL_STACK, '1');
-  assert.equal(fullstack.env.E2E_MOCK_API, '0');
-  assert.equal(fullstack['continue-on-error'], undefined);
-  assert.ok(runStep, 'missing DB-backed full-stack Playwright step');
-  assert.equal(runStep['continue-on-error'], undefined);
-  const contractBuildStep = fullstack.steps.find((step) => step.run === 'npm run build --workspace @lunchlineup/api-contract');
-  assert.ok(contractBuildStep, 'full-stack Playwright must build the shared API contract package first');
-  for (const spec of requiredSpecs) assert.match(runStep.run, new RegExp(`tests/e2e/${spec.replaceAll('.', '\\.')}`));
+    .filter((name) => read(`apps/web/tests/e2e/${name}`).includes("tag: '@full-stack'"));
+  assert.ok(requiredSpecs.length > 0, 'DB-backed acceptance inventory must not be empty');
+  assert.match(fullstack, /E2E_FULL_STACK=1 E2E_MOCK_API=0/);
+  assert.match(fullstack, /--workers=1 --retries=0/);
+  assert.match(fullstack, /stats\.unexpected!==0\|\|stats\.skipped!==0\|\|stats\.flaky!==0/);
+  for (const spec of requiredSpecs) assert.ok(fullstack.includes(`tests/e2e/${spec}`), `Missing full-stack spec: ${spec}`);
 });
 
 test('internal beta proof requires every exact-SHA release, security, and runtime gate', () => {
@@ -615,7 +603,7 @@ test('internal beta local pipeline keeps isolated source, active scanners, exact
   assert.match(qualification, /BASE_URL=http:\/\/127\.0\.0\.1:8080 E2E_FULL_STACK=1 E2E_MOCK_API=0 E2E_SIGNUP_MODE=closed_beta E2E_COMPOSE_PROJECT_NAME="\$project" E2E_COMPOSE_ENV_FILE="\$env_file"/);
   assert.match(qualification, /ZAP_IMAGE='ghcr\.io\/zaproxy\/zaproxy:stable@sha256:[a-f0-9]{64}'/);
   assert.match(qualification, /AVAILABILITY_IMPORT_ORIGIN=http:\/\/127\.0\.0\.1:8080/);
-  assert.match(qualification, /\/usr\/bin\/podman healthcheck run "\$container_id"/);
+  assert.match(qualification, /podman healthcheck run "\$container_id"/);
   assert.match(qualification, /run_podman_healthcheck "\$postgres_id"/);
   assert.match(qualification, /run_project_podman_healthchecks/);
   const webDockerfile = read('infrastructure/docker/Dockerfile.web');

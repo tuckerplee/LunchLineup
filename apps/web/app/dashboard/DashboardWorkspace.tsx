@@ -239,19 +239,21 @@ export function DashboardWorkspace() {
         const schedulePath = dashboardWindowPath('/schedules', -7, 90);
         const shiftPath = dashboardWindowPath('/shifts', 0, 7);
         const lunchBreakPath = dashboardWindowPath('/lunch-breaks', 0, 7);
-        const [profile, userDirectory, locationSummary, schedules, shifts, features, lunchBreaks, notifications] = await Promise.all([
-            fetchJsonResult<{ user?: DashboardProfile }>('/auth/me'),
-            fetchJsonResult<ApiUserDirectoryResponse>('/users?limit=1'),
-            fetchJsonResult<ApiLocationSummary>('/locations/summary'),
-            fetchBoundedJsonResult<ApiSchedule>(schedulePath),
-            fetchBoundedJsonResult<ApiShift>(shiftPath),
-            fetchJsonResult<ApiFeatureMatrix>('/billing/features'),
-            fetchBoundedJsonResult<ApiLunchBreak>(lunchBreakPath),
+        const profile = await fetchJsonResult<{ user?: DashboardProfile }>('/auth/me');
+        const profileData = profile.ok && profile.data.user ? profile.data.user : null;
+        const loadedCapabilities = getWorkspaceCapabilities(profileData?.permissions ?? []);
+        const unavailable = Promise.resolve({ ok: false as const });
+        const [userDirectory, locationSummary, schedules, shifts, features, lunchBreaks, notifications] = await Promise.all([
+            loadedCapabilities.canReadUsers ? fetchJsonResult<ApiUserDirectoryResponse>('/users?limit=1') : unavailable,
+            loadedCapabilities.canReadLocations ? fetchJsonResult<ApiLocationSummary>('/locations/summary') : unavailable,
+            loadedCapabilities.canReadScheduling ? fetchBoundedJsonResult<ApiSchedule>(schedulePath) : unavailable,
+            loadedCapabilities.canReadScheduling ? fetchBoundedJsonResult<ApiShift>(shiftPath) : unavailable,
+            loadedCapabilities.canReadBilling ? fetchJsonResult<ApiFeatureMatrix>('/billing/features') : unavailable,
+            loadedCapabilities.canReadLunchBreaks ? fetchBoundedJsonResult<ApiLunchBreak>(lunchBreakPath) : unavailable,
             fetchJsonResult<{ data?: ApiNotification[] }>('/notifications?status=all&limit=5'),
         ]);
 
-        const profileData = profile.ok && profile.data.user ? profile.data.user : null;
-        const loadedCapabilities = getWorkspaceCapabilities(profileData?.permissions ?? []);
+
         const userSummary = userDirectory.ok ? userDirectory.data.summary : undefined;
         const validStaffSummary = Number.isSafeInteger(userSummary?.staffCount)
             && Number.isSafeInteger(userSummary?.managerCount);
@@ -329,7 +331,7 @@ export function DashboardWorkspace() {
             || (loadedCapabilities.canReadLocations && locationCount === null)
             || (loadedCapabilities.canReadScheduling && (scheduleRows === null || shiftRows === null))
             || (loadedCapabilities.canReadLunchBreaks && lunchBreakRows === null)
-            || !features.ok
+            || (loadedCapabilities.canReadBilling && !features.ok)
             || notificationRows === null;
 
         if (loadGeneration !== loadGenerationRef.current) return;
@@ -428,7 +430,7 @@ export function DashboardWorkspace() {
             tasks.push({
                 href: '/dashboard/scheduling',
                 label: "Review this week's schedule",
-                detail: 'Coverage is ready for a final manager check.',
+                detail: 'Review the latest published schedule.',
                 priority: 'routine',
             });
         }
@@ -476,8 +478,8 @@ export function DashboardWorkspace() {
 
             <header className="manager-dashboard-header">
                 <div>
-                    <div className="workspace-kicker">{overview?.profile?.tenantName ?? 'Manager workspace'}</div>
-                    <h1 className="workspace-title">Manager dashboard</h1>
+                    <div className="workspace-kicker">{overview?.profile?.tenantName ?? 'Team workspace'}</div>
+                    <h1 className="workspace-title">Your dashboard</h1>
                     <p className="workspace-subtitle">{todayLabel}</p>
                 </div>
             </header>
@@ -490,7 +492,7 @@ export function DashboardWorkspace() {
                     </div>
                     <span className="manager-dashboard-count">{managerTasks.length}</span>
                 </div>
-                {isLoading ? <p role="status" className="manager-dashboard-muted">Loading manager tasks…</p> : null}
+                {isLoading ? <p role="status" className="manager-dashboard-muted">Loading your next steps…</p> : null}
                 {!isLoading && managerTasks.length === 0 ? <p className="manager-dashboard-muted">Nothing needs action right now.</p> : null}
                 {!isLoading && managerTasks.length > 0 ? (
                     <div className="manager-task-list">

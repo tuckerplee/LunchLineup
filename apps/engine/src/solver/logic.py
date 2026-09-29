@@ -506,7 +506,7 @@ class ConstraintSolver:
                 raise ValueError(f"Unsupported demand window field: {sorted(unknown)[0]}")
             start_time = parse_schedule_datetime(raw_window.get("start_time"), f"demand_windows[{index}].start_time")
             end_time = parse_schedule_datetime(raw_window.get("end_time"), f"demand_windows[{index}].end_time")
-            if not (schedule_start <= start_time < end_time <= schedule_end):
+            if not (schedule_start <= start_time < schedule_end and start_time < end_time <= start_time + timedelta(days=1)):
                 raise ValueError("demand window must be inside the schedule window")
             required_staff = self._parse_positive_int(raw_window.get("required_staff"), "demand window required_staff")
             skill_value = raw_window.get("skill")
@@ -1053,7 +1053,7 @@ class ConstraintSolver:
             end = parse_schedule_datetime(item.get("end_time"), f"existing_shift_intervals[{index}].end_time")
             if end <= start:
                 raise ValueError("existing shift interval end_time must be after start_time")
-            if start >= schedule_end or end <= schedule_start:
+            if start >= schedule_end + timedelta(days=1) or end <= schedule_start:
                 raise ValueError("existing shift interval must overlap the schedule window")
             normalized.setdefault(staff_id, []).append((start, end))
         return normalized

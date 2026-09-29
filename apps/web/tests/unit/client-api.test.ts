@@ -51,6 +51,28 @@ describe('fetchWithSession', () => {
     expect((fetchMock.mock.calls[0][1] as RequestInit).redirect).toBe('error');
   });
 
+  it('sends bodyless MFA enrollment without an empty JSON document and preserves CSRF', async () => {
+    const fetchMock = vi.fn().mockImplementation(async () => new Response('{}', {
+      status: 200, headers: { 'content-type': 'application/json' },
+    }));
+    vi.stubGlobal('fetch', fetchMock);
+    vi.stubGlobal('document', { cookie: 'csrf_token=enrollment-csrf' });
+
+    await fetchPublicApi('/auth/mfa/enrollment', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+    });
+    expect(fetchMock.mock.calls[0][0]).toBe('/api/v2/auth/mfa/enrollment');
+    expect(headersFromCall(fetchMock.mock.calls[0]).has('content-type')).toBe(false);
+    expect(headersFromCall(fetchMock.mock.calls[0]).get('x-csrf-token')).toBe('enrollment-csrf');
+
+    await fetchPublicApi('/auth/mfa/enrollment', {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ code: '123456' }),
+    });
+    expect(headersFromCall(fetchMock.mock.calls[1]).get('content-type')).toBe('application/json');
+    expect((fetchMock.mock.calls[1][1] as RequestInit).body).toBe('{"code":"123456"}');
+  });
+
   it('routes dependency health through the unversioned same-origin proxy endpoint', async () => {
     const fetchMock = vi.fn().mockResolvedValue(new Response(
       JSON.stringify({ status: 'ok' }),

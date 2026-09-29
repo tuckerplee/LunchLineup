@@ -1,5 +1,7 @@
 # Disposable Dev Server
 
+> **2026-09-08 operating hold:** VM107 stays stopped. The source-building bootstrap below is retired and now refuses execution. Build only on a storage-bounded CI runner, retain current and rollback image digests, and deploy without building. Historical commands below are not authorization to resume launch. See the host storage/retention runbook before any maintenance.
+
 ## Purpose
 
 VM107 is disposable. If the VM is broken or intentionally removed, restore access by creating a fresh Debian VM on a healthy Proxmox1 host, assigning the same private IP shape, bootstrapping from GitHub, restoring already-available data, and validating private routes. Target restore time is 15 minutes after the VM exists and the data dump is available.

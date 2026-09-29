@@ -37,7 +37,7 @@ export function assertShiftUpdateWithinSchedule(
     if (!(schedule.startDate instanceof Date) || !(schedule.endDate instanceof Date)) {
         throw new ConflictException('Schedule window is invalid.');
     }
-    if (startTime < schedule.startDate || endTime > schedule.endDate) {
+    if (startTime < schedule.startDate || startTime >= schedule.endDate || endTime <= startTime || endTime.getTime() - startTime.getTime() > 86_400_000) {
         throw new ConflictException('Shift must stay within its schedule window.');
     }
 }

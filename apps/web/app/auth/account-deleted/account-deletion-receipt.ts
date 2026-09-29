@@ -1,3 +1,4 @@
+export const ACCOUNT_DELETION_RECOVERY_KEY = 'lunchlineup.account-deletion-recovery.v1';
 export const ACCOUNT_DELETION_RECEIPT_STORAGE_KEY = 'lunchlineup.account-deletion-receipt.v1';
 
 type ReceiptStorage = Pick<Storage, 'getItem' | 'setItem'>;
@@ -68,6 +69,9 @@ function normalizeReceipt(value: unknown): AccountDeletionReceipt | null {
 }
 export function accountDeletionReceiptFromResponse(response: AccountDeletionResponse): AccountDeletionReceipt {
   const retention = response.retention ?? {};
+  if (!['FINALIZED', 'PENDING_BILLING_CLEANUP'].includes(String(response.deletionState)) || !normalizeDate(response.deletionRequestedAt ?? retention.deletionRequestedAt)) {
+    throw new Error('Deletion completion has not been confirmed by the service.');
+  }
   return {
     deletionState: normalizeDeletionState(response.deletionState, response.billingCleanupPending),
     deletionRequestedAt: normalizeDate(response.deletionRequestedAt ?? retention.deletionRequestedAt),

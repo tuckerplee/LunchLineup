@@ -285,7 +285,7 @@ function solveStatusLabel(job: ScheduleSolveJobSnapshot): string {
     return `Solved${job.resultShiftCount === null || job.resultShiftCount === undefined ? '' : ` ${shiftCountLabel(job.resultShiftCount)}`}`;
   }
   if (status === 'FAILED' || status === 'DEAD_LETTERED') {
-    return job.statusReason ? `${status}: ${job.statusReason}` : status;
+    return 'Schedule generation did not complete. Review staffing demand, employee availability, required skills, and weekly hour limits, then retry. Reload the calendar to confirm saved shifts.';
   }
   if (status === 'RETRYING') return `Retrying${job.retryCount ? ` attempt ${job.retryCount}` : ''}`;
   return status;

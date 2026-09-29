@@ -296,6 +296,13 @@ export class NativeIdentityAdapter implements IdentityAdapter {
       pinResetRequired: snapshot.user.pinResetRequired,
     };
 
+    if (identity.pinResetRequired) {
+      const operation = `${request.method} ${request.url.split('?', 1)[0]}`;
+      if (!['GET /v2/auth/me', 'POST /v2/auth/refresh', 'POST /v2/auth/logout', 'PUT /v2/users/me/pin'].includes(operation)) {
+        throw new ProblemError(403, 'pin_rotation_required', 'Replace your temporary PIN before continuing.', 'PIN rotation required');
+      }
+    }
+
     if (source.cookieAuthenticated) this.rotateCookie(reply, identity, snapshot.effectiveExpiresAt);
     return identity;
   }

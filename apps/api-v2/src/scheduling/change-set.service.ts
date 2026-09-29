@@ -357,10 +357,10 @@ export class ScheduleChangeSetService {
         ? await transaction.shift.findMany({
             where: {
               tenantId: identity.tenantId,
-              scheduleId: { not: schedule.id },
+              OR: [{ scheduleId: null }, { scheduleId: { not: schedule.id } }],
               userId: { in: [...involvedUserIds] },
               deletedAt: null,
-              startTime: { lt: schedule.endDate },
+              startTime: { lt: new Date(schedule.endDate.getTime() + 86_400_000) },
               endTime: { gt: schedule.startDate },
             },
             orderBy: [{ startTime: 'asc' }, { id: 'asc' }],

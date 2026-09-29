@@ -23,7 +23,7 @@ test.describe.serial('Tenant and admin SaaS workflows', { tag: '@full-stack' }, 
       expectedPath: '/dashboard',
     });
 
-    await expect(page.getByRole('heading', { name: 'Manager dashboard' })).toBeVisible();
+    await expect(page.getByRole('heading', { name: 'Your dashboard' })).toBeVisible();
     await expect(page.getByRole('link', { name: 'Admin Console' })).toHaveCount(0);
 
     const denial = await page.request.get('/admin/tenants', { maxRedirects: 0 });
@@ -32,7 +32,7 @@ test.describe.serial('Tenant and admin SaaS workflows', { tag: '@full-stack' }, 
 
     await page.goto('/dashboard');
     await expect(page).toHaveURL(/\/dashboard(?:[?#].*)?$/);
-    await expect(page.getByRole('heading', { name: 'Manager dashboard' })).toBeVisible();
+    await expect(page.getByRole('heading', { name: 'Your dashboard' })).toBeVisible();
   });
 
   test('lets super admins inspect tenants, users, and return to tenant scheduling', async ({ page }) => {

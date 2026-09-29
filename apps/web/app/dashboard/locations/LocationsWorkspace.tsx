@@ -14,6 +14,7 @@ type LocationsWorkspaceProps = {
 
 type ApiLocation = {
     id: string;
+    updatedAt?: string;
     name: string;
     address?: string | null;
     timezone?: string | null;

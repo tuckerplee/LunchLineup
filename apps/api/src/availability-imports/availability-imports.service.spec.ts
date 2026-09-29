@@ -65,6 +65,31 @@ describe('AvailabilityImportsService', () => {
         vi.restoreAllMocks();
     });
 
+    it('cancels an unfinished import and refunds once; repeated cancellation does not settle again', async () => {
+        const row = { id: 'import-1', userId: 'user-1', status: 'PENDING', createdAt: new Date(), storageKey: null };
+        tx.availabilityImportJob.findFirst.mockImplementation(async () => row);
+        tx.availabilityImportJob.updateMany = vi.fn(async ({ data }) => { Object.assign(row, data); return { count: 1 }; });
+        tx.creditTransaction.findFirst = vi.fn(async ({ where }) => where.id.startsWith('feature-usage') ? { amount: -1 } : null);
+        tx.creditTransaction.findMany.mockResolvedValue([{ id: 'feature-usage-availability-import:import-1', amount: -1 }, { id: 'feature-refund-availability-import:import-1', amount: 0, debtAmount: -1 }]);
+        tx.$queryRaw = vi.fn(async (query) => String(query).includes('settle_positive') ? [{ creditedValue: 1, replayed: false }] : []);
+        tx.auditLog = { create: vi.fn() };
+        featureAccess.lockTenantInTransaction = vi.fn();
+        const service = new AvailabilityImportsService(tenantDb, featureAccess, publisher);
+        await expect(service.cancelImport('tenant-1', 'actor', 'import-1')).resolves.toMatchObject({ status: 'CANCELLED', settlement: { chargedCredits: 1, refundedCredits: 1, pending: false } });
+        await service.cancelImport('tenant-1', 'actor', 'import-1');
+        expect(tx.availabilityImportJob.updateMany).toHaveBeenCalledOnce();
+        expect(tx.auditLog.create).toHaveBeenCalledOnce();
+        expect(tx.$queryRaw.mock.calls.filter(([query]) => String(query).includes('settle_positive'))).toHaveLength(1);
+    });
+
+    it('does not cancel an import that completed first', async () => {
+        tx.$queryRaw = vi.fn().mockResolvedValue([]);
+        tx.availabilityImportJob.findFirst.mockResolvedValue({ id: 'import-1', status: 'SUCCEEDED' });
+        featureAccess.lockTenantInTransaction = vi.fn();
+        const service = new AvailabilityImportsService(tenantDb, featureAccess, publisher);
+        await expect(service.cancelImport('tenant-1', 'actor', 'import-1')).rejects.toThrow('already completed');
+    });
+
     it('validates MIME, extension, signature, size, and printable idempotency keys', () => {
         const valid = {
             buffer: Buffer.from('%PDF-1.7\n'),
@@ -390,7 +415,7 @@ describe('AvailabilityImportsService', () => {
                     ],
                 },
             },
-            select: { id: true, amount: true },
+            select: { id: true, amount: true, debtAmount: true },
         });
     });
 
