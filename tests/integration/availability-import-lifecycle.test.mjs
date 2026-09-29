@@ -25,11 +25,11 @@ async function workerProbe(mode, tenantId, importId, identityHash, applicationNa
 import json, sys
 from concurrent.futures import ThreadPoolExecutor
 from src.availability_import_store import ImportPayload, claim_import, complete_import, terminalize_import, mark_retrying, _sweep_expired_import, AvailabilityImportRejected, AvailabilityImportBusy, _connect
-mode, tenant, job, identity = sys.argv[1:]
+mode, tenant, job, identity, expected_application_name = sys.argv[1:]
 with _connect() as connection:
     with connection.cursor() as cursor:
-        cursor.execute('SELECT rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user')
-        assert cursor.fetchone() == (False, False)
+        cursor.execute("SELECT rolsuper, rolbypassrls, current_setting('application_name') FROM pg_roles WHERE rolname = current_user")
+        assert cursor.fetchone() == (False, False, expected_application_name)
 payload = ImportPayload(job, tenant)
 def settle(_):
     return terminalize_import(payload, None, 'FAILED', 'EXPIRED')
@@ -53,7 +53,7 @@ try:
     print(json.dumps({'status': 'ok'}))
 except (AvailabilityImportRejected, AvailabilityImportBusy) as failure:
     print(json.dumps({'status': 'rejected', 'reason': str(failure)}))
-`, mode, tenantId, importId, identityHash], {
+`, mode, tenantId, importId, identityHash, applicationName], {
     cwd: workerRoot, env: { ...process.env, DATABASE_URL: databaseUrl.toString() }, timeout: 20_000, maxBuffer: 1024 * 1024,
   });
   return JSON.parse(stdout.trim());
@@ -195,13 +195,15 @@ test('publisher automatically republishes expired execution owners without touch
       completion = workerProbe('complete', tenantId, ids.freshnull, identity, completionApplicationName);
       // Retain rejection handling while the child is intentionally blocked.
       void completion.catch(() => undefined);
+      // Activity query text may be truncated before the table name. Match the
+      // verified worker identity and exact blocker instead of SQL substrings.
       let waiting = false;
       let completionBackendPid;
       const deadline = Date.now() + 5000;
       while (Date.now() < deadline) {
         const rows = await app.$queryRaw`SELECT pid FROM pg_stat_activity
           WHERE usename = current_user AND application_name = ${completionApplicationName}
-            AND wait_event_type = 'Lock' AND query LIKE '%AvailabilityImportJob%'
+            AND wait_event_type = 'Lock'
             AND ${holder.pid} = ANY(pg_blocking_pids(pid))`;
         assert.ok(rows.length <= 1, 'The uniquely named completion probe must have at most one blocked backend');
         if (rows.length === 1) { completionBackendPid = rows[0].pid; waiting = true; break; }
