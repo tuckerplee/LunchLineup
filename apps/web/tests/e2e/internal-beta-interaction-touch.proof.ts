@@ -1,4 +1,4 @@
-import { expect, test } from '@playwright/test';
+import { expect, test } from './qa-isolation-fixture';
 
 import { changeSetRequests, createProofShift, moveHandle, resetAndOpenCalendar, shiftBlock } from './internal-beta-interaction-support';
 

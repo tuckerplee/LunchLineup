@@ -302,3 +302,5 @@ See `docs/runbooks/production-readiness.md` for the operator invocation contract
 - `ci-container-bin/`: scoped application repair or disposable qualification support.
 
 - `run-development-browser-qa.sh`: scoped application repair or disposable qualification support.
+
+- `check-development-browser-isolation.ts`: disposable QA isolation and evidence checks.

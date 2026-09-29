@@ -1,5 +1,6 @@
 import { defineConfig, devices } from '@playwright/test';
 import { resolve } from 'node:path';
+import { requireQaBaseUrl } from './tests/e2e/qa-isolation-policy';
 
 const AUTOMATIC_PORT_BASE = 4300;
 const AUTOMATIC_PORT_PAIR_COUNT = 300;
@@ -33,6 +34,7 @@ const mockApiPort = configuredPort('PLAYWRIGHT_API_PORT', perRunPortBase + 1);
 const localBaseUrl = `http://127.0.0.1:${e2ePort}`;
 const mockApiBaseUrl = `http://127.0.0.1:${mockApiPort}`;
 const runFullStack = process.env.E2E_FULL_STACK === '1';
+if (process.env.LUNCHLINEUP_DEVELOPMENT_QA === '1') requireQaBaseUrl(process.env.BASE_URL);
 const useMockApi = process.env.E2E_MOCK_API !== '0' && !runFullStack && !process.env.BASE_URL;
 if (useMockApi && e2ePort === mockApiPort) {
     throw new Error('PLAYWRIGHT_PORT and PLAYWRIGHT_API_PORT must be different when the mock API is enabled.');
@@ -106,6 +108,7 @@ export default defineConfig({
     ],
     outputDir: artifactRoot ? resolve(artifactRoot, 'results/artifacts') : 'test-results',
     use: {
+        ...(process.env.LUNCHLINEUP_DEVELOPMENT_QA === '1' ? { serviceWorkers: 'block' as const } : {}),
         baseURL: process.env.BASE_URL || localBaseUrl,
         trace: 'on-first-retry',
         screenshot: 'only-on-failure',

@@ -1,4 +1,4 @@
-import { expect, test } from '@playwright/test';
+import { expect, test } from './qa-isolation-fixture';
 import type {
   ScheduleBoardResponse,
   ScheduleChangeSetResponse,

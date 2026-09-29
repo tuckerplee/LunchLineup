@@ -61,3 +61,8 @@ npm.cmd run test:e2e --workspace @lunchlineup/web -- --project=chromium authenti
 - `settings-recovery-acceptance.spec.ts`: recovery and acceptance regression checks.
 
 - `staff-repair-acceptance.spec.ts`: recovery and acceptance regression checks.
+
+- `qa-isolation-policy.ts`: disposable QA isolation and evidence checks.
+- `qa-isolation-controls.ts`: disposable QA isolation and evidence checks.
+- `qa-isolation-fixture.ts`: disposable QA isolation and evidence checks.
+- `qa-loopback-proxy.ts`: disposable QA isolation and evidence checks.

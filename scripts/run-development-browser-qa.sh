@@ -14,6 +14,11 @@ project_suffix=${CI_RUN_ID,,}; project_suffix=${project_suffix//[^a-z0-9]/}
 project="lunchlineup-beta-$project_suffix"
 [[ "$context" == "$source_root/source-context.json" && ! -e "$qualification_root" && ! -L "$qualification_root" ]] || exit 64
 node "$build_root/scripts/verify-internal-ci-source-clone.mjs" --proof "$artifact_root/source/source-proof.json" --clone "$build_root" --purpose build --require-clean >/dev/null
+node - "$artifact_root/development-browser-isolation.json" "$CI_RUN_ID" "$CI_COMMIT_SHA" <<'NODE'
+const fs=require('node:fs');const [path,runId,sourceSha]=process.argv.slice(2),proof=JSON.parse(fs.readFileSync(path));
+if(proof.deniedTrapConnections!==0||proof.checkpoints?.some(x=>x.deniedTrapConnections!==0)||proof.optionOverrideProof?.attempts!==3||proof.optionOverrideProof?.rejectedBeforeCreation!==3||proof.optionOverrideProof?.factoryCalls!==0||proof.optionOverrideProof?.deniedTrapConnections!==0)throw new Error('Browser connection/proxy-override proof is missing or incomplete; refusing runtime preparation.');
+if(proof.kind!=='disposable-development-browser-isolation-selftest'||proof.releaseQualified!==false||proof.runId!==runId||proof.sourceSha!==sourceSha||proof.status!=='passed'||proof.approvedOrigin!=='http://127.0.0.1:8080'||proof.expectedCheckpointCount!==10||proof.completedCheckpointCount!==10||proof.deniedTrapHits!==0||proof.cleanupVerified!==true||!Array.isArray(proof.checkpoints)||proof.checkpoints.length!==10||new Set(proof.checkpoints.map(x=>x.case)).size!==10||proof.checkpoints.some(x=>x.deniedTrapHits!==0)||proof.proxy?.upstream?.hostname!=='127.0.0.1'||proof.proxy?.upstream?.port!==8080||!proof.proxy?.stoppedAt||proof.ownedHarness?.syntheticTarget?.serverClosed!==true||proof.ownedHarness?.deniedTrap?.serverClosed!==true||proof.ownedHarness?.browserClosed!==true)throw new Error('Current isolated Chromium proof is missing or incomplete; refusing runtime preparation.');
+NODE
 export PATH="$build_root/scripts/ci-container-bin:$PATH"
 compose=(docker compose --project-name "$project" --env-file "$env_file" -f "$build_root/docker-compose.yml")
 mkdir -- "$qualification_root"
@@ -132,8 +137,8 @@ export XDG_RUNTIME_DIR="$runtime_root" LUNCHLINEUP_DEV_RUNTIME="$runtime_root"
 node "$build_root/scripts/write-internal-beta-qualification-env.mjs" --source-context "$context" --output "$env_file" --public-build-config "$artifact_root/public-build-config.json" --secrets-dir "$qualification_root/secrets"
 "${compose[@]}" --profile ops config --format json >"$artifact_root/compose-config.json"
 python3 "$build_root/scripts/check-internal-ci-target.py" fullstack
-node - "$artifact_root/compose-config.json" "$artifact_root/development-images.tsv" "$qualification_root/development-compose.json" <<'NODE'
-const fs=require('node:fs');const [configPath,out,runtimePath]=process.argv.slice(2),config=JSON.parse(fs.readFileSync(configPath));
+node - "$artifact_root/compose-config.json" "$artifact_root/development-images.tsv" "$qualification_root/development-compose.json" "$artifact_root/development-network-policy.json" "$project" <<'NODE'
+const fs=require('node:fs');const [configPath,out,runtimePath,policyPath,project]=process.argv.slice(2),config=JSON.parse(fs.readFileSync(configPath));
 const selected=new Set();function include(name){if(selected.has(name))return;const service=config.services[name];if(!service)throw new Error(`Missing development service ${name}`);selected.add(name);for(const dep of Object.keys(service.depends_on??{})){if(dep==='pitr-wal-provider'&&String(config.services.postgres.environment.PITR_ENABLED)==='false')continue;include(dep);}}
 for(const name of ['api-v2','web','worker','engine','proxy'])include(name);
 const seen=new Set(),lines=[];for(const name of [...selected].sort()){const s=config.services[name];if(seen.has(s.image))continue;seen.add(s.image);lines.push([s.build?'build':'pull',name,s.image].join('\t'));}
@@ -141,6 +146,29 @@ fs.writeFileSync(out,lines.join('\n')+'\n',{flag:'wx'});
 config.services=Object.fromEntries([...selected].map(name=>{const service=config.services[name];delete service.depends_on;return [name,service];}));
 // Use the application's existing isolated browser-test throttle configuration.
 Object.assign(config.services.api.environment,{NODE_ENV:'test',DATA_TARGET_ENV:'test',E2E_FULL_STACK:'1',E2E_PREAUTH_IP_LIMIT:'120',E2E_PREAUTH_IDENTIFIER_LIMIT:'30'});
+// Runtime isolation is independent of provider flags and synthetic credentials.
+// Build/pull traffic remains unrestricted and needs separate qualification;
+// these runtime receipts do not qualify or restrict build-time networking.
+const usedNetworks=new Set(),servicePolicy={};
+for(const [name,service] of Object.entries(config.services)){
+  if(service.privileged===true||(service.cap_add??[]).some(cap=>['NET_ADMIN','ALL'].includes(String(cap).toUpperCase().replace(/^CAP_/,''))))throw new Error(`Unsafe runtime network privileges: ${name}`);
+  if(service.network_mode&&service.network_mode!=='none')throw new Error(`Unapproved runtime network mode: ${name}`);
+  const keys=Object.keys(service.networks??{});
+  if(service.network_mode==='none'&&keys.length)throw new Error(`Conflicting runtime networks: ${name}`);
+  if(service.network_mode!=='none'&&!keys.length)throw new Error(`Implicit runtime network is forbidden: ${name}`);
+  for(const key of keys)usedNetworks.add(key);
+  for(const port of service.ports??[]){
+    if(!port||typeof port!=='object'||port.host_ip!=='127.0.0.1'||!['4000','8080','18443'].includes(String(port.published))||port.protocol!=='tcp')throw new Error(`Unapproved runtime published port: ${name}`);
+  }
+  servicePolicy[name]={networkMode:service.network_mode??'named-internal',networks:keys,publishedPorts:(service.ports??[]).map(port=>({hostIp:port.host_ip,published:String(port.published),target:port.target,protocol:port.protocol}))};
+}
+config.networks=Object.fromEntries([...usedNetworks].sort().map(key=>{
+  const network=config.networks?.[key],name=`${project}_${key}`;
+  if(!/^[a-z][a-z0-9_-]*$/.test(key)||!network||network.external===true||(network.driver??'bridge')!=='bridge'||(network.name&&network.name!==name))throw new Error(`Unapproved runtime network: ${key}`);
+  return [key,{...network,name,driver:'bridge',internal:true,enable_ipv6:false,driver_opts:{isolate:'true'}}];
+}));
+config.name=project;
+fs.writeFileSync(policyPath,JSON.stringify({version:1,runId:process.env.CI_RUN_ID,sourceSha:process.env.CI_COMMIT_SHA,project,externalEgress:'denied',requiredBackend:'netavark',networks:Object.entries(config.networks).map(([key,network])=>({key,name:network.name,driver:'bridge',internal:true,isolate:'true',ipv6:false})),services:servicePolicy},null,2)+'\n',{flag:'wx',mode:0o600});
 fs.writeFileSync(runtimePath,JSON.stringify(config),{flag:'wx',mode:0o600});
 NODE
 export LUNCHLINEUP_DEV_COMPOSE="$qualification_root/development-compose.json"
@@ -150,14 +178,100 @@ build_image(){
   if [[ "$action" == build ]]; then "${compose[@]}" --profile ops build "$service"; else docker pull "$image"; fi
   docker image inspect --format '{{.Id}}' "$image"
 }
+prepare_runtime_networks(){
+  timeout --kill-after=5s 30s docker info --format json >"$artifact_root/development-network-backend.json"
+  node - "$artifact_root/development-network-policy.json" "$artifact_root/development-network-backend.json" "$artifact_root/fullstack-target.json" <<'NODE'
+const fs=require('node:fs');const [policyPath,infoPath,targetPath]=process.argv.slice(2),policy=JSON.parse(fs.readFileSync(policyPath)),info=JSON.parse(fs.readFileSync(infoPath)),target=JSON.parse(fs.readFileSync(targetPath));
+if(info.host?.networkBackend!=='netavark'||info.store?.graphRoot!==target.store||policy.runId!==target.runId||policy.sourceSha!==target.sourceSha||policy.project!==target.project||!policy.networks.length)throw new Error('Runtime network backend/store/policy is unverified; no application startup is allowed.');
+NODE
+  mapfile -t runtime_networks < <(node -e 'for(const network of JSON.parse(require("fs").readFileSync(process.argv[1])).networks)console.log(network.name)' "$artifact_root/development-network-policy.json")
+  [[ "${#runtime_networks[@]}" -gt 0 ]] || return 1
+  for network in "${runtime_networks[@]}"; do
+    if timeout --kill-after=5s 30s docker network exists "$network"; then
+      echo 'Refusing a pre-existing runtime network.' >&2; return 1
+    else
+      network_status=$?; [[ "$network_status" == 1 ]] || return "$network_status"
+    fi
+    timeout --kill-after=5s 30s docker network create --internal --label "io.podman.compose.project=$project" --label "com.docker.compose.project=$project" --driver bridge --opt isolate=true "$network" >/dev/null
+    timeout --kill-after=5s 30s docker network inspect "$network" >"$artifact_root/development-network-inspect-$network.json"
+  done
+  node - "$artifact_root/development-network-policy.json" "$artifact_root" <<'NODE'
+const fs=require('node:fs'),crypto=require('node:crypto');const [policyPath,root]=process.argv.slice(2),policy=JSON.parse(fs.readFileSync(policyPath)),bindings=[];
+for(const expected of policy.networks){
+  const bytes=fs.readFileSync(`${root}/development-network-inspect-${expected.name}.json`),rows=JSON.parse(bytes);
+  if(!Array.isArray(rows)||rows.length!==1)throw new Error('Runtime network inspection is incomplete.');
+  const actual=rows[0];
+  if(actual.name!==expected.name||actual.driver!=='bridge'||actual.internal!==true||actual.dns_enabled!==true||actual.ipv6_enabled!==false||String(actual.options?.isolate)!=='true'||actual.labels?.['io.podman.compose.project']!==policy.project||actual.labels?.['com.docker.compose.project']!==policy.project)throw new Error(`Runtime network isolation is unverified: ${expected.name}`);
+  if(!/^[a-f0-9]{64}$/.test(actual.id))throw new Error('Runtime network immutable ID is missing.');
+  bindings.push({name:expected.name,networkId:actual.id,inspectionSha256:crypto.createHash('sha256').update(bytes).digest('hex'),inspectionBytes:bytes.length,internal:true,dnsEnabled:true,ipv6Enabled:false});
+}
+fs.writeFileSync(`${root}/development-network-readiness.json`,JSON.stringify({version:1,runId:policy.runId,sourceSha:policy.sourceSha,project:policy.project,checkedAt:new Date().toISOString(),runtimeStarted:false,externalEgress:'denied',backend:'netavark',networks:bindings},null,2)+'\n',{flag:'wx',mode:0o600});
+NODE
+}
+verify_runtime_attachments(){
+  local phase=$1 required=$2
+  [[ "$phase" =~ ^(early-api|pre-fixtures)$ ]] || return 64
+  mkdir -- "$artifact_root/development-runtime-network-$phase"
+  node - "$qualification_root/development-compose.json" "$artifact_root/development-network-policy.json" "$artifact_root/development-network-readiness.json" "$artifact_root/development-runtime-network-$phase" "$phase" "$required" <<'NODE'
+const fs=require('node:fs'),crypto=require('node:crypto'),{spawnSync}=require('node:child_process');
+const [configPath,policyPath,networkProofPath,root,phase,required]=process.argv.slice(2);
+const config=JSON.parse(fs.readFileSync(configPath)),policy=JSON.parse(fs.readFileSync(policyPath)),networkProof=JSON.parse(fs.readFileSync(networkProofPath));
+if(policy.sourceSha!==networkProof.sourceSha||policy.runId!==networkProof.runId||policy.project!==networkProof.project)throw new Error('Runtime network proof identity changed.');
+const networkIds=new Map(networkProof.networks.map(network=>[network.name,network.networkId])),services=new Set(),containers=[];
+function read(args){
+  const result=spawnSync('docker',args,{encoding:'utf8',timeout:30000,killSignal:'SIGKILL'});
+  if(result.error||result.status!==0)throw new Error(`Private container readback failed: ${args[0]}`);
+  return result.stdout;
+}
+function json(args){try{return JSON.parse(read(args));}catch{throw new Error(`Private container JSON readback failed: ${args[0]}`);}}
+function write(name,value){const bytes=typeof value==='string'?value:JSON.stringify(value,null,2)+'\n';fs.writeFileSync(`${root}/${name}`,bytes,{flag:'wx',mode:0o600});return {artifact:name,sha256:crypto.createHash('sha256').update(bytes).digest('hex'),bytes:Buffer.byteLength(bytes)};}
+const inventory=json(['ps','--no-trunc','--format','json']);
+if(!Array.isArray(inventory))throw new Error('Private container inventory is malformed.');
+for(const row of inventory){
+  if(!row||typeof row!=='object'||Array.isArray(row))throw new Error('Private container inventory row is malformed.');
+  let labels=row.Labels??row.labels??{};
+  if(typeof labels==='string')labels=Object.fromEntries(labels.split(',').filter(part=>part.includes('=')).map(part=>part.split(/=(.*)/s).slice(0,2)));
+  if(!labels||typeof labels!=='object'||Array.isArray(labels))throw new Error('Private container inventory labels are malformed.');
+  const names=row.Names??row.names??row.Name??row.name,list=Array.isArray(names)?names:[names];
+  if(!list.length||list.some(name=>typeof name!=='string'||!name))throw new Error('Private container inventory names are malformed.');
+  const owned=labels['com.docker.compose.project']===policy.project||labels['io.podman.compose.project']===policy.project||list.some(name=>typeof name==='string'&&(name===policy.project||name.startsWith(policy.project+'_')||name.startsWith(policy.project+'-')));
+  if(!owned)continue;
+  const id=row.Id??row.ID??row.id;
+  if(!/^[a-f0-9]{64}$/.test(id))throw new Error('Runtime container immutable ID is missing.');
+  const rows=json(['inspect',id]);
+  if(!Array.isArray(rows)||rows.length!==1)throw new Error('Runtime container inspection is incomplete.');
+  const actual=rows[0],boundLabels=actual.Config?.Labels??{},service=boundLabels['com.docker.compose.service']??boundLabels['io.podman.compose.service'];
+  if(actual.Id!==id||actual.State?.Running!==true||boundLabels['com.docker.compose.project']!==policy.project||!Object.hasOwn(policy.services,service)||services.has(service))throw new Error('Unexpected, duplicate, or inactive runtime container.');
+  services.add(service);
+  const declared=policy.services[service],networks=actual.NetworkSettings?.Networks??{},attachments=Object.keys(networks).sort();
+  const expected=declared.networks.map(key=>config.networks[key].name).sort();
+  if(JSON.stringify(attachments)!==JSON.stringify(expected))throw new Error(`Unexpected runtime network attachment: ${service}`);
+  if(declared.networkMode==='none'&&actual.HostConfig?.NetworkMode!=='none')throw new Error('Parser network mode is not none.');
+  for(const name of attachments)if(networks[name].NetworkID!==networkIds.get(name))throw new Error('Runtime container attached to a replaced or unverified network.');
+  const imageRows=json(['image','inspect',config.services[service].image]);
+  if(!Array.isArray(imageRows)||imageRows.length!==1)throw new Error('Runtime image inspection is incomplete.');
+  const normalized=value=>String(value).replace(/^sha256:/,'');
+  const imageId=normalized(actual.Image);
+  if(!/^[a-f0-9]{64}$/.test(imageId)||imageId!==normalized(imageRows[0].Id))throw new Error('Runtime container image differs from its current declared image.');
+  const v4=read(['exec',id,'cat','/proc/net/route']),v6=read(['exec',id,'cat','/proc/net/ipv6_route']);
+  const ipv4Routes=write(`${service}-ipv4-routes.txt`,v4),ipv6Routes=write(`${service}-ipv6-routes.txt`,v6);
+  const v4Rows=v4.trim().split('\n');
+  if(!/^Iface\s+Destination\s+Gateway\s+Flags/.test(v4Rows.shift()??''))throw new Error('IPv4 route readback is malformed.');
+  for(const line of v4Rows){const fields=line.trim().split(/\s+/);if(fields.length<8||! /^[a-f0-9]{8}$/i.test(fields[1])||! /^[a-f0-9]{8}$/i.test(fields[7]))throw new Error('IPv4 route readback is malformed.');if(fields[1]==='00000000'&&fields[7]==='00000000')throw new Error(`IPv4 default route remains: ${service}`);}
+  for(const line of v6.split('\n').filter(line=>line.trim())){const fields=line.trim().split(/\s+/);if(fields.length!==10||! /^[a-f0-9]{32}$/i.test(fields[0])||! /^[a-f0-9]{2}$/i.test(fields[1])||! /^[a-f0-9]{8}$/i.test(fields[8]))throw new Error('IPv6 route readback is malformed.');const rejected=(parseInt(fields[8],16)&0x200)!==0;if(/^0{32}$/.test(fields[0])&&fields[1]==='00'&&!rejected)throw new Error(`Usable IPv6 default route remains: ${service}`);}
+  const inspectProof=write(`${service}-attachment.json`,{containerId:id,project:policy.project,service,imageRef:config.services[service].image,imageId:'sha256:'+imageId,networkMode:actual.HostConfig?.NetworkMode,attachments:attachments.map(name=>({name,networkId:networks[name].NetworkID})),running:true});
+  containers.push({service,containerId:id,imageId:'sha256:'+imageId,attachments:inspectProof,ipv4Routes,ipv6Routes,noIpv4DefaultRoute:true,noUsableIpv6DefaultRoute:true});
+}
+for(const service of required.split(','))if(!services.has(service))throw new Error(`Required runtime service is missing: ${service}`);
+write('proof.json',{version:1,runId:policy.runId,sourceSha:policy.sourceSha,project:policy.project,phase,checkedAt:new Date().toISOString(),scope:'running-application-containers-only',buildTrafficQualified:false,noExternalProbePerformed:true,containers});
+NODE
+}
 # Prove fresh database setup before spending time building application images.
 while IFS=$'\t' read -r action service image; do
   case "$service" in migrate|postgres|redis|rabbitmq|pitr-wal-provider) build_image "$action" "$service" "$image";; esac
 done <"$artifact_root/development-images.tsv" >"$artifact_root/development-build.log" 2>&1
-# These are job-private networks from the existing manifest, with Podman isolation.
-for network in alertmanager-egress pitr-egress outbound-egress; do
-  docker network create --label "io.podman.compose.project=$project" --label "com.docker.compose.project=$project" --driver bridge --opt isolate=true "${project}_${network}" >/dev/null
-done
+# All networks are internal and independently inspected before any runtime starts.
+prepare_runtime_networks
 if awk -F '\t' '$2 == "pitr-wal-provider" { found=1 } END { exit !found }' "$artifact_root/development-images.tsv"; then
   "${compose[@]}" --profile ops up -d --no-build --no-deps pitr-wal-provider >"$artifact_root/development-start.log" 2>&1
 fi
@@ -178,6 +292,7 @@ while IFS=$'\t' read -r action service image; do
       [[ "$attempt" != 60 ]] || { echo 'Retained API startup failed'; exit 1; }
       sleep 2
     done
+    verify_runtime_attachments early-api api,postgres,redis,rabbitmq
   fi
 done <"$artifact_root/development-images.tsv" >>"$artifact_root/development-build.log" 2>&1
 "${compose[@]}" --profile ops up -d --no-build --no-deps engine api api-v2 pdf-parser worker web proxy >>"$artifact_root/development-start.log" 2>&1
@@ -188,6 +303,7 @@ for attempt in {1..120}; do
   [[ "$attempt" != 120 ]] || { "${compose[@]}" logs --tail 80 >"$artifact_root/development-runtime.log" 2>&1; exit 1; }
   sleep 2
 done
+verify_runtime_attachments pre-fixtures engine,api,api-v2,pdf-parser,worker,web,proxy,postgres,redis,rabbitmq
 output="$artifact_root/fullstack-playwright"; mkdir -- "$output"
 cd "$build_root/apps/web"
 BASE_URL=http://127.0.0.1:8080 E2E_FULL_STACK=1 E2E_MOCK_API=0 E2E_SIGNUP_MODE=closed_beta E2E_COMPOSE_PROJECT_NAME="$project" E2E_COMPOSE_ENV_FILE="$env_file" E2E_CANDIDATE_SHA="$CI_COMMIT_SHA" E2E_ARTIFACT_ROOT="$output" PLAYWRIGHT_JSON_OUTPUT_NAME="$output/results.json" npx playwright test --reporter=json --grep='@full-stack' --project=chromium --workers=1 --retries=0 --trace=retain-on-failure tests/e2e/operations-workflows.spec.ts tests/e2e/month-volume-workflows.spec.ts tests/e2e/stress-workflows.spec.ts tests/e2e/tenant-admin-workflows.spec.ts tests/e2e/staff-repair-acceptance.spec.ts tests/e2e/settings-recovery-acceptance.spec.ts >"$output/test.log" 2>&1

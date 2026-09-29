@@ -86,3 +86,5 @@
 - `settings-save-state.test.ts`: recovery and acceptance regression checks.
 
 - `time-card-mutation-result.test.ts`: recovery and acceptance regression checks.
+
+- `qa-isolation-policy.test.ts`: disposable QA isolation and evidence checks.

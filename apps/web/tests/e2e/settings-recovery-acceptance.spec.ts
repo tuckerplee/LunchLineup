@@ -1,4 +1,4 @@
-import { expect, test } from '@playwright/test';
+import { expect, test } from './qa-isolation-fixture';
 import { loginAsSeedAdmin, loginAsSeedManager, seedTenant } from './support';
 
 test.describe.serial('Settings recovery acceptance', { tag: '@full-stack' }, () => {
