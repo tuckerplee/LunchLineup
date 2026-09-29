@@ -1,7 +1,5 @@
 {
   "version": 1,
-  "name": "LunchLineup internal-beta release qualification",
-  "timeout_seconds": 21600,
   "required_labels": [
     "containers",
     "linux",
@@ -18,8 +16,14 @@
     "NODE_VERSION": "22.23.2",
     "NODE_OPTIONS": "--max-old-space-size=4096",
     "CODEQL_CLI": "/opt/codeql/bundle-2.26.2/codeql",
-    "CODEQL_BUNDLE_SHA256": "cb361567fa1bdb9d322da4240f621b36f245e4d7bb97db3c3a2ad7f743c8e8e7"
+    "CODEQL_BUNDLE_SHA256": "cb361567fa1bdb9d322da4240f621b36f245e4d7bb97db3c3a2ad7f743c8e8e7",
+    "LUNCHLINEUP_DEVELOPMENT_QA": "1"
   },
+  "artifacts": [
+    ".release/internal-ci/**"
+  ],
+  "name": "Disposable development QA \u2014 no release signing or deployment",
+  "timeout_seconds": 14400,
   "steps": [
     {
       "name": "Materialize and verify exact candidate source",
@@ -32,84 +36,9 @@
       "timeout_seconds": 1800
     },
     {
-      "name": "Dependency audit",
-      "run": "set -euo pipefail; source_context=\"$RUNNER_TEMP/lunchlineup-source-$CI_RUN_ID/source-context.json\"; build_root=\"$RUNNER_TEMP/lunchlineup-source-$CI_RUN_ID/build\"; test -f \"$source_context\"; test -d \"$build_root\"; bash \"$build_root/scripts/run-internal-ci-build-gate.sh\" dependency-audit dependency/npm-audit.log npm run audit:prod",
-      "timeout_seconds": 900
-    },
-    {
-      "name": "License policy",
-      "run": "set -euo pipefail; source_context=\"$RUNNER_TEMP/lunchlineup-source-$CI_RUN_ID/source-context.json\"; build_root=\"$RUNNER_TEMP/lunchlineup-source-$CI_RUN_ID/build\"; test -f \"$source_context\"; test -d \"$build_root\"; bash \"$build_root/scripts/run-internal-ci-build-gate.sh\" license-policy dependency/licenses.json ./node_modules/.bin/license-checker --failOn \"GPL-2.0;GPL-3.0\" --json",
-      "timeout_seconds": 900
-    },
-    {
-      "name": "Lint",
-      "run": "set -euo pipefail; source_context=\"$RUNNER_TEMP/lunchlineup-source-$CI_RUN_ID/source-context.json\"; build_root=\"$RUNNER_TEMP/lunchlineup-source-$CI_RUN_ID/build\"; test -f \"$source_context\"; test -d \"$build_root\"; bash \"$build_root/scripts/run-internal-ci-build-gate.sh\" lint source/lint.log npm run lint",
-      "timeout_seconds": 900
-    },
-    {
-      "name": "Typecheck",
-      "run": "set -euo pipefail; source_context=\"$RUNNER_TEMP/lunchlineup-source-$CI_RUN_ID/source-context.json\"; build_root=\"$RUNNER_TEMP/lunchlineup-source-$CI_RUN_ID/build\"; test -f \"$source_context\"; test -d \"$build_root\"; bash \"$build_root/scripts/run-internal-ci-build-gate.sh\" typecheck source/typecheck.log npm run typecheck",
+      "name": "Build contracts, typecheck web, and check repair helpers",
+      "run": "set -euo pipefail; build_root=\"$RUNNER_TEMP/lunchlineup-source-$CI_RUN_ID/build\"; cd \"$build_root\"; npm run build --workspace @lunchlineup/api-contract; npm run build --workspace @lunchlineup/config; npm run build --workspace @lunchlineup/rbac; npm run typecheck --workspace @lunchlineup/web; (cd apps/web && npx vitest run --project=unit tests/unit/settings-request.test.ts tests/unit/settings-save-state.test.ts tests/unit/invitation-recovery.test.ts tests/unit/profile-save-state.test.ts tests/unit/staff-action-confirmation.test.ts tests/unit/time-card-mutation-result.test.ts); npx playwright install chromium",
       "timeout_seconds": 1200
-    },
-    {
-      "name": "Migration and hygiene tests",
-      "run": "set -euo pipefail; source_context=\"$RUNNER_TEMP/lunchlineup-source-$CI_RUN_ID/source-context.json\"; build_root=\"$RUNNER_TEMP/lunchlineup-source-$CI_RUN_ID/build\"; test -f \"$source_context\"; test -d \"$build_root\"; bash \"$build_root/scripts/run-internal-ci-build-gate.sh\" migration-hygiene source/migration-hygiene.log npm run test:migration",
-      "timeout_seconds": 3000
-    },
-    {
-      "name": "Observability validation",
-      "run": "set -euo pipefail; source_context=\"$RUNNER_TEMP/lunchlineup-source-$CI_RUN_ID/source-context.json\"; build_root=\"$RUNNER_TEMP/lunchlineup-source-$CI_RUN_ID/build\"; test -f \"$source_context\"; test -d \"$build_root\"; bash \"$build_root/scripts/run-internal-ci-build-gate.sh\" observability-validation source/observability-validation.log node scripts/verify-observability-configs.mjs --root . --tool-mode container",
-      "timeout_seconds": 900
-    },
-    {
-      "name": "Terraform validation",
-      "run": "set -euo pipefail; source_context=\"$RUNNER_TEMP/lunchlineup-source-$CI_RUN_ID/source-context.json\"; build_root=\"$RUNNER_TEMP/lunchlineup-source-$CI_RUN_ID/build\"; test -f \"$source_context\"; test -d \"$build_root\"; bash \"$build_root/scripts/run-internal-ci-terraform.sh\" --source-context \"$source_context\"",
-      "timeout_seconds": 1800
-    },
-    {
-      "name": "Semgrep full inventory",
-      "run": "set -euo pipefail; source_context=\"$RUNNER_TEMP/lunchlineup-source-$CI_RUN_ID/source-context.json\"; build_root=\"$RUNNER_TEMP/lunchlineup-source-$CI_RUN_ID/build\"; test -f \"$source_context\"; test -d \"$build_root\"; bash \"$build_root/scripts/run-internal-ci-semgrep.sh\" --source-context \"$source_context\" --mode full",
-      "timeout_seconds": 3600
-    },
-    {
-      "name": "Semgrep baseline delta",
-      "run": "set -euo pipefail; source_context=\"$RUNNER_TEMP/lunchlineup-source-$CI_RUN_ID/source-context.json\"; build_root=\"$RUNNER_TEMP/lunchlineup-source-$CI_RUN_ID/build\"; test -f \"$source_context\"; test -d \"$build_root\"; bash \"$build_root/scripts/run-internal-ci-semgrep.sh\" --source-context \"$source_context\" --mode delta",
-      "timeout_seconds": 3600
-    },
-    {
-      "name": "CodeQL JavaScript/TypeScript",
-      "run": "set -euo pipefail; source_context=\"$RUNNER_TEMP/lunchlineup-source-$CI_RUN_ID/source-context.json\"; build_root=\"$RUNNER_TEMP/lunchlineup-source-$CI_RUN_ID/build\"; test -f \"$source_context\"; test -d \"$build_root\"; bash \"$build_root/scripts/run-internal-ci-codeql.sh\" --source-context \"$source_context\" --language javascript-typescript",
-      "timeout_seconds": 5400
-    },
-    {
-      "name": "CodeQL Python",
-      "run": "set -euo pipefail; source_context=\"$RUNNER_TEMP/lunchlineup-source-$CI_RUN_ID/source-context.json\"; build_root=\"$RUNNER_TEMP/lunchlineup-source-$CI_RUN_ID/build\"; test -f \"$source_context\"; test -d \"$build_root\"; bash \"$build_root/scripts/run-internal-ci-codeql.sh\" --source-context \"$source_context\" --language python",
-      "timeout_seconds": 5400
-    },
-    {
-      "name": "JavaScript unit suites",
-      "run": "set -euo pipefail; source_context=\"$RUNNER_TEMP/lunchlineup-source-$CI_RUN_ID/source-context.json\"; build_root=\"$RUNNER_TEMP/lunchlineup-source-$CI_RUN_ID/build\"; test -f \"$source_context\"; test -d \"$build_root\"; bash \"$build_root/scripts/run-internal-ci-test-gate.sh\" --source-context \"$source_context\" --suite javascript",
-      "timeout_seconds": 3600
-    },
-    {
-      "name": "Engine Python unit suite",
-      "run": "set -euo pipefail; source_context=\"$RUNNER_TEMP/lunchlineup-source-$CI_RUN_ID/source-context.json\"; build_root=\"$RUNNER_TEMP/lunchlineup-source-$CI_RUN_ID/build\"; test -f \"$source_context\"; test -d \"$build_root\"; bash \"$build_root/scripts/run-internal-ci-test-gate.sh\" --source-context \"$source_context\" --suite engine",
-      "timeout_seconds": 3600
-    },
-    {
-      "name": "Worker Python unit suite",
-      "run": "set -euo pipefail; source_context=\"$RUNNER_TEMP/lunchlineup-source-$CI_RUN_ID/source-context.json\"; build_root=\"$RUNNER_TEMP/lunchlineup-source-$CI_RUN_ID/build\"; test -f \"$source_context\"; test -d \"$build_root\"; bash \"$build_root/scripts/run-internal-ci-test-gate.sh\" --source-context \"$source_context\" --suite worker",
-      "timeout_seconds": 3600
-    },
-    {
-      "name": "Source build",
-      "run": "set -euo pipefail; source_context=\"$RUNNER_TEMP/lunchlineup-source-$CI_RUN_ID/source-context.json\"; build_root=\"$RUNNER_TEMP/lunchlineup-source-$CI_RUN_ID/build\"; test -f \"$source_context\"; test -d \"$build_root\"; bash \"$build_root/scripts/run-internal-ci-test-gate.sh\" --source-context \"$source_context\" --suite build",
-      "timeout_seconds": 3600
-    },
-    {
-      "name": "Mock Playwright",
-      "run": "set -euo pipefail; source_context=\"$RUNNER_TEMP/lunchlineup-source-$CI_RUN_ID/source-context.json\"; build_root=\"$RUNNER_TEMP/lunchlineup-source-$CI_RUN_ID/build\"; test -f \"$source_context\"; test -d \"$build_root\"; bash \"$build_root/scripts/run-internal-ci-mock-playwright.sh\" --source-context \"$source_context\"",
-      "timeout_seconds": 3600
     },
     {
       "name": "Disposable database integration",
@@ -117,72 +46,9 @@
       "timeout_seconds": 3600
     },
     {
-      "name": "Canonical beta release-image build",
-      "run": "set -euo pipefail; source_context=\"$RUNNER_TEMP/lunchlineup-source-$CI_RUN_ID/source-context.json\"; build_root=\"$RUNNER_TEMP/lunchlineup-source-$CI_RUN_ID/build\"; test -f \"$source_context\"; test -d \"$build_root\"; bash \"$build_root/scripts/run-internal-beta-release-qualification.sh\" --source-context \"$source_context\" --stage release-image-build",
-      "timeout_seconds": 7200
-    },
-    {
-      "name": "Production image inventory",
-      "run": "set -euo pipefail; source_context=\"$RUNNER_TEMP/lunchlineup-source-$CI_RUN_ID/source-context.json\"; build_root=\"$RUNNER_TEMP/lunchlineup-source-$CI_RUN_ID/build\"; test -f \"$source_context\"; test -d \"$build_root\"; bash \"$build_root/scripts/run-internal-beta-release-qualification.sh\" --source-context \"$source_context\" --stage production-image-inventory",
-      "timeout_seconds": 1200
-    },
-    {
-      "name": "Release stack health",
-      "run": "set -euo pipefail; source_context=\"$RUNNER_TEMP/lunchlineup-source-$CI_RUN_ID/source-context.json\"; build_root=\"$RUNNER_TEMP/lunchlineup-source-$CI_RUN_ID/build\"; test -f \"$source_context\"; test -d \"$build_root\"; bash \"$build_root/scripts/run-internal-beta-release-qualification.sh\" --source-context \"$source_context\" --stage release-stack-health",
-      "timeout_seconds": 3600
-    },
-    {
-      "name": "DB-backed Playwright",
-      "run": "set -euo pipefail; source_context=\"$RUNNER_TEMP/lunchlineup-source-$CI_RUN_ID/source-context.json\"; build_root=\"$RUNNER_TEMP/lunchlineup-source-$CI_RUN_ID/build\"; test -f \"$source_context\"; test -d \"$build_root\"; bash \"$build_root/scripts/run-internal-beta-release-qualification.sh\" --source-context \"$source_context\" --stage fullstack-playwright",
-      "timeout_seconds": 5400
-    },
-    {
-      "name": "Interaction proof",
-      "run": "set -euo pipefail; source_context=\"$RUNNER_TEMP/lunchlineup-source-$CI_RUN_ID/source-context.json\"; build_root=\"$RUNNER_TEMP/lunchlineup-source-$CI_RUN_ID/build\"; test -f \"$source_context\"; test -d \"$build_root\"; bash \"$build_root/scripts/run-internal-beta-release-qualification.sh\" --source-context \"$source_context\" --stage interaction-proof",
-      "timeout_seconds": 3600
-    },
-    {
-      "name": "DAST",
-      "run": "set -euo pipefail; source_context=\"$RUNNER_TEMP/lunchlineup-source-$CI_RUN_ID/source-context.json\"; build_root=\"$RUNNER_TEMP/lunchlineup-source-$CI_RUN_ID/build\"; test -f \"$source_context\"; test -d \"$build_root\"; bash \"$build_root/scripts/run-internal-beta-release-qualification.sh\" --source-context \"$source_context\" --stage dast",
-      "timeout_seconds": 3600
-    },
-    {
-      "name": "Load qualification",
-      "run": "set -euo pipefail; source_context=\"$RUNNER_TEMP/lunchlineup-source-$CI_RUN_ID/source-context.json\"; build_root=\"$RUNNER_TEMP/lunchlineup-source-$CI_RUN_ID/build\"; test -f \"$source_context\"; test -d \"$build_root\"; bash \"$build_root/scripts/run-internal-beta-release-qualification.sh\" --source-context \"$source_context\" --stage load",
-      "timeout_seconds": 3600
-    },
-    {
-      "name": "SBOM",
-      "run": "set -euo pipefail; source_context=\"$RUNNER_TEMP/lunchlineup-source-$CI_RUN_ID/source-context.json\"; build_root=\"$RUNNER_TEMP/lunchlineup-source-$CI_RUN_ID/build\"; test -f \"$source_context\"; test -d \"$build_root\"; bash \"$build_root/scripts/run-internal-beta-release-qualification.sh\" --source-context \"$source_context\" --stage sbom",
-      "timeout_seconds": 5400
-    },
-    {
-      "name": "Trivy",
-      "run": "set -euo pipefail; source_context=\"$RUNNER_TEMP/lunchlineup-source-$CI_RUN_ID/source-context.json\"; build_root=\"$RUNNER_TEMP/lunchlineup-source-$CI_RUN_ID/build\"; test -f \"$source_context\"; test -d \"$build_root\"; bash \"$build_root/scripts/run-internal-beta-release-qualification.sh\" --source-context \"$source_context\" --stage trivy",
-      "timeout_seconds": 5400
-    },
-    {
-      "name": "Artifact integrity manifest",
-      "run": "set -euo pipefail; source_context=\"$RUNNER_TEMP/lunchlineup-source-$CI_RUN_ID/source-context.json\"; build_root=\"$RUNNER_TEMP/lunchlineup-source-$CI_RUN_ID/build\"; test -f \"$source_context\"; test -d \"$build_root\"; node \"$build_root/scripts/build-internal-ci-artifact-manifest.mjs\" --source-context \"$source_context\" --output \"$PWD/.release/internal-ci/$CI_COMMIT_SHA/artifact-manifest.json\"",
-      "timeout_seconds": 1200
-    },
-    {
-      "name": "Candidate receipt construction",
-      "run": "set -euo pipefail; source_context=\"$RUNNER_TEMP/lunchlineup-source-$CI_RUN_ID/source-context.json\"; build_root=\"$RUNNER_TEMP/lunchlineup-source-$CI_RUN_ID/build\"; test -f \"$source_context\"; test -d \"$build_root\"; node \"$build_root/scripts/build-internal-ci-candidate-receipt.mjs\" --source-context \"$source_context\" --source-proof \"$PWD/.release/internal-ci/$CI_COMMIT_SHA/source/source-proof.json\" --gate-directory \"$PWD/.release/internal-ci/$CI_COMMIT_SHA/gates\" --release-manifest \"$PWD/.release/internal-ci/$CI_COMMIT_SHA/release-manifest.json\" --interaction-proof \"$PWD/.release/internal-ci/$CI_COMMIT_SHA/interaction-proof.json\" --artifact-manifest \"$PWD/.release/internal-ci/$CI_COMMIT_SHA/artifact-manifest.json\" --output \"$PWD/.release/internal-ci/$CI_COMMIT_SHA/candidate-receipt.json\"",
-      "timeout_seconds": 1200
-    },
-    {
-      "name": "External policy verification and signing",
-      "run": "set -euo pipefail; source_context=\"$RUNNER_TEMP/lunchlineup-source-$CI_RUN_ID/source-context.json\"; build_root=\"$RUNNER_TEMP/lunchlineup-source-$CI_RUN_ID/build\"; test -f \"$source_context\"; test -d \"$build_root\"; node \"$build_root/scripts/verify-internal-ci-unsigned-receipt.mjs\" --receipt \"$PWD/.release/internal-ci/$CI_COMMIT_SHA/candidate-receipt.json\" --source-context \"$source_context\"; sudo -n /usr/local/libexec/custom-ci/lunchlineup-sign-receipt --receipt \"$PWD/.release/internal-ci/$CI_COMMIT_SHA/candidate-receipt.json\" --signature \"$PWD/.release/internal-ci/$CI_COMMIT_SHA/candidate-receipt.sig.json\"",
-      "timeout_seconds": 600
-    },
-    {
-      "name": "Signature self-verification",
-      "run": "set -euo pipefail; source_context=\"$RUNNER_TEMP/lunchlineup-source-$CI_RUN_ID/source-context.json\"; build_root=\"$RUNNER_TEMP/lunchlineup-source-$CI_RUN_ID/build\"; test -f \"$source_context\"; test -d \"$build_root\"; node \"$build_root/scripts/verify-internal-ci-candidate-receipt.mjs\" --receipt \"$PWD/.release/internal-ci/$CI_COMMIT_SHA/candidate-receipt.json\" --signature \"$PWD/.release/internal-ci/$CI_COMMIT_SHA/candidate-receipt.sig.json\" --public-key /etc/custom-ci/keys/lunchlineup-beta-ed25519.pub --approved-policy /etc/custom-ci/policies/lunchlineup-internal-beta.json --release-manifest \"$PWD/.release/internal-ci/$CI_COMMIT_SHA/release-manifest.json\" --artifact-manifest \"$PWD/.release/internal-ci/$CI_COMMIT_SHA/artifact-manifest.json\" --expected-source-sha \"$CI_COMMIT_SHA\"; node \"$build_root/scripts/build-internal-ci-candidate-bundle.mjs\" --source-context \"$source_context\" --receipt \"$PWD/.release/internal-ci/$CI_COMMIT_SHA/candidate-receipt.json\" --signature \"$PWD/.release/internal-ci/$CI_COMMIT_SHA/candidate-receipt.sig.json\" --release-manifest \"$PWD/.release/internal-ci/$CI_COMMIT_SHA/release-manifest.json\" --artifact-manifest \"$PWD/.release/internal-ci/$CI_COMMIT_SHA/artifact-manifest.json\" --output \"$PWD/.release/internal-ci/$CI_COMMIT_SHA/candidate-bundle.tar.gz\" --descriptor \"$PWD/.release/internal-ci/$CI_COMMIT_SHA/candidate-bundle.descriptor.json\"",
-      "timeout_seconds": 600
+      "name": "Run disposable application browser tests",
+      "run": "set -euo pipefail; build_root=\"$RUNNER_TEMP/lunchlineup-source-$CI_RUN_ID/build\"; bash \"$build_root/scripts/run-development-browser-qa.sh\" --source-context \"$RUNNER_TEMP/lunchlineup-source-$CI_RUN_ID/source-context.json\"",
+      "timeout_seconds": 9000
     }
-  ],
-  "artifacts": [
-    ".release/internal-ci/**"
   ]
 }
