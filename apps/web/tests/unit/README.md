@@ -4,6 +4,7 @@
 
 - `README.md`: this unit test folder guide.
 - `server-app-origin.test.ts`: exact disposable loopback origin and server marker validation, malformed-origin rejection, and preservation of production HTTPS requirements.
+- `seeded-mfa-helper.test.ts`: real current-step TOTP allocation, replay prevention across repeated logins, bounded boundary waits, and independent seeded identities.
 - `account-deletion-receipt.test.ts`: finalized and pending DELETE receipt normalization, identifier/provider-error exclusion, versioned tab-storage round-trip, and malformed-storage coverage.
 - `account-lifecycle-panel.test.ts`: source-contract coverage for requester-visible export recovery, uncapped active polling, retry cleanup, server-expiring downloads, API-to-UI scheduled-cancellation/effective-date reload projection with duplicate-action prevention, and no authenticated status reload after deletion.
 - `admin-credit-grant-submission.test.ts`: stable payload-bound grant keys across ambiguous failure and deliberate retry, payload-change and success rotation, opaque reason handling, and concurrent-submit rejection.

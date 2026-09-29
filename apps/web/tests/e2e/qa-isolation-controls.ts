@@ -1,11 +1,55 @@
 import type { APIRequest, APIRequestContext, APIResponse, Browser, BrowserContext, Page, Route } from '@playwright/test';
 import { QA_ORIGIN, requireQaBaseUrl, requireQaContextOptions, requireQaResponse, requireQaUrl } from './qa-isolation-policy';
 
+type RouteLifecycle = { closing: boolean; pending: Set<Promise<unknown>>; failures: unknown[] };
+const ROUTE_DRAIN_TIMEOUT_MS = 5_000;
+
 export class QaIsolationGuard {
     private readonly contexts = new WeakSet<BrowserContext>();
     private readonly pages = new WeakSet<Page>();
     private readonly apis = new WeakSet<APIRequestContext>();
+    private readonly isolationFailures = new WeakSet<object>();
+    private readonly lifecycles = new WeakMap<BrowserContext | Page, RouteLifecycle>();
     constructor(readonly violations: string[]) {}
+
+    private lifecycle(owner: BrowserContext | Page): RouteLifecycle {
+        let state = this.lifecycles.get(owner);
+        if (!state) {
+            state = { closing: false, pending: new Set(), failures: [] };
+            this.lifecycles.set(owner, state);
+        }
+        return state;
+    }
+    private async drain(owner: BrowserContext | Page): Promise<void> {
+        const state = this.lifecycle(owner);
+        state.closing = true;
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        try {
+            await Promise.race([
+                (async () => {
+                    // Include authorized late arrivals being aborted after the
+                    // closing flag, rather than only the initial snapshot.
+                    while (state.pending.size) await Promise.allSettled([...state.pending]);
+                })(),
+                new Promise<never>((_, reject) => {
+                    timer = setTimeout(() => reject(new Error('QA isolation route drain exceeded its 5-second deadline.')), ROUTE_DRAIN_TIMEOUT_MS);
+                }),
+            ]);
+        } finally { clearTimeout(timer); }
+        if (state.failures.length) throw new AggregateError(state.failures, 'QA isolation route handler failed.');
+    }
+    async drainContext(context: BrowserContext): Promise<void> {
+        await this.drain(context);
+    }
+    private guardClose(owner: BrowserContext | Page): void {
+        const original = owner.close.bind(owner);
+        Object.defineProperty(owner, 'close', { configurable: true, value: async (...args: Parameters<typeof original>) => {
+            const failures: unknown[] = [];
+            try { await this.drain(owner); } catch (failure) { failures.push(failure); }
+            try { await original(...args); } catch (failure) { failures.push(failure); }
+            if (failures.length) throw new AggregateError(failures, 'QA isolation could not drain and close an owned context or page.');
+        } });
+    }
 
     async createBrowserContext(create: Browser['newContext'], options: Parameters<Browser['newContext']>[0] = {}): Promise<BrowserContext> {
         this.enforce(() => requireQaContextOptions(options));
@@ -32,6 +76,7 @@ export class QaIsolationGuard {
     enforce<T>(action: () => T): T {
         try { return action(); }
         catch (failure) {
+            if (failure !== null && typeof failure === 'object') this.isolationFailures.add(failure);
             this.violations.push(failure instanceof Error ? failure.message : 'QA isolation denied a request.');
             throw failure;
         }
@@ -81,17 +126,38 @@ export class QaIsolationGuard {
         const originalUnroute = owner.unroute.bind(owner);
         const handlers = new WeakMap<(...args: any[]) => unknown, (...args: any[]) => unknown>();
         Object.defineProperty(owner, 'route', { configurable: true, value: async (pattern: any, handler: any, options?: any) => {
-            const wrapped = async (route: Route, request: any) => {
-                const before = this.violations.length;
+            const wrapped = (route: Route, request: any) => {
+                const states = [this.lifecycle(owner)];
+                // Context routes also belong to the requesting page. Draining a
+                // page must not close admission for other pages in that context.
                 try {
-                    this.enforce(() => requireQaUrl(route.request().url()));
-                    return await handler(this.route(route), request);
-                } catch (failure) {
-                    await route.abort('blockedbyclient').catch(() => undefined);
-                    // Only isolation violations are handled through retained
-                    // teardown evidence. Genuine test/assertion failures propagate.
-                    if (this.violations.length === before) throw failure;
-                }
+                    const page = route.request().frame().page();
+                    const context = page.context();
+                    for (const state of [this.lifecycle(page), this.lifecycle(context)]) {
+                        if (!states.includes(state)) states.push(state);
+                    }
+                } catch { /* Frameless requests still belong to the guarded owner. */ }
+                const task = (async () => {
+                    try {
+                        this.enforce(() => requireQaUrl(route.request().url()));
+                        if (states.some(state => state.closing)) {
+                            await route.abort('blockedbyclient');
+                            return;
+                        }
+                        return await handler(this.route(route), request);
+                    } catch (failure) {
+                        await route.abort('blockedbyclient').catch(() => undefined);
+                        // Only isolation violations are handled through retained
+                        // teardown evidence. Genuine test/assertion failures propagate.
+                        if (failure === null || typeof failure !== 'object' || !this.isolationFailures.has(failure)) throw failure;
+                    }
+                })();
+                for (const state of states) state.pending.add(task);
+                void task.then(
+                    () => { for (const state of states) state.pending.delete(task); },
+                    failure => { for (const state of states) { state.pending.delete(task); state.failures.push(failure); } },
+                );
+                return task;
             };
             handlers.set(handler, wrapped);
             return originalRoute(pattern, wrapped, options);
@@ -101,12 +167,14 @@ export class QaIsolationGuard {
     private guardPage(page: Page): void {
         if (this.pages.has(page)) return;
         this.pages.add(page);
+        this.guardClose(page);
         this.guardRoutes(page);
         this.guardApi(page.request);
     }
     async guardContext(context: BrowserContext): Promise<void> {
         if (this.contexts.has(context)) return;
         this.contexts.add(context);
+        this.guardClose(context);
         this.guardApi(context.request);
         this.guardRoutes(context);
         context.on('page', page => this.guardPage(page));

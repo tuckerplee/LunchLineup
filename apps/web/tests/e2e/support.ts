@@ -2,7 +2,7 @@ import { createHmac } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import path from 'node:path';
 
-import { expect, type Page, type Response } from '@playwright/test';
+import { expect, test, type Page, type Response } from '@playwright/test';
 
 export const repoRoot = path.resolve(process.cwd(), '../..');
 export const runFullStack = process.env.E2E_FULL_STACK === '1';
@@ -77,6 +77,41 @@ function totpCode(secret: string, now = Date.now()): string {
   return String(value % 1_000_000).padStart(6, '0');
 }
 
+// TOTP claims are unique per tenant/user/time step, including across separate
+// browser sessions. Reserve before returning so concurrent helper calls cannot
+// generate the same already-consumed step. Never generate a future-step code.
+export function createSeededTotpAllocator(
+  clock: { now: () => number; sleep: (milliseconds: number) => Promise<void> } = {
+    now: Date.now,
+    sleep: milliseconds => new Promise(resolve => setTimeout(resolve, milliseconds)),
+  },
+) {
+  const reservedSteps = new Map<string, number>();
+  return async (identity: string, secret: string, onWait: (milliseconds: number) => void = () => {}) => {
+    // A prior worker/process may already have consumed this current step. Start
+    // every newly seen identity beyond that lower bound, even on its first call.
+    if (!reservedSteps.has(identity)) reservedSteps.set(identity, Math.floor(clock.now() / 30_000));
+    let remainingWait = 31_250;
+    while (true) {
+      const now = clock.now();
+      const step = Math.floor(now / 30_000);
+      const untilBoundary = (step + 1) * 30_000 - now;
+      if (step > (reservedSteps.get(identity) ?? -1) && untilBoundary > 1_000) {
+        const code = totpCode(secret, now);
+        reservedSteps.set(identity, step);
+        return code;
+      }
+      const wait = untilBoundary + 250;
+      if (wait > remainingWait) throw new Error('Seeded MFA could not reserve a fresh current time step within its bounded wait.');
+      remainingWait -= wait;
+      onWait(wait);
+      await clock.sleep(wait);
+    }
+  };
+}
+
+const freshSeededTotp = createSeededTotpAllocator();
+
 export async function loginWithPin(
   page: Page,
   options: {
@@ -123,8 +158,22 @@ export async function loginWithPin(
       const secret = options.username === e2eSuperAdminUsername
         ? e2eSuperAdminMfaSecret
         : e2eAdminMfaSecret;
-      await page.getByLabel('Authentication code').fill(totpCode(secret));
-      await page.getByRole('button', { name: 'Verify and continue' }).click();
+      const code = await freshSeededTotp(`${e2eTenantSlug}:${options.username}`, secret, milliseconds => {
+        // Exclude only the intentional fresh-factor wait from the test's action
+        // budget; the helper itself caps that wait and retains all assertions.
+        const info = test.info();
+        if (info.timeout > 0) info.setTimeout(info.timeout + milliseconds);
+      });
+      await page.getByLabel('Authentication code').fill(code);
+      const [verified] = await Promise.all([
+        page.waitForResponse(response => {
+          return new URL(response.url()).pathname === '/api/v2/auth/mfa/verify'
+            && response.request().method() === 'POST';
+        }, { timeout: 10_000 }),
+        page.getByRole('button', { name: 'Verify and continue' }).click(),
+      ]);
+      if (verified.status() !== 200) throw new Error(`Seeded MFA verification failed with HTTP ${verified.status()}.`);
+      expect(await verified.json(), 'Seeded MFA must receive authoritative server verification.').toMatchObject({ success: true, mfaVerified: true });
     }
     await expect(page).toHaveURL(new RegExp(`${escapeRegExp(expectedPath)}(?:[?#].*)?$`));
     // A matching URL can still be a middleware 503 response. Require the actual

@@ -354,7 +354,7 @@ export function AddTeamMemberForm({
                                         autoComplete="off"
                                         minLength={3}
                                         maxLength={32}
-                                        pattern="[a-z0-9._-]+"
+                                        pattern={'[a-z0-9._\\-]+'}
                                         style={fieldStyle}
                                     />
                                 </label>

@@ -82,20 +82,27 @@ export const test = isolatedBase.extend<{ qaIsolation: void }>({
             guard.guardApi(created);
             return created;
         };
+        let primaryFailure: unknown;
         try { await use(); }
+        catch (failure) { primaryFailure = failure; throw failure; }
         finally {
             const closed = await Promise.allSettled([
+                guard.drainContext(context),
                 ...extraContexts.map(created => created.close()),
                 ...extraRequests.map(created => created.dispose()),
             ]);
-            if (closed.some(result => result.status === 'rejected')) violations.push('QA isolation could not close an owned additional context.');
+            const teardownFailures = closed.filter((result): result is PromiseRejectedResult => result.status === 'rejected').map(result => result.reason);
             browser.newContext = newContext;
             browser.newPage = newPage;
             requestFactory.newContext = newApiContext;
             const denials = proxyEvidence?.denials ?? [];
             if (violations.length || denials.length) {
                 await testInfo.attach('qa-isolation-violations', { body: JSON.stringify({ approvedOrigin: QA_ORIGIN, violations, proxy: proxyEvidence }, null, 2), contentType: 'application/json' });
-                throw new Error(`Disposable QA blocked ${violations.length + denials.length} unapproved request(s); see isolation evidence.`);
+                teardownFailures.push(new Error(`Disposable QA blocked ${violations.length + denials.length} unapproved request(s); see isolation evidence.`));
+            }
+            if (teardownFailures.length) {
+                if (primaryFailure !== undefined) teardownFailures.unshift(primaryFailure);
+                throw new AggregateError(teardownFailures, 'Disposable QA teardown or isolation checks failed.');
             }
         }
     }, { auto: true }],
