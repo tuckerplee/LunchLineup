@@ -20,28 +20,31 @@ test.describe('Internal beta desktop interaction proof', () => {
     const block = shiftBlock(page, '10:00-14:00');
     const mutations = changeSetRequests(page);
 
-    await block.getByRole('button', { name: /Edit Staff One shift/ }).click();
+    await block.getByRole('button', { name: /^Edit STAFF shift,/ }).click();
     await closeShiftDialogIfOpen(page);
 
     const handle = moveHandle(block);
-    const geometry = await pointerGeometry(page, handle, 'Staff One');
+    let geometry = await pointerGeometry(page, handle, 'Staff One');
     await page.mouse.move(geometry.sourceX, geometry.sourceY);
     await page.mouse.down();
     await page.mouse.move(geometry.sourceX + 2, geometry.sourceY + 2, { steps: 2 });
     await page.mouse.up();
     await closeShiftDialogIfOpen(page);
 
+    geometry = await pointerGeometry(page, handle, 'Staff One');
     await page.mouse.move(geometry.sourceX, geometry.sourceY);
     await page.mouse.down();
     await page.mouse.move(2, 2, { steps: 8 });
     await page.mouse.up();
 
+    geometry = await pointerGeometry(page, handle, 'Staff One');
     await page.mouse.move(geometry.sourceX, geometry.sourceY);
     await page.mouse.down();
     await page.mouse.move(geometry.sourceX + geometry.hourWidth, geometry.sourceY, { steps: 6 });
     await page.keyboard.press('Escape');
     await page.mouse.up();
 
+    geometry = await pointerGeometry(page, handle, 'Staff One');
     await page.mouse.move(geometry.sourceX, geometry.sourceY);
     await page.mouse.down();
     await page.mouse.move(geometry.sourceX + geometry.hourWidth, geometry.sourceY, { steps: 6 });

@@ -10,7 +10,7 @@ test('real touch scroll never moves a shift and the dedicated handle opens the M
   const mutations = changeSetRequests(page);
   const timeline = page.getByRole('region', { name: /staff schedule timeline/ });
   const block = shiftBlock(page, '10:00-14:00');
-  const details = block.getByRole('button', { name: /Edit Staff One shift/ });
+  const details = block.getByRole('button', { name: /^Edit STAFF shift,/ });
   await details.scrollIntoViewIfNeeded();
   const detailsBox = await visibleInputBounds(details);
   const timelineBox = await visibleInputBounds(timeline);
