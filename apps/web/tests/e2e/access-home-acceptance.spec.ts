@@ -6,6 +6,7 @@ import type {
   SchedulePublicationResponse, SchedulePublishPlanResponse, StaffDirectoryResponse, ShiftSummaryListResponse, WorkspaceSettings,
 } from '@lunchlineup/api-contract';
 import { expect, test } from './qa-isolation-fixture';
+import { closeQaContexts } from './qa-context-cleanup';
 import {
   csrfHeaders, dayWindow, e2eAdminUsername, e2eStaffPin, e2eStaffUsername, e2eTenantName, e2eTenantSlug,
   loginAsSeedAdmin, loginAsSeedManager, loginWithPin, runFullStack, seedTenant,
@@ -91,16 +92,6 @@ async function screenshot(page: Page, info: TestInfo, name: string) {
 
 async function evidence(info: TestInfo, name: string, facts: Record<string, unknown>) {
   await info.attach(name, { body: JSON.stringify(facts, null, 2), contentType: 'application/json' });
-}
-
-async function closeContexts(contexts: BrowserContext[], primaryFailure: unknown) {
-  const closed = await Promise.allSettled(contexts.map(context => context.close()));
-  const failures = closed.filter((result): result is PromiseRejectedResult => result.status === 'rejected')
-    .map(result => result.reason);
-  if (failures.length) throw new AggregateError(
-    primaryFailure === undefined ? failures : [primaryFailure, ...failures],
-    'Native context cleanup failed; primary failure retained when present',
-  );
 }
 
 async function loginStaff(page: Page) {
@@ -254,7 +245,7 @@ test.describe.serial('Native access, Home and notification acceptance', { tag: '
       await evidence(info, 'native-session-revocation', { role: original.role, genuineMfa: original.mfaRequired && original.mfaVerified,
         sameSessionBeforeLogout: true, replayStatusAfterLogout: 401, refreshReplayStatus: 401, browserIdentityStatus: 401 });
     } catch (error) { primaryFailure = error; throw error; }
-    finally { await closeContexts([replay], primaryFailure); }
+    finally { await closeQaContexts([replay], primaryFailure); }
   });
 
   test('authenticates the least-privilege Staff fixture and denies native privileged writes and platform access', async ({ page, browser }, info) => {
@@ -285,7 +276,7 @@ test.describe.serial('Native access, Home and notification acceptance', { tag: '
       const after = await readJson<WorkspaceSettings>(adminPage.request, '/api/v2/settings');
       expect(after, 'Denied Staff write preserves the independently read settings aggregate').toEqual(before);
     } catch (error) { primaryFailure = error; throw error; }
-    finally { await closeContexts([adminContext], primaryFailure); }
+    finally { await closeQaContexts([adminContext], primaryFailure); }
     await statusOnly(page.request, '/api/v2/admin/tenants', 403);
     await page.goto('/admin/tenants');
     await expect(page).toHaveURL(/\/dashboard$/);
@@ -460,6 +451,6 @@ test.describe.serial('Native access, Home and notification acceptance', { tag: '
         staffUnreadAfterOne: afterOne.unreadCount, staffUnreadAfterAll: afterAll.unreadCount,
         managerUnreadUnchanged: managerAfter.unreadCount === managerFeed.unreadCount });
     } catch (error) { primaryFailure = error; throw error; }
-    finally { await closeContexts(contexts, primaryFailure); }
+    finally { await closeQaContexts(contexts, primaryFailure); }
   });
 });
