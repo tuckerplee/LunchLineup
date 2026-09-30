@@ -5,6 +5,7 @@ import { usePathname } from 'next/navigation';
 import { useEffect, useMemo, useState } from 'react';
 import { LunchLineupMark } from '@/components/branding/LunchLineupMark';
 import { fetchJsonWithSession, fetchWithSession } from '@/lib/client-api';
+import { handleLogoutNavigation } from '@/lib/logout-navigation';
 import {
   LogOut,
   Settings,
@@ -247,10 +248,10 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
           <DashboardMobileNavigation pathname={pathname} {...mobileNavGroups} />
 
           <div style={{ borderTop: '1px solid var(--border)', padding: '0.8rem' }}>
-            <Link href="/auth/logout" prefetch={false} className="workspace-nav-link" style={{ justifyContent: 'flex-start' }}>
+            <a href="/auth/logout" onClick={handleLogoutNavigation} className="workspace-nav-link" style={{ justifyContent: 'flex-start' }}>
               <LogOut size={16} />
               Sign out
-            </Link>
+            </a>
           </div>
         </div>
       </aside>
@@ -263,15 +264,15 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
           </div>
 
           <div style={{ display: 'flex', alignItems: 'center', gap: '0.7rem' }}>
-            <Link
+            <a
               href="/auth/logout"
-              prefetch={false}
+              onClick={handleLogoutNavigation}
               className="workspace-mobile-signout btn btn-secondary btn-sm"
               aria-label="Sign out"
               title="Sign out"
             >
               <LogOut size={16} aria-hidden="true" />
-            </Link>
+            </a>
             <NotificationsMenu
               error={notificationError}
               busy={notificationBusy}
