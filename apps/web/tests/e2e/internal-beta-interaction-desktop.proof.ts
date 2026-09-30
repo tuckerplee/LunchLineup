@@ -54,7 +54,7 @@ test.describe('Internal beta desktop interaction proof', () => {
   });
 
   test('valid drag announces and commits the exact proposed employee and time with local Saved and Undo with persisted reversal', async ({ page }) => {
-    const original = await createProofShift(page, 'Staff One', '10:00', '14:00');
+    const original = await createProofShift(page, 'Staff 10', '10:00', '14:00');
     expect(original).toBeTruthy();
     const block = shiftBlock(page, '10:00-14:00');
     const geometry = await pointerGeometry(page, moveHandle(block), 'E2E Manager');
@@ -102,17 +102,17 @@ test.describe('Internal beta desktop interaction proof', () => {
       endTime: original!.endTime,
     });
     await expect(feedback.getByRole('status')).toContainText('Move undone');
-    await expect(page.locator('.timeline-row[data-resource-title="Staff One"]')).toContainText('10:00-14:00');
+    await expect(page.locator('.timeline-row[data-resource-title="Staff 10"]')).toContainText('10:00-14:00');
     await expect.poll(async () => (await readShifts(page)).find((row) => row.id === original!.id)).toMatchObject({
       id: original!.id,
-      user: { name: 'Staff One' },
+      user: { name: 'Staff 10' },
       startTime: original!.startTime,
       endTime: original!.endTime,
     });
   });
 
   test('failed move restores only that shift and keyboard editing remains an exact fallback', async ({ page }) => {
-    const first = await createProofShift(page, 'Staff One', '10:00', '14:00');
+    const first = await createProofShift(page, 'Staff 10', '10:00', '14:00');
     const second = await createProofShift(page, 'E2E Manager', '15:00', '18:00');
     expect(first).toBeTruthy();
     expect(second).toBeTruthy();
@@ -150,7 +150,7 @@ test.describe('Internal beta desktop interaction proof', () => {
     await page.mouse.move(geometry.sourceX + geometry.hourWidth, geometry.targetY, { steps: 10 });
     await page.mouse.up();
     await expect(page.locator('.scheduler-error')).toContainText('Proof injected move failure.');
-    await expect(page.locator('.timeline-row[data-resource-title="Staff One"]')).toContainText('10:00-14:00');
+    await expect(page.locator('.timeline-row[data-resource-title="Staff 10"]')).toContainText('10:00-14:00');
     await expect(page.locator('.timeline-row[data-resource-title="E2E Manager"]')).toContainText('15:00-18:00');
     await page.waitForTimeout(250);
     expect(wholeBoardReloads, 'failed move must roll back only its object without a whole-board read').toEqual([]);

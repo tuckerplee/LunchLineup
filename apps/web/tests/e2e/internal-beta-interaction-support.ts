@@ -48,10 +48,48 @@ export function moveHandle(block: Locator): Locator {
   return block.getByRole('button', { name: /Move or copy/ });
 }
 
+/** Fresh bounds clipped by the viewport and every scrolling/clipping ancestor. */
+export async function visibleInputBounds(locator: Locator) {
+  const bounds = await locator.evaluate((node) => {
+    const rect = node.getBoundingClientRect();
+    let left = Math.max(0, rect.left), top = Math.max(0, rect.top);
+    let right = Math.min(window.innerWidth, rect.right), bottom = Math.min(window.innerHeight, rect.bottom);
+    for (let parent = node.parentElement; parent; parent = parent.parentElement) {
+      const style = getComputedStyle(parent), clip = parent.getBoundingClientRect();
+      if (/auto|scroll|hidden|clip/.test(style.overflowX)) {
+        left = Math.max(left, clip.left + parent.clientLeft);
+        right = Math.min(right, clip.left + parent.clientLeft + parent.clientWidth);
+      }
+      if (/auto|scroll|hidden|clip/.test(style.overflowY)) {
+        top = Math.max(top, clip.top + parent.clientTop);
+        bottom = Math.min(bottom, clip.top + parent.clientTop + parent.clientHeight);
+      }
+    }
+    return { x: left, y: top, width: right - left, height: bottom - top };
+  });
+  expect(bounds.width, 'input target has visible horizontal intersection').toBeGreaterThan(0);
+  expect(bounds.height, 'input target has visible vertical intersection').toBeGreaterThan(0);
+  return bounds;
+}
+
+export async function assertInputHit(locator: Locator, x: number, y: number) {
+  expect(await locator.evaluate((node, point) => {
+    const hit = document.elementFromPoint(point.x, point.y);
+    return hit !== null && (hit === node || node.contains(hit));
+  }, { x, y }), 'raw input coordinate hits the intended element').toBe(true);
+}
+
 export async function pointerGeometry(page: Page, source: Locator, targetStaff: string) {
-  const sourceBox = await source.boundingBox();
   const row = page.locator(`.timeline-row[data-resource-title="${targetStaff}"]`);
+  await source.scrollIntoViewIfNeeded();
+  await row.scrollIntoViewIfNeeded();
+  // Positioning either element may move a shared scroll container. Measure both
+  // only after the final scroll; fail if they cannot be visible together.
+  await source.scrollIntoViewIfNeeded();
+  const sourceBox = await source.boundingBox();
   const rowBox = await row.boundingBox();
+  const sourceVisible = await visibleInputBounds(source);
+  const rowVisible = await visibleInputBounds(row);
   const targetUserId = await row.getAttribute('data-resource-id');
   expect(sourceBox, 'shift move-handle geometry').toBeTruthy();
   expect(rowBox, 'target row geometry').toBeTruthy();
@@ -59,15 +97,14 @@ export async function pointerGeometry(page: Page, source: Locator, targetStaff: 
   const grid = row.locator('.timeline-grid');
   const hourWidth = await grid.evaluate((node) => Number.parseFloat(getComputedStyle(node).backgroundSize));
   expect(hourWidth).toBeGreaterThan(0);
-  return {
-    sourceBox: sourceBox!,
-    rowBox: rowBox!,
-    hourWidth,
-    targetUserId: targetUserId!,
-    sourceX: sourceBox!.x + sourceBox!.width / 2,
-    sourceY: sourceBox!.y + sourceBox!.height / 2,
-    targetY: rowBox!.y + rowBox!.height / 2,
-  };
+  const sourceX = sourceVisible.x + sourceVisible.width / 2;
+  const sourceY = sourceVisible.y + sourceVisible.height / 2;
+  const targetY = rowVisible.y + rowVisible.height / 2;
+  await assertInputHit(source, sourceX, sourceY);
+  // Desktop proofs use either same-time movement or a one-hour move.
+  await assertInputHit(row, sourceX, targetY);
+  await assertInputHit(row, sourceX + hourWidth, targetY);
+  return { sourceBox: sourceBox!, rowBox: rowBox!, hourWidth, targetUserId: targetUserId!, sourceX, sourceY, targetY };
 }
 
 export function changeSetRequests(page: Page) {
