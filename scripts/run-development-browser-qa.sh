@@ -376,3 +376,17 @@ env "${interaction_env[@]}" PLAYWRIGHT_JSON_OUTPUT_NAME="$interaction/selection.
 node "$report_verifier" --selection "$case_manifest" interaction "$interaction/selection.json" >"$interaction/selection-proof.json"
 env "${interaction_env[@]}" PLAYWRIGHT_JSON_OUTPUT_NAME="$interaction/results.json" "$build_root/node_modules/.bin/playwright" "${interaction_args[@]}" >"$interaction/test.log" 2>&1
 node "$report_verifier" --complete "$case_manifest" interaction "$interaction/selection.json" "$interaction/results.json" "$CI_COMMIT_SHA" "$CI_RUN_ID" >"$interaction/acceptance-proof.json"
+
+# Additional document logout proof runs only after native and interaction gates pass.
+# Its sole fixture seed precedes all four serial cases; preserve lane history until
+# the exact-owned disposable project cleanup. This is not release qualification.
+logout="$artifact_root/development-logout"; mkdir -- "$logout"
+logout_env=(BASE_URL=http://127.0.0.1:8080 E2E_FULL_STACK=1 E2E_ADMIN_USERNAME=e2e.logout.admin E2E_RESOLUTION_IDENTIFIER_LIMIT=30 E2E_MOCK_API=0 E2E_SIGNUP_MODE=closed_beta E2E_COMPOSE_PROJECT_NAME="$project" E2E_COMPOSE_ENV_FILE="$env_file" E2E_CANDIDATE_SHA="$CI_COMMIT_SHA" E2E_ARTIFACT_ROOT="$logout")
+logout_args=(test --forbid-only --reporter=json --grep='@full-stack' --project=chromium --workers=1 --retries=0 --trace=on
+  tests/e2e/logout-surfaces-acceptance.spec.ts)
+logout_manifest="$build_root/.ci/development-logout-cases.json"
+# Discovery and execution use exactly the same file, environment and arguments.
+env "${logout_env[@]}" PLAYWRIGHT_JSON_OUTPUT_NAME="$logout/selection.json" "$build_root/node_modules/.bin/playwright" "${logout_args[@]}" --list >"$logout/selection.log" 2>&1
+node "$report_verifier" --selection "$logout_manifest" fullstack "$logout/selection.json" >"$logout/selection-proof.json"
+env "${logout_env[@]}" PLAYWRIGHT_JSON_OUTPUT_NAME="$logout/results.json" "$build_root/node_modules/.bin/playwright" "${logout_args[@]}" >"$logout/test.log" 2>&1
+node "$report_verifier" --complete "$logout_manifest" fullstack "$logout/selection.json" "$logout/results.json" "$CI_COMMIT_SHA" "$CI_RUN_ID" >"$logout/acceptance-proof.json"

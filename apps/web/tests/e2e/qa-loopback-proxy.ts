@@ -14,6 +14,25 @@ export async function startQaLoopbackProxy() {
     const sockets = new Set<Socket>();
     const upstreamSockets = new Set<Socket>();
     const upstreamRequests = new Set<ClientRequest>();
+    const pendingSocketCloses = new Set<Socket>();
+    let closing = false;
+    let closePromise: Promise<void> | undefined;
+    let notifyClosure = () => {};
+    const trackSocket = (socket: Socket, owned: Set<Socket>) => {
+        if (owned.has(socket)) return;
+        owned.add(socket);
+        pendingSocketCloses.add(socket);
+        evidence.openUpstreamSockets = upstreamSockets.size;
+        socket.once('close', () => {
+            owned.delete(socket);
+            pendingSocketCloses.delete(socket);
+            evidence.openUpstreamSockets = upstreamSockets.size;
+            notifyClosure();
+        });
+        // Include ownership delivered after close() began, even when destroyed
+        // sockets have not yet emitted their actual close event.
+        if (closing) socket.destroy();
+    };
     const server = createServer((incoming, outgoing) => {
         let url: URL;
         try { url = requireQaUrl(incoming.url?.startsWith('http') ? incoming.url : `http://${incoming.headers.host}${incoming.url}`); }
@@ -23,6 +42,7 @@ export async function startQaLoopbackProxy() {
             outgoing.end('Disposable QA proxy denied this destination.');
             return;
         }
+        if (closing) { outgoing.destroy(); return; }
         // Never resolve or connect to the requested host. Every permitted request
         // is sent to this one fixed application endpoint, including redirect hops.
         const headers: IncomingHttpHeaders = { ...incoming.headers, host: '127.0.0.1:8080' };
@@ -35,20 +55,15 @@ export async function startQaLoopbackProxy() {
         });
         upstreamRequests.add(upstream);
         upstream.on('socket', socket => {
-            upstreamSockets.add(socket);
-            evidence.openUpstreamSockets = upstreamSockets.size;
-            socket.once('close', () => {
-                upstreamSockets.delete(socket);
-                evidence.openUpstreamSockets = upstreamSockets.size;
-            });
+            trackSocket(socket, upstreamSockets);
         });
-        upstream.on('close', () => upstreamRequests.delete(upstream));
+        upstream.on('close', () => { upstreamRequests.delete(upstream); notifyClosure(); });
         upstream.on('error', () => { if (!outgoing.headersSent) outgoing.writeHead(502); outgoing.end('QA endpoint unavailable.'); });
         incoming.on('aborted', () => upstream.destroy());
         outgoing.on('close', () => upstream.destroy());
         incoming.pipe(upstream);
     });
-    server.on('connection', socket => { sockets.add(socket); socket.on('close', () => sockets.delete(socket)); });
+    server.on('connection', socket => trackSocket(socket, sockets));
     server.on('connect', (incoming, socket, head) => {
         try { requireQaConnectAuthority(incoming.url); }
         catch (failure) {
@@ -56,12 +71,12 @@ export async function startQaLoopbackProxy() {
             socket.end('HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n');
             return;
         }
+        if (closing) { socket.destroy(); return; }
         // Playwright's API/Route.fetch transport uses CONNECT even for HTTP.
         // Never parse, resolve or forward its authority: connect to this literal
         // endpoint only. This cannot provide an arbitrary-host/port tunnel.
         const upstream = tcpConnect({ host: '127.0.0.1', port: 8080 });
-        upstreamSockets.add(upstream);
-        evidence.openUpstreamSockets = upstreamSockets.size;
+        trackSocket(upstream, upstreamSockets);
         const deadline = setTimeout(() => { upstream.destroy(); socket.destroy(); }, 5000);
         upstream.once('connect', () => {
             clearTimeout(deadline);
@@ -76,8 +91,6 @@ export async function startQaLoopbackProxy() {
         socket.on('close', () => upstream.destroy());
         upstream.on('close', () => {
             clearTimeout(deadline);
-            upstreamSockets.delete(upstream);
-            evidence.openUpstreamSockets = upstreamSockets.size;
             socket.destroy();
         });
     });
@@ -94,19 +107,37 @@ export async function startQaLoopbackProxy() {
     evidence.listenOrigin = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
     return {
         evidence,
-        async close() {
-            await new Promise<void>((resolve, reject) => {
-                const timeout = setTimeout(() => reject(new Error('QA proxy close deadline exceeded.')), 5000);
-                const upstreamClosed = Promise.all([...upstreamSockets].map(upstream => new Promise<void>(done => upstream.once('close', () => done()))));
-                upstreamRequests.forEach(upstream => upstream.destroy());
-                upstreamSockets.forEach(upstream => upstream.destroy());
-                sockets.forEach(socket => socket.destroy());
-                server.close(() => { void upstreamClosed.then(() => { clearTimeout(timeout); resolve(); }); });
-                server.closeAllConnections();
+        close() {
+            if (closePromise) return closePromise;
+            closing = true;
+            closePromise = new Promise<void>((resolve, reject) => {
+                let serverClosed = false, actionsFinished = false, settled = false;
+                const failures: unknown[] = [];
+                const finish = (deadline = false) => {
+                    if (settled || (!deadline && (!serverClosed || !actionsFinished
+                        || pendingSocketCloses.size || upstreamRequests.size))) return;
+                    settled = true;
+                    clearTimeout(timeout);
+                    notifyClosure = () => {};
+                    if (deadline) failures.push(new Error('QA proxy close deadline exceeded.'));
+                    if (failures.length) { reject(new AggregateError(failures, 'QA proxy teardown failed.')); return; }
+                    evidence.socketsClosed = sockets.size === 0 && upstreamSockets.size === 0;
+                    if (!evidence.socketsClosed) { reject(new Error('QA proxy teardown retained an owned socket.')); return; }
+                    evidence.stoppedAt = new Date().toISOString();
+                    resolve();
+                };
+                const timeout = setTimeout(() => finish(true), 5000);
+                notifyClosure = () => finish();
+                const attempt = (action: () => void) => { try { action(); } catch (failure) { failures.push(failure); } };
+                attempt(() => server.close(failure => { if (failure) failures.push(failure); serverClosed = true; finish(); }));
+                upstreamRequests.forEach(upstream => attempt(() => { upstream.destroy(); }));
+                upstreamSockets.forEach(upstream => attempt(() => { upstream.destroy(); }));
+                sockets.forEach(socket => attempt(() => { socket.destroy(); }));
+                attempt(() => server.closeAllConnections());
+                actionsFinished = true;
+                finish();
             });
-            evidence.stoppedAt = new Date().toISOString();
-            evidence.socketsClosed = sockets.size === 0 && upstreamSockets.size === 0;
-            if (!evidence.socketsClosed) throw new Error('QA proxy teardown retained an owned socket.');
+            return closePromise;
         },
     };
 }
