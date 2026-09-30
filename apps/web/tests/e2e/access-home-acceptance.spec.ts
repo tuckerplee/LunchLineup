@@ -222,7 +222,7 @@ test.describe.serial('Native access, Home and notification acceptance', { tag: '
       page.getByRole('button', { name: 'Sign in with password', exact: true }).click(),
     ]);
     expect(denied.status()).toBe(401);
-    await expect(page.getByRole('alert')).toContainText(/Invalid username or (PIN|password)/i);
+    await expect(page.getByRole('main').getByRole('alert')).toContainText(/Invalid username or (PIN|password)/i);
     await statusOnly(page.request, '/api/v2/auth/me', 401);
     expect((await page.context().cookies()).some(cookie => ['access_token', 'refresh_token'].includes(cookie.name))).toBe(false);
     await evidence(info, 'native-invalid-login', { verificationStatus: denied.status(), authenticatedIdentityStatus: 401 });

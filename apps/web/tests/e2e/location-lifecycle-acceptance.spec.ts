@@ -177,7 +177,7 @@ test.describe.serial('Native location lifecycle acceptance', { tag: '@full-stack
     await create.getByLabel('Location name').fill('Invalid native timezone');
     await create.getByLabel('IANA timezone').fill('Invalid/Private_Test_Zone');
     await create.getByRole('button', { name: 'Save', exact: true }).click();
-    await expect(page.getByRole('alert')).toHaveText('Select a valid IANA timezone.');
+    await expect(page.getByRole('main').getByRole('alert')).toHaveText('Select a valid IANA timezone.');
     await retainState(page, testInfo, 'location-invalid-create', { initial, initialSummary, browserWrites: writes });
     await page.getByRole('button', { name: 'Add Location' }).click();
     expect(await readActive(page)).toEqual(initial);
@@ -192,7 +192,7 @@ test.describe.serial('Native location lifecycle acceptance', { tag: '@full-stack
     await edit.getByLabel('Location name').fill('Uncommitted location name');
     await edit.getByLabel('IANA timezone').fill('Invalid/Private_Test_Zone');
     await edit.getByRole('button', { name: 'Save changes', exact: true }).click();
-    await expect(page.getByRole('alert')).toHaveText('Select a valid IANA timezone.');
+    await expect(page.getByRole('main').getByRole('alert')).toHaveText('Select a valid IANA timezone.');
     await edit.getByLabel('IANA timezone').fill('America/Denver');
     await edit.getByRole('button', { name: 'Cancel', exact: true }).click();
     expect(await readLocation(page, target.id)).toEqual(target);
