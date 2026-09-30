@@ -53,18 +53,18 @@ test.describe('Internal beta desktop interaction proof', () => {
     await expect(block).toContainText('10:00-14:00');
   });
 
-  test('valid drag announces and commits the exact proposed employee and time with local Saved and Undo when exposed', async ({ page }) => {
+  test('valid drag announces and commits the exact proposed employee and time with local Saved and Undo with persisted reversal', async ({ page }) => {
     const original = await createProofShift(page, 'Staff One', '10:00', '14:00');
     expect(original).toBeTruthy();
     const block = shiftBlock(page, '10:00-14:00');
-    const geometry = await pointerGeometry(page, moveHandle(block), 'E2E Admin');
+    const geometry = await pointerGeometry(page, moveHandle(block), 'E2E Manager');
     const requestPromise = page.waitForRequest((request) => request.method() === 'POST' && /\/change-sets$/.test(request.url()));
 
     await page.mouse.move(geometry.sourceX, geometry.sourceY);
     await page.mouse.down();
     await page.mouse.move(geometry.sourceX + geometry.hourWidth, geometry.targetY, { steps: 10 });
     const proposal = page.locator('.scheduler-status').getByRole('status');
-    await expect(proposal).toContainText('E2E Admin');
+    await expect(proposal).toContainText('E2E Manager');
     await expect(proposal).toContainText('11:00');
     await expect(proposal).toContainText('15:00');
     await page.mouse.up();
@@ -78,20 +78,42 @@ test.describe('Internal beta desktop interaction proof', () => {
       startTime: addHours(original!.startTime, 1),
       endTime: addHours(original!.endTime, 1),
     });
-    await expect(page.locator('.timeline-row[data-resource-title="E2E Admin"]')).toContainText('11:00-15:00');
+    await expect(page.locator('.timeline-row[data-resource-title="E2E Manager"]')).toContainText('11:00-15:00');
 
-    const saved = page.getByRole('status').filter({ hasText: /Saved/ });
-    if (await saved.count()) await expect(saved).toBeVisible();
-    const undo = page.getByRole('button', { name: /Undo move/ });
-    if (await undo.count()) {
-      await undo.click();
-      await expect(page.locator('.timeline-row[data-resource-title="Staff One"]')).toContainText('10:00-14:00');
-    }
+    const feedback = page.locator('.schedule-mutation-feedback');
+    const saved = feedback.getByRole('status').filter({ hasText: /^Saved E2E Manager/ });
+    await expect(saved).toBeVisible();
+    const undo = saved.getByRole('button', { name: 'Undo', exact: true });
+    await expect(undo).toBeVisible();
+    await expect.poll(async () => (await readShifts(page)).find((row) => row.id === original!.id)).toMatchObject({
+      id: original!.id,
+      user: { name: 'E2E Manager' },
+      startTime: addHours(original!.startTime, 1),
+      endTime: addHours(original!.endTime, 1),
+    });
+    const undoRequestPromise = page.waitForRequest((candidate) => candidate.method() === 'POST' && /\/change-sets$/.test(candidate.url()));
+    await undo.click();
+    const undoRequest = await undoRequestPromise;
+    expect((undoRequest.postDataJSON() as { operations: any[] }).operations[0]).toMatchObject({
+      op: 'shift.update',
+      shiftId: original!.id,
+      userId: original!.userId ?? original!.user?.id,
+      startTime: original!.startTime,
+      endTime: original!.endTime,
+    });
+    await expect(feedback.getByRole('status')).toContainText('Move undone');
+    await expect(page.locator('.timeline-row[data-resource-title="Staff One"]')).toContainText('10:00-14:00');
+    await expect.poll(async () => (await readShifts(page)).find((row) => row.id === original!.id)).toMatchObject({
+      id: original!.id,
+      user: { name: 'Staff One' },
+      startTime: original!.startTime,
+      endTime: original!.endTime,
+    });
   });
 
   test('failed move restores only that shift and keyboard editing remains an exact fallback', async ({ page }) => {
     const first = await createProofShift(page, 'Staff One', '10:00', '14:00');
-    const second = await createProofShift(page, 'E2E Admin', '15:00', '18:00');
+    const second = await createProofShift(page, 'E2E Manager', '15:00', '18:00');
     expect(first).toBeTruthy();
     expect(second).toBeTruthy();
     let failed = false;
@@ -122,14 +144,14 @@ test.describe('Internal beta desktop interaction proof', () => {
 
     const firstBlock = shiftBlock(page, '10:00-14:00');
     const firstHandle = moveHandle(firstBlock);
-    const geometry = await pointerGeometry(page, firstHandle, 'E2E Admin');
+    const geometry = await pointerGeometry(page, firstHandle, 'E2E Manager');
     await page.mouse.move(geometry.sourceX, geometry.sourceY);
     await page.mouse.down();
     await page.mouse.move(geometry.sourceX + geometry.hourWidth, geometry.targetY, { steps: 10 });
     await page.mouse.up();
     await expect(page.locator('.scheduler-error')).toContainText('Proof injected move failure.');
     await expect(page.locator('.timeline-row[data-resource-title="Staff One"]')).toContainText('10:00-14:00');
-    await expect(page.locator('.timeline-row[data-resource-title="E2E Admin"]')).toContainText('15:00-18:00');
+    await expect(page.locator('.timeline-row[data-resource-title="E2E Manager"]')).toContainText('15:00-18:00');
     await page.waitForTimeout(250);
     expect(wholeBoardReloads, 'failed move must roll back only its object without a whole-board read').toEqual([]);
 
@@ -137,13 +159,13 @@ test.describe('Internal beta desktop interaction proof', () => {
     await page.keyboard.press('Enter');
     const dialog = page.getByRole('dialog', { name: /Move or copy shift/ });
     await expect(dialog).toBeVisible();
-    await dialog.getByLabel('Team member').selectOption({ label: 'E2E Admin' });
+    await dialog.getByLabel('Team member').selectOption({ label: 'E2E Manager' });
     await dialog.getByLabel('Time adjustment in minutes').fill('60');
-    await expect(dialog.getByRole('status')).toContainText('E2E Admin');
+    await expect(dialog.getByRole('status')).toContainText('E2E Manager');
     await expect(dialog.getByRole('status')).toContainText('11:00');
     await expect(dialog.getByRole('status')).toContainText('15:00');
     await dialog.getByRole('button', { name: 'Apply move' }).click();
-    await expect(page.locator('.timeline-row[data-resource-title="E2E Admin"]')).toContainText('11:00-15:00');
+    await expect(page.locator('.timeline-row[data-resource-title="E2E Manager"]')).toContainText('11:00-15:00');
     await expect.poll(async () => (await readShifts(page)).find((row) => row.id === second!.id)?.startTime).toBe(second!.startTime);
   });
 

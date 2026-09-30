@@ -29,7 +29,9 @@ export async function createProofShift(page: Page, staff: string, start: string,
   await page.getByRole('button', { name: /Add shift/ }).click();
   const form = page.locator('form.shift-form');
   await expect(form).toBeVisible();
-  await form.getByLabel('Staff').selectOption({ label: staff });
+  // The role field also contains a Staff option; bind to the staff field's
+  // label prefix so fixture setup cannot select the role control.
+  await form.getByLabel(/^Staff(?:$|\s|Select staff)/).selectOption({ label: staff });
   await form.getByLabel('Start').fill(start);
   await form.getByLabel('End').fill(end);
   await form.getByRole('button', { name: 'Create shift' }).click();
