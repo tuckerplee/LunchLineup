@@ -19,16 +19,101 @@ function fixture() {
   })) } };
   const report = structuredClone(selection);
   report.config.metadata = { actualWorkers: 1 };
-  report.stats = { expected: 2, unexpected: 0, skipped: 0, flaky: 0 };
-  for (const spec of report.suites[0].suites[0].specs) {
+  report.stats = { startTime: '2026-09-30T19:00:00.000Z', duration: 5000,
+    expected: 2, unexpected: 0, skipped: 0, flaky: 0 };
+  for (const [index, spec] of report.suites[0].suites[0].specs.entries()) {
     spec.tests[0].status = 'expected';
-    spec.tests[0].results = [{ status: 'passed', retry: 0, workerIndex: 0, parallelIndex: 0, errors: [], annotations: [] }];
+    spec.tests[0].results = [{ status: 'passed', retry: 0, workerIndex: 0, parallelIndex: 0, errors: [], annotations: [],
+      startTime: `2026-09-30T19:00:0${index}.000Z`, duration: 500 }];
   }
   return { manifest, selection, report };
 }
 const specs = value => value.suites[0].suites[0].specs;
 const attempt = value => specs(value)[0].tests[0].results[0];
 const verify = value => verifyDevelopmentBrowserReport(value.manifest, 'fullstack', value.selection, value.report);
+
+function interactionFixture() {
+  const value = fixture();
+  // Sanitized QA26 result timings: four desktop cases followed by one touch case.
+  const timings = [
+    ['2026-09-30T19:40:37.569Z', 27448],
+    ['2026-09-30T19:41:05.613Z', 28320],
+    ['2026-09-30T19:41:34.287Z', 29494],
+    ['2026-09-30T19:42:04.201Z', 33448],
+    ['2026-09-30T19:42:39.369Z', 23031],
+  ];
+  const projects = ['interaction-desktop', 'interaction-touch'].map(name => ({ id: name, name, retries: 0, repeatEach: 1 }));
+  value.selection.config.projects = structuredClone(projects);
+  value.report.config.projects = structuredClone(projects);
+  const template = specs(value.selection)[0];
+  value.selection.suites[0].suites[0].specs = timings.map((_, index) => {
+    const spec = structuredClone(template), project = projects[index === 4 ? 1 : 0].name;
+    spec.title = spec.id = `gesture-${index}`;
+    spec.tests[0].projectId = spec.tests[0].projectName = project;
+    return spec;
+  });
+  value.selection.stats.skipped = 5;
+  value.report.suites = structuredClone(value.selection.suites);
+  value.report.stats = { startTime: '2026-09-30T19:40:36.410Z', duration: 146522.679,
+    expected: 5, unexpected: 0, skipped: 0, flaky: 0 };
+  for (const [index, spec] of specs(value.report).entries()) {
+    spec.tests[0].status = 'expected';
+    spec.tests[0].results = [{ ...structuredClone(attempt(fixture().report)), workerIndex: index === 4 ? 1 : 0,
+      startTime: timings[index][0], duration: timings[index][1] }];
+  }
+  value.manifest.lanes = { interaction: specs(value.selection).map(spec => ({ file: spec.file,
+    titlePath: ['access.spec.ts', 'Native access', spec.title], project: spec.tests[0].projectName })) };
+  return value;
+}
+const resultAt = (value, index) => specs(value.report)[index].tests[0].results[0];
+const verifyInteraction = value => verifyDevelopmentBrowserReport(value.manifest, 'interaction', value.selection, value.report);
+
+test('actual sequential desktop and touch lifecycles occupy one slot without replacing any project worker', () => {
+  const value = interactionFixture();
+  const proof = verifyInteraction(value);
+  assert.equal(proof.executed, 5); assert.equal(proof.workers, 1); assert.equal(proof.retries, 0);
+  assert.equal(proof.releaseQualified, false);
+  assert.deepEqual(proof.cases.map(row => row.project), [
+    'interaction-desktop', 'interaction-desktop', 'interaction-desktop', 'interaction-desktop', 'interaction-touch',
+  ]);
+});
+
+test('suite presentation order does not change the validated chronological lifecycle', () => {
+  const value = interactionFixture(); specs(value.report).reverse();
+  assert.equal(verifyInteraction(value).executed, 5);
+});
+
+test('adjacent intervals and a real zero-duration result are allowed within the report', () => {
+  const value = fixture();
+  attempt(value.report).duration = 0;
+  resultAt(value, 1).startTime = attempt(value.report).startTime;
+  value.report.stats.duration = resultAt(value, 1).duration;
+  assert.equal(verify(value).executed, 2);
+});
+
+for (const [name, mutate] of [
+  ['overlapping desktop cases', value => { resultAt(value, 1).startTime = resultAt(value, 0).startTime; }],
+  ['concurrent desktop and touch despite one-slot metadata', value => { resultAt(value, 4).startTime = resultAt(value, 3).startTime; }],
+  ['same-project worker restart', value => { resultAt(value, 1).workerIndex = 1; }],
+  ['unaccounted initial worker', value => { for (let i = 0; i < 5; i++) resultAt(value, i).workerIndex++; }],
+  ['unaccounted worker index gap', value => { resultAt(value, 4).workerIndex = 2; }],
+  ['worker reused across projects', value => { resultAt(value, 4).workerIndex = 0; }],
+  ['returned retired project worker', value => {
+    resultAt(value, 3).startTime = '2026-09-30T19:43:03.000Z'; value.report.stats.duration = 200000;
+  }],
+  ['reversed worker creation order', value => { for (let i = 0; i < 5; i++) resultAt(value, i).workerIndex = i === 4 ? 0 : 1; }],
+  ['out-of-report start', value => { resultAt(value, 0).startTime = '2026-09-30T19:40:36.409Z'; }],
+  ['out-of-report finish', value => { value.report.stats.duration = 100000; }],
+]) test(`sequential project proof rejects ${name}`, () => {
+  const value = interactionFixture(); mutate(value);
+  assert.throws(() => verifyInteraction(value), /Incomplete disposable browser proof/);
+});
+
+test('native lane retains its one-project worker assurance', () => {
+  const value = interactionFixture();
+  value.manifest.lanes.fullstack = value.manifest.lanes.interaction;
+  assert.throws(() => verify(value), /native execution project multiplicity/);
+});
 
 test('listed skipped status is only a plan; exact first-attempt native execution independently passes', () => {
   const value = fixture();
@@ -78,6 +163,18 @@ for (const [name, mutate] of [
   ['configured workers greater than one', value => { value.report.config.workers = 2; }],
   ['actual workers greater than one', value => { value.report.config.metadata.actualWorkers = 2; }],
   ['replacement worker', value => { attempt(value.report).workerIndex = 1; }],
+  ...['1', -1, 0.5, NaN, Infinity, Number.MAX_SAFE_INTEGER + 1, undefined].map(index =>
+    [`invalid worker index ${String(index)} (${typeof index})`, value => { attempt(value.report).workerIndex = index; }]),
+  ...['0', 1, 0.5, undefined].map(index =>
+    [`invalid parallel index ${String(index)} (${typeof index})`, value => { attempt(value.report).parallelIndex = index; }]),
+  ...[undefined, 0, 'not-a-date', '2026-09-30', '2026-09-30T19:00:00Z'].map(start =>
+    [`invalid test timestamp ${String(start)}`, value => { attempt(value.report).startTime = start; }]),
+  ...[undefined, '500', -1, NaN, Infinity, 1e100].map(duration =>
+    [`invalid test duration ${String(duration)}`, value => { attempt(value.report).duration = duration; }]),
+  ...[undefined, 'not-a-date', '2026-09-30'].map(start =>
+    [`invalid report timestamp ${String(start)}`, value => { value.report.stats.startTime = start; }]),
+  ...[undefined, '5000', -1, NaN, Infinity, 1e100].map(duration =>
+    [`invalid report duration ${String(duration)}`, value => { value.report.stats.duration = duration; }]),
   ['missing actual worker proof', value => { delete value.report.config.metadata; }],
   ['focused tests allowed', value => { value.report.config.forbidOnly = false; }],
   ['sharded selection', value => { value.selection.config.shard = { current: 1, total: 2 }; }],

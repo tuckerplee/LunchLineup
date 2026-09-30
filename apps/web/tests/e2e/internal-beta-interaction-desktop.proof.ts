@@ -1,3 +1,5 @@
+import type { TimeCardActiveResponse, TimeCardRecord } from '@lunchlineup/api-contract';
+
 import { expect, test } from './qa-isolation-fixture';
 
 import {
@@ -207,7 +209,7 @@ test.describe('Internal beta desktop interaction proof', () => {
     await expect.poll(async () => (await readShifts(page)).find((row) => row.id === second!.id)?.startTime).toBe(second!.startTime);
   });
 
-  test('overnight values survive Calendar and Lunch while Lunch and Time Cards expose only supported explicit actions', async ({ page }) => {
+  test('overnight values survive Calendar and Lunch while Lunch and Time Cards expose only supported explicit actions', async ({ page }, info) => {
     const overnight = await createProofShift(page, 'Staff One', '22:00', '06:00');
     expect(overnight).toBeTruthy();
     const before = { startTime: overnight!.startTime, endTime: overnight!.endTime };
@@ -270,9 +272,91 @@ test.describe('Internal beta desktop interaction proof', () => {
     const target = { userId: await employee.inputValue(), locationId: await location.inputValue() };
     expect(target.userId).not.toBe('');
     expect(target.locationId).not.toBe('');
-    await clockIn.click();
+    const timeout = 10_000;
+    const bounded = async <T,>(operation: Promise<T>, label: string): Promise<T> => {
+      let timer!: ReturnType<typeof setTimeout>;
+      try { return await Promise.race([operation, new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error(`${label} exceeded its finite deadline.`)), timeout);
+      })]); } finally { clearTimeout(timer); }
+    };
+    const nativeRead = async <T,>(path: string): Promise<T> => {
+      const response = await page.request.get(path, { timeout, maxRetries: 0, maxRedirects: 0 });
+      let primary: unknown;
+      try {
+        expect(response.status(), `Native time-card readback for ${path}`).toBe(200);
+        const bytes = await bounded(response.body(), 'Native time-card body');
+        expect(bytes.length).toBeLessThanOrEqual(512 * 1024);
+        return JSON.parse(bytes.toString('utf8')) as T;
+      } catch (error) { primary = error; throw error; }
+      finally { try { await bounded(response.dispose(), 'Native time-card response cleanup'); } catch (cleanup) {
+        throw new AggregateError(primary === undefined ? [cleanup] : [primary, cleanup], 'Native time-card readback/cleanup failures retained.');
+      } }
+    };
+    const activePath = `/api/v2/time-cards/active?userId=${encodeURIComponent(target.userId)}`;
+    expect((await nativeRead<TimeCardActiveResponse>(activePath)).data, 'Fresh selected employee has no open card before the sole clock-in').toBeNull();
+    const origin = new URL(page.url()).origin;
+    const observed = page.waitForRequest(request => request.method() === 'POST'
+      && new URL(request.url()).origin === origin && new URL(request.url()).pathname === '/api/v2/time-cards/clock-in',
+    { timeout }).then(async request => {
+      expect(request.postDataJSON()).toMatchObject(target);
+      const response = await bounded(request.response(), 'Exact clock-in Request response');
+      expect(response, 'The actual clock-in Request receives its own native response').not.toBeNull();
+      // Canonical fresh clock-in is 201; 200 denotes an existing/reused card.
+      expect(response!.status()).toBe(201);
+      // Guarded Chromium response bodies can be unavailable; independent native
+      // reads below own saved-card evidence rather than reusing browser JSON.
+    });
+    const [response, action] = await Promise.allSettled([observed,
+      bounded(Promise.resolve().then(() => clockIn.click()), 'Clock-in action')]);
+    const failures: unknown[] = [];
+    if (action.status === 'rejected') failures.push(action.reason);
+    if (response.status === 'rejected') failures.push(response.reason);
+    if (failures.length) throw new AggregateError(failures, 'Clock-in action/actual Request response failures retained.');
     await expect(page.getByText('Staff One was clocked in at Downtown Diner.')).toBeVisible();
     expect(clockInRequests).toHaveLength(1);
     expect(clockInRequests[0]).toMatchObject(target);
+    const settled = async () => {
+      const main = page.getByRole('main');
+      await expect(main.getByRole('button', { name: 'Clock out Staff One from Downtown Diner', exact: true })).toBeEnabled({ timeout });
+      const currentStatus = main.getByText('Current status', { exact: true }).locator('..');
+      await expect(currentStatus).toContainText('Clocked in at');
+      await expect(currentStatus).toContainText('Downtown Diner');
+      await expect(main.getByRole('alert')).toHaveCount(0);
+      await expect(main.getByText(/^(Loading time cards|Loading status|Loading time card history|Status unavailable|Time card history is unavailable)/)).toHaveCount(0);
+      await expect(main.getByRole('button', { name: /^Clocking (in|out) / })).toHaveCount(0);
+      await expect(main.getByRole('button', { name: 'Clock in Staff One at Downtown Diner', exact: true })).toHaveCount(0);
+      const row = main.getByRole('row').filter({ hasText: 'Staff One' });
+      await expect(row).toHaveCount(1);
+      await expect(row).toContainText('Downtown Diner'); await expect(row).toContainText('OPEN');
+    };
+    await settled();
+    const active = (await nativeRead<TimeCardActiveResponse>(activePath)).data;
+    expect(active, 'Native active card exists after settled clock-in').not.toBeNull();
+    expect(active!).toMatchObject({ ...target, status: 'OPEN', clockOutAt: null,
+      user: { id: target.userId, name: 'Staff One' }, location: { id: target.locationId, name: 'Downtown Diner' } });
+    expect(active!.id).toMatch(/^[a-f0-9-]{36}$/i);
+    const saved = await nativeRead<TimeCardRecord>(`/api/v2/time-cards/${encodeURIComponent(active!.id)}`);
+    const persisted = { id: active!.id, ...target, status: 'OPEN' as const, clockInAt: active!.clockInAt,
+      clockOutAt: null, createdAt: active!.createdAt };
+    expect(saved).toMatchObject(persisted);
+    await page.reload();
+    await page.getByRole('button', { name: 'Team Time', exact: true }).click();
+    await expect(employee).toHaveValue(''); await expect(location).toBeDisabled();
+    await employee.selectOption(target.userId); await expect(location).toBeEnabled();
+    await location.selectOption(target.locationId);
+    await expect(employee).toHaveValue(target.userId); await expect(location).toHaveValue(target.locationId);
+    await settled();
+    const reloaded = (await nativeRead<TimeCardActiveResponse>(activePath)).data;
+    expect(reloaded).toMatchObject(persisted);
+    expect(await nativeRead<TimeCardRecord>(`/api/v2/time-cards/${encodeURIComponent(saved.id)}`)).toMatchObject(persisted);
+    expect(clockInRequests).toHaveLength(1);
+    const screenshotPath = info.outputPath('settled-time-card-after-reload.png');
+    const screenshot = await page.screenshot({ path: screenshotPath });
+    expect(screenshot.length).toBeLessThanOrEqual(4 * 1024 * 1024);
+    await info.attach('settled-time-card-after-reload', { path: screenshotPath, contentType: 'image/png' });
+    await info.attach('native-time-card-persistence', { body: JSON.stringify({
+      saved: persisted, user: saved.user, location: saved.location, actualClockInStatus: 201,
+      clockInRequestCount: clockInRequests.length, settledClockOutEnabled: true, reloadedSameActiveCard: true,
+    }), contentType: 'application/json' });
   });
 });

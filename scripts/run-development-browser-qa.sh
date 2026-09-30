@@ -390,3 +390,18 @@ env "${logout_env[@]}" PLAYWRIGHT_JSON_OUTPUT_NAME="$logout/selection.json" "$bu
 node "$report_verifier" --selection "$logout_manifest" fullstack "$logout/selection.json" >"$logout/selection-proof.json"
 env "${logout_env[@]}" PLAYWRIGHT_JSON_OUTPUT_NAME="$logout/results.json" "$build_root/node_modules/.bin/playwright" "${logout_args[@]}" >"$logout/test.log" 2>&1
 node "$report_verifier" --complete "$logout_manifest" fullstack "$logout/selection.json" "$logout/results.json" "$CI_COMMIT_SHA" "$CI_RUN_ID" >"$logout/acceptance-proof.json"
+
+# Additional Staff lifecycle proof starts only after the logout lane passes.
+# Seed once before all eight serial cases, then retain its published assignment
+# and all lifecycle history until exact-owned disposable database teardown.
+# A later Payroll fixture reseed is incompatible with this history lifetime.
+staff="$artifact_root/development-staff"; mkdir -- "$staff"
+staff_env=(BASE_URL=http://127.0.0.1:8080 E2E_FULL_STACK=1 E2E_ADMIN_USERNAME=e2e.staff-lifecycle.admin E2E_RESOLUTION_IDENTIFIER_LIMIT=30 E2E_MOCK_API=0 E2E_SIGNUP_MODE=closed_beta E2E_COMPOSE_PROJECT_NAME="$project" E2E_COMPOSE_ENV_FILE="$env_file" E2E_CANDIDATE_SHA="$CI_COMMIT_SHA" E2E_ARTIFACT_ROOT="$staff")
+staff_args=(test --forbid-only --reporter=json --grep='@full-stack' --project=chromium --workers=1 --retries=0 --trace=on
+  tests/e2e/staff-lifecycle-acceptance.spec.ts)
+staff_manifest="$build_root/.ci/development-staff-cases.json"
+# Selection and execution share exact environment/arguments and native tag gates.
+env "${staff_env[@]}" PLAYWRIGHT_JSON_OUTPUT_NAME="$staff/selection.json" "$build_root/node_modules/.bin/playwright" "${staff_args[@]}" --list >"$staff/selection.log" 2>&1
+node "$report_verifier" --selection "$staff_manifest" fullstack "$staff/selection.json" >"$staff/selection-proof.json"
+env "${staff_env[@]}" PLAYWRIGHT_JSON_OUTPUT_NAME="$staff/results.json" "$build_root/node_modules/.bin/playwright" "${staff_args[@]}" >"$staff/test.log" 2>&1
+node "$report_verifier" --complete "$staff_manifest" fullstack "$staff/selection.json" "$staff/results.json" "$CI_COMMIT_SHA" "$CI_RUN_ID" >"$staff/acceptance-proof.json"

@@ -10,6 +10,38 @@ const key = value => JSON.stringify([value.file, value.titlePath, value.project]
 const forbiddenAnnotation = annotations => !Array.isArray(annotations) || annotations.some(value =>
   !value || typeof value.type !== 'string' || ['skip', 'fixme', 'fail'].includes(value.type));
 
+function timestamp(value) {
+  const parsed = typeof value === 'string' ? Date.parse(value) : NaN;
+  requireProof(Number.isFinite(parsed) && new Date(parsed).toISOString() === value, 'missing/invalid execution timestamp');
+  return parsed;
+}
+
+function verifyWorkerLifecycles(executions, stats) {
+  const reportStart = timestamp(stats?.startTime);
+  requireProof(typeof stats.duration === 'number' && Number.isFinite(stats.duration) && stats.duration >= 0,
+    'missing/invalid report duration');
+  const reportEnd = reportStart + stats.duration;
+  requireProof(Number.isFinite(new Date(reportEnd).getTime()), 'invalid report interval');
+  const projects = new Set();
+  let worker = -1, project, previousEnd = reportStart;
+  // JSON suites are grouped by source, not necessarily execution order.
+  for (const execution of [...executions].sort((a, b) => a.start - b.start)) {
+    requireProof(execution.start >= previousEnd && execution.end <= reportEnd,
+      'overlapping/out-of-report execution');
+    if (execution.worker !== worker) {
+      // Playwright replaces a process when the project's worker fixture hash changes.
+      // These reviewed lanes permit one process lifecycle per selected project.
+      requireProof(execution.worker === worker + 1 && !projects.has(execution.project),
+        'restarted/reused/unaccounted worker lifecycle');
+      worker = execution.worker;
+      project = execution.project;
+      projects.add(project);
+    }
+    requireProof(execution.project === project, 'worker reused across projects');
+    previousEnd = execution.end;
+  }
+}
+
 function cases(report, executed) {
   requireProof(Array.isArray(report?.errors) && report.errors.length === 0, 'global report errors');
   requireProof(report.config?.workers === 1 && report.config?.forbidOnly === true &&
@@ -17,6 +49,7 @@ function cases(report, executed) {
   requireProof(Array.isArray(report.config.projects), 'project configuration');
   if (executed) requireProof(report.config.metadata?.actualWorkers === 1, 'actual worker count');
   const rows = [];
+  const executions = [];
   const ids = new Set();
   function visit(suites, parents = []) {
     requireProof(Array.isArray(suites), 'suite inventory');
@@ -38,9 +71,16 @@ function cases(report, executed) {
         if (executed) {
           requireProof(test.status === 'expected' && test.results.length === 1, 'missing/repeated/nonpassing execution');
           const result = test.results[0];
-          requireProof(result.status === 'passed' && result.retry === 0 && result.workerIndex === 0 &&
+          requireProof(result.status === 'passed' && result.retry === 0 &&
+            Number.isSafeInteger(result.workerIndex) && result.workerIndex >= 0 &&
             result.parallelIndex === 0 && Array.isArray(result.errors) && result.errors.length === 0 &&
             result.error == null && !forbiddenAnnotation(result.annotations), 'failed/retried/error-bearing execution');
+          const start = timestamp(result.startTime);
+          requireProof(typeof result.duration === 'number' && Number.isFinite(result.duration) && result.duration >= 0,
+            'missing/invalid execution duration');
+          const end = start + result.duration;
+          requireProof(Number.isFinite(new Date(end).getTime()), 'invalid execution interval');
+          executions.push({ project: test.projectName, worker: result.workerIndex, start, end });
         } else {
           // Playwright's --list JSON reports each unexecuted case as skipped.
           // Execution must independently pass the checks above.
@@ -53,6 +93,7 @@ function cases(report, executed) {
   }
   visit(report.suites);
   requireProof(rows.length > 0 && new Set(rows.map(key)).size === rows.length, 'empty/duplicate selected cases');
+  if (executed) verifyWorkerLifecycles(executions, report.stats);
   if (!executed) requireProof(report.stats?.expected === 0 && report.stats.skipped === rows.length &&
     report.stats.unexpected === 0 && report.stats.flaky === 0, 'inconsistent unexecuted selection summary');
   return rows;
@@ -78,7 +119,10 @@ export function verifyDevelopmentBrowserReport(manifest, lane, selection, report
   const actual = cases(report, true);
   const selectedIds = new Map(selected.map(value => [key(value), value.id]));
   requireProof(actual.length === selected.length && actual.every(value => selectedIds.get(key(value)) === value.id), 'execution differs from selected cases');
-  if (lane === 'fullstack') requireProof(actual.every(value => Array.isArray(value.tags) && value.tags.includes('full-stack')), 'native execution tag');
+  if (lane === 'fullstack') {
+    requireProof(actual.every(value => Array.isArray(value.tags) && value.tags.includes('full-stack')), 'native execution tag');
+    requireProof(new Set(actual.map(value => value.project)).size === 1, 'native execution project multiplicity');
+  }
   const stats = report.stats;
   requireProof(stats?.expected === selected.length && stats.unexpected === 0 && stats.skipped === 0 && stats.flaky === 0, 'incomplete summary');
   return { kind: 'exact-disposable-development-browser-report', releaseQualified: false, lane,
