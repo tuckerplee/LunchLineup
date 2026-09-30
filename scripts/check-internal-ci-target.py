@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Validate and record controller-owned disposable QA targets before mutations."""
+import errno
 import importlib.util
 import json
 import os
@@ -9,6 +10,7 @@ import socket
 import subprocess
 import sys
 import tomllib
+import time
 
 # The candidate build clone must remain clean after guard imports.
 sys.dont_write_bytecode = True
@@ -30,13 +32,30 @@ def validate_volumes(configuration, project):
     return sorted(names)
 
 
-def require_ports_free(ports):
+def require_ports_free(ports, wait_seconds=0):
+    if not 0 <= wait_seconds <= 65:
+        raise ValueError('port bind retry budget must be between 0 and 65 seconds')
+    deadline = time.monotonic() + wait_seconds
     sockets = []
     try:
         for port in ports:
-            listener = socket.socket()
-            sockets.append(listener)
-            listener.bind(('127.0.0.1', port))
+            while True:
+                listener = socket.socket()
+                try:
+                    # An exclusive bind also rejects occupied non-listening sockets.
+                    # Do not use SO_REUSEADDR or replace this with a connect probe.
+                    listener.bind(('127.0.0.1', port))
+                except OSError as failure:
+                    listener.close()
+                    remaining = deadline - time.monotonic()
+                    if failure.errno != errno.EADDRINUSE or remaining <= 0:
+                        raise
+                    time.sleep(min(0.25, remaining))
+                    if time.monotonic() >= deadline:
+                        raise
+                else:
+                    sockets.append(listener)
+                    break
     finally:
         for listener in sockets:
             listener.close()
@@ -90,7 +109,11 @@ def main():
                 if project in json.dumps(row):
                     raise ValueError(f'refusing pre-existing qualification {resource}')
         https_port = 18443 if os.environ.get('LUNCHLINEUP_DEVELOPMENT_QA') == '1' else 8443
-        require_ports_free((8080, 4000, https_port))
+        # The development canary closes its real 8080 HTTP target just before
+        # this guard. Allow bounded TCP teardown, while still requiring every
+        # port to become exclusively bindable. Canonical qualification stays fast.
+        require_ports_free((8080, 4000, https_port),
+                           wait_seconds=65 if os.environ.get('LUNCHLINEUP_DEVELOPMENT_QA') == '1' else 0)
         receipt.update(database='lunchlineup_ci', store=str(store), project=project,
                        volumes=volumes, httpsPort=https_port, browserEndpoint='http://127.0.0.1:8080',
                        runtimeEnvironment=str(Path(os.environ['RUNNER_TEMP']) / f'lunchlineup-beta-qualification-{run_id}/runtime.env'))
