@@ -778,7 +778,7 @@ export function StaffScheduler({ resources, events, viewMode, initialDate, timeZ
                                             return (
                                                 <div
                                                     key={event.segmentKey}
-                                                    className={`shift-block ${isSourceGhost ? 'shift-block--source-ghost' : ''} ${locked ? 'shift-block--locked' : ''}`}
+                                                    className={`shift-block ${event.width < 80 ? 'shift-block--compact' : ''} ${isSourceGhost ? 'shift-block--source-ghost' : ''} ${locked ? 'shift-block--locked' : ''}`}
                                                     data-shift-event-id={event.id}
                                                     style={{
                                                         left: event.left,
@@ -1260,8 +1260,8 @@ export function StaffScheduler({ resources, events, viewMode, initialDate, timeZ
 
                 .shift-details-button {
                     position: absolute;
-                    inset: 0;
-                    width: 100%;
+                    inset: 0 40px 0 0;
+                    width: auto;
                     border: 0;
                     border-radius: inherit;
                     background: transparent;
@@ -1271,7 +1271,7 @@ export function StaffScheduler({ resources, events, viewMode, initialDate, timeZ
                     justify-content: center;
                     align-items: flex-start;
                     gap: 2px;
-                    padding: 4px 40px 4px 8px;
+                    padding: 4px 0 4px 8px;
                     text-align: left;
                     cursor: pointer;
                     touch-action: pan-x pan-y;
@@ -1312,6 +1312,49 @@ export function StaffScheduler({ resources, events, viewMode, initialDate, timeZ
                 .shift-drag-handle:disabled {
                     cursor: not-allowed;
                     opacity: 0.5;
+                }
+
+                /* Keep both controls reachable without inflating a short shift's
+                   true timeline width. Compact cards separate them vertically. */
+                .shift-block--compact .shift-details-button {
+                    inset: 0 0 24px;
+                    padding: 2px;
+                    justify-content: flex-start;
+                }
+
+                .shift-block--compact .shift-time {
+                    line-height: 14px;
+                }
+
+                .shift-block--compact .shift-role {
+                    display: none;
+                }
+
+                .shift-block--compact .shift-drag-handle {
+                    top: auto;
+                    left: 4px;
+                    right: 4px;
+                    bottom: 2px;
+                    width: auto;
+                    min-width: 0;
+                    height: 20px;
+                }
+
+                .shift-block--compact .shift-markers {
+                    left: 2px;
+                    right: 2px;
+                    bottom: 0;
+                    height: 3px;
+                }
+
+                .shift-block--compact .shift-marker {
+                    box-sizing: border-box;
+                    min-width: 0;
+                    height: 3px;
+                }
+
+                .shift-block--compact .shift-marker > span {
+                    display: none;
                 }
 
                 .shift-drag-preview {
@@ -1423,7 +1466,7 @@ export function StaffScheduler({ resources, events, viewMode, initialDate, timeZ
                 .shift-markers {
                     position: absolute;
                     left: 8px;
-                    right: 40px;
+                    right: 0;
                     bottom: 3px;
                     height: 12px;
                     pointer-events: none;

@@ -2,6 +2,7 @@ import { expect, test } from './qa-isolation-fixture';
 
 import {
   addHours,
+  assertInputHit,
   changeSetRequests,
   closeShiftDialogIfOpen,
   createProofShift,
@@ -10,6 +11,7 @@ import {
   readShifts,
   resetAndOpenCalendar,
   shiftBlock,
+  visibleInputBounds,
 } from './internal-beta-interaction-support';
 
 test.describe('Internal beta desktop interaction proof', () => {
@@ -18,12 +20,45 @@ test.describe('Internal beta desktop interaction proof', () => {
   test('click, slight movement, outside drop, Escape, and pointercancel issue no move request', async ({ page }) => {
     await createProofShift(page, 'Staff One', '10:00', '14:00');
     const block = shiftBlock(page, '10:00-14:00');
+    // Native generation clamps the default breaks into this four-hour shift.
+    // Keep actual break markers in the compact-card reachability regression.
+    await page.getByRole('button', { name: 'Advanced settings' }).click();
+    await page.getByRole('button', { name: /Generate breaks/ }).click();
+    const markers = block.getByRole('list', { name: 'Shift breaks' });
+    await expect(markers).toBeVisible();
+    expect(await markers.getByRole('listitem').count()).toBeGreaterThan(0);
     const mutations = changeSetRequests(page);
 
-    await block.getByRole('button', { name: /^Edit STAFF shift,/ }).click();
+    // This fitted three-day card previously let the move handle cover the
+    // details button. Prove both actual controls remain separately hittable.
+    await expect(block).toHaveClass(/shift-block--compact/);
+    const details = block.getByRole('button', { name: /^Edit STAFF shift,/ });
+    const handle = moveHandle(block);
+    await details.scrollIntoViewIfNeeded();
+    await handle.scrollIntoViewIfNeeded();
+    const detailsBounds = await visibleInputBounds(details);
+    const handleBounds = await visibleInputBounds(handle);
+    const timeBounds = await visibleInputBounds(details.locator('.shift-time'));
+    const markerBounds = await visibleInputBounds(markers);
+    expect(timeBounds.y + timeBounds.height, 'compact time and actual break strip do not overlap')
+      .toBeLessThanOrEqual(markerBounds.y);
+    expect(markerBounds.y + markerBounds.height, 'actual break strip stays inside details')
+      .toBeLessThanOrEqual(detailsBounds.y + detailsBounds.height);
+    const markerItems = markers.getByRole('listitem');
+    for (let index = 0; index < await markerItems.count(); index++) {
+      const item = markerItems.nth(index);
+      await expect(item).toHaveAttribute('aria-label', /^(Meal|Break) \d/);
+      const bounds = await visibleInputBounds(item);
+      expect(bounds.y).toBeGreaterThanOrEqual(markerBounds.y);
+      expect(bounds.y + bounds.height).toBeLessThanOrEqual(markerBounds.y + markerBounds.height);
+    }
+    expect(detailsBounds.y + detailsBounds.height, 'compact controls have disjoint visible hit areas')
+      .toBeLessThanOrEqual(handleBounds.y);
+    await assertInputHit(details, detailsBounds.x + detailsBounds.width / 2, detailsBounds.y + detailsBounds.height / 2);
+    await assertInputHit(handle, handleBounds.x + handleBounds.width / 2, handleBounds.y + handleBounds.height / 2);
+    await details.click();
     await closeShiftDialogIfOpen(page);
 
-    const handle = moveHandle(block);
     let geometry = await pointerGeometry(page, handle, 'Staff One');
     await page.mouse.move(geometry.sourceX, geometry.sourceY);
     await page.mouse.down();
