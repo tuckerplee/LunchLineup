@@ -17,6 +17,15 @@
         "titlePath": [
           "access-home-acceptance.spec.ts",
           "Native access, Home and notification acceptance",
+          "shows the native resolution rate limit without establishing a session or advancing login"
+        ],
+        "project": "chromium"
+      },
+      {
+        "file": "access-home-acceptance.spec.ts",
+        "titlePath": [
+          "access-home-acceptance.spec.ts",
+          "Native access, Home and notification acceptance",
           "revokes the actual admin session on logout and rejects replay and protected navigation"
         ],
         "project": "chromium"

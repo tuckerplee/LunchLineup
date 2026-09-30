@@ -26,7 +26,7 @@ export function seedTenant() {
     throw new Error('E2E_COMPOSE_PROJECT_NAME and an absolute E2E_COMPOSE_ENV_FILE are required when E2E_FULL_STACK=1.');
   }
   execFileSync('docker', ['compose', '--project-name', project, '--project-directory', repoRoot, '--env-file', envFile, '-f', path.join(repoRoot, 'docker-compose.yml'), '--profile', 'ops', 'run', '--rm', '--no-deps', '-e', 'DATA_TARGET_ENV=disposable',
-    '-e', 'NODE_ENV=test', '-e', 'APP_ENV=test', '-e', 'DEPLOY_ENV=test', '-e', 'NEXT_PUBLIC_APP_ENV=test', 'migrate', 'sh', '-lc', 'DATABASE_URL="$MIGRATION_DATABASE_URL" node scripts/seed-e2e.mjs'], {
+    '-e', `E2E_ADMIN_USERNAME=${e2eAdminUsername}`, '-e', 'NODE_ENV=test', '-e', 'APP_ENV=test', '-e', 'DEPLOY_ENV=test', '-e', 'NEXT_PUBLIC_APP_ENV=test', 'migrate', 'sh', '-lc', 'DATABASE_URL="$MIGRATION_DATABASE_URL" node scripts/seed-e2e.mjs'], {
     cwd: repoRoot,
     env: process.env,
     stdio: 'inherit',

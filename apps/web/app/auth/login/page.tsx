@@ -135,7 +135,9 @@ function LoginContent() {
             });
             const data = await res.json().catch(() => ({}));
             if (!res.ok || !data.success) {
-                setError(data.message ?? data.error ?? 'Unable to continue login.');
+                setError(res.status === 429
+                    ? 'Too many sign-in attempts. Please wait and try again.'
+                    : data.message ?? data.error ?? 'Unable to continue login.');
                 return;
             }
 

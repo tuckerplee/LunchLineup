@@ -34,7 +34,7 @@ function observeErrors(page: Page) {
     if (message.type() !== 'error') return;
     let path = '';
     try { path = new URL(message.location().url).pathname; } catch { /* No URL means no expected-denial match. */ }
-    const status = /^Failed to load resource: the server responded with a status of (401|403) \(/.exec(message.text());
+    const status = /^Failed to load resource: the server responded with a status of (401|403|429) \(/.exec(message.text());
     const expected = status && expectedBrowserDenials.find(item => item.path === path
       && item.status === Number(status[1]) && item.remaining > 0);
     if (expected) expected.remaining--;
@@ -250,6 +250,67 @@ test.describe.serial('Native access, Home and notification acceptance', { tag: '
     await statusOnly(page.request, '/api/v2/auth/me', 401);
     expect((await page.context().cookies()).some(cookie => ['access_token', 'refresh_token'].includes(cookie.name))).toBe(false);
     await evidence(info, 'native-invalid-login', { verificationStatus: denied.status(), authenticatedIdentityStatus: 401 });
+  });
+
+  test('shows the native resolution rate limit without establishing a session or advancing login', async ({ page }, info) => {
+    const rawLimit = process.env.E2E_RESOLUTION_IDENTIFIER_LIMIT ?? '5';
+    expect(rawLimit, 'Expected-only native resolution budget is an integer').toMatch(/^\d+$/);
+    const limit = Number(rawLimit);
+    expect(Number.isSafeInteger(limit) && limit >= 1 && limit <= 500, 'Expected resolution budget is bounded to 1..500').toBe(true);
+    const identifier = 'e2e.resolution.limit';
+    const path = '/api/v2/auth/login/resolve';
+    await page.goto(`/auth/login?tenantSlug=${encodeURIComponent(e2eTenantSlug)}&next=%2Fdashboard`);
+    const origin = new URL(page.url()).origin;
+    const data = { identifier, tenantSlug: e2eTenantSlug };
+    const requestOptions = { method: 'POST' as const, headers: { Origin: origin }, data };
+    for (let index = 0; index < limit; index++) {
+      expect(await readJson(page.request, path, requestOptions)).toEqual({
+        success: true, flow: 'USERNAME_PASSWORD', identifier, pinResetRequired: false,
+      });
+    }
+    const limited = await readJson<ProblemDetails>(page.request, path, { ...requestOptions, status: 429 });
+    expect(limited.code).toBe('rate_limited'); expect(limited.status).toBe(429);
+    await page.getByLabel('Work email or username').fill(identifier);
+    await expect(page.getByLabel('Workspace slug')).toHaveValue(e2eTenantSlug);
+    const allowance = { path, status: 429, remaining: 1 }; expectedBrowserDenials.push(allowance);
+    const bounded = async <T,>(operation: Promise<T>, label: string): Promise<T> => {
+      let timer!: ReturnType<typeof setTimeout>;
+      try { return await Promise.race([operation, new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error(`${label} exceeded its finite deadline.`)), REQUEST_TIMEOUT_MS);
+      })]); } finally { clearTimeout(timer); }
+    };
+    const observed = page.waitForRequest(request => request.method() === 'POST'
+      && new URL(request.url()).origin === origin && new URL(request.url()).pathname === path,
+    { timeout: REQUEST_TIMEOUT_MS }).then(async request => {
+      expect(request.postDataJSON()).toEqual(data);
+      const response = await bounded(request.response(), 'Native browser resolution response');
+      expect(response, 'Exact browser resolution Request receives its own response').not.toBeNull();
+      expect(response!.status()).toBe(429);
+      // Guarded Chromium responses can lose their body; the actual native API
+      // request above owns problem-body validation, while this proves browser status.
+    });
+    const [response, action] = await Promise.allSettled([observed,
+      bounded(Promise.resolve().then(() => page.getByRole('button', { name: 'Continue', exact: true }).click()), 'Native browser Continue action')]);
+    const failures: unknown[] = [];
+    if (action.status === 'rejected') failures.push(action.reason);
+    if (response.status === 'rejected') failures.push(response.reason);
+    if (failures.length) throw new AggregateError(failures, 'Native resolution action/response failures retained.');
+    await expect(page.getByRole('main').getByRole('alert')).toHaveText('Too many sign-in attempts. Please wait and try again.');
+    await expect(page.getByRole('heading', { name: 'Sign in to LunchLineup', exact: true })).toBeVisible();
+    await expect(page.getByRole('heading', { name: 'Enter your password', exact: true })).toHaveCount(0);
+    await expect(page.getByPlaceholder('Enter password')).toHaveCount(0);
+    await expect(page.getByLabel('Work email or username')).toHaveValue(identifier);
+    await expect(page.getByRole('button', { name: 'Continue', exact: true })).toBeEnabled();
+    await statusOnly(page.request, '/api/v2/auth/me', 401);
+    expect((await page.context().cookies()).some(cookie => ['access_token', 'refresh_token'].includes(cookie.name))).toBe(false);
+    await expect.poll(() => allowance.remaining, { timeout: REQUEST_TIMEOUT_MS,
+      message: 'Exactly one declared browser 429 console event is observed' }).toBe(0);
+    expect(browserErrors.filter(event => event.expectedNativeDenial && event.path === path)).toHaveLength(1);
+    await screenshot(page, info, 'native-resolution-rate-limit');
+    await evidence(info, 'native-resolution-rate-limit-readback', { identifier, expectedIdentifierBudget: limit,
+      nativeResolutionSuccesses: limit, nextNativeResolutionStatus: 429, nativeProblemCode: limited.code,
+      actualBrowserResolutionStatus: 429, expectedBrowser429Events: 1, identifierStepRetained: true,
+      authenticatedIdentityStatus: 401, sessionCookiesAbsent: true });
   });
 
   test('revokes the actual admin session on logout and rejects replay and protected navigation', async ({ page, browser }, info) => {
