@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { createSeededTotpAllocator } from '../e2e/support';
+import { createSeededTotpAllocator, readSeededMfaIdentity } from '../e2e/support';
 
 // RFC 6238's ASCII test secret encoded as base32; this is public test material.
 const secret = 'GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ';
@@ -80,4 +80,90 @@ describe('seeded MFA fresh-code allocator', () => {
     await expect(allocate('tenant:admin', secret)).rejects.toThrow('bounded wait');
     expect(sleep).toHaveBeenCalledTimes(7);
   });
+});
+
+
+describe('seeded MFA authoritative API identity proof', () => {
+  const binding = { publicUserId: 'f6776d21-bb21-4c35-a6ed-5da8df5ed238', workspaceScope: 'A'.repeat(43), sessionScope: 'B'.repeat(43) };
+  const expected = { username: 'e2e.admin', workspaceName: 'E2E Operations Diner', verified: true, binding };
+  const user = () => ({ ...binding, username: expected.username, workspaceName: expected.workspaceName, mfaRequired: true, mfaVerified: true, pinResetRequired: false });
+  function api(payload: unknown, status = 200) {
+    const response = { status: () => status, json: vi.fn().mockResolvedValue(payload), dispose: vi.fn().mockResolvedValue(undefined) };
+    return { request: { get: vi.fn().mockResolvedValue(response) }, response };
+  }
+
+  it('accepts a fresh verified API identity matching the same user, workspace and session', async () => {
+    const { request, response } = api({ user: user() });
+    expect(await readSeededMfaIdentity(request, expected)).toEqual(binding);
+    expect(request.get).toHaveBeenCalledExactlyOnceWith('/api/v2/auth/me', { maxRedirects: 0, timeout: 10_000 });
+    expect(response.json).toHaveBeenCalledOnce();
+    expect(response.dispose).toHaveBeenCalledOnce();
+  });
+
+  it('captures the real unverified pre-MFA binding for a later exact comparison', async () => {
+    const { request } = api({ user: { ...user(), mfaVerified: false } });
+    expect(await readSeededMfaIdentity(request, { ...expected, verified: false, binding: undefined })).toEqual(binding);
+  });
+
+  it.each([
+    ['missing user', undefined], ['array user', []],
+    ['unverified session', { ...user(), mfaVerified: false }],
+    ['missing verification', { ...user(), mfaVerified: undefined }],
+    ['MFA disabled', { ...user(), mfaRequired: false }],
+    ['missing required state', { ...user(), mfaRequired: undefined }],
+    ['pending PIN reset', { ...user(), pinResetRequired: true }],
+    ['different username', { ...user(), username: 'other.admin' }],
+    ['different workspace', { ...user(), workspaceName: 'Other workspace' }],
+    ['different user identity', { ...user(), publicUserId: 'f6776d21-bb21-4c35-a6ed-5da8df5ed239' }],
+    ['different tenant scope', { ...user(), workspaceScope: 'C'.repeat(43) }],
+    ['different session scope', { ...user(), sessionScope: 'C'.repeat(43) }],
+    ['missing public identity', { ...user(), publicUserId: undefined }],
+    ['malformed tenant scope', { ...user(), workspaceScope: 'invalid' }],
+    ['malformed session scope', { ...user(), sessionScope: 'invalid' }],
+  ])('rejects %s without trusting the browser MFA response body', async (_label, candidate) => {
+    const { request, response } = api({ user: candidate });
+    await expect(readSeededMfaIdentity(request, expected)).rejects.toThrow('Seeded MFA');
+    expect(response.dispose).toHaveBeenCalledOnce();
+  });
+
+  it.each([302, 401, 403, 500, 503])('rejects HTTP %s without reading a purported success body', async status => {
+    const { request, response } = api({ user: user() }, status);
+    await expect(readSeededMfaIdentity(request, expected)).rejects.toThrow(`HTTP ${status}`);
+    expect(response.json).not.toHaveBeenCalled();
+    expect(response.dispose).toHaveBeenCalledOnce();
+  });
+
+  it('rejects malformed JSON and still disposes the independent API response', async () => {
+    const { request, response } = api(undefined);
+    response.json.mockRejectedValue(new SyntaxError('Invalid JSON'));
+    await expect(readSeededMfaIdentity(request, expected)).rejects.toThrow('Seeded MFA identity response could not be read.');
+    expect(response.dispose).toHaveBeenCalledOnce();
+  });
+
+  it('propagates transport failure without manufacturing verification', async () => {
+    const request = { get: vi.fn().mockRejectedValue(new Error('Transport unavailable')) };
+    await expect(readSeededMfaIdentity(request, expected)).rejects.toThrow('Seeded MFA identity request failed.');
+  });
+
+  it('bounds an unavailable API body read, redacts parser details and disposes the response', async () => {
+    vi.useFakeTimers();
+    const { request, response } = api(undefined);
+    response.json.mockImplementation(() => new Promise(() => {}));
+    const read = readSeededMfaIdentity(request, expected);
+    const rejected = expect(read).rejects.toThrow('Seeded MFA identity response could not be read.');
+    await vi.advanceTimersByTimeAsync(5_000);
+    await rejected;
+    expect(response.dispose).toHaveBeenCalledOnce();
+  });
+
+  it('bounds API response disposal rather than silently retaining the response', async () => {
+    vi.useFakeTimers();
+    const { request, response } = api({ user: user() });
+    response.dispose.mockImplementation(() => new Promise(() => {}));
+    const read = readSeededMfaIdentity(request, expected);
+    const rejected = expect(read).rejects.toThrow('Seeded MFA identity response cleanup failed.');
+    await vi.advanceTimersByTimeAsync(5_000);
+    await rejected;
+  });
+
 });

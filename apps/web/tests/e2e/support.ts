@@ -2,11 +2,12 @@ import { createHmac } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import path from 'node:path';
 
-import { expect, test, type Page, type Response } from '@playwright/test';
+import { expect, test, type Page, type Response, type APIRequestContext } from '@playwright/test';
 
 export const repoRoot = path.resolve(process.cwd(), '../..');
 export const runFullStack = process.env.E2E_FULL_STACK === '1';
 export const e2eTenantSlug = process.env.E2E_TENANT_SLUG ?? 'e2e-operations';
+export const e2eTenantName = process.env.E2E_TENANT_NAME ?? 'E2E Operations Diner';
 export const e2eAdminUsername = process.env.E2E_ADMIN_USERNAME ?? 'e2e.admin';
 export const e2eAdminPin = process.env.E2E_ADMIN_PIN ?? '246810';
 export const e2eManagerUsername = process.env.E2E_MANAGER_USERNAME ?? 'e2e.manager';
@@ -112,6 +113,65 @@ export function createSeededTotpAllocator(
 
 const freshSeededTotp = createSeededTotpAllocator();
 
+export type SeededMfaIdentityBinding = {
+  publicUserId: string;
+  workspaceScope: string;
+  sessionScope: string;
+};
+
+async function boundedSeededIdentityOperation<T>(operation: () => Promise<T>, failureMessage: string): Promise<T> {
+  let deadline: ReturnType<typeof setTimeout>;
+  try {
+    return await Promise.race([
+      operation(),
+      new Promise<never>((_resolve, reject) => { deadline = setTimeout(() => reject(new Error(failureMessage)), 5_000); }),
+    ]);
+  } catch {
+    // Transport/parser errors can include response details. Keep helper errors
+    // generic so cookies, identity fields, and session scopes never reach logs.
+    throw new Error(failureMessage);
+  } finally {
+    clearTimeout(deadline);
+  }
+}
+
+// Read through the context's guarded API transport: unlike a browser response
+// fulfilled during navigation, APIResponse owns a readable retained body.
+export async function readSeededMfaIdentity(
+  request: Pick<APIRequestContext, 'get'>,
+  expected: { username: string; workspaceName: string; verified: boolean; binding?: SeededMfaIdentityBinding },
+): Promise<SeededMfaIdentityBinding> {
+  const response = await request.get('/api/v2/auth/me', { maxRedirects: 0, timeout: 10_000 })
+    .catch(() => { throw new Error('Seeded MFA identity request failed.'); });
+  try {
+    if (response.status() !== 200) throw new Error(`Seeded MFA identity read failed with HTTP ${response.status()}.`);
+    const payload: unknown = await boundedSeededIdentityOperation(() => response.json(), 'Seeded MFA identity response could not be read.');
+    const user = payload && typeof payload === 'object' && !Array.isArray(payload)
+      ? (payload as { user?: unknown }).user : undefined;
+    if (!user || typeof user !== 'object' || Array.isArray(user)) throw new Error('Seeded MFA identity response is missing its user.');
+    const identity = user as Record<string, unknown>;
+    if (identity.username !== expected.username || identity.workspaceName !== expected.workspaceName) {
+      throw new Error('Seeded MFA identity does not match the expected user and workspace.');
+    }
+    if (identity.mfaRequired !== true || identity.mfaVerified !== expected.verified || identity.pinResetRequired !== false) {
+      throw new Error('Seeded MFA identity has unexpected MFA or PIN state.');
+    }
+    if (typeof identity.publicUserId !== 'string'
+      || !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(identity.publicUserId)
+      || typeof identity.workspaceScope !== 'string' || !/^[A-Za-z0-9_-]{43}$/.test(identity.workspaceScope)
+      || typeof identity.sessionScope !== 'string' || !/^[A-Za-z0-9_-]{43}$/.test(identity.sessionScope)) {
+      throw new Error('Seeded MFA identity is missing its public user, workspace, or session binding.');
+    }
+    const binding = { publicUserId: identity.publicUserId, workspaceScope: identity.workspaceScope, sessionScope: identity.sessionScope };
+    if (expected.binding && Object.entries(expected.binding).some(([key, value]) => binding[key as keyof SeededMfaIdentityBinding] !== value)) {
+      throw new Error('Seeded MFA verification changed its authenticated user, workspace, or session.');
+    }
+    return binding;
+  } finally {
+    await boundedSeededIdentityOperation(() => response.dispose(), 'Seeded MFA identity response cleanup failed.');
+  }
+}
+
 export async function loginWithPin(
   page: Page,
   options: {
@@ -155,6 +215,9 @@ export async function loginWithPin(
     // the gate for the test to drive.  Ordinary authenticated helpers continue
     // through an enrolled seeded TOTP challenge automatically.
     if (new URL(page.url()).pathname === '/mfa' && expectedPath !== '/mfa') {
+      const identity = await readSeededMfaIdentity(page.request, {
+        username: options.username, workspaceName: e2eTenantName.trim().slice(0, 200), verified: false,
+      });
       const secret = options.username === e2eSuperAdminUsername
         ? e2eSuperAdminMfaSecret
         : e2eAdminMfaSecret;
@@ -173,7 +236,11 @@ export async function loginWithPin(
         page.getByRole('button', { name: 'Verify and continue' }).click(),
       ]);
       if (verified.status() !== 200) throw new Error(`Seeded MFA verification failed with HTTP ${verified.status()}.`);
-      expect(await verified.json(), 'Seeded MFA must receive authoritative server verification.').toMatchObject({ success: true, mfaVerified: true });
+      // The browser may have navigated before CDP can read this fulfilled
+      // response body. Prove the committed session independently instead.
+      await readSeededMfaIdentity(page.request, {
+        username: options.username, workspaceName: e2eTenantName.trim().slice(0, 200), verified: true, binding: identity,
+      });
     }
     await expect(page).toHaveURL(new RegExp(`${escapeRegExp(expectedPath)}(?:[?#].*)?$`));
     // A matching URL can still be a middleware 503 response. Require the actual
