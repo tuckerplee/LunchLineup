@@ -9,6 +9,8 @@ const tenantSlug = process.env.E2E_TENANT_SLUG ?? 'e2e-operations';
 const tenantName = process.env.E2E_TENANT_NAME ?? 'E2E Operations Diner';
 const adminUsername = process.env.E2E_ADMIN_USERNAME ?? 'e2e.admin';
 const adminPin = process.env.E2E_ADMIN_PIN ?? '246810';
+const managerUsername = process.env.E2E_MANAGER_USERNAME ?? 'e2e.manager';
+const managerPin = process.env.E2E_MANAGER_PIN ?? '112233';
 const superAdminUsername = process.env.E2E_SUPER_ADMIN_USERNAME ?? 'e2e.superadmin';
 const superAdminPin = process.env.E2E_SUPER_ADMIN_PIN ?? '864200';
 const adminMfaSecret = process.env.E2E_ADMIN_MFA_SECRET ?? 'JBSWY3DPEHPK3PXP';
@@ -256,6 +258,9 @@ async function main() {
   if (!/^\d{4,8}$/.test(adminPin)) {
     throw new Error('E2E_ADMIN_PIN must be 4-8 digits.');
   }
+  if (!/^\d{4,8}$/.test(managerPin)) {
+    throw new Error('E2E_MANAGER_PIN must be 4-8 digits.');
+  }
   if (!/^\d{4,8}$/.test(superAdminPin)) {
     throw new Error('E2E_SUPER_ADMIN_PIN must be 4-8 digits.');
   }
@@ -323,9 +328,11 @@ async function main() {
 
   const rolesBySlug = await ensureTenantRoles(tenant.id);
   const adminRole = rolesBySlug.get('admin');
+  const managerRole = rolesBySlug.get('manager');
   const superAdminRole = rolesBySlug.get('super-admin');
   const staffRole = rolesBySlug.get('staff');
   if (!adminRole) throw new Error('Admin role was not created.');
+  if (!managerRole) throw new Error('Manager role was not created.');
   if (!superAdminRole) throw new Error('Super admin role was not created.');
   if (!staffRole) throw new Error('Staff role was not created.');
 
@@ -352,10 +359,36 @@ async function main() {
     },
   });
 
+  // The permission-denial browser scenario authenticates this actual manager
+  // fixture before issuing its forbidden settings write. Keep its existing
+  // least-privilege role and exercise genuine MFA with the helper's factor.
+  const manager = await prisma.user.create({
+    data: {
+      tenantId: tenant.id,
+      email: null,
+      username: managerUsername,
+      name: 'E2E Manager',
+      role: 'MANAGER',
+      pinHash: hashPin(managerPin),
+      pinSetAt: new Date(),
+      pinResetRequired: false,
+      mfaEnabled: true,
+      mfaSecret: adminMfaSecret,
+    },
+  });
+
+  await prisma.roleAssignment.create({
+    data: {
+      tenantId: tenant.id,
+      userId: manager.id,
+      roleId: managerRole.id,
+    },
+  });
+
   // The availability-import load proof exercises the real privileged route.
-  // Its disposable-only account completes MFA in the proof runner; ordinary
-  // browser E2E identities remain unchanged and do not receive a fixture MFA
-  // factor.
+  // Its disposable-only account completes MFA in the proof runner. The
+  // browser admin, manager and super-admin fixtures also use enrolled factors
+  // and must complete their own genuine, replay-protected MFA challenges.
   const loadSmoke = await prisma.user.create({
     data: {
       tenantId: tenant.id,

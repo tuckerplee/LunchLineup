@@ -21,24 +21,40 @@ test.describe.serial('Staff repair acceptance', { tag: '@full-stack' }, () => {
       return key;
     });
     await page.reload();
+    // Corrupt recovery cannot restore a draft, and PINs never survive reload.
+    await expect(form.getByLabel('Full name')).toHaveValue('');
+    await expect(form.getByLabel('Username', { exact: true })).toHaveValue('');
+    await expect(form.getByLabel('Temporary PIN', { exact: true })).toHaveValue('');
+    // Complete the initial workspace/catalog load before injecting an outage
+    // into the separate directory-review request. Otherwise the outage also
+    // prevents roles from hydrating, leaving creation legitimately disabled.
+    await expect(form.getByLabel('Role').getByRole('option', { name: 'Staff', exact: true })).toHaveCount(1);
+    await form.getByLabel('Full name').fill('Reviewed Recovery');
+    await form.getByLabel('Username', { exact: true }).fill(`reviewed.${Date.now()}`);
+    await form.getByLabel('Temporary PIN', { exact: true }).fill('567812');
+    await form.getByLabel('Role').selectOption({ label: 'Staff' });
     await expect(form.getByRole('button', { name: 'Create team member' })).toBeDisabled();
     await page.route('**/api/v2/users?*', route => route.abort('connectionfailed'));
     await page.getByRole('button', { name: 'Reload directory to repair recovery' }).click();
     await expect(page.getByText('Directory refresh failed. Recovery storage is unchanged.', { exact: true })).toBeVisible();
     await expect(page.getByRole('button', { name: 'Acknowledge directory review and retry recovery' })).toHaveCount(0);
     expect(await page.evaluate(key => sessionStorage.getItem(key), scopedKey)).toBe('{');
+    await expect(form.getByRole('button', { name: 'Create team member' })).toBeDisabled();
     await page.unroute('**/api/v2/users?*');
     const refreshed = page.waitForResponse(response => response.url().includes('/api/v2/users?') && response.ok());
     await page.getByRole('button', { name: 'Reload directory to repair recovery' }).click();
     await refreshed;
     const acknowledgement = page.getByRole('button', { name: 'Acknowledge directory review and retry recovery' });
     await expect(acknowledgement).toBeVisible();
+    await expect(form.getByRole('button', { name: 'Create team member' })).toBeDisabled();
     page.once('dialog', dialog => dialog.dismiss());
     await acknowledgement.click();
     expect(await page.evaluate(key => sessionStorage.getItem(key), scopedKey)).toBe('{');
+    await expect(form.getByRole('button', { name: 'Create team member' })).toBeDisabled();
     page.once('dialog', dialog => dialog.accept());
     await acknowledgement.click();
     await expect(form.getByRole('button', { name: 'Create team member' })).toBeEnabled();
+    await expect(acknowledgement).toHaveCount(0);
     expect(await page.evaluate(key => sessionStorage.getItem(key), scopedKey)).toBeNull();
     expect(await page.evaluate(() => sessionStorage.getItem('unrelated-recovery'))).toBe('preserve');
   });
