@@ -1,4 +1,4 @@
-import Link from 'next/link';
+import { LogoutLink } from '@/components/auth/LogoutLink';
 import { getServerUser } from '@/lib/server-auth';
 import { redirect } from 'next/navigation';
 import { LunchLineupMark } from '@/components/branding/LunchLineupMark';
@@ -62,14 +62,13 @@ export default async function AdminLayout({ children }: { children: React.ReactN
                         <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)', marginBottom: '0.45rem', paddingLeft: '0.2rem' }}>
                             Signed in as {roleLabel.toLowerCase()}
                         </div>
-                        <Link
-                            href="/auth/logout"
+                        <LogoutLink
                             className="workspace-nav-link"
                             style={{ color: '#b4233f', borderColor: '#ffd5df', background: '#fff6f8' }}
                         >
                             <span aria-hidden="true">↩</span>
                             Sign out
-                        </Link>
+                        </LogoutLink>
                     </div>
                 </div>
             </aside>
@@ -91,15 +90,13 @@ export default async function AdminLayout({ children }: { children: React.ReactN
                     </div>
 
                     <div style={{ display: 'flex', alignItems: 'center', gap: '0.7rem' }}>
-                        <Link
-                            href="/auth/logout"
-                            prefetch={false}
+                        <LogoutLink
                             className="workspace-mobile-signout btn btn-secondary btn-sm"
                             aria-label="Sign out"
                         >
                             <LogOut aria-hidden="true" size={16} />
                             <span className="workspace-mobile-signout-label">Sign out</span>
-                        </Link>
+                        </LogoutLink>
                         <span className="badge" style={{ background: '#ffeef2', borderColor: '#ffcfda', color: '#b4233f' }}>
                             {environment}
                         </span>

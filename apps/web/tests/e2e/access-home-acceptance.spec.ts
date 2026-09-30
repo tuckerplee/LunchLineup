@@ -3,7 +3,7 @@ import type { APIRequestContext, BrowserContext, Page, TestInfo } from '@playwri
 import type {
   BrowserSessionIdentity, CurrentSessionResponse, LocationSummaryResponse, NotificationListResponse,
   NotificationReadResponse, ProblemDetails, ScheduleBoardResponse, ScheduleChangeSetResponse, ScheduleCreateResponse,
-  SchedulePublicationResponse, SchedulePublishPlanResponse, StaffDirectoryResponse, ShiftSummaryListResponse, WorkspaceSettings,
+  SchedulePublicationResponse, SchedulePublishPlanResponse, StaffDirectoryResponse, StaffSchedulingProfile, ShiftSummaryListResponse, WorkspaceSettings,
 } from '@lunchlineup/api-contract';
 import { expect, test } from './qa-isolation-fixture';
 import { closeQaContexts } from './qa-context-cleanup';
@@ -111,6 +111,7 @@ async function createSchedule(page: Page, offset: number, names: Array<'Staff On
   expect(board.data.locations).toHaveLength(1);
   const location = board.data.locations[0];
   expect(location.name).toBe('Downtown Diner');
+  expect(location.timezone).toBe('America/Los_Angeles');
   const startDate = `${date}T08:00:00.000Z`;
   const endDate = new Date(Date.parse(startDate) + 24 * 60 * 60 * 1000).toISOString();
   const schedule = await readJson<ScheduleCreateResponse>(page.request, `/api/v2/locations/${location.id}/schedules`, {
@@ -130,6 +131,38 @@ async function createSchedule(page: Page, offset: number, names: Array<'Staff On
   expect(changed.data.created).toHaveLength(names.length);
   return { scheduleId: schedule.data.id, locationId: location.id, date,
     assignedIds: operations.map(operation => operation.userId), shiftIds: changed.data.created.map(row => row.shiftId) };
+}
+
+async function configurePublicationAvailability(page: Page, schedules: Array<Awaited<ReturnType<typeof createSchedule>>>, info: TestInfo) {
+  const locationIds = [...new Set(schedules.map(schedule => schedule.locationId))];
+  expect(locationIds, 'The notification fixture uses one exact seeded location').toHaveLength(1);
+  const dates = [...new Set(schedules.map(schedule => schedule.date))].sort();
+  expect(dates, 'Two distinct publication dates').toHaveLength(2);
+  const userIds = [...new Set(schedules.flatMap(schedule => schedule.assignedIds)
+    .filter((id): id is string => id !== null))].sort();
+  expect(userIds, 'The fixture has exactly two distinct assigned recipients').toHaveLength(2);
+  for (const userId of userIds) {
+    const path = `/api/v2/users/${userId}/scheduling-profile`;
+    const before = await readJson<StaffSchedulingProfile>(page.request, path);
+    expect(before.user.id).toBe(userId);
+    expect(before.availabilityExceptions, 'Fresh seed has no retained dated availability').toEqual([]);
+    // The four-hour shifts start at 16:00Z, within these LA local dates.
+    // Configure real availability; publication readiness remains authoritative.
+    const availabilityExceptions = dates.map(date => ({ locationId: locationIds[0], date,
+      kind: 'AVAILABLE' as const, allDay: true, startTimeMinutes: 0, endTimeMinutes: 1440 }));
+    const saved = await readJson<StaffSchedulingProfile>(page.request, path, {
+      method: 'PUT', headers: await mutationHeaders(page), data: { expectedVersion: before.version,
+        skills: before.skills, availability: before.availability, availabilityExceptions },
+    });
+    expect(saved.user.id).toBe(userId);
+    expect(saved.skills).toEqual(before.skills);
+    expect(saved.availability).toEqual(before.availability);
+    expect(saved.availabilityExceptions).toEqual(availabilityExceptions);
+    expect(saved.version).not.toBe(before.version);
+    expect(await readJson<StaffSchedulingProfile>(page.request, path), 'Availability persists in an independent native read').toEqual(saved);
+  }
+  await evidence(info, 'native-publication-availability-setup', { locationId: locationIds[0], recipientIds: userIds,
+    dates, availableDatesPerRecipient: 2, nativeVersionedWrites: true, independentReadback: true });
 }
 
 async function publishSchedule(page: Page, scheduleId: string, key: string) {
@@ -370,6 +403,7 @@ test.describe.serial('Native access, Home and notification acceptance', { tag: '
     const admin = await identity(page, 'ADMIN');
     const first = await createSchedule(page, 0, ['Staff One', 'E2E Manager'], 'native-notification-first');
     const second = await createSchedule(page, 1, ['Staff One', 'E2E Manager'], 'native-notification-second');
+    await configurePublicationAvailability(page, [first, second], info);
     await publishSchedule(page, first.scheduleId, 'native-notification-first-publish');
     await publishSchedule(page, second.scheduleId, 'native-notification-second-publish');
     const contexts: BrowserContext[] = [];

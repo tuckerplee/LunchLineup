@@ -4,7 +4,8 @@ import Link from 'next/link';
 import { useState } from 'react';
 import { KeyRound } from 'lucide-react';
 import { LunchLineupMark } from '@/components/branding/LunchLineupMark';
-import { fetchPublicApi } from '@/lib/client-api';
+import { fetchPublicApi, prepareForLogout } from '@/lib/client-api';
+import { LogoutLink } from '@/components/auth/LogoutLink';
 
 function getCsrfToken(): string {
     if (typeof document === 'undefined') return '';
@@ -60,6 +61,7 @@ function ResetPinContent() {
                 throw new Error(readMessage(rotatePayload, 'Unable to update PIN.'));
             }
 
+            prepareForLogout();
             window.location.assign('/auth/logout');
         } catch (err) {
             setError(err instanceof Error ? err.message : 'Unable to update PIN.');
@@ -124,7 +126,7 @@ function ResetPinContent() {
                     </button>
                 </form>
 
-                <Link href="/auth/logout" className="pin-reset-link">Sign out</Link>
+                <LogoutLink className="pin-reset-link">Sign out</LogoutLink>
             </section>
 
             <style>{`
