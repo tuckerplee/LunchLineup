@@ -24,13 +24,13 @@ async function failureOf(promise: Promise<void>) {
 }
 
 describe('owned QA context cleanup', () => {
-  it('finishes every open page before closing guarded admission, with a finite native wait', async () => {
+  it('settles every open document before guarded closure, without requiring polling to stop', async () => {
     const first = deferred(), second = deferred();
     const a = page(() => first.promise), b = page(() => second.promise);
     const owner = context([a.value, b.value]);
     const pending = closeQaContexts([owner.value]);
-    expect(a.waitForLoadState).toHaveBeenCalledWith('networkidle', { timeout: 5_000 });
-    expect(b.waitForLoadState).toHaveBeenCalledWith('networkidle', { timeout: 5_000 });
+    expect(a.waitForLoadState).toHaveBeenCalledWith('domcontentloaded', { timeout: 5_000 });
+    expect(b.waitForLoadState).toHaveBeenCalledWith('domcontentloaded', { timeout: 5_000 });
     expect(owner.close).not.toHaveBeenCalled();
     first.resolve();
     await Promise.resolve();
@@ -50,7 +50,7 @@ describe('owned QA context cleanup', () => {
   });
 
   it('retains timeout, close and primary failures while attempting every owned context', async () => {
-    const timeout = new Error('Native network idle timed out'), closing = new Error('Guard drain failed');
+    const timeout = new Error('Native document settling timed out'), closing = new Error('Guard drain failed');
     const primary = new Error('Rendered state assertion failed');
     const failed = context([page(async () => { throw timeout; }).value], vi.fn(async () => { throw closing; }));
     const healthy = context([]);

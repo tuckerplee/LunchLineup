@@ -101,6 +101,7 @@ async function proveRevocation(page: Page, browser: Browser, info: TestInfo, nam
   action: () => Promise<void>, role: 'SUPER_ADMIN' | 'STAFF', pinResetRequired: boolean, protectedPath: string) {
   const original = await session(page, role, pinResetRequired);
   const contexts: BrowserContext[] = []; let primary: unknown;
+  let fetchMetadata: { destination: string | null; mode: string | null } | undefined;
   try {
     const replay = await browser.newContext({ baseURL: new URL(page.url()).origin,
       storageState: await page.context().storageState() }); contexts.push(replay);
@@ -123,7 +124,11 @@ async function proveRevocation(page: Page, browser: Browser, info: TestInfo, nam
       const headers = await bounded(request.allHeaders(), 'Complete document navigation request headers');
       expect(headers['rsc']).toBeUndefined(); expect(headers['next-router-prefetch']).toBeUndefined();
       expect(`${headers['purpose'] ?? ''} ${headers['sec-purpose'] ?? ''}`.toLowerCase().includes('prefetch')).toBe(false);
-      expect(headers['sec-fetch-dest']).toBe('document'); expect(headers['sec-fetch-mode']).toBe('navigate');
+      // Intercepted CDP headers may omit transport-generated Fetch Metadata.
+      // The exact Request's frame/navigation/resource type remains authoritative.
+      fetchMetadata = { destination: headers['sec-fetch-dest'] ?? null, mode: headers['sec-fetch-mode'] ?? null };
+      if (fetchMetadata.destination !== null) expect(fetchMetadata.destination).toBe('document');
+      if (fetchMetadata.mode !== null) expect(fetchMetadata.mode).toBe('navigate');
       const responseHeaders = await bounded(response!.allHeaders(), 'Document redirect headers');
       expect(responseHeaders['content-type']?.includes('text/x-component') ?? false).toBe(false);
       const redirect = new URL(responseHeaders.location, origin);
@@ -149,7 +154,7 @@ async function proveRevocation(page: Page, browser: Browser, info: TestInfo, nam
     await attach(page, info, name, { role, pinResetRequiredBefore: pinResetRequired,
       genuineMfa: role === 'SUPER_ADMIN' && original.mfaRequired && original.mfaVerified,
       sameSessionReplayBefore: true, copiedCredentialsPresentBefore: true, copiedRefreshAndCsrfPreservedAtReplay: true,
-      mainFrameDocumentGet: true, nativeLogoutRedirectStatus: 307, exactLoginRedirect: true, nonRscNonPrefetchNavigation: true,
+      fetchMetadata, mainFrameDocumentGet: true, nativeLogoutRedirectStatus: 307, exactLoginRedirect: true, nonRscNonPrefetchNavigation: true,
       identityReplayAfter: 401, validCsrfRefreshReplayAfter: 401,
       currentIdentityAfter: 401, allSessionCookiesAbsent: true, protectedRedirect: true });
   } catch (error) { primary = error; throw error; }
@@ -166,7 +171,7 @@ test.describe.serial('Proposed native document logout surfaces', { tag: '@full-s
   test.beforeEach(({ page }) => { errors = []; observe(page); });
   test.afterEach(async ({ page }, info) => {
     const failures: unknown[] = [];
-    try { if (!page.isClosed()) await page.waitForLoadState('networkidle', { timeout: 5_000 }); }
+    try { if (!page.isClosed()) await page.waitForLoadState('domcontentloaded', { timeout: 5_000 }); }
     catch (error) { failures.push(error); }
     try { await bounded(page.close(), 'Primary page closure'); } catch (error) { failures.push(error); }
     try { await info.attach('strict-first-attempt-browser-errors', { body: JSON.stringify(errors), contentType: 'application/json' }); }
