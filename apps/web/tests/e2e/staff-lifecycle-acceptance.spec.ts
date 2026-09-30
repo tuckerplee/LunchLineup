@@ -158,9 +158,9 @@ test.describe.serial('Proposed native Staff lifecycle acceptance', { tag: '@full
   test.afterEach(async ({ page }, info) => {
     const primary = info.errors.length ? new AggregateError([...info.errors], 'Primary test failure retained.') : undefined;
     const failures: unknown[] = [];
-    // Settle real page work before guarded closure and freeze strict console evidence.
+    // Settle the current document before guarded route drain and freeze console evidence.
     // Always attempt close, attachment, and strict error checks after settling failure.
-    try { if (!page.isClosed()) await page.waitForLoadState('networkidle', { timeout: 5_000 }); }
+    try { if (!page.isClosed()) await page.waitForLoadState('domcontentloaded', { timeout: 5_000 }); }
     catch (error) { failures.push(error); retainError('page-settling', '', error); }
     try { await bounded(page.close(), 'Primary framework page closure'); }
     catch (error) { failures.push(error); retainError('page-close', '', error); }
