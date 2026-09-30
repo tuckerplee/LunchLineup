@@ -1,0 +1,315 @@
+{
+  "version": 1,
+  "releaseQualified": false,
+  "lanes": {
+    "fullstack": [
+      {
+        "file": "access-home-acceptance.spec.ts",
+        "titlePath": [
+          "access-home-acceptance.spec.ts",
+          "Native access, Home and notification acceptance",
+          "navigates native public pages and rejects empty and invalid login without establishing a session"
+        ],
+        "project": "chromium"
+      },
+      {
+        "file": "access-home-acceptance.spec.ts",
+        "titlePath": [
+          "access-home-acceptance.spec.ts",
+          "Native access, Home and notification acceptance",
+          "revokes the actual admin session on logout and rejects replay and protected navigation"
+        ],
+        "project": "chromium"
+      },
+      {
+        "file": "access-home-acceptance.spec.ts",
+        "titlePath": [
+          "access-home-acceptance.spec.ts",
+          "Native access, Home and notification acceptance",
+          "authenticates the least-privilege Staff fixture and denies native privileged writes and platform access"
+        ],
+        "project": "chromium"
+      },
+      {
+        "file": "access-home-acceptance.spec.ts",
+        "titlePath": [
+          "access-home-acceptance.spec.ts",
+          "Native access, Home and notification acceptance",
+          "loads real empty Home summaries and follows actual manager task links"
+        ],
+        "project": "chromium"
+      },
+      {
+        "file": "access-home-acceptance.spec.ts",
+        "titlePath": [
+          "access-home-acceptance.spec.ts",
+          "Native access, Home and notification acceptance",
+          "reloads populated Home with independently verified shift, coverage and team counts"
+        ],
+        "project": "chromium"
+      },
+      {
+        "file": "access-home-acceptance.spec.ts",
+        "titlePath": [
+          "access-home-acceptance.spec.ts",
+          "Native access, Home and notification acceptance",
+          "opens and closes the real empty notification dialog with keyboard focus restoration"
+        ],
+        "project": "chromium"
+      },
+      {
+        "file": "access-home-acceptance.spec.ts",
+        "titlePath": [
+          "access-home-acceptance.spec.ts",
+          "Native access, Home and notification acceptance",
+          "delivers real publications to distinct recipients and persists owned notification reads across reload"
+        ],
+        "project": "chromium"
+      },
+      {
+        "file": "location-lifecycle-acceptance.spec.ts",
+        "titlePath": [
+          "location-lifecycle-acceptance.spec.ts",
+          "Native location lifecycle acceptance",
+          "creates and edits a location through the UI with persistent fields and public UUID schedule navigation"
+        ],
+        "project": "chromium"
+      },
+      {
+        "file": "location-lifecycle-acceptance.spec.ts",
+        "titlePath": [
+          "location-lifecycle-acceptance.spec.ts",
+          "Native location lifecycle acceptance",
+          "rejects invalid IANA zones in UI and native writes and preserves cancelled edit drafts"
+        ],
+        "project": "chromium"
+      },
+      {
+        "file": "location-lifecycle-acceptance.spec.ts",
+        "titlePath": [
+          "location-lifecycle-acceptance.spec.ts",
+          "Native location lifecycle acceptance",
+          "deactivates a nonreferenced location only after exact confirmation and removes its active selector UUID"
+        ],
+        "project": "chromium"
+      },
+      {
+        "file": "location-lifecycle-acceptance.spec.ts",
+        "titlePath": [
+          "location-lifecycle-acceptance.spec.ts",
+          "Native location lifecycle acceptance",
+          "denies staff location create update and delete while independent admin readback remains exactly unchanged"
+        ],
+        "project": "chromium"
+      },
+      {
+        "file": "month-volume-workflows.spec.ts",
+        "titlePath": [
+          "month-volume-workflows.spec.ts",
+          "API-v2 schedule and lunch/break volume workflows",
+          "builds a bounded multi-user schedule, persists lunch/breaks, and reads the result back"
+        ],
+        "project": "chromium"
+      },
+      {
+        "file": "operations-workflows.spec.ts",
+        "titlePath": [
+          "operations-workflows.spec.ts",
+          "Full-stack operations workflows",
+          "adds employees, creates a schedule shift, reassigns by drag/drop, generates lunches/breaks, and runs time cards"
+        ],
+        "project": "chromium"
+      },
+      {
+        "file": "operations-workflows.spec.ts",
+        "titlePath": [
+          "operations-workflows.spec.ts",
+          "Full-stack operations workflows",
+          "creates, edits, replays, publishes, and reads back an internal-beta schedule through API v2"
+        ],
+        "project": "chromium"
+      },
+      {
+        "file": "settings-recovery-acceptance.spec.ts",
+        "titlePath": [
+          "settings-recovery-acceptance.spec.ts",
+          "Settings recovery acceptance",
+          "keeps saves disabled after initial read failure and recovers through an actual fresh read"
+        ],
+        "project": "chromium"
+      },
+      {
+        "file": "settings-recovery-acceptance.spec.ts",
+        "titlePath": [
+          "settings-recovery-acceptance.spec.ts",
+          "Settings recovery acceptance",
+          "confirms general changes independently before withholding their response, then persists across reload"
+        ],
+        "project": "chromium"
+      },
+      {
+        "file": "settings-recovery-acceptance.spec.ts",
+        "titlePath": [
+          "settings-recovery-acceptance.spec.ts",
+          "Settings recovery acceptance",
+          "confirms team changes independently before withholding their response, then persists across reload"
+        ],
+        "project": "chromium"
+      },
+      {
+        "file": "settings-recovery-acceptance.spec.ts",
+        "titlePath": [
+          "settings-recovery-acceptance.spec.ts",
+          "Settings recovery acceptance",
+          "confirms security changes independently before withholding their response, then persists across reload"
+        ],
+        "project": "chromium"
+      },
+      {
+        "file": "settings-recovery-acceptance.spec.ts",
+        "titlePath": [
+          "settings-recovery-acceptance.spec.ts",
+          "Settings recovery acceptance",
+          "retains the submitted draft and prevents a second write while readback is unavailable"
+        ],
+        "project": "chromium"
+      },
+      {
+        "file": "settings-recovery-acceptance.spec.ts",
+        "titlePath": [
+          "settings-recovery-acceptance.spec.ts",
+          "Settings recovery acceptance",
+          "lets a user resolve an uncommitted save by explicitly discarding the retained draft"
+        ],
+        "project": "chromium"
+      },
+      {
+        "file": "settings-recovery-acceptance.spec.ts",
+        "titlePath": [
+          "settings-recovery-acceptance.spec.ts",
+          "Settings recovery acceptance",
+          "denies a real settings mutation from a manager without write permission"
+        ],
+        "project": "chromium"
+      },
+      {
+        "file": "staff-repair-acceptance.spec.ts",
+        "titlePath": [
+          "staff-repair-acceptance.spec.ts",
+          "Staff repair acceptance",
+          "repairs corrupt creation recovery only after a fresh directory load and acknowledgement"
+        ],
+        "project": "chromium"
+      },
+      {
+        "file": "staff-repair-acceptance.spec.ts",
+        "titlePath": [
+          "staff-repair-acceptance.spec.ts",
+          "Staff repair acceptance",
+          "recovers a committed staff creation after response loss and reload without retaining the PIN"
+        ],
+        "project": "chromium"
+      },
+      {
+        "file": "staff-repair-acceptance.spec.ts",
+        "titlePath": [
+          "staff-repair-acceptance.spec.ts",
+          "Staff repair acceptance",
+          "deactivates and reactivates the same employee with fresh persisted readback"
+        ],
+        "project": "chromium"
+      },
+      {
+        "file": "staff-repair-acceptance.spec.ts",
+        "titlePath": [
+          "staff-repair-acceptance.spec.ts",
+          "Staff repair acceptance",
+          "reconciles a lost profile response against the real committed backend state"
+        ],
+        "project": "chromium"
+      },
+      {
+        "file": "stress-workflows.spec.ts",
+        "titlePath": [
+          "stress-workflows.spec.ts",
+          "Stress operations workflows",
+          "A path: messy schedule board interactions keep assignments and validation sane"
+        ],
+        "project": "chromium"
+      },
+      {
+        "file": "stress-workflows.spec.ts",
+        "titlePath": [
+          "stress-workflows.spec.ts",
+          "Stress operations workflows",
+          "B path: recovery flow handles lunch setup churn and time-card mistakes"
+        ],
+        "project": "chromium"
+      },
+      {
+        "file": "tenant-admin-workflows.spec.ts",
+        "titlePath": [
+          "tenant-admin-workflows.spec.ts",
+          "Tenant and admin SaaS workflows",
+          "keeps tenant admins out of platform admin while preserving dashboard access"
+        ],
+        "project": "chromium"
+      },
+      {
+        "file": "tenant-admin-workflows.spec.ts",
+        "titlePath": [
+          "tenant-admin-workflows.spec.ts",
+          "Tenant and admin SaaS workflows",
+          "lets super admins inspect tenants, users, and return to tenant scheduling"
+        ],
+        "project": "chromium"
+      }
+    ],
+    "interaction": [
+      {
+        "file": "internal-beta-interaction-desktop.proof.ts",
+        "titlePath": [
+          "internal-beta-interaction-desktop.proof.ts",
+          "Internal beta desktop interaction proof",
+          "click, slight movement, outside drop, Escape, and pointercancel issue no move request"
+        ],
+        "project": "interaction-desktop"
+      },
+      {
+        "file": "internal-beta-interaction-desktop.proof.ts",
+        "titlePath": [
+          "internal-beta-interaction-desktop.proof.ts",
+          "Internal beta desktop interaction proof",
+          "valid drag announces and commits the exact proposed employee and time with local Saved and Undo with persisted reversal"
+        ],
+        "project": "interaction-desktop"
+      },
+      {
+        "file": "internal-beta-interaction-desktop.proof.ts",
+        "titlePath": [
+          "internal-beta-interaction-desktop.proof.ts",
+          "Internal beta desktop interaction proof",
+          "failed move restores only that shift and keyboard editing remains an exact fallback"
+        ],
+        "project": "interaction-desktop"
+      },
+      {
+        "file": "internal-beta-interaction-desktop.proof.ts",
+        "titlePath": [
+          "internal-beta-interaction-desktop.proof.ts",
+          "Internal beta desktop interaction proof",
+          "overnight values survive Calendar and Lunch while Lunch and Time Cards expose only supported explicit actions"
+        ],
+        "project": "interaction-desktop"
+      },
+      {
+        "file": "internal-beta-interaction-touch.proof.ts",
+        "titlePath": [
+          "internal-beta-interaction-touch.proof.ts",
+          "real touch scroll never moves a shift and the dedicated handle opens the Move fallback"
+        ],
+        "project": "interaction-touch"
+      }
+    ]
+  }
+}

@@ -8,7 +8,7 @@ import { fetchAllBoundedPages, type BoundedPage } from '@/lib/bounded-pagination
 
 type DashboardProfile = {
     name?: string | null;
-    tenantName?: string | null;
+    workspaceName?: string | null;
     permissions?: string[];
 };
 
@@ -478,7 +478,7 @@ export function DashboardWorkspace() {
 
             <header className="manager-dashboard-header">
                 <div>
-                    <div className="workspace-kicker">{overview?.profile?.tenantName ?? 'Team workspace'}</div>
+                    <div className="workspace-kicker">{overview?.profile?.workspaceName ?? 'Team workspace'}</div>
                     <h1 className="workspace-title">Your dashboard</h1>
                     <p className="workspace-subtitle">{todayLabel}</p>
                 </div>

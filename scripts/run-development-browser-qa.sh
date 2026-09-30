@@ -351,21 +351,28 @@ done
 verify_runtime_attachments pre-fixtures engine,api,api-v2,pdf-parser,worker,web,proxy,postgres,redis,rabbitmq
 output="$artifact_root/fullstack-playwright"; mkdir -- "$output"
 cd "$build_root/apps/web"
-BASE_URL=http://127.0.0.1:8080 E2E_FULL_STACK=1 E2E_MOCK_API=0 E2E_SIGNUP_MODE=closed_beta E2E_COMPOSE_PROJECT_NAME="$project" E2E_COMPOSE_ENV_FILE="$env_file" E2E_CANDIDATE_SHA="$CI_COMMIT_SHA" E2E_ARTIFACT_ROOT="$output" PLAYWRIGHT_JSON_OUTPUT_NAME="$output/results.json" npx playwright test --reporter=json --grep='@full-stack' --project=chromium --workers=1 --retries=0 --trace=retain-on-failure tests/e2e/operations-workflows.spec.ts tests/e2e/month-volume-workflows.spec.ts tests/e2e/stress-workflows.spec.ts tests/e2e/tenant-admin-workflows.spec.ts tests/e2e/staff-repair-acceptance.spec.ts tests/e2e/settings-recovery-acceptance.spec.ts >"$output/test.log" 2>&1
-node - "$output/results.json" <<'NODE'
-const report=JSON.parse(require('node:fs').readFileSync(process.argv[2]));const s=report.stats;
-if(!s||!(s.expected>0)||s.unexpected!==0||s.skipped!==0||s.flaky!==0)throw new Error('Development browser acceptance failed or incomplete');
-console.log(JSON.stringify({developmentBrowserAcceptance:'passed',...s}));
-NODE
+browser_env=(BASE_URL=http://127.0.0.1:8080 E2E_FULL_STACK=1 E2E_MOCK_API=0 E2E_SIGNUP_MODE=closed_beta E2E_COMPOSE_PROJECT_NAME="$project" E2E_COMPOSE_ENV_FILE="$env_file" E2E_CANDIDATE_SHA="$CI_COMMIT_SHA" E2E_ARTIFACT_ROOT="$output")
+browser_args=(test --forbid-only --reporter=json --grep='@full-stack' --project=chromium --workers=1 --retries=0 --trace=retain-on-failure
+  tests/e2e/operations-workflows.spec.ts tests/e2e/month-volume-workflows.spec.ts tests/e2e/stress-workflows.spec.ts
+  tests/e2e/tenant-admin-workflows.spec.ts tests/e2e/staff-repair-acceptance.spec.ts tests/e2e/settings-recovery-acceptance.spec.ts
+  tests/e2e/access-home-acceptance.spec.ts tests/e2e/location-lifecycle-acceptance.spec.ts)
+case_manifest="$build_root/.ci/development-browser-cases.json"
+report_verifier="$build_root/scripts/verify-development-browser-report.mjs"
+# Discovery and execution share the same candidate, environment and selection.
+# The reviewed manifest rejects narrowed/focused/missing discovery before fixtures.
+env "${browser_env[@]}" PLAYWRIGHT_JSON_OUTPUT_NAME="$output/selection.json" "$build_root/node_modules/.bin/playwright" "${browser_args[@]}" --list >"$output/selection.log" 2>&1
+node "$report_verifier" --selection "$case_manifest" fullstack "$output/selection.json" >"$output/selection-proof.json"
+env "${browser_env[@]}" PLAYWRIGHT_JSON_OUTPUT_NAME="$output/results.json" "$build_root/node_modules/.bin/playwright" "${browser_args[@]}" >"$output/test.log" 2>&1
+node "$report_verifier" --complete "$case_manifest" fullstack "$output/selection.json" "$output/results.json" "$CI_COMMIT_SHA" "$CI_RUN_ID" >"$output/acceptance-proof.json"
 
 # Development interaction evidence uses the actual candidate and built web image.
 # It is deliberately not promoted as a release-qualified interaction receipt.
 interaction="$artifact_root/development-interaction"; mkdir -- "$interaction"
 web_image=$(node -e 'process.stdout.write(JSON.parse(require("fs").readFileSync(process.argv[1])).services.web.image)' "$artifact_root/compose-config.json")
 web_id=$(docker image inspect --format '{{.Id}}' "$web_image")
-BASE_URL=http://127.0.0.1:8080 E2E_FULL_STACK=1 E2E_MOCK_API=0 E2E_SIGNUP_MODE=closed_beta E2E_COMPOSE_PROJECT_NAME="$project" E2E_COMPOSE_ENV_FILE="$env_file" E2E_CANDIDATE_SHA="$CI_COMMIT_SHA" E2E_CANDIDATE_TREE_SHA="$(git -C "$build_root" rev-parse 'HEAD^{tree}')" E2E_WEB_IMAGE_ID="$web_id" E2E_INTERACTION_PROOF_ROOT="$interaction" PLAYWRIGHT_JSON_OUTPUT_NAME="$interaction/results.json" npx playwright test --reporter=json --config=playwright.interaction-proof.config.ts --workers=1 --retries=0 >"$interaction/test.log" 2>&1
-node - "$interaction/results.json" <<'NODE'
-const report=JSON.parse(require('node:fs').readFileSync(process.argv[2]));const s=report.stats;
-if(!s||!(s.expected>0)||s.unexpected!==0||s.skipped!==0||s.flaky!==0)throw new Error('Development interaction acceptance failed or incomplete');
-console.log(JSON.stringify({developmentInteractionAcceptance:'passed',releaseQualified:false,...s}));
-NODE
+interaction_env=(BASE_URL=http://127.0.0.1:8080 E2E_FULL_STACK=1 E2E_MOCK_API=0 E2E_SIGNUP_MODE=closed_beta E2E_COMPOSE_PROJECT_NAME="$project" E2E_COMPOSE_ENV_FILE="$env_file" E2E_CANDIDATE_SHA="$CI_COMMIT_SHA" E2E_CANDIDATE_TREE_SHA="$(git -C "$build_root" rev-parse 'HEAD^{tree}')" E2E_WEB_IMAGE_ID="$web_id" E2E_INTERACTION_PROOF_ROOT="$interaction")
+interaction_args=(test --forbid-only --reporter=json --config=playwright.interaction-proof.config.ts --workers=1 --retries=0)
+env "${interaction_env[@]}" PLAYWRIGHT_JSON_OUTPUT_NAME="$interaction/selection.json" "$build_root/node_modules/.bin/playwright" "${interaction_args[@]}" --list >"$interaction/selection.log" 2>&1
+node "$report_verifier" --selection "$case_manifest" interaction "$interaction/selection.json" >"$interaction/selection-proof.json"
+env "${interaction_env[@]}" PLAYWRIGHT_JSON_OUTPUT_NAME="$interaction/results.json" "$build_root/node_modules/.bin/playwright" "${interaction_args[@]}" >"$interaction/test.log" 2>&1
+node "$report_verifier" --complete "$case_manifest" interaction "$interaction/selection.json" "$interaction/results.json" "$CI_COMMIT_SHA" "$CI_RUN_ID" >"$interaction/acceptance-proof.json"

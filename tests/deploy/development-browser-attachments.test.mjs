@@ -102,7 +102,7 @@ for (const [description, modify] of [
 test('attachment admission runs after early API startup before later sorted image builds and before fixtures', () => {
   const early = source.indexOf('verify_runtime_attachments early-api');
   const final = source.indexOf('verify_runtime_attachments pre-fixtures');
-  const fixtures = source.indexOf('npx playwright test');
+  const fixtures = source.indexOf('env "${browser_env[@]}" PLAYWRIGHT_JSON_OUTPUT_NAME="$output/results.json"');
   assert.match(source, /for\(const name of \[\.\.\.selected\]\.sort\(\)\)/);
   assert.ok('api' < 'web');
   assert.ok(early > source.indexOf('--no-deps api >>'));

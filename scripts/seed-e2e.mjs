@@ -20,6 +20,7 @@ const loadSmokePin = process.env.E2E_LOAD_SMOKE_PIN ?? '246812';
 const loadSmokeMfaSecret = process.env.E2E_LOAD_SMOKE_MFA_SECRET ?? 'JBSWY3DPEHPK3PXP';
 const locationName = process.env.E2E_LOCATION_NAME ?? 'Downtown Diner';
 const staffUsername = process.env.E2E_STAFF_USERNAME ?? 'staff-1';
+const staffPin = process.env.E2E_STAFF_PIN ?? '135790';
 const walletCredits = 500;
 const stripeCustomerId = process.env.E2E_STRIPE_CUSTOMER_ID ?? 'cus_e2e_operations_paid';
 const stripeSubscriptionId = process.env.E2E_STRIPE_SUBSCRIPTION_ID ?? 'sub_e2e_operations_active';
@@ -255,6 +256,9 @@ async function ensureTenantRoles(tenantId) {
 }
 
 async function main() {
+  if (!/^\d{4,8}$/.test(staffPin)) {
+    throw new Error('E2E_STAFF_PIN must be 4-8 digits.');
+  }
   if (!/^\d{4,8}$/.test(adminPin)) {
     throw new Error('E2E_ADMIN_PIN must be 4-8 digits.');
   }
@@ -436,7 +440,7 @@ async function main() {
   });
 
   const seededStaff = [
-    { username: staffUsername, name: 'Staff One' },
+    { username: staffUsername, name: 'Staff One', pin: staffPin },
     ...Array.from({ length: 9 }, (_, index) => ({
       username: `staff-${index + 2}`,
       name: `Staff ${index + 2}`,
@@ -450,6 +454,7 @@ async function main() {
         username: member.username,
         name: member.name,
         role: 'STAFF',
+        ...(member.pin ? { pinHash: hashPin(member.pin), pinSetAt: new Date() } : {}),
         pinResetRequired: false,
       },
     });
@@ -472,7 +477,7 @@ async function main() {
 
   console.log(JSON.stringify({
     tenant: tenant.slug,
-    seededAccountCount: 4,
+    seededAccountCount: 5,
     stripeSubscriptionStatus: tenant.status,
     creditSourceAttestation: 'admin-credit-grant',
     walletCredits: tenant.usageCredits,
