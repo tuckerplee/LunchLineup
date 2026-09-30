@@ -141,7 +141,10 @@ export class QaIsolationGuard {
                     try {
                         this.enforce(() => requireQaUrl(route.request().url()));
                         if (states.some(state => state.closing)) {
-                            await route.abort('blockedbyclient');
+                            // An approved request cancelled by owned teardown is
+                            // a lifecycle abort, not a security-policy denial.
+                            // URL checks and denied-request handling stay active.
+                            await route.abort('aborted');
                             return;
                         }
                         return await handler(this.route(route), request);

@@ -109,14 +109,16 @@ describe('guarded route lifecycle teardown', () => {
         expect(fixture.contextUnroute).not.toHaveBeenCalled();
         expect(fixture.guard.violations).toEqual([]);
     });
-    it('blocks new local fetches during drain while still retaining denied external requests', async () => {
+    it.each(['context', 'page'] as const)('cancels new local fetches during %s drain while retaining security denials', async owner => {
         const fixture = guardedOwners(); await fixture.guard.guardContext(fixture.context);
         const waiting = deferred<any>(); const initial = fixture.handlers[0](fixture.route(vi.fn(() => waiting.promise)));
-        const closing = fixture.context.close();
+        const closing = fixture[owner].close();
         const late = fixture.route(); await fixture.handlers[0](late);
-        expect(late.fetch).not.toHaveBeenCalled(); expect(late.abort).toHaveBeenCalledWith('blockedbyclient');
+        expect(late.fetch).not.toHaveBeenCalled(); expect(late.abort).toHaveBeenCalledWith('aborted');
         const denied = fixture.route(undefined, 'https://api.stripe.com/unsafe'); await fixture.handlers[0](denied);
         expect(denied.fetch).not.toHaveBeenCalled(); expect(fixture.guard.violations).toHaveLength(1);
+        expect(denied.abort).toHaveBeenCalledWith('blockedbyclient');
+        expect(denied.abort).not.toHaveBeenCalledWith('aborted');
         waiting.resolve({ url: () => QA_ORIGIN, status: () => 200, headers: () => ({}) }); await initial; await closing;
     });
     it('retains a real fetch failure after the handler has already settled and closes ownership', async () => {
