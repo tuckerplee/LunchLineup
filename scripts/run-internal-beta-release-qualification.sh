@@ -22,6 +22,30 @@ fi
 trap cleanup_stage EXIT
 record_gate(){ local gate=$1 started=$2 details=$3; shift 3; node "$build_root/scripts/write-internal-ci-command-result.mjs" --name "$gate" --source-context "$context" --started-at "$started" --output "$artifact_root/results/$gate.json"; local evidence=(); for file in "$@"; do evidence+=(--evidence "$file"); done; node "$build_root/scripts/record-internal-ci-gate.mjs" --name "$gate" --source-context "$context" --started-at "$started" --command-result "$artifact_root/results/$gate.json" --details "$details" --output "$artifact_root/gates/$gate.json" "${evidence[@]}"; }
 require_state(){ test -f "$env_file"; test -f "$artifact_root/compose-config.json"; test -f "$artifact_root/compose-image-inventory.json"; test -f "$artifact_root/release-manifest.json"; }
+# The qualification profile/origin/network prerequisites remain separately blocked.
+# This coverage-only proposal does not change runtime admission or auth limits.
+run_native_cohort(){
+  local scope=$1 username=$2 manifest=$3; shift 3
+  local destination="$artifact_root/$scope"; mkdir -- "$destination"
+  local env_args=(BASE_URL=http://127.0.0.1:8080 E2E_FULL_STACK=1 E2E_MOCK_API=0
+    E2E_SIGNUP_MODE=closed_beta E2E_ADMIN_USERNAME="$username"
+    E2E_RESOLUTION_IDENTIFIER_LIMIT=5 E2E_COMPOSE_PROJECT_NAME="$project"
+    E2E_COMPOSE_ENV_FILE="$env_file" E2E_CANDIDATE_SHA="$CI_COMMIT_SHA" E2E_ARTIFACT_ROOT="$destination")
+  local args=(test --forbid-only --reporter=json --grep='@full-stack' --project=chromium --workers=1 --retries=0 --trace=on "$@")
+  env "${env_args[@]}" PLAYWRIGHT_JSON_OUTPUT_NAME="$destination/selection.json" "$build_root/node_modules/.bin/playwright" "${args[@]}" --list >"$destination/selection.log" 2>&1
+  node "$build_root/scripts/verify-development-browser-report.mjs" --selection "$build_root/$manifest" fullstack "$destination/selection.json" >"$destination/selection-proof.json"
+  env "${env_args[@]}" PLAYWRIGHT_JSON_OUTPUT_NAME="$destination/results.json" "$build_root/node_modules/.bin/playwright" "${args[@]}" >"$destination/test.log" 2>&1
+  node "$build_root/scripts/verify-development-browser-report.mjs" --complete "$build_root/$manifest" fullstack "$destination/selection.json" "$destination/results.json" "$CI_COMMIT_SHA" "$CI_RUN_ID" >"$destination/acceptance-proof.json"
+}
+verify_canonical_interaction(){
+  local destination=$1
+  node "$build_root/apps/web/tests/e2e/verify-internal-beta-interaction-proof.mjs" --report "$artifact_root/interaction-proof-artifacts/results.json" --source-sha "$CI_COMMIT_SHA" --tree-sha "$(git -C "$build_root" rev-parse 'HEAD^{tree}')" --release-manifest "$artifact_root/release-manifest.json" --web-image-id "$web_id" --public-build-config-sha256 "$public_sha" --output "$destination"
+}
+read_browser_image_bindings(){
+  manifest_sha=$(sha256sum "$artifact_root/release-manifest.json"|awk '{print $1}')
+  web_id=$(node -e 'const x=JSON.parse(require("fs").readFileSync(process.argv[1]));process.stdout.write(x.images[x.services.web.imageArtifact].localImageId)' "$artifact_root/release-manifest.json")
+  public_sha=$(node -e 'const x=JSON.parse(require("fs").readFileSync(process.argv[1]));process.stdout.write(x.publicBuildConfig.sha256)' "$artifact_root/release-manifest.json")
+}
 prepare_podman_egress_networks(){
   local docker_version network full_name
   docker_version=$(docker --version 2>&1)
@@ -76,15 +100,59 @@ release-stack-health)
   record_gate release-stack-health "$started" "$artifact_root/details/release-stack-health.json" "$artifact_root/release-stack-health.json" "$artifact_root/migrate-release-stack.log"
 ;;
 fullstack-playwright)
-  require_state; started=$(date -u +%Y-%m-%dT%H:%M:%SZ); output="$artifact_root/fullstack-playwright"; mkdir -p "$output"; cd "$build_root/apps/web"; BASE_URL=http://127.0.0.1:8080 E2E_FULL_STACK=1 E2E_MOCK_API=0 E2E_SIGNUP_MODE=closed_beta E2E_COMPOSE_PROJECT_NAME="$project" E2E_COMPOSE_ENV_FILE="$env_file" E2E_CANDIDATE_SHA="$CI_COMMIT_SHA" E2E_ARTIFACT_ROOT="$output" PLAYWRIGHT_JSON_OUTPUT_NAME="$output/results.json" npx playwright test --reporter=json --project=chromium --workers=1 --retries=0 tests/e2e/operations-workflows.spec.ts tests/e2e/month-volume-workflows.spec.ts tests/e2e/stress-workflows.spec.ts tests/e2e/tenant-admin-workflows.spec.ts tests/e2e/staff-repair-acceptance.spec.ts tests/e2e/settings-recovery-acceptance.spec.ts >"$output/test.log" 2>&1
-  node - "$output/results.json" "$artifact_root/details/fullstack-playwright.json" "$CI_COMMIT_SHA" <<'NODE'
-const fs=require('node:fs');const [reportPath,output,sourceSha]=process.argv.slice(2),report=JSON.parse(fs.readFileSync(reportPath)),stats=report.stats??{};for(const key of ['expected','skipped','unexpected','flaky'])if(!Number.isSafeInteger(stats[key])||stats[key]<0)throw new Error('Invalid full-stack Playwright statistics.');if(stats.unexpected!==0||stats.skipped!==0||stats.flaky!==0)throw new Error('Full-stack Playwright is not complete, deterministic, and clean.');fs.writeFileSync(output,JSON.stringify({sourceSha,fullStack:true,mockApi:false,passed:stats.expected,failed:stats.unexpected,skipped:stats.skipped,flaky:stats.flaky},null,2)+'\n',{flag:'wx',mode:0o600});
+  require_state; started=$(date -u +%Y-%m-%dT%H:%M:%SZ); read_browser_image_bindings; cd "$build_root/apps/web"
+  # Keep the exact reviewed baseline 30 in its existing first fixture lifetime.
+  run_native_cohort canonical-baseline e2e.admin .ci/development-browser-cases.json \
+    tests/e2e/operations-workflows.spec.ts tests/e2e/month-volume-workflows.spec.ts tests/e2e/stress-workflows.spec.ts \
+    tests/e2e/tenant-admin-workflows.spec.ts tests/e2e/staff-repair-acceptance.spec.ts tests/e2e/settings-recovery-acceptance.spec.ts \
+    tests/e2e/access-home-acceptance.spec.ts tests/e2e/location-lifecycle-acceptance.spec.ts
+  # Interaction owns its genuine seeds BEFORE the two single-seed serial lanes.
+  proof_dir="$artifact_root/interaction-proof-artifacts"; mkdir -- "$proof_dir"
+  interaction_env=(BASE_URL=http://127.0.0.1:8080 E2E_FULL_STACK=1 E2E_MOCK_API=0 E2E_SIGNUP_MODE=closed_beta
+    E2E_ADMIN_USERNAME=e2e.interaction.admin E2E_COMPOSE_PROJECT_NAME="$project" E2E_COMPOSE_ENV_FILE="$env_file"
+    E2E_CANDIDATE_SHA="$CI_COMMIT_SHA" E2E_CANDIDATE_TREE_SHA="$(git -C "$build_root" rev-parse 'HEAD^{tree}')"
+    E2E_RELEASE_MANIFEST_SHA256="$manifest_sha" E2E_WEB_IMAGE_ID="$web_id"
+    E2E_PUBLIC_BUILD_CONFIG_SHA256="$public_sha" E2E_INTERACTION_PROOF_ROOT="$proof_dir")
+  interaction_args=(test --forbid-only --reporter=json --config=playwright.interaction-proof.config.ts --workers=1 --retries=0)
+  env "${interaction_env[@]}" PLAYWRIGHT_JSON_OUTPUT_NAME="$proof_dir/selection.json" "$build_root/node_modules/.bin/playwright" "${interaction_args[@]}" --list >"$proof_dir/selection.log" 2>&1
+  node "$build_root/scripts/verify-development-browser-report.mjs" --selection "$build_root/.ci/development-browser-cases.json" interaction "$proof_dir/selection.json" >"$proof_dir/selection-proof.json"
+  env "${interaction_env[@]}" PLAYWRIGHT_JSON_OUTPUT_NAME="$proof_dir/results.json" "$build_root/node_modules/.bin/playwright" "${interaction_args[@]}" >"$artifact_root/interaction-proof.log" 2>&1
+  node "$build_root/scripts/verify-development-browser-report.mjs" --complete "$build_root/.ci/development-browser-cases.json" interaction "$proof_dir/selection.json" "$proof_dir/results.json" "$CI_COMMIT_SHA" "$CI_RUN_ID" >"$proof_dir/acceptance-proof.json"
+  verify_canonical_interaction "$artifact_root/interaction-proof.json"
+  run_native_cohort canonical-logout e2e.logout.admin .ci/development-logout-cases.json tests/e2e/logout-surfaces-acceptance.spec.ts
+  run_native_cohort canonical-staff e2e.staff-lifecycle.admin .ci/development-staff-cases.json tests/e2e/staff-lifecycle-acceptance.spec.ts
+  # No seed/reset after Staff. Every report is independently revalidated and bound.
+  node "$build_root/scripts/write-internal-beta-browser-lane-details.mjs" "$build_root" "$artifact_root" "$CI_COMMIT_SHA" "$CI_RUN_ID" "$artifact_root/details/fullstack-playwright.json"
+  evidence=("$artifact_root/interaction-proof.json" "$artifact_root/interaction-proof.log")
+  for scope in canonical-baseline interaction-proof-artifacts canonical-logout canonical-staff; do
+    for name in selection.json selection-proof.json results.json acceptance-proof.json; do evidence+=("$artifact_root/$scope/$name"); done
+    [[ "$scope" == interaction-proof-artifacts ]] || evidence+=("$artifact_root/$scope/test.log")
+  done
+  # Declare the exact real media payloads whose bytes/hashes the detail owner checked.
+  node --input-type=module - "$artifact_root/details/fullstack-playwright.json" "$artifact_root/browser-media-paths.bin" <<'NODE'
+import {readFileSync,writeFileSync} from 'node:fs';
+import {isAbsolute} from 'node:path';
+const [detailsPath,output]=process.argv.slice(2),details=JSON.parse(readFileSync(detailsPath,'utf8'));
+if(!Array.isArray(details.mediaEvidence)||!details.mediaEvidence.length)throw new Error('Actual canonical media evidence is missing.');
+const paths=details.mediaEvidence.map(item=>item.path);
+if(new Set(paths).size!==paths.length||paths.some(path=>typeof path!=='string'||!path||isAbsolute(path)||path.split('/').includes('..')||/[\r\n\0]/.test(path)))throw new Error('Invalid canonical media evidence path.');
+writeFileSync(output,Buffer.from(paths.join('\0')+'\0'),{flag:'wx',mode:0o600});
 NODE
-  cd "$workspace"; record_gate fullstack-playwright "$started" "$artifact_root/details/fullstack-playwright.json" "$output/test.log" "$output/results.json"
+  while IFS= read -r -d '' media; do evidence+=("$artifact_root/$media"); done <"$artifact_root/browser-media-paths.bin"
+  evidence+=("$artifact_root/browser-media-paths.bin")
+  cd "$workspace"; record_gate fullstack-playwright "$started" "$artifact_root/details/fullstack-playwright.json" "${evidence[@]}"
 ;;
 interaction-proof)
-  require_state; started=$(date -u +%Y-%m-%dT%H:%M:%SZ); manifest_sha=$(sha256sum "$artifact_root/release-manifest.json"|awk '{print $1}'); web_id=$(node -e 'const x=JSON.parse(require("fs").readFileSync(process.argv[1]));process.stdout.write(x.images[x.services.web.imageArtifact].localImageId)' "$artifact_root/release-manifest.json"); public_sha=$(node -e 'const x=JSON.parse(require("fs").readFileSync(process.argv[1]));process.stdout.write(x.publicBuildConfig.sha256)' "$artifact_root/release-manifest.json"); proof_dir="$artifact_root/interaction-proof-artifacts"; mkdir -p "$proof_dir"; cd "$build_root/apps/web"; BASE_URL=http://127.0.0.1:8080 E2E_FULL_STACK=1 E2E_MOCK_API=0 E2E_COMPOSE_PROJECT_NAME="$project" E2E_COMPOSE_ENV_FILE="$env_file" E2E_CANDIDATE_SHA="$CI_COMMIT_SHA" E2E_CANDIDATE_TREE_SHA="$(git -C "$build_root" rev-parse 'HEAD^{tree}')" E2E_RELEASE_MANIFEST_SHA256="$manifest_sha" E2E_WEB_IMAGE_ID="$web_id" E2E_PUBLIC_BUILD_CONFIG_SHA256="$public_sha" E2E_INTERACTION_PROOF_ROOT="$proof_dir" npx playwright test --config=playwright.interaction-proof.config.ts --workers=1 --retries=0 >"$artifact_root/interaction-proof.log" 2>&1; node tests/e2e/verify-internal-beta-interaction-proof.mjs --report "$proof_dir/results.json" --source-sha "$CI_COMMIT_SHA" --tree-sha "$(git -C "$build_root" rev-parse 'HEAD^{tree}')" --release-manifest "$artifact_root/release-manifest.json" --web-image-id "$web_id" --public-build-config-sha256 "$public_sha" --output "$artifact_root/interaction-proof.json"; cp "$artifact_root/interaction-proof.json" "$artifact_root/details/interaction-proof.json"; cd "$workspace"; record_gate interaction-proof "$started" "$artifact_root/details/interaction-proof.json" "$artifact_root/interaction-proof.json" "$artifact_root/interaction-proof.log"
+  # Keep this mandatory canonical gate, but VERIFY the earlier native proof.
+  # Re-executing interaction here would reseed away Staff's published history.
+  require_state; started=$(date -u +%Y-%m-%dT%H:%M:%SZ); read_browser_image_bindings
+  node "$build_root/scripts/write-internal-beta-browser-lane-details.mjs" "$build_root" "$artifact_root" "$CI_COMMIT_SHA" "$CI_RUN_ID" "$artifact_root/details/browser-lanes-reverified.json"
+  verify_canonical_interaction "$artifact_root/interaction-proof-reverified.json"
+  cmp "$artifact_root/interaction-proof.json" "$artifact_root/interaction-proof-reverified.json"
+  cp "$artifact_root/interaction-proof.json" "$artifact_root/details/interaction-proof.json"
+  record_gate interaction-proof "$started" "$artifact_root/details/interaction-proof.json" "$artifact_root/interaction-proof.json" "$artifact_root/interaction-proof-reverified.json" "$artifact_root/interaction-proof.log" "$artifact_root/details/browser-lanes-reverified.json"
 ;;
+
 dast)
   require_state; started=$(date -u +%Y-%m-%dT%H:%M:%SZ); temporary="$qualification_root/dast"; export EXPECTED_SOURCE_SHA="$CI_COMMIT_SHA" DAST_OUTPUT_DIR="$temporary" RELEASE_MANIFEST_SHA256="$(sha256sum "$artifact_root/release-manifest.json"|awk '{print $1}')" ZAP_IMAGE='ghcr.io/zaproxy/zaproxy:stable@sha256:781a2bdaea47324e7bab583e2263f21d257b0aee61ed51521a5be45f5f5081ef'; test ! -e "$temporary"; cd "$build_root"; bash scripts/run-dast.sh http://127.0.0.1:8080; cd "$workspace"; mkdir -p "$artifact_root/dast"; cp "$temporary"/* "$artifact_root/dast/"; node "$build_root/scripts/write-internal-ci-runtime-gate-details.mjs" --source-context "$context" --gate dast --release-manifest "$artifact_root/release-manifest.json" --evidence-directory "$artifact_root/dast" --output "$artifact_root/details/dast.json"; record_gate dast "$started" "$artifact_root/details/dast.json" "$artifact_root/dast/dast-evidence-$CI_COMMIT_SHA.json"
 ;;

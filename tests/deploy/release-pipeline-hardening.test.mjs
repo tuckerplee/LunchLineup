@@ -328,15 +328,29 @@ test('candidate DAST and load bundles are uploaded, downloaded, and verified bef
 test('full-stack release-image E2E runs every spec that declares DB-backed coverage', () => {
   const qualification = read('scripts/run-internal-beta-release-qualification.sh');
   const fullstack = qualification.slice(qualification.indexOf('\nfullstack-playwright)'), qualification.indexOf('\ninteraction-proof)'));
-  const e2eRoot = resolve(root, 'apps/web/tests/e2e');
-  const requiredSpecs = readdirSync(e2eRoot)
-    .filter((name) => name.endsWith('.spec.ts'))
-    .filter((name) => read(`apps/web/tests/e2e/${name}`).includes("tag: '@full-stack'"));
-  assert.ok(requiredSpecs.length > 0, 'DB-backed acceptance inventory must not be empty');
-  assert.match(fullstack, /E2E_FULL_STACK=1 E2E_MOCK_API=0/);
-  assert.match(fullstack, /--workers=1 --retries=0/);
-  assert.match(fullstack, /stats\.unexpected!==0\|\|stats\.skipped!==0\|\|stats\.flaky!==0/);
+  const interaction = qualification.slice(qualification.indexOf('\ninteraction-proof)'), qualification.indexOf('\ndast)'));
+  const helper = read('scripts/write-internal-beta-browser-lane-details.mjs');
+  const inventories = ['development-browser-cases.json', 'development-logout-cases.json', 'development-staff-cases.json']
+    .map(name => JSON.parse(read(`.ci/${name}`)));
+  assert.deepEqual(inventories.map(manifest => manifest.lanes.fullstack.length), [30, 4, 8]);
+  assert.equal(inventories[0].lanes.interaction.length, 5);
+  const files = inventories.flatMap(manifest => [...new Set(manifest.lanes.fullstack.map(row => row.file))]);
+  const requiredSpecs = readdirSync(resolve(root, 'apps/web/tests/e2e'))
+    .filter(name => name.endsWith('.spec.ts') && read(`apps/web/tests/e2e/${name}`).includes("tag: '@full-stack'"));
+  assert.deepEqual([...files].sort(), [...requiredSpecs].sort(), 'Every tagged owner belongs to exactly one fullstack cohort');
   for (const spec of requiredSpecs) assert.ok(fullstack.includes(`tests/e2e/${spec}`), `Missing full-stack spec: ${spec}`);
+  const ordered = ['run_native_cohort canonical-baseline e2e.admin', 'E2E_ADMIN_USERNAME=e2e.interaction.admin',
+    'run_native_cohort canonical-logout e2e.logout.admin', 'run_native_cohort canonical-staff e2e.staff-lifecycle.admin'];
+  const offsets = ordered.map(value => fullstack.indexOf(value));
+  assert.ok(offsets.every((offset, i) => offset >= 0 && (i === 0 || offset > offsets[i - 1])));
+  assert.match(qualification, /E2E_FULL_STACK=1 E2E_MOCK_API=0/);
+  assert.match(qualification, /--forbid-only --reporter=json --grep='@full-stack' --project=chromium --workers=1 --retries=0/);
+  assert.match(qualification, /--selection/); assert.match(qualification, /--complete/);
+  assert.match(helper, /verifyDevelopmentBrowserReport/);
+  assert.match(helper, /retained\.runId !== runId/); assert.match(helper, /release\.sourceSha !== sourceSha/);
+  assert.match(helper, /start < previousEnd/);
+  assert.doesNotMatch(interaction, /playwright.*test|seedTenant|run_native_cohort/);
+  assert.match(interaction, /verify_canonical_interaction/);
 });
 
 test('internal beta proof requires every exact-SHA release, security, and runtime gate', () => {
@@ -597,10 +611,13 @@ test('internal beta local pipeline keeps isolated source, active scanners, exact
   assert.match(qualification, /cleanup_stage\(\).*--profile ops down -v --remove-orphans/);
   assert.match(qualification, /qualification_real.*runner_real\/lunchlineup-beta-qualification-\$CI_RUN_ID/);
   assert.match(qualification, /rm -rf -- "\$qualification_real"/);
-  assert.match(qualification, /PLAYWRIGHT_JSON_OUTPUT_NAME="\$output\/results\.json"/);
-  assert.match(qualification, /stats\.unexpected!==0\|\|stats\.skipped!==0\|\|stats\.flaky!==0/);
+  assert.match(qualification, /PLAYWRIGHT_JSON_OUTPUT_NAME="\$destination\/results\.json"/);
+  assert.match(qualification, /verify-development-browser-report\.mjs/);
   assert.doesNotMatch(qualification, /"failed":0,"skipped":0/);
-  assert.match(qualification, /BASE_URL=http:\/\/127\.0\.0\.1:8080 E2E_FULL_STACK=1 E2E_MOCK_API=0 E2E_SIGNUP_MODE=closed_beta E2E_COMPOSE_PROJECT_NAME="\$project" E2E_COMPOSE_ENV_FILE="\$env_file"/);
+  assert.match(qualification, /BASE_URL=http:\/\/127\.0\.0\.1:8080 E2E_FULL_STACK=1 E2E_MOCK_API=0/);
+  assert.match(qualification, /E2E_SIGNUP_MODE=closed_beta/);
+  assert.match(qualification, /E2E_COMPOSE_PROJECT_NAME="\$project"/);
+  assert.match(qualification, /E2E_COMPOSE_ENV_FILE="\$env_file"/);
   assert.match(qualification, /ZAP_IMAGE='ghcr\.io\/zaproxy\/zaproxy:stable@sha256:[a-f0-9]{64}'/);
   assert.match(qualification, /AVAILABILITY_IMPORT_ORIGIN=http:\/\/127\.0\.0\.1:8080/);
   assert.match(qualification, /podman healthcheck run "\$container_id"/);
