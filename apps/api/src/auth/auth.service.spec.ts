@@ -2906,9 +2906,13 @@ describe('AuthService - MFA and refresh state', () => {
             role: 'STAFF',
             email: null,
             username: 'staff',
+            pinHash: (service as any).hashPin('123456'),
             mfaEnabled: false,
         };
         mockPrisma.user.findFirst.mockResolvedValue(user);
+        mockRbacService.getEffectiveAccess.mockResolvedValue({
+            primaryRole: 'STAFF', roles: [], permissions: ['auth:login_pin'],
+        });
         mockPrisma.session.create.mockResolvedValue({ id: 's-session', refreshToken: 'refresh-session' });
         mockPrisma.session.findMany.mockResolvedValue([
             { id: 'old-session-1' },
@@ -2920,7 +2924,7 @@ describe('AuthService - MFA and refresh state', () => {
             loginMethod: 'USERNAME_PIN',
             ipAddress: '203.0.113.44',
             userAgent: 'Vitest Browser',
-        });
+        }, true, null, { username: user.username, pinHash: user.pinHash });
 
         expect(mockPrisma.$transaction).toHaveBeenCalledWith(
             expect.any(Function),
@@ -2991,6 +2995,7 @@ describe('AuthService - MFA and refresh state', () => {
                 role: 'STAFF',
                 email: 'staff@example.com',
                 username: 'staff',
+            pinHash: (service as any).hashPin('123456'),
                 mfaEnabled: false,
             }, { loginMethod })).rejects.toBeInstanceOf(UnauthorizedException);
 
@@ -4086,5 +4091,239 @@ describe('AuthService - managed MFA encryption keys', () => {
         process.env.MFA_SECRET_ENCRYPTION_KEY_PREVIOUS = duplicate;
         expect(() => (service as any).encryptMfaSecret('JBSWY3DPEHPK3PXP'))
             .toThrow(/must differ/);
+    });
+});
+
+
+describe('AuthService - PIN proof transaction boundaries', () => {
+    let service: AuthService;
+    let account: {
+        id: string; tenantId: string; role: string; email: null; username: string;
+        pinHash: string | null; pinLoginAttempts: number; pinLockedUntil: Date | null;
+        deletedAt: Date | null; suspendedAt: Date | null;
+        mfaEnabled: boolean; pinResetRequired: boolean;
+    };
+    const access = { primaryRole: 'STAFF', roles: [], permissions: ['auth:login_pin', 'dashboard:access'] };
+
+    beforeEach(() => {
+        vi.clearAllMocks();
+        resetPrismaMocks();
+        mockRbacService.getEffectiveAccess.mockReset().mockResolvedValue(access);
+        service = new AuthService(mockConfigService as any, mockJwtService as any, mockRbacService as any);
+        (service as any).prisma = mockPrisma;
+        account = {
+            id: 'u-pin-proof', tenantId: 't-1', role: 'STAFF', email: null, username: 'proof.user',
+            pinHash: (service as any).hashPin('123456'), pinLoginAttempts: 0, pinLockedUntil: null,
+            deletedAt: null, suspendedAt: null, mfaEnabled: false, pinResetRequired: false,
+        };
+        mockPrisma.user.findFirst.mockImplementation(async () => account.deletedAt || account.suspendedAt
+            ? null : { ...account });
+        mockPrisma.user.update.mockImplementation(async ({ data }: { data: Partial<typeof account> }) => {
+            Object.assign(account, data);
+            return { ...account };
+        });
+        mockPrisma.session.create.mockResolvedValue({ id: 's-pin-proof' });
+    });
+
+    function deferVerification() {
+        let release!: (valid: boolean) => void;
+        let started!: () => void;
+        const entered = new Promise<void>(resolve => { started = resolve; });
+        const result = new Promise<boolean>(resolve => { release = resolve; });
+        vi.spyOn(service as any, 'verifyLoginPin').mockImplementation(() => { started(); return result; });
+        return { entered, release };
+    }
+
+    function expectNoIssuanceWrites() {
+        expect(mockPrisma.session.create).not.toHaveBeenCalled();
+        expect(mockPrisma.session.deleteMany).not.toHaveBeenCalled();
+        expect(mockPrisma.auditLog.create).not.toHaveBeenCalled();
+        expect(mockJwtService.generateAccessToken).not.toHaveBeenCalled();
+        expect(mockJwtService.generateCsrfToken).not.toHaveBeenCalled();
+    }
+
+    it('verifies asynchronous PIN hashes compatibly and rejects malformed hashes', async () => {
+        await expect((service as any).verifyLoginPin('123456', account.pinHash)).resolves.toBe(true);
+        await expect((service as any).verifyLoginPin('654321', account.pinHash)).resolves.toBe(false);
+        await expect((service as any).verifyLoginPin('123456', 'missing-separator')).resolves.toBe(false);
+        await expect((service as any).verifyLoginPin('123456', 'salt:not-hex')).resolves.toBe(false);
+    });
+
+    it('rejects PIN session issuance without a verified credential proof before any writes', async () => {
+        await expect((service as any).createSessionTokens(account, { loginMethod: 'USERNAME_PIN' }))
+            .rejects.toBeInstanceOf(UnauthorizedException);
+        expectNoIssuanceWrites();
+        expect(mockPrisma.user.update).not.toHaveBeenCalled();
+    });
+
+    it('holds no tenant transaction or User lock while deferred verification is running', async () => {
+        let activeTransactions = 0;
+        mockPrisma.$transaction.mockImplementation(async (operation: (tx: typeof mockPrisma) => Promise<unknown>) => {
+            activeTransactions++;
+            try { return await operation(mockPrisma); }
+            finally { activeTransactions--; }
+        });
+        const pending = deferVerification();
+        const login = service.loginWithUsernamePin('proof.user', '123456', 'demo');
+        await pending.entered;
+        expect(activeTransactions).toBe(0);
+        expect(mockPrisma.$queryRaw).not.toHaveBeenCalled();
+        expect(mockPrisma.user.update).not.toHaveBeenCalled();
+        expectNoIssuanceWrites();
+        pending.release(true);
+        await expect(login).resolves.toHaveProperty('accessToken');
+        expect(mockPrisma.$queryRaw).toHaveBeenCalled();
+    });
+
+    for (const valid of [false, true]) {
+        it.each([
+            ['rotated hash', () => { account.pinHash = 'new-salt:' + 'a'.repeat(128); }],
+            ['removed hash', () => { account.pinHash = null; }],
+            ['renamed username', () => { account.username = 'renamed.user'; }],
+            ['deleted user', () => { account.deletedAt = new Date(); }],
+            ['suspended user', () => { account.suspendedAt = new Date(); }],
+        ] as const)(`rejects a %s during KDF after ${valid ? 'successful' : 'failed'} verification without charging replacement counters`, async (_name, mutate) => {
+            account.pinLoginAttempts = 3;
+            const pending = deferVerification();
+            const login = service.loginWithUsernamePin('proof.user', valid ? '123456' : '0000', 'demo');
+            await pending.entered;
+            mutate();
+            pending.release(valid);
+            await expect(login).rejects.toBeInstanceOf(UnauthorizedException);
+            expect(account.pinLoginAttempts).toBe(3);
+            expect(mockPrisma.user.update).not.toHaveBeenCalled();
+            expectNoIssuanceWrites();
+        });
+    }
+
+    it('rejects a lockout imposed during verification without clearing counters', async () => {
+        const pending = deferVerification();
+        const login = service.loginWithUsernamePin('proof.user', '123456', 'demo');
+        await pending.entered;
+        account.pinLoginAttempts = 5;
+        account.pinLockedUntil = new Date(Date.now() + 15 * 60_000);
+        pending.release(true);
+        await expect(login).rejects.toBeInstanceOf(UnauthorizedException);
+        expect(account.pinLoginAttempts).toBe(5);
+        expect(mockPrisma.user.update).not.toHaveBeenCalled();
+        expectNoIssuanceWrites();
+    });
+
+    it.each(['invalid format', 'missing user', 'missing hash', 'locked user'] as const)(
+        'performs %s verification outside transactions and writes no session', async scenario => {
+            if (scenario === 'missing user') account.deletedAt = new Date();
+            if (scenario === 'missing hash') account.pinHash = null;
+            if (scenario === 'locked user') account.pinLockedUntil = new Date(Date.now() + 60_000);
+            let activeTransactions = 0;
+            mockPrisma.$transaction.mockImplementation(async (operation: (tx: typeof mockPrisma) => Promise<unknown>) => {
+                activeTransactions++;
+                try { return await operation(mockPrisma); }
+                finally { activeTransactions--; }
+            });
+            const verify = vi.spyOn(service as any, 'verifyLoginPin').mockImplementation(async () => {
+                expect(activeTransactions).toBe(0);
+                return true;
+            });
+            const syncVerify = vi.spyOn(service as any, 'verifyPin');
+            await expect(service.loginWithUsernamePin('proof.user', scenario === 'invalid format' ? 'x' : '123456', 'demo'))
+                .rejects.toBeInstanceOf(UnauthorizedException);
+            expect(verify).toHaveBeenCalledOnce();
+            expect(syncVerify).not.toHaveBeenCalled();
+            expect(mockPrisma.user.update).not.toHaveBeenCalled();
+            expectNoIssuanceWrites();
+        },
+    );
+
+    it('clears only expired PIN lockout and current counters after same-proof verification', async () => {
+        account.pinLoginAttempts = 4;
+        account.pinLockedUntil = new Date(Date.now() - 1_000);
+        await expect(service.loginWithUsernamePin('proof.user', '123456', 'demo')).resolves.toHaveProperty('accessToken');
+        expect(mockPrisma.user.update).toHaveBeenCalledWith({
+            where: { id: account.id }, data: { pinLoginAttempts: 0, pinLockedUntil: null },
+        });
+        expect(account.pinLoginAttempts).toBe(0);
+        expect(account.pinLockedUntil).toBeNull();
+    });
+
+    it.each([
+        ['rotated hash', () => { account.pinHash = 'replacement:' + 'b'.repeat(128); }],
+        ['removed hash', () => { account.pinHash = null; }],
+        ['renamed username', () => { account.username = 'renamed.user'; }],
+        ['new PIN lockout', () => { account.pinLockedUntil = new Date(Date.now() + 60_000); }],
+        ['deleted user', () => { account.deletedAt = new Date(); }],
+        ['suspended user', () => { account.suspendedAt = new Date(); }],
+    ] as const)('rejects a %s after credential commit before any issuance writes', async (_name, mutate) => {
+        mockRbacService.getEffectiveAccess.mockImplementationOnce(async () => { mutate(); return access; });
+        await expect(service.loginWithUsernamePin('proof.user', '123456', 'demo')).rejects.toBeInstanceOf(UnauthorizedException);
+        expect(mockPrisma.user.update).not.toHaveBeenCalled();
+        expectNoIssuanceWrites();
+    });
+
+    it('rejects freshly revoked PIN permission while the issuance User lock is held', async () => {
+        let userLocked = false;
+        mockPrisma.$transaction.mockImplementation(async (operation: (tx: typeof mockPrisma) => Promise<unknown>) => {
+            userLocked = false;
+            try { return await operation(mockPrisma); }
+            finally { userLocked = false; }
+        });
+        mockPrisma.$queryRaw.mockImplementation(async (sql: unknown) => {
+            const strings = Array.isArray(sql) ? sql : (sql as { strings?: string[] }).strings ?? [];
+            if (strings.join('').includes('FROM "User"')) userLocked = true;
+            return [{ id: account.id }];
+        });
+        mockRbacService.getEffectiveAccess.mockResolvedValueOnce(access)
+            .mockImplementationOnce(async () => {
+                expect(userLocked).toBe(true);
+                return { ...access, permissions: ['dashboard:access'] };
+            });
+        await expect(service.loginWithUsernamePin('proof.user', '123456', 'demo')).rejects.toBeInstanceOf(UnauthorizedException);
+        expect(mockRbacService.getEffectiveAccess).toHaveBeenCalledTimes(2);
+        expect(mockPrisma.user.update).not.toHaveBeenCalled();
+        expectNoIssuanceWrites();
+    });
+
+    it('rejects PIN issuance when current security settings switch to OIDC-only', async () => {
+        mockRbacService.getEffectiveAccess.mockImplementationOnce(async () => {
+            mockPrisma.tenantSetting.findUnique.mockResolvedValue({ value: { security: { ssoOidcOnly: true } } });
+            return access;
+        });
+        await expect(service.loginWithUsernamePin('proof.user', '123456', 'demo')).rejects.toBeInstanceOf(UnauthorizedException);
+        expect(mockPrisma.user.update).not.toHaveBeenCalled();
+        expectNoIssuanceWrites();
+    });
+
+    it('uses latest PIN-reset and MFA state at issuance without changing the verified credential', async () => {
+        mockRbacService.getEffectiveAccess.mockImplementationOnce(async () => {
+            account.pinResetRequired = true;
+            account.mfaEnabled = true;
+            return access;
+        });
+        const result = await service.loginWithUsernamePin('proof.user', '123456', 'demo');
+        expect(result.pinResetRequired).toBe(true);
+        expect(result.requiresMfa).toBe(true);
+        expect(mockJwtService.generateAccessToken).toHaveBeenCalledWith(expect.objectContaining({
+            pinResetRequired: true, mfaVerified: false,
+        }));
+    });
+
+    it.each([1, 2])('surfaces transaction failure at User lock %i without issuing tokens', async failingLock => {
+        let userLocks = 0;
+        const failure = new Error('owned transaction failure');
+        mockPrisma.$queryRaw.mockImplementation(async (sql: unknown) => {
+            const strings = Array.isArray(sql) ? sql : (sql as { strings?: string[] }).strings ?? [];
+            if (strings.join('').includes('FROM "User"') && ++userLocks === failingLock) throw failure;
+            return [{ id: account.id }];
+        });
+        await expect(service.loginWithUsernamePin('proof.user', '123456', 'demo')).rejects.toBe(failure);
+        expectNoIssuanceWrites();
+    });
+
+    it('surfaces asynchronous KDF failure before taking a credential lock or changing counters', async () => {
+        const failure = new Error('owned KDF failure');
+        vi.spyOn(service as any, 'verifyLoginPin').mockRejectedValue(failure);
+        await expect(service.loginWithUsernamePin('proof.user', '123456', 'demo')).rejects.toBe(failure);
+        expect(mockPrisma.$queryRaw).not.toHaveBeenCalled();
+        expect(mockPrisma.user.update).not.toHaveBeenCalled();
+        expectNoIssuanceWrites();
     });
 });

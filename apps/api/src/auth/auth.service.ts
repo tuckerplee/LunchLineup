@@ -83,6 +83,8 @@ type AuthenticatedUser = {
     pinResetRequired?: boolean | null;
 };
 
+type PinLoginProof = Readonly<{ username: string; pinHash: string }>;
+
 type SessionRecord = {
     id: string;
     userId: string;
@@ -769,6 +771,20 @@ export class AuthService implements OnModuleDestroy {
         return this.safeEqual(hash, computed);
     }
 
+    // Login KDF work must not block the event loop or hold a database row lock.
+    // Other PIN mutation callers retain their existing verification contracts.
+    private async verifyLoginPin(pin: string, storedHash: string): Promise<boolean> {
+        const [salt, hash] = storedHash.split(':');
+        if (!salt || !hash) return false;
+        const computed = await new Promise<Buffer>((resolve, reject) => {
+            crypto.scrypt(pin, salt, 64, (error, derivedKey) => {
+                if (error) reject(error);
+                else resolve(derivedKey);
+            });
+        });
+        return this.safeEqual(hash, computed.toString('hex'));
+    }
+
     private verifyLegacyPassword(password: string, storedHash: string): boolean {
         try {
             const normalizedHash = storedHash.replace(/^\$2y\$/, '$2a$');
@@ -911,6 +927,7 @@ export class AuthService implements OnModuleDestroy {
         source: SessionTokenAudit | string,
         resetLoginAttempts = true,
         mfaExemption: SessionMfaExemption = null,
+        pinProof?: PinLoginProof,
     ) {
         const audit = this.sessionTokenAudit(source);
         await this.assertTenantIdCanAuthenticate(user.tenantId);
@@ -936,11 +953,21 @@ export class AuthService implements OnModuleDestroy {
             if (!lockedUser) {
                 throw new UnauthorizedException('User account inactive');
             }
+            if (audit.loginMethod === 'USERNAME_PIN' && (!pinProof
+                || settings.ssoOidcOnly
+                || lockedUser.pinHash !== pinProof.pinHash
+                || lockedUser.username !== pinProof.username
+                || (lockedUser.pinLockedUntil && lockedUser.pinLockedUntil > new Date()))) {
+                throw new UnauthorizedException('Invalid username or PIN');
+            }
 
             // Role assignment mutations lock this same user row before replacing
             // access and revoking sessions. Resolve access only after the lock so
             // the session, permission, and MFA policy share one linearization point.
             const access = await this.rbacService.getEffectiveAccess(lockedUser.id, lockedUser.tenantId);
+            if (audit.loginMethod === 'USERNAME_PIN' && !access.permissions.includes('auth:login_pin')) {
+                throw new UnauthorizedException('Invalid username or PIN');
+            }
             const mfaRequired = this.isMfaRequired(lockedUser, settings, access);
             const now = new Date();
             await tx.session.deleteMany({
@@ -1565,7 +1592,7 @@ export class AuthService implements OnModuleDestroy {
         const username = this.normalizeIdentifier(identifierRaw);
         const pin = typeof pinRaw === 'string' ? pinRaw : '';
         if (!username || !this.isPin(pin)) {
-            this.verifyPin('invalid-pin', DUMMY_PIN_HASH);
+            await this.verifyLoginPin('invalid-pin', DUMMY_PIN_HASH);
             throw new UnauthorizedException('Invalid username or PIN');
         }
 
@@ -1576,10 +1603,12 @@ export class AuthService implements OnModuleDestroy {
         }));
 
         if (!user || !user.pinHash) {
-            this.verifyPin(pin, DUMMY_PIN_HASH);
+            await this.verifyLoginPin(pin, DUMMY_PIN_HASH);
             throw new UnauthorizedException('Invalid username or PIN');
         }
 
+        const pinProof: PinLoginProof = { username, pinHash: user.pinHash };
+        const validPin = await this.verifyLoginPin(pin, pinProof.pinHash);
         const pinAttempt = await this.getTenantDb().withTenant(user.tenantId, async (tx) => {
             await tx.$queryRaw`
                 SELECT "id"
@@ -1591,15 +1620,16 @@ export class AuthService implements OnModuleDestroy {
                 where: { id: user.id, tenantId: user.tenantId, deletedAt: null, suspendedAt: null },
             });
 
-            if (!lockedUser?.pinHash) {
-                this.verifyPin(pin, DUMMY_PIN_HASH);
+            // A credential or identity change invalidates this verification;
+            // never charge a stale guess against the replacement credential.
+            if (!lockedUser?.pinHash || lockedUser.pinHash !== pinProof.pinHash
+                || lockedUser.username !== pinProof.username) {
                 return { status: 'invalid' as const };
             }
             if (lockedUser.pinLockedUntil && lockedUser.pinLockedUntil > new Date()) {
-                this.verifyPin(pin, DUMMY_PIN_HASH);
                 return { status: 'locked' as const };
             }
-            if (!this.verifyPin(pin, lockedUser.pinHash)) {
+            if (!validPin) {
                 const attempts = lockedUser.pinLoginAttempts + 1;
                 await tx.user.update({
                     where: { id: lockedUser.id },
@@ -1643,7 +1673,7 @@ export class AuthService implements OnModuleDestroy {
             role: authenticatedUser.role,
             mfaEnabled: authenticatedUser.mfaEnabled,
             pinResetRequired: authenticatedUser.pinResetRequired,
-        }, { loginMethod: 'USERNAME_PIN', ...audit });
+        }, { loginMethod: 'USERNAME_PIN', ...audit }, true, null, pinProof);
     }
     async resetUserPinAsAdmin(
         userId: string,
