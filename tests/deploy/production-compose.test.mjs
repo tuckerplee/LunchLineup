@@ -1750,6 +1750,7 @@ test('smoke environment generator writes the requested env and metrics token fil
       'JWT_REFRESH_SECRET',
       'SESSION_SECRET',
       'MFA_SECRET_ENCRYPTION_KEY_CURRENT',
+      'OTP_HMAC_SECRET',
       'WEBHOOK_DELIVERY_ENCRYPTION_KEY_CURRENT',
       'PASSWORD_RESET_OUTBOX_ENCRYPTION_KEY',
       'AVAILABILITY_IMPORT_ENCRYPTION_KEY',
@@ -1790,6 +1791,11 @@ test('smoke environment generator writes the requested env and metrics token fil
     assert.match(env.DATABASE_URL, /%3A%40%2F%3F%5B%5D%25@postgres/);
     assert.match(env.RABBITMQ_URL, /%3A%40%2F%3F%5B%5D%25@rabbitmq/);
     assert.match(env.JWT_SECRET, /^jwt_[A-Za-z0-9_-]{32,}$/);
+    assert.ok(/^otp_[A-Za-z0-9_-]{43}$/.test(env.OTP_HMAC_SECRET), 'smoke OTP must encode fresh 32-byte material');
+    assert.ok(Buffer.from(env.OTP_HMAC_SECRET.slice(4), 'base64url').length === 32, 'smoke OTP material must be 32 bytes');
+    for (const key of ['JWT_SECRET', 'JWT_REFRESH_SECRET', 'SESSION_SECRET', 'CSRF_SECRET']) {
+      assert.ok(env.OTP_HMAC_SECRET !== env[key], `smoke OTP must be independent from ${key}`);
+    }
     assert.equal(Buffer.from(env.WEBHOOK_DELIVERY_ENCRYPTION_KEY_CURRENT, 'base64').length, 32);
     assert.equal(Buffer.from(env.PASSWORD_RESET_OUTBOX_ENCRYPTION_KEY, 'base64').length, 32);
     assert.equal(Buffer.from(env.AVAILABILITY_IMPORT_ENCRYPTION_KEY, 'base64').length, 32);

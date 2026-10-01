@@ -1,5 +1,5 @@
 import { profileVersion } from './profile-version';
-import { createHash, randomBytes, randomInt, scryptSync, timingSafeEqual } from 'node:crypto';
+import { createHash, randomBytes, randomInt, scrypt, scryptSync, timingSafeEqual } from 'node:crypto';
 import { Prisma, type UserRole } from '@prisma/client';
 import type {
   AccessCatalogResponse,
@@ -55,6 +55,11 @@ const EMAIL = /^[a-z0-9.!#$%*+/=?^_`{|}~-]+@[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?
 const PIN = /^\d{4,8}$/;
 const SYSTEM_EMAIL_DOMAIN = 'staff.lunchlineup.local';
 const WORKSPACE_SETTINGS_KEY = 'workspace_settings';
+// Shared with username/PIN login: five failures lock the account for 15 minutes.
+const MAX_PIN_ATTEMPTS = 5;
+const PIN_LOCK_MS = 15 * 60_000;
+const MAX_PIN_ROTATION_KDFS = 4;
+let activePinRotationKdfs = 0;
 
 type UserCursor = { timestamp: string; publicId: string };
 type AvailabilityWindow = {
@@ -217,6 +222,32 @@ function verifiesPin(pin: string, storedHash: string): boolean {
   const left = Buffer.from(hash, 'utf8');
   const right = Buffer.from(computed, 'utf8');
   return left.length === right.length && timingSafeEqual(left, right);
+}
+
+async function deriveRotationPin(pin: string, salt: string): Promise<Buffer> {
+  // Reject excess work instead of building an unbounded KDF queue. No database
+  // transaction or account lock is held while the thread pool derives a PIN.
+  if (activePinRotationKdfs >= MAX_PIN_ROTATION_KDFS) {
+    throw problem(503, 'pin_rotation_busy', 'PIN rotation is busy. Retry shortly.', 'Service unavailable');
+  }
+  activePinRotationKdfs += 1;
+  try {
+    return await new Promise<Buffer>((resolve, reject) => {
+      scrypt(pin, salt, 64, (error, derivedKey) => {
+        if (error) reject(error);
+        else resolve(derivedKey);
+      });
+    });
+  } finally {
+    activePinRotationKdfs -= 1;
+  }
+}
+
+async function verifiesRotationPin(pin: string, storedHash: string): Promise<boolean> {
+  const [salt, hash, extra] = storedHash.split(':');
+  if (!salt || salt.length > 256 || !hash || !/^[0-9a-f]{128}$/.test(hash) || extra !== undefined) return false;
+  const computed = await deriveRotationPin(pin, salt);
+  return timingSafeEqual(Buffer.from(hash, 'hex'), computed);
 }
 
 function pinData(pin: string, pinResetRequired: boolean, now: Date) {
@@ -1135,7 +1166,7 @@ export class PeopleService {
     if (currentPin === newPin) {
       throw problem(422, 'invalid_pin', 'New PIN must differ from the current PIN.', 'PIN validation failed');
     }
-    await withSerializable(this.database, identity.tenantId, async (transaction) => {
+    const proof = await withSerializable(this.database, identity.tenantId, async (transaction) => {
       const authority = await authorizeMutation(transaction, identity, 'auth:login_pin');
       const user = await transaction.user.findFirst({
         where: { id: authority.actor.id, tenantId: identity.tenantId, deletedAt: null, suspendedAt: null },
@@ -1144,14 +1175,47 @@ export class PeopleService {
       if (!user || !user.username || !user.pinHash) {
         throw problem(403, 'pin_rotation_unavailable', 'PIN rotation is only available for username accounts.', 'Forbidden');
       }
-      if (!verifiesPin(currentPin, user.pinHash)) {
-        throw problem(401, 'invalid_current_pin', 'Current PIN is invalid.', 'Unauthorized');
+      return { id: user.id, username: user.username, pinHash: user.pinHash, role: authority.actor.role };
+    });
+    const validPin = await verifiesRotationPin(currentPin, proof.pinHash);
+    const salt = validPin ? randomBytes(16).toString('hex') : null;
+    const replacementHash = salt ? `${salt}:${(await deriveRotationPin(newPin, salt)).toString('hex')}` : null;
+    const outcome = await withSerializable(this.database, identity.tenantId, async (transaction) => {
+      const authority = await authorizeMutation(transaction, identity, 'auth:login_pin');
+      const user = await transaction.user.findFirst({
+        where: { id: authority.actor.id, tenantId: identity.tenantId, deletedAt: null, suspendedAt: null },
+        select: { id: true, username: true, pinHash: true, pinLoginAttempts: true },
+      });
+      if (!user || user.id !== proof.id || user.username !== proof.username || user.pinHash !== proof.pinHash
+        || authority.actor.role !== proof.role) {
+        throw problem(409, 'pin_rotation_changed', 'Account access or PIN changed. Retry the request.', 'Conflict');
       }
       const now = new Date();
-      await transaction.user.updateMany({
-        where: { id: user.id, tenantId: identity.tenantId, deletedAt: null, suspendedAt: null },
-        data: pinData(newPin, false, now),
+      const credentialWhere = {
+        id: user.id, tenantId: identity.tenantId, deletedAt: null, suspendedAt: null,
+        username: proof.username, pinHash: proof.pinHash, role: proof.role,
+      };
+      if (!validPin) {
+        const attempts = user.pinLoginAttempts + 1;
+        const charged = await transaction.user.updateMany({
+          where: credentialWhere,
+          data: {
+            pinLoginAttempts: attempts,
+            pinLockedUntil: attempts >= MAX_PIN_ATTEMPTS ? new Date(now.getTime() + PIN_LOCK_MS) : null,
+          },
+        });
+        if (charged.count !== 1) throw problem(409, 'pin_rotation_changed', 'Account access or PIN changed. Retry the request.', 'Conflict');
+        // Throwing here would roll back the shared account guessing budget.
+        return 'invalid' as const;
+      }
+      const updated = await transaction.user.updateMany({
+        where: credentialWhere,
+        data: {
+          pinHash: replacementHash!, pinSetAt: now, pinResetRequired: false,
+          pinLoginAttempts: 0, pinLockedUntil: null,
+        },
       });
+      if (updated.count !== 1) throw problem(409, 'pin_rotation_changed', 'Account access or PIN changed. Retry the request.', 'Conflict');
       const sessions = await transaction.session.updateMany({ where: { userId: user.id, revokedAt: null }, data: { revokedAt: now } });
       await transaction.auditLog.create({
         data: {
@@ -1160,7 +1224,11 @@ export class PeopleService {
           newValue: { pinResetRequired: false, sessionsRevoked: sessions.count },
         },
       });
+      return 'rotated' as const;
     });
+    if (outcome === 'invalid') {
+      throw problem(401, 'invalid_current_pin', 'Current PIN is invalid.', 'Unauthorized');
+    }
   }
 
   async lifecycle(identity: SessionIdentity, userPublicId: string): Promise<StaffLifecycleResponse> {

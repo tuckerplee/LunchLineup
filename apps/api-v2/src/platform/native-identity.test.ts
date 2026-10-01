@@ -16,19 +16,21 @@ const config = loadConfig({
 type FixtureOptions = {
   permissions?: string[];
   mfaEnabled?: boolean;
+  requireMfaForAll?: boolean;
+  mfaVerified?: boolean;
   pinResetRequired?: boolean;
   revokedAt?: Date | null;
   tenantStatus?: string;
 };
 
-function signedAccessToken(): string {
+function signedAccessToken(mfaVerified = false): string {
   return jwt.sign({
     sub: 'user-1',
     tenantId: 'tenant-1',
     role: 'MANAGER',
     legacyRole: 'MANAGER',
     sessionId: 'session-1',
-    mfaVerified: false,
+    mfaVerified,
     pinResetRequired: false,
   }, config.jwtSecret, {
     algorithm: 'HS256',
@@ -46,6 +48,15 @@ function request(token = signedAccessToken(), authorization?: string): FastifyRe
     headers: authorization === undefined ? {} : { authorization },
     cookies: { access_token: token },
   } as unknown as FastifyRequest;
+}
+
+function operationRequest(method: string, url: string, credential: 'cookie' | 'bearer', token = signedAccessToken()): FastifyRequest {
+  return {
+    ...request(token, credential === 'bearer' ? `Bearer ${token}` : undefined),
+    method,
+    url,
+    cookies: credential === 'cookie' ? { access_token: token } : {},
+  } as FastifyRequest;
 }
 
 function reply(): FastifyReply {
@@ -83,7 +94,10 @@ function fixture(options: FixtureOptions = {}) {
       })),
     },
     tenantSetting: {
-      findUnique: vi.fn(async () => ({ value: { security: { sessionTimeoutMinutes: 480 } } })),
+      findUnique: vi.fn(async () => ({ value: { security: {
+        sessionTimeoutMinutes: 480,
+        requireMfaForAll: options.requireMfaForAll ?? false,
+      } } })),
     },
     roleAssignment: {
       findMany: vi.fn(async () => [{
@@ -103,7 +117,7 @@ function fixture(options: FixtureOptions = {}) {
       return operation(transaction);
     }),
   };
-  const mfaSessions: MfaSessionStore = { isVerified: vi.fn(async () => true) };
+  const mfaSessions: MfaSessionStore = { isVerified: vi.fn(async () => options.mfaVerified ?? true) };
   return { transaction, database, mfaSessions };
 }
 
@@ -158,6 +172,109 @@ describe('native API v2 identity', () => {
     });
     expect(mfaSessions.isVerified).toHaveBeenCalledOnce();
     expect(mfaSessions.isVerified).toHaveBeenCalledWith('session-1');
+  });
+
+  describe.each(['cookie', 'bearer'] as const)('%s session boundaries', (credential) => {
+    it.each([
+      ['GET', '/v2/settings'],
+      ['PUT', '/v2/settings/security'],
+      ['GET', '/v2/payroll/periods'],
+      ['POST', '/v2/payroll/periods'],
+      ['GET', '/v2/notifications'],
+      ['PUT', '/v2/users/me/pin'],
+      ['DELETE', '/v2/auth/mfa/enrollment'],
+      ['POST', '/v2/auth/mfa/disable'],
+      ['GET', '/v2/auth/mfa/verify'],
+      ['POST', '/v2/auth/me'],
+      ['GET', '/v2/auth/me/extra'],
+      ['POST', '/v2/auth/mfa/enrollment/extra'],
+    ])('rejects pending MFA for %s %s before rotating a cookie', async (method, url) => {
+      const { database, mfaSessions } = fixture({ permissions: ['settings:write'], mfaVerified: false });
+      const adapter = new NativeIdentityAdapter(config, database as never, mfaSessions);
+      const response = reply();
+
+      await expect(adapter.authenticate(operationRequest(method, url, credential), response))
+        .rejects.toMatchObject({ status: 403, code: 'mfa_verification_required' });
+      expect(response.setCookie).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      ['GET', '/v2/auth/me'],
+      ['POST', '/v2/auth/refresh'],
+      ['POST', '/v2/auth/logout'],
+      ['POST', '/v2/auth/mfa/verify'],
+      ['GET', '/v2/auth/mfa/enrollment'],
+      ['POST', '/v2/auth/mfa/enrollment'],
+      ['PUT', '/v2/auth/mfa/enrollment'],
+      ['POST', '/v2/auth/mfa/enroll'],
+      ['POST', '/v2/auth/mfa/enroll/confirm'],
+    ])('allows pending MFA recovery through %s %s with a query string', async (method, url) => {
+      const { database, mfaSessions } = fixture({ mfaEnabled: true, mfaVerified: false });
+      const adapter = new NativeIdentityAdapter(config, database as never, mfaSessions);
+      const response = reply();
+
+      await expect(adapter.authenticate(operationRequest(method, `${url}?source=recovery`, credential), response))
+        .resolves.toMatchObject({ mfaRequired: true, mfaVerified: false });
+      if (credential === 'cookie') {
+        expect(response.setCookie).toHaveBeenCalledOnce();
+        const rotatedToken = vi.mocked(response.setCookie).mock.calls[0][1];
+        expect(jwt.verify(rotatedToken, config.jwtSecret)).toMatchObject({ mfaVerified: false });
+      } else {
+        expect(response.setCookie).not.toHaveBeenCalled();
+      }
+    });
+
+    it.each([
+      { permissions: ['settings:write'] },
+      { mfaEnabled: true },
+      { requireMfaForAll: true },
+    ])('requires live MFA for %j regardless of a verified token claim', async (options) => {
+      const { database, mfaSessions } = fixture({ ...options, mfaVerified: false });
+      const adapter = new NativeIdentityAdapter(config, database as never, mfaSessions);
+
+      await expect(adapter.authenticate(operationRequest('GET', '/v2/notifications', credential, signedAccessToken(true)), reply()))
+        .rejects.toMatchObject({ status: 403, code: 'mfa_verification_required' });
+    });
+
+    it('allows protected operations after the session MFA marker is verified', async () => {
+      const { database, mfaSessions } = fixture({ permissions: ['payroll:read'], mfaVerified: true });
+      const adapter = new NativeIdentityAdapter(config, database as never, mfaSessions);
+
+      await expect(adapter.authenticate(operationRequest('GET', '/v2/payroll/periods', credential), reply()))
+        .resolves.toMatchObject({ mfaRequired: true, mfaVerified: true });
+    });
+
+    it('allows protected operations when live policy does not require MFA', async () => {
+      const { database, mfaSessions } = fixture({ mfaVerified: false });
+      const adapter = new NativeIdentityAdapter(config, database as never, mfaSessions);
+
+      await expect(adapter.authenticate(operationRequest('GET', '/v2/notifications', credential), reply()))
+        .resolves.toMatchObject({ mfaRequired: false, mfaVerified: true });
+      expect(mfaSessions.isVerified).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      ['GET', '/v2/auth/me'], ['POST', '/v2/auth/refresh'], ['POST', '/v2/auth/logout'], ['PUT', '/v2/users/me/pin'],
+    ])('preserves mandatory PIN recovery before pending MFA through %s %s', async (method, url) => {
+      const { database, mfaSessions } = fixture({ pinResetRequired: true, mfaEnabled: true, mfaVerified: false });
+      const adapter = new NativeIdentityAdapter(config, database as never, mfaSessions);
+
+      await expect(adapter.authenticate(operationRequest(method, url, credential), reply()))
+        .resolves.toMatchObject({ pinResetRequired: true, mfaRequired: true, mfaVerified: false });
+    });
+
+    it.each([
+      ['GET', '/v2/settings'], ['POST', '/v2/auth/mfa/verify'], ['GET', '/v2/auth/mfa/enrollment'],
+      ['POST', '/v2/users/me/pin'], ['GET', '/v2/users/me/pin'],
+    ])('prioritizes mandatory PIN recovery over MFA for %s %s', async (method, url) => {
+      const { database, mfaSessions } = fixture({ pinResetRequired: true, mfaEnabled: true, mfaVerified: false });
+      const adapter = new NativeIdentityAdapter(config, database as never, mfaSessions);
+      const response = reply();
+
+      await expect(adapter.authenticate(operationRequest(method, url, credential), response))
+        .rejects.toMatchObject({ status: 403, code: 'pin_rotation_required' });
+      expect(response.setCookie).not.toHaveBeenCalled();
+    });
   });
 
   it('derives forced PIN rotation from live session state rather than token claims', async () => {

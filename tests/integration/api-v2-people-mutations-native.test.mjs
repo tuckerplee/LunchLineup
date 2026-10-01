@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { randomUUID } from 'node:crypto';
+import { randomBytes, randomUUID, scryptSync } from 'node:crypto';
 import { createRequire } from 'node:module';
 import { resolve } from 'node:path';
 import test from 'node:test';
@@ -10,10 +10,23 @@ const require = createRequire(import.meta.url);
 require('ts-node/register/transpile-only');
 const { PeopleService } = require('../../apps/api-v2/src/people/people.service.ts');
 const { TenantDatabase } = require('../../apps/api-v2/src/platform/database.ts');
+const { installProblemHandler } = require('../../apps/api-v2/src/platform/problem.ts');
+
+// Direct service calls expose raw Prisma conflicts. Exercise the actual public
+// problem handler instead of assuming those errors already carry HTTP status.
+function publicPinFailure(error) {
+  let handler, payload;
+  installProblemHandler({ setErrorHandler(value) { handler = value; }, setNotFoundHandler() {} });
+  const reply = { code(status) { this.status = status; return this; }, header() { return this; },
+    type() { return this; }, send(value) { payload = value; } };
+  handler(error, { id: 'native-pin-race', url: '/v2/users/me/pin', log: { info() {}, error() {} } }, reply);
+  assert.equal(payload.status, reply.status);
+  return payload;
+}
 
 // Run only on the approved disposable integration database. Elevated setup is
 // separate; every operation being proved uses the restricted application role.
-test('People mutations preserve stale writes, replay identity, and suspended staff history', async () => {
+test('People mutations preserve stale writes, replay identity, suspended history, and durable PIN budgets', async () => {
   assert.equal(process.env.DATA_TARGET_ENV, 'disposable');
   const owner = createPrisma(requireServiceUrl('MIGRATION_DATABASE_URL').toString());
   const app = createPrisma(requireServiceUrl('DATABASE_URL').toString());
@@ -90,6 +103,91 @@ test('People mutations preserve stale writes, replay identity, and suspended sta
     assert.equal((await owner.user.findUniqueOrThrow({ where: { id: employee.id } })).deletedAt, null);
     assert.deepEqual(await service.schedulingProfile(identity, employee.publicId), saved);
     await assert.rejects(() => service.setSuspended(identity, foreign.publicId, { suspended: true, expectedSuspendedAt: null }), e => e.status === 404);
+
+    // These are real restricted-role transactions. Wrong PIN failures must
+    // commit their account budget even though the public operation rejects.
+    const originalPin = '456789', replacementPin = '567890';
+    const salt = randomBytes(16).toString('hex');
+    const originalHash = `${salt}:${scryptSync(originalPin, salt, 64).toString('hex')}`;
+    const pinUser = await owner.user.create({ data: { tenantId, name: 'PIN Budget Employee', role: 'STAFF',
+      username: `b${randomUUID().slice(0, 12)}`, pinHash: originalHash, pinResetRequired: true, mfaBackupCodes: [] } });
+    const pinRole = await owner.role.create({ data: { tenantId, name: 'PIN Budget', slug: `pin-${randomUUID()}`,
+      legacyRole: 'STAFF', isSystem: false } });
+    const pinPermission = await owner.permission.findUniqueOrThrow({ where: { key: 'auth:login_pin' } });
+    await owner.rolePermission.create({ data: { roleId: pinRole.id, permissionId: pinPermission.id } });
+    await owner.roleAssignment.create({ data: { tenantId, userId: pinUser.id, roleId: pinRole.id } });
+    const pinSession = await session(pinUser.id), copiedPinSession = await session(pinUser.id);
+    const pinIdentity = { sub: pinUser.id, publicUserId: pinUser.publicId, tenantId, sessionId: pinSession.id,
+      role: 'PIN Budget', legacyRole: 'STAFF', roles: [{ id: pinRole.publicId, name: pinRole.name, legacyRole: 'STAFF', isSystem: false }],
+      permissions: ['auth:login_pin'], mfaVerified: true, mfaRequired: false, pinResetRequired: true };
+    const readPinState = () => owner.user.findUniqueOrThrow({ where: { id: pinUser.id },
+      select: { pinHash: true, pinLoginAttempts: true, pinLockedUntil: true, pinResetRequired: true } });
+    for (let attempt = 1; attempt <= 5; attempt++) {
+      const beforeAttempt = Date.now();
+      await assert.rejects(() => service.replaceOwnPin(pinIdentity, '111111', replacementPin),
+        e => e.status === 401 && e.code === 'invalid_current_pin');
+      const stored = await readPinState();
+      assert.equal(stored.pinLoginAttempts, attempt);
+      assert.equal(stored.pinHash, originalHash);
+      assert.equal(stored.pinResetRequired, true);
+      if (attempt < 5) assert.equal(stored.pinLockedUntil, null);
+      else {
+        assert.ok(stored.pinLockedUntil.getTime() >= beforeAttempt + 15 * 60 * 1000);
+        assert.ok(stored.pinLockedUntil.getTime() <= Date.now() + 15 * 60 * 1000);
+      }
+      assert.equal(await owner.session.count({ where: { userId: pinUser.id, revokedAt: null } }), 2);
+      assert.equal(await owner.auditLog.count({ where: { tenantId, resourceId: pinUser.id, action: 'USER_PIN_ROTATED' } }), 0);
+    }
+    const locked = await readPinState();
+    await assert.rejects(() => service.replaceOwnPin(pinIdentity, originalPin, replacementPin), e => e.status === 403);
+    assert.deepEqual(await readPinState(), locked);
+    // Owner setup expires only this synthetic user's lock for the recovery
+    // scenario; no service or production clock/policy is changed.
+    await owner.user.update({ where: { id: pinUser.id }, data: { pinLockedUntil: new Date(Date.now() - 1000) } });
+    await service.replaceOwnPin(pinIdentity, originalPin, replacementPin);
+    const rotated = await readPinState();
+    assert.equal(rotated.pinLoginAttempts, 0);
+    assert.equal(rotated.pinLockedUntil, null);
+    assert.equal(rotated.pinResetRequired, false);
+    assert.notEqual(rotated.pinHash, originalHash);
+    const [newSalt, newHash] = rotated.pinHash.split(':');
+    assert.equal(scryptSync(replacementPin, newSalt, 64).toString('hex'), newHash);
+    assert.equal(await owner.session.count({ where: { userId: pinUser.id, revokedAt: null } }), 0);
+    assert.ok((await owner.session.findUniqueOrThrow({ where: { id: copiedPinSession.id } })).revokedAt);
+    const rotationAudit = await owner.auditLog.findMany({ where: { tenantId, resourceId: pinUser.id, action: 'USER_PIN_ROTATED' } });
+    assert.equal(rotationAudit.length, 1);
+    assert.deepEqual(rotationAudit[0].newValue, { pinResetRequired: false, sessionsRevoked: 2 });
+    await assert.rejects(() => service.replaceOwnPin(pinIdentity, replacementPin, '678901'), e => e.status === 403);
+    assert.deepEqual(await readPinState(), rotated);
+    const freshPinSession = await session(pinUser.id);
+    const freshPinIdentity = { ...pinIdentity, sessionId: freshPinSession.id, pinResetRequired: false };
+    await assert.rejects(() => service.replaceOwnPin({ ...freshPinIdentity, tenantId: otherTenantId }, '111111', '678901'), e => e.status === 403);
+    assert.deepEqual(await readPinState(), rotated);
+    const concurrentGuesses = await Promise.allSettled(Array.from({ length: 4 },
+      () => service.replaceOwnPin(freshPinIdentity, '111111', '678901')));
+    let committedGuesses = 0;
+    for (const result of concurrentGuesses) {
+      assert.equal(result.status, 'rejected');
+      const problem = publicPinFailure(result.reason);
+      assert.ok([401, 409].includes(problem.status), 'Concurrency must yield a durable invalid PIN or an explicit public conflict');
+      assert.equal(problem.code, problem.status === 401 ? 'invalid_current_pin' : 'concurrent_change');
+      if (problem.status === 401) {
+        committedGuesses++;
+      }
+    }
+    assert.ok(committedGuesses >= 1 && committedGuesses <= 4);
+    const afterRace = await readPinState();
+    assert.equal(afterRace.pinLoginAttempts, committedGuesses, 'No committed invalid-PIN rejection may lose its account charge');
+    assert.equal(afterRace.pinLockedUntil, null);
+    assert.equal(afterRace.pinHash, rotated.pinHash);
+    assert.equal(afterRace.pinResetRequired, false);
+    assert.equal(await owner.auditLog.count({ where: { tenantId, resourceId: pinUser.id, action: 'USER_PIN_ROTATED' } }), 1);
+    assert.equal((await owner.session.findUniqueOrThrow({ where: { id: freshPinSession.id } })).revokedAt, null);
+    await owner.rolePermission.delete({ where: { roleId_permissionId: { roleId: pinRole.id, permissionId: pinPermission.id } } });
+    await assert.rejects(() => service.replaceOwnPin(freshPinIdentity, '111111', '678901'), e => e.status === 403);
+    assert.deepEqual(await readPinState(), afterRace);
+    assert.equal((await owner.session.findUniqueOrThrow({ where: { id: freshPinSession.id } })).revokedAt, null);
+
     await owner.session.update({ where: { id: actorSession.id }, data: { revokedAt: new Date() } });
     await assert.rejects(() => service.setSuspended(identity, employee.publicId, { suspended: true, expectedSuspendedAt: null }), e => e.status === 403);
     assert.equal((await owner.user.findUniqueOrThrow({ where: { id: employee.id } })).suspendedAt, null);

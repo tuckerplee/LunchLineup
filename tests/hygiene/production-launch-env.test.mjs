@@ -152,6 +152,7 @@ function validEnv(overrides = {}) {
     JWT_SECRET: 'jwt_abcdefghijklmnopqrstuvwxyz1234567890',
     JWT_REFRESH_SECRET: 'refresh_abcdefghijklmnopqrstuvwxyz1234567890',
     SESSION_SECRET: 'session_abcdefghijklmnopqrstuvwxyz1234567890',
+    OTP_HMAC_SECRET: 'otp_abcdefghijklmnopqrstuvwxyz1234567890',
     MFA_SECRET_ENCRYPTION_KEY_CURRENT: '1111111111111111111111111111111111111111111111111111111111111111',
     MFA_SECRET_ENCRYPTION_KEY_PREVIOUS: '',
     MFA_SECRET_ENCRYPTION_KEY: '',
@@ -831,6 +832,19 @@ test('production launch validator rejects reused credential material without pri
     assert.doesNotMatch(result.stderr, new RegExp(reusedPitrCredential.trim()));
   } finally {
     fixture.cleanup();
+  }
+});
+
+test('production launch validator rejects missing, short, or placeholder OTP HMAC secrets', () => {
+  for (const [value, message] of [
+    [undefined, /OTP_HMAC_SECRET is required/],
+    ['', /OTP_HMAC_SECRET is required/],
+    ['short-otp-key', /OTP_HMAC_SECRET must be a non-placeholder value with at least 32 characters/],
+    ['replace_me_abcdefghijklmnopqrstuvwxyz123456', /OTP_HMAC_SECRET must be a non-placeholder value with at least 32 characters/],
+  ]) {
+    const result = run(validEnv({ OTP_HMAC_SECRET: value }));
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, message);
   }
 });
 

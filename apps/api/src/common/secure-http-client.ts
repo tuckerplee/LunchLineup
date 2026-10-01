@@ -188,11 +188,20 @@ function requestPinnedAddress(
 
     return new Promise<Response>((resolve, reject) => {
         const req = transport.request(requestOptions, (res) => {
+            const failResponse = (error: unknown) => {
+                // Settle with the original error before closing both sides.
+                // A rejected receiver must not keep streaming after finally
+                // clears the total request deadline.
+                reject(error);
+                res.destroy();
+                req.destroy();
+            };
+            res.on('error', failResponse);
+            res.once('aborted', () => failResponse(new Error('Outbound response aborted')));
             const status = res.statusCode ?? 0;
             const redirectMode = options.redirect ?? 'error';
             if (redirectMode === 'error' && status >= 300 && status < 400) {
-                res.resume();
-                reject(new Error('Outbound redirects are disabled'));
+                failResponse(new Error('Outbound redirects are disabled'));
                 return;
             }
 
@@ -200,13 +209,11 @@ function requestPinnedAddress(
             try {
                 declaredResponseBytes = parseContentLength(res.headers['content-length']);
             } catch (error) {
-                res.resume();
-                reject(error);
+                failResponse(error);
                 return;
             }
             if (declaredResponseBytes !== null && declaredResponseBytes > maxResponseBytes) {
-                res.resume();
-                reject(new Error('Outbound response exceeded size limit'));
+                failResponse(new Error('Outbound response exceeded size limit'));
                 return;
             }
 
@@ -216,7 +223,7 @@ function requestPinnedAddress(
                 const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
                 receivedBytes += buffer.length;
                 if (receivedBytes > maxResponseBytes) {
-                    req.destroy(new Error('Outbound response exceeded size limit'));
+                    failResponse(new Error('Outbound response exceeded size limit'));
                     return;
                 }
                 chunks.push(buffer);
@@ -229,10 +236,6 @@ function requestPinnedAddress(
                     statusText: res.statusMessage,
                     headers: responseHeaders(res.headers),
                 }));
-            });
-            res.on('error', (error) => {
-                clearTimeout(timeout);
-                reject(error);
             });
         });
 

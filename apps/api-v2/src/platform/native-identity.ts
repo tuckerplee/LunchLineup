@@ -15,6 +15,23 @@ const MAX_SESSION_TIMEOUT_MINUTES = 1440;
 const MFA_SESSION_KEY = (sessionId: string) => `session_mfa:${sessionId}`;
 const ROLE_NAME_CONTROL_CHARACTERS = /[\u0000-\u001f\u007f-\u009f]/g;
 const MAX_ROLE_NAME_LENGTH = 80;
+const PIN_RESET_OPERATIONS = new Set([
+  'GET /v2/auth/me',
+  'POST /v2/auth/refresh',
+  'POST /v2/auth/logout',
+  'PUT /v2/users/me/pin',
+]);
+const MFA_COMPLETION_OPERATIONS = new Set([
+  'POST /v2/auth/mfa/verify',
+  'POST /v2/auth/mfa/enroll',
+  'POST /v2/auth/mfa/enroll/confirm',
+  'GET /v2/auth/mfa/enrollment',
+  'POST /v2/auth/mfa/enrollment',
+  'PUT /v2/auth/mfa/enrollment',
+  'POST /v2/auth/logout',
+  'GET /v2/auth/me',
+  'POST /v2/auth/refresh',
+]);
 
 type AccessTokenClaims = {
   sub: string;
@@ -296,11 +313,15 @@ export class NativeIdentityAdapter implements IdentityAdapter {
       pinResetRequired: snapshot.user.pinResetRequired,
     };
 
+    const operation = `${request.method} ${request.url.split('?', 1)[0]}`;
+    // Match the retained session boundary: mandatory PIN replacement must be
+    // completed before MFA, and only explicitly listed recovery routes pass.
     if (identity.pinResetRequired) {
-      const operation = `${request.method} ${request.url.split('?', 1)[0]}`;
-      if (!['GET /v2/auth/me', 'POST /v2/auth/refresh', 'POST /v2/auth/logout', 'PUT /v2/users/me/pin'].includes(operation)) {
+      if (!PIN_RESET_OPERATIONS.has(operation)) {
         throw new ProblemError(403, 'pin_rotation_required', 'Replace your temporary PIN before continuing.', 'PIN rotation required');
       }
+    } else if (identity.mfaRequired && !identity.mfaVerified && !MFA_COMPLETION_OPERATIONS.has(operation)) {
+      throw new ProblemError(403, 'mfa_verification_required', 'Complete MFA verification before continuing.', 'MFA verification required');
     }
 
     if (source.cookieAuthenticated) this.rotateCookie(reply, identity, snapshot.effectiveExpiresAt);
