@@ -87,7 +87,7 @@ test('native session security binds signed JWTs to live restricted PostgreSQL an
   const owner=createPrisma(requireServiceUrl('MIGRATION_DATABASE_URL').toString()),appClient=createPrisma(requireServiceUrl('DATABASE_URL').toString()),refusalClient=createPrisma(requireServiceUrl('DATABASE_URL').toString());
   const redis=new Redis(context.redisUrl.toString(),{lazyConnect:true,enableOfflineQueue:false,maxRetriesPerRequest:0,retryStrategy:()=>null,connectTimeout:1000,commandTimeout:1000});redis.on('error',()=>undefined);
   const nonce=randomUUID(),startedAt=new Date().toISOString(),tenantIds=[`native-security-${nonce}`,`native-security-other-${nonce}`];
-  const users=[],roles=[],sessions=[],checkpoints=[],cleanupFailures=[];
+  const users=[],roles=[],sessions=[],allSessions=[],checkpoints=[],cleanupFailures=[];
   let app,store,refusalStore,trap,refusalTrap,apiPort,trapPort,refusalPort,primary,complete=false,databaseCleaned=false,trapCalls=0,refusedConnections=0,appCloseSettled=false,effectsConfirmed=false,pinAuditExpected=false,baselineEffects,effectsBeforeCleanup;
   let appSockets=new Set(),trapSockets=new Set(),refusalSockets=new Set();
   const key=session=>`session_mfa:${session.id}`;
@@ -132,10 +132,10 @@ test('native session security binds signed JWTs to live restricted PostgreSQL an
     }
     const privilegedRole=await owner.role.create({data:{tenantId:tenantIds[0],name:'Native Payroll reader',slug:'native-payroll-reader',isSystem:false}});roles.push(privilegedRole);
     await owner.rolePermission.create({data:{roleId:privilegedRole.id,permissionId:permissionId('payroll:read')}});
-    for(const user of [users[0],users[0],users[1]])sessions.push(await owner.session.create({data:{userId:user.id,refreshToken:sha(randomBytes(32)),ipAddress:'127.0.0.1',userAgent:'native-security-fixture',createdAt:new Date(),expiresAt:new Date(Date.now()+3600000)}}));
+    for(const user of [users[0],users[0],users[1]]){const session=await owner.session.create({data:{userId:user.id,refreshToken:sha(randomBytes(32)),ipAddress:'127.0.0.1',userAgent:'native-security-fixture',createdAt:new Date(),expiresAt:new Date(Date.now()+3600000)}});sessions.push(session);allSessions.push(session);}
     await redis.del(...sessions.map(key));
     const sign=(session=sessions[0],user=users[0],extra={},jwtOptions={})=>jwt.sign({sub:user.id,tenantId:user.tenantId,sessionId:session.id,role:'SUPER_ADMIN',permissions:['settings:read','payroll:read'],mfaVerified:true,pinResetRequired:false,...extra},secret,{algorithm:'HS256',issuer:'lunchlineup',audience:'lunchlineup-api',expiresIn:'30m',...jwtOptions});
-    const token=sign(),foreignToken=sign(sessions[2],users[1]);
+    let token=sign();const foreignToken=sign(sessions[2],users[1]);
     const request=(path,credential='cookie',selectedToken=token,extra={})=>nativeHttp(apiPort,path,{credential,token:selectedToken,...extra});
     const noCookie=response=>assert.equal(Boolean(response.headers['set-cookie']),false,'Rejected identity must not rotate an access cookie');
     const deny=async(name,path,credential,status,code,selectedToken=token,extra={})=>{
@@ -176,7 +176,35 @@ test('native session security binds signed JWTs to live restricted PostgreSQL an
       ['revoked-session',()=>owner.session.update({where:{id:sessions[0].id},data:{revokedAt:new Date()}}),()=>owner.session.update({where:{id:sessions[0].id},data:{revokedAt:null}})],
       ['expired-session',()=>owner.session.update({where:{id:sessions[0].id},data:{expiresAt:new Date(Date.now()-60000)}}),()=>owner.session.update({where:{id:sessions[0].id},data:{expiresAt:new Date(Date.now()+3600000)}})],
       ['shortened-live-timeout',async()=>{await policy(false,5);await owner.session.update({where:{id:sessions[0].id},data:{createdAt:new Date(Date.now()-600000)}});},async()=>{await policy(false);await owner.session.update({where:{id:sessions[0].id},data:{createdAt:new Date()}});}],
-      ['suspended-user',()=>owner.user.update({where:{id:users[0].id},data:{suspendedAt:new Date()}}),()=>owner.user.update({where:{id:users[0].id},data:{suspendedAt:null}})],
+      ['suspended-user',()=>owner.user.update({where:{id:users[0].id},data:{suspendedAt:new Date()}}),async()=>{
+        // Reactivation must not revive credentials revoked by the real trigger.
+        await owner.user.update({where:{id:users[0].id},data:{suspendedAt:null}});
+        const prior=sessions.slice(0,2),priorIds=prior.map(row=>row.id);
+        assert.equal(await owner.session.count({where:{id:{in:priorIds},userId:users[0].id,revokedAt:{not:null}}}),2);
+        await deny('suspension-keeps-prior-primary-revoked','/v2/settings','bearer',401,'authentication_required',token);
+        await deny('suspension-keeps-prior-sibling-revoked','/v2/settings','bearer',401,'authentication_required',sign(prior[1]));
+        await redis.del(...prior.map(key));
+        // Synthetic replacement fixtures only, not a credential-login claim.
+        // Atomic creation leaves no untracked first row if the second fails.
+        const fresh=await owner.$transaction(async tx=>{
+          const rows=[];
+          for(let index=0;index<2;index++)rows.push(await tx.session.create({data:{userId:users[0].id,refreshToken:sha(randomBytes(32)),ipAddress:'127.0.0.1',userAgent:'native-security-fixture',createdAt:new Date(),expiresAt:new Date(Date.now()+3600000)}}));
+          return rows;
+        },{maxWait:5000,timeout:10000});
+        allSessions.push(...fresh);sessions.splice(0,2,...fresh);token=sign();
+        await redis.set(key(sessions[0]),'1','EX',600);
+        for(const credential of ['cookie','bearer']){
+          const response=await request('/v2/settings',credential);assert.equal(response.status,200);assert.equal(response.body.general.name,`Private fixture ${tenantIds[0]}`);assert.equal(Boolean(response.headers['set-cookie']),credential==='cookie');
+          if(credential==='cookie'){
+            const access=response.headers['set-cookie'].find(value=>value.startsWith('access_token='));assert.ok(access);
+            const claims=jwt.verify(access.slice(13).split(';',1)[0],secret,{algorithms:['HS256'],issuer:'lunchlineup',audience:'lunchlineup-api'});
+            assert.equal(claims.sessionId===sessions[0].id,true);assert.equal(claims.mfaVerified,true);
+          }
+          record(`post-suspension-fresh-session:${credential}`,response);
+        }
+        assert.equal(await owner.session.count({where:{id:{in:fresh.map(row=>row.id)},userId:users[0].id,revokedAt:null}}),2);
+        assert.equal(await owner.session.count({where:{id:{in:priorIds},userId:users[0].id,revokedAt:{not:null}}}),2);
+      }],
       ['suspended-tenant',()=>owner.tenant.update({where:{id:tenantIds[0]},data:{status:'SUSPENDED'}}),()=>owner.tenant.update({where:{id:tenantIds[0]},data:{status:'ACTIVE'}})],
     ];
     for(const [name,activate,restore]of liveCases){let failure;try{await activate();await denied(name,401,'authentication_required');}catch(error){failure=error;}try{await restore();}catch(error){throw new AggregateError([...(failure?[failure]:[]),error],'Live fixture probe and restoration failures retained.');}if(failure)throw failure;}
@@ -205,14 +233,14 @@ test('native session security binds signed JWTs to live restricted PostgreSQL an
     refusalTrap=net.createServer(socket=>{refusedConnections++;socket.destroy();});refusalSockets=track(refusalTrap);refusalPort=await listen(refusalTrap);
     const refusalConfig={...config,redisUrl:`redis://127.0.0.1:${refusalPort}`},refusalDb=new TenantDatabase(refusalClient);refusalStore=new RedisMfaSessionStore(refusalConfig);
     await assert.rejects(()=>bounded(buildServer(refusalConfig,{database:refusalDb,identity:new NativeIdentityAdapter(refusalConfig,refusalDb,refusalStore)}),'Unavailable-target native startup'),error=>error.message==='MFA session store is unavailable.');
-    assert.ok(refusedConnections>0);assert.equal(trapCalls,0);assert.equal(checkpoints.length,96);assert.equal(new Set(checkpoints.map(value=>value.name)).size,96);complete=true;
+    assert.ok(refusedConnections>0);assert.equal(trapCalls,0);assert.equal(checkpoints.length,100);assert.equal(new Set(checkpoints.map(value=>value.name)).size,100);complete=true;
   }catch(error){primary=error;}
   finally{
     await attempt(async()=>{if(app)await bounded(app.close(),'Owned API close',15000);appCloseSettled=true;});
     for(const socket of appSockets)socket.destroy();
     await attempt(async()=>{assert.equal(appCloseSettled,true,'Owned API close must settle');assert.equal(Boolean(app?.server.listening),false);assert.equal(appSockets.size,0);});
     await attempt(async()=>{if(store)await bounded(store.close(),'Owned MFA client cleanup');});await attempt(async()=>{if(refusalStore)await bounded(refusalStore.close(),'Refusal-target MFA client cleanup');});
-    await attempt(async()=>{if(sessions.length)await bounded(redis.del(...sessions.map(key)),'Exact fixture MFA-key deletion');});
+    await attempt(async()=>{if(allSessions.length)await bounded(redis.del(...allSessions.map(key)),'Exact fixture MFA-key deletion');});
     await attempt(()=>closeListener(trap,trapSockets));await attempt(()=>closeListener(refusalTrap,refusalSockets));
     await attempt(async()=>{
       assert.equal(appCloseSettled,true,'Preserve fixture when native close/drain did not settle');
@@ -228,7 +256,7 @@ test('native session security binds signed JWTs to live restricted PostgreSQL an
         // replica mode only after app closure, exclusively these exact fixtures.
         // It permits removal of their otherwise append-only PIN rotation audit.
         await tx.$executeRawUnsafe('SET LOCAL session_replication_role = replica');
-        const userIds=users.map(row=>row.id),roleIds=roles.map(row=>row.id),sessionIds=sessions.map(row=>row.id);
+        const userIds=users.map(row=>row.id),roleIds=roles.map(row=>row.id),sessionIds=allSessions.map(row=>row.id);
         await tx.refreshTokenReplay.deleteMany({where:{sessionId:{in:sessionIds}}});await tx.session.deleteMany({where:{id:{in:sessionIds},userId:{in:userIds}}});
         await tx.auditLog.deleteMany({where:{tenantId:{in:tenantIds},resourceId:{in:userIds},action:'USER_PIN_ROTATED'}});
         await tx.roleAssignment.deleteMany({where:{tenantId:{in:tenantIds},userId:{in:userIds},roleId:{in:roleIds}}});await tx.rolePermission.deleteMany({where:{roleId:{in:roleIds}}});await tx.role.deleteMany({where:{id:{in:roleIds},tenantId:{in:tenantIds}}});
@@ -238,7 +266,7 @@ test('native session security binds signed JWTs to live restricted PostgreSQL an
     await attempt(async()=>{if(redis.status!=='end')await bounded(redis.quit(),'Owned Redis fixture-client close');});redis.disconnect(false);
     const closed=await Promise.allSettled([appClient.$disconnect(),refusalClient.$disconnect(),owner.$disconnect()].map(promise=>bounded(promise,'Owned Prisma disconnect')));for(const result of closed)if(result.status==='rejected')cleanupFailures.push(result.reason);
     await attempt(async()=>{
-      const receipt={version:1,kind:'native-session-security-integration',releaseQualified:false,runId:context.runId,sourceSha:context.sourceSha,targetReceiptSha256:context.targetReceiptSha256,fixtureNonce:nonce,startedAt,finishedAt:new Date().toISOString(),status:complete&&!primary&&!cleanupFailures.length?'passed':'failed',transport:'owned-127.0.0.1-http',apiPort,legacyTrapPort:trapPort,unavailableRedisTrapPort:refusalPort,legacyCalls:trapCalls,refusedStartupConnections:refusedConnections,expectedCheckpointCount:96,completedCheckpointCount:checkpoints.length,checkpoints,databaseCleaned,appCloseSettled,effectsConfirmed,baselineEffects,expectedEffects:expectedEffects(),effectsBeforeCleanup,fixturePreserved:!databaseCleaned,apiClosed:!app?.server.listening,acceptedApiSocketsRemaining:appSockets.size,legacyTrapClosed:!trap?.listening,refusalTrapClosed:!refusalTrap?.listening,
+      const receipt={version:1,kind:'native-session-security-integration',releaseQualified:false,runId:context.runId,sourceSha:context.sourceSha,targetReceiptSha256:context.targetReceiptSha256,fixtureNonce:nonce,startedAt,finishedAt:new Date().toISOString(),status:complete&&!primary&&!cleanupFailures.length?'passed':'failed',transport:'owned-127.0.0.1-http',apiPort,legacyTrapPort:trapPort,unavailableRedisTrapPort:refusalPort,legacyCalls:trapCalls,refusedStartupConnections:refusedConnections,expectedCheckpointCount:100,completedCheckpointCount:checkpoints.length,checkpoints,databaseCleaned,appCloseSettled,effectsConfirmed,baselineEffects,expectedEffects:expectedEffects(),effectsBeforeCleanup,fixturePreserved:!databaseCleaned,apiClosed:!app?.server.listening,acceptedApiSocketsRemaining:appSockets.size,legacyTrapClosed:!trap?.listening,refusalTrapClosed:!refusalTrap?.listening,
         limitation:'Synthetic signed session fixtures and real Redis state: no actual login/TOTP, retained-auth success, Redis-server outage, runtime503, controller admission or release qualification.',failures:[...(primary?[primary]:[]),...cleanupFailures].map(error=>({name:error?.name??'Error',messageSha256:sha(Buffer.from(String(error?.message??error)))}))};
       const bytes=Buffer.from(JSON.stringify(receipt,null,2)+'\n');assert.ok(bytes.length<=cap);
       await bounded(writeFile(`${context.workspace}/.release/internal-ci/${context.sourceSha}/integration/native-session-security-${nonce}.json`,bytes,{flag:'wx',mode:0o600}),'Private actual-run diagnostic receipt');
