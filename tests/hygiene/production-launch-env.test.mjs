@@ -89,10 +89,14 @@ function renderCompose(envText) {
   const scratch = mkdtempSync(join(tmpdir(), 'll-rendered-compose-'));
   const envPath = join(scratch, 'production.env');
   const childEnv = { ...process.env };
+  for (const key of Object.keys(childEnv)) {
+    if (key.startsWith('COMPOSE_')) delete childEnv[key];
+  }
   for (const line of envText.split(/\r?\n/)) {
     const separator = line.indexOf('=');
     if (separator > 0) delete childEnv[line.slice(0, separator)];
   }
+  delete childEnv.LUNCHLINEUP_DEV_COMPOSE;
   childEnv.COMPOSE_PROJECT_NAME = 'lunchlineup-production-fixture';
   writeFileSync(
     envPath,
@@ -103,7 +107,7 @@ function renderCompose(envText) {
   try {
     const result = spawnSync(
       process.platform === 'win32' ? 'docker.exe' : 'docker',
-      ['compose', '--env-file', envPath, '--profile', '*', 'config', '--format', 'json'],
+      ['compose', '--project-directory', root, '-f', join(root, 'docker-compose.yml'), '--env-file', envPath, '--profile', '*', 'config', '--format', 'json'],
       {
         cwd: root,
         encoding: 'utf8',
