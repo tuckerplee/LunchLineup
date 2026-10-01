@@ -200,7 +200,7 @@ test.describe.serial('Proposed native document logout surfaces', { tag: '@full-s
     const matches = directory.data.filter(user => user.username === e2eStaffUsername); expect(matches).toHaveLength(1);
     staffId = matches[0].id;
     const reset = await native<ResetStaffPinResponse>(page.request, `/api/v2/users/${staffId}/pin/reset`, {
-      method: 'POST', headers: { ...(await csrfHeaders(page)), Origin: new URL(page.url()).origin } });
+      method: 'POST', data: {}, headers: { ...(await csrfHeaders(page)), Origin: new URL(page.url()).origin } });
     expect(reset.id).toBe(staffId); expect(reset.username).toBe(e2eStaffUsername);
     expect(/^\d{4,8}$/.test(reset.temporaryPin)).toBe(true); temporaryPin = reset.temporaryPin;
     expect((await native<StaffMember>(page.request, `/api/v2/users/${staffId}`)).pinResetRequired).toBe(true);
