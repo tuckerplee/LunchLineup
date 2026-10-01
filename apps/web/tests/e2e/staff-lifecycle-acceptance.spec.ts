@@ -11,6 +11,7 @@ import type {
 } from '@lunchlineup/api-contract';
 import { expect, test } from './qa-isolation-fixture';
 import { closeQaContexts } from './qa-context-cleanup';
+import { captureOriginalNativeResponse, consumeOriginalNativeJson, finishOriginalNativeCaptures } from './staff-native-response-capture';
 import {
   csrfHeaders, e2eManagerPin, e2eManagerUsername, e2eStaffPin, e2eStaffUsername,
   e2eTenantName, e2eTenantSlug, loginAsSeedAdmin, loginAsSeedManager, loginWithPin, runFullStack, seedTenant,
@@ -111,10 +112,9 @@ async function mutation(page: Page, method: string, path: string, action: () => 
   return transport.value;
 }
 async function browserJson<T>(response: Response): Promise<T> {
-  // Browser responses have no dispose API; the owned context is closed after use.
-  const bytes = await bounded(response.body(), 'Native browser response body');
-  expect(bytes.length).toBeLessThanOrEqual(512 * 1024);
-  return JSON.parse(bytes.toString('utf8')) as T;
+  // Consume the original guarded API response, captured before unmodified native fulfillment.
+  // Chromium may no longer retain a routed browser response body; do not replay the mutation.
+  return consumeOriginalNativeJson<T>(response);
 }
 async function withPage(browser: Browser, origin: string, action: (page: Page) => Promise<void>) {
   const context = await browser.newContext({ baseURL: origin }); let primary: unknown;
@@ -164,6 +164,8 @@ test.describe.serial('Proposed native Staff lifecycle acceptance', { tag: '@full
     catch (error) { failures.push(error); retainError('page-settling', '', error); }
     try { await bounded(page.close(), 'Primary framework page closure'); }
     catch (error) { failures.push(error); retainError('page-close', '', error); }
+    try { await info.attach('original-native-response-captures', { body: JSON.stringify(finishOriginalNativeCaptures()), contentType: 'application/json' }); }
+    catch (error) { failures.push(error); }
     try { await info.attach('strict-first-attempt-errors', { body: JSON.stringify(errors), contentType: 'application/json' }); }
     catch (error) { failures.push(error); }
     try { expect(errors.filter(row => !row.expected), 'No unexplained first-attempt browser errors').toEqual([]); }
@@ -215,7 +217,10 @@ test.describe.serial('Proposed native Staff lifecycle acceptance', { tag: '@full
         email: original.email, expectedVersion: original.identityVersion },
     });
     intentional.push({ path: `/api/v2/users/${original.id}/identity`, status: 409, remaining: 1 });
-    const pending = await mutation(page, 'PUT', `/api/v2/users/${original.id}/identity`, () => region.getByRole('button', { name: 'Save identity', exact: true }).click());
+    const pending = await captureOriginalNativeResponse(page, {
+      method: 'PUT', path: `/api/v2/users/${original.id}/identity`, status: 409, mime: 'problem',
+      data: { name: 'Losing identity draft', username: original.username, email: original.email, expectedVersion: original.identityVersion },
+    }, () => mutation(page, 'PUT', `/api/v2/users/${original.id}/identity`, () => region.getByRole('button', { name: 'Save identity', exact: true }).click({ timeout: 10_000 })));
     const response = pending; expect(response.status()).toBe(409);
     expect((await browserJson<ProblemDetails>(response)).code).toBe('staff_identity_conflict');
     await expect(region.getByLabel('Full name', { exact: true })).toHaveValue('Losing identity draft');
@@ -279,7 +284,7 @@ test.describe.serial('Proposed native Staff lifecycle acceptance', { tag: '@full
     await exception.getByLabel('Exception', { exact: true }).selectOption('UNAVAILABLE'); await exception.getByLabel('All day', { exact: true }).check();
     const saved = await mutation(page, 'PUT', `/api/v2/users/${user.id}/scheduling-profile`, () => profile.getByRole('button', { name: 'Save profile', exact: true }).click()); expect(saved.status()).toBe(200);
     const original = await native<StaffSchedulingProfile>(page.request, `/api/v2/users/${user.id}/scheduling-profile`);
-    expect(original.user.id).toBe(user.id); expect(original.skills).toEqual(['Native lifecycle skill']);
+    expect(original.user.id).toBe(user.id); expect(original.skills).toEqual(['native lifecycle skill']);
     expect(original.availability).toEqual([{ locationId: location.id, dayOfWeek: 1, startTimeMinutes: 540, endTimeMinutes: 1020 }]);
     expect(original.availabilityExceptions).toEqual([{ locationId: location.id, date, kind: 'UNAVAILABLE', allDay: true, startTimeMinutes: 0, endTimeMinutes: 1440 }]);
     await profile.getByLabel('Skills', { exact: true }).fill('Losing draft skill'); await profile.getByRole('button', { name: 'Add skill', exact: true }).click();
@@ -288,18 +293,22 @@ test.describe.serial('Proposed native Staff lifecycle acceptance', { tag: '@full
         availability: original.availability, availabilityExceptions: original.availabilityExceptions },
     });
     intentional.push({ path: `/api/v2/users/${user.id}/scheduling-profile`, status: 409, remaining: 1 });
-    const conflict = await mutation(page, 'PUT', `/api/v2/users/${user.id}/scheduling-profile`, () => profile.getByRole('button', { name: 'Save profile', exact: true }).click()); const rejected = conflict;
+    const conflict = await captureOriginalNativeResponse(page, {
+      method: 'PUT', path: `/api/v2/users/${user.id}/scheduling-profile`, status: 409, mime: 'problem',
+      data: { skills: [...original.skills, 'losing draft skill'].sort(), availability: original.availability,
+        availabilityExceptions: original.availabilityExceptions, expectedVersion: original.version },
+    }, () => mutation(page, 'PUT', `/api/v2/users/${user.id}/scheduling-profile`, () => profile.getByRole('button', { name: 'Save profile', exact: true }).click({ timeout: 10_000 }))); const rejected = conflict;
     expect(rejected.status()).toBe(409); expect((await browserJson<ProblemDetails>(rejected)).code).toBe('scheduling_profile_changed');
-    await expect(profile).toContainText('Your draft is retained'); await expect(profile.getByRole('button', { name: 'Remove Losing draft skill', exact: true })).toBeVisible();
+    await expect(profile).toContainText('Your draft is retained'); await expect(profile.getByRole('button', { name: 'Remove losing draft skill', exact: true })).toBeVisible();
     expect(await native<StaffSchedulingProfile>(page.request, `/api/v2/users/${user.id}/scheduling-profile`)).toEqual(competitor);
     page.once('dialog', confirmation => confirmation.dismiss()); await profile.getByRole('button', { name: 'Reload saved profile', exact: true }).click();
-    await expect(profile.getByRole('button', { name: 'Remove Losing draft skill', exact: true })).toBeVisible();
+    await expect(profile.getByRole('button', { name: 'Remove losing draft skill', exact: true })).toBeVisible();
     page.once('dialog', confirmation => confirmation.accept()); await profile.getByRole('button', { name: 'Reload saved profile', exact: true }).click();
-    await expect(profile.getByRole('button', { name: 'Remove Winning saved skill', exact: true })).toBeVisible();
-    await expect(profile.getByRole('button', { name: 'Remove Losing draft skill', exact: true })).toHaveCount(0);
+    await expect(profile.getByRole('button', { name: 'Remove winning saved skill', exact: true })).toBeVisible();
+    await expect(profile.getByRole('button', { name: 'Remove losing draft skill', exact: true })).toHaveCount(0);
     await proof(page, info, 'profile-native-version-conflict', { actualConflict: 409, persistedWindows: 1, persistedExceptions: 1, explicitReload: true });
     // Explicitly clear the saved scheduling profile through UI; empty availability is unconfigured.
-    await profile.getByRole('button', { name: 'Remove Winning saved skill', exact: true }).click();
+    await profile.getByRole('button', { name: 'Remove winning saved skill', exact: true }).click();
     await profile.getByRole('button', { name: 'Remove availability window', exact: true }).click();
     await profile.getByRole('button', { name: 'Remove dated availability exception', exact: true }).click();
     const clear = await mutation(page, 'PUT', `/api/v2/users/${user.id}/scheduling-profile`, () => profile.getByRole('button', { name: 'Save profile', exact: true }).click()); expect(clear.status()).toBe(200);
@@ -317,7 +326,9 @@ test.describe.serial('Proposed native Staff lifecycle acceptance', { tag: '@full
       expect((await native<StaffMember>(page.request, `/api/v2/users/${user.id}`)).pinResetRequired).toBe(false);
       expect((await me(employee)).publicUserId).toBe(user.id);
       await row.getByRole('button', { name: 'Reset PIN', exact: true }).click();
-      const pending = await mutation(page, 'POST', `/api/v2/users/${user.id}/pin/reset`, () => confirmation.getByRole('button', { name: 'Reset PIN', exact: true }).click());
+      const pending = await captureOriginalNativeResponse(page, {
+        method: 'POST', path: `/api/v2/users/${user.id}/pin/reset`, status: 200, mime: 'json', data: {},
+      }, () => mutation(page, 'POST', `/api/v2/users/${user.id}/pin/reset`, () => confirmation.getByRole('button', { name: 'Reset PIN', exact: true }).click({ timeout: 10_000 })));
       const response = pending; expect(response.status()).toBe(200);
       // Secret-bearing browser response stays in memory; do not attach/assert the raw credential.
       const reset = await browserJson<ResetStaffPinResponse>(response);
