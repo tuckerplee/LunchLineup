@@ -226,7 +226,7 @@ test.describe.serial('Proposed native document logout surfaces', { tag: '@full-s
       employee.on('request', countInvalid);
       try {
         await employee.getByRole('button', { name: 'Update PIN', exact: true }).click();
-        await expect(employee.getByRole('alert')).toContainText('New PINs do not match');
+        await expect(employee.locator('.pin-reset-form').getByRole('alert')).toContainText('New PINs do not match');
         await expect(employee).toHaveURL(/\/auth\/reset-pin(?:\?|$)/);
         expect((await session(employee, 'STAFF', true)).sessionScope === original.sessionScope).toBe(true);
         expect((await native<StaffMember>(page.request, `/api/v2/users/${staffId}`)).pinResetRequired).toBe(true);
