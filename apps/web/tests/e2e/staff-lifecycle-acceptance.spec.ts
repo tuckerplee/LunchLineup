@@ -139,7 +139,7 @@ async function rejectedLogin(page: Page, username: string, pin: string) {
   await page.getByPlaceholder('Enter password').fill(pin);
   const pending = await mutation(page, 'POST', '/api/v2/auth/password/verify', () => page.getByRole('button', { name: 'Sign in with password', exact: true }).click());
   expect(pending.status()).toBe(401);
-  await expect(page.getByRole('alert')).toContainText(/Invalid username or (PIN|password)/i);
+  await expect(page.locator('.login-card').getByRole('alert')).toContainText(/Invalid username or (PIN|password)/i);
   await status(page.request, '/api/v2/auth/me', 401);
 }
 
@@ -337,7 +337,7 @@ test.describe.serial('Proposed native Staff lifecycle acceptance', { tag: '@full
       const replacement = reset.temporaryPin === '975310' ? '975311' : '975310';
       await employee.getByLabel('Temporary PIN', { exact: true }).fill(reset.temporaryPin);
       await employee.getByLabel('New PIN', { exact: true }).fill(replacement); await employee.getByLabel('Confirm new PIN', { exact: true }).fill(`${replacement.slice(0, 5)}2`);
-      await employee.getByRole('button', { name: 'Update PIN', exact: true }).click(); await expect(employee.getByRole('alert')).toContainText('New PINs do not match');
+      await employee.getByRole('button', { name: 'Update PIN', exact: true }).click(); await expect(employee.locator('.pin-reset-form').getByRole('alert')).toContainText('New PINs do not match');
       await employee.getByLabel('Confirm new PIN', { exact: true }).fill(replacement);
       const rotate = await mutation(employee, 'PUT', '/api/v2/users/me/pin', () => employee.getByRole('button', { name: 'Update PIN', exact: true }).click()); expect(rotate.status()).toBe(200);
       await expect(employee).toHaveURL(/\/auth\/login(?:\?|$)/); await status(employee.request, '/api/v2/auth/me', 401);
