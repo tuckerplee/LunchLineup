@@ -9,7 +9,7 @@ import {
 import { Prisma } from '@prisma/client';
 import { TenantDatabase, type TenantTransaction } from '../platform/database';
 import { matchesContract } from '../platform/contract-check';
-import { requirePermissions } from '../platform/identity';
+import { authorizeScheduleDemand } from './authorization';
 import { ProblemError } from '../platform/problem';
 import {
   parseUtcInstant,
@@ -93,7 +93,7 @@ export class DemandWindowService {
     identity: SessionIdentity,
     schedulePublicId: string,
   ): Promise<DemandWindowListResponse> {
-    requirePermissions(identity, ['schedules:write']);
+    authorizeScheduleDemand(identity);
     return this.database.withTenant(identity.tenantId, async (transaction) => {
       const schedule = await transaction.schedule.findFirst({
         where: {
@@ -141,7 +141,7 @@ export class DemandWindowService {
     headers: { ifMatch?: string; idempotencyKey?: string },
     metadata: { ipAddress?: string; userAgent?: string } = {},
   ): Promise<DemandWindowReplaceResponse> {
-    requirePermissions(identity, ['schedules:write']);
+    authorizeScheduleDemand(identity);
     const baseRevision = requireScheduleRevision(headers.ifMatch, schedulePublicId);
     const idempotencyKey = requireIdempotencyKey(headers.idempotencyKey);
     const idempotencyKeyHash = sha256(idempotencyKey);

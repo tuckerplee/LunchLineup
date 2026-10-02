@@ -1,3 +1,4 @@
+import type { NativeQuotaAdapter } from '../platform/native-quota';
 import {
   StaffLifecycleRequestSchema,
   StaffLifecycleResponseSchema,
@@ -40,6 +41,7 @@ import type { PeopleService } from './people.service';
 export type PeopleRouteDependencies = {
   config: ApiV2Config;
   identity: IdentityAdapter;
+  quota: Pick<NativeQuotaAdapter, 'consume'>;
   people: Pick<
     PeopleService,
     | 'list'
@@ -104,6 +106,7 @@ export async function registerPeopleRoutes(
   }, async (request, reply) => {
     const identity = await authenticate(request, reply, dependencies);
     requirePermissions(identity, ['users:read']);
+    await dependencies.quota.consume('listStaffMembers', identity, reply);
     const response = await dependencies.people.list(identity, request.query);
     reply.header('Cache-Control', 'private, no-store');
     return response;
@@ -120,6 +123,7 @@ export async function registerPeopleRoutes(
   }, async (request, reply) => {
     const identity = await authenticate(request, reply, dependencies);
     requirePermissions(identity, ['roles:read']);
+    await dependencies.quota.consume('getAccessCatalog', identity, reply);
     const response = await dependencies.people.accessCatalog(identity);
     reply.header('Cache-Control', 'private, no-store');
     return response;
@@ -138,6 +142,7 @@ export async function registerPeopleRoutes(
     assertUnsafeRequestSecurity(request, dependencies.config);
     const identity = await authenticate(request, reply, dependencies, { mfa: true });
     requirePermissions(identity, ['users:write']);
+    await dependencies.quota.consume('createStaffInvitation', identity, reply);
     const response = await dependencies.people.invite(identity, request.body, header(request, 'idempotency-key'));
     reply.code(201).header('Cache-Control', 'private, no-store');
     return response;
@@ -156,6 +161,7 @@ export async function registerPeopleRoutes(
     assertUnsafeRequestSecurity(request, dependencies.config);
     const identity = await authenticate(request, reply, dependencies, { mfa: true });
     requirePermissions(identity, ['roles:write']);
+    await dependencies.quota.consume('createAccessRole', identity, reply);
     const response = await dependencies.people.createRole(identity, request.body);
     reply.code(201).header('Cache-Control', 'private, no-store');
     return response;
@@ -178,6 +184,7 @@ export async function registerPeopleRoutes(
     assertUnsafeRequestSecurity(request, dependencies.config);
     const identity = await authenticate(request, reply, dependencies, { mfa: true });
     requirePermissions(identity, ['roles:write']);
+    await dependencies.quota.consume('updateAccessRole', identity, reply);
     const response = await dependencies.people.updateRole(identity, request.params.roleId, request.body);
     reply.header('Cache-Control', 'private, no-store');
     return response;
@@ -196,6 +203,7 @@ export async function registerPeopleRoutes(
     assertUnsafeRequestSecurity(request, dependencies.config);
     const identity = await authenticate(request, reply, dependencies, { mfa: true });
     requirePermissions(identity, ['roles:write']);
+    await dependencies.quota.consume('deleteAccessRole', identity, reply);
     await dependencies.people.deleteRole(identity, request.params.roleId);
     reply.code(204).header('Cache-Control', 'private, no-store').send();
   });
@@ -214,6 +222,7 @@ export async function registerPeopleRoutes(
   }, async (request, reply) => {
     assertUnsafeRequestSecurity(request, dependencies.config);
     const identity = await authenticate(request, reply, dependencies);
+    await dependencies.quota.consume('replaceCurrentPin', identity, reply);
     await dependencies.people.replaceOwnPin(identity, request.body.currentPin, request.body.newPin);
     reply.header('Cache-Control', 'private, no-store');
     return { success: true as const };
@@ -229,6 +238,7 @@ export async function registerPeopleRoutes(
     assertUnsafeRequestSecurity(request, dependencies.config);
     const identity = await authenticate(request, reply, dependencies, { mfa: true });
     requirePermissions(identity, ['users:admin']);
+    await dependencies.quota.consume('updateStaffIdentity', identity, reply);
     const response = await dependencies.people.updateIdentity(identity, request.params.userId, request.body);
     reply.header('Cache-Control', 'private, no-store');
     return response;
@@ -246,6 +256,7 @@ export async function registerPeopleRoutes(
   }, async (request, reply) => {
     const identity = await authenticate(request, reply, dependencies);
     requirePermissions(identity, ['users:read']);
+    await dependencies.quota.consume('getStaffSchedulingProfile', identity, reply);
     const response = await dependencies.people.schedulingProfile(identity, request.params.userId);
     reply.header('Cache-Control', 'private, no-store');
     return response;
@@ -268,6 +279,7 @@ export async function registerPeopleRoutes(
     assertUnsafeRequestSecurity(request, dependencies.config);
     const identity = await authenticate(request, reply, dependencies, { mfa: true });
     requirePermissions(identity, ['users:write']);
+    await dependencies.quota.consume('updateStaffSchedulingProfile', identity, reply);
     const response = await dependencies.people.replaceSchedulingProfile(identity, request.params.userId, request.body);
     reply.header('Cache-Control', 'private, no-store');
     return response;
@@ -285,6 +297,7 @@ export async function registerPeopleRoutes(
   }, async (request, reply) => {
     const identity = await authenticate(request, reply, dependencies);
     requirePermissions(identity, ['users:admin']);
+    await dependencies.quota.consume('getStaffInvitation', identity, reply);
     const response = await dependencies.people.invitation(identity, request.params.userId);
     reply.header('Cache-Control', 'private, no-store');
     return response;
@@ -303,6 +316,7 @@ export async function registerPeopleRoutes(
     assertUnsafeRequestSecurity(request, dependencies.config);
     const identity = await authenticate(request, reply, dependencies, { mfa: true });
     requirePermissions(identity, ['users:admin']);
+    await dependencies.quota.consume('retryStaffInvitation', identity, reply);
     const response = await dependencies.people.retryInvitation(identity, request.params.userId);
     reply.header('Cache-Control', 'private, no-store');
     return response;
@@ -321,6 +335,7 @@ export async function registerPeopleRoutes(
     assertUnsafeRequestSecurity(request, dependencies.config);
     const identity = await authenticate(request, reply, dependencies, { mfa: true });
     requirePermissions(identity, ['users:admin']);
+    await dependencies.quota.consume('reissueStaffInvitation', identity, reply);
     const response = await dependencies.people.reissueInvitation(
       identity,
       request.params.userId,
@@ -347,6 +362,7 @@ export async function registerPeopleRoutes(
     assertUnsafeRequestSecurity(request, dependencies.config);
     const identity = await authenticate(request, reply, dependencies, { mfa: true });
     requirePermissions(identity, ['users:admin']);
+    await dependencies.quota.consume('resetStaffPin', identity, reply);
     const response = await dependencies.people.resetPin(identity, request.params.userId, request.body.pin);
     reply.header('Cache-Control', 'private, no-store');
     return response;
@@ -364,6 +380,7 @@ export async function registerPeopleRoutes(
   }, async (request, reply) => {
     const identity = await authenticate(request, reply, dependencies);
     requirePermissions(identity, ['roles:read']);
+    await dependencies.quota.consume('getStaffAccess', identity, reply);
     const response = await dependencies.people.access(identity, request.params.userId);
     reply.header('Cache-Control', 'private, no-store');
     return response;
@@ -386,6 +403,7 @@ export async function registerPeopleRoutes(
     assertUnsafeRequestSecurity(request, dependencies.config);
     const identity = await authenticate(request, reply, dependencies, { mfa: true });
     requirePermissions(identity, ['roles:assign']);
+    await dependencies.quota.consume('updateStaffAccess', identity, reply);
     const response = await dependencies.people.replaceAccess(identity, request.params.userId, request.body.roleIds);
     reply.header('Cache-Control', 'private, no-store');
     return response;
@@ -403,6 +421,7 @@ export async function registerPeopleRoutes(
   }, async (request, reply) => {
     const identity = await authenticate(request, reply, dependencies);
     requirePermissions(identity, ['users:read']);
+    await dependencies.quota.consume('getStaffMember', identity, reply);
     const response = await dependencies.people.get(identity, request.params.userId);
     reply.header('Cache-Control', 'private, no-store');
     return response;
@@ -414,6 +433,7 @@ export async function registerPeopleRoutes(
   }, async (request, reply) => {
     const identity = await authenticate(request, reply, dependencies, { mfa: true });
     requirePermissions(identity, ['users:admin']);
+    await dependencies.quota.consume('getStaffLifecycle', identity, reply);
     reply.header('Cache-Control', 'private, no-store');
     return dependencies.people.lifecycle(identity, request.params.userId);
   });
@@ -426,6 +446,7 @@ export async function registerPeopleRoutes(
     assertUnsafeRequestSecurity(request, dependencies.config);
     const identity = await authenticate(request, reply, dependencies, { mfa: true });
     requirePermissions(identity, ['users:admin']);
+    await dependencies.quota.consume('setStaffSuspension', identity, reply);
     reply.header('Cache-Control', 'private, no-store');
     return dependencies.people.setSuspended(identity, request.params.userId, request.body);
   });
@@ -443,6 +464,7 @@ export async function registerPeopleRoutes(
     assertUnsafeRequestSecurity(request, dependencies.config);
     const identity = await authenticate(request, reply, dependencies, { mfa: true });
     requirePermissions(identity, ['users:admin']);
+    await dependencies.quota.consume('deleteStaffMember', identity, reply);
     await dependencies.people.remove(identity, request.params.userId);
     reply.code(204).header('Cache-Control', 'private, no-store').send();
   });

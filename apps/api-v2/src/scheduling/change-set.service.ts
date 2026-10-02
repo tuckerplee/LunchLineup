@@ -8,7 +8,7 @@ import {
 import { Prisma } from '@prisma/client';
 import { TenantDatabase, type TenantTransaction } from '../platform/database';
 import { matchesContract } from '../platform/contract-check';
-import { requirePermissions } from '../platform/identity';
+import { authorizeScheduleChangeSet } from './authorization';
 import { ProblemError } from '../platform/problem';
 import {
   requestHash,
@@ -78,12 +78,7 @@ export class ScheduleChangeSetService {
   constructor(private readonly database: TenantDatabase) {}
 
   private authorize(identity: SessionIdentity, body: ScheduleChangeSetRequest): void {
-    if (body.operations.some((operation) => operation.op === 'shift.delete')) {
-      requirePermissions(identity, ['shifts:delete']);
-    }
-    if (body.operations.some((operation) => operation.op !== 'shift.delete')) {
-      requirePermissions(identity, ['shifts:write']);
-    }
+    authorizeScheduleChangeSet(identity, body);
   }
 
   private async replay(

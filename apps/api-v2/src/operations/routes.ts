@@ -1,3 +1,4 @@
+import type { NativeQuotaAdapter } from '../platform/native-quota';
 import {
   LunchBreakGenerationRequestSchema,
   LunchBreakGenerationResponseSchema,
@@ -35,6 +36,7 @@ import type { OperationsService } from './operations.service';
 export type OperationsRouteDependencies = {
   config: ApiV2Config;
   identity: IdentityAdapter;
+  quota: Pick<NativeQuotaAdapter, 'consume'>;
   operations: Pick<OperationsService, 'listSchedules' | 'listShifts' | 'staffRoster'>;
   lunchBreaks: Pick<LunchBreakService, 'list' | 'policy' | 'replacePolicy' | 'generate' | 'setupShifts' | 'replaceShiftBreaks'>;
 };
@@ -90,6 +92,7 @@ export async function registerOperationsRoutes(
   }, async (request, reply) => {
     const identity = await authenticate(request, reply, dependencies);
     requirePermissions(identity, ['schedules:read']);
+    await dependencies.quota.consume('listScheduleSummaries', identity, reply);
     const response = await dependencies.operations.listSchedules(identity, request.query);
     reply.header('Cache-Control', 'private, no-store');
     return response;
@@ -107,6 +110,7 @@ export async function registerOperationsRoutes(
   }, async (request, reply) => {
     const identity = await authenticate(request, reply, dependencies);
     requirePermissions(identity, ['shifts:read']);
+    await dependencies.quota.consume('listStaffRoster', identity, reply);
     const response = await dependencies.operations.staffRoster(identity, request.query);
     reply.header('Cache-Control', 'private, no-store');
     return response;
@@ -124,6 +128,7 @@ export async function registerOperationsRoutes(
   }, async (request, reply) => {
     const identity = await authenticate(request, reply, dependencies);
     requirePermissions(identity, ['shifts:read']);
+    await dependencies.quota.consume('listShiftSummaries', identity, reply);
     const response = await dependencies.operations.listShifts(identity, request.query);
     reply.header('Cache-Control', 'private, no-store');
     return response;
@@ -141,6 +146,7 @@ export async function registerOperationsRoutes(
   }, async (request, reply) => {
     const identity = await authenticate(request, reply, dependencies);
     requirePermissions(identity, ['lunch_breaks:read']);
+    await dependencies.quota.consume('listLunchBreakRows', identity, reply);
     const response = await dependencies.lunchBreaks.list(identity, request.query);
     reply.header('Cache-Control', 'private, no-store');
     return response;
@@ -157,6 +163,7 @@ export async function registerOperationsRoutes(
   }, async (request, reply) => {
     const identity = await authenticate(request, reply, dependencies);
     requirePermissions(identity, ['lunch_breaks:read']);
+    await dependencies.quota.consume('getLunchBreakPolicy', identity, reply);
     const response = await dependencies.lunchBreaks.policy(identity);
     reply.header('Cache-Control', 'private, no-store');
     return response;
@@ -175,6 +182,7 @@ export async function registerOperationsRoutes(
     assertUnsafeRequestSecurity(request, dependencies.config);
     const identity = await authenticate(request, reply, dependencies);
     requirePermissions(identity, ['lunch_breaks:write']);
+    await dependencies.quota.consume('updateLunchBreakPolicy', identity, reply);
     const response = await dependencies.lunchBreaks.replacePolicy(identity, request.body);
     reply.header('Cache-Control', 'private, no-store');
     return response;
@@ -193,6 +201,7 @@ export async function registerOperationsRoutes(
     assertUnsafeRequestSecurity(request, dependencies.config);
     const identity = await authenticate(request, reply, dependencies);
     requirePermissions(identity, ['lunch_breaks:write']);
+    await dependencies.quota.consume('generateLunchBreakPlan', identity, reply);
     const response = await dependencies.lunchBreaks.generate(identity, request.body, header(request, 'idempotency-key'));
     reply.header('Cache-Control', 'private, no-store');
     return response;
@@ -211,6 +220,7 @@ export async function registerOperationsRoutes(
     assertUnsafeRequestSecurity(request, dependencies.config);
     const identity = await authenticate(request, reply, dependencies);
     requirePermissions(identity, ['lunch_breaks:write', 'shifts:write']);
+    await dependencies.quota.consume('importLunchBreakShifts', identity, reply);
     const response = await dependencies.lunchBreaks.setupShifts(identity, request.body, header(request, 'idempotency-key'));
     reply.header('Cache-Control', 'private, no-store');
     return response;
@@ -233,6 +243,7 @@ export async function registerOperationsRoutes(
     assertUnsafeRequestSecurity(request, dependencies.config);
     const identity = await authenticate(request, reply, dependencies);
     requirePermissions(identity, ['lunch_breaks:write']);
+    await dependencies.quota.consume('updateShiftBreakPlan', identity, reply);
     const response = await dependencies.lunchBreaks.replaceShiftBreaks(
       identity,
       request.params.shiftId,
