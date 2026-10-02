@@ -603,20 +603,20 @@ function SchedulingContent() {
   }, []);
 
   const selectScheduleLocation = (locationId: string) => {
-    invalidateLocationData(locationId, selectedDate, viewMode);
+    invalidateLocationData(locationId, selectedDateRef.current, viewModeRef.current);
     setEditingShiftId(null);
     setConfirmDeleteShiftId(null);
     setShiftDraft((current) => ({ ...current, locationId }));
   };
 
   const selectScheduleDate = (dateValue: string) => {
-    invalidateLocationData(shiftDraft.locationId || locations[0]?.id || '', dateValue, viewMode);
+    invalidateLocationData(selectedLocationRef.current || locations[0]?.id || '', dateValue, viewModeRef.current);
     setSelectedDate(dateValue);
   };
 
   const selectScheduleViewMode = (mode: SchedulerViewMode) => {
     if (mode === viewModeRef.current) return;
-    invalidateLocationData(shiftDraft.locationId || locations[0]?.id || '', selectedDate, mode);
+    invalidateLocationData(selectedLocationRef.current || locations[0]?.id || '', selectedDateRef.current, mode);
     setViewMode(mode);
   };
 

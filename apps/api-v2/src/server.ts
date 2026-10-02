@@ -74,7 +74,17 @@ export async function buildServer(
   overrides: ApiV2ServerDependencies = {},
 ): Promise<FastifyInstance> {
   const app = Fastify({
-    logger: { level: config.logLevel },
+    logger: {
+      level: config.logLevel,
+      serializers: {
+        // Route templates preserve request diagnostics without logging query
+        // credentials or caller-controlled path parameters.
+        req: (request) => ({
+          method: request.method,
+          url: request.routeOptions?.url ?? '[unmatched]',
+        }),
+      },
+    },
     trustProxy: config.trustProxy,
     ajv: {
       customOptions: {

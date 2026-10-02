@@ -1,8 +1,12 @@
 import type { SessionIdentity } from '@lunchlineup/api-contract';
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
+import Fastify, { type FastifyLoggerOptions } from 'fastify';
+import * as ts from 'typescript';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { loadConfig } from './config';
-import { ProblemError } from './platform/problem';
-import { buildServer } from './server';
+import { installProblemHandler, ProblemError } from './platform/problem';
+import { buildServer, type ApiV2ServerDependencies } from './server';
 
 const config = loadConfig({
   APP_ORIGIN: 'https://beta.lunchlineup.com',
@@ -129,7 +133,7 @@ async function harness(identityResponse: SessionIdentity = identity) {
         canDelegate: true,
       }],
     })),
-    get: vi.fn(async () => staffMember),
+    get: vi.fn(async (..._args: Parameters<NonNullable<ApiV2ServerDependencies['people']>['get']>) => staffMember),
     schedulingProfile: vi.fn(async () => ({
       user: { id: staffMember.id, name: staffMember.name },
       skills: [], availability: [], availabilityExceptions: [], availabilityConfigured: false,
@@ -348,7 +352,7 @@ async function harness(identityResponse: SessionIdentity = identity) {
     },
     meta: { generatedAt: '2026-07-18T00:00:00.000Z' },
   }));
-  const apply = vi.fn(async () => ({
+  const apply = vi.fn(async (..._args: Parameters<NonNullable<ApiV2ServerDependencies['routes']>['changeSets']['apply']>) => ({
     data: {
       changeSetId: '62e5c71b-d3fd-4226-842e-ad84ae79173e',
       scheduleId: '88d8d86a-7e8d-4246-8ad3-eb7eedb44c1e',
@@ -1264,5 +1268,71 @@ describe('API v2 HTTP contract', () => {
       }),
       expect.any(Object),
     );
+  });
+});
+
+
+// Use the actual buildServer logger option with the installed Fastify/Pino sink.
+// These injected requests do not start a listener or qualify deployed logging.
+function requestLoggerOptions(): FastifyLoggerOptions {
+  const source = readFileSync(resolve(__dirname, 'server.ts'), 'utf8');
+  const file = ts.createSourceFile('server.ts', source, ts.ScriptTarget.Latest, true);
+  const expressions: ts.Expression[] = [];
+  function visit(node: ts.Node) {
+    if (ts.isCallExpression(node) && node.expression.getText(file) === 'Fastify') {
+      const options = node.arguments[0];
+      if (options && ts.isObjectLiteralExpression(options)) {
+        for (const property of options.properties) {
+          if (ts.isPropertyAssignment(property) && property.name.getText(file) === 'logger') {
+            expressions.push(property.initializer);
+          }
+        }
+      }
+    }
+    ts.forEachChild(node, visit);
+  }
+  visit(file);
+  expect(expressions).toHaveLength(1);
+  const javascript = ts.transpileModule(`const options = ${expressions[0].getText(file)};`, {
+    compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.None },
+  }).outputText;
+  return new Function('config', `${javascript}\nreturn options;`)({ logLevel: 'debug' }) as FastifyLoggerOptions;
+}
+
+describe('API v2 request-object log privacy', () => {
+  it.each([
+    { url: '/v2/auth/callback?code=sentinel-code&state=sentinel-state', route: '/v2/auth/callback', status: 200 },
+    { url: '/v2/users/sentinel-path?code=sentinel-code&state=sentinel-state', route: '/v2/users/:userId', status: 200 },
+    { url: '/v2/reject?code=sentinel-code&state=sentinel-state', route: '/v2/reject', status: 401 },
+    { url: '/v2/fail?code=sentinel-code&state=sentinel-state', route: '/v2/fail', status: 500 },
+    { url: '/v2/missing/sentinel-path?code=sentinel-code&state=sentinel-state', route: '[unmatched]', status: 404 },
+  ])('keeps request diagnostics without query/path/credential bytes for $route ($status)', async ({ url, route, status }) => {
+    const lines: string[] = [];
+    const app = Fastify({ logger: { ...requestLoggerOptions(), stream: { write: (line: string) => { lines.push(line); } } } });
+    apps.push(app);
+    installProblemHandler(app);
+    app.get('/v2/auth/callback', async () => ({ ok: true }));
+    app.get('/v2/users/:userId', async () => ({ ok: true }));
+    app.get('/v2/reject', async () => { throw new ProblemError(401, 'synthetic_rejection', 'Synthetic rejection.'); });
+    app.get('/v2/fail', async () => { throw new Error('Synthetic failure.'); });
+    const response = await app.inject({
+      method: 'GET', url,
+      headers: { authorization: 'Bearer sentinel-auth', cookie: 'access_token=sentinel-cookie' },
+    });
+    expect(response.statusCode).toBe(status);
+    const records = lines.flatMap((line) => line.trim().split('\n').filter(Boolean).map((record) => JSON.parse(record)));
+    const incoming = records.find((record) => record.msg === 'incoming request');
+    const completed = records.find((record) => record.msg === 'request completed');
+    expect(incoming?.req).toEqual({ method: 'GET', url: route });
+    expect(incoming?.reqId).toEqual(expect.any(String));
+    expect(incoming.reqId.length).toBeGreaterThan(0);
+    expect(completed?.reqId).toBe(incoming.reqId);
+    expect(completed?.res.statusCode).toBe(status);
+    expect(completed?.responseTime).toEqual(expect.any(Number));
+    for (const sentinel of ['sentinel-code', 'sentinel-state', 'sentinel-path', 'sentinel-auth', 'sentinel-cookie']) {
+      expect(lines.join('')).not.toContain(sentinel);
+    }
+    if (status === 401) expect(records.some((record) => record.msg === 'api_v2_request_rejected')).toBe(true);
+    if (status === 500) expect(records.some((record) => record.msg === 'api_v2_request_failed')).toBe(true);
   });
 });

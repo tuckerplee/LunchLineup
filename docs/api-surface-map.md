@@ -1,6 +1,6 @@
 # LunchLineup API Surface Map
 
-This is the source-of-truth map for the HTTP and RPC boundaries serving `beta.lunchlineup.com`. It distinguishes the new public contract from retained compatibility code so a browser-facing feature cannot quietly add another legacy endpoint.
+This map describes the checked-in HTTP and RPC contracts and their implementation owners. VM107 remains stopped under the launch hold; the runtime graph below describes configured topology, not a verified live route. Disposable qualification runs on VM218 with run-private services and loopback endpoints. It does not authorize activation of `beta.lunchlineup.com` or any production route.
 
 ## Request Path
 
@@ -20,7 +20,7 @@ api-v2
   -> Redis for bounded MFA session-marker validation
   -> selected private v1 scheduling operations for publication billing and notification delivery
      and solver-queue compatibility
-  -> exact 58-operation API-01 compatibility catalog for remaining browser domains,
+  -> exact 62-operation API-01 compatibility catalog for remaining browser domains,
      over the private api:3000 service network only
 
 worker -> RabbitMQ, PostgreSQL, engine:50051 gRPC, parser Unix socket
@@ -98,7 +98,9 @@ External paths include `/api`; the service receives the same path after Caddy re
 | GET | `/api/v2/schedules/{scheduleId}/solve-jobs/{jobId}` | read one solve job | private, no-store |
 | POST | `/api/v2/break-generations` | generate and persist breaks for selected shifts | `Idempotency-Key` |
 
-The 121 browser operations are registered explicitly from `packages/api-contract/src/application.ts`. Sixty-three are native (`GET /auth/me`, six location operations, all seventeen People operations, nine Operations resources, six Time Card resources, seventeen Payroll operations, three Notification operations, and four workspace Settings operations); the remaining 58 compatibility operations cover authentication (16), billing (9), availability imports (2), and administration/account lifecycle (31). The same catalog validates browser path/method pairs. There is no `/v2/*` catch-all handler and no caller-supplied upstream path.
+The application catalog defines 128 browser operations in `packages/api-contract/src/application.ts`: 66 native operations and 62 retained operations. Native ownership comprises current session (1), Locations (6), People (20), Operations (9), Time (6), Payroll (17), Notifications (3), and Settings (4). Retained ownership comprises Authentication (17), Billing (9), Imports (3), Administration (32), and the Settings deletion-receipt preparation capability (1). These counts cover this application catalog; scheduling aggregate operations, probes, and the retention-operator route are separately declared. The same catalog validates browser path/method pairs. There is no `/v2/*` catch-all handler and no caller-supplied upstream path.
+
+Retained authentication and platform-admin requests pass through the exact Fastify compatibility catalog to the private Nest `/v1` implementation. Email OTP requests carry onboarding data into the Nest auth controller and signup service. Native current-session, People, Settings, and other native resources use Fastify owners directly. Both API images are built by the disposable browser pipeline, but a passed native-service check does not prove the retained hop. Acceptance must exercise the actual owning service and bridge for each operation; source routing and mocked injection tests do not prove deployed reachability or provider delivery.
 
 API v2 uses shared TypeBox schemas for server validation, OpenAPI generation, and the generated browser client. Every v2 response exposes the server-generated `X-Correlation-ID` used for downstream retained-service calls. Errors are bounded RFC 9457 Problem Details with stable machine codes. Contract failures use `422`; missing preconditions use `428`; stale schedule revisions use `412` and return `currentEtag`; state conflicts use `409`. Unsafe cookie-authenticated requests require an allowed `Origin` and double-submit CSRF proof. Shift updates are partial: omitted fields retain their exact saved values, including custom role labels, while explicitly supplied role labels are trimmed without case normalization.
 
@@ -125,7 +127,7 @@ Bounded compatibility ownership during the strangler migration:
 
 - publication billing and notification-emission compatibility;
 - solver queue submission/status;
-- the frozen 58-operation API-01 application catalog while API-02 replaces each remaining domain implementation.
+- the catalogued 62-operation API-01 application boundary while API-02 replaces each remaining domain implementation.
 
 The scheduling compatibility adapter accepts only hard-coded internal route shapes and translates public UUIDs to tenant-scoped internal IDs. The API-01 application compatibility owner is reachable only through the exact shared catalog, uses a fixed internal authority, bounds request time/body/response size, forwards only approved headers, replaces spoofable forwarding values with the trusted client address and canonical `APP_ORIGIN` host/protocol, permits redirects only for the two declared OIDC operations, and sanitizes errors into Problem Details. Its location and people seams apply only to declared retained domains and exact `locationId`/`locationIds` and `userId`/`userIds` fields; requests translate public UUIDs inward and retained responses translate storage IDs outward. Neither boundary exposes a wildcard route. API-02 is the required removal owner.
 
