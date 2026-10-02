@@ -16,6 +16,7 @@ export type LocationShiftScope = {
   locationId: string;
   dateValue: string;
   viewMode: 'day' | 'threeDay' | 'week';
+  visitGeneration?: number;
 };
 
 type BreakGenerationResponse = {
@@ -74,6 +75,15 @@ export function locationShiftScopeMatches(
     loadedScope.dateValue === expectedScope.dateValue &&
     loadedScope.viewMode === expectedScope.viewMode
   );
+}
+
+export function locationShiftVisitIsCurrent(
+  capturedScope: LocationShiftScope,
+  desiredScope: LocationShiftScope,
+  visitGeneration: number,
+): boolean {
+  return locationShiftScopeMatches(capturedScope, desiredScope)
+    && capturedScope.visitGeneration === visitGeneration;
 }
 
 export function assertBreakGenerationResponseScope(

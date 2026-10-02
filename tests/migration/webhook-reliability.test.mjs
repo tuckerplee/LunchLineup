@@ -1,9 +1,11 @@
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { readdirSync, readFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { orderMigrationFileNames } from '../../scripts/apply-db-migrations.mjs';
+import { buildRawMigrationInventory } from '../../scripts/raw-migration-inventory.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const migrationsRoot = join(root, 'packages/db/prisma/migrations');
@@ -11,6 +13,30 @@ const migrationsRoot = join(root, 'packages/db/prisma/migrations');
 function read(path) {
   return readFileSync(join(root, path), 'utf8');
 }
+
+test('webhook terminal contract repairs run before upgrade backfill and after fresh historical migrations', () => {
+  const inventory = buildRawMigrationInventory(root, migrationsRoot);
+  const preName = 'pre_20261001_webhook_terminal_payload_contract.sql';
+  const postName = '20261001_webhook_terminal_payload_contract.sql';
+  const pre = inventory.pre.find((migration) => migration.fileName === preName);
+  const post = inventory.post.find((migration) => migration.fileName === postName);
+
+  assert.ok(pre, 'populated upgrades require the repair before schema reconciliation and erasure backfill');
+  assert.ok(post, 'fresh databases require the repair after the historical outbox CHECK is created');
+  assert.equal(pre.phase, 'pre');
+  assert.equal(post.phase, 'post');
+  assert.equal(pre.sql, post.sql);
+
+  const postNames = inventory.post.map((migration) => migration.fileName);
+  for (const [name, digest] of [
+    ['20260709_webhook_delivery_outbox.sql', '575a8c4886d0562cf85c1fb79027c82926a58a409bcf09f45d6b5ed93bf77bcf'],
+    ['20260713_terminal_encrypted_payload_erasure.sql', 'a63123662ec1e99cde397bb4ef3eac38509788aa38b6ba24de9f2212fc34ee3b'],
+  ]) {
+    assert.ok(postNames.indexOf(name) !== -1 && postNames.indexOf(name) < postNames.indexOf(postName));
+    assert.equal(createHash('sha256').update(readFileSync(join(migrationsRoot, name))).digest('hex'), digest,
+      `${name} must retain its historical migration bytes`);
+  }
+});
 
 test('fresh migration ordering installs the platform-admin helper before dependent policies', () => {
   const files = readdirSync(migrationsRoot)

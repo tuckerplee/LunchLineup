@@ -39,6 +39,7 @@ import {
   buildLocationScheduleQuery,
   buildLocationShiftQuery,
   locationShiftScopeMatches,
+  locationShiftVisitIsCurrent,
   resolveTenantVisibleLocation,
   shiftIdsForLocation,
   shiftsForLocation,
@@ -94,6 +95,31 @@ describe('scheduling location shift scope', () => {
 
     expect(locationShiftScopeMatches(loadedUptown, desiredDowntown)).toBe(false);
     expect(locationShiftScopeMatches(desiredDowntown, desiredDowntown)).toBe(true);
+  });
+
+
+  it('rejects a delayed response from the previous visit after location A-to-B-to-A', () => {
+    const visitA = { locationId: 'loc-downtown', dateValue: '2026-07-09', viewMode: 'threeDay' as const, visitGeneration: 1 };
+    const desiredB = { ...visitA, locationId: 'loc-uptown' };
+    expect(locationShiftVisitIsCurrent(visitA, desiredB, 2)).toBe(false);
+    const returnedToA = { ...visitA, visitGeneration: 3 };
+    expect(locationShiftScopeMatches(visitA, returnedToA)).toBe(true);
+    expect(locationShiftVisitIsCurrent(visitA, returnedToA, 3)).toBe(false);
+    expect(locationShiftVisitIsCurrent(returnedToA, returnedToA, 3)).toBe(true);
+  });
+
+  it('rejects a delayed response after date or view is changed and restored', () => {
+    const captured = { locationId: 'loc-downtown', dateValue: '2026-07-09', viewMode: 'threeDay' as const, visitGeneration: 7 };
+    expect(locationShiftVisitIsCurrent(captured, { ...captured, dateValue: '2026-07-10' }, 8)).toBe(false);
+    expect(locationShiftVisitIsCurrent(captured, captured, 9)).toBe(false);
+    expect(locationShiftVisitIsCurrent(captured, { ...captured, viewMode: 'week' }, 10)).toBe(false);
+    expect(locationShiftVisitIsCurrent(captured, captured, 11)).toBe(false);
+  });
+
+  it('preserves completion after an owner reload in the same visit', () => {
+    const captured = { locationId: 'loc-downtown', dateValue: '2026-07-09', viewMode: 'threeDay' as const, visitGeneration: 12 };
+    const reloaded = { ...captured };
+    expect(locationShiftVisitIsCurrent(captured, reloaded, 12)).toBe(true);
   });
 
   it('rejects generation responses that identify another location or shift set', () => {

@@ -437,6 +437,22 @@
       "contractPhase": "compatibility-proven-inline",
       "requiresOldReleaseProof": true,
       "rationale": "Replaces schedule-window triggers with start-day ownership and a 24-hour duration bound while retaining candidate schema during rollback; old-release proof must cover existing supported writes, candidate-created overnight rows, demand ownership and schedule edits before compatibility is accepted."
+    },
+    "packages/db/prisma/migrations/20261001_webhook_terminal_payload_contract.sql": {
+      "sha256": "daa061800b59c111e7ff9520e592b9741100e26eaaadcbdfee973f43e8b94248",
+      "phase": "expand-contract",
+      "rollbackSchema": "retain",
+      "contractPhase": "compatibility-proven-inline",
+      "requiresOldReleaseProof": true,
+      "rationale": "Forward-only repair of the webhook terminal text-presence CHECK remains during rollback: restoring the historical strict CHECK rejects irreversibly erased terminal ciphertext. Historical SQL receipts and the terminal-erasure trigger/CHECK are retained; isolated old-release proof of terminalization, active-row rejection and replay is required before production mutation."
+    },
+    "packages/db/prisma/migrations/pre_20261001_webhook_terminal_payload_contract.sql": {
+      "sha256": "daa061800b59c111e7ff9520e592b9741100e26eaaadcbdfee973f43e8b94248",
+      "phase": "expand-contract",
+      "rollbackSchema": "retain",
+      "contractPhase": "compatibility-proven-inline",
+      "requiresOldReleaseProof": true,
+      "rationale": "Forward-only repair of the webhook terminal text-presence CHECK remains during rollback: restoring the historical strict CHECK rejects irreversibly erased terminal ciphertext. Historical SQL receipts and the terminal-erasure trigger/CHECK are retained; isolated old-release proof of terminalization, active-row rejection and replay is required before production mutation."
     }
   }
 }

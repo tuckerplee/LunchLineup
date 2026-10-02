@@ -43,6 +43,7 @@ import {
 import {
   assertBreakGenerationResponseScope,
   locationShiftScopeMatches,
+  locationShiftVisitIsCurrent,
   shiftIdsForLocation,
   type LocationShiftScope,
 } from './location-shift-scope';
@@ -356,6 +357,7 @@ function SchedulingContent() {
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [showTimeline, setShowTimeline] = useState(true);
   const [viewMode, setViewMode] = useState<SchedulerViewMode>('threeDay');
+  const [scopeLoadRevision, setScopeLoadRevision] = useState(0);
   const [selectedDate, setSelectedDate] = useState(initialDateValue);
   const [staff, setStaff] = useState<StaffRosterItem[]>([]);
   const [locations, setLocations] = useState<LocationItem[]>([]);
@@ -385,6 +387,7 @@ function SchedulingContent() {
   const publishAttemptsRef = useRef<Record<string, IdempotentRequestAttempt>>({});
   const publishingScheduleIdRef = useRef<string | null>(null);
   const latestLoadRequestRef = useRef(0);
+  const calendarVisitGenerationRef = useRef(0);
   const solveGenerationRef = useRef(0);
   const selectedLocationRef = useRef(initialLocationId);
   const selectedDateRef = useRef(initialDateValue);
@@ -401,6 +404,9 @@ function SchedulingContent() {
   };
   useEffect(() => {
     const browserDate = requestedDate ?? toDateInputValue(new Date());
+    if (browserDate !== selectedDateRef.current) {
+      calendarVisitGenerationRef.current += 1;
+    }
     selectedDateRef.current = browserDate;
     setSelectedDate(browserDate);
     setShiftDraft((current) => (
@@ -428,10 +434,14 @@ function SchedulingContent() {
     viewMode,
   }), [locations, selectedDate, shiftDraft.locationId, viewMode]);
   const locationDataCurrent = locationShiftScopeMatches(loadedShiftScope, desiredShiftScope) && !isLoading;
-  const scopeIsStillSelected = useCallback((scope: LocationShiftScope) => (
-    selectedLocationRef.current === scope.locationId &&
-    selectedDateRef.current === scope.dateValue &&
-    viewModeRef.current === scope.viewMode
+  const scopeIsStillSelected = useCallback((scope: LocationShiftScope) => locationShiftVisitIsCurrent(
+    scope,
+    {
+      locationId: selectedLocationRef.current,
+      dateValue: selectedDateRef.current,
+      viewMode: viewModeRef.current,
+    },
+    calendarVisitGenerationRef.current,
   ), []);
   const loadDemandWindows = useCallback(async (scheduleId: string) => {
     const payload = await apiV2.getDemandWindows(scheduleId);
@@ -479,6 +489,7 @@ function SchedulingContent() {
 
   const loadSchedule = useCallback(async (dateValue: string, mode: SchedulerViewMode, requestedLocationId?: string) => {
     const requestId = ++latestLoadRequestRef.current;
+    const visitGeneration = calendarVisitGenerationRef.current;
     setIsLoading(true);
     setLoadedShiftScope(null);
     setError(null);
@@ -535,7 +546,7 @@ function SchedulingContent() {
           : current
       ));
       setShifts(payload.data.shifts);
-      setLoadedShiftScope(primaryLocationId ? { locationId: primaryLocationId, dateValue, viewMode: mode } : null);
+      setLoadedShiftScope(primaryLocationId ? { locationId: primaryLocationId, dateValue, viewMode: mode, visitGeneration } : null);
       const shiftCount = payload.data.shifts.length;
       setScheduleStatus({
         tone: payload.data.locationsTruncated ? 'warning' : 'ready',
@@ -559,7 +570,7 @@ function SchedulingContent() {
   useEffect(() => {
     if (!isHydrated) return;
     void loadSchedule(selectedDate, viewMode, shiftDraft.locationId || initialLocationId || undefined);
-  }, [initialLocationId, isHydrated, loadSchedule, selectedDate, shiftDraft.locationId, viewMode]);
+  }, [initialLocationId, isHydrated, loadSchedule, scopeLoadRevision, selectedDate, shiftDraft.locationId, viewMode]);
 
   useEffect(() => {
     setShiftDraft((current) => {
@@ -578,6 +589,7 @@ function SchedulingContent() {
   }, [locations]);
 
   const invalidateLocationData = useCallback((locationId: string, dateValue: string, mode: SchedulerViewMode) => {
+    calendarVisitGenerationRef.current += 1;
     latestLoadRequestRef.current += 1;
     solveGenerationRef.current += 1;
     selectedLocationRef.current = locationId;
@@ -587,6 +599,7 @@ function SchedulingContent() {
     setShifts([]);
     setIsLoading(true);
     setSolvingScheduleId(null);
+    setScopeLoadRevision((current) => current + 1);
   }, []);
 
   const selectScheduleLocation = (locationId: string) => {
@@ -602,6 +615,7 @@ function SchedulingContent() {
   };
 
   const selectScheduleViewMode = (mode: SchedulerViewMode) => {
+    if (mode === viewModeRef.current) return;
     invalidateLocationData(shiftDraft.locationId || locations[0]?.id || '', selectedDate, mode);
     setViewMode(mode);
   };
@@ -1402,6 +1416,7 @@ function SchedulingContent() {
       locationId: selectedLocationRef.current || shiftDraft.locationId,
       dateValue: selectedDateRef.current,
       viewMode: viewModeRef.current,
+      visitGeneration: calendarVisitGenerationRef.current,
     };
     const solveGeneration = ++solveGenerationRef.current;
     const solveIsCurrent = () => (

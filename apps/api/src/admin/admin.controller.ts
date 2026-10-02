@@ -1373,6 +1373,9 @@ export class AdminController implements OnModuleDestroy {
             const now = new Date();
 
             if (emailChanged) {
+                await tx.onboardingSignupAttempt.deleteMany({
+                    where: { tenantId: existingUser.tenantId, userId: targetUserId },
+                });
                 await tx.passwordResetToken.updateMany({
                     where: {
                         tenantId: existingUser.tenantId,

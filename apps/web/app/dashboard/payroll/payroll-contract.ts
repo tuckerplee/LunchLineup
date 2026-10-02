@@ -177,9 +177,8 @@ export function parsePayrollExportCreditCost(payload: unknown): number {
 }
 
 export function reconciliationEditableLines(batch: PayrollExportBatch): PayrollExportLine[] {
-  const loaded = batch.lines.slice(0, MAX_RECONCILIATION_LINES);
-  const unresolved = loaded.filter((line) => line.reconciliationStatus !== 'ACCEPTED');
-  return unresolved.length > 0 ? unresolved : loaded;
+  const unresolved = batch.lines.filter((line) => line.reconciliationStatus !== 'ACCEPTED');
+  return (unresolved.length > 0 ? unresolved : batch.lines).slice(0, MAX_RECONCILIATION_LINES);
 }
 
 export function validateReconciliation(input: PayrollReconciliationInput): string | null {

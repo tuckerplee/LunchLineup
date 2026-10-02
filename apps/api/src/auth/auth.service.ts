@@ -85,6 +85,9 @@ type AuthenticatedUser = {
 
 type PinLoginProof = Readonly<{ username: string; pinHash: string }>;
 
+type PasswordLoginProof = Readonly<{ passwordHash: string }>;
+type EmailLoginProof = Readonly<{ email: string }>;
+
 type SessionRecord = {
     id: string;
     userId: string;
@@ -928,6 +931,8 @@ export class AuthService implements OnModuleDestroy {
         resetLoginAttempts = true,
         mfaExemption: SessionMfaExemption = null,
         pinProof?: PinLoginProof,
+        passwordProof?: PasswordLoginProof,
+        emailProof?: EmailLoginProof,
     ) {
         const audit = this.sessionTokenAudit(source);
         await this.assertTenantIdCanAuthenticate(user.tenantId);
@@ -953,6 +958,14 @@ export class AuthService implements OnModuleDestroy {
             if (!lockedUser) {
                 throw new UnauthorizedException('User account inactive');
             }
+            if (audit.loginMethod === 'EMAIL_OTP' && (!emailProof
+                || lockedUser.email !== emailProof.email)) {
+                throw new UnauthorizedException('Invalid workspace or login');
+            }
+            if (audit.loginMethod === 'USERNAME_PASSWORD' && (!passwordProof
+                || lockedUser.passwordHash !== passwordProof.passwordHash)) {
+                throw new UnauthorizedException('Invalid username or password');
+            }
             if (audit.loginMethod === 'USERNAME_PIN' && (!pinProof
                 || settings.ssoOidcOnly
                 || lockedUser.pinHash !== pinProof.pinHash
@@ -965,6 +978,9 @@ export class AuthService implements OnModuleDestroy {
             // access and revoking sessions. Resolve access only after the lock so
             // the session, permission, and MFA policy share one linearization point.
             const access = await this.rbacService.getEffectiveAccess(lockedUser.id, lockedUser.tenantId);
+            if (audit.loginMethod === 'USERNAME_PASSWORD' && !access.permissions.includes('auth:login_password')) {
+                throw new UnauthorizedException('Invalid username or password');
+            }
             if (audit.loginMethod === 'USERNAME_PIN' && !access.permissions.includes('auth:login_pin')) {
                 throw new UnauthorizedException('Invalid username or PIN');
             }
@@ -1237,7 +1253,11 @@ export class AuthService implements OnModuleDestroy {
                     },
                 });
             }
-            return { status: 'authenticated' as const, user: lockedUser };
+            return {
+                status: 'authenticated' as const,
+                user: lockedUser,
+                passwordProof: { passwordHash: lockedUser.passwordHash },
+            };
         });
 
         if (numericCredential) this.verifyPin(password, DUMMY_PIN_HASH);
@@ -1263,7 +1283,7 @@ export class AuthService implements OnModuleDestroy {
             tenantId: authenticatedUser.tenantId,
             role: authenticatedUser.role,
             mfaEnabled: authenticatedUser.mfaEnabled,
-        }, { loginMethod: 'USERNAME_PASSWORD', ...audit }, false, betaDemoMfaBypass ? 'BETA_DEMO' : null);
+        }, { loginMethod: 'USERNAME_PASSWORD', ...audit }, false, betaDemoMfaBypass ? 'BETA_DEMO' : null, undefined, passwordAttempt.passwordProof);
     }
     async createPasswordReset(identifierRaw: string, tenantSlugRaw?: string): Promise<null> {
         const resetOutbox = new PasswordResetOutboxService(this.configService);
@@ -1579,7 +1599,7 @@ export class AuthService implements OnModuleDestroy {
             tenantId: user.tenantId,
             role: user.role,
             mfaEnabled: user.mfaEnabled,
-        }, { loginMethod: 'EMAIL_OTP', ...audit });
+        }, { loginMethod: 'EMAIL_OTP', ...audit }, true, null, undefined, undefined, { email });
         return { ...session, workspaceSlug };
     }
 

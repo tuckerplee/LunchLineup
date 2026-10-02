@@ -67,6 +67,9 @@ test('full migration runner replays on a fresh database without changing a PENDI
   const suffix = randomUUID();
   const tenantId = `tenant-migration-replay-${suffix}`;
   const jobId = `export-migration-replay-${suffix}`;
+  const deliveredId = `webhook-delivered-${suffix}`;
+  const deadLetteredId = `webhook-dead-lettered-${suffix}`;
+  const queuedId = `webhook-queued-${suffix}`;
 
   try {
     await maintenance.$executeRawUnsafe(`CREATE DATABASE "${databaseName}"`);
@@ -105,7 +108,119 @@ test('full migration runner replays on a fresh database without changing a PENDI
       WHERE "id" = ${jobId}
     `;
 
+    for (const [id, terminalStatus] of [
+      [deliveredId, 'DELIVERED'],
+      [deadLetteredId, 'DEAD_LETTERED'],
+    ]) {
+      await database.$executeRaw`
+        INSERT INTO "WebhookDelivery"
+          ("id", "tenantId", "status", "endpointRef", "payloadDigest", "payloadBytes",
+           "encryptedUrl", "encryptedPayload", "encryptionKeyRef", "attempts",
+           "lastError", "createdAt", "updatedAt")
+        VALUES
+          (${id}, ${tenantId}, 'SENDING'::"WebhookDeliveryStatus", 'synthetic-endpoint',
+           'synthetic-digest', 1, 'synthetic-encrypted-url', 'synthetic-encrypted-payload',
+           'synthetic-key', 1, 'synthetic-terminal-error', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+      `;
+      await database.$executeRaw`
+        UPDATE "WebhookDelivery"
+        SET "status" = ${terminalStatus}::"WebhookDeliveryStatus"
+        WHERE "id" = ${id} AND "tenantId" = ${tenantId}
+      `;
+      const rows = await database.$queryRaw`
+        SELECT "status"::text AS "status", "encryptedUrl", "encryptedPayload",
+               "encryptionKeyRef", "lastError", "endpointRef", "payloadDigest"
+        FROM "WebhookDelivery"
+        WHERE "id" = ${id} AND "tenantId" = ${tenantId}
+      `;
+      assert.deepEqual(rows, [{
+        status: terminalStatus,
+        encryptedUrl: '',
+        encryptedPayload: '',
+        encryptionKeyRef: 'erased-v1',
+        lastError: null,
+        endpointRef: 'synthetic-endpoint',
+        payloadDigest: 'synthetic-digest',
+      }]);
+    }
+
+    await database.$executeRaw`
+      INSERT INTO "WebhookDelivery"
+        ("id", "tenantId", "status", "endpointRef", "payloadDigest", "payloadBytes",
+         "encryptedUrl", "encryptedPayload", "encryptionKeyRef", "attempts", "createdAt", "updatedAt")
+      VALUES
+        (${queuedId}, ${tenantId}, 'QUEUED'::"WebhookDeliveryStatus", 'synthetic-endpoint',
+         'synthetic-digest', 1, 'synthetic-encrypted-url', 'synthetic-encrypted-payload',
+         'synthetic-key', 0, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+    `;
+    const queuedRows = await database.$queryRaw`
+      SELECT "status"::text AS "status", "encryptedUrl", "encryptedPayload", "encryptionKeyRef"
+      FROM "WebhookDelivery" WHERE "id" = ${queuedId} AND "tenantId" = ${tenantId}
+    `;
+    assert.deepEqual(queuedRows, [{
+      status: 'QUEUED', encryptedUrl: 'synthetic-encrypted-url',
+      encryptedPayload: 'synthetic-encrypted-payload', encryptionKeyRef: 'synthetic-key',
+    }]);
+
+    const invalidInputs = [
+      { field: 'encryptedUrl', value: '', status: 'QUEUED', code: '23514' },
+      { field: 'encryptedPayload', value: '', status: 'QUEUED', code: '23514' },
+      { field: 'encryptedUrl', value: null, status: 'QUEUED', code: '23502' },
+      { field: 'encryptedPayload', value: null, status: 'QUEUED', code: '23502' },
+      ...['endpointRef', 'payloadDigest', 'encryptionKeyRef'].map((field) => (
+        { field, value: '', status: 'QUEUED', code: '23514' }
+      )),
+      ...['DELIVERED', 'DEAD_LETTERED'].flatMap((status) => (
+        ['endpointRef', 'payloadDigest'].map((field) => ({ field, value: '', status, code: '23514' }))
+      )),
+    ];
+    for (const [index, invalid] of invalidInputs.entries()) {
+      const id = `webhook-invalid-${index}-${suffix}`;
+      const values = {
+        endpointRef: 'synthetic-endpoint', payloadDigest: 'synthetic-digest',
+        encryptedUrl: 'synthetic-encrypted-url', encryptedPayload: 'synthetic-encrypted-payload',
+        encryptionKeyRef: 'synthetic-key', [invalid.field]: invalid.value,
+      };
+      await assert.rejects(database.$executeRaw`
+        INSERT INTO "WebhookDelivery"
+          ("id", "tenantId", "status", "endpointRef", "payloadDigest", "payloadBytes",
+           "encryptedUrl", "encryptedPayload", "encryptionKeyRef", "attempts", "createdAt", "updatedAt")
+        VALUES
+          (${id}, ${tenantId}, ${invalid.status}::"WebhookDeliveryStatus", ${values.endpointRef},
+           ${values.payloadDigest}, 1, ${values.encryptedUrl}, ${values.encryptedPayload},
+           ${values.encryptionKeyRef}, 0, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+      `, (error) => error?.code === 'P2010' && error.meta?.code === invalid.code,
+      `${invalid.status} must reject ${invalid.field}=${JSON.stringify(invalid.value)}`);
+      const rows = await database.$queryRaw`
+        SELECT "id" FROM "WebhookDelivery" WHERE "id" = ${id} AND "tenantId" = ${tenantId}
+      `;
+      assert.deepEqual(rows, [], 'rejected webhook insert must leave no fixture row');
+    }
+
+    // Synthetic nonterminal strings prove database presence requirements only;
+    // remove this exact row before the real migration encryption-key preflight.
+    await database.$executeRaw`
+      DELETE FROM "WebhookDelivery" WHERE "id" = ${queuedId} AND "tenantId" = ${tenantId}
+    `;
+    const queuedAfterDelete = await database.$queryRaw`
+      SELECT "id" FROM "WebhookDelivery" WHERE "id" = ${queuedId} AND "tenantId" = ${tenantId}
+    `;
+    assert.deepEqual(queuedAfterDelete, [], 'synthetic queued row must be absent before encryption preflight');
+    const webhookBeforeReplay = await database.$queryRaw`
+      SELECT to_jsonb(delivery) AS "snapshot" FROM "WebhookDelivery" delivery
+      WHERE "tenantId" = ${tenantId} AND "id" IN (${deliveredId}, ${deadLetteredId})
+      ORDER BY "id"
+    `;
+    assert.equal(webhookBeforeReplay.length, 2);
+
     runFullMigration(migrationEnvironment);
+
+    const webhookAfterReplay = await database.$queryRaw`
+      SELECT to_jsonb(delivery) AS "snapshot" FROM "WebhookDelivery" delivery
+      WHERE "tenantId" = ${tenantId} AND "id" IN (${deliveredId}, ${deadLetteredId})
+      ORDER BY "id"
+    `;
+    assert.deepEqual(webhookAfterReplay, webhookBeforeReplay);
 
     const after = await database.$queryRaw`
       SELECT to_jsonb(job) AS "snapshot"

@@ -1837,6 +1837,118 @@ describe('AuthService – mixed auth flow', () => {
         expect((service as any).getRedis().set).not.toHaveBeenCalled();
     });
 
+    it.each(['changed', 'removed'] as const)(
+        'rejects a verified password when its hash is %s before locked session issuance',
+        async (change) => {
+            const passwordHash = bcrypt.hashSync('correct-horse', 10);
+            const verifiedUser = {
+                id: 'u-password-reset-race',
+                tenantId: 't-1',
+                role: 'STAFF',
+                email: null,
+                username: 'legacyuser',
+                mfaEnabled: false,
+                passwordHash,
+                loginAttempts: 0,
+                lockedUntil: null,
+            };
+            const changedUser = {
+                ...verifiedUser,
+                passwordHash: change === 'changed' ? bcrypt.hashSync('replacement-password', 10) : null,
+            };
+            // Lookup and locked verification see the old credential. The issuer's
+            // separate locked reread sees the reset/deletion that committed next.
+            mockPrisma.user.findFirst
+                .mockResolvedValueOnce(verifiedUser)
+                .mockResolvedValueOnce(verifiedUser)
+                .mockResolvedValueOnce(changedUser);
+            mockRbacService.getEffectiveAccess.mockResolvedValue({
+                primaryRole: 'STAFF', roles: [], permissions: ['auth:login_password'],
+            });
+
+            await expect(service.loginWithUsernamePassword('LegacyUser', 'correct-horse', 'demo'))
+                .rejects.toBeInstanceOf(UnauthorizedException);
+
+            expect(mockPrisma.user.findFirst).toHaveBeenCalledTimes(3);
+            expect(mockPrisma.session.create).not.toHaveBeenCalled();
+            expect(mockPrisma.auditLog.create).not.toHaveBeenCalled();
+            expect(mockJwtService.generateAccessToken).not.toHaveBeenCalled();
+        },
+    );
+
+    it('rejects password session issuance after the password login permission is revoked', async () => {
+        const passwordHash = bcrypt.hashSync('correct-horse', 10);
+        mockPrisma.user.findFirst.mockResolvedValue({
+            id: 'u-password-permission-race',
+            tenantId: 't-1',
+            role: 'STAFF',
+            email: null,
+            username: 'legacyuser',
+            mfaEnabled: false,
+            passwordHash,
+            loginAttempts: 0,
+            lockedUntil: null,
+        });
+        mockRbacService.getEffectiveAccess
+            .mockResolvedValueOnce({
+                primaryRole: 'STAFF', roles: [], permissions: ['auth:login_password', 'dashboard:access'],
+            })
+            .mockResolvedValueOnce({
+                primaryRole: 'STAFF', roles: [], permissions: ['dashboard:access'],
+            });
+
+        await expect(service.loginWithUsernamePassword('LegacyUser', 'correct-horse', 'demo'))
+            .rejects.toBeInstanceOf(UnauthorizedException);
+
+        expect(mockRbacService.getEffectiveAccess).toHaveBeenCalledTimes(2);
+        expect(mockPrisma.session.create).not.toHaveBeenCalled();
+        expect(mockPrisma.auditLog.create).not.toHaveBeenCalled();
+        expect(mockJwtService.generateAccessToken).not.toHaveBeenCalled();
+    });
+
+    it('rejects direct password session issuance without a verified credential proof', async () => {
+        const user = {
+            id: 'u-password-missing-proof',
+            tenantId: 't-1',
+            role: 'STAFF',
+            email: null,
+            username: 'legacyuser',
+            mfaEnabled: false,
+            passwordHash: bcrypt.hashSync('correct-horse', 10),
+        };
+        mockPrisma.user.findFirst.mockResolvedValue(user);
+
+        await expect((service as any).createSessionTokens(user, { loginMethod: 'USERNAME_PASSWORD' }))
+            .rejects.toBeInstanceOf(UnauthorizedException);
+
+        expect(mockRbacService.getEffectiveAccess).not.toHaveBeenCalled();
+        expect(mockPrisma.session.create).not.toHaveBeenCalled();
+        expect(mockPrisma.auditLog.create).not.toHaveBeenCalled();
+        expect(mockJwtService.generateAccessToken).not.toHaveBeenCalled();
+    });
+
+    it.each(['changed', 'removed', 'missing-proof'] as const)(
+        'rejects email session issuance after a %s verified identity',
+        async (change) => {
+            const verified = {
+                id: 'u-email-identity-race', tenantId: 't-1', role: 'STAFF',
+                email: 'former@example.com', username: null, mfaEnabled: false,
+            };
+            mockPrisma.user.findFirst.mockResolvedValue({
+                ...verified,
+                email: change === 'changed' ? 'replacement@example.com' : change === 'removed' ? null : verified.email,
+            });
+            const proof = change === 'missing-proof' ? undefined : { email: verified.email };
+            await expect((service as any).createSessionTokens(
+                verified, { loginMethod: 'EMAIL_OTP' }, true, null, undefined, undefined, proof,
+            )).rejects.toBeInstanceOf(UnauthorizedException);
+            expect(mockRbacService.getEffectiveAccess).not.toHaveBeenCalled();
+            expect(mockPrisma.session.create).not.toHaveBeenCalled();
+            expect(mockPrisma.auditLog.create).not.toHaveBeenCalled();
+            expect(mockJwtService.generateAccessToken).not.toHaveBeenCalled();
+        },
+    );
+
     it('records failed password attempt on invalid migrated password', async () => {
         const passwordHash = bcrypt.hashSync('right-password', 10);
         mockPrisma.user.findFirst.mockResolvedValue({
@@ -3176,7 +3288,7 @@ describe('AuthService - MFA and refresh state', () => {
             email: 'admin@example.com',
             username: null,
             mfaEnabled: false,
-        }, { loginMethod: 'EMAIL_OTP' });
+        }, { loginMethod: 'EMAIL_OTP' }, true, null, undefined, undefined, { email: 'admin@example.com' });
 
         expect(mockJwtService.generateAccessToken).toHaveBeenCalledWith(expect.objectContaining({
             sessionId: 's-settings-admin',

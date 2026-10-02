@@ -2653,6 +2653,7 @@ describe('AdminController platform user identity and access updates', () => {
                 findUniqueOrThrow: vi.fn().mockResolvedValue(updated),
                 update: vi.fn().mockResolvedValue(updated),
             },
+            onboardingSignupAttempt: { deleteMany: vi.fn().mockResolvedValue({ count: 0 }) },
             passwordResetToken: { updateMany: vi.fn().mockResolvedValue({ count: 0 }) },
             passwordResetEmailOutbox: { updateMany: vi.fn().mockResolvedValue({ count: 0 }) },
             session: { updateMany: vi.fn().mockResolvedValue({ count: 1 }) },
@@ -2812,6 +2813,9 @@ describe('AdminController platform user identity and access updates', () => {
                 userAgent: 'vitest-platform-admin',
             },
         );
+        expect(prisma.onboardingSignupAttempt.deleteMany).toHaveBeenCalledWith({
+            where: { tenantId: 'tenant-1', userId: 'user-1' },
+        });
         expect(prisma.passwordResetToken.updateMany).toHaveBeenCalledWith({
             where: { tenantId: 'tenant-1', userId: 'user-1', consumedAt: null },
             data: { consumedAt: expect.any(Date) },
@@ -2845,6 +2849,32 @@ describe('AdminController platform user identity and access updates', () => {
             where: { userId: 'user-1', revokedAt: null },
             data: { revokedAt: expect.any(Date) },
         });
+    });
+
+    it('preserves bound signup recovery when the normalized email is unchanged', async () => {
+        const prisma = buildUserMutationPrisma();
+        const controller = buildController(prisma, { grantCredits: vi.fn() }, undefined, {
+            authorizePlatformAdminUserMutationInTransaction: vi.fn().mockResolvedValue({ id: 'user-1', tenantId: 'tenant-1' }),
+        } as any);
+        await controller.updateUser(superAdminReq, 'user-1', { email: ' ADMIN@example.com ' });
+        expect(prisma.onboardingSignupAttempt.deleteMany).not.toHaveBeenCalled();
+        expect(prisma.passwordResetToken.updateMany).not.toHaveBeenCalled();
+        expect(prisma.session.updateMany).not.toHaveBeenCalled();
+    });
+
+    it('stops before identity mutation when bound signup invalidation fails', async () => {
+        const prisma = buildUserMutationPrisma();
+        prisma.onboardingSignupAttempt.deleteMany.mockRejectedValueOnce(new Error('signup invalidation unavailable'));
+        const controller = buildController(prisma, { grantCredits: vi.fn() }, undefined, {
+            authorizePlatformAdminUserMutationInTransaction: vi.fn().mockResolvedValue({ id: 'user-1', tenantId: 'tenant-1' }),
+        } as any);
+        await expect(controller.updateUser(superAdminReq, 'user-1', { email: 'replacement@example.com' }))
+            .rejects.toThrow('signup invalidation unavailable');
+        expect(prisma.user.update).not.toHaveBeenCalled();
+        expect(prisma.passwordResetToken.updateMany).not.toHaveBeenCalled();
+        expect(prisma.passwordResetEmailOutbox.updateMany).not.toHaveBeenCalled();
+        expect(prisma.session.updateMany).not.toHaveBeenCalled();
+        expect(prisma.auditLog.create).not.toHaveBeenCalled();
     });
 
     it('rolls back a non-role patch when exact live platform authorization is no longer valid', async () => {

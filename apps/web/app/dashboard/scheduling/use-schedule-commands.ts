@@ -553,6 +553,8 @@ export function useScheduleCommands<
 
   const undoShift = useCallback(async (shiftId: string) => {
     const current = optionsRef.current;
+    if (!current.canWriteShifts || !current.locationDataCurrent || !current.loadedShiftScope) return;
+    const writeScope = current.loadedShiftScope;
     const feedback = stateRef.current.byShiftId[shiftId];
     if (
       !feedback
@@ -618,15 +620,23 @@ export function useScheduleCommands<
         attempt.key,
       ));
       clearAttempt(shiftId, attempt.key);
+      if (!current.scopeIsStillSelected(writeScope)) {
+        transition(shiftId, attempt.key, 'undone', 'Move undone in a different calendar view. Reload that schedule to view it.');
+        return;
+      }
       replaceScheduleResult(schedule.id, undone.data);
       const message = `Move undone at ${statusTime()}.`;
       current.setScheduleStatus({ tone: 'saved', message });
       transition(shiftId, attempt.key, 'undone', message);
     } catch (error) {
+      if (requiresAttemptRotation(error)) clearAttempt(shiftId, attempt.key);
+      if (!current.scopeIsStillSelected(writeScope)) {
+        transition(shiftId, attempt.key, 'failed', 'Undo outcome belongs to a different calendar view. Reload that schedule before retrying.');
+        return;
+      }
       current.setShifts((items) => items.map((item) => (
         item.id === shiftId ? placementWithStaff(item, feedback.requested!) : item
       )));
-      if (requiresAttemptRotation(error)) discardAttempt(shiftId);
       if (!(error instanceof ApiV2ClientError) || error.status === 412 || requiresAttemptRotation(error)) {
         await reconcileAuthoritative(shiftId, attempt.key, 'Undo outcome was uncertain. Reconciling the saved schedule...', currentShift?.locationId);
         return;

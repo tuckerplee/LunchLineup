@@ -219,7 +219,7 @@ export function AdminUsersWorkspace({ currentUserId }: WorkspaceProps) {
     const [tenantLoadingMore, setTenantLoadingMore] = useState(false);
     const [savingKey, setSavingKey] = useState<string | null>(null);
     const [message, setMessage] = useState<Banner>(null);
-    const [temporaryPin, setTemporaryPin] = useState<string | null>(null);
+    const [temporaryPin, setTemporaryPin] = useState<{ userId: string; pin: string } | null>(null);
     const userRequestId = useRef(0);
     const tenantRequestId = useRef(0);
 
@@ -387,7 +387,9 @@ export function AdminUsersWorkspace({ currentUserId }: WorkspaceProps) {
                 'POST',
                 {},
             );
-            setTemporaryPin(payload.temporaryPin ?? null);
+            setTemporaryPin(payload.temporaryPin
+                ? { userId: selectedUser.id, pin: payload.temporaryPin }
+                : null);
             setMessage({ tone: 'success', text: `PIN reset for ${selectedUser.name}.` });
             await refreshUsers();
         } catch (error) {
@@ -1053,11 +1055,11 @@ export function AdminUsersWorkspace({ currentUserId }: WorkspaceProps) {
                                 )}
                             </div>
 
-                            {temporaryPin ? (
+                            {temporaryPin?.userId === selectedUser.id ? (
                                 <div className="surface-muted" style={{ padding: '0.8rem', borderColor: '#ffe1a6', background: '#fff7e7' }}>
                                     <div style={{ fontSize: '0.78rem', color: '#7a2e14', marginBottom: 2 }}>Temporary PIN</div>
                                     <div style={{ fontSize: '1.1rem', fontWeight: 800, color: '#7c4a03', letterSpacing: '0.04em', fontFamily: 'var(--font-mono)' }}>
-                                        {temporaryPin}
+                                        {temporaryPin.pin}
                                     </div>
                                     <div style={{ fontSize: '0.74rem', color: 'var(--text-secondary)', marginTop: 4 }}>
                                         Share this securely. The user should reset it after first login.

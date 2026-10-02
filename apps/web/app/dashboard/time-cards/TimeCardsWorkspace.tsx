@@ -50,6 +50,10 @@ export function TimeCardsWorkspace({ canManageTeam, canReadLocations, canWriteTi
     const [notice, setNotice] = useState<string | null>(null);
     const cardsRequestGate = useRef(createLatestRequestGate<string>());
     const clockInRequestKey = useRef(new ClockInRequestKey());
+    const correctionGeneration = useRef(0);
+    const renderedCorrectionGeneration = correctionGeneration.current;
+
+    useEffect(() => () => { correctionGeneration.current += 1; }, []);
 
     const isTeamTime = view === 'team';
     const selectedUserId = selectedTimeCardUserId({ view, currentUserId, selectedTeamUserId });
@@ -115,6 +119,7 @@ export function TimeCardsWorkspace({ canManageTeam, canReadLocations, canWriteTi
         }
     }, [nextLocationCursor]);
     const loadCards = useCallback(async (userId: string, targetView: TimeCardView) => {
+        correctionGeneration.current += 1;
         const targetKey = `${targetView}:${userId}`;
         const ticket = cardsRequestGate.current.begin(targetKey);
         setIsCardsLoading(true);
@@ -235,6 +240,7 @@ export function TimeCardsWorkspace({ canManageTeam, canReadLocations, canWriteTi
     }, []);
 
     const clearLoadedPerson = useCallback(() => {
+        correctionGeneration.current += 1;
         cardsRequestGate.current.invalidate();
         setActiveCard(null);
         setCards([]);
@@ -262,6 +268,7 @@ export function TimeCardsWorkspace({ canManageTeam, canReadLocations, canWriteTi
 
     const selectLocation = useCallback((locationId: string) => {
         if (locationId === selectedLocationId) return;
+        correctionGeneration.current += 1;
         clockInRequestKey.current.reset();
         setSelectedLocationId(locationId);
         setBreakMinutes('30');
@@ -557,8 +564,12 @@ export function TimeCardsWorkspace({ canManageTeam, canReadLocations, canWriteTi
                 <TimeCardCorrectionPanel
                     key={correctingCard.id + correctingCard.updatedAt}
                     card={correctingCard}
-                    onCancel={() => setCorrectingCard(null)}
+                    onCancel={() => {
+                        correctionGeneration.current += 1;
+                        setCorrectingCard(null);
+                    }}
                     onSaved={async () => {
+                        if (correctionGeneration.current !== renderedCorrectionGeneration) return;
                         setNotice('Time card corrected.');
                         setCorrectingCard(null);
                         await loadCards(selectedUserId, view);
@@ -574,6 +585,8 @@ export function TimeCardsWorkspace({ canManageTeam, canReadLocations, canWriteTi
                 nextCardsCursor={nextCardsCursor}
                 selectedStaffName={selectedStaffName}
                 onCorrect={(card) => {
+                    if (correctingCard?.id === card.id && correctingCard.updatedAt === card.updatedAt) return;
+                    correctionGeneration.current += 1;
                     setError(null);
                     setNotice(null);
                     setCorrectingCard(card);
