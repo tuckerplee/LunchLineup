@@ -4,7 +4,7 @@ import type { SessionIdentity } from '@lunchlineup/api-contract';
 import type { FastifyReply } from 'fastify';
 import type { TenantDatabase } from './database';
 import { NATIVE_QUOTA_OWNERS, type NativeQuotaOperation } from './native-quota-owners';
-import type { NativeQuotaStorage } from './native-quota-storage';
+import { NativeQuotaStorageUnavailableError, type NativeQuotaRecord, type NativeQuotaStorage } from './native-quota-storage';
 import { ProblemError } from './problem';
 
 type PlanTier = Parameters<typeof resolveRateLimits>[0];
@@ -100,7 +100,16 @@ export class NativePlanQuota implements NativeQuotaAdapter {
 
   private async consumeBucket(operation: NativeQuotaOperation, tenantId: string, subject: string, reply: FastifyReply, bucket: 'default' | 'tenantCeiling', limit: number): Promise<void> {
     const key = nativeQuotaKey(operation, tenantId, subject, bucket);
-    const result = await this.storage.increment(key, WINDOW_MS, limit, WINDOW_MS, bucket);
+    let result: NativeQuotaRecord;
+    try {
+      result = await this.storage.increment(key, WINDOW_MS, limit, WINDOW_MS, bucket);
+    } catch (error) {
+      if (error instanceof NativeQuotaStorageUnavailableError) {
+        throw new ProblemError(503, 'rate_limit_storage_unavailable',
+          'Request limits are temporarily unavailable.', 'Service unavailable');
+      }
+      throw error;
+    }
     const suffix = bucket === 'default' ? '' : '-' + bucket;
     reply.header('X-RateLimit-Limit' + suffix, limit);
     reply.header('X-RateLimit-Remaining' + suffix, Math.max(0, limit - result.totalHits));

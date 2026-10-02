@@ -7,6 +7,8 @@ function config(trustProxy: string) {
     APP_ORIGIN: 'https://beta.lunchlineup.com',
     LEGACY_API_BASE_URL: 'http://api:3000/v1',
     JWT_SECRET: 'test-api-v2-jwt-secret',
+    NODE_ENV: 'test',
+    METRICS_TOKEN: 'synthetic-config-metrics-token-00000000000000000000',
     TRUST_PROXY: trustProxy,
   });
 }
@@ -66,12 +68,16 @@ describe('API v2 runtime configuration', () => {
       APP_ORIGIN: 'https://beta.lunchlineup.com',
       LEGACY_API_BASE_URL: 'http://api:3000/v1',
       JWT_SECRET: 'test-api-v2-jwt-secret',
+      NODE_ENV: 'test',
+      METRICS_TOKEN: 'synthetic-config-metrics-token-00000000000000000000',
       REDIS_URL: 'https://not-redis.example',
     })).toThrow('REDIS_URL');
     expect(() => loadConfig({
       APP_ORIGIN: 'https://beta.lunchlineup.com',
       LEGACY_API_BASE_URL: 'http://api:3000/v1/auth/me',
       JWT_SECRET: 'test-api-v2-jwt-secret',
+      NODE_ENV: 'test',
+      METRICS_TOKEN: 'synthetic-config-metrics-token-00000000000000000000',
     })).toThrow('LEGACY_API_BASE_URL');
   });
 
@@ -80,12 +86,16 @@ describe('API v2 runtime configuration', () => {
       APP_ORIGIN: 'https://beta.lunchlineup.com',
       LEGACY_API_BASE_URL: 'http://api:3000/v1',
       JWT_SECRET: 'test-api-v2-jwt-secret',
+      NODE_ENV: 'test',
+      METRICS_TOKEN: 'synthetic-config-metrics-token-00000000000000000000',
       STAFF_INVITATION_MAX_ATTEMPTS: '3',
     }).staffInvitationMaxAttempts).toBe(3);
     expect(() => loadConfig({
       APP_ORIGIN: 'https://beta.lunchlineup.com',
       LEGACY_API_BASE_URL: 'http://api:3000/v1',
       JWT_SECRET: 'test-api-v2-jwt-secret',
+      NODE_ENV: 'test',
+      METRICS_TOKEN: 'synthetic-config-metrics-token-00000000000000000000',
       STAFF_INVITATION_MAX_ATTEMPTS: '9',
     })).toThrow(/integer between 1 and 8/);
   });
@@ -95,18 +105,24 @@ describe('API v2 runtime configuration', () => {
       APP_ORIGIN: 'https://beta.lunchlineup.com',
       LEGACY_API_BASE_URL: 'http://api:3000/v1',
       JWT_SECRET: 'test-api-v2-jwt-secret',
+      NODE_ENV: 'test',
+      METRICS_TOKEN: 'synthetic-config-metrics-token-00000000000000000000',
       INTERNAL_BETA_ENTITLEMENTS_ENABLED: 'true',
     })).not.toThrow();
     expect(() => loadConfig({
       APP_ORIGIN: 'https://app.lunchlineup.com',
       LEGACY_API_BASE_URL: 'http://api:3000/v1',
       JWT_SECRET: 'test-api-v2-jwt-secret',
+      NODE_ENV: 'test',
+      METRICS_TOKEN: 'synthetic-config-metrics-token-00000000000000000000',
       INTERNAL_BETA_ENTITLEMENTS_ENABLED: 'true',
     })).toThrow(/INTERNAL_BETA_ENTITLEMENTS_ENABLED/);
     expect(() => loadConfig({
       APP_ORIGIN: 'https://beta.lunchlineup.com',
       LEGACY_API_BASE_URL: 'http://api:3000/v1',
       JWT_SECRET: 'test-api-v2-jwt-secret',
+      NODE_ENV: 'test',
+      METRICS_TOKEN: 'synthetic-config-metrics-token-00000000000000000000',
       INTERNAL_BETA_ENTITLEMENTS_ENABLED: 'sometimes',
     })).toThrow(/boolean/);
   });
@@ -116,11 +132,15 @@ describe('API v2 runtime configuration', () => {
       APP_ORIGIN: 'https://beta.lunchlineup.com',
       LEGACY_API_BASE_URL: 'http://api:3000/v1',
       JWT_SECRET: 'test-api-v2-jwt-secret',
+      NODE_ENV: 'test',
+      METRICS_TOKEN: 'synthetic-config-metrics-token-00000000000000000000',
     }).oidcSsoAvailable).toBe(false);
     expect(loadConfig({
       APP_ORIGIN: 'https://beta.lunchlineup.com',
       LEGACY_API_BASE_URL: 'http://api:3000/v1',
       JWT_SECRET: 'test-api-v2-jwt-secret',
+      NODE_ENV: 'test',
+      METRICS_TOKEN: 'synthetic-config-metrics-token-00000000000000000000',
       OIDC_ENABLED: 'true',
       NEXT_PUBLIC_OIDC_ENABLED: 'true',
       OIDC_ISSUER_URL: 'https://issuer.example.test',

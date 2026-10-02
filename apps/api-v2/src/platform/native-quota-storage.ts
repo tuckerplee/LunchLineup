@@ -95,6 +95,13 @@ export interface NativeQuotaRedisClient {
   off(event: 'error', listener: (error: unknown) => void): unknown;
 }
 
+export class NativeQuotaStorageUnavailableError extends Error {
+  constructor() {
+    super('Shared rate-limit storage is unavailable.');
+    this.name = 'NativeQuotaStorageUnavailableError';
+  }
+}
+
 export class NativeRedisQuotaStorage implements NativeQuotaStorage {
   private readonly client: NativeQuotaRedisClient;
   private readonly ownsClient: boolean;
@@ -154,14 +161,9 @@ export class NativeRedisQuotaStorage implements NativeQuotaStorage {
       return record;
     } catch {
       this.logFailure();
-      // Match retained production behavior. Never fall back to process-local
-      // counters, even when the native service is run in a development shell.
-      return {
-        totalHits: limit + 1,
-        timeToExpire: Math.ceil(ttl / 1000),
-        isBlocked: true,
-        timeToBlockExpire: Math.ceil(blockDuration / 1000),
-      };
+      // Failed storage is service unavailability, distinct from a valid quota
+      // denial. Never admit through local counters or classify failure as429.
+      throw new NativeQuotaStorageUnavailableError();
     }
   }
 
@@ -227,6 +229,6 @@ export class NativeRedisQuotaStorage implements NativeQuotaStorage {
     const now = Date.now();
     if (this.lastFailureLogAt !== undefined && now - this.lastFailureLogAt < FAILURE_LOG_INTERVAL_MS) return;
     this.lastFailureLogAt = now;
-    this.reportFailure();
+    try { this.reportFailure(); } catch { /* diagnostics cannot change admission or expose their error */ }
   }
 }

@@ -1,8 +1,8 @@
 // Private source-only regression draft; future destination native-quota-storage.test.ts.
-// Binds selected storage V6; no native Redis, cancellation, or total-wall-budget proof.
+// Binds selected storage V7; no native Redis, cancellation, or total-wall-budget proof.
 import { createHash } from 'node:crypto';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { NativeRedisQuotaStorage } from './native-quota-storage';
+import { NativeQuotaStorageUnavailableError, NativeRedisQuotaStorage } from './native-quota-storage';
 
 const owned = vi.hoisted(() => ({
   client: undefined as unknown,
@@ -69,7 +69,14 @@ function success(result: Result, action: Action) {
   expect(result).toEqual({ ok: true, value: action === 'ready' ? undefined : ALLOWED });
 }
 function denied(result: Result, action: Action) {
-  if (action === 'increment') expect(result).toEqual({ ok: true, value: DENIED });
+  if (action === 'increment') {
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error).toBeInstanceOf(NativeQuotaStorageUnavailableError);
+      expect((result.error as Error).message).toBe('Shared rate-limit storage is unavailable.');
+      expect(Object.prototype.hasOwnProperty.call(result.error, 'cause')).toBe(false);
+    }
+  }
   else {
     expect(result.ok).toBe(false);
     if (!result.ok) {
@@ -352,7 +359,9 @@ describe('shared quota V6 finite transport contracts', () => {
     { id: "parse-decimal-terminal-newline-v6-denied", reply: ["1\n",60,0,0], expected: DENIED, diagnostic: true }
   ])('$id', async ({ reply, expected, diagnostic: shouldReport }) => {
     const h = harness(); h.client.eval.mockResolvedValueOnce(reply);
-    expect(await start(h, 'increment').outcome).toEqual({ ok: true, value: expected });
+    const result = await start(h, 'increment').outcome;
+    if (shouldReport) denied(result, 'increment');
+    else expect(result).toEqual({ ok: true, value: expected });
     expect(h.client.eval).toHaveBeenCalledOnce(); diagnostic(h, shouldReport ? 1 : 0);
   }, 10_000);
 
@@ -376,4 +385,13 @@ describe('shared quota V6 finite transport contracts', () => {
     expect(h.client.connect).toHaveBeenCalledOnce(); expect(h.client.eval).toHaveBeenCalledOnce();
     expect(h.client.ping).toHaveBeenCalledTimes(action === 'ready' ? 1 : 0); diagnostic(h, 0);
   }, 10_000);
+  it.each(['increment', 'ready'] as const)('reporter failure cannot replace safe %s unavailability', async action => {
+    const h = harness();
+    h.report.mockImplementation(() => { throw new Error('synthetic-private-report-error'); });
+    h.client.eval.mockRejectedValueOnce(new Error('synthetic-private-redis-error'));
+    denied(await start(h, action).outcome, action);
+    diagnostic(h, 1);
+    expect(h.client.eval).toHaveBeenCalledTimes(1);
+  });
+
 });

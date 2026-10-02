@@ -1,3 +1,4 @@
+import type { Prisma } from '@prisma/client';
 import { describe, expect, it, vi } from 'vitest';
 import { PeopleService } from './people.service';
 import { authorizeMutation } from './access';
@@ -13,7 +14,7 @@ function fixture(suspendedAt: Date | null = null) {
   const tx = {
     user: { findFirst: vi.fn(async () => user), findFirstOrThrow: vi.fn(async () => user),
       update: vi.fn(async ({ data }) => { Object.assign(user, data); return user; }), count: vi.fn(async () => 1) },
-    session: { updateMany: vi.fn(async () => ({ count: 1 })) },
+    session: { updateMany: vi.fn(async (_args: Prisma.SessionUpdateManyArgs) => ({ count: 1 })) },
     passwordResetToken: { updateMany: vi.fn() }, passwordResetEmailOutbox: { updateMany: vi.fn() },
     mfaTotpClaim: { deleteMany: vi.fn() },
     auditLog: { create: vi.fn() }, roleAssignment: { findMany: vi.fn(async () => []) },

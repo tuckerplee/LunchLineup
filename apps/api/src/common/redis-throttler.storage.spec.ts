@@ -1,4 +1,5 @@
 import { Test } from "@nestjs/testing";
+import { ServiceUnavailableException } from "@nestjs/common";
 import { ThrottlerModule, ThrottlerStorageService } from "@nestjs/throttler";
 import { describe, expect, it, vi } from "vitest";
 import {
@@ -60,14 +61,20 @@ describe("RedisThrottlerStorage", () => {
       }),
     });
 
-    await expect(
-      storage.increment("request-key", 60_000, 5, 30_000, "auth"),
-    ).resolves.toEqual({
-      totalHits: 6,
-      timeToExpire: 60,
-      isBlocked: true,
-      timeToBlockExpire: 30,
-    });
+    const result = storage.increment("request-key", 60_000, 5, 30_000, "auth").then(
+      value => ({ ok: true as const, value }),
+      error => ({ ok: false as const, error }),
+    );
+    const outcome = await result;
+    expect(outcome.ok).toBe(false);
+    if (!outcome.ok) {
+      expect(outcome.error).toBeInstanceOf(ServiceUnavailableException);
+      expect(outcome.error.getStatus()).toBe(503);
+      expect(outcome.error.message).toBe("Request limits are temporarily unavailable.");
+      expect(outcome.error.getResponse()).not.toHaveProperty("cause");
+      expect(JSON.stringify(outcome.error.getResponse())).not.toContain("secret");
+      expect(String(outcome.error)).not.toContain("redis://");
+    }
   });
 
   it("uses the isolated in-memory fallback only outside production", async () => {

@@ -15,6 +15,8 @@ const config = loadConfig({
   ALLOWED_ORIGINS: 'https://beta.lunchlineup.com',
   LEGACY_API_BASE_URL: 'http://api:3000/v1',
   JWT_SECRET: 'test-api-v2-jwt-secret',
+  NODE_ENV: 'test',
+  METRICS_TOKEN: 'synthetic-config-metrics-token-00000000000000000000',
   DEPLOY_RELEASE_SHA: 'a'.repeat(40),
   LOG_LEVEL: 'silent',
 });

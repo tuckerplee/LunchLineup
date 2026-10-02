@@ -1,5 +1,6 @@
 import { NativePlanQuota, type NativeQuotaAdapter } from './platform/native-quota';
 import { NativeRedisQuotaStorage } from './platform/native-quota-storage';
+import { NativeApiMetrics } from './platform/metrics';
 import cookie from '@fastify/cookie';
 import swagger from '@fastify/swagger';
 import { TypeBoxTypeProvider } from '@fastify/type-provider-typebox';
@@ -105,17 +106,24 @@ export async function buildServer(
     database?: TenantDatabase;
     identity?: IdentityAdapter;
     quotaStorage?: NativeRedisQuotaStorage;
+    metrics?: NativeApiMetrics;
   } = {};
   let cleanupPromise: Promise<void> | undefined;
   const cleanup = (): Promise<void> => {
     cleanupPromise ??= (async () => {
       try {
-        await resources.identity?.close?.();
+        // The onClose owner runs after Fastify drains its response streams.
+        // Startup cleanup has no admitted requests. Clear only this registry.
+        resources.metrics?.close();
       } finally {
         try {
-          resources.quotaStorage?.close();
+          await resources.identity?.close?.();
         } finally {
-          await resources.database?.disconnect();
+          try {
+            resources.quotaStorage?.close();
+          } finally {
+            await resources.database?.disconnect();
+          }
         }
       }
     })();
@@ -123,6 +131,10 @@ export async function buildServer(
   };
   try {
     app.addHook('onClose', cleanup);
+    // Retain the successfully returned owner before install/route hooks can fail.
+    const metrics = new NativeApiMetrics(config.metricsToken, message => app.log.error(message));
+    resources.metrics = metrics;
+    metrics.install(app);
     const database = overrides.database ?? new TenantDatabase();
     resources.database = database;
     const identity = overrides.identity ?? new NativeIdentityAdapter(config, database);

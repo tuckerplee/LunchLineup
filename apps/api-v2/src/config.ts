@@ -1,4 +1,5 @@
 import { isIP } from 'node:net';
+import { resolveNativeMetricsToken, type MetricsTokenReader } from './platform/metrics-token.js';
 
 export type ApiV2Config = {
   port: number;
@@ -18,6 +19,7 @@ export type ApiV2Config = {
   releaseSha: string;
   trustProxy: boolean | string[];
   logLevel: string;
+  readonly metricsToken: string;
 };
 
 function boundedInteger(value: string | undefined, fallback: number, minimum: number, maximum: number): number {
@@ -130,7 +132,10 @@ function trustProxy(value: string | undefined): boolean | string[] {
   return networks;
 }
 
-export function loadConfig(env: NodeJS.ProcessEnv = process.env): ApiV2Config {
+export function loadConfig(
+  env: NodeJS.ProcessEnv = process.env,
+  metricsSecretReader?: MetricsTokenReader,
+): ApiV2Config {
   const appOrigin = normalizedOrigin(env.APP_ORIGIN ?? 'http://localhost:3000');
   const internalBetaEntitlementsEnabled = booleanSetting(
     env.INTERNAL_BETA_ENTITLEMENTS_ENABLED,
@@ -180,5 +185,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ApiV2Config {
     releaseSha: releaseSha(env.DEPLOY_RELEASE_SHA ?? env.IMAGE_TAG),
     trustProxy: trustProxy(env.TRUST_PROXY),
     logLevel: env.LOG_LEVEL?.trim() || 'info',
+    metricsToken: resolveNativeMetricsToken(env, metricsSecretReader),
   };
 }

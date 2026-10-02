@@ -11,6 +11,8 @@ const config = loadConfig({
   APP_ORIGIN: 'https://beta.lunchlineup.com',
   LEGACY_API_BASE_URL: 'http://api:3000/v1',
   JWT_SECRET: 'test-api-v2-jwt-secret',
+  NODE_ENV: 'test',
+  METRICS_TOKEN: 'synthetic-config-metrics-token-00000000000000000000',
   LOG_LEVEL: 'silent',
 });
 
@@ -91,7 +93,7 @@ afterEach(() => {
 
 describe('retained application compatibility bridge', () => {
   it('calls only the fixed retained API base with bounded forwarded headers and JSON', async () => {
-    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ saved: true }), {
+    const fetchMock = vi.fn(async (_target: string, _init: RequestInit) => new Response(JSON.stringify({ saved: true }), {
       status: 200,
       headers: { 'content-type': 'application/json' },
     }));
@@ -135,7 +137,7 @@ describe('retained application compatibility bridge', () => {
       }),
       request: request('/v2/settings/general'),
       reply: reply(),
-    })).rejects.toMatchObject<Partial<ProblemError>>({
+    })).rejects.toMatchObject({
       status: 409,
       code: 'resource_conflict',
       message: 'The saved request conflicts with this payload.',
@@ -143,7 +145,7 @@ describe('retained application compatibility bridge', () => {
         legacyCode: 'SETUP_SHIFTS_CONFLICT',
         remediation: 'Retry the unchanged request or create a new attempt.',
       },
-    });
+    } satisfies Partial<ProblemError>);
   });
 
   it('translates declared retained location references only after native identity binding', async () => {
@@ -151,7 +153,7 @@ describe('retained application compatibility bridge', () => {
       resolvePublicIds: vi.fn(async () => new Map([[publicLocationId, internalLocationId]])),
       resolveInternalIds: vi.fn(async () => new Map([[internalLocationId, publicLocationId]])),
     };
-    const fetchMock = vi.fn(async () => new Response(JSON.stringify({
+    const fetchMock = vi.fn(async (_target: string, _init: RequestInit) => new Response(JSON.stringify({
       data: [{ locationId: internalLocationId }],
       unrelatedId: internalLocationId,
     }), {
@@ -198,7 +200,7 @@ describe('retained application compatibility bridge', () => {
       resolvePublicUserIds: vi.fn(async () => new Map([[publicUserId, internalUserId]])),
       resolveInternalUserIds: vi.fn(async () => new Map([[internalUserId, publicUserId]])),
     };
-    const fetchMock = vi.fn(async () => new Response(JSON.stringify({
+    const fetchMock = vi.fn(async (_target: string, _init: RequestInit) => new Response(JSON.stringify({
       locationId: internalLocationId,
       userId: internalUserId,
       id: internalUserId,

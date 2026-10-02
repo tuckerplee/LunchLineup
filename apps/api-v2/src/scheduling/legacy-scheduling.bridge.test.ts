@@ -1,3 +1,4 @@
+import type { SessionIdentity } from '@lunchlineup/api-contract';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { loadConfig } from '../config';
 import { LegacySchedulingBridge } from './legacy-scheduling.bridge';
@@ -7,12 +8,15 @@ const config = loadConfig({
   ALLOWED_ORIGINS: 'https://beta.lunchlineup.com',
   LEGACY_API_BASE_URL: 'http://api:3000/v1',
   JWT_SECRET: 'test-api-v2-jwt-secret',
+  NODE_ENV: 'test',
+  METRICS_TOKEN: 'synthetic-config-metrics-token-00000000000000000000',
   DEPLOY_RELEASE_SHA: 'a'.repeat(40),
   LOG_LEVEL: 'silent',
 });
 
-const identity = {
+const identity: SessionIdentity = {
   sub: 'user-internal',
+  publicUserId: 'f6776d21-bb21-4c35-a6ed-5da8df5ed238',
   tenantId: 'tenant-internal',
   sessionId: 'session-internal',
   role: 'MANAGER',
@@ -55,7 +59,7 @@ describe('retained scheduling anti-corruption bridge', () => {
     const database = {
       withTenant: vi.fn(async (_tenantId, operation) => operation(transaction)),
     } as never;
-    const fetchMock = vi.fn(async () => new Response(JSON.stringify({
+    const fetchMock = vi.fn(async (_target: string, _init: RequestInit) => new Response(JSON.stringify({
       scheduleId: 'legacy-schedule-1',
       totalConfiguredCost: 2,
       scheduleCost: 2,

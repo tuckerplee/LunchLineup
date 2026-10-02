@@ -9,6 +9,8 @@ const config = loadConfig({
   APP_ORIGIN: 'https://beta.lunchlineup.com',
   LEGACY_API_BASE_URL: 'http://api:3000/v1',
   JWT_SECRET: 'test-api-v2-jwt-secret',
+  NODE_ENV: 'test',
+  METRICS_TOKEN: 'synthetic-config-metrics-token-00000000000000000000',
   COOKIE_SECURE: 'false',
   LOG_LEVEL: 'silent',
 });
@@ -308,10 +310,10 @@ describe('native API v2 identity', () => {
   it('fails closed when tenant session state or MFA state is unavailable', async () => {
     const revoked = fixture({ revokedAt: new Date() });
     const revokedAdapter = new NativeIdentityAdapter(config, revoked.database as never, revoked.mfaSessions);
-    await expect(revokedAdapter.authenticate(request(), reply())).rejects.toMatchObject<Partial<ProblemError>>({
+    await expect(revokedAdapter.authenticate(request(), reply())).rejects.toMatchObject({
       status: 401,
       code: 'authentication_required',
-    });
+    } satisfies Partial<ProblemError>);
 
     const mfaUnavailable = fixture({ mfaEnabled: true });
     mfaUnavailable.mfaSessions.isVerified = vi.fn(async () => {
@@ -322,20 +324,20 @@ describe('native API v2 identity', () => {
       mfaUnavailable.database as never,
       mfaUnavailable.mfaSessions,
     );
-    await expect(unavailableAdapter.authenticate(request(), reply())).rejects.toMatchObject<Partial<ProblemError>>({
+    await expect(unavailableAdapter.authenticate(request(), reply())).rejects.toMatchObject({
       status: 503,
       code: 'identity_service_unavailable',
-    });
+    } satisfies Partial<ProblemError>);
   });
 
   it('does not fall back to a cookie when an Authorization header is malformed', async () => {
     const { database, mfaSessions } = fixture();
     const adapter = new NativeIdentityAdapter(config, database as never, mfaSessions);
 
-    await expect(adapter.authenticate(request(undefined, 'Basic stale'), reply())).rejects.toMatchObject<Partial<ProblemError>>({
+    await expect(adapter.authenticate(request(undefined, 'Basic stale'), reply())).rejects.toMatchObject({
       status: 401,
       code: 'authentication_required',
-    });
+    } satisfies Partial<ProblemError>);
     expect(database.withTenant).not.toHaveBeenCalled();
   });
 });

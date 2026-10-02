@@ -1,0 +1,1034 @@
+# Source-only native API rule controls; expectations not executed or parser-qualified.
+rule_files:
+  -
+    "../lunchlineup.yml"
+evaluation_interval: "1m"
+tests:
+  -
+    name: "healthy eligible traffic with no initialized5xx series has zero errors, not a missing ratio"
+    interval: "1m"
+    input_series:
+      -
+        series: "up{job=\"api-v2\",instance=\"api-v2:3002\"}"
+        values: "1+0x420"
+      -
+        series: "lunchlineup_api_v2_http_instrumentation_ready{job=\"api-v2\",instance=\"api-v2:3002\",app=\"lunchlineup-api-v2\"}"
+        values: "1+0x420"
+      -
+        series: "lunchlineup_api_v2_http_requests_total{job=\"api-v2\",instance=\"api-v2:3002\",method=\"GET\",route=\"/v2/locations\",scope=\"application\",status_class=\"2xx\"}"
+        values: "0+90x420"
+    alert_rule_test:
+      -
+        eval_time: "7h"
+        alertname: "ApiAvailabilityBudgetFastBurn"
+        exp_alerts: []
+      -
+        eval_time: "7h"
+        alertname: "ApiAvailabilityBudgetSlowBurn"
+        exp_alerts: []
+      -
+        eval_time: "7h"
+        alertname: "HighNativeApiErrorRate"
+        exp_alerts: []
+      -
+        eval_time: "3m"
+        alertname: "NativeApiMetricsMissing"
+        exp_alerts: []
+      -
+        eval_time: "3m"
+        alertname: "NativeApiHttpInstrumentationUnavailable"
+        exp_alerts: []
+    promql_expr_test:
+      -
+        expr: "((sum(rate(lunchlineup_api_v2_http_requests_total{job=\"api-v2\",scope=\"application\",status_class=\"5xx\"}[5m])) or vector(0)) / sum(rate(lunchlineup_api_v2_http_requests_total{job=\"api-v2\",scope=\"application\",status_class=~\"2xx|3xx|5xx\"}[5m])))"
+        eval_time: "7h"
+        exp_samples:
+          -
+            labels: "{}"
+            value: 0
+  -
+    name: "failed native scrape respects pending interval and resolves after recovery"
+    interval: "1m"
+    input_series:
+      -
+        series: "up{job=\"api-v2\",instance=\"api-v2:3002\"}"
+        values: "0+0x4 1+0x5"
+      -
+        series: "lunchlineup_api_v2_http_instrumentation_ready{job=\"api-v2\",instance=\"api-v2:3002\",app=\"lunchlineup-api-v2\"}"
+        values: "1+0x10"
+    alert_rule_test:
+      -
+        eval_time: "1m"
+        alertname: "ServiceDown"
+        exp_alerts: []
+      -
+        eval_time: "3m"
+        alertname: "ServiceDown"
+        exp_alerts:
+          -
+            exp_labels:
+              severity: "critical"
+              team: "ops"
+              job: "api-v2"
+              instance: "api-v2:3002"
+            exp_annotations:
+              summary: "api-v2 metrics scrape is down"
+              description: "Prometheus cannot scrape api-v2 at api-v2:3002."
+              runbook: "docs/runbooks/production-readiness.md"
+      -
+        eval_time: "7m"
+        alertname: "ServiceDown"
+        exp_alerts: []
+      -
+        eval_time: "3m"
+        alertname: "NativeApiHttpInstrumentationUnavailable"
+        exp_alerts: []
+  -
+    name: "removed native job is missing rather than healthy idle"
+    interval: "1m"
+    input_series: []
+    alert_rule_test:
+      -
+        eval_time: "1m"
+        alertname: "NativeApiMetricsMissing"
+        exp_alerts: []
+      -
+        eval_time: "3m"
+        alertname: "NativeApiMetricsMissing"
+        exp_alerts:
+          -
+            exp_labels:
+              severity: "critical"
+              team: "ops"
+              job: "api-v2"
+            exp_annotations:
+              summary: "Native API scrape configuration is missing"
+              description: "Prometheus has no current api-v2 target series; native availability cannot be confirmed."
+              runbook: "docs/runbooks/production-readiness.md"
+      -
+        eval_time: "3m"
+        alertname: "NativeApiHttpInstrumentationUnavailable"
+        exp_alerts: []
+  -
+    name: "healthy scrape with missing marker pages after two minutes"
+    interval: "1m"
+    input_series:
+      -
+        series: "up{job=\"api-v2\",instance=\"api-v2:3002\"}"
+        values: "1+0x10"
+    alert_rule_test:
+      -
+        eval_time: "1m"
+        alertname: "NativeApiHttpInstrumentationUnavailable"
+        exp_alerts: []
+      -
+        eval_time: "3m"
+        alertname: "NativeApiHttpInstrumentationUnavailable"
+        exp_alerts:
+          -
+            exp_labels:
+              severity: "critical"
+              team: "ops"
+              job: "api-v2"
+              instance: "api-v2:3002"
+            exp_annotations:
+              summary: "Native API HTTP instrumentation is unavailable"
+              description: "The native scrape succeeds but its initialized instrumentation marker is missing or zero."
+              runbook: "docs/runbooks/production-readiness.md"
+  -
+    name: "zero instrumentation marker pages and then resolves"
+    interval: "1m"
+    input_series:
+      -
+        series: "up{job=\"api-v2\",instance=\"api-v2:3002\"}"
+        values: "1+0x10"
+      -
+        series: "lunchlineup_api_v2_http_instrumentation_ready{job=\"api-v2\",instance=\"api-v2:3002\",app=\"lunchlineup-api-v2\"}"
+        values: "0+0x4 1+0x5"
+    alert_rule_test:
+      -
+        eval_time: "3m"
+        alertname: "NativeApiHttpInstrumentationUnavailable"
+        exp_alerts:
+          -
+            exp_labels:
+              severity: "critical"
+              team: "ops"
+              job: "api-v2"
+              instance: "api-v2:3002"
+            exp_annotations:
+              summary: "Native API HTTP instrumentation is unavailable"
+              description: "The native scrape succeeds but its initialized instrumentation marker is missing or zero."
+              runbook: "docs/runbooks/production-readiness.md"
+      -
+        eval_time: "7m"
+        alertname: "NativeApiHttpInstrumentationUnavailable"
+        exp_alerts: []
+  -
+    name: "another instance marker cannot mask the missing marker of this instance"
+    interval: "1m"
+    input_series:
+      -
+        series: "up{job=\"api-v2\",instance=\"api-v2:3002\"}"
+        values: "1+0x10"
+      -
+        series: "up{job=\"api-v2\",instance=\"api-v2-other:3002\"}"
+        values: "1+0x10"
+      -
+        series: "lunchlineup_api_v2_http_instrumentation_ready{job=\"api-v2\",instance=\"api-v2-other:3002\",app=\"lunchlineup-api-v2\"}"
+        values: "1+0x10"
+    alert_rule_test:
+      -
+        eval_time: "3m"
+        alertname: "NativeApiHttpInstrumentationUnavailable"
+        exp_alerts:
+          -
+            exp_labels:
+              severity: "critical"
+              team: "ops"
+              job: "api-v2"
+              instance: "api-v2:3002"
+            exp_annotations:
+              summary: "Native API HTTP instrumentation is unavailable"
+              description: "The native scrape succeeds but its initialized instrumentation marker is missing or zero."
+              runbook: "docs/runbooks/production-readiness.md"
+      -
+        eval_time: "3m"
+        alertname: "NativeApiMetricsMissing"
+        exp_alerts: []
+  -
+    name: "initialized healthy idle marker does not require request series"
+    interval: "1m"
+    input_series:
+      -
+        series: "up{job=\"api-v2\",instance=\"api-v2:3002\"}"
+        values: "1+0x420"
+      -
+        series: "lunchlineup_api_v2_http_instrumentation_ready{job=\"api-v2\",instance=\"api-v2:3002\",app=\"lunchlineup-api-v2\"}"
+        values: "1+0x420"
+    alert_rule_test:
+      -
+        eval_time: "7h"
+        alertname: "ApiAvailabilityBudgetFastBurn"
+        exp_alerts: []
+      -
+        eval_time: "7h"
+        alertname: "ApiAvailabilityBudgetSlowBurn"
+        exp_alerts: []
+      -
+        eval_time: "7h"
+        alertname: "HighNativeApiErrorRate"
+        exp_alerts: []
+      -
+        eval_time: "3m"
+        alertname: "NativeApiMetricsMissing"
+        exp_alerts: []
+      -
+        eval_time: "3m"
+        alertname: "NativeApiHttpInstrumentationUnavailable"
+        exp_alerts: []
+    promql_expr_test:
+      -
+        expr: "((sum(rate(lunchlineup_api_v2_http_requests_total{job=\"api-v2\",scope=\"application\",status_class=\"5xx\"}[5m])) or vector(0)) / sum(rate(lunchlineup_api_v2_http_requests_total{job=\"api-v2\",scope=\"application\",status_class=~\"2xx|3xx|5xx\"}[5m])))"
+        eval_time: "7h"
+        exp_samples: []
+  -
+    name: "zero eligible counters do not fire burn or route error"
+    interval: "1m"
+    input_series:
+      -
+        series: "up{job=\"api-v2\",instance=\"api-v2:3002\"}"
+        values: "1+0x420"
+      -
+        series: "lunchlineup_api_v2_http_instrumentation_ready{job=\"api-v2\",instance=\"api-v2:3002\",app=\"lunchlineup-api-v2\"}"
+        values: "1+0x420"
+      -
+        series: "lunchlineup_api_v2_http_requests_total{job=\"api-v2\",instance=\"api-v2:3002\",method=\"GET\",route=\"/v2/locations\",scope=\"application\",status_class=\"2xx\"}"
+        values: "0+0x420"
+      -
+        series: "lunchlineup_api_v2_http_requests_total{job=\"api-v2\",instance=\"api-v2:3002\",method=\"GET\",route=\"/v2/locations\",scope=\"application\",status_class=\"5xx\"}"
+        values: "0+0x420"
+    alert_rule_test:
+      -
+        eval_time: "7h"
+        alertname: "ApiAvailabilityBudgetFastBurn"
+        exp_alerts: []
+      -
+        eval_time: "7h"
+        alertname: "ApiAvailabilityBudgetSlowBurn"
+        exp_alerts: []
+      -
+        eval_time: "7h"
+        alertname: "HighNativeApiErrorRate"
+        exp_alerts: []
+  -
+    name: "only4xx traffic is excluded and cannot invent availability"
+    interval: "1m"
+    input_series:
+      -
+        series: "up{job=\"api-v2\",instance=\"api-v2:3002\"}"
+        values: "1+0x420"
+      -
+        series: "lunchlineup_api_v2_http_instrumentation_ready{job=\"api-v2\",instance=\"api-v2:3002\",app=\"lunchlineup-api-v2\"}"
+        values: "1+0x420"
+      -
+        series: "lunchlineup_api_v2_http_requests_total{job=\"api-v2\",instance=\"api-v2:3002\",method=\"GET\",route=\"/v2/locations\",scope=\"application\",status_class=\"4xx\"}"
+        values: "0+10000x420"
+    alert_rule_test:
+      -
+        eval_time: "7h"
+        alertname: "ApiAvailabilityBudgetFastBurn"
+        exp_alerts: []
+      -
+        eval_time: "7h"
+        alertname: "ApiAvailabilityBudgetSlowBurn"
+        exp_alerts: []
+      -
+        eval_time: "7h"
+        alertname: "HighNativeApiErrorRate"
+        exp_alerts: []
+    promql_expr_test:
+      -
+        expr: "((sum(rate(lunchlineup_api_v2_http_requests_total{job=\"api-v2\",scope=\"application\",status_class=\"5xx\"}[5m])) or vector(0)) / sum(rate(lunchlineup_api_v2_http_requests_total{job=\"api-v2\",scope=\"application\",status_class=~\"2xx|3xx|5xx\"}[5m])))"
+        eval_time: "7h"
+        exp_samples: []
+  -
+    name: "huge4xx volume cannot dilute native service failures"
+    interval: "1m"
+    input_series:
+      -
+        series: "up{job=\"api-v2\",instance=\"api-v2:3002\"}"
+        values: "1+0x420"
+      -
+        series: "lunchlineup_api_v2_http_instrumentation_ready{job=\"api-v2\",instance=\"api-v2:3002\",app=\"lunchlineup-api-v2\"}"
+        values: "1+0x420"
+      -
+        series: "lunchlineup_api_v2_http_requests_total{job=\"api-v2\",instance=\"api-v2:3002\",method=\"GET\",route=\"/v2/locations\",scope=\"application\",status_class=\"4xx\"}"
+        values: "0+10000x420"
+      -
+        series: "lunchlineup_api_v2_http_requests_total{job=\"api-v2\",instance=\"api-v2:3002\",method=\"GET\",route=\"/v2/locations\",scope=\"application\",status_class=\"5xx\"}"
+        values: "0+10x420"
+    alert_rule_test:
+      -
+        eval_time: "7h"
+        alertname: "ApiAvailabilityBudgetFastBurn"
+        exp_alerts:
+          -
+            exp_labels:
+              severity: "critical"
+              team: "engineering"
+            exp_annotations:
+              summary: "API availability error budget is burning rapidly"
+              description: "The 99.9% API availability SLO is consuming error budget above 14.4x across both five-minute and one-hour windows."
+              runbook: "docs/runbooks/service-level-objectives.md"
+      -
+        eval_time: "7h"
+        alertname: "ApiAvailabilityBudgetSlowBurn"
+        exp_alerts:
+          -
+            exp_labels:
+              severity: "warning"
+              team: "engineering"
+            exp_annotations:
+              summary: "API availability error budget is burning persistently"
+              description: "The 99.9% API availability SLO is consuming error budget above 6x across both 30-minute and six-hour windows."
+              runbook: "docs/runbooks/service-level-objectives.md"
+      -
+        eval_time: "7h"
+        alertname: "HighNativeApiErrorRate"
+        exp_alerts:
+          -
+            exp_labels:
+              severity: "critical"
+              team: "engineering"
+              job: "api-v2"
+              route: "/v2/locations"
+            exp_annotations:
+              summary: "High native API error rate on /v2/locations"
+              description: "api-v2 returns 100% completed 5xx responses among eligible application traffic."
+              runbook: "docs/runbooks/high-error-rate.md"
+    promql_expr_test:
+      -
+        expr: "((sum(rate(lunchlineup_api_v2_http_requests_total{job=\"api-v2\",scope=\"application\",status_class=\"5xx\"}[5m])) or vector(0)) / sum(rate(lunchlineup_api_v2_http_requests_total{job=\"api-v2\",scope=\"application\",status_class=~\"2xx|3xx|5xx\"}[5m])))"
+        eval_time: "7h"
+        exp_samples:
+          -
+            labels: "{}"
+            value: 1
+  -
+    name: "delegated native response budget never sums retained diagnostics"
+    interval: "1m"
+    input_series:
+      -
+        series: "up{job=\"api-v2\",instance=\"api-v2:3002\"}"
+        values: "1+0x420"
+      -
+        series: "lunchlineup_api_v2_http_instrumentation_ready{job=\"api-v2\",instance=\"api-v2:3002\",app=\"lunchlineup-api-v2\"}"
+        values: "1+0x420"
+      -
+        series: "lunchlineup_api_v2_http_requests_total{job=\"api-v2\",instance=\"api-v2:3002\",method=\"GET\",route=\"/v2/locations\",scope=\"application\",status_class=\"2xx\"}"
+        values: "0+90x420"
+      -
+        series: "lunchlineup_api_v2_http_requests_total{job=\"api-v2\",instance=\"api-v2:3002\",method=\"GET\",route=\"/v2/locations\",scope=\"application\",status_class=\"5xx\"}"
+        values: "0+10x420"
+      -
+        series: "http_requests_total{job=\"api\",route=\"/v1/locations\",status=\"500\"}"
+        values: "0+9999x420"
+    alert_rule_test:
+      -
+        eval_time: "7h"
+        alertname: "ApiAvailabilityBudgetFastBurn"
+        exp_alerts:
+          -
+            exp_labels:
+              severity: "critical"
+              team: "engineering"
+            exp_annotations:
+              summary: "API availability error budget is burning rapidly"
+              description: "The 99.9% API availability SLO is consuming error budget above 14.4x across both five-minute and one-hour windows."
+              runbook: "docs/runbooks/service-level-objectives.md"
+      -
+        eval_time: "7h"
+        alertname: "ApiAvailabilityBudgetSlowBurn"
+        exp_alerts:
+          -
+            exp_labels:
+              severity: "warning"
+              team: "engineering"
+            exp_annotations:
+              summary: "API availability error budget is burning persistently"
+              description: "The 99.9% API availability SLO is consuming error budget above 6x across both 30-minute and six-hour windows."
+              runbook: "docs/runbooks/service-level-objectives.md"
+      -
+        eval_time: "7h"
+        alertname: "HighNativeApiErrorRate"
+        exp_alerts:
+          -
+            exp_labels:
+              severity: "critical"
+              team: "engineering"
+              job: "api-v2"
+              route: "/v2/locations"
+            exp_annotations:
+              summary: "High native API error rate on /v2/locations"
+              description: "api-v2 returns 10% completed 5xx responses among eligible application traffic."
+              runbook: "docs/runbooks/high-error-rate.md"
+    promql_expr_test:
+      -
+        expr: "((sum(rate(lunchlineup_api_v2_http_requests_total{job=\"api-v2\",scope=\"application\",status_class=\"5xx\"}[5m])) or vector(0)) / sum(rate(lunchlineup_api_v2_http_requests_total{job=\"api-v2\",scope=\"application\",status_class=~\"2xx|3xx|5xx\"}[5m])))"
+        eval_time: "7h"
+        exp_samples:
+          -
+            labels: "{}"
+            value: 0.1
+  -
+    name: "retained-only failures do not burn native front-door budget"
+    interval: "1m"
+    input_series:
+      -
+        series: "up{job=\"api-v2\",instance=\"api-v2:3002\"}"
+        values: "1+0x420"
+      -
+        series: "lunchlineup_api_v2_http_instrumentation_ready{job=\"api-v2\",instance=\"api-v2:3002\",app=\"lunchlineup-api-v2\"}"
+        values: "1+0x420"
+      -
+        series: "lunchlineup_api_v2_http_requests_total{job=\"api-v2\",instance=\"api-v2:3002\",method=\"GET\",route=\"/v2/locations\",scope=\"application\",status_class=\"2xx\"}"
+        values: "0+100x420"
+      -
+        series: "http_requests_total{job=\"api\",route=\"/v1/locations\",status=\"500\"}"
+        values: "0+9999x420"
+    alert_rule_test:
+      -
+        eval_time: "7h"
+        alertname: "ApiAvailabilityBudgetFastBurn"
+        exp_alerts: []
+      -
+        eval_time: "7h"
+        alertname: "ApiAvailabilityBudgetSlowBurn"
+        exp_alerts: []
+      -
+        eval_time: "7h"
+        alertname: "HighNativeApiErrorRate"
+        exp_alerts: []
+    promql_expr_test:
+      -
+        expr: "((sum(rate(lunchlineup_api_v2_http_requests_total{job=\"api-v2\",scope=\"application\",status_class=\"5xx\"}[5m])) or vector(0)) / sum(rate(lunchlineup_api_v2_http_requests_total{job=\"api-v2\",scope=\"application\",status_class=~\"2xx|3xx|5xx\"}[5m])))"
+        eval_time: "7h"
+        exp_samples:
+          -
+            labels: "{}"
+            value: 0
+  -
+    name: "probe metadata operator and unmatched failures are outside application SLI"
+    interval: "1m"
+    input_series:
+      -
+        series: "up{job=\"api-v2\",instance=\"api-v2:3002\"}"
+        values: "1+0x420"
+      -
+        series: "lunchlineup_api_v2_http_instrumentation_ready{job=\"api-v2\",instance=\"api-v2:3002\",app=\"lunchlineup-api-v2\"}"
+        values: "1+0x420"
+      -
+        series: "lunchlineup_api_v2_http_requests_total{job=\"api-v2\",instance=\"api-v2:3002\",method=\"GET\",route=\"/v2/locations\",scope=\"application\",status_class=\"2xx\"}"
+        values: "0+100x420"
+      -
+        series: "lunchlineup_api_v2_http_requests_total{job=\"api-v2\",instance=\"api-v2:3002\",method=\"GET\",route=\"/v2/ready\",scope=\"probe\",status_class=\"5xx\"}"
+        values: "0+9999x420"
+      -
+        series: "lunchlineup_api_v2_http_requests_total{job=\"api-v2\",instance=\"api-v2:3002\",method=\"GET\",route=\"/v2/version\",scope=\"metadata\",status_class=\"5xx\"}"
+        values: "0+9999x420"
+      -
+        series: "lunchlineup_api_v2_http_requests_total{job=\"api-v2\",instance=\"api-v2:3002\",method=\"GET\",route=\"/v2/admin/retention/purge-expired\",scope=\"operator\",status_class=\"5xx\"}"
+        values: "0+9999x420"
+      -
+        series: "lunchlineup_api_v2_http_requests_total{job=\"api-v2\",instance=\"api-v2:3002\",method=\"GET\",route=\"/unmatched\",scope=\"unmatched\",status_class=\"5xx\"}"
+        values: "0+9999x420"
+    alert_rule_test:
+      -
+        eval_time: "7h"
+        alertname: "ApiAvailabilityBudgetFastBurn"
+        exp_alerts: []
+      -
+        eval_time: "7h"
+        alertname: "ApiAvailabilityBudgetSlowBurn"
+        exp_alerts: []
+      -
+        eval_time: "7h"
+        alertname: "HighNativeApiErrorRate"
+        exp_alerts: []
+    promql_expr_test:
+      -
+        expr: "((sum(rate(lunchlineup_api_v2_http_requests_total{job=\"api-v2\",scope=\"application\",status_class=\"5xx\"}[5m])) or vector(0)) / sum(rate(lunchlineup_api_v2_http_requests_total{job=\"api-v2\",scope=\"application\",status_class=~\"2xx|3xx|5xx\"}[5m])))"
+        eval_time: "7h"
+        exp_samples:
+          -
+            labels: "{}"
+            value: 0
+  -
+    name: "shortfast window breach alone cannot page"
+    interval: "1m"
+    input_series:
+      -
+        series: "up{job=\"api-v2\",instance=\"api-v2:3002\"}"
+        values: "1+0x420"
+      -
+        series: "lunchlineup_api_v2_http_instrumentation_ready{job=\"api-v2\",instance=\"api-v2:3002\",app=\"lunchlineup-api-v2\"}"
+        values: "1+0x420"
+      -
+        series: "lunchlineup_api_v2_http_requests_total{job=\"api-v2\",instance=\"api-v2:3002\",method=\"GET\",route=\"/v2/locations\",scope=\"application\",status_class=\"2xx\"}"
+        values: "0+10000x420"
+      -
+        series: "lunchlineup_api_v2_http_requests_total{job=\"api-v2\",instance=\"api-v2:3002\",method=\"GET\",route=\"/v2/locations\",scope=\"application\",status_class=\"5xx\"}"
+        values: "0+0x417 200 400 600"
+    alert_rule_test:
+      -
+        eval_time: "7h"
+        alertname: "ApiAvailabilityBudgetFastBurn"
+        exp_alerts: []
+    promql_expr_test:
+      -
+        expr: "((sum(rate(lunchlineup_api_v2_http_requests_total{job=\"api-v2\",scope=\"application\",status_class=\"5xx\"}[5m])) or vector(0)) / sum(rate(lunchlineup_api_v2_http_requests_total{job=\"api-v2\",scope=\"application\",status_class=~\"2xx|3xx|5xx\"}[5m]))) > bool (14.4 * 0.001)"
+        eval_time: "7h"
+        exp_samples:
+          -
+            labels: "{}"
+            value: 1
+      -
+        expr: "((sum(rate(lunchlineup_api_v2_http_requests_total{job=\"api-v2\",scope=\"application\",status_class=\"5xx\"}[1h])) or vector(0)) / sum(rate(lunchlineup_api_v2_http_requests_total{job=\"api-v2\",scope=\"application\",status_class=~\"2xx|3xx|5xx\"}[1h]))) > bool (14.4 * 0.001)"
+        eval_time: "7h"
+        exp_samples:
+          -
+            labels: "{}"
+            value: 0
+  -
+    name: "longfast breach with a recovered short window resolves"
+    interval: "1m"
+    input_series:
+      -
+        series: "up{job=\"api-v2\",instance=\"api-v2:3002\"}"
+        values: "1+0x420"
+      -
+        series: "lunchlineup_api_v2_http_instrumentation_ready{job=\"api-v2\",instance=\"api-v2:3002\",app=\"lunchlineup-api-v2\"}"
+        values: "1+0x420"
+      -
+        series: "lunchlineup_api_v2_http_requests_total{job=\"api-v2\",instance=\"api-v2:3002\",method=\"GET\",route=\"/v2/locations\",scope=\"application\",status_class=\"2xx\"}"
+        values: "0+10000x420"
+      -
+        series: "lunchlineup_api_v2_http_requests_total{job=\"api-v2\",instance=\"api-v2:3002\",method=\"GET\",route=\"/v2/locations\",scope=\"application\",status_class=\"5xx\"}"
+        values: "0+10000x410 4100000+0x9"
+    alert_rule_test:
+      -
+        eval_time: "6h"
+        alertname: "ApiAvailabilityBudgetFastBurn"
+        exp_alerts:
+          -
+            exp_labels:
+              severity: "critical"
+              team: "engineering"
+            exp_annotations:
+              summary: "API availability error budget is burning rapidly"
+              description: "The 99.9% API availability SLO is consuming error budget above 14.4x across both five-minute and one-hour windows."
+              runbook: "docs/runbooks/service-level-objectives.md"
+      -
+        eval_time: "7h"
+        alertname: "ApiAvailabilityBudgetFastBurn"
+        exp_alerts: []
+    promql_expr_test:
+      -
+        expr: "((sum(rate(lunchlineup_api_v2_http_requests_total{job=\"api-v2\",scope=\"application\",status_class=\"5xx\"}[5m])) or vector(0)) / sum(rate(lunchlineup_api_v2_http_requests_total{job=\"api-v2\",scope=\"application\",status_class=~\"2xx|3xx|5xx\"}[5m]))) > bool (14.4 * 0.001)"
+        eval_time: "7h"
+        exp_samples:
+          -
+            labels: "{}"
+            value: 0
+      -
+        expr: "((sum(rate(lunchlineup_api_v2_http_requests_total{job=\"api-v2\",scope=\"application\",status_class=\"5xx\"}[1h])) or vector(0)) / sum(rate(lunchlineup_api_v2_http_requests_total{job=\"api-v2\",scope=\"application\",status_class=~\"2xx|3xx|5xx\"}[1h]))) > bool (14.4 * 0.001)"
+        eval_time: "7h"
+        exp_samples:
+          -
+            labels: "{}"
+            value: 1
+  -
+    name: "shortslow window breach alone cannot page"
+    interval: "1m"
+    input_series:
+      -
+        series: "up{job=\"api-v2\",instance=\"api-v2:3002\"}"
+        values: "1+0x420"
+      -
+        series: "lunchlineup_api_v2_http_instrumentation_ready{job=\"api-v2\",instance=\"api-v2:3002\",app=\"lunchlineup-api-v2\"}"
+        values: "1+0x420"
+      -
+        series: "lunchlineup_api_v2_http_requests_total{job=\"api-v2\",instance=\"api-v2:3002\",method=\"GET\",route=\"/v2/locations\",scope=\"application\",status_class=\"2xx\"}"
+        values: "0+10000x420"
+      -
+        series: "lunchlineup_api_v2_http_requests_total{job=\"api-v2\",instance=\"api-v2:3002\",method=\"GET\",route=\"/v2/locations\",scope=\"application\",status_class=\"5xx\"}"
+        values: "0+0x390 100+100x29"
+    alert_rule_test:
+      -
+        eval_time: "7h"
+        alertname: "ApiAvailabilityBudgetSlowBurn"
+        exp_alerts: []
+    promql_expr_test:
+      -
+        expr: "((sum(rate(lunchlineup_api_v2_http_requests_total{job=\"api-v2\",scope=\"application\",status_class=\"5xx\"}[30m])) or vector(0)) / sum(rate(lunchlineup_api_v2_http_requests_total{job=\"api-v2\",scope=\"application\",status_class=~\"2xx|3xx|5xx\"}[30m]))) > bool (6 * 0.001)"
+        eval_time: "7h"
+        exp_samples:
+          -
+            labels: "{}"
+            value: 1
+      -
+        expr: "((sum(rate(lunchlineup_api_v2_http_requests_total{job=\"api-v2\",scope=\"application\",status_class=\"5xx\"}[6h])) or vector(0)) / sum(rate(lunchlineup_api_v2_http_requests_total{job=\"api-v2\",scope=\"application\",status_class=~\"2xx|3xx|5xx\"}[6h]))) > bool (6 * 0.001)"
+        eval_time: "7h"
+        exp_samples:
+          -
+            labels: "{}"
+            value: 0
+  -
+    name: "longslow breach with recovered short window resolves"
+    interval: "1m"
+    input_series:
+      -
+        series: "up{job=\"api-v2\",instance=\"api-v2:3002\"}"
+        values: "1+0x420"
+      -
+        series: "lunchlineup_api_v2_http_instrumentation_ready{job=\"api-v2\",instance=\"api-v2:3002\",app=\"lunchlineup-api-v2\"}"
+        values: "1+0x420"
+      -
+        series: "lunchlineup_api_v2_http_requests_total{job=\"api-v2\",instance=\"api-v2:3002\",method=\"GET\",route=\"/v2/locations\",scope=\"application\",status_class=\"2xx\"}"
+        values: "0+10000x420"
+      -
+        series: "lunchlineup_api_v2_http_requests_total{job=\"api-v2\",instance=\"api-v2:3002\",method=\"GET\",route=\"/v2/locations\",scope=\"application\",status_class=\"5xx\"}"
+        values: "0+10000x389 3890000+0x30"
+    alert_rule_test:
+      -
+        eval_time: "6h"
+        alertname: "ApiAvailabilityBudgetSlowBurn"
+        exp_alerts:
+          -
+            exp_labels:
+              severity: "warning"
+              team: "engineering"
+            exp_annotations:
+              summary: "API availability error budget is burning persistently"
+              description: "The 99.9% API availability SLO is consuming error budget above 6x across both 30-minute and six-hour windows."
+              runbook: "docs/runbooks/service-level-objectives.md"
+      -
+        eval_time: "7h"
+        alertname: "ApiAvailabilityBudgetSlowBurn"
+        exp_alerts: []
+    promql_expr_test:
+      -
+        expr: "((sum(rate(lunchlineup_api_v2_http_requests_total{job=\"api-v2\",scope=\"application\",status_class=\"5xx\"}[30m])) or vector(0)) / sum(rate(lunchlineup_api_v2_http_requests_total{job=\"api-v2\",scope=\"application\",status_class=~\"2xx|3xx|5xx\"}[30m]))) > bool (6 * 0.001)"
+        eval_time: "7h"
+        exp_samples:
+          -
+            labels: "{}"
+            value: 0
+      -
+        expr: "((sum(rate(lunchlineup_api_v2_http_requests_total{job=\"api-v2\",scope=\"application\",status_class=\"5xx\"}[6h])) or vector(0)) / sum(rate(lunchlineup_api_v2_http_requests_total{job=\"api-v2\",scope=\"application\",status_class=~\"2xx|3xx|5xx\"}[6h]))) > bool (6 * 0.001)"
+        eval_time: "7h"
+        exp_samples:
+          -
+            labels: "{}"
+            value: 1
+  -
+    name: "paired burn respects each for duration before firing"
+    interval: "1m"
+    input_series:
+      -
+        series: "up{job=\"api-v2\",instance=\"api-v2:3002\"}"
+        values: "1+0x420"
+      -
+        series: "lunchlineup_api_v2_http_instrumentation_ready{job=\"api-v2\",instance=\"api-v2:3002\",app=\"lunchlineup-api-v2\"}"
+        values: "1+0x420"
+      -
+        series: "lunchlineup_api_v2_http_requests_total{job=\"api-v2\",instance=\"api-v2:3002\",method=\"GET\",route=\"/v2/locations\",scope=\"application\",status_class=\"2xx\"}"
+        values: "0+90x420"
+      -
+        series: "lunchlineup_api_v2_http_requests_total{job=\"api-v2\",instance=\"api-v2:3002\",method=\"GET\",route=\"/v2/locations\",scope=\"application\",status_class=\"5xx\"}"
+        values: "0+10x420"
+    alert_rule_test:
+      -
+        eval_time: "1m"
+        alertname: "ApiAvailabilityBudgetFastBurn"
+        exp_alerts: []
+      -
+        eval_time: "3m"
+        alertname: "ApiAvailabilityBudgetFastBurn"
+        exp_alerts:
+          -
+            exp_labels:
+              severity: "critical"
+              team: "engineering"
+            exp_annotations:
+              summary: "API availability error budget is burning rapidly"
+              description: "The 99.9% API availability SLO is consuming error budget above 14.4x across both five-minute and one-hour windows."
+              runbook: "docs/runbooks/service-level-objectives.md"
+      -
+        eval_time: "10m"
+        alertname: "ApiAvailabilityBudgetSlowBurn"
+        exp_alerts: []
+      -
+        eval_time: "20m"
+        alertname: "ApiAvailabilityBudgetSlowBurn"
+        exp_alerts:
+          -
+            exp_labels:
+              severity: "warning"
+              team: "engineering"
+            exp_annotations:
+              summary: "API availability error budget is burning persistently"
+              description: "The 99.9% API availability SLO is consuming error budget above 6x across both 30-minute and six-hour windows."
+              runbook: "docs/runbooks/service-level-objectives.md"
+  -
+    name: "counter reset is handled before summing both native instances"
+    interval: "1m"
+    input_series:
+      -
+        series: "up{job=\"api-v2\",instance=\"api-v2:3002\"}"
+        values: "1+0x420"
+      -
+        series: "lunchlineup_api_v2_http_instrumentation_ready{job=\"api-v2\",instance=\"api-v2:3002\",app=\"lunchlineup-api-v2\"}"
+        values: "1+0x420"
+      -
+        series: "lunchlineup_api_v2_http_requests_total{job=\"api-v2\",instance=\"api-v2:3002\",method=\"GET\",route=\"/v2/locations\",scope=\"application\",status_class=\"2xx\"}"
+        values: "0+90x210 0+90x209"
+      -
+        series: "lunchlineup_api_v2_http_requests_total{job=\"api-v2\",instance=\"api-v2:3002\",method=\"GET\",route=\"/v2/locations\",scope=\"application\",status_class=\"5xx\"}"
+        values: "0+10x210 0+10x209"
+      -
+        series: "lunchlineup_api_v2_http_requests_total{job=\"api-v2\",instance=\"api-v2-other:3002\",method=\"GET\",route=\"/v2/locations\",scope=\"application\",status_class=\"2xx\"}"
+        values: "0+900x210 0+900x209"
+      -
+        series: "lunchlineup_api_v2_http_requests_total{job=\"api-v2\",instance=\"api-v2-other:3002\",method=\"GET\",route=\"/v2/locations\",scope=\"application\",status_class=\"5xx\"}"
+        values: "0+0x420"
+    alert_rule_test:
+      -
+        eval_time: "7h"
+        alertname: "ApiAvailabilityBudgetFastBurn"
+        exp_alerts: []
+      -
+        eval_time: "7h"
+        alertname: "ApiAvailabilityBudgetSlowBurn"
+        exp_alerts:
+          -
+            exp_labels:
+              severity: "warning"
+              team: "engineering"
+            exp_annotations:
+              summary: "API availability error budget is burning persistently"
+              description: "The 99.9% API availability SLO is consuming error budget above 6x across both 30-minute and six-hour windows."
+              runbook: "docs/runbooks/service-level-objectives.md"
+      -
+        eval_time: "7h"
+        alertname: "HighNativeApiErrorRate"
+        exp_alerts: []
+    promql_expr_test:
+      -
+        expr: "((sum(rate(lunchlineup_api_v2_http_requests_total{job=\"api-v2\",scope=\"application\",status_class=\"5xx\"}[5m])) or vector(0)) / sum(rate(lunchlineup_api_v2_http_requests_total{job=\"api-v2\",scope=\"application\",status_class=~\"2xx|3xx|5xx\"}[5m])))"
+        eval_time: "7h"
+        exp_samples:
+          -
+            labels: "{}"
+            value: 0.01
+      -
+        expr: "((sum(rate(lunchlineup_api_v2_http_requests_total{job=\"api-v2\",scope=\"application\",status_class=\"5xx\"}[6h])) or vector(0)) / sum(rate(lunchlineup_api_v2_http_requests_total{job=\"api-v2\",scope=\"application\",status_class=~\"2xx|3xx|5xx\"}[6h])))"
+        eval_time: "7h"
+        exp_samples:
+          -
+            labels: "{}"
+            value: 0.01
+  -
+    name: "one sparse eligible failure preserves exact sixhour error ratio without floor"
+    interval: "1m"
+    input_series:
+      -
+        series: "up{job=\"api-v2\",instance=\"api-v2:3002\"}"
+        values: "1+0x420"
+      -
+        series: "lunchlineup_api_v2_http_instrumentation_ready{job=\"api-v2\",instance=\"api-v2:3002\",app=\"lunchlineup-api-v2\"}"
+        values: "1+0x420"
+      -
+        series: "lunchlineup_api_v2_http_requests_total{job=\"api-v2\",instance=\"api-v2:3002\",method=\"GET\",route=\"/v2/locations\",scope=\"application\",status_class=\"5xx\"}"
+        values: "0+0x359 1+0x60"
+    alert_rule_test:
+      -
+        eval_time: "7h"
+        alertname: "ApiAvailabilityBudgetFastBurn"
+        exp_alerts: []
+      -
+        eval_time: "7h"
+        alertname: "ApiAvailabilityBudgetSlowBurn"
+        exp_alerts: []
+      -
+        eval_time: "7h"
+        alertname: "HighNativeApiErrorRate"
+        exp_alerts: []
+    promql_expr_test:
+      -
+        expr: "((sum(rate(lunchlineup_api_v2_http_requests_total{job=\"api-v2\",scope=\"application\",status_class=\"5xx\"}[6h])) or vector(0)) / sum(rate(lunchlineup_api_v2_http_requests_total{job=\"api-v2\",scope=\"application\",status_class=~\"2xx|3xx|5xx\"}[6h])))"
+        eval_time: "7h"
+        exp_samples:
+          -
+            labels: "{}"
+            value: 1
+  -
+    name: "native high latency is seconds with actual finite bucket layout"
+    interval: "1m"
+    input_series:
+      -
+        series: "up{job=\"api-v2\",instance=\"api-v2:3002\"}"
+        values: "1+0x420"
+      -
+        series: "lunchlineup_api_v2_http_instrumentation_ready{job=\"api-v2\",instance=\"api-v2:3002\",app=\"lunchlineup-api-v2\"}"
+        values: "1+0x420"
+      -
+        series: "lunchlineup_api_v2_http_request_duration_seconds_bucket{job=\"api-v2\",instance=\"api-v2:3002\",method=\"GET\",route=\"/v2/locations\",scope=\"application\",le=\"0.01\"}"
+        values: "0+0x420"
+      -
+        series: "lunchlineup_api_v2_http_request_duration_seconds_bucket{job=\"api-v2\",instance=\"api-v2:3002\",method=\"GET\",route=\"/v2/locations\",scope=\"application\",le=\"0.025\"}"
+        values: "0+0x420"
+      -
+        series: "lunchlineup_api_v2_http_request_duration_seconds_bucket{job=\"api-v2\",instance=\"api-v2:3002\",method=\"GET\",route=\"/v2/locations\",scope=\"application\",le=\"0.05\"}"
+        values: "0+0x420"
+      -
+        series: "lunchlineup_api_v2_http_request_duration_seconds_bucket{job=\"api-v2\",instance=\"api-v2:3002\",method=\"GET\",route=\"/v2/locations\",scope=\"application\",le=\"0.1\"}"
+        values: "0+0x420"
+      -
+        series: "lunchlineup_api_v2_http_request_duration_seconds_bucket{job=\"api-v2\",instance=\"api-v2:3002\",method=\"GET\",route=\"/v2/locations\",scope=\"application\",le=\"0.25\"}"
+        values: "0+0x420"
+      -
+        series: "lunchlineup_api_v2_http_request_duration_seconds_bucket{job=\"api-v2\",instance=\"api-v2:3002\",method=\"GET\",route=\"/v2/locations\",scope=\"application\",le=\"0.5\"}"
+        values: "0+0x420"
+      -
+        series: "lunchlineup_api_v2_http_request_duration_seconds_bucket{job=\"api-v2\",instance=\"api-v2:3002\",method=\"GET\",route=\"/v2/locations\",scope=\"application\",le=\"1\"}"
+        values: "0+0x420"
+      -
+        series: "lunchlineup_api_v2_http_request_duration_seconds_bucket{job=\"api-v2\",instance=\"api-v2:3002\",method=\"GET\",route=\"/v2/locations\",scope=\"application\",le=\"2.5\"}"
+        values: "0+0x420"
+      -
+        series: "lunchlineup_api_v2_http_request_duration_seconds_bucket{job=\"api-v2\",instance=\"api-v2:3002\",method=\"GET\",route=\"/v2/locations\",scope=\"application\",le=\"5\"}"
+        values: "0+100x420"
+      -
+        series: "lunchlineup_api_v2_http_request_duration_seconds_bucket{job=\"api-v2\",instance=\"api-v2:3002\",method=\"GET\",route=\"/v2/locations\",scope=\"application\",le=\"+Inf\"}"
+        values: "0+100x420"
+    alert_rule_test:
+      -
+        eval_time: "3m"
+        alertname: "HighNativeApiLatency"
+        exp_alerts: []
+      -
+        eval_time: "10m"
+        alertname: "HighNativeApiLatency"
+        exp_alerts:
+          -
+            exp_labels:
+              severity: "warning"
+              team: "engineering"
+              job: "api-v2"
+              route: "/v2/locations"
+            exp_annotations:
+              summary: "High native API p99 latency"
+              description: "Completed application request p99 is 4.975 seconds at the native front door."
+              runbook: "docs/runbooks/high-error-rate.md"
+    promql_expr_test:
+      -
+        expr: "histogram_quantile(0.99, sum by (le, job, route) (rate(lunchlineup_api_v2_http_request_duration_seconds_bucket{job=\"api-v2\",scope=\"application\"}[5m])))"
+        eval_time: "10m"
+        exp_samples:
+          -
+            labels: "{job=\"api-v2\",route=\"/v2/locations\"}"
+            value: 4.975
+  -
+    name: "normal native latency stays below two seconds"
+    interval: "1m"
+    input_series:
+      -
+        series: "up{job=\"api-v2\",instance=\"api-v2:3002\"}"
+        values: "1+0x420"
+      -
+        series: "lunchlineup_api_v2_http_instrumentation_ready{job=\"api-v2\",instance=\"api-v2:3002\",app=\"lunchlineup-api-v2\"}"
+        values: "1+0x420"
+      -
+        series: "lunchlineup_api_v2_http_request_duration_seconds_bucket{job=\"api-v2\",instance=\"api-v2:3002\",method=\"GET\",route=\"/v2/locations\",scope=\"application\",le=\"0.01\"}"
+        values: "0+0x420"
+      -
+        series: "lunchlineup_api_v2_http_request_duration_seconds_bucket{job=\"api-v2\",instance=\"api-v2:3002\",method=\"GET\",route=\"/v2/locations\",scope=\"application\",le=\"0.025\"}"
+        values: "0+0x420"
+      -
+        series: "lunchlineup_api_v2_http_request_duration_seconds_bucket{job=\"api-v2\",instance=\"api-v2:3002\",method=\"GET\",route=\"/v2/locations\",scope=\"application\",le=\"0.05\"}"
+        values: "0+0x420"
+      -
+        series: "lunchlineup_api_v2_http_request_duration_seconds_bucket{job=\"api-v2\",instance=\"api-v2:3002\",method=\"GET\",route=\"/v2/locations\",scope=\"application\",le=\"0.1\"}"
+        values: "0+0x420"
+      -
+        series: "lunchlineup_api_v2_http_request_duration_seconds_bucket{job=\"api-v2\",instance=\"api-v2:3002\",method=\"GET\",route=\"/v2/locations\",scope=\"application\",le=\"0.25\"}"
+        values: "0+0x420"
+      -
+        series: "lunchlineup_api_v2_http_request_duration_seconds_bucket{job=\"api-v2\",instance=\"api-v2:3002\",method=\"GET\",route=\"/v2/locations\",scope=\"application\",le=\"0.5\"}"
+        values: "0+0x420"
+      -
+        series: "lunchlineup_api_v2_http_request_duration_seconds_bucket{job=\"api-v2\",instance=\"api-v2:3002\",method=\"GET\",route=\"/v2/locations\",scope=\"application\",le=\"1\"}"
+        values: "0+100x420"
+      -
+        series: "lunchlineup_api_v2_http_request_duration_seconds_bucket{job=\"api-v2\",instance=\"api-v2:3002\",method=\"GET\",route=\"/v2/locations\",scope=\"application\",le=\"2.5\"}"
+        values: "0+100x420"
+      -
+        series: "lunchlineup_api_v2_http_request_duration_seconds_bucket{job=\"api-v2\",instance=\"api-v2:3002\",method=\"GET\",route=\"/v2/locations\",scope=\"application\",le=\"5\"}"
+        values: "0+100x420"
+      -
+        series: "lunchlineup_api_v2_http_request_duration_seconds_bucket{job=\"api-v2\",instance=\"api-v2:3002\",method=\"GET\",route=\"/v2/locations\",scope=\"application\",le=\"+Inf\"}"
+        values: "0+100x420"
+    alert_rule_test:
+      -
+        eval_time: "10m"
+        alertname: "HighNativeApiLatency"
+        exp_alerts: []
+    promql_expr_test:
+      -
+        expr: "histogram_quantile(0.99, sum by (le, job, route) (rate(lunchlineup_api_v2_http_request_duration_seconds_bucket{job=\"api-v2\",scope=\"application\"}[5m])))"
+        eval_time: "10m"
+        exp_samples:
+          -
+            labels: "{job=\"api-v2\",route=\"/v2/locations\"}"
+            value: 0.995
+  -
+    name: "multiple instance histogram aggregates buckets before quantile"
+    interval: "1m"
+    input_series:
+      -
+        series: "up{job=\"api-v2\",instance=\"api-v2:3002\"}"
+        values: "1+0x420"
+      -
+        series: "lunchlineup_api_v2_http_instrumentation_ready{job=\"api-v2\",instance=\"api-v2:3002\",app=\"lunchlineup-api-v2\"}"
+        values: "1+0x420"
+      -
+        series: "lunchlineup_api_v2_http_request_duration_seconds_bucket{job=\"api-v2\",instance=\"api-v2:3002\",method=\"GET\",route=\"/v2/locations\",scope=\"application\",le=\"0.01\"}"
+        values: "0+0x420"
+      -
+        series: "lunchlineup_api_v2_http_request_duration_seconds_bucket{job=\"api-v2\",instance=\"api-v2:3002\",method=\"GET\",route=\"/v2/locations\",scope=\"application\",le=\"0.025\"}"
+        values: "0+0x420"
+      -
+        series: "lunchlineup_api_v2_http_request_duration_seconds_bucket{job=\"api-v2\",instance=\"api-v2:3002\",method=\"GET\",route=\"/v2/locations\",scope=\"application\",le=\"0.05\"}"
+        values: "0+0x420"
+      -
+        series: "lunchlineup_api_v2_http_request_duration_seconds_bucket{job=\"api-v2\",instance=\"api-v2:3002\",method=\"GET\",route=\"/v2/locations\",scope=\"application\",le=\"0.1\"}"
+        values: "0+0x420"
+      -
+        series: "lunchlineup_api_v2_http_request_duration_seconds_bucket{job=\"api-v2\",instance=\"api-v2:3002\",method=\"GET\",route=\"/v2/locations\",scope=\"application\",le=\"0.25\"}"
+        values: "0+0x420"
+      -
+        series: "lunchlineup_api_v2_http_request_duration_seconds_bucket{job=\"api-v2\",instance=\"api-v2:3002\",method=\"GET\",route=\"/v2/locations\",scope=\"application\",le=\"0.5\"}"
+        values: "0+0x420"
+      -
+        series: "lunchlineup_api_v2_http_request_duration_seconds_bucket{job=\"api-v2\",instance=\"api-v2:3002\",method=\"GET\",route=\"/v2/locations\",scope=\"application\",le=\"1\"}"
+        values: "0+0x420"
+      -
+        series: "lunchlineup_api_v2_http_request_duration_seconds_bucket{job=\"api-v2\",instance=\"api-v2:3002\",method=\"GET\",route=\"/v2/locations\",scope=\"application\",le=\"2.5\"}"
+        values: "0+0x420"
+      -
+        series: "lunchlineup_api_v2_http_request_duration_seconds_bucket{job=\"api-v2\",instance=\"api-v2:3002\",method=\"GET\",route=\"/v2/locations\",scope=\"application\",le=\"5\"}"
+        values: "0+100x420"
+      -
+        series: "lunchlineup_api_v2_http_request_duration_seconds_bucket{job=\"api-v2\",instance=\"api-v2:3002\",method=\"GET\",route=\"/v2/locations\",scope=\"application\",le=\"+Inf\"}"
+        values: "0+100x420"
+      -
+        series: "lunchlineup_api_v2_http_request_duration_seconds_bucket{job=\"api-v2\",instance=\"api-v2-other:3002\",method=\"GET\",route=\"/v2/locations\",scope=\"application\",le=\"0.01\"}"
+        values: "0+0x420"
+      -
+        series: "lunchlineup_api_v2_http_request_duration_seconds_bucket{job=\"api-v2\",instance=\"api-v2-other:3002\",method=\"GET\",route=\"/v2/locations\",scope=\"application\",le=\"0.025\"}"
+        values: "0+0x420"
+      -
+        series: "lunchlineup_api_v2_http_request_duration_seconds_bucket{job=\"api-v2\",instance=\"api-v2-other:3002\",method=\"GET\",route=\"/v2/locations\",scope=\"application\",le=\"0.05\"}"
+        values: "0+0x420"
+      -
+        series: "lunchlineup_api_v2_http_request_duration_seconds_bucket{job=\"api-v2\",instance=\"api-v2-other:3002\",method=\"GET\",route=\"/v2/locations\",scope=\"application\",le=\"0.1\"}"
+        values: "0+0x420"
+      -
+        series: "lunchlineup_api_v2_http_request_duration_seconds_bucket{job=\"api-v2\",instance=\"api-v2-other:3002\",method=\"GET\",route=\"/v2/locations\",scope=\"application\",le=\"0.25\"}"
+        values: "0+0x420"
+      -
+        series: "lunchlineup_api_v2_http_request_duration_seconds_bucket{job=\"api-v2\",instance=\"api-v2-other:3002\",method=\"GET\",route=\"/v2/locations\",scope=\"application\",le=\"0.5\"}"
+        values: "0+0x420"
+      -
+        series: "lunchlineup_api_v2_http_request_duration_seconds_bucket{job=\"api-v2\",instance=\"api-v2-other:3002\",method=\"GET\",route=\"/v2/locations\",scope=\"application\",le=\"1\"}"
+        values: "0+100x420"
+      -
+        series: "lunchlineup_api_v2_http_request_duration_seconds_bucket{job=\"api-v2\",instance=\"api-v2-other:3002\",method=\"GET\",route=\"/v2/locations\",scope=\"application\",le=\"2.5\"}"
+        values: "0+100x420"
+      -
+        series: "lunchlineup_api_v2_http_request_duration_seconds_bucket{job=\"api-v2\",instance=\"api-v2-other:3002\",method=\"GET\",route=\"/v2/locations\",scope=\"application\",le=\"5\"}"
+        values: "0+100x420"
+      -
+        series: "lunchlineup_api_v2_http_request_duration_seconds_bucket{job=\"api-v2\",instance=\"api-v2-other:3002\",method=\"GET\",route=\"/v2/locations\",scope=\"application\",le=\"+Inf\"}"
+        values: "0+100x420"
+    alert_rule_test: []
+    promql_expr_test:
+      -
+        expr: "histogram_quantile(0.99, sum by (le, job, route) (rate(lunchlineup_api_v2_http_request_duration_seconds_bucket{job=\"api-v2\",scope=\"application\"}[5m])))"
+        eval_time: "10m"
+        exp_samples:
+          -
+            labels: "{job=\"api-v2\",route=\"/v2/locations\"}"
+            value: 4.95
+  -
+    name: "missing histogram does not fabricate healthy latency"
+    interval: "1m"
+    input_series:
+      -
+        series: "up{job=\"api-v2\",instance=\"api-v2:3002\"}"
+        values: "1+0x420"
+      -
+        series: "lunchlineup_api_v2_http_instrumentation_ready{job=\"api-v2\",instance=\"api-v2:3002\",app=\"lunchlineup-api-v2\"}"
+        values: "1+0x420"
+    alert_rule_test:
+      -
+        eval_time: "10m"
+        alertname: "HighNativeApiLatency"
+        exp_alerts: []
+    promql_expr_test:
+      -
+        expr: "histogram_quantile(0.99, sum by (le, job, route) (rate(lunchlineup_api_v2_http_request_duration_seconds_bucket{job=\"api-v2\",scope=\"application\"}[5m])))"
+        eval_time: "10m"
+        exp_samples: []

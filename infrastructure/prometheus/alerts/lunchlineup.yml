@@ -3,7 +3,7 @@ groups:
     interval: 1m
     rules:
       - alert: ServiceDown
-        expr: up{job=~"api|engine|worker|webhook-replay|control|node"} == 0
+        expr: up{job=~"api|api-v2|engine|worker|webhook-replay|control|node"} == 0
         for: 2m
         labels:
           severity: critical
@@ -11,6 +11,32 @@ groups:
         annotations:
           summary: "{{ $labels.job }} metrics scrape is down"
           description: "Prometheus cannot scrape {{ $labels.job }} at {{ $labels.instance }}."
+          runbook: "docs/runbooks/production-readiness.md"
+
+      - alert: NativeApiMetricsMissing
+        expr: absent(up{job="api-v2"})
+        for: 2m
+        labels:
+          severity: critical
+          team: ops
+          job: api-v2
+        annotations:
+          summary: "Native API scrape configuration is missing"
+          description: "Prometheus has no current api-v2 target series; native availability cannot be confirmed."
+          runbook: "docs/runbooks/production-readiness.md"
+
+      - alert: NativeApiHttpInstrumentationUnavailable
+        expr: |
+          (up{job="api-v2"} == 1)
+          unless on (job, instance)
+          (lunchlineup_api_v2_http_instrumentation_ready{job="api-v2"} == 1)
+        for: 2m
+        labels:
+          severity: critical
+          team: ops
+        annotations:
+          summary: "Native API HTTP instrumentation is unavailable"
+          description: "The native scrape succeeds but its initialized instrumentation marker is missing or zero."
           runbook: "docs/runbooks/production-readiness.md"
 
       - alert: PublicWebUnavailable
@@ -74,17 +100,9 @@ groups:
 
       - alert: ApiAvailabilityBudgetFastBurn
         expr: |
-          (
-            sum(rate(http_requests_total{job="api",status=~"5..",route!~"/(health|live|metrics)"}[5m]))
-            /
-            clamp_min(sum(rate(http_requests_total{job="api",route!~"/(health|live|metrics)"}[5m])), 0.001)
-          ) > (14.4 * 0.001)
+          ((((sum(rate(lunchlineup_api_v2_http_requests_total{job="api-v2",scope="application",status_class="5xx"}[5m])) or vector(0)) / sum(rate(lunchlineup_api_v2_http_requests_total{job="api-v2",scope="application",status_class=~"2xx|3xx|5xx"}[5m]))) > (14.4 * 0.001)) and (sum(rate(lunchlineup_api_v2_http_requests_total{job="api-v2",scope="application",status_class=~"2xx|3xx|5xx"}[5m])) > 0))
           and
-          (
-            sum(rate(http_requests_total{job="api",status=~"5..",route!~"/(health|live|metrics)"}[1h]))
-            /
-            clamp_min(sum(rate(http_requests_total{job="api",route!~"/(health|live|metrics)"}[1h])), 0.001)
-          ) > (14.4 * 0.001)
+          ((((sum(rate(lunchlineup_api_v2_http_requests_total{job="api-v2",scope="application",status_class="5xx"}[1h])) or vector(0)) / sum(rate(lunchlineup_api_v2_http_requests_total{job="api-v2",scope="application",status_class=~"2xx|3xx|5xx"}[1h]))) > (14.4 * 0.001)) and (sum(rate(lunchlineup_api_v2_http_requests_total{job="api-v2",scope="application",status_class=~"2xx|3xx|5xx"}[1h])) > 0))
         for: 2m
         labels:
           severity: critical
@@ -96,17 +114,9 @@ groups:
 
       - alert: ApiAvailabilityBudgetSlowBurn
         expr: |
-          (
-            sum(rate(http_requests_total{job="api",status=~"5..",route!~"/(health|live|metrics)"}[30m]))
-            /
-            clamp_min(sum(rate(http_requests_total{job="api",route!~"/(health|live|metrics)"}[30m])), 0.001)
-          ) > (6 * 0.001)
+          ((((sum(rate(lunchlineup_api_v2_http_requests_total{job="api-v2",scope="application",status_class="5xx"}[30m])) or vector(0)) / sum(rate(lunchlineup_api_v2_http_requests_total{job="api-v2",scope="application",status_class=~"2xx|3xx|5xx"}[30m]))) > (6 * 0.001)) and (sum(rate(lunchlineup_api_v2_http_requests_total{job="api-v2",scope="application",status_class=~"2xx|3xx|5xx"}[30m])) > 0))
           and
-          (
-            sum(rate(http_requests_total{job="api",status=~"5..",route!~"/(health|live|metrics)"}[6h]))
-            /
-            clamp_min(sum(rate(http_requests_total{job="api",route!~"/(health|live|metrics)"}[6h])), 0.001)
-          ) > (6 * 0.001)
+          ((((sum(rate(lunchlineup_api_v2_http_requests_total{job="api-v2",scope="application",status_class="5xx"}[6h])) or vector(0)) / sum(rate(lunchlineup_api_v2_http_requests_total{job="api-v2",scope="application",status_class=~"2xx|3xx|5xx"}[6h]))) > (6 * 0.001)) and (sum(rate(lunchlineup_api_v2_http_requests_total{job="api-v2",scope="application",status_class=~"2xx|3xx|5xx"}[6h])) > 0))
         for: 15m
         labels:
           severity: warning
@@ -158,6 +168,36 @@ groups:
           summary: "Required API dependency {{ $labels.dependency }} is unavailable"
           description: "The API dependency health metric is zero or absent for {{ $labels.dependency }}."
           runbook: "docs/runbooks/production-readiness.md"
+
+  - name: lunchlineup.native-api
+    interval: 1m
+    rules:
+      - alert: HighNativeApiErrorRate
+        expr: |
+          (((sum by (job, route) (rate(lunchlineup_api_v2_http_requests_total{job="api-v2",scope="application",status_class="5xx"}[5m])) or on (job, route) (0 * sum by (job, route) (rate(lunchlineup_api_v2_http_requests_total{job="api-v2",scope="application",status_class=~"2xx|3xx|5xx"}[5m])))) / sum by (job, route) (rate(lunchlineup_api_v2_http_requests_total{job="api-v2",scope="application",status_class=~"2xx|3xx|5xx"}[5m]))) > 0.05)
+          and on (job, route) (sum by (job, route) (rate(lunchlineup_api_v2_http_requests_total{job="api-v2",scope="application",status_class=~"2xx|3xx|5xx"}[5m])) > 0)
+        for: 2m
+        labels:
+          severity: critical
+          team: engineering
+        annotations:
+          summary: "High native API error rate on {{ $labels.route }}"
+          description: "{{ $labels.job }} returns {{ $value | humanizePercentage }} completed 5xx responses among eligible application traffic."
+          runbook: "docs/runbooks/high-error-rate.md"
+
+      - alert: HighNativeApiLatency
+        expr: |
+          histogram_quantile(0.99,
+            sum by (le, job, route) (rate(lunchlineup_api_v2_http_request_duration_seconds_bucket{job="api-v2",scope="application"}[5m]))
+          ) > 2
+        for: 5m
+        labels:
+          severity: warning
+          team: engineering
+        annotations:
+          summary: "High native API p99 latency"
+          description: "Completed application request p99 is {{ $value | humanize }} seconds at the native front door."
+          runbook: "docs/runbooks/high-error-rate.md"
 
   - name: lunchlineup.worker
     interval: 1m

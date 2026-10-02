@@ -614,6 +614,7 @@ services:
       - DATABASE_URL=${DATABASE_URL:?Set validated percent-encoded DATABASE_URL in .env}
       - REDIS_URL=${REDIS_URL:-redis://redis:6379}
       - JWT_SECRET=${JWT_SECRET:?Set JWT_SECRET in .env}
+      - METRICS_TOKEN_FILE=/run/secrets/metrics_token
       - STAFF_INVITATION_OUTBOX_ENABLED=${STAFF_INVITATION_OUTBOX_ENABLED:?Set STAFF_INVITATION_OUTBOX_ENABLED=true in .env}
       - STAFF_INVITATION_OUTBOX_ENCRYPTION_KEY=${STAFF_INVITATION_OUTBOX_ENCRYPTION_KEY:?Set STAFF_INVITATION_OUTBOX_ENCRYPTION_KEY in .env}
       - STAFF_INVITATION_MAX_ATTEMPTS=${STAFF_INVITATION_MAX_ATTEMPTS:-8}
@@ -624,6 +625,8 @@ services:
       - LEGACY_REQUEST_TIMEOUT_MS=${LEGACY_REQUEST_TIMEOUT_MS:-15000}
       - DEPLOY_RELEASE_SHA=${DEPLOY_RELEASE_SHA:-local}
       - LOG_LEVEL=${LOG_LEVEL:-info}
+    secrets:
+      - metrics_token
     volumes:
       - availability_uploads:/app/uploads
     healthcheck:

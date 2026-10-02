@@ -120,6 +120,7 @@ const CONFIG: ApiV2Config = {
   staffInvitationOutboxEncryptionKey: '', staffInvitationMaxAttempts: 1,
   oidcSsoAvailable: false, cookieSecure: true, releaseSha: 'local',
   trustProxy: false, logLevel: 'silent',
+  metricsToken: 'synthetic-config-metrics-token-00000000000000000000',
 };
 type Result<T> = { ok: true; value: T } | { ok: false; error: unknown };
 const publicOutcomes: Array<Promise<unknown>> = [];

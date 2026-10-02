@@ -6,7 +6,7 @@
     "build": "tsc",
     "start": "node dist/main.js",
     "start:dev": "tsx watch src/main.ts",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.tests.json",
     "lint": "eslint \"src/**/*.ts\"",
     "test": "vitest run"
   },
@@ -22,7 +22,8 @@
     "@sinclair/typebox": "^0.34.52",
     "fastify": "^5.12.1",
     "ioredis": "^5.10.0",
-    "jsonwebtoken": "^9.0.3"
+    "jsonwebtoken": "^9.0.3",
+    "prom-client": "^15.1.3"
   },
   "devDependencies": {
     "@types/jsonwebtoken": "^9.0.10",

@@ -12,6 +12,18 @@ The GitHub production-environment, GitHub OIDC/Sigstore, VM217, and workflow dis
 
 Complete the [production qualification bridge gate matrix](production-qualification-bridge.md) before proposing public activation. Preserve every recovery, secret, immutable-artifact, verification, resource-limit, legal, and rollback guarantee below when implementing that bridge. Missing executable ownership or evidence blocks promotion; an internal-beta receipt, synthetic provider fixtures, or successful development QA cannot substitute. The incident launch hold remains in force; production readiness work does not itself release it.
 
+## Native observability qualification for the private candidate
+
+The selected native metrics/config/server/deployment/storage 503/rule/dashboard/verifier files are source proposals, not a qualified release. Keep VM107 stopped/onboot0 and its hook/hold intact. VM218 admission remains held until the infrastructure owner resolves the current backing-capacity shortfall and fresh full admission gates pass. QA34’s storage-measurement timeout cause remains unproved. Nothing here authorizes touching VM4014, VM106, public routes or the historical GitHub/VM217 launch path.
+
+The native browser response budget selects only job="api-v2", scope="application" and eligible 2xx/3xx/5xx classes; 5xx is the failure numerator. Retained diagnostics and direct provider ingress remain separate. Quota storage failures must be 503 while valid quota denials remain 429. Neither successful metrics scraping nor a current marker proves dependency readiness or historical coverage.
+
+The source verifier checks internal target/auth/limits/secret mounting, fixed alert semantics, query ownership and dashboard units/missing-data contracts. Its closed expression comparison and delimiter checks are structural guards, not PromQL parsing. The native rule fixture is included in both host/container command plans; exact pinned promtool, mounted-secret UID/readability, Grafana provisioning/rendering, actual HTTP lifecycle/stream drains and every mutation case require later admitted execution.
+
+Use the tracked platform-overview.json dashboard. Its native 30-day response estimate remains explicitly provisional until complete collection/gap/reset/retention evidence exists. A missing/zero denominator is unknown. The initialized marker, scrape failures, readiness, aborts and retained dependencies remain complementary. Add an owned expected-target inventory before using multiple native instances.
+
+Before this gate closes, retain independent reviews of the exact selection, test-inclusive type/loader checks, non-skipped source/HTTP/socket/parser/rule/dashboard/privacy results, critical and resolved alert-delivery receipts, the approved private status route and owner-led recovery drill. Complete30-day telemetry and months of full application acceptance remain required. The source mutation/lifecycle/rule counts are proposed coverage only, with no execution or production-readiness credit.
+
 ## Retained production safety requirements and historical procedure reference
 
 Production database recovery requires both the existing encrypted logical dump and the independent PostgreSQL PITR path in `postgres-pitr-recovery.md`. The validated runtime and migration URLs must target the Compose `postgres:5432/POSTGRES_DB` service that those recovery jobs protect; an external authoritative database requires a separate, explicitly validated recovery architecture. Do not launch with PITR disabled or without a manually verified remote base backup and WAL segment.
