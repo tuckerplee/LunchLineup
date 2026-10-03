@@ -5,7 +5,10 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 
-import { runBoundedProcess } from '../../scripts/bounded-child-process.mjs';
+import { runBoundedProcess, runBoundedProcessResult } from '../../scripts/bounded-child-process.mjs';
+import childProcess from 'node:child_process';
+import { EventEmitter } from 'node:events';
+import { syncBuiltinESMExports } from 'node:module';
 
 function processExists(pid) {
   try {
@@ -73,6 +76,10 @@ setInterval(() => {}, 1000);
     assert.equal(processExists(pids[1]), false, 'descendant survived timeout cleanup');
     await assert.rejects(readFile(outputPath), { code: 'ENOENT' });
   } finally {
+    if (!parentPid) {
+      const ownedPids = await readFile(pidPath, 'utf8').catch(() => '');
+      parentPid = Number(ownedPids.trim().split(/\s+/)[0]) || undefined;
+    }
     forceCleanup(parentPid);
     await rm(directory, { recursive: true, force: true });
   }
@@ -117,7 +124,109 @@ setInterval(() => {}, 1000);
     assert.equal(processExists(pids[1]), false, 'orphan descendant survived timeout cleanup');
     await assert.rejects(readFile(outputPath), { code: 'ENOENT' });
   } finally {
+    if (!parentPid) {
+      const ownedPids = await readFile(pidPath, 'utf8').catch(() => '');
+      parentPid = Number(ownedPids.trim().split(/\s+/)[0]) || undefined;
+    }
     forceCleanup(parentPid);
     await rm(directory, { recursive: true, force: true });
   }
+});
+
+test('bounded child success reports observed direct-child closure without a group-settlement claim', async () => {
+  const result = await runBoundedProcessResult(process.execPath, ['-e', 'process.exit(0)'], {
+    stdio: 'ignore', timeoutMs: 5_000,
+  });
+  assert.equal(result.code, 0);
+  assert.equal(result.timedOut, false);
+  assert.equal(result.childCloseObserved, true);
+  assert.equal(result.processGroupSettlementVerified, false);
+  assert.equal(processExists(result.directChildPid), false);
+});
+
+for (const ignoresTerm of [false, true]) {
+  test(`bounded child timeout observes direct-child closure at return (ignores TERM=${ignoresTerm})`, { timeout: 10_000 }, async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'lunchlineup-direct-close-'));
+    const source = join(directory, 'child.cjs');
+    const ready = join(directory, 'ready.txt');
+    let pid;
+    await writeFile(source, `
+const { writeFileSync } = require('node:fs');
+${ignoresTerm ? "process.on('SIGTERM', () => {});" : ''}
+writeFileSync(${JSON.stringify(ready)}, String(process.pid));
+setInterval(() => {}, 1000);
+`);
+    try {
+      const result = await runBoundedProcessResult(process.execPath, [source], {
+        stdio: 'ignore', timeoutMs: 1_000,
+        terminationGraceMs: 100, terminationConfirmationMs: 1_000,
+      });
+      pid = Number(await readFile(ready, 'utf8'));
+      assert.equal(result.directChildPid, pid);
+      assert.equal(result.code, 124);
+      assert.equal(result.timedOut, true);
+      assert.equal(result.childCloseObserved, true);
+      assert.equal(result.processGroupSettlementVerified, false);
+      // No sleep after helper return: this oracle distinguishes a KILL attempt
+      // from the actual close/reap event of this exact synthetic direct child.
+      assert.equal(processExists(pid), false);
+    } finally {
+      if (!pid) pid = Number(await readFile(ready, 'utf8').catch(() => '0'));
+      forceCleanup(pid);
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+}
+
+function mockChildSpawn(t, factory) {
+  const mocked = t.mock.method(childProcess, 'spawn', factory);
+  syncBuiltinESMExports();
+  t.after(() => {
+    mocked.mock.restore();
+    syncBuiltinESMExports();
+  });
+}
+
+test('bounded child waits for a delayed close after the KILL phase', { timeout: 2_000 }, async (t) => {
+  mockChildSpawn(t, () => {
+    const child = new EventEmitter();
+    // No PID: this deterministic event fixture can never signal a real group.
+    child.pid = undefined;
+    const close = setTimeout(() => child.emit('close', null, 'SIGKILL'), 50);
+    t.after(() => clearTimeout(close));
+    return child;
+  });
+  const result = await runBoundedProcessResult('synthetic-no-executable', [], {
+    stdio: 'ignore', timeoutMs: 5,
+    terminationGraceMs: 5, terminationConfirmationMs: 500,
+  });
+  assert.equal(result.code, 124);
+  assert.equal(result.signal, 'SIGKILL');
+  assert.equal(result.childCloseObserved, true);
+  assert.equal(result.processGroupSettlementVerified, false);
+});
+
+test('bounded child reports unconfirmed closure if no close arrives and preserves it on the thrown timeout', { timeout: 2_000 }, async (t) => {
+  mockChildSpawn(t, () => {
+    const child = new EventEmitter();
+    child.pid = undefined; // Never signal an actual process in this fault case.
+    return child;
+  });
+  const options = {
+    stdio: 'ignore', timeoutMs: 5,
+    terminationGraceMs: 5, terminationConfirmationMs: 20,
+    label: 'No-close synthetic fixture',
+  };
+  const result = await runBoundedProcessResult('synthetic-no-executable', [], options);
+  assert.equal(result.code, 124);
+  assert.equal(result.timedOut, true);
+  assert.equal(result.childCloseObserved, false);
+  assert.equal(result.processGroupSettlementVerified, false);
+  await assert.rejects(runBoundedProcess('synthetic-no-executable', [], options), (error) => {
+    assert.equal(error.code, 'BOUNDED_PROCESS_TIMEOUT');
+    assert.equal(error.childCloseObserved, false);
+    assert.equal(error.processGroupSettlementVerified, false);
+    assert.match(error.message, /direct child closure unconfirmed$/);
+    return true;
+  });
 });

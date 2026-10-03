@@ -182,7 +182,10 @@ async function runtimeCredentialWorks(config, env) {
       },
     );
     return true;
-  } catch {
+  } catch (error) {
+    // A deadline is an unknown credential/termination outcome, not a failed
+    // authentication result. Do not start provisioning after that uncertainty.
+    if (error?.code === 'BOUNDED_PROCESS_TIMEOUT') throw error;
     return false;
   }
 }
