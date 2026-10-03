@@ -64,6 +64,7 @@
 - `write-internal-ci-release-manifest.mjs`: records digest-pinned Compose runtime images and their retained CI archives.
 - `internal-ci-policy.mjs`: canonical required internal-beta gate policy.
 - `internal-ci-source-context.mjs`: validates the job-private materialized-source context and exact clone identity.
+- `native-billing-ledger-window.mjs`: callable fixture-only ledger grant/read/revoke mechanism with exact-role/ACL checks and preserved failure observations. It has no CLI or pipeline invocation and supplies no admission authority. A protected source-binding wrapper, authenticated physical owner, settled clients/children, and fresh capacity gates remain prerequisites.
 - `materialize-internal-ci-source.mjs`: materializes independent verified scan and build clones and writes the retained source proof.
 - `run-internal-ci-build-gate.sh`: runs one named build-clone gate and records a source-proof-bound receipt.
 - `run-internal-ci-terraform.sh`: runs the pinned Terraform validation suite from the isolated build clone.
