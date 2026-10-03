@@ -440,7 +440,9 @@ class PostgresUsageStore:
                 "eventName" = EXCLUDED."eventName",
                 "stripeCustomerId" = EXCLUDED."stripeCustomerId",
                 "updatedAt" = EXCLUDED."updatedAt"
-            WHERE "StripeUsageEvent"."status" IN ('PENDING', 'FAILED')
+            WHERE "StripeUsageEvent"."status" = 'PENDING'
+              AND "StripeUsageEvent"."attempts" = 0
+              AND "StripeUsageEvent"."submittedAt" IS NULL
             ''',
             (
                 str(uuid.uuid4()), tenant_id, period_start, period_end, quantity, event_name,
