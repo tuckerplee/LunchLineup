@@ -18,15 +18,23 @@ export function verifyExactClone(path, expected) {
   if (git(path, 'rev-parse', 'HEAD') !== expected.sourceSha || git(path, 'rev-parse', 'HEAD^{tree}') !== expected.treeSha || git(path, 'status', '--porcelain=v1', '--untracked-files=all')) throw new Error('Clone is not exact and clean.');
   return true;
 }
+export function verifyInternalCiSourceContextIdentity(context, identity) {
+  if (!identity.commitSha || !identity.runId || !/^[A-Za-z0-9._-]+$/.test(context.runId ?? '') || context.version !== 1 || context.kind !== 'lunchlineup-internal-ci-source-context' || context.repository !== 'tuckerplee/LunchLineup' || context.sourceRef !== 'refs/heads/internal-beta-candidate' || context.baselineRef !== 'refs/heads/main' || !sha(context.sourceSha) || !sha(context.treeSha) || !sha(context.baselineSha) || !/^[a-f0-9]{64}$/.test(context.pipelineSha256 ?? '') || context.sourceSha !== context.remoteCandidateSha || context.sourceSha !== identity.commitSha || context.runId !== identity.runId) throw new Error('Invalid internal CI source context.');
+  return context;
+}
+export function verifyInternalCiSourceProof(context, proof) {
+  if (proof.version !== 1 || proof.kind !== 'lunchlineup-internal-ci-source-proof' || proof.status !== 'passed' || proof.repository !== context.repository || proof.sourceRef !== context.sourceRef || proof.sourceSha !== context.sourceSha || proof.remoteCandidateSha !== context.sourceSha || proof.treeSha !== context.treeSha || proof.baselineRef !== context.baselineRef || proof.baselineSha !== context.baselineSha || !sha(proof.baselineTreeSha) || proof.pipelineSha256 !== context.pipelineSha256 || proof.runId !== context.runId || proof.originalCheckoutClean !== true || proof.scanCloneVerified !== true || proof.buildCloneVerified !== true || proof.gitAlternatesRejected !== true || !Number.isFinite(Date.parse(proof.verifiedAt ?? ''))) throw new Error('Source proof does not bind source context.');
+  return proof;
+}
 export function verifyInternalCiSourceContext(context, { verifyClones = false } = {}) {
-  if (!process.env.CI_COMMIT_SHA || !process.env.CI_RUN_ID || !/^[A-Za-z0-9._-]+$/.test(context.runId ?? '') || context.version !== 1 || context.kind !== 'lunchlineup-internal-ci-source-context' || context.repository !== 'tuckerplee/LunchLineup' || context.sourceRef !== 'refs/heads/internal-beta-candidate' || context.baselineRef !== 'refs/heads/main' || !sha(context.sourceSha) || !sha(context.treeSha) || !sha(context.baselineSha) || !/^[a-f0-9]{64}$/.test(context.pipelineSha256 ?? '') || context.sourceSha !== context.remoteCandidateSha || context.sourceSha !== process.env.CI_COMMIT_SHA || context.runId !== process.env.CI_RUN_ID) throw new Error('Invalid internal CI source context.');
+  verifyInternalCiSourceContextIdentity(context, { commitSha: process.env.CI_COMMIT_SHA, runId: process.env.CI_RUN_ID });
   assertDirectory(context.runRoot, 'run root'); assertDirectory(context.artifactRoot, 'artifact root'); assertDirectory(context.scanSourcePath, 'scan clone'); assertDirectory(context.buildSourcePath, 'build clone'); assertRegularFile(context.sourceProofPath, 'source proof');
   const expectedRunRoot = process.env.RUNNER_TEMP ? resolve(process.env.RUNNER_TEMP, `lunchlineup-source-${context.runId}`) : '';
   if (!expectedRunRoot || realpathSync(context.runRoot) !== realpathSync(expectedRunRoot) || realpathSync(context.scanSourcePath) === realpathSync(context.buildSourcePath)) throw new Error('Source context run root is not job-private.');
   assertPathInside(context.runRoot, context.scanSourcePath, 'scan clone'); assertPathInside(context.runRoot, context.buildSourcePath, 'build clone'); assertPathInside(context.artifactRoot, context.sourceProofPath, 'source proof');
   if (realpathSync(context.evidenceRoot) !== realpathSync(context.artifactRoot)) throw new Error('Evidence root must equal artifact root.');
   const proof = JSON.parse(readFileSync(context.sourceProofPath, 'utf8'));
-  if (proof.version !== 1 || proof.kind !== 'lunchlineup-internal-ci-source-proof' || proof.status !== 'passed' || proof.repository !== context.repository || proof.sourceRef !== context.sourceRef || proof.sourceSha !== context.sourceSha || proof.remoteCandidateSha !== context.sourceSha || proof.treeSha !== context.treeSha || proof.baselineRef !== context.baselineRef || proof.baselineSha !== context.baselineSha || !sha(proof.baselineTreeSha) || proof.pipelineSha256 !== context.pipelineSha256 || proof.runId !== context.runId || proof.originalCheckoutClean !== true || proof.scanCloneVerified !== true || proof.buildCloneVerified !== true || proof.gitAlternatesRejected !== true || !Number.isFinite(Date.parse(proof.verifiedAt ?? ''))) throw new Error('Source proof does not bind source context.');
+  verifyInternalCiSourceProof(context, proof);
   if (verifyClones) { verifyExactClone(context.scanSourcePath, context); verifyExactClone(context.buildSourcePath, context); }
   return context;
 }
