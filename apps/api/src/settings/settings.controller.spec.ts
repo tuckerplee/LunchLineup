@@ -83,6 +83,22 @@ describe('SettingsController', () => {
         expect(Reflect.getMetadata(PERMISSION_METADATA_KEY, SettingsController.prototype.updateSecurity)).toBe('settings:write');
     });
 
+    it.each(['general', 'team', 'security'] as const)('does not read or write %s settings after its Tenant lock fails', async section => {
+        const failure = new Error('owned settings lock failure');
+        prisma.$queryRaw.mockRejectedValueOnce(failure);
+        const operation = section === 'general'
+            ? controller.updateGeneral({ timezone: 'America/Chicago' }, settingsWriteReq)
+            : section === 'team'
+                ? controller.updateTeam({ defaultInviteRole: 'MANAGER' }, settingsWriteReq)
+                : controller.updateSecurity({ requireMfaForAll: true }, settingsWriteReq);
+        await expect(operation).rejects.toBe(failure);
+        expect(prisma.tenantSetting.findUnique).not.toHaveBeenCalled();
+        expect(prisma.tenant.findUniqueOrThrow).not.toHaveBeenCalled();
+        expect(prisma.tenant.update).not.toHaveBeenCalled();
+        expect(prisma.tenantSetting.upsert).not.toHaveBeenCalled();
+        expect(prisma.auditLog.create).not.toHaveBeenCalled();
+    });
+
     it('returns normalized settings for managers', async () => {
         prisma.tenantSetting.findUnique.mockResolvedValue({
             value: {

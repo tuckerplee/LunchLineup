@@ -936,11 +936,20 @@ export class AuthService implements OnModuleDestroy {
     ) {
         const audit = this.sessionTokenAudit(source);
         await this.assertTenantIdCanAuthenticate(user.tenantId);
-        const settings = await this.getTenantSecuritySettings(user.tenantId);
-        const expiresAt = new Date(Date.now() + settings.sessionTimeoutMinutes * 60 * 1000);
         const refreshCredential = this.generateSelectedRefreshCredential();
         const issuance = await this.getTenantDb().withTenant(user.tenantId, async (tx) => {
             await this.lockTenantForSessionIssuance(tx, user.tenantId);
+            // Both settings implementations take this Tenant lock before
+            // reading/replacing their JSON aggregate. Keep policy decisions
+            // and session expiry inside the same protected issuance window.
+            const settings = await this.tenantSecuritySettingsInTransaction(tx, user.tenantId);
+            if (settings.ssoOidcOnly && audit.loginMethod !== 'OIDC') {
+                if (audit.loginMethod === 'USERNAME_PIN') {
+                    throw new UnauthorizedException('Invalid username or PIN');
+                }
+                throw new ForbiddenException('This tenant requires SSO login.');
+            }
+            const expiresAt = new Date(Date.now() + settings.sessionTimeoutMinutes * 60 * 1000);
             await tx.$queryRaw(Prisma.sql`
                 SELECT "id"
                 FROM "User"
@@ -967,7 +976,6 @@ export class AuthService implements OnModuleDestroy {
                 throw new UnauthorizedException('Invalid username or password');
             }
             if (audit.loginMethod === 'USERNAME_PIN' && (!pinProof
-                || settings.ssoOidcOnly
                 || lockedUser.pinHash !== pinProof.pinHash
                 || lockedUser.username !== pinProof.username
                 || (lockedUser.pinLockedUntil && lockedUser.pinLockedUntil > new Date()))) {
@@ -1051,9 +1059,9 @@ export class AuthService implements OnModuleDestroy {
                     : { lastLoginAt: new Date() },
             });
 
-            return { session, user: lockedUser, access, mfaRequired };
+            return { session, user: lockedUser, access, mfaRequired, settings, expiresAt };
         }, SESSION_CREATION_TRANSACTION_OPTIONS);
-        const { session, user: currentUser, access, mfaRequired } = issuance;
+        const { session, user: currentUser, access, mfaRequired, settings, expiresAt } = issuance;
         const mfaVerified = !mfaRequired || mfaExemption === 'BETA_DEMO';
         if (mfaRequired && mfaExemption === 'BETA_DEMO') {
             try {

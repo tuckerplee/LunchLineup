@@ -254,10 +254,11 @@ export class WorkspaceSettingsService {
   }
 
   private async lock(transaction: TenantTransaction, tenantId: string): Promise<void> {
-    // Sections share one JSON aggregate; serialize reads and writes, including
-    // first creation, so a concurrent Team save cannot erase Security changes.
-    await transaction.$executeRaw(Prisma.sql`
-      SELECT pg_advisory_xact_lock(hashtextextended(${`lunchlineup:settings:${tenantId}`}, 0))
+    // Share the Tenant lock with legacy settings and session issuance, including
+    // first JSON creation. A separate advisory lock cannot protect cross-owner
+    // saves or prevent a login from using stale security policy.
+    await transaction.$queryRaw(Prisma.sql`
+      SELECT "id" FROM "Tenant" WHERE "id" = ${tenantId} FOR UPDATE
     `);
   }
 

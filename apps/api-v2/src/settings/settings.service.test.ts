@@ -23,6 +23,7 @@ function harness(initialValue: unknown = null, oidcSsoAvailable = false) {
   };
   const transaction = {
     $executeRaw: vi.fn(async () => 1),
+    $queryRaw: vi.fn(async () => [{ id: identity.tenantId }]),
     tenant: {
       findUnique: vi.fn(async () => ({ ...tenant })),
       update: vi.fn(async ({ data }: { data: Partial<typeof tenant> }) => {
@@ -48,6 +49,23 @@ function harness(initialValue: unknown = null, oidcSsoAvailable = false) {
 }
 
 describe('native API v2 workspace settings owner', () => {
+  it.each(['general', 'team', 'security'] as const)('does not read or write %s settings after its Tenant lock fails', async section => {
+    const { instance, transaction } = harness();
+    const failure = new Error('owned settings lock failure');
+    transaction.$queryRaw.mockRejectedValueOnce(failure);
+    const operation = section === 'general'
+      ? instance.updateGeneral(identity, { timezone: 'America/Chicago' })
+      : section === 'team'
+        ? instance.updateTeam(identity, { defaultInviteRole: 'MANAGER' })
+        : instance.updateSecurity(identity, { requireMfaForAll: true });
+    await expect(operation).rejects.toBe(failure);
+    expect(transaction.tenant.findUnique).not.toHaveBeenCalled();
+    expect(transaction.tenant.update).not.toHaveBeenCalled();
+    expect(transaction.tenantSetting.findUnique).not.toHaveBeenCalled();
+    expect(transaction.tenantSetting.upsert).not.toHaveBeenCalled();
+    expect(transaction.auditLog.create).not.toHaveBeenCalled();
+  });
+
   it('normalizes malformed stored JSON without allowing it to choose a tenant', async () => {
     const { instance, withTenant } = harness({
       general: { timezone: 'not-a-timezone' },

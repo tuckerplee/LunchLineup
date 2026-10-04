@@ -349,6 +349,17 @@ export class SettingsController {
         });
     }
 
+    private async lockWorkspaceSettings(client: TenantPrismaTransaction, tenantId: string): Promise<void> {
+        // Use the same tenant row as session issuance and API-v2 writers.
+        // Lock before reading, including when workspace_settings is absent.
+        await client.$queryRaw`
+            SELECT "id"
+            FROM "Tenant"
+            WHERE "id" = ${tenantId}
+            FOR UPDATE
+        `;
+    }
+
     @Get()
     @RequirePermission('settings:read')
     async getSettings(@Req() req: any): Promise<NormalizedSettings> {
@@ -368,6 +379,7 @@ export class SettingsController {
 
         const tenantId = req.user.tenantId;
         return this.tenantDb.withTenant(tenantId, async (tx) => {
+            await this.lockWorkspaceSettings(tx, tenantId);
             const current = await this.readNormalizedSettings(tx, tenantId);
             const tenantUpdate: Record<string, string> = {};
 
@@ -419,6 +431,7 @@ export class SettingsController {
 
         const tenantId = req.user.tenantId;
         return this.tenantDb.withTenant(tenantId, async (tx) => {
+            await this.lockWorkspaceSettings(tx, tenantId);
             const current = await this.readNormalizedSettings(tx, tenantId);
             const nextSettings: NormalizedSettings = {
                 general: current.general,
@@ -451,6 +464,7 @@ export class SettingsController {
         }
 
         return this.tenantDb.withTenant(tenantId, async (tx) => {
+            await this.lockWorkspaceSettings(tx, tenantId);
             const current = await this.readNormalizedSettings(tx, tenantId);
             const nextSettings: NormalizedSettings = {
                 general: current.general,

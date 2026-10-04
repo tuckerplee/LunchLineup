@@ -4207,6 +4207,128 @@ describe('AuthService - managed MFA encryption keys', () => {
 });
 
 
+describe('AuthService - policy commit at session issuance', () => {
+    let service: AuthService;
+    let policy: { requireMfaForAll: boolean; sessionTimeoutMinutes: number; ssoOidcOnly: boolean };
+    let account: Record<string, any>;
+
+    beforeEach(() => {
+        vi.clearAllMocks();
+        resetPrismaMocks();
+        service = new AuthService(mockConfigService as any, mockJwtService as any, mockRbacService as any);
+        (service as any).prisma = mockPrisma;
+        policy = { requireMfaForAll: false, sessionTimeoutMinutes: 480, ssoOidcOnly: false };
+        account = { id: 'u-policy', tenantId: 't-1', role: 'STAFF', email: 'policy@example.test',
+            username: 'policy.user', passwordHash: 'verified-password-hash', pinHash: 'verified-pin-hash',
+            mfaEnabled: false, pinResetRequired: false, pinLockedUntil: null, deletedAt: null, suspendedAt: null };
+        mockPrisma.tenantSetting.findUnique.mockImplementation(async () => ({ value: { security: { ...policy } } }));
+        mockPrisma.user.findFirst.mockImplementation(async () => ({ ...account }));
+        mockPrisma.session.create.mockImplementation(async ({ data }) => ({ id: 's-policy', ...data }));
+        mockRbacService.getEffectiveAccess.mockReset().mockResolvedValue({ primaryRole: 'STAFF', roles: [],
+            permissions: ['auth:login_pin', 'auth:login_password', 'auth:login_email', 'dashboard:access'] });
+    });
+
+    function pauseTenantLock() {
+        let enter!: () => void, release!: () => void;
+        const entered = new Promise<void>(resolve => { enter = resolve; });
+        const gate = new Promise<void>(resolve => { release = resolve; });
+        mockPrisma.$queryRaw.mockImplementation(async (sql: unknown) => {
+            const strings = Array.isArray(sql) ? sql : (sql as { strings?: string[] }).strings ?? [];
+            if (strings.join('').includes('FROM "Tenant"')) { enter(); await gate; }
+            return [{ id: 't-1' }];
+        });
+        return { entered, release };
+    }
+
+    function issue(method: 'USERNAME_PIN' | 'USERNAME_PASSWORD' | 'EMAIL_OTP' | 'OIDC') {
+        return (service as any).createSessionTokens(account, { loginMethod: method }, true, null,
+            { username: account.username, pinHash: account.pinHash },
+            { passwordHash: account.passwordHash }, { email: account.email });
+    }
+
+    it.each(['USERNAME_PIN', 'USERNAME_PASSWORD', 'EMAIL_OTP'] as const)(
+        'rejects %s when SSO-only policy commits while issuance waits for Tenant', async method => {
+            const lock = pauseTenantLock();
+            const pending = issue(method).then((value: unknown) => ({ value, error: undefined }),
+                (error: unknown) => ({ error, value: undefined }));
+            await lock.entered;
+            policy.ssoOidcOnly = true;
+            lock.release();
+            const result = await pending;
+            expect(result.error).toBeInstanceOf(method === 'USERNAME_PIN' ? UnauthorizedException : ForbiddenException);
+            expect(result.value).toBeUndefined();
+            expect(mockPrisma.session.create).not.toHaveBeenCalled();
+            expect(mockPrisma.session.deleteMany).not.toHaveBeenCalled();
+            expect(mockPrisma.user.update).not.toHaveBeenCalled();
+            expect(mockPrisma.auditLog.create).not.toHaveBeenCalled();
+            expect(mockJwtService.generateAccessToken).not.toHaveBeenCalled();
+            expect(mockJwtService.generateCsrfToken).not.toHaveBeenCalled();
+        },
+    );
+
+    it('uses committed MFA and session timeout after waiting for Tenant', async () => {
+        let now = Date.now();
+        const clock = vi.spyOn(Date, 'now').mockImplementation(() => now);
+        const lock = pauseTenantLock(), pending = issue('USERNAME_PIN');
+        try {
+            await lock.entered;
+            policy.requireMfaForAll = true;
+            policy.sessionTimeoutMinutes = 5;
+            now += 60_000;
+            lock.release();
+            const result = await pending;
+            expect(result.requiresMfa).toBe(true);
+            expect(result.sessionMaxAgeMs).toBe(5 * 60_000);
+            expect(mockJwtService.generateAccessToken).toHaveBeenCalledWith(expect.objectContaining({ mfaVerified: false }));
+            const expiry = mockPrisma.session.create.mock.calls[0][0].data.expiresAt.getTime();
+            expect(expiry).toBe(now + 5 * 60_000);
+        } finally { lock.release(); await Promise.allSettled([pending]); clock.mockRestore(); }
+    });
+
+    it('uses a relaxed committed MFA policy and longer timeout after waiting for Tenant', async () => {
+        policy.requireMfaForAll = true;
+        policy.sessionTimeoutMinutes = 5;
+        const lock = pauseTenantLock(), pending = issue('USERNAME_PIN');
+        try {
+            await lock.entered;
+            policy.requireMfaForAll = false;
+            policy.sessionTimeoutMinutes = 480;
+            lock.release();
+            const result = await pending;
+            expect(result.requiresMfa).toBe(false);
+            expect(result.sessionMaxAgeMs).toBe(480 * 60_000);
+            expect(mockJwtService.generateAccessToken).toHaveBeenCalledWith(expect.objectContaining({ mfaVerified: true }));
+        } finally { lock.release(); await Promise.allSettled([pending]); }
+    });
+
+    it.each(['Tenant lock', 'locked policy read'] as const)('fails before issuance writes when %s fails', async boundary => {
+        const failure = new Error('owned policy boundary failure');
+        if (boundary === 'Tenant lock') {
+            mockPrisma.$queryRaw.mockImplementation(async (sql: unknown) => {
+                const strings = Array.isArray(sql) ? sql : (sql as { strings?: string[] }).strings ?? [];
+                if (strings.join('').includes('FROM "Tenant"')) throw failure;
+                return [{ id: 't-1' }];
+            });
+        } else mockPrisma.tenantSetting.findUnique.mockRejectedValue(failure);
+        await expect(issue('USERNAME_PIN')).rejects.toBe(failure);
+        expect(mockPrisma.session.create).not.toHaveBeenCalled();
+        expect(mockPrisma.session.deleteMany).not.toHaveBeenCalled();
+        expect(mockPrisma.user.update).not.toHaveBeenCalled();
+        expect(mockPrisma.auditLog.create).not.toHaveBeenCalled();
+        expect(mockJwtService.generateAccessToken).not.toHaveBeenCalled();
+        expect(mockJwtService.generateCsrfToken).not.toHaveBeenCalled();
+    });
+
+    it('allows OIDC under the newly committed SSO-only policy', async () => {
+        const lock = pauseTenantLock(), pending = issue('OIDC');
+        await lock.entered;
+        policy.ssoOidcOnly = true;
+        lock.release();
+        await expect(pending).resolves.toHaveProperty('accessToken');
+        expect(mockPrisma.session.create).toHaveBeenCalledOnce();
+    });
+});
+
 describe('AuthService - PIN proof transaction boundaries', () => {
     let service: AuthService;
     let account: {

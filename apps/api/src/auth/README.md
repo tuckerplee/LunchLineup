@@ -35,6 +35,10 @@
 
 ## Notes
 
+Initial session issuance reads security policy only after acquiring its Tenant row lock. Both settings implementations take that same lock before reading and replacing their aggregate. Issuance checks committed SSO-only policy for every non-OIDC login method and derives MFA and expiry from that transaction's policy snapshot; a refusal occurs before issuance writes. The lock order stays Tenant then User. Postcommit token and Redis work use the returned snapshot. A policy change committed after issuance may still precede the HTTP response: the guarantee is transaction serialization, not response-time freshness.
+
+This initial-session fix does not qualify refresh authorization, access-session/MFA policy observation, or settings-write authorization against concurrent actor revocation. These remain separate acceptance coverage. Transaction doubles prove the reproduced source regressions; actual PostgreSQL blocking and signed HTTP/Redis behavior require admitted native QA with all live settings writers on the shared lock protocol.
+
 Auth operational logs never serialize provider or Redis exception messages or stacks. The shared classifier emits only an allowlisted event, error class, category, known infrastructure code, and a strictly validated correlation ID. Non-production `AUTH_DEBUG` uses a separate runtime detail allowlist; submitted OTPs, tokens, credentials, raw redirect URLs, and arbitrary error details are not accepted.
 
 Migrated legacy users authenticate with `username` plus preserved PHP `password_hash` values. PIN login remains available for accounts without a migrated password hash. Password reset requests return a generic response and atomically store a SHA-256 token hash plus an encrypted delivery outbox row. The worker leases due rows, sends with provider idempotency, retries transient failures to a fixed bound, and exposes dead-letter metrics/log alerts without logging recipients or reset tokens. Confirmation validates the token, account, tenant, and expiry before asynchronously hashing the new password; transactional compare-and-set consumption keeps each token one-time and revokes existing sessions.
