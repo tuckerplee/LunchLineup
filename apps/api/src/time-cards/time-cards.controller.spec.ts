@@ -9,7 +9,7 @@ import {
 describe('TimeCardsController', () => {
     let controller: TimeCardsController;
     let prisma: any;
-    let tenantDb: { withTenant: ReturnType<typeof vi.fn> };
+    let tenantDb: { withTenant: ReturnType<typeof vi.fn<(...args: any[]) => Promise<any>>> };
     let featureAccess: {
         assertFeatureEnabled: ReturnType<typeof vi.fn>;
         assertFeatureEntitled: ReturnType<typeof vi.fn>;
@@ -18,8 +18,25 @@ describe('TimeCardsController', () => {
         recordFeatureUsageInTransaction: ReturnType<typeof vi.fn>;
     };
 
-    const adminReq = { user: { tenantId: 'tenant-1', sub: 'admin-1', permissions: ['users:read', 'shifts:read'] } };
-    const staffReq = { user: { tenantId: 'tenant-1', sub: 'staff-1', permissions: [] } };
+    let domainPermissions: Record<string, string[]>;
+    // These legacy domain units deliberately isolate the current-authority
+    // boundary. Actual Rbac/current policy is exercised in the independent
+    // time-cards-current-authority fixture, not by this adapter.
+    const domainRbac = { runCurrentMutation: async (options: any, _authorize: any, operation: any, recovery: any) => {
+        const selected = { ...options.actor };
+        const current = { req: { user: { ...selected, sub: selected.userId,
+            permissions: domainPermissions[selected.userId] ?? [] } } };
+        const run = (callback: any) => tenantDb.withTenant(selected.tenantId,
+            (tx: any) => callback(tx, current, () => {}, selected), options.transactionOptions);
+        try { return await run(operation); }
+        catch (error) {
+            if (!recovery?.isRecoverable(error)) throw error;
+            return run((tx: any, authority: any, guard: any, actor: any) => recovery.operation(tx, authority, guard, actor, error));
+        }
+    } };
+
+    const adminReq = { user: { tenantId: 'tenant-1', sub: 'admin-1', sessionId: 'admin-session', permissions: ['users:read', 'shifts:read'] } };
+    const staffReq = { user: { tenantId: 'tenant-1', sub: 'staff-1', sessionId: 'staff-session', permissions: [] } };
     const baseCard = {
         id: 'card-1',
         tenantId: 'tenant-1',
@@ -43,6 +60,10 @@ describe('TimeCardsController', () => {
     };
 
     beforeEach(() => {
+        domainPermissions = { 'admin-1': ['time_cards:read', 'time_cards:write', 'users:read', 'shifts:read'],
+            'staff-1': ['time_cards:read', 'time_cards:write'],
+            'payroll-supervisor-1': ['time_cards:read', 'time_cards:write', 'users:read', 'shifts:read'],
+            'manager-1': ['time_cards:read'] };
         featureAccess = {
             assertFeatureEnabled: vi.fn().mockResolvedValue({ enabled: true, source: 'credits', reason: 'Billable', creditCost: 1 }),
             assertFeatureEntitled: vi.fn().mockResolvedValue({ enabled: true, source: 'credits', reason: 'Entitled control', creditCost: 1 }),
@@ -90,7 +111,7 @@ describe('TimeCardsController', () => {
         tenantDb = {
             withTenant: vi.fn(async (_tenantId: string, operation: (tx: any) => Promise<unknown>) => operation(prisma)),
         };
-        controller = new TimeCardsController(featureAccess as any, tenantDb as any);
+        controller = new TimeCardsController(featureAccess as any, tenantDb as any, domainRbac as any, {} as any);
     });
 
     it('checks time card feature access before clock-in writes', async () => {
@@ -99,7 +120,7 @@ describe('TimeCardsController', () => {
         await expect(controller.clockIn({ userId: 'staff-1' }, adminReq, 'clock-in-1')).rejects.toBeInstanceOf(ForbiddenException);
 
         expect(featureAccess.assertFeatureEnabledInTransaction).toHaveBeenCalledWith(prisma, 'tenant-1', 'time_cards');
-        expect(tenantDb.withTenant).toHaveBeenCalledWith('tenant-1', expect.any(Function));
+        expect(tenantDb.withTenant).toHaveBeenCalledWith('tenant-1', expect.any(Function), { maxWait: 5_000, timeout: 10_000 });
         expect(prisma.user.findFirst).not.toHaveBeenCalled();
         expect(prisma.timeCard.create).not.toHaveBeenCalled();
         expect(prisma.auditLog.create).not.toHaveBeenCalled();
@@ -107,13 +128,15 @@ describe('TimeCardsController', () => {
 
     it('prevents staff from clocking in another employee', async () => {
         await expect(controller.clockIn({ userId: 'other-user' }, staffReq, 'clock-in-other')).rejects.toBeInstanceOf(ForbiddenException);
-        expect(tenantDb.withTenant).not.toHaveBeenCalled();
+        expect(prisma.timeCard.create).not.toHaveBeenCalled();
+        expect(prisma.timeCard.updateMany).not.toHaveBeenCalled();
+        expect(prisma.auditLog.create).not.toHaveBeenCalled();
         expect(prisma.user.findFirst).not.toHaveBeenCalled();
         expect(prisma.timeCard.create).not.toHaveBeenCalled();
         expect(prisma.auditLog.create).not.toHaveBeenCalled();
     });
 
-    it('prevents staff self-service clock-in backdating before tenant database work', async () => {
+    it('prevents staff self-service clock-in backdating before domain effects', async () => {
         await expect(controller.clockIn(
             { clockInAt: '2026-07-08T14:00:00.000Z' },
             staffReq,
@@ -121,7 +144,9 @@ describe('TimeCardsController', () => {
         )).rejects.toBeInstanceOf(ForbiddenException);
 
         expect(featureAccess.assertFeatureEnabled).not.toHaveBeenCalled();
-        expect(tenantDb.withTenant).not.toHaveBeenCalled();
+        expect(prisma.timeCard.create).not.toHaveBeenCalled();
+        expect(prisma.timeCard.updateMany).not.toHaveBeenCalled();
+        expect(prisma.auditLog.create).not.toHaveBeenCalled();
         expect(prisma.timeCard.create).not.toHaveBeenCalled();
         expect(prisma.auditLog.create).not.toHaveBeenCalled();
     });
@@ -131,7 +156,7 @@ describe('TimeCardsController', () => {
 
         const result = await controller.findAll(adminReq);
 
-        expect(tenantDb.withTenant).toHaveBeenCalledWith('tenant-1', expect.any(Function));
+        expect(tenantDb.withTenant).toHaveBeenCalledWith('tenant-1', expect.any(Function), { maxWait: 5_000, timeout: 10_000 });
         expect(prisma.timeCard.findMany).toHaveBeenCalledWith(expect.objectContaining({
             where: expect.objectContaining({
                 tenantId: 'tenant-1',
@@ -218,6 +243,7 @@ describe('TimeCardsController', () => {
             user: {
                 tenantId: 'tenant-1',
                 sub: 'payroll-supervisor-1',
+                sessionId: 'supervisor-session',
                 role: 'Payroll Supervisor',
                 permissions: ['time_cards:read', 'time_cards:write', 'users:read', 'shifts:read'],
             },
@@ -232,7 +258,7 @@ describe('TimeCardsController', () => {
         prisma.timeCard.findMany.mockResolvedValue([baseCard]);
 
         await controller.findAll({
-            user: { tenantId: 'tenant-1', sub: 'manager-1', role: 'MANAGER', permissions: ['time_cards:read'] },
+            user: { tenantId: 'tenant-1', sub: 'manager-1', sessionId: 'manager-session', role: 'MANAGER', permissions: ['time_cards:read'] },
         }, 'staff-1');
 
         expect(prisma.timeCard.findMany).toHaveBeenCalledWith(expect.objectContaining({
@@ -245,7 +271,7 @@ describe('TimeCardsController', () => {
         prisma.timeCard.findFirst.mockResolvedValue({ id: 'open-card' });
 
         await expect(controller.clockIn({ userId: 'staff-1' }, adminReq, 'clock-in-1')).rejects.toBeInstanceOf(BadRequestException);
-        expect(tenantDb.withTenant).toHaveBeenCalledWith('tenant-1', expect.any(Function));
+        expect(tenantDb.withTenant).toHaveBeenCalledWith('tenant-1', expect.any(Function), { maxWait: 5_000, timeout: 10_000 });
         expect(prisma.timeCard.create).not.toHaveBeenCalled();
         expect(prisma.auditLog.create).not.toHaveBeenCalled();
     });
@@ -284,7 +310,7 @@ describe('TimeCardsController', () => {
             'clock-in-create',
         );
 
-        expect(tenantDb.withTenant).toHaveBeenCalledWith('tenant-1', expect.any(Function));
+        expect(tenantDb.withTenant).toHaveBeenCalledWith('tenant-1', expect.any(Function), { maxWait: 5_000, timeout: 10_000 });
         expect(prisma.timeCard.create).toHaveBeenCalledWith(expect.objectContaining({
             data: expect.objectContaining({
                 tenantId: 'tenant-1',
@@ -346,7 +372,7 @@ describe('TimeCardsController', () => {
         expect(prisma.auditLog.create).not.toHaveBeenCalled();
     });
 
-    it('prevents staff self-service clock-out timestamp overrides before tenant database work', async () => {
+    it('prevents staff self-service clock-out timestamp overrides before domain effects', async () => {
         await expect(controller.clockOut(
             'card-1',
             { clockOutAt: '2026-07-08T23:00:00.000Z', breakMinutes: 0 },
@@ -354,7 +380,9 @@ describe('TimeCardsController', () => {
         )).rejects.toBeInstanceOf(ForbiddenException);
 
         expect(featureAccess.assertFeatureEnabled).not.toHaveBeenCalled();
-        expect(tenantDb.withTenant).not.toHaveBeenCalled();
+        expect(prisma.timeCard.create).not.toHaveBeenCalled();
+        expect(prisma.timeCard.updateMany).not.toHaveBeenCalled();
+        expect(prisma.auditLog.create).not.toHaveBeenCalled();
         expect(prisma.timeCard.update).not.toHaveBeenCalled();
         expect(prisma.auditLog.create).not.toHaveBeenCalled();
     });
@@ -377,7 +405,7 @@ describe('TimeCardsController', () => {
         expect(prisma.location.findFirst).not.toHaveBeenCalled();
         expect(prisma.timeCard.create).not.toHaveBeenCalled();
         expect(prisma.auditLog.create).not.toHaveBeenCalled();
-        expect(tenantDb.withTenant).toHaveBeenCalledWith('tenant-1', expect.any(Function));
+        expect(tenantDb.withTenant).toHaveBeenCalledWith('tenant-1', expect.any(Function), { maxWait: 5_000, timeout: 10_000 });
     });
 
     it('closes an open time card with break minutes', async () => {
@@ -580,6 +608,8 @@ describe('TimeCardsController', () => {
             creditResolution,
             'Time card clock-in (card-1)',
             expect.stringMatching(/^[a-f0-9]{64}$/),
+            undefined,
+            expect.any(Function),
         );
     });
 
@@ -606,6 +636,8 @@ describe('TimeCardsController', () => {
             planResolution,
             'Time card clock-in (card-1)',
             expect.any(String),
+            undefined,
+            expect.any(Function),
         );
         expect(prisma.auditLog.create).not.toHaveBeenCalled();
     });
@@ -648,7 +680,6 @@ describe('TimeCardsController', () => {
         };
         prisma.user.findFirst.mockResolvedValue({ id: 'staff-1' });
         prisma.timeCard.findUnique
-            .mockResolvedValueOnce(null)
             .mockResolvedValueOnce(null)
             .mockResolvedValueOnce(committed);
         prisma.timeCard.findFirst.mockResolvedValue({ id: 'card-1' });
@@ -804,14 +835,16 @@ describe('TimeCardsController', () => {
         expect(result.data[0].displayTimeZone).toBe('America/Los_Angeles');
     });
 
-    it('rejects staff corrections before tenant database access', async () => {
+    it('rejects staff corrections before domain effects', async () => {
         await expect(controller.correct('card-1', {
             clockOutAt: '2026-07-08T23:00:00.000Z',
             expectedUpdatedAt: '2026-07-08T15:00:00.000Z',
             reason: 'Forgotten clock out.',
         }, staffReq)).rejects.toBeInstanceOf(ForbiddenException);
 
-        expect(tenantDb.withTenant).not.toHaveBeenCalled();
+        expect(prisma.timeCard.create).not.toHaveBeenCalled();
+        expect(prisma.timeCard.updateMany).not.toHaveBeenCalled();
+        expect(prisma.auditLog.create).not.toHaveBeenCalled();
         expect(prisma.timeCard.updateMany).not.toHaveBeenCalled();
         expect(prisma.auditLog.create).not.toHaveBeenCalled();
     });

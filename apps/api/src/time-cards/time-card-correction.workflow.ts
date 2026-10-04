@@ -27,8 +27,11 @@ export async function correctTimeCardInTransaction(
     actorUserId: string,
     cardId: string,
     body: TimeCardCorrectionBody,
+    assertCurrent: () => void = () => {},
 ) {
+    assertCurrent();
     const initialCard = await findTimeCard(tx, tenantId, cardId);
+    assertCurrent();
     if (initialCard.status === 'VOID') {
         throw new BadRequestException('Voided time cards cannot be corrected.');
     }
@@ -38,14 +41,19 @@ export async function correctTimeCardInTransaction(
         tenantId,
         correction.clockInAt,
         initialCard.location ? { id: initialCard.location.id, timezone: initialCard.workTimeZone } : null,
+        assertCurrent,
     );
+    assertCurrent();
     await lockTimeCardPayrollContext(
         tx,
         tenantId,
         cardId,
         [initialCard.payrollPeriodId, assignment.payrollPeriodId],
+        assertCurrent,
     );
+    assertCurrent();
     const card = await findTimeCard(tx, tenantId, cardId);
+    assertCurrent();
     if (card.status === 'VOID') {
         throw new BadRequestException('Voided time cards cannot be corrected.');
     }
@@ -58,6 +66,7 @@ export async function correctTimeCardInTransaction(
         correction.clockOutAt,
     );
 
+    assertCurrent();
     const updateResult = await tx.timeCard.updateMany({
         where: {
             id: card.id,
@@ -76,12 +85,15 @@ export async function correctTimeCardInTransaction(
             revision: { increment: 1 },
         },
     });
+    assertCurrent();
     if (updateResult.count !== 1) {
         throw new ConflictException('This time card changed while you were editing it. Refresh and try again.');
     }
 
     if (correction.breakIntervals) {
+        assertCurrent();
         await tx.timeCardBreak.deleteMany({ where: { tenantId, timeCardId: card.id } });
+        assertCurrent();
         if (correction.breakIntervals.length > 0) {
             await tx.timeCardBreak.createMany({
                 data: correction.breakIntervals.map((interval) => ({
@@ -91,10 +103,12 @@ export async function correctTimeCardInTransaction(
                     endAt: interval.endAt,
                 })),
             });
+            assertCurrent();
         }
     }
 
     const updated = await findTimeCard(tx, tenantId, cardId);
+    assertCurrent();
     await tx.auditLog.create({
         data: {
             tenantId,
@@ -109,6 +123,7 @@ export async function correctTimeCardInTransaction(
             },
         },
     });
+    assertCurrent();
     return updated;
 }
 

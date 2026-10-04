@@ -20,10 +20,13 @@ export async function resolveTimeCardPayrollAssignment(
   tenantId: string,
   clockInAt: Date,
   location: { id: string; timezone: string } | null,
+  assertCurrent: () => void = () => {},
 ): Promise<TimeCardPayrollAssignment> {
+  assertCurrent();
   let policy: { id: string; version: number; timeZone: string; effectiveFrom: Date } | undefined;
   let cursorId: string | undefined;
   do {
+    assertCurrent();
     const policies = await transaction.payrollPolicyVersion.findMany({
       where: { tenantId },
       orderBy: [{ effectiveFrom: 'desc' }, { version: 'desc' }],
@@ -31,6 +34,7 @@ export async function resolveTimeCardPayrollAssignment(
       ...(cursorId ? { cursor: { id: cursorId }, skip: 1 } : {}),
       select: { id: true, version: true, timeZone: true, effectiveFrom: true },
     });
+    assertCurrent();
     policy = policies.find((candidate) => (
       candidate.effectiveFrom.toISOString().slice(0, 10)
       <= dateValueInTimeZone(clockInAt, candidate.timeZone)
@@ -53,11 +57,14 @@ export async function resolveTimeCardPayrollAssignment(
     },
     select: { id: true },
   });
+  assertCurrent();
   if (!period) {
     throw new ProblemError(409, 'no_open_payroll_period', 'No open payroll period covers this clock-in time.', 'Payroll period unavailable');
   }
   await lockPayrollTenant(transaction, tenantId);
+  assertCurrent();
   await lockPayrollPeriod(transaction, tenantId, period.id);
+  assertCurrent();
   const current = await transaction.$queryRaw<Array<{ id: string }>>(Prisma.sql`
     SELECT "id"
     FROM "PayrollPeriod"
@@ -69,6 +76,7 @@ export async function resolveTimeCardPayrollAssignment(
       AND "endsAt" > ${clockInAt}
     FOR UPDATE
   `);
+  assertCurrent();
   if (current.length !== 1) {
     throw new ProblemError(409, 'payroll_period_changed', 'The payroll period changed while this time card was being created.', 'Concurrent change');
   }
@@ -80,19 +88,26 @@ export async function lockTimeCardPayrollContext(
   tenantId: string,
   timeCardId: string,
   periodIds: Array<string | null | undefined>,
+  assertCurrent: () => void = () => {},
 ): Promise<LockedPayrollPeriodWindow[]> {
+  assertCurrent();
   await transaction.$executeRaw`SET LOCAL lock_timeout = '5s'`;
+  assertCurrent();
   await lockPayrollTenant(transaction, tenantId);
+  assertCurrent();
   const orderedPeriodIds = [...new Set(periodIds.filter((value): value is string => Boolean(value)))].sort();
   const locked: LockedPayrollPeriodWindow[] = [];
   for (const periodId of orderedPeriodIds) {
+    assertCurrent();
     await lockPayrollPeriod(transaction, tenantId, periodId);
+    assertCurrent();
     const periods = await transaction.$queryRaw<Array<LockedPayrollPeriodWindow & { status: string }>>(Prisma.sql`
       SELECT "id", "startsAt", "endsAt", "status"::text AS "status"
       FROM "PayrollPeriod"
       WHERE "id" = ${periodId} AND "tenantId" = ${tenantId}
       FOR UPDATE
     `);
+    assertCurrent();
     if (periods.length !== 1) {
       throw new ProblemError(409, 'payroll_period_changed', 'The payroll period changed while this time card was being updated.', 'Concurrent change');
     }
@@ -106,12 +121,14 @@ export async function lockTimeCardPayrollContext(
     WHERE "id" = ${timeCardId} AND "tenantId" = ${tenantId}
     FOR UPDATE
   `);
+  assertCurrent();
   await transaction.$queryRaw(Prisma.sql`
     SELECT "id" FROM "TimeCardBreak"
     WHERE "timeCardId" = ${timeCardId} AND "tenantId" = ${tenantId}
     ORDER BY "id" ASC
     FOR UPDATE
   `);
+  assertCurrent();
   return locked;
 }
 

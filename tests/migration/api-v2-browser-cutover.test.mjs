@@ -248,7 +248,7 @@ test('API-02 owns Time Cards natively with public records and no retained applic
   assert.match(schema, /model TimeCardBreak \{[\s\S]*?publicId\s+String\s+@unique/);
   assert.match(migration, /\['TimeCard', 'TimeCardBreak'\]/);
   assert.match(migration, /target_table \|\| '_publicId_key'/);
-  assert.match(server, /new TimeCardService\(database\)/);
+  assert.match(server, /new TimeCardService\(database, identity\)/);
   assert.match(server, /registerTimeCardRoutes/);
   assert.match(routes, /registerTimeCardRoutes/);
   assert.match(service, /publicId: true/);

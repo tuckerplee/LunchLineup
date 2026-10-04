@@ -325,16 +325,31 @@ export function TimeCardsWorkspace({ canManageTeam, canReadLocations, canWriteTi
             setError(`Choose ${activeCardForSelectedUser.location?.name ?? 'the active card location'} before clocking out ${selectedStaffName}.`);
             return;
         }
+        const typedBreakMinutes = breakMinutes.trim();
+        const parsedBreakMinutes = Number(typedBreakMinutes);
+        if (!/^[0-9]+$/.test(typedBreakMinutes) || !Number.isSafeInteger(parsedBreakMinutes)) {
+            setError('Enter break minutes as a whole non-negative number, including 0 for no break.');
+            setNotice(null);
+            return;
+        }
+        const normalizedNotes = notes.trim() || undefined;
+        const desired = Object.freeze({
+            cardId: activeCardForSelectedUser.id,
+            userId: activeCardForSelectedUser.userId,
+            breakMinutes: parsedBreakMinutes,
+            notes: normalizedNotes,
+            // An omitted note leaves the previously saved value unchanged.
+            savedNotes: normalizedNotes === undefined ? activeCardForSelectedUser.notes ?? null : normalizedNotes,
+        });
         const targetName = selectedStaffName;
         const targetLocationName = activeCardForSelectedUser.location?.name ?? selectedLocationName;
         setIsSaving(true);
         setError(null);
         setNotice(null);
         try {
-            const parsedBreakMinutes = Number.parseInt(breakMinutes, 10);
-            await clockOutTimeCard(activeCardForSelectedUser.id, {
-                breakMinutes: Number.isFinite(parsedBreakMinutes) ? parsedBreakMinutes : 0,
-                notes: notes.trim() || undefined,
+            await clockOutTimeCard(desired.cardId, {
+                breakMinutes: desired.breakMinutes,
+                notes: desired.notes,
             });
             setNotice(isTeamTime
                 ? `${targetName} was clocked out${targetLocationName ? ` from ${targetLocationName}` : ''}.`
@@ -350,13 +365,18 @@ export function TimeCardsWorkspace({ canManageTeam, canReadLocations, canWriteTi
                 return;
             }
             const refreshedCards = await loadCards(selectedUserId, view);
-            const confirmed = refreshedCards?.find((card) => card.id === activeCardForSelectedUser.id && card.clockOutAt);
+            const confirmed = refreshedCards?.find((card) => card.id === desired.cardId
+                && card.userId === desired.userId
+                && card.status === 'CLOSED'
+                && typeof card.clockOutAt === 'string' && Number.isFinite(Date.parse(card.clockOutAt))
+                && card.breakMinutes === desired.breakMinutes
+                && (card.notes ?? null) === desired.savedNotes);
             if (confirmed) {
-                setNotice('Clock-out confirmed from the saved time card after refreshing.');
+                setNotice('Saved time card matches your clock-out entries after refreshing.');
                 setBreakMinutes('30');
                 setNotes('');
             } else {
-                setError('Clock-out could not be confirmed. Your entries have been retained. Check the current status before retrying.');
+                setError('Clock-out could not be confirmed against your entries. Your entries have been retained. Review the current card before retrying.');
             }
         } finally {
             setIsSaving(false);
@@ -508,7 +528,7 @@ export function TimeCardsWorkspace({ canManageTeam, canReadLocations, canWriteTi
                             step="1"
                             value={breakMinutes}
                             onChange={(event) => setBreakMinutes(event.target.value)}
-                            disabled={!activeCardForSelectedUser || !canWriteTimeCards || !hasCurrentCards}
+                            disabled={isSaving || !activeCardForSelectedUser || !canWriteTimeCards || !hasCurrentCards}
                             style={{ border: '1px solid var(--border)', borderRadius: 8, padding: '0.45rem 0.5rem', background: '#fff', color: 'var(--text-primary)' }}
                         />
                     </label>
@@ -581,6 +601,7 @@ export function TimeCardsWorkspace({ canManageTeam, canReadLocations, canWriteTi
                 cards={cards}
                 canManageTeam={canManageTeam}
                 canWriteTimeCards={canWriteTimeCards}
+                isSaving={isSaving}
                 isMoreCardsLoading={isMoreCardsLoading}
                 nextCardsCursor={nextCardsCursor}
                 selectedStaffName={selectedStaffName}

@@ -145,7 +145,7 @@ export async function buildServer(
     const lunchBreaks = overrides.lunchBreaks ?? new LunchBreakService(database);
     const notifications = overrides.notifications ?? new NotificationService(database);
     const payroll = overrides.payroll ?? new PayrollService(database, identity);
-    const timeCards = overrides.timeCards ?? new TimeCardService(database);
+    const timeCards = overrides.timeCards ?? new TimeCardService(database, identity);
     const settings = overrides.settings ?? new WorkspaceSettingsService(database, config, identity);
     const retainedApplication = overrides.retainedApplication ?? new RetainedApplicationBridge(
       config,

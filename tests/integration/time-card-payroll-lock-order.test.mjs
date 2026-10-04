@@ -156,12 +156,14 @@ async function createFixture(owner, values) {
       ipAddress: '127.0.0.1', userAgent: 'scoped-payroll-lock-order-fixture',
       expiresAt: new Date('2099-01-01T00:00:00.000Z'),
     } });
-    const permission = await tx.permission.findUniqueOrThrow({ where: { key: 'payroll:export' } });
+    const timeAndExportPermissions = ['payroll:export', 'time_cards:read', 'time_cards:write', 'users:read', 'shifts:read'];
+    const permissions = [];
+    for (const key of timeAndExportPermissions) permissions.push(await tx.permission.findUniqueOrThrow({ where: { key } }));
     await tx.role.create({ data: {
       id: values.exporterRoleId, tenantId: values.tenantId, name: 'Scoped payroll exporter',
       slug: `exporter-${values.suffix}`, isSystem: false,
     } });
-    await tx.rolePermission.create({ data: { roleId: values.exporterRoleId, permissionId: permission.id } });
+    for (const permission of permissions) await tx.rolePermission.create({ data: { roleId: values.exporterRoleId, permissionId: permission.id } });
     await tx.roleAssignment.create({ data: { tenantId: values.tenantId, userId: values.managerId, roleId: values.exporterRoleId } });
     await tx.location.create({
       data: { id: values.locationId, tenantId: values.tenantId, name: 'UTC Location', timezone: 'UTC' },
@@ -287,7 +289,7 @@ function managerRequest(values) {
       sub: values.managerId,
       sessionId: values.managerSessionId,
       role: 'ADMIN',
-      permissions: ['users:read', 'shifts:read'],
+      permissions: ['time_cards:read', 'time_cards:write', 'users:read', 'shifts:read'],
     },
   };
 }
@@ -332,9 +334,9 @@ test('Tenant-first payroll hierarchy serializes clock-in/export and correction/e
       createFixture(owner, clockValues),
       createFixture(owner, correctionValues),
     ]);
-    const mutationRuntime = runtime(mutationPrisma);
+    const mutationRuntime = runtime(mutationPrisma, [clockValues, correctionValues]);
     const exportRuntime = runtime(exportPrisma, [clockValues, correctionValues]);
-    const timeCards = new TimeCardsController(mutationRuntime.featureAccess, mutationRuntime.tenantDb);
+    const timeCards = new TimeCardsController(mutationRuntime.featureAccess, mutationRuntime.tenantDb, mutationRuntime.rbac, mutationRuntime.mfaObserver);
     const exports = new PayrollExportService(exportRuntime.tenantDb, exportRuntime.featureAccess, exportRuntime.rbac, exportRuntime.mfaObserver);
 
     let ready = deferred();

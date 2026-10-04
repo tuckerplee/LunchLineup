@@ -21,6 +21,10 @@ type BreakDraft = {
     key: string;
     startAt: string;
     endAt: string;
+    originalStartAt?: string;
+    originalEndAt?: string;
+    startTouched: boolean;
+    endTouched: boolean;
 };
 
 export function TimeCardCorrectionPanel({ card, onCancel, onSaved }: TimeCardCorrectionPanelProps) {
@@ -29,10 +33,16 @@ export function TimeCardCorrectionPanel({ card, onCancel, onSaved }: TimeCardCor
     const [clockOutAt, setClockOutAt] = useState(() => (
         card.clockOutAt ? timeCardInstantToLocalInput(card.clockOutAt, timeZone) : ''
     ));
+    const [clockInTouched, setClockInTouched] = useState(false);
+    const [clockOutTouched, setClockOutTouched] = useState(false);
     const [breaks, setBreaks] = useState<BreakDraft[]>(() => (card.breaks ?? []).map((interval) => ({
         key: interval.id,
         startAt: timeCardInstantToLocalInput(interval.startAt, timeZone),
         endAt: timeCardInstantToLocalInput(interval.endAt, timeZone),
+        originalStartAt: interval.startAt,
+        originalEndAt: interval.endAt,
+        startTouched: false,
+        endTouched: false,
     })));
     const [breaksTouched, setBreaksTouched] = useState(Boolean(card.breaks?.length));
     const [reason, setReason] = useState('');
@@ -43,12 +53,28 @@ export function TimeCardCorrectionPanel({ card, onCancel, onSaved }: TimeCardCor
 
     function updateDateTime(fieldKey: string, value: string, setter: (next: string) => void) {
         setter(value);
+        if (fieldKey === 'clock-in') setClockInTouched(true);
+        if (fieldKey === 'clock-out') setClockOutTouched(true);
         setAmbiguities((current) => withoutKey(current, fieldKey));
         setAmbiguitySelections((current) => withoutKey(current, fieldKey));
     }
 
+    function untouchedOriginal(fieldKey: string): string | undefined {
+        if (fieldKey === 'clock-in' && !clockInTouched) return card.clockInAt;
+        if (fieldKey === 'clock-out' && !clockOutTouched) return card.clockOutAt || undefined;
+        for (const interval of breaks) {
+            if (fieldKey === breakFieldKey(interval.key, 'startAt') && !interval.startTouched) return interval.originalStartAt;
+            if (fieldKey === breakFieldKey(interval.key, 'endAt') && !interval.endTouched) return interval.originalEndAt;
+        }
+        return undefined;
+    }
+
     function inspectDateTime(fieldKey: string, value: string) {
         if (!value) return;
+        if (untouchedOriginal(fieldKey)) {
+            setAmbiguities((current) => withoutKey(current, fieldKey));
+            return;
+        }
         try {
             const candidates = timeCardLocalInputCandidates(value, timeZone);
             setAmbiguities((current) => ({ ...current, [fieldKey]: candidates }));
@@ -60,13 +86,14 @@ export function TimeCardCorrectionPanel({ card, onCancel, onSaved }: TimeCardCor
 
     function addBreak() {
         const key = crypto.randomUUID();
-        setBreaks((current) => [...current, { key, startAt: '', endAt: '' }]);
+        setBreaks((current) => [...current, { key, startAt: '', endAt: '', startTouched: true, endTouched: true }]);
         setBreaksTouched(true);
     }
 
     function updateBreak(key: string, field: 'startAt' | 'endAt', value: string) {
         setBreaks((current) => current.map((interval) => (
-            interval.key === key ? { ...interval, [field]: value } : interval
+            interval.key === key ? { ...interval, [field]: value,
+                ...(field === 'startAt' ? { startTouched: true } : { endTouched: true }) } : interval
         )));
         setBreaksTouched(true);
         const fieldKey = breakFieldKey(key, field);
@@ -85,6 +112,11 @@ export function TimeCardCorrectionPanel({ card, onCancel, onSaved }: TimeCardCor
     }
 
     function resolveInstant(fieldKey: string, value: string, label: string): string {
+        // Minute-only display values must not replace precise saved instants.
+        // A deliberate edit, including respecifying the same wall time, uses
+        // the current local-time validation and occurrence selection instead.
+        const original = untouchedOriginal(fieldKey);
+        if (original) return original;
         if (!value) throw new Error(label + ' is required.');
         const candidates = timeCardLocalInputCandidates(value, timeZone);
         setAmbiguities((current) => ({ ...current, [fieldKey]: candidates }));
@@ -137,6 +169,7 @@ export function TimeCardCorrectionPanel({ card, onCancel, onSaved }: TimeCardCor
     }
 
     function renderAmbiguity(fieldKey: string) {
+        if (untouchedOriginal(fieldKey)) return null;
         const candidates = ambiguities[fieldKey] ?? [];
         if (candidates.length < 2) return null;
         return (

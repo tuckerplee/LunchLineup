@@ -8,6 +8,7 @@ const adminReq = {
     user: {
         tenantId: 'tenant-1',
         sub: 'admin-1',
+        sessionId: 'admin-session',
         permissions: ['users:read', 'shifts:read'],
     },
 };
@@ -139,6 +140,18 @@ function buildControllerDb(initialTenant: any = zeroCreditPaidTenant) {
     };
 }
 
+// Domain-only authority adapter: keep the actual FeatureAccess owner and
+// its transaction tenant rows. This adapter neither decides current policy nor
+// qualifies actor/session/MFA; the separate actual-Rbac fixture owns that proof.
+function domainRbac(tenantDb: any) {
+    return { runCurrentMutation: (options: any, _authorize: any, operation: any) => {
+        const actor = { ...options.actor };
+        return tenantDb.withTenant(actor.tenantId, (tx: any) => operation(tx,
+            { req: { user: { ...actor, sub: actor.userId, permissions: ['time_cards:read', 'time_cards:write', 'users:read', 'shifts:read'] } } },
+            () => {}, actor), options.transactionOptions);
+    } };
+}
+
 describe('TimeCardsController entitlement boundaries', () => {
     it.each(entitlementDenials)(
         'blocks history, historical detail, and corrections for $name',
@@ -147,7 +160,7 @@ describe('TimeCardsController entitlement boundaries', () => {
             const accessSpy = vi.spyOn(featureAccess, 'assertFeatureEntitled');
             const transactionAccessSpy = vi.spyOn(featureAccess, 'assertFeatureEntitledInTransaction');
             const { prisma, tenantDb } = buildControllerDb(tenant);
-            const controller = new TimeCardsController(featureAccess, tenantDb as any);
+            const controller = new TimeCardsController(featureAccess, tenantDb as any, domainRbac(tenantDb) as any, {} as any);
             const correction = {
                 clockOutAt: '2026-07-08T23:00:00.000Z',
                 expectedUpdatedAt: '2026-07-08T15:00:00.000Z',
@@ -158,11 +171,10 @@ describe('TimeCardsController entitlement boundaries', () => {
             await expect(controller.findOne('card-1', adminReq)).rejects.toThrow(reason);
             await expect(controller.correct('card-1', correction, adminReq)).rejects.toThrow(reason);
 
-            expect(accessSpy).toHaveBeenCalledTimes(2);
-            expect(accessSpy).toHaveBeenNthCalledWith(1, 'tenant-1', 'time_cards');
-            expect(accessSpy).toHaveBeenNthCalledWith(2, 'tenant-1', 'time_cards');
+            expect(accessSpy).not.toHaveBeenCalled();
+            expect(transactionAccessSpy).toHaveBeenCalledTimes(3);
             expect(transactionAccessSpy).toHaveBeenCalledWith(prisma, 'tenant-1', 'time_cards');
-            expect(tenantDb.withTenant).toHaveBeenCalledOnce();
+            expect(tenantDb.withTenant).toHaveBeenCalledTimes(3);
             expect(prisma.timeCard.findMany).not.toHaveBeenCalled();
             expect(prisma.timeCard.findFirst).not.toHaveBeenCalled();
             expect(prisma.timeCard.updateMany).not.toHaveBeenCalled();
@@ -176,7 +188,7 @@ describe('TimeCardsController entitlement boundaries', () => {
             const { featureAccess } = buildFeatureAccess(tenant);
             const accessSpy = vi.spyOn(featureAccess, 'assertFeatureEntitled');
             const { prisma, tenantDb } = buildControllerDb();
-            const controller = new TimeCardsController(featureAccess, tenantDb as any);
+            const controller = new TimeCardsController(featureAccess, tenantDb as any, domainRbac(tenantDb) as any, {} as any);
             const closedCard = {
                 ...baseCard,
                 clockOutAt: new Date('2026-07-08T23:00:00.000Z'),
@@ -227,7 +239,7 @@ describe('TimeCardsController entitlement boundaries', () => {
             });
             return originalWithTenant(tenantId, operation);
         });
-        const controller = new TimeCardsController(featureAccess, tenantDb as any);
+        const controller = new TimeCardsController(featureAccess, tenantDb as any, domainRbac(tenantDb) as any, {} as any);
 
         await expect(controller.correct('card-1', {
             clockOutAt: '2026-07-08T23:00:00.000Z',
@@ -246,7 +258,7 @@ describe('TimeCardsController entitlement boundaries', () => {
         const { featureAccess, metering } = buildFeatureAccess(zeroCreditPaidTenant);
         const accessSpy = vi.spyOn(featureAccess, 'assertFeatureEntitled');
         const { prisma, tenantDb } = buildControllerDb();
-        const controller = new TimeCardsController(featureAccess, tenantDb as any);
+        const controller = new TimeCardsController(featureAccess, tenantDb as any, domainRbac(tenantDb) as any, {} as any);
         prisma.timeCard.findMany.mockResolvedValue([baseCard]);
         prisma.timeCard.findFirst.mockResolvedValue(baseCard);
 
@@ -255,7 +267,8 @@ describe('TimeCardsController entitlement boundaries', () => {
 
         expect(history.data).toHaveLength(1);
         expect(detail.id).toBe('card-1');
-        expect(accessSpy).toHaveBeenCalledTimes(2);
+        expect(accessSpy).not.toHaveBeenCalled();
+        expect(tenantDb.withTenant).toHaveBeenCalledTimes(2);
         expect(metering.recordFeatureUsageInTransaction).not.toHaveBeenCalled();
         expect(prisma.auditLog.create).not.toHaveBeenCalled();
     });
