@@ -165,7 +165,8 @@ function fixture(mode: 'real' | 'branch' = 'real') {
     mode, ledger, database, identity, storage, quota, operator,
     storageConstructor: vi.fn(), quotaConstructor: vi.fn(), databaseConstructor: vi.fn(), identityConstructor: vi.fn(),
     primary: new Error('primary-startup-sentinel'),
-    fault: '' as string, injected: false, omitIdentityHooks: false,
+    fault: '' as string, injected: false, omitIdentityHooks: false, defaultSettings: false,
+    settingsConstructor: vi.fn(),
     closeFallback: '' as '' | 'before-hook' | 'after-hook',
     expectedCleanupError: undefined as unknown,
     app: undefined as FastifyInstance | undefined,
@@ -216,7 +217,8 @@ async function setup(f: Fixture) {
         return { ...actual, [name]: class { constructor() { throw new Error('Unexpected operator constructor'); } } };
       });
     } else vi.doMock(path, () => ({ [name]: class {
-      constructor() {
+      constructor(...args: unknown[]) {
+        if (path === './settings/settings.service' && f.defaultSettings) { f.settingsConstructor(...args); return {}; }
         if (path === './locations/locations.service' && f.fault === 'location-constructor') throw f.primary;
         throw new Error('Unexpected service constructor: ' + name);
       }
@@ -274,6 +276,7 @@ async function setup(f: Fixture) {
     ...(f.injected ? { quota: f.quota } : {}),
   };
   if (f.omitIdentityHooks) overrides.identity = { authenticate: f.identity.authenticate } as typeof f.identity;
+  if (f.defaultSettings) delete (overrides as Partial<typeof overrides>).settings;
   if (f.fault === 'db-constructor') delete (overrides as Partial<typeof overrides>).database;
   if (f.fault === 'identity-constructor') delete (overrides as Partial<typeof overrides>).identity;
   if (f.fault === 'location-constructor') delete (overrides as Partial<typeof overrides>).locations;
@@ -357,6 +360,11 @@ describe('composed server lifecycle with actual Fastify and fake owners', () => 
     expect(f.routeCalls).toEqual([]);
     expect(cleanupTrace(f)).toEqual(['identity.close', 'storage.close', 'db.close']);
     error(await observe(f.cleanup!()), dbError); noBusiness(f);
+  }, 15_000);
+  it('passes the lifecycle-owned identity to the default settings owner', async () => {
+    const f = fixture(); f.defaultSettings = true; const app = await built(f);
+    expect(f.settingsConstructor).toHaveBeenCalledExactlyOnceWith(f.database, CONFIG, f.identity);
+    await app.close(); expect(f.identity.close).toHaveBeenCalledOnce(); noBusiness(f);
   }, 15_000);
   it('closes owned resources once with exact construction dependencies', async () => {
     const f = fixture(); const app = await built(f);

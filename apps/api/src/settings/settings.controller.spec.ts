@@ -3,6 +3,7 @@ import { BadRequestException, ForbiddenException } from '@nestjs/common';
 import { PERMISSION_METADATA_KEY } from '../auth/require-permission.decorator';
 import { TenantPrismaService } from '../database/tenant-prisma.service';
 import { SettingsController } from './settings.controller';
+import { verifiedSettingsObserver } from './settings-test-mfa.fixture';
 
 const settingsReadReq = { user: { tenantId: 'tenant-1', role: 'MANAGER', permissions: ['settings:read'] } };
 const settingsWriteReq = { user: { sub: 'admin-1', tenantId: 'tenant-1', sessionId: 'session-1', role: 'ADMIN', permissions: ['settings:read', 'settings:write'] } };
@@ -72,7 +73,7 @@ describe('SettingsController', () => {
             }),
             $transaction: vi.fn(async (cb: any) => cb(prisma)),
         };
-        controller = new SettingsController(new TenantPrismaService(prisma));
+        controller = new SettingsController(new TenantPrismaService(prisma), undefined, verifiedSettingsObserver as never);
     });
 
     afterEach(() => {

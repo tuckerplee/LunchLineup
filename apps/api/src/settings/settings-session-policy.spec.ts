@@ -4,6 +4,7 @@ import { ProblemError } from '../../../api-v2/src/platform/problem';
 import { TenantPrismaService } from '../database/tenant-prisma.service';
 import { SettingsController } from './settings.controller';
 import { WorkspaceSettingsService } from '../../../api-v2/src/settings/settings.service';
+import { verifiedSettingsObserver } from './settings-test-mfa.fixture';
 
 type Owner = 'legacy' | 'native';
 type Section = 'general' | 'team' | 'security';
@@ -27,7 +28,7 @@ function harness(owner: Owner, boundary: Boundary = 'Tenant') {
     const session = { id: sessionId, userId: actorId, createdAt: new Date(Date.now() - 10 * minute),
         expiresAt: new Date(Date.now() + 60 * minute), revokedAt: null as Date | null };
     const actor = { id: actorId, tenantId, publicId: 'actor-public', role: 'ADMIN', deletedAt: null,
-        suspendedAt: null, lockedUntil: null, pinLockedUntil: null };
+        suspendedAt: null, lockedUntil: null, pinLockedUntil: null, pinResetRequired: false };
     const role = { id: 'role-policy', name: 'Custom settings editor', isSystem: false, legacyRole: null,
         rolePermissions: [{ permission: { key: 'settings:write' } }] };
     const state: { tenantPresent: boolean; value: any } = {
@@ -91,10 +92,10 @@ function harness(owner: Owner, boundary: Boundary = 'Tenant') {
     };
     const identity: any = { sub: ` ${actorId} `, tenantId, sessionId: ` ${sessionId} `, role: 'ADMIN',
         permissions: ['settings:write'], roles: [], mfaVerified: true, mfaRequired: false };
-    const legacy = new SettingsController(new TenantPrismaService({ $transaction: transaction } as any));
+    const legacy = new SettingsController(new TenantPrismaService({ $transaction: transaction } as any), undefined, verifiedSettingsObserver as never);
     const native = new WorkspaceSettingsService({ withTenant: async (selected: string, operation: any) => {
         expect(selected).toBe(tenantId); return transaction(operation);
-    } } as never, { oidcSsoAvailable: false });
+    } } as never, { oidcSsoAvailable: false }, verifiedSettingsObserver);
     const call = (section: Section, security: any = { sessionTimeoutMinutes: 60 }) => {
         if (owner === 'legacy') {
             if (section === 'general') return legacy.updateGeneral({ name: 'Changed' }, { user: identity });

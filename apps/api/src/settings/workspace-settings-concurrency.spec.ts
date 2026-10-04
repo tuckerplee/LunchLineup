@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { TenantPrismaService } from '../database/tenant-prisma.service';
 import { SettingsController } from './settings.controller';
 import { WorkspaceSettingsService } from '../../../api-v2/src/settings/settings.service';
+import { verifiedSettingsObserver } from './settings-test-mfa.fixture';
 
 type Owner = 'legacy' | 'native';
 const flattenedValues = (values: unknown[]): unknown[] => values.flatMap(value => (
@@ -24,6 +25,7 @@ function harness(initiallyMissing = false) {
     const writes = vi.fn(), audits = vi.fn();
     const firstUpsert = deferred(), releaseFirst = deferred(), secondBoundary = deferred();
     let sequence = 0;
+    let writeSequence = 0, firstWriteWaiting = false;
     function ensure(tenantId: string) {
         if (!tenants.has(tenantId)) {
             tenants.set(tenantId, { name: 'Original name', slug: 'original' });
@@ -53,11 +55,11 @@ function harness(initiallyMissing = false) {
             const text = (Array.isArray(sql) ? sql : (sql as { strings: readonly string[] }).strings).join('');
             const parameters = flattenedValues(Array.isArray(sql) ? args : (sql as { values: unknown[] }).values);
             if (text.includes('FROM "Tenant"') && text.includes('FOR UPDATE')) {
-                if (number === 2) secondBoundary.release();
+                if (firstWriteWaiting) secondBoundary.release();
                 expect(parameters).toEqual([tenantId]);
                 await lock(`tenant:${tenantId}`);
             } else if (text.includes('pg_advisory_xact_lock')) {
-                if (number === 2) secondBoundary.release();
+                if (firstWriteWaiting) secondBoundary.release();
                 await lock(`advisory:${parameters[0]}`);
             }
             if (text.includes('FROM "User"')) return [{ id: actorId, role: 'ADMIN', deletedAt: null, suspendedAt: null }];
@@ -74,7 +76,7 @@ function harness(initiallyMissing = false) {
         const tx = {
             $queryRaw: explicitLock,
             $executeRaw: explicitLock,
-            user: { findFirst: async () => ({ id: actorId, role: 'ADMIN', lockedUntil: null, pinLockedUntil: null }) },
+            user: { findFirst: async () => ({ id: actorId, role: 'ADMIN', lockedUntil: null, pinLockedUntil: null, pinResetRequired: false }) },
             roleAssignment: { findMany: async () => [{ userId: actorId, roleId }] },
             role: { findMany: async () => [{ id: roleId, name: 'Admin', isSystem: true, legacyRole: 'ADMIN',
                 rolePermissions: [{ permission: { key: 'settings:write' } }] }] },
@@ -95,7 +97,6 @@ function harness(initiallyMissing = false) {
             tenantSetting: {
                 findUnique: async ({ where }: { where: unknown }) => {
                     expect(where).toEqual({ tenantId_key: { tenantId, key: 'workspace_settings' } });
-                    if (number === 2) secondBoundary.release();
                     const value = draft ?? values.get(tenantId);
                     return value === null ? null : { value: structuredClone(value) };
                 },
@@ -104,7 +105,10 @@ function harness(initiallyMissing = false) {
                     expect(create).toMatchObject({ tenantId, key: 'workspace_settings' });
                     expect(create.value).toEqual(update.value);
                     await lock(`setting:${tenantId}`);
-                    if (number === 1) { firstUpsert.release(); await releaseFirst.promise; }
+                    if (++writeSequence === 1) {
+                        firstWriteWaiting = true; firstUpsert.release();
+                        try { await releaseFirst.promise; } finally { firstWriteWaiting = false; }
+                    }
                     draft = structuredClone(update.value);
                     writes(tenantId, draft);
                     return { value: structuredClone(draft) };
@@ -128,13 +132,13 @@ function harness(initiallyMissing = false) {
         const identity = { ...req.user, role: 'ADMIN' };
         const legacy = new SettingsController(new TenantPrismaService({
             $transaction: (operation: (tx: any) => Promise<any>) => transaction(tenantId, operation),
-        } as any));
+        } as any), undefined, verifiedSettingsObserver as never);
         const native = new WorkspaceSettingsService({
             withTenant: (selected: string, operation: (tx: any) => Promise<any>) => {
                 expect(selected).toBe(tenantId);
                 return transaction(selected, operation);
             },
-        } as never, { oidcSsoAvailable: false });
+        } as never, { oidcSsoAvailable: false }, verifiedSettingsObserver);
         return {
             security: (owner: Owner) => owner === 'legacy'
                 ? legacy.updateSecurity({ requireMfaForAll: true }, req)

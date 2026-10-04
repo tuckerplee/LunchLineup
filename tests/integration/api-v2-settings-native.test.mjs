@@ -1,3 +1,4 @@
+import { performance } from 'node:perf_hooks';
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { createRequire } from 'node:module';
@@ -55,6 +56,16 @@ async function boundedBarrier(promise, description, timeoutMs = 5_000) {
   }
 }
 
+// Controlled MFA observation keeps this PostgreSQL settings fixture focused on
+// database behavior. It does not qualify the real Redis marker, TTL or identity
+// store. Admission and real MFA acceptance remain separate requirements.
+const controlledMfaObserver = {
+  async observeSessionMfa(identity) {
+    return { ...identity, expiresAtEpochMs: Date.now() + 3_600_000,
+      expiresAtMonotonicMs: performance.now() + 3_600_000 };
+  },
+};
+
 test('native API v2 workspace settings stay tenant-scoped, audit security changes, and reject unavailable SSO-only policy', { timeout: 30_000 }, async () => {
   const owner = createPrisma(requireServiceUrl('MIGRATION_DATABASE_URL').toString());
   const app = createPrisma(requireServiceUrl('DATABASE_URL').toString());
@@ -65,7 +76,7 @@ test('native API v2 workspace settings stay tenant-scoped, audit security change
     userId: `api-v2-settings-user-${runId}`,
     otherUserId: `api-v2-settings-other-user-${runId}`,
   };
-  const settings = new WorkspaceSettingsService(new TenantDatabase(app), { oidcSsoAvailable: false });
+  const settings = new WorkspaceSettingsService(new TenantDatabase(app), { oidcSsoAvailable: false }, controlledMfaObserver);
 
   try {
     const [tenant, otherTenant] = await Promise.all([
@@ -136,7 +147,7 @@ test('native API v2 workspace settings stay tenant-scoped, audit security change
           return typeof value === 'function' ? value.bind(target) : value;
         },
       }))),
-    }, { oidcSsoAvailable: false });
+    }, { oidcSsoAvailable: false }, controlledMfaObserver);
     const observedSecond = new WorkspaceSettingsService({
       withTenant: (tenantId, operation) => database.withTenant(tenantId, tx => operation(new Proxy(tx, {
         get(target, key) {
@@ -164,7 +175,7 @@ test('native API v2 workspace settings stay tenant-scoped, audit security change
           return typeof value === 'function' ? value.bind(target) : value;
         },
       }))),
-    }, { oidcSsoAvailable: false });
+    }, { oidcSsoAvailable: false }, controlledMfaObserver);
     const firstSave = delayed.updateTeam(primaryIdentity, { defaultInviteRole: 'STAFF' });
     // Attach rejection observers immediately so a broken lock cannot generate an
     // unhandled rejection while the explicit barrier is waiting.

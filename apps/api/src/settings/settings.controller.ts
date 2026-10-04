@@ -1,4 +1,6 @@
-import { BadRequestException, Body, Controller, ForbiddenException, Get, Optional, Put, Req, UseGuards } from '@nestjs/common';
+import { BadRequestException, Body, Controller, ForbiddenException, Get, Optional, Put, Req, ServiceUnavailableException, UseGuards } from '@nestjs/common';
+import { isCurrentMfaObservation, type MfaSessionIdentity } from '@lunchlineup/rbac';
+import { AuthService } from '../auth/auth.service';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { RbacGuard } from '../auth/rbac.guard';
 import { RbacService } from '../auth/rbac.service';
@@ -97,7 +99,8 @@ export class SettingsController {
     private readonly tenantDb: TenantPrismaService;
     private readonly rbacService: RbacService;
 
-    constructor(@Optional() tenantDb?: TenantPrismaService, @Optional() rbacService?: RbacService) {
+    constructor(@Optional() tenantDb?: TenantPrismaService, @Optional() rbacService?: RbacService,
+        @Optional() private readonly authService?: AuthService) {
         this.tenantDb = tenantDb ?? new TenantPrismaService();
         this.rbacService = rbacService ?? new RbacService(this.tenantDb);
     }
@@ -361,6 +364,13 @@ export class SettingsController {
             requiredPermission: 'settings:write',
         });
 
+        const user = await client.user.findFirst({
+            where: { id: actor.sub.trim(), tenantId, deletedAt: null, suspendedAt: null },
+            select: { pinResetRequired: true },
+        });
+        if (!user) throw new ForbiddenException('User account is inactive');
+        if (user.pinResetRequired) throw new ForbiddenException('PIN rotation required');
+
         // A request guard can precede a Tenant/Session/role lock wait. Recheck
         // workspace eligibility and the effective lifetime under those locks,
         // using the current policy rather than the proposed security update.
@@ -385,6 +395,31 @@ export class SettingsController {
         return current;
     }
 
+    private async writeSettings(
+        actor: any,
+        operation: (client: TenantPrismaTransaction, current: NormalizedSettings) => Promise<NormalizedSettings>,
+    ): Promise<NormalizedSettings> {
+        const identity: MfaSessionIdentity = Object.freeze({ sub: actor?.sub?.trim(), tenantId: actor?.tenantId,
+            sessionId: actor?.sessionId?.trim() });
+        // Validate database authority without writes before observing Redis.
+        await this.tenantDb.withTenant(identity.tenantId, tx => this.authorizeSettingsWrite(tx, identity.tenantId, identity));
+        if (!this.authService?.observeSessionMfa) {
+            throw new ServiceUnavailableException('MFA verification is temporarily unavailable');
+        }
+        let observation;
+        try { observation = await this.authService.observeSessionMfa({ ...identity }); }
+        catch { throw new ServiceUnavailableException('MFA verification is temporarily unavailable'); }
+        if (!isCurrentMfaObservation(observation, identity)) throw new ForbiddenException('MFA verification required');
+        return this.tenantDb.withTenant(identity.tenantId, async tx => {
+            const current = await this.authorizeSettingsWrite(tx, identity.tenantId, identity);
+            // settings:write always requires MFA, even when user/workspace/JWT
+            // flags say otherwise. Clock/TTL and exact identity are rechecked
+            // after the final Tenant/User/Session/role waits, before any write.
+            if (!isCurrentMfaObservation(observation, identity)) throw new ForbiddenException('MFA verification required');
+            return operation(tx, current);
+        });
+    }
+
     @Get()
     @RequirePermission('settings:read')
     async getSettings(@Req() req: any): Promise<NormalizedSettings> {
@@ -403,8 +438,7 @@ export class SettingsController {
         const timezone = this.parseOptionalString(body?.timezone, 'timezone');
 
         const tenantId = req.user.tenantId;
-        return this.tenantDb.withTenant(tenantId, async (tx) => {
-            const current = await this.authorizeSettingsWrite(tx, tenantId, req.user);
+        return this.writeSettings(req.user, async (tx, current) => {
             const tenantUpdate: Record<string, string> = {};
 
             if (name !== undefined) {
@@ -454,8 +488,7 @@ export class SettingsController {
             : this.normalizeShiftApprovalPolicy(body.shiftApprovalPolicy);
 
         const tenantId = req.user.tenantId;
-        return this.tenantDb.withTenant(tenantId, async (tx) => {
-            const current = await this.authorizeSettingsWrite(tx, tenantId, req.user);
+        return this.writeSettings(req.user, async (tx, current) => {
             const nextSettings: NormalizedSettings = {
                 general: current.general,
                 team: {
@@ -486,8 +519,7 @@ export class SettingsController {
             throw new ForbiddenException('A live actor identity is required to update security settings');
         }
 
-        return this.tenantDb.withTenant(tenantId, async (tx) => {
-            const current = await this.authorizeSettingsWrite(tx, tenantId, req.user);
+        return this.writeSettings(req.user, async (tx, current) => {
             const nextSettings: NormalizedSettings = {
                 general: current.general,
                 team: current.team,

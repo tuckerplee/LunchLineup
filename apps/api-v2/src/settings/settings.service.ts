@@ -6,6 +6,7 @@ import type {
   WorkspaceTeamSettingsUpdate,
 } from '@lunchlineup/api-contract';
 import type { Prisma } from '@prisma/client';
+import { isCurrentMfaObservation, type MfaSessionIdentity, type MfaSessionObserver } from '@lunchlineup/rbac';
 import { authorizeMutation } from '../people/access';
 import type { ApiV2Config } from '../config';
 import type { TenantDatabase, TenantTransaction } from '../platform/database';
@@ -155,6 +156,7 @@ export class WorkspaceSettingsService {
   constructor(
     private readonly database: Pick<TenantDatabase, 'withTenant'>,
     private readonly config: Pick<ApiV2Config, 'oidcSsoAvailable'>,
+    private readonly mfaObserver?: Partial<MfaSessionObserver>,
   ) {}
 
   async get(identity: SessionIdentity): Promise<WorkspaceSettings> {
@@ -168,8 +170,7 @@ export class WorkspaceSettingsService {
     const name = body.name === undefined ? undefined : requiredText(body.name, 'name', 200);
     const slug = body.slug === undefined ? undefined : requiredText(body.slug, 'slug', 128).toLowerCase();
     const timezone = body.timezone === undefined ? undefined : normalizeTimeZone(body.timezone);
-    return this.database.withTenant(identity.tenantId, async (transaction) => {
-      const current = await this.authorizeWrite(transaction, identity);
+    return this.write(identity, async (transaction, current, identity) => {
       const tenant = name === undefined && slug === undefined
         ? current.general
         : await transaction.tenant.update({
@@ -191,8 +192,7 @@ export class WorkspaceSettingsService {
     identity: SessionIdentity,
     body: WorkspaceTeamSettingsUpdate,
   ): Promise<WorkspaceSettings> {
-    return this.database.withTenant(identity.tenantId, async (transaction) => {
-      const current = await this.authorizeWrite(transaction, identity);
+    return this.write(identity, async (transaction, current, identity) => {
       const next: WorkspaceSettings = {
         general: current.general,
         team: {
@@ -211,8 +211,7 @@ export class WorkspaceSettingsService {
     body: WorkspaceSecuritySettingsUpdate,
   ): Promise<WorkspaceSettings> {
     const issuer = body.oidcIssuerUrl === undefined ? undefined : normalizeOidcIssuerUrl(body.oidcIssuerUrl);
-    return this.database.withTenant(identity.tenantId, async (transaction) => {
-      const current = await this.authorizeWrite(transaction, identity);
+    return this.write(identity, async (transaction, current, identity) => {
       const next: WorkspaceSettings = {
         general: current.general,
         team: current.team,
@@ -253,6 +252,14 @@ export class WorkspaceSettingsService {
 
   private async authorizeWrite(transaction: TenantTransaction, identity: SessionIdentity): Promise<WorkspaceSettings> {
     await authorizeMutation(transaction, identity, 'settings:write');
+    const user = await transaction.user.findFirst({
+      where: { id: identity.sub.trim(), tenantId: identity.tenantId, deletedAt: null, suspendedAt: null },
+      select: { pinResetRequired: true },
+    });
+    if (!user) throw new ProblemError(403, 'permission_denied', 'The user account is inactive.', 'Forbidden');
+    if (user.pinResetRequired) {
+      throw new ProblemError(403, 'pin_rotation_required', 'Replace your temporary PIN before continuing.', 'PIN rotation required');
+    }
     // The helper retains Tenant/User/exact Session locks through this write.
     // Guard observations made before a lock wait do not authorize a mutation
     // after workspace suspension or policy-shortened session expiry.
@@ -275,6 +282,34 @@ export class WorkspaceSettingsService {
       throw new ProblemError(403, 'permission_denied', 'Administrator session is no longer active.', 'Forbidden');
     }
     return current;
+  }
+
+  private async write(
+    identity: SessionIdentity,
+    operation: (transaction: TenantTransaction, current: WorkspaceSettings, actor: SessionIdentity) => Promise<WorkspaceSettings>,
+  ): Promise<WorkspaceSettings> {
+    const actor = Object.freeze({ ...identity, sub: identity.sub?.trim(), sessionId: identity.sessionId?.trim() });
+    const selected: MfaSessionIdentity = Object.freeze({ sub: actor.sub, tenantId: actor.tenantId, sessionId: actor.sessionId });
+    await this.database.withTenant(actor.tenantId, tx => this.authorizeWrite(tx, actor));
+    if (!this.mfaObserver?.observeSessionMfa) {
+      throw new ProblemError(503, 'identity_service_unavailable', 'Session validation is temporarily unavailable.', 'Service unavailable');
+    }
+    let observation;
+    try { observation = await this.mfaObserver.observeSessionMfa({ ...selected }); }
+    catch {
+      throw new ProblemError(503, 'identity_service_unavailable', 'Session validation is temporarily unavailable.', 'Service unavailable');
+    }
+    const requireMarker = () => {
+      if (!isCurrentMfaObservation(observation, selected)) {
+        throw new ProblemError(403, 'mfa_verification_required', 'Complete MFA verification before continuing.', 'MFA verification required');
+      }
+    };
+    requireMarker();
+    return this.database.withTenant(actor.tenantId, async tx => {
+      const current = await this.authorizeWrite(tx, actor);
+      requireMarker();
+      return operation(tx, current, actor);
+    });
   }
 
   private async read(transaction: TenantTransaction, tenantId: string): Promise<WorkspaceSettings> {

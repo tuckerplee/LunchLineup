@@ -12,6 +12,7 @@ import { OnboardingSignupService } from './onboarding-signup.service';
 import { operationalErrorLog } from './operational-error';
 import { secureHttpRequest, type SecureRequestOptions } from '../common/secure-http-client';
 import { PUBLIC_LEGAL_MANIFEST, hasCurrentSelfServiceLegalApproval } from '@lunchlineup/config';
+import { observeMfaVerification, type MfaSessionIdentity, type MfaVerificationObservation } from '@lunchlineup/rbac';
 import {
     isPrismaUniqueConstraintConflict,
     isSerializableTransactionConflict,
@@ -2136,6 +2137,21 @@ export class AuthService implements OnModuleDestroy {
     private async isSessionMfaVerified(sessionId: string): Promise<boolean> {
         const value = await this.getRedis().get(KEY_SESSION_MFA(sessionId));
         return value === '1';
+    }
+
+    async observeSessionMfa(identity: MfaSessionIdentity): Promise<MfaVerificationObservation | null> {
+        const redis = this.getRedis();
+        // Reuse the managed client, but never enqueue this observation while it
+        // is offline. The bounded read only affects the mutation decision; it
+        // does not change existing authentication retry behavior.
+        if (redis.status !== 'ready') {
+            throw new ServiceUnavailableException('MFA verification is temporarily unavailable');
+        }
+        try {
+            return await observeMfaVerification(identity, (script, key) => redis.eval(script, 1, key));
+        } catch {
+            throw new ServiceUnavailableException('MFA verification is temporarily unavailable');
+        }
     }
 
     private async markSessionMfaVerified(sessionId: string, expiresAt: Date): Promise<void> {

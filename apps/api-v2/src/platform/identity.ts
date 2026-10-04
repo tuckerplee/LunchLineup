@@ -1,4 +1,5 @@
 import type { SessionIdentity } from '@lunchlineup/api-contract';
+import type { MfaSessionObserver } from '@lunchlineup/rbac';
 import type { FastifyReply, FastifyRequest } from 'fastify';
 import { ProblemError } from './problem';
 
@@ -6,7 +7,7 @@ import { ProblemError } from './problem';
  * The application and scheduling modules depend on this narrow session
  * boundary, never on a particular generation of the auth implementation.
  */
-export type IdentityAdapter = {
+export type IdentityAdapter = Partial<MfaSessionObserver> & {
   authenticate(request: FastifyRequest, reply: FastifyReply): Promise<SessionIdentity>;
   ready?(): Promise<void>;
   close?(): Promise<void>;

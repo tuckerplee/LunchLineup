@@ -1,4 +1,5 @@
-import { PRIVILEGED_MFA_PERMISSION_KEYS } from '@lunchlineup/rbac';
+import { PRIVILEGED_MFA_PERMISSION_KEYS, observeMfaVerification,
+  type MfaSessionObserver, type MfaSessionIdentity, type MfaVerificationObservation } from '@lunchlineup/rbac';
 import type { SessionIdentity } from '@lunchlineup/api-contract';
 import Redis from 'ioredis';
 import jwt, { type JwtPayload } from 'jsonwebtoken';
@@ -77,7 +78,7 @@ type AuthorizationSnapshot = {
   mfaRequired: boolean;
 };
 
-export type MfaSessionStore = {
+export type MfaSessionStore = Partial<MfaSessionObserver> & {
   isVerified(sessionId: string): Promise<boolean>;
   ready?(): Promise<void>;
   close?(): Promise<void>;
@@ -85,8 +86,10 @@ export type MfaSessionStore = {
 
 export class RedisMfaSessionStore implements MfaSessionStore {
   private readonly client: Redis;
+  private readonly observationTimeoutMs: number;
 
   constructor(config: Pick<ApiV2Config, 'redisUrl' | 'authStateTimeoutMs'>) {
+    this.observationTimeoutMs = config.authStateTimeoutMs;
     this.client = new Redis(config.redisUrl, {
       lazyConnect: true,
       enableOfflineQueue: false,
@@ -116,6 +119,13 @@ export class RedisMfaSessionStore implements MfaSessionStore {
     } catch {
       throw new Error('MFA session store is unavailable.');
     }
+  }
+
+  async observeSessionMfa(identity: MfaSessionIdentity): Promise<MfaVerificationObservation | null> {
+    return observeMfaVerification(identity, async (script, key) => {
+      if (this.client.status !== 'ready') await this.ready();
+      return this.client.eval(script, 1, key);
+    }, this.observationTimeoutMs);
   }
 
   async close(): Promise<void> {
@@ -251,6 +261,15 @@ export class NativeIdentityAdapter implements IdentityAdapter {
 
   async close(): Promise<void> {
     await this.mfaSessions.close?.();
+  }
+
+  async observeSessionMfa(identity: MfaSessionIdentity): Promise<MfaVerificationObservation | null> {
+    if (!this.mfaSessions.observeSessionMfa) throw identityUnavailable();
+    try {
+      return await this.mfaSessions.observeSessionMfa(identity);
+    } catch {
+      throw identityUnavailable();
+    }
   }
 
   async authenticate(request: FastifyRequest, reply: FastifyReply): Promise<SessionIdentity> {

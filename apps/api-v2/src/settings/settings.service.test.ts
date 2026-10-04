@@ -1,6 +1,7 @@
 import type { SessionIdentity } from '@lunchlineup/api-contract';
 import { describe, expect, it, vi } from 'vitest';
 import { WorkspaceSettingsService } from './settings.service';
+import { verifiedSettingsObserver } from '../../../api/src/settings/settings-test-mfa.fixture';
 
 const identity: SessionIdentity = {
   sub: 'user-storage-id',
@@ -24,6 +25,10 @@ function harness(initialValue: unknown = null, oidcSsoAvailable = false) {
     deletedAt: null,
   };
   const transaction = {
+    user: { findFirst: vi.fn(async ({ where }: { where: unknown }) => {
+      expect(where).toMatchObject({ id: identity.sub, tenantId: identity.tenantId, deletedAt: null, suspendedAt: null });
+      return { pinResetRequired: false };
+    }) },
     $executeRaw: vi.fn(async () => 1),
     $queryRaw: vi.fn(async (sql: { strings: readonly string[] }) => {
       const text = sql.strings.join('');
@@ -57,7 +62,7 @@ function harness(initialValue: unknown = null, oidcSsoAvailable = false) {
   };
   const withTenant = vi.fn(async (_tenantId: string, operation: (tx: unknown) => unknown) => operation(transaction));
   return {
-    instance: new WorkspaceSettingsService({ withTenant } as never, { oidcSsoAvailable } as never),
+    instance: new WorkspaceSettingsService({ withTenant } as never, { oidcSsoAvailable } as never, verifiedSettingsObserver),
     transaction,
     withTenant,
   };
