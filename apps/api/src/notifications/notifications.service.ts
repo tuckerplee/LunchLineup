@@ -48,12 +48,13 @@ export class NotificationsService implements OnModuleInit, OnModuleDestroy {
             : null;
         this.outbox = new NotificationOutboxProcessor(this.tenantDb, {
             fanOut: (notification) => this.publishExisting(notification),
-            deliverExternal: (intent, recipientEmail) => schedulePublishedEmail.send({
+            externalTimeoutMs: schedulePublishedEmail.deliveryTimeoutMs,
+            prepareExternal: (intent, recipientEmail, window) => schedulePublishedEmail.prepare({
                 outboxId: intent.id,
                 recipientEmail,
                 title: intent.title,
                 body: intent.body,
-            }),
+            }, window),
             recordOutcome: (status) => this.metrics.notificationOutboxDeliveriesTotal.inc({ status }),
             setDeadLetteredCount: (count) => this.metrics.notificationOutboxDeadLettered.set(count),
         });

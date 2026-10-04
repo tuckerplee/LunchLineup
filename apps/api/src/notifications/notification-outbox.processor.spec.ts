@@ -16,12 +16,33 @@ describe('NotificationOutboxProcessor', () => {
         title: 'Schedule published',
         body: 'Downtown: Jul 14, 2026 to Jul 20, 2026',
         attempts,
+        failureCount: Math.max(0, attempts - 1),
         createdAt: new Date('2026-07-14T08:00:00.000Z'),
+        leaseUntil: new Date(Date.now() + 30_000),
     });
 
     beforeEach(() => {
         tx = {
-            $queryRaw: vi.fn(),
+            // Limited composition seam: closed delegate shape; stateful ownership proof is in ownership.spec.
+            $queryRaw: vi.fn(async (query: any, ...values: any[]) => {
+                const sql = (query.strings ?? query).join('?');
+                if (sql.includes('WITH candidates AS')) return tx.claims.shift() ?? [];
+                if (sql.includes('FROM "Tenant"')) return [{ id: 'tenant-1', status: 'ACTIVE', deletedAt: null }];
+                if (sql.includes('FROM "User"')) {
+                    const selected = await tx.user.findFirst({ where: { id: 'user-1', tenantId: 'tenant-1', role: { in: ['MANAGER', 'STAFF'] }, deletedAt: null, suspendedAt: null }, select: { id: true, email: true } });
+                    return selected ? [{ ...selected, role: 'STAFF', deletedAt: null, suspendedAt: null, emailDeliverySuppressedAt: null }] : [];
+                }
+                if (sql.includes('statement_timestamp()')) return [{ now: new Date() }];
+                if (sql.includes('FROM "NotificationOutbox"')) return [{ ...claimed(tx.activeAttempt ?? 1), status: 'PROCESSING', leaseUntil: tx.activeLease }];
+                throw new Error('Unexpected composition SQL');
+            }),
+            $executeRaw: vi.fn(async (query: any, ...values: any[]) => {
+                if ((query.strings ?? query).join('?').includes('UPDATE "NotificationOutbox" SET "leaseUntil"')) tx.activeLease = new Date(values[0]);
+                return 1;
+            }),
+            activeLease: undefined,
+            activeAttempt: 1,
+            claims: [],
             tenant: {
                 findFirst: vi.fn().mockResolvedValue({ status: 'ACTIVE' }),
             },
@@ -52,9 +73,17 @@ describe('NotificationOutboxProcessor', () => {
                 ]),
             },
         };
+        const runCompositionCallback = async (operation: (client: any) => Promise<unknown>) => {
+            const originalLease = tx.activeLease;
+            try {
+                const result: any = await operation(tx);
+                if (Array.isArray(result) && result[0]?.dedupeKey) { tx.activeLease = result[0].leaseUntil; tx.activeAttempt = result[0].attempts; }
+                return result;
+            } catch (error) { tx.activeLease = originalLease; throw error; }
+        };
         tenantDb = {
-            withTenant: vi.fn(async (_tenantId: string, operation: (client: any) => Promise<unknown>) => operation(tx)),
-            withPlatformAdmin: vi.fn(async (operation: (client: any) => Promise<unknown>) => operation(tx)),
+            withTenant: vi.fn(async (_tenantId: string, operation: (client: any) => Promise<unknown>) => runCompositionCallback(operation)),
+            withPlatformAdmin: vi.fn(async (operation: (client: any) => Promise<unknown>) => runCompositionCallback(operation)),
         };
         fanOut = vi.fn().mockResolvedValue(undefined);
     });
@@ -82,7 +111,7 @@ describe('NotificationOutboxProcessor', () => {
     });
 
     it('atomically creates the durable notification before post-commit fan-out', async () => {
-        tx.$queryRaw.mockResolvedValueOnce([claimed()]);
+        tx.claims.push([claimed()]);
         const processor = new NotificationOutboxProcessor(tenantDb, { fanOut });
 
         await expect(
@@ -125,7 +154,7 @@ describe('NotificationOutboxProcessor', () => {
     });
 
     it('recovers a committed pending intent after a process crash through the platform sweep', async () => {
-        tx.$queryRaw.mockResolvedValueOnce([claimed()]);
+        tx.claims.push([claimed()]);
         const processor = new NotificationOutboxProcessor(tenantDb, { fanOut });
 
         await (processor as any).sweep();
@@ -139,9 +168,7 @@ describe('NotificationOutboxProcessor', () => {
     });
 
     it('retries a transient failure with the same notification identity and no duplicate fan-out', async () => {
-        tx.$queryRaw
-            .mockResolvedValueOnce([claimed(1)])
-            .mockResolvedValueOnce([claimed(2)]);
+        tx.claims.push([claimed(1)], [claimed(2)]);
         tx.notification.upsert
             .mockRejectedValueOnce(new Error('database unavailable'))
             .mockResolvedValueOnce({
@@ -181,9 +208,7 @@ describe('NotificationOutboxProcessor', () => {
     });
 
     it('retries schedule email with one stable outbox identity before marking delivery complete', async () => {
-        tx.$queryRaw
-            .mockResolvedValueOnce([claimed(1)])
-            .mockResolvedValueOnce([claimed(2)]);
+        tx.claims.push([claimed(1)], [claimed(2)]);
         tx.notificationOutbox.findMany
             .mockResolvedValueOnce([{ dedupeKey: claimed().dedupeKey, status: 'FAILED' }])
             .mockResolvedValueOnce([{ dedupeKey: claimed().dedupeKey, status: 'DELIVERED' }]);
@@ -223,7 +248,7 @@ describe('NotificationOutboxProcessor', () => {
     });
 
     it('persists and logs terminal failure after bounded attempts', async () => {
-        tx.$queryRaw.mockResolvedValueOnce([claimed(2)]);
+        tx.claims.push([claimed(2)]);
         tx.notification.upsert.mockRejectedValueOnce(
             new Error('password=secret database unavailable'),
         );
@@ -250,7 +275,7 @@ describe('NotificationOutboxProcessor', () => {
                     leaseUntil: null,
                     title: '',
                     body: '',
-                    lastError: 'category=unknown class=Error',
+                    lastError: null,
                 }),
             }),
         );
@@ -264,7 +289,7 @@ describe('NotificationOutboxProcessor', () => {
     });
 
     it('reports delivery outcomes and terminal backlog without payload labels', async () => {
-        tx.$queryRaw.mockResolvedValueOnce([claimed()]);
+        tx.claims.push([claimed()]);
         tx.notificationOutbox.count.mockResolvedValueOnce(3);
         const recordOutcome = vi.fn();
         const setDeadLetteredCount = vi.fn();
@@ -282,7 +307,7 @@ describe('NotificationOutboxProcessor', () => {
     });
 
     it('reports retryable and unclaimed intents as pending instead of failed', async () => {
-        tx.$queryRaw.mockResolvedValueOnce([]);
+        tx.claims.push([]);
         tx.notificationOutbox.findMany.mockResolvedValueOnce([
             { dedupeKey: 'delivered', status: 'DELIVERED' },
             { dedupeKey: 'retrying', status: 'FAILED' },
@@ -304,7 +329,7 @@ describe('NotificationOutboxProcessor', () => {
     });
 
     it('dead-letters an intent when its tenant or recipient is no longer eligible', async () => {
-        tx.$queryRaw.mockResolvedValueOnce([claimed()]);
+        tx.claims.push([claimed()]);
         tx.user.findFirst.mockResolvedValueOnce(null);
         tx.notificationOutbox.findMany.mockResolvedValueOnce([
             { dedupeKey: claimed().dedupeKey, status: 'DEAD_LETTERED' },
@@ -320,7 +345,7 @@ describe('NotificationOutboxProcessor', () => {
                     status: 'DEAD_LETTERED',
                     title: '',
                     body: '',
-                    lastError: 'Tenant or recipient is no longer eligible for notification delivery',
+                    lastError: null,
                 }),
             }),
         );

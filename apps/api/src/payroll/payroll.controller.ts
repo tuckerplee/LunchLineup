@@ -23,7 +23,7 @@ import { PayrollReconciliationService } from './payroll-reconciliation.service';
 import type { PayrollActor } from './payroll-transaction';
 
 type AuthenticatedRequest = {
-    user: { sub: string; tenantId: string };
+    user: { sub: string; tenantId: string; sessionId?: string };
 };
 
 @Controller({ path: 'payroll', version: '1' })
@@ -220,6 +220,7 @@ export class PayrollController {
     }
 
     private actor(req: AuthenticatedRequest): PayrollActor {
-        return { tenantId: req.user.tenantId, userId: req.user.sub };
+        return { tenantId: req.user.tenantId, userId: req.user.sub,
+            ...(req.user.sessionId !== undefined ? { sessionId: req.user.sessionId } : {}) };
     }
 }

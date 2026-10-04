@@ -6,6 +6,7 @@ import {
     Resend,
 } from 'resend';
 import { runtimeErrorText } from '../common/runtime-error-diagnostic';
+import type { NotificationHandoffWindow, PreparedNotificationHandoff } from '../notifications/notification-outbox.processor';
 import { EmailDeliveryFeedbackService } from './email-delivery-feedback.service';
 
 const DEFAULT_PROVIDER_TIMEOUT_MS = 10_000;
@@ -66,72 +67,80 @@ export class SchedulePublishedEmailService {
         this.resend = new Resend(apiKey);
     }
 
+    get deliveryTimeoutMs(): number { return this.providerTimeoutMs; }
+
     async send(input: SchedulePublishedEmailInput): Promise<SchedulePublishedEmailOutcome> {
-        if (!this.enabled) return 'disabled';
-        const recipient = input.recipientEmail?.trim() ?? '';
-        if (!this.validRecipient(recipient)) return 'not_addressable';
+        return this.withDeadline(async window => {
+            const prepared = await this.prepare(input, window);
+            return prepared.send(input.recipientEmail, window) as Promise<SchedulePublishedEmailOutcome>;
+        });
+    }
+
+    /** Database suppression preparation must finish before the caller holds Tenant/User/outbox locks. */
+    async prepare(input: SchedulePublishedEmailInput, window: NotificationHandoffWindow): Promise<PreparedNotificationHandoff> {
+        window.assertNewHandoff();
+        const boundRecipient = input.recipientEmail;
+        const skip = (outcome: SchedulePublishedEmailOutcome): PreparedNotificationHandoff => Object.freeze({
+            recipientEmail: boundRecipient,
+            send: async (currentRecipient: string | null, selectedWindow: NotificationHandoffWindow) => {
+                this.assertPreparedRecipient(boundRecipient, currentRecipient, window, selectedWindow);
+                return outcome;
+            },
+        });
+        if (!this.enabled) return skip('disabled');
+        const recipient = boundRecipient?.trim() ?? '';
+        if (!this.validRecipient(recipient)) return skip('not_addressable');
         const outboxId = this.providerIdentity(input.outboxId);
         const title = this.singleLineContent(input.title, 'schedule email title', 200);
         const body = this.boundedContent(input.body, 'schedule email body', 2_000);
-        if (!this.resend) {
-            throw new Error('Schedule publication email provider is not configured');
+        if (!this.resend) throw new Error('Schedule publication email provider is not configured');
+        const suppressed = await this.deliveryFeedback.isSuppressed(recipient);
+        window.assertNewHandoff();
+        if (suppressed) {
+            this.logger.warn('Schedule publication email skipped reason=provider_feedback');
+            return skip('suppressed');
         }
-
-        const htmlTitle = this.escapeHtml(title);
-        const htmlBody = this.escapeHtml(body);
-        const htmlScheduleUrl = this.escapeHtml(this.scheduleUrl);
-        try {
-            const outcome = await this.withDeadline(async (signal) => {
-                if (await this.deliveryFeedback.isSuppressed(recipient)) {
-                    this.logger.warn('Schedule publication email skipped reason=provider_feedback');
-                    return 'suppressed' as const;
-                }
-                if (signal.aborted) throw signal.reason;
-
-                const send = this.resend!.emails.send as unknown as AbortableEmailSend;
-                const response = await send.call(this.resend!.emails, {
-                    from: this.from,
-                    to: recipient,
-                    subject: title,
-                    html: [
-                        '<!doctype html><html><body style="font-family:system-ui,sans-serif;line-height:1.5;color:#172033">',
-                        `<h1 style="font-size:22px">${htmlTitle}</h1>`,
-                        `<p>${htmlBody}</p>`,
-                        `<p><a href="${htmlScheduleUrl}">View your schedule in LunchLineup</a></p>`,
-                        '<p>If you no longer work at this location, contact your manager.</p>',
-                        '</body></html>',
-                    ].join(''),
-                    text: `${title}\n\n${body}\n\nView your schedule: ${this.scheduleUrl}\n\nIf you no longer work at this location, contact your manager.`,
-                }, {
-                    idempotencyKey: `schedule-published/${outboxId}`,
-                    signal,
-                });
-                if (response.error) {
-                    const providerError = new Error('Schedule publication email provider rejected delivery');
-                    const statusCode = Number((response.error as { statusCode?: unknown }).statusCode);
-                    if (Number.isInteger(statusCode) && statusCode >= 400 && statusCode <= 599) {
-                        Object.defineProperty(providerError, 'status', { value: statusCode });
+        const payload = Object.freeze({
+            from: this.from, to: recipient, subject: title,
+            html: ['<!doctype html><html><body style="font-family:system-ui,sans-serif;line-height:1.5;color:#172033">',
+                `<h1 style="font-size:22px">${this.escapeHtml(title)}</h1>`, `<p>${this.escapeHtml(body)}</p>`,
+                `<p><a href="${this.escapeHtml(this.scheduleUrl)}">View your schedule in LunchLineup</a></p>`,
+                '<p>If you no longer work at this location, contact your manager.</p>', '</body></html>'].join(''),
+            text: `${title}\n\n${body}\n\nView your schedule: ${this.scheduleUrl}\n\nIf you no longer work at this location, contact your manager.`,
+        });
+        return Object.freeze({
+            recipientEmail: boundRecipient,
+            send: async (currentRecipient: string | null, selectedWindow: NotificationHandoffWindow) => {
+                this.assertPreparedRecipient(boundRecipient, currentRecipient, window, selectedWindow);
+                try {
+                    // No database or asynchronous preparation between the final guard and NEW provider handoff.
+                    const send = this.resend!.emails.send as unknown as AbortableEmailSend;
+                    const response = await send.call(this.resend!.emails, payload, {
+                        idempotencyKey: `schedule-published/${outboxId}`, signal: selectedWindow.signal,
+                    });
+                    if (response.error) {
+                        const providerError = new Error('Schedule publication email provider rejected delivery');
+                        const statusCode = Number((response.error as { statusCode?: unknown }).statusCode);
+                        if (Number.isInteger(statusCode) && statusCode >= 400 && statusCode <= 599) Object.defineProperty(providerError, 'status', { value: statusCode });
+                        throw providerError;
                     }
-                    throw providerError;
+                    if (!response.data || typeof response.data.id !== 'string' || response.data.id.length < 1 || response.data.id.length > 255) {
+                        throw new Error('Schedule publication email provider returned an invalid response');
+                    }
+                    this.logger.log('Schedule publication email delivery accepted');
+                    return 'accepted' as const;
+                } catch (error) {
+                    this.logger.error(`Schedule publication email delivery failed ${runtimeErrorText(error)}`);
+                    throw error;
                 }
-                if (
-                    !response.data
-                    || typeof response.data.id !== 'string'
-                    || response.data.id.length < 1
-                    || response.data.id.length > 255
-                ) {
-                    throw new Error('Schedule publication email provider returned an invalid response');
-                }
-                return 'accepted' as const;
-            });
-            if (outcome === 'accepted') {
-                this.logger.log('Schedule publication email delivery accepted');
-            }
-            return outcome;
-        } catch (error) {
-            this.logger.error(`Schedule publication email delivery failed ${runtimeErrorText(error)}`);
-            throw error;
-        }
+            },
+        });
+    }
+
+    private assertPreparedRecipient(bound: string | null, current: string | null, original: NotificationHandoffWindow, selected: NotificationHandoffWindow): void {
+        if (bound !== current || selected.signal !== original.signal) throw new Error('Schedule publication email prepared recipient changed');
+        original.assertNewHandoff();
+        if (original.signal.aborted) throw original.signal.reason;
     }
 
     private canonicalBoolean(name: string, fallback: boolean): boolean {
@@ -218,22 +227,24 @@ export class SchedulePublishedEmailService {
         return parsed;
     }
 
-    private async withDeadline<T>(operation: (signal: AbortSignal) => Promise<T>): Promise<T> {
+    private async withDeadline<T>(operation: (window: NotificationHandoffWindow) => Promise<T>): Promise<T> {
         const deadlineError = new Error('Schedule publication email provider deadline exceeded');
         const controller = new AbortController();
+        const started = performance.now();
+        const window = { signal: controller.signal, assertNewHandoff: () => {
+            if (controller.signal.aborted || performance.now() - started >= this.providerTimeoutMs) {
+                if (!controller.signal.aborted) controller.abort(deadlineError);
+                throw deadlineError;
+            }
+        } };
         let timeout: NodeJS.Timeout | undefined;
         try {
-            return await Promise.race([
-                operation(controller.signal),
-                new Promise<never>((_resolve, reject) => {
-                    timeout = setTimeout(() => {
-                        controller.abort(deadlineError);
-                        reject(deadlineError);
-                    }, this.providerTimeoutMs);
-                }),
-            ]);
+            return await Promise.race([operation(window), new Promise<never>((_resolve, reject) => {
+                timeout = setTimeout(() => { controller.abort(deadlineError); reject(deadlineError); }, this.providerTimeoutMs);
+            })]);
         } finally {
             if (timeout) clearTimeout(timeout);
+            controller.abort(deadlineError); // A late preparation result cannot start a new handoff after return.
         }
     }
 

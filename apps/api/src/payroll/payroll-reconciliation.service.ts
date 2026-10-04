@@ -4,6 +4,8 @@ import {
     NotFoundException,
 } from '@nestjs/common';
 
+import { AuthService } from '../auth/auth.service';
+import { RbacService } from '../auth/rbac.service';
 import { TenantPrismaService, type TenantPrismaTransaction } from '../database/tenant-prisma.service';
 import {
     normalizeReconciliation,
@@ -12,13 +14,11 @@ import {
 } from './payroll-reconciliation';
 import { serializePayrollReceipt } from './payroll-records';
 import {
-    applyPayrollTransactionTimeouts,
     isPrismaUniqueConflict,
     lockPayrollPeriod,
     lockPayrollTenant,
     PAYROLL_REPLAY_CONFLICT,
-    PAYROLL_TRANSACTION_OPTIONS,
-    retryPayrollSerializableMutation,
+    runCurrentPayrollMutation,
     type PayrollActor,
     writePayrollAudit,
 } from './payroll-transaction';
@@ -26,9 +26,14 @@ import { requiredId } from './payroll-validation';
 
 @Injectable()
 export class PayrollReconciliationService {
-    constructor(private readonly tenantDb: TenantPrismaService) {}
+    constructor(
+        private readonly tenantDb: TenantPrismaService,
+        private readonly rbac: RbacService,
+        private readonly authService: AuthService,
+    ) {}
 
     async reconcile(actor: PayrollActor, batchIdRaw: unknown, body: unknown) {
+        actor = Object.freeze({ ...actor });
         const batchId = requiredId(batchIdRaw, 'exportId');
         const payload = normalizeReconciliation(body);
         const payloadSha256 = reconciliationPayloadSha256({
@@ -37,19 +42,26 @@ export class PayrollReconciliationService {
             batchId,
             payload,
         });
-        const replay = await this.findReplay(actor, batchId, payload.provider, payload.providerEventId, payloadSha256);
-        if (replay) return replay;
+        return runCurrentPayrollMutation(this.rbac, this.authService, actor, 'payroll:reconcile',
+            async (tx, assertCurrent, actor) => {
+                assertCurrent();
+                const replay = await this.findReplayInTransaction(tx, actor, batchId, payload.provider, payload.providerEventId, payloadSha256);
+                assertCurrent();
+                if (replay) return replay;
 
-        try {
-            return await retryPayrollSerializableMutation(() => this.tenantDb.withTenant(actor.tenantId, async (tx) => {
-                await applyPayrollTransactionTimeouts(tx);
+                assertCurrent();
                 await lockPayrollTenant(tx, actor.tenantId);
+                assertCurrent();
                 await this.lockBatchRow(tx, actor.tenantId, batchId);
+                assertCurrent();
                 const batch = await tx.payrollExportBatch.findFirst({
                     where: { id: batchId, tenantId: actor.tenantId },
                 });
+                assertCurrent();
                 if (!batch) throw new NotFoundException('Payroll export not found.');
+                assertCurrent();
                 await lockPayrollPeriod(tx, actor.tenantId, batch.periodId);
+                assertCurrent();
                 const insideReplay = await this.findReplayInTransaction(
                     tx,
                     actor,
@@ -58,6 +70,7 @@ export class PayrollReconciliationService {
                     payload.providerEventId,
                     payloadSha256,
                 );
+                assertCurrent();
                 if (insideReplay) return insideReplay;
                 if (batch.status === 'GENERATED') {
                     throw new ConflictException('Payroll export must be downloaded before reconciliation.');
@@ -66,6 +79,7 @@ export class PayrollReconciliationService {
                     throw new ConflictException('Payroll export reconciliation is already terminal.');
                 }
 
+                assertCurrent();
                 const lines = await tx.payrollExportLine.findMany({
                     where: {
                         tenantId: actor.tenantId,
@@ -76,10 +90,12 @@ export class PayrollReconciliationService {
                     take: payload.outcomes.length,
                     select: { id: true },
                 });
+                assertCurrent();
                 if (lines.length !== payload.outcomes.length) {
                     throw new BadReconciliationLineException();
                 }
                 const counts = reconciliationCounts(payload);
+                assertCurrent();
                 const receipt = await tx.payrollReconciliationReceipt.create({
                     data: {
                         tenantId: actor.tenantId,
@@ -92,6 +108,7 @@ export class PayrollReconciliationService {
                         receivedByUserId: actor.userId,
                     },
                 });
+                assertCurrent();
                 await tx.payrollReconciliationLineEvent.createMany({
                     data: payload.outcomes.map((outcome) => ({
                         tenantId: actor.tenantId,
@@ -102,7 +119,9 @@ export class PayrollReconciliationService {
                         reason: outcome.reason,
                     })),
                 });
+                assertCurrent();
                 for (const outcome of payload.outcomes) {
+                    assertCurrent();
                     await tx.payrollReconciliationLineState.upsert({
                         where: { batchId_lineId: { batchId: batch.id, lineId: outcome.lineId } },
                         create: {
@@ -119,66 +138,53 @@ export class PayrollReconciliationService {
                             reason: outcome.reason,
                         },
                     });
+                    assertCurrent();
                 }
                 if (batch.status === 'DOWNLOADED') {
+                    assertCurrent();
                     const changed = await tx.payrollExportBatch.updateMany({
                         where: { id: batch.id, tenantId: actor.tenantId, status: 'DOWNLOADED' },
                         data: { status: 'RECONCILING' },
                     });
+                    assertCurrent();
                     if (changed.count !== 1) throw new ConflictException('Payroll reconciliation state changed. Retry.');
                 }
+                assertCurrent();
                 const accepted = await tx.payrollReconciliationLineState.count({
                     where: { tenantId: actor.tenantId, batchId: batch.id, status: 'ACCEPTED' },
                 });
+                assertCurrent();
                 const complete = accepted === batch.rowCount
                     && payload.providerTotalMinutes === batch.totalPayableMinutes;
                 if (complete) {
+                    assertCurrent();
                     const changed = await tx.payrollExportBatch.updateMany({
                         where: { id: batch.id, tenantId: actor.tenantId, status: 'RECONCILING' },
                         data: { status: 'RECONCILED', reconciledAt: new Date() },
                     });
+                    assertCurrent();
                     if (changed.count !== 1) throw new ConflictException('Payroll reconciliation state changed. Retry.');
                 }
                 const response = serializePayrollReceipt(receipt);
+                assertCurrent();
                 await writePayrollAudit(tx, actor, {
                     action: 'PAYROLL_RECONCILIATION_RECEIVED',
                     resource: 'PayrollReconciliationReceipt',
                     resourceId: receipt.id,
                     newValue: response,
-                });
+                }, assertCurrent);
+                assertCurrent();
                 return response;
-            }, PAYROLL_TRANSACTION_OPTIONS));
-        } catch (error) {
-            if (isPrismaUniqueConflict(error)) {
-                const racedReplay = await this.findReplay(
-                    actor,
-                    batchId,
-                    payload.provider,
-                    payload.providerEventId,
-                    payloadSha256,
-                );
-                if (racedReplay) return racedReplay;
+            }, {
+            isRecoverable: isPrismaUniqueConflict,
+            operation: async (tx, assertCurrent, actor, error) => {
+                assertCurrent();
+                const replay = await this.findReplayInTransaction(tx, actor, batchId, payload.provider, payload.providerEventId, payloadSha256);
+                assertCurrent();
+                if (replay) return replay;
                 throw new ConflictException(PAYROLL_REPLAY_CONFLICT);
-            }
-            throw error;
-        }
-    }
-
-    private async findReplay(
-        actor: PayrollActor,
-        batchId: string,
-        provider: string,
-        providerEventId: string,
-        payloadSha256: string,
-    ) {
-        return this.tenantDb.withTenant(actor.tenantId, (tx) => this.findReplayInTransaction(
-            tx,
-            actor,
-            batchId,
-            provider,
-            providerEventId,
-            payloadSha256,
-        ));
+            },
+        });
     }
 
     private async findReplayInTransaction(

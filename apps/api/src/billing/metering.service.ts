@@ -273,6 +273,7 @@ export class MeteringService {
             cost: number;
             reason: string;
             operationId: string;
+            assertCurrent?: () => void;
         },
     ): Promise<{ consumedCredits: number; newBalance: number | null }> {
         if (args.source !== 'credits') {
@@ -283,6 +284,7 @@ export class MeteringService {
             cost: args.cost,
             reason: args.reason,
             transactionId: `feature-usage-${args.operationId}`,
+            ...(args.assertCurrent ? { assertCurrent: args.assertCurrent } : {}),
         });
     }
 
@@ -293,8 +295,11 @@ export class MeteringService {
             cost: number;
             reason: string;
             transactionId: string;
+            assertCurrent?: () => void;
         },
     ): Promise<{ consumedCredits: number; newBalance: number }> {
+        const assertCurrent = args.assertCurrent ?? (() => {});
+        assertCurrent();
         if (typeof args.tenantId !== 'string' || !args.tenantId.trim()) {
             throw new BadRequestException('tenantId is required');
         }
@@ -314,7 +319,9 @@ export class MeteringService {
         }
 
         await this.lockCreditSettlementTables(tx);
+        assertCurrent();
         await tx.$queryRaw`SELECT "id" FROM "Tenant" WHERE "id" = ${args.tenantId} FOR UPDATE`;
+        assertCurrent();
         const existing = await tx.creditTransaction.findUnique({
             where: { id: args.transactionId },
             select: {
@@ -327,6 +334,7 @@ export class MeteringService {
                 debtAfter: true,
             },
         });
+        assertCurrent();
         if (existing) {
             if (
                 existing.tenantId !== args.tenantId
@@ -352,6 +360,7 @@ export class MeteringService {
             };
         }
 
+        assertCurrent();
         const debit = await tx.tenant.updateMany({
             where: {
                 id: args.tenantId,
@@ -360,6 +369,7 @@ export class MeteringService {
             },
             data: { usageCredits: { decrement: args.cost } },
         });
+        assertCurrent();
         if (debit.count !== 1) {
             throw new ForbiddenException('Insufficient usage credits balance.');
         }
@@ -367,6 +377,7 @@ export class MeteringService {
             where: { id: args.tenantId },
             select: { usageCredits: true, creditDebt: true },
         });
+        assertCurrent();
         const newBalance = this.requireStoredBalanceAfter(
             tenant.usageCredits,
             'Feature usage settlement produced an invalid wallet balance.',
@@ -375,6 +386,7 @@ export class MeteringService {
             tenant.creditDebt,
             'Feature usage settlement produced an invalid debt balance.',
         );
+        assertCurrent();
         await tx.creditTransaction.create({
             data: {
                 id: args.transactionId,
@@ -386,6 +398,7 @@ export class MeteringService {
                 debtAfter,
             },
         });
+        assertCurrent();
         return { consumedCredits: args.cost, newBalance };
     }
 

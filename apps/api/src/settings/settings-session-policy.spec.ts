@@ -39,7 +39,15 @@ function harness(owner: Owner, boundary: Boundary = 'Tenant') {
     let active = false, reached = false;
     const assertActive = () => expect(active).toBe(true);
     const tx: any = {
-        $executeRaw: vi.fn(async () => { assertActive(); return 1; }),
+        $executeRaw: vi.fn(async (sql: TemplateStringsArray, ...values: unknown[]) => {
+            assertActive();
+            const text = Array.from(sql).join('').replace(/\s+/g, ' ').trim();
+            if (text.startsWith('UPDATE')) {
+                expect(text).toBe('UPDATE "Tenant" SET "updatedAt" = "updatedAt" WHERE "id" =');
+            } else expect(text).toContain('set_current_tenant');
+            expect(values).toEqual([tenantId]);
+            return 1;
+        }),
         $queryRaw: vi.fn(async (sql: any, ...args: unknown[]) => {
             assertActive();
             const text = (Array.isArray(sql) ? sql : sql.strings).join('');

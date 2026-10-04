@@ -1,8 +1,9 @@
 import { describe, expect, it, vi } from 'vitest';
+import { payrollDomainAuthority } from './payroll-domain-authority.fixture';
 
 import { PayrollLockService } from './payroll-lock.service';
 
-const actor = { tenantId: 'tenant-1', userId: 'manager-1' };
+const actor = { tenantId: 'tenant-1', userId: 'manager-1', sessionId: 'session-1' };
 
 function reviewPeriod(overrides: Record<string, unknown> = {}) {
     return {
@@ -53,13 +54,13 @@ describe('PayrollLockService', () => {
         const tenantDb = {
             withTenant: vi.fn(),
         } as any;
-        let transactionAttempts = 0;
+        let transactionAttempts = 0; let transactionCalls = 0;
         tenantDb.withTenant.mockImplementation((_tenantId: string, work: (value: any) => unknown, options?: unknown) => {
-            if (options && ++transactionAttempts === 1) return Promise.reject({ code: 'P2034' });
+            if (options && ++transactionCalls > 1 && ++transactionAttempts === 1) return Promise.reject({ code: 'P2034' });
             return work(tx);
         });
 
-        const result = await new PayrollLockService(tenantDb).lock(
+        const result = await new PayrollLockService(tenantDb, ...payrollDomainAuthority(tenantDb, tx, actor)).lock(
             actor,
             review.id,
             { expectedRevision: 1 },

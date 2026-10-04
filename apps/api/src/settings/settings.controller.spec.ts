@@ -64,7 +64,17 @@ describe('SettingsController', () => {
             auditLog: {
                 create: vi.fn().mockResolvedValue({}),
             },
-            $executeRaw: vi.fn().mockResolvedValue(1),
+            $executeRaw: vi.fn(async (sql: TemplateStringsArray, ...values: unknown[]) => {
+                const text = Array.from(sql).join('').replace(/\s+/g, ' ').trim();
+                if (text.startsWith('UPDATE')) {
+                    expect(text).toBe('UPDATE "Tenant" SET "updatedAt" = "updatedAt" WHERE "id" =');
+                    expect(values).toEqual(['tenant-1']);
+                } else {
+                    expect(text).toContain('set_current_tenant');
+                    expect(values).toEqual(['tenant-1']);
+                }
+                return 1;
+            }),
             $queryRaw: vi.fn(async (sql: unknown) => {
                 const text = Array.from(sql as TemplateStringsArray).join('');
                 return text.includes('FROM "Session"')

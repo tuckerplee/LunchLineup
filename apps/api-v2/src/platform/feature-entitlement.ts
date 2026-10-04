@@ -314,8 +314,11 @@ export async function debitFeatureCredit(
     operationId: string;
     reason: string;
     transactionId?: string;
+    assertCurrent?: () => void;
   },
 ): Promise<{ consumedCredits: number; newBalance: number }> {
+  const assertCurrent = args.assertCurrent ?? (() => {});
+  assertCurrent();
   const transactionId = args.transactionId ?? `feature-usage-${args.operationId}`;
   await transaction.$executeRaw`LOCK TABLE "Tenant", "CreditTransaction" IN ROW EXCLUSIVE MODE`;
   await transaction.$queryRaw`SELECT "id" FROM "Tenant" WHERE "id" = ${args.tenantId} FOR UPDATE`;
@@ -335,9 +338,11 @@ export async function debitFeatureCredit(
     ) {
       throw new ProblemError(409, 'credit_settlement_conflict', 'The saved credit settlement does not match this operation.', 'Conflict');
     }
+    assertCurrent();
     return { consumedCredits: args.entitlement.creditCost, newBalance: Number(existing.balanceAfter) };
   }
 
+  assertCurrent();
   const debit = await transaction.tenant.updateMany({
     where: {
       id: args.tenantId,
@@ -346,6 +351,7 @@ export async function debitFeatureCredit(
     },
     data: { usageCredits: { decrement: args.entitlement.creditCost } },
   });
+  assertCurrent();
   if (debit.count !== 1) throw failure(args.entitlement.feature, true);
   const tenant = await transaction.tenant.findUniqueOrThrow({
     where: { id: args.tenantId },
@@ -354,6 +360,7 @@ export async function debitFeatureCredit(
   if (!Number.isSafeInteger(tenant.usageCredits) || tenant.usageCredits < 0 || tenant.creditDebt !== 0) {
     throw new ProblemError(409, 'credit_settlement_conflict', 'Credit settlement produced an invalid wallet balance.', 'Conflict');
   }
+  assertCurrent();
   await transaction.creditTransaction.create({
     data: {
       id: transactionId,
@@ -365,5 +372,6 @@ export async function debitFeatureCredit(
       debtAfter: tenant.creditDebt,
     },
   });
+  assertCurrent();
   return { consumedCredits: args.entitlement.creditCost, newBalance: tenant.usageCredits };
 }

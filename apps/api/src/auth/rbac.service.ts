@@ -380,11 +380,33 @@ export class RbacService {
         authorize: (tx: TenantPrismaTransaction, actor: CurrentMutationActor) => Promise<A>,
         operation: (tx: TenantPrismaTransaction, authority: A, assertCurrent: () => void,
             actor: CurrentMutationActor) => Promise<T>,
+        recovery?: {
+            isRecoverable: (error: unknown) => boolean;
+            operation: (tx: TenantPrismaTransaction, authority: A, assertCurrent: () => void,
+                actor: CurrentMutationActor, error: unknown) => Promise<T>;
+        },
     ): Promise<T> {
         const actor = freezeMutationActor(options.actor);
         const permission = canonicalPermissionKey(options.requiredPermission);
         if (!permission) throw new ForbiddenException('A current mutation permission is required');
         const scope = options.scope;
+        const isRecoverable = recovery?.isRecoverable;
+        const recover = recovery?.operation;
+        // Trusted owners may retain their finite domain transaction budget.
+        // Capture it before any await; callers cannot replace isolation or
+        // extend the final retry after an outside MFA observation.
+        const transactionOptions: { isolationLevel: 'Serializable'; maxWait?: number; timeout?: number } = {
+            isolationLevel: 'Serializable',
+        };
+        for (const key of ['maxWait', 'timeout'] as const) {
+            const value = options.transactionOptions?.[key];
+            if (value === undefined) continue;
+            if (!Number.isInteger(value) || value < 1 || value > 60_000) {
+                throw new ForbiddenException('Current mutation transaction budgets must be between 1 and 60000 milliseconds');
+            }
+            transactionOptions[key] = value;
+        }
+        Object.freeze(transactionOptions);
         const observerOwner = options.mfaObserver;
         const observe = observerOwner?.observeSessionMfa;
         const observer = typeof observe === 'function'
@@ -393,8 +415,8 @@ export class RbacService {
             ?? 'Authorization or access state changed concurrently; retry the request',
             isConflict: options.isConflict };
         const transaction = <R>(callback: (tx: TenantPrismaTransaction) => Promise<R>) => scope === 'platform'
-            ? this.tenantDb.withPlatformAdmin(callback, { isolationLevel: 'Serializable' })
-            : this.tenantDb.withTenant(actor.tenantId, callback, { isolationLevel: 'Serializable' });
+            ? this.tenantDb.withPlatformAdmin(callback, transactionOptions)
+            : this.tenantDb.withTenant(actor.tenantId, callback, transactionOptions);
         const preflight = await runSerializableMutationWithRetry(() => transaction(async tx => {
             await this.authorizeActorMutationInTransaction(tx, actor, permission);
             return captureCurrentMutationPolicy(tx, actor,
@@ -402,16 +424,26 @@ export class RbacService {
         }), retry);
         const observation = await observeCurrentMutationMfa(preflight, observer);
         assertCurrentMutationPolicy(preflight, observation);
-        return runSerializableMutationWithRetry(() => transaction(async tx => {
+        const finalTransaction = (callback: typeof operation) => transaction(async tx => {
             const authority = await authorize(tx, actor);
             const policy = await captureCurrentMutationPolicy(tx, actor,
                 await this.currentMutationPermissionsInTransaction(tx, actor, permission));
             const assertCurrent = () => assertCurrentMutationPolicy(policy, observation);
             assertCurrent();
-            const result = await operation(tx, authority, assertCurrent, actor);
+            const result = await callback(tx, authority, assertCurrent, actor);
             assertCurrent();
             return result;
-        }), retry);
+        });
+        try {
+            return await runSerializableMutationWithRetry(() => finalTransaction(operation), retry);
+        } catch (error) {
+            if (!isRecoverable || !recover || !isRecoverable(error)) throw error;
+            // One fresh authorized receipt-read callback after the failed
+            // transaction has ended, using the original finite MFA proof.
+            // Recovery errors propagate; no recursive retry or observation.
+            return finalTransaction((tx, authority, assertCurrent, selectedActor) =>
+                recover(tx, authority, assertCurrent, selectedActor, error));
+        }
     }
 
     private async currentMutationPermissionsInTransaction(

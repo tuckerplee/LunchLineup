@@ -1,5 +1,7 @@
 import { BadRequestException, ConflictException, Injectable, NotFoundException } from '@nestjs/common';
 
+import { AuthService } from '../auth/auth.service';
+import { RbacService } from '../auth/rbac.service';
 import { TenantPrismaService, type TenantPrismaTransaction } from '../database/tenant-prisma.service';
 import { normalizePayrollIdempotencyKey, payrollRequestIdentity } from './payroll-idempotency';
 import {
@@ -12,13 +14,11 @@ import { lockPayrollCandidateCards, validatePayrollCandidateCards } from './payr
 import { loadPayrollPeriodSummaries } from './payroll-period-summary';
 import { serializePayrollPeriod } from './payroll-records';
 import {
-    applyPayrollTransactionTimeouts,
     isPrismaUniqueConflict,
     lockPayrollPeriod,
     lockPayrollTenant,
     PAYROLL_CONCURRENT_CHANGE,
-    PAYROLL_TRANSACTION_OPTIONS,
-    retryPayrollSerializableMutation,
+    runCurrentPayrollMutation,
     type PayrollActor,
     writePayrollAudit,
 } from './payroll-transaction';
@@ -32,7 +32,11 @@ import {
 
 @Injectable()
 export class PayrollPeriodService {
-    constructor(private readonly tenantDb: TenantPrismaService) {}
+    constructor(
+        private readonly tenantDb: TenantPrismaService,
+        private readonly rbac: RbacService,
+        private readonly authService: AuthService,
+    ) {}
 
     async list(actor: PayrollActor, limitRaw?: unknown, cursorRaw?: unknown) {
         const limit = parseBoundedLimit(limitRaw, {
@@ -61,6 +65,7 @@ export class PayrollPeriodService {
     }
 
     async create(actor: PayrollActor, body: unknown, idempotencyKeyRaw: unknown) {
+        actor = Object.freeze({ ...actor });
         const request = body && typeof body === 'object' && !Array.isArray(body)
             ? body as Record<string, unknown>
             : {};
@@ -72,15 +77,20 @@ export class PayrollPeriodService {
             idempotencyKey: normalizePayrollIdempotencyKey(idempotencyKeyRaw),
             body: { localStartDate },
         });
-        const replay = await this.findCreateReplay(actor, identity);
-        if (replay) return replay;
+        return runCurrentPayrollMutation(this.rbac, this.authService, actor, 'payroll:policy_write',
+            async (tx, assertCurrent, actor) => {
+                assertCurrent();
+                const replay = await readPayrollPeriodCreateReplay(tx, actor, identity);
+                assertCurrent();
+                if (replay) return replay;
 
-        try {
-            return await retryPayrollSerializableMutation(() => this.tenantDb.withTenant(actor.tenantId, async (tx) => {
-                await applyPayrollTransactionTimeouts(tx);
+                assertCurrent();
                 await lockPayrollTenant(tx, actor.tenantId);
+                assertCurrent();
                 const insideReplay = await readPayrollPeriodCreateReplay(tx, actor, identity);
+                assertCurrent();
                 if (insideReplay) return insideReplay;
+                assertCurrent();
                 const policy = await tx.payrollPolicyVersion.findFirst({
                     where: {
                         tenantId: actor.tenantId,
@@ -88,12 +98,14 @@ export class PayrollPeriodService {
                     },
                     orderBy: [{ effectiveFrom: 'desc' }, { version: 'desc' }],
                 });
+                assertCurrent();
                 if (!policy) throw new BadRequestException('No payroll policy is effective for localStartDate.');
                 const boundaries = payrollPeriodBoundaries(localStartDate, {
                     timeZone: policy.timeZone,
                     cadence: policy.cadence,
                     anchorDate: serializeDateOnly(policy.anchorDate),
                 });
+                assertCurrent();
                 const overlap = await tx.payrollPeriod.findFirst({
                     where: {
                         tenantId: actor.tenantId,
@@ -102,7 +114,9 @@ export class PayrollPeriodService {
                     },
                     select: { id: true },
                 });
+                assertCurrent();
                 if (overlap) throw new ConflictException('Payroll period overlaps an existing period.');
+                assertCurrent();
                 const created = await tx.payrollPeriod.create({
                     data: {
                         tenantId: actor.tenantId,
@@ -115,25 +129,31 @@ export class PayrollPeriodService {
                         cadence: policy.cadence,
                     },
                 });
+                assertCurrent();
                 const response = serializePayrollPeriod(created);
-                await writePayrollOperation(tx, actor, identity, 'PERIOD_CREATE', created.id, response);
+                assertCurrent();
+                await writePayrollOperation(tx, actor, identity, 'PERIOD_CREATE', created.id, response, assertCurrent);
+                assertCurrent();
                 await writePayrollAudit(tx, actor, {
                     action: 'PAYROLL_PERIOD_CREATED', resource: 'PayrollPeriod',
                     resourceId: created.id, newValue: response,
-                });
+                }, assertCurrent);
+                assertCurrent();
                 return response;
-            }, PAYROLL_TRANSACTION_OPTIONS));
-        } catch (error) {
-            if (isPrismaUniqueConflict(error)) {
-                const racedReplay = await this.findCreateReplay(actor, identity);
-                if (racedReplay) return racedReplay;
+            }, {
+            isRecoverable: isPrismaUniqueConflict,
+            operation: async (tx, assertCurrent, actor, error) => {
+                assertCurrent();
+                const replay = await readPayrollPeriodCreateReplay(tx, actor, identity);
+                assertCurrent();
+                if (replay) return replay;
                 throw new ConflictException('Payroll period conflicts with an existing period.');
-            }
-            throw error;
-        }
+            },
+        });
     }
 
     async startReview(actor: PayrollActor, periodIdRaw: unknown, body: unknown, idempotencyKeyRaw: unknown) {
+        actor = Object.freeze({ ...actor });
         const periodId = requiredId(periodIdRaw, 'periodId');
         const request = body && typeof body === 'object' && !Array.isArray(body)
             ? body as Record<string, unknown>
@@ -146,55 +166,59 @@ export class PayrollPeriodService {
             idempotencyKey: normalizePayrollIdempotencyKey(idempotencyKeyRaw),
             body: { periodId, expectedRevision },
         });
-        const replay = await this.findReplay(actor, identity, periodId);
-        if (replay) return replay;
+        return runCurrentPayrollMutation(this.rbac, this.authService, actor, 'payroll:lock',
+            async (tx, assertCurrent, actor) => {
+                assertCurrent();
+                const replay = await readPayrollOperationReplay(tx, actor, identity, 'REVIEW', periodId);
+                assertCurrent();
+                if (replay) return replay;
 
-        return retryPayrollSerializableMutation(() => this.tenantDb.withTenant(actor.tenantId, async (tx) => {
-            await applyPayrollTransactionTimeouts(tx);
-            await lockPayrollTenant(tx, actor.tenantId);
-            await lockPayrollPeriod(tx, actor.tenantId, periodId);
-            const insideReplay = await readPayrollOperationReplay(tx, actor, identity, 'REVIEW', periodId);
-            if (insideReplay) return insideReplay;
-            const period = await this.requirePeriod(tx, actor.tenantId, periodId);
-            if (period.status !== 'OPEN') throw new ConflictException('Only an open payroll period can enter review.');
-            if (period.revision !== expectedRevision) throw new ConflictException(PAYROLL_CONCURRENT_CHANGE);
-            if (period.endsAt.getTime() > Date.now()) {
-                throw new BadRequestException('Payroll review cannot begin before the period ends.');
-            }
-            const candidates = await lockPayrollCandidateCards(tx, actor.tenantId, period);
-            validatePayrollCandidateCards(candidates, period);
-            const changed = await tx.payrollPeriod.updateMany({
-                where: { id: period.id, tenantId: actor.tenantId, status: 'OPEN', revision: expectedRevision },
-                data: {
-                    status: 'REVIEW', revision: { increment: 1 },
-                    reviewStartedAt: new Date(), reviewStartedByUserId: actor.userId,
-                },
+                assertCurrent();
+                await lockPayrollTenant(tx, actor.tenantId);
+                assertCurrent();
+                await lockPayrollPeriod(tx, actor.tenantId, periodId);
+                assertCurrent();
+                const insideReplay = await readPayrollOperationReplay(tx, actor, identity, 'REVIEW', periodId);
+                assertCurrent();
+                if (insideReplay) return insideReplay;
+                assertCurrent();
+                const period = await this.requirePeriod(tx, actor.tenantId, periodId);
+                assertCurrent();
+                if (period.status !== 'OPEN') throw new ConflictException('Only an open payroll period can enter review.');
+                if (period.revision !== expectedRevision) throw new ConflictException(PAYROLL_CONCURRENT_CHANGE);
+                if (period.endsAt.getTime() > Date.now()) {
+                    throw new BadRequestException('Payroll review cannot begin before the period ends.');
+                }
+                assertCurrent();
+                const candidates = await lockPayrollCandidateCards(tx, actor.tenantId, period);
+                assertCurrent();
+                validatePayrollCandidateCards(candidates, period);
+                assertCurrent();
+                const changed = await tx.payrollPeriod.updateMany({
+                    where: { id: period.id, tenantId: actor.tenantId, status: 'OPEN', revision: expectedRevision },
+                    data: {
+                        status: 'REVIEW', revision: { increment: 1 },
+                        reviewStartedAt: new Date(), reviewStartedByUserId: actor.userId,
+                    },
+                });
+                assertCurrent();
+                if (changed.count !== 1) throw new ConflictException(PAYROLL_CONCURRENT_CHANGE);
+                assertCurrent();
+                const updated = await this.requirePeriod(tx, actor.tenantId, period.id);
+                assertCurrent();
+                const response = serializePayrollPeriod(updated);
+                assertCurrent();
+                await writePayrollOperation(tx, actor, identity, 'REVIEW', period.id, response, assertCurrent);
+                assertCurrent();
+                await writePayrollAudit(tx, actor, {
+                    action: 'PAYROLL_PERIOD_REVIEW_STARTED', resource: 'PayrollPeriod', resourceId: period.id,
+                    oldValue: serializePayrollPeriod(period), newValue: response,
+                }, assertCurrent);
+                assertCurrent();
+                return response;
             });
-            if (changed.count !== 1) throw new ConflictException(PAYROLL_CONCURRENT_CHANGE);
-            const updated = await this.requirePeriod(tx, actor.tenantId, period.id);
-            const response = serializePayrollPeriod(updated);
-            await writePayrollOperation(tx, actor, identity, 'REVIEW', period.id, response);
-            await writePayrollAudit(tx, actor, {
-                action: 'PAYROLL_PERIOD_REVIEW_STARTED', resource: 'PayrollPeriod', resourceId: period.id,
-                oldValue: serializePayrollPeriod(period), newValue: response,
-            });
-            return response;
-        }, PAYROLL_TRANSACTION_OPTIONS));
     }
 
-    private async findCreateReplay(actor: PayrollActor, identity: { operationId: string; requestHash: string }) {
-        return this.tenantDb.withTenant(actor.tenantId, (tx) =>
-            readPayrollPeriodCreateReplay(tx, actor, identity));
-    }
-
-    private async findReplay(
-        actor: PayrollActor,
-        identity: { operationId: string; requestHash: string },
-        periodId: string,
-    ) {
-        return this.tenantDb.withTenant(actor.tenantId, (tx) =>
-            readPayrollOperationReplay(tx, actor, identity, 'REVIEW', periodId));
-    }
 
     private async requirePeriod(tx: TenantPrismaTransaction, tenantId: string, periodId: string) {
         const period = await tx.payrollPeriod.findFirst({ where: { id: periodId, tenantId } });

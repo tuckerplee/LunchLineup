@@ -1493,6 +1493,7 @@ model NotificationOutbox {
   body             String
   status           NotificationOutboxStatus @default(PENDING)
   attempts         Int                      @default(0)
+  failureCount     Int                      @default(0)
   nextAttemptAt    DateTime?                @default(now())
   leaseUntil       DateTime?
   deliveredAt      DateTime?

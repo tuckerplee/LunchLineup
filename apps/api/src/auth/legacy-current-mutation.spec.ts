@@ -16,6 +16,9 @@ type State = { tenants: Row[]; users: Row[]; sessions: Row[]; roles: Row[];
 type Effect = { ordinal: number; method: string; args: Row };
 type Lock = { ordinal: number; final: boolean; table: string; values: unknown[]; text: string };
 type Boundary = 'final-grants' | 'user-effect' | 'audit-effect' | 'callback-read' | 'observer';
+type Recovery = { isRecoverable: (error: unknown) => boolean;
+    operation: (tx: any, authority: any, assertCurrent: () => void,
+        actor: typeof ids, error: unknown) => Promise<any> };
 const clone = <T>(value: T): T => structuredClone(value);
 const gate = () => {
     let release!: () => void;
@@ -50,7 +53,7 @@ afterEach(() => { vi.useRealTimers(); vi.unstubAllEnvs(); vi.restoreAllMocks(); 
 // model filters selectors and stages effects until successful callback completion.
 // It does not simulate PostgreSQL lock blocking, isolation/RLS or Redis atomicity.
 // The domain callback is synthetic: these cases do not qualify all route owners.
-function harness(scope: Scope = 'tenant') {
+function harness(scope: Scope = 'tenant', expectedTransactionOptions: Row = { isolationLevel: 'Serializable' }) {
     const permission = scope === 'platform' ? 'admin_portal:access'
         : scope === 'unprivileged' ? 'locations:write' : 'users:admin';
     const targetTenant = scope === 'platform' ? foreignTenant : ids.tenantId;
@@ -92,7 +95,7 @@ function harness(scope: Scope = 'tenant') {
         }
     };
     const database: any = { $transaction: async (operation: (tx: any) => Promise<unknown>, options: Row) => {
-        expect(options).toEqual({ isolationLevel: 'Serializable' });
+        expect(options).toEqual(expectedTransactionOptions);
         expect(active).toBe(0); active++;
         const context = { ordinal: ++ordinal, final: false };
         let draft: State | undefined;
@@ -282,7 +285,7 @@ function harness(scope: Scope = 'tenant') {
     }) };
     const options: CurrentMutationOptions = { actor: { ...ids }, requiredPermission: permission,
         scope: scope === 'platform' ? 'platform' : 'tenant', mfaObserver: observer };
-    const run = (readOnly = false, withoutExpectedTargetTenant = false) => rbac.runCurrentMutation(options,
+    const run = (readOnly = false, withoutExpectedTargetTenant = false, recovery?: Recovery) => rbac.runCurrentMutation(options,
         async (tx, actor) => {
             expect(Object.isFrozen(actor)).toBe(true); expect(actor).toEqual(ids);
             const context = txContexts.get(tx)!; context.final = true; finalPasses++;
@@ -305,7 +308,7 @@ function harness(scope: Scope = 'tenant') {
             }
             // Deliberately no local assertion: the actual wrapper must check callback completion.
             return tx.user.findFirst({ where: { id: targetId, tenantId: targetTenant } });
-        });
+        }, recovery);
     return { get state() { return state; }, get active() { return active; }, get ordinal() { return ordinal; },
         get finalPasses() { return finalPasses; }, get lastObservation() { return lastObservation; },
         options, observer, run, attempted, committed, locks, contexts, entered, release,
@@ -340,6 +343,80 @@ function assertLockOrder(h: Harness) {
 }
 
 describe('actual legacy current mutation authority with explicit staged transactions', () => {
+    for (const secondAttempt of [false, true]) {
+        it(`recovers a unique failure on domain attempt ${secondAttempt ? 2 : 1} in one fresh authorized read transaction`, async () => {
+            const h = harness(); const initial = clone(h.state);
+            const failure = Object.assign(new Error('Synthetic unique constraint'), { code: 'P2002' });
+            if (secondAttempt) h.conflicts(0, 1, () => h.failAudit(failure));
+            else h.failAudit(failure);
+            const recover = vi.fn(async (tx: any, authority: any, assertCurrent: () => void, actor: typeof ids, error: unknown) => {
+                expect(authority.id).toBe(targetId); expect(actor).toEqual(ids); expect(error).toBe(failure);
+                assertCurrent();
+                return tx.user.findFirst({ where: { id: targetId, tenantId: ids.tenantId } });
+            });
+            const result = await h.run(false, false, { isRecoverable: error => error === failure, operation: recover });
+            expect(result.name).toBe(targetId);
+            expect(h.ordinal).toBe(secondAttempt ? 4 : 3);
+            expect(h.attempted).toHaveLength(secondAttempt ? 4 : 2);
+            expect(h.committed).toEqual([]); expect(h.state).toEqual(initial);
+            expect(h.observer.observeSessionMfa).toHaveBeenCalledTimes(1);
+            expect(recover).toHaveBeenCalledTimes(1); assertLockOrder(h);
+        });
+    }
+    it('recovery refuses newly revoked authority without renewing the observation or entering the recovery callback', async () => {
+        const h = harness();
+        const failure = Object.assign(new Error('Synthetic lock timeout'), { code: '55P03' });
+        h.failAudit(failure); const recover = vi.fn();
+        await expect(h.run(false, false, {
+            isRecoverable: error => { expect(h.active).toBe(0); h.state.sessions[0].revokedAt = new Date(); return error === failure; },
+            operation: recover,
+        })).rejects.toBeInstanceOf(ForbiddenException);
+        expect(h.ordinal).toBe(3); expect(h.committed).toEqual([]);
+        expect(recover).not.toHaveBeenCalled(); expect(h.observer.observeSessionMfa).toHaveBeenCalledTimes(1);
+    });
+    it('recovery is one shot and does not retry another recovery failure', async () => {
+        const h = harness(); const failure = Object.assign(new Error('Synthetic unique constraint'), { code: 'P2002' });
+        const recoveryFailure = Object.assign(new Error('Synthetic recovery conflict'), { code: 'P2034' });
+        h.failAudit(failure); const recover = vi.fn(async () => { throw recoveryFailure; });
+        await expect(h.run(false, false, { isRecoverable: error => error === failure, operation: recover })).rejects.toBe(recoveryFailure);
+        expect(h.ordinal).toBe(3); expect(recover).toHaveBeenCalledTimes(1); expect(h.committed).toEqual([]);
+        expect(h.observer.observeSessionMfa).toHaveBeenCalledTimes(1);
+    });
+    it('captures the recovery classifier and callback before the outside observation', async () => {
+        const h = harness(); const failure = Object.assign(new Error('Synthetic unique constraint'), { code: 'P2002' });
+        h.failAudit(failure);
+        const recovery: Recovery = { isRecoverable: error => error === failure,
+            operation: async (tx, _authority, assertCurrent) => { assertCurrent(); return tx.user.findFirst({ where: { id: targetId, tenantId: ids.tenantId } }); } };
+        h.onObserve(() => { recovery.isRecoverable = () => { throw new Error('Late classifier'); };
+            recovery.operation = async () => { throw new Error('Late recovery callback'); }; });
+        await expect(h.run(false, false, recovery)).resolves.toMatchObject({ name: targetId });
+        expect(h.ordinal).toBe(3); expect(h.committed).toEqual([]);
+    });
+    for (const scope of ['tenant', 'platform'] as const) {
+        it(`${scope}: snapshots the owner transaction budget before observation and retry`, async () => {
+            const selected = { maxWait: 5_000, timeout: 20_000 };
+            const h = harness(scope, { ...selected, isolationLevel: 'Serializable' });
+            Object.assign(h.options, { transactionOptions: selected });
+            h.conflicts(0, 1);
+            h.onObserve(() => { selected.maxWait = 1; selected.timeout = 1; });
+            await h.run();
+            expect(h.ordinal).toBe(3);
+            expect(h.observer.observeSessionMfa).toHaveBeenCalledTimes(1);
+            expect(h.state.audits).toHaveLength(1);
+        });
+    }
+    for (const value of [0, -1, NaN, Infinity, 1.5, 60_001]) {
+        for (const key of ['maxWait', 'timeout']) {
+            it(`rejects invalid owner transaction ${key}=${value} before starting a transaction`, async () => {
+                const h = harness();
+                Object.assign(h.options, { transactionOptions: { [key]: value } });
+                await expect(h.run()).rejects.toBeInstanceOf(ForbiddenException);
+                expect(h.ordinal).toBe(0);
+                expect(h.observer.observeSessionMfa).not.toHaveBeenCalled();
+                expect(h.attempted).toEqual([]);
+            });
+        }
+    }
     for (const scope of ['tenant', 'platform', 'unprivileged'] as const) {
         it(`${scope}: admits current authority, preserves scoped sorted locks and staged writes`, async () => {
             const h = harness(scope);
@@ -655,4 +732,25 @@ describe('actual legacy current mutation authority with explicit staged transact
         expect(h.ordinal).toBe(2); expect(h.finalPasses).toBe(0);
         expect(h.observer.observeSessionMfa).not.toHaveBeenCalled(); expect(h.attempted).toEqual([]);
     });
+    for (const lifetime of lifetimes) {
+        it(`recovery refuses ${lifetime} expiry during its last receipt read`, async () => {
+            const h = harness(); const expire = arrangeLifetime(h, lifetime);
+            const failure = Object.assign(new Error('Synthetic unique constraint'), { code: 'P2002' });
+            h.failAudit(failure); h.pauseAt('callback-read');
+            const initial = clone(h.state);
+            const outcome = h.run(false, false, { isRecoverable: error => error === failure,
+                // Deliberately omit a local assertion: final callback completion
+                // must be checked by the actual shared wrapper.
+                operation: tx => tx.user.findFirst({ where: { id: targetId, tenantId: ids.tenantId } }),
+            }).then(value => ({ value }), error => ({ error }));
+            try {
+                expect(await Promise.race([h.entered.promise.then(() => 'entered'), outcome.then(() => 'settled')])).toBe('entered');
+                expire();
+            } finally { h.release.release(); await outcome; }
+            const result = await outcome;
+            expect('error' in result ? result.error : undefined).toBeInstanceOf(ForbiddenException);
+            expect(h.ordinal).toBe(3); expect(h.committed).toEqual([]); expect(h.state).toEqual(initial);
+            expect(h.observer.observeSessionMfa).toHaveBeenCalledTimes(1);
+        });
+    }
 });

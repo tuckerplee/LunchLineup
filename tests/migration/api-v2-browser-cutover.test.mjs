@@ -329,7 +329,7 @@ test('API-02 owns Payroll natively with public immutable evidence and no retaine
   }
   assert.match(contract, /PayrollLockedEntrySchema/);
   assert.match(contract, /PayrollReconciliationReceiptSchema/);
-  assert.match(server, /new PayrollService\(database\)/);
+  assert.match(server, /new PayrollService\(database, identity\)/);
   assert.match(server, /registerPayrollRoutes/);
   assert.match(routes, /registerPayrollRoutes/);
   assert.match(routes, /assertUnsafeRequestSecurity/);

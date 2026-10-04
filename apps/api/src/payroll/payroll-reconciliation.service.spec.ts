@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import { payrollDomainAuthority } from './payroll-domain-authority.fixture';
 
 import {
     normalizeReconciliation,
@@ -6,11 +7,15 @@ import {
 } from './payroll-reconciliation';
 import { PayrollReconciliationService } from './payroll-reconciliation.service';
 
-const actor = { tenantId: 'tenant-1', userId: 'manager-1' };
+const actor = { tenantId: 'tenant-1', userId: 'manager-1', sessionId: 'session-1' };
 const batchId = 'batch-1';
 
 function tenantDb(tx: any) {
     return { withTenant: vi.fn((_tenantId: string, work: (value: any) => unknown) => work(tx)) } as any;
+}
+
+function domainDependencies(tx: any) {
+    const db = tenantDb(tx); return [db, ...payrollDomainAuthority(db, tx, actor)] as const;
 }
 
 describe('PayrollReconciliationService', () => {
@@ -32,7 +37,7 @@ describe('PayrollReconciliationService', () => {
         const tx = {
             payrollReconciliationReceipt: { findUnique: vi.fn().mockResolvedValue(receipt) },
         };
-        const service = new PayrollReconciliationService(tenantDb(tx));
+        const service = new PayrollReconciliationService(...domainDependencies(tx));
 
         await expect(service.reconcile(actor, batchId, body)).resolves.toMatchObject({
             id: receipt.id, providerTotalMinutes: -30,
@@ -79,7 +84,7 @@ describe('PayrollReconciliationService', () => {
             auditLog: { create: vi.fn().mockResolvedValue({}) },
         };
 
-        await new PayrollReconciliationService(tenantDb(tx)).reconcile(actor, batchId, body);
+        await new PayrollReconciliationService(...domainDependencies(tx)).reconcile(actor, batchId, body);
 
         expect(tx.payrollReconciliationLineState.upsert).toHaveBeenCalledWith(expect.objectContaining({
             where: { batchId_lineId: { batchId, lineId: 'line-1' } },

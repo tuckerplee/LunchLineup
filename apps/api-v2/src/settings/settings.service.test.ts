@@ -29,7 +29,12 @@ function harness(initialValue: unknown = null, oidcSsoAvailable = false) {
       expect(where).toMatchObject({ id: identity.sub, tenantId: identity.tenantId, deletedAt: null, suspendedAt: null });
       return { pinResetRequired: false };
     }) },
-    $executeRaw: vi.fn(async () => 1),
+    $executeRaw: vi.fn(async (sql: TemplateStringsArray, ...values: unknown[]) => {
+      expect(Array.from(sql).join('').replace(/\s+/g, ' ').trim())
+        .toBe('UPDATE "Tenant" SET "updatedAt" = "updatedAt" WHERE "id" =');
+      expect(values).toEqual([identity.tenantId]);
+      return 1;
+    }),
     $queryRaw: vi.fn(async (sql: { strings: readonly string[] }) => {
       const text = sql.strings.join('');
       if (text.includes('FROM "User"')) return [{ id: identity.sub, role: 'ADMIN', deletedAt: null, suspendedAt: null }];

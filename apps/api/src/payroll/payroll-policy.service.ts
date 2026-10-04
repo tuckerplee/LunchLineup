@@ -1,5 +1,7 @@
 import { BadRequestException, ConflictException, Injectable } from '@nestjs/common';
 
+import { AuthService } from '../auth/auth.service';
+import { RbacService } from '../auth/rbac.service';
 import { TenantPrismaService, type TenantPrismaTransaction } from '../database/tenant-prisma.service';
 import { normalizePayrollIdempotencyKey, payrollRequestIdentity } from './payroll-idempotency';
 import {
@@ -11,12 +13,10 @@ import {
 } from './payroll-policy';
 import { serializePayrollPolicy } from './payroll-records';
 import {
-    applyPayrollTransactionTimeouts,
     isPrismaUniqueConflict,
     lockPayrollTenant,
     PAYROLL_REPLAY_CONFLICT,
-    PAYROLL_TRANSACTION_OPTIONS,
-    retryPayrollSerializableMutation,
+    runCurrentPayrollMutation,
     type PayrollActor,
     writePayrollAudit,
 } from './payroll-transaction';
@@ -28,7 +28,11 @@ import {
 
 @Injectable()
 export class PayrollPolicyService {
-    constructor(private readonly tenantDb: TenantPrismaService) {}
+    constructor(
+        private readonly tenantDb: TenantPrismaService,
+        private readonly rbac: RbacService,
+        private readonly authService: AuthService,
+    ) {}
 
     async list(actor: PayrollActor, limitRaw?: unknown, cursorRaw?: unknown) {
         const limit = parseBoundedLimit(limitRaw, {
@@ -57,6 +61,7 @@ export class PayrollPolicyService {
     }
 
     async create(actor: PayrollActor, body: unknown, idempotencyKeyRaw: unknown) {
+        actor = Object.freeze({ ...actor });
         const policy = normalizePayrollPolicy(body);
         assertPayrollAnchorAlignment(policy.effectiveFrom, policy.anchorDate, policy.cadence);
         const identity = payrollRequestIdentity({
@@ -66,22 +71,28 @@ export class PayrollPolicyService {
             idempotencyKey: normalizePayrollIdempotencyKey(idempotencyKeyRaw),
             body: policy,
         });
-        const replay = await this.findReplay(actor, identity.operationId, identity.requestHash);
-        if (replay) return replay;
+        return runCurrentPayrollMutation(this.rbac, this.authService, actor, 'payroll:policy_write',
+            async (tx, assertCurrent, actor) => {
+                assertCurrent();
+                const replay = await this.findReplayInTransaction(tx, actor, identity.operationId, identity.requestHash);
+                assertCurrent();
+                if (replay) return replay;
 
-        try {
-            return await retryPayrollSerializableMutation(() => this.tenantDb.withTenant(actor.tenantId, async (tx) => {
-                await applyPayrollTransactionTimeouts(tx);
+                assertCurrent();
                 await lockPayrollTenant(tx, actor.tenantId);
+                assertCurrent();
                 const insideReplay = await this.findReplayInTransaction(
                     tx, actor, identity.operationId, identity.requestHash,
                 );
+                assertCurrent();
                 if (insideReplay) return insideReplay;
 
+                assertCurrent();
                 const latest = await tx.payrollPolicyVersion.findFirst({
                     where: { tenantId: actor.tenantId },
                     orderBy: [{ version: 'desc' }, { id: 'desc' }],
                 });
+                assertCurrent();
                 if (latest && serializeDateOnly(latest.effectiveFrom) >= policy.effectiveFrom) {
                     throw new ConflictException('effectiveFrom must be after the latest payroll policy boundary.');
                 }
@@ -96,6 +107,7 @@ export class PayrollPolicyService {
                         latest.cadence,
                     );
                 }
+                assertCurrent();
                 const created = await tx.payrollPolicyVersion.create({
                     data: {
                         tenantId: actor.tenantId,
@@ -109,28 +121,27 @@ export class PayrollPolicyService {
                         createdByUserId: actor.userId,
                     },
                 });
+                assertCurrent();
                 const response = serializePayrollPolicy(created);
+                assertCurrent();
                 await writePayrollAudit(tx, actor, {
                     action: 'PAYROLL_POLICY_VERSION_CREATED',
                     resource: 'PayrollPolicyVersion',
                     resourceId: created.id,
                     newValue: response,
-                });
+                }, assertCurrent);
+                assertCurrent();
                 return response;
-            }, PAYROLL_TRANSACTION_OPTIONS));
-        } catch (error) {
-            if (isPrismaUniqueConflict(error)) {
-                const racedReplay = await this.findReplay(actor, identity.operationId, identity.requestHash);
-                if (racedReplay) return racedReplay;
+            }, {
+            isRecoverable: isPrismaUniqueConflict,
+            operation: async (tx, assertCurrent, actor, error) => {
+                assertCurrent();
+                const replay = await this.findReplayInTransaction(tx, actor, identity.operationId, identity.requestHash);
+                assertCurrent();
+                if (replay) return replay;
                 throw new ConflictException('Payroll policy version conflicts with an existing boundary.');
-            }
-            throw error;
-        }
-    }
-
-    private async findReplay(actor: PayrollActor, operationId: string, requestHash: string) {
-        return this.tenantDb.withTenant(actor.tenantId, (tx) =>
-            this.findReplayInTransaction(tx, actor, operationId, requestHash));
+            },
+        });
     }
 
     private async findReplayInTransaction(

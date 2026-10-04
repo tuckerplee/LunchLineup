@@ -26,7 +26,7 @@ describe('NotificationsService', () => {
             notificationOutboxDeadLettered: { set: vi.fn() },
         };
         moduleRef = { get: vi.fn().mockReturnValue(metrics) };
-        schedulePublishedEmail = { send: vi.fn().mockResolvedValue('accepted') };
+        schedulePublishedEmail = { deliveryTimeoutMs: 10_000, prepare: vi.fn().mockResolvedValue({ recipientEmail: 'staff@example.test', send: vi.fn().mockResolvedValue('accepted') }) };
         service = new NotificationsService(
             { get: vi.fn().mockReturnValue(undefined) } as any,
             moduleRef,
@@ -48,7 +48,8 @@ describe('NotificationsService', () => {
     });
 
     it('delegates schedule publication email with only outbox-owned delivery fields', async () => {
-        await (service as any).outbox.deliverExternal({
+        const window = { signal: new AbortController().signal, assertNewHandoff: vi.fn() };
+        await (service as any).outbox.prepareExternal({
             id: 'outbox-1',
             tenantId: 'tenant-1',
             userId: 'user-1',
@@ -58,14 +59,14 @@ describe('NotificationsService', () => {
             body: 'Downtown: Jul 14 to Jul 20',
             attempts: 1,
             createdAt: new Date(),
-        }, 'staff@example.test');
+        }, 'staff@example.test', window);
 
-        expect(schedulePublishedEmail.send).toHaveBeenCalledWith({
+        expect(schedulePublishedEmail.prepare).toHaveBeenCalledWith({
             outboxId: 'outbox-1',
             recipientEmail: 'staff@example.test',
             title: 'Schedule published',
             body: 'Downtown: Jul 14 to Jul 20',
-        });
+        }, window);
     });
 
     it('creates notifications inside tenant context', async () => {

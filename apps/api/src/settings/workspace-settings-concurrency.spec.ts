@@ -54,6 +54,16 @@ function harness(initiallyMissing = false) {
         async function explicitLock(sql: { strings: readonly string[]; values?: unknown[] } | readonly string[], ...args: unknown[]) {
             const text = (Array.isArray(sql) ? sql : (sql as { strings: readonly string[] }).strings).join('');
             const parameters = flattenedValues(Array.isArray(sql) ? args : (sql as { values: unknown[] }).values);
+            if (text.trim().startsWith('UPDATE')) {
+                expect(text.replace(/\s+/g, ' ').trim()).toBe('UPDATE "Tenant" SET "updatedAt" = "updatedAt" WHERE "id" =');
+                expect(parameters).toEqual([tenantId]);
+                expect(held.has(`tenant:${tenantId}`)).toBe(true);
+                return 1;
+            }
+            if (text.includes('set_current_tenant')) {
+                expect(parameters).toEqual([tenantId]);
+                return 1;
+            }
             if (text.includes('FROM "Tenant"') && text.includes('FOR UPDATE')) {
                 if (firstWriteWaiting) secondBoundary.release();
                 expect(parameters).toEqual([tenantId]);

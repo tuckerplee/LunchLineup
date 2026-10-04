@@ -55,7 +55,9 @@ export async function writePayrollOperation(
     kind: PayrollStoredOperationKind,
     periodId: string,
     response: Record<string, unknown>,
+    assertCurrent: () => void = () => {},
 ): Promise<void> {
+    assertCurrent();
     await tx.payrollOperation.create({
         data: {
             operationId: identity.operationId,
@@ -66,6 +68,7 @@ export async function writePayrollOperation(
             response: response as Prisma.InputJsonValue,
         },
     });
+    assertCurrent();
 }
 
 function storedResponse(value: Prisma.JsonValue): Record<string, unknown> {

@@ -42,7 +42,15 @@ function harness(owner: Owner, observerAvailable = true) {
     let readerError: Error | undefined;
     const writes = vi.fn(), audits = vi.fn();
     const tx: any = {
-        $executeRaw: vi.fn(async () => { expect(active).toBe(1); return 1; }),
+        $executeRaw: vi.fn(async (sql: TemplateStringsArray, ...values: unknown[]) => {
+            expect(active).toBe(1);
+            const text = Array.from(sql).join('').replace(/\s+/g, ' ').trim();
+            if (text.startsWith('UPDATE')) {
+                expect(text).toBe('UPDATE "Tenant" SET "updatedAt" = "updatedAt" WHERE "id" =');
+            } else expect(text).toContain('set_current_tenant');
+            expect(values).toEqual([ids.tenantId]);
+            return 1;
+        }),
         $queryRaw: vi.fn(async (sql: any, ...args: unknown[]) => {
             expect(active).toBe(1);
             const text = (Array.isArray(sql) ? sql : sql.strings).join('');

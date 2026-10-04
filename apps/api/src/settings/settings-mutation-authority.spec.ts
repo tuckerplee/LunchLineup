@@ -33,7 +33,14 @@ function harness(owner: Owner) {
     const entered = deferred(), gate = deferred();
     const writes = vi.fn(), audits = vi.fn(), reads = vi.fn();
     const tx: any = {
-        $executeRaw: vi.fn(async () => 1),
+        $executeRaw: vi.fn(async (sql: TemplateStringsArray, ...values: unknown[]) => {
+            const text = Array.from(sql).join('').replace(/\s+/g, ' ').trim();
+            if (text.startsWith('UPDATE')) {
+                expect(text).toBe('UPDATE "Tenant" SET "updatedAt" = "updatedAt" WHERE "id" =');
+            } else expect(text).toContain('set_current_tenant');
+            expect(values).toEqual([tenantId]);
+            return 1;
+        }),
         $queryRaw: vi.fn(async (sql: any, ...args: unknown[]) => {
             const text = (Array.isArray(sql) ? sql : sql.strings).join('');
             const values = flattenedValues(Array.isArray(sql) ? args : sql.values);

@@ -1,7 +1,7 @@
 import { ForbiddenException, ServiceUnavailableException } from '@nestjs/common';
 import { isCurrentMfaObservation, PRIVILEGED_MFA_PERMISSION_KEYS,
     type MfaSessionObserver, type MfaVerificationObservation } from '@lunchlineup/rbac';
-import type { TenantPrismaTransaction } from '../database/tenant-prisma.service';
+import type { TenantPrismaTransaction, TenantPrismaTransactionOptions } from '../database/tenant-prisma.service';
 
 export type CurrentMutationActor = Readonly<{ userId: string; tenantId: string; sessionId: string }>;
 export type CurrentMutationPolicy = Readonly<{
@@ -16,6 +16,7 @@ export type CurrentMutationOptions = {
     mfaObserver?: MfaSessionObserver;
     conflictMessage?: string | ((error: unknown) => string);
     isConflict?: (error: unknown) => boolean;
+    transactionOptions?: Readonly<Pick<TenantPrismaTransactionOptions, 'maxWait' | 'timeout'>>;
 };
 
 export function freezeMutationActor(actor: CurrentMutationActor): CurrentMutationActor {

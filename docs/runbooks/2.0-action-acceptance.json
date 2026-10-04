@@ -3,8 +3,8 @@
   "kind": "lunchlineup-action-acceptance-plan",
   "releaseQualified": false,
   "acceptanceExecuted": false,
-  "preparedFromCommit": "c692163dc84ba2dc886b567e390786fb46373607",
-  "preparedFromTree": "32152dc637b4390deb1c137143b36e032e7840a4",
+  "preparedFromCommit": "1d1cd2a9d82d567d1ff649de2fe975480fce1585",
+  "preparedFromTree": "a59a47344adcccdcff0088f3d85ac3b4f9da98e4",
   "scope": {
     "originalWorkflowsAreMinimum": true,
     "allExposedActionsRequired": true,
@@ -2616,7 +2616,8 @@
         },
         {
           "path": "apps/api-v2/src/payroll/payroll.service.ts",
-          "line": 513
+          "line": 535,
+          "sourceLine": "  async exportEntitlement(identity: SessionIdentity) {"
         }
       ],
       "actorBoundary": "Authenticated exact live session in its own tenant; native identity re-reads user/tenant/session/settings/assigned permissions, enforces stored and policy-shortened expiry, account activity, mandatory PIN reset and required MFA, with listed recovery exceptions. Requires payroll:export; all target/query rows are constrained to the session tenant, without platform cross-tenant override.",
@@ -2675,7 +2676,8 @@
         },
         {
           "path": "apps/api-v2/src/payroll/payroll.service.ts",
-          "line": 161
+          "line": 170,
+          "sourceLine": "  async listPolicies(identity: SessionIdentity, query: PayrollPolicyListQuery) {"
         }
       ],
       "actorBoundary": "Authenticated exact live session in its own tenant; native identity re-reads user/tenant/session/settings/assigned permissions, enforces stored and policy-shortened expiry, account activity, mandatory PIN reset and required MFA, with listed recovery exceptions. Requires payroll:read; all target/query rows are constrained to the session tenant, without platform cross-tenant override.",
@@ -2732,7 +2734,8 @@
         },
         {
           "path": "apps/api-v2/src/payroll/payroll.service.ts",
-          "line": 191
+          "line": 200,
+          "sourceLine": "  async latestPolicy(identity: SessionIdentity) {"
         }
       ],
       "actorBoundary": "Authenticated exact live session in its own tenant; native identity re-reads user/tenant/session/settings/assigned permissions, enforces stored and policy-shortened expiry, account activity, mandatory PIN reset and required MFA, with listed recovery exceptions. Requires payroll:read; all target/query rows are constrained to the session tenant, without platform cross-tenant override.",
@@ -2790,7 +2793,8 @@
         },
         {
           "path": "apps/api-v2/src/payroll/payroll.service.ts",
-          "line": 203
+          "line": 212,
+          "sourceLine": "  async createPolicy(identity: SessionIdentity, body: PayrollPolicyRequest, idempotencyKeyRaw: string | undefined) {"
         }
       ],
       "actorBoundary": "Authenticated exact live session in its own tenant; native identity re-reads user/tenant/session/settings/assigned permissions, enforces stored and policy-shortened expiry, account activity, mandatory PIN reset and required MFA, with listed recovery exceptions. Requires payroll:policy_write; all target/query rows are constrained to the session tenant, without platform cross-tenant override.",
@@ -2821,6 +2825,11 @@
             "path": "tests/integration/api-v2-payroll-native.test.mjs",
             "title": "native API v2 Payroll uses public IDs, tenant RLS, immutable evidence, exact-once export, and reconciliation"
           }
+        },
+        {
+          "id": "createPayrollPolicy.current-authority-after-wait",
+          "contract": "Authenticate an exact valid payroll session, pause admitted work before current authority, domain locks, nested debit, effects or final receipt reads, then revoke/expire that session, remove its actual assigned grant, require PIN/MFA reset, disable its account/tenant, or cross stored expiry, policy-effective expiry or MFA wall/monotonic deadlines. Both native and retained actual owners must refuse new effects and stale replay/recovery with unchanged committed payroll/wallet/audit evidence. Preserve valid exact replay, immutable historical approver evidence and financial rules. Prepared local owner matrices exercise synthetic transactions; real PostgreSQL/RLS/lock ordering, overlapping writers, commit recovery and provider qualification remain pending. Include an actual concurrent native or retained Settings writer that commits workspace security JSON after the reader snapshot was established but before its Tenant lock completes. The writer must update the parent Tenant tuple in the same transaction; prove serialization retry reads the new policy using the unchanged original finite MFA observation. A lock-only child write is insufficient, and ordinary controlled per-callback snapshots do not qualify this interleaving.",
+          "evidenceKind": "security-native-concurrency"
         }
       ],
       "workflowIds": [
@@ -2848,7 +2857,8 @@
         },
         {
           "path": "apps/api-v2/src/payroll/payroll.service.ts",
-          "line": 270
+          "line": 285,
+          "sourceLine": "  async listPeriods(identity: SessionIdentity, query: PayrollPeriodListQuery) {"
         }
       ],
       "actorBoundary": "Authenticated exact live session in its own tenant; native identity re-reads user/tenant/session/settings/assigned permissions, enforces stored and policy-shortened expiry, account activity, mandatory PIN reset and required MFA, with listed recovery exceptions. Requires payroll:read; all target/query rows are constrained to the session tenant, without platform cross-tenant override.",
@@ -2899,7 +2909,8 @@
         },
         {
           "path": "apps/api-v2/src/payroll/payroll.service.ts",
-          "line": 306
+          "line": 321,
+          "sourceLine": "  async createPeriod(identity: SessionIdentity, body: PayrollPeriodCreateRequest, idempotencyKeyRaw: string | undefined) {"
         }
       ],
       "actorBoundary": "Authenticated exact live session in its own tenant; native identity re-reads user/tenant/session/settings/assigned permissions, enforces stored and policy-shortened expiry, account activity, mandatory PIN reset and required MFA, with listed recovery exceptions. Requires payroll:policy_write; all target/query rows are constrained to the session tenant, without platform cross-tenant override.",
@@ -2930,6 +2941,11 @@
             "path": "tests/integration/api-v2-payroll-native.test.mjs",
             "title": "native API v2 Payroll uses public IDs, tenant RLS, immutable evidence, exact-once export, and reconciliation"
           }
+        },
+        {
+          "id": "createPayrollPeriod.current-authority-after-wait",
+          "contract": "Authenticate an exact valid payroll session, pause admitted work before current authority, domain locks, nested debit, effects or final receipt reads, then revoke/expire that session, remove its actual assigned grant, require PIN/MFA reset, disable its account/tenant, or cross stored expiry, policy-effective expiry or MFA wall/monotonic deadlines. Both native and retained actual owners must refuse new effects and stale replay/recovery with unchanged committed payroll/wallet/audit evidence. Preserve valid exact replay, immutable historical approver evidence and financial rules. Prepared local owner matrices exercise synthetic transactions; real PostgreSQL/RLS/lock ordering, overlapping writers, commit recovery and provider qualification remain pending. Include an actual concurrent native or retained Settings writer that commits workspace security JSON after the reader snapshot was established but before its Tenant lock completes. The writer must update the parent Tenant tuple in the same transaction; prove serialization retry reads the new policy using the unchanged original finite MFA observation. A lock-only child write is insufficient, and ordinary controlled per-callback snapshots do not qualify this interleaving.",
+          "evidenceKind": "security-native-concurrency"
         }
       ],
       "workflowIds": [
@@ -2959,7 +2975,8 @@
         },
         {
           "path": "apps/api-v2/src/payroll/payroll.service.ts",
-          "line": 382
+          "line": 404,
+          "sourceLine": "  async getPeriod(identity: SessionIdentity, publicPeriodId: string, query: PayrollPeriodDetailQuery) {"
         }
       ],
       "actorBoundary": "Authenticated exact live session in its own tenant; native identity re-reads user/tenant/session/settings/assigned permissions, enforces stored and policy-shortened expiry, account activity, mandatory PIN reset and required MFA, with listed recovery exceptions. Requires payroll:read; all target/query rows are constrained to the session tenant, without platform cross-tenant override.",
@@ -3020,7 +3037,8 @@
         },
         {
           "path": "apps/api-v2/src/payroll/payroll.service.ts",
-          "line": 997
+          "line": 1054,
+          "sourceLine": "  async adoptCards("
         }
       ],
       "actorBoundary": "Authenticated exact live session in its own tenant; native identity re-reads user/tenant/session/settings/assigned permissions, enforces stored and policy-shortened expiry, account activity, mandatory PIN reset and required MFA, with listed recovery exceptions. Requires payroll:policy_write; all target/query rows are constrained to the session tenant, without platform cross-tenant override.",
@@ -3051,6 +3069,11 @@
             "path": "tests/integration/api-v2-payroll-native.test.mjs",
             "title": "native API v2 Payroll uses public IDs, tenant RLS, immutable evidence, exact-once export, and reconciliation"
           }
+        },
+        {
+          "id": "adoptPayrollTimeCards.current-authority-after-wait",
+          "contract": "Authenticate an exact valid payroll session, pause admitted work before current authority, domain locks, nested debit, effects or final receipt reads, then revoke/expire that session, remove its actual assigned grant, require PIN/MFA reset, disable its account/tenant, or cross stored expiry, policy-effective expiry or MFA wall/monotonic deadlines. Both native and retained actual owners must refuse new effects and stale replay/recovery with unchanged committed payroll/wallet/audit evidence. Preserve valid exact replay, immutable historical approver evidence and financial rules. Prepared local owner matrices exercise synthetic transactions; real PostgreSQL/RLS/lock ordering, overlapping writers, commit recovery and provider qualification remain pending. Include an actual concurrent native or retained Settings writer that commits workspace security JSON after the reader snapshot was established but before its Tenant lock completes. The writer must update the parent Tenant tuple in the same transaction; prove serialization retry reads the new policy using the unchanged original finite MFA observation. A lock-only child write is insufficient, and ordinary controlled per-callback snapshots do not qualify this interleaving.",
+          "evidenceKind": "security-native-concurrency"
         }
       ],
       "workflowIds": [
@@ -3080,7 +3103,8 @@
         },
         {
           "path": "apps/api-v2/src/payroll/payroll.service.ts",
-          "line": 943
+          "line": 993,
+          "sourceLine": "  async startReview("
         }
       ],
       "actorBoundary": "Authenticated exact live session in its own tenant; native identity re-reads user/tenant/session/settings/assigned permissions, enforces stored and policy-shortened expiry, account activity, mandatory PIN reset and required MFA, with listed recovery exceptions. Requires payroll:lock; all target/query rows are constrained to the session tenant, without platform cross-tenant override.",
@@ -3111,6 +3135,11 @@
             "path": "tests/integration/api-v2-payroll-native.test.mjs",
             "title": "native API v2 Payroll uses public IDs, tenant RLS, immutable evidence, exact-once export, and reconciliation"
           }
+        },
+        {
+          "id": "startPayrollReview.current-authority-after-wait",
+          "contract": "Authenticate an exact valid payroll session, pause admitted work before current authority, domain locks, nested debit, effects or final receipt reads, then revoke/expire that session, remove its actual assigned grant, require PIN/MFA reset, disable its account/tenant, or cross stored expiry, policy-effective expiry or MFA wall/monotonic deadlines. Both native and retained actual owners must refuse new effects and stale replay/recovery with unchanged committed payroll/wallet/audit evidence. Preserve valid exact replay, immutable historical approver evidence and financial rules. Prepared local owner matrices exercise synthetic transactions; real PostgreSQL/RLS/lock ordering, overlapping writers, commit recovery and provider qualification remain pending. Include an actual concurrent native or retained Settings writer that commits workspace security JSON after the reader snapshot was established but before its Tenant lock completes. The writer must update the parent Tenant tuple in the same transaction; prove serialization retry reads the new policy using the unchanged original finite MFA observation. A lock-only child write is insufficient, and ordinary controlled per-callback snapshots do not qualify this interleaving.",
+          "evidenceKind": "security-native-concurrency"
         }
       ],
       "workflowIds": [
@@ -3138,7 +3167,8 @@
         },
         {
           "path": "apps/api-v2/src/payroll/payroll.service.ts",
-          "line": 1105
+          "line": 1169,
+          "sourceLine": "  async decideCards("
         }
       ],
       "actorBoundary": "Authenticated exact live session in its own tenant; native identity re-reads user/tenant/session/settings/assigned permissions, enforces stored and policy-shortened expiry, account activity, mandatory PIN reset and required MFA, with listed recovery exceptions. time_cards:approve for own tenant. Actor cannot approve or reject their own card revisions even if they hold this permission; REVIEW period and exact current revision required.",
@@ -3169,6 +3199,11 @@
             "path": "tests/integration/api-v2-payroll-native.test.mjs",
             "title": "native API v2 Payroll uses public IDs, tenant RLS, immutable evidence, exact-once export, and reconciliation"
           }
+        },
+        {
+          "id": "decidePayrollEntries.current-authority-after-wait",
+          "contract": "Authenticate an exact valid payroll session, pause admitted work before current authority, domain locks, nested debit, effects or final receipt reads, then revoke/expire that session, remove its actual assigned grant, require PIN/MFA reset, disable its account/tenant, or cross stored expiry, policy-effective expiry or MFA wall/monotonic deadlines. Both native and retained actual owners must refuse new effects and stale replay/recovery with unchanged committed payroll/wallet/audit evidence. Preserve valid exact replay, immutable historical approver evidence and financial rules. Prepared local owner matrices exercise synthetic transactions; real PostgreSQL/RLS/lock ordering, overlapping writers, commit recovery and provider qualification remain pending. Include an actual concurrent native or retained Settings writer that commits workspace security JSON after the reader snapshot was established but before its Tenant lock completes. The writer must update the parent Tenant tuple in the same transaction; prove serialization retry reads the new policy using the unchanged original finite MFA observation. A lock-only child write is insufficient, and ordinary controlled per-callback snapshots do not qualify this interleaving.",
+          "evidenceKind": "security-native-concurrency"
         }
       ],
       "workflowIds": [
@@ -3197,7 +3232,8 @@
         },
         {
           "path": "apps/api-v2/src/payroll/payroll.service.ts",
-          "line": 1233
+          "line": 1304,
+          "sourceLine": "  async lockPeriod("
         }
       ],
       "actorBoundary": "Authenticated exact live session in its own tenant; native identity re-reads user/tenant/session/settings/assigned permissions, enforces stored and policy-shortened expiry, account activity, mandatory PIN reset and required MFA, with listed recovery exceptions. Requires payroll:lock; all target/query rows are constrained to the session tenant, without platform cross-tenant override.",
@@ -3231,7 +3267,7 @@
         },
         {
           "id": "lockPayrollPeriod.current-authority-after-wait",
-          "contract": "Authenticate an exact valid payroll session, pause admitted work before final transaction authority or domain/effect wait, then revoke/expire that session, change current grant/PIN/MFA/account policy, or cross its effective lifetime. The actual owner must refuse new effects and stale replay/recovery with unchanged committed payroll/wallet/audit evidence. Preserve valid exact replay and independent historical approver evidence. Source gap triaged; behavioral repair and real PostgreSQL/RLS/lock-order qualification remain pending.",
+          "contract": "Authenticate an exact valid payroll session, pause admitted work before current authority, domain locks, nested debit, effects or final receipt reads, then revoke/expire that session, remove its actual assigned grant, require PIN/MFA reset, disable its account/tenant, or cross stored expiry, policy-effective expiry or MFA wall/monotonic deadlines. Both native and retained actual owners must refuse new effects and stale replay/recovery with unchanged committed payroll/wallet/audit evidence. Preserve valid exact replay, immutable historical approver evidence and financial rules. Prepared local owner matrices exercise synthetic transactions; real PostgreSQL/RLS/lock ordering, overlapping writers, commit recovery and provider qualification remain pending. Include an actual concurrent native or retained Settings writer that commits workspace security JSON after the reader snapshot was established but before its Tenant lock completes. The writer must update the parent Tenant tuple in the same transaction; prove serialization retry reads the new policy using the unchanged original finite MFA observation. A lock-only child write is insufficient, and ordinary controlled per-callback snapshots do not qualify this interleaving.",
           "evidenceKind": "security-native-concurrency"
         }
       ],
@@ -3261,7 +3297,8 @@
         },
         {
           "path": "apps/api-v2/src/payroll/payroll.service.ts",
-          "line": 1347
+          "line": 1426,
+          "sourceLine": "  async createAmendment("
         }
       ],
       "actorBoundary": "Authenticated exact live session in its own tenant; native identity re-reads user/tenant/session/settings/assigned permissions, enforces stored and policy-shortened expiry, account activity, mandatory PIN reset and required MFA, with listed recovery exceptions. payroll:reconcile for own tenant. Requester must differ from source employee, and only original TIME_CARD locked entries are amendable; no cross-tenant or platform exception.",
@@ -3295,7 +3332,7 @@
         },
         {
           "id": "createPayrollAmendment.current-authority-after-wait",
-          "contract": "Authenticate an exact valid payroll session, pause admitted work before final transaction authority or domain/effect wait, then revoke/expire that session, change current grant/PIN/MFA/account policy, or cross its effective lifetime. The actual owner must refuse new effects and stale replay/recovery with unchanged committed payroll/wallet/audit evidence. Preserve valid exact replay and independent historical approver evidence. Source gap triaged; behavioral repair and real PostgreSQL/RLS/lock-order qualification remain pending.",
+          "contract": "Authenticate an exact valid payroll session, pause admitted work before current authority, domain locks, nested debit, effects or final receipt reads, then revoke/expire that session, remove its actual assigned grant, require PIN/MFA reset, disable its account/tenant, or cross stored expiry, policy-effective expiry or MFA wall/monotonic deadlines. Both native and retained actual owners must refuse new effects and stale replay/recovery with unchanged committed payroll/wallet/audit evidence. Preserve valid exact replay, immutable historical approver evidence and financial rules. Prepared local owner matrices exercise synthetic transactions; real PostgreSQL/RLS/lock ordering, overlapping writers, commit recovery and provider qualification remain pending. Include an actual concurrent native or retained Settings writer that commits workspace security JSON after the reader snapshot was established but before its Tenant lock completes. The writer must update the parent Tenant tuple in the same transaction; prove serialization retry reads the new policy using the unchanged original finite MFA observation. A lock-only child write is insufficient, and ordinary controlled per-callback snapshots do not qualify this interleaving.",
           "evidenceKind": "security-native-concurrency"
         }
       ],
@@ -3324,7 +3361,8 @@
         },
         {
           "path": "apps/api-v2/src/payroll/payroll.service.ts",
-          "line": 1447
+          "line": 1532,
+          "sourceLine": "  async decideAmendment("
         }
       ],
       "actorBoundary": "Authenticated exact live session in its own tenant; native identity re-reads user/tenant/session/settings/assigned permissions, enforces stored and policy-shortened expiry, account activity, mandatory PIN reset and required MFA, with listed recovery exceptions. time_cards:approve for own tenant. Decision maker must differ from BOTH amendment requester and source employee; adjustment period must be REVIEW. No platform/self override.",
@@ -3358,7 +3396,7 @@
         },
         {
           "id": "decidePayrollAmendment.current-authority-after-wait",
-          "contract": "Authenticate an exact valid payroll session, pause admitted work before final transaction authority or domain/effect wait, then revoke/expire that session, change current grant/PIN/MFA/account policy, or cross its effective lifetime. The actual owner must refuse new effects and stale replay/recovery with unchanged committed payroll/wallet/audit evidence. Preserve valid exact replay and independent historical approver evidence. Source gap triaged; behavioral repair and real PostgreSQL/RLS/lock-order qualification remain pending.",
+          "contract": "Authenticate an exact valid payroll session, pause admitted work before current authority, domain locks, nested debit, effects or final receipt reads, then revoke/expire that session, remove its actual assigned grant, require PIN/MFA reset, disable its account/tenant, or cross stored expiry, policy-effective expiry or MFA wall/monotonic deadlines. Both native and retained actual owners must refuse new effects and stale replay/recovery with unchanged committed payroll/wallet/audit evidence. Preserve valid exact replay, immutable historical approver evidence and financial rules. Prepared local owner matrices exercise synthetic transactions; real PostgreSQL/RLS/lock ordering, overlapping writers, commit recovery and provider qualification remain pending. Include an actual concurrent native or retained Settings writer that commits workspace security JSON after the reader snapshot was established but before its Tenant lock completes. The writer must update the parent Tenant tuple in the same transaction; prove serialization retry reads the new policy using the unchanged original finite MFA observation. A lock-only child write is insufficient, and ordinary controlled per-callback snapshots do not qualify this interleaving.",
           "evidenceKind": "security-native-concurrency"
         }
       ],
@@ -3388,7 +3426,8 @@
         },
         {
           "path": "apps/api-v2/src/payroll/payroll.service.ts",
-          "line": 538
+          "line": 560,
+          "sourceLine": "  async createExport("
         }
       ],
       "actorBoundary": "Authenticated exact live session in its own tenant; native identity re-reads user/tenant/session/settings/assigned permissions, enforces stored and policy-shortened expiry, account activity, mandatory PIN reset and required MFA, with listed recovery exceptions. Requires payroll:export; all target/query rows are constrained to the session tenant, without platform cross-tenant override.",
@@ -3423,7 +3462,7 @@
         },
         {
           "id": "createPayrollExport.current-authority-after-wait",
-          "contract": "Authenticate an exact valid payroll session, pause admitted work before final transaction authority or domain/effect wait, then revoke/expire that session, change current grant/PIN/MFA/account policy, or cross its effective lifetime. The actual owner must refuse new effects and stale replay/recovery with unchanged committed payroll/wallet/audit evidence. Preserve valid exact replay and independent historical approver evidence. Source gap triaged; behavioral repair and real PostgreSQL/RLS/lock-order qualification remain pending.",
+          "contract": "Authenticate an exact valid payroll session, pause admitted work before current authority, domain locks, nested debit, effects or final receipt reads, then revoke/expire that session, remove its actual assigned grant, require PIN/MFA reset, disable its account/tenant, or cross stored expiry, policy-effective expiry or MFA wall/monotonic deadlines. Both native and retained actual owners must refuse new effects and stale replay/recovery with unchanged committed payroll/wallet/audit evidence. Preserve valid exact replay, immutable historical approver evidence and financial rules. Prepared local owner matrices exercise synthetic transactions; real PostgreSQL/RLS/lock ordering, overlapping writers, commit recovery and provider qualification remain pending. Include an actual concurrent native or retained Settings writer that commits workspace security JSON after the reader snapshot was established but before its Tenant lock completes. The writer must update the parent Tenant tuple in the same transaction; prove serialization retry reads the new policy using the unchanged original finite MFA observation. A lock-only child write is insufficient, and ordinary controlled per-callback snapshots do not qualify this interleaving.",
           "evidenceKind": "security-native-concurrency"
         },
         {
@@ -3486,7 +3525,8 @@
         },
         {
           "path": "apps/api-v2/src/payroll/payroll.service.ts",
-          "line": 500
+          "line": 522,
+          "sourceLine": "  async getExport(identity: SessionIdentity, publicExportId: string, query: { lineLimit?: string; lineCursor?: string }) {"
         }
       ],
       "actorBoundary": "Authenticated exact live session in its own tenant; native identity re-reads user/tenant/session/settings/assigned permissions, enforces stored and policy-shortened expiry, account activity, mandatory PIN reset and required MFA, with listed recovery exceptions. Requires payroll:read; all target/query rows are constrained to the session tenant, without platform cross-tenant override.",
@@ -3546,7 +3586,8 @@
         },
         {
           "path": "apps/api-v2/src/payroll/payroll.service.ts",
-          "line": 744
+          "line": 776,
+          "sourceLine": "  async downloadExport(identity: SessionIdentity, publicExportId: string): Promise<{ filename: string; content: Buffer }> {"
         }
       ],
       "actorBoundary": "Authenticated exact live session in its own tenant; native identity re-reads user/tenant/session/settings/assigned permissions, enforces stored and policy-shortened expiry, account activity, mandatory PIN reset and required MFA, with listed recovery exceptions. Requires payroll:export; all target/query rows are constrained to the session tenant, without platform cross-tenant override.",
@@ -3581,7 +3622,7 @@
         },
         {
           "id": "downloadPayrollExport.current-authority-after-wait",
-          "contract": "Authenticate an exact valid payroll session, pause admitted work before final transaction authority or domain/effect wait, then revoke/expire that session, change current grant/PIN/MFA/account policy, or cross its effective lifetime. The actual owner must refuse new effects and stale replay/recovery with unchanged committed payroll/wallet/audit evidence. Preserve valid exact replay and independent historical approver evidence. Source gap triaged; behavioral repair and real PostgreSQL/RLS/lock-order qualification remain pending.",
+          "contract": "Authenticate an exact valid payroll session, pause admitted work before current authority, domain locks, nested debit, effects or final receipt reads, then revoke/expire that session, remove its actual assigned grant, require PIN/MFA reset, disable its account/tenant, or cross stored expiry, policy-effective expiry or MFA wall/monotonic deadlines. Both native and retained actual owners must refuse new effects and stale replay/recovery with unchanged committed payroll/wallet/audit evidence. Preserve valid exact replay, immutable historical approver evidence and financial rules. Prepared local owner matrices exercise synthetic transactions; real PostgreSQL/RLS/lock ordering, overlapping writers, commit recovery and provider qualification remain pending. Include an actual concurrent native or retained Settings writer that commits workspace security JSON after the reader snapshot was established but before its Tenant lock completes. The writer must update the parent Tenant tuple in the same transaction; prove serialization retry reads the new policy using the unchanged original finite MFA observation. A lock-only child write is insufficient, and ordinary controlled per-callback snapshots do not qualify this interleaving.",
           "evidenceKind": "security-native-concurrency"
         }
       ],
@@ -3610,7 +3651,8 @@
         },
         {
           "path": "apps/api-v2/src/payroll/payroll.service.ts",
-          "line": 791
+          "line": 828,
+          "sourceLine": "  async reconcileExport("
         }
       ],
       "actorBoundary": "Authenticated exact live session in its own tenant; native identity re-reads user/tenant/session/settings/assigned permissions, enforces stored and policy-shortened expiry, account activity, mandatory PIN reset and required MFA, with listed recovery exceptions. Requires payroll:reconcile; all target/query rows are constrained to the session tenant, without platform cross-tenant override.",
@@ -3645,7 +3687,7 @@
         },
         {
           "id": "reconcilePayrollExport.current-authority-after-wait",
-          "contract": "Authenticate an exact valid payroll session, pause admitted work before final transaction authority or domain/effect wait, then revoke/expire that session, change current grant/PIN/MFA/account policy, or cross its effective lifetime. The actual owner must refuse new effects and stale replay/recovery with unchanged committed payroll/wallet/audit evidence. Preserve valid exact replay and independent historical approver evidence. Source gap triaged; behavioral repair and real PostgreSQL/RLS/lock-order qualification remain pending.",
+          "contract": "Authenticate an exact valid payroll session, pause admitted work before current authority, domain locks, nested debit, effects or final receipt reads, then revoke/expire that session, remove its actual assigned grant, require PIN/MFA reset, disable its account/tenant, or cross stored expiry, policy-effective expiry or MFA wall/monotonic deadlines. Both native and retained actual owners must refuse new effects and stale replay/recovery with unchanged committed payroll/wallet/audit evidence. Preserve valid exact replay, immutable historical approver evidence and financial rules. Prepared local owner matrices exercise synthetic transactions; real PostgreSQL/RLS/lock ordering, overlapping writers, commit recovery and provider qualification remain pending. Include an actual concurrent native or retained Settings writer that commits workspace security JSON after the reader snapshot was established but before its Tenant lock completes. The writer must update the parent Tenant tuple in the same transaction; prove serialization retry reads the new policy using the unchanged original finite MFA observation. A lock-only child write is insufficient, and ordinary controlled per-callback snapshots do not qualify this interleaving.",
           "evidenceKind": "security-native-concurrency"
         }
       ],
@@ -3886,7 +3928,7 @@
         },
         {
           "path": "apps/api-v2/src/settings/settings.service.ts",
-          "line": 162
+          "line": 163
         }
       ],
       "actorBoundary": "Authenticated exact live session in its own tenant; native identity re-reads user/tenant/session/settings/assigned permissions, enforces stored and policy-shortened expiry, account activity, mandatory PIN reset and required MFA, with listed recovery exceptions. Requires settings:read; all target/query rows are constrained to the session tenant, without platform cross-tenant override.",
@@ -3946,11 +3988,15 @@
         },
         {
           "path": "apps/api-v2/src/settings/settings.service.ts",
-          "line": 166
+          "line": 167
         },
         {
           "path": "apps/api-v2/src/settings/settings.service.ts",
-          "line": 253
+          "line": 258
+        },
+        {
+          "path": "apps/api/src/settings/settings.controller.ts",
+          "line": 461
         }
       ],
       "actorBoundary": "Authenticated exact live session in its own tenant; native identity re-reads user/tenant/session/settings/assigned permissions, enforces stored and policy-shortened expiry, account activity, mandatory PIN reset and required MFA, with listed recovery exceptions. Requires settings:write; all target/query rows are constrained to the session tenant, without platform cross-tenant override. Writer additionally rechecks current actor/exact Session/settings:write, tenant activity and effective expiry under retained locks in both passes; current forced PIN is denied and a canonical bounded MFA marker is always required after the outside-DB observation.",
@@ -3981,6 +4027,11 @@
             "path": "tests/integration/api-v2-settings-native.test.mjs",
             "title": "native API v2 workspace settings stay tenant-scoped, audit security changes, and reject unavailable SSO-only policy"
           }
+        },
+        {
+          "id": "updateGeneralSettings.policy-generation-and-original-lifetime",
+          "contract": "Both native and retained Settings writers must commit a real scoped Tenant tuple update under their existing Tenant lock in the same transaction as workspace_settings and any audit, including timezone-only, team-only and unchanged security saves. In independent PostgreSQL sessions establish an old payroll Serializable snapshot before a Tenant wait, commit a shorter policy with the writer, then prove tuple conflict, bounded fresh-authority retry and refusal of expired payroll creation and exact replay with no committed payroll/wallet/audit effects. Preserve the original finite outside MFA observation across retries. For the Settings writer, cross stored/effective session expiry or MFA wall/monotonic deadlines after each reached business Tenant, tuple-fence, JSON or audit await and at final callback; all effects must roll back. Zero affected rows and SQL/upsert/audit failures must roll back together. A valid writer may shorten policy based on the policy that authorized the save; the proposed policy must not retroactively deny that save. Closed local snapshot and effect models are prepared controls, not actual MVCC/SSI, physical locking, migration or commit proof.",
+          "evidenceKind": "security-native-concurrency"
         }
       ],
       "workflowIds": [
@@ -4009,11 +4060,15 @@
         },
         {
           "path": "apps/api-v2/src/settings/settings.service.ts",
-          "line": 191
+          "line": 194
         },
         {
           "path": "apps/api-v2/src/settings/settings.service.ts",
-          "line": 253
+          "line": 258
+        },
+        {
+          "path": "apps/api/src/settings/settings.controller.ts",
+          "line": 510
         }
       ],
       "actorBoundary": "Authenticated exact live session in its own tenant; native identity re-reads user/tenant/session/settings/assigned permissions, enforces stored and policy-shortened expiry, account activity, mandatory PIN reset and required MFA, with listed recovery exceptions. Requires settings:write; all target/query rows are constrained to the session tenant, without platform cross-tenant override. Writer additionally rechecks current actor/exact Session/settings:write, tenant activity and effective expiry under retained locks in both passes; current forced PIN is denied and a canonical bounded MFA marker is always required after the outside-DB observation.",
@@ -4044,6 +4099,11 @@
             "path": "tests/integration/api-v2-settings-native.test.mjs",
             "title": "native API v2 workspace settings stay tenant-scoped, audit security changes, and reject unavailable SSO-only policy"
           }
+        },
+        {
+          "id": "updateTeamSettings.policy-generation-and-original-lifetime",
+          "contract": "Both native and retained Settings writers must commit a real scoped Tenant tuple update under their existing Tenant lock in the same transaction as workspace_settings and any audit, including timezone-only, team-only and unchanged security saves. In independent PostgreSQL sessions establish an old payroll Serializable snapshot before a Tenant wait, commit a shorter policy with the writer, then prove tuple conflict, bounded fresh-authority retry and refusal of expired payroll creation and exact replay with no committed payroll/wallet/audit effects. Preserve the original finite outside MFA observation across retries. For the Settings writer, cross stored/effective session expiry or MFA wall/monotonic deadlines after each reached business Tenant, tuple-fence, JSON or audit await and at final callback; all effects must roll back. Zero affected rows and SQL/upsert/audit failures must roll back together. A valid writer may shorten policy based on the policy that authorized the save; the proposed policy must not retroactively deny that save. Closed local snapshot and effect models are prepared controls, not actual MVCC/SSI, physical locking, migration or commit proof.",
+          "evidenceKind": "security-native-concurrency"
         }
       ],
       "workflowIds": [
@@ -4072,11 +4132,15 @@
         },
         {
           "path": "apps/api-v2/src/settings/settings.service.ts",
-          "line": 209
+          "line": 212
         },
         {
           "path": "apps/api-v2/src/settings/settings.service.ts",
-          "line": 253
+          "line": 258
+        },
+        {
+          "path": "apps/api/src/settings/settings.controller.ts",
+          "line": 538
         }
       ],
       "actorBoundary": "Authenticated exact live session in its own tenant; native identity re-reads user/tenant/session/settings/assigned permissions, enforces stored and policy-shortened expiry, account activity, mandatory PIN reset and required MFA, with listed recovery exceptions. Requires settings:write; all target/query rows are constrained to the session tenant, without platform cross-tenant override. Writer additionally rechecks current actor/exact Session/settings:write, tenant activity and effective expiry under retained locks in both passes; current forced PIN is denied and a canonical bounded MFA marker is always required after the outside-DB observation.",
@@ -4108,6 +4172,11 @@
             "path": "tests/integration/api-v2-settings-native.test.mjs",
             "title": "native API v2 workspace settings stay tenant-scoped, audit security changes, and reject unavailable SSO-only policy"
           }
+        },
+        {
+          "id": "updateSecuritySettings.policy-generation-and-original-lifetime",
+          "contract": "Both native and retained Settings writers must commit a real scoped Tenant tuple update under their existing Tenant lock in the same transaction as workspace_settings and any audit, including timezone-only, team-only and unchanged security saves. In independent PostgreSQL sessions establish an old payroll Serializable snapshot before a Tenant wait, commit a shorter policy with the writer, then prove tuple conflict, bounded fresh-authority retry and refusal of expired payroll creation and exact replay with no committed payroll/wallet/audit effects. Preserve the original finite outside MFA observation across retries. For the Settings writer, cross stored/effective session expiry or MFA wall/monotonic deadlines after each reached business Tenant, tuple-fence, JSON or audit await and at final callback; all effects must roll back. Zero affected rows and SQL/upsert/audit failures must roll back together. A valid writer may shorten policy based on the policy that authorized the save; the proposed policy must not retroactively deny that save. Closed local snapshot and effect models are prepared controls, not actual MVCC/SSI, physical locking, migration or commit proof.",
+          "evidenceKind": "security-native-concurrency"
         }
       ],
       "workflowIds": [
@@ -9770,7 +9839,7 @@
         {
           "path": "docs/runbooks/production-qualification-bridge.md",
           "line": 34,
-          "sourceLine": "| Providers and legal \u2014 External | Synthetic mail/billing/auth/payroll fixtures cannot prove required integrations. | Exact candidate sender/provider and webhook readback, delivery verification, live Stripe meter/billing requirements and bounded integration proof where applicable; monitored support/privacy/DPA contacts and paid-service attestations. Exact `closed_beta` on API and web; counsel-approved immutable Terms plus reviewed policy changes required before self-service. |"
+          "sourceLine": "| Providers and legal — External | Synthetic mail/billing/auth/payroll fixtures cannot prove required integrations. | Exact candidate sender/provider and webhook readback, delivery verification, live Stripe meter/billing requirements and bounded integration proof where applicable; monitored support/privacy/DPA contacts and paid-service attestations. Exact `closed_beta` on API and web; counsel-approved immutable Terms plus reviewed policy changes required before self-service. |"
         }
       ],
       "actorBoundary": "Configured external OIDC issuer+registered callback; browser state/nonce and exact subject/issuer must bind active local tenant/session.",
@@ -9816,7 +9885,7 @@
         {
           "path": "docs/runbooks/production-qualification-bridge.md",
           "line": 34,
-          "sourceLine": "| Providers and legal \u2014 External | Synthetic mail/billing/auth/payroll fixtures cannot prove required integrations. | Exact candidate sender/provider and webhook readback, delivery verification, live Stripe meter/billing requirements and bounded integration proof where applicable; monitored support/privacy/DPA contacts and paid-service attestations. Exact `closed_beta` on API and web; counsel-approved immutable Terms plus reviewed policy changes required before self-service. |"
+          "sourceLine": "| Providers and legal — External | Synthetic mail/billing/auth/payroll fixtures cannot prove required integrations. | Exact candidate sender/provider and webhook readback, delivery verification, live Stripe meter/billing requirements and bounded integration proof where applicable; monitored support/privacy/DPA contacts and paid-service attestations. Exact `closed_beta` on API and web; counsel-approved immutable Terms plus reviewed policy changes required before self-service. |"
         },
         {
           "path": "apps/api/src/auth/email.service.ts",
@@ -9871,7 +9940,7 @@
         {
           "path": "docs/runbooks/production-qualification-bridge.md",
           "line": 34,
-          "sourceLine": "| Providers and legal \u2014 External | Synthetic mail/billing/auth/payroll fixtures cannot prove required integrations. | Exact candidate sender/provider and webhook readback, delivery verification, live Stripe meter/billing requirements and bounded integration proof where applicable; monitored support/privacy/DPA contacts and paid-service attestations. Exact `closed_beta` on API and web; counsel-approved immutable Terms plus reviewed policy changes required before self-service. |"
+          "sourceLine": "| Providers and legal — External | Synthetic mail/billing/auth/payroll fixtures cannot prove required integrations. | Exact candidate sender/provider and webhook readback, delivery verification, live Stripe meter/billing requirements and bounded integration proof where applicable; monitored support/privacy/DPA contacts and paid-service attestations. Exact `closed_beta` on API and web; counsel-approved immutable Terms plus reviewed policy changes required before self-service. |"
         }
       ],
       "actorBoundary": "Current billing owner and exact Stripe customer/tenant, approved price/return origin, separate signed completion event.",
@@ -9914,7 +9983,7 @@
         {
           "path": "docs/runbooks/production-qualification-bridge.md",
           "line": 34,
-          "sourceLine": "| Providers and legal \u2014 External | Synthetic mail/billing/auth/payroll fixtures cannot prove required integrations. | Exact candidate sender/provider and webhook readback, delivery verification, live Stripe meter/billing requirements and bounded integration proof where applicable; monitored support/privacy/DPA contacts and paid-service attestations. Exact `closed_beta` on API and web; counsel-approved immutable Terms plus reviewed policy changes required before self-service. |"
+          "sourceLine": "| Providers and legal — External | Synthetic mail/billing/auth/payroll fixtures cannot prove required integrations. | Exact candidate sender/provider and webhook readback, delivery verification, live Stripe meter/billing requirements and bounded integration proof where applicable; monitored support/privacy/DPA contacts and paid-service attestations. Exact `closed_beta` on API and web; counsel-approved immutable Terms plus reviewed policy changes required before self-service. |"
         }
       ],
       "actorBoundary": "Tenant billing authority delegates to credit-pack owner; provider checkout/session/purchase identity exact.",
@@ -9958,7 +10027,7 @@
         {
           "path": "docs/runbooks/production-qualification-bridge.md",
           "line": 34,
-          "sourceLine": "| Providers and legal \u2014 External | Synthetic mail/billing/auth/payroll fixtures cannot prove required integrations. | Exact candidate sender/provider and webhook readback, delivery verification, live Stripe meter/billing requirements and bounded integration proof where applicable; monitored support/privacy/DPA contacts and paid-service attestations. Exact `closed_beta` on API and web; counsel-approved immutable Terms plus reviewed policy changes required before self-service. |"
+          "sourceLine": "| Providers and legal — External | Synthetic mail/billing/auth/payroll fixtures cannot prove required integrations. | Exact candidate sender/provider and webhook readback, delivery verification, live Stripe meter/billing requirements and bounded integration proof where applicable; monitored support/privacy/DPA contacts and paid-service attestations. Exact `closed_beta` on API and web; counsel-approved immutable Terms plus reviewed policy changes required before self-service. |"
         }
       ],
       "actorBoundary": "Current tenant/customer and approved safe portal configuration.",
@@ -10001,7 +10070,7 @@
         {
           "path": "docs/runbooks/production-qualification-bridge.md",
           "line": 34,
-          "sourceLine": "| Providers and legal \u2014 External | Synthetic mail/billing/auth/payroll fixtures cannot prove required integrations. | Exact candidate sender/provider and webhook readback, delivery verification, live Stripe meter/billing requirements and bounded integration proof where applicable; monitored support/privacy/DPA contacts and paid-service attestations. Exact `closed_beta` on API and web; counsel-approved immutable Terms plus reviewed policy changes required before self-service. |"
+          "sourceLine": "| Providers and legal — External | Synthetic mail/billing/auth/payroll fixtures cannot prove required integrations. | Exact candidate sender/provider and webhook readback, delivery verification, live Stripe meter/billing requirements and bounded integration proof where applicable; monitored support/privacy/DPA contacts and paid-service attestations. Exact `closed_beta` on API and web; counsel-approved immutable Terms plus reviewed policy changes required before self-service. |"
         }
       ],
       "actorBoundary": "Live managed tenant Stripe subscription and requested configured price with owner approval.",
@@ -10045,7 +10114,7 @@
         {
           "path": "docs/runbooks/production-qualification-bridge.md",
           "line": 34,
-          "sourceLine": "| Providers and legal \u2014 External | Synthetic mail/billing/auth/payroll fixtures cannot prove required integrations. | Exact candidate sender/provider and webhook readback, delivery verification, live Stripe meter/billing requirements and bounded integration proof where applicable; monitored support/privacy/DPA contacts and paid-service attestations. Exact `closed_beta` on API and web; counsel-approved immutable Terms plus reviewed policy changes required before self-service. |"
+          "sourceLine": "| Providers and legal — External | Synthetic mail/billing/auth/payroll fixtures cannot prove required integrations. | Exact candidate sender/provider and webhook readback, delivery verification, live Stripe meter/billing requirements and bounded integration proof where applicable; monitored support/privacy/DPA contacts and paid-service attestations. Exact `closed_beta` on API and web; counsel-approved immutable Terms plus reviewed policy changes required before self-service. |"
         }
       ],
       "actorBoundary": "Exact paused managed subscription; current tenant billing actor.",
@@ -10088,7 +10157,7 @@
         {
           "path": "docs/runbooks/production-qualification-bridge.md",
           "line": 34,
-          "sourceLine": "| Providers and legal \u2014 External | Synthetic mail/billing/auth/payroll fixtures cannot prove required integrations. | Exact candidate sender/provider and webhook readback, delivery verification, live Stripe meter/billing requirements and bounded integration proof where applicable; monitored support/privacy/DPA contacts and paid-service attestations. Exact `closed_beta` on API and web; counsel-approved immutable Terms plus reviewed policy changes required before self-service. |"
+          "sourceLine": "| Providers and legal — External | Synthetic mail/billing/auth/payroll fixtures cannot prove required integrations. | Exact candidate sender/provider and webhook readback, delivery verification, live Stripe meter/billing requirements and bounded integration proof where applicable; monitored support/privacy/DPA contacts and paid-service attestations. Exact `closed_beta` on API and web; counsel-approved immutable Terms plus reviewed policy changes required before self-service. |"
         }
       ],
       "actorBoundary": "Exact tenant subscription and cancellation operation identity; tenant lifecycle owner controls local transition.",
@@ -10132,7 +10201,7 @@
         {
           "path": "docs/runbooks/production-qualification-bridge.md",
           "line": 34,
-          "sourceLine": "| Providers and legal \u2014 External | Synthetic mail/billing/auth/payroll fixtures cannot prove required integrations. | Exact candidate sender/provider and webhook readback, delivery verification, live Stripe meter/billing requirements and bounded integration proof where applicable; monitored support/privacy/DPA contacts and paid-service attestations. Exact `closed_beta` on API and web; counsel-approved immutable Terms plus reviewed policy changes required before self-service. |"
+          "sourceLine": "| Providers and legal — External | Synthetic mail/billing/auth/payroll fixtures cannot prove required integrations. | Exact candidate sender/provider and webhook readback, delivery verification, live Stripe meter/billing requirements and bounded integration proof where applicable; monitored support/privacy/DPA contacts and paid-service attestations. Exact `closed_beta` on API and web; counsel-approved immutable Terms plus reviewed policy changes required before self-service. |"
         }
       ],
       "actorBoundary": "Privileged tenant purge lifecycle after legal hold/retention/confirmation checks; exact customer/subscription binding.",
@@ -10220,7 +10289,7 @@
         {
           "path": "docs/runbooks/production-qualification-bridge.md",
           "line": 34,
-          "sourceLine": "| Providers and legal \u2014 External | Synthetic mail/billing/auth/payroll fixtures cannot prove required integrations. | Exact candidate sender/provider and webhook readback, delivery verification, live Stripe meter/billing requirements and bounded integration proof where applicable; monitored support/privacy/DPA contacts and paid-service attestations. Exact `closed_beta` on API and web; counsel-approved immutable Terms plus reviewed policy changes required before self-service. |"
+          "sourceLine": "| Providers and legal — External | Synthetic mail/billing/auth/payroll fixtures cannot prove required integrations. | Exact candidate sender/provider and webhook readback, delivery verification, live Stripe meter/billing requirements and bounded integration proof where applicable; monitored support/privacy/DPA contacts and paid-service attestations. Exact `closed_beta` on API and web; counsel-approved immutable Terms plus reviewed policy changes required before self-service. |"
         }
       ],
       "actorBoundary": "Authorized payroll export/reconciliation actor and independently approved external payroll recipient/provider; no simulated provider response is certification.",
@@ -10522,7 +10591,7 @@
       "sourceAnchors": [
         {
           "path": "apps/api/src/notifications/notification-outbox.processor.ts",
-          "line": 60,
+          "line": 77,
           "sourceLine": "export class NotificationOutboxProcessor {"
         }
       ],
@@ -10560,6 +10629,26 @@
           "id": "terminal-diagnostic-erasure",
           "contract": "Actual terminal payload-erasure migration forces DEAD_LETTERED lastError NULL. Reconcile documentation/mock claims with that privacy contract; independent native terminal-row readback must verify erased content/error while safe operator logs/metrics remain observable.",
           "evidenceKind": "native-migration-readback"
+        },
+        {
+          "id": "durable-feed-on-provider-failure",
+          "contract": "A current eligible owner commits one durable in-app notification even when optional email preparation/provider delivery fails; repeated retries preserve feed identity/readAt and increment the durable failure budget exactly once. Stale lease/generation, recipient lifecycle changes and database transaction failures must not commit obsolete feed/terminal effects. Verify native rollback, privacy trigger, provider and independent feed readback.",
+          "evidenceKind": "runtime-native-outage"
+        },
+        {
+          "id": "claim-generation-failure-budget",
+          "contract": "Claims increment attempts monotonically; NOWAIT lock/address-change postponements burn zero failureCount. Several contention cycles followed by actual failures obey the configured failure limit; obsolete attempts with reused lease timestamps or different lease generations cannot send, decrement attempts, burn budget or revive terminal rows. Verify PostgreSQL UTC lease checks/CAS/locks and rollback rather than synthetic query ledgers.",
+          "evidenceKind": "runtime-native-concurrency"
+        },
+        {
+          "id": "failure-counter-migration-rollout",
+          "contract": "Review and apply the additive failureCount schema and PROCESSING attempts-minus-one/conservative historical counter backfill on the admitted private target with matching generated client. Independent constraint/cardinality/privacy and rollback/deployment readback are required. Historical attempts are conservative prior claim budget, not historical provider-failure evidence; no migration or generated-client rollout is certified by source checks.",
+          "evidenceKind": "native-migration-readback"
+        },
+        {
+          "id": "bounded-handoff-lifecycle",
+          "contract": "A bounded abortable handoff deadline starts before recipient/pre-provider preparation. Final Tenant/User/Outbox NOWAIT locks and a fresh live exact lease precede feed/send effects. Delayed preparation or adapter continuation cannot initiate a new send after deadline/deletion/suppression. Accepted sends and lost acknowledgements require independent provider idempotency/readback; global same-email suppression across tenants and lifecycle changes around best-effort Redis fanout remain explicit concurrency obligations.",
+          "evidenceKind": "runtime-native-provider"
         }
       ],
       "workflowIds": [
@@ -12882,7 +12971,7 @@
         {
           "path": "docs/runbooks/production-qualification-bridge.md",
           "line": 32,
-          "sourceLine": "| Storage admission \u2014 External | Retained capacity observations are historical and capacity is not reserved against unrelated writers. | Fresh backing and parent measurements through admission controls: 32 GiB job allowance, existing backing reserve/guest floor, parent availability at least 52 GiB, single worker, bounded retention. No guest-df-only clearance or shared quota change. |"
+          "sourceLine": "| Storage admission — External | Retained capacity observations are historical and capacity is not reserved against unrelated writers. | Fresh backing and parent measurements through admission controls: 32 GiB job allowance, existing backing reserve/guest floor, parent availability at least 52 GiB, single worker, bounded retention. No guest-df-only clearance or shared quota change. |"
         }
       ],
       "actorBoundary": "Infrastructure/controller owner fresh backing+parent admission;32GiB job allowance and single worker.",
@@ -12917,7 +13006,7 @@
         {
           "path": "docs/runbooks/production-qualification-bridge.md",
           "line": 25,
-          "sourceLine": "| Candidate and ownership \u2014 Source + External | Preserved application changes and focused development QA are not a qualified release; receiving QA and production owners need current coordination. | One reviewed clean candidate pushed to the authoritative internal remote; source/tree SHA; current remote containment; single QA owner and accepted execution target. Preserve unfinished work. |"
+          "sourceLine": "| Candidate and ownership — Source + External | Preserved application changes and focused development QA are not a qualified release; receiving QA and production owners need current coordination. | One reviewed clean candidate pushed to the authoritative internal remote; source/tree SHA; current remote containment; single QA owner and accepted execution target. Preserve unfinished work. |"
         }
       ],
       "actorBoundary": "Accepted sole QA execution owner and compatible protected controller integration/source/ref binding.",
@@ -12952,7 +13041,7 @@
         {
           "path": "docs/runbooks/production-qualification-bridge.md",
           "line": 27,
-          "sourceLine": "| Production trust \u2014 Source + External | Internal-beta Ed25519 receipts do not satisfy the former GitHub OIDC/Sigstore registry contract. | Explicit independently approved production trust root and signer policy; validators and negative tests reject beta receipts, wrong identity, changed bytes, expired evidence and source mismatch. Keys remain outside candidate workspaces; no candidate-controlled trust policy. No signer approval is presently established. |"
+          "sourceLine": "| Production trust — Source + External | Internal-beta Ed25519 receipts do not satisfy the former GitHub OIDC/Sigstore registry contract. | Explicit independently approved production trust root and signer policy; validators and negative tests reject beta receipts, wrong identity, changed bytes, expired evidence and source mismatch. Keys remain outside candidate workspaces; no candidate-controlled trust policy. No signer approval is presently established. |"
         }
       ],
       "actorBoundary": "Separate external production trust/promotion owner; beta signing is not approved public production trust.",
@@ -12987,7 +13076,7 @@
         {
           "path": "docs/runbooks/production-qualification-bridge.md",
           "line": 28,
-          "sourceLine": "| Manifest and image publication \u2014 Source + External | Internal-beta manifest uses local image IDs/archive checksums; production verifier expects digest-pinned registry refs, deployment contract and production health metadata. | Reviewed production manifest/publishing bridge with independently read-back immutable OCI digests, complete first/third-party service and base-image inventory, SBOM/security reports, signatures, exact deployment bytes and retained rollback artifacts. Local archive integrity alone is insufficient. |"
+          "sourceLine": "| Manifest and image publication — Source + External | Internal-beta manifest uses local image IDs/archive checksums; production verifier expects digest-pinned registry refs, deployment contract and production health metadata. | Reviewed production manifest/publishing bridge with independently read-back immutable OCI digests, complete first/third-party service and base-image inventory, SBOM/security reports, signatures, exact deployment bytes and retained rollback artifacts. Local archive integrity alone is insufficient. |"
         }
       ],
       "actorBoundary": "Reviewed manifest/registry/retained artifact owner outside candidate workspace.",
@@ -13022,7 +13111,7 @@
         {
           "path": "docs/runbooks/production-qualification-bridge.md",
           "line": 33,
-          "sourceLine": "| Runtime secrets and access \u2014 Source + External | Synthetic disposable env is not a production env; former GitHub environment settings have no current execution authority. | Immutable managed runtime-secret version validated by production policy; role-separated secret files/bytes and least-privilege access; authenticated pinned-host transport; controller protections preserving independently reviewed approval, no self-approval, approved branch, credential scope and serialized mutations. Secret bytes never enter logs/artifacts/source. |"
+          "sourceLine": "| Runtime secrets and access — Source + External | Synthetic disposable env is not a production env; former GitHub environment settings have no current execution authority. | Immutable managed runtime-secret version validated by production policy; role-separated secret files/bytes and least-privilege access; authenticated pinned-host transport; controller protections preserving independently reviewed approval, no self-approval, approved branch, credential scope and serialized mutations. Secret bytes never enter logs/artifacts/source. |"
         }
       ],
       "actorBoundary": "Managed versioned runtime secret/role-separated mounts and pinned-host transport owner.",
@@ -13057,7 +13146,7 @@
         {
           "path": "docs/runbooks/production-qualification-bridge.md",
           "line": 36,
-          "sourceLine": "| Alerts and production resource limits \u2014 External | Disposable stack excludes host integrations and cannot prove actual paging or exact-target capacity. | Independent bounded alert delivery/resolution; actionable runbooks, authenticated/private telemetry, healthy dependency series and failure health behavior; finite CPU/memory/PID/file/log limits; exact-target load evidence without OOM/restart/throttling exhaustion. Account for notification outbox recovery/dead letters. |"
+          "sourceLine": "| Alerts and production resource limits — External | Disposable stack excludes host integrations and cannot prove actual paging or exact-target capacity. | Independent bounded alert delivery/resolution; actionable runbooks, authenticated/private telemetry, healthy dependency series and failure health behavior; finite CPU/memory/PID/file/log limits; exact-target load evidence without OOM/restart/throttling exhaustion. Account for notification outbox recovery/dead letters. |"
         }
       ],
       "actorBoundary": "Private authenticated telemetry plus independently controlled pager/receiver.",
@@ -13094,7 +13183,7 @@
         {
           "path": "docs/runbooks/production-qualification-bridge.md",
           "line": 37,
-          "sourceLine": "| Retention and release history \u2014 Source + External | Internal artifacts retained for 30 days and beta receipt lifetime do not prove production recovery retention or durable registry authenticity. | Reviewed immutable retained production artifacts/reports, independently verified signed index/bundle/current pointer, provider retention/access/deletion protections and recoverable previous successful release. Define and enforce production retention; preserve recovery evidence outside disposable cleanup. |"
+          "sourceLine": "| Retention and release history — Source + External | Internal artifacts retained for 30 days and beta receipt lifetime do not prove production recovery retention or durable registry authenticity. | Reviewed immutable retained production artifacts/reports, independently verified signed index/bundle/current pointer, provider retention/access/deletion protections and recoverable previous successful release. Define and enforce production retention; preserve recovery evidence outside disposable cleanup. |"
         },
         {
           "path": "apps/api/src/admin/tenant-account-lifecycle.ts",
@@ -13173,7 +13262,7 @@
         {
           "path": "docs/runbooks/production-qualification-bridge.md",
           "line": 34,
-          "sourceLine": "| Providers and legal \u2014 External | Synthetic mail/billing/auth/payroll fixtures cannot prove required integrations. | Exact candidate sender/provider and webhook readback, delivery verification, live Stripe meter/billing requirements and bounded integration proof where applicable; monitored support/privacy/DPA contacts and paid-service attestations. Exact `closed_beta` on API and web; counsel-approved immutable Terms plus reviewed policy changes required before self-service. |"
+          "sourceLine": "| Providers and legal — External | Synthetic mail/billing/auth/payroll fixtures cannot prove required integrations. | Exact candidate sender/provider and webhook readback, delivery verification, live Stripe meter/billing requirements and bounded integration proof where applicable; monitored support/privacy/DPA contacts and paid-service attestations. Exact `closed_beta` on API and web; counsel-approved immutable Terms plus reviewed policy changes required before self-service. |"
         }
       ],
       "actorBoundary": "Counsel/policy/contact/provider owners; closed_beta exact on API+web.",
@@ -13210,7 +13299,7 @@
         {
           "path": "docs/runbooks/production-qualification-bridge.md",
           "line": 40,
-          "sourceLine": "| Activation decision \u2014 External | Incident launch hold remains explicit. | All prior gates independently reviewed with no missing evidence; owner acceptance and explicit user activation instruction; private launch uses documented private routes, and any public cutover has separately approved routing/data recovery scope. Production readiness does not itself start the launch. |"
+          "sourceLine": "| Activation decision — External | Incident launch hold remains explicit. | All prior gates independently reviewed with no missing evidence; owner acceptance and explicit user activation instruction; private launch uses documented private routes, and any public cutover has separately approved routing/data recovery scope. Production readiness does not itself start the launch. |"
         }
       ],
       "actorBoundary": "Explicit user activation instruction and independently accepted estate/route/data/recovery owners after all prior gates.",
@@ -15265,6 +15354,7 @@
     "Password-reset local statements and transaction-private effect ledgers do not execute PostgreSQL or prove native lock/isolation/RLS/statement-clock/rollback/cardinality behavior. Explicit ReadCommitted fences avoid a pre-lock Serializable snapshot, but actual overlap proof remains pending. Public request must remain account-blind; token recovery deliberately keeps its existing lockout/PIN/MFA and issued-capability policy.",
     "Phase75 durable MFA local controls exercise actual retained owners over synthetic SQL clock and transaction-private effects. Native PostgreSQL locks/isolation/RLS/statement-clock/rollback, migration/trigger/encryption constraints, all connected lifecycle owners and bounded SKIP LOCKED retention remain unexecuted. Both retained MFA route families and retention owner must upgrade coherently with additive schema and configured encrypted write key; old Redis-only challenges must restart and security rollback must not restore old pending authority. No deploy/build/native admission/QA lease/provider/browser or production launch follows from source fixes. All acceptance actions remain pending.",
     "Phase76 adds the previously unlisted legacy-import operator action: all266 action statuses remain pending. Exact-export retry source uses immutable private receipts and create-only atomic initialization; real export lineage/adapter approval, native SQL/RLS/locks/concurrency/commit recovery, target-generation/receipt retention, all provider/browser/build/recovery/security/load gates and months of private qualification remain unverified. Local planner/transaction-ledger tests do not authorize production, VM106/VM107 contact, launch or protected QA.",
-    "Phase77 prepared UI source preserves original per-schedule publication body/key, fences payroll export preparation/custody and scoped readback, and reconciles header read state through authoritative responses and fresh feed. Controlled actual-handler fixtures use a deterministic hook ledger and mocked transport; they are not React scheduling, DOM/browser, native SQL/Redis, provider or committed billing proof. Current payroll transaction authority after waits/replay, outbox lease/lifecycle effect ordering, and terminal diagnostic documentation remain separate pending repairs/qualification. All266 actions,47 selected browser cases,84 minimum workflows, full operational gates and months of private testing remain required. preparedFromCommit/tree identify this edit increment base, not a qualified release or executed candidate."
+    "Phase77 prepared UI source preserves original per-schedule publication body/key, fences payroll export preparation/custody and scoped readback, and reconciles header read state through authoritative responses and fresh feed. Controlled actual-handler fixtures use a deterministic hook ledger and mocked transport; they are not React scheduling, DOM/browser, native SQL/Redis, provider or committed billing proof. Current payroll transaction authority after waits/replay, outbox lease/lifecycle effect ordering, and terminal diagnostic documentation remain separate pending repairs/qualification. All266 actions,47 selected browser cases,84 minimum workflows, full operational gates and months of private testing remain required. preparedFromCommit/tree identify this edit increment base, not a qualified release or executed candidate.",
+    "Phase78 prepared source adds current actor/session/grant/PIN/account/policy/MFA authority to all eleven native and retained stateful payroll commands, explicit guarded readonly receipt recovery and nested wallet/ledger guards. Controlled owner matrices and existing domain regressions do not execute PostgreSQL/RLS/locks/Redis/provider/commit recovery. Read-only payroll endpoints still require current native acceptance. The prepared outbox protocol fences current exact lease/generation and lifecycle before effects, preserves durable feed during email failure, separates monotonic attempts from durable failureCount and retains terminal payload/error erasure. Matching generated-client/private migration rollout, real NOWAIT overlap/deadlines/provider idempotency, global cross-tenant email suppression and lifecycle-current Redis fanout remain unqualified. All266 actions,47 selected browser cases,84 minimum workflows and months of private testing remain required; no protected QA, VM107 action, production contact, public activation or launch is authorized. preparedFromCommit/tree identify this edit increment base only. The two Settings persistence owners additionally require a same-transaction actual Tenant tuple update with exact affected-row validation and original session/MFA lifetime guards. Their closed snapshot model does not prove PostgreSQL tuple/SSI/trigger behavior; mixed-owner native overlap remains pending. Four exact current raw migrations (durable MFA enrollment, private legacy-import retry receipts and notification failure-budget pre/forward) now have prepared rollback-policy designs. Policy fields describe the required protocol and retain mandatory fresh isolated exact old-release/candidate-schema proof; source policy checks do not attest compatibility. No policy/signing/QA enablement is authorized by these edits."
   ]
 }
