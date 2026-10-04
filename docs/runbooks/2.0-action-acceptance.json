@@ -3,8 +3,8 @@
   "kind": "lunchlineup-action-acceptance-plan",
   "releaseQualified": false,
   "acceptanceExecuted": false,
-  "preparedFromCommit": "99677c5162466b1d9eedd930443781266cf8d496",
-  "preparedFromTree": "8248b4a707a5903ad5b1f153a6ce9eaa8156c8c1",
+  "preparedFromCommit": "ec91b84d04b1911eabc36e301f684b9ae0b1e7b1",
+  "preparedFromTree": "bf16b993e4a9829b77e89c88cab8e98d7b53d7d1",
   "scope": {
     "originalWorkflowsAreMinimum": true,
     "allExposedActionsRequired": true,
@@ -27,7 +27,8 @@
         },
         {
           "path": "apps/api-v2/src/application/routes.ts",
-          "line": 141
+          "line": 143,
+          "sourceLine": "          const identity = await dependencies.identity.authenticate(request as FastifyRequest, reply);"
         },
         {
           "path": "apps/api-v2/src/platform/native-identity.ts",
@@ -35,7 +36,8 @@
         },
         {
           "path": "apps/api-v2/src/application/routes.ts",
-          "line": 92
+          "line": 96,
+          "sourceLine": "export function browserSessionIdentity("
         }
       ],
       "actorBoundary": "Own exact authenticated session; no extra operation permission. GET /auth/me is an explicit mandatory-PIN and unverified-MFA recovery exemption, while deleted/suspended users, blocked/deleted tenant, revoked/expired session and absent live assignments still fail. No platform cross-tenant inspection.",
@@ -4070,6 +4072,24 @@
             "path": "apps/api/src/admin/account-deletion-receipt.controller.spec.ts",
             "title": "never treats a prepared receipt as proof deletion happened"
           }
+        },
+        {
+          "id": "readAccountDeletionReceipt-local-v2-success-transport",
+          "contract": "Controlled actual Fastify HTTP injection and actual retained bridge exercise POST /v2/account-deletion/receipt. Verify exact retained target/method/raw query/body; allowed credential/CSRF/origin/conditional/idempotency headers; configured forwarding host/protocol and socket IP without client spoofing; server correlation/version/release headers; redirect manual/AbortSignal; validated JSON or declared redirect response, cookies and cache. No native identity/quota/translator/domain invocation. Synthetic transport result is not operation-specific response shape, business credential/provider/session or durable acceptance.",
+          "evidenceKind": "unit",
+          "executable": {
+            "path": "apps/api-v2/src/application/auth-retained-http.test.ts",
+            "title": "preserves success transport for every reviewed retained authentication route"
+          }
+        },
+        {
+          "id": "readAccountDeletionReceipt-local-v2-refusal-transport",
+          "contract": "Controlled retained owner returns 401 for POST /v2/account-deletion/receipt through actual Fastify and retained bridge. Verify authentication_required problem status/detail/content type, no-store, exact valid correlation-cookie clearing and no redirect; all17 explicit retained operations must each reach the fixed controlled transport with no native dispatch or unexpected fetch. This refusal wiring does not prove native denial authority, attempt counters, rollback or provider behavior.",
+          "evidenceKind": "unit",
+          "executable": {
+            "path": "apps/api-v2/src/application/auth-retained-http.test.ts",
+            "title": "preserves refusal transport for every reviewed retained authentication route"
+          }
         }
       ],
       "workflowIds": [
@@ -4122,6 +4142,24 @@
           "id": "resolveLoginMethod-browser",
           "contract": "Exercise relevant workflow UI for POST /v2/auth/login/resolve; inspect loading, validation, result/error and navigation, then reload/independent status to verify: Normalize email to EMAIL_OTP and username to USERNAME_PASSWORD; return success and pinResetRequired false without account disclosure or session creation. Compare known/unknown identifiers. Failure must not display false completion or lose recoverable input.",
           "evidenceKind": "browser"
+        },
+        {
+          "id": "resolveLoginMethod-local-v2-success-transport",
+          "contract": "Controlled actual Fastify HTTP injection and actual retained bridge exercise POST /v2/auth/login/resolve. Verify exact retained target/method/raw query/body; allowed credential/CSRF/origin/conditional/idempotency headers; configured forwarding host/protocol and socket IP without client spoofing; server correlation/version/release headers; redirect manual/AbortSignal; validated JSON or declared redirect response, cookies and cache. No native identity/quota/translator/domain invocation. Synthetic transport result is not operation-specific response shape, business credential/provider/session or durable acceptance.",
+          "evidenceKind": "unit",
+          "executable": {
+            "path": "apps/api-v2/src/application/auth-retained-http.test.ts",
+            "title": "preserves success transport for every reviewed retained authentication route"
+          }
+        },
+        {
+          "id": "resolveLoginMethod-local-v2-refusal-transport",
+          "contract": "Controlled retained owner returns 401 for POST /v2/auth/login/resolve through actual Fastify and retained bridge. Verify authentication_required problem status/detail/content type, no-store, exact valid correlation-cookie clearing and no redirect; all17 explicit retained operations must each reach the fixed controlled transport with no native dispatch or unexpected fetch. This refusal wiring does not prove native denial authority, attempt counters, rollback or provider behavior.",
+          "evidenceKind": "unit",
+          "executable": {
+            "path": "apps/api-v2/src/application/auth-retained-http.test.ts",
+            "title": "preserves refusal transport for every reviewed retained authentication route"
+          }
         }
       ],
       "workflowIds": [
@@ -4180,6 +4218,24 @@
           "id": "verifyPasswordLogin-durable-readback",
           "contract": "Read persisted effects independently after response, response loss and applicable restart/reload for verifyPasswordLogin: Valid current legacy hash creates access/refresh/CSRF cookies and safe redirect/reset/MFA flags, no bearer JSON. Independent session/readback and protected browser request confirms exact user/tenant, current timeout and required PIN/MFA. Wrong/oversize credential, stale proof, lockout, inactive account, missing login grant or SSO-only policy denies issuance; current failed guesses charge budget. Wrong-origin/non-beta email denies. Demo exemption must not extend to other hosts/accounts.",
           "evidenceKind": "durable"
+        },
+        {
+          "id": "verifyPasswordLogin-local-v2-success-transport",
+          "contract": "Controlled actual Fastify HTTP injection and actual retained bridge exercise POST /v2/auth/password/verify. Verify exact retained target/method/raw query/body; allowed credential/CSRF/origin/conditional/idempotency headers; configured forwarding host/protocol and socket IP without client spoofing; server correlation/version/release headers; redirect manual/AbortSignal; validated JSON or declared redirect response, cookies and cache. No native identity/quota/translator/domain invocation. Synthetic transport result is not operation-specific response shape, business credential/provider/session or durable acceptance.",
+          "evidenceKind": "unit",
+          "executable": {
+            "path": "apps/api-v2/src/application/auth-retained-http.test.ts",
+            "title": "preserves success transport for every reviewed retained authentication route"
+          }
+        },
+        {
+          "id": "verifyPasswordLogin-local-v2-refusal-transport",
+          "contract": "Controlled retained owner returns 401 for POST /v2/auth/password/verify through actual Fastify and retained bridge. Verify authentication_required problem status/detail/content type, no-store, exact valid correlation-cookie clearing and no redirect; all17 explicit retained operations must each reach the fixed controlled transport with no native dispatch or unexpected fetch. This refusal wiring does not prove native denial authority, attempt counters, rollback or provider behavior.",
+          "evidenceKind": "unit",
+          "executable": {
+            "path": "apps/api-v2/src/application/auth-retained-http.test.ts",
+            "title": "preserves refusal transport for every reviewed retained authentication route"
+          }
         }
       ],
       "workflowIds": [
@@ -4247,6 +4303,24 @@
           "id": "requestPasswordReset-provider-boundary",
           "contract": "Use explicitly admitted controlled dependency/provider, record scoped request/response and outage/timeout/recovery for requestPasswordReset: Ineligible/unknown remains generic without delivery. Misconfiguration/infrastructure loss must surface bounded safe failure instead of proving delivery; no universal replay guarantee (new request supersedes previous). Provider stub is local control only, never real delivery/custody qualification.",
           "evidenceKind": "provider"
+        },
+        {
+          "id": "requestPasswordReset-local-v2-success-transport",
+          "contract": "Controlled actual Fastify HTTP injection and actual retained bridge exercise POST /v2/auth/password/reset/request. Verify exact retained target/method/raw query/body; allowed credential/CSRF/origin/conditional/idempotency headers; configured forwarding host/protocol and socket IP without client spoofing; server correlation/version/release headers; redirect manual/AbortSignal; validated JSON or declared redirect response, cookies and cache. No native identity/quota/translator/domain invocation. Synthetic transport result is not operation-specific response shape, business credential/provider/session or durable acceptance.",
+          "evidenceKind": "unit",
+          "executable": {
+            "path": "apps/api-v2/src/application/auth-retained-http.test.ts",
+            "title": "preserves success transport for every reviewed retained authentication route"
+          }
+        },
+        {
+          "id": "requestPasswordReset-local-v2-refusal-transport",
+          "contract": "Controlled retained owner returns 401 for POST /v2/auth/password/reset/request through actual Fastify and retained bridge. Verify authentication_required problem status/detail/content type, no-store, exact valid correlation-cookie clearing and no redirect; all17 explicit retained operations must each reach the fixed controlled transport with no native dispatch or unexpected fetch. This refusal wiring does not prove native denial authority, attempt counters, rollback or provider behavior.",
+          "evidenceKind": "unit",
+          "executable": {
+            "path": "apps/api-v2/src/application/auth-retained-http.test.ts",
+            "title": "preserves refusal transport for every reviewed retained authentication route"
+          }
         }
       ],
       "workflowIds": [
@@ -4306,6 +4380,24 @@
           "id": "confirmPasswordReset-durable-readback",
           "contract": "Read persisted effects independently after response, response loss and applicable restart/reload for confirmPasswordReset: Validate new password; atomically consume token, update hash/clear password lockout, revoke sessions/other tokens, PASSWORD_RESET_COMPLETED audit. Independently test new login and old credential/session rejection. Malformed/expired/used token, inactive user/tenant or invalid password denies. Concurrent consume succeeds only once. Redis MFA cleanup after commit is best effort; cleanup loss cannot undo authoritative DB revocation.",
           "evidenceKind": "durable"
+        },
+        {
+          "id": "confirmPasswordReset-local-v2-success-transport",
+          "contract": "Controlled actual Fastify HTTP injection and actual retained bridge exercise POST /v2/auth/password/reset/confirm. Verify exact retained target/method/raw query/body; allowed credential/CSRF/origin/conditional/idempotency headers; configured forwarding host/protocol and socket IP without client spoofing; server correlation/version/release headers; redirect manual/AbortSignal; validated JSON or declared redirect response, cookies and cache. No native identity/quota/translator/domain invocation. Synthetic transport result is not operation-specific response shape, business credential/provider/session or durable acceptance.",
+          "evidenceKind": "unit",
+          "executable": {
+            "path": "apps/api-v2/src/application/auth-retained-http.test.ts",
+            "title": "preserves success transport for every reviewed retained authentication route"
+          }
+        },
+        {
+          "id": "confirmPasswordReset-local-v2-refusal-transport",
+          "contract": "Controlled retained owner returns 401 for POST /v2/auth/password/reset/confirm through actual Fastify and retained bridge. Verify authentication_required problem status/detail/content type, no-store, exact valid correlation-cookie clearing and no redirect; all17 explicit retained operations must each reach the fixed controlled transport with no native dispatch or unexpected fetch. This refusal wiring does not prove native denial authority, attempt counters, rollback or provider behavior.",
+          "evidenceKind": "unit",
+          "executable": {
+            "path": "apps/api-v2/src/application/auth-retained-http.test.ts",
+            "title": "preserves refusal transport for every reviewed retained authentication route"
+          }
         }
       ],
       "workflowIds": [
@@ -4365,6 +4457,24 @@
           "id": "startOidcLogin-provider-boundary",
           "contract": "Use explicitly admitted controlled dependency/provider, record scoped request/response and outage/timeout/recovery for startOidcLogin: Missing workspace/config rejects; disabled OIDC redirects local login; unsafe next discarded. Redis loss must not emit usable uncorrelated flow. Provider stub is local control only, never real delivery/custody qualification.",
           "evidenceKind": "provider"
+        },
+        {
+          "id": "startOidcLogin-local-v2-success-transport",
+          "contract": "Controlled actual Fastify HTTP injection and actual retained bridge exercise GET /v2/auth/login. Verify exact retained target/method/raw query/body; allowed credential/CSRF/origin/conditional/idempotency headers; configured forwarding host/protocol and socket IP without client spoofing; server correlation/version/release headers; redirect manual/AbortSignal; validated JSON or declared redirect response, cookies and cache. No native identity/quota/translator/domain invocation. Synthetic transport result is not operation-specific response shape, business credential/provider/session or durable acceptance.",
+          "evidenceKind": "unit",
+          "executable": {
+            "path": "apps/api-v2/src/application/auth-retained-http.test.ts",
+            "title": "preserves success transport for every reviewed retained authentication route"
+          }
+        },
+        {
+          "id": "startOidcLogin-local-v2-refusal-transport",
+          "contract": "Controlled retained owner returns 401 for GET /v2/auth/login through actual Fastify and retained bridge. Verify authentication_required problem status/detail/content type, no-store, exact valid correlation-cookie clearing and no redirect; all17 explicit retained operations must each reach the fixed controlled transport with no native dispatch or unexpected fetch. This refusal wiring does not prove native denial authority, attempt counters, rollback or provider behavior.",
+          "evidenceKind": "unit",
+          "executable": {
+            "path": "apps/api-v2/src/application/auth-retained-http.test.ts",
+            "title": "preserves refusal transport for every reviewed retained authentication route"
+          }
         }
       ],
       "workflowIds": [
@@ -4441,6 +4551,24 @@
             "path": "apps/api/src/auth/auth.service.spec.ts",
             "title": "allows exactly one simultaneous OIDC state claim and refuses replay"
           }
+        },
+        {
+          "id": "completeOidcLogin-local-v2-success-transport",
+          "contract": "Controlled actual Fastify HTTP injection and actual retained bridge exercise GET /v2/auth/callback. Verify exact retained target/method/raw query/body; allowed credential/CSRF/origin/conditional/idempotency headers; configured forwarding host/protocol and socket IP without client spoofing; server correlation/version/release headers; redirect manual/AbortSignal; validated JSON or declared redirect response, cookies and cache. No native identity/quota/translator/domain invocation. Synthetic transport result is not operation-specific response shape, business credential/provider/session or durable acceptance.",
+          "evidenceKind": "unit",
+          "executable": {
+            "path": "apps/api-v2/src/application/auth-retained-http.test.ts",
+            "title": "preserves success transport for every reviewed retained authentication route"
+          }
+        },
+        {
+          "id": "completeOidcLogin-local-v2-refusal-transport",
+          "contract": "Controlled retained owner returns 401 for GET /v2/auth/callback through actual Fastify and retained bridge. Verify authentication_required problem status/detail/content type, no-store, exact valid correlation-cookie clearing and no redirect; all17 explicit retained operations must each reach the fixed controlled transport with no native dispatch or unexpected fetch. This refusal wiring does not prove native denial authority, attempt counters, rollback or provider behavior.",
+          "evidenceKind": "unit",
+          "executable": {
+            "path": "apps/api-v2/src/application/auth-retained-http.test.ts",
+            "title": "preserves refusal transport for every reviewed retained authentication route"
+          }
         }
       ],
       "workflowIds": [
@@ -4511,6 +4639,24 @@
             "path": "apps/api/src/auth/auth.controller.spec.ts",
             "title": "returns generic success without generating or sending an OTP for an unknown recipient"
           }
+        },
+        {
+          "id": "sendEmailLoginCode-local-v2-success-transport",
+          "contract": "Controlled actual Fastify HTTP injection and actual retained bridge exercise POST /v2/auth/email/send-otp. Verify exact retained target/method/raw query/body; allowed credential/CSRF/origin/conditional/idempotency headers; configured forwarding host/protocol and socket IP without client spoofing; server correlation/version/release headers; redirect manual/AbortSignal; validated JSON or declared redirect response, cookies and cache. No native identity/quota/translator/domain invocation. Synthetic transport result is not operation-specific response shape, business credential/provider/session or durable acceptance.",
+          "evidenceKind": "unit",
+          "executable": {
+            "path": "apps/api-v2/src/application/auth-retained-http.test.ts",
+            "title": "preserves success transport for every reviewed retained authentication route"
+          }
+        },
+        {
+          "id": "sendEmailLoginCode-local-v2-refusal-transport",
+          "contract": "Controlled retained owner returns 401 for POST /v2/auth/email/send-otp through actual Fastify and retained bridge. Verify authentication_required problem status/detail/content type, no-store, exact valid correlation-cookie clearing and no redirect; all17 explicit retained operations must each reach the fixed controlled transport with no native dispatch or unexpected fetch. This refusal wiring does not prove native denial authority, attempt counters, rollback or provider behavior.",
+          "evidenceKind": "unit",
+          "executable": {
+            "path": "apps/api-v2/src/application/auth-retained-http.test.ts",
+            "title": "preserves refusal transport for every reviewed retained authentication route"
+          }
         }
       ],
       "workflowIds": [
@@ -4578,6 +4724,24 @@
           "id": "verifyEmailLoginCode-provider-boundary",
           "contract": "Use explicitly admitted controlled dependency/provider, record scoped request/response and outage/timeout/recovery for verifyEmailLoginCode: Wrong/expired/reused code, wrong workspace/organization/challenge or absent assent denies; inactive account/SSO-only policy denies issuance. Redis/provider loss cannot grant login; invalid redirect mode remains safe internal error redirect. Provider stub is local control only, never real delivery/custody qualification.",
           "evidenceKind": "provider"
+        },
+        {
+          "id": "verifyEmailLoginCode-local-v2-success-transport",
+          "contract": "Controlled actual Fastify HTTP injection and actual retained bridge exercise POST /v2/auth/email/verify-otp. Verify exact retained target/method/raw query/body; allowed credential/CSRF/origin/conditional/idempotency headers; configured forwarding host/protocol and socket IP without client spoofing; server correlation/version/release headers; redirect manual/AbortSignal; validated JSON or declared redirect response, cookies and cache. No native identity/quota/translator/domain invocation. Synthetic transport result is not operation-specific response shape, business credential/provider/session or durable acceptance.",
+          "evidenceKind": "unit",
+          "executable": {
+            "path": "apps/api-v2/src/application/auth-retained-http.test.ts",
+            "title": "preserves success transport for every reviewed retained authentication route"
+          }
+        },
+        {
+          "id": "verifyEmailLoginCode-local-v2-refusal-transport",
+          "contract": "Controlled retained owner returns 401 for POST /v2/auth/email/verify-otp through actual Fastify and retained bridge. Verify authentication_required problem status/detail/content type, no-store, exact valid correlation-cookie clearing and no redirect; all17 explicit retained operations must each reach the fixed controlled transport with no native dispatch or unexpected fetch. This refusal wiring does not prove native denial authority, attempt counters, rollback or provider behavior.",
+          "evidenceKind": "unit",
+          "executable": {
+            "path": "apps/api-v2/src/application/auth-retained-http.test.ts",
+            "title": "preserves refusal transport for every reviewed retained authentication route"
+          }
         }
       ],
       "workflowIds": [
@@ -4639,6 +4803,24 @@
           "id": "verifyPinLogin-durable-readback",
           "contract": "Read persisted effects independently after response, response loss and applicable restart/reload for verifyPinLogin: Async proof of current hash/username creates scoped session/cookies; forced reset takes priority over MFA destination, otherwise safe dashboard. Independently check attempts/current session and cross-tenant refusal. Wrong/malformed/stale PIN proof, lockout, missing grant/inactive/SSO-only policy denies; current wrong guess charges once, stale hash/username proof must not charge replacement. No arbitrary recovery bypass.",
           "evidenceKind": "durable"
+        },
+        {
+          "id": "verifyPinLogin-local-v2-success-transport",
+          "contract": "Controlled actual Fastify HTTP injection and actual retained bridge exercise POST /v2/auth/pin/verify. Verify exact retained target/method/raw query/body; allowed credential/CSRF/origin/conditional/idempotency headers; configured forwarding host/protocol and socket IP without client spoofing; server correlation/version/release headers; redirect manual/AbortSignal; validated JSON or declared redirect response, cookies and cache. No native identity/quota/translator/domain invocation. Synthetic transport result is not operation-specific response shape, business credential/provider/session or durable acceptance.",
+          "evidenceKind": "unit",
+          "executable": {
+            "path": "apps/api-v2/src/application/auth-retained-http.test.ts",
+            "title": "preserves success transport for every reviewed retained authentication route"
+          }
+        },
+        {
+          "id": "verifyPinLogin-local-v2-refusal-transport",
+          "contract": "Controlled retained owner returns 401 for POST /v2/auth/pin/verify through actual Fastify and retained bridge. Verify authentication_required problem status/detail/content type, no-store, exact valid correlation-cookie clearing and no redirect; all17 explicit retained operations must each reach the fixed controlled transport with no native dispatch or unexpected fetch. This refusal wiring does not prove native denial authority, attempt counters, rollback or provider behavior.",
+          "evidenceKind": "unit",
+          "executable": {
+            "path": "apps/api-v2/src/application/auth-retained-http.test.ts",
+            "title": "preserves refusal transport for every reviewed retained authentication route"
+          }
         }
       ],
       "workflowIds": [
@@ -4713,6 +4895,24 @@
             "path": "apps/api/src/auth/auth.controller.spec.ts",
             "title": "rotates all session cookies without returning bearer tokens in JSON"
           }
+        },
+        {
+          "id": "refreshSession-local-v2-success-transport",
+          "contract": "Controlled actual Fastify HTTP injection and actual retained bridge exercise POST /v2/auth/refresh. Verify exact retained target/method/raw query/body; allowed credential/CSRF/origin/conditional/idempotency headers; configured forwarding host/protocol and socket IP without client spoofing; server correlation/version/release headers; redirect manual/AbortSignal; validated JSON or declared redirect response, cookies and cache. No native identity/quota/translator/domain invocation. Synthetic transport result is not operation-specific response shape, business credential/provider/session or durable acceptance.",
+          "evidenceKind": "unit",
+          "executable": {
+            "path": "apps/api-v2/src/application/auth-retained-http.test.ts",
+            "title": "preserves success transport for every reviewed retained authentication route"
+          }
+        },
+        {
+          "id": "refreshSession-local-v2-refusal-transport",
+          "contract": "Controlled retained owner returns 401 for POST /v2/auth/refresh through actual Fastify and retained bridge. Verify authentication_required problem status/detail/content type, no-store, exact valid correlation-cookie clearing and no redirect; all17 explicit retained operations must each reach the fixed controlled transport with no native dispatch or unexpected fetch. This refusal wiring does not prove native denial authority, attempt counters, rollback or provider behavior.",
+          "evidenceKind": "unit",
+          "executable": {
+            "path": "apps/api-v2/src/application/auth-retained-http.test.ts",
+            "title": "preserves refusal transport for every reviewed retained authentication route"
+          }
         }
       ],
       "workflowIds": [
@@ -4776,6 +4976,24 @@
           "executable": {
             "path": "apps/api/src/auth/auth.controller.spec.ts",
             "title": "reports MFA enrollment state through the settings contract route"
+          }
+        },
+        {
+          "id": "getMfaEnrollment-local-v2-success-transport",
+          "contract": "Controlled actual Fastify HTTP injection and actual retained bridge exercise GET /v2/auth/mfa/enrollment. Verify exact retained target/method/raw query/body; allowed credential/CSRF/origin/conditional/idempotency headers; configured forwarding host/protocol and socket IP without client spoofing; server correlation/version/release headers; redirect manual/AbortSignal; validated JSON or declared redirect response, cookies and cache. No native identity/quota/translator/domain invocation. Synthetic transport result is not operation-specific response shape, business credential/provider/session or durable acceptance.",
+          "evidenceKind": "unit",
+          "executable": {
+            "path": "apps/api-v2/src/application/auth-retained-http.test.ts",
+            "title": "preserves success transport for every reviewed retained authentication route"
+          }
+        },
+        {
+          "id": "getMfaEnrollment-local-v2-refusal-transport",
+          "contract": "Controlled retained owner returns 401 for GET /v2/auth/mfa/enrollment through actual Fastify and retained bridge. Verify authentication_required problem status/detail/content type, no-store, exact valid correlation-cookie clearing and no redirect; all17 explicit retained operations must each reach the fixed controlled transport with no native dispatch or unexpected fetch. This refusal wiring does not prove native denial authority, attempt counters, rollback or provider behavior.",
+          "evidenceKind": "unit",
+          "executable": {
+            "path": "apps/api-v2/src/application/auth-retained-http.test.ts",
+            "title": "preserves refusal transport for every reviewed retained authentication route"
           }
         }
       ],
@@ -4843,6 +5061,24 @@
           "executable": {
             "path": "apps/api/src/auth/auth.controller.spec.ts",
             "title": "keeps REST-style MFA enrollment aliases wired to the same service flow"
+          }
+        },
+        {
+          "id": "startMfaEnrollment-local-v2-success-transport",
+          "contract": "Controlled actual Fastify HTTP injection and actual retained bridge exercise POST /v2/auth/mfa/enrollment. Verify exact retained target/method/raw query/body; allowed credential/CSRF/origin/conditional/idempotency headers; configured forwarding host/protocol and socket IP without client spoofing; server correlation/version/release headers; redirect manual/AbortSignal; validated JSON or declared redirect response, cookies and cache. No native identity/quota/translator/domain invocation. Synthetic transport result is not operation-specific response shape, business credential/provider/session or durable acceptance.",
+          "evidenceKind": "unit",
+          "executable": {
+            "path": "apps/api-v2/src/application/auth-retained-http.test.ts",
+            "title": "preserves success transport for every reviewed retained authentication route"
+          }
+        },
+        {
+          "id": "startMfaEnrollment-local-v2-refusal-transport",
+          "contract": "Controlled retained owner returns 401 for POST /v2/auth/mfa/enrollment through actual Fastify and retained bridge. Verify authentication_required problem status/detail/content type, no-store, exact valid correlation-cookie clearing and no redirect; all17 explicit retained operations must each reach the fixed controlled transport with no native dispatch or unexpected fetch. This refusal wiring does not prove native denial authority, attempt counters, rollback or provider behavior.",
+          "evidenceKind": "unit",
+          "executable": {
+            "path": "apps/api-v2/src/application/auth-retained-http.test.ts",
+            "title": "preserves refusal transport for every reviewed retained authentication route"
           }
         }
       ],
@@ -4918,6 +5154,24 @@
             "path": "apps/api/src/auth/auth.controller.spec.ts",
             "title": "keeps REST-style MFA enrollment aliases wired to the same service flow"
           }
+        },
+        {
+          "id": "confirmMfaEnrollment-local-v2-success-transport",
+          "contract": "Controlled actual Fastify HTTP injection and actual retained bridge exercise PUT /v2/auth/mfa/enrollment. Verify exact retained target/method/raw query/body; allowed credential/CSRF/origin/conditional/idempotency headers; configured forwarding host/protocol and socket IP without client spoofing; server correlation/version/release headers; redirect manual/AbortSignal; validated JSON or declared redirect response, cookies and cache. No native identity/quota/translator/domain invocation. Synthetic transport result is not operation-specific response shape, business credential/provider/session or durable acceptance.",
+          "evidenceKind": "unit",
+          "executable": {
+            "path": "apps/api-v2/src/application/auth-retained-http.test.ts",
+            "title": "preserves success transport for every reviewed retained authentication route"
+          }
+        },
+        {
+          "id": "confirmMfaEnrollment-local-v2-refusal-transport",
+          "contract": "Controlled retained owner returns 401 for PUT /v2/auth/mfa/enrollment through actual Fastify and retained bridge. Verify authentication_required problem status/detail/content type, no-store, exact valid correlation-cookie clearing and no redirect; all17 explicit retained operations must each reach the fixed controlled transport with no native dispatch or unexpected fetch. This refusal wiring does not prove native denial authority, attempt counters, rollback or provider behavior.",
+          "evidenceKind": "unit",
+          "executable": {
+            "path": "apps/api-v2/src/application/auth-retained-http.test.ts",
+            "title": "preserves refusal transport for every reviewed retained authentication route"
+          }
         }
       ],
       "workflowIds": [
@@ -4992,6 +5246,24 @@
             "path": "apps/api/src/auth/auth.controller.spec.ts",
             "title": "keeps REST-style MFA enrollment aliases wired to the same service flow"
           }
+        },
+        {
+          "id": "deleteMfaEnrollment-local-v2-success-transport",
+          "contract": "Controlled actual Fastify HTTP injection and actual retained bridge exercise DELETE /v2/auth/mfa/enrollment. Verify exact retained target/method/raw query/body; allowed credential/CSRF/origin/conditional/idempotency headers; configured forwarding host/protocol and socket IP without client spoofing; server correlation/version/release headers; redirect manual/AbortSignal; validated JSON or declared redirect response, cookies and cache. No native identity/quota/translator/domain invocation. Synthetic transport result is not operation-specific response shape, business credential/provider/session or durable acceptance.",
+          "evidenceKind": "unit",
+          "executable": {
+            "path": "apps/api-v2/src/application/auth-retained-http.test.ts",
+            "title": "preserves success transport for every reviewed retained authentication route"
+          }
+        },
+        {
+          "id": "deleteMfaEnrollment-local-v2-refusal-transport",
+          "contract": "Controlled retained owner returns 401 for DELETE /v2/auth/mfa/enrollment through actual Fastify and retained bridge. Verify authentication_required problem status/detail/content type, no-store, exact valid correlation-cookie clearing and no redirect; all17 explicit retained operations must each reach the fixed controlled transport with no native dispatch or unexpected fetch. This refusal wiring does not prove native denial authority, attempt counters, rollback or provider behavior.",
+          "evidenceKind": "unit",
+          "executable": {
+            "path": "apps/api-v2/src/application/auth-retained-http.test.ts",
+            "title": "preserves refusal transport for every reviewed retained authentication route"
+          }
         }
       ],
       "workflowIds": [
@@ -5057,6 +5329,24 @@
           "id": "verifyMfaChallenge-provider-boundary",
           "contract": "Use explicitly admitted controlled dependency/provider, record scoped request/response and outage/timeout/recovery for verifyMfaChallenge: Invalid/reused proof, forced reset, inactive actor or foreign/revoked/expired session denies. Postcommit marker loss consumes proof once but issues no JWT/automatic consumption retry. Concurrent proofs cannot reuse one code/timestep. Provider stub is local control only, never real delivery/custody qualification.",
           "evidenceKind": "provider"
+        },
+        {
+          "id": "verifyMfaChallenge-local-v2-success-transport",
+          "contract": "Controlled actual Fastify HTTP injection and actual retained bridge exercise POST /v2/auth/mfa/verify. Verify exact retained target/method/raw query/body; allowed credential/CSRF/origin/conditional/idempotency headers; configured forwarding host/protocol and socket IP without client spoofing; server correlation/version/release headers; redirect manual/AbortSignal; validated JSON or declared redirect response, cookies and cache. No native identity/quota/translator/domain invocation. Synthetic transport result is not operation-specific response shape, business credential/provider/session or durable acceptance.",
+          "evidenceKind": "unit",
+          "executable": {
+            "path": "apps/api-v2/src/application/auth-retained-http.test.ts",
+            "title": "preserves success transport for every reviewed retained authentication route"
+          }
+        },
+        {
+          "id": "verifyMfaChallenge-local-v2-refusal-transport",
+          "contract": "Controlled retained owner returns 401 for POST /v2/auth/mfa/verify through actual Fastify and retained bridge. Verify authentication_required problem status/detail/content type, no-store, exact valid correlation-cookie clearing and no redirect; all17 explicit retained operations must each reach the fixed controlled transport with no native dispatch or unexpected fetch. This refusal wiring does not prove native denial authority, attempt counters, rollback or provider behavior.",
+          "evidenceKind": "unit",
+          "executable": {
+            "path": "apps/api-v2/src/application/auth-retained-http.test.ts",
+            "title": "preserves refusal transport for every reviewed retained authentication route"
+          }
         }
       ],
       "workflowIds": [
@@ -5131,6 +5421,24 @@
           "executable": {
             "path": "apps/api/src/auth/auth.controller.spec.ts",
             "title": "revokes logout by refresh cookie without requiring access-token claims"
+          }
+        },
+        {
+          "id": "deleteSession-local-v2-success-transport",
+          "contract": "Controlled actual Fastify HTTP injection and actual retained bridge exercise POST /v2/auth/logout. Verify exact retained target/method/raw query/body; allowed credential/CSRF/origin/conditional/idempotency headers; configured forwarding host/protocol and socket IP without client spoofing; server correlation/version/release headers; redirect manual/AbortSignal; validated JSON or declared redirect response, cookies and cache. No native identity/quota/translator/domain invocation. Synthetic transport result is not operation-specific response shape, business credential/provider/session or durable acceptance.",
+          "evidenceKind": "unit",
+          "executable": {
+            "path": "apps/api-v2/src/application/auth-retained-http.test.ts",
+            "title": "preserves success transport for every reviewed retained authentication route"
+          }
+        },
+        {
+          "id": "deleteSession-local-v2-refusal-transport",
+          "contract": "Controlled retained owner returns 401 for POST /v2/auth/logout through actual Fastify and retained bridge. Verify authentication_required problem status/detail/content type, no-store, exact valid correlation-cookie clearing and no redirect; all17 explicit retained operations must each reach the fixed controlled transport with no native dispatch or unexpected fetch. This refusal wiring does not prove native denial authority, attempt counters, rollback or provider behavior.",
+          "evidenceKind": "unit",
+          "executable": {
+            "path": "apps/api-v2/src/application/auth-retained-http.test.ts",
+            "title": "preserves refusal transport for every reviewed retained authentication route"
           }
         }
       ],
@@ -8786,7 +9094,7 @@
         {
           "path": "docs/runbooks/production-qualification-bridge.md",
           "line": 34,
-          "sourceLine": "| Providers and legal \u2014 External | Synthetic mail/billing/auth/payroll fixtures cannot prove required integrations. | Exact candidate sender/provider and webhook readback, delivery verification, live Stripe meter/billing requirements and bounded integration proof where applicable; monitored support/privacy/DPA contacts and paid-service attestations. Exact `closed_beta` on API and web; counsel-approved immutable Terms plus reviewed policy changes required before self-service. |"
+          "sourceLine": "| Providers and legal — External | Synthetic mail/billing/auth/payroll fixtures cannot prove required integrations. | Exact candidate sender/provider and webhook readback, delivery verification, live Stripe meter/billing requirements and bounded integration proof where applicable; monitored support/privacy/DPA contacts and paid-service attestations. Exact `closed_beta` on API and web; counsel-approved immutable Terms plus reviewed policy changes required before self-service. |"
         }
       ],
       "actorBoundary": "Configured external OIDC issuer+registered callback; browser state/nonce and exact subject/issuer must bind active local tenant/session.",
@@ -8832,7 +9140,7 @@
         {
           "path": "docs/runbooks/production-qualification-bridge.md",
           "line": 34,
-          "sourceLine": "| Providers and legal \u2014 External | Synthetic mail/billing/auth/payroll fixtures cannot prove required integrations. | Exact candidate sender/provider and webhook readback, delivery verification, live Stripe meter/billing requirements and bounded integration proof where applicable; monitored support/privacy/DPA contacts and paid-service attestations. Exact `closed_beta` on API and web; counsel-approved immutable Terms plus reviewed policy changes required before self-service. |"
+          "sourceLine": "| Providers and legal — External | Synthetic mail/billing/auth/payroll fixtures cannot prove required integrations. | Exact candidate sender/provider and webhook readback, delivery verification, live Stripe meter/billing requirements and bounded integration proof where applicable; monitored support/privacy/DPA contacts and paid-service attestations. Exact `closed_beta` on API and web; counsel-approved immutable Terms plus reviewed policy changes required before self-service. |"
         },
         {
           "path": "apps/api/src/auth/email.service.ts",
@@ -8887,7 +9195,7 @@
         {
           "path": "docs/runbooks/production-qualification-bridge.md",
           "line": 34,
-          "sourceLine": "| Providers and legal \u2014 External | Synthetic mail/billing/auth/payroll fixtures cannot prove required integrations. | Exact candidate sender/provider and webhook readback, delivery verification, live Stripe meter/billing requirements and bounded integration proof where applicable; monitored support/privacy/DPA contacts and paid-service attestations. Exact `closed_beta` on API and web; counsel-approved immutable Terms plus reviewed policy changes required before self-service. |"
+          "sourceLine": "| Providers and legal — External | Synthetic mail/billing/auth/payroll fixtures cannot prove required integrations. | Exact candidate sender/provider and webhook readback, delivery verification, live Stripe meter/billing requirements and bounded integration proof where applicable; monitored support/privacy/DPA contacts and paid-service attestations. Exact `closed_beta` on API and web; counsel-approved immutable Terms plus reviewed policy changes required before self-service. |"
         }
       ],
       "actorBoundary": "Current billing owner and exact Stripe customer/tenant, approved price/return origin, separate signed completion event.",
@@ -8930,7 +9238,7 @@
         {
           "path": "docs/runbooks/production-qualification-bridge.md",
           "line": 34,
-          "sourceLine": "| Providers and legal \u2014 External | Synthetic mail/billing/auth/payroll fixtures cannot prove required integrations. | Exact candidate sender/provider and webhook readback, delivery verification, live Stripe meter/billing requirements and bounded integration proof where applicable; monitored support/privacy/DPA contacts and paid-service attestations. Exact `closed_beta` on API and web; counsel-approved immutable Terms plus reviewed policy changes required before self-service. |"
+          "sourceLine": "| Providers and legal — External | Synthetic mail/billing/auth/payroll fixtures cannot prove required integrations. | Exact candidate sender/provider and webhook readback, delivery verification, live Stripe meter/billing requirements and bounded integration proof where applicable; monitored support/privacy/DPA contacts and paid-service attestations. Exact `closed_beta` on API and web; counsel-approved immutable Terms plus reviewed policy changes required before self-service. |"
         }
       ],
       "actorBoundary": "Tenant billing authority delegates to credit-pack owner; provider checkout/session/purchase identity exact.",
@@ -8974,7 +9282,7 @@
         {
           "path": "docs/runbooks/production-qualification-bridge.md",
           "line": 34,
-          "sourceLine": "| Providers and legal \u2014 External | Synthetic mail/billing/auth/payroll fixtures cannot prove required integrations. | Exact candidate sender/provider and webhook readback, delivery verification, live Stripe meter/billing requirements and bounded integration proof where applicable; monitored support/privacy/DPA contacts and paid-service attestations. Exact `closed_beta` on API and web; counsel-approved immutable Terms plus reviewed policy changes required before self-service. |"
+          "sourceLine": "| Providers and legal — External | Synthetic mail/billing/auth/payroll fixtures cannot prove required integrations. | Exact candidate sender/provider and webhook readback, delivery verification, live Stripe meter/billing requirements and bounded integration proof where applicable; monitored support/privacy/DPA contacts and paid-service attestations. Exact `closed_beta` on API and web; counsel-approved immutable Terms plus reviewed policy changes required before self-service. |"
         }
       ],
       "actorBoundary": "Current tenant/customer and approved safe portal configuration.",
@@ -9017,7 +9325,7 @@
         {
           "path": "docs/runbooks/production-qualification-bridge.md",
           "line": 34,
-          "sourceLine": "| Providers and legal \u2014 External | Synthetic mail/billing/auth/payroll fixtures cannot prove required integrations. | Exact candidate sender/provider and webhook readback, delivery verification, live Stripe meter/billing requirements and bounded integration proof where applicable; monitored support/privacy/DPA contacts and paid-service attestations. Exact `closed_beta` on API and web; counsel-approved immutable Terms plus reviewed policy changes required before self-service. |"
+          "sourceLine": "| Providers and legal — External | Synthetic mail/billing/auth/payroll fixtures cannot prove required integrations. | Exact candidate sender/provider and webhook readback, delivery verification, live Stripe meter/billing requirements and bounded integration proof where applicable; monitored support/privacy/DPA contacts and paid-service attestations. Exact `closed_beta` on API and web; counsel-approved immutable Terms plus reviewed policy changes required before self-service. |"
         }
       ],
       "actorBoundary": "Live managed tenant Stripe subscription and requested configured price with owner approval.",
@@ -9061,7 +9369,7 @@
         {
           "path": "docs/runbooks/production-qualification-bridge.md",
           "line": 34,
-          "sourceLine": "| Providers and legal \u2014 External | Synthetic mail/billing/auth/payroll fixtures cannot prove required integrations. | Exact candidate sender/provider and webhook readback, delivery verification, live Stripe meter/billing requirements and bounded integration proof where applicable; monitored support/privacy/DPA contacts and paid-service attestations. Exact `closed_beta` on API and web; counsel-approved immutable Terms plus reviewed policy changes required before self-service. |"
+          "sourceLine": "| Providers and legal — External | Synthetic mail/billing/auth/payroll fixtures cannot prove required integrations. | Exact candidate sender/provider and webhook readback, delivery verification, live Stripe meter/billing requirements and bounded integration proof where applicable; monitored support/privacy/DPA contacts and paid-service attestations. Exact `closed_beta` on API and web; counsel-approved immutable Terms plus reviewed policy changes required before self-service. |"
         }
       ],
       "actorBoundary": "Exact paused managed subscription; current tenant billing actor.",
@@ -9104,7 +9412,7 @@
         {
           "path": "docs/runbooks/production-qualification-bridge.md",
           "line": 34,
-          "sourceLine": "| Providers and legal \u2014 External | Synthetic mail/billing/auth/payroll fixtures cannot prove required integrations. | Exact candidate sender/provider and webhook readback, delivery verification, live Stripe meter/billing requirements and bounded integration proof where applicable; monitored support/privacy/DPA contacts and paid-service attestations. Exact `closed_beta` on API and web; counsel-approved immutable Terms plus reviewed policy changes required before self-service. |"
+          "sourceLine": "| Providers and legal — External | Synthetic mail/billing/auth/payroll fixtures cannot prove required integrations. | Exact candidate sender/provider and webhook readback, delivery verification, live Stripe meter/billing requirements and bounded integration proof where applicable; monitored support/privacy/DPA contacts and paid-service attestations. Exact `closed_beta` on API and web; counsel-approved immutable Terms plus reviewed policy changes required before self-service. |"
         }
       ],
       "actorBoundary": "Exact tenant subscription and cancellation operation identity; tenant lifecycle owner controls local transition.",
@@ -9148,7 +9456,7 @@
         {
           "path": "docs/runbooks/production-qualification-bridge.md",
           "line": 34,
-          "sourceLine": "| Providers and legal \u2014 External | Synthetic mail/billing/auth/payroll fixtures cannot prove required integrations. | Exact candidate sender/provider and webhook readback, delivery verification, live Stripe meter/billing requirements and bounded integration proof where applicable; monitored support/privacy/DPA contacts and paid-service attestations. Exact `closed_beta` on API and web; counsel-approved immutable Terms plus reviewed policy changes required before self-service. |"
+          "sourceLine": "| Providers and legal — External | Synthetic mail/billing/auth/payroll fixtures cannot prove required integrations. | Exact candidate sender/provider and webhook readback, delivery verification, live Stripe meter/billing requirements and bounded integration proof where applicable; monitored support/privacy/DPA contacts and paid-service attestations. Exact `closed_beta` on API and web; counsel-approved immutable Terms plus reviewed policy changes required before self-service. |"
         }
       ],
       "actorBoundary": "Privileged tenant purge lifecycle after legal hold/retention/confirmation checks; exact customer/subscription binding.",
@@ -9236,7 +9544,7 @@
         {
           "path": "docs/runbooks/production-qualification-bridge.md",
           "line": 34,
-          "sourceLine": "| Providers and legal \u2014 External | Synthetic mail/billing/auth/payroll fixtures cannot prove required integrations. | Exact candidate sender/provider and webhook readback, delivery verification, live Stripe meter/billing requirements and bounded integration proof where applicable; monitored support/privacy/DPA contacts and paid-service attestations. Exact `closed_beta` on API and web; counsel-approved immutable Terms plus reviewed policy changes required before self-service. |"
+          "sourceLine": "| Providers and legal — External | Synthetic mail/billing/auth/payroll fixtures cannot prove required integrations. | Exact candidate sender/provider and webhook readback, delivery verification, live Stripe meter/billing requirements and bounded integration proof where applicable; monitored support/privacy/DPA contacts and paid-service attestations. Exact `closed_beta` on API and web; counsel-approved immutable Terms plus reviewed policy changes required before self-service. |"
         }
       ],
       "actorBoundary": "Authorized payroll export/reconciliation actor and independently approved external payroll recipient/provider; no simulated provider response is certification.",
@@ -11847,7 +12155,7 @@
         {
           "path": "docs/runbooks/production-qualification-bridge.md",
           "line": 32,
-          "sourceLine": "| Storage admission \u2014 External | Retained capacity observations are historical and capacity is not reserved against unrelated writers. | Fresh backing and parent measurements through admission controls: 32 GiB job allowance, existing backing reserve/guest floor, parent availability at least 52 GiB, single worker, bounded retention. No guest-df-only clearance or shared quota change. |"
+          "sourceLine": "| Storage admission — External | Retained capacity observations are historical and capacity is not reserved against unrelated writers. | Fresh backing and parent measurements through admission controls: 32 GiB job allowance, existing backing reserve/guest floor, parent availability at least 52 GiB, single worker, bounded retention. No guest-df-only clearance or shared quota change. |"
         }
       ],
       "actorBoundary": "Infrastructure/controller owner fresh backing+parent admission;32GiB job allowance and single worker.",
@@ -11882,7 +12190,7 @@
         {
           "path": "docs/runbooks/production-qualification-bridge.md",
           "line": 25,
-          "sourceLine": "| Candidate and ownership \u2014 Source + External | Preserved application changes and focused development QA are not a qualified release; receiving QA and production owners need current coordination. | One reviewed clean candidate pushed to the authoritative internal remote; source/tree SHA; current remote containment; single QA owner and accepted execution target. Preserve unfinished work. |"
+          "sourceLine": "| Candidate and ownership — Source + External | Preserved application changes and focused development QA are not a qualified release; receiving QA and production owners need current coordination. | One reviewed clean candidate pushed to the authoritative internal remote; source/tree SHA; current remote containment; single QA owner and accepted execution target. Preserve unfinished work. |"
         }
       ],
       "actorBoundary": "Accepted sole QA execution owner and compatible protected controller integration/source/ref binding.",
@@ -11917,7 +12225,7 @@
         {
           "path": "docs/runbooks/production-qualification-bridge.md",
           "line": 27,
-          "sourceLine": "| Production trust \u2014 Source + External | Internal-beta Ed25519 receipts do not satisfy the former GitHub OIDC/Sigstore registry contract. | Explicit independently approved production trust root and signer policy; validators and negative tests reject beta receipts, wrong identity, changed bytes, expired evidence and source mismatch. Keys remain outside candidate workspaces; no candidate-controlled trust policy. No signer approval is presently established. |"
+          "sourceLine": "| Production trust — Source + External | Internal-beta Ed25519 receipts do not satisfy the former GitHub OIDC/Sigstore registry contract. | Explicit independently approved production trust root and signer policy; validators and negative tests reject beta receipts, wrong identity, changed bytes, expired evidence and source mismatch. Keys remain outside candidate workspaces; no candidate-controlled trust policy. No signer approval is presently established. |"
         }
       ],
       "actorBoundary": "Separate external production trust/promotion owner; beta signing is not approved public production trust.",
@@ -11952,7 +12260,7 @@
         {
           "path": "docs/runbooks/production-qualification-bridge.md",
           "line": 28,
-          "sourceLine": "| Manifest and image publication \u2014 Source + External | Internal-beta manifest uses local image IDs/archive checksums; production verifier expects digest-pinned registry refs, deployment contract and production health metadata. | Reviewed production manifest/publishing bridge with independently read-back immutable OCI digests, complete first/third-party service and base-image inventory, SBOM/security reports, signatures, exact deployment bytes and retained rollback artifacts. Local archive integrity alone is insufficient. |"
+          "sourceLine": "| Manifest and image publication — Source + External | Internal-beta manifest uses local image IDs/archive checksums; production verifier expects digest-pinned registry refs, deployment contract and production health metadata. | Reviewed production manifest/publishing bridge with independently read-back immutable OCI digests, complete first/third-party service and base-image inventory, SBOM/security reports, signatures, exact deployment bytes and retained rollback artifacts. Local archive integrity alone is insufficient. |"
         }
       ],
       "actorBoundary": "Reviewed manifest/registry/retained artifact owner outside candidate workspace.",
@@ -11987,7 +12295,7 @@
         {
           "path": "docs/runbooks/production-qualification-bridge.md",
           "line": 33,
-          "sourceLine": "| Runtime secrets and access \u2014 Source + External | Synthetic disposable env is not a production env; former GitHub environment settings have no current execution authority. | Immutable managed runtime-secret version validated by production policy; role-separated secret files/bytes and least-privilege access; authenticated pinned-host transport; controller protections preserving independently reviewed approval, no self-approval, approved branch, credential scope and serialized mutations. Secret bytes never enter logs/artifacts/source. |"
+          "sourceLine": "| Runtime secrets and access — Source + External | Synthetic disposable env is not a production env; former GitHub environment settings have no current execution authority. | Immutable managed runtime-secret version validated by production policy; role-separated secret files/bytes and least-privilege access; authenticated pinned-host transport; controller protections preserving independently reviewed approval, no self-approval, approved branch, credential scope and serialized mutations. Secret bytes never enter logs/artifacts/source. |"
         }
       ],
       "actorBoundary": "Managed versioned runtime secret/role-separated mounts and pinned-host transport owner.",
@@ -12022,7 +12330,7 @@
         {
           "path": "docs/runbooks/production-qualification-bridge.md",
           "line": 36,
-          "sourceLine": "| Alerts and production resource limits \u2014 External | Disposable stack excludes host integrations and cannot prove actual paging or exact-target capacity. | Independent bounded alert delivery/resolution; actionable runbooks, authenticated/private telemetry, healthy dependency series and failure health behavior; finite CPU/memory/PID/file/log limits; exact-target load evidence without OOM/restart/throttling exhaustion. Account for notification outbox recovery/dead letters. |"
+          "sourceLine": "| Alerts and production resource limits — External | Disposable stack excludes host integrations and cannot prove actual paging or exact-target capacity. | Independent bounded alert delivery/resolution; actionable runbooks, authenticated/private telemetry, healthy dependency series and failure health behavior; finite CPU/memory/PID/file/log limits; exact-target load evidence without OOM/restart/throttling exhaustion. Account for notification outbox recovery/dead letters. |"
         }
       ],
       "actorBoundary": "Private authenticated telemetry plus independently controlled pager/receiver.",
@@ -12059,7 +12367,7 @@
         {
           "path": "docs/runbooks/production-qualification-bridge.md",
           "line": 37,
-          "sourceLine": "| Retention and release history \u2014 Source + External | Internal artifacts retained for 30 days and beta receipt lifetime do not prove production recovery retention or durable registry authenticity. | Reviewed immutable retained production artifacts/reports, independently verified signed index/bundle/current pointer, provider retention/access/deletion protections and recoverable previous successful release. Define and enforce production retention; preserve recovery evidence outside disposable cleanup. |"
+          "sourceLine": "| Retention and release history — Source + External | Internal artifacts retained for 30 days and beta receipt lifetime do not prove production recovery retention or durable registry authenticity. | Reviewed immutable retained production artifacts/reports, independently verified signed index/bundle/current pointer, provider retention/access/deletion protections and recoverable previous successful release. Define and enforce production retention; preserve recovery evidence outside disposable cleanup. |"
         }
       ],
       "actorBoundary": "Scoped application/CI retention owners; preserved unfinished source/data/backup/evidence.",
@@ -12094,7 +12402,7 @@
         {
           "path": "docs/runbooks/production-qualification-bridge.md",
           "line": 34,
-          "sourceLine": "| Providers and legal \u2014 External | Synthetic mail/billing/auth/payroll fixtures cannot prove required integrations. | Exact candidate sender/provider and webhook readback, delivery verification, live Stripe meter/billing requirements and bounded integration proof where applicable; monitored support/privacy/DPA contacts and paid-service attestations. Exact `closed_beta` on API and web; counsel-approved immutable Terms plus reviewed policy changes required before self-service. |"
+          "sourceLine": "| Providers and legal — External | Synthetic mail/billing/auth/payroll fixtures cannot prove required integrations. | Exact candidate sender/provider and webhook readback, delivery verification, live Stripe meter/billing requirements and bounded integration proof where applicable; monitored support/privacy/DPA contacts and paid-service attestations. Exact `closed_beta` on API and web; counsel-approved immutable Terms plus reviewed policy changes required before self-service. |"
         }
       ],
       "actorBoundary": "Counsel/policy/contact/provider owners; closed_beta exact on API+web.",
@@ -12131,7 +12439,7 @@
         {
           "path": "docs/runbooks/production-qualification-bridge.md",
           "line": 40,
-          "sourceLine": "| Activation decision \u2014 External | Incident launch hold remains explicit. | All prior gates independently reviewed with no missing evidence; owner acceptance and explicit user activation instruction; private launch uses documented private routes, and any public cutover has separately approved routing/data recovery scope. Production readiness does not itself start the launch. |"
+          "sourceLine": "| Activation decision — External | Incident launch hold remains explicit. | All prior gates independently reviewed with no missing evidence; owner acceptance and explicit user activation instruction; private launch uses documented private routes, and any public cutover has separately approved routing/data recovery scope. Production readiness does not itself start the launch. |"
         }
       ],
       "actorBoundary": "Explicit user activation instruction and independently accepted estate/route/data/recovery owners after all prior gates.",
@@ -13996,6 +14304,7 @@
     "Persistent multi-month soak target is unapproved; repeated disposable jobs and synthetic time boundaries do not prove continuous retained state or authorize new infrastructure.",
     "Conditional Turnstile action is a pending requirement under separately approved open signup configuration, not authorized enablement; current closed-beta refusal must be proved.",
     "Required independent contract corrections preserve desired one-use/current-authority/native/provider/operational outcomes as pending requirements; describing current source does not certify that source is correct.",
-    "The earlier non-atomic OIDC GET plus DEL source limitation is addressed by the prepared Redis GETDEL source change and shared-state service/controller regressions. Atomic one-use state consumption still requires admitted native Redis/concurrent callback proof; declared Redis7/client support is source compatibility evidence, not proof of deployed configuration, ACL capability or provider correctness. Redis errors or lost claim responses must not trigger split-command fallback; a consumed state may require fresh login."
+    "The earlier non-atomic OIDC GET plus DEL source limitation is addressed by the prepared Redis GETDEL source change and shared-state service/controller regressions. Atomic one-use state consumption still requires admitted native Redis/concurrent callback proof; declared Redis7/client support is source compatibility evidence, not proof of deployed configuration, ACL capability or provider correctness. Redis errors or lost claim responses must not trigger split-command fallback; a consumed state may require fresh login.",
+    "Prepared retained authentication transport fixes defer credential-cookie forwarding until bounded JSON/redirect validation; error responses forward only recognized unambiguous expiring cookie cleanup. Cookie lifetime parsing normalizes attributes and conservatively accepts only canonical GMT dates with year>=1601, rejecting duplicate lifetime attributes. Actual Fastify parser errors map to 400/413/415 using known constructors; arbitrary domain errors remain internal failures. Seventeen explicit retained operations have controlled success/refusal transport scenarios. These local fixtures use actual server/bridge but mocked owners and inert infrastructure: operation-specific JSON shape, native provider/Redis/session/RBAC/business effects, browser cookie custody and current candidate acceptance remain pending. All265 action statuses and original84 workflows remain pending; no native admission, production operation, held VM107 action or launch is authorized by local results."
   ]
 }

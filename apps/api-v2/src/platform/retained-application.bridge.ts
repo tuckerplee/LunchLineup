@@ -65,11 +65,49 @@ function forwardedSetCookies(headers: Headers): string[] {
   return combined ? [combined] : [];
 }
 
-function copyResponseHeaders(reply: FastifyReply, headers: Headers): void {
-  for (const cookie of forwardedSetCookies(headers)) reply.header('set-cookie', cookie);
+function clearsCookie(cookie: string): boolean {
+  const attributes = cookie.split(';').slice(1).map(value => {
+    const separator = value.indexOf('=');
+    return {
+      name: (separator < 0 ? value : value.slice(0, separator)).trim().toLowerCase(),
+      value: separator < 0 ? '' : value.slice(separator + 1).trim(),
+    };
+  });
+  const maxAge = attributes.filter(attribute => attribute.name === 'max-age');
+  const expires = attributes.filter(attribute => attribute.name === 'expires');
+  if (maxAge.length > 1 || expires.length > 1) return false;
+  if (maxAge.length > 0) {
+    return maxAge.length === 1 && /^-?\d+$/.test(maxAge[0]!.value)
+      && Number(maxAge[0]!.value) <= 0;
+  }
+  if (expires.length !== 1) return false;
+  // Date.parse accepts formats that a browser may ignore, leaving a live
+  // session cookie. Only recognize canonical cookie dates for denial cleanup.
+  const expiry = new Date(expires[0]!.value);
+  return Number.isFinite(expiry.getTime()) && expiry.getUTCFullYear() >= 1601
+    && expiry.toUTCString() === expires[0]!.value && expiry.getTime() <= Date.now();
+}
+
+function copyResponseHeaders(reply: FastifyReply, headers: Headers, clearCookiesOnly = false): void {
+  for (const cookie of forwardedSetCookies(headers)) {
+    if (!clearCookiesOnly || clearsCookie(cookie)) reply.header('set-cookie', cookie);
+  }
   for (const name of ['content-disposition', 'etag', 'last-modified', 'retry-after']) {
     const value = headers.get(name);
     if (value && SAFE_HEADER_VALUE.test(value)) reply.header(name, value);
+  }
+}
+
+function validRedirect(status: number, location: string | null): location is string {
+  if (![301, 302, 303, 307, 308].includes(status) || !location || location.length > 4096
+    || /[\u0000-\u0020\u007f\\]/.test(location)) return false;
+  if (location.startsWith('/')) return !location.startsWith('//');
+  if (!/^https?:\/\//i.test(location)) return false;
+  try {
+    const target = new URL(location);
+    return ['http:', 'https:'].includes(target.protocol) && !target.username && !target.password;
+  } catch {
+    return false;
   }
 }
 
@@ -359,8 +397,14 @@ export class RetainedApplicationBridge {
       );
     }
 
-    copyResponseHeaders(reply, response.headers);
-    const bytes = await readBoundedBytes(response, responseLimit(operation.responseKind));
+    let bytes: Uint8Array;
+    try {
+      bytes = await readBoundedBytes(response, responseLimit(operation.responseKind));
+    } catch (error) {
+      if (error instanceof ProblemError) throw error;
+      throw new ProblemError(503, 'retained_application_unavailable',
+        'This application operation is temporarily unavailable.', 'Service unavailable');
+    }
     const contentType = response.headers.get('content-type');
 
     if (response.status >= 300 && response.status < 400) {
@@ -373,7 +417,7 @@ export class RetainedApplicationBridge {
         );
       }
       const location = response.headers.get('location');
-      if (!location || location.length > 4096 || /[\r\n\0]/.test(location)) {
+      if (!validRedirect(response.status, location)) {
         throw new ProblemError(
           502,
           'invalid_compatibility_response',
@@ -381,6 +425,7 @@ export class RetainedApplicationBridge {
           'Bad gateway',
         );
       }
+      copyResponseHeaders(reply, response.headers);
       reply.code(response.status).header('location', location).header('Cache-Control', 'no-store');
       return reply.send();
     }
@@ -399,7 +444,17 @@ export class RetainedApplicationBridge {
       }
     }
 
-    if (!response.ok) throw compatibilityProblem(response, json);
+    if (!response.ok) {
+      // Refusals may clear existing cookies, but must not establish credentials.
+      copyResponseHeaders(reply, response.headers, true);
+      throw compatibilityProblem(response, json);
+    }
+
+    if (operation.responseKind === 'redirect' || (response.status !== 204
+      && operation.responseKind !== 'download' && (bytes.byteLength === 0 || !isJsonContentType(contentType)))) {
+      throw new ProblemError(502, 'invalid_compatibility_response',
+        'A retained application subsystem returned an invalid response.', 'Bad gateway');
+    }
 
     if (identity && json !== null) {
       try {
@@ -412,12 +467,14 @@ export class RetainedApplicationBridge {
       }
     }
 
+    // Forward success cookies only after response and identifier validation.
+    copyResponseHeaders(reply, response.headers);
     reply
       .code(response.status)
       .header('Cache-Control', 'private, no-store')
       .header('X-LunchLineup-Compatibility-Owner', 'API-02');
 
-    if (response.status === 204 || bytes.byteLength === 0) return reply.send();
+    if (response.status === 204) return reply.send();
     if (operation.responseKind === 'download') {
       if (contentType && SAFE_HEADER_VALUE.test(contentType)) reply.type(contentType);
       return reply.send(Buffer.from(bytes));

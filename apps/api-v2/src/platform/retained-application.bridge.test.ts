@@ -278,4 +278,23 @@ describe('retained application compatibility bridge', () => {
       reply: reply(),
     })).rejects.toMatchObject({ status: 502, code: 'invalid_compatibility_response' });
   });
+
+  it('preserves empty binary downloads with their declared content type', async () => {
+    const fetchMock = vi.fn(async () => new Response(new Uint8Array(), {
+      status: 200, headers: { 'content-type': 'application/octet-stream', 'content-disposition': 'attachment; filename="synthetic.bin"' },
+    }));
+    vi.stubGlobal('fetch', fetchMock);
+    const req = { ...request('/v2/admin/account/exports/synthetic-job/download', undefined), method: 'GET' };
+    const res = reply();
+    await new RetainedApplicationBridge(config).execute({
+      operation: operation({ operationId: 'downloadAccountExport', method: 'GET',
+        path: '/admin/account/exports/:jobId/download', tag: 'Administration', responseKind: 'download' }),
+      request: req, reply: res,
+    });
+    expect(res.code).toHaveBeenCalledWith(200);
+    expect(res.type).toHaveBeenCalledWith('application/octet-stream');
+    expect(res.send).toHaveBeenCalledWith(Buffer.alloc(0));
+    expect(res.header).toHaveBeenCalledWith('content-disposition', 'attachment; filename="synthetic.bin"');
+    expect(fetchMock).toHaveBeenCalledOnce();
+  });
 });

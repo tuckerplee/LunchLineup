@@ -32,6 +32,8 @@ const commonResponses = {
   404: ProblemDetailsSchema,
   409: ProblemDetailsSchema,
   412: ProblemDetailsSchema,
+  413: ProblemDetailsSchema,
+  415: ProblemDetailsSchema,
   422: ProblemDetailsSchema,
   428: ProblemDetailsSchema,
   429: ProblemDetailsSchema,
