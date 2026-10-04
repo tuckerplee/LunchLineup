@@ -6,6 +6,7 @@ type TimeCardHistoryProps = {
     canManageTeam: boolean;
     canWriteTimeCards: boolean;
     isSaving: boolean;
+    isCorrectionOpen: boolean;
     isMoreCardsLoading: boolean;
     nextCardsCursor: string | null;
     selectedStaffName: string;
@@ -18,6 +19,7 @@ export function TimeCardHistory({
     canManageTeam,
     canWriteTimeCards,
     isSaving,
+    isCorrectionOpen,
     isMoreCardsLoading,
     nextCardsCursor,
     selectedStaffName,
@@ -76,7 +78,7 @@ export function TimeCardHistory({
                                     <button
                                         type="button"
                                         className="btn btn-secondary"
-                                        disabled={isSaving}
+                                        disabled={isSaving || isCorrectionOpen}
                                         aria-label={'Correct time card for ' + (card.user?.name ?? selectedStaffName) + ' clocked in ' + formatTimeCardTimestamp(card.clockInAt, card.displayTimeZone)}
                                         onClick={() => onCorrect(card)}
                                     >

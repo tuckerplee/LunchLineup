@@ -11781,6 +11781,16 @@
           "id": "refusal-recovery",
           "contract": "Wrong target/session/stale correction/lost response avoids duplicate open card and visibly resolves unknown state.",
           "evidenceKind": "browser-interaction"
+        },
+        {
+          "id": "earlier-open-correction-availability",
+          "contract": "Open and edit a correction before any main mutation. Its draft remains available; Clock in/out, Refresh, person/view/location changes and replacement Correct stay unavailable until explicit Save or Cancel. Pending correction and correction refusal keep that availability boundary. Verify actual desktop/mobile keyboard and pointer behavior, focus and guidance, with no conflicting request or discarded draft.",
+          "evidenceKind": "browser-interaction"
+        },
+        {
+          "id": "correction-save-cancel-restores-actions",
+          "contract": "Cancel an idle edited correction and verify eligible main actions/context switches re-enable with existing target resets. Save a valid correction and independently verify its persisted card before restored main action; correction 422/conflict keeps the panel and draft. Preserve the one-request transport ledger, current generation protection and eligibility/read-only restrictions across all outcomes.",
+          "evidenceKind": "browser-interaction"
         }
       ],
       "workflowIds": [

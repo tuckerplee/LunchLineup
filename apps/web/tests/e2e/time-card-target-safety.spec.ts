@@ -84,6 +84,9 @@ test.describe('Time Card target safety', { tag: '@desktop-chromium' }, () => {
     await expect(page.getByRole('heading', { name: 'Correct Mock Staff time card' })).toBeVisible();
     await page.getByLabel('Correction reason').fill('Reviewing the prior punch');
 
+    await expect(page.getByLabel('Team member')).toBeDisabled();
+    await expect(page.getByLabel('Correction reason')).toHaveValue('Reviewing the prior punch');
+    await page.getByRole('button', { name: 'Cancel', exact: true }).click();
     await page.getByLabel('Team member').selectOption({ label: 'Mock Manager' });
     await expect(page.getByTestId('time-card-selected-person')).toContainText('Mock Manager');
     await expect(page.getByLabel('Team location')).toHaveValue('');

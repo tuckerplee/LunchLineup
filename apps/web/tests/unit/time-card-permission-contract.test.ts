@@ -28,8 +28,8 @@ describe('time-card workspace permission contract', () => {
     expect(workspaceSource).toContain('You can still clock out an open card.');
     expect(workspaceSource).toContain('const canClockIn = clockInTargetIsExplicit && hasCurrentCards && canStartNewTimeCard;');
     expect(workspaceSource).toContain('const canClockOut = Boolean(activeCardForSelectedUser && hasCurrentCards && teamClockOutTargetIsExplicit);');
-    expect(workspaceSource).toContain('disabled={isSaving || !canClockIn}');
-    expect(workspaceSource).toContain('disabled={isSaving || !canClockOut}');
+    expect(workspaceSource).toContain('disabled={isSaving || isCorrectionOpen || !canClockIn}');
+    expect(workspaceSource).toContain('disabled={isSaving || isCorrectionOpen || !canClockOut}');
   });
 
   it('separates My Time from explicit Team Time targeting without first-row defaults', () => {

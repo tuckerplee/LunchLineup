@@ -59,6 +59,7 @@ export function TimeCardsWorkspace({ canManageTeam, canReadLocations, canWriteTi
     const selectedUserId = selectedTimeCardUserId({ view, currentUserId, selectedTeamUserId });
     const selectedTargetKey = selectedUserId ? `${view}:${selectedUserId}` : '';
     const isLoading = isReferenceLoading || isCardsLoading;
+    const isCorrectionOpen = Boolean(correctingCard);
     const activeCardForSelectedUser = activeCard && (!isTeamTime || isTimeCardForEmployee(activeCard, selectedUserId))
         ? activeCard
         : null;
@@ -412,7 +413,7 @@ export function TimeCardsWorkspace({ canManageTeam, canReadLocations, canWriteTi
                                     : !canStartNewTimeCard ? 'Time card count unavailable' : `${cards.length} card${cards.length === 1 ? '' : 's'} for ${selectedStaffName}`}
                         </p>
                     </div>
-                    <button className="btn btn-secondary" onClick={() => void loadCards(selectedUserId, view)} disabled={!selectedUserId || isLoading || isSaving}>
+                    <button className="btn btn-secondary" onClick={() => void loadCards(selectedUserId, view)} disabled={!selectedUserId || isLoading || isSaving || isCorrectionOpen}>
                         Refresh
                     </button>
                 </div>
@@ -424,7 +425,7 @@ export function TimeCardsWorkspace({ canManageTeam, canReadLocations, canWriteTi
                             className={view === 'mine' ? 'btn btn-primary' : 'btn btn-secondary'}
                             aria-pressed={view === 'mine'}
                             onClick={() => selectView('mine')}
-                            disabled={isSaving}
+                            disabled={isSaving || isCorrectionOpen}
                         >
                             My Time
                         </button>
@@ -433,7 +434,7 @@ export function TimeCardsWorkspace({ canManageTeam, canReadLocations, canWriteTi
                             className={view === 'team' ? 'btn btn-primary' : 'btn btn-secondary'}
                             aria-pressed={view === 'team'}
                             onClick={() => selectView('team')}
-                            disabled={isSaving}
+                            disabled={isSaving || isCorrectionOpen}
                         >
                             Team Time
                         </button>
@@ -479,7 +480,7 @@ export function TimeCardsWorkspace({ canManageTeam, canReadLocations, canWriteTi
                             <select
                                 value={selectedTeamUserId}
                                 onChange={(event) => selectEmployee(event.target.value)}
-                                disabled={isSaving}
+                                disabled={isSaving || isCorrectionOpen}
                                 style={{ border: '1px solid var(--border)', borderRadius: 8, padding: '0.45rem 0.5rem', background: '#fff', color: 'var(--text-primary)' }}
                             >
                                 <option value="">Choose a team member</option>
@@ -495,7 +496,7 @@ export function TimeCardsWorkspace({ canManageTeam, canReadLocations, canWriteTi
                         <select
                             value={selectedLocationId}
                             onChange={(event) => selectLocation(event.target.value)}
-                            disabled={isSaving || !canWriteTimeCards || (isTeamTime && !selectedTeamUserId)}
+                            disabled={isSaving || isCorrectionOpen || !canWriteTimeCards || (isTeamTime && !selectedTeamUserId)}
                             style={{ border: '1px solid var(--border)', borderRadius: 8, padding: '0.45rem 0.5rem', background: '#fff', color: 'var(--text-primary)' }}
                         >
                             <option value="">Choose a location</option>
@@ -568,17 +569,19 @@ export function TimeCardsWorkspace({ canManageTeam, canReadLocations, canWriteTi
 
                     {canWriteTimeCards ? (
                         activeCardForSelectedUser ? (
-                            <button className="btn btn-primary" onClick={() => void clockOut()} disabled={isSaving || !canClockOut}>
+                            <button className="btn btn-primary" onClick={() => void clockOut()} disabled={isSaving || isCorrectionOpen || !canClockOut}>
                                 {isSaving ? `Clocking out ${selectedStaffName}...` : clockOutLabel}
                             </button>
                         ) : (
-                            <button className="btn btn-primary" onClick={() => void clockIn()} disabled={isSaving || !canClockIn}>
+                            <button className="btn btn-primary" onClick={() => void clockIn()} disabled={isSaving || isCorrectionOpen || !canClockIn}>
                                 {isSaving ? `Clocking in ${selectedStaffName || 'team member'}...` : clockInLabel}
                             </button>
                         )
                     ) : null}
                 </div>
             </section>
+
+            {correctingCard ? <p role="note">Save or cancel the correction before refreshing, changing the view, person or location, starting another time action, or choosing another correction.</p> : null}
 
             {correctingCard ? (
                 <TimeCardCorrectionPanel
@@ -602,6 +605,7 @@ export function TimeCardsWorkspace({ canManageTeam, canReadLocations, canWriteTi
                 canManageTeam={canManageTeam}
                 canWriteTimeCards={canWriteTimeCards}
                 isSaving={isSaving}
+                isCorrectionOpen={isCorrectionOpen}
                 isMoreCardsLoading={isMoreCardsLoading}
                 nextCardsCursor={nextCardsCursor}
                 selectedStaffName={selectedStaffName}
