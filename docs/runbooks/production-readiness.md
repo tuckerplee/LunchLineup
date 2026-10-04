@@ -24,11 +24,13 @@ Use the tracked platform-overview.json dashboard. Its native 30-day response est
 
 Before this gate closes, retain independent reviews of the exact selection, test-inclusive type/loader checks, non-skipped source/HTTP/socket/parser/rule/dashboard/privacy results, critical and resolved alert-delivery receipts, the approved private status route and owner-led recovery drill. Complete30-day telemetry and months of full application acceptance remain required. The source mutation/lifecycle/rule counts are proposed coverage only, with no execution or production-readiness credit.
 
-## MFA policy serialization source checks
+## Authentication policy serialization source checks
 
 Nest MFA validation acquires Tenant, scoped User and exact Session row locks in that order. It reads security policy and effective role access in the same transaction before claiming a TOTP time-step or removing a backup code. The response uses that transaction's role and effective expiry. Redis marker publication and token generation occur after commit.
 
-`apps/api/src/auth/mfa-policy-serialization.spec.ts` exercises committed policy/access changes during a controlled wait, Session-writer revocation, one-use proof retention, transaction rollback and permitted tenant states using actual authentication and RBAC methods. These local transaction doubles do not prove PostgreSQL locking, RLS, request routing or distributed Redis behavior. In particular, revocation after database commit can race marker publication; stored Session revocation remains authoritative. Refresh serialization and account/PIN boundary checks remain separate open work. No local pass closes the native or whole-application release gates.
+Refresh rotation uses a preliminary lookup only to identify locks, then locks Tenant, scoped User and exact Session. A known predecessor revokes its family before current authorization checks; a random validator does not revoke it. Current credentials use security policy, effective expiry and RBAC access from the rotation transaction. Required MFA triggers a write-free first pass, an exact-session Redis observation outside locks, and one fully revalidated transaction before any replay insertion or credential rotation. Replay marker cleanup is best effort after committed revocation; cleanup failure still returns Unauthorized.
+
+`apps/api/src/auth/mfa-policy-serialization.spec.ts` and `refresh-policy-serialization.spec.ts` exercise committed policy/access changes during controlled waits, exact identity binding, one-use credential/proof retention, transaction rollback and external-work failures using actual authentication and RBAC methods. These local transaction doubles do not prove PostgreSQL locking, RLS, request routing or distributed Redis behavior. Changes after database commit or marker observation remain later request boundaries; stored Session revocation and current guard checks remain authoritative. Account/PIN boundary checks remain separate open work. No local pass closes the native or whole-application release gates.
 
 ## Retained production safety requirements and historical procedure reference
 

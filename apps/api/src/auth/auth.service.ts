@@ -140,16 +140,20 @@ type RefreshCredential = SelectedRefreshCredential | LegacyRefreshCredential;
 
 type RefreshSession = Prisma.SessionGetPayload<{ include: { user: true } }>;
 
+type RefreshSessionLocator = { sessionId: string; userId: string; tenantId: string };
+type RefreshMfaObservation = RefreshSessionLocator & { verified: boolean };
+
 type RefreshRotationResult =
     | {
         status: 'rotated';
-        session: RefreshSession;
+        authorization: RefreshAuthorizationContext;
     }
     | {
         status: 'replayed';
         sessionId: string;
     }
-    | { status: 'invalid' };
+    | { status: 'invalid' }
+    | { status: 'needs-mfa-marker'; locator: RefreshSessionLocator };
 
 type RefreshAuthorizationContext = {
     session: RefreshSession;
@@ -1887,101 +1891,71 @@ export class AuthService implements OnModuleDestroy {
         );
     }
 
-    private async prepareRefreshAuthorization(
+    private async locateRefreshSession(
         credential: RefreshCredential,
-    ): Promise<RefreshAuthorizationContext | null> {
-        const session = await this.getTenantDb().withPlatformAdmin((tx) => tx.session.findFirst({
-            where: credential.kind === 'selected'
-                ? { selectorHash: credential.selectorHash }
-                : { refreshToken: { in: credential.candidates } },
-            include: { user: true },
-        }));
-        if (!session) return null;
-
-        const currentCredentialMatches = credential.kind === 'selected'
-            ? session.refreshToken === credential.validatorHash
-            : credential.candidates.includes(session.refreshToken);
-        if (!currentCredentialMatches) return null;
-        if (
-            session.revokedAt
-            || session.expiresAt <= new Date()
-            || session.user.deletedAt
-            || session.user.suspendedAt
-        ) {
-            throw new UnauthorizedException('Invalid or expired refresh token');
-        }
-
-        await this.assertTenantIdCanAuthenticate(session.user.tenantId);
-        const settings = await this.getTenantSecuritySettings(session.user.tenantId);
-        const effectiveExpiresAt = this.assertSessionActive(session, settings);
-        const access = await this.rbacService.getEffectiveAccess(session.user.id, session.user.tenantId);
-        const mfaRequired = this.isMfaRequired(session.user, settings, access);
-        const mfaVerified = !mfaRequired || await this.isSessionMfaVerified(session.id);
-
-        return {
-            session,
-            access,
-            effectiveExpiresAt,
-            mfaRequired,
-            mfaVerified,
-        };
+    ): Promise<RefreshSessionLocator | null> {
+        return this.getTenantDb().withPlatformAdmin(async (tx) => {
+            let session = await tx.session.findFirst({
+                where: credential.kind === 'selected'
+                    ? { selectorHash: credential.selectorHash }
+                    : { refreshToken: { in: credential.candidates } },
+                include: { user: true },
+            });
+            if (!session && credential.kind === 'legacy') {
+                const replay = await tx.refreshTokenReplay.findUnique({
+                    where: { validatorHash: credential.candidates[0] },
+                    select: { sessionId: true },
+                });
+                if (replay) session = await tx.session.findFirst({
+                    where: { id: replay.sessionId },
+                    include: { user: true },
+                });
+            }
+            // This lookup supplies lock identities only. All authority and
+            // credential decisions are repeated after acquiring those locks.
+            return session ? {
+                sessionId: session.id,
+                userId: session.userId,
+                tenantId: session.user.tenantId,
+            } : null;
+        });
     }
 
     private async rotateRefreshCredential(
         credential: RefreshCredential,
         rotatedCredential: SelectedRefreshCredential,
-        allowRotation: boolean,
+        locator: RefreshSessionLocator,
+        marker?: RefreshMfaObservation,
     ): Promise<RefreshRotationResult> {
         return this.getTenantDb().withPlatformAdmin(async (tx) => {
-            let session: RefreshSession | null;
-            let legacyReplayHash: string | null = null;
-
-            if (credential.kind === 'selected') {
-                await tx.$queryRaw`
-                    SELECT "id"
-                    FROM "Session"
-                    WHERE "selectorHash" = ${credential.selectorHash}
-                    FOR UPDATE
-                `;
-                session = await tx.session.findFirst({
-                    where: { selectorHash: credential.selectorHash },
-                    include: { user: true },
-                });
-            } else {
-                legacyReplayHash = credential.candidates[0];
-                const candidate = await tx.session.findFirst({
-                    where: { refreshToken: { in: credential.candidates } },
-                    select: { id: true },
-                });
-                const replay = candidate
-                    ? null
-                    : await tx.refreshTokenReplay.findUnique({
-                        where: { validatorHash: legacyReplayHash },
-                        select: { sessionId: true },
-                    });
-                const sessionId = candidate?.id ?? replay?.sessionId;
-                if (!sessionId) return { status: 'invalid' };
-
-                await tx.$queryRaw`
-                    SELECT "id"
-                    FROM "Session"
-                    WHERE "id" = ${sessionId}
-                    FOR UPDATE
-                `;
-                session = await tx.session.findFirst({
-                    where: { id: sessionId },
-                    include: { user: true },
-                });
-            }
+            // Defer tenant eligibility until after replay classification: a
+            // known predecessor must still revoke its family when access fails.
+            await tx.$queryRaw`
+                SELECT "id" FROM "Tenant" WHERE "id" = ${locator.tenantId} FOR UPDATE
+            `;
+            await tx.$queryRaw`
+                SELECT "id" FROM "User"
+                WHERE "id" = ${locator.userId} AND "tenantId" = ${locator.tenantId} FOR UPDATE
+            `;
+            await tx.$queryRaw`
+                SELECT "id" FROM "Session"
+                WHERE "id" = ${locator.sessionId} AND "userId" = ${locator.userId} FOR UPDATE
+            `;
+            const session = await tx.session.findFirst({
+                where: { id: locator.sessionId, userId: locator.userId },
+                include: { user: true },
+            });
 
             const now = new Date();
-            if (!session || session.revokedAt || session.expiresAt <= now || session.user.deletedAt || session.user.suspendedAt) {
+            if (!session || session.revokedAt
+                || session.user.id !== locator.userId || session.user.tenantId !== locator.tenantId
+                || credential.kind === 'selected' && session.selectorHash !== credential.selectorHash) {
                 return { status: 'invalid' };
             }
 
             const suppliedValidatorHash = credential.kind === 'selected'
                 ? credential.validatorHash
-                : legacyReplayHash;
+                : credential.candidates[0];
             const currentCredentialMatches = credential.kind === 'selected'
                 ? session.refreshToken === credential.validatorHash
                 : credential.candidates.includes(session.refreshToken);
@@ -1998,15 +1972,31 @@ export class AuthService implements OnModuleDestroy {
                 }
 
                 await tx.session.updateMany({
-                    where: { id: session.id, revokedAt: null },
+                    where: { id: session.id, userId: locator.userId, revokedAt: null },
                     data: { revokedAt: now },
                 });
                 return { status: 'replayed', sessionId: session.id };
             }
 
-            if (!allowRotation) {
+            if (session.expiresAt <= now || session.user.deletedAt || session.user.suspendedAt) {
                 return { status: 'invalid' };
             }
+
+            const tenant = await tx.tenant.findUnique({
+                where: { id: locator.tenantId },
+                select: { id: true, status: true, deletedAt: true },
+            });
+            this.assertTenantCanAuthenticate(tenant);
+            const settings = await this.tenantSecuritySettingsInTransaction(tx, locator.tenantId);
+            const effectiveExpiresAt = this.assertSessionActive(session, settings);
+            const access = await this.rbacService.getEffectiveAccessInTransaction(tx, locator.userId, locator.tenantId);
+            const mfaRequired = this.isMfaRequired(session.user, settings, access);
+            const markerMatches = marker?.sessionId === session.id
+                && marker.userId === locator.userId && marker.tenantId === locator.tenantId;
+            if (mfaRequired && !markerMatches) {
+                return { status: 'needs-mfa-marker', locator };
+            }
+            const mfaVerified = !mfaRequired || marker?.verified === true;
 
             await tx.refreshTokenReplay.create({
                 data: {
@@ -2040,7 +2030,7 @@ export class AuthService implements OnModuleDestroy {
                 throw new UnauthorizedException('Invalid or expired refresh token');
             }
 
-            return { status: 'rotated', session };
+            return { status: 'rotated', authorization: { session, access, effectiveExpiresAt, mfaRequired, mfaVerified } };
         });
     }
     async refreshAccessToken(refreshTokenRaw: unknown) {
@@ -2049,22 +2039,25 @@ export class AuthService implements OnModuleDestroy {
             throw new UnauthorizedException('Invalid or expired refresh token');
         }
 
-        const authorization = await this.prepareRefreshAuthorization(credential);
+        const locator = await this.locateRefreshSession(credential);
+        if (!locator) throw new UnauthorizedException('Invalid or expired refresh token');
         const rotatedCredential = this.generateSelectedRefreshCredential();
-        const rotation = await this.rotateRefreshCredential(credential, rotatedCredential, Boolean(authorization));
+        let rotation = await this.rotateRefreshCredential(credential, rotatedCredential, locator);
+        if (rotation.status === 'needs-mfa-marker') {
+            const observation: RefreshMfaObservation = {
+                ...rotation.locator,
+                verified: await this.isSessionMfaVerified(rotation.locator.sessionId),
+            };
+            rotation = await this.rotateRefreshCredential(credential, rotatedCredential, locator, observation);
+        }
         if (rotation.status === 'replayed') {
-            await this.getRedis().del(KEY_SESSION_MFA(rotation.sessionId));
+            await this.clearSessionMfaMarkersBestEffort([rotation.sessionId], 'auth.refresh_replay_mfa_cleanup_failed');
             throw new UnauthorizedException('Invalid or expired refresh token');
         }
-        if (rotation.status === 'invalid') {
+        if (rotation.status !== 'rotated') {
             throw new UnauthorizedException('Invalid or expired refresh token');
         }
-        if (!authorization) {
-            throw new UnauthorizedException('Invalid or expired refresh token');
-        }
-
-        const { session } = rotation;
-        const { access, effectiveExpiresAt, mfaRequired, mfaVerified } = authorization;
+        const { session, access, effectiveExpiresAt, mfaRequired, mfaVerified } = rotation.authorization;
         const payload: TokenPayload = {
             sub: session.user.id,
             tenantId: session.user.tenantId,

@@ -3354,18 +3354,7 @@ describe('AuthService - MFA and refresh state', () => {
             include: { user: true },
         });
         expect(mockPrisma.session.findFirst).toHaveBeenNthCalledWith(2, {
-            where: {
-                refreshToken: {
-                    in: [
-                        (service as any).hashRefreshToken(rawRefreshToken),
-                        rawRefreshToken,
-                    ],
-                },
-            },
-            select: { id: true },
-        });
-        expect(mockPrisma.session.findFirst).toHaveBeenNthCalledWith(3, {
-            where: { id: 's-refresh' },
+            where: { id: 's-refresh', userId: 'u-refresh' },
             include: { user: true },
         });
         expect(mockPrisma.refreshTokenReplay.create).toHaveBeenCalledWith({
