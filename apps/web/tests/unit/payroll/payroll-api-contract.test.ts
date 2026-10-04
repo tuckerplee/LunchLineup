@@ -44,10 +44,10 @@ describe('immutable payroll API contract', () => {
     expect(apiSource).toContain("fetchJsonWithSession<unknown>('/payroll/export-entitlement')");
     expect(apiSource).not.toContain('/billing/features');
     expect(apiSource).toContain("jsonRequest('POST', { expectedCreditCost }, idempotencyKey)");
-    expect(hookSource).toContain("attemptFor('export', detail.period.id, payload)");
-    expect(hookSource).toContain('const payload = { periodId: detail.period.id, expectedCreditCost: authoritativeCost };');
-    expect(hookSource).toContain('createPayrollExport(detail.period.id, payload.expectedCreditCost, attempt.key)');
-    expect(hookSource).toContain('const authoritativeCost = await loadCreditCost();');
+    expect(hookSource).toContain("getOrCreatePayrollAttempt(guardedStorage, 'export', periodId, payload,");
+    expect(hookSource).toContain('const payload = { periodId, expectedCreditCost: authoritativeCost };');
+    expect(hookSource).toContain('createPayrollExport(periodId, payload.expectedCreditCost, attempt.key)');
+    expect(hookSource).toContain('authoritativeCost = parsePayrollExportCreditCost(await fetchPayrollExportEntitlement());');
     expect(hookSource).toContain('fetchPayrollExport(batch.id, batch.nextLineCursor)');
     expect(hookSource).toContain('appendPayrollExportLines(batch.lines, page.lines)');
     expect(hookSource).toContain('Downloads use no credits.');
@@ -72,7 +72,7 @@ describe('immutable payroll API contract', () => {
     expect(hookSource).toContain('refreshAfterConfirmedPeriodMutation');
     expect(hookSource).toContain('do not repeat the completed command');
     expect(hookSource).toContain('Payroll period creation succeeded, but the period list could not be refreshed.');
-    expect(hookSource).toContain('installDetail({ ...detail, period: { ...detail.period, exportBatch: batch } });');
+    expect(hookSource).toContain('installExportDetail({ ...capturedDetail, period: { ...capturedDetail.period, exportBatch: batch } });');
     expect(hookSource).toContain('Reconciliation was recorded. Refresh to load the latest batch status; do not replay the completed submission.');
   });
 

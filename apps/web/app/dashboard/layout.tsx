@@ -2,7 +2,7 @@
 
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { LunchLineupMark } from '@/components/branding/LunchLineupMark';
 import { fetchJsonWithSession, fetchWithSession } from '@/lib/client-api';
 import { handleLogoutNavigation } from '@/lib/logout-navigation';
@@ -35,6 +35,49 @@ type DashboardUser = {
   name?: string | null;
 };
 
+type NotificationFeed = { data: DashboardNotification[]; unreadCount: number };
+const notificationTypes = new Set(['INFO', 'SUCCESS', 'WARNING', 'ERROR', 'SCHEDULE_PUBLISHED', 'SHIFT_ASSIGNED', 'SHIFT_CHANGED']);
+const publicNotificationId = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\s\S])/i;
+const notificationRefreshError = 'Notifications could not be refreshed. Previously loaded messages may be out of date.';
+const savedNotificationRefreshError = 'Read status was saved, but notifications could not be refreshed. Retry to refresh the saved state.';
+const confirmedNotificationRefreshError = 'Read status was confirmed, but notifications could not be refreshed. Retry to refresh the saved state.';
+
+function notificationScope(user: DashboardUser | null): string | null {
+  if (!user || [user.publicUserId, user.workspaceScope, user.sessionScope].some(value => typeof value !== 'string' || !value)) return null;
+  return JSON.stringify([user.publicUserId, user.workspaceScope, user.sessionScope]);
+}
+
+function notificationRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value && typeof value === 'object' && !Array.isArray(value));
+}
+
+function notificationInstant(value: unknown): value is string {
+  return typeof value === 'string' && Number.isFinite(Date.parse(value)) && new Date(value).toISOString() === value;
+}
+
+function parseNotificationFeed(value: unknown): NotificationFeed {
+  if (!notificationRecord(value) || !Array.isArray(value.data) || value.data.length > 100
+    || !Number.isSafeInteger(value.unreadCount) || (value.unreadCount as number) < 0
+    || value.data.some(row => !notificationRecord(row) || typeof row.id !== 'string' || !publicNotificationId.test(row.id)
+      || typeof row.type !== 'string' || !notificationTypes.has(row.type)
+      || typeof row.title !== 'string' || typeof row.body !== 'string'
+      || !notificationInstant(row.createdAt) || (row.readAt !== null && !notificationInstant(row.readAt)))
+    || new Set(value.data.map(row => row.id)).size !== value.data.length) {
+    throw new Error('The notification feed could not be confirmed.');
+  }
+  return { data: value.data as DashboardNotification[], unreadCount: value.unreadCount as number };
+}
+
+function parseNotificationMutation(value: unknown, all: boolean): { updated: number; unreadCount: number } {
+  if (!notificationRecord(value) || !Number.isSafeInteger(value.updated) || (value.updated as number) < 0
+    || (!all && (value.updated as number) > 1)
+    || !Number.isSafeInteger(value.unreadCount) || (value.unreadCount as number) < 0
+    || (all && (value.success !== true || value.unreadCount !== 0))) {
+    throw new Error('The notification update response could not be confirmed.');
+  }
+  return { updated: value.updated as number, unreadCount: value.unreadCount as number };
+}
+
 export default function DashboardLayout({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
   const [user, setUser] = useState<DashboardUser | null>(null);
@@ -44,106 +87,146 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
   const [notificationError, setNotificationError] = useState<string | null>(null);
   const [notificationBusy, setNotificationBusy] = useState(false);
 
+  const notificationContextRef = useRef({ mounted: false, generation: 0, scope: null as string | null });
+  const notificationFeedRef = useRef<AbortController | null>(null);
+  const notificationActionRef = useRef<{ controller: AbortController; scope: string } | null>(null);
+
   function getCsrfToken(): string {
     if (typeof document === 'undefined') return '';
     const pair = document.cookie.split('; ').find((entry) => entry.startsWith('csrf_token='));
     return pair ? decodeURIComponent(pair.split('=')[1] ?? '') : '';
   }
 
-  useEffect(() => {
-    let cancelled = false;
+  function invalidateNotificationFeed(): number {
+    notificationFeedRef.current?.abort();
+    notificationFeedRef.current = null;
+    return ++notificationContextRef.current.generation;
+  }
 
+  function currentNotificationScope(scope: string): boolean {
+    const context = notificationContextRef.current;
+    return context.mounted && context.scope === scope;
+  }
+
+  async function refreshNotifications(scope: string, failureMessage = notificationRefreshError): Promise<void> {
+    if (!currentNotificationScope(scope)) return;
+    const generation = invalidateNotificationFeed();
+    const controller = new AbortController();
+    notificationFeedRef.current = controller;
+    const current = () => currentNotificationScope(scope)
+      && notificationContextRef.current.generation === generation && !controller.signal.aborted;
+    try {
+      const payload = await fetchJsonWithSession<unknown>('/notifications?status=all&limit=20', { signal: controller.signal });
+      if (!current()) return;
+      const feed = parseNotificationFeed(payload);
+      setNotifications(feed.data);
+      setUnreadCount(feed.unreadCount);
+      setNotificationError(null);
+    } catch {
+      if (current()) setNotificationError(failureMessage);
+    } finally {
+      if (notificationFeedRef.current === controller) notificationFeedRef.current = null;
+    }
+  }
+
+  useEffect(() => {
+    const context = notificationContextRef.current;
+    context.mounted = true;
+    context.scope = null;
+    const generation = invalidateNotificationFeed();
+    const identityController = new AbortController();
     async function loadHeaderData() {
       try {
-        const me = await fetchJsonWithSession<{ user?: DashboardUser }>('/auth/me');
-        if (cancelled) return;
-        setUser(me.user ?? null);
+        const me = await fetchJsonWithSession<{ user?: DashboardUser }>('/auth/me', { signal: identityController.signal });
+        if (!context.mounted || context.generation !== generation || identityController.signal.aborted) return;
+        const nextUser = me.user ?? null;
+        const scope = notificationScope(nextUser);
+        context.scope = scope;
+        setUser(nextUser);
+        if (scope) await refreshNotifications(scope);
+        else { setNotifications([]); setUnreadCount(0); }
       } catch {
-        if (!cancelled) setUser(null);
-        return;
-      }
-
-      try {
-        const feed = await fetchJsonWithSession<{ data: DashboardNotification[]; unreadCount: number }>('/notifications?status=all&limit=20');
-        if (cancelled) return;
-        setNotifications(feed.data ?? []);
-        setUnreadCount(feed.unreadCount ?? 0);
-          setNotificationError(null);
-      } catch {
-        if (!cancelled) {
-          setNotificationError('Notifications could not be refreshed. Previously loaded messages may be out of date.');
+        if (context.mounted && context.generation === generation && !identityController.signal.aborted) {
+          context.scope = null;
+          setUser(null);
+          setNotifications([]);
+          setUnreadCount(0);
         }
       }
     }
-
-    async function refreshFeed() {
-      try {
-        const feed = await fetchJsonWithSession<{ data: DashboardNotification[]; unreadCount: number }>('/notifications?status=all&limit=20');
-        if (!cancelled) {
-          setNotifications(feed.data ?? []);
-          setUnreadCount(feed.unreadCount ?? 0);
-          setNotificationError(null);
-        }
-      } catch {
-        if (!cancelled) {
-          setNotificationError('Notifications could not be refreshed. Previously loaded messages may be out of date.');
-        }
-      }
-    }
-
     void loadHeaderData();
     const interval = window.setInterval(() => {
-      void refreshFeed();
+      if (!context.scope || notificationActionRef.current || notificationFeedRef.current) return;
+      void refreshNotifications(context.scope);
     }, 45000);
-
     return () => {
-      cancelled = true;
+      context.mounted = false;
+      context.scope = null;
+      invalidateNotificationFeed();
+      identityController.abort();
+      notificationActionRef.current?.controller.abort();
+      notificationActionRef.current = null;
       window.clearInterval(interval);
     };
   }, []);
 
-  async function markOneAsRead(notificationId: string) {
-    if (notifications.find((item) => item.id === notificationId)?.readAt) return;
-    if (notificationBusy) return;
+  async function retryNotifications() {
+    const scope = notificationScope(user);
+    if (!scope || !currentNotificationScope(scope) || notificationActionRef.current) return;
+    const action = { controller: new AbortController(), scope };
+    notificationActionRef.current = action;
     setNotificationBusy(true);
-    setNotificationError(null);
-    try {
-    const csrf = getCsrfToken();
-    const response = await fetchWithSession('/notifications/read', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        ...(csrf ? { 'x-csrf-token': csrf } : {}),
-      },
-      body: JSON.stringify({ ids: [notificationId] }),
-    });
-    if (!response.ok) throw new Error('Notification update could not be confirmed. Retry to refresh the saved state.');
-
-    setNotifications((current) => current.map((item) => (item.id === notificationId ? { ...item, readAt: new Date().toISOString() } : item)));
-    setUnreadCount((count) => Math.max(0, count - 1));
-    } catch { setNotificationError('Notification update could not be confirmed. Retry to refresh the saved state.'); }
-    finally { setNotificationBusy(false); }
+    try { await refreshNotifications(scope); }
+    finally {
+      if (notificationActionRef.current === action && currentNotificationScope(scope)) {
+        notificationActionRef.current = null;
+        setNotificationBusy(false);
+      }
+    }
   }
 
-  async function markAllAsRead() {
-    if (notificationBusy) return;
+  async function mutateNotificationRead(notificationId?: string) {
+    const scope = notificationScope(user);
+    if (!scope || !currentNotificationScope(scope) || notificationActionRef.current) return;
+    if (notificationId !== undefined && !notifications.some(row => row.id === notificationId && row.readAt === null)) return;
+    const all = notificationId === undefined;
+    const action = { controller: new AbortController(), scope };
+    notificationActionRef.current = action;
+    invalidateNotificationFeed();
     setNotificationBusy(true);
     setNotificationError(null);
+    const current = () => notificationActionRef.current === action && currentNotificationScope(scope) && !action.controller.signal.aborted;
     try {
-    const csrf = getCsrfToken();
-    const response = await fetchWithSession('/notifications/read-all', {
-      method: 'POST',
-      headers: {
-        ...(csrf ? { 'x-csrf-token': csrf } : {}),
-      },
-    });
-    if (!response.ok) throw new Error('Notification update could not be confirmed. Retry to refresh the saved state.');
-
-    setNotifications((current) => current.map((item) => (item.readAt ? item : { ...item, readAt: new Date().toISOString() })));
-    setUnreadCount(0);
-    } catch { setNotificationError('Notification update could not be confirmed. Retry to refresh the saved state.'); }
-    finally { setNotificationBusy(false); }
+      const csrf = getCsrfToken();
+      const response = await fetchWithSession(all ? '/notifications/read-all' : '/notifications/read', {
+        method: 'POST',
+        signal: action.controller.signal,
+        headers: {
+          ...(!all ? { 'Content-Type': 'application/json' } : {}),
+          ...(csrf ? { 'x-csrf-token': csrf } : {}),
+        },
+        ...(!all ? { body: JSON.stringify({ ids: [notificationId] }) } : {}),
+      });
+      if (!current()) return;
+      if (!response.ok) throw new Error('Notification update could not be confirmed.');
+      const payload: unknown = await response.json();
+      if (!current()) return;
+      const result = parseNotificationMutation(payload, all);
+      setUnreadCount(result.unreadCount);
+      // Saved timestamps and concurrent arrivals come from readback, never from the browser clock.
+      await refreshNotifications(scope, result.updated > 0 ? savedNotificationRefreshError : confirmedNotificationRefreshError);
+    } catch {
+      if (current()) setNotificationError('Notification update could not be confirmed. Retry to refresh the saved state.');
+    } finally {
+      if (current()) {
+        notificationActionRef.current = null;
+        setNotificationBusy(false);
+      }
+    }
   }
+
+  async function markOneAsRead(notificationId: string) { await mutateNotificationRead(notificationId); }
+  async function markAllAsRead() { await mutateNotificationRead(); }
 
   const visibleNavItems = useMemo(() => getVisibleDashboardNavItems(user?.permissions), [user?.permissions]);
   const mobileNavGroups = useMemo(() => getDashboardMobileNavGroups(user?.permissions), [user?.permissions]);
@@ -276,16 +359,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
             <NotificationsMenu
               error={notificationError}
               busy={notificationBusy}
-              onRetry={async () => {
-                setNotificationBusy(true);
-                try {
-                  const feed = await fetchJsonWithSession<{ data: DashboardNotification[]; unreadCount: number }>('/notifications?status=all&limit=20');
-                  setNotifications(feed.data ?? []);
-                  setUnreadCount(feed.unreadCount ?? 0);
-                  setNotificationError(null);
-                } catch { setNotificationError('Notifications are still unavailable. Please retry.'); }
-                finally { setNotificationBusy(false); }
-              }}
+              onRetry={retryNotifications}
               notificationsOpen={notificationsOpen}
               notifications={notifications}
               unreadCount={unreadCount}

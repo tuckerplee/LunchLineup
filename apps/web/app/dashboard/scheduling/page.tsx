@@ -25,7 +25,7 @@ import {
 } from '@/lib/location-timezone';
 import type { SchedulerViewMode, StaffScheduleEvent, StaffScheduleSlotSelection } from '@/components/scheduling/StaffScheduler';
 import { publishNotificationOutcome } from './publish-result';
-import { schedulePublishAttempt } from './publish-attempt';
+import { readSchedulePublishAttempt, schedulePublishAttempt, type SchedulePublishAttempt } from './publish-attempt';
 import {
   creditCount,
   parseSchedulePublishPreflight,
@@ -384,7 +384,7 @@ function SchedulingContent() {
   const demandWindowAttemptsRef = useRef<Record<string, IdempotentRequestAttempt>>({});
   const scheduleCreateAttemptsRef = useRef<Record<string, IdempotentRequestAttempt>>({});
   const reopenAttemptsRef = useRef<Record<string, IdempotentRequestAttempt>>({});
-  const publishAttemptsRef = useRef<Record<string, IdempotentRequestAttempt>>({});
+  const publishAttemptsRef = useRef<Record<string, SchedulePublishAttempt>>({});
   const publishingScheduleIdRef = useRef<string | null>(null);
   const latestLoadRequestRef = useRef(0);
   const calendarVisitGenerationRef = useRef(0);
@@ -1227,16 +1227,24 @@ function SchedulingContent() {
         }
       }
 
-      const publishAttempt = schedulePublishAttempt(
-        scheduleId,
-        publishReview!.acceptedContract,
-        publishAttemptsRef.current[scheduleId],
-      );
+      const publishAttempt = replayingOriginalAttempt
+        ? readSchedulePublishAttempt(scheduleId, publishAttemptsRef.current[scheduleId])
+        : schedulePublishAttempt(
+          scheduleId,
+          publishReview!.acceptedContract,
+          publishAttemptsRef.current[scheduleId],
+        );
+      if (!publishAttempt) {
+        const message = 'The original publish outcome remains unconfirmed, and its saved retry request is unavailable. Check the saved schedule status before retrying.';
+        setError(message);
+        setScheduleStatus({ tone: 'warning', message });
+        return;
+      }
       publishAttemptsRef.current[scheduleId] = publishAttempt;
       publishRequestStarted = true;
       const publishedPayload = await apiV2.publishSchedule(
         scheduleId,
-        { acceptedContract: publishReview!.acceptedContract },
+        publishAttempt.payload.body,
         publishAttempt.key,
       );
       const published = parseSchedulePublishResponse(scheduleId, publishedPayload);

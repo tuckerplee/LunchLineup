@@ -32,6 +32,7 @@ type PayrollPeriodDetailProps = {
   onAmendment: (entryId: string, input: PayrollAmendmentInput) => Promise<boolean>;
   onAmendmentDecision: (amendmentId: string, decision: PayrollDecision, reason?: string) => Promise<void>;
   onExport: (confirmedCost: number) => Promise<void>;
+  onCancelExportPreparation: () => void;
   onDownload: () => Promise<void>;
   onReconcile: (batchId: string, input: PayrollReconciliationInput) => Promise<void>;
   onReplayReconciliation: () => Promise<void>;
@@ -49,7 +50,7 @@ function employeeLabel(card: PayrollCard): string {
 export function PayrollPeriodDetail({
   detail, periods, capabilities, currentUserId, creditCost, creditCostError, reconciliationReplay, busyAction,
   onLoadCards, onLoadExportLines, onAdopt, onDecision, onReview, onLock, onAmendment, onAmendmentDecision,
-  onExport, onDownload, onReconcile, onReplayReconciliation,
+  onExport, onCancelExportPreparation, onDownload, onReconcile, onReplayReconciliation,
 }: PayrollPeriodDetailProps) {
   const { period, cards, nextCardCursor, lockedEntries, amendments } = detail;
   const readiness = payrollReadiness(period);
@@ -61,6 +62,18 @@ export function PayrollPeriodDetail({
   const [selectionError, setSelectionError] = useState<string | null>(null);
   const [confirmation, setConfirmation] = useState<Confirmation>(null);
   const confirmationRef = useRef<HTMLDivElement>(null);
+  const confirmationGeneration = useRef(0);
+  useEffect(() => {
+    confirmationGeneration.current += 1;
+    setConfirmation(null);
+    onCancelExportPreparation();
+  }, [period.id, currentUserId, onCancelExportPreparation]);
+
+  function cancelConfirmation() {
+    confirmationGeneration.current += 1;
+    if (confirmation === 'export') onCancelExportPreparation();
+    setConfirmation(null);
+  }
 
   const selectableCards = useMemo(() => cards.filter((card) => (
     period.status === 'OPEN' ? capabilities.canWritePayrollPolicy && card.adoptionEligible
@@ -94,9 +107,10 @@ export function PayrollPeriodDetail({
   }
 
   async function confirm() {
+    const generation = confirmationGeneration.current;
     if (confirmation === 'lock') await onLock();
     if (confirmation === 'export' && creditCost !== null && hasExportableEntries) await onExport(creditCost);
-    setConfirmation(null);
+    if (confirmationGeneration.current === generation) setConfirmation(null);
   }
 
   const batch = period.exportBatch;
@@ -129,10 +143,10 @@ export function PayrollPeriodDetail({
         {period.status === 'LOCKED' && capabilities.canExportPayroll && hasExportableEntries && creditCostError && !batch ? <div role="alert" className={styles.inlineError}>{creditCostError}</div> : null}
       </section>
 
-      {confirmation ? <div ref={confirmationRef} className={`surface-card ${styles.confirmation}`} role="alertdialog" aria-modal="false" aria-labelledby="payroll-confirmation-title" tabIndex={-1} onKeyDown={(event) => { if (event.key === 'Escape' && !isBusy) setConfirmation(null); }}>
-        <div className={styles.sectionHeading}><h3 id="payroll-confirmation-title" className={styles.confirmationTitle}>{confirmation === 'lock' ? 'Lock this payroll period?' : 'Create the payroll export?'}</h3><button className={styles.iconButton} type="button" onClick={() => setConfirmation(null)} aria-label="Cancel confirmation"><X size={16} aria-hidden="true" /></button></div>
+      {confirmation ? <div ref={confirmationRef} className={`surface-card ${styles.confirmation}`} role="alertdialog" aria-modal="false" aria-labelledby="payroll-confirmation-title" tabIndex={-1} onKeyDown={(event) => { if (event.key === 'Escape' && (!isBusy || confirmation === 'export')) cancelConfirmation(); }}>
+        <div className={styles.sectionHeading}><h3 id="payroll-confirmation-title" className={styles.confirmationTitle}>{confirmation === 'lock' ? 'Lock this payroll period?' : 'Create the payroll export?'}</h3><button className={styles.iconButton} type="button" onClick={cancelConfirmation} aria-label="Cancel confirmation"><X size={16} aria-hidden="true" /></button></div>
         <p>{confirmation === 'lock' ? 'Locking closes this review. Any later correction must be recorded as an amendment in a future period.' : <>Creating this export uses <strong>{creditCost} {creditCost === 1 ? 'credit' : 'credits'}</strong>. Downloading it again does not use more credits.</>}</p>
-        <div className={styles.actionRow}><button className="btn btn-primary btn-sm" type="button" disabled={isBusy} onClick={() => void confirm()}>{confirmation === 'lock' ? <LockKeyhole size={15} aria-hidden="true" /> : <FileDown size={15} aria-hidden="true" />}{isBusy ? 'Working...' : confirmation === 'lock' ? 'Lock payroll' : 'Create export'}</button><button className="btn btn-secondary btn-sm" type="button" disabled={isBusy} onClick={() => setConfirmation(null)}>Cancel</button></div>
+        <div className={styles.actionRow}><button className="btn btn-primary btn-sm" type="button" disabled={isBusy} onClick={() => void confirm()}>{confirmation === 'lock' ? <LockKeyhole size={15} aria-hidden="true" /> : <FileDown size={15} aria-hidden="true" />}{isBusy ? 'Working...' : confirmation === 'lock' ? 'Lock payroll' : 'Create export'}</button><button className="btn btn-secondary btn-sm" type="button" disabled={isBusy && confirmation !== 'export'} onClick={cancelConfirmation}>Cancel</button></div>
       </div> : null}
 
       {period.status !== 'LOCKED' ? <section className={`surface-card ${styles.tablePanel}`} aria-labelledby="payroll-cards-title">

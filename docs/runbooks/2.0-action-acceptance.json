@@ -3,8 +3,8 @@
   "kind": "lunchlineup-action-acceptance-plan",
   "releaseQualified": false,
   "acceptanceExecuted": false,
-  "preparedFromCommit": "861c7789362326b981f25f127ddfa9ad837e0ff3",
-  "preparedFromTree": "4d92c25f132c427715e530812e0f971781b89d26",
+  "preparedFromCommit": "c692163dc84ba2dc886b567e390786fb46373607",
+  "preparedFromTree": "32152dc637b4390deb1c137143b36e032e7840a4",
   "scope": {
     "originalWorkflowsAreMinimum": true,
     "allExposedActionsRequired": true,
@@ -3228,6 +3228,11 @@
             "path": "tests/integration/api-v2-payroll-native.test.mjs",
             "title": "native API v2 Payroll uses public IDs, tenant RLS, immutable evidence, exact-once export, and reconciliation"
           }
+        },
+        {
+          "id": "lockPayrollPeriod.current-authority-after-wait",
+          "contract": "Authenticate an exact valid payroll session, pause admitted work before final transaction authority or domain/effect wait, then revoke/expire that session, change current grant/PIN/MFA/account policy, or cross its effective lifetime. The actual owner must refuse new effects and stale replay/recovery with unchanged committed payroll/wallet/audit evidence. Preserve valid exact replay and independent historical approver evidence. Source gap triaged; behavioral repair and real PostgreSQL/RLS/lock-order qualification remain pending.",
+          "evidenceKind": "security-native-concurrency"
         }
       ],
       "workflowIds": [
@@ -3287,6 +3292,11 @@
             "path": "tests/integration/api-v2-payroll-native.test.mjs",
             "title": "native API v2 Payroll uses public IDs, tenant RLS, immutable evidence, exact-once export, and reconciliation"
           }
+        },
+        {
+          "id": "createPayrollAmendment.current-authority-after-wait",
+          "contract": "Authenticate an exact valid payroll session, pause admitted work before final transaction authority or domain/effect wait, then revoke/expire that session, change current grant/PIN/MFA/account policy, or cross its effective lifetime. The actual owner must refuse new effects and stale replay/recovery with unchanged committed payroll/wallet/audit evidence. Preserve valid exact replay and independent historical approver evidence. Source gap triaged; behavioral repair and real PostgreSQL/RLS/lock-order qualification remain pending.",
+          "evidenceKind": "security-native-concurrency"
         }
       ],
       "workflowIds": [
@@ -3345,6 +3355,11 @@
             "path": "tests/integration/api-v2-payroll-native.test.mjs",
             "title": "native API v2 Payroll uses public IDs, tenant RLS, immutable evidence, exact-once export, and reconciliation"
           }
+        },
+        {
+          "id": "decidePayrollAmendment.current-authority-after-wait",
+          "contract": "Authenticate an exact valid payroll session, pause admitted work before final transaction authority or domain/effect wait, then revoke/expire that session, change current grant/PIN/MFA/account policy, or cross its effective lifetime. The actual owner must refuse new effects and stale replay/recovery with unchanged committed payroll/wallet/audit evidence. Preserve valid exact replay and independent historical approver evidence. Source gap triaged; behavioral repair and real PostgreSQL/RLS/lock-order qualification remain pending.",
+          "evidenceKind": "security-native-concurrency"
         }
       ],
       "workflowIds": [
@@ -3405,6 +3420,43 @@
             "path": "tests/integration/api-v2-payroll-native.test.mjs",
             "title": "native API v2 Payroll uses public IDs, tenant RLS, immutable evidence, exact-once export, and reconciliation"
           }
+        },
+        {
+          "id": "createPayrollExport.current-authority-after-wait",
+          "contract": "Authenticate an exact valid payroll session, pause admitted work before final transaction authority or domain/effect wait, then revoke/expire that session, change current grant/PIN/MFA/account policy, or cross its effective lifetime. The actual owner must refuse new effects and stale replay/recovery with unchanged committed payroll/wallet/audit evidence. Preserve valid exact replay and independent historical approver evidence. Source gap triaged; behavioral repair and real PostgreSQL/RLS/lock-order qualification remain pending.",
+          "evidenceKind": "security-native-concurrency"
+        },
+        {
+          "id": "createPayrollExport.preparation-intent-fence",
+          "contract": "Hold entitlement or payload hashing after A confirmation, then change selection/owner or cancel before dispatch. Refuse obsolete dispatch/custody writes and preserve current B selector/detail. A sent request retains exact replay custody; acknowledged A success/readback must not replace B detail or be described as an unconfirmed charge. Repeat real rendered/private HTTP workflow with independent settlement readback.",
+          "evidenceKind": "local-handler-plus-browser-native",
+          "executable": {
+            "path": "apps/web/tests/unit/payroll-export-handler.test.ts",
+            "title": "refuses obsolete A after selecting B while entitlement waits"
+          }
+        },
+        {
+          "id": "createPayrollExport.late-readback",
+          "contract": "A acknowledged export readback finishing after selection of B must preserve B selector/detail while updating A scoped summary. Verify actual rendered route and independent committed settlement; local hook ledger is only a control.",
+          "evidenceKind": "local-handler-plus-browser-native",
+          "executable": {
+            "path": "apps/web/tests/unit/payroll-export-handler.test.ts",
+            "title": "does not install a late A follow-up readback after acknowledged export and selection of B"
+          }
+        },
+        {
+          "id": "createPayrollExport.cancelled-confirmation",
+          "contract": "Cancel an actual export confirmation during entitlement lookup, reopen it, and finish the old lookup. No obsolete POST or dismissal of the new panel; cancellation after dispatch preserves exact replay custody. Verify real React/browser focus and request/ledger behavior separately.",
+          "evidenceKind": "local-handler-plus-browser-native",
+          "executable": {
+            "path": "apps/web/tests/unit/payroll-export-handler.test.ts",
+            "title": "the actual confirmation cancel handler invalidates an unsent entitlement continuation"
+          }
+        },
+        {
+          "id": "createPayrollExport.requested-resource-response-binding",
+          "contract": "Bind export and follow-up period responses to the requested public period/batch identity before installing workspace detail. A well-shaped response for a different period must not create selector/detail mismatch or clear unrelated replay custody. Execute actual client/normalizer boundary and then private HTTP/browser plus independent ledger; existing mocked handler checks do not qualify this gate.",
+          "evidenceKind": "client-contract-plus-browser-native"
         }
       ],
       "workflowIds": [
@@ -3526,6 +3578,11 @@
             "path": "tests/integration/api-v2-payroll-native.test.mjs",
             "title": "native API v2 Payroll uses public IDs, tenant RLS, immutable evidence, exact-once export, and reconciliation"
           }
+        },
+        {
+          "id": "downloadPayrollExport.current-authority-after-wait",
+          "contract": "Authenticate an exact valid payroll session, pause admitted work before final transaction authority or domain/effect wait, then revoke/expire that session, change current grant/PIN/MFA/account policy, or cross its effective lifetime. The actual owner must refuse new effects and stale replay/recovery with unchanged committed payroll/wallet/audit evidence. Preserve valid exact replay and independent historical approver evidence. Source gap triaged; behavioral repair and real PostgreSQL/RLS/lock-order qualification remain pending.",
+          "evidenceKind": "security-native-concurrency"
         }
       ],
       "workflowIds": [
@@ -3585,6 +3642,11 @@
             "path": "tests/integration/api-v2-payroll-native.test.mjs",
             "title": "native API v2 Payroll uses public IDs, tenant RLS, immutable evidence, exact-once export, and reconciliation"
           }
+        },
+        {
+          "id": "reconcilePayrollExport.current-authority-after-wait",
+          "contract": "Authenticate an exact valid payroll session, pause admitted work before final transaction authority or domain/effect wait, then revoke/expire that session, change current grant/PIN/MFA/account policy, or cross its effective lifetime. The actual owner must refuse new effects and stale replay/recovery with unchanged committed payroll/wallet/audit evidence. Preserve valid exact replay and independent historical approver evidence. Source gap triaged; behavioral repair and real PostgreSQL/RLS/lock-order qualification remain pending.",
+          "evidenceKind": "security-native-concurrency"
         }
       ],
       "workflowIds": [
@@ -3643,6 +3705,15 @@
           "executable": {
             "path": "tests/integration/api-v2-notifications-native.test.mjs",
             "title": "native API v2 notifications keep feed IDs public, cursor pagination tenant-scoped, and read state private to the session user"
+          }
+        },
+        {
+          "id": "listNotifications.manual-refresh-supersedes-poll",
+          "contract": "Resolve a manual feed retry before an older poll finishes. Preserve the newer authoritative feed/count; old failure must not replace its success. Include initial-feed and unmount/session-remount controls; local hook ledger is not React/browser qualification.",
+          "evidenceKind": "local-handler-plus-browser-native",
+          "executable": {
+            "path": "apps/web/tests/unit/dashboard-notification-handler.test.ts",
+            "title": "keeps a newer manual refresh when an older poll finishes afterward"
           }
         }
       ],
@@ -3703,6 +3774,24 @@
             "path": "tests/integration/api-v2-notifications-native.test.mjs",
             "title": "native API v2 notifications keep feed IDs public, cursor pagination tenant-scoped, and read state private to the session user"
           }
+        },
+        {
+          "id": "markNotificationRead.authoritative-ui-result",
+          "contract": "Actual header handler must honor updated0 and authoritative unreadCount after another client read/deletion, then use saved feed timestamps. Include positive own-user update and failed-read controls; local hook ledger does not qualify actual browser/native session or durable database state.",
+          "evidenceKind": "local-handler-plus-browser-native",
+          "executable": {
+            "path": "apps/web/tests/unit/dashboard-notification-handler.test.ts",
+            "title": "uses the authoritative updated0 count and refreshes saved feed instead of decrementing"
+          }
+        },
+        {
+          "id": "markNotificationRead.stale-feed-after-confirmed-read",
+          "contract": "Delay an old feed poll, confirm an actual read mutation and authoritative readback, then finish the old poll. Preserve confirmed counts/timestamps and refuse stale success/error independently of abort. Real browser/session/native isolation proof remains required.",
+          "evidenceKind": "local-handler-plus-browser-native",
+          "executable": {
+            "path": "apps/web/tests/unit/dashboard-notification-handler.test.ts",
+            "title": "keeps confirmed read state when an older poll finishes after the mutation"
+          }
         }
       ],
       "workflowIds": [
@@ -3760,6 +3849,15 @@
           "executable": {
             "path": "tests/integration/api-v2-notifications-native.test.mjs",
             "title": "native API v2 notifications keep feed IDs public, cursor pagination tenant-scoped, and read state private to the session user"
+          }
+        },
+        {
+          "id": "markAllNotificationsRead.later-arrival-readback",
+          "contract": "Confirm all-read updated/count response, then read saved feed with a later unread arrival. Preserve saved timestamps and display the authoritative new unread count without asserting permanent zero or inventing browser timestamps. Native committed and rendered browser readback remain required.",
+          "evidenceKind": "local-handler-plus-browser-native",
+          "executable": {
+            "path": "apps/web/tests/unit/dashboard-notification-handler.test.ts",
+            "title": "keeps saved timestamps and new arrivals from authoritative readback"
           }
         }
       ],
@@ -8986,6 +9084,29 @@
           "id": "refusal-recovery",
           "contract": "Unaccepted/changed quote, stale revision, insufficient credits/coverage or authority loss refuses atomic domain mutation; response loss same identity replays without second debit or intent.",
           "evidenceKind": "native-integration"
+        },
+        {
+          "id": "cross-schedule-replay-review",
+          "contract": "Controlled actual-page handler check must replay pending A with its exact original key/body after reviewing different B. The local hook ledger is not React/browser or committed debit proof; repeat through the rendered private route and independently read one settled debit/intent.",
+          "evidenceKind": "local-handler-plus-browser-native",
+          "executable": {
+            "path": "apps/web/tests/unit/scheduling-publish-handler.test.ts",
+            "title": "replays A exact original body and key after reviewing a different B contract"
+          }
+        },
+        {
+          "id": "cross-schedule-replay-settled",
+          "contract": "Controlled actual-page handler check must replay pending A with its exact original key/body after successful B clears the shared review. The local hook ledger is not React/browser or committed debit proof; repeat through the rendered private route and independently read one settled debit/intent.",
+          "evidenceKind": "local-handler-plus-browser-native",
+          "executable": {
+            "path": "apps/web/tests/unit/scheduling-publish-handler.test.ts",
+            "title": "replays A exact original body and key after successful B clears the shared review"
+          }
+        },
+        {
+          "id": "issued-contract-response-binding",
+          "contract": "Bind a returned publication settlement to the exact issued schedule and accepted contract, not merely an internally consistent receipt with a different cost/version. Exercise actual transport/parser/handler with a wrong-contract success and retain original unresolved replay custody; then verify real HTTP and independent committed settlement. This is an additional unexecuted contract gate, not a newly proven defect.",
+          "evidenceKind": "client-contract-plus-browser-native"
         }
       ],
       "workflowIds": [
@@ -10424,6 +10545,21 @@
           "id": "refusal-recovery",
           "contract": "Provider/lease/lifecycle failures use stable outbox identity and bounded retry or terminal erasure; independently verify no duplicate durable Notification. Redis fanout after DELIVERED is best effort: rejection is logged and does not retry that fanout. Verify durable feed recovery across a missed event; no guaranteed/exact-once fanout claim.",
           "evidenceKind": "runtime-integration"
+        },
+        {
+          "id": "stale-attempt-before-effects",
+          "contract": "Pause claimed attempt1, let reclaimed attempt2 finish/terminalize, then resume attempt1. Current ownership must prevent obsolete durable feed effects/external handoff and terminal revival. Include active-owner/transient-retry controls; actual PostgreSQL lease/locks and provider evidence remain required.",
+          "evidenceKind": "runtime-native-concurrency"
+        },
+        {
+          "id": "lifecycle-before-handoff",
+          "contract": "Commit recipient deletion/anonymization or tenant purge after eligibility/feed transaction but before an external call has started. Prevent a new handoff with captured erased recipient content, preserve erased feed/outbox, and retain active-recipient controls. An already accepted external call is not reversible. Actual lifecycle/lock/provider proof remains required.",
+          "evidenceKind": "runtime-native-lifecycle"
+        },
+        {
+          "id": "terminal-diagnostic-erasure",
+          "contract": "Actual terminal payload-erasure migration forces DEAD_LETTERED lastError NULL. Reconcile documentation/mock claims with that privacy contract; independent native terminal-row readback must verify erased content/error while safe operator logs/metrics remain observable.",
+          "evidenceKind": "native-migration-readback"
         }
       ],
       "workflowIds": [
@@ -11336,7 +11472,7 @@
       "sourceAnchors": [
         {
           "path": "apps/web/app/dashboard/scheduling/page.tsx",
-          "line": 2757,
+          "line": 2765,
           "sourceLine": "export default function SchedulingPage() {"
         }
       ],
@@ -15128,6 +15264,7 @@
     "Phase74 prepared password-reset fences address the local captured-time and current-account/recipient source defects; admitted PostgreSQL overlap, UTC statement-clock expiry, actual RLS/rollback and provider/browser verification remain pending. Phase75 prepared durable MFA generation/TTL/lifecycle/retention source requires native migration, SQL/RLS/clock/overlap and coherent owner/key rollout qualification, and reset-page reload custody remains a policy choice. All265 actions,47 selected browser cases,84 minimum workflows, real provider/recovery/security/load evidence and months of private testing remain pending; no native admission, VM107 action, VM4014/VM106 contact or public activation follows from these local results.",
     "Password-reset local statements and transaction-private effect ledgers do not execute PostgreSQL or prove native lock/isolation/RLS/statement-clock/rollback/cardinality behavior. Explicit ReadCommitted fences avoid a pre-lock Serializable snapshot, but actual overlap proof remains pending. Public request must remain account-blind; token recovery deliberately keeps its existing lockout/PIN/MFA and issued-capability policy.",
     "Phase75 durable MFA local controls exercise actual retained owners over synthetic SQL clock and transaction-private effects. Native PostgreSQL locks/isolation/RLS/statement-clock/rollback, migration/trigger/encryption constraints, all connected lifecycle owners and bounded SKIP LOCKED retention remain unexecuted. Both retained MFA route families and retention owner must upgrade coherently with additive schema and configured encrypted write key; old Redis-only challenges must restart and security rollback must not restore old pending authority. No deploy/build/native admission/QA lease/provider/browser or production launch follows from source fixes. All acceptance actions remain pending.",
-    "Phase76 adds the previously unlisted legacy-import operator action: all266 action statuses remain pending. Exact-export retry source uses immutable private receipts and create-only atomic initialization; real export lineage/adapter approval, native SQL/RLS/locks/concurrency/commit recovery, target-generation/receipt retention, all provider/browser/build/recovery/security/load gates and months of private qualification remain unverified. Local planner/transaction-ledger tests do not authorize production, VM106/VM107 contact, launch or protected QA."
+    "Phase76 adds the previously unlisted legacy-import operator action: all266 action statuses remain pending. Exact-export retry source uses immutable private receipts and create-only atomic initialization; real export lineage/adapter approval, native SQL/RLS/locks/concurrency/commit recovery, target-generation/receipt retention, all provider/browser/build/recovery/security/load gates and months of private qualification remain unverified. Local planner/transaction-ledger tests do not authorize production, VM106/VM107 contact, launch or protected QA.",
+    "Phase77 prepared UI source preserves original per-schedule publication body/key, fences payroll export preparation/custody and scoped readback, and reconciles header read state through authoritative responses and fresh feed. Controlled actual-handler fixtures use a deterministic hook ledger and mocked transport; they are not React scheduling, DOM/browser, native SQL/Redis, provider or committed billing proof. Current payroll transaction authority after waits/replay, outbox lease/lifecycle effect ordering, and terminal diagnostic documentation remain separate pending repairs/qualification. All266 actions,47 selected browser cases,84 minimum workflows, full operational gates and months of private testing remain required. preparedFromCommit/tree identify this edit increment base, not a qualified release or executed candidate."
   ]
 }
