@@ -43,7 +43,20 @@ type State = { tenant: Row | null; users: Row[]; sessions: Row[]; roles: Row[]; 
 const gate = () => { let release!: () => void; const promise = new Promise<void>(resolve => { release = resolve; }); return { promise, release }; };
 const flatten = (items: unknown[]): unknown[] => items.flatMap(x => x && typeof x === 'object' && 'values' in x
   ? flatten((x as { values: unknown[] }).values) : [x]);
-const clone = <T,>(value: T): T => structuredClone(value);
+function clone<T>(value: T): T {
+  // structuredClone faithfully copies Date and byte contents, but changes a
+  // Buffer into Uint8Array. Restore only that runtime type so live encrypted
+  // payloads and independent snapshots compare with identical byte semantics.
+  const restoreBuffers = (source: any, copied: any): any => {
+    if (Buffer.isBuffer(source)) return Buffer.from(source);
+    if (Array.isArray(source)) return source.map((item, index) => restoreBuffers(item, copied[index]));
+    if (source && typeof source === 'object' && !(source instanceof Date) && !ArrayBuffer.isView(source)) {
+      for (const key of Object.keys(source)) copied[key] = restoreBuffers(source[key], copied[key]);
+    }
+    return copied;
+  };
+  return restoreBuffers(value, structuredClone(value)) as T;
+}
 function matches(row: Row, where: Row): boolean {
   return Object.entries(where).every(([key, value]) => {
     if (key === 'role') return true; // Role relation is independently filtered below.
@@ -109,20 +122,36 @@ function fixture(action: Action) {
   const initial = gate(), initialRelease = gate(), late = gate(), lateRelease = gate();
   const attempts: Row[] = [], committed: Row[] = [];
   const controls = { active: 0, ttl: 60_000, observerFailure: false, observerOffline: false,
-    stage: 'tenant' as 'tenant' | 'role' | 'domain', entered: false, tenantVisits: 0,
+    stage: 'tenant' as 'tenant' | 'role' | 'domain' | 'finalRole' | 'effect' | 'response' | 'observer',
+    entered: false, tenantVisits: 0, transactions: 0, effectIndex: 0, noop: false, changeLogin: false, fullProfile: false,
     failAudit: false, conflictOnce: false, rejectCas: false, onConflict: undefined as (() => void) | undefined };
-  const initialSnapshot = () => clone(state);
+  const initialSnapshot = () => {
+    const copied = clone(state);
+    for (let index = 0; index < state.outboxes.length; index++) {
+      const payload = state.outboxes[index].encryptedPayload;
+      if (Buffer.isBuffer(payload)) {
+        expect(Buffer.isBuffer(copied.outboxes[index].encryptedPayload)).toBe(true);
+        expect(copied.outboxes[index].encryptedPayload).not.toBe(payload);
+        expect(copied.outboxes[index].encryptedPayload.equals(payload)).toBe(true);
+      }
+    }
+    return copied;
+  };
   const observeSessionMfa = vi.fn(async (selected: MfaSessionIdentity) => {
     expect(controls.active).toBe(0);
     expect(selected).toEqual({ sub: ids.actor, tenantId: ids.tenant, sessionId: ids.session });
     if (controls.observerFailure) throw new Error('controlled.redis.provider.secret');
     if (controls.ttl <= 0) return null;
-    return { ...selected, expiresAtEpochMs: Date.now() + controls.ttl, expiresAtMonotonicMs: performance.now() + controls.ttl };
+    const observation = { ...selected, expiresAtEpochMs: Date.now() + controls.ttl, expiresAtMonotonicMs: performance.now() + controls.ttl };
+    if (controls.stage === 'observer' && !controls.entered) { controls.entered = true; late.release(); await lateRelease.promise; }
+    expect(controls.active).toBe(0);
+    return observation;
   });
   const observer: Partial<{ observeSessionMfa: typeof observeSessionMfa }> = {};
   Object.defineProperty(observer, 'observeSessionMfa', { get: () => controls.observerOffline ? undefined : observeSessionMfa });
   const withTenant = vi.fn(async (tenantId: string, operation: (tx: any) => Promise<any>) => {
     expect(tenantId).toBe(ids.tenant); expect(controls.active).toBe(0); controls.active++;
+    const transactionOrdinal = ++controls.transactions;
     let draft: State | undefined;
     const pending: Row[] = [];
     const view = () => draft ?? state;
@@ -131,7 +160,9 @@ function fixture(action: Action) {
       const entry = { table, method, args: clone(args) }; attempts.push(entry); pending.push(entry); return startDraft();
     };
     const pause = async (kind: 'role' | 'domain') => {
-      if (controls.stage === kind && !controls.entered) { controls.entered = true; late.release(); await lateRelease.promise; }
+      if ((controls.stage === kind || (kind === 'role' && controls.stage === 'finalRole' && transactionOrdinal === 2)) && !controls.entered) {
+        controls.entered = true; late.release(); await lateRelease.promise;
+      }
     };
     const targetWhere = (where: Row) => {
       expect(where.tenantId).toBe(ids.tenant);
@@ -318,6 +349,56 @@ function fixture(action: Action) {
     }
     tx.refreshTokenReplay = { deleteMany: vi.fn(async (args: Row) => { expect(args.where).toEqual({ session: { userId: ids.target } });
       effect('refreshTokenReplay', 'deleteMany', args).cleanup.push({ table: 'refreshTokenReplay' }); return { count: 0 }; }) };
+    // Enumerated completion interceptors wrap the explicit stateful models above.
+    // The draft/attempt exists before the awaited promise resolves; this is not
+    // an ORM Proxy and never supplies an owner decision or a transaction queue.
+    const completionMethods: Array<[string, string]> = [
+      ['user', 'create'], ['user', 'update'], ['user', 'updateMany'], ['session', 'updateMany'],
+      ['roleAssignment', 'deleteMany'], ['roleAssignment', 'create'], ['roleAssignment', 'createMany'],
+      ['role', 'create'], ['role', 'update'], ['rolePermission', 'deleteMany'], ['auditLog', 'create'],
+      ['schedule', 'updateMany'], ['staffSkill', 'deleteMany'], ['staffSkill', 'createMany'],
+      ['staffAvailability', 'deleteMany'], ['staffAvailability', 'createMany'],
+      ['staffAvailabilityException', 'deleteMany'], ['staffAvailabilityException', 'createMany'],
+      ['staffInvitationOutbox', 'updateMany'], ['refreshTokenReplay', 'deleteMany'],
+      ...['availabilityImportJob', 'passwordResetToken', 'passwordResetEmailOutbox', 'mfaTotpClaim',
+        'onboardingSignupAttempt', 'notificationOutbox', 'notification'].flatMap(table =>
+          [[table, 'updateMany'], [table, 'deleteMany']] as Array<[string, string]>),
+    ];
+    const pauseCompletion = async (before: number) => {
+      if (controls.stage === 'effect' && attempts.length > before && attempts.length === controls.effectIndex && !controls.entered) {
+        expect(transactionOrdinal).toBe(2); expect(controls.active).toBe(1);
+        controls.entered = true; late.release(); await lateRelease.promise;
+      }
+    };
+    for (const [table, method] of completionMethods) {
+      const original = tx[table][method];
+      tx[table][method] = vi.fn(async (...args: any[]) => {
+        const before = attempts.length; const value = await original(...args); await pauseCompletion(before); return value;
+      });
+    }
+    const originalExecute = tx.$executeRaw;
+    tx.$executeRaw = vi.fn(async (...args: any[]) => {
+      const before = attempts.length; const value = await originalExecute(...args); await pauseCompletion(before); return value;
+    });
+    for (const [table, method] of [['roleAssignment', 'findMany'], ['shift', 'findMany'],
+      ['staffInvitationOutbox', 'findUnique']] as const) {
+      const original = tx[table][method];
+      tx[table][method] = vi.fn(async (args: Row) => {
+        const value = await original(args);
+        const returnedRoles = table === 'roleAssignment' && action === 'updateIdentity'
+          && args.where.userId?.in?.length === 1 && args.where.userId.in[0] === ids.target
+          && (controls.noop || attempts.length > 0);
+        const returnedLifecycle = table === 'shift' && action === 'setSuspended';
+        const returnedOutbox = table === 'staffInvitationOutbox'
+          && ((action === 'retryInvitation' && (controls.noop || attempts.length > 0))
+            || (action === 'reissueInvitation' && args.where.id && (controls.noop || attempts.length > 0)));
+        if (controls.stage === 'response' && transactionOrdinal === 2 && !controls.entered
+          && (returnedRoles || returnedLifecycle || returnedOutbox)) {
+          controls.entered = true; late.release(); await lateRelease.promise;
+        }
+        return value;
+      });
+    }
     try {
       const result = await operation(tx);
       if (pending.length && controls.conflictOnce) { controls.conflictOnce = false; controls.onConflict?.(); throw { code: '40001' }; }
@@ -329,14 +410,16 @@ function fixture(action: Action) {
   const version = createHash('sha256').update(JSON.stringify([state.users[1].name, '', state.users[1].username])).digest('hex');
   const call = () => {
     switch (action) {
-      case 'updateIdentity': return service.updateIdentity(identity, pub.target, { name: 'Changed name', email: '', username: state.users[1].username, expectedVersion: version });
-      case 'replaceSchedulingProfile': return service.replaceSchedulingProfile(identity, pub.target, { skills: ['expo'], availability: [], expectedVersion: profileVersion(ids.target, [], [], []) });
+      case 'updateIdentity': return service.updateIdentity(identity, pub.target, { name: controls.noop ? state.users[1].name : 'Changed name', email: '', username: controls.changeLogin ? 'changed.staff' : state.users[1].username, expectedVersion: version });
+      case 'replaceSchedulingProfile': return service.replaceSchedulingProfile(identity, pub.target, { skills: ['expo'], availability: controls.fullProfile ? [{ locationId: null, dayOfWeek: 1, startTimeMinutes: 540, endTimeMinutes: 600 }] : [],
+        ...(controls.fullProfile ? { availabilityExceptions: [{ locationId: null, date: '2026-10-05', kind: 'AVAILABLE' as const, allDay: false, startTimeMinutes: 600, endTimeMinutes: 660 }] } : {}),
+        expectedVersion: profileVersion(ids.target, [], [], []) });
       case 'invite': return service.invite(identity, { name: 'New staff', username: 'new.staff', pin: newPin, roleId: pub.staff });
       case 'retryInvitation': return service.retryInvitation(identity, pub.target);
       case 'reissueInvitation': return service.reissueInvitation(identity, pub.target, 'controlled-reissue-key');
       case 'resetPin': return service.resetPin(identity, pub.target, newPin);
       case 'replaceOwnPin': return service.replaceOwnPin(identity, oldPin, newPin);
-      case 'setSuspended': return service.setSuspended(identity, pub.target, { suspended: true, expectedSuspendedAt: null });
+      case 'setSuspended': return service.setSuspended(identity, pub.target, { suspended: !controls.noop, expectedSuspendedAt: null });
       case 'remove': return service.remove(identity, pub.target);
       case 'replaceAccess': return service.replaceAccess(identity, pub.target, [pub.staff]);
       case 'createRole': return service.createRole(identity, { name: 'Reader', permissionKeys: ['users:read'] });
@@ -538,5 +621,246 @@ describe('actual People self PIN recovery and async proof authority', () => {
     expect(h.state.users[0].pinLockedUntil.getTime()).toBe(Date.now() + 15 * 60_000);
     expect(h.state.users[0].pinHash).toBe(pinHash); expect(h.state.audits).toEqual([]); expect(h.state.sessions[0].revokedAt).toBeNull();
     expect(h.committed.filter(x => x.table === 'user')).toHaveLength(5);
+  });
+});
+
+
+// Phase67: these gates distinguish preflight, final authority, effect completion
+// and owner response reads. No state change is injected while modeled final
+// locks are held; only time advances there. Live-state changes occur exclusively
+// during the observer interval with zero active database callbacks.
+const mutationActions: Action[] = [...actions, 'replaceOwnPin'];
+const effectPrefix = (rows: Row[]) => rows.map(({ table, method }) => ({ table, method }));
+function captureCall(operation: () => Promise<unknown>) {
+  return operation().then(value => ({ value, error: undefined as unknown }), error => ({ value: undefined, error }));
+}
+async function atLifetimeGate(h: Fixture, stage: 'finalRole' | 'effect' | 'response' | 'observer',
+  change: () => void, operation: () => Promise<unknown> = h.call) {
+  h.controls.stage = stage;
+  if (h.state.users[0].role === 'STAFF') cryptoWork.onStart = () => expect(h.controls.active).toBe(0);
+  const result = captureCall(operation);
+  try {
+    expect(await Promise.race([h.initial.promise.then(() => 'entered'), result.then(() => 'settled')])).toBe('entered');
+    h.initialRelease.release();
+    expect(await Promise.race([h.late.promise.then(() => 'entered'), result.then(() => 'settled')])).toBe('entered');
+    expect(h.controls.transactions).toBe(stage === 'observer' ? 1 : 2);
+    expect(h.controls.active).toBe(stage === 'observer' ? 0 : 1);
+    change(); h.lateRelease.release(); return await result;
+  } finally { h.initialRelease.release(); h.lateRelease.release(); await result; }
+}
+function rollback403(result: { error: unknown }, h: Fixture, snapshot: State, prefix: Row[],
+  code = 'permission_denied') {
+  expect(result.error).toBeInstanceOf(ProblemError);
+  expect(result.error).toMatchObject({ status: 403, code });
+  expect(effectPrefix(h.attempts)).toEqual(prefix);
+  expect(h.committed).toEqual([]); expect(h.state).toEqual(snapshot);
+  expect(h.controls.active).toBe(0);
+}
+async function viableControl(h: Fixture, operation: () => Promise<unknown> = h.call) {
+  if (h.state.users[0].role === 'STAFF') cryptoWork.onStart = () => expect(h.controls.active).toBe(0);
+  h.initialRelease.release(); const result = await captureCall(operation);
+  expect(result.error).toBeUndefined(); expect(h.controls.transactions).toBe(2);
+  expect(h.controls.active).toBe(0); expect(h.committed.length).toBeGreaterThan(0);
+  expect(effectPrefix(h.attempts)).toEqual(effectPrefix(h.committed)); return result;
+}
+const lifetimeModes = ['stored Session', 'effective policy', 'bounded MFA'] as const;
+function isolatedLifetime(h: Fixture, mode: typeof lifetimeModes[number]): number {
+  if (mode === 'stored Session') {
+    h.state.sessions[0].expiresAt = new Date(Date.now() + 1000); return 1001;
+  }
+  if (mode === 'effective policy') {
+    h.state.security.sessionTimeoutMinutes = 30;
+    h.state.sessions[0].createdAt = new Date(Date.now() - 29 * 60_000);
+    h.controls.ttl = 120_000; return 60_000;
+  }
+  h.controls.ttl = 1000;
+  if (h.state.users[0].role === 'STAFF') h.state.users[0].mfaEnabled = true;
+  return 1001;
+}
+describe('People lifetime at final authority and every reached modeled effect completion', () => {
+  for (const action of mutationActions) {
+    it.each(lifetimeModes)(action + ' refuses %s expiry at RolePermission in final transaction exactly2', async mode => {
+      const h = fixture(action), jump = isolatedLifetime(h, mode), snapshot = h.snapshot();
+      const result = await atLifetimeGate(h, 'finalRole', () => { vi.setSystemTime(Date.now() + jump); });
+      rollback403(result, h, snapshot, [], mode === 'bounded MFA' ? 'mfa_verification_required' : 'permission_denied');
+    });
+    it(action + ' discards each attempted-effect prefix when expiry occurs before that promise resolves', async () => {
+      const control = fixture(action);
+      await viableControl(control);
+      const completed = effectPrefix(control.committed);
+      expect(completed.length).toBeGreaterThan(0);
+      // Actual successful owner traversal discovers reached effects. Every one
+      // is then paused after its explicit model mutation and before resolution.
+      for (const mode of lifetimeModes) {
+        for (let index = 1; index <= completed.length; index++) {
+          const h = fixture(action), jump = isolatedLifetime(h, mode), snapshot = h.snapshot(); h.controls.effectIndex = index;
+          const result = await atLifetimeGate(h, 'effect', () => { vi.setSystemTime(Date.now() + jump); });
+          rollback403(result, h, snapshot, completed.slice(0, index), mode === 'bounded MFA' ? 'mfa_verification_required' : 'permission_denied');
+        }
+      }
+    });
+  }
+  it('wrong PIN charge rolls back on expiry at its update promise instead of committing401', async () => {
+    const h = fixture('replaceOwnPin'); h.state.users[0].pinResetRequired = true; h.state.security.requireMfaForAll = true;
+    const jump = isolatedLifetime(h, 'stored Session'), snapshot = h.snapshot(); h.controls.effectIndex = 1;
+    cryptoWork.onStart = () => expect(h.controls.active).toBe(0);
+    const result = await atLifetimeGate(h, 'effect', () => { vi.setSystemTime(Date.now() + jump); },
+      () => h.service.replaceOwnPin(h.identity, '111111', newPin));
+    rollback403(result, h, snapshot, [{ table: 'user', method: 'updateMany' }]);
+    expect(h.state.users[0].pinLoginAttempts).toBe(0);
+  });
+  it('wrong PIN401 is reported only after a viable charge commits in exactly2 transactions', async () => {
+    const h = fixture('replaceOwnPin'); h.initialRelease.release();
+    cryptoWork.onStart = () => expect(h.controls.active).toBe(0);
+    const result = await captureCall(() => h.service.replaceOwnPin(h.identity, '111111', newPin));
+    expect(result.error).toBeInstanceOf(ProblemError);
+    expect(result.error).toMatchObject({ status: 401, code: 'invalid_current_pin' });
+    expect(h.controls.transactions).toBe(2); expect(h.controls.active).toBe(0);
+    expect(effectPrefix(h.committed)).toEqual([{ table: 'user', method: 'updateMany' }]);
+    expect(h.state.users[0].pinLoginAttempts).toBe(1); expect(h.state.users[0].pinHash).toBe(pinHash);
+    expect(h.state.audits).toEqual([]); expect(h.state.sessions[0].revokedAt).toBeNull();
+  });
+});
+
+const responseActions = ['updateIdentity', 'setSuspended', 'retryInvitation', 'reissueInvitation'] as const;
+function responseFixture(action: typeof responseActions[number], noop: boolean, replay?: Row) {
+  const h = fixture(action); h.controls.noop = noop;
+  if (noop && action === 'retryInvitation') h.state.outboxes[0].status = 'PENDING';
+  if (replay) h.state.outboxes = [clone(replay)];
+  return h;
+}
+describe('People final callback after late owner response reads and viable noop or replay', () => {
+  for (const action of responseActions) {
+    it.each(lifetimeModes)(action + ' rolls back earlier writes on %s expiry in its final response read', async mode => {
+      const control = fixture(action); await viableControl(control);
+      const h = fixture(action), jump = isolatedLifetime(h, mode), snapshot = h.snapshot();
+      const result = await atLifetimeGate(h, 'response', () => { vi.setSystemTime(Date.now() + jump); });
+      const expected = effectPrefix(control.committed);
+      // Retry's response-row read is between update and audit; all other chosen
+      // reads occur after the final effect and before the owner callback returns.
+      rollback403(result, h, snapshot, action === 'retryInvitation' ? expected.slice(0, 1) : expected,
+        mode === 'bounded MFA' ? 'mfa_verification_required' : 'permission_denied');
+    });
+    it.each(lifetimeModes)(action + ' has a viable zero-effect noop/replay and refuses %s expiry in response read', async mode => {
+      let replay: Row | undefined;
+      if (action === 'reissueInvitation') {
+        const producer = fixture(action); await viableControl(producer); replay = clone(producer.state.outboxes[0]);
+      }
+      const control = responseFixture(action, true, replay), baseline = control.snapshot(); control.initialRelease.release();
+      const positive = await captureCall(control.call); expect(positive.error).toBeUndefined();
+      expect(control.controls.transactions).toBe(2); expect(control.attempts).toEqual([]);
+      expect(control.committed).toEqual([]); expect(control.state).toEqual(baseline);
+      const h = responseFixture(action, true, replay), jump = isolatedLifetime(h, mode), snapshot = h.snapshot();
+      const result = await atLifetimeGate(h, 'response', () => { vi.setSystemTime(Date.now() + jump); });
+      rollback403(result, h, snapshot, [], mode === 'bounded MFA' ? 'mfa_verification_required' : 'permission_denied');
+    });
+  }
+});
+
+const handoffChanges: Array<[string, (h: Fixture) => void]> = [
+  ['missing Tenant', h => { h.state.tenant = null; }],
+  ['deleted Tenant', h => { h.state.tenant!.deletedAt = new Date(); }],
+  ['SUSPENDED Tenant', h => { h.state.tenant!.status = 'SUSPENDED'; }],
+  ['PURGED Tenant', h => { h.state.tenant!.status = 'PURGED'; }],
+  ['forced PIN actor', h => { h.state.users[0].pinResetRequired = true; }],
+  ['missing actor', h => { h.state.users = h.state.users.filter(row => row.id !== ids.actor); }],
+  ['foreign Tenant actor', h => { h.state.users[0].tenantId = 'foreign-tenant'; }],
+  ['deleted actor', h => { h.state.users[0].deletedAt = new Date(); }],
+  ['suspended actor', h => { h.state.users[0].suspendedAt = new Date(); }],
+  ['locked actor', h => { h.state.users[0].lockedUntil = new Date(Date.now() + 60_000); }],
+  ['missing exact Session', h => { h.state.sessions = h.state.sessions.filter(row => row.id !== ids.session); }],
+  ['revoked exact Session', h => { h.state.sessions[0].revokedAt = new Date(); }],
+  ['foreign owner Session', h => { h.state.sessions[0].userId = ids.target; }],
+  ['different Session id', h => { h.state.sessions[0].id = 'different-session'; }],
+  ['deleted current Role', h => { h.state.roles[0].deletedAt = new Date(); }],
+  ['demoted current assignments', h => { h.state.users[0].role = 'STAFF'; h.state.assignments[0].roleId = ids.staffRole; }],
+  ['removed current grant', h => { h.state.roles[0].rolePermissions = h.state.roles[0].rolePermissions.filter((row: Row) => row.permission.key !== 'roles:write'); }],
+  ['shortened current policy', h => { h.state.security.sessionTimeoutMinutes = 5; }],
+];
+describe('People observable authority changes between preflight and final authorization', () => {
+  it.each(handoffChanges)('createRole rereads %s after unlocked observer wait', async (_name, change) => {
+    const h = fixture('createRole'); let externalSnapshot!: State;
+    const result = await atLifetimeGate(h, 'observer', () => { change(h); externalSnapshot = h.snapshot(); });
+    denied(result, h, 403); expect(h.state).toEqual(externalSnapshot); expect(h.controls.transactions).toBe(2);
+  });
+  for (const action of mutationActions) {
+    it(action + ' rereads current Tenant after a viable outside-DB observer handoff', async () => {
+      const control = fixture(action); if (action === 'replaceOwnPin') control.state.users[0].mfaEnabled = true;
+      await viableControl(control); expect(control.observeSessionMfa).toHaveBeenCalledTimes(1);
+      const h = fixture(action); if (action === 'replaceOwnPin') h.state.users[0].mfaEnabled = true;
+      let externalSnapshot!: State;
+      const result = await atLifetimeGate(h, 'observer', () => {
+        h.state.tenant!.status = 'SUSPENDED'; externalSnapshot = h.snapshot();
+      });
+      denied(result, h, 403); expect(h.state).toEqual(externalSnapshot); expect(h.controls.transactions).toBe(2);
+    });
+  }
+  it('ordinary self PIN preserves a bound current observation when policy strengthens during observer suspension', async () => {
+    const h = fixture('replaceOwnPin'); h.state.users[0].mfaEnabled = true;
+    const result = await atLifetimeGate(h, 'observer', () => {
+      h.state.security.requireMfaForAll = true;
+    });
+    // The observation was acquired before suspension and remains bound/current;
+    // changed current policy must still admit this viable proof, in two passes.
+    expect(result.error).toBeUndefined(); expect(h.controls.transactions).toBe(2);
+    expect(h.committed.length).toBeGreaterThan(0); expect(h.state.audits).toHaveLength(1);
+  });
+  it('observer delay exhausting its bounded observation refuses before final transaction', async () => {
+    const h = fixture('createRole'); h.controls.ttl = 1000; const snapshot = h.snapshot();
+    const result = await atLifetimeGate(h, 'observer', () => { vi.setSystemTime(Date.now() + 1001); });
+    denied(result, h, 403); expect(h.state).toEqual(snapshot); expect(h.controls.transactions).toBe(1);
+  });
+});
+
+
+const expandedBranches = ['identity login change', 'invitation reactivation', 'full scheduling windows'] as const;
+function expandedFixture(branch: typeof expandedBranches[number]) {
+  const h = fixture(branch === 'identity login change' ? 'updateIdentity'
+    : branch === 'invitation reactivation' ? 'invite' : 'replaceSchedulingProfile');
+  if (branch === 'identity login change') h.controls.changeLogin = true;
+  if (branch === 'invitation reactivation') { h.state.users[1].username = 'new.staff'; h.state.users[1].deletedAt = new Date(); }
+  if (branch === 'full scheduling windows') h.controls.fullProfile = true;
+  return h;
+}
+describe('additional actual People branches reach their modeled cleanup and profile replacement effects', () => {
+  it.each(expandedBranches)('%s has a viable positive and rolls back each reached completion under isolated deadlines', async branch => {
+    const control = expandedFixture(branch); await viableControl(control);
+    const expected = effectPrefix(control.committed);
+    if (branch === 'identity login change') {
+      expect(expected.filter(row => row.table === 'session' && row.method === 'updateMany')).toHaveLength(2);
+      expect(control.state.users[1].username).toBe('changed.staff');
+    } else if (branch === 'invitation reactivation') {
+      expect(control.state.users[1].deletedAt).toBeNull(); expect(control.state.users[1].pinResetRequired).toBe(true);
+      expect(expected.some(row => row.table === 'passwordResetToken')).toBe(true);
+      expect(control.state.audits[0].action).toBe('USER_REACTIVATED');
+    } else {
+      expect(expected).toEqual([
+        { table: 'staffAvailability', method: 'deleteMany' }, { table: 'staffSkill', method: 'deleteMany' },
+        { table: 'staffAvailabilityException', method: 'deleteMany' }, { table: 'staffSkill', method: 'createMany' },
+        { table: 'staffAvailability', method: 'createMany' }, { table: 'staffAvailabilityException', method: 'createMany' },
+      ]);
+      expect(control.state.availability).toHaveLength(1); expect(control.state.exceptions).toHaveLength(1);
+    }
+    for (const mode of lifetimeModes) {
+      for (let index = 1; index <= expected.length; index++) {
+        const h = expandedFixture(branch), jump = isolatedLifetime(h, mode), snapshot = h.snapshot(); h.controls.effectIndex = index;
+        const result = await atLifetimeGate(h, 'effect', () => { vi.setSystemTime(Date.now() + jump); });
+        rollback403(result, h, snapshot, expected.slice(0, index), mode === 'bounded MFA' ? 'mfa_verification_required' : 'permission_denied');
+      }
+    }
+  });
+  it('forced-reset self PIN remains observer-free but rolls back each completion on session or policy expiry', async () => {
+    const forced = () => { const h = fixture('replaceOwnPin'); h.state.users[0].pinResetRequired = true;
+      h.state.users[0].mfaEnabled = true; h.state.security.requireMfaForAll = true; h.controls.ttl = -2; return h; };
+    const control = forced(); await viableControl(control); expect(control.observeSessionMfa).not.toHaveBeenCalled();
+    const expected = effectPrefix(control.committed);
+    expect(expected).toEqual([{ table: 'user', method: 'updateMany' }, { table: 'session', method: 'updateMany' }, { table: 'auditLog', method: 'create' }]);
+    for (const mode of ['stored Session', 'effective policy'] as const) {
+      for (let index = 1; index <= expected.length; index++) {
+        const h = forced(), jump = isolatedLifetime(h, mode), snapshot = h.snapshot(); h.controls.effectIndex = index;
+        const result = await atLifetimeGate(h, 'effect', () => { vi.setSystemTime(Date.now() + jump); });
+        rollback403(result, h, snapshot, expected.slice(0, index)); expect(h.observeSessionMfa).not.toHaveBeenCalled();
+      }
+    }
   });
 });
