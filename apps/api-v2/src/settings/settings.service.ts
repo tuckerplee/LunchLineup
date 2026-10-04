@@ -169,8 +169,7 @@ export class WorkspaceSettingsService {
     const slug = body.slug === undefined ? undefined : requiredText(body.slug, 'slug', 128).toLowerCase();
     const timezone = body.timezone === undefined ? undefined : normalizeTimeZone(body.timezone);
     return this.database.withTenant(identity.tenantId, async (transaction) => {
-      await authorizeMutation(transaction, identity, 'settings:write');
-      const current = await this.read(transaction, identity.tenantId);
+      const current = await this.authorizeWrite(transaction, identity);
       const tenant = name === undefined && slug === undefined
         ? current.general
         : await transaction.tenant.update({
@@ -193,8 +192,7 @@ export class WorkspaceSettingsService {
     body: WorkspaceTeamSettingsUpdate,
   ): Promise<WorkspaceSettings> {
     return this.database.withTenant(identity.tenantId, async (transaction) => {
-      await authorizeMutation(transaction, identity, 'settings:write');
-      const current = await this.read(transaction, identity.tenantId);
+      const current = await this.authorizeWrite(transaction, identity);
       const next: WorkspaceSettings = {
         general: current.general,
         team: {
@@ -214,8 +212,7 @@ export class WorkspaceSettingsService {
   ): Promise<WorkspaceSettings> {
     const issuer = body.oidcIssuerUrl === undefined ? undefined : normalizeOidcIssuerUrl(body.oidcIssuerUrl);
     return this.database.withTenant(identity.tenantId, async (transaction) => {
-      await authorizeMutation(transaction, identity, 'settings:write');
-      const current = await this.read(transaction, identity.tenantId);
+      const current = await this.authorizeWrite(transaction, identity);
       const next: WorkspaceSettings = {
         general: current.general,
         team: current.team,
@@ -252,6 +249,32 @@ export class WorkspaceSettingsService {
       }
       return next;
     });
+  }
+
+  private async authorizeWrite(transaction: TenantTransaction, identity: SessionIdentity): Promise<WorkspaceSettings> {
+    await authorizeMutation(transaction, identity, 'settings:write');
+    // The helper retains Tenant/User/exact Session locks through this write.
+    // Guard observations made before a lock wait do not authorize a mutation
+    // after workspace suspension or policy-shortened session expiry.
+    const tenant = await transaction.tenant.findUnique({
+      where: { id: identity.tenantId },
+      select: { status: true, deletedAt: true },
+    });
+    if (!tenant || tenant.deletedAt || tenant.status === 'SUSPENDED' || tenant.status === 'PURGED') {
+      throw new ProblemError(403, 'permission_denied', 'The workspace is no longer active.', 'Forbidden');
+    }
+    const current = await this.read(transaction, identity.tenantId);
+    const session = await transaction.session.findFirst({
+      where: { id: identity.sessionId.trim(), userId: identity.sub.trim() },
+      select: { createdAt: true, expiresAt: true, revokedAt: true },
+    });
+    if (!session || session.revokedAt || Math.min(
+      session.expiresAt.getTime(),
+      session.createdAt.getTime() + current.security.sessionTimeoutMinutes * 60_000,
+    ) <= Date.now()) {
+      throw new ProblemError(403, 'permission_denied', 'Administrator session is no longer active.', 'Forbidden');
+    }
+    return current;
   }
 
   private async read(transaction: TenantTransaction, tenantId: string): Promise<WorkspaceSettings> {

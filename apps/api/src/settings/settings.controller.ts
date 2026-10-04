@@ -352,7 +352,7 @@ export class SettingsController {
         });
     }
 
-    private async authorizeSettingsWrite(client: TenantPrismaTransaction, tenantId: string, actor: any): Promise<void> {
+    private async authorizeSettingsWrite(client: TenantPrismaTransaction, tenantId: string, actor: any): Promise<NormalizedSettings> {
         // The shared helper obtains Tenant first, preserving aggregate/policy
         // serialization, then rechecks the exact session and live role grants.
         await this.rbacService.authorizeSelfSecurityMutationInTransaction(client, tenantId, {
@@ -360,6 +360,29 @@ export class SettingsController {
             actorSessionId: actor?.sessionId,
             requiredPermission: 'settings:write',
         });
+
+        // A request guard can precede a Tenant/Session/role lock wait. Recheck
+        // workspace eligibility and the effective lifetime under those locks,
+        // using the current policy rather than the proposed security update.
+        const tenant = await client.tenant.findUnique({
+            where: { id: tenantId },
+            select: { status: true, deletedAt: true },
+        });
+        if (!tenant || tenant.deletedAt || tenant.status === 'SUSPENDED' || tenant.status === 'PURGED') {
+            throw new ForbiddenException('Workspace is no longer active');
+        }
+        const current = await this.readNormalizedSettings(client, tenantId);
+        const session = await client.session.findFirst({
+            where: { id: actor.sessionId.trim(), userId: actor.sub.trim() },
+            select: { createdAt: true, expiresAt: true, revokedAt: true },
+        });
+        if (!session || session.revokedAt || Math.min(
+            session.expiresAt.getTime(),
+            session.createdAt.getTime() + current.security.sessionTimeoutMinutes * 60_000,
+        ) <= Date.now()) {
+            throw new ForbiddenException('Administrator session is no longer active');
+        }
+        return current;
     }
 
     @Get()
@@ -381,8 +404,7 @@ export class SettingsController {
 
         const tenantId = req.user.tenantId;
         return this.tenantDb.withTenant(tenantId, async (tx) => {
-            await this.authorizeSettingsWrite(tx, tenantId, req.user);
-            const current = await this.readNormalizedSettings(tx, tenantId);
+            const current = await this.authorizeSettingsWrite(tx, tenantId, req.user);
             const tenantUpdate: Record<string, string> = {};
 
             if (name !== undefined) {
@@ -433,8 +455,7 @@ export class SettingsController {
 
         const tenantId = req.user.tenantId;
         return this.tenantDb.withTenant(tenantId, async (tx) => {
-            await this.authorizeSettingsWrite(tx, tenantId, req.user);
-            const current = await this.readNormalizedSettings(tx, tenantId);
+            const current = await this.authorizeSettingsWrite(tx, tenantId, req.user);
             const nextSettings: NormalizedSettings = {
                 general: current.general,
                 team: {
@@ -466,8 +487,7 @@ export class SettingsController {
         }
 
         return this.tenantDb.withTenant(tenantId, async (tx) => {
-            await this.authorizeSettingsWrite(tx, tenantId, req.user);
-            const current = await this.readNormalizedSettings(tx, tenantId);
+            const current = await this.authorizeSettingsWrite(tx, tenantId, req.user);
             const nextSettings: NormalizedSettings = {
                 general: current.general,
                 team: current.team,

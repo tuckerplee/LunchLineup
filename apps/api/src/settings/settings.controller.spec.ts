@@ -47,7 +47,9 @@ describe('SettingsController', () => {
             roleAssignment: { findMany: vi.fn().mockResolvedValue([{ userId: 'admin-1', roleId: 'role-1' }]) },
             role: { findMany: vi.fn().mockResolvedValue([{ id: 'role-1', name: 'Admin', isSystem: true, legacyRole: 'ADMIN',
                 rolePermissions: [{ permission: { key: 'settings:write' } }] }]) },
+            session: { findFirst: vi.fn().mockResolvedValue({ createdAt: new Date(), expiresAt: new Date(Date.now() + 60_000), revokedAt: null }) },
             tenant: {
+                findUnique: vi.fn().mockResolvedValue({ status: 'ACTIVE', deletedAt: null }),
                 findUniqueOrThrow: vi.fn().mockResolvedValue({
                     name: 'Acme Dining',
                     slug: 'acme-dining',

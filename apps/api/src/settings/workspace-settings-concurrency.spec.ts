@@ -69,7 +69,7 @@ function harness(initiallyMissing = false) {
         }
         const readTenant = async ({ where }: { where: { id: string } }) => {
             expect(where).toEqual({ id: tenantId });
-            return { ...(tenantDraft ?? tenants.get(tenantId)!) };
+            return { ...(tenantDraft ?? tenants.get(tenantId)!), status: 'ACTIVE', deletedAt: null };
         };
         const tx = {
             $queryRaw: explicitLock,
@@ -78,6 +78,10 @@ function harness(initiallyMissing = false) {
             roleAssignment: { findMany: async () => [{ userId: actorId, roleId }] },
             role: { findMany: async () => [{ id: roleId, name: 'Admin', isSystem: true, legacyRole: 'ADMIN',
                 rolePermissions: [{ permission: { key: 'settings:write' } }] }] },
+            session: { findFirst: async ({ where }: { where: { id: string; userId: string } }) => {
+                expect(where).toEqual({ id: sessionId, userId: actorId });
+                return { createdAt: new Date(), expiresAt: new Date(Date.now() + 60_000), revokedAt: null };
+            } },
             tenant: {
                 findUnique: readTenant,
                 findUniqueOrThrow: readTenant,

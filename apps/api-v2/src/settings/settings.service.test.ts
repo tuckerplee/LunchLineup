@@ -20,6 +20,8 @@ function harness(initialValue: unknown = null, oidcSsoAvailable = false) {
   const tenant = {
     name: 'Harbor & Main',
     slug: 'harbor-main',
+    status: 'ACTIVE',
+    deletedAt: null,
   };
   const transaction = {
     $executeRaw: vi.fn(async () => 1),
@@ -33,6 +35,10 @@ function harness(initialValue: unknown = null, oidcSsoAvailable = false) {
     roleAssignment: { findMany: vi.fn(async () => [{ userId: identity.sub, roleId: 'role-1' }]) },
     role: { findMany: vi.fn(async () => [{ id: 'role-1', publicId: 'role-public', name: 'Admin', isSystem: true,
       legacyRole: 'ADMIN', rolePermissions: [{ permission: { key: 'settings:write' } }] }]) },
+    session: { findFirst: vi.fn(async ({ where }: { where: { id: string; userId: string } }) => {
+      expect(where).toEqual({ id: identity.sessionId, userId: identity.sub });
+      return { createdAt: new Date(), expiresAt: new Date(Date.now() + 60_000), revokedAt: null };
+    }) },
     tenant: {
       findUnique: vi.fn(async () => ({ ...tenant })),
       update: vi.fn(async ({ data }: { data: Partial<typeof tenant> }) => {

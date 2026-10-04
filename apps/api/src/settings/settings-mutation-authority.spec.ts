@@ -24,7 +24,7 @@ function harness(owner: Owner) {
     const actor: any = { id: actorId, tenantId, publicId: 'actor-public-id', role: 'ADMIN', name: 'Actor',
         email: 'actor@example.test', username: 'actor', deletedAt: null, suspendedAt: null,
         lockedUntil: null, pinLockedUntil: null };
-    const session: any = { id: sessionId, userId: actorId, expiresAt: new Date(Date.now() + 3_600_000), revokedAt: null };
+    const session: any = { id: sessionId, userId: actorId, createdAt: new Date(), expiresAt: new Date(Date.now() + 3_600_000), revokedAt: null };
     const role: any = { id: 'role-authority', publicId: 'role-public-id', name: 'Admin', slug: 'admin',
         isSystem: true, isDefault: false, description: null, legacyRole: 'ADMIN', deletedAt: null,
         rolePermissions: [{ permission: { key: 'settings:write' } }, { permission: { key: 'settings:read' } }] };
@@ -65,8 +65,12 @@ function harness(owner: Owner) {
             expect(where.tenantId).toBe(tenantId);
             return assigned && !role.deletedAt ? [structuredClone(role)] : [];
         }) },
+        session: { findFirst: vi.fn(async ({ where }: any) => {
+            expect(where).toEqual({ id: sessionId, userId: actorId });
+            return sessionPresent && session.userId === actorId ? structuredClone(session) : null;
+        }) },
         tenant: {
-            findUnique: vi.fn(async () => { reads(); return { name: 'Original', slug: 'original' }; }),
+            findUnique: vi.fn(async () => { reads(); return { name: 'Original', slug: 'original', status: 'ACTIVE', deletedAt: null }; }),
             findUniqueOrThrow: vi.fn(async () => { reads(); return { name: 'Original', slug: 'original' }; }),
             update: vi.fn(async ({ data }: any) => { writes('Tenant', data); return { name: 'Original', slug: 'original', ...data }; }),
         },
