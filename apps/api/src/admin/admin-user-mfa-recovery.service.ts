@@ -1,7 +1,6 @@
 import { BadRequestException, ConflictException, Injectable } from '@nestjs/common';
-import { Prisma } from '@prisma/client';
 import { RbacService } from '../auth/rbac.service';
-import { runSerializableMutationWithRetry } from '../auth/serializable-mutation';
+import type { MfaSessionObserver } from '@lunchlineup/rbac';
 import { TenantPrismaService } from '../database/tenant-prisma.service';
 
 export type AdminMfaRecoveryRequest = {
@@ -18,8 +17,9 @@ export type AdminMfaRecoveryRequest = {
 @Injectable()
 export class AdminUserMfaRecoveryService {
     constructor(
-        private readonly tenantDb: TenantPrismaService,
+        _tenantDb: TenantPrismaService,
         private readonly rbac: RbacService,
+        private readonly mfaObserver?: MfaSessionObserver,
     ) {}
 
     async reset(request: AdminMfaRecoveryRequest) {
@@ -34,17 +34,15 @@ export class AdminUserMfaRecoveryService {
             throw new BadRequestException('reason must contain 10 to 500 characters.');
         }
 
-        return runSerializableMutationWithRetry(
-            () => this.tenantDb.withPlatformAdmin(async (tx) => {
-                const authorizedTarget = await this.rbac.authorizePlatformAdminUserMutationInTransaction(
-                    tx,
-                    request.targetUserId,
-                    {
-                        userId: request.actorUserId,
-                        tenantId: request.actorTenantId,
-                        sessionId: request.actorSessionId,
-                    },
-                );
+        request = Object.freeze({ ...request, reason });
+        return this.rbac.runCurrentMutation({
+            actor: { userId: request.actorUserId, tenantId: request.actorTenantId, sessionId: request.actorSessionId },
+            requiredPermission: 'admin_portal:access',
+            scope: 'platform',
+            mfaObserver: this.mfaObserver,
+            conflictMessage: 'Authorization or MFA state changed concurrently; retry the request.',
+        }, (tx, frozenActor) => this.rbac.authorizePlatformAdminUserMutationInTransaction(tx, request.targetUserId, frozenActor),
+            async (tx, authorizedTarget, assertCurrent, frozenActor) => {
                 const target = await tx.user.findUnique({
                     where: { id: authorizedTarget.id },
                     select: {
@@ -63,23 +61,27 @@ export class AdminUserMfaRecoveryService {
                 }
                 if (!target.mfaEnabled) throw new ConflictException('User does not have MFA enabled.');
 
+                assertCurrent();
                 const updated = await tx.user.updateMany({
                     where: { id: target.id, tenantId: target.tenantId, deletedAt: null, suspendedAt: null, mfaEnabled: true },
                     data: { mfaEnabled: false, mfaSecret: null, mfaBackupCodes: [] },
                 });
                 if (updated.count !== 1) throw new ConflictException('MFA enrollment changed before it could be reset.');
 
+                assertCurrent();
                 await tx.mfaTotpClaim.deleteMany({ where: { tenantId: target.tenantId, userId: target.id } });
+                assertCurrent();
                 const sessions = await tx.session.updateMany({
                     where: { userId: target.id, revokedAt: null },
                     data: { revokedAt: new Date() },
                 });
+                assertCurrent();
                 await tx.auditLog.create({
                     data: {
                         tenantId: target.tenantId,
-                        userId: request.actorTenantId === target.tenantId ? request.actorUserId : null,
-                        actorUserId: request.actorUserId,
-                        actorTenantId: request.actorTenantId,
+                        userId: frozenActor.tenantId === target.tenantId ? frozenActor.userId : null,
+                        actorUserId: frozenActor.userId,
+                        actorTenantId: frozenActor.tenantId,
                         ipAddress: request.ipAddress,
                         userAgent: request.userAgent,
                         action: 'USER_MFA_RECOVERY_RESET',
@@ -91,8 +93,6 @@ export class AdminUserMfaRecoveryService {
                 });
 
                 return { id: target.id, mfaEnabled: false, sessionsRevoked: sessions.count };
-            }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }),
-            { conflictMessage: 'Authorization or MFA state changed concurrently; retry the request.' },
-        );
+            });
     }
 }

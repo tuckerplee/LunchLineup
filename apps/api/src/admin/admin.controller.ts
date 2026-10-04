@@ -27,6 +27,7 @@ import { RequirePermission } from '../auth/require-permission.decorator';
 import { applyOnboardingSignupAttemptRetention } from '../auth/onboarding-signup-retention';
 import { TenantAccountLifecycleService, type TenantLifecycleActor, type TenantRetentionStage } from './tenant-account-lifecycle.service';
 import { RbacService } from '../auth/rbac.service';
+import { AuthService } from '../auth/auth.service';
 import { TenantProvisioningService } from './tenant-provisioning.service';
 import { InternalBetaEntitlementService } from './internal-beta-entitlement.service';
 import { TenantExportService } from './tenant-export.service';
@@ -83,12 +84,13 @@ export class AdminController implements OnModuleDestroy {
         @Optional() tenantDb?: TenantPrismaService,
         @Optional() private readonly stripeBilling?: StripeService,
         @Optional() rbacService?: RbacService,
+        @Optional() private readonly identityService?: AuthService,
     ) {
         this.tenantDb = tenantDb ?? new TenantPrismaService(this.prisma);
         this.prisma = this.tenantDb.client;
         this.rbac = rbacService ?? new RbacService(this.tenantDb);
-        this.userMfaRecovery = new AdminUserMfaRecoveryService(this.tenantDb, this.rbac);
-        this.userLifecycle = new AdminUserLifecycleService(this.tenantDb, this.rbac);
+        this.userMfaRecovery = new AdminUserMfaRecoveryService(this.tenantDb, this.rbac, this.identityService);
+        this.userLifecycle = new AdminUserLifecycleService(this.tenantDb, this.rbac, this.identityService);
         this.tenantAccountLifecycle = new TenantAccountLifecycleService(this.tenantDb, this.stripeBilling);
         this.tenantProvisioning = new TenantProvisioningService(
             this.tenantDb,
@@ -1323,32 +1325,34 @@ export class AdminController implements OnModuleDestroy {
         }
         const mutationActor = this.adminUserLifecycleActor(req);
 
-        const updated = await this.withPlatformAdminUserMutation(async (tx) => {
+        const attribution = this.platformAuditAttribution(req);
+        const updated = await this.rbac.runCurrentMutation({
+            actor: mutationActor,
+            requiredPermission: 'admin_portal:access',
+            scope: 'platform',
+            mfaObserver: this.identityService,
+            conflictMessage: 'Authorization or access state changed concurrently; retry the request',
+            isConflict: isSerializableTransactionConflict,
+        }, async (tx, frozenActor) => {
             const target = await this.resolveAdminUserIdentifier(tx, id);
-            const targetUserId = target.id;
             const authorizedTarget = requestedRole === undefined
-                ? await this.rbac.authorizePlatformAdminUserMutationInTransaction(
-                    tx,
-                    targetUserId,
-                    mutationActor,
-                )
+                ? await this.rbac.authorizePlatformAdminUserMutationInTransaction(tx, target.id, frozenActor)
                 : null;
             const existingUser = await tx.user.findUnique({
-                where: { id: targetUserId },
-                select: {
-                    id: true,
-                    tenantId: true,
-                    email: true,
-                    role: true,
-                    deletedAt: true,
-                },
+                where: { id: target.id },
+                select: { id: true, tenantId: true, email: true, role: true, deletedAt: true },
             });
-            if (!existingUser) {
-                throw new BadRequestException('User not found');
-            }
+            if (!existingUser) throw new BadRequestException('User not found');
             if (authorizedTarget && authorizedTarget.tenantId !== existingUser.tenantId) {
                 throw new ConflictException('User tenant changed before authorization completed');
             }
+            const rolePlan = requestedRole === undefined ? null
+                : await this.rbac.prepareLegacySystemRoleForPlatformAdminActorInTransaction(
+                    tx, target.id, existingUser.tenantId, requestedRole, frozenActor,
+                );
+            return { target, existingUser, rolePlan };
+        }, async (tx, { target, existingUser, rolePlan }, assertCurrent, frozenActor) => {
+            const targetUserId = target.id;
             if (requestedTenantId !== undefined && requestedTenantId !== existingUser.tenantId) {
                 throw new BadRequestException(
                     'Cross-tenant user reassignment is not supported because tenant-owned access and data cannot be migrated safely.',
@@ -1360,22 +1364,17 @@ export class AdminController implements OnModuleDestroy {
                 throw new BadRequestException('No valid fields to update');
             }
 
-            const roleReplacement = requestedRole === undefined
-                ? null
-                : await this.rbac.replaceLegacySystemRoleForPlatformAdminActorInTransaction(
-                    tx,
-                    targetUserId,
-                    existingUser.tenantId,
-                    requestedRole,
-                    mutationActor,
-                );
-            const emailChanged = body.email !== undefined && patch.email !== existingUser.email;
+            const roleReplacement = rolePlan === null ? null
+                : await this.rbac.applyPreparedPlatformAdminSystemRoleReplacementInTransaction(tx, rolePlan, assertCurrent);
+            const emailChanged = Object.prototype.hasOwnProperty.call(patch, 'email') && patch.email !== existingUser.email;
             const now = new Date();
 
             if (emailChanged) {
+                assertCurrent();
                 await tx.onboardingSignupAttempt.deleteMany({
                     where: { tenantId: existingUser.tenantId, userId: targetUserId },
                 });
+                assertCurrent();
                 await tx.passwordResetToken.updateMany({
                     where: {
                         tenantId: existingUser.tenantId,
@@ -1384,6 +1383,7 @@ export class AdminController implements OnModuleDestroy {
                     },
                     data: { consumedAt: now },
                 });
+                assertCurrent();
                 await tx.passwordResetEmailOutbox.updateMany({
                     where: {
                         tenantId: existingUser.tenantId,
@@ -1402,22 +1402,28 @@ export class AdminController implements OnModuleDestroy {
             }
 
             if (Object.keys(patch).length > 0) {
+                assertCurrent();
                 await tx.user.update({
                     where: { id: targetUserId },
                     data: patch,
                 });
             }
             if (emailChanged || roleReplacement?.changed) {
+                assertCurrent();
                 await tx.session.updateMany({
                     where: { userId: targetUserId, revokedAt: null },
                     data: { revokedAt: now },
                 });
             }
 
+            assertCurrent();
             await tx.auditLog.create({
                 data: {
                     tenantId: existingUser.tenantId,
-                    ...this.platformAuditData(req, existingUser.tenantId),
+                    userId: frozenActor.tenantId === existingUser.tenantId ? frozenActor.userId : null,
+                    ...attribution,
+                    actorUserId: frozenActor.userId,
+                    actorTenantId: frozenActor.tenantId,
                     action: 'USER_UPDATED',
                     resource: 'User',
                     resourceId: targetUserId,
@@ -1457,7 +1463,7 @@ export class AdminController implements OnModuleDestroy {
         this.assertSuperAdmin(req);
         const actor = this.adminUserLifecycleActor(req);
         const target = await this.withPlatformAdmin((tx) => this.resolveAdminUserIdentifier(tx, id));
-        return new AdminUserPinRecoveryService(this.tenantDb, this.rbac).reset(target.id, actor);
+        return new AdminUserPinRecoveryService(this.tenantDb, this.rbac, this.identityService).reset(target.id, actor);
     }
 
     @Post('users/:id/mfa/reset')
@@ -1493,24 +1499,33 @@ export class AdminController implements OnModuleDestroy {
         const lockedUntil = new Date(Date.now() + minutes * 60 * 1000);
         const mutationActor = this.adminUserLifecycleActor(req);
         let publicUserId = id;
-        await this.withPlatformAdminUserMutation(async (tx) => {
+        const attribution = this.platformAuditAttribution(req);
+        await this.rbac.runCurrentMutation({
+            actor: mutationActor,
+            requiredPermission: 'admin_portal:access',
+            scope: 'platform',
+            mfaObserver: this.identityService,
+            conflictMessage: 'Authorization or access state changed concurrently; retry the request',
+            isConflict: isSerializableTransactionConflict,
+        }, async (tx, frozenActor) => {
             const target = await this.resolveAdminUserIdentifier(tx, id);
+            const authorizedTarget = await this.rbac.authorizePlatformAdminUserMutationInTransaction(tx, target.id, frozenActor);
+            return { target, authorizedTarget };
+        }, async (tx, { target, authorizedTarget }, assertCurrent, frozenActor) => {
             publicUserId = target.publicId;
-            const authorizedTarget = await this.rbac.authorizePlatformAdminUserMutationInTransaction(
-                tx,
-                target.id,
-                mutationActor,
-            );
+            assertCurrent();
             const user = await tx.user.update({
                 where: { id: authorizedTarget.id },
                 data: { lockedUntil, pinLockedUntil: lockedUntil },
             });
+            assertCurrent();
             await tx.session.updateMany({
                 where: { userId: target.id, revokedAt: null },
                 data: { revokedAt: new Date() },
             });
+            assertCurrent();
             await tx.auditLog.create({
-                data: { tenantId: user.tenantId, ...this.platformAuditData(req, user.tenantId), action: 'USER_LOCKED', resource: 'User', resourceId: target.id },
+                data: { tenantId: user.tenantId, userId: frozenActor.tenantId === user.tenantId ? frozenActor.userId : null, ...attribution, actorUserId: frozenActor.userId, actorTenantId: frozenActor.tenantId, action: 'USER_LOCKED', resource: 'User', resourceId: target.id },
             });
         });
         return { id: publicUserId, lockedUntil };
@@ -1521,20 +1536,28 @@ export class AdminController implements OnModuleDestroy {
         this.assertSuperAdmin(req);
         const mutationActor = this.adminUserLifecycleActor(req);
         let publicUserId = id;
-        await this.withPlatformAdminUserMutation(async (tx) => {
+        const attribution = this.platformAuditAttribution(req);
+        await this.rbac.runCurrentMutation({
+            actor: mutationActor,
+            requiredPermission: 'admin_portal:access',
+            scope: 'platform',
+            mfaObserver: this.identityService,
+            conflictMessage: 'Authorization or access state changed concurrently; retry the request',
+            isConflict: isSerializableTransactionConflict,
+        }, async (tx, frozenActor) => {
             const target = await this.resolveAdminUserIdentifier(tx, id);
+            const authorizedTarget = await this.rbac.authorizePlatformAdminUserMutationInTransaction(tx, target.id, frozenActor);
+            return { target, authorizedTarget };
+        }, async (tx, { target, authorizedTarget }, assertCurrent, frozenActor) => {
             publicUserId = target.publicId;
-            const authorizedTarget = await this.rbac.authorizePlatformAdminUserMutationInTransaction(
-                tx,
-                target.id,
-                mutationActor,
-            );
+            assertCurrent();
             const user = await tx.user.update({
                 where: { id: authorizedTarget.id },
                 data: { lockedUntil: null, pinLockedUntil: null, loginAttempts: 0, pinLoginAttempts: 0 },
             });
+            assertCurrent();
             await tx.auditLog.create({
-                data: { tenantId: user.tenantId, ...this.platformAuditData(req, user.tenantId), action: 'USER_UNLOCKED', resource: 'User', resourceId: target.id },
+                data: { tenantId: user.tenantId, userId: frozenActor.tenantId === user.tenantId ? frozenActor.userId : null, ...attribution, actorUserId: frozenActor.userId, actorTenantId: frozenActor.tenantId, action: 'USER_UNLOCKED', resource: 'User', resourceId: target.id },
             });
         });
         return { id: publicUserId, unlocked: true };

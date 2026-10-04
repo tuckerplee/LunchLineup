@@ -1723,87 +1723,84 @@ export class AuthService implements OnModuleDestroy {
         const now = new Date();
         const data = this.buildPinCredentialData(normalizedPin, true, now);
         const audit = this.securityRequestAudit(requestAudit);
-        const reset = await runSerializableMutationWithRetry(
-            () => this.getTenantDb().withTenant(tenantId, async (tx) => {
-                    let usernameBootstrapAttempted = false;
-                    const user = await this.rbacService.authorizeUserAdministrationInTransaction(
-                        tx,
-                        tenantId,
-                        {
-                            actorUserId,
-                            actorSessionId,
-                            targetUserId: userId,
-                            requiredPermission: 'users:admin',
-                            selfMutationMessage: 'Use the self-service PIN rotation route for your own account',
-                        },
-                    );
+        if (actorUserId?.trim() === userId?.trim()) {
+            throw new ForbiddenException('Use the self-service PIN rotation route for your own account');
+        }
+        const reset = await this.rbacService.runCurrentMutation({
+            actor: { userId: actorUserId, tenantId, sessionId: actorSessionId },
+            requiredPermission: 'users:admin', mfaObserver: this,
+            isConflict: (error) => error instanceof UsernameReservationConflict
+                || isSerializableTransactionConflict(error),
+            conflictMessage: (error) => error instanceof UsernameReservationConflict
+                ? 'Unable to reserve a unique username; retry the PIN reset'
+                : 'Authorization or PIN state changed concurrently; retry the request',
+        }, (tx, actor) => this.rbacService.authorizeUserAdministrationInTransaction(tx, tenantId, {
+            actorUserId: actor.userId, actorSessionId: actor.sessionId, targetUserId: userId,
+            requiredPermission: 'users:admin',
+            selfMutationMessage: 'Use the self-service PIN rotation route for your own account',
+        }), async (tx, user, assertCurrent, actor) => {
+            let usernameBootstrapAttempted = false;
+            let username = user.username;
+            if (!username) {
+                if (!this.canBootstrapPinUsername(user.email)) {
+                    throw new BadRequestException('PIN reset is only available for username accounts');
+                }
+                usernameBootstrapAttempted = true;
+                username = await this.generateUniqueUsername(tx, tenantId, user.name);
+            }
 
-                    let username = user.username;
-                    if (!username) {
-                        if (!this.canBootstrapPinUsername(user.email)) {
-                            throw new BadRequestException('PIN reset is only available for username accounts');
-                        }
-                        usernameBootstrapAttempted = true;
-                        username = await this.generateUniqueUsername(tx, tenantId, user.name);
-                    }
-
-                    const activeSessions = await tx.session.findMany({
-                        where: { userId, revokedAt: null },
-                        select: { id: true },
-                    });
-                    let updated: { count: number };
-                    try {
-                        updated = await tx.user.updateMany({
-                            where: { id: userId, tenantId, deletedAt: null },
-                            data: {
-                                ...data,
-                                username,
-                            },
-                        });
-                    } catch (error) {
-                        if (usernameBootstrapAttempted && isPrismaUniqueConstraintConflict(error)) {
-                            throw new UsernameReservationConflict();
-                        }
-                        throw error;
-                    }
-                    if (updated.count !== 1) {
-                        throw new UnauthorizedException('User account inactive');
-                    }
-                    const sessions = await tx.session.updateMany({
-                        where: { userId, revokedAt: null },
-                        data: { revokedAt: now },
-                    });
-                    await tx.auditLog.create({
-                        data: {
-                            tenantId,
-                            userId: actorUserId,
-                            actorUserId,
-                            actorTenantId: tenantId,
-                            action: 'USER_PIN_RESET',
-                            resource: 'User',
-                            resourceId: userId,
-                            newValue: {
-                                pinResetRequired: true,
-                                sessionsRevoked: sessions.count,
-                            },
-                            ipAddress: audit.ipAddress,
-                            userAgent: audit.userAgent,
-                        },
-                    });
-
-                    return {
+            const activeSessions = await tx.session.findMany({
+                where: { userId, revokedAt: null },
+                select: { id: true },
+            });
+            let updated: { count: number };
+            try {
+                assertCurrent();
+                updated = await tx.user.updateMany({
+                    where: { id: userId, tenantId, deletedAt: null },
+                    data: {
+                        ...data,
                         username,
-                        revokedSessionIds: activeSessions.map((session) => session.id),
-                    };
-                }, { isolationLevel: 'Serializable' }),
-            {
-                isConflict: (error) => error instanceof UsernameReservationConflict
-                    || isSerializableTransactionConflict(error),
-                conflictMessage: (error) => error instanceof UsernameReservationConflict
-                    ? 'Unable to reserve a unique username; retry the PIN reset'
-                    : 'Authorization or PIN state changed concurrently; retry the request',
-            },
-        );
+                    },
+                });
+            } catch (error) {
+                if (usernameBootstrapAttempted && isPrismaUniqueConstraintConflict(error)) {
+                    throw new UsernameReservationConflict();
+                }
+                throw error;
+            }
+            if (updated.count !== 1) {
+                throw new UnauthorizedException('User account inactive');
+            }
+            assertCurrent();
+            const sessions = await tx.session.updateMany({
+                where: { userId, revokedAt: null },
+                data: { revokedAt: now },
+            });
+            assertCurrent();
+            await tx.auditLog.create({
+                data: {
+                    tenantId,
+                    userId: actor.userId,
+                    actorUserId: actor.userId,
+                    actorTenantId: tenantId,
+                    action: 'USER_PIN_RESET',
+                    resource: 'User',
+                    resourceId: userId,
+                    newValue: {
+                        pinResetRequired: true,
+                        sessionsRevoked: sessions.count,
+                    },
+                    ipAddress: audit.ipAddress,
+                    userAgent: audit.userAgent,
+                },
+            });
+
+            return {
+                username,
+                revokedSessionIds: activeSessions.map((session) => session.id),
+            };
+        });
 
         await this.clearSessionMfaMarkersBestEffort(
             reset.revokedSessionIds,

@@ -27,6 +27,7 @@ export async function lockTenantSchedulingMutations(
     tx: TenantPrismaTransaction,
     tenantId: string,
     tenantAlreadyLocked = false,
+    assertCurrent: () => void = () => {},
 ): Promise<void> {
     if (!tenantAlreadyLocked) {
         await tx.$queryRaw(Prisma.sql`
@@ -36,11 +37,13 @@ export async function lockTenantSchedulingMutations(
             FOR UPDATE
         `);
     }
+    assertCurrent();
     await tx.$executeRaw(Prisma.sql`
         SELECT pg_advisory_xact_lock(
             hashtextextended(${`lunchlineup:scheduling:${tenantId}`}, 0)
         )
     `);
+    assertCurrent();
 }
 
 export async function lockActiveSchedulableUser(
@@ -65,6 +68,7 @@ export async function unassignEditableShiftsForIneligibleUser(
     tx: TenantPrismaTransaction,
     tenantId: string,
     userId: string,
+    assertCurrent: () => void = () => {},
 ): Promise<number> {
     await tx.$queryRaw(Prisma.sql`
         SELECT schedule_row."id"
@@ -117,7 +121,7 @@ export async function unassignEditableShiftsForIneligibleUser(
                 (shift.scheduleStatus === 'DRAFT' && shift.scheduleDeletedAt === null),
         )
         .map((shift) => shift.id);
-    if (editableShiftIds.length === 0) return 0;
+    if (editableShiftIds.length === 0) { assertCurrent(); return 0; }
     const affectedDraftScheduleIds = Array.from(
         new Set(
             assignedShifts
@@ -131,6 +135,7 @@ export async function unassignEditableShiftsForIneligibleUser(
         ),
     ).sort();
 
+    assertCurrent();
     const unassigned = await tx.shift.updateMany({
         where: {
             id: { in: editableShiftIds },
@@ -146,6 +151,7 @@ export async function unassignEditableShiftsForIneligibleUser(
         );
     }
     if (affectedDraftScheduleIds.length > 0) {
+        assertCurrent();
         const revised = await tx.schedule.updateMany({
             where: {
                 id: { in: affectedDraftScheduleIds },
@@ -161,5 +167,6 @@ export async function unassignEditableShiftsForIneligibleUser(
             );
         }
     }
+    assertCurrent();
     return unassigned.count;
 }

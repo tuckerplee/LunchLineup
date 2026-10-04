@@ -92,6 +92,7 @@ export class StaffInvitationOutboxService implements OnModuleInit {
     async enqueueInTransaction(
         tx: TenantPrismaTransaction,
         input: { tenantId: string; userId: string; recipient: string },
+        assertCurrent: () => void = () => {},
     ): Promise<InvitationOutboxRow> {
         this.assertEnabled();
         this.maxAttempts();
@@ -118,23 +119,28 @@ export class StaffInvitationOutboxService implements OnModuleInit {
             recipient,
         });
 
+        assertCurrent();
         if (existing) {
-            return tx.staffInvitationOutbox.update({
+            const row = await tx.staffInvitationOutbox.update({
                 where: { id: existing.id },
                 data: {
                     ...(outboxId !== existing.id ? { id: outboxId } : {}),
                     ...data,
                 },
-            }) as Promise<InvitationOutboxRow>;
+            }) as InvitationOutboxRow;
+            assertCurrent();
+            return row;
         }
-        return tx.staffInvitationOutbox.create({
+        const row = await tx.staffInvitationOutbox.create({
             data: {
                 id: outboxId,
                 tenantId: input.tenantId,
                 userId: input.userId,
                 ...data,
             },
-        }) as Promise<InvitationOutboxRow>;
+        }) as InvitationOutboxRow;
+        assertCurrent();
+        return row;
     }
 
     async statusInTransaction(
@@ -155,6 +161,7 @@ export class StaffInvitationOutboxService implements OnModuleInit {
     async retryInTransaction(
         tx: TenantPrismaTransaction,
         input: { tenantId: string; userId: string; actorUserId: string },
+        assertCurrent: () => void = () => {},
     ): Promise<InvitationDeliveryResponse> {
         this.assertEnabled();
         const maxAttempts = this.maxAttempts();
@@ -171,7 +178,7 @@ export class StaffInvitationOutboxService implements OnModuleInit {
 
         const current = await this.findInvitation(tx, input.tenantId, input.userId);
         if (!current) throw new NotFoundException('Invitation delivery not found');
-        if (current.status === 'PENDING') return this.toResponse(current);
+        if (current.status === 'PENDING') { assertCurrent(); return this.toResponse(current); }
         if (current.status === 'SENDING') {
             throw new ConflictException('Invitation delivery is currently leased');
         }
@@ -186,6 +193,7 @@ export class StaffInvitationOutboxService implements OnModuleInit {
             throw new ConflictException('Invitation delivery retry limit reached');
         }
 
+        assertCurrent();
         const updated = await tx.staffInvitationOutbox.updateMany({
             where: {
                 id: current.id,
@@ -212,6 +220,7 @@ export class StaffInvitationOutboxService implements OnModuleInit {
             throw new ConflictException('Invitation delivery changed before retry');
         }
         if (updated.count > 0) {
+            assertCurrent();
             await tx.auditLog.create({
                 data: {
                     tenantId: input.tenantId,
@@ -222,6 +231,7 @@ export class StaffInvitationOutboxService implements OnModuleInit {
                 },
             });
         }
+        assertCurrent();
         return this.toResponse(row);
     }
 
@@ -233,6 +243,7 @@ export class StaffInvitationOutboxService implements OnModuleInit {
             actorUserId: string;
             idempotencyKey: string | undefined;
         },
+        assertCurrent: () => void = () => {},
     ): Promise<InvitationDeliveryResponse> {
         this.assertEnabled();
         this.maxAttempts();
@@ -243,6 +254,7 @@ export class StaffInvitationOutboxService implements OnModuleInit {
         const existingAction = await this.findInvitationById(tx, outboxId);
         if (existingAction) {
             this.assertSameInvitation(existingAction, input.tenantId, input.userId);
+            assertCurrent();
             return this.toResponse(existingAction);
         }
 
@@ -288,6 +300,7 @@ export class StaffInvitationOutboxService implements OnModuleInit {
             outboxId,
             recipient: user.email.trim().toLowerCase(),
         });
+        assertCurrent();
         const replaced = await tx.staffInvitationOutbox.updateMany({
             where: {
                 id: current.id,
@@ -302,11 +315,13 @@ export class StaffInvitationOutboxService implements OnModuleInit {
             const replay = await this.findInvitationById(tx, outboxId);
             if (replay) {
                 this.assertSameInvitation(replay, input.tenantId, input.userId);
+                assertCurrent();
                 return this.toResponse(replay);
             }
             throw new ConflictException('Invitation delivery changed before reissue');
         }
 
+        assertCurrent();
         await tx.auditLog.create({
             data: {
                 tenantId: input.tenantId,
@@ -335,6 +350,7 @@ export class StaffInvitationOutboxService implements OnModuleInit {
 
         const reissued = await this.findInvitationById(tx, outboxId);
         if (!reissued) throw new ServiceUnavailableException('Invitation reissue was not persisted');
+        assertCurrent();
         return this.toResponse(reissued);
     }
 

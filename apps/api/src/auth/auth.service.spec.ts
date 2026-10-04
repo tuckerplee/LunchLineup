@@ -1,5 +1,7 @@
 import { afterEach, describe, it, expect, vi, beforeEach } from 'vitest';
 import { BadRequestException, ConflictException, ForbiddenException, ServiceUnavailableException, UnauthorizedException } from '@nestjs/common';
+import { runSerializableMutationWithRetry } from './serializable-mutation';
+import { freezeMutationActor } from './current-mutation';
 import { AuthService } from './auth.service';
 import * as bcrypt from 'bcryptjs';
 import * as crypto from 'crypto';
@@ -77,6 +79,17 @@ const mockJwtService = {
 };
 
 const mockRbacService = {
+    // Existing PIN-domain cases model the final authorized operation only;
+    // they are not a current-policy/MFA proof for the shared two-pass wrapper.
+    runCurrentMutation: vi.fn(async (options: any, authorize: any, operation: any) => {
+        const actor = freezeMutationActor(options.actor);
+        return runSerializableMutationWithRetry(() => mockPrisma.$transaction(async (tx: any) =>
+            operation(tx, await authorize(tx, actor), () => {}, actor),
+        { isolationLevel: 'Serializable' }), {
+            conflictMessage: options.conflictMessage ?? 'Authorization or access state changed concurrently; retry the request',
+            isConflict: options.isConflict,
+        });
+    }),
     getEffectiveAccess: vi.fn(),
     getEffectiveAccessInTransaction: vi.fn((_tx: unknown, userId: string, tenantId: string) =>
         mockRbacService.getEffectiveAccess(userId, tenantId)),

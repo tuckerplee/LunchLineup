@@ -1,5 +1,7 @@
 import { BadRequestException, ConflictException, ForbiddenException, NotFoundException } from '@nestjs/common';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { runSerializableMutationWithRetry } from './serializable-mutation';
+import { freezeMutationActor } from './current-mutation';
 import { TenantPrismaService } from '../database/tenant-prisma.service';
 import {
     DEFAULT_ROLE_DEFINITIONS,
@@ -142,6 +144,19 @@ describe('RbacService role mutation protections', () => {
             },
         }]);
         service = new RbacService(new TenantPrismaService(prisma));
+        // These existing domain/locking cases retain their single-pass transaction
+        // model. Full two-pass current-policy/MFA behavior is exercised separately
+        // by legacy-current-mutation.spec.ts and actual controller owner fixtures.
+        vi.spyOn(service, 'runCurrentMutation').mockImplementation(async (options, authorize, operation) => {
+            const actor = freezeMutationActor(options.actor);
+            const tenantDb = new TenantPrismaService(prisma);
+            return runSerializableMutationWithRetry(() => tenantDb.withTenant(actor.tenantId, async tx =>
+                operation(tx, await authorize(tx, actor), () => {}, actor),
+            { isolationLevel: 'Serializable' }), {
+                conflictMessage: options.conflictMessage ?? 'Authorization or access state changed concurrently; retry the request',
+                isConflict: options.isConflict,
+            });
+        });
     });
 
     function accessRole(
@@ -395,7 +410,7 @@ describe('RbacService role mutation protections', () => {
         expect(lockSql[3]).toContain('FROM "RoleAssignment"');
         expect(lockSql[4]).toContain('FROM "Role"');
         expect(lockSql[5]).toContain('FROM "RolePermission"');
-        expect(lockSql[0]).toContain('FOR KEY SHARE');
+        expect(lockSql[0]).toContain('FOR UPDATE');
         expect(lockSql.slice(1).every((sql: string) => sql.includes('FOR UPDATE'))).toBe(true);
     });
 

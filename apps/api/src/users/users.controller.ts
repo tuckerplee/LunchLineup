@@ -18,7 +18,6 @@ import {
     isPrismaUniqueConstraintConflict,
     isSerializableTransactionConflict,
 } from '../database/transaction-error';
-import { runSerializableMutationWithRetry } from '../auth/serializable-mutation';
 import {
     buildBoundedListPage,
     decodeBoundedListCursor,
@@ -149,19 +148,18 @@ export class UsersController {
         return sessionId;
     }
 
-    private async withActorAuthorizedSerializableMutation<T>(
-        tenantId: string,
-        operation: (tx: TenantPrismaTransaction) => Promise<T>,
-        conflictMessage = 'Authorization or invitation state changed concurrently; retry the request',
-    ): Promise<T> {
-        return runSerializableMutationWithRetry(
-            () => this.tenantDb.withTenant(
-                tenantId,
-                operation,
-                { isolationLevel: 'Serializable' },
-            ),
-            { conflictMessage },
-        );
+    private currentMutationOptions(req: any, requiredPermission: string,
+        conflictMessage = 'Authorization or invitation state changed concurrently; retry the request') {
+        return {
+            actor: {
+                userId: req.user.sub as string,
+                tenantId: req.user.tenantId as string,
+                sessionId: this.requestSessionId(req),
+            },
+            requiredPermission,
+            mfaObserver: this.authService,
+            conflictMessage,
+        };
     }
 
     private async resolveInviteRole(tx: TenantPrismaTransaction, tenantId: string, requestedRole?: UserRoleValue): Promise<UserRoleValue> {
@@ -313,6 +311,7 @@ export class UsersController {
         tenantId: string,
         changedSkills: string[],
         availabilityScopes: ChangedAvailabilityScope[],
+        assertCurrent: () => void = () => {},
     ): Promise<void> {
         const predicates: Prisma.Sql[] = [];
         if (changedSkills.length > 0) {
@@ -353,6 +352,7 @@ export class UsersController {
         `);
         const scheduleIds = affected.map((schedule) => schedule.id);
         if (scheduleIds.length === 0) return;
+        assertCurrent();
         await tx.schedule.updateMany({
             where: {
                 id: { in: scheduleIds },
@@ -375,7 +375,6 @@ export class UsersController {
         const tenantId = req.user.tenantId;
         const limit = parseBoundedListLimit(limitValue);
         const cursor = decodeBoundedListCursor(cursorValue);
-        await this.rbacService.ensureTenantRoles(tenantId);
         const { page, roleAssignmentsByUser, summary } = await this.tenantDb.withTenant(tenantId, async (tx) => {
             const where: Prisma.UserWhereInput = { tenantId, deletedAt: null };
             if (cursor) {
@@ -597,7 +596,6 @@ export class UsersController {
         @Body() body: StaffSchedulingProfileInput,
         @Req() req: any,
     ) {
-        const tenantId = req.user.tenantId;
         const profile = normalizeStaffSchedulingProfile(body);
         const locationIds = Array.from(new Set(
             profile.availability
@@ -605,58 +603,68 @@ export class UsersController {
                 .filter((locationId): locationId is string => Boolean(locationId)),
         ));
 
-        return this.tenantDb.withTenant(tenantId, async (tx) => {
-            await lockTenantSchedulingMutations(tx, tenantId);
-            await this.lockActiveSchedulingProfileScope(tx, tenantId, id, locationIds);
-            const [existingSkills, existingAvailability] = await Promise.all([
-                tx.staffSkill.findMany({
-                    where: { tenantId, userId: id },
-                    select: { skill: true },
-                    orderBy: { skill: 'asc' },
-                }),
-                tx.staffAvailability.findMany({
-                    where: { tenantId, userId: id },
-                    select: {
-                        locationId: true,
-                        dayOfWeek: true,
-                        startTimeMinutes: true,
-                        endTimeMinutes: true,
-                    },
-                }),
-            ]);
-            const previousSkills = existingSkills.map((entry) => entry.skill).sort();
-            const changedSkills = Array.from(new Set([
-                ...previousSkills.filter((skill) => !profile.skills.includes(skill)),
-                ...profile.skills.filter((skill) => !previousSkills.includes(skill)),
-            ])).sort();
-            const availabilityScopes = this.changedAvailabilityScopes(
-                existingAvailability,
-                profile.availability,
-            );
-            await this.invalidateAffectedDraftSchedules(
-                tx,
-                tenantId,
-                changedSkills,
-                availabilityScopes,
-            );
-            await tx.staffAvailability.deleteMany({ where: { tenantId, userId: id } });
-            await tx.staffSkill.deleteMany({ where: { tenantId, userId: id } });
-            if (profile.skills.length > 0) {
-                await tx.staffSkill.createMany({
-                    data: profile.skills.map((skill) => ({ tenantId, userId: id, skill })),
-                });
-            }
-            if (profile.availability.length > 0) {
-                await tx.staffAvailability.createMany({
-                    data: profile.availability.map((window) => ({ tenantId, userId: id, ...window })),
-                });
-            }
-            return {
-                user: { id },
-                ...profile,
-                availabilityConfigured: profile.availability.length > 0,
-            };
-        });
+        return this.rbacService.runCurrentMutation(
+            this.currentMutationOptions(req, 'users:write'),
+            (tx, actor) => this.rbacService.authorizeActorMutationInTransaction(tx, actor, 'users:write', [id]),
+            async (tx, _authorized, assertCurrent, actor) => {
+                const tenantId = actor.tenantId;
+                await lockTenantSchedulingMutations(tx, tenantId, true, assertCurrent);
+                await this.lockActiveSchedulingProfileScope(tx, tenantId, id, locationIds);
+                const [existingSkills, existingAvailability] = await Promise.all([
+                    tx.staffSkill.findMany({
+                        where: { tenantId, userId: id },
+                        select: { skill: true },
+                        orderBy: { skill: 'asc' },
+                    }),
+                    tx.staffAvailability.findMany({
+                        where: { tenantId, userId: id },
+                        select: {
+                            locationId: true,
+                            dayOfWeek: true,
+                            startTimeMinutes: true,
+                            endTimeMinutes: true,
+                        },
+                    }),
+                ]);
+                const previousSkills = existingSkills.map((entry) => entry.skill).sort();
+                const changedSkills = Array.from(new Set([
+                    ...previousSkills.filter((skill) => !profile.skills.includes(skill)),
+                    ...profile.skills.filter((skill) => !previousSkills.includes(skill)),
+                ])).sort();
+                const availabilityScopes = this.changedAvailabilityScopes(
+                    existingAvailability,
+                    profile.availability,
+                );
+                await this.invalidateAffectedDraftSchedules(
+                    tx,
+                    tenantId,
+                    changedSkills,
+                    availabilityScopes,
+                    assertCurrent,
+                );
+                assertCurrent();
+                await tx.staffAvailability.deleteMany({ where: { tenantId, userId: id } });
+                assertCurrent();
+                await tx.staffSkill.deleteMany({ where: { tenantId, userId: id } });
+                if (profile.skills.length > 0) {
+                    assertCurrent();
+                    await tx.staffSkill.createMany({
+                        data: profile.skills.map((skill) => ({ tenantId, userId: id, skill })),
+                    });
+                }
+                if (profile.availability.length > 0) {
+                    assertCurrent();
+                    await tx.staffAvailability.createMany({
+                        data: profile.availability.map((window) => ({ tenantId, userId: id, ...window })),
+                    });
+                }
+                return {
+                    user: { id },
+                    ...profile,
+                    availabilityConfigured: profile.availability.length > 0,
+                };
+            },
+        );
     }
 
     private async invalidateArchivedUserAuthState(
@@ -664,15 +672,19 @@ export class UsersController {
         tenantId: string,
         userId: string,
         now: Date,
+        assertCurrent: () => void = () => {},
     ): Promise<void> {
+        assertCurrent();
         await tx.session.updateMany({
             where: { userId, revokedAt: null },
             data: { revokedAt: now },
         });
+        assertCurrent();
         await tx.passwordResetToken.updateMany({
             where: { tenantId, userId, consumedAt: null },
             data: { consumedAt: now },
         });
+        assertCurrent();
         await tx.passwordResetEmailOutbox.updateMany({
             where: {
                 tenantId,
@@ -686,9 +698,11 @@ export class UsersController {
                 lastError: 'User credentials reprovisioned',
             },
         });
+        assertCurrent();
         await tx.mfaTotpClaim.deleteMany({
             where: { tenantId, userId },
         });
+        assertCurrent();
     }
 
     @Get(':id')
@@ -746,129 +760,128 @@ export class UsersController {
             throw new BadRequestException('Choose email login or username login, not both');
         }
 
-        const tenantId = req.user.tenantId;
-
         const requestedRoleId = (body.roleId || '').trim();
-        const actorSessionId = this.requestSessionId(req);
-        const { user, temporaryPin, invitationDelivery } = await this.withActorAuthorizedSerializableMutation(
-            tenantId,
-            async (tx) => {
-            await assertTenantCanAddActiveUser(tx as any, tenantId);
-            const requestedLegacyRole = requestedRoleId
-                ? null
-                : await this.resolveInviteRole(tx, tenantId, body.role);
-            const archivedUser = await tx.user.findFirst({
-                where: {
-                    tenantId,
-                    deletedAt: { not: null },
-                    ...(normalizedEmail
-                        ? { email: normalizedEmail }
-                        : { username: normalizedUsername }),
-                },
-                select: { id: true },
-            });
-            const selectedRole = await this.rbacService.authorizeUserInvitationInTransaction(
-                tx,
-                tenantId,
-                {
-                    actorUserId: req.user.sub,
-                    actorSessionId,
+        const requestedLegacyRoleInput = body.role;
+        const { user, temporaryPin, invitationDelivery, assignedRoles } = await this.rbacService.runCurrentMutation(
+            this.currentMutationOptions(req, 'users:write'),
+            async (tx, actor) => {
+                const tenantId = actor.tenantId;
+                const requestedLegacyRole = requestedRoleId
+                    ? null
+                    : await this.resolveInviteRole(tx, tenantId, requestedLegacyRoleInput);
+                const archivedUser = await tx.user.findFirst({
+                    where: {
+                        tenantId,
+                        deletedAt: { not: null },
+                        ...(normalizedEmail ? { email: normalizedEmail } : { username: normalizedUsername }),
+                    },
+                    select: { id: true },
+                });
+                const selectedRole = await this.rbacService.authorizeUserInvitationInTransaction(tx, tenantId, {
+                    actorUserId: actor.userId,
+                    actorSessionId: actor.sessionId,
                     targetUserId: archivedUser?.id,
                     requestedRoleId: requestedRoleId || undefined,
                     requestedLegacyRole: requestedLegacyRole ?? undefined,
-                },
-            );
+                });
+                return { selectedRole, archivedUser };
+            },
+            async (tx, { selectedRole, archivedUser }, assertCurrent, actor) => {
+                const tenantId = actor.tenantId;
+                await assertTenantCanAddActiveUser(tx as any, tenantId);
+                const selectedPermissions = selectedRole.rolePermissions.map((item) => item.permission.key);
+                const allowsEmail = selectedPermissions.includes('auth:login_email');
+                const allowsPin = selectedPermissions.includes('auth:login_pin');
+                const selectedLegacyRole = this.isUserRole(selectedRole.legacyRole)
+                    ? selectedRole.legacyRole
+                    : USER_ROLE.STAFF;
 
-            const selectedPermissions = selectedRole.rolePermissions.map((item) => item.permission.key);
-            const allowsEmail = selectedPermissions.includes('auth:login_email');
-            const allowsPin = selectedPermissions.includes('auth:login_pin');
-            const selectedLegacyRole = this.isUserRole(selectedRole.legacyRole)
-                ? selectedRole.legacyRole
-                : USER_ROLE.STAFF;
+                if (hasEmail && !allowsEmail) {
+                    throw new BadRequestException('Email login is not enabled for the selected role');
+                }
+                if (!allowsPin && hasUsername) {
+                    throw new BadRequestException('Username and PIN login is not enabled for the selected role');
+                }
 
-            if (hasEmail && !allowsEmail) {
-                throw new BadRequestException('Email login is not enabled for the selected role');
-            }
-            if (!allowsPin && hasUsername) {
-                throw new BadRequestException('Username and PIN login is not enabled for the selected role');
-            }
-
-            const identityData = {
-                email: normalizedEmail || null,
-                username: normalizedUsername,
-                name: normalizedName,
-                role: selectedLegacyRole,
-            };
-            const now = new Date();
-            const temporaryPin = normalizedUsername
-                ? normalizedPin || this.createTemporaryPin()
-                : null;
-            const pinCredentialData = temporaryPin
-                ? this.authService.buildPinCredentialData(temporaryPin, !normalizedPin, now)
-                : {
-                    pinHash: null,
-                    pinSetAt: null,
-                    pinResetRequired: false,
-                    pinLoginAttempts: 0,
-                    pinLockedUntil: null,
+                const identityData = {
+                    email: normalizedEmail || null,
+                    username: normalizedUsername,
+                    name: normalizedName,
+                    role: selectedLegacyRole,
                 };
-            const credentialData = {
-                passwordHash: null,
-                oidcIssuer: null,
-                oidcSubject: null,
-                mfaEnabled: false,
-                mfaSecret: null,
-                mfaBackupCodes: [],
-                loginAttempts: 0,
-                lockedUntil: null,
-                lastLoginAt: null,
-                ...pinCredentialData,
-            };
-            const user = archivedUser
-                ? await tx.user.update({
-                    where: { id: archivedUser.id },
-                    data: {
-                        ...identityData,
-                        ...credentialData,
-                        deletedAt: null,
-                    },
-                })
-                : await tx.user.create({
+                const now = new Date();
+                const temporaryPin = normalizedUsername
+                    ? normalizedPin || this.createTemporaryPin()
+                    : null;
+                const pinCredentialData = temporaryPin
+                    ? this.authService.buildPinCredentialData(temporaryPin, !normalizedPin, now)
+                    : {
+                        pinHash: null,
+                        pinSetAt: null,
+                        pinResetRequired: false,
+                        pinLoginAttempts: 0,
+                        pinLockedUntil: null,
+                    };
+                const credentialData = {
+                    passwordHash: null,
+                    oidcIssuer: null,
+                    oidcSubject: null,
+                    mfaEnabled: false,
+                    mfaSecret: null,
+                    mfaBackupCodes: [],
+                    loginAttempts: 0,
+                    lockedUntil: null,
+                    lastLoginAt: null,
+                    ...pinCredentialData,
+                };
+                assertCurrent();
+                const user = archivedUser
+                    ? await tx.user.update({
+                        where: { id: archivedUser.id },
+                        data: {
+                            ...identityData,
+                            ...credentialData,
+                            deletedAt: null,
+                        },
+                    })
+                    : await tx.user.create({
+                        data: {
+                            tenantId,
+                            ...identityData,
+                            ...(temporaryPin ? pinCredentialData : {}),
+                        },
+                    });
+
+                assertCurrent();
+                const replacement = await this.rbacService.assignRolesToUserInTransaction(tx, user.id, tenantId, [selectedRole.id], assertCurrent);
+
+                if (archivedUser) {
+                    await this.invalidateArchivedUserAuthState(tx, tenantId, user.id, now, assertCurrent);
+                }
+                const invitationDelivery = normalizedEmail
+                    ? this.staffInvitationOutbox.toResponse(
+                        await this.staffInvitationOutbox.enqueueInTransaction(tx, {
+                            tenantId,
+                            userId: user.id,
+                            recipient: normalizedEmail,
+                        }, assertCurrent),
+                    )
+                    : this.staffInvitationOutbox.notApplicable();
+
+                assertCurrent();
+                await tx.auditLog.create({
                     data: {
                         tenantId,
-                        ...identityData,
-                        ...(temporaryPin ? pinCredentialData : {}),
-                    },
+                        userId: actor.userId,
+                        actorUserId: actor.userId,
+                        actorTenantId: tenantId,
+                        action: archivedUser ? 'USER_REACTIVATED' : 'USER_INVITED',
+                        resource: 'User',
+                        resourceId: user.id
+                    }
                 });
 
-            await this.rbacService.assignRolesToUserInTransaction(tx, user.id, tenantId, [selectedRole.id]);
-
-            if (archivedUser) {
-                await this.invalidateArchivedUserAuthState(tx, tenantId, user.id, now);
-            }
-            const invitationDelivery = normalizedEmail
-                ? this.staffInvitationOutbox.toResponse(
-                    await this.staffInvitationOutbox.enqueueInTransaction(tx, {
-                        tenantId,
-                        userId: user.id,
-                        recipient: normalizedEmail,
-                    }),
-                )
-                : this.staffInvitationOutbox.notApplicable();
-
-            await tx.auditLog.create({
-                data: {
-                    tenantId,
-                    userId: req.user.sub,
-                    actorUserId: req.user.sub,
-                    actorTenantId: tenantId,
-                    action: archivedUser ? 'USER_REACTIVATED' : 'USER_INVITED',
-                    resource: 'User',
-                    resourceId: user.id
-                }
-            });
-
-            return { user, temporaryPin, invitationDelivery };
+                return { user, temporaryPin, invitationDelivery, assignedRoles: replacement.assignedRoles };
             },
         );
 
@@ -883,7 +896,7 @@ export class UsersController {
             pinResetRequired: Boolean(normalizedUsername) && !normalizedPin,
             temporaryPin,
             invitationDelivery,
-            assignedRoles: await this.rbacService.getUserRoleAssignments(user.id, tenantId),
+            assignedRoles,
             status: 'INVITED',
         };
     }
@@ -903,25 +916,21 @@ export class UsersController {
     @Post(':id/invitation/retry')
     @Permission('users:admin')
     async retryInvitation(@Param('id') id: string, @Req() req: any) {
-        const tenantId = req.user.tenantId;
-        const actorSessionId = this.requestSessionId(req);
         return {
-            invitationDelivery: await this.withActorAuthorizedSerializableMutation(
-                tenantId,
-                async (tx) => {
-                    await this.rbacService.authorizeUserAdministrationInTransaction(tx, tenantId, {
-                        actorUserId: req.user.sub,
-                        actorSessionId,
+            invitationDelivery: await this.rbacService.runCurrentMutation(
+                this.currentMutationOptions(req, 'users:admin'),
+                (tx, actor) => this.rbacService.authorizeUserAdministrationInTransaction(tx, actor.tenantId, {
+                        actorUserId: actor.userId,
+                        actorSessionId: actor.sessionId,
                         targetUserId: id,
                         requiredPermission: 'users:admin',
                         selfMutationMessage: 'You cannot retry your own invitation delivery',
-                    });
-                    return this.staffInvitationOutbox.retryInTransaction(tx, {
-                        tenantId,
+                    }),
+                (tx, _target, assertCurrent, actor) => this.staffInvitationOutbox.retryInTransaction(tx, {
+                        tenantId: actor.tenantId,
                         userId: id,
-                        actorUserId: req.user.sub,
-                    });
-                },
+                        actorUserId: actor.userId,
+                    }, assertCurrent),
             ),
         };
     }
@@ -933,26 +942,22 @@ export class UsersController {
         @Req() req: any,
         @Headers('idempotency-key') idempotencyKey?: string,
     ) {
-        const tenantId = req.user.tenantId;
-        const actorSessionId = this.requestSessionId(req);
         return {
-            invitationDelivery: await this.withActorAuthorizedSerializableMutation(
-                tenantId,
-                async (tx) => {
-                    await this.rbacService.authorizeUserAdministrationInTransaction(tx, tenantId, {
-                        actorUserId: req.user.sub,
-                        actorSessionId,
+            invitationDelivery: await this.rbacService.runCurrentMutation(
+                this.currentMutationOptions(req, 'users:admin'),
+                (tx, actor) => this.rbacService.authorizeUserAdministrationInTransaction(tx, actor.tenantId, {
+                        actorUserId: actor.userId,
+                        actorSessionId: actor.sessionId,
                         targetUserId: id,
                         requiredPermission: 'users:admin',
                         selfMutationMessage: 'You cannot reissue your own invitation delivery',
-                    });
-                    return this.staffInvitationOutbox.reissueInTransaction(tx, {
-                        tenantId,
+                    }),
+                (tx, _target, assertCurrent, actor) => this.staffInvitationOutbox.reissueInTransaction(tx, {
+                        tenantId: actor.tenantId,
                         userId: id,
-                        actorUserId: req.user.sub,
+                        actorUserId: actor.userId,
                         idempotencyKey,
-                    });
-                },
+                    }, assertCurrent),
             ),
         };
     }
@@ -965,6 +970,7 @@ export class UsersController {
         const replacement = await this.rbacService.replaceUserRolesAsActor(tenantId, {
             actorUserId: req.user.sub,
             actorSessionId: this.requestSessionId(req),
+            mfaObserver: this.authService,
             targetUserId: id,
             legacyRole: role,
             requiredPermission: 'users:admin',
@@ -1016,35 +1022,25 @@ export class UsersController {
     @Permission('users:admin')
     @HttpCode(HttpStatus.NO_CONTENT)
     async deactivate(@Param('id') id: string, @Req() req: any) {
-        const tenantId = req.user.tenantId;
-        const actorSessionId = this.requestSessionId(req);
-        const storageKeys = await this.withActorAuthorizedSerializableMutation(
-            tenantId,
-            async (tx) => {
-                await tx.$queryRaw(Prisma.sql`
-                    SELECT "id"
-                    FROM "Tenant"
-                    WHERE "id" = ${tenantId}
-                    FOR UPDATE
-                `);
-                const user = await this.rbacService.authorizeUserAdministrationInTransaction(
-                    tx,
-                    tenantId,
-                    {
-                        actorUserId: req.user.sub,
-                        actorSessionId,
-                        targetUserId: id,
-                        requiredPermission: 'users:admin',
-                        selfMutationMessage: 'You cannot deactivate your own account',
-                    },
-                );
+        const storageKeys = await this.rbacService.runCurrentMutation(
+            this.currentMutationOptions(req, 'users:admin', 'Authorization changed during user deactivation; retry the request'),
+            (tx, actor) => this.rbacService.authorizeUserAdministrationInTransaction(tx, actor.tenantId, {
+                actorUserId: actor.userId,
+                actorSessionId: actor.sessionId,
+                targetUserId: id,
+                requiredPermission: 'users:admin',
+                selfMutationMessage: 'You cannot deactivate your own account',
+            }),
+            async (tx, user, assertCurrent, actor) => {
+                const tenantId = actor.tenantId;
                 const deletedAt = new Date();
-                const cleanup = await anonymizeDeletedUser(tx, tenantId, user.id, deletedAt);
+                const cleanup = await anonymizeDeletedUser(tx, tenantId, user.id, deletedAt, assertCurrent);
+                assertCurrent();
                 await tx.auditLog.create({
                     data: {
                         tenantId,
-                        userId: req.user.sub,
-                        actorUserId: req.user.sub,
+                        userId: actor.userId,
+                        actorUserId: actor.userId,
                         actorTenantId: tenantId,
                         action: 'USER_DELETED',
                         resource: 'User',
@@ -1053,7 +1049,6 @@ export class UsersController {
                 });
                 return cleanup.availabilityImportStorageKeys;
             },
-            'Authorization changed during user deactivation; retry the request',
         );
         await deleteAvailabilityImportStorageKeys(storageKeys);
     }
@@ -1080,6 +1075,7 @@ export class UsersController {
         const replacement = await this.rbacService.replaceUserRolesAsActor(tenantId, {
             actorUserId: req.user.sub,
             actorSessionId: this.requestSessionId(req),
+            mfaObserver: this.authService,
             targetUserId: id,
             roleIds: requestedRoleIds,
             requiredPermission: 'roles:assign',
@@ -1105,6 +1101,7 @@ export class UsersController {
                 {
                     actorUserId: req.user.sub,
                     actorSessionId: this.requestSessionId(req),
+                    mfaObserver: this.authService,
                     ...requestAudit,
                 },
             );
@@ -1141,6 +1138,7 @@ export class UsersController {
             {
                 actorUserId: req.user.sub,
                 actorSessionId: this.requestSessionId(req),
+                mfaObserver: this.authService,
                 ...requestAudit,
             },
         );
@@ -1166,6 +1164,7 @@ export class UsersController {
             {
                 actorUserId: req.user.sub,
                 actorSessionId: this.requestSessionId(req),
+                mfaObserver: this.authService,
                 ...requestAudit,
             },
         );

@@ -38,8 +38,9 @@ async function cancelAvailabilityImports(
   tenantId: string,
   userId: string,
   deletedAt: Date,
+  assertCurrent: () => void = () => {},
 ): Promise<DeletedUserCleanup> {
-  await lockTenantSchedulingMutations(tx, tenantId);
+  await lockTenantSchedulingMutations(tx, tenantId, false, assertCurrent);
   await tx.$queryRaw(Prisma.sql`
         SELECT "id"
         FROM "User"
@@ -136,6 +137,7 @@ async function cancelAvailabilityImports(
     if (refundCount !== 0) {
       throw new Error("Availability import refund provenance is invalid during user deletion.");
     }
+    assertCurrent();
     const settled = await tx.$queryRaw<Array<{
       transactionId: string;
       creditedValue: number | bigint;
@@ -171,6 +173,7 @@ async function cancelAvailabilityImports(
     refundedAvailabilityImportCredits += consumedCredits;
   }
 
+  assertCurrent();
   await tx.availabilityImportJob.updateMany({
     where: { tenantId, userId, status: { not: "SUCCEEDED" } },
     data: {
@@ -190,6 +193,7 @@ async function cancelAvailabilityImports(
       completedAt: deletedAt,
     },
   });
+  assertCurrent();
   await tx.availabilityImportJob.updateMany({
     where: { tenantId, userId, status: "SUCCEEDED" },
     data: {
@@ -206,6 +210,7 @@ async function cancelAvailabilityImports(
     },
   });
 
+  assertCurrent();
   return {
     availabilityImportStorageKeys: imports
       .map((job) => job.storageKey)
@@ -259,9 +264,10 @@ export async function unassignEditableShiftsForDeletedUser(
   tx: TenantPrismaTransaction,
   tenantId: string,
   userId: string,
+  assertCurrent: () => void = () => {},
 ): Promise<number> {
-  await lockTenantSchedulingMutations(tx, tenantId);
-  return unassignEditableShiftsForIneligibleUser(tx, tenantId, userId);
+  await lockTenantSchedulingMutations(tx, tenantId, false, assertCurrent);
+  return unassignEditableShiftsForIneligibleUser(tx, tenantId, userId, assertCurrent);
 }
 
 export async function anonymizeDeletedUser(
@@ -269,17 +275,20 @@ export async function anonymizeDeletedUser(
   tenantId: string,
   userId: string,
   deletedAt: Date,
+  assertCurrent: () => void = () => {},
 ): Promise<DeletedUserCleanup> {
   const cleanup = await cancelAvailabilityImports(
     tx,
     tenantId,
     userId,
     deletedAt,
+    assertCurrent,
   );
-  await unassignEditableShiftsForIneligibleUser(tx, tenantId, userId);
+  await unassignEditableShiftsForIneligibleUser(tx, tenantId, userId, assertCurrent);
   const invitationDiagnosticsEraseAfter = new Date(
     deletedAt.getTime() + 30 * 24 * 60 * 60 * 1_000,
   );
+  assertCurrent();
   await tx.staffInvitationOutbox.updateMany({
     where: {
       tenantId,
@@ -302,6 +311,7 @@ export async function anonymizeDeletedUser(
     },
   });
 
+  assertCurrent();
   const anonymized = await tx.user.updateMany({
     where: { id: userId, tenantId, deletedAt: null },
     data: {
@@ -338,11 +348,14 @@ export async function anonymizeDeletedUser(
     throw new Error("Cannot delete user because the locked account changed during cleanup.");
   }
 
+  assertCurrent();
   await tx.availabilityImportJob.updateMany({
     where: { tenantId, requestedByUserId: userId },
     data: { requestedByUserId: null },
   });
+  assertCurrent();
   await tx.refreshTokenReplay.deleteMany({ where: { session: { userId } } });
+  assertCurrent();
   await tx.$executeRaw(Prisma.sql`
         UPDATE "Session"
         SET "selectorHash" = NULL,
@@ -352,12 +365,20 @@ export async function anonymizeDeletedUser(
             "revokedAt" = ${deletedAt}
         WHERE "userId" = ${userId}
     `);
+  assertCurrent();
   await tx.passwordResetEmailOutbox.deleteMany({ where: { tenantId, userId } });
+  assertCurrent();
   await tx.passwordResetToken.deleteMany({ where: { tenantId, userId } });
+  assertCurrent();
   await tx.mfaTotpClaim.deleteMany({ where: { tenantId, userId } });
+  assertCurrent();
   await tx.roleAssignment.deleteMany({ where: { tenantId, userId } });
+  assertCurrent();
   await tx.onboardingSignupAttempt.deleteMany({ where: { tenantId, userId } });
+  assertCurrent();
   await tx.notificationOutbox.deleteMany({ where: { tenantId, userId } });
+  assertCurrent();
   await tx.notification.deleteMany({ where: { tenantId, userId } });
+  assertCurrent();
   return cleanup;
 }

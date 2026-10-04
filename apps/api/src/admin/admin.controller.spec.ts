@@ -1,5 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { AdminController } from './admin.controller';
+import { RbacService } from '../auth/rbac.service';
+import { installAdminCompositionPolicy } from './admin-user-authority.fixture';
 import { BadRequestException, ConflictException, ForbiddenException } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { TenantPrismaService } from '../database/tenant-prisma.service';
@@ -86,6 +88,23 @@ function buildController(
     config: Record<string, string> = {},
     tenantAccountLifecycle?: any,
 ) {
+    // Retained target callback stubs assert domain composition only. The real
+    // actor wrapper reads complete policy context; full target checks/rollback
+    // are separately exercised in admin-user-current-authority.spec.ts.
+    let observer: any;
+    if (rbacService && typeof rbacService.runCurrentMutation !== 'function') {
+        observer = installAdminCompositionPolicy(prisma);
+        const oldCombinedRoleWriter = rbacService.replaceLegacySystemRoleForPlatformAdminActorInTransaction;
+        rbacService = Object.assign(new RbacService(new TenantPrismaService(prisma)), rbacService);
+        if (oldCombinedRoleWriter) {
+            rbacService.prepareLegacySystemRoleForPlatformAdminActorInTransaction = vi.fn(async (_tx: any,
+                userId: string, tenantId: string, legacyRole: string, actor: any) => ({
+                target: { id: userId, tenantId }, userId, tenantId, legacyRole, actor,
+            }));
+            rbacService.applyPreparedPlatformAdminSystemRoleReplacementInTransaction = vi.fn(async (tx: any, plan: any) =>
+                oldCombinedRoleWriter(tx, plan.userId, plan.tenantId, plan.legacyRole, plan.actor));
+        }
+    }
     const controller = new AdminController(
         { get: vi.fn((key: string) => config[key]) } as any,
         {} as any,
@@ -93,6 +112,7 @@ function buildController(
         new TenantPrismaService(prisma),
         stripeBilling,
         rbacService,
+        observer,
     );
     if (tenantAccountLifecycle) {
         (controller as any).tenantAccountLifecycle = tenantAccountLifecycle;
@@ -2697,8 +2717,6 @@ describe('AdminController platform user identity and access updates', () => {
                 userId: 'admin-1',
                 tenantId: 'platform-tenant',
                 sessionId: 'admin-session-1',
-                ipAddress: '203.0.113.25',
-                userAgent: 'vitest-platform-admin',
             },
         );
         expect(prisma.session.updateMany).toHaveBeenCalledWith({
@@ -2763,7 +2781,7 @@ describe('AdminController platform user identity and access updates', () => {
             'user-1',
             { role: 'STAFF' },
         )).resolves.toMatchObject({ role: 'STAFF' });
-        expect((prisma as any).$transaction).toHaveBeenCalledTimes(2);
+        expect((prisma as any).$transaction).toHaveBeenCalledTimes(3);
         expect(replacement).toHaveBeenCalledOnce();
         expect(prisma.auditLog.create).toHaveBeenCalledOnce();
     });
@@ -2809,8 +2827,6 @@ describe('AdminController platform user identity and access updates', () => {
                 userId: 'admin-1',
                 tenantId: 'platform-tenant',
                 sessionId: 'admin-session-1',
-                ipAddress: '203.0.113.25',
-                userAgent: 'vitest-platform-admin',
             },
         );
         expect(prisma.onboardingSignupAttempt.deleteMany).toHaveBeenCalledWith({

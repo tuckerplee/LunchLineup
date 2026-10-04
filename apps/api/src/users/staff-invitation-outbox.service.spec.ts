@@ -1,4 +1,5 @@
 import { createDecipheriv } from 'node:crypto';
+import { ForbiddenException } from '@nestjs/common';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
@@ -500,5 +501,72 @@ describe('StaffInvitationOutboxService', () => {
             .toThrow('unavailable');
         expect(() => service(key.toString('base64'), 'true', '9').validateConfiguration())
             .toThrow('unavailable');
+    });
+});
+
+
+// Injected guard proves actual producer forwarding and effect/late-read bounds;
+// the root shared runner separately proves current policy and native observer.
+describe('legacy invitation producer finite guard boundaries', () => {
+    for (const existing of [false, true]) {
+        it.each(['read', 'effect'] as const)(`enqueue ${existing ? 'update' : 'create'} refuses expiry after %s`, async boundary => {
+            let expired = false;
+            const assertCurrent = () => { if (expired) throw new ForbiddenException('Controlled authority expiry'); };
+            const tx = { staffInvitationOutbox: {
+                findUnique: vi.fn(async () => { if (boundary === 'read') expired = true; return existing ? row() : null; }),
+                create: vi.fn(async ({ data }: any) => { expired = true; return row(data); }),
+                update: vi.fn(async ({ data }: any) => { expired = true; return row(data); }),
+            } };
+            await expect(service().enqueueInTransaction(tx as never,
+                { tenantId: 'tenant-1', userId: 'user-1', recipient: 'person@example.com' }, assertCurrent))
+                .rejects.toBeInstanceOf(ForbiddenException);
+            expect(tx.staffInvitationOutbox.create).toHaveBeenCalledTimes(boundary === 'effect' && !existing ? 1 : 0);
+            expect(tx.staffInvitationOutbox.update).toHaveBeenCalledTimes(boundary === 'effect' && existing ? 1 : 0);
+        });
+    }
+    it.each(['update', 'audit', 'pending replay read'] as const)('retry refuses expiry at %s and never reports success', async boundary => {
+        let expired = false, current = row({ status: boundary === 'pending replay read' ? 'PENDING' : 'FAILED' });
+        const assertCurrent = () => { if (expired) throw new ForbiddenException('Controlled authority expiry'); };
+        const tx = { user: { findFirst: vi.fn(async () => ({ id: 'user-1' })) }, staffInvitationOutbox: {
+            findUnique: vi.fn(async () => { if (boundary === 'pending replay read') expired = true; return current; }),
+            updateMany: vi.fn(async () => { current = row({ status: 'PENDING' }); if (boundary === 'update') expired = true; return { count: 1 }; }),
+        }, auditLog: { create: vi.fn(async () => { expired = true; return { id: 'audit' }; }) } };
+        await expect(service().retryInTransaction(tx as never,
+            { tenantId: 'tenant-1', userId: 'user-1', actorUserId: 'actor' }, assertCurrent))
+            .rejects.toBeInstanceOf(ForbiddenException);
+        expect(tx.staffInvitationOutbox.updateMany).toHaveBeenCalledTimes(boundary === 'pending replay read' ? 0 : 1);
+        expect(tx.auditLog.create).toHaveBeenCalledTimes(boundary === 'audit' ? 1 : 0);
+    });
+    it.each(['update', 'audit', 'terminal read'] as const)('reissue refuses expiry at %s', async boundary => {
+        let expired = false, replacement: ReturnType<typeof row> | undefined;
+        const assertCurrent = () => { if (expired) throw new ForbiddenException('Controlled authority expiry'); };
+        const tx = { user: { findFirst: vi.fn(async () => ({ id: 'user-1', email: 'person@example.com' })) },
+            staffInvitationOutbox: {
+                findUnique: vi.fn(async ({ where }: any) => {
+                    if (where.tenantId_userId_purpose) return row({ status: 'DEAD_LETTERED' });
+                    if (replacement && boundary === 'terminal read') expired = true;
+                    return replacement ?? null;
+                }),
+                updateMany: vi.fn(async ({ data }: any) => { replacement = row(data); if (boundary === 'update') expired = true; return { count: 1 }; }),
+            }, auditLog: { findFirst: vi.fn(async () => null), create: vi.fn(async () => { if (boundary === 'audit') expired = true; return { id: 'audit' }; }) } };
+        await expect(service().reissueInTransaction(tx as never,
+            { tenantId: 'tenant-1', userId: 'user-1', actorUserId: 'actor', idempotencyKey: 'bounded-reissue' }, assertCurrent))
+            .rejects.toBeInstanceOf(ForbiddenException);
+        expect(tx.staffInvitationOutbox.updateMany).toHaveBeenCalledOnce();
+        expect(tx.auditLog.create).toHaveBeenCalledTimes(boundary === 'update' ? 0 : 1);
+    });
+    it('keeps a viable explicit guard encrypted enqueue and retry usable', async () => {
+        const guard = vi.fn(); let current = row();
+        const tx = { user: { findFirst: vi.fn(async () => ({ id: 'user-1' })) }, staffInvitationOutbox: {
+            findUnique: vi.fn(async () => current),
+            update: vi.fn(async ({ data }: any) => { current = row(data); return current; }),
+            updateMany: vi.fn(async () => { current = row({ status: 'PENDING' }); return { count: 1 }; }),
+        }, auditLog: { create: vi.fn(async () => ({ id: 'audit' })) } };
+        await expect(service().enqueueInTransaction(tx as never,
+            { tenantId: 'tenant-1', userId: 'user-1', recipient: 'person@example.com' }, guard)).resolves.toMatchObject({ status: 'PENDING' });
+        current = row();
+        await expect(service().retryInTransaction(tx as never,
+            { tenantId: 'tenant-1', userId: 'user-1', actorUserId: 'actor' }, guard)).resolves.toMatchObject({ status: 'queued' });
+        expect(guard).toHaveBeenCalled(); expect(tx.auditLog.create).toHaveBeenCalledOnce();
     });
 });
