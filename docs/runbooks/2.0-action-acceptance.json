@@ -3,8 +3,8 @@
   "kind": "lunchlineup-action-acceptance-plan",
   "releaseQualified": false,
   "acceptanceExecuted": false,
-  "preparedFromCommit": "c031918dcc373a016651a9bd80eb6af44aa2f75c",
-  "preparedFromTree": "ec6d36eef340323a6c474633a9ea3d184a8039db",
+  "preparedFromCommit": "1ecf132d3a98dd5ab59c8cd844a6604ae82e852b",
+  "preparedFromTree": "e23723fcdd5999e89fbb45b71f4d318873071864",
   "scope": {
     "originalWorkflowsAreMinimum": true,
     "allExposedActionsRequired": true,
@@ -4382,8 +4382,8 @@
         }
       ],
       "actorBoundary": "Public same-origin pre-auth throttled; eligible existing tenant password account with email, auth:login_password and allowed method; no authenticated session.",
-      "successContract": "Generic success for matching and unknown accounts. Eligible request stores expiring reset hash and encrypted email outbox, supersedes prior tokens/pending messages. Independently inspect outbox/token and actual delivery, without logging token.",
-      "failureContract": "Ineligible/unknown remains generic without delivery. Misconfiguration/infrastructure loss must surface bounded safe failure instead of proving delivery; no universal replay guarantee (new request supersedes previous).",
+      "successContract": "Generic success for matching and unknown accounts. Eligible request stores expiring reset hash and encrypted email outbox, supersedes prior tokens/pending messages. Independently inspect outbox/token and actual delivery, without logging token. Current recipient/password/SSO/login-grant eligibility is rechecked under Tenant/User locks; concurrent supersession shares that fence and each new token/outbox envelope has a matching lifetime after waits.",
+      "failureContract": "Ineligible/unknown remains generic without delivery. Misconfiguration/infrastructure loss must surface bounded safe failure instead of proving delivery; no universal replay guarantee (new request supersedes previous). A missing current RBAC assignment remains generic. No stale preliminary snapshot authorizes issuance.",
       "requiredEvidence": [
         "native-api",
         "browser",
@@ -4434,6 +4434,56 @@
             "path": "apps/api-v2/src/application/auth-retained-http.test.ts",
             "title": "preserves refusal transport for every reviewed retained authentication route"
           }
+        },
+        {
+          "id": "requestPasswordReset-local-reset-current-recipient",
+          "contract": "Actual AuthService/TenantPrismaService/RbacService with controlled statement results, deferred waits and transaction-private effects: encrypts a reset for the current recipient after an email change in preflight. SQL clock/locks are modeled adapters; KDF await is controlled, no actual PostgreSQL locks/rollback/native role/expiry/provider/browser qualification. Concurrent supersession is a controlled lock-adapter oracle, not PostgreSQL cardinality evidence.",
+          "evidenceKind": "unit",
+          "executable": {
+            "path": "apps/api/src/auth/password-reset-current-authority.spec.ts",
+            "title": "encrypts a reset for the current recipient after an email change in preflight"
+          }
+        },
+        {
+          "id": "requestPasswordReset-local-reset-no-rbac-generic",
+          "contract": "Actual AuthService/TenantPrismaService/RbacService with controlled statement results, deferred waits and transaction-private effects: keeps requests generic when the account has no current RBAC assignment. SQL clock/locks are modeled adapters; KDF await is controlled, no actual PostgreSQL locks/rollback/native role/expiry/provider/browser qualification. Concurrent supersession is a controlled lock-adapter oracle, not PostgreSQL cardinality evidence.",
+          "evidenceKind": "unit",
+          "executable": {
+            "path": "apps/api/src/auth/password-reset-current-authority.spec.ts",
+            "title": "keeps requests generic when the account has no current RBAC assignment"
+          }
+        },
+        {
+          "id": "requestPasswordReset-local-reset-fresh-envelope-lifetime",
+          "contract": "Actual AuthService/TenantPrismaService/RbacService with controlled statement results, deferred waits and transaction-private effects: starts a matching token and encrypted-message lifetime after the eligibility wait. SQL clock/locks are modeled adapters; KDF await is controlled, no actual PostgreSQL locks/rollback/native role/expiry/provider/browser qualification. Concurrent supersession is a controlled lock-adapter oracle, not PostgreSQL cardinality evidence.",
+          "evidenceKind": "unit",
+          "executable": {
+            "path": "apps/api/src/auth/password-reset-current-authority.spec.ts",
+            "title": "starts a matching token and encrypted-message lifetime after the eligibility wait"
+          }
+        },
+        {
+          "id": "requestPasswordReset-local-reset-retry-current-recipient",
+          "contract": "Actual AuthService/TenantPrismaService/RbacService with controlled statement results, deferred waits and transaction-private effects: rechecks the current recipient when reset issuance retries after a conflict. SQL clock/locks are modeled adapters; KDF await is controlled, no actual PostgreSQL locks/rollback/native role/expiry/provider/browser qualification. Concurrent supersession is a controlled lock-adapter oracle, not PostgreSQL cardinality evidence.",
+          "evidenceKind": "unit",
+          "executable": {
+            "path": "apps/api/src/auth/password-reset-current-authority.spec.ts",
+            "title": "rechecks the current recipient when reset issuance retries after a conflict"
+          }
+        },
+        {
+          "id": "requestPasswordReset-local-reset-controlled-supersession",
+          "contract": "Actual AuthService/TenantPrismaService/RbacService with controlled statement results, deferred waits and transaction-private effects: serializes concurrent reset requests so only the latest token and message remain live. SQL clock/locks are modeled adapters; KDF await is controlled, no actual PostgreSQL locks/rollback/native role/expiry/provider/browser qualification. Concurrent supersession is a controlled lock-adapter oracle, not PostgreSQL cardinality evidence.",
+          "evidenceKind": "unit",
+          "executable": {
+            "path": "apps/api/src/auth/password-reset-current-authority.spec.ts",
+            "title": "serializes concurrent reset requests so only the latest token and message remain live"
+          }
+        },
+        {
+          "id": "requestPasswordReset-native-current-authority-expiry",
+          "contract": "Admitted native overlap: wait behind actual Tenant/User/policy/grant writers, then request recovery against the same candidate. Independently inspect current recipient, current password/SSO/RBAC eligibility, fresh token/encrypted outbox expiry and concurrent request supersession under explicit ReadCommitted locks. Unknown/no-role/inactive remains generic without writes; delivery failure is bounded and safe. Qualify exact selectors, RLS and transactional token/outbox rollback, including worker overlap and response loss. Controlled unit callback snapshots are insufficient.",
+          "evidenceKind": "native-api"
         }
       ],
       "workflowIds": [
@@ -4463,13 +4513,13 @@
         },
         {
           "path": "apps/api/src/auth/auth.service.ts",
-          "line": 1401,
+          "line": 1435,
           "sourceLine": "    async resetPasswordWithToken("
         }
       ],
       "actorBoundary": "Public same-origin pre-auth throttled; valid one-use token binds its account/tenant rather than caller-supplied identity.",
-      "successContract": "Validate new password; atomically consume token, update hash/clear password lockout, revoke sessions/other tokens, PASSWORD_RESET_COMPLETED audit. Independently test new login and old credential/session rejection.",
-      "failureContract": "Malformed/expired/used token, inactive user/tenant or invalid password denies. Concurrent consume succeeds only once. Redis MFA cleanup after commit is best effort; cleanup loss cannot undo authoritative DB revocation.",
+      "successContract": "Validate new password; atomically consume token, update hash/clear password lockout, revoke sessions/other tokens, PASSWORD_RESET_COMPLETED audit. Independently test new login and old credential/session rejection. KDF preparation precedes the write transaction; current Tenant/User and exact token are checked under locks, and single-use consumption uses the UTC statement clock after reads/waits.",
+      "failureContract": "Malformed/expired/used token, inactive user/tenant or invalid password denies. Concurrent consume succeeds only once. Redis MFA cleanup after commit is best effort; cleanup loss cannot undo authoritative DB revocation. Credential lockout, required PIN rotation or MFA does not block token recovery; an issued capability retains the existing recovery policy after SSO/login-grant changes, subject to current live account/tenant and unexpired one-use token.",
       "requiredEvidence": [
         "native-api",
         "browser",
@@ -4523,6 +4573,92 @@
             "path": "apps/web/tests/unit/reset-password-contract.test.ts",
             "title": "only clears inputs after the current controller confirmation actually arrives"
           }
+        },
+        {
+          "id": "confirmPasswordReset-local-reset-expiry-during-hash",
+          "contract": "Actual AuthService/TenantPrismaService/RbacService with controlled statement results, deferred waits and transaction-private effects: refuses a reset that expires while hashing and preserves all reset effects. SQL clock/locks are modeled adapters; KDF await is controlled, no actual PostgreSQL locks/rollback/native role/expiry/provider/browser qualification. Concurrent supersession is a controlled lock-adapter oracle, not PostgreSQL cardinality evidence.",
+          "evidenceKind": "unit",
+          "executable": {
+            "path": "apps/api/src/auth/password-reset-current-authority.spec.ts",
+            "title": "refuses a reset that expires while hashing and preserves all reset effects"
+          }
+        },
+        {
+          "id": "confirmPasswordReset-local-reset-consumption-clock",
+          "contract": "Actual AuthService/TenantPrismaService/RbacService with controlled statement results, deferred waits and transaction-private effects: uses the consumption statement clock when the token expires while SQL waits. SQL clock/locks are modeled adapters; KDF await is controlled, no actual PostgreSQL locks/rollback/native role/expiry/provider/browser qualification. Concurrent supersession is a controlled lock-adapter oracle, not PostgreSQL cardinality evidence.",
+          "evidenceKind": "unit",
+          "executable": {
+            "path": "apps/api/src/auth/password-reset-current-authority.spec.ts",
+            "title": "uses the consumption statement clock when the token expires while SQL waits"
+          }
+        },
+        {
+          "id": "confirmPasswordReset-local-reset-expiry-after-read",
+          "contract": "Actual AuthService/TenantPrismaService/RbacService with controlled statement results, deferred waits and transaction-private effects: checks expiry after a delayed active-session read. SQL clock/locks are modeled adapters; KDF await is controlled, no actual PostgreSQL locks/rollback/native role/expiry/provider/browser qualification. Concurrent supersession is a controlled lock-adapter oracle, not PostgreSQL cardinality evidence.",
+          "evidenceKind": "unit",
+          "executable": {
+            "path": "apps/api/src/auth/password-reset-current-authority.spec.ts",
+            "title": "checks expiry after a delayed active-session read"
+          }
+        },
+        {
+          "id": "confirmPasswordReset-local-reset-locked-recovery",
+          "contract": "Actual AuthService/TenantPrismaService/RbacService with controlled statement results, deferred waits and transaction-private effects: preserves recovery for a locked account with PIN rotation and MFA required. SQL clock/locks are modeled adapters; KDF await is controlled, no actual PostgreSQL locks/rollback/native role/expiry/provider/browser qualification. Concurrent supersession is a controlled lock-adapter oracle, not PostgreSQL cardinality evidence.",
+          "evidenceKind": "unit",
+          "executable": {
+            "path": "apps/api/src/auth/password-reset-current-authority.spec.ts",
+            "title": "preserves recovery for a locked account with PIN rotation and MFA required"
+          }
+        },
+        {
+          "id": "confirmPasswordReset-local-reset-issued-recovery-policy",
+          "contract": "Actual AuthService/TenantPrismaService/RbacService with controlled statement results, deferred waits and transaction-private effects: keeps an issued recovery capability valid after SSO and password-login grants change. SQL clock/locks are modeled adapters; KDF await is controlled, no actual PostgreSQL locks/rollback/native role/expiry/provider/browser qualification. Concurrent supersession is a controlled lock-adapter oracle, not PostgreSQL cardinality evidence.",
+          "evidenceKind": "unit",
+          "executable": {
+            "path": "apps/api/src/auth/password-reset-current-authority.spec.ts",
+            "title": "keeps an issued recovery capability valid after SSO and password-login grants change"
+          }
+        },
+        {
+          "id": "confirmPasswordReset-local-reset-kdf-custody",
+          "contract": "Actual AuthService/TenantPrismaService/RbacService with controlled statement results, deferred waits and transaction-private effects: prepares the credential outside database callbacks before the protected write. SQL clock/locks are modeled adapters; KDF await is controlled, no actual PostgreSQL locks/rollback/native role/expiry/provider/browser qualification. Concurrent supersession is a controlled lock-adapter oracle, not PostgreSQL cardinality evidence.",
+          "evidenceKind": "unit",
+          "executable": {
+            "path": "apps/api/src/auth/password-reset-current-authority.spec.ts",
+            "title": "prepares the credential outside database callbacks before the protected write"
+          }
+        },
+        {
+          "id": "confirmPasswordReset-local-reset-single-use",
+          "contract": "Actual AuthService/TenantPrismaService/RbacService with controlled statement results, deferred waits and transaction-private effects: refuses reuse of the consumed reset without a second credential or audit write. SQL clock/locks are modeled adapters; KDF await is controlled, no actual PostgreSQL locks/rollback/native role/expiry/provider/browser qualification. Concurrent supersession is a controlled lock-adapter oracle, not PostgreSQL cardinality evidence.",
+          "evidenceKind": "unit",
+          "executable": {
+            "path": "apps/api/src/auth/password-reset-current-authority.spec.ts",
+            "title": "refuses reuse of the consumed reset without a second credential or audit write"
+          }
+        },
+        {
+          "id": "confirmPasswordReset-local-reset-retry-current-authority",
+          "contract": "Actual AuthService/TenantPrismaService/RbacService with controlled statement results, deferred waits and transaction-private effects: rechecks eligibility and rolls back the first attempt when a conflict retry sees suspension. SQL clock/locks are modeled adapters; KDF await is controlled, no actual PostgreSQL locks/rollback/native role/expiry/provider/browser qualification. Concurrent supersession is a controlled lock-adapter oracle, not PostgreSQL cardinality evidence.",
+          "evidenceKind": "unit",
+          "executable": {
+            "path": "apps/api/src/auth/password-reset-current-authority.spec.ts",
+            "title": "rechecks eligibility and rolls back the first attempt when a conflict retry sees suspension"
+          }
+        },
+        {
+          "id": "confirmPasswordReset-local-reset-retry-exhaustion",
+          "contract": "Actual AuthService/TenantPrismaService/RbacService with controlled statement results, deferred waits and transaction-private effects: surfaces repeated serialization conflict without committed reset effects. SQL clock/locks are modeled adapters; KDF await is controlled, no actual PostgreSQL locks/rollback/native role/expiry/provider/browser qualification. Concurrent supersession is a controlled lock-adapter oracle, not PostgreSQL cardinality evidence.",
+          "evidenceKind": "unit",
+          "executable": {
+            "path": "apps/api/src/auth/password-reset-current-authority.spec.ts",
+            "title": "surfaces repeated serialization conflict without committed reset effects"
+          }
+        },
+        {
+          "id": "confirmPasswordReset-native-current-authority-expiry",
+          "contract": "Admitted native expiry/authority overlap: advance expiry during KDF, actual Tenant/User/token lock waits and session reads; assert the SQL statement UTC clock rejects expired claims and no credential/session/token/audit effects commit. Exercise supported suspension/deletion writers, exact token/tenant/user/hash binding, one-use concurrency and conflict retry/exhaustion. Hash preparation holds no transaction locks; locked/PIN/MFA recovery remains allowed, and an issued recovery capability survives later SSO/login-grant changes while account/tenant remains live. Verify actual new login, old-session refusal and postcommit marker failure. Native PostgreSQL/clock/rollback/provider evidence remains required.",
+          "evidenceKind": "native-api"
         }
       ],
       "workflowIds": [
@@ -4927,8 +5063,8 @@
       "sourceAnchors": [
         {
           "path": "packages/api-contract/src/application.ts",
-          "line": 50,
-          "sourceLine": "  { operationId: 'verifyEmailLoginCode', method: 'POST', path: '/auth/email/verify-otp', tag: 'Authentication', summary: 'Verify an email sign-in code', supportsLoginRedirect: true },"
+          "line": 51,
+          "sourceLine": "  { operationId: 'verifyPinLogin', method: 'POST', path: '/auth/pin/verify', tag: 'Authentication', summary: 'Verify a PIN sign-in challenge', supportsLoginRedirect: true },"
         },
         {
           "path": "apps/api/src/auth/auth.controller.ts",
@@ -4937,7 +5073,7 @@
         },
         {
           "path": "apps/api/src/auth/auth.service.ts",
-          "line": 1622,
+          "line": 1669,
           "sourceLine": "    async loginWithUsernamePin("
         }
       ],
@@ -5026,7 +5162,7 @@
         },
         {
           "path": "apps/api/src/auth/auth.service.ts",
-          "line": 2087,
+          "line": 2134,
           "sourceLine": "    async refreshAccessToken(refreshTokenRaw: unknown) {"
         }
       ],
@@ -5123,7 +5259,7 @@
         },
         {
           "path": "apps/api/src/auth/auth.service.ts",
-          "line": 2502,
+          "line": 2549,
           "sourceLine": "    async getMfaEnrollmentState("
         }
       ],
@@ -5214,7 +5350,7 @@
         },
         {
           "path": "apps/api/src/auth/auth.service.ts",
-          "line": 2571,
+          "line": 2618,
           "sourceLine": "    async beginMfaEnrollment("
         }
       ],
@@ -5312,7 +5448,7 @@
         },
         {
           "path": "apps/api/src/auth/auth.service.ts",
-          "line": 2595,
+          "line": 2642,
           "sourceLine": "    async confirmMfaEnrollment("
         }
       ],
@@ -5416,7 +5552,7 @@
         },
         {
           "path": "apps/api/src/auth/auth.service.ts",
-          "line": 2692,
+          "line": 2739,
           "sourceLine": "    async disableMfa("
         }
       ],
@@ -5520,7 +5656,7 @@
         },
         {
           "path": "apps/api/src/auth/auth.service.ts",
-          "line": 2781,
+          "line": 2828,
           "sourceLine": "    async validateMfa("
         }
       ],
@@ -5607,7 +5743,7 @@
         },
         {
           "path": "apps/api/src/auth/auth.service.ts",
-          "line": 2938,
+          "line": 2985,
           "sourceLine": "    async revokeSessionByRefreshToken("
         }
       ],
@@ -9365,7 +9501,7 @@
       "sourceAnchors": [
         {
           "path": "apps/api/src/auth/auth.service.ts",
-          "line": 1507,
+          "line": 1554,
           "sourceLine": "        const issuerUrl = this.normalizeOidcIssuer(this.configService.getOrThrow('OIDC_ISSUER_URL'));"
         },
         {
@@ -14622,6 +14758,8 @@
     "Prepared phase73 owner fixes require a fresh email-login grant at locked issuance, reject malformed authentication bodies before owner effects, preserve authoritative DB logout despite best-effort MFA-marker cleanup, and route forced PIN reset ahead of MFA/next in OTP/OIDC. Controlled owner/controller/production-filter/Express-cookie/bridge/Fastify tests use predetermined AuthService outcomes and injected OTP external adapter; they do not establish real JWT guards, RLS/transactions/current RBAC queries, native Redis Lua, provider identity/delivery, ingress trust or browser custody.",
     "Prepared phase73 web fixes use request intent/abort guards and exact success profiles; original handler negatives and current local JSX event tests use explicit hook ledgers, mocked transport/navigation and manual rerenders. These are not DOM, real React scheduling/effect cleanup/hydration/accessibility or native browser evidence. Aborting a UI attempt cannot undo an already completed upstream issuance/cookie effect; stale-response browser/session custody and post-disable reauthentication remain native obligations.",
     "Password-reset confirmation now validates the existing eight-character/72 UTF-8 byte owner rule and distinguishes password400/422 from token401 before claiming strict success. The existing reset token URL/handoff-cookie scrub and memory-only custody remain unchanged; reload loses reset context and its privacy/recovery policy choice remains unresolved.",
-    "Prior source-review concerns about MFA pending enrollment generation/TTL crossing and password-reset captured time/current actor authority remain separate open source/native requirements. Phase73 controller/wire/UI fixes do not close them. All265 actions,47 selected browser cases,84 minimum workflows, real provider/recovery/security/load evidence and months of private testing remain pending; no native admission, VM107 action, VM4014/VM106 contact or public activation follows from these local results."
+    "Phase74 prepared password-reset fences address the local captured-time and current-account/recipient source defects; admitted PostgreSQL overlap, UTC statement-clock expiry, actual RLS/rollback and provider/browser verification remain pending. MFA pending generation/TTL defects require the complete durable implementation and lifecycle/retention/rollout change, and reset-page reload custody remains a policy choice. All265 actions,47 selected browser cases,84 minimum workflows, real provider/recovery/security/load evidence and months of private testing remain pending; no native admission, VM107 action, VM4014/VM106 contact or public activation follows from these local results.",
+    "Password-reset local statements and transaction-private effect ledgers do not execute PostgreSQL or prove native lock/isolation/RLS/statement-clock/rollback/cardinality behavior. Explicit ReadCommitted fences avoid a pre-lock Serializable snapshot, but actual overlap proof remains pending. Public request must remain account-blind; token recovery deliberately keeps its existing lockout/PIN/MFA and issued-capability policy.",
+    "Pending MFA cached generation/TTL defects remain unimplemented: a complete encrypted exact-Session authority migration needs revocation clearing, other-session challenge invalidation, bounded expired-pending cleanup and coherent retained-owner/schema/key rollout. Current Redis challenge/cleanup contracts remain current until that full change is implemented and tested."
   ]
 }

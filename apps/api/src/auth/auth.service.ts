@@ -1344,16 +1344,20 @@ export class AuthService implements OnModuleDestroy {
                 return null;
             }
         } catch (err) {
-            if (err instanceof ForbiddenException) return null;
+            if (err instanceof ForbiddenException || err instanceof UnauthorizedException) return null;
             throw err;
         }
 
-        const resetToken = this.generatePasswordResetToken();
-        const tokenHash = this.hashPasswordResetToken(resetToken);
-        const expiresAt = new Date(Date.now() + PASSWORD_RESET_TOKEN_TTL_MINUTES * 60 * 1000);
-        const delivery = resetOutbox.createEncryptedEnvelope(user.email, resetToken, expiresAt);
-
-        await this.getTenantDb().withTenant(user.tenantId, async (tx) => {
+        await runSerializableMutationWithRetry(() => this.getTenantDb().withTenant(user.tenantId, async (tx) => {
+            // Session issuance, account administration, role changes and the
+            // delivery worker all take Tenant -> User. Recheck the recipient
+            // and eligibility under that same fence before supersession.
+            const currentUser = await this.passwordResetUserInTransaction(tx, user.tenantId, user.id);
+            if (!currentUser?.email) return;
+            const settings = await this.tenantSecuritySettingsInTransaction(tx, user.tenantId);
+            if (settings.ssoOidcOnly) return;
+            const access = await this.rbacService.getEffectiveAccessInTransaction(tx, user.id, user.tenantId);
+            if (!access.permissions.includes('auth:login_password')) return;
             await tx.passwordResetToken.updateMany({
                 where: {
                     tenantId: user.tenantId,
@@ -1375,6 +1379,12 @@ export class AuthService implements OnModuleDestroy {
                     lastError: 'Superseded by a newer password reset request',
                 },
             });
+            // Start the new lifetime after lock and supersession waits. The
+            // envelope and durable token must share this exact expiry.
+            const resetToken = this.generatePasswordResetToken();
+            const tokenHash = this.hashPasswordResetToken(resetToken);
+            const expiresAt = new Date(Date.now() + PASSWORD_RESET_TOKEN_TTL_MINUTES * 60 * 1000);
+            const delivery = resetOutbox.createEncryptedEnvelope(currentUser.email, resetToken, expiresAt);
             await tx.passwordResetToken.create({
                 data: {
                     tenantId: user.tenantId,
@@ -1393,9 +1403,33 @@ export class AuthService implements OnModuleDestroy {
                     expiresAt,
                 },
             });
+        // READ COMMITTED makes policy reads after a waited lock fresh. A
+        // Serializable snapshot could predate that lock even when only a
+        // setting/grant (not the Tenant row) changed under its previous holder.
+        }, { isolationLevel: 'ReadCommitted' }), {
+            conflictMessage: 'Account or reset state changed concurrently; retry the request',
+        }).catch(err => {
+            // A now-ineligible account remains indistinguishable from an
+            // unknown account. Infrastructure and delivery failures propagate.
+            if (!(err instanceof UnauthorizedException || err instanceof ForbiddenException)) throw err;
         });
 
         return null;
+    }
+
+    private async passwordResetUserInTransaction(tx: TenantPrismaTransaction, tenantId: string, userId: string) {
+        await this.lockTenantForSessionIssuance(tx, tenantId);
+        await tx.$queryRaw`
+            SELECT "id" FROM "User"
+            WHERE "id" = ${userId} AND "tenantId" = ${tenantId}
+            FOR UPDATE
+        `;
+        // Recovery deliberately ignores credential lockout and needs no
+        // access Session, PIN or MFA proof. It still requires a live account.
+        return tx.user.findFirst({
+            where: { id: userId, tenantId, deletedAt: null, suspendedAt: null, passwordHash: { not: null } },
+            select: { id: true, tenantId: true, email: true, passwordHash: true },
+        });
     }
 
     async resetPasswordWithToken(
@@ -1410,40 +1444,35 @@ export class AuthService implements OnModuleDestroy {
 
         const tokenHash = this.hashPasswordResetToken(token);
         const password = this.validateNewPassword(passwordRaw);
-        const now = new Date();
         const audit = this.securityRequestAudit(requestAudit);
-        let revokedSessionIds: string[] = [];
-
-        await this.getTenantDb().withPlatformAdmin(async (tx) => {
-            const reset = await tx.passwordResetToken.findFirst({
+        const locator = await this.getTenantDb().withPlatformAdmin(tx => tx.passwordResetToken.findFirst({
                 where: { tokenHash },
                 include: { user: true },
+        }));
+        if (!locator || locator.consumedAt || locator.expiresAt <= new Date()
+            || locator.user.id !== locator.userId || locator.user.tenantId !== locator.tenantId
+            || locator.user.deletedAt || locator.user.suspendedAt || !locator.user.passwordHash) {
+            throw new UnauthorizedException('Invalid or expired reset token');
+        }
+        // Expensive preparation holds no authorization locks. None of the
+        // locator's account or time observations authorizes the final write.
+        const passwordHash = await this.hashNewPassword(password);
+        const revokedSessionIds = await runSerializableMutationWithRetry(() => this.getTenantDb().withTenant(
+            locator.tenantId, async (tx) => {
+            const currentUser = await this.passwordResetUserInTransaction(tx, locator.tenantId, locator.userId);
+            if (!currentUser) throw new UnauthorizedException('Invalid or expired reset token');
+            await tx.$queryRaw`
+                SELECT "id" FROM "PasswordResetToken"
+                WHERE "id" = ${locator.id} AND "tenantId" = ${locator.tenantId}
+                  AND "userId" = ${locator.userId} AND "tokenHash" = ${tokenHash}
+                FOR UPDATE
+            `;
+            const reset = await tx.passwordResetToken.findFirst({
+                where: { id: locator.id, tenantId: locator.tenantId, userId: locator.userId, tokenHash },
             });
-
-            if (!reset || reset.consumedAt || reset.expiresAt <= now || reset.user.deletedAt || reset.user.suspendedAt || !reset.user.passwordHash) {
+            if (!reset || reset.consumedAt || reset.expiresAt <= new Date()) {
                 throw new UnauthorizedException('Invalid or expired reset token');
             }
-
-            const tenant = await tx.tenant.findUnique({
-                where: { id: reset.tenantId },
-                select: { id: true, status: true, deletedAt: true },
-            });
-            this.assertTenantCanAuthenticate(tenant);
-
-            const passwordHash = await this.hashNewPassword(password);
-
-            const consumed = await tx.passwordResetToken.updateMany({
-                where: {
-                    id: reset.id,
-                    consumedAt: null,
-                    expiresAt: { gt: now },
-                },
-                data: { consumedAt: now },
-            });
-            if (consumed.count !== 1) {
-                throw new UnauthorizedException('Invalid or expired reset token');
-            }
-
             const activeSessions = await tx.session.findMany({
                 where: {
                     userId: reset.userId,
@@ -1451,7 +1480,21 @@ export class AuthService implements OnModuleDestroy {
                 },
                 select: { id: true },
             });
-            revokedSessionIds = activeSessions.map((session) => session.id);
+            // Use the statement's UTC database clock after all reads/waits,
+            // rather than an application timestamp captured before an await.
+            const consumed = await tx.$queryRaw<Array<{ id: string; consumedAt: Date }>>`
+                UPDATE "PasswordResetToken"
+                SET "consumedAt" = timezone('UTC', clock_timestamp())
+                WHERE "id" = ${reset.id} AND "tenantId" = ${locator.tenantId}
+                  AND "userId" = ${locator.userId} AND "tokenHash" = ${tokenHash}
+                  AND "consumedAt" IS NULL
+                  AND "expiresAt" > timezone('UTC', clock_timestamp())
+                RETURNING "id", "consumedAt"
+            `;
+            if (consumed.length !== 1 || consumed[0]?.id !== reset.id) {
+                throw new UnauthorizedException('Invalid or expired reset token');
+            }
+            const now = consumed[0].consumedAt;
 
             await tx.user.update({
                 where: { id: reset.userId },
@@ -1470,6 +1513,7 @@ export class AuthService implements OnModuleDestroy {
             });
             await tx.passwordResetToken.updateMany({
                 where: {
+                    tenantId: locator.tenantId,
                     userId: reset.userId,
                     consumedAt: null,
                 },
@@ -1489,6 +1533,9 @@ export class AuthService implements OnModuleDestroy {
                     userAgent: audit.userAgent,
                 },
             });
+            return activeSessions.map(session => session.id);
+        }, { isolationLevel: 'ReadCommitted' }), {
+            conflictMessage: 'Account or reset state changed concurrently; retry the request',
         });
 
         try {

@@ -227,6 +227,17 @@ function resetPrismaMocks() {
     mockPrisma.onboardingSignupAttempt.update.mockReset();
 }
 
+// These three legacy reset tests model a current locked account and a
+// successful SQL-clock claim. The separate current-authority suite exercises
+// stale reads, advancing expiry, selectors and transaction-private effects.
+function installCurrentPasswordResetStatementMocks() {
+    mockPrisma.user.findFirst.mockResolvedValue({ id:'u-reset', tenantId:'t-1', email:'reset@example.com',
+        deletedAt:null, suspendedAt:null, passwordHash:'existing-password-hash' });
+    mockPrisma.$queryRaw.mockImplementation(async (sql: TemplateStringsArray, ...values: unknown[]) =>
+        sql.join('').includes('UPDATE "PasswordResetToken"')
+            ? [{ id:values[0], consumedAt:new Date() }] : [{ id:'locked-current-row' }]);
+}
+
 function installAuditFailureRollbackHarness(
     account: Record<string, any>,
     sessions: Array<{ id: string; userId: string; revokedAt: Date | null }>,
@@ -2121,6 +2132,7 @@ describe('AuthService – mixed auth flow', () => {
             id: 'u-reset',
             tenantId: 't-1',
             email: 'legacy@example.com',
+            passwordHash: 'existing-password-hash',
         });
         mockRbacService.getEffectiveAccess.mockResolvedValue({
             primaryRole: 'STAFF',
@@ -2194,6 +2206,7 @@ describe('AuthService – mixed auth flow', () => {
     });
 
     it('consumes a password reset token, updates the hash, and revokes sessions', async () => {
+        installCurrentPasswordResetStatementMocks();
         const token = 'reset_token_123456789012345678901234';
         const tokenHash = (service as any).hashPasswordResetToken(token);
         mockPrisma.passwordResetToken.findFirst.mockResolvedValue({
@@ -2234,14 +2247,9 @@ describe('AuthService – mixed auth flow', () => {
             },
             data: { revokedAt: expect.any(Date) },
         });
-        expect(mockPrisma.passwordResetToken.updateMany).toHaveBeenCalledWith({
-            where: {
-                id: 'prt-1',
-                consumedAt: null,
-                expiresAt: { gt: expect.any(Date) },
-            },
-            data: { consumedAt: expect.any(Date) },
-        });
+        const claim = mockPrisma.$queryRaw.mock.calls.find(([sql]) => sql.join('').includes('UPDATE "PasswordResetToken"'));
+        expect(claim?.slice(1)).toEqual(['prt-1','t-1','u-reset',tokenHash]);
+        expect(claim?.[0].join('')).toContain('clock_timestamp()');
         expect(mockPrisma.auditLog.create).toHaveBeenCalledWith({
             data: {
                 tenantId: 't-1',
@@ -2259,6 +2267,7 @@ describe('AuthService – mixed auth flow', () => {
     });
 
     it('keeps Redis cleanup provider details out of password-reset warning logs', async () => {
+        installCurrentPasswordResetStatementMocks();
         const token = 'reset_token_123456789012345678901234';
         const tokenHash = (service as any).hashPasswordResetToken(token);
         const secret = 'redis://default:cleanup-secret@private-cache.internal:6379';
@@ -2302,6 +2311,7 @@ describe('AuthService – mixed auth flow', () => {
     });
 
     it('fails closed inside the password-reset transaction when its audit event cannot be persisted', async () => {
+        installCurrentPasswordResetStatementMocks();
         const token = 'reset_token_audit_failure_123456789012345';
         const tokenHash = (service as any).hashPasswordResetToken(token);
         mockPrisma.passwordResetToken.findFirst.mockResolvedValue({

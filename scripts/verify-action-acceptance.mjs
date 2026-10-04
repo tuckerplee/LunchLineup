@@ -98,7 +98,8 @@ function catalogInventory(read) {
     const operation = Object.fromEntries(['operationId', 'method', 'path', 'tag'].map(name => [name, literal(fields.get(name))]));
     need(Object.values(operation).every(nonempty) && methods.has(operation.method) && operation.path.startsWith('/'), 'invalid catalog operation');
     if (fields.has('native')) need(fields.get('native').kind === ts.SyntaxKind.TrueKeyword, 'nonliteral native catalog flag');
-    return { ...operation, native: fields.has('native') };
+    return { ...operation, native: fields.has('native'),
+      sourceAnchor: { path, line: source.getLineAndCharacterOfPosition(node.getStart(source)).line + 1 } };
   });
   unique(operations.map(value => value.operationId), 'catalog operation ID');
   unique(operations.map(key), 'catalog route');
@@ -262,6 +263,11 @@ export function verifyActionAcceptance(manifest, root) {
     action.workflowIds.forEach(id => mappedWorkflows.add(id));
     if (action.kind === 'catalog') {
       const actual = catalogById.get(action.id);
+      // A literal line can exist while describing a different operation.
+      // Bind the anchor to the declaration selected by this operation's ID.
+      const catalogAnchors = action.sourceAnchors.filter(anchor => anchor.path === actual.sourceAnchor.path);
+      need(catalogAnchors.length === 1 && catalogAnchors[0].line === actual.sourceAnchor.line,
+        `catalog operation anchor drift ${action.id}`);
       need(action.method === actual.method && action.path === actual.path && action.tag === actual.tag &&
         action.implementation === (actual.native ? 'native' : 'retained'), `catalog route or owner drift ${action.id}`);
       declaredRoutes.add(key({ method: action.method, path: `/v2${action.path}` }));
