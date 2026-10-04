@@ -6,6 +6,7 @@ import { assertE2ESeedTarget } from './data-target-guard.mjs';
 import { buildRawMigrationInventory } from './raw-migration-inventory.mjs';
 import { assertPathInside, assertRegularFile, readInternalCiSourceContext } from './internal-ci-source-context.mjs';
 import { assertNoSymlinkComponents, writeExclusiveJson } from './internal-ci-evidence.mjs';
+import { verifyInternalCiSourceClone } from './verify-internal-ci-source-clone.mjs';
 
 export function verifyIntegrationDatabaseTarget(env, context, target) {
   assert.equal(assertE2ESeedTarget(env), 'disposable');
@@ -77,23 +78,32 @@ export async function readOnlyDatabase(client, query) {
   return result.rows;
 }
 
-async function main() {
-  assert.equal(process.argv.length, 4); assert.equal(process.argv[2], '--source-context');
-  const context = readInternalCiSourceContext(resolve(process.argv[3]));
+// Explicit API for the protected controller; ordinary CLI/release callers stay v1.
+export function readInternalCiMigrationSource(contextPath, { expectedSource, env = process.env, verifyClones = false } = {}) {
+  const context = readInternalCiSourceContext(resolve(contextPath), { expectedSource, env, verifyClones });
+  // Dependency installs generate untracked files. The development readback
+  // still verifies actual identities and tracked cleanliness, without treating
+  // this later phase as the pre-install untracked-clean gate.
+  if (expectedSource !== undefined) for (const purpose of ['scan', 'build']) verifyInternalCiSourceClone({ proofPath: context.sourceProofPath, clone: context[`${purpose}SourcePath`], purpose, expectedSource });
+  return context;
+}
+
+export async function readInternalCiMigrations(contextPath, { expectedSource, env = process.env } = {}) {
+  const context = readInternalCiMigrationSource(contextPath, { expectedSource, env });
   const targetPath = join(context.evidenceRoot, 'integration-target.json');
   assertPathInside(context.evidenceRoot, targetPath); assertRegularFile(targetPath);
   const target = JSON.parse(readFileSync(targetPath, 'utf8'));
-  verifyIntegrationDatabaseTarget(process.env, context, target);
+  verifyIntegrationDatabaseTarget(env, context, target);
   const inventory = buildRawMigrationInventory(context.buildSourcePath, join(context.buildSourcePath, 'packages/db/prisma/migrations')).all;
   assert.ok(inventory.length > 0);
   // Target and authoritative source validation precede loading any DB client.
   const { default: pg } = await import('pg');
   const client = url => new pg.Client({ connectionString: url, connectionTimeoutMillis: 5_000,
     statement_timeout: 10_000, query_timeout: 12_000, application_name: 'lunchlineup_ci_migration_readback' });
-  const role = await readOnlyDatabase(client(process.env.DATABASE_URL),
+  const role = await readOnlyDatabase(client(env.DATABASE_URL),
     'SELECT current_user, session_user, current_database(), rolcanlogin, rolsuper, rolcreatedb, rolcreaterole, rolinherit, rolreplication, rolbypassrls FROM pg_roles WHERE rolname = current_user');
   verifyRestrictedIntegrationRole(role);
-  const ledger = await readOnlyDatabase(client(process.env.MIGRATION_DATABASE_URL),
+  const ledger = await readOnlyDatabase(client(env.MIGRATION_DATABASE_URL),
     'SELECT path, sha256, bytes, phase, execution_mode, source_sha, applied_at::text FROM lunchlineup_migrations.raw_migration_ledger ORDER BY path');
   verifyAppliedMigrationRows(inventory, ledger, context.sourceSha);
   const output = join(context.evidenceRoot, 'integration');
@@ -109,4 +119,7 @@ async function main() {
   writeFileSync(inventoryPath, inventory.map(item => item.relativePath).join('\n') + '\n', { flag: 'wx', mode: 0o600 });
 }
 
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) await main();
+if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  assert.equal(process.argv.length, 4); assert.equal(process.argv[2], '--source-context');
+  await readInternalCiMigrations(process.argv[3]);
+}

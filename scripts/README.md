@@ -64,12 +64,53 @@
 - `write-internal-ci-release-manifest.mjs`: records digest-pinned Compose runtime images and their retained CI archives.
 - `internal-ci-policy.mjs`: canonical required internal-beta gate policy.
 - `internal-ci-source-context.mjs`: validates the job-private materialized-source context and exact clone identity.
+- `internal-ci-dependency-install-plan.mjs`: prepares an immutable `npm ci` plan only after actual source/clone verification and the pre-install untracked-clean gate. It does not execute installation or establish custody/admission.
 - `native-billing-source-binding.mjs`: definition-only bounded private-file snapshots and exact canonical source/proof/preflight checks, bound to independently selected source hashes and runtime port/credentials. It has no CLI or native admission. Actual clone/source-selection custody, authenticated owner, quota/isolation/settlement and fresh capacity gates remain external prerequisites.
 - `native-billing-ledger-window.mjs`: callable fixture-only ledger grant/read/revoke mechanism with exact-role/ACL checks and preserved failure observations. It has no CLI or pipeline invocation and supplies no admission authority. A protected source-binding wrapper, authenticated physical owner, settled clients/children, and fresh capacity gates remain prerequisites.
 - `materialize-internal-ci-source.mjs`: materializes independent verified scan and build clones and writes the retained source proof.
 - `run-internal-ci-build-gate.sh`: runs one named build-clone gate and records a source-proof-bound receipt.
 - `run-internal-ci-terraform.sh`: runs the pinned Terraform validation suite from the isolated build clone.
 - `verify-internal-ci-source-clone.mjs`: verifies a downstream build or scan clone against the retained source proof.
+
+### Explicit disposable source selection
+
+Existing source commands and release consumers default to the v1
+`refs/heads/internal-beta-candidate` contract. A separate development ref uses
+v2 context/proof receipts only through an explicit `expectedSource` API argument
+supplied by the independently authenticated controller owner. `CI_REF`, receipt
+contents, a JSON filename/hash, and development environment flags do not select
+that profile. The current CLIs accept no disposable profile option; controller
+authentication, source/profile promotion and protected invocation remain pending.
+
+The exact profile fields are `version: 2`,
+`sourcePurpose: 'disposable-development'`, `repository: 'tuckerplee/LunchLineup'`,
+`sourceRef`, `sourceSha`, `treeSha`, `baselineRef: 'refs/heads/main'`,
+`baselineSha`, `baselineTreeSha`, `pipelinePath`, and `pipelineSha256`.
+The development ref must be a safe full `refs/heads/...` name distinct from
+main and the candidate. The source and baseline must be distinct commits;
+materialization preserves the main-ancestor requirement. `pipelinePath` selects
+one of `.ci/pipeline.json`, `.ci/development-qa.pipeline.json`, or
+`.ci/development-browser.pipeline.json`, bound to its exact approved hash.
+V2 receipts add `sourcePurpose`/`pipelinePath` and use `remoteSourceSha` in place
+of `remoteCandidateSha`. Native metadata verification receives the same exact
+profile as `expected.sourceProfile`, independently of the raw receipt hashes.
+
+The protected adapter can call `materializeInternalCiSource`,
+`readInternalCiSourceContext`, `verifyInternalCiSourceClone`,
+`prepareInternalCiDependencyInstall`, and `readInternalCiMigrations` with that
+same profile. Materialization fetches the exact selected tracking ref into two
+independent detached clones and checks their trees and baseline. Installation
+planning requires completely clean clones before `npm ci`; subsequent migration
+readback allows generated untracked dependencies while checking both development
+clones' actual identities and tracked cleanliness before loading PostgreSQL.
+Plans and metadata bindings remain unqualified and require continuous exclusive
+custody, bounded storage/process supervision and a separately admitted QA owner.
+
+Publication approval applies to an exact immutable source commit and ref.
+Changing these scripts requires a new reviewed commit and renewed owner
+source/profile reconciliation; the previously published commit cannot inherit
+the changes. These interfaces enable no CI policy, triggers, native execution,
+VM start, deployment or launch.
 - `verify-internal-ci-candidate-receipt.mjs`: verifies an externally signed candidate receipt, exact policy, and retained manifest bindings.
 - `run-internal-ci-semgrep.sh`: runs pinned Semgrep analysis from the isolated scan clone.
 - `verify-internal-ci-semgrep.mjs`: validates retained Semgrep reports against the materialized source identity.

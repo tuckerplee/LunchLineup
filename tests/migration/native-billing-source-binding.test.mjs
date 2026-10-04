@@ -27,6 +27,60 @@ function refused(value) {
   assert.throws(() => verifyNativeBillingSourceBinding(value), error => error.message === 'Native billing source binding refused.' && !error.cause);
 }
 
+function disposableFixture() {
+  const value=fixture(), sourceRef='refs/heads/codex/disposable-native-test', pipelinePath='.ci/development-qa.pipeline.json';
+  for (const name of ['context','proof']) {
+    const original=JSON.parse(value[`${name}Bytes`]), entries=[];
+    for (const [key,old] of Object.entries(original)) {
+      if (key==='pipelineSha256') entries.push(['pipelinePath',pipelinePath]);
+      entries.push([key==='remoteCandidateSha'?'remoteSourceSha':key,key==='version'?2:key==='sourceRef'?sourceRef:old]);
+      if (key==='repository') entries.push(['sourcePurpose','disposable-development']);
+    }
+    value[`${name}Bytes`]=body(Object.fromEntries(entries));
+  }
+  const e=value.expected;
+  e.sourceProfile={version:2,sourcePurpose:'disposable-development',repository:'tuckerplee/LunchLineup',sourceRef,sourceSha:e.sourceSha,treeSha:e.treeSha,baselineRef:'refs/heads/main',baselineSha:e.baselineSha,baselineTreeSha:e.baselineTreeSha,pipelinePath,pipelineSha256:e.pipelineSha256};
+  value.env.CI_REF=sourceRef; rehash(value); return value;
+}
+test('explicit disposable native metadata binds canonical v2 and remains frozen/unqualified',()=>{
+  const value=disposableFixture(),result=verifyNativeBillingSourceBinding(value);
+  assert.equal(result.context.sourceRef,value.expected.sourceProfile.sourceRef);assert.equal(result.context.version,2);assert.equal(result.proof.remoteSourceSha,value.expected.sourceSha);
+  assert.equal(result.nativeQualified,false);assert.equal(result.releaseQualified,false);
+  value.expected.sourceProfile.sourceRef='refs/heads/codex/changed';value.proofBytes.fill(0);
+  assert.equal(result.proof.sourceRef,'refs/heads/codex/disposable-native-test');assert.throws(()=>{result.context.sourcePurpose='release';},TypeError);
+});
+for (const [label,mutate] of Object.entries({
+  'absent explicit selection despite disposable env and receipt':v=>{delete v.expected.sourceProfile;},
+  'context ref only':v=>change(v,'context',o=>{o.sourceRef='refs/heads/codex/unapproved';}),
+  'proof ref only':v=>change(v,'proof',o=>{o.sourceRef='refs/heads/codex/unapproved';}),
+  'environment ref only':v=>{v.env.CI_REF='refs/heads/codex/unapproved';},
+  'expected ref only':v=>{v.expected.sourceProfile.sourceRef='refs/heads/codex/unapproved';},
+  'selfconsistent unapproved receipt refs':v=>{for(const n of ['context','proof'])change(v,n,o=>{o.sourceRef='refs/heads/codex/unapproved';});},
+  'selfconsistent unapproved trees':v=>{for(const n of ['context','proof'])change(v,n,o=>{o.treeSha='f'.repeat(40);});},
+  'conflicting expected envelope':v=>{v.expected.sourceProfile.sourceSha='f'.repeat(40);},
+  'wrong repository':v=>{for(const n of ['context','proof'])change(v,n,o=>{o.repository='other/project';});},
+  'wrong pipeline path':v=>{for(const n of ['context','proof'])change(v,n,o=>{o.pipelinePath='.ci/pipeline.json';});},
+  'wrong purpose':v=>{for(const n of ['context','proof'])change(v,n,o=>{o.sourcePurpose='release';});},
+  'wrong receipt version':v=>change(v,'context',o=>{o.version=1;}),
+  'legacy alias in disposable context':v=>change(v,'context',o=>{o.remoteCandidateSha=o.sourceSha;delete o.remoteSourceSha;}),
+  'unknown explicit profile key':v=>{v.expected.sourceProfile.authorized=true;},
+  'missing explicit profile key':v=>{delete v.expected.sourceProfile.baselineTreeSha;},
+  'array expected ref':v=>{v.expected.sourceProfile.sourceRef=['refs/heads/codex/dev'];},
+  'non-string receipt ref':v=>change(v,'proof',o=>{o.sourceRef={ref:'refs/heads/codex/dev'};}),
+})) test(`disposable metadata refuses ${label} with recalculated hashes`,()=>{const value=disposableFixture();mutate(value);refused(value);});
+for (const name of ['context','proof']) for (const label of ['duplicate key','reordered keys','extra key','missing key','BOM','compact bytes']) test(`disposable canonical ${name} refuses ${label}`,()=>{
+  const value=disposableFixture(), bytes=value[`${name}Bytes`], parsed=JSON.parse(bytes);
+  const mutations={
+    'duplicate key':()=>Buffer.from(bytes.toString().replace('  "version": 2,','  "version": 2,\n  "version": 2,')),
+    'reordered keys':()=>body(Object.fromEntries(Object.entries(parsed).reverse())),
+    'extra key':()=>body({...parsed,extra:true}),
+    'missing key':()=>{delete parsed.sourcePurpose;return body(parsed);},
+    'BOM':()=>Buffer.concat([Buffer.from([0xef,0xbb,0xbf]),bytes]),
+    'compact bytes':()=>Buffer.from(JSON.stringify(parsed)+'\n'),
+  };
+  value[`${name}Bytes`]=mutations[label]();rehash(value);refused(value);
+});
+
 test('canonical producer-shaped receipts bind exact runtime; output detached/frozen and unqualified', () => {
   const value = fixture(), result = verifyNativeBillingSourceBinding(value);
   assert.equal(result.controllerBinding.preflightSha256, sha(value.preflightBytes));

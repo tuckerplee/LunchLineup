@@ -5,11 +5,13 @@ import { createHash } from 'node:crypto';
 import { constants, openSync, closeSync, readSync, fstatSync, lstatSync } from 'node:fs';
 import { posix } from 'node:path';
 import { TextDecoder } from 'node:util';
-import { verifyInternalCiSourceContextIdentity, verifyInternalCiSourceProof } from './internal-ci-source-context.mjs';
+import { selectInternalCiSourceProfile, verifyInternalCiSourceContextIdentity, verifyInternalCiSourceProof } from './internal-ci-source-context.mjs';
 import { verifyIntegrationDatabaseTarget } from './read-internal-ci-migrations.mjs';
 
 const CONTEXT_KEYS = ['version', 'kind', 'repository', 'runId', 'runRoot', 'sourceRef', 'sourceSha', 'treeSha', 'remoteCandidateSha', 'baselineRef', 'baselineSha', 'pipelineSha256', 'sourceProofPath', 'scanSourcePath', 'buildSourcePath', 'artifactRoot', 'evidenceRoot'];
 const PROOF_KEYS = ['version', 'kind', 'status', 'repository', 'sourceRef', 'sourceSha', 'remoteCandidateSha', 'treeSha', 'baselineRef', 'baselineSha', 'baselineTreeSha', 'pipelineSha256', 'runId', 'originalCheckoutClean', 'scanCloneVerified', 'buildCloneVerified', 'gitAlternatesRejected', 'verifiedAt'];
+const DISPOSABLE_CONTEXT_KEYS = ['version', 'kind', 'repository', 'sourcePurpose', 'runId', 'runRoot', 'sourceRef', 'sourceSha', 'treeSha', 'remoteSourceSha', 'baselineRef', 'baselineSha', 'pipelinePath', 'pipelineSha256', 'sourceProofPath', 'scanSourcePath', 'buildSourcePath', 'artifactRoot', 'evidenceRoot'];
+const DISPOSABLE_PROOF_KEYS = ['version', 'kind', 'status', 'repository', 'sourcePurpose', 'sourceRef', 'sourceSha', 'remoteSourceSha', 'treeSha', 'baselineRef', 'baselineSha', 'baselineTreeSha', 'pipelinePath', 'pipelineSha256', 'runId', 'originalCheckoutClean', 'scanCloneVerified', 'buildCloneVerified', 'gitAlternatesRejected', 'verifiedAt'];
 const PREFLIGHT_KEYS = ['runId', 'sourceSha', 'workspace', 'temporaryRoot', 'mutationRole', 'dataTargetEnvironment', 'database', 'store', 'containers'];
 const fail = () => { throw new Error('Native billing source binding refused.'); };
 const digest = bytes => createHash('sha256').update(bytes).digest('hex');
@@ -72,15 +74,20 @@ export function verifyNativeBillingSourceBinding({ contextBytes, proofBytes, pre
     if (!expected || !env || !runtime || typeof expected.runId !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,159}$/.test(expected.runId)) fail();
     for (const key of ['sourceSha', 'treeSha', 'baselineSha', 'baselineTreeSha']) if (!hex(expected[key], 40)) fail();
     if (!hex(expected.pipelineSha256, 64) || expected.sourceSha === expected.baselineSha) fail();
+    const expectedSource = expected.sourceProfile;
+    const profile = selectInternalCiSourceProfile(expectedSource);
+    if (profile.version === 2) for (const key of ['sourceSha', 'treeSha', 'baselineSha', 'baselineTreeSha', 'pipelineSha256']) if (profile[key] !== expected[key]) fail();
+    const contextKeys = profile.version === 1 ? CONTEXT_KEYS : DISPOSABLE_CONTEXT_KEYS;
+    const proofKeys = profile.version === 1 ? PROOF_KEYS : DISPOSABLE_PROOF_KEYS;
     const runId = expected.runId, sourceSha = expected.sourceSha;
     const workspace = `/var/lib/custom-ci/workspaces/${runId}`;
     const temporaryRoot = `/var/lib/custom-ci/runs/${runId}/tmp/job-tmp`;
     const runRoot = `${temporaryRoot}/lunchlineup-source-${runId}`;
     const artifactRoot = `${workspace}/.release/internal-ci/${sourceSha}`;
-    const context = receipt(contextBytes, CONTEXT_KEYS, expected.contextSha256);
-    const proof = receipt(proofBytes, PROOF_KEYS, expected.proofSha256);
+    const context = receipt(contextBytes, contextKeys, expected.contextSha256);
+    const proof = receipt(proofBytes, proofKeys, expected.proofSha256);
     const preflight = receipt(preflightBytes, PREFLIGHT_KEYS, expected.preflightSha256);
-    for (const [keys, value] of [[CONTEXT_KEYS, context], [PROOF_KEYS, proof]]) {
+    for (const [keys, value] of [[contextKeys, context], [proofKeys, proof]]) {
       for (const key of keys) {
         const type = key === 'version' ? 'number' : ['originalCheckoutClean', 'scanCloneVerified', 'buildCloneVerified', 'gitAlternatesRejected'].includes(key) ? 'boolean' : 'string';
         if (typeof value[key] !== type) fail();
@@ -91,9 +98,9 @@ export function verifyNativeBillingSourceBinding({ contextBytes, proofBytes, pre
       if (env[key] !== undefined && typeof env[key] !== 'string') fail();
       consumedEnv[key] = env[key];
     }
-    if (consumedEnv.CI_RUN_ID !== runId || consumedEnv.CI_COMMIT_SHA !== sourceSha || consumedEnv.CI_REPOSITORY !== 'lunchlineup' || consumedEnv.CI_REF !== 'refs/heads/internal-beta-candidate' || consumedEnv.CI_RUN_ATTEMPT !== '1' || consumedEnv.RUNNER_TEMP !== temporaryRoot) fail();
-    verifyInternalCiSourceContextIdentity(context, { commitSha: sourceSha, runId });
-    verifyInternalCiSourceProof(context, proof);
+    if (consumedEnv.CI_RUN_ID !== runId || consumedEnv.CI_COMMIT_SHA !== sourceSha || consumedEnv.CI_REPOSITORY !== 'lunchlineup' || consumedEnv.CI_REF !== profile.sourceRef || consumedEnv.CI_RUN_ATTEMPT !== '1' || consumedEnv.RUNNER_TEMP !== temporaryRoot) fail();
+    verifyInternalCiSourceContextIdentity(context, { commitSha: sourceSha, runId }, { expectedSource });
+    verifyInternalCiSourceProof(context, proof, { expectedSource });
     for (const key of ['treeSha', 'baselineSha', 'pipelineSha256']) if (context[key] !== expected[key]) fail();
     if (proof.baselineTreeSha !== expected.baselineTreeSha || new Date(proof.verifiedAt).toISOString() !== proof.verifiedAt) fail();
     const paths = { runRoot, scanSourcePath: `${runRoot}/scan`, buildSourcePath: `${runRoot}/build`, artifactRoot, evidenceRoot: artifactRoot, sourceProofPath: `${artifactRoot}/source/source-proof.json` };
