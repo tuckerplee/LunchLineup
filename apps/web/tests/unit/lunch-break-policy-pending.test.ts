@@ -48,7 +48,7 @@ const stateNames = stateDeclarations.map(node => {
     return node.name.elements[0].name.getText(ast);
 });
 const selectedRefs = ['desiredDayScopeRef', 'dayLoadRequestRef'];
-const derived = ['capabilities', 'canWriteLunchBreaks', 'activeLocation', 'activeTimeZone', 'lunchBreakFeature'];
+const derived = ['capabilities', 'canWriteLunchBreaks', 'activeLocation', 'activeTimeZone', 'lunchBreakFeature', 'hasPendingDayRowChanges'];
 const callbacks = ['commitActiveDayScope', 'clearDayRows', 'clearScopedDisplayState', 'loadDayRows', 'selectDayScope', 'handleSavePolicy'];
 const policyMaps: ts.CallExpression[] = [];
 const saveButtons: ts.JsxElement[] = [];

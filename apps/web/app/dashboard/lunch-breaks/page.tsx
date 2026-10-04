@@ -491,6 +491,7 @@ export default function LunchBreaksPage() {
   const desiredDayScope = desiredDayScopeRef.current;
   const isLoadedDayScopeCurrent = lunchBreakDayScopeMatches(loadedDayScope, desiredDayScope);
   const canWriteLoadedDay = canWriteLunchBreaks && isLoadedDayScopeCurrent && !isDayLoading;
+  const hasPendingDayRowChanges = dayRows.some((row) => row.dirty || row.saving);
   const isGeneratingDay = lunchBreakMutationBusyOwnerOwnsScope(scheduledGenerationBusyOwner, desiredDayScope);
   const isGeneratingManual = lunchBreakMutationBusyOwnerOwnsScope(manualGenerationBusyOwner, desiredDayScope);
   const isApplyingSetupShifts = lunchBreakMutationBusyOwnerOwnsScope(setupShiftsBusyOwner, desiredDayScope);
@@ -836,7 +837,7 @@ export default function LunchBreaksPage() {
   }, [selectedDate, selectedLocationId, setupShiftRows]);
 
   const updateBreak = useCallback((shiftId: string, key: BreakEditorKey, next: Partial<EditableBreak>) => {
-    if (!canWriteLoadedDay) return;
+    if (!canWriteLoadedDay || isSavingPolicy) return;
     setDayRows((prev) =>
       prev.map((row) =>
         row.shiftId === shiftId
@@ -848,18 +849,26 @@ export default function LunchBreaksPage() {
           : row,
       ),
     );
-  }, [canWriteLoadedDay]);
+  }, [canWriteLoadedDay, isSavingPolicy]);
 
   const resetRow = useCallback((shiftId: string) => {
-    if (!canWriteLoadedDay) return;
+    if (!canWriteLoadedDay || isSavingPolicy) return;
     const baseline = baselines[shiftId];
     if (!baseline) return;
     setDayRows((prev) => prev.map((row) => (row.shiftId === shiftId ? cloneRow(baseline) : row)));
-  }, [baselines, canWriteLoadedDay]);
+  }, [baselines, canWriteLoadedDay, isSavingPolicy]);
 
   const handleSavePolicy = useCallback(async () => {
     if (!canWriteLunchBreaks) {
       setError('You have read-only lunch/break access.');
+      return;
+    }
+    if (isSavingPolicy) {
+      setError('Wait for the planning settings save to finish.');
+      return;
+    }
+    if (hasPendingDayRowChanges) {
+      setError('Save or reset your shift edits before saving planning settings.');
       return;
     }
     const mutationScope = desiredDayScopeRef.current;
@@ -883,12 +892,16 @@ export default function LunchBreaksPage() {
     } finally {
       commitActiveDayScope(mutationScope, () => setIsSavingPolicy(false));
     }
-  }, [activeTimeZone, canWriteLunchBreaks, commitActiveDayScope, loadDayRows, policy]);
+  }, [activeTimeZone, canWriteLunchBreaks, commitActiveDayScope, hasPendingDayRowChanges, isSavingPolicy, loadDayRows, policy]);
 
   const saveRow = useCallback(
     async (shiftId: string): Promise<boolean> => {
       const row = dayRows.find((candidate) => candidate.shiftId === shiftId);
       if (!row) return false;
+      if (isSavingPolicy) {
+        setError('Wait for planning settings to finish saving before editing shifts.');
+        return false;
+      }
       if (!canWriteLunchBreaks) {
         setError('You have read-only lunch/break access.');
         return false;
@@ -987,10 +1000,14 @@ export default function LunchBreaksPage() {
         return false;
       }
     },
-    [activeTimeZone, canWriteLunchBreaks, commitActiveDayScope, dayRows, loadedDayScope, policyLoaded, sessionIdentity],
+    [activeTimeZone, canWriteLunchBreaks, commitActiveDayScope, dayRows, isSavingPolicy, loadedDayScope, policyLoaded, sessionIdentity],
   );
 
   const saveAllDirtyRows = useCallback(async () => {
+    if (isSavingPolicy) {
+      setError('Wait for planning settings to finish saving before editing shifts.');
+      return;
+    }
     if (!canWriteLunchBreaks) {
       setError('You have read-only lunch/break access.');
       return;
@@ -1003,7 +1020,7 @@ export default function LunchBreaksPage() {
       const ok = await saveRow(row.shiftId);
       if (!ok) break;
     }
-  }, [canWriteLunchBreaks, dayRows, saveRow]);
+  }, [canWriteLunchBreaks, dayRows, isSavingPolicy, saveRow]);
 
   const generateForSelectedDay = useCallback(async () => {
     if (!canWriteLunchBreaks) {
@@ -1325,6 +1342,7 @@ export default function LunchBreaksPage() {
 
   useEffect(() => {
     if (!canWriteLunchBreaks) return;
+    if (isSavingPolicy) return;
     if (!(plannerMode === 'auto' && autoGuideStep >= 5)) return;
     if (!selectedRow || !selectedRow.dirty || selectedRow.saving) return;
 
@@ -1333,7 +1351,7 @@ export default function LunchBreaksPage() {
     }, 650);
 
     return () => window.clearTimeout(timeout);
-  }, [autoGuideStep, canWriteLunchBreaks, plannerMode, saveRow, selectedRow]);
+  }, [autoGuideStep, canWriteLunchBreaks, isSavingPolicy, plannerMode, saveRow, selectedRow]);
 
   useEffect(() => {
     if (!canWriteLunchBreaks) return;
@@ -1970,7 +1988,7 @@ export default function LunchBreaksPage() {
                   >
                     {isGeneratingPrimary ? 'Generating plan...' : 'Generate Lunch & Break Plan'}
                   </Button>
-                  <Button size="sm" variant="outline" onClick={() => void saveAllDirtyRows()} disabled={dirtyCount === 0 || !canWriteLoadedDay}>
+                  <Button size="sm" variant="outline" onClick={() => void saveAllDirtyRows()} disabled={dirtyCount === 0 || !canWriteLoadedDay || isSavingPolicy}>
                     {dirtyCount > 0 ? `Save ${dirtyCount} changes` : 'Save changes'}
                   </Button>
                 </>
@@ -3186,7 +3204,7 @@ export default function LunchBreaksPage() {
                             <input
                               type="checkbox"
                               checked={current.skipped}
-                              disabled={!canWriteLoadedDay || selectedRow.saving}
+                              disabled={!canWriteLoadedDay || selectedRow.saving || isSavingPolicy}
                               onChange={(event) => updateBreak(selectedRow.shiftId, key, { skipped: event.target.checked })}
                             />
                             Skip {info.label.toLowerCase()}
@@ -3196,7 +3214,7 @@ export default function LunchBreaksPage() {
                               type="time"
                               aria-label={`${info.label} time for ${selectedRow.employeeName}`}
                               value={current.time}
-                              disabled={!canWriteLoadedDay || current.skipped || selectedRow.saving}
+                              disabled={!canWriteLoadedDay || current.skipped || selectedRow.saving || isSavingPolicy}
                               onChange={(event) => updateBreak(selectedRow.shiftId, key, { time: event.target.value })}
                               style={{
                                 border: '1px solid var(--border)',
@@ -3212,7 +3230,7 @@ export default function LunchBreaksPage() {
                               aria-label={`${info.label} duration for ${selectedRow.employeeName}`}
                               min={info.minimumDuration}
                               value={current.durationMinutes}
-                              disabled={!canWriteLoadedDay || current.skipped || selectedRow.saving}
+                              disabled={!canWriteLoadedDay || current.skipped || selectedRow.saving || isSavingPolicy}
                               onChange={(event) =>
                                 updateBreak(selectedRow.shiftId, key, {
                                   durationMinutes: Number(event.target.value),
@@ -3247,11 +3265,11 @@ export default function LunchBreaksPage() {
                           size="sm"
                           aria-describedby={`shift-break-save-cost-${selectedRow.shiftId}`}
                           onClick={() => void saveRow(selectedRow.shiftId)}
-                          disabled={!selectedRow.dirty || selectedRow.saving || !canWriteLoadedDay}
+                          disabled={!selectedRow.dirty || selectedRow.saving || !canWriteLoadedDay || isSavingPolicy}
                         >
                           {selectedRow.saving ? 'Saving...' : 'Save shift'}
                         </Button>
-                        <Button size="sm" variant="outline" onClick={() => resetRow(selectedRow.shiftId)} disabled={!selectedRow.dirty || selectedRow.saving || !canWriteLoadedDay}>
+                        <Button size="sm" variant="outline" onClick={() => resetRow(selectedRow.shiftId)} disabled={!selectedRow.dirty || selectedRow.saving || !canWriteLoadedDay || isSavingPolicy}>
                           Reset
                         </Button>
                       </div>
@@ -3437,9 +3455,17 @@ export default function LunchBreaksPage() {
                   ))}
                 </div>
                 {canWriteLunchBreaks ? (
-                  <Button variant="secondary" size="sm" onClick={handleSavePolicy} disabled={isSavingPolicy}>
+                  <Button variant="secondary" size="sm" onClick={handleSavePolicy} disabled={isSavingPolicy || hasPendingDayRowChanges}>
                     {isSavingPolicy ? 'Saving...' : 'Save policy'}
                   </Button>
+                ) : null}
+
+                {hasPendingDayRowChanges || isSavingPolicy ? (
+                  <p role="status" style={{ margin: 0, fontSize: '0.76rem', color: 'var(--text-secondary)' }}>
+                    {isSavingPolicy
+                      ? 'Wait for planning settings to finish saving before editing shifts.'
+                      : 'Save or reset your shift edits before saving planning settings.'}
+                  </p>
                 ) : null}
 
                 <div style={{ borderTop: '1px solid var(--border)', paddingTop: 8, fontSize: '0.78rem', color: 'var(--text-secondary)' }}>
