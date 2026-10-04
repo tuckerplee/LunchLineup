@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
+import { performance } from 'node:perf_hooks';
 import { createRequire } from 'node:module';
 import { resolve } from 'node:path';
 import test from 'node:test';
@@ -13,15 +14,15 @@ const { LunchBreakService } = require('../../apps/api-v2/src/operations/lunch-br
 const { OperationsService } = require('../../apps/api-v2/src/operations/operations.service.ts');
 const { TenantDatabase } = require('../../apps/api-v2/src/platform/database.ts');
 
-function identity(tenantId, userId, role) {
+function identity(tenantId, userId, publicUserId, sessionId, role, currentRole) {
   return {
     sub: userId,
-    publicUserId: randomUUID(),
+    publicUserId,
     tenantId,
-    sessionId: `operations-session-${randomUUID()}`,
+    sessionId,
     role,
     legacyRole: role,
-    roles: [{ id: randomUUID(), name: role === 'STAFF' ? 'Staff' : 'Manager', isSystem: true, legacyRole: role }],
+    roles: [{ id: currentRole.publicId, name: currentRole.name, isSystem: false, legacyRole: role }],
     permissions: [
       'schedules:read',
       'shifts:read',
@@ -32,6 +33,21 @@ function identity(tenantId, userId, role) {
     mfaVerified: true,
     mfaRequired: false,
   };
+}
+
+const operationPermissions = ['schedules:read', 'shifts:read', 'shifts:write', 'lunch_breaks:read', 'lunch_breaks:write'];
+
+async function seedAuthority(owner, tenantId, user, roleName, runId) {
+  const catalog = await owner.permission.findMany({ where: { key: { in: operationPermissions } }, select: { id: true, key: true } });
+  assert.deepEqual(new Set(catalog.map(row => row.key)), new Set(operationPermissions), 'Existing complete permission catalog required; fixture never seeds global permissions');
+  const role = await owner.role.create({ data: { tenantId, name: `Operations ${roleName} ${runId}`, slug: `operations-${roleName.toLowerCase()}-${runId}`,
+    isSystem: false, legacyRole: roleName } });
+  await owner.rolePermission.createMany({ data: catalog.map(permission => ({ roleId: role.id, permissionId: permission.id })) });
+  await owner.roleAssignment.create({ data: { tenantId, userId: user.id, roleId: role.id } });
+  const session = await owner.session.create({ data: { id: `operations-session-${randomUUID()}`, userId: user.id,
+    refreshToken: `operations-controlled-${randomUUID()}`, ipAddress: '127.0.0.1', userAgent: 'source-controlled-integration-fixture',
+    expiresAt: new Date(Date.now() + 60 * 60_000) } });
+  return identity(tenantId, user.id, user.publicId, session.id, roleName, role);
 }
 
 test('native API v2 Operations uses public IDs, tenant RLS, durable credits, and direct lunch-break persistence', { timeout: 45_000 }, async () => {
@@ -49,8 +65,14 @@ test('native API v2 Operations uses public IDs, tenant RLS, durable credits, and
     draftShiftId: `api-v2-operations-draft-shift-${runId}`,
     publishedShiftId: `api-v2-operations-published-shift-${runId}`,
   };
-  const operations = new OperationsService(new TenantDatabase(app));
-  const lunchBreaks = new LunchBreakService(new TenantDatabase(app));
+  const admittedSessions = new Map();
+  // Explicit finite controlled marker only; this fixture does not qualify Redis publication/custody.
+  const observer = { observeSessionMfa: async selected => {
+    assert.deepEqual(selected, admittedSessions.get(selected.sessionId));
+    return { ...selected, expiresAtEpochMs: Date.now() + 60_000, expiresAtMonotonicMs: performance.now() + 60_000 };
+  } };
+  const operations = new OperationsService(new TenantDatabase(app), observer);
+  const lunchBreaks = new LunchBreakService(new TenantDatabase(app), observer);
 
   try {
     const tenant = await owner.tenant.create({
@@ -187,8 +209,10 @@ test('native API v2 Operations uses public IDs, tenant RLS, durable credits, and
         role: 'STAFF',
       },
     });
-    const managerIdentity = identity(fixture.tenantId, manager.id, 'MANAGER');
-    const staffIdentity = identity(fixture.tenantId, staff.id, 'STAFF');
+    const managerIdentity = await seedAuthority(owner, fixture.tenantId, manager, 'MANAGER', runId);
+    const staffIdentity = await seedAuthority(owner, fixture.tenantId, staff, 'STAFF', runId);
+    for (const current of [managerIdentity, staffIdentity]) admittedSessions.set(current.sessionId,
+      { sub: current.sub, tenantId: current.tenantId, sessionId: current.sessionId });
 
     const [schedules, shifts, roster, staffSchedules, staffLunchRows] = await Promise.all([
       operations.listSchedules(managerIdentity, { limit: '20' }),
@@ -300,6 +324,10 @@ test('native API v2 Operations uses public IDs, tenant RLS, durable credits, and
       await transaction.schedule.deleteMany({ where: { tenantId: { in: tenantIds } } });
       await transaction.tenantSetting.deleteMany({ where: { tenantId: { in: tenantIds } } });
       await transaction.location.deleteMany({ where: { tenantId: { in: tenantIds } } });
+      await transaction.session.deleteMany({ where: { user: { tenantId: { in: tenantIds } } } });
+      await transaction.roleAssignment.deleteMany({ where: { tenantId: { in: tenantIds } } });
+      await transaction.rolePermission.deleteMany({ where: { role: { tenantId: { in: tenantIds } } } });
+      await transaction.role.deleteMany({ where: { tenantId: { in: tenantIds } } });
       await transaction.user.deleteMany({ where: { tenantId: { in: tenantIds } } });
       await transaction.tenant.deleteMany({ where: { id: { in: tenantIds } } });
     }).catch(() => {});

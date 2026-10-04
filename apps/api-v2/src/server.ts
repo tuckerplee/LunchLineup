@@ -141,8 +141,8 @@ export async function buildServer(
     resources.identity = identity;
     const locations = overrides.locations ?? new LocationService(database);
     const people = overrides.people ?? new PeopleService(database, config, identity);
-    const operations = overrides.operations ?? new OperationsService(database);
-    const lunchBreaks = overrides.lunchBreaks ?? new LunchBreakService(database);
+    const operations = overrides.operations ?? new OperationsService(database, identity);
+    const lunchBreaks = overrides.lunchBreaks ?? new LunchBreakService(database, identity);
     const notifications = overrides.notifications ?? new NotificationService(database);
     const payroll = overrides.payroll ?? new PayrollService(database, identity);
     const timeCards = overrides.timeCards ?? new TimeCardService(database, identity);

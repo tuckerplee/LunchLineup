@@ -3423,7 +3423,7 @@ export default function LunchBreaksPage() {
                             [field.key]: Number(event.target.value),
                           }))
                         }
-                        disabled={!canWriteLunchBreaks}
+                        disabled={!canWriteLunchBreaks || isSavingPolicy}
                         style={{
                           background: '#ffffff',
                           border: '1px solid var(--border)',

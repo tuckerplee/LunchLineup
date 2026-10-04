@@ -208,8 +208,8 @@ test('API-02 owns Operations natively with public records and no retained applic
   ]) {
     assert.match(catalog, new RegExp(`operationId: '${operationId}'[^\\n]*native: true`));
   }
-  assert.match(server, /new OperationsService\(database\)/);
-  assert.match(server, /new LunchBreakService\(database\)/);
+  assert.match(server, /new OperationsService\(database, identity\)/);
+  assert.match(server, /new LunchBreakService\(database, identity\)/);
   assert.match(server, /registerOperationsRoutes/);
   assert.match(routes, /registerOperationsRoutes/);
   assert.match(contract, /LunchBreakGenerationRequestSchema/);

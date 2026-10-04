@@ -1,4 +1,6 @@
 import assert from 'node:assert/strict';
+import { performance } from 'node:perf_hooks';
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { randomUUID } from 'node:crypto';
 import { createRequire } from 'node:module';
 import { resolve } from 'node:path';
@@ -17,6 +19,45 @@ const { MeteringService } = require('../../apps/api/src/billing/metering.service
 const { TenantPrismaService } = require('../../apps/api/src/database/tenant-prisma.service.ts');
 const { LunchBreaksController } = require('../../apps/api/src/lunch-breaks/lunch-breaks.controller.ts');
 const { LunchBreaksService } = require('../../apps/api/src/lunch-breaks/lunch-breaks.service.ts');
+const { RbacService } = require('../../apps/api/src/auth/rbac.service.ts');
+
+// Source-only readiness: real scoped Session/current RBAC rows, with an
+// explicitly synthetic bounded MFA observer. No Redis/provider qualification.
+async function seedCurrentLunchAuthority(owner, fixture) {
+  const keys = ['lunch_breaks:read', 'lunch_breaks:write', 'shifts:write'];
+  await owner.$transaction(async tx => {
+    await tx.user.update({ where: { id: fixture.managerId }, data: { mfaEnabled: true } });
+    await tx.session.create({ data: {
+      id: `${fixture.managerId}-lunch-session`, userId: fixture.managerId,
+      refreshToken: `fixture-hash-${fixture.managerId}`, ipAddress: '127.0.0.1',
+      userAgent: 'retained-lunch-current-authority-fixture',
+      expiresAt: new Date(Date.now() + 8 * 60 * 60_000),
+    } });
+    const roleId = `${fixture.managerId}-lunch-role`;
+    await tx.role.create({ data: { id: roleId, tenantId: fixture.tenantId,
+      name: 'Scoped Lunch Manager', slug: 'scoped-lunch-manager', isSystem: false } });
+    for (const key of keys) {
+      const permission = await tx.permission.findUniqueOrThrow({ where: { key } });
+      await tx.rolePermission.create({ data: { roleId, permissionId: permission.id } });
+    }
+    await tx.roleAssignment.create({ data: { tenantId: fixture.tenantId, userId: fixture.managerId, roleId } });
+  });
+}
+function currentLunchDependencies(tenantDb, fixture) {
+  const transactionContext = new AsyncLocalStorage();
+  const withTenant = tenantDb.withTenant.bind(tenantDb);
+  tenantDb.withTenant = (tenantId, callback, options) => withTenant(tenantId,
+    tx => transactionContext.run(true, () => callback(tx)), options);
+  const observer = { observeSessionMfa: async identity => {
+    assert.notEqual(transactionContext.getStore(), true, 'trusted synthetic observation must occur outside its own DB callback');
+    assert.deepEqual(identity, { sub: fixture.managerId, tenantId: fixture.tenantId,
+      sessionId: `${fixture.managerId}-lunch-session` });
+    return { ...identity, expiresAtEpochMs: Date.now() + 60_000,
+      expiresAtMonotonicMs: performance.now() + 60_000 };
+  } };
+  return [new RbacService(tenantDb), observer];
+}
+
 const { SchedulesController } = require('../../apps/api/src/schedules/schedules.controller.ts');
 const { ShiftsController } = require('../../apps/api/src/shifts/shifts.controller.ts');
 
@@ -42,6 +83,7 @@ test('real PostgreSQL revisions fence stale publish across every scheduled-shift
     user: {
       tenantId: fixture.tenantId,
       sub: fixture.managerId,
+      sessionId: `${fixture.managerId}-lunch-session`,
       role: 'MANAGER',
     },
   };
@@ -118,10 +160,11 @@ test('real PostgreSQL revisions fence stale publish across every scheduled-shift
       });
     });
 
+    await seedCurrentLunchAuthority(ownerPrisma, fixture);
     const tenantDb = new TenantPrismaService(appPrisma);
     const featureAccess = new FeatureAccessService(new MeteringService(tenantDb), tenantDb);
     const shifts = new ShiftsController(featureAccess, tenantDb);
-    const lunch = new LunchBreaksController(new LunchBreaksService(featureAccess, tenantDb));
+    const lunch = new LunchBreaksController(new LunchBreaksService(featureAccess, tenantDb, ...currentLunchDependencies(tenantDb, fixture)));
     const notifications = {
       enqueueInTransaction: async () => undefined,
       deliverPendingNow: async () => ({ delivered: 0, failed: 0, pending: 0 }),
@@ -364,6 +407,11 @@ test('real PostgreSQL revisions fence stale publish across every scheduled-shift
       await tx.shift.deleteMany({ where: { tenantId: fixture.tenantId } });
       await tx.schedule.deleteMany({ where: { tenantId: fixture.tenantId } });
       await tx.location.deleteMany({ where: { tenantId: fixture.tenantId } });
+      // Explicit scoped authority-row cleanup: replica mode suppresses FK cascades.
+      await tx.session.deleteMany({ where: { id: `${fixture.managerId}-lunch-session`, userId: fixture.managerId } });
+      await tx.roleAssignment.deleteMany({ where: { tenantId: fixture.tenantId, userId: fixture.managerId, roleId: `${fixture.managerId}-lunch-role` } });
+      await tx.rolePermission.deleteMany({ where: { roleId: `${fixture.managerId}-lunch-role` } });
+      await tx.role.deleteMany({ where: { id: `${fixture.managerId}-lunch-role`, tenantId: fixture.tenantId } });
       await tx.user.deleteMany({ where: { tenantId: fixture.tenantId } });
       await tx.tenant.deleteMany({ where: { id: fixture.tenantId } });
     }).catch(() => {});

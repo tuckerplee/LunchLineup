@@ -8,7 +8,7 @@ describe('generation recovery and standalone shifts', () => {
       updateMany: vi.fn().mockResolvedValue({ count: 1 }),
     } };
     const service = new LunchBreakService({ withTenant: async (_tenant: string, fn: (tx: unknown) => unknown) => fn(transaction) } as never);
-    await expect(service['claimGeneration']('tenant', 'retained-key', 'body')).resolves.toMatchObject({ requestId: 'attempt' });
+    await expect(service['claimGeneration']({ run: async (fn: (tx: unknown, identity: unknown, guard: () => void) => unknown) => fn(transaction, {}, () => undefined) } as never, 'tenant', 'retained-key', 'body')).resolves.toMatchObject({ requestId: 'attempt' });
     expect(transaction.lunchBreakGenerationRequest.updateMany).toHaveBeenCalledOnce();
   });
   it('accepts a saved standalone shift but rejects a changed snapshot', async () => {

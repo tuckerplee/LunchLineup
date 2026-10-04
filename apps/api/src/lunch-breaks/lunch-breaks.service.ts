@@ -4,12 +4,19 @@ import {
     ForbiddenException,
     HttpException,
     HttpStatus,
+    Inject,
     Injectable,
     NotFoundException,
     Optional,
 } from "@nestjs/common";
 import { BreakType as PrismaBreakType, Prisma, UserRole } from "@prisma/client";
 import { randomUUID } from "crypto";
+import type { MfaVerificationObservation } from '@lunchlineup/rbac';
+import { AuthService } from '../auth/auth.service';
+import { RbacService } from '../auth/rbac.service';
+import { assertCurrentMutationPolicy, captureCurrentMutationPolicy, freezeMutationActor,
+    observeCurrentMutationMfa, type CurrentMutationActor, type CurrentMutationPolicy } from '../auth/current-mutation';
+import { runSerializableMutationWithRetry } from '../auth/serializable-mutation';
 import {
     FeatureAccessService,
     type FeatureResolution,
@@ -24,7 +31,6 @@ import {
 } from "../common/bounded-pagination";
 import {
     ACTIVE_SCHEDULABLE_USER_FILTER,
-    lockActiveSchedulableUser,
 } from "../common/schedulable-user";
 import {
     TenantPrismaService,
@@ -146,7 +152,14 @@ export interface LunchBreakActor {
     role?: string;
     legacyRole?: string;
     roles?: string[];
+    tenantId?: string;
+    sessionId?: string;
 }
+type LunchAction = Readonly<{ actor: CurrentMutationActor; permission: string;
+    additionalPermissions: readonly string[]; targetUserIds: readonly string[];
+    targetShiftIds: readonly string[]; targetShiftFilters: Readonly<{ scheduleId?: string; locationId?: string }>;
+    initialPolicy: CurrentMutationPolicy; observation: MfaVerificationObservation | null }>;
+type LunchGuard = () => void;
 type CreditConsumption = {
     consumedCredits: number;
     newBalance: number;
@@ -307,24 +320,105 @@ const DEFAULT_POLICY: LunchBreakPolicy = {
     timeStepMinutes: 5,
 };
 
+// Private owner marker: only the final exact claim CAS can emit this conflict.
+class OwnedGenerationClaimExpired extends ConflictException {
+    constructor() { super('Lunch/break generation claim expired before it could commit. Retry the request.'); }
+}
+
 @Injectable()
 export class LunchBreaksService {
     private readonly tenantDb: TenantPrismaService;
 
     constructor(
         private readonly featureAccessService: FeatureAccessService,
-        @Optional() tenantDb?: TenantPrismaService,
+        @Optional() @Inject(TenantPrismaService) tenantDb: TenantPrismaService | undefined,
+        private readonly rbacService: RbacService,
+        private readonly authService: AuthService,
     ) {
         this.tenantDb = tenantDb ?? new TenantPrismaService();
     }
-    async getPolicy(tenantId: string): Promise<LunchBreakPolicy> {
-        await this.featureAccessService.assertFeatureEntitled(tenantId, 'lunch_breaks');
-        return this.fetchPolicy(tenantId);
+    private async prepareLunchAction(tenantId: string, actorInput: LunchBreakActor,
+        permission: string, additionalPermissions: readonly string[] = [],
+        targetUserIds: readonly string[] = [], targetShiftIds: readonly string[] = [],
+        targetShiftFilters: Readonly<{ scheduleId?: string; locationId?: string }> = {}): Promise<LunchAction> {
+        const actor = freezeMutationActor({ tenantId: actorInput.tenantId ?? tenantId,
+            userId: actorInput.sub ?? actorInput.id ?? '', sessionId: actorInput.sessionId ?? '' });
+        if (actor.tenantId !== tenantId) throw new ForbiddenException('Lunch/break workspace does not match the current actor');
+        const extra = Object.freeze([...additionalPermissions]);
+        const observe = this.authService?.observeSessionMfa;
+        const observer = typeof observe === 'function' ? { observeSessionMfa: observe.bind(this.authService) } : undefined;
+        const targets = Object.freeze([...new Set(targetUserIds)].sort());
+        const shiftIds = Object.freeze([...new Set(targetShiftIds)].sort());
+        const shiftFilters = Object.freeze({ ...targetShiftFilters });
+        const preflight = await runSerializableMutationWithRetry(() => this.tenantDb.withTenant(actor.tenantId, async tx => {
+            await this.rbacService.authorizeActorMutationInTransaction(tx, actor, permission);
+            const access = await this.rbacService.getEffectiveAccessInTransaction(tx, actor.userId, actor.tenantId);
+            this.assertLunchPermissions(access.permissions, extra);
+            return captureCurrentMutationPolicy(tx, actor, access.permissions);
+        }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }), { conflictMessage: 'Lunch/break authority changed concurrently. Retry the request.' });
+        const observation = await observeCurrentMutationMfa(preflight, observer);
+        assertCurrentMutationPolicy(preflight, observation);
+        return Object.freeze({ actor, permission, additionalPermissions: extra,
+            targetUserIds: targets, targetShiftIds: shiftIds, targetShiftFilters: shiftFilters,
+            initialPolicy: preflight, observation });
     }
-    async updatePolicy(tenantId: string, policy: Partial<LunchBreakPolicy>): Promise<LunchBreakPolicy> {
-        return this.tenantDb.withTenant(tenantId, async (tx) => {
+    private assertLunchPermissions(permissions: readonly string[], required: readonly string[]): void {
+        for (const key of required) if (!permissions.includes(key)) throw new ForbiddenException(`${key} permission is no longer active for this account`);
+    }
+    private async runLunchPhase<T>(action: LunchAction,
+        operation: (tx: TenantPrismaTransaction, assertCurrent: LunchGuard, actor: LunchBreakActor) => Promise<T>,
+        retry = true): Promise<T> {
+        const transaction = () => this.tenantDb.withTenant(action.actor.tenantId, async tx => {
+            // Target discovery is read-only under Tenant before the combined
+            // sorted User lock. Receipt replay must not require live targets.
+            await tx.$queryRaw`SELECT "id" FROM "Tenant" WHERE "id" = ${action.actor.tenantId} FOR UPDATE`;
+            const shifts = action.targetShiftIds.length || action.targetShiftFilters.locationId || action.targetShiftFilters.scheduleId ? await tx.shift.findMany({
+                where: { tenantId: action.actor.tenantId, ...action.targetShiftFilters,
+                    ...(action.targetShiftIds.length ? { id: { in: [...action.targetShiftIds] } } : {}) },
+                select: { userId: true },
+            }) : [];
+            const targets = [...new Set([...action.targetUserIds, ...shifts.map(shift => shift.userId).filter((id): id is string => !!id)])].sort();
+            await this.rbacService.authorizeActorMutationInTransaction(tx, action.actor, action.permission, targets);
+            const access = await this.rbacService.getEffectiveAccessInTransaction(tx, action.actor.userId, action.actor.tenantId);
+            this.assertLunchPermissions(access.permissions, action.additionalPermissions);
+            const policy = await captureCurrentMutationPolicy(tx, action.actor, access.permissions);
+            const assertCurrent = () => {
+                assertCurrentMutationPolicy(action.initialPolicy, action.observation);
+                assertCurrentMutationPolicy(policy, action.observation);
+            };
+            assertCurrent();
+            const user = await tx.user.findFirst({ where: { id: action.actor.userId, tenantId: action.actor.tenantId,
+                deletedAt: null, suspendedAt: null }, select: { role: true } });
+            assertCurrent();
+            const actor: LunchBreakActor = Object.freeze({ sub: action.actor.userId, id: action.actor.userId,
+                tenantId: action.actor.tenantId, sessionId: action.actor.sessionId, role: user?.role, legacyRole: user?.role });
+            const result = await operation(tx, assertCurrent, actor); assertCurrent(); return result;
+        }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
+        return retry ? runSerializableMutationWithRetry(transaction, { conflictMessage: 'Lunch/break state changed concurrently. Retry the request.' }) : transaction();
+    }
+    private isLunchReceiptRecovery(error: unknown): boolean {
+        if (!error || typeof error !== 'object' || error instanceof HttpException) return false;
+        const value = error as { code?: unknown; meta?: { code?: unknown } };
+        if (typeof value.code !== 'string') return false;
+        if (['P2002', 'P2028', 'P1001', 'P1002', 'P1017'].includes(value.code)) return true;
+        return value.code === 'P2010' && typeof value.meta?.code === 'string'
+            && ['55P03', '57014', '08006', '57P01'].includes(value.meta.code);
+    }
+    async getPolicy(tenantId: string, actor: LunchBreakActor = {}): Promise<LunchBreakPolicy> {
+        const action = await this.prepareLunchAction(tenantId, actor, 'lunch_breaks:read');
+        return this.runLunchPhase(action, async (tx, assertCurrent) => {
+            await this.featureAccessService.assertFeatureEntitledInTransaction(tx, tenantId, 'lunch_breaks'); assertCurrent();
+            return this.fetchPolicyForTenant(tx, tenantId, assertCurrent);
+        });
+    }
+    async updatePolicy(tenantId: string, policy: Partial<LunchBreakPolicy>, actor: LunchBreakActor = {}): Promise<LunchBreakPolicy> {
+        policy = structuredClone(policy);
+        const action = await this.prepareLunchAction(tenantId, actor, 'lunch_breaks:write');
+        return this.runLunchPhase(action, async (tx, assertCurrent) => {
             await this.featureAccessService.assertFeatureEntitledInTransaction(tx, tenantId, 'lunch_breaks');
-            const mergedPolicy = this.normalizePolicy({ ...(await this.fetchPolicyForTenant(tx, tenantId)), ...policy });
+            assertCurrent();
+            const mergedPolicy = this.normalizePolicy({ ...(await this.fetchPolicyForTenant(tx, tenantId, assertCurrent)), ...policy });
+            assertCurrent();
             await tx.tenantSetting.upsert({
                 where: {
                     tenantId_key: {
@@ -341,57 +435,63 @@ export class LunchBreaksService {
                     value: mergedPolicy as unknown as Prisma.InputJsonValue,
                 },
             });
+            assertCurrent();
             return mergedPolicy;
         });
     }
     async listLunchBreaks(tenantId: string, filters: LunchBreakListFilters, actor: LunchBreakActor = {}): Promise<{ data: GeneratedShiftBreaks[]; pagination: BoundedPagination }> {
-        await this.featureAccessService.assertFeatureEntitled(tenantId, 'lunch_breaks');
-        const limit = parseBoundedListLimit(filters.limit);
-        const window = {
-            startDate: parseOptionalBoundedDate(filters.startDate, 'startDate'),
-            endDate: parseOptionalBoundedDate(filters.endDate, 'endDate'),
-        };
-        assertBoundedListWindow(window);
-        const cursor = decodeBoundedListCursor(filters.cursor);
-        const where: Prisma.ShiftWhereInput = { tenantId, deletedAt: null };
-        const and: Prisma.ShiftWhereInput[] = [SCHEDULABLE_SHIFT_USER_FILTER];
-        if (this.isStaffActor(actor)) {
-            where.userId = this.actorUserId(actor) ?? '__missing_actor__';
-            and.push({ schedule: { is: { status: 'PUBLISHED' } } });
-        }
-        if (filters.scheduleId)
-            where.scheduleId = filters.scheduleId;
-        if (filters.locationId)
-            where.locationId = filters.locationId;
-        if (filters.shiftIds?.length)
-            where.id = { in: filters.shiftIds };
-        if (window.startDate)
-            and.push({ endTime: { gt: window.startDate } });
-        if (window.endDate)
-            and.push({ startTime: { lt: window.endDate } });
-        if (cursor) {
-            and.push({
-                OR: [
-                    { startTime: { gt: cursor.timestamp } },
-                    { startTime: cursor.timestamp, id: { gt: cursor.id } },
-                ],
+        filters = structuredClone(filters);
+        const action = await this.prepareLunchAction(tenantId, actor, 'lunch_breaks:read');
+        return this.runLunchPhase(action, async (tx, assertCurrent, currentActor) => {
+            await this.featureAccessService.assertFeatureEntitledInTransaction(tx, tenantId, 'lunch_breaks'); assertCurrent();
+            const limit = parseBoundedListLimit(filters.limit);
+            const window = {
+                startDate: parseOptionalBoundedDate(filters.startDate, 'startDate'),
+                endDate: parseOptionalBoundedDate(filters.endDate, 'endDate'),
+            };
+            assertBoundedListWindow(window);
+            const cursor = decodeBoundedListCursor(filters.cursor);
+            const where: Prisma.ShiftWhereInput = { tenantId, deletedAt: null };
+            const and: Prisma.ShiftWhereInput[] = [SCHEDULABLE_SHIFT_USER_FILTER];
+            if (this.isStaffActor(currentActor)) {
+                where.userId = this.actorUserId(currentActor) ?? '__missing_actor__';
+                and.push({ schedule: { is: { status: 'PUBLISHED' } } });
+            }
+            if (filters.scheduleId)
+                where.scheduleId = filters.scheduleId;
+            if (filters.locationId)
+                where.locationId = filters.locationId;
+            if (filters.shiftIds?.length)
+                where.id = { in: filters.shiftIds };
+            if (window.startDate)
+                and.push({ endTime: { gt: window.startDate } });
+            if (window.endDate)
+                and.push({ startTime: { lt: window.endDate } });
+            if (cursor) {
+                and.push({
+                    OR: [
+                        { startTime: { gt: cursor.timestamp } },
+                        { startTime: cursor.timestamp, id: { gt: cursor.id } },
+                    ],
+                });
+            }
+            where.AND = and;
+            const shifts = await tx.shift.findMany({
+                where,
+                orderBy: [{ startTime: 'asc' }, { id: 'asc' }],
+                take: limit + 1,
+                include: {
+                    user: { select: { id: true, name: true, role: true } },
+                    breaks: { orderBy: { startTime: 'asc' } },
+                },
             });
-        }
-        where.AND = and;
-        const shifts = await this.tenantDb.withTenant(tenantId, (tx) => tx.shift.findMany({
-            where,
-            orderBy: [{ startTime: 'asc' }, { id: 'asc' }],
-            take: limit + 1,
-            include: {
-                user: { select: { id: true, name: true, role: true } },
-                breaks: { orderBy: { startTime: 'asc' } },
-            },
-        }));
-        const page = buildBoundedListPage(shifts, limit, (shift) => shift.startTime, window);
-        return {
-            ...page,
-            data: page.data.map((shift) => this.mapShiftToGenerated(shift)),
-        };
+            assertCurrent();
+            const page = buildBoundedListPage(shifts, limit, (shift) => shift.startTime, window);
+            return {
+                ...page,
+                data: page.data.map((shift) => this.mapShiftToGenerated(shift)),
+            };
+        });
     }
     private isStaffActor(actor: LunchBreakActor): boolean {
         return [actor?.legacyRole, actor?.role].some((role) => this.isRole(role, UserRole.STAFF));
@@ -410,43 +510,48 @@ export class LunchBreaksService {
         idempotencyKey: string,
         actor: LunchBreakActor = {},
     ): Promise<GeneratedShiftBreaks> {
+        input = structuredClone(input);
         const normalizedInput = this.normalizeShiftBreakUpdateInput(input);
+        const action = await this.prepareLunchAction(tenantId, actor, 'lunch_breaks:write', [], [], [shiftId]);
         const operationId = shiftBreakUpdateOperationId(
             tenantId,
             shiftId,
             normalizeShiftBreakUpdateIdempotencyKey(idempotencyKey),
         );
         const requestHash = shiftBreakUpdateRequestHash(normalizedInput);
-        const replay = await this.tenantDb.withTenant(tenantId, (tx) => this.findShiftBreakUpdateReplay(
+        const replay = await this.runLunchPhase(action, (tx, assertCurrent) => this.findShiftBreakUpdateReplay(
             tx,
             tenantId,
             shiftId,
             operationId,
             requestHash,
+            assertCurrent,
         ));
         if (replay) return replay;
 
         try {
-            return await this.tenantDb.withTenant(tenantId, async (tx) => {
+            return await this.runLunchPhase(action, async (tx, assertCurrent, currentActor) => {
                 const lockedReplay = await this.findShiftBreakUpdateReplay(
                     tx,
                     tenantId,
                     shiftId,
                     operationId,
                     requestHash,
+                    assertCurrent,
                 );
                 if (lockedReplay) return lockedReplay;
-                await this.lockTenantSchedulingMutations(tx, tenantId);
+                await this.lockTenantSchedulingMutations(tx, tenantId, assertCurrent);
                 const serializedReplay = await this.findShiftBreakUpdateReplay(
                     tx,
                     tenantId,
                     shiftId,
                     operationId,
                     requestHash,
+                    assertCurrent,
                 );
                 if (serializedReplay) return serializedReplay;
 
-                const policy = await this.fetchPolicyForTenant(tx, tenantId);
+                const policy = await this.fetchPolicyForTenant(tx, tenantId, assertCurrent);
                 const shift = await tx.shift.findFirst({
                     where: {
                         id: shiftId,
@@ -461,8 +566,9 @@ export class LunchBreaksService {
                         breaks: { orderBy: { startTime: 'asc' } },
                     },
                 });
+                assertCurrent();
                 if (!shift) throw new NotFoundException('Shift not found for the selected location.');
-                await this.lockScheduleRowsForMutation(tx, tenantId, [shift.schedule?.id]);
+                await this.lockScheduleRowsForMutation(tx, tenantId, [shift.schedule?.id], assertCurrent);
                 this.assertDraftScheduleForBreakMutation(shift.schedule?.status);
 
                 const payload = this.buildShiftBreakMutationPayload(shiftId, shift, normalizedInput, policy);
@@ -472,7 +578,7 @@ export class LunchBreaksService {
                     return currentResponse;
                 }
 
-                const entitlement = await this.requireShiftBreakUpdateEntitlement(tx, tenantId);
+                const entitlement = await this.requireShiftBreakUpdateEntitlement(tx, tenantId, assertCurrent);
                 let creditConsumption: { consumedCredits: number; newBalance: number | null };
                 try {
                     creditConsumption = await this.featureAccessService.recordFeatureUsageInTransaction(
@@ -481,15 +587,20 @@ export class LunchBreaksService {
                         entitlement,
                         `Lunch/break shift replacement (${operationId})`,
                         operationId,
+                        undefined,
+                        assertCurrent,
                     );
+                    assertCurrent();
                 } catch (error) {
+                    assertCurrent();
                     if (error instanceof ForbiddenException) throw this.shiftBreakUpdateEntitlementError();
                     throw error;
                 }
 
-                await tx.break.deleteMany({ where: { shiftId } });
-                if (payload.length > 0) await tx.break.createMany({ data: payload });
-                await this.incrementScheduleRevisions(tx, tenantId, [shift.schedule?.id]);
+                assertCurrent();
+                await tx.break.deleteMany({ where: { shiftId } }); assertCurrent();
+                if (payload.length > 0) { await tx.break.createMany({ data: payload }); assertCurrent(); }
+                await this.incrementScheduleRevisions(tx, tenantId, [shift.schedule?.id], assertCurrent);
                 const updated = await tx.shift.findFirst({
                     where: {
                         id: shiftId,
@@ -503,22 +614,25 @@ export class LunchBreaksService {
                         breaks: { orderBy: { startTime: 'asc' } },
                     },
                 });
+                assertCurrent();
                 if (!updated) throw this.shiftBreakUpdateConflict('Shift changed while lunch/breaks were being saved. Refresh and retry.');
                 const response = this.mapShiftToGenerated(updated);
                 await this.createShiftBreakUpdateAudit(tx, {
                     tenantId,
-                    actorUserId: this.actorUserId(actor) ?? null,
+                    actorUserId: this.actorUserId(currentActor) ?? null,
                     shiftId,
                     operationId,
                     requestHash,
                     changed: true,
                     creditConsumption,
                     response,
-                });
+                }, assertCurrent);
                 return response;
             });
         } catch (error) {
+            if (!this.isLunchReceiptRecovery(error)) throw this.toPublicShiftBreakUpdateError(mapShiftUpdateInvariantError(error));
             return this.replayShiftBreakUpdateAfterFailure(
+                action,
                 tenantId,
                 shiftId,
                 operationId,
@@ -627,6 +741,7 @@ export class LunchBreaksService {
         shiftId: string,
         operationId: string,
         requestHash: string,
+        assertCurrent: LunchGuard = () => {},
     ): Promise<GeneratedShiftBreaks | null> {
         const stored = await tx.auditLog.findFirst({
             where: {
@@ -638,6 +753,7 @@ export class LunchBreaksService {
             orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
             select: { newValue: true },
         });
+        assertCurrent();
         if (!stored) return null;
         if (!this.isRecord(stored.newValue) || typeof stored.newValue.requestHash !== 'string') {
             throw this.shiftBreakUpdateConflict('The stored shift lunch/break outcome is unavailable. Use a new Idempotency-Key.');
@@ -654,11 +770,14 @@ export class LunchBreaksService {
     private async requireShiftBreakUpdateEntitlement(
         tx: TenantPrismaTransaction,
         tenantId: string,
+        assertCurrent: LunchGuard = () => {},
     ): Promise<FeatureResolution> {
         let entitlement: FeatureResolution;
         try {
             entitlement = await this.featureAccessService.assertFeatureEnabledInTransaction(tx, tenantId, 'lunch_breaks');
+            assertCurrent();
         } catch (error) {
+            assertCurrent();
             if (error instanceof ForbiddenException) throw this.shiftBreakUpdateEntitlementError();
             throw error;
         }
@@ -703,7 +822,9 @@ export class LunchBreaksService {
             creditConsumption: { consumedCredits: number; newBalance: number | null } | null;
             response: GeneratedShiftBreaks;
         },
+        assertCurrent: LunchGuard = () => {},
     ): Promise<void> {
+        assertCurrent();
         await tx.auditLog.create({
             data: {
                 tenantId: args.tenantId,
@@ -722,21 +843,24 @@ export class LunchBreaksService {
                 } as unknown as Prisma.InputJsonValue,
             },
         });
+        assertCurrent();
     }
     private async replayShiftBreakUpdateAfterFailure(
+        action: LunchAction,
         tenantId: string,
         shiftId: string,
         operationId: string,
         requestHash: string,
         error: unknown,
     ): Promise<GeneratedShiftBreaks> {
-        const replay = await this.tenantDb.withTenant(tenantId, (tx) => this.findShiftBreakUpdateReplay(
+        const replay = await this.runLunchPhase(action, (tx, assertCurrent) => this.findShiftBreakUpdateReplay(
             tx,
             tenantId,
             shiftId,
             operationId,
             requestHash,
-        ));
+            assertCurrent,
+        ), false);
         if (replay) return replay;
         throw error;
     }
@@ -763,7 +887,11 @@ export class LunchBreaksService {
         idempotencyKey: string,
         actor: LunchBreakActor = {},
     ): Promise<SetupShiftsResponse> {
+        input = structuredClone(input);
         const normalizedInput = this.normalizeSetupShiftsInput(input);
+        const action = await this.prepareLunchAction(tenantId, actor, 'lunch_breaks:write', ['shifts:write'],
+            normalizedInput.rows.map(row => row.userId).filter((id): id is string => !!id),
+            normalizedInput.rows.map(row => row.shiftId).filter((id): id is string => !!id));
         const operationId = setupShiftsOperationId(
             tenantId,
             normalizeSetupShiftsIdempotencyKey(idempotencyKey),
@@ -772,20 +900,22 @@ export class LunchBreaksService {
         const semanticOperationId = setupShiftsNeedsSemanticReplay(normalizedInput)
             ? setupShiftsSemanticOperationId(tenantId, requestHash)
             : null;
-        const replay = await this.tenantDb.withTenant(tenantId, (tx) => this.findSetupShiftsReplay(
+        const replay = await this.runLunchPhase(action, (tx, assertCurrent) => this.findSetupShiftsReplay(
             tx,
             tenantId,
             operationId,
             requestHash,
+            SETUP_SHIFTS_IDEMPOTENCY_RESOURCE,
+            assertCurrent,
         ));
         if (replay) return replay;
 
         try {
-            return await this.tenantDb.withTenant(tenantId, async (tx) => {
-                const lockedReplay = await this.findSetupShiftsReplay(tx, tenantId, operationId, requestHash);
+            return await this.runLunchPhase(action, async (tx, assertCurrent, currentActor) => {
+                const lockedReplay = await this.findSetupShiftsReplay(tx, tenantId, operationId, requestHash, SETUP_SHIFTS_IDEMPOTENCY_RESOURCE, assertCurrent);
                 if (lockedReplay) return lockedReplay;
-                await this.lockTenantSchedulingMutations(tx, tenantId);
-                const serializedReplay = await this.findSetupShiftsReplay(tx, tenantId, operationId, requestHash);
+                await this.lockTenantSchedulingMutations(tx, tenantId, assertCurrent);
+                const serializedReplay = await this.findSetupShiftsReplay(tx, tenantId, operationId, requestHash, SETUP_SHIFTS_IDEMPOTENCY_RESOURCE, assertCurrent);
                 if (serializedReplay) return serializedReplay;
                 if (semanticOperationId) {
                     const semanticReplay = await this.findSetupShiftsReplay(
@@ -794,6 +924,7 @@ export class LunchBreaksService {
                         semanticOperationId,
                         requestHash,
                         SETUP_SHIFTS_SEMANTIC_RESOURCE,
+                        assertCurrent,
                     );
                     if (semanticReplay) return semanticReplay;
                 }
@@ -801,6 +932,7 @@ export class LunchBreaksService {
                     where: { id: normalizedInput.locationId, tenantId, deletedAt: null },
                     select: { id: true },
                 });
+                assertCurrent();
                 if (!location) {
                     throw new BadRequestException('The selected location was not found for this workspace.');
                 }
@@ -821,6 +953,7 @@ export class LunchBreaksService {
                         },
                     })
                     : [];
+                assertCurrent();
                 const existingById = new Map(existingShifts.map((shift) => [shift.id, shift]));
                 if (existingById.size !== explicitShiftIds.length) {
                     throw new BadRequestException('One or more setup shifts were not found for this tenant.');
@@ -828,7 +961,7 @@ export class LunchBreaksService {
                 if (existingShifts.some((shift) => shift.locationId !== normalizedInput.locationId)) {
                     throw new BadRequestException('Setup shifts must belong to the selected location.');
                 }
-                await this.lockScheduleRowsForMutation(tx, tenantId, existingShifts.map((shift) => shift.scheduleId));
+                await this.lockScheduleRowsForMutation(tx, tenantId, existingShifts.map((shift) => shift.scheduleId), assertCurrent);
                 if (existingShifts.some((shift) => this.isPublishedSchedule(shift.schedule?.status))) {
                     throw new BadRequestException('Published schedules are locked. Create a new draft before changing lunch/break setup shifts.');
                 }
@@ -836,7 +969,7 @@ export class LunchBreaksService {
                     .map((row) => row.userId)
                     .filter((id): id is string => Boolean(id))));
                 for (const userId of userIds) {
-                    await this.assertSchedulableUser(tx, tenantId, userId);
+                    await this.assertSchedulableUser(tx, tenantId, userId, assertCurrent);
                 }
 
                 const plans: SetupShiftMutationPlan[] = [];
@@ -859,6 +992,7 @@ export class LunchBreaksService {
                             existing.startTime,
                             nextStartTime,
                             nextEndTime,
+                            assertCurrent,
                         )
                         : [];
                     plans.push({
@@ -874,10 +1008,10 @@ export class LunchBreaksService {
                     });
                 }
 
-                await this.assertSetupShiftOverlapInvariants(tx, tenantId, plans, explicitShiftIds);
+                await this.assertSetupShiftOverlapInvariants(tx, tenantId, plans, explicitShiftIds, assertCurrent);
                 const changedPlans = plans.filter((plan) => plan.valueChanged);
                 if (changedPlans.length > 0) {
-                    const entitlement = await this.requireSetupShiftsEntitlement(tx, tenantId);
+                    const entitlement = await this.requireSetupShiftsEntitlement(tx, tenantId, assertCurrent);
                     try {
                         await this.featureAccessService.recordFeatureUsageInTransaction(
                             tx,
@@ -885,8 +1019,12 @@ export class LunchBreaksService {
                             entitlement,
                             `Lunch/break setup shift persistence (${operationId})`,
                             operationId,
+                            undefined,
+                            assertCurrent,
                         );
+                        assertCurrent();
                     } catch (error) {
+                        assertCurrent();
                         if (error instanceof ForbiddenException) throw this.setupShiftsEntitlementError();
                         throw error;
                     }
@@ -894,6 +1032,7 @@ export class LunchBreaksService {
 
                 const ids: string[] = [];
                 for (const plan of plans) {
+                    assertCurrent();
                     const { row } = plan;
                     if (row.shiftId) {
                         ids.push(row.shiftId);
@@ -915,6 +1054,7 @@ export class LunchBreaksService {
                                 userId: plan.nextUserId,
                             },
                         });
+                        assertCurrent();
                         if (updated.count === 0) {
                             throw this.setupShiftsConflict('A setup shift changed while it was being saved. Refresh and retry.');
                         }
@@ -923,6 +1063,7 @@ export class LunchBreaksService {
                                 where: { id: shiftBreak.id, shiftId: row.shiftId },
                                 data: { startTime: shiftBreak.startTime, endTime: shiftBreak.endTime },
                             });
+                            assertCurrent();
                             if (breakUpdate.count !== 1) {
                                 throw this.setupShiftsConflict('A dependent lunch/break changed while setup shifts were being saved. Refresh and retry.');
                             }
@@ -940,26 +1081,30 @@ export class LunchBreaksService {
                         },
                         select: { id: true },
                     });
+                    assertCurrent();
                     ids.push(created.id);
                 }
                 await this.incrementScheduleRevisions(
                     tx,
                     tenantId,
                     changedPlans.map((plan) => plan.existing?.scheduleId),
+                    assertCurrent,
                 );
                 const response = { shiftIds: ids };
                 await this.createSetupShiftsAudit(tx, {
                     tenantId,
-                    actorUserId: this.actorUserId(actor) ?? null,
+                    actorUserId: this.actorUserId(currentActor) ?? null,
                     operationId,
                     semanticOperationId,
                     requestHash,
                     response,
-                });
+                }, assertCurrent);
                 return response;
             });
         } catch (error) {
+            if (!this.isLunchReceiptRecovery(error)) throw this.toPublicSetupShiftsError(mapShiftUpdateInvariantError(error));
             return this.replaySetupShiftsAfterFailure(
+                action,
                 tenantId,
                 operationId,
                 requestHash,
@@ -1020,6 +1165,7 @@ export class LunchBreaksService {
         operationId: string,
         requestHash: string,
         resource: string = SETUP_SHIFTS_IDEMPOTENCY_RESOURCE,
+        assertCurrent: LunchGuard = () => {},
     ): Promise<SetupShiftsResponse | null> {
         const stored = await tx.auditLog.findFirst({
             where: {
@@ -1031,6 +1177,7 @@ export class LunchBreaksService {
             orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
             select: { newValue: true },
         });
+        assertCurrent();
         if (!stored) return null;
         if (!this.isRecord(stored.newValue) || typeof stored.newValue.requestHash !== 'string') {
             throw this.setupShiftsConflict('The stored setup shift outcome is unavailable. Use a new Idempotency-Key.');
@@ -1049,11 +1196,14 @@ export class LunchBreaksService {
     private async requireSetupShiftsEntitlement(
         tx: TenantPrismaTransaction,
         tenantId: string,
+        assertCurrent: LunchGuard = () => {},
     ): Promise<FeatureResolution> {
         let entitlement: FeatureResolution;
         try {
             entitlement = await this.featureAccessService.assertFeatureEnabledInTransaction(tx, tenantId, 'scheduling');
+            assertCurrent();
         } catch (error) {
+            assertCurrent();
             if (error instanceof ForbiddenException) throw this.setupShiftsEntitlementError();
             throw error;
         }
@@ -1072,6 +1222,7 @@ export class LunchBreaksService {
         previousStartTime: Date,
         nextStartTime: Date,
         nextEndTime: Date,
+        assertCurrent: LunchGuard = () => {},
     ): Promise<ShiftBreakWindow[]> {
         const rows = await tx.$queryRaw<ShiftBreakWindow[]>`
             SELECT "id", "startTime", "endTime"
@@ -1080,6 +1231,7 @@ export class LunchBreaksService {
             ORDER BY "startTime", "id"
             FOR UPDATE
         `;
+        assertCurrent();
         return translateShiftBreakWindows(rows, previousStartTime, nextStartTime, nextEndTime);
     }
     private async assertSetupShiftOverlapInvariants(
@@ -1087,6 +1239,7 @@ export class LunchBreaksService {
         tenantId: string,
         plans: SetupShiftMutationPlan[],
         explicitShiftIds: string[],
+        assertCurrent: LunchGuard = () => {},
     ): Promise<void> {
         const byUser = new Map<string, SetupShiftMutationPlan[]>();
         for (const plan of plans) {
@@ -1113,6 +1266,7 @@ export class LunchBreaksService {
                     ...(explicitShiftIds.length > 0 ? { id: { notIn: explicitShiftIds } } : {}),
                 },
             });
+            assertCurrent();
             if (overlapCount > 0) {
                 throw this.setupShiftsConflict('User already has a shift that overlaps this setup window.');
             }
@@ -1148,7 +1302,9 @@ export class LunchBreaksService {
             requestHash: string;
             response: SetupShiftsResponse;
         },
+        assertCurrent: LunchGuard = () => {},
     ): Promise<void> {
+        assertCurrent();
         await tx.auditLog.create({
             data: {
                 tenantId: args.tenantId,
@@ -1164,6 +1320,7 @@ export class LunchBreaksService {
                 },
             },
         });
+        assertCurrent();
         if (args.semanticOperationId) {
             await tx.auditLog.create({
                 data: {
@@ -1180,24 +1337,32 @@ export class LunchBreaksService {
                     },
                 },
             });
+            assertCurrent();
         }
     }
     private async replaySetupShiftsAfterFailure(
+        action: LunchAction,
         tenantId: string,
         operationId: string,
         requestHash: string,
         error: unknown,
     ): Promise<SetupShiftsResponse> {
-        const replay = await this.tenantDb.withTenant(tenantId, (tx) => this.findSetupShiftsReplay(
+        const replay = await this.runLunchPhase(action, (tx, assertCurrent) => this.findSetupShiftsReplay(
             tx,
             tenantId,
             operationId,
             requestHash,
-        ));
+            SETUP_SHIFTS_IDEMPOTENCY_RESOURCE,
+            assertCurrent,
+        ), false);
         if (replay) return replay;
         throw error;
     }
-    async generateLunchBreaks(tenantId: string, input: GenerateLunchBreaksRequest, idempotencyKey: string): Promise<GenerationResponse> {
+    async generateLunchBreaks(tenantId: string, input: GenerateLunchBreaksRequest, idempotencyKey: string,
+        actor: LunchBreakActor = {}): Promise<GenerationResponse> {
+        input = structuredClone(input);
+        const action = await this.prepareLunchAction(tenantId, actor, 'lunch_breaks:write', [], [], input.shiftIds ?? [],
+            { ...(input.locationId ? { locationId: input.locationId.trim() } : {}), ...(input.scheduleId ? { scheduleId: input.scheduleId } : {}) });
         const persistedLocationId = input.persist ? input.locationId?.trim() : undefined;
         if (input.persist && !persistedLocationId) {
             throw new BadRequestException('locationId is required when persisting generated lunch/breaks.');
@@ -1206,28 +1371,29 @@ export class LunchBreaksService {
             ? { ...input, locationId: persistedLocationId }
             : input;
         if (persistedLocationId) {
-            await this.assertPersistedGenerationLocationBoundary(tenantId, persistedLocationId, generationInputRequest.shiftIds);
+            await this.assertPersistedGenerationLocationBoundary(action, tenantId, persistedLocationId, generationInputRequest.shiftIds);
         }
         const requestKeyHash = hashLunchBreakGenerationIdempotencyKey(normalizeLunchBreakGenerationIdempotencyKey(idempotencyKey));
         const requestHash = lunchBreakGenerationRequestHash(generationInputRequest);
-        const claimResult = await this.claimGenerationRequest(tenantId, requestKeyHash, requestHash);
+        const claimResult = await this.claimGenerationRequest(action, tenantId, requestKeyHash, requestHash);
         if ('reusedResponse' in claimResult)
             return claimResult.reusedResponse;
         const claim = claimResult;
         try {
             const explicitShifts = this.normalizeExplicitShifts(input.shifts ?? []);
-            const { policy, dbShifts } = await this.tenantDb.withTenant(tenantId, async (tx) => {
+            const { policy, dbShifts } = await this.runLunchPhase(action, async (tx, assertCurrent) => {
                 if (persistedLocationId) {
                     const location = await tx.location.findFirst({
                         where: { id: persistedLocationId, tenantId, deletedAt: null },
                         select: { id: true },
                     });
+                    assertCurrent();
                     if (!location) {
                         throw new BadRequestException('locationId must identify an active location in this tenant.');
                     }
                 }
                 const sharedShifts = explicitShifts.length === 0
-                    ? await this.findSharedShifts(tx, tenantId, generationInputRequest)
+                    ? await this.findSharedShifts(tx, tenantId, generationInputRequest, assertCurrent)
                     : [];
                 if (persistedLocationId && generationInputRequest.shiftIds?.length) {
                     const requestedShiftIds = new Set(generationInputRequest.shiftIds);
@@ -1239,7 +1405,7 @@ export class LunchBreaksService {
                 }
                 return {
                     policy: this.normalizePolicy({
-                        ...(await this.fetchPolicyForTenant(tx, tenantId)),
+                        ...(await this.fetchPolicyForTenant(tx, tenantId, assertCurrent)),
                         ...(input.policy ?? {}),
                     }),
                     dbShifts: sharedShifts,
@@ -1267,9 +1433,9 @@ export class LunchBreaksService {
                 throw new BadRequestException('Persisting lunch/breaks requires existing shift records from shared scheduling data.');
             }
             if (shouldPersist) {
-                await this.preflightGeneratedBreakPersistence(tenantId, data, calculationSnapshot);
+                await this.preflightGeneratedBreakPersistence(action, tenantId, data, calculationSnapshot);
             }
-            return await this.completeGenerationRequest(tenantId, claim, {
+            return await this.completeGenerationRequest(action, tenantId, claim, {
                 source,
                 persisted: shouldPersist,
                 policy,
@@ -1279,25 +1445,34 @@ export class LunchBreaksService {
             });
         }
         catch (error) {
-            try {
-                const committed = await this.findGenerationRequest(tenantId, requestKeyHash);
-                if (committed?.status === 'SUCCEEDED' && committed.response) {
-                    return this.reuseGenerationRequest(committed, requestHash);
+            let failure = error;
+            if (error instanceof OwnedGenerationClaimExpired || this.isLunchReceiptRecovery(error)) {
+                try {
+                    const committed = await this.findGenerationRequest(action, tenantId, requestKeyHash);
+                    if (committed?.status === 'SUCCEEDED' && committed.response) {
+                        return this.reuseGenerationRequest(committed, requestHash);
+                    }
+                } catch (recoveryError) {
+                    failure = recoveryError;
                 }
-                await this.failGenerationRequest(tenantId, claim, error);
             }
-            catch {
-                // A lost commit acknowledgement remains safely reusable by the same idempotency key.
+            try {
+                // Internal settlement of this request's exact PENDING claim:
+                // no actor readmission, domain effects, debit or receipt return.
+                await this.failGenerationRequest(tenantId, claim, failure);
+            } catch {
+                // A lost acknowledgement is safely reusable by the same key.
             }
-            throw error;
+            throw failure;
         }
     }
-    private async claimGenerationRequest(tenantId: string, requestKeyHash: string, requestHash: string): Promise<GenerationClaimResult> {
+    private async claimGenerationRequest(action: LunchAction, tenantId: string, requestKeyHash: string, requestHash: string): Promise<GenerationClaimResult> {
         const requestId = randomUUID();
         const claimToken = randomUUID();
-        const now = new Date();
-        const claimExpiresAt = new Date(now.getTime() + GENERATION_CLAIM_MS);
-        const request = await this.tenantDb.withTenant(tenantId, async (tx) => {
+        const request = await this.runLunchPhase(action, async (tx, assertCurrent) => {
+            const now = new Date();
+            const claimExpiresAt = new Date(now.getTime() + GENERATION_CLAIM_MS);
+            assertCurrent();
             const row = await tx.lunchBreakGenerationRequest.upsert({
                 where: { tenantId_requestKeyHash: { tenantId, requestKeyHash } },
                 create: {
@@ -1312,6 +1487,7 @@ export class LunchBreaksService {
                 },
                 update: {},
             });
+            assertCurrent();
             if (row.id === requestId || row.requestHash !== requestHash || row.status === 'SUCCEEDED') {
                 return row;
             }
@@ -1342,10 +1518,12 @@ export class LunchBreaksService {
                     completedAt: null,
                 },
             });
+            assertCurrent();
             if (reclaimed.count !== 1) {
-                return await tx.lunchBreakGenerationRequest.findUnique({
+                const current = await tx.lunchBreakGenerationRequest.findUnique({
                     where: { tenantId_requestKeyHash: { tenantId, requestKeyHash } },
-                }) ?? row;
+                });
+                assertCurrent(); return current ?? row;
             }
             return { ...row, status: 'PENDING', claimToken, claimExpiresAt };
         });
@@ -1357,10 +1535,11 @@ export class LunchBreaksService {
         }
         return { requestId: request.id, claimToken };
     }
-    private async findGenerationRequest(tenantId: string, requestKeyHash: string): Promise<GenerationRequestRecord | null> {
-        return this.tenantDb.withTenant(tenantId, (tx) => tx.lunchBreakGenerationRequest.findUnique({
-            where: { tenantId_requestKeyHash: { tenantId, requestKeyHash } },
-        }));
+    private async findGenerationRequest(action: LunchAction, tenantId: string, requestKeyHash: string): Promise<GenerationRequestRecord | null> {
+        return this.runLunchPhase(action, async (tx, assertCurrent) => {
+            const row = await tx.lunchBreakGenerationRequest.findUnique({ where: { tenantId_requestKeyHash: { tenantId, requestKeyHash } } });
+            assertCurrent(); return row;
+        }, false);
     }
     private reuseGenerationRequest(request: GenerationRequestRecord, requestHash: string): GenerationResponse {
         if (request.requestHash !== requestHash) {
@@ -1380,8 +1559,8 @@ export class LunchBreaksService {
         }
         throw new ConflictException('Lunch/break generation for this Idempotency-Key is already in progress.');
     }
-    private async completeGenerationRequest(tenantId: string, claim: GenerationClaim, prepared: GenerationPrepared): Promise<GenerationResponse> {
-        return this.tenantDb.withTenant(tenantId, async (tx) => {
+    private async completeGenerationRequest(action: LunchAction, tenantId: string, claim: GenerationClaim, prepared: GenerationPrepared): Promise<GenerationResponse> {
+        return this.runLunchPhase(action, async (tx, assertCurrent) => {
             const claimed = await tx.lunchBreakGenerationRequest.updateMany({
                 where: {
                     id: claim.requestId,
@@ -1391,23 +1570,25 @@ export class LunchBreaksService {
                 },
                 data: { claimExpiresAt: new Date(Date.now() + GENERATION_CLAIM_MS) },
             });
+            assertCurrent();
             if (claimed.count !== 1) {
-                throw new ConflictException('Lunch/break generation claim expired before it could commit. Retry the request.');
+                throw new OwnedGenerationClaimExpired();
             }
             const entitlement = await this.featureAccessService.assertFeatureEnabledInTransaction(
                 tx,
                 tenantId,
                 'lunch_breaks',
             );
+            assertCurrent();
             this.requirePositiveGenerationCredit(entitlement);
             if (prepared.generated) {
-                await this.assertGeneratedShiftIdsPersistable(tx, tenantId, this.getGeneratedShiftIdsOrThrow(prepared.generated), prepared.calculationSnapshot);
+                await this.assertGeneratedShiftIdsPersistable(tx, tenantId, this.getGeneratedShiftIdsOrThrow(prepared.generated), prepared.calculationSnapshot, assertCurrent);
             }
             const creditConsumption = await this.reserveGenerationCredit(tx, {
                 tenantId,
                 requestId: claim.requestId,
                 entitlement,
-            });
+            }, assertCurrent);
             const response = {
                 source: prepared.source,
                 persisted: prepared.persisted,
@@ -1417,8 +1598,9 @@ export class LunchBreaksService {
                 reused: false,
             };
             if (prepared.generated) {
-                await this.persistGeneratedBreaks(tx, tenantId, prepared.generated, prepared.calculationSnapshot);
+                await this.persistGeneratedBreaks(tx, tenantId, prepared.generated, prepared.calculationSnapshot, assertCurrent);
             }
+            assertCurrent();
             await tx.lunchBreakGenerationRequest.update({
                 where: { id: claim.requestId },
                 data: {
@@ -1434,10 +1616,11 @@ export class LunchBreaksService {
                     claimExpiresAt: null,
                 },
             });
+            assertCurrent();
             return response;
         });
     }
-    private async reserveGenerationCredit(tx: TenantPrismaTransaction, args: CreditReservationArgs): Promise<CreditConsumption> {
+    private async reserveGenerationCredit(tx: TenantPrismaTransaction, args: CreditReservationArgs, assertCurrent: LunchGuard = () => {}): Promise<CreditConsumption> {
         const transactionId = this.generationCreditTransactionId(args.requestId);
         const settlement = await this.featureAccessService.recordFeatureUsageInTransaction(
             tx,
@@ -1446,7 +1629,9 @@ export class LunchBreaksService {
             `Lunch/Break generation (${args.requestId})`,
             args.requestId,
             transactionId,
+            assertCurrent,
         );
+        assertCurrent();
         const newBalance = Number(settlement.newBalance);
         if (!Number.isSafeInteger(newBalance) || newBalance < 0) {
             throw new ConflictException('Lunch/break generation credit settlement is invalid.');
@@ -1496,10 +1681,7 @@ export class LunchBreaksService {
             : 'Lunch/break generation failed.';
         return message.slice(0, 1000);
     }
-    private async fetchPolicy(tenantId: string): Promise<LunchBreakPolicy> {
-        return this.tenantDb.withTenant(tenantId, (tx) => this.fetchPolicyForTenant(tx, tenantId));
-    }
-    private async fetchPolicyForTenant(tx: TenantPrismaTransaction, tenantId: string): Promise<LunchBreakPolicy> {
+    private async fetchPolicyForTenant(tx: TenantPrismaTransaction, tenantId: string, assertCurrent: LunchGuard = () => {}): Promise<LunchBreakPolicy> {
         const existing = await tx.tenantSetting.findUnique({
             where: {
                 tenantId_key: {
@@ -1508,6 +1690,7 @@ export class LunchBreaksService {
                 },
             },
         });
+        assertCurrent();
         if (!existing?.value || typeof existing.value !== 'object') {
             return { ...DEFAULT_POLICY };
         }
@@ -1538,7 +1721,7 @@ export class LunchBreaksService {
             lunchDurationMinutes: item.lunchDurationMinutes,
         }));
     }
-    private async findSharedShifts(tx: TenantPrismaTransaction, tenantId: string, input: GenerateLunchBreaksRequest): Promise<SharedShift[]> {
+    private async findSharedShifts(tx: TenantPrismaTransaction, tenantId: string, input: GenerateLunchBreaksRequest, assertCurrent: LunchGuard = () => {}): Promise<SharedShift[]> {
         const where: Prisma.ShiftWhereInput = { tenantId, deletedAt: null };
         const and: Prisma.ShiftWhereInput[] = [SCHEDULABLE_SHIFT_USER_FILTER];
         if (input.scheduleId)
@@ -1548,20 +1731,22 @@ export class LunchBreaksService {
         if (input.shiftIds?.length)
             where.id = { in: input.shiftIds };
         where.AND = and;
-        return tx.shift.findMany({
+        const shifts = await tx.shift.findMany({
             where,
             orderBy: { startTime: 'asc' },
             include: {
                 user: { select: { id: true, name: true, role: true } },
             },
         });
+        assertCurrent(); return shifts;
     }
-    private async assertPersistedGenerationLocationBoundary(tenantId: string, locationId: string, shiftIds?: string[]): Promise<void> {
-        await this.tenantDb.withTenant(tenantId, async (tx) => {
+    private async assertPersistedGenerationLocationBoundary(action: LunchAction, tenantId: string, locationId: string, shiftIds?: string[]): Promise<void> {
+        await this.runLunchPhase(action, async (tx, assertCurrent) => {
             const location = await tx.location.findFirst({
                 where: { id: locationId, tenantId, deletedAt: null },
                 select: { id: true },
             });
+            assertCurrent();
             if (!location) {
                 throw new BadRequestException('locationId must identify an active location in this tenant.');
             }
@@ -1576,6 +1761,7 @@ export class LunchBreaksService {
                     id: { in: requestedShiftIds },
                 },
             });
+            assertCurrent();
             if (matchingShiftCount !== requestedShiftIds.length) {
                 throw new BadRequestException('Every selected shift must belong to the requested location.');
             }
@@ -1705,11 +1891,11 @@ export class LunchBreaksService {
             }
         }
     }
-    private async preflightGeneratedBreakPersistence(tenantId: string, generated: GeneratedShiftBreaks[], calculationSnapshot: CalculationShiftSnapshot[]): Promise<void> {
+    private async preflightGeneratedBreakPersistence(action: LunchAction, tenantId: string, generated: GeneratedShiftBreaks[], calculationSnapshot: CalculationShiftSnapshot[]): Promise<void> {
         const shiftIds = this.getGeneratedShiftIdsOrThrow(generated);
-        await this.tenantDb.withTenant(tenantId, (tx) => this.assertGeneratedShiftIdsPersistable(tx, tenantId, shiftIds, calculationSnapshot));
+        await this.runLunchPhase(action, (tx, assertCurrent) => this.assertGeneratedShiftIdsPersistable(tx, tenantId, shiftIds, calculationSnapshot, assertCurrent));
     }
-    private async persistGeneratedBreaks(tx: TenantPrismaTransaction, tenantId: string, generated: GeneratedShiftBreaks[], calculationSnapshot: CalculationShiftSnapshot[]): Promise<void> {
+    private async persistGeneratedBreaks(tx: TenantPrismaTransaction, tenantId: string, generated: GeneratedShiftBreaks[], calculationSnapshot: CalculationShiftSnapshot[], assertCurrent: LunchGuard = () => {}): Promise<void> {
         const shiftIds = this.getGeneratedShiftIdsOrThrow(generated);
         const payload = generated.flatMap((item) => item.breaks.map((entry) => ({
             shiftId: item.shiftId as string,
@@ -1718,15 +1904,18 @@ export class LunchBreaksService {
             endTime: new Date(entry.endTime),
             paid: entry.paid,
         })));
-        await tx.break.deleteMany({ where: { shiftId: { in: shiftIds } } });
+        assertCurrent();
+        await tx.break.deleteMany({ where: { shiftId: { in: shiftIds } } }); assertCurrent();
         if (payload.length > 0) {
             await tx.break.createMany({ data: payload });
+            assertCurrent();
         }
         await tx.shift.updateMany({
             where: { tenantId, deletedAt: null, id: { in: shiftIds } },
             data: { updatedAt: new Date() },
         });
-        await this.incrementScheduleRevisions(tx, tenantId, calculationSnapshot.map((shift) => shift.scheduleId));
+        assertCurrent();
+        await this.incrementScheduleRevisions(tx, tenantId, calculationSnapshot.map((shift) => shift.scheduleId), assertCurrent);
     }
     private getGeneratedShiftIdsOrThrow(generated: GeneratedShiftBreaks[]): string[] {
         const shiftIds = generated.map((item) => item.shiftId).filter((id): id is string => Boolean(id));
@@ -1735,11 +1924,11 @@ export class LunchBreaksService {
         }
         return shiftIds;
     }
-    private async assertGeneratedShiftIdsPersistable(tx: TenantPrismaTransaction, tenantId: string, shiftIds: string[], calculationSnapshot: CalculationShiftSnapshot[]): Promise<void> {
+    private async assertGeneratedShiftIdsPersistable(tx: TenantPrismaTransaction, tenantId: string, shiftIds: string[], calculationSnapshot: CalculationShiftSnapshot[], assertCurrent: LunchGuard = () => {}): Promise<void> {
         if (new Set(shiftIds).size !== shiftIds.length || calculationSnapshot.length !== shiftIds.length) {
             throw new ConflictException('Shift calculation snapshot no longer matches the requested shifts. Retry generation.');
         }
-        await this.lockScheduleRowsForMutation(tx, tenantId, calculationSnapshot.map((shift) => shift.scheduleId));
+        await this.lockScheduleRowsForMutation(tx, tenantId, calculationSnapshot.map((shift) => shift.scheduleId), assertCurrent);
         await tx.$queryRaw `
             SELECT "id"
             FROM "Shift"
@@ -1749,6 +1938,7 @@ export class LunchBreaksService {
             ORDER BY "id" ASC
             FOR UPDATE
         `;
+        assertCurrent();
         const shifts = await tx.shift.findMany({
             where: { tenantId, deletedAt: null, id: { in: shiftIds }, AND: [SCHEDULABLE_SHIFT_USER_FILTER] },
             select: {
@@ -1760,6 +1950,7 @@ export class LunchBreaksService {
                 schedule: { select: { status: true } },
             },
         });
+        assertCurrent();
         if (shifts.length !== shiftIds.length) {
             throw new BadRequestException('One or more shifts were not found for this tenant.');
         }
@@ -1829,8 +2020,10 @@ export class LunchBreaksService {
             breaks: typed,
         };
     }
-    private async assertSchedulableUser(tx: TenantPrismaTransaction, tenantId: string, userId: string): Promise<void> {
-        const user = await lockActiveSchedulableUser(tx, tenantId, userId);
+    private async assertSchedulableUser(tx: TenantPrismaTransaction, tenantId: string, userId: string, assertCurrent: LunchGuard = () => {}): Promise<void> {
+        // This target is already part of the phase's sorted User lock set.
+        const user = await tx.user.findFirst({ where: { id: userId, tenantId, ...ACTIVE_SCHEDULABLE_USER_FILTER }, select: { id: true } });
+        assertCurrent();
         if (!user) {
             throw new BadRequestException('User is not available for lunch/break scheduling in this tenant.');
         }
@@ -1843,7 +2036,7 @@ export class LunchBreaksService {
             throw new BadRequestException('Published schedules are locked. Create a new draft before changing lunch/breaks.');
         }
     }
-    private async lockScheduleRowsForMutation(tx: TenantPrismaTransaction, tenantId: string, scheduleIds: Array<string | null | undefined>): Promise<void> {
+    private async lockScheduleRowsForMutation(tx: TenantPrismaTransaction, tenantId: string, scheduleIds: Array<string | null | undefined>, assertCurrent: LunchGuard = () => {}): Promise<void> {
         const ids = Array.from(new Set(scheduleIds.filter((id): id is string => Boolean(id)))).sort();
         if (ids.length === 0)
             return;
@@ -1855,24 +2048,29 @@ export class LunchBreaksService {
             ORDER BY "id" ASC
             FOR UPDATE
         `;
+        assertCurrent();
         if (rows.some((row) => row.status !== 'DRAFT')) {
             throw new BadRequestException('Published schedules are locked. Reopen the schedule before changing lunch/breaks.');
         }
     }
-    private async lockTenantSchedulingMutations(tx: TenantPrismaTransaction, tenantId: string): Promise<void> {
+    private async lockTenantSchedulingMutations(tx: TenantPrismaTransaction, tenantId: string, assertCurrent: LunchGuard = () => {}): Promise<void> {
         await this.featureAccessService.lockTenantInTransaction(tx, tenantId);
+        assertCurrent();
         await tx.$executeRaw`
             SELECT pg_advisory_xact_lock(hashtextextended(${`lunchlineup:scheduling:${tenantId}`}, 0))
         `;
+        assertCurrent();
     }
-    private async incrementScheduleRevisions(tx: TenantPrismaTransaction, tenantId: string, scheduleIds: Array<string | null | undefined>): Promise<void> {
+    private async incrementScheduleRevisions(tx: TenantPrismaTransaction, tenantId: string, scheduleIds: Array<string | null | undefined>, assertCurrent: LunchGuard = () => {}): Promise<void> {
         const ids = Array.from(new Set(scheduleIds.filter((id): id is string => Boolean(id))));
         if (ids.length === 0)
             return;
+        assertCurrent();
         const updated = await tx.schedule.updateMany({
             where: { tenantId, id: { in: ids }, status: 'DRAFT', deletedAt: null },
             data: { revision: { increment: 1 } },
         });
+        assertCurrent();
         if (updated.count !== ids.length) {
             throw new ConflictException('Schedule changed before break edits could be saved. Retry the request.');
         }

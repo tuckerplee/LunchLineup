@@ -11445,6 +11445,11 @@
           "id": "refusal-recovery",
           "contract": "Response loss/cancel/invalid draft/insufficient credits leaves explicit unknown/retry state and preserved events.",
           "evidenceKind": "browser-interaction"
+        },
+        {
+          "id": "policy-save-pending-availability",
+          "contract": "While a same-scope policy PUT is pending, all seven planning numeric controls and Save are unavailable. After acknowledged save and scoped day refresh, editing resumes; after rejection the submitted draft remains and editing resumes without a day GET. A location/date switch retains its existing scope ownership and refuses the old completion. Verify real browser keyboard/loading/focus behavior and independently reread the persisted policy; local source composition alone is insufficient.",
+          "evidenceKind": "browser-interaction"
         }
       ],
       "workflowIds": [

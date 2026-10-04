@@ -306,7 +306,22 @@ describe('LunchBreaksService', () => {
         service = new LunchBreaksService(
             featureAccess as any,
             new TenantPrismaService(prisma as any),
+            {} as any,
+            {} as any,
         );
+        // These preserved financial/domain queue fixtures deliberately bypass
+        // only the request authority boundary. They do NOT qualify current
+        // Rbac/session/MFA/locking; lunch-breaks-current-authority.spec.ts uses
+        // the real authorizer. All actual domain, receipt/claim, billing and
+        // TenantPrisma callback/rollback behavior below remains in the owner.
+        vi.spyOn(service as any, 'prepareLunchAction').mockImplementation(async (...args: any[]) => ({
+            actor: { tenantId: args[0] }, domainActor: args[1] ?? {},
+        }));
+        vi.spyOn(service as any, 'runLunchPhase').mockImplementation(async (...args: any[]) => {
+            const [action, operation] = args;
+            return new TenantPrismaService(prisma as any).withTenant(action.actor.tenantId,
+                tx => operation(tx, () => {}, action.domainActor));
+        });
     });
 
     afterEach(() => {
@@ -348,8 +363,8 @@ describe('LunchBreaksService', () => {
             data: [],
         }));
 
-        expect(featureAccess.assertFeatureEntitled).toHaveBeenCalledTimes(2);
-        expect(featureAccess.assertFeatureEntitled).toHaveBeenCalledWith('tenant-1', 'lunch_breaks');
+        expect(featureAccess.assertFeatureEntitledInTransaction).toHaveBeenCalledTimes(2);
+        expect(featureAccess.assertFeatureEntitledInTransaction).toHaveBeenCalledWith(prisma.tx, 'tenant-1', 'lunch_breaks');
         expect(featureAccess.assertFeatureEnabled).not.toHaveBeenCalled();
         expect(featureAccess.recordFeatureUsageInTransaction).not.toHaveBeenCalled();
         expect(prisma.tx.creditTransaction.create).not.toHaveBeenCalled();
@@ -377,7 +392,7 @@ describe('LunchBreaksService', () => {
         {
             name: 'setup shift persistence',
             feature: 'scheduling',
-            transactions: 3,
+            transactions: 2,
             mutate: () => service.persistSetupShifts('tenant-1', {
                 locationId: 'location-1',
                 rows: [{
@@ -1101,6 +1116,8 @@ describe('LunchBreaksService', () => {
             entitlement,
             expect.stringMatching(/^Lunch\/break shift replacement \([a-f0-9]{64}\)$/),
             expect.stringMatching(/^[a-f0-9]{64}$/),
+            undefined,
+            expect.any(Function),
         );
         expect(prisma.tx.auditLog.create).toHaveBeenCalledWith(expect.objectContaining({
             data: expect.objectContaining({
@@ -1362,14 +1379,13 @@ describe('LunchBreaksService', () => {
         }, 'setup-update-1');
 
         expect(result.shiftIds).toEqual(['shift-1']);
-        const schedulableUserQuery = prisma.tx.$queryRaw.mock.calls.find(([query]: any[]) => (
-            Array.from(query as ArrayLike<unknown>).join(' ').includes('FROM "User"')
-        ));
-        expect(schedulableUserQuery).toBeDefined();
-        expect(Array.from(schedulableUserQuery?.[0] as ArrayLike<unknown>).join(' '))
-            .toContain('"suspendedAt" IS NULL');
-        expect(Array.from(schedulableUserQuery?.[0] as ArrayLike<unknown>).join(' '))
-            .toContain('FOR UPDATE');
+        // Current owner already holds combined sorted User locks in the
+        // authority phase; this domain-only unit proves the active target
+        // selector, not a second late User lock (real lock proof is separate).
+        expect(prisma.tx.user.findFirst).toHaveBeenCalledWith({ where: {
+            id: 'user-1', tenantId: 'tenant-1', role: { in: ['MANAGER', 'STAFF'] },
+            deletedAt: null, suspendedAt: null,
+        }, select: { id: true } });
         expect(prisma.tx.shift.updateMany).toHaveBeenCalledWith(expect.objectContaining({
             where: expect.objectContaining({
                 id: 'shift-1',
@@ -1616,6 +1632,8 @@ describe('LunchBreaksService', () => {
             entitlement,
             expect.stringMatching(/^Lunch\/break setup shift persistence \([a-f0-9]{64}\)$/),
             expect.stringMatching(/^[a-f0-9]{64}$/),
+            undefined,
+            expect.any(Function),
         );
         expect(prisma.tx.shift.create).toHaveBeenCalledTimes(2);
         expect(prisma.tx.auditLog.create).toHaveBeenCalledOnce();
