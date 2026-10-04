@@ -392,6 +392,8 @@ model Session {
   expiresAt    DateTime
   createdAt    DateTime  @default(now())
   revokedAt    DateTime?
+  mfaEnrollmentSecret    String? // Encrypted pending TOTP generation; never plaintext
+  mfaEnrollmentExpiresAt DateTime? // Paired UTC database-clock enrollment deadline
 
   user                User                 @relation(fields: [userId], references: [id])
   refreshTokenReplays RefreshTokenReplay[]
@@ -400,6 +402,7 @@ model Session {
   @@index([refreshToken])
   @@index([expiresAt])
   @@index([revokedAt])
+  @@index([mfaEnrollmentExpiresAt, id])
 }
 
 model RefreshTokenReplay {

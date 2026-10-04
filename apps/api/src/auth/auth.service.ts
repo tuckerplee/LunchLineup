@@ -30,7 +30,6 @@ const OIDC_STATE_TTL_SECONDS = 10 * 60;
 const KEY_OIDC_STATE = (state: string) => `oidc_state:${state}`;
 const KEY_SESSION_MFA = (sessionId: string) => `session_mfa:${sessionId}`;
 const MFA_ENROLLMENT_TTL_SECONDS = 10 * 60;
-const KEY_PENDING_MFA_ENROLLMENT = (sessionId: string, userId: string) => `mfa_enrollment:${sessionId}:${userId}`;
 const DEFAULT_MFA_ISSUER = 'LunchLineup';
 const MFA_BACKUP_CODE_COUNT = 10;
 const MAX_PROVISIONED_TENANT_NAME_LENGTH = 80;
@@ -2615,28 +2614,92 @@ export class AuthService implements OnModuleDestroy {
         };
     }
 
+    private async assertMfaEnrollmentLifetimeInTransaction(
+        tx: TenantPrismaTransaction,
+        session: SessionRecord,
+        settings: TenantSecuritySettings,
+        enrollmentExpiresAt?: Date,
+    ): Promise<Date> {
+        // A statement clock is required after lock/proof/write waits. The
+        // transaction-start clock and the process clock cannot authorize an
+        // expired durable challenge. Timestamp columns are stored as UTC.
+        const rows = await tx.$queryRaw<Array<{ now: Date }>>`
+            SELECT timezone('UTC', clock_timestamp()) AS "now"
+        `;
+        const now = rows.length === 1 ? rows[0]?.now : null;
+        if (!(now instanceof Date) || !Number.isFinite(now.getTime())) {
+            throw new ServiceUnavailableException('MFA enrollment is temporarily unavailable');
+        }
+        const effectiveExpiresAt = this.assertSessionActive(session, settings);
+        if (effectiveExpiresAt <= now) throw new UnauthorizedException('Invalid or expired session');
+        if (enrollmentExpiresAt && enrollmentExpiresAt <= now) {
+            throw new BadRequestException('MFA enrollment has expired');
+        }
+        return now;
+    }
+
+    private encryptDurableMfaSecret(secret: string): string {
+        const encrypted = this.encryptMfaSecret(secret);
+        if (!encrypted.startsWith(CURRENT_ENCRYPTED_MFA_SECRET_PREFIX)
+            && !encrypted.startsWith(ENCRYPTED_MFA_SECRET_PREFIX)) {
+            throw new ServiceUnavailableException('MFA enrollment is not configured.');
+        }
+        return encrypted;
+    }
+
+    private decryptPendingMfaEnrollment(stored: unknown): string {
+        // Durable pending material never permits the development plaintext
+        // fallback supported for historical account secrets. Both authenticated
+        // managed-key v2 and configured legacy-key v1 envelopes can be read.
+        if (typeof stored !== 'string'
+            || (!stored.startsWith(CURRENT_ENCRYPTED_MFA_SECRET_PREFIX)
+                && !stored.startsWith(ENCRYPTED_MFA_SECRET_PREFIX))) {
+            throw new BadRequestException('MFA enrollment has expired');
+        }
+        const secret = this.decryptMfaSecret(stored);
+        if (!secret || !/^[A-Z2-7]{32}$/.test(secret)) {
+            throw new BadRequestException('MFA enrollment has expired');
+        }
+        return secret;
+    }
+
     async beginMfaEnrollment(
         userId: string,
         sessionClaims: { tenantId: string; sessionId: string },
     ) {
-        const { user } = await this.loadMfaSessionContext(userId, sessionClaims);
-        if (user.mfaEnabled && user.mfaSecret) {
-            throw new BadRequestException('MFA is already enabled');
-        }
-
-        const secret = this.generateBase32Secret();
-        await this.getRedis().set(
-            KEY_PENDING_MFA_ENROLLMENT(sessionClaims.sessionId, user.id),
-            secret,
-            'EX',
-            MFA_ENROLLMENT_TTL_SECONDS,
+        return runSerializableMutationWithRetry(
+            () => this.getTenantDb().withTenant(sessionClaims.tenantId, async (tx) => {
+                const { user, session, settings } = await this.selfSecurityContextInTransaction(
+                    tx, sessionClaims.tenantId, userId, sessionClaims.sessionId);
+                if (user.mfaEnabled) throw new BadRequestException('MFA is already enabled');
+                const secret = this.generateBase32Secret();
+                const encryptedSecret = this.encryptDurableMfaSecret(secret);
+                await this.assertMfaEnrollmentLifetimeInTransaction(tx, session, settings);
+                const rows = await tx.$queryRaw<Array<{ id: string; mfaEnrollmentExpiresAt: Date }>>`
+                    UPDATE "Session"
+                    SET "mfaEnrollmentSecret" = ${encryptedSecret},
+                        "mfaEnrollmentExpiresAt" = timezone('UTC', clock_timestamp())
+                            + ${MFA_ENROLLMENT_TTL_SECONDS} * interval '1 second'
+                    WHERE "id" = ${session.id} AND "userId" = ${user.id}
+                        AND "revokedAt" IS NULL
+                        AND "expiresAt" > timezone('UTC', clock_timestamp())
+                    RETURNING "id", "mfaEnrollmentExpiresAt"
+                `;
+                const expiresAt = rows.length === 1 && rows[0]?.id === session.id
+                    ? rows[0].mfaEnrollmentExpiresAt : null;
+                if (!(expiresAt instanceof Date) || !Number.isFinite(expiresAt.getTime())) {
+                    throw new UnauthorizedException('Invalid or expired session');
+                }
+                const now = await this.assertMfaEnrollmentLifetimeInTransaction(tx, session, settings, expiresAt);
+                return {
+                    secret,
+                    otpauthUrl: this.buildOtpAuthUrl(secret, user),
+                    expiresInSeconds: Math.min(MFA_ENROLLMENT_TTL_SECONDS,
+                        Math.ceil((expiresAt.getTime() - now.getTime()) / 1000)),
+                };
+            }, { isolationLevel: 'ReadCommitted' }),
+            { conflictMessage: 'Authorization or MFA state changed concurrently; retry the request' },
         );
-
-        return {
-            secret,
-            otpauthUrl: this.buildOtpAuthUrl(secret, user),
-            expiresInSeconds: MFA_ENROLLMENT_TTL_SECONDS,
-        };
     }
 
     async confirmMfaEnrollment(
@@ -2645,92 +2708,105 @@ export class AuthService implements OnModuleDestroy {
         sessionClaims: { tenantId: string; sessionId: string },
         requestAudit: SessionRequestAudit = {},
     ) {
-        const { user, session } = await this.loadMfaSessionContext(userId, sessionClaims);
-        const key = KEY_PENDING_MFA_ENROLLMENT(session.id, user.id);
-        const secret = await this.getRedis().get(key);
-        if (!secret) {
-            throw new BadRequestException('MFA enrollment has expired');
-        }
-
         const normalizedCode = typeof code === 'string' ? code.trim().replace(/\s+/g, '') : '';
-        const matchedTotpTimeStep = this.findMatchingTotpTimeStep(secret, normalizedCode);
-        if (matchedTotpTimeStep === null) {
-            throw new ForbiddenException('Invalid MFA code');
-        }
-
         const backupCodes = this.generateBackupCodes();
         const audit = this.securityRequestAudit(requestAudit);
         const committed = await runSerializableMutationWithRetry(
-            () => this.getTenantDb().withTenant(user.tenantId, async (tx) => {
-            const { user: currentUser, access, session: currentSession, settings, effectiveExpiresAt } = await this.selfSecurityContextInTransaction(
-                tx, user.tenantId, user.id, session.id);
-            if (currentUser.mfaEnabled) throw new BadRequestException('MFA is already enabled');
-
-            const backupCodeHashes = backupCodes.map(backupCode => this.hashBackupCode(backupCode));
-            this.assertSessionActive(currentSession, settings);
-            const currentTotpTimeStep = this.findMatchingTotpTimeStep(secret, normalizedCode);
-            if (currentTotpTimeStep === null) throw new ForbiddenException('Invalid MFA code');
-            await this.claimTotpTimeStep(tx, user.tenantId, user.id, currentTotpTimeStep);
-            // A delayed proof insert must roll back rather than enable an
-            // account using authority or a TOTP window that expired meanwhile.
-            this.assertSessionActive(currentSession, settings);
-            if (this.findMatchingTotpTimeStep(secret, normalizedCode) !== currentTotpTimeStep) {
-                throw new ForbiddenException('Invalid MFA code');
-            }
-            await tx.user.update({
-                where: { id: user.id },
-                data: {
-                    mfaEnabled: true,
-                    mfaSecret: this.encryptMfaSecret(secret),
-                    mfaBackupCodes: backupCodeHashes,
-                },
-            });
-            await tx.auditLog.create({
-                data: {
-                    tenantId: user.tenantId,
-                    userId: user.id,
-                    actorUserId: user.id,
-                    actorTenantId: user.tenantId,
-                    action: 'MFA_ENABLED',
-                    resource: 'User',
-                    resourceId: user.id,
-                    newValue: { mfaEnabled: true },
-                    ipAddress: audit.ipAddress,
-                    userAgent: audit.userAgent,
-                },
-            });
-            const payload: TokenPayload = {
-                sub: user.id,
-                tenantId: user.tenantId,
-                role: access.primaryRole,
-                legacyRole: currentUser.role,
-                sessionId: session.id,
-                mfaVerified: true,
-                pinResetRequired: false,
-            };
-            return {
-                effectiveExpiresAt,
-                accessToken: this.jwtService.generateAccessToken(payload),
-                accessTokenMaxAgeMs: this.getAccessTokenMaxAgeMs(effectiveExpiresAt),
-            };
-            }, { isolationLevel: 'Serializable' }),
+            () => this.getTenantDb().withTenant(sessionClaims.tenantId, async (tx) => {
+                const { user, access, session, settings, effectiveExpiresAt } = await this.selfSecurityContextInTransaction(
+                    tx, sessionClaims.tenantId, userId, sessionClaims.sessionId);
+                if (user.mfaEnabled) throw new BadRequestException('MFA is already enabled');
+                const backupCodeHashes = backupCodes.map(backupCode => this.hashBackupCode(backupCode));
+                // The shared Session fence is already held. Each conflict retry
+                // reads the current generation and original deadline anew.
+                const pending = await tx.$queryRaw<Array<{
+                    id: string; mfaEnrollmentSecret: string | null; mfaEnrollmentExpiresAt: Date | null;
+                }>>`
+                    SELECT "id", "mfaEnrollmentSecret", "mfaEnrollmentExpiresAt"
+                    FROM "Session"
+                    WHERE "id" = ${session.id} AND "userId" = ${user.id}
+                        AND "revokedAt" IS NULL
+                    FOR UPDATE
+                `;
+                const enrollment = pending.length === 1 && pending[0]?.id === session.id ? pending[0] : null;
+                const expiresAt = enrollment?.mfaEnrollmentExpiresAt;
+                if (!(expiresAt instanceof Date) || !Number.isFinite(expiresAt.getTime())) {
+                    throw new BadRequestException('MFA enrollment has expired');
+                }
+                const encryptedSecret = enrollment!.mfaEnrollmentSecret;
+                const secret = this.decryptPendingMfaEnrollment(encryptedSecret);
+                await this.assertMfaEnrollmentLifetimeInTransaction(tx, session, settings, expiresAt);
+                const timeStep = this.findMatchingTotpTimeStep(secret, normalizedCode);
+                if (timeStep === null) throw new ForbiddenException('Invalid MFA code');
+                await this.claimTotpTimeStep(tx, user.tenantId, user.id, timeStep);
+                await this.assertMfaEnrollmentLifetimeInTransaction(tx, session, settings, expiresAt);
+                if (this.findMatchingTotpTimeStep(secret, normalizedCode) !== timeStep) {
+                    throw new ForbiddenException('Invalid MFA code');
+                }
+                const consumed = await tx.$queryRaw<Array<{ id: string }>>`
+                    UPDATE "Session"
+                    SET "mfaEnrollmentSecret" = NULL, "mfaEnrollmentExpiresAt" = NULL
+                    WHERE "id" = ${session.id} AND "userId" = ${user.id}
+                        AND "revokedAt" IS NULL
+                        AND "mfaEnrollmentSecret" = ${encryptedSecret}
+                        AND "mfaEnrollmentExpiresAt" = (${expiresAt.toISOString()}::timestamptz AT TIME ZONE 'UTC')
+                        AND "mfaEnrollmentExpiresAt" > timezone('UTC', clock_timestamp())
+                        AND "expiresAt" > timezone('UTC', clock_timestamp())
+                    RETURNING "id"
+                `;
+                if (consumed.length !== 1 || consumed[0]?.id !== session.id) {
+                    throw new BadRequestException('MFA enrollment has expired');
+                }
+                await this.assertMfaEnrollmentLifetimeInTransaction(tx, session, settings, expiresAt);
+                if (this.findMatchingTotpTimeStep(secret, normalizedCode) !== timeStep) {
+                    throw new ForbiddenException('Invalid MFA code');
+                }
+                await tx.user.update({
+                    where: { id: user.id },
+                    data: {
+                        mfaEnabled: true,
+                        mfaSecret: this.encryptDurableMfaSecret(secret),
+                        mfaBackupCodes: backupCodeHashes,
+                    },
+                });
+                // The additive User lifecycle trigger clears pending challenges
+                // on every retained Session when account MFA state changes.
+                await this.assertMfaEnrollmentLifetimeInTransaction(tx, session, settings, expiresAt);
+                if (this.findMatchingTotpTimeStep(secret, normalizedCode) !== timeStep) {
+                    throw new ForbiddenException('Invalid MFA code');
+                }
+                await tx.auditLog.create({
+                    data: {
+                        tenantId: user.tenantId, userId: user.id,
+                        actorUserId: user.id, actorTenantId: user.tenantId,
+                        action: 'MFA_ENABLED', resource: 'User', resourceId: user.id,
+                        newValue: { mfaEnabled: true },
+                        ipAddress: audit.ipAddress, userAgent: audit.userAgent,
+                    },
+                });
+                await this.assertMfaEnrollmentLifetimeInTransaction(tx, session, settings, expiresAt);
+                if (this.findMatchingTotpTimeStep(secret, normalizedCode) !== timeStep) {
+                    throw new ForbiddenException('Invalid MFA code');
+                }
+                const payload: TokenPayload = {
+                    sub: user.id, tenantId: user.tenantId, role: access.primaryRole,
+                    legacyRole: user.role, sessionId: session.id,
+                    mfaVerified: true, pinResetRequired: false,
+                };
+                return {
+                    effectiveExpiresAt,
+                    accessToken: this.jwtService.generateAccessToken(payload),
+                    accessTokenMaxAgeMs: this.getAccessTokenMaxAgeMs(effectiveExpiresAt),
+                };
+            }, { isolationLevel: 'ReadCommitted' }),
             { conflictMessage: 'Authorization or MFA state changed concurrently; retry the request' },
         );
-        await Promise.all([
-            this.runRedisMutationBestEffort(
-                'auth.mfa_enrollment_cleanup_failed',
-                () => this.getRedis().del(key),
-            ),
-            this.runRedisMutationBestEffort(
-                'auth.mfa_enrollment_session_marker_failed',
-                () => this.markSessionMfaVerified(session.id, committed.effectiveExpiresAt),
-            ),
-        ]);
-
+        await this.runRedisMutationBestEffort(
+            'auth.mfa_enrollment_session_marker_failed',
+            () => this.markSessionMfaVerified(sessionClaims.sessionId, committed.effectiveExpiresAt),
+        );
         return {
-            success: true,
-            mfaVerified: true,
-            backupCodes,
+            success: true, mfaVerified: true, backupCodes,
             accessToken: committed.accessToken,
             accessTokenMaxAgeMs: committed.accessTokenMaxAgeMs,
         };

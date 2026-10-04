@@ -46,6 +46,9 @@ function addTransactionMock<T extends Record<string, any>>(prisma: T): T {
             return [{ eligibleCount: 5n }];
         }
         if (queryText.includes('purge_dormant_sessions')) return [{ purgedCount: 4n }];
+        if (queryText.includes('clear_expired_mfa_enrollments')) {
+            return [{ eligibleCount: 8n, clearedCount: query.values[2] ? 0n : 3n }];
+        }
         if (queryText.includes('COUNT(*)') && queryText.includes('PasswordResetToken')) {
             return [{ eligibleCount: 6n }];
         }
@@ -1685,6 +1688,7 @@ describe('AdminController retained-record expiry', () => {
             revokedRetentionDays: 30,
             eligibleCount: 5,
             purgedCount: 4,
+            pendingEnrollmentRetention: { batchLimit: 5_000, eligibleCount: 8, clearedCount: 3 },
         });
         expect(result.staffInvitationRetention).toMatchObject({
             retentionDays: 30,

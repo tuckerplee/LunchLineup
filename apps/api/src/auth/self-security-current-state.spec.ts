@@ -6,7 +6,7 @@ import { TenantPrismaService } from '../database/tenant-prisma.service';
 
 type Action = 'enroll' | 'disable' | 'verify' | 'pin';
 const ids = { tenantId: 'self-tenant', userId: 'self-user', sessionId: 'self-session' };
-const secret = 'JBSWY3DPEHPK3PXP';
+const secret = 'JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP';
 const gate = () => {
     let release!: () => void;
     const promise = new Promise<void>(resolve => { release = resolve; });
@@ -49,6 +49,11 @@ function harness(action: Action) {
             $queryRaw: vi.fn(async (sql: any, ...args: unknown[]) => {
                 const text = (Array.isArray(sql) ? sql : sql.strings).join('');
                 const values = flatten(Array.isArray(sql) ? args : sql.values);
+                if (text.includes('AS "now"')) return [{ now: new Date() }];
+                if (text.includes('UPDATE "Session"') && text.includes('"mfaEnrollmentSecret" = NULL')) {
+                    expect(values).toEqual([ids.sessionId, ids.userId, state.session.mfaEnrollmentSecret, state.session.mfaEnrollmentExpiresAt.toISOString()]);
+                    staged.push({ enrollmentConsumed: true }); return [{ id: ids.sessionId }];
+                }
                 if (text.includes('FROM "Tenant"')) {
                     expect(values).toEqual([ids.tenantId]);
                     tenantVisits++;
@@ -120,8 +125,10 @@ function harness(action: Action) {
     } };
     const tenantDb = new TenantPrismaService(database);
     const jwt = { generateAccessToken: vi.fn(() => 'controlled-self-token') };
-    const service = new AuthService({ get: (_key: string, fallback: unknown) => fallback } as never,
+    const service = new AuthService({ get: (key: string, fallback: unknown) => process.env[key] ?? fallback } as never,
         jwt as never, new RbacService(tenantDb), tenantDb);
+    state.session.mfaEnrollmentSecret = (service as any).encryptMfaSecret(secret);
+    state.session.mfaEnrollmentExpiresAt = new Date(Date.now() + 600_000);
     if (action === 'pin') state.user.pinHash = (service as any).hashPin('1111');
     const redis = {
         status: 'ready', get: vi.fn(async (key: string) => {

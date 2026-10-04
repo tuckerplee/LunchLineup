@@ -47,6 +47,14 @@ function retentionCount(value: bigint | number | string | undefined, label: stri
     return count;
 }
 
+function pendingEnrollmentRetentionCount(value: unknown, label: string): number {
+    if (typeof value !== 'bigint' && typeof value !== 'number'
+        && (typeof value !== 'string' || !/^[0-9]+$/.test(value))) {
+        throw new Error(`${label} returned an invalid count.`);
+    }
+    return retentionCount(value, label);
+}
+
 export async function applyDormantSessionRetention(
     tx: Prisma.TransactionClient,
     asOf: Date,
@@ -68,6 +76,26 @@ export async function applyDormantSessionRetention(
     );
     const eligibleCount = retentionCount(eligibleRows[0]?.eligibleCount, 'Dormant session retention count');
     const batchLimit = DORMANT_SESSION_RETENTION_POLICY.batchLimit;
+    // Pending challenge material has its own short deadline even when the
+    // Session is active. Always run/count this pass, including dry-run and
+    // zero dormant-session eligibility, without changing dormant purge counts.
+    const pendingRows = await tx.$queryRaw<Array<{
+        eligibleCount: bigint | number | string;
+        clearedCount: bigint | number | string;
+    }>>(Prisma.sql`SELECT * FROM public.clear_expired_mfa_enrollments(
+        (${asOf.toISOString()}::timestamptz AT TIME ZONE 'UTC'), ${batchLimit}, ${dryRun})`);
+    if (!Array.isArray(pendingRows) || pendingRows.length !== 1) {
+        throw new Error('MFA enrollment retention returned an invalid receipt.');
+    }
+    const pendingEnrollmentRetention = {
+        batchLimit,
+        eligibleCount: pendingEnrollmentRetentionCount(pendingRows[0]?.eligibleCount, 'MFA enrollment retention count'),
+        clearedCount: pendingEnrollmentRetentionCount(pendingRows[0]?.clearedCount, 'MFA enrollment retention clear'),
+    };
+    if (pendingEnrollmentRetention.clearedCount > batchLimit
+        || (dryRun && pendingEnrollmentRetention.clearedCount !== 0)) {
+        throw new Error('MFA enrollment retention returned an invalid clear count.');
+    }
     let purgedCount = 0;
     if (!dryRun && eligibleCount > 0) {
         const purgedRows = await tx.$queryRaw<Array<{ purgedCount: bigint | number | string }>>(
@@ -82,6 +110,7 @@ export async function applyDormantSessionRetention(
         revokedBefore: revokedBefore.toISOString(),
         eligibleCount,
         purgedCount,
+        pendingEnrollmentRetention,
     };
 }
 

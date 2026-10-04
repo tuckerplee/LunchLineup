@@ -3822,6 +3822,29 @@ describe('AuthService - MFA and refresh state', () => {
         await expect(service.revokeSessionByRefreshToken('synthetic-logout-bearer')).rejects.toBe(failure);
         expect((service as any).redis.del).not.toHaveBeenCalled();
     });
+    function installDurableEnrollmentStatements(session: { id: string; userId: string }, initialSecret?: string) {
+        let encrypted = initialSecret ? (service as any).encryptMfaSecret(initialSecret) : null;
+        let deadline = new Date(Date.now() + 600_000);
+        mockPrisma.$queryRaw.mockImplementation(async (parts: TemplateStringsArray, ...values: unknown[]) => {
+            const sql = parts.join('');
+            if (sql.includes('AS "now"')) return [{ now: new Date() }];
+            if (sql.includes('UPDATE "Session"') && sql.includes('interval')) {
+                expect(values.slice(1)).toEqual([600, session.id, session.userId]);
+                encrypted = values[0] as string; deadline = new Date(Date.now() + 600_000);
+                return [{ id: session.id, mfaEnrollmentExpiresAt: deadline }];
+            }
+            if (sql.includes('SELECT "id", "mfaEnrollmentSecret"')) {
+                expect(values).toEqual([session.id, session.userId]);
+                return [{ id: session.id, mfaEnrollmentSecret: encrypted, mfaEnrollmentExpiresAt: deadline }];
+            }
+            if (sql.includes('UPDATE "Session"') && sql.includes('"mfaEnrollmentSecret" = NULL')) {
+                expect(values).toEqual([session.id, session.userId, encrypted, deadline.toISOString()]);
+                encrypted = null; return [{ id: session.id }];
+            }
+            return [];
+        });
+    }
+
     it('enrolls MFA for an authenticated session and returns one-time backup codes', async () => {
         const session = {
             id: 's-enroll',
@@ -3843,11 +3866,11 @@ describe('AuthService - MFA and refresh state', () => {
         mockPrisma.session.findFirst.mockResolvedValue(session);
         mockPrisma.user.update.mockResolvedValue({});
 
+        process.env.MFA_SECRET_ENCRYPTION_KEY = 'mfa-test-key-with-enough-entropy';
+        installDurableEnrollmentStatements(session);
         const enrollment = await service.beginMfaEnrollment('u-enroll', { tenantId: 't-1', sessionId: 's-enroll' });
         const secretBuffer = (service as any).secretToBuffer(enrollment.secret);
         const code = (service as any).generateTotpCode(secretBuffer, Math.floor(Date.now() / 30_000));
-        redis.get.mockResolvedValue(enrollment.secret);
-        process.env.MFA_SECRET_ENCRYPTION_KEY = 'mfa-test-key-with-enough-entropy';
 
         const result = await service.confirmMfaEnrollment(
             'u-enroll',
@@ -3890,14 +3913,15 @@ describe('AuthService - MFA and refresh state', () => {
                 userAgent: 'Vitest MFA Enrollment',
             },
         });
-        expect(redis.del).toHaveBeenCalledWith('mfa_enrollment:s-enroll:u-enroll');
+        expect(redis.get).not.toHaveBeenCalled();
+        expect(redis.del).not.toHaveBeenCalled();
         expect(redis.set).toHaveBeenCalledWith('session_mfa:s-enroll', '1', 'EX', expect.any(Number));
         expect(result.backupCodes).toHaveLength(10);
         expect(result).toEqual(expect.objectContaining({ success: true, mfaVerified: true, accessToken: 'test-access-token' }));
     });
 
-    it('returns committed backup codes once when both post-commit Redis writes fail', async () => {
-        const secret = 'JBSWY3DPEHPK3PXP';
+    it('returns committed backup codes once when post-commit Redis marker publication fails', async () => {
+        const secret = 'JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP';
         const session = {
             id: 's-enroll-redis-failure',
             userId: 'u-enroll-redis-failure',
@@ -3918,7 +3942,8 @@ describe('AuthService - MFA and refresh state', () => {
         });
         mockPrisma.session.findFirst.mockResolvedValue(session);
         mockPrisma.user.update.mockResolvedValue({});
-        redis.get.mockResolvedValue(secret);
+        process.env.MFA_SECRET_ENCRYPTION_KEY = 'mfa-test-key-with-enough-entropy';
+        installDurableEnrollmentStatements(session, secret);
         const providerSecret = 'redis://default:plaintext-backup-code-risk@private-cache.internal:6379';
         redis.del.mockRejectedValue(Object.assign(
             new Error(`DEL failed against ${providerSecret}`),
@@ -3948,18 +3973,19 @@ describe('AuthService - MFA and refresh state', () => {
             accessToken: 'test-access-token',
         }));
         expect(result.backupCodes).toHaveLength(10);
-        expect(mockPrisma.$transaction).toHaveBeenCalledTimes(4);
+        expect(mockPrisma.$transaction).toHaveBeenCalledOnce();
         expect(mockRbacService.authorizeSelfSecurityMutationInTransaction).toHaveBeenCalledOnce();
         expect(mockPrisma.user.update).toHaveBeenCalledOnce();
         expect(mockPrisma.auditLog.create).toHaveBeenCalledOnce();
         expect(mockJwtService.generateAccessToken).toHaveBeenCalledOnce();
-        expect(redis.del).toHaveBeenCalledOnce();
+        expect(redis.get).not.toHaveBeenCalled();
+        expect(redis.del).not.toHaveBeenCalled();
         expect(redis.set).toHaveBeenCalledOnce();
-        expect(warning).toHaveBeenCalledTimes(2);
+        expect(warning).toHaveBeenCalledOnce();
         const diagnostics = JSON.stringify(warning.mock.calls);
-        expect(diagnostics).toContain('auth.mfa_enrollment_cleanup_failed');
+        expect(diagnostics).not.toContain('auth.mfa_enrollment_cleanup_failed');
         expect(diagnostics).toContain('auth.mfa_enrollment_session_marker_failed');
-        expect(diagnostics).toContain('ECONNRESET');
+        expect(diagnostics).not.toContain('ECONNRESET');
         expect(diagnostics).toContain('ETIMEDOUT');
         expect(diagnostics).not.toContain(providerSecret);
         expect(diagnostics).not.toContain('plaintext-backup-code-risk');

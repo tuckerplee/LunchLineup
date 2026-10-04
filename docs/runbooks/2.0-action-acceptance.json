@@ -3,8 +3,8 @@
   "kind": "lunchlineup-action-acceptance-plan",
   "releaseQualified": false,
   "acceptanceExecuted": false,
-  "preparedFromCommit": "1ecf132d3a98dd5ab59c8cd844a6604ae82e852b",
-  "preparedFromTree": "e23723fcdd5999e89fbb45b71f4d318873071864",
+  "preparedFromCommit": "861c7789362326b981f25f127ddfa9ad837e0ff3",
+  "preparedFromTree": "4d92c25f132c427715e530812e0f971781b89d26",
   "scope": {
     "originalWorkflowsAreMinimum": true,
     "allExposedActionsRequired": true,
@@ -4186,7 +4186,7 @@
         },
         {
           "path": "apps/api/src/auth/auth.service.ts",
-          "line": 1121,
+          "line": 1120,
           "sourceLine": "    async resolveLoginMethod(identifierRaw: string, tenantSlugRaw?: string): Promise<LoginResolveResult> {"
         }
       ],
@@ -4277,7 +4277,7 @@
         },
         {
           "path": "apps/api/src/auth/auth.service.ts",
-          "line": 1198,
+          "line": 1197,
           "sourceLine": "    async loginWithUsernamePassword("
         }
       ],
@@ -4377,7 +4377,7 @@
         },
         {
           "path": "apps/api/src/auth/auth.service.ts",
-          "line": 1304,
+          "line": 1303,
           "sourceLine": "    async createPasswordReset(identifierRaw: string, tenantSlugRaw?: string): Promise<null> {"
         }
       ],
@@ -4513,7 +4513,7 @@
         },
         {
           "path": "apps/api/src/auth/auth.service.ts",
-          "line": 1435,
+          "line": 1434,
           "sourceLine": "    async resetPasswordWithToken("
         }
       ],
@@ -4688,7 +4688,7 @@
         },
         {
           "path": "apps/api/src/auth/auth.service.ts",
-          "line": 596,
+          "line": 595,
           "sourceLine": "    async createOidcState(nextPath: string | null = null, tenantSlugRaw?: string | null) {"
         }
       ],
@@ -4770,7 +4770,7 @@
         },
         {
           "path": "apps/api/src/auth/auth.service.ts",
-          "line": 609,
+          "line": 608,
           "sourceLine": "    async consumeOidcState("
         }
       ],
@@ -4867,7 +4867,7 @@
         },
         {
           "path": "apps/api/src/auth/auth.service.ts",
-          "line": 1140,
+          "line": 1139,
           "sourceLine": "    async assertEmailOtpAllowed(emailRaw: string, options: EmailLoginOptions = {}): Promise<boolean> {"
         }
       ],
@@ -5073,7 +5073,7 @@
         },
         {
           "path": "apps/api/src/auth/auth.service.ts",
-          "line": 1669,
+          "line": 1668,
           "sourceLine": "    async loginWithUsernamePin("
         }
       ],
@@ -5162,7 +5162,7 @@
         },
         {
           "path": "apps/api/src/auth/auth.service.ts",
-          "line": 2134,
+          "line": 2133,
           "sourceLine": "    async refreshAccessToken(refreshTokenRaw: unknown) {"
         }
       ],
@@ -5259,7 +5259,7 @@
         },
         {
           "path": "apps/api/src/auth/auth.service.ts",
-          "line": 2549,
+          "line": 2548,
           "sourceLine": "    async getMfaEnrollmentState("
         }
       ],
@@ -5350,13 +5350,25 @@
         },
         {
           "path": "apps/api/src/auth/auth.service.ts",
-          "line": 2618,
+          "line": 2666,
           "sourceLine": "    async beginMfaEnrollment("
+        },
+        {
+          "path": "packages/db/prisma/schema.prisma",
+          "line": 1
+        },
+        {
+          "path": "packages/db/prisma/migrations/20261004_durable_mfa_enrollment.sql",
+          "line": 1
+        },
+        {
+          "path": "docs/runbooks/mfa-durable-enrollment-rollout.md",
+          "line": 1
         }
       ],
       "actorBoundary": "Authenticated self enrollment alias+auth throttle; live exact session/no forced PIN reset; existing verified MFA not required.",
-      "successContract": "Store expiring pending Redis secret bound to session/user, return secret/otpauth URL/TTL for setup. Independent pending read and enrollment read prove durable MFA not enabled yet.",
-      "failureContract": "Already enabled, invalid/foreign/expired session or forced reset denies; Redis loss cannot claim successful pending setup. Sensitive self-only secret absent from logs.",
+      "successContract": "Persist a fresh authenticated encrypted pending generation and UTC statement-clock deadline on the exact live Session under Tenant/User/Session/current-role fences; return self-only secret/otpauth URL and remaining bounded TTL. Independent pending/account readback proves durable MFA is not enabled yet; Redis is not pending authority.",
+      "failureContract": "Already enabled, invalid/foreign/revoked/expired session, forced PIN reset, missing current role or absent encrypted write key denies without durable setup. Database/schema/key failures cannot claim successful pending setup. Sensitive self-only secret is absent from logs.",
       "requiredEvidence": [
         "native-api",
         "browser",
@@ -5366,22 +5378,22 @@
       "scenarios": [
         {
           "id": "startMfaEnrollment-native-success",
-          "contract": "Store expiring pending Redis secret bound to session/user, return secret/otpauth URL/TTL for setup. Independent pending read and enrollment read prove durable MFA not enabled yet. Exercise exact POST /v2/auth/mfa/enrollment and verify bridge cookie/redirect/download/result translation; direct v1 call alone does not satisfy route proof.",
+          "contract": "Persist a fresh authenticated encrypted pending generation and UTC statement-clock deadline on the exact live Session under Tenant/User/Session/current-role fences; return self-only secret/otpauth URL and remaining bounded TTL. Independent pending/account readback proves durable MFA is not enabled yet; Redis is not pending authority. Exercise exact POST /v2/auth/mfa/enrollment and verify bridge cookie/redirect/download/result translation; direct v1 call alone does not satisfy route proof.",
           "evidenceKind": "native-api"
         },
         {
           "id": "startMfaEnrollment-denial",
-          "contract": "Already enabled, invalid/foreign/expired session or forced reset denies; Redis loss cannot claim successful pending setup. Sensitive self-only secret absent from logs. Compare independent scoped records and provider state; distinguish intended committed attempt counters/deletion barrier from rolled-back effects.",
+          "contract": "Already enabled, invalid/foreign/revoked/expired session, forced PIN reset, missing current role or absent encrypted write key denies without durable setup. Database/schema/key failures cannot claim successful pending setup. Sensitive self-only secret is absent from logs. Compare independent scoped records and provider state; distinguish intended committed attempt counters/deletion barrier from rolled-back effects.",
           "evidenceKind": "security"
         },
         {
           "id": "startMfaEnrollment-browser",
-          "contract": "Exercise relevant workflow UI for POST /v2/auth/mfa/enrollment; inspect loading, validation, result/error and navigation, then reload/independent status to verify: Store expiring pending Redis secret bound to session/user, return secret/otpauth URL/TTL for setup. Independent pending read and enrollment read prove durable MFA not enabled yet. Failure must not display false completion or lose recoverable input.",
+          "contract": "Exercise relevant workflow UI for POST /v2/auth/mfa/enrollment; inspect loading, validation, result/error and navigation, then reload/independent status to verify: Persist a fresh authenticated encrypted pending generation and UTC statement-clock deadline on the exact live Session under Tenant/User/Session/current-role fences; return self-only secret/otpauth URL and remaining bounded TTL. Independent pending/account readback proves durable MFA is not enabled yet; Redis is not pending authority. Failure must not display false completion or lose recoverable input.",
           "evidenceKind": "browser"
         },
         {
           "id": "startMfaEnrollment-provider-boundary",
-          "contract": "Use explicitly admitted controlled dependency/provider, record scoped request/response and outage/timeout/recovery for startMfaEnrollment: Already enabled, invalid/foreign/expired session or forced reset denies; Redis loss cannot claim successful pending setup. Sensitive self-only secret absent from logs. Provider stub is local control only, never real delivery/custody qualification.",
+          "contract": "Use explicitly admitted controlled dependency/provider, record scoped request/response and outage/timeout/recovery for startMfaEnrollment: Already enabled, invalid/foreign/revoked/expired session, forced PIN reset, missing current role or absent encrypted write key denies without durable setup. Database/schema/key failures cannot claim successful pending setup. Sensitive self-only secret is absent from logs. Provider stub is local control only, never real delivery/custody qualification.",
           "evidenceKind": "provider"
         },
         {
@@ -5419,6 +5431,47 @@
             "path": "apps/web/tests/unit/mfa-enrollment-panel.test.ts",
             "title": "uses the actual flat owner setup and confirmation profiles and waits before displaying completion"
           }
+        },
+        {
+          "id": "startMfaEnrollment-local-durable-mfa-begin",
+          "contract": "Actual AuthService/TenantPrismaService/RbacService over selector-filtered synthetic rows with controlled statement clock and private draft effects: begins with encrypted durable material and a fresh SQL-clock lifetime. SQL locking/isolation/rollback/clock and cross-session trigger behavior are modeled or unexecuted, not native PostgreSQL/RLS/cardinality proof. Retained route guards, provider/key custody and actual browser acceptance remain pending.",
+          "evidenceKind": "unit",
+          "executable": {
+            "path": "apps/api/src/auth/mfa-enrollment-durable-authority.spec.ts",
+            "title": "begins with encrypted durable material and a fresh SQL-clock lifetime"
+          }
+        },
+        {
+          "id": "startMfaEnrollment-local-durable-mfa-fresh-lifetime",
+          "contract": "Actual AuthService/TenantPrismaService/RbacService over selector-filtered synthetic rows with controlled statement clock and private draft effects: issues the full lifetime after a delayed current RolePermission lock. SQL locking/isolation/rollback/clock and cross-session trigger behavior are modeled or unexecuted, not native PostgreSQL/RLS/cardinality proof. Retained route guards, provider/key custody and actual browser acceptance remain pending.",
+          "evidenceKind": "unit",
+          "executable": {
+            "path": "apps/api/src/auth/mfa-enrollment-durable-authority.spec.ts",
+            "title": "issues the full lifetime after a delayed current RolePermission lock"
+          }
+        },
+        {
+          "id": "startMfaEnrollment-local-durable-mfa-encrypted-key",
+          "contract": "Actual AuthService/TenantPrismaService/RbacService over selector-filtered synthetic rows with controlled statement clock and private draft effects: begin fails closed without configured encryption even in development. SQL locking/isolation/rollback/clock and cross-session trigger behavior are modeled or unexecuted, not native PostgreSQL/RLS/cardinality proof. Retained route guards, provider/key custody and actual browser acceptance remain pending.",
+          "evidenceKind": "unit",
+          "executable": {
+            "path": "apps/api/src/auth/mfa-enrollment-durable-authority.spec.ts",
+            "title": "begin fails closed without configured encryption even in development"
+          }
+        },
+        {
+          "id": "startMfaEnrollment-local-durable-mfa-post-write-expiry",
+          "contract": "Actual AuthService/TenantPrismaService/RbacService over selector-filtered synthetic rows with controlled statement clock and private draft effects: begin rolls back its durable write if its new challenge expires while the statement completes. SQL locking/isolation/rollback/clock and cross-session trigger behavior are modeled or unexecuted, not native PostgreSQL/RLS/cardinality proof. Retained route guards, provider/key custody and actual browser acceptance remain pending.",
+          "evidenceKind": "unit",
+          "executable": {
+            "path": "apps/api/src/auth/mfa-enrollment-durable-authority.spec.ts",
+            "title": "begin rolls back its durable write if its new challenge expires while the statement completes"
+          }
+        },
+        {
+          "id": "startMfaEnrollment-native-generation-lock-clock",
+          "contract": "Qualify actual restricted-role migration/RLS/UTC clock including non-UTC connection timezone; begin/confirm races and freshness after Tenant/User/Session/current-grant contention. Verify database expiry, no plaintext, no Redis pending fallback, mixed-owner rejection and encrypted key rotation/recovery custody on the exact admitted candidate.",
+          "evidenceKind": "native-integration"
         }
       ],
       "workflowIds": [
@@ -5448,13 +5501,25 @@
         },
         {
           "path": "apps/api/src/auth/auth.service.ts",
-          "line": 2642,
+          "line": 2705,
           "sourceLine": "    async confirmMfaEnrollment("
+        },
+        {
+          "path": "packages/db/prisma/schema.prisma",
+          "line": 1
+        },
+        {
+          "path": "packages/db/prisma/migrations/20261004_durable_mfa_enrollment.sql",
+          "line": 1
+        },
+        {
+          "path": "docs/runbooks/mfa-durable-enrollment-rollout.md",
+          "line": 1
         }
       ],
       "actorBoundary": "Authenticated self confirmation alias, pending secret/current TOTP and exact live session; unverified recovery session allowed.",
-      "successContract": "Claim TOTP timestep once, persist encrypted MFA secret/backup hashes and MFA_ENABLED audit; return one-time plaintext backup codes/bounded verified access cookie. Independently read enrollment/protected access/storage secrecy.",
-      "failureContract": "Missing/expired pending, invalid/replayed/late-window TOTP, enabled account/current revocation or lifetime expiry at proof wait denies with rollback. Postcommit pending cleanup/marker are best effort; failed marker cannot count as verified protected-route evidence.",
+      "successContract": "Read the current exact-Session encrypted generation under the common authority fence; atomically claim TOTP, consume exact ciphertext/deadline with the UTC statement clock, persist encrypted account secret/backup hashes and redacted MFA_ENABLED audit, and invalidate all other pending generations through the User lifecycle trigger. Return one-time plaintext backup codes and bounded verified access cookie after commit. Independently verify enrollment/protected access/storage secrecy.",
+      "failureContract": "Missing/malformed/plaintext/unreadable/expired pending generation, invalid/replayed/late-window TOTP, enabled account, current actor/role/PIN/tenant/session denial, zero-row consume or expiry across proof/consume/enable/audit waits causes rollback. Conflict retries reread the current generation and original deadline. Pending state never uses Redis GET/SET/DEL fallback; only the postcommit session_mfa marker remains best effort, and its failure cannot count as verified protected-route evidence.",
       "requiredEvidence": [
         "native-api",
         "browser",
@@ -5465,27 +5530,27 @@
       "scenarios": [
         {
           "id": "confirmMfaEnrollment-native-success",
-          "contract": "Claim TOTP timestep once, persist encrypted MFA secret/backup hashes and MFA_ENABLED audit; return one-time plaintext backup codes/bounded verified access cookie. Independently read enrollment/protected access/storage secrecy. Exercise exact PUT /v2/auth/mfa/enrollment and verify bridge cookie/redirect/download/result translation; direct v1 call alone does not satisfy route proof.",
+          "contract": "Read the current exact-Session encrypted generation under the common authority fence; atomically claim TOTP, consume exact ciphertext/deadline with the UTC statement clock, persist encrypted account secret/backup hashes and redacted MFA_ENABLED audit, and invalidate all other pending generations through the User lifecycle trigger. Return one-time plaintext backup codes and bounded verified access cookie after commit. Independently verify enrollment/protected access/storage secrecy. Exercise exact PUT /v2/auth/mfa/enrollment and verify bridge cookie/redirect/download/result translation; direct v1 call alone does not satisfy route proof.",
           "evidenceKind": "native-api"
         },
         {
           "id": "confirmMfaEnrollment-denial",
-          "contract": "Missing/expired pending, invalid/replayed/late-window TOTP, enabled account/current revocation or lifetime expiry at proof wait denies with rollback. Postcommit pending cleanup/marker are best effort; failed marker cannot count as verified protected-route evidence. Compare independent scoped records and provider state; distinguish intended committed attempt counters/deletion barrier from rolled-back effects.",
+          "contract": "Missing/malformed/plaintext/unreadable/expired pending generation, invalid/replayed/late-window TOTP, enabled account, current actor/role/PIN/tenant/session denial, zero-row consume or expiry across proof/consume/enable/audit waits causes rollback. Conflict retries reread the current generation and original deadline. Pending state never uses Redis GET/SET/DEL fallback; only the postcommit session_mfa marker remains best effort, and its failure cannot count as verified protected-route evidence. Compare independent scoped records and provider state; distinguish intended committed attempt counters/deletion barrier from rolled-back effects.",
           "evidenceKind": "security"
         },
         {
           "id": "confirmMfaEnrollment-browser",
-          "contract": "Exercise relevant workflow UI for PUT /v2/auth/mfa/enrollment; inspect loading, validation, result/error and navigation, then reload/independent status to verify: Claim TOTP timestep once, persist encrypted MFA secret/backup hashes and MFA_ENABLED audit; return one-time plaintext backup codes/bounded verified access cookie. Independently read enrollment/protected access/storage secrecy. Failure must not display false completion or lose recoverable input.",
+          "contract": "Exercise relevant workflow UI for PUT /v2/auth/mfa/enrollment; inspect loading, validation, result/error and navigation, then reload/independent status to verify: Read the current exact-Session encrypted generation under the common authority fence; atomically claim TOTP, consume exact ciphertext/deadline with the UTC statement clock, persist encrypted account secret/backup hashes and redacted MFA_ENABLED audit, and invalidate all other pending generations through the User lifecycle trigger. Return one-time plaintext backup codes and bounded verified access cookie after commit. Independently verify enrollment/protected access/storage secrecy. Failure must not display false completion or lose recoverable input.",
           "evidenceKind": "browser"
         },
         {
           "id": "confirmMfaEnrollment-durable-readback",
-          "contract": "Read persisted effects independently after response, response loss and applicable restart/reload for confirmMfaEnrollment: Claim TOTP timestep once, persist encrypted MFA secret/backup hashes and MFA_ENABLED audit; return one-time plaintext backup codes/bounded verified access cookie. Independently read enrollment/protected access/storage secrecy. Missing/expired pending, invalid/replayed/late-window TOTP, enabled account/current revocation or lifetime expiry at proof wait denies with rollback. Postcommit pending cleanup/marker are best effort; failed marker cannot count as verified protected-route evidence.",
+          "contract": "Read persisted effects independently after response, response loss and applicable restart/reload for confirmMfaEnrollment: Read the current exact-Session encrypted generation under the common authority fence; atomically claim TOTP, consume exact ciphertext/deadline with the UTC statement clock, persist encrypted account secret/backup hashes and redacted MFA_ENABLED audit, and invalidate all other pending generations through the User lifecycle trigger. Return one-time plaintext backup codes and bounded verified access cookie after commit. Independently verify enrollment/protected access/storage secrecy. Missing/malformed/plaintext/unreadable/expired pending generation, invalid/replayed/late-window TOTP, enabled account, current actor/role/PIN/tenant/session denial, zero-row consume or expiry across proof/consume/enable/audit waits causes rollback. Conflict retries reread the current generation and original deadline. Pending state never uses Redis GET/SET/DEL fallback; only the postcommit session_mfa marker remains best effort, and its failure cannot count as verified protected-route evidence.",
           "evidenceKind": "durable"
         },
         {
           "id": "confirmMfaEnrollment-provider-boundary",
-          "contract": "Use explicitly admitted controlled dependency/provider, record scoped request/response and outage/timeout/recovery for confirmMfaEnrollment: Missing/expired pending, invalid/replayed/late-window TOTP, enabled account/current revocation or lifetime expiry at proof wait denies with rollback. Postcommit pending cleanup/marker are best effort; failed marker cannot count as verified protected-route evidence. Provider stub is local control only, never real delivery/custody qualification.",
+          "contract": "Use explicitly admitted controlled dependency/provider, record scoped request/response and outage/timeout/recovery for confirmMfaEnrollment: Missing/malformed/plaintext/unreadable/expired pending generation, invalid/replayed/late-window TOTP, enabled account, current actor/role/PIN/tenant/session denial, zero-row consume or expiry across proof/consume/enable/audit waits causes rollback. Conflict retries reread the current generation and original deadline. Pending state never uses Redis GET/SET/DEL fallback; only the postcommit session_mfa marker remains best effort, and its failure cannot count as verified protected-route evidence. Provider stub is local control only, never real delivery/custody qualification.",
           "evidenceKind": "provider"
         },
         {
@@ -5523,6 +5588,83 @@
             "path": "apps/web/tests/unit/mfa-enrollment-panel.test.ts",
             "title": "does not replay confirmation or discard the proof input when the reply is lost"
           }
+        },
+        {
+          "id": "confirmMfaEnrollment-local-durable-mfa-atomic-ledger",
+          "contract": "Actual AuthService/TenantPrismaService/RbacService over selector-filtered synthetic rows with controlled statement clock and private draft effects: confirms the durable generation and commits proof, consumption, enable and audit once. SQL locking/isolation/rollback/clock and cross-session trigger behavior are modeled or unexecuted, not native PostgreSQL/RLS/cardinality proof. Retained route guards, provider/key custody and actual browser acceptance remain pending.",
+          "evidenceKind": "unit",
+          "executable": {
+            "path": "apps/api/src/auth/mfa-enrollment-durable-authority.spec.ts",
+            "title": "confirms the durable generation and commits proof, consumption, enable and audit once"
+          }
+        },
+        {
+          "id": "confirmMfaEnrollment-local-durable-mfa-generation-after-wait",
+          "contract": "Actual AuthService/TenantPrismaService/RbacService over selector-filtered synthetic rows with controlled statement clock and private draft effects: confirmation reads the generation committed while it waits behind the Tenant fence. SQL locking/isolation/rollback/clock and cross-session trigger behavior are modeled or unexecuted, not native PostgreSQL/RLS/cardinality proof. Retained route guards, provider/key custody and actual browser acceptance remain pending.",
+          "evidenceKind": "unit",
+          "executable": {
+            "path": "apps/api/src/auth/mfa-enrollment-durable-authority.spec.ts",
+            "title": "confirmation reads the generation committed while it waits behind the Tenant fence"
+          }
+        },
+        {
+          "id": "confirmMfaEnrollment-local-durable-mfa-statement-clock",
+          "contract": "Actual AuthService/TenantPrismaService/RbacService over selector-filtered synthetic rows with controlled statement clock and private draft effects: SQL consumption expiry while the statement waits rolls back its earlier proof. SQL locking/isolation/rollback/clock and cross-session trigger behavior are modeled or unexecuted, not native PostgreSQL/RLS/cardinality proof. Retained route guards, provider/key custody and actual browser acceptance remain pending.",
+          "evidenceKind": "unit",
+          "executable": {
+            "path": "apps/api/src/auth/mfa-enrollment-durable-authority.spec.ts",
+            "title": "SQL consumption expiry while the statement waits rolls back its earlier proof"
+          }
+        },
+        {
+          "id": "confirmMfaEnrollment-local-durable-mfa-no-redis-authority",
+          "contract": "Actual AuthService/TenantPrismaService/RbacService over selector-filtered synthetic rows with controlled statement clock and private draft effects: missing durable authority is refused even when legacy Redis supplies a valid secret. SQL locking/isolation/rollback/clock and cross-session trigger behavior are modeled or unexecuted, not native PostgreSQL/RLS/cardinality proof. Retained route guards, provider/key custody and actual browser acceptance remain pending.",
+          "evidenceKind": "unit",
+          "executable": {
+            "path": "apps/api/src/auth/mfa-enrollment-durable-authority.spec.ts",
+            "title": "missing durable authority is refused even when legacy Redis supplies a valid secret"
+          }
+        },
+        {
+          "id": "confirmMfaEnrollment-local-durable-mfa-previous-only",
+          "contract": "Actual AuthService/TenantPrismaService/RbacService over selector-filtered synthetic rows with controlled statement clock and private draft effects: previous-key-only decrypt succeeds but absence of a current write key rolls back confirmation. SQL locking/isolation/rollback/clock and cross-session trigger behavior are modeled or unexecuted, not native PostgreSQL/RLS/cardinality proof. Retained route guards, provider/key custody and actual browser acceptance remain pending.",
+          "evidenceKind": "unit",
+          "executable": {
+            "path": "apps/api/src/auth/mfa-enrollment-durable-authority.spec.ts",
+            "title": "previous-key-only decrypt succeeds but absence of a current write key rolls back confirmation"
+          }
+        },
+        {
+          "id": "confirmMfaEnrollment-local-durable-mfa-key-overlap",
+          "contract": "Actual AuthService/TenantPrismaService/RbacService over selector-filtered synthetic rows with controlled statement clock and private draft effects: current and previous managed keys confirm the old envelope and write using the current key. SQL locking/isolation/rollback/clock and cross-session trigger behavior are modeled or unexecuted, not native PostgreSQL/RLS/cardinality proof. Retained route guards, provider/key custody and actual browser acceptance remain pending.",
+          "evidenceKind": "unit",
+          "executable": {
+            "path": "apps/api/src/auth/mfa-enrollment-durable-authority.spec.ts",
+            "title": "current and previous managed keys confirm the old envelope and write using the current key"
+          }
+        },
+        {
+          "id": "confirmMfaEnrollment-local-durable-mfa-retry-current",
+          "contract": "Actual AuthService/TenantPrismaService/RbacService over selector-filtered synthetic rows with controlled statement clock and private draft effects: retry rereads a superseding generation rather than enabling from the first draft. SQL locking/isolation/rollback/clock and cross-session trigger behavior are modeled or unexecuted, not native PostgreSQL/RLS/cardinality proof. Retained route guards, provider/key custody and actual browser acceptance remain pending.",
+          "evidenceKind": "unit",
+          "executable": {
+            "path": "apps/api/src/auth/mfa-enrollment-durable-authority.spec.ts",
+            "title": "retry rereads a superseding generation rather than enabling from the first draft"
+          }
+        },
+        {
+          "id": "confirmMfaEnrollment-local-durable-mfa-marker-loss",
+          "contract": "Actual AuthService/TenantPrismaService/RbacService over selector-filtered synthetic rows with controlled statement clock and private draft effects: postcommit marker loss cannot recreate or retry durable authority. SQL locking/isolation/rollback/clock and cross-session trigger behavior are modeled or unexecuted, not native PostgreSQL/RLS/cardinality proof. Retained route guards, provider/key custody and actual browser acceptance remain pending.",
+          "evidenceKind": "unit",
+          "executable": {
+            "path": "apps/api/src/auth/mfa-enrollment-durable-authority.spec.ts",
+            "title": "postcommit marker loss cannot recreate or retry durable authority"
+          }
+        },
+        {
+          "id": "confirmMfaEnrollment-native-generation-expiry-lifecycle",
+          "contract": "Qualify real SQL concurrent generation replacement, single-use TOTP/CAS/rollback, deadline equality across all waits and commit-delay limits, central retained revocation/deletion/MFA transition clearing for every connected owner, and other-session invalidation. Verify session refresh preserves challenge deadline, physical deletion, key compatibility, response loss and backup-code/browser/marker custody.",
+          "evidenceKind": "native-integration"
         }
       ],
       "workflowIds": [
@@ -5552,7 +5694,7 @@
         },
         {
           "path": "apps/api/src/auth/auth.service.ts",
-          "line": 2739,
+          "line": 2815,
           "sourceLine": "    async disableMfa("
         }
       ],
@@ -5656,7 +5798,7 @@
         },
         {
           "path": "apps/api/src/auth/auth.service.ts",
-          "line": 2828,
+          "line": 2904,
           "sourceLine": "    async validateMfa("
         }
       ],
@@ -5743,7 +5885,7 @@
         },
         {
           "path": "apps/api/src/auth/auth.service.ts",
-          "line": 2985,
+          "line": 3061,
           "sourceLine": "    async revokeSessionByRefreshToken("
         }
       ],
@@ -9501,7 +9643,7 @@
       "sourceAnchors": [
         {
           "path": "apps/api/src/auth/auth.service.ts",
-          "line": 1554,
+          "line": 1553,
           "sourceLine": "        const issuerUrl = this.normalizeOidcIssuer(this.configService.getOrThrow('OIDC_ISSUER_URL'));"
         },
         {
@@ -9562,7 +9704,7 @@
         },
         {
           "path": "apps/api/src/auth/auth.service.ts",
-          "line": 1140,
+          "line": 1139,
           "sourceLine": "    async assertEmailOtpAllowed(emailRaw: string, options: EmailLoginOptions = {}): Promise<boolean> {"
         }
       ],
@@ -12817,6 +12959,18 @@
           "path": "docs/runbooks/production-qualification-bridge.md",
           "line": 37,
           "sourceLine": "| Retention and release history \u2014 Source + External | Internal artifacts retained for 30 days and beta receipt lifetime do not prove production recovery retention or durable registry authenticity. | Reviewed immutable retained production artifacts/reports, independently verified signed index/bundle/current pointer, provider retention/access/deletion protections and recoverable previous successful release. Define and enforce production retention; preserve recovery evidence outside disposable cleanup. |"
+        },
+        {
+          "path": "apps/api/src/admin/tenant-account-lifecycle.ts",
+          "line": 1
+        },
+        {
+          "path": "packages/db/prisma/migrations/20261004_durable_mfa_enrollment.sql",
+          "line": 1
+        },
+        {
+          "path": "docs/runbooks/mfa-durable-enrollment-rollout.md",
+          "line": 1
         }
       ],
       "actorBoundary": "Scoped application/CI retention owners; preserved unfinished source/data/backup/evidence.",
@@ -12837,6 +12991,38 @@
           "id": "refusal-recovery",
           "contract": "Broad prune/unowned deletion/backup loss, stale policy or unrecoverable prior artifact fails.",
           "evidenceKind": "operational-owner"
+        },
+        {
+          "id": "gate.retentionRecoveryHistory-local-mfa-active-pending",
+          "contract": "Controlled actual retained retention owner calls the pending-only SQL function unconditionally with explicit UTC cutoff and separate receipt: clears pending-only eligibility even when no dormant Session can be deleted. SQL function/triggers/RLS/capability/SKIP LOCKED behavior is not executed by this adapter; native and installed scheduler cadence proof remain pending.",
+          "evidenceKind": "unit",
+          "executable": {
+            "path": "apps/api/src/admin/tenant-account-lifecycle.spec.ts",
+            "title": "clears pending-only eligibility even when no dormant Session can be deleted"
+          }
+        },
+        {
+          "id": "gate.retentionRecoveryHistory-local-mfa-capability-refusal",
+          "contract": "Controlled actual retained retention owner calls the pending-only SQL function unconditionally with explicit UTC cutoff and separate receipt: does not proceed with dormant deletion when pending capability cleanup refuses. SQL function/triggers/RLS/capability/SKIP LOCKED behavior is not executed by this adapter; native and installed scheduler cadence proof remain pending.",
+          "evidenceKind": "unit",
+          "executable": {
+            "path": "apps/api/src/admin/tenant-account-lifecycle.spec.ts",
+            "title": "does not proceed with dormant deletion when pending capability cleanup refuses"
+          }
+        },
+        {
+          "id": "gate.retentionRecoveryHistory-local-mfa-count-snapshots",
+          "contract": "Controlled actual retained retention owner calls the pending-only SQL function unconditionally with explicit UTC cutoff and separate receipt: keeps independent count snapshots when eligibility grows before the bounded clear. SQL function/triggers/RLS/capability/SKIP LOCKED behavior is not executed by this adapter; native and installed scheduler cadence proof remain pending.",
+          "evidenceKind": "unit",
+          "executable": {
+            "path": "apps/api/src/admin/tenant-account-lifecycle.spec.ts",
+            "title": "keeps independent count snapshots when eligibility grows before the bounded clear"
+          }
+        },
+        {
+          "id": "gate.retentionRecoveryHistory-native-pending-expiry",
+          "contract": "Execute admitted restricted-role dry-run/clearing/denial and malformed parameters; verify current UTC cutoff, counts and bounded SKIP LOCKED cleanup preserve locked/fresh/replaced generations and active refresh credentials. Exercise real migration populated data/constraints/triggers/grants/RLS, concurrency and installed cleanup cadence/alerts/restore. Model tests cannot establish these facts.",
+          "evidenceKind": "native-integration"
         }
       ],
       "workflowIds": [],
@@ -14169,12 +14355,12 @@
       "sourceAnchors": [
         {
           "path": "apps/api/src/auth/auth.service.ts",
-          "line": 389,
+          "line": 388,
           "sourceLine": "    private async verifyPublicSignupChallenge(tokenRaw?: string | null, remoteIp?: string | null): Promise<void> {"
         },
         {
           "path": "apps/api/src/auth/auth.service.ts",
-          "line": 381,
+          "line": 380,
           "sourceLine": "    private async assertPublicSignupOtpRequestAllowed(options: EmailLoginOptions): Promise<void> {"
         }
       ],
@@ -14758,8 +14944,8 @@
     "Prepared phase73 owner fixes require a fresh email-login grant at locked issuance, reject malformed authentication bodies before owner effects, preserve authoritative DB logout despite best-effort MFA-marker cleanup, and route forced PIN reset ahead of MFA/next in OTP/OIDC. Controlled owner/controller/production-filter/Express-cookie/bridge/Fastify tests use predetermined AuthService outcomes and injected OTP external adapter; they do not establish real JWT guards, RLS/transactions/current RBAC queries, native Redis Lua, provider identity/delivery, ingress trust or browser custody.",
     "Prepared phase73 web fixes use request intent/abort guards and exact success profiles; original handler negatives and current local JSX event tests use explicit hook ledgers, mocked transport/navigation and manual rerenders. These are not DOM, real React scheduling/effect cleanup/hydration/accessibility or native browser evidence. Aborting a UI attempt cannot undo an already completed upstream issuance/cookie effect; stale-response browser/session custody and post-disable reauthentication remain native obligations.",
     "Password-reset confirmation now validates the existing eight-character/72 UTF-8 byte owner rule and distinguishes password400/422 from token401 before claiming strict success. The existing reset token URL/handoff-cookie scrub and memory-only custody remain unchanged; reload loses reset context and its privacy/recovery policy choice remains unresolved.",
-    "Phase74 prepared password-reset fences address the local captured-time and current-account/recipient source defects; admitted PostgreSQL overlap, UTC statement-clock expiry, actual RLS/rollback and provider/browser verification remain pending. MFA pending generation/TTL defects require the complete durable implementation and lifecycle/retention/rollout change, and reset-page reload custody remains a policy choice. All265 actions,47 selected browser cases,84 minimum workflows, real provider/recovery/security/load evidence and months of private testing remain pending; no native admission, VM107 action, VM4014/VM106 contact or public activation follows from these local results.",
+    "Phase74 prepared password-reset fences address the local captured-time and current-account/recipient source defects; admitted PostgreSQL overlap, UTC statement-clock expiry, actual RLS/rollback and provider/browser verification remain pending. Phase75 prepared durable MFA generation/TTL/lifecycle/retention source requires native migration, SQL/RLS/clock/overlap and coherent owner/key rollout qualification, and reset-page reload custody remains a policy choice. All265 actions,47 selected browser cases,84 minimum workflows, real provider/recovery/security/load evidence and months of private testing remain pending; no native admission, VM107 action, VM4014/VM106 contact or public activation follows from these local results.",
     "Password-reset local statements and transaction-private effect ledgers do not execute PostgreSQL or prove native lock/isolation/RLS/statement-clock/rollback/cardinality behavior. Explicit ReadCommitted fences avoid a pre-lock Serializable snapshot, but actual overlap proof remains pending. Public request must remain account-blind; token recovery deliberately keeps its existing lockout/PIN/MFA and issued-capability policy.",
-    "Pending MFA cached generation/TTL defects remain unimplemented: a complete encrypted exact-Session authority migration needs revocation clearing, other-session challenge invalidation, bounded expired-pending cleanup and coherent retained-owner/schema/key rollout. Current Redis challenge/cleanup contracts remain current until that full change is implemented and tested."
+    "Phase75 durable MFA local controls exercise actual retained owners over synthetic SQL clock and transaction-private effects. Native PostgreSQL locks/isolation/RLS/statement-clock/rollback, migration/trigger/encryption constraints, all connected lifecycle owners and bounded SKIP LOCKED retention remain unexecuted. Both retained MFA route families and retention owner must upgrade coherently with additive schema and configured encrypted write key; old Redis-only challenges must restart and security rollback must not restore old pending authority. No deploy/build/native admission/QA lease/provider/browser or production launch follows from source fixes. All acceptance actions remain pending."
   ]
 }
