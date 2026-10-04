@@ -616,8 +616,8 @@ export class AuthService implements OnModuleDestroy {
         }
 
         const key = KEY_OIDC_STATE(state);
-        const rawPayload = await this.getRedis().get(key);
-        await this.getRedis().del(key);
+        // Redis must claim the state atomically before any callback can exchange its code.
+        const rawPayload = await this.getRedis().getdel(key);
         if (!rawPayload) {
             throw new UnauthorizedException('Invalid OIDC state');
         }

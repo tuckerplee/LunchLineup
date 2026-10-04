@@ -1,6 +1,8 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { BadRequestException, ForbiddenException, UnauthorizedException } from '@nestjs/common';
 import { AuthController } from './auth.controller';
+import { AuthService } from './auth.service';
+import { createHash } from 'node:crypto';
 import { resolvePreAuthThrottleLimits } from './pre-auth-throttle.config';
 import { JwtAuthGuard } from './jwt-auth.guard';
 import { ALLOW_AUTHENTICATED_METADATA_KEY } from './require-permission.decorator';
@@ -272,6 +274,50 @@ describe('AuthController', () => {
         }));
         expect(authService.handleOidcCallback).not.toHaveBeenCalled();
         expect(res.cookie).not.toHaveBeenCalled();
+    });
+
+    it('admits only one concurrent callback through the actual OIDC state owner', async () => {
+        const state = 'a'.repeat(64), nonce = 'b'.repeat(64), key = `oidc_state:${state}`;
+        const states = new Map([[key, JSON.stringify({
+            nextPath: '/dashboard/staff', tenantSlug: 'demo', createdAt: 123,
+            correlationHash: createHash('sha256').update(nonce).digest('hex'),
+        })]]);
+        const redis = {
+            get: vi.fn(async (name: string) => states.get(name) ?? null),
+            del: vi.fn(async (name: string) => states.delete(name) ? 1 : 0),
+            getdel: vi.fn(async (name: string) => {
+                const payload = states.get(name) ?? null;
+                states.delete(name);
+                return payload;
+            }),
+        };
+        const actualStateOwner = Object.create(AuthService.prototype) as AuthService;
+        (actualStateOwner as any).redis = redis;
+        authService.consumeOidcState = vi.fn(actualStateOwner.consumeOidcState.bind(actualStateOwner));
+        authService.handleOidcCallback.mockResolvedValue({
+            accessToken: 'a', refreshToken: 'r', csrfToken: 'c', requiresMfa: false, sessionMaxAgeMs: 900000,
+        });
+        const responses = [createResponseMock(), createResponseMock()];
+        const pending = responses.map(res => controller.callback(createRequestMock({
+            query: { code: 'code-1', state }, cookies: { oidc_correlation: nonce },
+        }), res));
+        const results = await Promise.allSettled(pending);
+        expect(results.filter(result => result.status === 'fulfilled')).toHaveLength(1);
+        const denied = results.findIndex(result => result.status === 'rejected');
+        expect(denied).toBeGreaterThanOrEqual(0);
+        expect((results[denied] as PromiseRejectedResult).reason).toBeInstanceOf(UnauthorizedException);
+        expect(authService.handleOidcCallback).toHaveBeenCalledTimes(1);
+        expect(authService.handleOidcCallback).toHaveBeenCalledWith('code-1', state, 'demo', {
+            ipAddress: null, userAgent: null,
+        });
+        expect(responses[denied].cookie).not.toHaveBeenCalled();
+        expect(responses[denied].redirect).not.toHaveBeenCalled();
+        expect(responses[1 - denied].cookie).toHaveBeenCalledTimes(3);
+        expect(responses[1 - denied].redirect).toHaveBeenCalledWith('/dashboard/staff');
+        for (const response of responses) expect(response.clearCookie).toHaveBeenCalledTimes(1);
+        expect(states.has(key)).toBe(false);
+        expect(redis.get).not.toHaveBeenCalled();
+        expect(redis.del).not.toHaveBeenCalled();
     });
 
     it('verifies PIN and returns JSON payload when redirect mode is off', async () => {

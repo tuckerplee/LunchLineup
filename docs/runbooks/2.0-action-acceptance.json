@@ -3,8 +3,8 @@
   "kind": "lunchlineup-action-acceptance-plan",
   "releaseQualified": false,
   "acceptanceExecuted": false,
-  "preparedFromCommit": "62f7999ef5ed952c6281c10ce97fd1119c50bcea",
-  "preparedFromTree": "41b4e8c03e7aa16f6d173819b8382cca2f076b50",
+  "preparedFromCommit": "99677c5162466b1d9eedd930443781266cf8d496",
+  "preparedFromTree": "8248b4a707a5903ad5b1f153a6ce9eaa8156c8c1",
   "scope": {
     "originalWorkflowsAreMinimum": true,
     "allExposedActionsRequired": true,
@@ -4398,7 +4398,7 @@
         }
       ],
       "actorBoundary": "Public callback exception requires code, one-use state and initiating-browser correlation nonce; verified issuer/subject/email bound to workspace user.",
-      "successContract": "Pending success goal remains one atomic state claim for the initiating browser, verified configured-provider subject/email and requested workspace, followed by safe cookie/redirect translation. Current source uses non-atomic Redis GET plus DEL; this is a source limitation, not proven one-use behavior. Independently read identity/session, confirm existing tenant reused, and verify MFA or stored safe next redirect.",
+      "successContract": "Pending success goal remains one atomic state claim for the initiating browser, verified configured-provider subject/email and requested workspace, followed by safe cookie/redirect translation. Prepared source uses Redis GETDEL for the local claim; shared-state local regressions do not establish native Redis/provider qualification. Independently read identity/session, confirm existing tenant reused, and verify MFA or stored safe next redirect.",
       "failureContract": "Missing/replayed/mismatched state/correlation, unverified/wrong subject or malformed/timed-out token/userinfo denies session; correlation cookie cleared. Disabled OIDC redirects local login; provider outage is not login success.",
       "requiredEvidence": [
         "native-api",
@@ -4410,7 +4410,7 @@
       "scenarios": [
         {
           "id": "completeOidcLogin-native-success",
-          "contract": "Pending success goal remains one atomic state claim for the initiating browser, verified configured-provider subject/email and requested workspace, followed by safe cookie/redirect translation. Current source uses non-atomic Redis GET plus DEL; this is a source limitation, not proven one-use behavior. Independently read identity/session, confirm existing tenant reused, and verify MFA or stored safe next redirect. Exercise exact GET /v2/auth/callback and verify bridge cookie/redirect/download/result translation; direct v1 call alone does not satisfy route proof.",
+          "contract": "Pending success goal remains one atomic state claim for the initiating browser, verified configured-provider subject/email and requested workspace, followed by safe cookie/redirect translation. Prepared source uses Redis GETDEL for the local claim; shared-state local regressions do not establish native Redis/provider qualification. Independently read identity/session, confirm existing tenant reused, and verify MFA or stored safe next redirect. Exercise exact GET /v2/auth/callback and verify bridge cookie/redirect/download/result translation; direct v1 call alone does not satisfy route proof.",
           "evidenceKind": "native-api"
         },
         {
@@ -4420,12 +4420,12 @@
         },
         {
           "id": "completeOidcLogin-browser",
-          "contract": "Exercise relevant workflow UI for GET /v2/auth/callback; inspect loading, validation, result/error and navigation, then reload/independent status to verify: Pending success goal remains one atomic state claim for the initiating browser, verified configured-provider subject/email and requested workspace, followed by safe cookie/redirect translation. Current source uses non-atomic Redis GET plus DEL; this is a source limitation, not proven one-use behavior. Independently read identity/session, confirm existing tenant reused, and verify MFA or stored safe next redirect. Failure must not display false completion or lose recoverable input.",
+          "contract": "Exercise relevant workflow UI for GET /v2/auth/callback; inspect loading, validation, result/error and navigation, then reload/independent status to verify: Pending success goal remains one atomic state claim for the initiating browser, verified configured-provider subject/email and requested workspace, followed by safe cookie/redirect translation. Prepared source uses Redis GETDEL for the local claim; shared-state local regressions do not establish native Redis/provider qualification. Independently read identity/session, confirm existing tenant reused, and verify MFA or stored safe next redirect. Failure must not display false completion or lose recoverable input.",
           "evidenceKind": "browser"
         },
         {
           "id": "completeOidcLogin-durable-readback",
-          "contract": "Read persisted effects independently after response, response loss and applicable restart/reload for completeOidcLogin: Pending success goal remains one atomic state claim for the initiating browser, verified configured-provider subject/email and requested workspace, followed by safe cookie/redirect translation. Current source uses non-atomic Redis GET plus DEL; this is a source limitation, not proven one-use behavior. Independently read identity/session, confirm existing tenant reused, and verify MFA or stored safe next redirect. Missing/replayed/mismatched state/correlation, unverified/wrong subject or malformed/timed-out token/userinfo denies session; correlation cookie cleared. Disabled OIDC redirects local login; provider outage is not login success.",
+          "contract": "Read persisted effects independently after response, response loss and applicable restart/reload for completeOidcLogin: Pending success goal remains one atomic state claim for the initiating browser, verified configured-provider subject/email and requested workspace, followed by safe cookie/redirect translation. Prepared source uses Redis GETDEL for the local claim; shared-state local regressions do not establish native Redis/provider qualification. Independently read identity/session, confirm existing tenant reused, and verify MFA or stored safe next redirect. Missing/replayed/mismatched state/correlation, unverified/wrong subject or malformed/timed-out token/userinfo denies session; correlation cookie cleared. Disabled OIDC redirects local login; provider outage is not login success.",
           "evidenceKind": "durable"
         },
         {
@@ -4436,7 +4436,11 @@
         {
           "id": "completeOidcLogin-concurrent-state-claim",
           "evidenceKind": "security",
-          "contract": "With bounded staged/native Redis concurrency, release two callbacks for the identical state and browser correlation. Require exactly one local state claim and no second provider exchange/session grant; prove replay and wrong-correlation refusal independently. Provider one-use code behavior alone does not satisfy local atomic-claim evidence."
+          "contract": "With bounded staged/native Redis concurrency, release two callbacks for the identical state and browser correlation. Require exactly one local state claim and no second provider exchange/session grant; prove replay and wrong-correlation refusal independently. Provider one-use code behavior alone does not satisfy local atomic-claim evidence. The associated test is a local shared-map service control, not native Redis/provider/session acceptance.",
+          "executable": {
+            "path": "apps/api/src/auth/auth.service.spec.ts",
+            "title": "allows exactly one simultaneous OIDC state claim and refuses replay"
+          }
         }
       ],
       "workflowIds": [
@@ -13992,6 +13996,6 @@
     "Persistent multi-month soak target is unapproved; repeated disposable jobs and synthetic time boundaries do not prove continuous retained state or authorize new infrastructure.",
     "Conditional Turnstile action is a pending requirement under separately approved open signup configuration, not authorized enablement; current closed-beta refusal must be proved.",
     "Required independent contract corrections preserve desired one-use/current-authority/native/provider/operational outcomes as pending requirements; describing current source does not certify that source is correct.",
-    "Known source limitation: AuthService.consumeOidcState reads Redis state with GET then separately awaits DEL; concurrent callbacks may both read it. Atomic local one-use state claim is a required pending outcome. Prioritize an independently reviewed source fix with a controlled concurrency regression; provider one-use code behavior is insufficient. No staged/native acceptance execution is claimed."
+    "The earlier non-atomic OIDC GET plus DEL source limitation is addressed by the prepared Redis GETDEL source change and shared-state service/controller regressions. Atomic one-use state consumption still requires admitted native Redis/concurrent callback proof; declared Redis7/client support is source compatibility evidence, not proof of deployed configuration, ACL capability or provider correctness. Redis errors or lost claim responses must not trigger split-command fallback; a consumed state may require fresh login."
   ]
 }

@@ -757,16 +757,23 @@ describe('AuthService - OIDC provider HTTP boundaries', () => {
 describe('AuthService - OIDC state', () => {
     let service: AuthService;
     let redis: any;
+    let states: Map<string, string>;
 
     beforeEach(() => {
         vi.clearAllMocks();
         resetPrismaMocks();
         service = new AuthService(mockConfigService as any, mockJwtService as any, mockRbacService as any);
         (service as any).prisma = mockPrisma;
+        states = new Map();
         redis = {
-            set: vi.fn(),
-            get: vi.fn(),
-            del: vi.fn(),
+            set: vi.fn(async (key: string, payload: string) => { states.set(key, payload); return 'OK'; }),
+            get: vi.fn(async (key: string) => states.get(key) ?? null),
+            getdel: vi.fn(async (key: string) => {
+                const payload = states.get(key) ?? null;
+                states.delete(key);
+                return payload;
+            }),
+            del: vi.fn(async (key: string) => states.delete(key) ? 1 : 0),
             on: vi.fn(),
         };
         (service as any).redis = redis;
@@ -790,17 +797,16 @@ describe('AuthService - OIDC state', () => {
 
     it('consumes OIDC state once and rejects missing state', async () => {
         const oidcState = await service.createOidcState('/dashboard', 'demo');
-        const storedPayload = redis.set.mock.calls[0][1];
-        redis.get.mockResolvedValue(storedPayload);
 
         await expect(service.consumeOidcState(oidcState.state, oidcState.correlationNonce)).resolves.toEqual({
             nextPath: '/dashboard',
             tenantSlug: 'demo',
             createdAt: expect.any(Number),
         });
-        expect(redis.del).toHaveBeenCalledWith(`oidc_state:${oidcState.state}`);
+        expect(redis.getdel).toHaveBeenCalledWith(`oidc_state:${oidcState.state}`);
+        expect(redis.get).not.toHaveBeenCalled();
+        expect(redis.del).not.toHaveBeenCalled();
 
-        redis.get.mockResolvedValue(null);
         await expect(service.consumeOidcState(oidcState.state, oidcState.correlationNonce))
             .rejects
             .toBeInstanceOf(UnauthorizedException);
@@ -808,17 +814,70 @@ describe('AuthService - OIDC state', () => {
 
     it('rejects state redemption from a browser without the initiating correlation nonce', async () => {
         const oidcState = await service.createOidcState('/dashboard', 'demo');
-        const storedPayload = redis.set.mock.calls[0][1];
         const otherBrowserNonce = oidcState.correlationNonce === 'b'.repeat(64)
             ? 'c'.repeat(64)
             : 'b'.repeat(64);
-        redis.get.mockResolvedValue(storedPayload);
 
         await expect(service.consumeOidcState(oidcState.state, otherBrowserNonce))
             .rejects
             .toBeInstanceOf(UnauthorizedException);
 
-        expect(redis.del).toHaveBeenCalledWith(`oidc_state:${oidcState.state}`);
+        expect(redis.getdel).toHaveBeenCalledWith(`oidc_state:${oidcState.state}`);
+        await expect(service.consumeOidcState(oidcState.state, oidcState.correlationNonce))
+            .rejects.toBeInstanceOf(UnauthorizedException);
+    });
+
+    it('allows exactly one simultaneous OIDC state claim and refuses replay', async () => {
+        const first = await service.createOidcState('/dashboard/staff', 'demo');
+        const second = await service.createOidcState('/dashboard/schedules', 'other');
+        const pending = [
+            service.consumeOidcState(first.state, first.correlationNonce),
+            service.consumeOidcState(first.state, first.correlationNonce),
+        ];
+        const results = await Promise.allSettled(pending);
+        expect(results.filter(result => result.status === 'fulfilled')).toEqual([{
+            status: 'fulfilled', value: { nextPath: '/dashboard/staff', tenantSlug: 'demo', createdAt: expect.any(Number) },
+        }]);
+        const rejected = results.filter(result => result.status === 'rejected');
+        expect(rejected).toHaveLength(1);
+        expect(rejected[0].reason).toBeInstanceOf(UnauthorizedException);
+        expect(states.has(`oidc_state:${first.state}`)).toBe(false);
+        expect(states.has(`oidc_state:${second.state}`)).toBe(true);
+        await expect(service.consumeOidcState(first.state, first.correlationNonce)).rejects.toBeInstanceOf(UnauthorizedException);
+        await expect(service.consumeOidcState(second.state, second.correlationNonce)).resolves.toEqual({
+            nextPath: '/dashboard/schedules', tenantSlug: 'other', createdAt: expect.any(Number),
+        });
+        expect(redis.get).not.toHaveBeenCalled();
+        expect(redis.del).not.toHaveBeenCalled();
+    });
+
+    it('refuses malformed OIDC state before any Redis claim', async () => {
+        const state = await service.createOidcState('/dashboard', 'demo');
+        for (const invalid of ['', 'a'.repeat(63), 'a'.repeat(65), 'g'.repeat(64)]) {
+            await expect(service.consumeOidcState(invalid, state.correlationNonce)).rejects.toBeInstanceOf(UnauthorizedException);
+        }
+        expect(redis.getdel).not.toHaveBeenCalled();
+        expect(redis.get).not.toHaveBeenCalled();
+        expect(redis.del).not.toHaveBeenCalled();
+        expect(states.has(`oidc_state:${state.state}`)).toBe(true);
+    });
+
+    it.each(['', '{}', 'null', '{', '{"correlationHash":7}'])('burns invalid claimed OIDC payload %s and refuses retry', async payload => {
+        const state = await service.createOidcState('/dashboard', 'demo');
+        const key = `oidc_state:${state.state}`;
+        states.set(key, payload);
+        await expect(service.consumeOidcState(state.state, state.correlationNonce)).rejects.toBeInstanceOf(UnauthorizedException);
+        expect(states.has(key)).toBe(false);
+        await expect(service.consumeOidcState(state.state, state.correlationNonce)).rejects.toBeInstanceOf(UnauthorizedException);
+    });
+
+    it('propagates an atomic OIDC claim failure without split-command fallback', async () => {
+        const state = await service.createOidcState('/dashboard', 'demo');
+        const failure = new Error('GETDEL unavailable');
+        redis.getdel.mockRejectedValueOnce(failure);
+        await expect(service.consumeOidcState(state.state, state.correlationNonce)).rejects.toBe(failure);
+        expect(redis.get).not.toHaveBeenCalled();
+        expect(redis.del).not.toHaveBeenCalled();
     });
 });
 
