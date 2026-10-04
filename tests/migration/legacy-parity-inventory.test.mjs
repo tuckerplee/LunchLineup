@@ -1,8 +1,10 @@
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
+import { buildLegacyImportPlan, ROLE_PLAN_SHA256, DEFAULT_LIMITS, ROLE_DEFINITIONS } from '../../scripts/legacy-import-plan.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 
@@ -109,12 +111,14 @@ test('migration parity documentation captures workflows that must be proven befo
 });
 
 test('legacy import does not promote customer export users to platform admin', () => {
-  const importer = read('scripts/import-legacy-users.mjs');
   const scriptsReadme = read('scripts/README.md');
-
-  assert.match(importer, /roles\.includes\('super_admin'\)\) return UserRole\.ADMIN/);
-  assert.doesNotMatch(importer, /roles\.includes\('super_admin'\)\) return UserRole\.SUPER_ADMIN/);
-  assert.match(importer, /legacy_super_admin_downgraded_to_tenant_admin/);
+  const source = Buffer.from(JSON.stringify({ companies: [{ id: 1, name: 'Fixture Company' }], stores: [], users: [{ id: 7, company_id: 1, username: 'fixture.admin', name: 'Fixture Admin' }], staff: [], user_company_roles: [{ user_id: 7, company_id: 1, role: 'super_admin' }], user_store_roles: [] }));
+  const sha = (bytes) => createHash('sha256').update(bytes).digest('hex');
+  const descriptor = Buffer.from(JSON.stringify({ schemaVersion: 1, namespace: 'parity-fixture', targetGenerationId: '11111111-1111-4111-8111-111111111111', sourceSha256: sha(source), adapterVersion: 'legacy-combined-v1', rolePlanSha256: ROLE_PLAN_SHA256, timezone: 'America/Los_Angeles', companySlugs: { 1: 'legacy-company-1' }, limits: DEFAULT_LIMITS }));
+  const plan = buildLegacyImportPlan(source, descriptor, { expectedSourceSha256: sha(source), expectedDescriptorSha256: sha(descriptor) });
+  assert.equal(plan.accounts[0].role, 'ADMIN');
+  assert.equal(plan.accounts[0].note, 'legacy_super_admin_downgraded_to_tenant_admin');
+  assert.equal(ROLE_DEFINITIONS.find((role) => role.legacyRole === 'ADMIN').permissions.includes('admin_portal:access'), false);
   assert.match(scriptsReadme, /Legacy `super_admin` rows import as tenant `ADMIN`/);
   assert.match(scriptsReadme, /create platform admins only through `bootstrap-production-admin\.mjs`/);
 });

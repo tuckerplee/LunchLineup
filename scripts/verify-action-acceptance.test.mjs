@@ -41,7 +41,10 @@ function fixture() {
   write(testPath, `test('observes the saved action', async () => {});`);
   const action = (id, kind, method, path, tag, implementation) => ({
     id, kind, method, path, tag, implementation, status: 'pending',
-    sourceAnchors: [{ path: routePath, line: 1 }], actorBoundary: 'Authenticated tenant identity',
+    sourceAnchors: [{ path: routePath, line: 1 }, ...(kind === 'catalog' ? [{
+      path: 'packages/api-contract/src/application.ts',
+      line: catalog.split('\n').findIndex(line => line.includes(`operationId: '${id}'`)) + 1,
+    }] : [])], actorBoundary: 'Authenticated tenant identity',
     successContract: 'Read persisted tenant-scoped results independently', failureContract: 'Foreign tenant request leaves state unchanged',
     requiredEvidence: ['native-api', 'browser'], workflowIds: ['UX-001'],
     scenarios: [{ id: `${id}.readback`, contract: 'Independent readback with exact tenant identity', evidenceKind: 'browser',

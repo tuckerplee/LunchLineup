@@ -14390,6 +14390,187 @@
         "UX-011"
       ],
       "status": "pending"
+    },
+    {
+      "id": "gate.operator.legacyImport",
+      "kind": "operational-gate",
+      "tag": "Operator",
+      "implementation": "operational",
+      "sourceAnchors": [
+        {
+          "path": "scripts/import-legacy-users.mjs",
+          "line": 1,
+          "sourceLine": "#!/usr/bin/env node"
+        },
+        {
+          "path": "scripts/legacy-import-plan.mjs",
+          "line": 1,
+          "sourceLine": "import crypto from 'node:crypto';"
+        },
+        {
+          "path": "scripts/legacy-import-executor.mjs",
+          "line": 1,
+          "sourceLine": "import { performance } from 'node:perf_hooks';"
+        },
+        {
+          "path": "packages/db/prisma/migrations/20261004_legacy_import_retry_receipts.sql",
+          "line": 1,
+          "sourceLine": "-- Private, create-only legacy import retry receipts. These are permanent"
+        },
+        {
+          "path": "docs/runbooks/legacy-import-exact-replay.md",
+          "line": 1,
+          "sourceLine": "# Legacy import exact-export replay"
+        },
+        {
+          "path": "scripts/legacy-import-report.mjs",
+          "line": 1,
+          "sourceLine": "import fs from 'node:fs';"
+        }
+      ],
+      "actorBoundary": "Separately admitted privileged import operator on an exact isolated database generation, reviewed authentic source lineage and exact export/descriptor hashes; production and held environments remain excluded.",
+      "successContract": "Create fresh company, zero-credit provenance and RBAC atomically; create each account/assignment or location with durable private identity receipts. Same approved export resumes without duplicate targets or overwriting later application edits. Read-only report recovery publishes current scoped identity without overwriting files.",
+      "failureContract": "Unknown source/adapter/target, changed admission, ambiguous old imports, invalid associations, drifted unfinished roles, missing/foreign targets, exhausted limits or unsettled commit outcome fail closed. No automatic adoption, merge, changed-export synchronization, credential reset, wallet grant or purged-target recreation.",
+      "requiredEvidence": [
+        "Authentic reviewed real-export adapter/lineage, immutable descriptor/source/target-generation binding",
+        "Actual exact-schema PostgreSQL rollback, concurrent imports, lost acknowledgement, private RLS/ACL and role/lifecycle overlap readbacks",
+        "Bounded operator process/session settlement and independent report/recovery/backup custody"
+      ],
+      "scenarios": [
+        {
+          "id": "native-exact-repeat",
+          "contract": "On the same exact candidate/schema, import an admitted real-format synthetic export twice; independent receipts and actual target UUID/count snapshots match without suffixed duplicates.",
+          "evidenceKind": "native-import-owner"
+        },
+        {
+          "id": "native-precommit-rollback",
+          "contract": "Interrupt each reached company/account/location effect before commit; independently verify no partial target, provenance, role grant, assignment or receipt.",
+          "evidenceKind": "native-import-owner"
+        },
+        {
+          "id": "native-lost-ack-restart",
+          "contract": "After proven committed/lost acknowledgement or report failure and settled process/session, explicitly resume exact plan; preserve target IDs and receipt cardinality.",
+          "evidenceKind": "native-import-owner"
+        },
+        {
+          "id": "native-concurrent-repeat",
+          "contract": "Race two isolated bounded importer processes on one exact plan; verify one target per source identity and bounded terminal conflict or same identity, with actual locks and cleanup.",
+          "evidenceKind": "native-import-owner"
+        },
+        {
+          "id": "native-current-edit-preservation",
+          "contract": "After legitimate credential/PIN/MFA/OIDC/account/role/tenant/wallet edits, exact completed replay performs no domain repair or resurrection; preserve scoped snapshots.",
+          "evidenceKind": "native-import-owner"
+        },
+        {
+          "id": "native-tombstone-scope",
+          "contract": "Purge/delete or move a mapped target and test foreign malformed mappings; receipts survive deletion and replay refuses missing/foreign targets without recreation.",
+          "evidenceKind": "native-import-owner"
+        },
+        {
+          "id": "native-role-and-credit-contract",
+          "contract": "Fresh tenant ADMIN cannot access platform admin, Staff cannot write breaks, zero-wallet provenance remains exact; interrupted initialization is atomic and pending account role drift refuses.",
+          "evidenceKind": "native-import-owner"
+        },
+        {
+          "id": "native-private-access-provisioning",
+          "contract": "Under actual restricted application DB role, receipt schema remains inaccessible before and after provisioning; admitted import owner access and immutable transitions are independently verified.",
+          "evidenceKind": "native-import-owner"
+        },
+        {
+          "id": "native-ambiguous-admission",
+          "contract": "Changed export bytes, approval, generation, namespace collisions or pre-fix username/email/tenant matches refuse; positive UINT32 identities and independent user/staff types bind without aliasing.",
+          "evidenceKind": "native-import-owner"
+        },
+        {
+          "id": "native-report-and-recovery",
+          "contract": "Verify private non-overwrite/formula-safe current-identity reports, permission/full-storage failures and actual all-schema backup/restore with preserved receipts and restored private ACL/RLS/generation policy.",
+          "evidenceKind": "native-import-owner"
+        },
+        {
+          "id": "local-contract-01",
+          "contract": "approved planner preserves distinct user and staff identities and downgrades customer super admin; controlled JavaScript fixtures only, not native acceptance.",
+          "evidenceKind": "controlled-source-fixture",
+          "executable": {
+            "path": "tests/migration/legacy-import-retry.test.mjs",
+            "title": "approved planner preserves distinct user and staff identities and downgrades customer super admin"
+          }
+        },
+        {
+          "id": "local-contract-02",
+          "contract": "external approval hashes reject source or descriptor replacement before executor access; controlled JavaScript fixtures only, not native acceptance.",
+          "evidenceKind": "controlled-source-fixture",
+          "executable": {
+            "path": "tests/migration/legacy-import-retry.test.mjs",
+            "title": "external approval hashes reject source or descriptor replacement before executor access"
+          }
+        },
+        {
+          "id": "local-contract-03",
+          "contract": "two importer invocations preserve account edits and exact entity cardinality; controlled JavaScript fixtures only, not native acceptance.",
+          "evidenceKind": "controlled-source-fixture",
+          "executable": {
+            "path": "tests/migration/legacy-import-retry.test.mjs",
+            "title": "two importer invocations preserve account edits and exact entity cardinality"
+          }
+        },
+        {
+          "id": "local-contract-04",
+          "contract": "every reached precommit effect rolls back its transaction draft; controlled JavaScript fixtures only, not native acceptance.",
+          "evidenceKind": "controlled-source-fixture",
+          "executable": {
+            "path": "tests/migration/legacy-import-retry.test.mjs",
+            "title": "every reached precommit effect rolls back its transaction draft"
+          }
+        },
+        {
+          "id": "local-contract-05",
+          "contract": "a committed import survives lost acknowledgement and resumes without duplicate entities; controlled JavaScript fixtures only, not native acceptance.",
+          "evidenceKind": "controlled-source-fixture",
+          "executable": {
+            "path": "tests/migration/legacy-import-retry.test.mjs",
+            "title": "a committed import survives lost acknowledgement and resumes without duplicate entities"
+          }
+        },
+        {
+          "id": "local-contract-06",
+          "contract": "admitted namespace source target and approval changes refuse before domain effects; controlled JavaScript fixtures only, not native acceptance.",
+          "evidenceKind": "controlled-source-fixture",
+          "executable": {
+            "path": "tests/migration/legacy-import-retry.test.mjs",
+            "title": "admitted namespace source target and approval changes refuse before domain effects"
+          }
+        },
+        {
+          "id": "local-contract-07",
+          "contract": "missing mapped account or location is refused and never recreated; controlled JavaScript fixtures only, not native acceptance.",
+          "evidenceKind": "controlled-source-fixture",
+          "executable": {
+            "path": "tests/migration/legacy-import-retry.test.mjs",
+            "title": "missing mapped account or location is refused and never recreated"
+          }
+        },
+        {
+          "id": "local-contract-08",
+          "contract": "report generation is read only and publication never overwrites an existing file; controlled JavaScript fixtures only, not native acceptance.",
+          "evidenceKind": "controlled-source-fixture",
+          "executable": {
+            "path": "tests/migration/legacy-import-retry.test.mjs",
+            "title": "report generation is read only and publication never overwrites an existing file"
+          }
+        },
+        {
+          "id": "local-contract-09",
+          "contract": "report escapes spreadsheet formulas and bounds output without exposing password hashes; controlled JavaScript fixtures only, not native acceptance.",
+          "evidenceKind": "controlled-source-fixture",
+          "executable": {
+            "path": "tests/migration/legacy-import-retry.test.mjs",
+            "title": "report escapes spreadsheet formulas and bounds output without exposing password hashes"
+          }
+        }
+      ],
+      "workflowIds": [],
+      "status": "pending"
     }
   ],
   "browserCases": [
@@ -14946,6 +15127,7 @@
     "Password-reset confirmation now validates the existing eight-character/72 UTF-8 byte owner rule and distinguishes password400/422 from token401 before claiming strict success. The existing reset token URL/handoff-cookie scrub and memory-only custody remain unchanged; reload loses reset context and its privacy/recovery policy choice remains unresolved.",
     "Phase74 prepared password-reset fences address the local captured-time and current-account/recipient source defects; admitted PostgreSQL overlap, UTC statement-clock expiry, actual RLS/rollback and provider/browser verification remain pending. Phase75 prepared durable MFA generation/TTL/lifecycle/retention source requires native migration, SQL/RLS/clock/overlap and coherent owner/key rollout qualification, and reset-page reload custody remains a policy choice. All265 actions,47 selected browser cases,84 minimum workflows, real provider/recovery/security/load evidence and months of private testing remain pending; no native admission, VM107 action, VM4014/VM106 contact or public activation follows from these local results.",
     "Password-reset local statements and transaction-private effect ledgers do not execute PostgreSQL or prove native lock/isolation/RLS/statement-clock/rollback/cardinality behavior. Explicit ReadCommitted fences avoid a pre-lock Serializable snapshot, but actual overlap proof remains pending. Public request must remain account-blind; token recovery deliberately keeps its existing lockout/PIN/MFA and issued-capability policy.",
-    "Phase75 durable MFA local controls exercise actual retained owners over synthetic SQL clock and transaction-private effects. Native PostgreSQL locks/isolation/RLS/statement-clock/rollback, migration/trigger/encryption constraints, all connected lifecycle owners and bounded SKIP LOCKED retention remain unexecuted. Both retained MFA route families and retention owner must upgrade coherently with additive schema and configured encrypted write key; old Redis-only challenges must restart and security rollback must not restore old pending authority. No deploy/build/native admission/QA lease/provider/browser or production launch follows from source fixes. All acceptance actions remain pending."
+    "Phase75 durable MFA local controls exercise actual retained owners over synthetic SQL clock and transaction-private effects. Native PostgreSQL locks/isolation/RLS/statement-clock/rollback, migration/trigger/encryption constraints, all connected lifecycle owners and bounded SKIP LOCKED retention remain unexecuted. Both retained MFA route families and retention owner must upgrade coherently with additive schema and configured encrypted write key; old Redis-only challenges must restart and security rollback must not restore old pending authority. No deploy/build/native admission/QA lease/provider/browser or production launch follows from source fixes. All acceptance actions remain pending.",
+    "Phase76 adds the previously unlisted legacy-import operator action: all266 action statuses remain pending. Exact-export retry source uses immutable private receipts and create-only atomic initialization; real export lineage/adapter approval, native SQL/RLS/locks/concurrency/commit recovery, target-generation/receipt retention, all provider/browser/build/recovery/security/load gates and months of private qualification remain unverified. Local planner/transaction-ledger tests do not authorize production, VM106/VM107 contact, launch or protected QA."
   ]
 }

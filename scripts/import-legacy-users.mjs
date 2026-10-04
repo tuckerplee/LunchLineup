@@ -3,388 +3,88 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import process from 'node:process';
+import { performance } from 'node:perf_hooks';
+import { pathToFileURL } from 'node:url';
 import { assertLegacyImportTarget } from './data-target-guard.mjs';
+import { buildLegacyImportPlan, DEFAULT_LIMITS } from './legacy-import-plan.mjs';
+import { executeLegacyImport, readLegacyImportReport } from './legacy-import-executor.mjs';
+import { publishLegacyImportReport, validateLegacyImportReportPath } from './legacy-import-report.mjs';
 
-const args = process.argv.slice(2);
-const exportPath = args[0];
-if (!exportPath) usage();
-const reportFlagIndex = args.indexOf('--report');
-const reportPath = reportFlagIndex >= 0
-  ? args[reportFlagIndex + 1]
-  : path.resolve(process.cwd(), '..', '..', 'exports', `imported-user-credentials-${new Date().toISOString().slice(0, 10).replace(/-/g, '')}.csv`);
-if (!reportPath) usage();
-
-const sourceBuffer = fs.readFileSync(exportPath);
-const sourceSha256 = crypto.createHash('sha256').update(sourceBuffer).digest('hex');
-assertLegacyImportTarget({ env: process.env, actualSourceSha256: sourceSha256 });
-const sourcePayload = sourceBuffer.toString('utf8').replace(/^\uFEFF/, '');
-const source = JSON.parse(sourcePayload);
-const { PrismaClient, PermissionCategory, PlanTier, TenantStatus, UserRole } = await import('@prisma/client');
-const prisma = new PrismaClient();
-const LEGACY_CREDIT_PROVENANCE_VERSION = 1;
-const LEGACY_CREDIT_PROVENANCE_PREFIX = 'legacy-import.credit-provenance.v1.';
-
-const PERMISSIONS = [
-  ['dashboard:access', 'Access dashboard', 'Sign in to the tenant dashboard.', PermissionCategory.AUTH],
-  ['admin_portal:access', 'Access admin portal', 'Access the system administration portal.', PermissionCategory.ADMIN],
-  ['tenant_account:lifecycle', 'Manage tenant lifecycle', 'Cancel or request deletion for a tenant account.', PermissionCategory.ADMIN],
-  ['auth:login_email', 'Email login', 'Authenticate with work email and one-time passcode.', PermissionCategory.AUTH],
-  ['auth:login_pin', 'PIN login', 'Authenticate with username and PIN.', PermissionCategory.AUTH],
-  ['auth:login_password', 'Password login', 'Authenticate with migrated username and password.', PermissionCategory.AUTH],
-  ['users:read', 'View staff', 'Read staff directory and user details.', PermissionCategory.USERS],
-  ['users:write', 'Create staff', 'Invite staff and update basic account details.', PermissionCategory.USERS],
-  ['users:admin', 'Administer staff', 'Reset login credentials and deactivate users.', PermissionCategory.USERS],
-  ['roles:read', 'View access roles', 'Read role and permission definitions.', PermissionCategory.USERS],
-  ['roles:write', 'Manage access roles', 'Create, edit, and delete tenant-defined roles.', PermissionCategory.USERS],
-  ['roles:assign', 'Assign access roles', 'Assign or revoke roles for staff members.', PermissionCategory.USERS],
-  ['locations:read', 'View locations', 'Read location records.', PermissionCategory.LOCATIONS],
-  ['locations:write', 'Manage locations', 'Create and update locations.', PermissionCategory.LOCATIONS],
-  ['locations:delete', 'Delete locations', 'Delete locations.', PermissionCategory.LOCATIONS],
-  ['shifts:read', 'View shifts', 'Read shifts.', PermissionCategory.SHIFTS],
-  ['shifts:write', 'Manage shifts', 'Create and update shifts.', PermissionCategory.SHIFTS],
-  ['shifts:delete', 'Delete shifts', 'Delete shifts.', PermissionCategory.SHIFTS],
-  ['schedules:read', 'View schedules', 'Read schedules.', PermissionCategory.SCHEDULES],
-  ['schedules:write', 'Manage schedules', 'Create and update schedules.', PermissionCategory.SCHEDULES],
-  ['schedules:publish', 'Publish schedules', 'Publish schedules.', PermissionCategory.SCHEDULES],
-  ['lunch_breaks:read', 'View breaks', 'Read lunch and break plans.', PermissionCategory.LUNCH_BREAKS],
-  ['lunch_breaks:write', 'Manage breaks', 'Create and update lunch and break plans.', PermissionCategory.LUNCH_BREAKS],
-  ['lunch_breaks:delete', 'Delete breaks', 'Delete lunch and break plans.', PermissionCategory.LUNCH_BREAKS],
-  ['notifications:read', 'View notifications', 'Read notifications.', PermissionCategory.NOTIFICATIONS],
-  ['notifications:write', 'Manage notifications', 'Create and mark notifications.', PermissionCategory.NOTIFICATIONS],
-  ['billing:read', 'View billing', 'Read billing and credits data.', PermissionCategory.BILLING],
-  ['billing:write', 'Manage billing', 'Modify billing and credits data.', PermissionCategory.BILLING],
-  ['settings:read', 'View settings', 'Read tenant settings.', PermissionCategory.SETTINGS],
-  ['settings:write', 'Manage settings', 'Update tenant settings.', PermissionCategory.SETTINGS],
-];
-
-const ALL_PERMISSION_KEYS = PERMISSIONS.map(([key]) => key);
-const CUSTOMER_ADMIN_EXCLUDED_PERMISSION_KEYS = new Set(['admin_portal:access']);
-const ROLE_DEFINITIONS = [
-  { slug: 'super-admin', name: 'System Admin', legacyRole: UserRole.SUPER_ADMIN, permissions: ALL_PERMISSION_KEYS },
-  {
-    slug: 'admin',
-    name: 'Admin',
-    legacyRole: UserRole.ADMIN,
-    isDefault: true,
-    permissions: ALL_PERMISSION_KEYS.filter((key) => !CUSTOMER_ADMIN_EXCLUDED_PERMISSION_KEYS.has(key)),
-  },
-  {
-    slug: 'manager',
-    name: 'Manager',
-    legacyRole: UserRole.MANAGER,
-    permissions: [
-      'dashboard:access',
-      'auth:login_email',
-      'auth:login_pin',
-      'auth:login_password',
-      'users:read',
-      'users:write',
-      'roles:read',
-      'locations:read',
-      'shifts:read',
-      'shifts:write',
-      'schedules:read',
-      'schedules:write',
-      'schedules:publish',
-      'lunch_breaks:read',
-      'lunch_breaks:write',
-      'notifications:read',
-      'notifications:write',
-    ],
-  },
-  {
-    slug: 'staff',
-    name: 'Staff',
-    legacyRole: UserRole.STAFF,
-    permissions: [
-      'dashboard:access',
-      'auth:login_pin',
-      'auth:login_password',
-      'locations:read',
-      'shifts:read',
-      'schedules:read',
-      'lunch_breaks:read',
-      'lunch_breaks:write',
-      'notifications:read',
-      'notifications:write',
-    ],
-  },
-];
-
-function usage() {
-  console.error('Usage: DATA_TARGET_ENV=<test|disposable|development|staging|production-cutover> node scripts/import-legacy-users.mjs <legacy-export.json> [--report <credentials.csv>]');
-  process.exit(2);
-}
-
-function slugify(value, fallback) {
-  const slug = String(value ?? '')
-    .trim()
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, '-')
-    .replace(/^-+|-+$/g, '')
-    .slice(0, 48);
-  return slug || fallback;
-}
-
-function normalizeUsername(value, fallback) {
-  return slugify(value, fallback).replace(/-/g, '.');
-}
-
-function isEmail(value) {
-  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(value ?? ''));
-}
-
-function legacyRolesForUser(user, companyRoles, storeRoles) {
-  return [
-    ...companyRoles.filter((role) => Number(role.user_id) === Number(user.id)).map((role) => role.role),
-    ...storeRoles.filter((role) => Number(role.user_id) === Number(user.id)).map((role) => role.role),
-  ];
-}
-
-async function uniqueUsername(tenantId, base, reserved) {
-  let candidate = base;
-  let suffix = 2;
-  while (reserved.has(candidate) || await prisma.user.findFirst({ where: { tenantId, username: candidate, deletedAt: null }, select: { id: true } })) {
-    candidate = `${base}.${suffix}`;
-    suffix += 1;
+function argsOf(argv) {
+  if (!argv.length || argv[0].startsWith('--')) throw new Error('Usage: import-legacy-users.mjs <export.json> --descriptor <reviewed.json> --report <private.csv> [--report-only]');
+  const result = { exportPath: argv[0], reportOnly: false };
+  for (let index = 1; index < argv.length; index += 1) {
+    const flag = argv[index];
+    if (flag === '--report-only' && !result.reportOnly) { result.reportOnly = true; continue; }
+    const key = flag === '--descriptor' ? 'descriptorPath' : flag === '--report' ? 'reportPath' : null;
+    if (!key || result[key] || !argv[index + 1] || argv[index + 1].startsWith('--')) throw new Error('Unsupported, repeated or incomplete import option');
+    result[key] = argv[++index];
   }
-  reserved.add(candidate);
-  return candidate;
+  return result;
 }
-
-async function ensureRoles(tenantId) {
-  for (const [key, label, description, category] of PERMISSIONS) {
-    await prisma.permission.upsert({
-      where: { key },
-      update: { label, description, category },
-      create: { key, label, description, category },
-    });
-  }
-  const permissions = await prisma.permission.findMany({ where: { key: { in: ALL_PERMISSION_KEYS } }, select: { id: true, key: true } });
-  const permissionIdByKey = new Map(permissions.map((permission) => [permission.key, permission.id]));
-  const roleByLegacy = new Map();
-
-  for (const definition of ROLE_DEFINITIONS) {
-    const role = await prisma.role.upsert({
-      where: { tenantId_slug: { tenantId, slug: definition.slug } },
-      update: {
-        name: definition.name,
-        isSystem: true,
-        isDefault: Boolean(definition.isDefault),
-        legacyRole: definition.legacyRole,
-        deletedAt: null,
-      },
-      create: {
-        tenantId,
-        slug: definition.slug,
-        name: definition.name,
-        isSystem: true,
-        isDefault: Boolean(definition.isDefault),
-        legacyRole: definition.legacyRole,
-      },
-    });
-    await prisma.rolePermission.deleteMany({ where: { roleId: role.id } });
-    await prisma.rolePermission.createMany({
-      data: definition.permissions
-        .map((key) => permissionIdByKey.get(key))
-        .filter(Boolean)
-        .map((permissionId) => ({ roleId: role.id, permissionId })),
-      skipDuplicates: true,
-    });
-    roleByLegacy.set(definition.legacyRole, role);
-  }
-
-  return roleByLegacy;
-}
-
-function userRoleForLegacy(user, companyRoles, storeRoles) {
-  const roles = legacyRolesForUser(user, companyRoles, storeRoles);
-  if (roles.includes('super_admin')) return UserRole.ADMIN;
-  if (roles.includes('company_admin')) return UserRole.ADMIN;
-  if (roles.includes('store') || roles.includes('schedule')) return UserRole.MANAGER;
-  return UserRole.STAFF;
-}
-
-function importNoteForLegacyRoles(roles) {
-  return roles.includes('super_admin') ? 'legacy_super_admin_downgraded_to_tenant_admin' : '';
-}
-
-function staffRole(staff) {
-  return Number(staff.is_admin) === 1 ? UserRole.ADMIN : UserRole.STAFF;
-}
-
-function csvEscape(value) {
-  const stringValue = String(value ?? '');
-  if (!/[",\r\n]/.test(stringValue)) return stringValue;
-  return `"${stringValue.replace(/"/g, '""')}"`;
-}
-
-async function upsertLegacyTenant(company) {
-  const slug = `legacy-company-${company.id}`;
-  return prisma.$transaction(async (tx) => {
-    await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${`legacy-import:${slug}`}, 0))`;
-    const existing = await tx.tenant.findUnique({ where: { slug } });
-    if (existing) {
-      return tx.tenant.update({
-        where: { id: existing.id },
-        data: {
-          name: company.name,
-          planTier: PlanTier.ENTERPRISE,
-          status: TenantStatus.ACTIVE,
-          deletedAt: null,
-        },
-      });
+function readBounded(filename, maxBytes) {
+  const fd = fs.openSync(filename, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW | fs.constants.O_NONBLOCK);
+  try {
+    const stat = fs.fstatSync(fd);
+    if (!stat.isFile() || stat.size > maxBytes) throw new Error('Import input must be an in-bound regular file');
+    const result = Buffer.alloc(maxBytes + 1);
+    let used = 0;
+    while (used <= maxBytes) {
+      const count = fs.readSync(fd, result, used, result.length - used, null);
+      if (!count) return result.subarray(0, used);
+      used += count;
     }
-
-    const tenant = await tx.tenant.create({
-      data: {
-        name: company.name,
-        slug,
-        planTier: PlanTier.ENTERPRISE,
-        status: TenantStatus.ACTIVE,
-        usageCredits: 0,
-      },
-    });
-    await tx.platformConfig.create({
-      data: {
-        id: `legacy-import-credit-provenance-${tenant.id}`,
-        key: `${LEGACY_CREDIT_PROVENANCE_PREFIX}${tenant.id}`,
-        value: {
-          version: LEGACY_CREDIT_PROVENANCE_VERSION,
-          tenantId: tenant.id,
-          sourceSha256,
-          initialCreditPolicy: 'zero-wallet-no-ledger',
-          initialCreditGrant: 0,
-        },
-        updatedBy: 'scripts/import-legacy-users.mjs',
-      },
-    });
-    return tenant;
-  });
+    throw new Error('Import input exceeded byte bound while reading');
+  } finally { fs.closeSync(fd); }
+}
+export async function main(argv = process.argv.slice(2), env = process.env, { onAdmittedPlan } = {}) {
+  const selectedEnv = Object.freeze({ ...env });
+  const selected = argsOf(argv);
+  const sourceBytes = readBounded(selected.exportPath, DEFAULT_LIMITS.maxBytes);
+  const actualSourceSha256 = crypto.createHash('sha256').update(sourceBytes).digest('hex');
+  // Preserve target rejection before descriptor/planner validation and Prisma.
+  assertLegacyImportTarget({ env: selectedEnv, actualSourceSha256 });
+  if (!selected.descriptorPath || !selected.reportPath) throw new Error('A reviewed descriptor and explicit private report path are mandatory');
+  const descriptorBytes = readBounded(selected.descriptorPath, 1048576);
+  const plan = buildLegacyImportPlan(sourceBytes, descriptorBytes, { expectedDescriptorSha256: selectedEnv.LEGACY_IMPORT_DESCRIPTOR_SHA256, expectedSourceSha256: selectedEnv.LEGACY_SOURCE_EXPORT_SHA256 });
+  const validatedDatabaseUrl = selectedEnv.DATABASE_URL;
+  onAdmittedPlan?.(plan.limits.maxDurationMs);
+  // Validate output custody before committing any domain effects; publication
+  // remains exclusive and can still fail after a successful database commit.
+  validateLegacyImportReportPath(selected.reportPath);
+  let prisma;
+  let primary;
+  try {
+    const { PrismaClient } = await import('@prisma/client');
+    prisma = new PrismaClient({ datasources: { db: { url: validatedDatabaseUrl } } });
+    const report = selected.reportOnly ? await readLegacyImportReport(plan, { db: prisma }) : await executeLegacyImport(plan, { db: prisma });
+    const reportPath = publishLegacyImportReport(report, { path: selected.reportPath });
+    return { namespace: plan.namespace, sourceSha256: plan.sourceSha256, targetGenerationId: plan.generationUuid, counts: report.counts, reportPath, reportOnly: selected.reportOnly };
+  } catch (error) { primary = error; throw error; }
+  finally {
+    if (prisma) {
+      try { await prisma.$disconnect(); }
+      catch (cleanup) { if (primary) throw new AggregateError([primary, cleanup], 'Legacy import failed and database disconnect also failed'); throw cleanup; }
+    }
+  }
 }
 
-async function main() {
-  const reservedUsernames = new Set();
-  const tenantByLegacyCompany = new Map();
-  const locationByLegacyStore = new Map();
-  const reportRows = [['source_type', 'legacy_id', 'name', 'username', 'role', 'login_method', 'has_password_hash', 'import_note']];
-
-  for (const company of source.companies ?? []) {
-    const tenant = await upsertLegacyTenant(company);
-    tenantByLegacyCompany.set(Number(company.id), tenant);
-    await ensureRoles(tenant.id);
-  }
-
-  for (const store of source.stores ?? []) {
-    const tenant = tenantByLegacyCompany.get(Number(store.company_id));
-    if (!tenant) continue;
-    const location = await prisma.location.upsert({
-      where: { id: `legacy-store-${store.id}` },
-      update: {
-        tenantId: tenant.id,
-        name: store.name,
-        address: store.location || null,
-        deletedAt: null,
-      },
-      create: {
-        id: `legacy-store-${store.id}`,
-        tenantId: tenant.id,
-        name: store.name,
-        address: store.location || null,
-        timezone: process.env.LEGACY_IMPORT_TIMEZONE || 'America/Los_Angeles',
-      },
-    });
-    locationByLegacyStore.set(Number(store.id), location);
-  }
-
-  for (const legacyUser of source.users ?? []) {
-    const tenant = tenantByLegacyCompany.get(Number(legacyUser.company_id));
-    if (!tenant) continue;
-    const legacyRoles = legacyRolesForUser(legacyUser, source.user_company_roles ?? [], source.user_store_roles ?? []);
-    const role = userRoleForLegacy(legacyUser, source.user_company_roles ?? [], source.user_store_roles ?? []);
-    const roleByLegacy = await ensureRoles(tenant.id);
-    const sourceUsername = legacyUser.username_plain ?? legacyUser.username ?? `legacy.user.${legacyUser.id}`;
-    const username = await uniqueUsername(tenant.id, normalizeUsername(sourceUsername, `legacy.user.${legacyUser.id}`), reservedUsernames);
-    const name = legacyUser.name_plain ?? legacyUser.name ?? sourceUsername ?? `Legacy User ${legacyUser.id}`;
-    const passwordHash = legacyUser.password_hash ?? legacyUser.passwordHash ?? null;
-    const user = await prisma.user.upsert({
-      where: { tenantId_username: { tenantId: tenant.id, username } },
-      update: {
-        email: isEmail(sourceUsername) ? sourceUsername.toLowerCase() : null,
-        name,
-        role,
-        passwordHash,
-        pinHash: null,
-        pinSetAt: null,
-        pinResetRequired: false,
-        pinLoginAttempts: 0,
-        pinLockedUntil: null,
-        deletedAt: null,
-      },
-      create: {
-        tenantId: tenant.id,
-        email: isEmail(sourceUsername) ? sourceUsername.toLowerCase() : null,
-        username,
-        name,
-        role,
-        passwordHash,
-        pinResetRequired: false,
-      },
-    });
-    const roleRow = roleByLegacy.get(role);
-    if (roleRow) {
-      await prisma.roleAssignment.createMany({ data: [{ tenantId: tenant.id, userId: user.id, roleId: roleRow.id }], skipDuplicates: true });
-    }
-    reportRows.push(['user', legacyUser.id, user.name, username, role, passwordHash ? 'legacy-password' : 'none', passwordHash ? 'true' : 'false', importNoteForLegacyRoles(legacyRoles)]);
-  }
-
-  for (const staff of source.staff ?? []) {
-    const tenant = tenantByLegacyCompany.get(Number(staff.company_id));
-    if (!tenant) continue;
-    const role = staffRole(staff);
-    const roleByLegacy = await ensureRoles(tenant.id);
-    const staffName = staff.name_plain ?? staff.name ?? `Staff ${staff.id}`;
-    const username = await uniqueUsername(tenant.id, normalizeUsername(staffName, `staff.${staff.id}`), reservedUsernames);
-    const user = await prisma.user.upsert({
-      where: { tenantId_username: { tenantId: tenant.id, username } },
-      update: {
-        name: staffName,
-        role,
-        passwordHash: null,
-        pinHash: null,
-        pinSetAt: null,
-        pinResetRequired: false,
-        pinLoginAttempts: 0,
-        pinLockedUntil: null,
-        deletedAt: null,
-      },
-      create: {
-        tenantId: tenant.id,
-        username,
-        name: staffName,
-        role,
-        pinResetRequired: false,
-      },
-    });
-    const roleRow = roleByLegacy.get(role);
-    if (roleRow) {
-      await prisma.roleAssignment.createMany({ data: [{ tenantId: tenant.id, userId: user.id, roleId: roleRow.id }], skipDuplicates: true });
-    }
-    reportRows.push(['staff', staff.id, user.name, username, role, 'none', 'false', '']);
-  }
-
-  fs.mkdirSync(path.dirname(reportPath), { recursive: true });
-  fs.writeFileSync(reportPath, `${reportRows.map((row) => row.map(csvEscape).join(',')).join('\n')}\n`);
-
-  const counts = await prisma.user.groupBy({ by: ['role'], _count: { _all: true } });
-  console.log(JSON.stringify({ importedCredentials: reportRows.length - 1, reportPath, counts }, null, 2));
+if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {
+  // This local process fence never asserts a timed-out transaction rolled back.
+  // An independently admitted operator must reconcile server sessions/receipts
+  // before any subsequent invocation after timeout or uncertain acknowledgement.
+  const started = performance.now();
+  const deadlineExceeded = () => { console.error('Legacy import deadline exceeded; commit outcome uncertain. Reconcile owned database sessions and durable receipts before retry.'); process.exit(124); };
+  let timer = setTimeout(deadlineExceeded, DEFAULT_LIMITS.maxDurationMs);
+  main(process.argv.slice(2), process.env, { onAdmittedPlan(duration) {
+    const remaining = duration - (performance.now() - started);
+    clearTimeout(timer);
+    if (remaining <= 0) deadlineExceeded();
+    timer = setTimeout(deadlineExceeded, remaining);
+  } }).then((result) => { console.log(JSON.stringify(result, null, 2)); }, (error) => {
+    // Only known local validation messages are safe to expose. Database and
+    // filesystem errors may contain credentials, raw inputs or private paths.
+    if (/^(?:Legacy import (?:requires|plan refused:|conflict:)|Production legacy import requires|LEGACY_SOURCE_EXPORT_SHA256 does not match)/.test(error?.message ?? '')) console.error(error.message);
+    console.error('Legacy import refused or failed; no automatic retry. Preserve private evidence and reconcile durable receipts before another invocation.'); process.exitCode = 1;
+  }).finally(() => { clearTimeout(timer); });
 }
-
-main()
-  .catch((error) => {
-    console.error(error);
-    process.exitCode = 1;
-  })
-  .finally(async () => {
-    await prisma.$disconnect();
-  });

@@ -1,5 +1,7 @@
 # Prisma Migrations
 
+- `20261004_legacy_import_retry_receipts.sql`: adds operator-private exact-export admission, company and entity receipts with immutable identity tombstones and a target generation UUID. It has no application foreign keys or runtime grants and is intentionally outside the public Prisma model. See `docs/runbooks/legacy-import-exact-replay.md`; native catalog/RLS/concurrency/recovery and rollout qualification remain pending.
+
 - `20261004_durable_mfa_enrollment.sql`: adds encrypted exact-Session pending MFA authority, paired/revoked invariants, immutable Session ownership, User MFA/tenant transition invalidation, and a platform-capability-gated bounded pending-only expiry sweep. All retained enrollment owners must upgrade coherently; see `docs/runbooks/mfa-durable-enrollment-rollout.md`. This additive migration has not been qualified on native PostgreSQL.
 
 ## Files

@@ -12,7 +12,7 @@ const catalogAnchor = row => row.sourceAnchors.find(anchor => anchor.path === ca
 
 test('accepts the current pending inventory with every catalog operation bound to its own declaration', () => {
   const result = verifyActionAcceptance(plan,root);
-  assert.equal(result.catalogOperations,128); assert.equal(result.pendingActions,265);
+  assert.equal(result.catalogOperations,128); assert.equal(result.pendingActions,266);
   assert.equal(result.selectedBrowserCases,47); assert.equal(result.originalWorkflows,84);
   assert.equal(result.acceptanceExecuted,false); assert.equal(result.releaseQualified,false);
 });
