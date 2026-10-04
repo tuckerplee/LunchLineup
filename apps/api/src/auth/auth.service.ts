@@ -2754,12 +2754,10 @@ export class AuthService implements OnModuleDestroy {
         code: string,
         sessionClaims: { tenantId: string; sessionId: string },
     ) {
-        await this.assertTenantIdCanAuthenticate(sessionClaims.tenantId);
-        const settings = await this.getTenantSecuritySettings(sessionClaims.tenantId);
-        const access = await this.rbacService.getEffectiveAccess(userId, sessionClaims.tenantId);
         const normalizedCode = typeof code === 'string' ? code.trim().replace(/\s+/g, '') : '';
 
         const verification = await this.getTenantDb().withTenant(sessionClaims.tenantId, async (tx) => {
+            await this.lockTenantForSessionIssuance(tx, sessionClaims.tenantId);
             await tx.$queryRaw`
                 SELECT "id"
                 FROM "User"
@@ -2781,20 +2779,26 @@ export class AuthService implements OnModuleDestroy {
                     mfaBackupCodes: true,
                 },
             });
-            const session = user
-                ? await tx.session.findFirst({
-                    where: {
-                        id: sessionClaims.sessionId,
-                        userId,
-                    },
-                })
-                : null;
             if (!user) throw new UnauthorizedException('User not found');
+            await tx.$queryRaw`
+                SELECT "id"
+                FROM "Session"
+                WHERE "id" = ${sessionClaims.sessionId} AND "userId" = ${userId}
+                FOR UPDATE
+            `;
+            const session = await tx.session.findFirst({
+                where: {
+                    id: sessionClaims.sessionId,
+                    userId,
+                },
+            });
             if (!session) throw new UnauthorizedException('Invalid or expired session');
 
+            const settings = await this.tenantSecuritySettingsInTransaction(tx, sessionClaims.tenantId);
             const effectiveExpiresAt = this.assertSessionActive(session, settings);
+            const access = await this.rbacService.getEffectiveAccessInTransaction(tx, userId, sessionClaims.tenantId);
             if (!this.isMfaRequired(user, settings, access)) {
-                return { user, session, effectiveExpiresAt, verificationRequired: false };
+                return { user, session, access, effectiveExpiresAt, verificationRequired: false };
             }
 
             const matchedTotpTimeStep = user.mfaSecret
@@ -2823,7 +2827,7 @@ export class AuthService implements OnModuleDestroy {
                     },
                 });
             }
-            return { user, session, effectiveExpiresAt, verificationRequired: true };
+            return { user, session, access, effectiveExpiresAt, verificationRequired: true };
         });
 
         if (!verification.verificationRequired) return { success: true, mfaVerified: true };
@@ -2832,7 +2836,7 @@ export class AuthService implements OnModuleDestroy {
         const payload: TokenPayload = {
             sub: verification.user.id,
             tenantId: verification.user.tenantId,
-            role: access.primaryRole,
+            role: verification.access.primaryRole,
             legacyRole: verification.user.role,
             sessionId: verification.session.id,
             mfaVerified: true,

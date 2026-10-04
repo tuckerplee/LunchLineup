@@ -78,6 +78,8 @@ const mockJwtService = {
 
 const mockRbacService = {
     getEffectiveAccess: vi.fn(),
+    getEffectiveAccessInTransaction: vi.fn((_tx: unknown, userId: string, tenantId: string) =>
+        mockRbacService.getEffectiveAccess(userId, tenantId)),
     assignLegacySystemRole: vi.fn(),
     provisionLegacySystemRole: vi.fn(),
     authorizeUserAdministrationInTransaction: vi.fn(),

@@ -14,7 +14,7 @@ Complete the [production qualification bridge gate matrix](production-qualificat
 
 ## Native observability qualification for the private candidate
 
-The selected native metrics/config/server/deployment/storage 503/rule/dashboard/verifier files are source proposals, not a qualified release. Keep VM107 stopped/onboot0 and its hook/hold intact. VM218 admission remains held until the infrastructure owner resolves the current backing-capacity shortfall and fresh full admission gates pass. QA34’s storage-measurement timeout cause remains unproved. Nothing here authorizes touching VM4014, VM106, public routes or the historical GitHub/VM217 launch path.
+The selected native metrics/config/server/deployment/storage 503/rule/dashboard/verifier files are source proposals, not a qualified release. Keep VM107 stopped/onboot0 and its hook/hold intact. The infrastructure owner's October 3 handoff records passing capacity observations and publication of a separate disposable development ref; these do not establish native admission. Protected controller integration, compatible source/ref binding and a fresh exclusive QA lease remain required, along with every fresh capacity gate. QA34’s storage-measurement timeout cause remains unproved. Nothing here authorizes touching VM4014, VM106, public routes or the historical GitHub/VM217 launch path.
 
 The native browser response budget selects only job="api-v2", scope="application" and eligible 2xx/3xx/5xx classes; 5xx is the failure numerator. Retained diagnostics and direct provider ingress remain separate. Quota storage failures must be 503 while valid quota denials remain 429. Neither successful metrics scraping nor a current marker proves dependency readiness or historical coverage.
 
@@ -23,6 +23,12 @@ The source verifier checks internal target/auth/limits/secret mounting, fixed al
 Use the tracked platform-overview.json dashboard. Its native 30-day response estimate remains explicitly provisional until complete collection/gap/reset/retention evidence exists. A missing/zero denominator is unknown. The initialized marker, scrape failures, readiness, aborts and retained dependencies remain complementary. Add an owned expected-target inventory before using multiple native instances.
 
 Before this gate closes, retain independent reviews of the exact selection, test-inclusive type/loader checks, non-skipped source/HTTP/socket/parser/rule/dashboard/privacy results, critical and resolved alert-delivery receipts, the approved private status route and owner-led recovery drill. Complete30-day telemetry and months of full application acceptance remain required. The source mutation/lifecycle/rule counts are proposed coverage only, with no execution or production-readiness credit.
+
+## MFA policy serialization source checks
+
+Nest MFA validation acquires Tenant, scoped User and exact Session row locks in that order. It reads security policy and effective role access in the same transaction before claiming a TOTP time-step or removing a backup code. The response uses that transaction's role and effective expiry. Redis marker publication and token generation occur after commit.
+
+`apps/api/src/auth/mfa-policy-serialization.spec.ts` exercises committed policy/access changes during a controlled wait, Session-writer revocation, one-use proof retention, transaction rollback and permitted tenant states using actual authentication and RBAC methods. These local transaction doubles do not prove PostgreSQL locking, RLS, request routing or distributed Redis behavior. In particular, revocation after database commit can race marker publication; stored Session revocation remains authoritative. Refresh serialization and account/PIN boundary checks remain separate open work. No local pass closes the native or whole-application release gates.
 
 ## Retained production safety requirements and historical procedure reference
 

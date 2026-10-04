@@ -1376,7 +1376,16 @@ export class RbacService {
     }
 
     async getEffectiveAccess(userId: string, tenantId: string): Promise<EffectiveAccess> {
-        const assignments = await this.tenantDb.withTenant(tenantId, (tx) => tx.roleAssignment.findMany({
+        return this.tenantDb.withTenant(tenantId, (tx) =>
+            this.getEffectiveAccessInTransaction(tx, userId, tenantId));
+    }
+
+    async getEffectiveAccessInTransaction(
+        tx: TenantPrismaTransaction,
+        userId: string,
+        tenantId: string,
+    ): Promise<EffectiveAccess> {
+        const assignments = await tx.roleAssignment.findMany({
             where: {
                 tenantId,
                 userId,
@@ -1396,7 +1405,7 @@ export class RbacService {
                     },
                 },
             },
-        }));
+        });
 
         const permissions = new Set<string>();
         const roles = assignments.map((assignment) => {
