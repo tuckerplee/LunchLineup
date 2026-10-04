@@ -70,6 +70,30 @@ describe('AuthController', () => {
         controller = new AuthController(authService, otpService, emailService);
     });
 
+    it.each([true, false])('prioritizes forced PIN rotation over email-login MFA %s', async (requiresMfa) => {
+        authService.loginWithEmail.mockResolvedValue({ accessToken: 'access', refreshToken: 'refresh',
+            csrfToken: 'csrf', pinResetRequired: true, requiresMfa, user: { role: 'STAFF' }, workspaceSlug: 'demo' });
+        const response = createResponseMock();
+        await controller.verifyOtp({ email: 'worker@example.com', code: '123456', tenantSlug: 'demo' },
+            createRequestMock({ query: { next: '/dashboard/shifts' } }), response);
+        expect(response.json).toHaveBeenCalledWith({ success: true, redirectTo: '/auth/reset-pin?next=%2Fdashboard%2Fshifts',
+            pinResetRequired: true, requiresMfa, workspaceSlug: 'demo' });
+        expect(response.redirect).not.toHaveBeenCalled();
+        expect(response.cookie).toHaveBeenCalledTimes(3);
+    });
+
+    it.each([true, false])('prioritizes forced PIN rotation over OIDC MFA %s', async (requiresMfa) => {
+        authService.consumeOidcState.mockResolvedValue({ tenantSlug: 'demo', nextPath: '/dashboard/shifts' });
+        authService.handleOidcCallback.mockResolvedValue({ accessToken: 'access', refreshToken: 'refresh',
+            csrfToken: 'csrf', pinResetRequired: true, requiresMfa });
+        const response = createResponseMock();
+        await controller.callback(createRequestMock({ query: { code: 'code', state: 'state' },
+            cookies: { oidc_correlation: 'browser' } }), response);
+        expect(response.redirect).toHaveBeenCalledWith('/auth/reset-pin?next=%2Fdashboard%2Fshifts');
+        expect(response.clearCookie).toHaveBeenCalledOnce();
+        expect(response.cookie).toHaveBeenCalledTimes(3);
+    });
+
     it('keeps production pre-auth throttles fixed and isolates higher E2E capacity', () => {
         expect(resolvePreAuthThrottleLimits({})).toEqual({ ip: 30, identifier: 5 });
         expect(resolvePreAuthThrottleLimits({
@@ -866,6 +890,7 @@ describe('AuthController', () => {
             success: true,
             redirectTo: '/dashboard',
             requiresMfa: false,
+            pinResetRequired: false,
             workspaceSlug: 'acme-dining-abc123',
         });
     });
@@ -912,6 +937,7 @@ describe('AuthController', () => {
             success: true,
             redirectTo: '/mfa?next=%2Fonboarding%3Fresume%3Dfirst-location',
             requiresMfa: true,
+            pinResetRequired: false,
             workspaceSlug: 'acme-dining-abc123',
         });
     });
@@ -1192,5 +1218,38 @@ describe('JwtAuthGuard MFA boundary', () => {
         };
 
         await expect(guard.canActivate(createContext(request))).resolves.toBe(true);
+    });
+});
+
+// Plain @Body objects have no runtime DTO metadata; reject shape errors before owner effects.
+describe('AuthController body shape boundary', () => {
+    const calls = [
+        { name: 'resolveLoginFlow', fields: { identifier: 'worker' }, field: 'identifier' },
+        { name: 'verifyPassword', fields: { identifier: 'worker', password: 'password' }, field: 'password' },
+        { name: 'verifyPin', fields: { identifier: 'worker', pin: '123456' }, field: 'pin' },
+        { name: 'requestPasswordReset', fields: { identifier: 'worker' }, field: 'identifier' },
+        { name: 'confirmPasswordReset', fields: { token: 'token', password: 'password' }, field: 'token' },
+        { name: 'sendOtp', fields: { email: 'worker@example.com', tenantSlug: 'demo' }, field: 'tenantSlug' },
+        { name: 'verifyOtp', fields: { email: 'worker@example.com', code: '123456', tenantSlug: 'demo' }, field: 'code' },
+        { name: 'confirmMfaEnrollment', fields: { code: '123456' }, field: 'code', authenticated: true },
+        { name: 'verifyMfa', fields: { code: '123456' }, field: 'code', authenticated: true },
+        { name: 'disableMfa', fields: { code: '123456' }, field: 'code', authenticated: true },
+    ];
+    it.each(calls.flatMap(call => [null, [], 'primitive', { ...call.fields, [call.field]: 7 }]
+        .map(body => ({ ...call, body }))))('rejects malformed $name body $body without owner effects', async ({ name, body, authenticated }) => {
+        const effects: string[] = [];
+        const owner = new Proxy({}, { get: (_, key) => async () => {
+            effects.push(String(key)); return { flow: 'EMAIL_OTP', normalizedIdentifier: 'worker', user: { role: 'STAFF' } };
+        } });
+        const target = new AuthController(owner as never, owner as never, owner as never);
+        const req = createRequestMock({ user: { sub: 'worker', sessionId: 'session' } });
+        const res = createResponseMock();
+        const invoke = (target as any)[name].bind(target);
+        await expect(authenticated ? invoke(req, body, res) : invoke(body, req, res)).rejects.toBeInstanceOf(BadRequestException);
+        expect(effects).toEqual([]);
+        expect(res.cookie).not.toHaveBeenCalled();
+        expect(res.clearCookie).not.toHaveBeenCalled();
+        expect(res.json).not.toHaveBeenCalled();
+        expect(res.redirect).not.toHaveBeenCalled();
     });
 });

@@ -991,6 +991,9 @@ export class AuthService implements OnModuleDestroy {
             // access and revoking sessions. Resolve access only after the lock so
             // the session, permission, and MFA policy share one linearization point.
             const access = await this.rbacService.getEffectiveAccess(lockedUser.id, lockedUser.tenantId);
+            if (audit.loginMethod === 'EMAIL_OTP' && !access.permissions.includes('auth:login_email')) {
+                throw new UnauthorizedException('Invalid workspace or login');
+            }
             if (audit.loginMethod === 'USERNAME_PASSWORD' && !access.permissions.includes('auth:login_password')) {
                 throw new UnauthorizedException('Invalid username or password');
             }
@@ -2947,7 +2950,7 @@ export class AuthService implements OnModuleDestroy {
         if (!session) return { status: 'already_invalid' };
 
         if (session.revokedAt || session.expiresAt <= new Date()) {
-            await this.getRedis().del(KEY_SESSION_MFA(session.id));
+            await this.clearSessionMfaMarkersBestEffort([session.id], 'auth.logout_mfa_cleanup_failed');
             return { status: 'already_invalid' };
         }
 
@@ -2962,7 +2965,7 @@ export class AuthService implements OnModuleDestroy {
             },
             data: { revokedAt: new Date() },
         }));
-        await this.getRedis().del(KEY_SESSION_MFA(session.id));
+        await this.clearSessionMfaMarkersBestEffort([session.id], 'auth.logout_mfa_cleanup_failed');
 
         return { status: revoked.count === 1 ? 'revoked' : 'already_invalid' };
     }

@@ -3,8 +3,8 @@
   "kind": "lunchlineup-action-acceptance-plan",
   "releaseQualified": false,
   "acceptanceExecuted": false,
-  "preparedFromCommit": "ec91b84d04b1911eabc36e301f684b9ae0b1e7b1",
-  "preparedFromTree": "bf16b993e4a9829b77e89c88cab8e98d7b53d7d1",
+  "preparedFromCommit": "c031918dcc373a016651a9bd80eb6af44aa2f75c",
+  "preparedFromTree": "ec6d36eef340323a6c474633a9ea3d184a8039db",
   "scope": {
     "originalWorkflowsAreMinimum": true,
     "allExposedActionsRequired": true,
@@ -23,7 +23,8 @@
       "sourceAnchors": [
         {
           "path": "packages/api-contract/src/application.ts",
-          "line": 57
+          "line": 59,
+          "sourceLine": "  { operationId: 'getCurrentSession', method: 'GET', path: '/auth/me', tag: 'Authentication', summary: 'Read the authenticated identity and permissions', native: true },"
         },
         {
           "path": "apps/api-v2/src/application/routes.ts",
@@ -81,7 +82,8 @@
       "sourceAnchors": [
         {
           "path": "packages/api-contract/src/application.ts",
-          "line": 59
+          "line": 61,
+          "sourceLine": "  { operationId: 'listLocations', method: 'GET', path: '/locations', tag: 'Locations', summary: 'List active locations', native: true },"
         },
         {
           "path": "apps/api-v2/src/locations/routes.ts",
@@ -140,7 +142,8 @@
       "sourceAnchors": [
         {
           "path": "packages/api-contract/src/application.ts",
-          "line": 60
+          "line": 62,
+          "sourceLine": "  { operationId: 'createLocation', method: 'POST', path: '/locations', tag: 'Locations', summary: 'Create a location', native: true },"
         },
         {
           "path": "apps/api-v2/src/locations/routes.ts",
@@ -198,7 +201,8 @@
       "sourceAnchors": [
         {
           "path": "packages/api-contract/src/application.ts",
-          "line": 61
+          "line": 63,
+          "sourceLine": "  { operationId: 'getLocationSummary', method: 'GET', path: '/locations/summary', tag: 'Locations', summary: 'Read the location summary', native: true },"
         },
         {
           "path": "apps/api-v2/src/locations/routes.ts",
@@ -248,7 +252,8 @@
       "sourceAnchors": [
         {
           "path": "packages/api-contract/src/application.ts",
-          "line": 62
+          "line": 64,
+          "sourceLine": "  { operationId: 'getLocation', method: 'GET', path: '/locations/:locationId', tag: 'Locations', summary: 'Read one location', native: true },"
         },
         {
           "path": "apps/api-v2/src/locations/routes.ts",
@@ -305,7 +310,8 @@
       "sourceAnchors": [
         {
           "path": "packages/api-contract/src/application.ts",
-          "line": 63
+          "line": 65,
+          "sourceLine": "  { operationId: 'updateLocation', method: 'PUT', path: '/locations/:locationId', tag: 'Locations', summary: 'Replace one location', native: true },"
         },
         {
           "path": "apps/api-v2/src/locations/routes.ts",
@@ -364,7 +370,8 @@
       "sourceAnchors": [
         {
           "path": "packages/api-contract/src/application.ts",
-          "line": 64
+          "line": 66,
+          "sourceLine": "  { operationId: 'deleteLocation', method: 'DELETE', path: '/locations/:locationId', tag: 'Locations', summary: 'Archive one location', native: true },"
         },
         {
           "path": "apps/api-v2/src/locations/routes.ts",
@@ -421,7 +428,8 @@
       "sourceAnchors": [
         {
           "path": "packages/api-contract/src/application.ts",
-          "line": 66
+          "line": 68,
+          "sourceLine": "  { operationId: 'listStaffMembers', method: 'GET', path: '/users', tag: 'People', summary: 'List staff members', native: true },"
         },
         {
           "path": "apps/api-v2/src/people/routes.ts",
@@ -480,7 +488,8 @@
       "sourceAnchors": [
         {
           "path": "packages/api-contract/src/application.ts",
-          "line": 67
+          "line": 69,
+          "sourceLine": "  { operationId: 'getAccessCatalog', method: 'GET', path: '/users/access/catalog', tag: 'People', summary: 'Read the access-role catalog', native: true },"
         },
         {
           "path": "apps/api-v2/src/people/routes.ts",
@@ -538,7 +547,8 @@
       "sourceAnchors": [
         {
           "path": "packages/api-contract/src/application.ts",
-          "line": 68
+          "line": 70,
+          "sourceLine": "  { operationId: 'getStaffSchedulingProfile', method: 'GET', path: '/users/:userId/scheduling-profile', tag: 'People', summary: 'Read one staff scheduling profile', native: true },"
         },
         {
           "path": "apps/api-v2/src/people/routes.ts",
@@ -597,7 +607,8 @@
       "sourceAnchors": [
         {
           "path": "packages/api-contract/src/application.ts",
-          "line": 69
+          "line": 71,
+          "sourceLine": "  { operationId: 'updateStaffSchedulingProfile', method: 'PUT', path: '/users/:userId/scheduling-profile', tag: 'People', summary: 'Replace one staff scheduling profile', native: true },"
         },
         {
           "path": "apps/api-v2/src/people/routes.ts",
@@ -665,7 +676,8 @@
       "sourceAnchors": [
         {
           "path": "packages/api-contract/src/application.ts",
-          "line": 70
+          "line": 72,
+          "sourceLine": "  { operationId: 'updateStaffIdentity', method: 'PUT', path: '/users/:userId/identity', tag: 'People', summary: 'Update staff identity with a concurrency check', native: true },"
         },
         {
           "path": "apps/api-v2/src/people/routes.ts",
@@ -729,7 +741,8 @@
       "sourceAnchors": [
         {
           "path": "packages/api-contract/src/application.ts",
-          "line": 71
+          "line": 73,
+          "sourceLine": "  { operationId: 'getStaffLifecycle', method: 'GET', path: '/users/:userId/lifecycle', tag: 'People', summary: 'Review staff account state and future assignments', native: true },"
         },
         {
           "path": "apps/api-v2/src/people/routes.ts",
@@ -778,7 +791,8 @@
       "sourceAnchors": [
         {
           "path": "packages/api-contract/src/application.ts",
-          "line": 72
+          "line": 74,
+          "sourceLine": "  { operationId: 'setStaffSuspension', method: 'PUT', path: '/users/:userId/lifecycle', tag: 'People', summary: 'Suspend or reactivate staff without deleting identity', native: true },"
         },
         {
           "path": "apps/api-v2/src/people/routes.ts",
@@ -850,7 +864,8 @@
       "sourceAnchors": [
         {
           "path": "packages/api-contract/src/application.ts",
-          "line": 73
+          "line": 75,
+          "sourceLine": "  { operationId: 'getStaffMember', method: 'GET', path: '/users/:userId', tag: 'People', summary: 'Read one staff member', native: true },"
         },
         {
           "path": "apps/api-v2/src/people/routes.ts",
@@ -908,7 +923,8 @@
       "sourceAnchors": [
         {
           "path": "packages/api-contract/src/application.ts",
-          "line": 74
+          "line": 76,
+          "sourceLine": "  { operationId: 'createStaffInvitation', method: 'POST', path: '/users/invite', tag: 'People', summary: 'Invite a staff member', native: true },"
         },
         {
           "path": "apps/api-v2/src/people/routes.ts",
@@ -983,7 +999,8 @@
       "sourceAnchors": [
         {
           "path": "packages/api-contract/src/application.ts",
-          "line": 75
+          "line": 77,
+          "sourceLine": "  { operationId: 'getStaffInvitation', method: 'GET', path: '/users/:userId/invitation', tag: 'People', summary: 'Read invitation delivery state', native: true },"
         },
         {
           "path": "apps/api-v2/src/people/routes.ts",
@@ -1033,7 +1050,8 @@
       "sourceAnchors": [
         {
           "path": "packages/api-contract/src/application.ts",
-          "line": 76
+          "line": 78,
+          "sourceLine": "  { operationId: 'retryStaffInvitation', method: 'POST', path: '/users/:userId/invitation/retry', tag: 'People', summary: 'Retry invitation delivery', native: true },"
         },
         {
           "path": "apps/api-v2/src/people/routes.ts",
@@ -1097,7 +1115,8 @@
       "sourceAnchors": [
         {
           "path": "packages/api-contract/src/application.ts",
-          "line": 77
+          "line": 79,
+          "sourceLine": "  { operationId: 'reissueStaffInvitation', method: 'POST', path: '/users/:userId/invitation/reissue', tag: 'People', summary: 'Reissue an invitation', native: true },"
         },
         {
           "path": "apps/api-v2/src/people/routes.ts",
@@ -1161,7 +1180,8 @@
       "sourceAnchors": [
         {
           "path": "packages/api-contract/src/application.ts",
-          "line": 78
+          "line": 80,
+          "sourceLine": "  { operationId: 'resetStaffPin', method: 'POST', path: '/users/:userId/pin/reset', tag: 'People', summary: 'Reset a staff PIN', native: true },"
         },
         {
           "path": "apps/api-v2/src/people/routes.ts",
@@ -1223,7 +1243,8 @@
       "sourceAnchors": [
         {
           "path": "packages/api-contract/src/application.ts",
-          "line": 79
+          "line": 81,
+          "sourceLine": "  { operationId: 'replaceCurrentPin', method: 'PUT', path: '/users/me/pin', tag: 'People', summary: 'Replace the current user PIN', native: true },"
         },
         {
           "path": "apps/api-v2/src/people/routes.ts",
@@ -1313,7 +1334,8 @@
       "sourceAnchors": [
         {
           "path": "packages/api-contract/src/application.ts",
-          "line": 80
+          "line": 82,
+          "sourceLine": "  { operationId: 'deleteStaffMember', method: 'DELETE', path: '/users/:userId', tag: 'People', summary: 'Permanently remove a staff member', native: true },"
         },
         {
           "path": "apps/api-v2/src/people/routes.ts",
@@ -1379,7 +1401,8 @@
       "sourceAnchors": [
         {
           "path": "packages/api-contract/src/application.ts",
-          "line": 81
+          "line": 83,
+          "sourceLine": "  { operationId: 'getStaffAccess', method: 'GET', path: '/users/:userId/access', tag: 'People', summary: 'Read one staff access assignment', native: true },"
         },
         {
           "path": "apps/api-v2/src/people/routes.ts",
@@ -1429,7 +1452,8 @@
       "sourceAnchors": [
         {
           "path": "packages/api-contract/src/application.ts",
-          "line": 82
+          "line": 84,
+          "sourceLine": "  { operationId: 'updateStaffAccess', method: 'PUT', path: '/users/:userId/access', tag: 'People', summary: 'Replace one staff access assignment', native: true },"
         },
         {
           "path": "apps/api-v2/src/people/routes.ts",
@@ -1493,7 +1517,8 @@
       "sourceAnchors": [
         {
           "path": "packages/api-contract/src/application.ts",
-          "line": 83
+          "line": 85,
+          "sourceLine": "  { operationId: 'createAccessRole', method: 'POST', path: '/users/roles', tag: 'People', summary: 'Create an access role', native: true },"
         },
         {
           "path": "apps/api-v2/src/people/routes.ts",
@@ -1554,7 +1579,8 @@
       "sourceAnchors": [
         {
           "path": "packages/api-contract/src/application.ts",
-          "line": 84
+          "line": 86,
+          "sourceLine": "  { operationId: 'updateAccessRole', method: 'PUT', path: '/users/roles/:roleId', tag: 'People', summary: 'Replace an access role', native: true },"
         },
         {
           "path": "apps/api-v2/src/people/routes.ts",
@@ -1616,7 +1642,8 @@
       "sourceAnchors": [
         {
           "path": "packages/api-contract/src/application.ts",
-          "line": 85
+          "line": 87,
+          "sourceLine": "  { operationId: 'deleteAccessRole', method: 'DELETE', path: '/users/roles/:roleId', tag: 'People', summary: 'Delete an access role', native: true },"
         },
         {
           "path": "apps/api-v2/src/people/routes.ts",
@@ -1672,7 +1699,8 @@
       "sourceAnchors": [
         {
           "path": "packages/api-contract/src/application.ts",
-          "line": 87
+          "line": 89,
+          "sourceLine": "  { operationId: 'listScheduleSummaries', method: 'GET', path: '/schedules', tag: 'Operations', summary: 'List schedule summaries', native: true },"
         },
         {
           "path": "apps/api-v2/src/operations/routes.ts",
@@ -1732,7 +1760,8 @@
       "sourceAnchors": [
         {
           "path": "packages/api-contract/src/application.ts",
-          "line": 88
+          "line": 90,
+          "sourceLine": "  { operationId: 'listShiftSummaries', method: 'GET', path: '/shifts', tag: 'Operations', summary: 'List shift summaries', native: true },"
         },
         {
           "path": "apps/api-v2/src/operations/routes.ts",
@@ -1792,7 +1821,8 @@
       "sourceAnchors": [
         {
           "path": "packages/api-contract/src/application.ts",
-          "line": 89
+          "line": 91,
+          "sourceLine": "  { operationId: 'listStaffRoster', method: 'GET', path: '/shifts/staff-roster', tag: 'Operations', summary: 'List the bounded scheduling roster', native: true },"
         },
         {
           "path": "apps/api-v2/src/operations/routes.ts",
@@ -1851,7 +1881,8 @@
       "sourceAnchors": [
         {
           "path": "packages/api-contract/src/application.ts",
-          "line": 90
+          "line": 92,
+          "sourceLine": "  { operationId: 'listLunchBreakRows', method: 'GET', path: '/lunch-breaks', tag: 'Operations', summary: 'List lunch and break rows', native: true },"
         },
         {
           "path": "apps/api-v2/src/operations/routes.ts",
@@ -1910,7 +1941,8 @@
       "sourceAnchors": [
         {
           "path": "packages/api-contract/src/application.ts",
-          "line": 91
+          "line": 93,
+          "sourceLine": "  { operationId: 'getLunchBreakPolicy', method: 'GET', path: '/lunch-breaks/policy', tag: 'Operations', summary: 'Read the lunch and break policy', native: true },"
         },
         {
           "path": "apps/api-v2/src/operations/routes.ts",
@@ -1968,7 +2000,8 @@
       "sourceAnchors": [
         {
           "path": "packages/api-contract/src/application.ts",
-          "line": 92
+          "line": 94,
+          "sourceLine": "  { operationId: 'updateLunchBreakPolicy', method: 'PUT', path: '/lunch-breaks/policy', tag: 'Operations', summary: 'Replace the lunch and break policy', native: true },"
         },
         {
           "path": "apps/api-v2/src/operations/routes.ts",
@@ -2027,7 +2060,8 @@
       "sourceAnchors": [
         {
           "path": "packages/api-contract/src/application.ts",
-          "line": 93
+          "line": 95,
+          "sourceLine": "  { operationId: 'generateLunchBreakPlan', method: 'POST', path: '/lunch-breaks/generate', tag: 'Operations', summary: 'Generate one lunch and break plan', native: true },"
         },
         {
           "path": "apps/api-v2/src/operations/routes.ts",
@@ -2088,7 +2122,8 @@
       "sourceAnchors": [
         {
           "path": "packages/api-contract/src/application.ts",
-          "line": 94
+          "line": 96,
+          "sourceLine": "  { operationId: 'importLunchBreakShifts', method: 'POST', path: '/lunch-breaks/setup-shifts', tag: 'Operations', summary: 'Import manual shifts into a break plan', native: true },"
         },
         {
           "path": "apps/api-v2/src/operations/routes.ts",
@@ -2150,7 +2185,8 @@
       "sourceAnchors": [
         {
           "path": "packages/api-contract/src/application.ts",
-          "line": 95
+          "line": 97,
+          "sourceLine": "  { operationId: 'updateShiftBreakPlan', method: 'PUT', path: '/lunch-breaks/shift/:shiftId', tag: 'Operations', summary: 'Replace one shift break plan', native: true },"
         },
         {
           "path": "apps/api-v2/src/operations/routes.ts",
@@ -2211,7 +2247,8 @@
       "sourceAnchors": [
         {
           "path": "packages/api-contract/src/application.ts",
-          "line": 97
+          "line": 99,
+          "sourceLine": "  { operationId: 'listTimeCards', method: 'GET', path: '/time-cards', tag: 'Time', summary: 'List time cards', native: true },"
         },
         {
           "path": "apps/api-v2/src/time/routes.ts",
@@ -2270,7 +2307,8 @@
       "sourceAnchors": [
         {
           "path": "packages/api-contract/src/application.ts",
-          "line": 98
+          "line": 100,
+          "sourceLine": "  { operationId: 'getActiveTimeCard', method: 'GET', path: '/time-cards/active', tag: 'Time', summary: 'Read the active time card', native: true },"
         },
         {
           "path": "apps/api-v2/src/time/routes.ts",
@@ -2328,7 +2366,8 @@
       "sourceAnchors": [
         {
           "path": "packages/api-contract/src/application.ts",
-          "line": 99
+          "line": 101,
+          "sourceLine": "  { operationId: 'getTimeCard', method: 'GET', path: '/time-cards/:timeCardId', tag: 'Time', summary: 'Read one time card', native: true },"
         },
         {
           "path": "apps/api-v2/src/time/routes.ts",
@@ -2386,7 +2425,8 @@
       "sourceAnchors": [
         {
           "path": "packages/api-contract/src/application.ts",
-          "line": 100
+          "line": 102,
+          "sourceLine": "  { operationId: 'clockIn', method: 'POST', path: '/time-cards/clock-in', tag: 'Time', summary: 'Create a clock-in event', native: true },"
         },
         {
           "path": "apps/api-v2/src/time/routes.ts",
@@ -2447,7 +2487,8 @@
       "sourceAnchors": [
         {
           "path": "packages/api-contract/src/application.ts",
-          "line": 101
+          "line": 103,
+          "sourceLine": "  { operationId: 'clockOut', method: 'POST', path: '/time-cards/:timeCardId/clock-out', tag: 'Time', summary: 'Create a clock-out event', native: true },"
         },
         {
           "path": "apps/api-v2/src/time/routes.ts",
@@ -2506,7 +2547,8 @@
       "sourceAnchors": [
         {
           "path": "packages/api-contract/src/application.ts",
-          "line": 102
+          "line": 104,
+          "sourceLine": "  { operationId: 'correctTimeCard', method: 'PATCH', path: '/time-cards/:timeCardId/correction', tag: 'Time', summary: 'Correct a time card', native: true },"
         },
         {
           "path": "apps/api-v2/src/time/routes.ts",
@@ -2565,7 +2607,8 @@
       "sourceAnchors": [
         {
           "path": "packages/api-contract/src/application.ts",
-          "line": 104
+          "line": 106,
+          "sourceLine": "  { operationId: 'getPayrollExportEntitlement', method: 'GET', path: '/payroll/export-entitlement', tag: 'Payroll', summary: 'Read payroll export entitlement', native: true },"
         },
         {
           "path": "apps/api-v2/src/payroll/routes.ts",
@@ -2623,7 +2666,8 @@
       "sourceAnchors": [
         {
           "path": "packages/api-contract/src/application.ts",
-          "line": 105
+          "line": 107,
+          "sourceLine": "  { operationId: 'listPayrollPolicies', method: 'GET', path: '/payroll/policies', tag: 'Payroll', summary: 'List payroll policy versions', native: true },"
         },
         {
           "path": "apps/api-v2/src/payroll/routes.ts",
@@ -2679,7 +2723,8 @@
       "sourceAnchors": [
         {
           "path": "packages/api-contract/src/application.ts",
-          "line": 106
+          "line": 108,
+          "sourceLine": "  { operationId: 'getPayrollPolicy', method: 'GET', path: '/payroll/policy', tag: 'Payroll', summary: 'Read the current payroll policy', native: true },"
         },
         {
           "path": "apps/api-v2/src/payroll/routes.ts",
@@ -2736,7 +2781,8 @@
       "sourceAnchors": [
         {
           "path": "packages/api-contract/src/application.ts",
-          "line": 107
+          "line": 109,
+          "sourceLine": "  { operationId: 'createPayrollPolicy', method: 'PUT', path: '/payroll/policy', tag: 'Payroll', summary: 'Create a payroll policy version', native: true },"
         },
         {
           "path": "apps/api-v2/src/payroll/routes.ts",
@@ -2793,7 +2839,8 @@
       "sourceAnchors": [
         {
           "path": "packages/api-contract/src/application.ts",
-          "line": 108
+          "line": 110,
+          "sourceLine": "  { operationId: 'listPayrollPeriods', method: 'GET', path: '/payroll/periods', tag: 'Payroll', summary: 'List payroll periods', native: true },"
         },
         {
           "path": "apps/api-v2/src/payroll/routes.ts",
@@ -2843,7 +2890,8 @@
       "sourceAnchors": [
         {
           "path": "packages/api-contract/src/application.ts",
-          "line": 109
+          "line": 111,
+          "sourceLine": "  { operationId: 'createPayrollPeriod', method: 'POST', path: '/payroll/periods', tag: 'Payroll', summary: 'Create a payroll period', native: true },"
         },
         {
           "path": "apps/api-v2/src/payroll/routes.ts",
@@ -2902,7 +2950,8 @@
       "sourceAnchors": [
         {
           "path": "packages/api-contract/src/application.ts",
-          "line": 110
+          "line": 112,
+          "sourceLine": "  { operationId: 'getPayrollPeriod', method: 'GET', path: '/payroll/periods/:periodId', tag: 'Payroll', summary: 'Read one payroll period', native: true },"
         },
         {
           "path": "apps/api-v2/src/payroll/routes.ts",
@@ -2962,7 +3011,8 @@
       "sourceAnchors": [
         {
           "path": "packages/api-contract/src/application.ts",
-          "line": 111
+          "line": 113,
+          "sourceLine": "  { operationId: 'adoptPayrollTimeCards', method: 'POST', path: '/payroll/periods/:periodId/adopt', tag: 'Payroll', summary: 'Adopt time cards into a payroll period', native: true },"
         },
         {
           "path": "apps/api-v2/src/payroll/routes.ts",
@@ -3021,7 +3071,8 @@
       "sourceAnchors": [
         {
           "path": "packages/api-contract/src/application.ts",
-          "line": 112
+          "line": 114,
+          "sourceLine": "  { operationId: 'startPayrollReview', method: 'POST', path: '/payroll/periods/:periodId/review', tag: 'Payroll', summary: 'Start payroll review', native: true },"
         },
         {
           "path": "apps/api-v2/src/payroll/routes.ts",
@@ -3078,7 +3129,8 @@
       "sourceAnchors": [
         {
           "path": "packages/api-contract/src/application.ts",
-          "line": 113
+          "line": 115,
+          "sourceLine": "  { operationId: 'decidePayrollEntries', method: 'POST', path: '/payroll/periods/:periodId/decisions', tag: 'Payroll', summary: 'Record payroll entry decisions', native: true },"
         },
         {
           "path": "apps/api-v2/src/payroll/routes.ts",
@@ -3136,7 +3188,8 @@
       "sourceAnchors": [
         {
           "path": "packages/api-contract/src/application.ts",
-          "line": 114
+          "line": 116,
+          "sourceLine": "  { operationId: 'lockPayrollPeriod', method: 'POST', path: '/payroll/periods/:periodId/lock', tag: 'Payroll', summary: 'Lock a payroll period', native: true },"
         },
         {
           "path": "apps/api-v2/src/payroll/routes.ts",
@@ -3194,7 +3247,8 @@
       "sourceAnchors": [
         {
           "path": "packages/api-contract/src/application.ts",
-          "line": 115
+          "line": 117,
+          "sourceLine": "  { operationId: 'createPayrollAmendment', method: 'POST', path: '/payroll/entries/:entryId/amendments', tag: 'Payroll', summary: 'Create a payroll amendment', native: true },"
         },
         {
           "path": "apps/api-v2/src/payroll/routes.ts",
@@ -3251,7 +3305,8 @@
       "sourceAnchors": [
         {
           "path": "packages/api-contract/src/application.ts",
-          "line": 116
+          "line": 118,
+          "sourceLine": "  { operationId: 'decidePayrollAmendment', method: 'POST', path: '/payroll/amendments/:amendmentId/decision', tag: 'Payroll', summary: 'Decide a payroll amendment', native: true },"
         },
         {
           "path": "apps/api-v2/src/payroll/routes.ts",
@@ -3309,7 +3364,8 @@
       "sourceAnchors": [
         {
           "path": "packages/api-contract/src/application.ts",
-          "line": 117
+          "line": 119,
+          "sourceLine": "  { operationId: 'createPayrollExport', method: 'POST', path: '/payroll/periods/:periodId/exports', tag: 'Payroll', summary: 'Create a payroll export', native: true },"
         },
         {
           "path": "apps/api-v2/src/payroll/routes.ts",
@@ -3369,7 +3425,8 @@
       "sourceAnchors": [
         {
           "path": "packages/api-contract/src/application.ts",
-          "line": 118
+          "line": 120,
+          "sourceLine": "  { operationId: 'getPayrollExport', method: 'GET', path: '/payroll/exports/:exportId', tag: 'Payroll', summary: 'Read one payroll export', native: true },"
         },
         {
           "path": "apps/api-v2/src/payroll/routes.ts",
@@ -3428,7 +3485,8 @@
       "sourceAnchors": [
         {
           "path": "packages/api-contract/src/application.ts",
-          "line": 119
+          "line": 121,
+          "sourceLine": "  { operationId: 'downloadPayrollExport', method: 'GET', path: '/payroll/exports/:exportId/download', tag: 'Payroll', summary: 'Download one payroll export', responseKind: 'download', bodyLimitBytes: 25 * MiB, native: true },"
         },
         {
           "path": "apps/api-v2/src/payroll/routes.ts",
@@ -3486,7 +3544,8 @@
       "sourceAnchors": [
         {
           "path": "packages/api-contract/src/application.ts",
-          "line": 120
+          "line": 122,
+          "sourceLine": "  { operationId: 'reconcilePayrollExport', method: 'POST', path: '/payroll/exports/:exportId/reconciliation', tag: 'Payroll', summary: 'Reconcile a payroll export', native: true },"
         },
         {
           "path": "apps/api-v2/src/payroll/routes.ts",
@@ -3545,7 +3604,8 @@
       "sourceAnchors": [
         {
           "path": "packages/api-contract/src/application.ts",
-          "line": 122
+          "line": 124,
+          "sourceLine": "  { operationId: 'listNotifications', method: 'GET', path: '/notifications', tag: 'Notifications', summary: 'List notifications', native: true },"
         },
         {
           "path": "apps/api-v2/src/notifications/routes.ts",
@@ -3603,7 +3663,8 @@
       "sourceAnchors": [
         {
           "path": "packages/api-contract/src/application.ts",
-          "line": 123
+          "line": 125,
+          "sourceLine": "  { operationId: 'markNotificationRead', method: 'POST', path: '/notifications/read', tag: 'Notifications', summary: 'Mark one notification read', native: true },"
         },
         {
           "path": "apps/api-v2/src/notifications/routes.ts",
@@ -3660,7 +3721,8 @@
       "sourceAnchors": [
         {
           "path": "packages/api-contract/src/application.ts",
-          "line": 124
+          "line": 126,
+          "sourceLine": "  { operationId: 'markAllNotificationsRead', method: 'POST', path: '/notifications/read-all', tag: 'Notifications', summary: 'Mark all notifications read', native: true },"
         },
         {
           "path": "apps/api-v2/src/notifications/routes.ts",
@@ -3717,7 +3779,8 @@
       "sourceAnchors": [
         {
           "path": "packages/api-contract/src/application.ts",
-          "line": 126
+          "line": 128,
+          "sourceLine": "  { operationId: 'getWorkspaceSettings', method: 'GET', path: '/settings', tag: 'Settings', summary: 'Read workspace settings', native: true },"
         },
         {
           "path": "apps/api-v2/src/settings/routes.ts",
@@ -3776,7 +3839,8 @@
       "sourceAnchors": [
         {
           "path": "packages/api-contract/src/application.ts",
-          "line": 127
+          "line": 129,
+          "sourceLine": "  { operationId: 'updateGeneralSettings', method: 'PUT', path: '/settings/general', tag: 'Settings', summary: 'Replace general workspace settings', native: true },"
         },
         {
           "path": "apps/api-v2/src/settings/routes.ts",
@@ -3838,7 +3902,8 @@
       "sourceAnchors": [
         {
           "path": "packages/api-contract/src/application.ts",
-          "line": 128
+          "line": 130,
+          "sourceLine": "  { operationId: 'updateTeamSettings', method: 'PUT', path: '/settings/team', tag: 'Settings', summary: 'Replace team workspace settings', native: true },"
         },
         {
           "path": "apps/api-v2/src/settings/routes.ts",
@@ -3900,7 +3965,8 @@
       "sourceAnchors": [
         {
           "path": "packages/api-contract/src/application.ts",
-          "line": 129
+          "line": 131,
+          "sourceLine": "  { operationId: 'updateSecuritySettings', method: 'PUT', path: '/settings/security', tag: 'Settings', summary: 'Replace security workspace settings', native: true },"
         },
         {
           "path": "apps/api-v2/src/settings/routes.ts",
@@ -3964,7 +4030,8 @@
       "sourceAnchors": [
         {
           "path": "packages/api-contract/src/application.ts",
-          "line": 39
+          "line": 41,
+          "sourceLine": "  { operationId: 'prepareAccountDeletionReceipt', method: 'POST', path: '/account-deletion/prepare', tag: 'Settings', summary: 'Prepare a short-lived deletion receipt lookup', bodyLimitBytes: 2048 },"
         },
         {
           "path": "apps/api/src/admin/account-deletion-receipt.controller.ts",
@@ -4027,7 +4094,8 @@
       "sourceAnchors": [
         {
           "path": "packages/api-contract/src/application.ts",
-          "line": 40
+          "line": 42,
+          "sourceLine": "  { operationId: 'readAccountDeletionReceipt', method: 'POST', path: '/account-deletion/receipt', tag: 'Authentication', summary: 'Recover deletion confirmation using a short-lived receipt capability', bodyLimitBytes: 2048 },"
         },
         {
           "path": "apps/api/src/admin/account-deletion-receipt.controller.ts",
@@ -4108,15 +4176,18 @@
       "sourceAnchors": [
         {
           "path": "packages/api-contract/src/application.ts",
-          "line": 41
+          "line": 43,
+          "sourceLine": "  { operationId: 'resolveLoginMethod', method: 'POST', path: '/auth/login/resolve', tag: 'Authentication', summary: 'Resolve the configured sign-in method' },"
         },
         {
           "path": "apps/api/src/auth/auth.controller.ts",
-          "line": 393
+          "line": 418,
+          "sourceLine": "    async resolveLoginFlow(@Body() body: { identifier: string; tenantSlug?: string }, @Req() req: Request) {"
         },
         {
           "path": "apps/api/src/auth/auth.service.ts",
-          "line": 1118
+          "line": 1121,
+          "sourceLine": "    async resolveLoginMethod(identifierRaw: string, tenantSlugRaw?: string): Promise<LoginResolveResult> {"
         }
       ],
       "actorBoundary": "Public same-origin pre-auth throttled; identifier and workspace required.",
@@ -4160,6 +4231,24 @@
             "path": "apps/api-v2/src/application/auth-retained-http.test.ts",
             "title": "preserves refusal transport for every reviewed retained authentication route"
           }
+        },
+        {
+          "id": "resolveLoginMethod-local-stale-resolver-intent",
+          "contract": "Controlled actual JSX resolver handler must ignore a late response after identifier input changes; mocked transport and explicit hook rerenders only.",
+          "evidenceKind": "unit",
+          "executable": {
+            "path": "apps/web/tests/unit/login-intent.test.ts",
+            "title": "discards late resolver state when the actual identifier input changes"
+          }
+        },
+        {
+          "id": "resolveLoginMethod-local-unexpected-form-redirect",
+          "contract": "Actual resolver result passed through controlled corrupted owner response must reject3xx without publishing credentials despite redirect query; valid resolver semantics/tenant authority remain native pending.",
+          "evidenceKind": "unit",
+          "executable": {
+            "path": "apps/api-v2/src/application/retained-auth-owner-http.test.ts",
+            "title": "rejects a3xx from a JSON-only operation despite a redirect query"
+          }
         }
       ],
       "workflowIds": [
@@ -4178,15 +4267,18 @@
       "sourceAnchors": [
         {
           "path": "packages/api-contract/src/application.ts",
-          "line": 42
+          "line": 44,
+          "sourceLine": "  { operationId: 'verifyPasswordLogin', method: 'POST', path: '/auth/password/verify', tag: 'Authentication', summary: 'Verify a password sign-in challenge', supportsLoginRedirect: true },"
         },
         {
           "path": "apps/api/src/auth/auth.controller.ts",
-          "line": 411
+          "line": 437,
+          "sourceLine": "    async verifyPassword("
         },
         {
           "path": "apps/api/src/auth/auth.service.ts",
-          "line": 1195
+          "line": 1198,
+          "sourceLine": "    async loginWithUsernamePassword("
         }
       ],
       "actorBoundary": "Public same-origin throttled tenant credential flow; auth:login_password and current login method; numeric PIN fallback uses auth:login_pin. Email-password limited to beta host; demo MFA exemption only exact configured host/demo identity/workspace.",
@@ -4236,6 +4328,24 @@
             "path": "apps/api-v2/src/application/auth-retained-http.test.ts",
             "title": "preserves refusal transport for every reviewed retained authentication route"
           }
+        },
+        {
+          "id": "verifyPasswordLogin-local-form-redirect-catalog",
+          "contract": "Catalog has precisely password/PIN/email POST form redirect capabilities. Actual bridge permits3xx only for single-string redirect=1 and valid location; normalJSON and unexpected redirects remain controlled separately. No native business proof.",
+          "evidenceKind": "unit",
+          "executable": {
+            "path": "apps/api-v2/src/application/retained-auth-owner-http.test.ts",
+            "title": "declares form redirects only for the three retained POST credential endpoints"
+          }
+        },
+        {
+          "id": "verifyPasswordLogin-local-unrequested-form-redirect",
+          "contract": "Actual password controller JSON result corrupted to302 must be rejected without credential publication when form redirect was not requested. Already returned controlled owner outcome is not rolled back or claimed undone.",
+          "evidenceKind": "unit",
+          "executable": {
+            "path": "apps/api-v2/src/application/retained-auth-owner-http.test.ts",
+            "title": "rejects a3xx for a login operation without its single-string redirect opt-in"
+          }
         }
       ],
       "workflowIds": [
@@ -4257,15 +4367,18 @@
       "sourceAnchors": [
         {
           "path": "packages/api-contract/src/application.ts",
-          "line": 43
+          "line": 45,
+          "sourceLine": "  { operationId: 'requestPasswordReset', method: 'POST', path: '/auth/password/reset/request', tag: 'Authentication', summary: 'Request password recovery' },"
         },
         {
           "path": "apps/api/src/auth/auth.controller.ts",
-          "line": 470
+          "line": 497,
+          "sourceLine": "    async requestPasswordReset(@Body() body: PasswordResetRequestBody, @Req() req: Request) {"
         },
         {
           "path": "apps/api/src/auth/auth.service.ts",
-          "line": 1301
+          "line": 1304,
+          "sourceLine": "    async createPasswordReset(identifierRaw: string, tenantSlugRaw?: string): Promise<null> {"
         }
       ],
       "actorBoundary": "Public same-origin pre-auth throttled; eligible existing tenant password account with email, auth:login_password and allowed method; no authenticated session.",
@@ -4340,15 +4453,18 @@
       "sourceAnchors": [
         {
           "path": "packages/api-contract/src/application.ts",
-          "line": 44
+          "line": 46,
+          "sourceLine": "  { operationId: 'confirmPasswordReset', method: 'POST', path: '/auth/password/reset/confirm', tag: 'Authentication', summary: 'Confirm password recovery' },"
         },
         {
           "path": "apps/api/src/auth/auth.controller.ts",
-          "line": 483
+          "line": 511,
+          "sourceLine": "    async confirmPasswordReset(@Body() body: PasswordResetConfirmBody, @Req() req: Request) {"
         },
         {
           "path": "apps/api/src/auth/auth.service.ts",
-          "line": 1398
+          "line": 1401,
+          "sourceLine": "    async resetPasswordWithToken("
         }
       ],
       "actorBoundary": "Public same-origin pre-auth throttled; valid one-use token binds its account/tenant rather than caller-supplied identity.",
@@ -4398,6 +4514,15 @@
             "path": "apps/api-v2/src/application/auth-retained-http.test.ts",
             "title": "preserves refusal transport for every reviewed retained authentication route"
           }
+        },
+        {
+          "id": "confirmPasswordReset-local-confirmed-ui-result",
+          "contract": "Actual password-reset handler waits for strict success:true and forwards exact valid 72 UTF-8 byte proof. Input clears only on the controlled positive response; native token/hash/session effects and reload custody policy remain pending.",
+          "evidenceKind": "unit",
+          "executable": {
+            "path": "apps/web/tests/unit/reset-password-contract.test.ts",
+            "title": "only clears inputs after the current controller confirmation actually arrives"
+          }
         }
       ],
       "workflowIds": [
@@ -4417,15 +4542,18 @@
       "sourceAnchors": [
         {
           "path": "packages/api-contract/src/application.ts",
-          "line": 45
+          "line": 47,
+          "sourceLine": "  { operationId: 'startOidcLogin', method: 'GET', path: '/auth/login', tag: 'Authentication', summary: 'Start an OIDC sign-in redirect', responseKind: 'redirect' },"
         },
         {
           "path": "apps/api/src/auth/auth.controller.ts",
-          "line": 491
+          "line": 520,
+          "sourceLine": "    async login(@Req() req: Request, @Res() res: Response) {"
         },
         {
           "path": "apps/api/src/auth/auth.service.ts",
-          "line": 596
+          "line": 596,
+          "sourceLine": "    async createOidcState(nextPath: string | null = null, tenantSlugRaw?: string | null) {"
         }
       ],
       "actorBoundary": "Public redirect exception, configured OIDC and explicit workspace; no app session.",
@@ -4496,19 +4624,22 @@
       "sourceAnchors": [
         {
           "path": "packages/api-contract/src/application.ts",
-          "line": 46
+          "line": 48,
+          "sourceLine": "  { operationId: 'completeOidcLogin', method: 'GET', path: '/auth/callback', tag: 'Authentication', summary: 'Complete an OIDC sign-in redirect', responseKind: 'redirect' },"
         },
         {
           "path": "apps/api/src/auth/auth.controller.ts",
-          "line": 533
+          "line": 562,
+          "sourceLine": "    async callback(@Req() req: Request, @Res() res: Response) {"
         },
         {
           "path": "apps/api/src/auth/auth.service.ts",
-          "line": 609
+          "line": 609,
+          "sourceLine": "    async consumeOidcState("
         }
       ],
       "actorBoundary": "Public callback exception requires code, one-use state and initiating-browser correlation nonce; verified issuer/subject/email bound to workspace user.",
-      "successContract": "Pending success goal remains one atomic state claim for the initiating browser, verified configured-provider subject/email and requested workspace, followed by safe cookie/redirect translation. Prepared source uses Redis GETDEL for the local claim; shared-state local regressions do not establish native Redis/provider qualification. Independently read identity/session, confirm existing tenant reused, and verify MFA or stored safe next redirect.",
+      "successContract": "Pending success goal remains one atomic state claim for the initiating browser, verified configured-provider subject/email and requested workspace, followed by safe cookie/redirect translation. Prepared source uses Redis GETDEL for the local claim; shared-state local regressions do not establish native Redis/provider qualification. Independently read identity/session, confirm existing tenant reused, and verify MFA or stored safe next redirect. Current forced PIN-reset state takes priority over MFA and stored next; new local controller routing does not prove native provider/session flags.",
       "failureContract": "Missing/replayed/mismatched state/correlation, unverified/wrong subject or malformed/timed-out token/userinfo denies session; correlation cookie cleared. Disabled OIDC redirects local login; provider outage is not login success.",
       "requiredEvidence": [
         "native-api",
@@ -4590,15 +4721,18 @@
       "sourceAnchors": [
         {
           "path": "packages/api-contract/src/application.ts",
-          "line": 47
+          "line": 49,
+          "sourceLine": "  { operationId: 'sendEmailLoginCode', method: 'POST', path: '/auth/email/send-otp', tag: 'Authentication', summary: 'Send an email sign-in code' },"
         },
         {
           "path": "apps/api/src/auth/auth.controller.ts",
-          "line": 562
+          "line": 593,
+          "sourceLine": "    async sendOtp(@Body() body: EmailOtpBody, @Req() req: Request) {"
         },
         {
           "path": "apps/api/src/auth/auth.service.ts",
-          "line": 1137
+          "line": 1140,
+          "sourceLine": "    async assertEmailOtpAllowed(emailRaw: string, options: EmailLoginOptions = {}): Promise<boolean> {"
         }
       ],
       "actorBoundary": "Public same-origin pre-auth throttle. Active tenant recipient needs auth:login_email and allowed method; onboarding needs organization, Terms/Privacy assent, configured signup/challenge policy.",
@@ -4678,20 +4812,23 @@
       "sourceAnchors": [
         {
           "path": "packages/api-contract/src/application.ts",
-          "line": 48
+          "line": 50,
+          "sourceLine": "  { operationId: 'verifyEmailLoginCode', method: 'POST', path: '/auth/email/verify-otp', tag: 'Authentication', summary: 'Verify an email sign-in code', supportsLoginRedirect: true },"
         },
         {
           "path": "apps/api/src/auth/auth.controller.ts",
-          "line": 636
+          "line": 668,
+          "sourceLine": "    async verifyOtp("
         },
         {
           "path": "apps/api/src/auth/auth.controller.ts",
-          "line": 661
+          "line": 694,
+          "sourceLine": "        try {"
         }
       ],
       "actorBoundary": "Public same-origin throttle; scoped email OTP or organization-bound onboarding challenge and current auth:login_email/method/legal signup policy.",
-      "successContract": "Consume scoped proof; issue cookies/safe redirect and MFA flags; reuse existing user or create tenant ADMIN with legal assent, never platform SUPER_ADMIN. Independently read tenant/user/session, replay refusal and first-location resume.",
-      "failureContract": "Wrong/expired/reused code, wrong workspace/organization/challenge or absent assent denies; inactive account/SSO-only policy denies issuance. Redis/provider loss cannot grant login; invalid redirect mode remains safe internal error redirect.",
+      "successContract": "Consume scoped proof; issue cookies/safe redirect and MFA flags; reuse existing user or create tenant ADMIN with legal assent, never platform SUPER_ADMIN. Independently read tenant/user/session, replay refusal and first-location resume. Current forced PIN reset takes priority over MFA/next routes and is returned explicitly; fresh auth:login_email must still be present at locked issuance.",
+      "failureContract": "Wrong/expired/reused code, wrong workspace/organization/challenge or absent assent denies; inactive account/SSO-only policy denies issuance. Redis/provider loss cannot grant login; invalid redirect mode remains safe internal error redirect. A login grant revoked while issuance waits must cause zero new session/audit/token effects; malformed primitive/body metadata rejects before OTP or delivery/issuance calls.",
       "requiredEvidence": [
         "native-api",
         "browser",
@@ -4742,6 +4879,33 @@
             "path": "apps/api-v2/src/application/auth-retained-http.test.ts",
             "title": "preserves refusal transport for every reviewed retained authentication route"
           }
+        },
+        {
+          "id": "verifyEmailLoginCode-local-stale-verification-intent",
+          "contract": "Old OTP completion cannot navigate or release a newer password attempt; duplicate current submission cannot start a second request. Abort/intent guards do not undo already committed upstream issuance or prove browser cookie custody.",
+          "evidenceKind": "unit",
+          "executable": {
+            "path": "apps/web/tests/unit/login-intent.test.ts",
+            "title": "does not let an old OTP completion unlock a newer verification owner"
+          }
+        },
+        {
+          "id": "verifyEmailLoginCode-local-form-redirect-catalog",
+          "contract": "Exact catalog capability declaration control plus generated controlled real OTP/controller owner wire cases. OTP external eval is an injected adapter, not native Lua one-use or concurrency evidence.",
+          "evidenceKind": "unit",
+          "executable": {
+            "path": "apps/api-v2/src/application/retained-auth-owner-http.test.ts",
+            "title": "declares form redirects only for the three retained POST credential endpoints"
+          }
+        },
+        {
+          "id": "verifyEmailLoginCode-local-malformed-code-boundary",
+          "contract": "Actual controller rejects numeric code before OTP adapter/issuance, real production exception filter400 translates to facade422 with bounded public message and no cookies. Native request parsing/guard and OTP concurrency remain pending.",
+          "evidenceKind": "unit",
+          "executable": {
+            "path": "apps/api-v2/src/application/retained-auth-owner-http.test.ts",
+            "title": "rejects numeric OTP at the actual controller before OTP Redis or credential issuance"
+          }
         }
       ],
       "workflowIds": [
@@ -4763,15 +4927,18 @@
       "sourceAnchors": [
         {
           "path": "packages/api-contract/src/application.ts",
-          "line": 49
+          "line": 50,
+          "sourceLine": "  { operationId: 'verifyEmailLoginCode', method: 'POST', path: '/auth/email/verify-otp', tag: 'Authentication', summary: 'Verify an email sign-in code', supportsLoginRedirect: true },"
         },
         {
           "path": "apps/api/src/auth/auth.controller.ts",
-          "line": 722
+          "line": 760,
+          "sourceLine": "    async verifyPin("
         },
         {
           "path": "apps/api/src/auth/auth.service.ts",
-          "line": 1619
+          "line": 1622,
+          "sourceLine": "    async loginWithUsernamePin("
         }
       ],
       "actorBoundary": "Public same-origin throttle; tenant username/PIN with current auth:login_pin and permitted method.",
@@ -4821,6 +4988,15 @@
             "path": "apps/api-v2/src/application/auth-retained-http.test.ts",
             "title": "preserves refusal transport for every reviewed retained authentication route"
           }
+        },
+        {
+          "id": "verifyPinLogin-local-form-redirect-catalog",
+          "contract": "Exact catalog capability declaration control; generated owner success/denial/JSON cases exercise actual controller/Express cookie serialization/filter/bridge/Fastify with predetermined issuance seams, not real credential/session proof.",
+          "evidenceKind": "unit",
+          "executable": {
+            "path": "apps/api-v2/src/application/retained-auth-owner-http.test.ts",
+            "title": "declares form redirects only for the three retained POST credential endpoints"
+          }
         }
       ],
       "workflowIds": [
@@ -4840,15 +5016,18 @@
       "sourceAnchors": [
         {
           "path": "packages/api-contract/src/application.ts",
-          "line": 50
+          "line": 52,
+          "sourceLine": "  { operationId: 'refreshSession', method: 'POST', path: '/auth/refresh', tag: 'Authentication', summary: 'Rotate the authenticated session' },"
         },
         {
           "path": "apps/api/src/auth/auth.controller.ts",
-          "line": 770
+          "line": 809,
+          "sourceLine": "    async refresh(@Req() req: Request, @Res() res: Response) {"
         },
         {
           "path": "apps/api/src/auth/auth.service.ts",
-          "line": 2084
+          "line": 2087,
+          "sourceLine": "    async refreshAccessToken(refreshTokenRaw: unknown) {"
         }
       ],
       "actorBoundary": "Public session recovery exception using refresh cookie plus same-origin and exact CSRF cookie/header; exact credential/session/user/tenant binding.",
@@ -4934,15 +5113,18 @@
       "sourceAnchors": [
         {
           "path": "packages/api-contract/src/application.ts",
-          "line": 51
+          "line": 53,
+          "sourceLine": "  { operationId: 'getMfaEnrollment', method: 'GET', path: '/auth/mfa/enrollment', tag: 'Authentication', summary: 'Read MFA enrollment state' },"
         },
         {
           "path": "apps/api/src/auth/auth.controller.ts",
-          "line": 808
+          "line": 847,
+          "sourceLine": "    async getMfaEnrollment(@Req() req: any) {"
         },
         {
           "path": "apps/api/src/auth/auth.service.ts",
-          "line": 2499
+          "line": 2502,
+          "sourceLine": "    async getMfaEnrollmentState("
         }
       ],
       "actorBoundary": "Authenticated self JwtAuthGuard+AllowAuthenticated; unverified MFA intentionally admitted to recovery; forced PIN reset must rotate first. Exact live session/user/tenant.",
@@ -4995,6 +5177,15 @@
             "path": "apps/api-v2/src/application/auth-retained-http.test.ts",
             "title": "preserves refusal transport for every reviewed retained authentication route"
           }
+        },
+        {
+          "id": "getMfaEnrollment-local-flat-owner-profile",
+          "contract": "Actual panel validates and maps flat owner enabled/count/setup fields; unrelated aliases cannot shadow validated values. No deployed owner/guard/storage or browser evidence.",
+          "evidenceKind": "unit",
+          "executable": {
+            "path": "apps/web/tests/unit/mfa-enrollment-panel.test.ts",
+            "title": "uses validated flat fields even when unrelated envelope aliases are present"
+          }
         }
       ],
       "workflowIds": [
@@ -5013,15 +5204,18 @@
       "sourceAnchors": [
         {
           "path": "packages/api-contract/src/application.ts",
-          "line": 52
+          "line": 54,
+          "sourceLine": "  { operationId: 'startMfaEnrollment', method: 'POST', path: '/auth/mfa/enrollment', tag: 'Authentication', summary: 'Start MFA enrollment' },"
         },
         {
           "path": "apps/api/src/auth/auth.controller.ts",
-          "line": 817
+          "line": 856,
+          "sourceLine": "    async beginMfaEnrollmentAlias(@Req() req: any) {"
         },
         {
           "path": "apps/api/src/auth/auth.service.ts",
-          "line": 2568
+          "line": 2571,
+          "sourceLine": "    async beginMfaEnrollment("
         }
       ],
       "actorBoundary": "Authenticated self enrollment alias+auth throttle; live exact session/no forced PIN reset; existing verified MFA not required.",
@@ -5080,6 +5274,15 @@
             "path": "apps/api-v2/src/application/auth-retained-http.test.ts",
             "title": "preserves refusal transport for every reviewed retained authentication route"
           }
+        },
+        {
+          "id": "startMfaEnrollment-local-confirmed-owner-profile",
+          "contract": "Controlled actual panel POST setup and PUT confirmation handlers require actual flat secret/otpauth/lifetime and success/mfaVerified/backupCodes profiles before displaying their state; native secret generation/TTL and enrollment lifetime races remain pending.",
+          "evidenceKind": "unit",
+          "executable": {
+            "path": "apps/web/tests/unit/mfa-enrollment-panel.test.ts",
+            "title": "uses the actual flat owner setup and confirmation profiles and waits before displaying completion"
+          }
         }
       ],
       "workflowIds": [
@@ -5099,15 +5302,18 @@
       "sourceAnchors": [
         {
           "path": "packages/api-contract/src/application.ts",
-          "line": 53
+          "line": 55,
+          "sourceLine": "  { operationId: 'confirmMfaEnrollment', method: 'PUT', path: '/auth/mfa/enrollment', tag: 'Authentication', summary: 'Confirm MFA enrollment' },"
         },
         {
           "path": "apps/api/src/auth/auth.controller.ts",
-          "line": 853
+          "line": 893,
+          "sourceLine": "    async confirmMfaEnrollmentAlias(@Req() req: any, @Body() body: { code: string }, @Res() res: Response) {"
         },
         {
           "path": "apps/api/src/auth/auth.service.ts",
-          "line": 2592
+          "line": 2595,
+          "sourceLine": "    async confirmMfaEnrollment("
         }
       ],
       "actorBoundary": "Authenticated self confirmation alias, pending secret/current TOTP and exact live session; unverified recovery session allowed.",
@@ -5172,6 +5378,15 @@
             "path": "apps/api-v2/src/application/auth-retained-http.test.ts",
             "title": "preserves refusal transport for every reviewed retained authentication route"
           }
+        },
+        {
+          "id": "confirmMfaEnrollment-local-response-loss-input",
+          "contract": "Controlled actual panel retains setup/proof and refuses false completion or automatic replay on transport response loss. Actual committed MFA/backup-code custody and protected authorization require native readback.",
+          "evidenceKind": "unit",
+          "executable": {
+            "path": "apps/web/tests/unit/mfa-enrollment-panel.test.ts",
+            "title": "does not replay confirmation or discard the proof input when the reply is lost"
+          }
         }
       ],
       "workflowIds": [
@@ -5191,15 +5406,18 @@
       "sourceAnchors": [
         {
           "path": "packages/api-contract/src/application.ts",
-          "line": 54
+          "line": 56,
+          "sourceLine": "  { operationId: 'deleteMfaEnrollment', method: 'DELETE', path: '/auth/mfa/enrollment', tag: 'Authentication', summary: 'Disable MFA enrollment' },"
         },
         {
           "path": "apps/api/src/auth/auth.controller.ts",
-          "line": 899
+          "line": 941,
+          "sourceLine": "    async disableMfaAlias(@Req() req: any, @Body() body: { code: string }) {"
         },
         {
           "path": "apps/api/src/auth/auth.service.ts",
-          "line": 2689
+          "line": 2692,
+          "sourceLine": "    async disableMfa("
         }
       ],
       "actorBoundary": "Authenticated self disable alias/live exact session; valid proof when enabled. Current privileged-access or requireMfaForAll policy forbids disabling.",
@@ -5264,6 +5482,15 @@
             "path": "apps/api-v2/src/application/auth-retained-http.test.ts",
             "title": "preserves refusal transport for every reviewed retained authentication route"
           }
+        },
+        {
+          "id": "deleteMfaEnrollment-local-confirmed-owner-profile",
+          "contract": "Actual JSX handler displays disabled only after controlled success:true,mfaEnabled:false. Malformed200 keeps prior state/proof; deployed session revocation, logout and reauthentication journey remain pending.",
+          "evidenceKind": "unit",
+          "executable": {
+            "path": "apps/web/tests/unit/mfa-enrollment-panel.test.ts",
+            "title": "only reports disabled for the actual owner confirmation"
+          }
         }
       ],
       "workflowIds": [
@@ -5283,15 +5510,18 @@
       "sourceAnchors": [
         {
           "path": "packages/api-contract/src/application.ts",
-          "line": 55
+          "line": 57,
+          "sourceLine": "  { operationId: 'verifyMfaChallenge', method: 'POST', path: '/auth/mfa/verify', tag: 'Authentication', summary: 'Verify an MFA sign-in challenge' },"
         },
         {
           "path": "apps/api/src/auth/auth.controller.ts",
-          "line": 865
+          "line": 905,
+          "sourceLine": "    async verifyMfa(@Req() req: any, @Body() body: { code: string }, @Res() res: Response) {"
         },
         {
           "path": "apps/api/src/auth/auth.service.ts",
-          "line": 2778
+          "line": 2781,
+          "sourceLine": "    async validateMfa("
         }
       ],
       "actorBoundary": "Authenticated self AllowAuthenticated route reachable unverified; exact live session/account/tenant and current PIN/MFA/security policy.",
@@ -5367,15 +5597,18 @@
       "sourceAnchors": [
         {
           "path": "packages/api-contract/src/application.ts",
-          "line": 56
+          "line": 58,
+          "sourceLine": "  { operationId: 'deleteSession', method: 'POST', path: '/auth/logout', tag: 'Authentication', summary: 'Revoke the authenticated session' },"
         },
         {
           "path": "apps/api/src/auth/auth.controller.ts",
-          "line": 910
+          "line": 952,
+          "sourceLine": "    async logout(@Req() req: Request, @Res() res: Response) {"
         },
         {
           "path": "apps/api/src/auth/auth.service.ts",
-          "line": 2935
+          "line": 2938,
+          "sourceLine": "    async revokeSessionByRefreshToken("
         }
       ],
       "actorBoundary": "Public refresh-cookie logout exception with same-origin/CSRF; no still-valid access token needed.",
@@ -5458,7 +5691,8 @@
       "sourceAnchors": [
         {
           "path": "packages/api-contract/src/application.ts",
-          "line": 131
+          "line": 133,
+          "sourceLine": "  { operationId: 'getBillingFeatures', method: 'GET', path: '/billing/features', tag: 'Billing', summary: 'Read billing features and entitlements' },"
         },
         {
           "path": "apps/api/src/billing/billing.controller.ts",
@@ -5526,7 +5760,8 @@
       "sourceAnchors": [
         {
           "path": "packages/api-contract/src/application.ts",
-          "line": 132
+          "line": 134,
+          "sourceLine": "  { operationId: 'getSubscriptionRecoveryAction', method: 'GET', path: '/billing/subscription-recovery-action', tag: 'Billing', summary: 'Read the subscription recovery action' },"
         },
         {
           "path": "apps/api/src/billing/billing.controller.ts",
@@ -5593,7 +5828,8 @@
       "sourceAnchors": [
         {
           "path": "packages/api-contract/src/application.ts",
-          "line": 133
+          "line": 135,
+          "sourceLine": "  { operationId: 'listBillingPriceOptions', method: 'GET', path: '/billing/price-options', tag: 'Billing', summary: 'List subscription price options' },"
         },
         {
           "path": "apps/api/src/billing/billing.controller.ts",
@@ -5653,7 +5889,8 @@
       "sourceAnchors": [
         {
           "path": "packages/api-contract/src/application.ts",
-          "line": 134
+          "line": 136,
+          "sourceLine": "  { operationId: 'listCreditPacks', method: 'GET', path: '/billing/credit-packs', tag: 'Billing', summary: 'List credit packs' },"
         },
         {
           "path": "apps/api/src/billing/billing.controller.ts",
@@ -5721,7 +5958,8 @@
       "sourceAnchors": [
         {
           "path": "packages/api-contract/src/application.ts",
-          "line": 135
+          "line": 137,
+          "sourceLine": "  { operationId: 'createCreditPackCheckout', method: 'POST', path: '/billing/credit-packs/checkout', tag: 'Billing', summary: 'Create a credit-pack checkout' },"
         },
         {
           "path": "apps/api/src/billing/billing.controller.ts",
@@ -5795,7 +6033,8 @@
       "sourceAnchors": [
         {
           "path": "packages/api-contract/src/application.ts",
-          "line": 136
+          "line": 138,
+          "sourceLine": "  { operationId: 'createSubscriptionCheckout', method: 'POST', path: '/billing/subscribe', tag: 'Billing', summary: 'Create a subscription checkout' },"
         },
         {
           "path": "apps/api/src/billing/billing.controller.ts",
@@ -5868,7 +6107,8 @@
       "sourceAnchors": [
         {
           "path": "packages/api-contract/src/application.ts",
-          "line": 137
+          "line": 139,
+          "sourceLine": "  { operationId: 'createBillingPortalSession', method: 'POST', path: '/billing/portal', tag: 'Billing', summary: 'Create a billing portal session' },"
         },
         {
           "path": "apps/api/src/billing/billing.controller.ts",
@@ -5935,7 +6175,8 @@
       "sourceAnchors": [
         {
           "path": "packages/api-contract/src/application.ts",
-          "line": 138
+          "line": 140,
+          "sourceLine": "  { operationId: 'changeSubscriptionPlan', method: 'POST', path: '/billing/change-plan', tag: 'Billing', summary: 'Change the subscription plan' },"
         },
         {
           "path": "apps/api/src/billing/billing.controller.ts",
@@ -6008,7 +6249,8 @@
       "sourceAnchors": [
         {
           "path": "packages/api-contract/src/application.ts",
-          "line": 139
+          "line": 141,
+          "sourceLine": "  { operationId: 'resumeSubscription', method: 'POST', path: '/billing/resume', tag: 'Billing', summary: 'Resume a subscription' },"
         },
         {
           "path": "apps/api/src/billing/billing.controller.ts",
@@ -6081,7 +6323,8 @@
       "sourceAnchors": [
         {
           "path": "packages/api-contract/src/application.ts",
-          "line": 141
+          "line": 143,
+          "sourceLine": "  { operationId: 'createAvailabilityImport', method: 'POST', path: '/availability-imports/users/:userId', tag: 'Imports', summary: 'Create a staff availability import', bodyLimitBytes: 10 * MiB },"
         },
         {
           "path": "apps/api/src/availability-imports/availability-imports.controller.ts",
@@ -6155,7 +6398,8 @@
       "sourceAnchors": [
         {
           "path": "packages/api-contract/src/application.ts",
-          "line": 142
+          "line": 144,
+          "sourceLine": "  { operationId: 'cancelAvailabilityImport', method: 'POST', path: '/availability-imports/:importId/cancel', tag: 'Imports', summary: 'Cancel an unfinished availability import' },"
         },
         {
           "path": "apps/api/src/availability-imports/availability-imports.controller.ts",
@@ -6214,7 +6458,8 @@
       "sourceAnchors": [
         {
           "path": "packages/api-contract/src/application.ts",
-          "line": 143
+          "line": 145,
+          "sourceLine": "  { operationId: 'getAvailabilityImport', method: 'GET', path: '/availability-imports/:importId', tag: 'Imports', summary: 'Read one availability import' },"
         },
         {
           "path": "apps/api/src/availability-imports/availability-imports.controller.ts",
@@ -6281,7 +6526,8 @@
       "sourceAnchors": [
         {
           "path": "packages/api-contract/src/application.ts",
-          "line": 145
+          "line": 147,
+          "sourceLine": "  { operationId: 'getAdminStats', method: 'GET', path: '/admin/stats', tag: 'Administration', summary: 'Read platform statistics' },"
         },
         {
           "path": "apps/api/src/admin/admin.controller.ts",
@@ -6336,7 +6582,8 @@
       "sourceAnchors": [
         {
           "path": "packages/api-contract/src/application.ts",
-          "line": 146
+          "line": 148,
+          "sourceLine": "  { operationId: 'listAdminTenants', method: 'GET', path: '/admin/tenants', tag: 'Administration', summary: 'List platform tenants' },"
         },
         {
           "path": "apps/api/src/admin/admin.controller.ts",
@@ -6385,7 +6632,8 @@
       "sourceAnchors": [
         {
           "path": "packages/api-contract/src/application.ts",
-          "line": 147
+          "line": 149,
+          "sourceLine": "  { operationId: 'createAdminTenant', method: 'POST', path: '/admin/tenants', tag: 'Administration', summary: 'Create a platform tenant' },"
         },
         {
           "path": "apps/api/src/admin/admin.controller.ts",
@@ -6444,7 +6692,8 @@
       "sourceAnchors": [
         {
           "path": "packages/api-contract/src/application.ts",
-          "line": 148
+          "line": 150,
+          "sourceLine": "  { operationId: 'updateAdminTenant', method: 'PUT', path: '/admin/tenants/:tenantId', tag: 'Administration', summary: 'Replace a platform tenant' },"
         },
         {
           "path": "apps/api/src/admin/admin.controller.ts",
@@ -6498,7 +6747,8 @@
       "sourceAnchors": [
         {
           "path": "packages/api-contract/src/application.ts",
-          "line": 149
+          "line": 151,
+          "sourceLine": "  { operationId: 'suspendAdminTenant', method: 'POST', path: '/admin/tenants/:tenantId/suspend', tag: 'Administration', summary: 'Suspend a platform tenant' },"
         },
         {
           "path": "apps/api/src/admin/admin.controller.ts",
@@ -6552,7 +6802,8 @@
       "sourceAnchors": [
         {
           "path": "packages/api-contract/src/application.ts",
-          "line": 150
+          "line": 152,
+          "sourceLine": "  { operationId: 'activateAdminTenant', method: 'POST', path: '/admin/tenants/:tenantId/activate', tag: 'Administration', summary: 'Activate a platform tenant' },"
         },
         {
           "path": "apps/api/src/admin/admin.controller.ts",
@@ -6613,7 +6864,8 @@
       "sourceAnchors": [
         {
           "path": "packages/api-contract/src/application.ts",
-          "line": 151
+          "line": 153,
+          "sourceLine": "  { operationId: 'archiveAdminTenant', method: 'POST', path: '/admin/tenants/:tenantId/archive', tag: 'Administration', summary: 'Archive a platform tenant' },"
         },
         {
           "path": "apps/api/src/admin/admin.controller.ts",
@@ -6678,7 +6930,8 @@
       "sourceAnchors": [
         {
           "path": "packages/api-contract/src/application.ts",
-          "line": 152
+          "line": 154,
+          "sourceLine": "  { operationId: 'restoreAdminTenant', method: 'POST', path: '/admin/tenants/:tenantId/restore', tag: 'Administration', summary: 'Restore a platform tenant' },"
         },
         {
           "path": "apps/api/src/admin/admin.controller.ts",
@@ -6739,7 +6992,8 @@
       "sourceAnchors": [
         {
           "path": "packages/api-contract/src/application.ts",
-          "line": 153
+          "line": 155,
+          "sourceLine": "  { operationId: 'deleteAdminTenant', method: 'DELETE', path: '/admin/tenants/:tenantId', tag: 'Administration', summary: 'Permanently delete an eligible platform tenant' },"
         },
         {
           "path": "apps/api/src/admin/admin.controller.ts",
@@ -6794,7 +7048,8 @@
       "sourceAnchors": [
         {
           "path": "packages/api-contract/src/application.ts",
-          "line": 154
+          "line": 156,
+          "sourceLine": "  { operationId: 'createAccountExport', method: 'POST', path: '/admin/account/export', tag: 'Administration', summary: 'Create a tenant account export' },"
         },
         {
           "path": "apps/api/src/admin/admin.controller.ts",
@@ -6853,7 +7108,8 @@
       "sourceAnchors": [
         {
           "path": "packages/api-contract/src/application.ts",
-          "line": 155
+          "line": 157,
+          "sourceLine": "  { operationId: 'listAccountExports', method: 'GET', path: '/admin/account/exports', tag: 'Administration', summary: 'List tenant account exports' },"
         },
         {
           "path": "apps/api/src/admin/admin.controller.ts",
@@ -6912,7 +7168,8 @@
       "sourceAnchors": [
         {
           "path": "packages/api-contract/src/application.ts",
-          "line": 156
+          "line": 158,
+          "sourceLine": "  { operationId: 'getAccountExport', method: 'GET', path: '/admin/account/exports/:jobId', tag: 'Administration', summary: 'Read one tenant account export' },"
         },
         {
           "path": "apps/api/src/admin/admin.controller.ts",
@@ -6971,7 +7228,8 @@
       "sourceAnchors": [
         {
           "path": "packages/api-contract/src/application.ts",
-          "line": 157
+          "line": 159,
+          "sourceLine": "  { operationId: 'downloadAccountExport', method: 'GET', path: '/admin/account/exports/:jobId/download', tag: 'Administration', summary: 'Download one tenant account export', responseKind: 'download', bodyLimitBytes: 25 * MiB },"
         },
         {
           "path": "apps/api/src/admin/admin.controller.ts",
@@ -7030,7 +7288,8 @@
       "sourceAnchors": [
         {
           "path": "packages/api-contract/src/application.ts",
-          "line": 158
+          "line": 160,
+          "sourceLine": "  { operationId: 'getAccountLifecycleStatus', method: 'GET', path: '/admin/account/status', tag: 'Administration', summary: 'Read tenant account lifecycle status' },"
         },
         {
           "path": "apps/api/src/admin/admin.controller.ts",
@@ -7089,7 +7348,8 @@
       "sourceAnchors": [
         {
           "path": "packages/api-contract/src/application.ts",
-          "line": 159
+          "line": 161,
+          "sourceLine": "  { operationId: 'cancelAccountRenewal', method: 'POST', path: '/admin/account/cancel', tag: 'Administration', summary: 'Cancel tenant subscription renewal' },"
         },
         {
           "path": "apps/api/src/admin/admin.controller.ts",
@@ -7154,7 +7414,8 @@
       "sourceAnchors": [
         {
           "path": "packages/api-contract/src/application.ts",
-          "line": 160
+          "line": 162,
+          "sourceLine": "  { operationId: 'deleteTenantAccount', method: 'DELETE', path: '/admin/account', tag: 'Administration', summary: 'Request tenant account deletion' },"
         },
         {
           "path": "apps/api/src/admin/admin.controller.ts",
@@ -7219,7 +7480,8 @@
       "sourceAnchors": [
         {
           "path": "packages/api-contract/src/application.ts",
-          "line": 161
+          "line": 163,
+          "sourceLine": "  { operationId: 'listAdminUsers', method: 'GET', path: '/admin/users', tag: 'Administration', summary: 'List platform users' },"
         },
         {
           "path": "apps/api/src/admin/admin.controller.ts",
@@ -7267,7 +7529,8 @@
       "sourceAnchors": [
         {
           "path": "packages/api-contract/src/application.ts",
-          "line": 162
+          "line": 164,
+          "sourceLine": "  { operationId: 'updateAdminUser', method: 'PUT', path: '/admin/users/:userId', tag: 'Administration', summary: 'Replace a platform user' },"
         },
         {
           "path": "apps/api/src/admin/admin.controller.ts",
@@ -7328,7 +7591,8 @@
       "sourceAnchors": [
         {
           "path": "packages/api-contract/src/application.ts",
-          "line": 163
+          "line": 165,
+          "sourceLine": "  { operationId: 'resetAdminUserPin', method: 'POST', path: '/admin/users/:userId/pin/reset', tag: 'Administration', summary: 'Reset a platform-user PIN' },"
         },
         {
           "path": "apps/api/src/admin/admin.controller.ts",
@@ -7392,7 +7656,8 @@
       "sourceAnchors": [
         {
           "path": "packages/api-contract/src/application.ts",
-          "line": 164
+          "line": 166,
+          "sourceLine": "  { operationId: 'resetAdminUserMfa', method: 'POST', path: '/admin/users/:userId/mfa/reset', tag: 'Administration', summary: 'Reset platform-user MFA' },"
         },
         {
           "path": "apps/api/src/admin/admin.controller.ts",
@@ -7456,7 +7721,8 @@
       "sourceAnchors": [
         {
           "path": "packages/api-contract/src/application.ts",
-          "line": 165
+          "line": 167,
+          "sourceLine": "  { operationId: 'lockAdminUser', method: 'POST', path: '/admin/users/:userId/lock', tag: 'Administration', summary: 'Lock a platform user' },"
         },
         {
           "path": "apps/api/src/admin/admin.controller.ts",
@@ -7515,7 +7781,8 @@
       "sourceAnchors": [
         {
           "path": "packages/api-contract/src/application.ts",
-          "line": 166
+          "line": 168,
+          "sourceLine": "  { operationId: 'unlockAdminUser', method: 'POST', path: '/admin/users/:userId/unlock', tag: 'Administration', summary: 'Unlock a platform user' },"
         },
         {
           "path": "apps/api/src/admin/admin.controller.ts",
@@ -7574,7 +7841,8 @@
       "sourceAnchors": [
         {
           "path": "packages/api-contract/src/application.ts",
-          "line": 167
+          "line": 169,
+          "sourceLine": "  { operationId: 'suspendAdminUser', method: 'POST', path: '/admin/users/:userId/suspend', tag: 'Administration', summary: 'Suspend a platform user' },"
         },
         {
           "path": "apps/api/src/admin/admin.controller.ts",
@@ -7638,7 +7906,8 @@
       "sourceAnchors": [
         {
           "path": "packages/api-contract/src/application.ts",
-          "line": 168
+          "line": 170,
+          "sourceLine": "  { operationId: 'activateAdminUser', method: 'POST', path: '/admin/users/:userId/activate', tag: 'Administration', summary: 'Activate a platform user' },"
         },
         {
           "path": "apps/api/src/admin/admin.controller.ts",
@@ -7702,7 +7971,8 @@
       "sourceAnchors": [
         {
           "path": "packages/api-contract/src/application.ts",
-          "line": 169
+          "line": 171,
+          "sourceLine": "  { operationId: 'listAdminAudit', method: 'GET', path: '/admin/audit', tag: 'Administration', summary: 'List platform audit events' },"
         },
         {
           "path": "apps/api/src/admin/admin.controller.ts",
@@ -7752,7 +8022,8 @@
       "sourceAnchors": [
         {
           "path": "packages/api-contract/src/application.ts",
-          "line": 170
+          "line": 172,
+          "sourceLine": "  { operationId: 'getAdminCredits', method: 'GET', path: '/admin/credits', tag: 'Administration', summary: 'Read platform credit balances and history' },"
         },
         {
           "path": "apps/api/src/admin/admin.controller.ts",
@@ -7805,7 +8076,8 @@
       "sourceAnchors": [
         {
           "path": "packages/api-contract/src/application.ts",
-          "line": 171
+          "line": 173,
+          "sourceLine": "  { operationId: 'grantAdminCredits', method: 'POST', path: '/admin/credits/grant', tag: 'Administration', summary: 'Grant tenant credits' },"
         },
         {
           "path": "apps/api/src/admin/admin.controller.ts",
@@ -7858,7 +8130,8 @@
       "sourceAnchors": [
         {
           "path": "packages/api-contract/src/application.ts",
-          "line": 172
+          "line": 174,
+          "sourceLine": "  { operationId: 'listAdminPlans', method: 'GET', path: '/admin/plans', tag: 'Administration', summary: 'List billing plans' },"
         },
         {
           "path": "apps/api/src/admin/admin.controller.ts",
@@ -7906,7 +8179,8 @@
       "sourceAnchors": [
         {
           "path": "packages/api-contract/src/application.ts",
-          "line": 173
+          "line": 175,
+          "sourceLine": "  { operationId: 'createAdminPlan', method: 'POST', path: '/admin/plans', tag: 'Administration', summary: 'Create a billing plan' },"
         },
         {
           "path": "apps/api/src/admin/admin.controller.ts",
@@ -7960,7 +8234,8 @@
       "sourceAnchors": [
         {
           "path": "packages/api-contract/src/application.ts",
-          "line": 174
+          "line": 176,
+          "sourceLine": "  { operationId: 'updateAdminPlan', method: 'PUT', path: '/admin/plans/:codeOrId', tag: 'Administration', summary: 'Replace a billing plan' },"
         },
         {
           "path": "apps/api/src/admin/admin.controller.ts",
@@ -8014,7 +8289,8 @@
       "sourceAnchors": [
         {
           "path": "packages/api-contract/src/application.ts",
-          "line": 175
+          "line": 177,
+          "sourceLine": "  { operationId: 'deleteAdminPlan', method: 'DELETE', path: '/admin/plans/:codeOrId', tag: 'Administration', summary: 'Delete a billing plan' },"
         },
         {
           "path": "apps/api/src/admin/admin.controller.ts",
@@ -8068,7 +8344,8 @@
       "sourceAnchors": [
         {
           "path": "packages/api-contract/src/application.ts",
-          "line": 176
+          "line": 178,
+          "sourceLine": "  { operationId: 'getAdminHealth', method: 'GET', path: '/admin/health', tag: 'Administration', summary: 'Read platform dependency health' },"
         },
         {
           "path": "apps/api/src/admin/admin.controller.ts",
@@ -9088,13 +9365,13 @@
       "sourceAnchors": [
         {
           "path": "apps/api/src/auth/auth.service.ts",
-          "line": 1504,
+          "line": 1507,
           "sourceLine": "        const issuerUrl = this.normalizeOidcIssuer(this.configService.getOrThrow('OIDC_ISSUER_URL'));"
         },
         {
           "path": "docs/runbooks/production-qualification-bridge.md",
           "line": 34,
-          "sourceLine": "| Providers and legal — External | Synthetic mail/billing/auth/payroll fixtures cannot prove required integrations. | Exact candidate sender/provider and webhook readback, delivery verification, live Stripe meter/billing requirements and bounded integration proof where applicable; monitored support/privacy/DPA contacts and paid-service attestations. Exact `closed_beta` on API and web; counsel-approved immutable Terms plus reviewed policy changes required before self-service. |"
+          "sourceLine": "| Providers and legal \u2014 External | Synthetic mail/billing/auth/payroll fixtures cannot prove required integrations. | Exact candidate sender/provider and webhook readback, delivery verification, live Stripe meter/billing requirements and bounded integration proof where applicable; monitored support/privacy/DPA contacts and paid-service attestations. Exact `closed_beta` on API and web; counsel-approved immutable Terms plus reviewed policy changes required before self-service. |"
         }
       ],
       "actorBoundary": "Configured external OIDC issuer+registered callback; browser state/nonce and exact subject/issuer must bind active local tenant/session.",
@@ -9134,13 +9411,13 @@
       "sourceAnchors": [
         {
           "path": "apps/api/src/auth/auth.controller.ts",
-          "line": 562,
+          "line": 593,
           "sourceLine": "    async sendOtp(@Body() body: EmailOtpBody, @Req() req: Request) {"
         },
         {
           "path": "docs/runbooks/production-qualification-bridge.md",
           "line": 34,
-          "sourceLine": "| Providers and legal — External | Synthetic mail/billing/auth/payroll fixtures cannot prove required integrations. | Exact candidate sender/provider and webhook readback, delivery verification, live Stripe meter/billing requirements and bounded integration proof where applicable; monitored support/privacy/DPA contacts and paid-service attestations. Exact `closed_beta` on API and web; counsel-approved immutable Terms plus reviewed policy changes required before self-service. |"
+          "sourceLine": "| Providers and legal \u2014 External | Synthetic mail/billing/auth/payroll fixtures cannot prove required integrations. | Exact candidate sender/provider and webhook readback, delivery verification, live Stripe meter/billing requirements and bounded integration proof where applicable; monitored support/privacy/DPA contacts and paid-service attestations. Exact `closed_beta` on API and web; counsel-approved immutable Terms plus reviewed policy changes required before self-service. |"
         },
         {
           "path": "apps/api/src/auth/email.service.ts",
@@ -9149,7 +9426,7 @@
         },
         {
           "path": "apps/api/src/auth/auth.service.ts",
-          "line": 1137,
+          "line": 1140,
           "sourceLine": "    async assertEmailOtpAllowed(emailRaw: string, options: EmailLoginOptions = {}): Promise<boolean> {"
         }
       ],
@@ -9195,7 +9472,7 @@
         {
           "path": "docs/runbooks/production-qualification-bridge.md",
           "line": 34,
-          "sourceLine": "| Providers and legal — External | Synthetic mail/billing/auth/payroll fixtures cannot prove required integrations. | Exact candidate sender/provider and webhook readback, delivery verification, live Stripe meter/billing requirements and bounded integration proof where applicable; monitored support/privacy/DPA contacts and paid-service attestations. Exact `closed_beta` on API and web; counsel-approved immutable Terms plus reviewed policy changes required before self-service. |"
+          "sourceLine": "| Providers and legal \u2014 External | Synthetic mail/billing/auth/payroll fixtures cannot prove required integrations. | Exact candidate sender/provider and webhook readback, delivery verification, live Stripe meter/billing requirements and bounded integration proof where applicable; monitored support/privacy/DPA contacts and paid-service attestations. Exact `closed_beta` on API and web; counsel-approved immutable Terms plus reviewed policy changes required before self-service. |"
         }
       ],
       "actorBoundary": "Current billing owner and exact Stripe customer/tenant, approved price/return origin, separate signed completion event.",
@@ -9238,7 +9515,7 @@
         {
           "path": "docs/runbooks/production-qualification-bridge.md",
           "line": 34,
-          "sourceLine": "| Providers and legal — External | Synthetic mail/billing/auth/payroll fixtures cannot prove required integrations. | Exact candidate sender/provider and webhook readback, delivery verification, live Stripe meter/billing requirements and bounded integration proof where applicable; monitored support/privacy/DPA contacts and paid-service attestations. Exact `closed_beta` on API and web; counsel-approved immutable Terms plus reviewed policy changes required before self-service. |"
+          "sourceLine": "| Providers and legal \u2014 External | Synthetic mail/billing/auth/payroll fixtures cannot prove required integrations. | Exact candidate sender/provider and webhook readback, delivery verification, live Stripe meter/billing requirements and bounded integration proof where applicable; monitored support/privacy/DPA contacts and paid-service attestations. Exact `closed_beta` on API and web; counsel-approved immutable Terms plus reviewed policy changes required before self-service. |"
         }
       ],
       "actorBoundary": "Tenant billing authority delegates to credit-pack owner; provider checkout/session/purchase identity exact.",
@@ -9282,7 +9559,7 @@
         {
           "path": "docs/runbooks/production-qualification-bridge.md",
           "line": 34,
-          "sourceLine": "| Providers and legal — External | Synthetic mail/billing/auth/payroll fixtures cannot prove required integrations. | Exact candidate sender/provider and webhook readback, delivery verification, live Stripe meter/billing requirements and bounded integration proof where applicable; monitored support/privacy/DPA contacts and paid-service attestations. Exact `closed_beta` on API and web; counsel-approved immutable Terms plus reviewed policy changes required before self-service. |"
+          "sourceLine": "| Providers and legal \u2014 External | Synthetic mail/billing/auth/payroll fixtures cannot prove required integrations. | Exact candidate sender/provider and webhook readback, delivery verification, live Stripe meter/billing requirements and bounded integration proof where applicable; monitored support/privacy/DPA contacts and paid-service attestations. Exact `closed_beta` on API and web; counsel-approved immutable Terms plus reviewed policy changes required before self-service. |"
         }
       ],
       "actorBoundary": "Current tenant/customer and approved safe portal configuration.",
@@ -9325,7 +9602,7 @@
         {
           "path": "docs/runbooks/production-qualification-bridge.md",
           "line": 34,
-          "sourceLine": "| Providers and legal — External | Synthetic mail/billing/auth/payroll fixtures cannot prove required integrations. | Exact candidate sender/provider and webhook readback, delivery verification, live Stripe meter/billing requirements and bounded integration proof where applicable; monitored support/privacy/DPA contacts and paid-service attestations. Exact `closed_beta` on API and web; counsel-approved immutable Terms plus reviewed policy changes required before self-service. |"
+          "sourceLine": "| Providers and legal \u2014 External | Synthetic mail/billing/auth/payroll fixtures cannot prove required integrations. | Exact candidate sender/provider and webhook readback, delivery verification, live Stripe meter/billing requirements and bounded integration proof where applicable; monitored support/privacy/DPA contacts and paid-service attestations. Exact `closed_beta` on API and web; counsel-approved immutable Terms plus reviewed policy changes required before self-service. |"
         }
       ],
       "actorBoundary": "Live managed tenant Stripe subscription and requested configured price with owner approval.",
@@ -9369,7 +9646,7 @@
         {
           "path": "docs/runbooks/production-qualification-bridge.md",
           "line": 34,
-          "sourceLine": "| Providers and legal — External | Synthetic mail/billing/auth/payroll fixtures cannot prove required integrations. | Exact candidate sender/provider and webhook readback, delivery verification, live Stripe meter/billing requirements and bounded integration proof where applicable; monitored support/privacy/DPA contacts and paid-service attestations. Exact `closed_beta` on API and web; counsel-approved immutable Terms plus reviewed policy changes required before self-service. |"
+          "sourceLine": "| Providers and legal \u2014 External | Synthetic mail/billing/auth/payroll fixtures cannot prove required integrations. | Exact candidate sender/provider and webhook readback, delivery verification, live Stripe meter/billing requirements and bounded integration proof where applicable; monitored support/privacy/DPA contacts and paid-service attestations. Exact `closed_beta` on API and web; counsel-approved immutable Terms plus reviewed policy changes required before self-service. |"
         }
       ],
       "actorBoundary": "Exact paused managed subscription; current tenant billing actor.",
@@ -9412,7 +9689,7 @@
         {
           "path": "docs/runbooks/production-qualification-bridge.md",
           "line": 34,
-          "sourceLine": "| Providers and legal — External | Synthetic mail/billing/auth/payroll fixtures cannot prove required integrations. | Exact candidate sender/provider and webhook readback, delivery verification, live Stripe meter/billing requirements and bounded integration proof where applicable; monitored support/privacy/DPA contacts and paid-service attestations. Exact `closed_beta` on API and web; counsel-approved immutable Terms plus reviewed policy changes required before self-service. |"
+          "sourceLine": "| Providers and legal \u2014 External | Synthetic mail/billing/auth/payroll fixtures cannot prove required integrations. | Exact candidate sender/provider and webhook readback, delivery verification, live Stripe meter/billing requirements and bounded integration proof where applicable; monitored support/privacy/DPA contacts and paid-service attestations. Exact `closed_beta` on API and web; counsel-approved immutable Terms plus reviewed policy changes required before self-service. |"
         }
       ],
       "actorBoundary": "Exact tenant subscription and cancellation operation identity; tenant lifecycle owner controls local transition.",
@@ -9456,7 +9733,7 @@
         {
           "path": "docs/runbooks/production-qualification-bridge.md",
           "line": 34,
-          "sourceLine": "| Providers and legal — External | Synthetic mail/billing/auth/payroll fixtures cannot prove required integrations. | Exact candidate sender/provider and webhook readback, delivery verification, live Stripe meter/billing requirements and bounded integration proof where applicable; monitored support/privacy/DPA contacts and paid-service attestations. Exact `closed_beta` on API and web; counsel-approved immutable Terms plus reviewed policy changes required before self-service. |"
+          "sourceLine": "| Providers and legal \u2014 External | Synthetic mail/billing/auth/payroll fixtures cannot prove required integrations. | Exact candidate sender/provider and webhook readback, delivery verification, live Stripe meter/billing requirements and bounded integration proof where applicable; monitored support/privacy/DPA contacts and paid-service attestations. Exact `closed_beta` on API and web; counsel-approved immutable Terms plus reviewed policy changes required before self-service. |"
         }
       ],
       "actorBoundary": "Privileged tenant purge lifecycle after legal hold/retention/confirmation checks; exact customer/subscription binding.",
@@ -9544,7 +9821,7 @@
         {
           "path": "docs/runbooks/production-qualification-bridge.md",
           "line": 34,
-          "sourceLine": "| Providers and legal — External | Synthetic mail/billing/auth/payroll fixtures cannot prove required integrations. | Exact candidate sender/provider and webhook readback, delivery verification, live Stripe meter/billing requirements and bounded integration proof where applicable; monitored support/privacy/DPA contacts and paid-service attestations. Exact `closed_beta` on API and web; counsel-approved immutable Terms plus reviewed policy changes required before self-service. |"
+          "sourceLine": "| Providers and legal \u2014 External | Synthetic mail/billing/auth/payroll fixtures cannot prove required integrations. | Exact candidate sender/provider and webhook readback, delivery verification, live Stripe meter/billing requirements and bounded integration proof where applicable; monitored support/privacy/DPA contacts and paid-service attestations. Exact `closed_beta` on API and web; counsel-approved immutable Terms plus reviewed policy changes required before self-service. |"
         }
       ],
       "actorBoundary": "Authorized payroll export/reconciliation actor and independently approved external payroll recipient/provider; no simulated provider response is certification.",
@@ -10415,6 +10692,15 @@
           "id": "refusal-recovery",
           "contract": "Missing/expired/wrong receipt never reveals other account or invents deletion success.",
           "evidenceKind": "browser-interaction"
+        },
+        {
+          "id": "frontend.page.auth.account-deleted-local-cached-receipt-state",
+          "contract": "Versioned receipt helper retains explicit pending billing-cleanup state/requested time. Unknown/missing state or absent requested time cannot manufacture completion; local storage is display data, not deletion authority.",
+          "evidenceKind": "unit",
+          "executable": {
+            "path": "apps/web/tests/unit/account-deletion-receipt.test.ts",
+            "title": "round-trips a pending cached receipt without promoting it to finalized"
+          }
         }
       ],
       "workflowIds": [
@@ -10433,7 +10719,7 @@
       "sourceAnchors": [
         {
           "path": "apps/web/app/auth/login/page.tsx",
-          "line": 836,
+          "line": 877,
           "sourceLine": "export default function LoginPage() {"
         }
       ],
@@ -10456,6 +10742,24 @@
           "id": "refusal-recovery",
           "contract": "Invalid/reused/expired credentials/provider failure remains signed out with explicit guidance; unsafe redirects and session leaks refused.",
           "evidenceKind": "browser-interaction"
+        },
+        {
+          "id": "frontend.page.auth.login-local-stale-verification-intent",
+          "contract": "Actual JSX handler controlled deferred old/new transport intent regression; not DOM, hydration, React scheduling or real browser/network/session proof.",
+          "evidenceKind": "unit",
+          "executable": {
+            "path": "apps/web/tests/unit/login-intent.test.ts",
+            "title": "does not let an old OTP completion unlock a newer verification owner"
+          }
+        },
+        {
+          "id": "frontend.page.auth.login-local-error-string-render",
+          "contract": "Controlled resolver refusal with a non-string message must produce a safe string; actual nested LoginError JSX is rendered by installed ReactDOM/server to reject object-child crashes. This is one component server-render control, not DOM/browser/hydration/scheduling acceptance.",
+          "evidenceKind": "unit",
+          "executable": {
+            "path": "apps/web/tests/unit/login-intent.test.ts",
+            "title": "renders a malformed resolver refusal as a safe string through the actual error component"
+          }
         }
       ],
       "workflowIds": [
@@ -10478,7 +10782,7 @@
       "sourceAnchors": [
         {
           "path": "apps/web/app/auth/reset-password/page.tsx",
-          "line": 367,
+          "line": 368,
           "sourceLine": "export default function ResetPasswordPage() {"
         }
       ],
@@ -10501,6 +10805,15 @@
           "id": "refusal-recovery",
           "contract": "Wrong/expired/reused token or mismatch refuses without changing credential; secret not retained in logs/URLs beyond approved capability.",
           "evidenceKind": "browser-interaction"
+        },
+        {
+          "id": "frontend.page.auth.reset-password-local-confirmed-ui-result",
+          "contract": "Controlled actual JSX handler confirms current response and valid Unicode byte ceiling; separate malformed200 and invalid-password/error controls are local only. Existing URL/cookie scrub and memory-only reload custody choice remain unresolved.",
+          "evidenceKind": "unit",
+          "executable": {
+            "path": "apps/web/tests/unit/reset-password-contract.test.ts",
+            "title": "only clears inputs after the current controller confirmation actually arrives"
+          }
         }
       ],
       "workflowIds": [
@@ -12155,7 +12468,7 @@
         {
           "path": "docs/runbooks/production-qualification-bridge.md",
           "line": 32,
-          "sourceLine": "| Storage admission — External | Retained capacity observations are historical and capacity is not reserved against unrelated writers. | Fresh backing and parent measurements through admission controls: 32 GiB job allowance, existing backing reserve/guest floor, parent availability at least 52 GiB, single worker, bounded retention. No guest-df-only clearance or shared quota change. |"
+          "sourceLine": "| Storage admission \u2014 External | Retained capacity observations are historical and capacity is not reserved against unrelated writers. | Fresh backing and parent measurements through admission controls: 32 GiB job allowance, existing backing reserve/guest floor, parent availability at least 52 GiB, single worker, bounded retention. No guest-df-only clearance or shared quota change. |"
         }
       ],
       "actorBoundary": "Infrastructure/controller owner fresh backing+parent admission;32GiB job allowance and single worker.",
@@ -12190,7 +12503,7 @@
         {
           "path": "docs/runbooks/production-qualification-bridge.md",
           "line": 25,
-          "sourceLine": "| Candidate and ownership — Source + External | Preserved application changes and focused development QA are not a qualified release; receiving QA and production owners need current coordination. | One reviewed clean candidate pushed to the authoritative internal remote; source/tree SHA; current remote containment; single QA owner and accepted execution target. Preserve unfinished work. |"
+          "sourceLine": "| Candidate and ownership \u2014 Source + External | Preserved application changes and focused development QA are not a qualified release; receiving QA and production owners need current coordination. | One reviewed clean candidate pushed to the authoritative internal remote; source/tree SHA; current remote containment; single QA owner and accepted execution target. Preserve unfinished work. |"
         }
       ],
       "actorBoundary": "Accepted sole QA execution owner and compatible protected controller integration/source/ref binding.",
@@ -12225,7 +12538,7 @@
         {
           "path": "docs/runbooks/production-qualification-bridge.md",
           "line": 27,
-          "sourceLine": "| Production trust — Source + External | Internal-beta Ed25519 receipts do not satisfy the former GitHub OIDC/Sigstore registry contract. | Explicit independently approved production trust root and signer policy; validators and negative tests reject beta receipts, wrong identity, changed bytes, expired evidence and source mismatch. Keys remain outside candidate workspaces; no candidate-controlled trust policy. No signer approval is presently established. |"
+          "sourceLine": "| Production trust \u2014 Source + External | Internal-beta Ed25519 receipts do not satisfy the former GitHub OIDC/Sigstore registry contract. | Explicit independently approved production trust root and signer policy; validators and negative tests reject beta receipts, wrong identity, changed bytes, expired evidence and source mismatch. Keys remain outside candidate workspaces; no candidate-controlled trust policy. No signer approval is presently established. |"
         }
       ],
       "actorBoundary": "Separate external production trust/promotion owner; beta signing is not approved public production trust.",
@@ -12260,7 +12573,7 @@
         {
           "path": "docs/runbooks/production-qualification-bridge.md",
           "line": 28,
-          "sourceLine": "| Manifest and image publication — Source + External | Internal-beta manifest uses local image IDs/archive checksums; production verifier expects digest-pinned registry refs, deployment contract and production health metadata. | Reviewed production manifest/publishing bridge with independently read-back immutable OCI digests, complete first/third-party service and base-image inventory, SBOM/security reports, signatures, exact deployment bytes and retained rollback artifacts. Local archive integrity alone is insufficient. |"
+          "sourceLine": "| Manifest and image publication \u2014 Source + External | Internal-beta manifest uses local image IDs/archive checksums; production verifier expects digest-pinned registry refs, deployment contract and production health metadata. | Reviewed production manifest/publishing bridge with independently read-back immutable OCI digests, complete first/third-party service and base-image inventory, SBOM/security reports, signatures, exact deployment bytes and retained rollback artifacts. Local archive integrity alone is insufficient. |"
         }
       ],
       "actorBoundary": "Reviewed manifest/registry/retained artifact owner outside candidate workspace.",
@@ -12295,7 +12608,7 @@
         {
           "path": "docs/runbooks/production-qualification-bridge.md",
           "line": 33,
-          "sourceLine": "| Runtime secrets and access — Source + External | Synthetic disposable env is not a production env; former GitHub environment settings have no current execution authority. | Immutable managed runtime-secret version validated by production policy; role-separated secret files/bytes and least-privilege access; authenticated pinned-host transport; controller protections preserving independently reviewed approval, no self-approval, approved branch, credential scope and serialized mutations. Secret bytes never enter logs/artifacts/source. |"
+          "sourceLine": "| Runtime secrets and access \u2014 Source + External | Synthetic disposable env is not a production env; former GitHub environment settings have no current execution authority. | Immutable managed runtime-secret version validated by production policy; role-separated secret files/bytes and least-privilege access; authenticated pinned-host transport; controller protections preserving independently reviewed approval, no self-approval, approved branch, credential scope and serialized mutations. Secret bytes never enter logs/artifacts/source. |"
         }
       ],
       "actorBoundary": "Managed versioned runtime secret/role-separated mounts and pinned-host transport owner.",
@@ -12330,7 +12643,7 @@
         {
           "path": "docs/runbooks/production-qualification-bridge.md",
           "line": 36,
-          "sourceLine": "| Alerts and production resource limits — External | Disposable stack excludes host integrations and cannot prove actual paging or exact-target capacity. | Independent bounded alert delivery/resolution; actionable runbooks, authenticated/private telemetry, healthy dependency series and failure health behavior; finite CPU/memory/PID/file/log limits; exact-target load evidence without OOM/restart/throttling exhaustion. Account for notification outbox recovery/dead letters. |"
+          "sourceLine": "| Alerts and production resource limits \u2014 External | Disposable stack excludes host integrations and cannot prove actual paging or exact-target capacity. | Independent bounded alert delivery/resolution; actionable runbooks, authenticated/private telemetry, healthy dependency series and failure health behavior; finite CPU/memory/PID/file/log limits; exact-target load evidence without OOM/restart/throttling exhaustion. Account for notification outbox recovery/dead letters. |"
         }
       ],
       "actorBoundary": "Private authenticated telemetry plus independently controlled pager/receiver.",
@@ -12367,7 +12680,7 @@
         {
           "path": "docs/runbooks/production-qualification-bridge.md",
           "line": 37,
-          "sourceLine": "| Retention and release history — Source + External | Internal artifacts retained for 30 days and beta receipt lifetime do not prove production recovery retention or durable registry authenticity. | Reviewed immutable retained production artifacts/reports, independently verified signed index/bundle/current pointer, provider retention/access/deletion protections and recoverable previous successful release. Define and enforce production retention; preserve recovery evidence outside disposable cleanup. |"
+          "sourceLine": "| Retention and release history \u2014 Source + External | Internal artifacts retained for 30 days and beta receipt lifetime do not prove production recovery retention or durable registry authenticity. | Reviewed immutable retained production artifacts/reports, independently verified signed index/bundle/current pointer, provider retention/access/deletion protections and recoverable previous successful release. Define and enforce production retention; preserve recovery evidence outside disposable cleanup. |"
         }
       ],
       "actorBoundary": "Scoped application/CI retention owners; preserved unfinished source/data/backup/evidence.",
@@ -12402,7 +12715,7 @@
         {
           "path": "docs/runbooks/production-qualification-bridge.md",
           "line": 34,
-          "sourceLine": "| Providers and legal — External | Synthetic mail/billing/auth/payroll fixtures cannot prove required integrations. | Exact candidate sender/provider and webhook readback, delivery verification, live Stripe meter/billing requirements and bounded integration proof where applicable; monitored support/privacy/DPA contacts and paid-service attestations. Exact `closed_beta` on API and web; counsel-approved immutable Terms plus reviewed policy changes required before self-service. |"
+          "sourceLine": "| Providers and legal \u2014 External | Synthetic mail/billing/auth/payroll fixtures cannot prove required integrations. | Exact candidate sender/provider and webhook readback, delivery verification, live Stripe meter/billing requirements and bounded integration proof where applicable; monitored support/privacy/DPA contacts and paid-service attestations. Exact `closed_beta` on API and web; counsel-approved immutable Terms plus reviewed policy changes required before self-service. |"
         }
       ],
       "actorBoundary": "Counsel/policy/contact/provider owners; closed_beta exact on API+web.",
@@ -12439,7 +12752,7 @@
         {
           "path": "docs/runbooks/production-qualification-bridge.md",
           "line": 40,
-          "sourceLine": "| Activation decision — External | Incident launch hold remains explicit. | All prior gates independently reviewed with no missing evidence; owner acceptance and explicit user activation instruction; private launch uses documented private routes, and any public cutover has separately approved routing/data recovery scope. Production readiness does not itself start the launch. |"
+          "sourceLine": "| Activation decision \u2014 External | Incident launch hold remains explicit. | All prior gates independently reviewed with no missing evidence; owner acceptance and explicit user activation instruction; private launch uses documented private routes, and any public cutover has separately approved routing/data recovery scope. Production readiness does not itself start the launch. |"
         }
       ],
       "actorBoundary": "Explicit user activation instruction and independently accepted estate/route/data/recovery owners after all prior gates.",
@@ -14305,6 +14618,10 @@
     "Conditional Turnstile action is a pending requirement under separately approved open signup configuration, not authorized enablement; current closed-beta refusal must be proved.",
     "Required independent contract corrections preserve desired one-use/current-authority/native/provider/operational outcomes as pending requirements; describing current source does not certify that source is correct.",
     "The earlier non-atomic OIDC GET plus DEL source limitation is addressed by the prepared Redis GETDEL source change and shared-state service/controller regressions. Atomic one-use state consumption still requires admitted native Redis/concurrent callback proof; declared Redis7/client support is source compatibility evidence, not proof of deployed configuration, ACL capability or provider correctness. Redis errors or lost claim responses must not trigger split-command fallback; a consumed state may require fresh login.",
-    "Prepared retained authentication transport fixes defer credential-cookie forwarding until bounded JSON/redirect validation; error responses forward only recognized unambiguous expiring cookie cleanup. Cookie lifetime parsing normalizes attributes and conservatively accepts only canonical GMT dates with year>=1601, rejecting duplicate lifetime attributes. Actual Fastify parser errors map to 400/413/415 using known constructors; arbitrary domain errors remain internal failures. Seventeen explicit retained operations have controlled success/refusal transport scenarios. These local fixtures use actual server/bridge but mocked owners and inert infrastructure: operation-specific JSON shape, native provider/Redis/session/RBAC/business effects, browser cookie custody and current candidate acceptance remain pending. All265 action statuses and original84 workflows remain pending; no native admission, production operation, held VM107 action or launch is authorized by local results."
+    "Prepared retained authentication transport fixes defer credential-cookie forwarding until bounded JSON/redirect validation; error responses forward only recognized unambiguous expiring cookie cleanup. Cookie lifetime parsing normalizes attributes and conservatively accepts only canonical GMT dates with year>=1601, rejecting duplicate lifetime attributes. Actual Fastify parser errors map to 400/413/415 using known constructors; arbitrary domain errors remain internal failures. Seventeen explicit retained operations have controlled success/refusal transport scenarios. These local fixtures use actual server/bridge but mocked owners and inert infrastructure: operation-specific JSON shape, native provider/Redis/session/RBAC/business effects, browser cookie custody and current candidate acceptance remain pending. All265 action statuses and original84 workflows remain pending; no native admission, production operation, held VM107 action or launch is authorized by local results.",
+    "Prepared phase73 owner fixes require a fresh email-login grant at locked issuance, reject malformed authentication bodies before owner effects, preserve authoritative DB logout despite best-effort MFA-marker cleanup, and route forced PIN reset ahead of MFA/next in OTP/OIDC. Controlled owner/controller/production-filter/Express-cookie/bridge/Fastify tests use predetermined AuthService outcomes and injected OTP external adapter; they do not establish real JWT guards, RLS/transactions/current RBAC queries, native Redis Lua, provider identity/delivery, ingress trust or browser custody.",
+    "Prepared phase73 web fixes use request intent/abort guards and exact success profiles; original handler negatives and current local JSX event tests use explicit hook ledgers, mocked transport/navigation and manual rerenders. These are not DOM, real React scheduling/effect cleanup/hydration/accessibility or native browser evidence. Aborting a UI attempt cannot undo an already completed upstream issuance/cookie effect; stale-response browser/session custody and post-disable reauthentication remain native obligations.",
+    "Password-reset confirmation now validates the existing eight-character/72 UTF-8 byte owner rule and distinguishes password400/422 from token401 before claiming strict success. The existing reset token URL/handoff-cookie scrub and memory-only custody remain unchanged; reload loses reset context and its privacy/recovery policy choice remains unresolved.",
+    "Prior source-review concerns about MFA pending enrollment generation/TTL crossing and password-reset captured time/current actor authority remain separate open source/native requirements. Phase73 controller/wire/UI fixes do not close them. All265 actions,47 selected browser cases,84 minimum workflows, real provider/recovery/security/load evidence and months of private testing remain pending; no native admission, VM107 action, VM4014/VM106 contact or public activation follows from these local results."
   ]
 }

@@ -85,3 +85,20 @@ describe('account deletion receipt', () => {
 it('does not manufacture a finalized receipt from an empty response', () => {
   expect(() => accountDeletionReceiptFromResponse({})).toThrow('not been confirmed');
 });
+
+it.each([
+  { deletionState: 'UNKNOWN', deletionRequestedAt: '2026-07-13T19:00:00.000Z' },
+  { deletionRequestedAt: '2026-07-13T19:00:00.000Z' },
+  { deletionState: 'FINALIZED', applicationDataEligibleAt: '2026-08-12T19:00:00.000Z' },
+  { deletionState: 'PENDING_BILLING_CLEANUP', deletionRequestedAt: 'invalid', securityLogEligibleAt: '2026-10-11T19:00:00.000Z' },
+])('rejects a version-one cached receipt lacking explicit state and request time: %j', receipt => {
+  expect(readAccountDeletionReceipt(memoryStorage(JSON.stringify({ version: 1, receipt })))).toBeNull();
+});
+
+it('round-trips a pending cached receipt without promoting it to finalized', () => {
+  const receipt = accountDeletionReceiptFromResponse({
+    deletionState: 'PENDING_BILLING_CLEANUP', deletionRequestedAt: '2026-07-13T19:00:00.000Z',
+  });
+  const storage = memoryStorage(); storeAccountDeletionReceipt(storage, receipt);
+  expect(readAccountDeletionReceipt(storage)).toEqual(receipt);
+});

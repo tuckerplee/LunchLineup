@@ -8,6 +8,7 @@ import { apiPath, fetchPublicApi } from '@/lib/client-api';
 import { safeInternalNavigationPath } from '@/lib/safe-navigation';
 import { normalizeWorkspaceSlug, readRememberedWorkspaceSlug, rememberWorkspaceSlug } from '@/lib/workspace-slug';
 import { isSelfServiceSignupAvailable } from '../../onboarding/challenge';
+import { createLoginIntent } from './login-intent';
 
 const OIDC_ENABLED = (process.env.NEXT_PUBLIC_OIDC_ENABLED ?? '').toLowerCase() === 'true';
 const SELF_SERVICE_SIGNUP_AVAILABLE = isSelfServiceSignupAvailable(process.env.NEXT_PUBLIC_SIGNUP_MODE);
@@ -23,6 +24,13 @@ function LoginError({ message }: { message: string | null }) {
             {message}
         </div>
     );
+}
+
+function loginResponseError(payload: unknown, fallback: string): string {
+    if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return fallback;
+    const value = payload as Record<string, unknown>;
+    return typeof value.message === 'string' ? value.message
+        : typeof value.error === 'string' ? value.error : fallback;
 }
 
 function LoginContent() {
@@ -49,14 +57,21 @@ function LoginContent() {
     const [resendCountdown, setResendCountdown] = useState(0);
 
     const otpRefs = useRef<(HTMLInputElement | null)[]>([]);
-    const verifyInFlightRef = useRef(false);
+    const loginIntent = useRef(createLoginIntent());
+
+    const cancelPendingLogin = () => {
+        loginIntent.current.cancel();
+        setIsLoading(false);
+    };
 
     useEffect(() => {
         setIsBetaPasswordLogin(window.location.hostname.toLowerCase() === BETA_PASSWORD_LOGIN_HOST);
         setIsHydrated(true);
+        return () => loginIntent.current.cancel();
     }, []);
 
     useEffect(() => {
+        cancelPendingLogin();
         if (prefillIdentifier) {
             const normalized = prefillIdentifier.trim().toLowerCase();
             setIdentifier(normalized);
@@ -90,21 +105,26 @@ function LoginContent() {
     }, [prefillIdentifier, prefillWorkspace, stepParam, errorParam]);
 
     useEffect(() => {
+        if (step === 'otp') otpRefs.current[0]?.focus();
+    }, [step]);
+
+    useEffect(() => {
         if (resendCountdown <= 0) return;
         const t = setTimeout(() => setResendCountdown((c) => c - 1), 1000);
         return () => clearTimeout(t);
     }, [resendCountdown]);
 
-    const sendOtpForEmail = async (normalizedEmail: string, normalizedWorkspaceSlug: string) => {
+    const sendOtpForEmail = async (normalizedEmail: string, normalizedWorkspaceSlug: string, signal: AbortSignal) => {
         const res = await fetchPublicApi('/auth/email/send-otp', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ email: normalizedEmail, tenantSlug: normalizedWorkspaceSlug }),
             credentials: 'include',
+            signal,
         });
         const data = await res.json().catch(() => ({}));
-        if (!res.ok || !data.success) {
-            throw new Error(data.error ?? data.message ?? 'Failed to send code. Please try again.');
+        if (!res.ok || data?.success !== true) {
+            throw new Error(loginResponseError(data, 'Failed to send code. Please try again.'));
         }
     };
 
@@ -125,6 +145,8 @@ function LoginContent() {
         setWorkspaceSlug(normalizedWorkspaceSlug);
         rememberWorkspaceSlug(window.localStorage, normalizedWorkspaceSlug);
 
+        const attempt = loginIntent.current.begin();
+        if (!attempt) return;
         setIsLoading(true);
         try {
             const res = await fetchPublicApi('/auth/login/resolve', {
@@ -132,21 +154,28 @@ function LoginContent() {
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ identifier: normalizedIdentifier, tenantSlug: normalizedWorkspaceSlug }),
                 credentials: 'include',
+                signal: attempt.controller.signal,
             });
             const data = await res.json().catch(() => ({}));
-            if (!res.ok || !data.success) {
+            if (!loginIntent.current.current(attempt)) return;
+            if (!res.ok || data?.success !== true) {
                 setError(res.status === 429
                     ? 'Too many sign-in attempts. Please wait and try again.'
-                    : data.message ?? data.error ?? 'Unable to continue login.');
+                    : loginResponseError(data, 'Unable to continue login.'));
+                return;
+            }
+            if (!['EMAIL_OTP', 'USERNAME_PASSWORD', 'USERNAME_PIN'].includes(data.flow)
+                || typeof data.identifier !== 'string' || !data.identifier.trim()) {
+                setError('The service returned an invalid sign-in response. Please try again.');
                 return;
             }
 
             if (data.flow === 'EMAIL_OTP') {
-                await sendOtpForEmail(data.identifier, normalizedWorkspaceSlug);
+                await sendOtpForEmail(data.identifier, normalizedWorkspaceSlug, attempt.controller.signal);
+                if (!loginIntent.current.current(attempt)) return;
                 setEmail(data.identifier);
                 setStep('otp');
                 setResendCountdown(60);
-                setTimeout(() => otpRefs.current[0]?.focus(), 100);
                 return;
             }
 
@@ -164,13 +193,16 @@ function LoginContent() {
                 setError('Enter your temporary PIN to set a new PIN.');
             }
         } catch (err) {
-            setError(err instanceof Error ? err.message : 'Network error. Please try again.');
+            if (loginIntent.current.current(attempt)) {
+                setError(err instanceof Error ? err.message : 'Network error. Please try again.');
+            }
         } finally {
-            setIsLoading(false);
+            if (loginIntent.current.finish(attempt)) setIsLoading(false);
         }
     };
 
     const handleUsePassword = () => {
+        cancelPendingLogin();
         setError(null);
         if (!isBetaPasswordLogin) {
             setError('Email password sign-in is available only on the beta site.');
@@ -208,14 +240,17 @@ function LoginContent() {
         }
         setWorkspaceSlug(normalizedWorkspaceSlug);
         rememberWorkspaceSlug(window.localStorage, normalizedWorkspaceSlug);
+        const attempt = loginIntent.current.begin();
+        if (!attempt) return;
         setIsLoading(true);
         try {
-            await sendOtpForEmail(normalizedEmail, normalizedWorkspaceSlug);
+            await sendOtpForEmail(normalizedEmail, normalizedWorkspaceSlug, attempt.controller.signal);
+            if (!loginIntent.current.current(attempt)) return;
             setResendCountdown(60);
         } catch (err) {
-            setError((err as Error).message);
+            if (loginIntent.current.current(attempt)) setError((err as Error).message);
         } finally {
-            setIsLoading(false);
+            if (loginIntent.current.finish(attempt)) setIsLoading(false);
         }
     };
 
@@ -251,10 +286,10 @@ function LoginContent() {
         payload: Record<string, string>,
         fallbackError: string,
     ) => {
-        if (verifyInFlightRef.current) return;
+        const attempt = loginIntent.current.begin();
+        if (!attempt) return;
 
         const safeNext = safeInternalNavigationPath(nextPath);
-        verifyInFlightRef.current = true;
         setIsLoading(true);
         setError(null);
 
@@ -264,6 +299,7 @@ function LoginContent() {
                 headers: { 'Content-Type': 'application/json' },
                 credentials: 'include',
                 body: JSON.stringify(payload),
+                signal: attempt.controller.signal,
             });
             const data = await response.json().catch(() => ({})) as {
                 success?: unknown;
@@ -271,10 +307,11 @@ function LoginContent() {
                 message?: unknown;
                 error?: unknown;
             };
-            if (!response.ok || data.success !== true) {
-                const message = typeof data.message === 'string'
+            if (!loginIntent.current.current(attempt)) return;
+            if (!response.ok || data?.success !== true) {
+                const message = typeof data?.message === 'string'
                     ? data.message
-                    : typeof data.error === 'string'
+                    : typeof data?.error === 'string'
                         ? data.error
                         : fallbackError;
                 setError(message);
@@ -287,10 +324,11 @@ function LoginContent() {
             );
             router.push(redirectTo);
         } catch (err) {
-            setError(err instanceof Error ? err.message : 'Unable to sign in. Please try again.');
+            if (loginIntent.current.current(attempt)) {
+                setError(err instanceof Error ? err.message : 'Unable to sign in. Please try again.');
+            }
         } finally {
-            verifyInFlightRef.current = false;
-            setIsLoading(false);
+            if (loginIntent.current.finish(attempt)) setIsLoading(false);
         }
     };
 
@@ -346,6 +384,7 @@ function LoginContent() {
     };
 
     const handleOidcLogin = () => {
+        cancelPendingLogin();
         const normalizedWorkspaceSlug = normalizeWorkspaceSlug(workspaceSlug);
         if (!normalizedWorkspaceSlug) {
             setError('Enter your workspace slug before continuing with SSO.');
@@ -417,7 +456,7 @@ function LoginContent() {
                                             className="form-input"
                                             placeholder="your-workspace"
                                             value={workspaceSlug}
-                                            onChange={(e) => setWorkspaceSlug(normalizeWorkspaceSlug(e.target.value))}
+                                            onChange={(e) => { cancelPendingLogin(); setWorkspaceSlug(normalizeWorkspaceSlug(e.target.value)); }}
                                             autoComplete="organization"
                                             required
                                         />
@@ -430,7 +469,7 @@ function LoginContent() {
                                             className="form-input"
                                             placeholder="name@company.com or username"
                                             value={identifier}
-                                            onChange={(e) => setIdentifier(e.target.value)}
+                                            onChange={(e) => { cancelPendingLogin(); setIdentifier(e.target.value); }}
                                             autoComplete="username"
                                             required
                                         />
@@ -496,10 +535,10 @@ function LoginContent() {
                                         type="button"
                                         className="btn btn-ghost btn-sm"
                                         onClick={() => {
+                                            cancelPendingLogin();
                                             setStep('identifier');
                                             setOtp(['', '', '', '', '', '']);
                                             setError(null);
-                                            verifyInFlightRef.current = false;
                                             setIsLoading(false);
                                         }}
                                     >
@@ -537,6 +576,7 @@ function LoginContent() {
                                     type="button"
                                     className="btn btn-ghost btn-sm"
                                     onClick={() => {
+                                        cancelPendingLogin();
                                         setStep('identifier');
                                         setPin('');
                                         setError(null);
@@ -582,6 +622,7 @@ function LoginContent() {
                                     type="button"
                                     className="btn btn-ghost btn-sm"
                                     onClick={() => {
+                                        cancelPendingLogin();
                                         setStep('identifier');
                                         setPassword('');
                                         setError(null);

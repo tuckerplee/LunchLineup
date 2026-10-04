@@ -408,7 +408,10 @@ export class RetainedApplicationBridge {
     const contentType = response.headers.get('content-type');
 
     if (response.status >= 300 && response.status < 400) {
-      if (operation.responseKind !== 'redirect') {
+      const loginRedirectRequested = operation.supportsLoginRedirect === true
+        && typeof request.query === 'object' && request.query !== null
+        && (request.query as Record<string, unknown>).redirect === '1';
+      if (operation.responseKind !== 'redirect' && !loginRedirectRequested) {
         throw new ProblemError(
           502,
           'invalid_compatibility_response',

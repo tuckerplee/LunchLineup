@@ -60,7 +60,8 @@ function normalizeReceipt(value: unknown): AccountDeletionReceipt | null {
     fullDatabasePurgeEligibleAt: normalizeDate(candidate.fullDatabasePurgeEligibleAt),
   };
 
-  return Object.values(dates).some(Boolean)
+  return (candidate.deletionState === 'FINALIZED' || candidate.deletionState === 'PENDING_BILLING_CLEANUP')
+    && Boolean(dates.deletionRequestedAt)
     ? {
       deletionState: normalizeDeletionState(candidate.deletionState),
       ...dates,

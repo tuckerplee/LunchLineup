@@ -20,6 +20,8 @@ export type ApplicationApiOperation = Readonly<{
     | 'Administration';
   summary: string;
   responseKind?: ApplicationApiResponseKind;
+  /** These retained login endpoints also support the explicit ?redirect=1 form mode. */
+  supportsLoginRedirect?: true;
   bodyLimitBytes?: number;
   /** Native API-02 route registration owns this operation instead of the retained bridge. */
   native?: true;
@@ -39,14 +41,14 @@ export const APPLICATION_API_OPERATIONS = [
   { operationId: 'prepareAccountDeletionReceipt', method: 'POST', path: '/account-deletion/prepare', tag: 'Settings', summary: 'Prepare a short-lived deletion receipt lookup', bodyLimitBytes: 2048 },
   { operationId: 'readAccountDeletionReceipt', method: 'POST', path: '/account-deletion/receipt', tag: 'Authentication', summary: 'Recover deletion confirmation using a short-lived receipt capability', bodyLimitBytes: 2048 },
   { operationId: 'resolveLoginMethod', method: 'POST', path: '/auth/login/resolve', tag: 'Authentication', summary: 'Resolve the configured sign-in method' },
-  { operationId: 'verifyPasswordLogin', method: 'POST', path: '/auth/password/verify', tag: 'Authentication', summary: 'Verify a password sign-in challenge' },
+  { operationId: 'verifyPasswordLogin', method: 'POST', path: '/auth/password/verify', tag: 'Authentication', summary: 'Verify a password sign-in challenge', supportsLoginRedirect: true },
   { operationId: 'requestPasswordReset', method: 'POST', path: '/auth/password/reset/request', tag: 'Authentication', summary: 'Request password recovery' },
   { operationId: 'confirmPasswordReset', method: 'POST', path: '/auth/password/reset/confirm', tag: 'Authentication', summary: 'Confirm password recovery' },
   { operationId: 'startOidcLogin', method: 'GET', path: '/auth/login', tag: 'Authentication', summary: 'Start an OIDC sign-in redirect', responseKind: 'redirect' },
   { operationId: 'completeOidcLogin', method: 'GET', path: '/auth/callback', tag: 'Authentication', summary: 'Complete an OIDC sign-in redirect', responseKind: 'redirect' },
   { operationId: 'sendEmailLoginCode', method: 'POST', path: '/auth/email/send-otp', tag: 'Authentication', summary: 'Send an email sign-in code' },
-  { operationId: 'verifyEmailLoginCode', method: 'POST', path: '/auth/email/verify-otp', tag: 'Authentication', summary: 'Verify an email sign-in code' },
-  { operationId: 'verifyPinLogin', method: 'POST', path: '/auth/pin/verify', tag: 'Authentication', summary: 'Verify a PIN sign-in challenge' },
+  { operationId: 'verifyEmailLoginCode', method: 'POST', path: '/auth/email/verify-otp', tag: 'Authentication', summary: 'Verify an email sign-in code', supportsLoginRedirect: true },
+  { operationId: 'verifyPinLogin', method: 'POST', path: '/auth/pin/verify', tag: 'Authentication', summary: 'Verify a PIN sign-in challenge', supportsLoginRedirect: true },
   { operationId: 'refreshSession', method: 'POST', path: '/auth/refresh', tag: 'Authentication', summary: 'Rotate the authenticated session' },
   { operationId: 'getMfaEnrollment', method: 'GET', path: '/auth/mfa/enrollment', tag: 'Authentication', summary: 'Read MFA enrollment state' },
   { operationId: 'startMfaEnrollment', method: 'POST', path: '/auth/mfa/enrollment', tag: 'Authentication', summary: 'Start MFA enrollment' },

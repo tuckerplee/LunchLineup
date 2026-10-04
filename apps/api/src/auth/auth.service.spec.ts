@@ -3352,8 +3352,9 @@ describe('AuthService - MFA and refresh state', () => {
     it('requires MFA for privileged tenant operations even without platform admin access', async () => {
         mockRbacService.getEffectiveAccess.mockResolvedValue({
             primaryRole: 'Admin',
-            roles: [],
-            permissions: ['dashboard:access', 'settings:write'],
+            roles: [{ id: 'role-settings-admin', name: 'Admin', isSystem: true,
+                permissions: ['auth:login_email', 'dashboard:access', 'settings:write'] }],
+            permissions: ['auth:login_email', 'dashboard:access', 'settings:write'],
         });
         mockPrisma.user.findFirst.mockResolvedValue({
             id: 'u-settings-admin',
@@ -3774,6 +3775,42 @@ describe('AuthService - MFA and refresh state', () => {
             .resolves.toEqual({ status: 'already_invalid' });
 
         expect(mockPrisma.session.updateMany).not.toHaveBeenCalled();
+    });
+
+    it.each(['revoked', 'already_invalid'] as const)('preserves authoritative logout %s when MFA marker cleanup fails', async status => {
+        const session = { id: 's-logout-cleanup', userId: 'u-logout-cleanup',
+            user: { id: 'u-logout-cleanup', tenantId: 't-1', role: 'STAFF', deletedAt: null, suspendedAt: null, mfaEnabled: false },
+            revokedAt: status === 'already_invalid' ? new Date() : null,
+            createdAt: new Date(), expiresAt: new Date(Date.now() + 15 * 60_000) };
+        mockPrisma.session.findFirst.mockImplementation(async () => ({ ...session }));
+        mockPrisma.session.updateMany.mockImplementation(async ({ data }: any) => {
+            session.revokedAt = data.revokedAt;
+            return { count: 1 };
+        });
+        const cleanupFailure = Object.assign(new Error('secret-refresh-token and Redis endpoint must not be logged'), { code: 'ECONNRESET' });
+        (service as any).redis.del.mockRejectedValueOnce(cleanupFailure);
+        const warning = vi.spyOn((service as any).logger, 'warn').mockImplementation(() => undefined);
+        try {
+            await expect(service.revokeSessionByRefreshToken('synthetic-logout-bearer')).resolves.toEqual({ status });
+            expect(session.revokedAt).toBeInstanceOf(Date);
+            expect(mockPrisma.session.updateMany).toHaveBeenCalledTimes(status === 'revoked' ? 1 : 0);
+            expect((service as any).redis.del).toHaveBeenCalledWith('session_mfa:s-logout-cleanup');
+            expect(warning).toHaveBeenCalledOnce();
+            const diagnostic = JSON.parse(String(warning.mock.calls[0]![0]));
+            expect(diagnostic).toEqual({ event: 'auth.logout_mfa_cleanup_failed', errorClass: 'Error',
+                category: 'connectivity', code: 'ECONNRESET' });
+            await expect(service.validateAccessSession({ sub: session.userId, tenantId: 't-1', sessionId: session.id } as any))
+                .rejects.toBeInstanceOf(UnauthorizedException);
+        } finally { warning.mockRestore(); }
+    });
+
+    it('does not classify logout as complete or clear markers when durable revocation fails', async () => {
+        mockPrisma.session.findFirst.mockResolvedValue({ id: 's-logout-db-failure', revokedAt: null,
+            expiresAt: new Date(Date.now() + 15 * 60_000) });
+        const failure = new Error('owned database failure');
+        mockPrisma.session.updateMany.mockRejectedValueOnce(failure);
+        await expect(service.revokeSessionByRefreshToken('synthetic-logout-bearer')).rejects.toBe(failure);
+        expect((service as any).redis.del).not.toHaveBeenCalled();
     });
     it('enrolls MFA for an authenticated session and returns one-time backup codes', async () => {
         const session = {
@@ -4320,6 +4357,42 @@ describe('AuthService - policy commit at session issuance', () => {
             { username: account.username, pinHash: account.pinHash },
             { passwordHash: account.passwordHash }, { email: account.email });
     }
+
+    it.each([
+        ['EMAIL_OTP', 'auth:login_email'],
+        ['USERNAME_PASSWORD', 'auth:login_password'],
+        ['USERNAME_PIN', 'auth:login_pin'],
+    ] as const)('rejects %s when its login grant is revoked while issuance waits', async (method, permission) => {
+        const lock = pauseTenantLock();
+        const pending = issue(method).then((value: unknown) => ({ value, error: undefined }),
+            (error: unknown) => ({ error, value: undefined }));
+        try {
+            await lock.entered;
+            mockRbacService.getEffectiveAccess.mockResolvedValue({ primaryRole: 'STAFF',
+                roles: [{ id: 'staff-role', name: 'Staff', isSystem: true, legacyRole: 'STAFF' }],
+                permissions: ['auth:login_pin', 'auth:login_password', 'auth:login_email', 'dashboard:access']
+                    .filter(value => value !== permission) });
+            lock.release();
+            const result = await pending;
+            expect(result.error).toBeInstanceOf(UnauthorizedException);
+            expect(result.value).toBeUndefined();
+            expect(mockRbacService.getEffectiveAccess).toHaveBeenCalledWith(account.id, account.tenantId);
+            expect(mockPrisma.session.create).not.toHaveBeenCalled();
+            expect(mockPrisma.session.deleteMany).not.toHaveBeenCalled();
+            expect(mockPrisma.user.update).not.toHaveBeenCalled();
+            expect(mockPrisma.auditLog.create).not.toHaveBeenCalled();
+            expect(mockJwtService.generateAccessToken).not.toHaveBeenCalled();
+            expect(mockJwtService.generateCsrfToken).not.toHaveBeenCalled();
+        } finally { lock.release(); await pending; }
+    });
+
+    it('issues an email session when its current login grant remains present', async () => {
+        const lock = pauseTenantLock(), pending = issue('EMAIL_OTP');
+        await lock.entered;
+        lock.release();
+        await expect(pending).resolves.toHaveProperty('accessToken');
+        expect(mockPrisma.session.create).toHaveBeenCalledOnce();
+    });
 
     it.each(['USERNAME_PIN', 'USERNAME_PASSWORD', 'EMAIL_OTP'] as const)(
         'rejects %s when SSO-only policy commits while issuance waits for Tenant', async method => {

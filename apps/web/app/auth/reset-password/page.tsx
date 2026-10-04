@@ -5,6 +5,8 @@ import { Suspense, useEffect, useRef, useState } from 'react';
 import { useSearchParams } from 'next/navigation';
 import { LunchLineupMark } from '@/components/branding/LunchLineupMark';
 import { fetchPublicApi } from '@/lib/client-api';
+import { isPasswordResetConfirmation, passwordValidationMessage, resetConfirmationErrorMessage } from './reset-password-contract';
+export { resetConfirmationErrorMessage } from './reset-password-contract';
 const GENERIC_REQUEST_MESSAGE = 'If a matching account exists, a password reset email will be sent shortly.';
 const RESET_TOKEN_COOKIE = 'll_password_reset_token';
 
@@ -25,13 +27,6 @@ function readResetTokenCookie(): string {
 function clearResetTokenCookie() {
     const secure = window.location.protocol === 'https:' ? '; Secure' : '';
     document.cookie = `${RESET_TOKEN_COOKIE}=; Path=/auth/reset-password; Max-Age=0; SameSite=Strict${secure}`;
-}
-
-export function resetConfirmationErrorMessage(status: number): string {
-    if (status === 429) return 'Too many reset attempts. Wait a moment, then try again.';
-    if (status >= 500) return 'Password reset is temporarily unavailable. Please try again.';
-    if (status >= 400 && status < 500) return 'Reset link is invalid or expired.';
-    return 'Unable to reset password. Please try again.';
 }
 
 function ResetPasswordContent() {
@@ -112,8 +107,9 @@ function ResetPasswordContent() {
         setError(null);
         setMessage(null);
 
-        if (!password || password.length < 8) {
-            setError('Use at least 8 characters.');
+        const validationMessage = passwordValidationMessage(password);
+        if (validationMessage) {
+            setError(validationMessage);
             return;
         }
         if (password !== confirmPassword) {
@@ -131,6 +127,11 @@ function ResetPasswordContent() {
             });
             if (!response.ok) {
                 setError(resetConfirmationErrorMessage(response.status));
+                return;
+            }
+            const payload = await response.json().catch(() => null);
+            if (!isPasswordResetConfirmation(payload)) {
+                setError('The service did not confirm the password update. Please try again.');
                 return;
             }
             setPassword('');

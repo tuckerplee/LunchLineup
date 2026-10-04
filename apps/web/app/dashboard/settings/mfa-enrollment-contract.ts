@@ -112,3 +112,55 @@ export function readRecoveryCodes(payload: unknown): string[] {
     const root = unwrapPayload(payload);
     return readStringArray(root, ['recoveryCodes', 'backupCodes', 'codes']);
 }
+
+function invalidResponse(): never {
+    throw new Error('The service returned an invalid MFA response. Refresh the status before trying again.');
+}
+
+/** Validate the actual owner response before displaying a persisted status. */
+export function requireMfaEnrollmentState(payload: unknown): MfaEnrollmentState {
+    const root = asRecord(payload);
+    if (!root || typeof root.enabled !== 'boolean'
+        || typeof root.recoveryCodesRemaining !== 'number'
+        || !Number.isSafeInteger(root.recoveryCodesRemaining) || root.recoveryCodesRemaining < 0) {
+        return invalidResponse();
+    }
+    return {
+        enabled: root.enabled,
+        verifiedAt: typeof root.verifiedAt === 'string' ? root.verifiedAt : null,
+        recoveryCodesRemaining: root.recoveryCodesRemaining,
+        setup: null,
+    };
+}
+
+export function requireMfaSetupChallenge(payload: unknown): MfaSetupChallenge {
+    const root = asRecord(payload);
+    if (!root || typeof root.secret !== 'string' || !root.secret.trim()
+        || typeof root.otpauthUrl !== 'string' || !root.otpauthUrl.startsWith('otpauth://totp/')
+        || typeof root.expiresInSeconds !== 'number' || !Number.isSafeInteger(root.expiresInSeconds)
+        || root.expiresInSeconds <= 0) return invalidResponse();
+    return {
+        enrollmentId: null,
+        otpauthUrl: root.otpauthUrl,
+        qrCodeDataUrl: null,
+        manualEntryKey: root.secret,
+        expiresAt: null,
+        issuer: null,
+        accountLabel: null,
+    };
+}
+
+export function requireMfaConfirmation(payload: unknown): string[] {
+    const root = asRecord(payload);
+    if (!root || root.success !== true || root.mfaVerified !== true
+        || !Array.isArray(root.backupCodes) || root.backupCodes.length === 0
+        || !root.backupCodes.every(code => typeof code === 'string' && Boolean(code.trim()))) {
+        return invalidResponse();
+    }
+    return [...root.backupCodes] as string[];
+}
+
+export function requireMfaDisableConfirmation(payload: unknown): void {
+    const root = asRecord(payload);
+    if (!root || root.success !== true || root.mfaEnabled !== false) invalidResponse();
+}
