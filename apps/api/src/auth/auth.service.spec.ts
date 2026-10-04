@@ -241,6 +241,10 @@ function installAuditFailureRollbackHarness(
             },
             session: {
                 ...mockPrisma.session,
+                findFirst: vi.fn().mockImplementation(async ({ where }: any) => {
+                    const selected = draftSessions.find(session => session.id === where.id && session.userId === where.userId);
+                    return selected ? { ...selected } : null;
+                }),
                 findMany: vi.fn().mockImplementation(async () => draftSessions
                     .filter((session) => session.revokedAt === null)
                     .map(({ id }) => ({ id }))),
@@ -2402,9 +2406,15 @@ describe('AuthService – mixed auth flow', () => {
         (service as any).redis = redis;
         mockPrisma.user.findFirst.mockResolvedValue({
             id: 'u-3',
+            tenantId: 't-1',
+            pinResetRequired: true,
             username: 'nightlead',
             pinHash,
         });
+        mockPrisma.session.findFirst.mockImplementation(async ({ where }: any) =>
+            where.id === 'session-current' && where.userId === 'u-3'
+                ? { id: 'session-current', userId: 'u-3', revokedAt: null,
+                    createdAt: new Date(), expiresAt: new Date(Date.now() + 60 * 60_000) } : null);
         mockPrisma.user.updateMany.mockResolvedValue({ count: 1 });
         mockPrisma.session.findMany.mockResolvedValue([{ id: 'session-1' }]);
 
@@ -2741,7 +2751,8 @@ describe('AuthService – mixed auth flow', () => {
             deletedAt: null,
             suspendedAt: null,
         };
-        const sessions = [{ id: 'session-rollback', userId: account.id, revokedAt: null }];
+        const sessions = [{ id: 'session-rollback', userId: account.id, revokedAt: null,
+            createdAt: new Date(), expiresAt: new Date(Date.now() + 60 * 60_000) }];
         const redis = { del: vi.fn(), on: vi.fn() };
         (service as any).redis = redis;
         installAuditFailureRollbackHarness(account, sessions, new Error('audit unavailable'));
@@ -4087,7 +4098,8 @@ describe('AuthService - MFA and refresh state', () => {
             deletedAt: null,
             suspendedAt: null,
         };
-        const sessions = [{ id: 's-disable-rollback', userId: account.id, revokedAt: null }];
+        const sessions = [{ id: 's-disable-rollback', userId: account.id, revokedAt: null,
+            createdAt: new Date(), expiresAt: new Date(Date.now() + 15 * 60_000) }];
         mockPrisma.user.findFirst.mockResolvedValue({ ...account });
         mockPrisma.session.findFirst.mockResolvedValue({
             ...sessions[0],

@@ -12,7 +12,7 @@ import { OnboardingSignupService } from './onboarding-signup.service';
 import { operationalErrorLog } from './operational-error';
 import { secureHttpRequest, type SecureRequestOptions } from '../common/secure-http-client';
 import { PUBLIC_LEGAL_MANIFEST, hasCurrentSelfServiceLegalApproval } from '@lunchlineup/config';
-import { observeMfaVerification, type MfaSessionIdentity, type MfaVerificationObservation } from '@lunchlineup/rbac';
+import { isCurrentMfaObservation, observeMfaVerification, type MfaSessionIdentity, type MfaVerificationObservation } from '@lunchlineup/rbac';
 import {
     isPrismaUniqueConstraintConflict,
     isSerializableTransactionConflict,
@@ -1812,6 +1812,39 @@ export class AuthService implements OnModuleDestroy {
         return { username: reset.username };
     }
 
+    private async selfSecurityContextInTransaction(
+        tx: TenantPrismaTransaction,
+        tenantId: string,
+        userId: string,
+        sessionId: string,
+        options: { allowPinReset?: boolean; requiredPermission?: 'auth:login_pin' } = {},
+    ) {
+        // Retain Tenant -> User -> exact Session -> current roles/grants locks.
+        // Refresh eligibility and effective lifetime after those waits; callers
+        // must recheck deadlines after any additional waits before writing.
+        const access = await this.rbacService.authorizeSelfSecurityMutationInTransaction(tx, tenantId, {
+            actorUserId: userId, actorSessionId: sessionId, requiredPermission: options.requiredPermission,
+        });
+        const tenant = await tx.tenant.findUnique({
+            where: { id: tenantId }, select: { id: true, status: true, deletedAt: true },
+        });
+        this.assertTenantCanAuthenticate(tenant);
+        const user = await tx.user.findFirst({
+            where: { id: userId, tenantId, deletedAt: null, suspendedAt: null },
+            select: { id: true, tenantId: true, role: true, email: true, username: true,
+                pinHash: true, pinResetRequired: true, mfaEnabled: true, mfaSecret: true, mfaBackupCodes: true },
+        });
+        if (!user) throw new UnauthorizedException('User not found');
+        if (user.pinResetRequired && !options.allowPinReset) {
+            throw new ForbiddenException('PIN rotation required before MFA access');
+        }
+        const session = await tx.session.findFirst({ where: { id: sessionId, userId } });
+        if (!session) throw new UnauthorizedException('Invalid or expired session');
+        const settings = await this.tenantSecuritySettingsInTransaction(tx, tenantId);
+        const effectiveExpiresAt = this.assertSessionActive(session, settings);
+        return { user, session, settings, access, effectiveExpiresAt };
+    }
+
     async rotateOwnPin(
         userId: string,
         currentPin: string,
@@ -1827,20 +1860,33 @@ export class AuthService implements OnModuleDestroy {
             throw new BadRequestException('New PIN must differ from the temporary PIN');
         }
 
-        const now = new Date();
-        const data = this.buildPinCredentialData(newPin, false, now);
+        // Observe MFA outside retained database locks, then repeat current
+        // authorization in the write transaction. Forced reset is the explicit
+        // recovery exception; ordinary PIN changes follow current MFA policy.
+        const identity = { sub: userId, tenantId, sessionId: actorSessionId };
+        const preflight = await this.getTenantDb().withTenant(tenantId, tx =>
+            this.selfSecurityContextInTransaction(tx, tenantId, userId, actorSessionId,
+                { allowPinReset: true, requiredPermission: 'auth:login_pin' }));
+        const observation = !preflight.user.pinResetRequired
+            && this.isMfaRequired(preflight.user, preflight.settings, preflight.access)
+            ? await this.observeSessionMfa(identity) : null;
+        // New credential generation is independent of persisted authority.
+        // Keep this KDF outside locks and reuse it across bounded retries.
+        const preparedCredential = this.buildPinCredentialData(newPin, false);
         const audit = this.securityRequestAudit(requestAudit);
         const revokedSessionIds = await runSerializableMutationWithRetry(
             () => this.getTenantDb().withTenant(tenantId, async (tx) => {
-            await this.rbacService.authorizeSelfSecurityMutationInTransaction(tx, tenantId, {
-                actorUserId: userId,
-                actorSessionId,
-                requiredPermission: 'auth:login_pin',
-            });
-            const user = await tx.user.findFirst({
-                where: { id: userId, tenantId, deletedAt: null, suspendedAt: null },
-                select: { id: true, username: true, pinHash: true },
-            });
+            const { user, session, settings, access } = await this.selfSecurityContextInTransaction(
+                tx, tenantId, userId, actorSessionId,
+                { allowPinReset: true, requiredPermission: 'auth:login_pin' });
+            const assertCurrentAuthority = () => {
+                this.assertSessionActive(session, settings);
+                if (!user.pinResetRequired && this.isMfaRequired(user, settings, access)
+                    && !isCurrentMfaObservation(observation, identity)) {
+                    throw new ForbiddenException('MFA verification required before PIN change');
+                }
+            };
+            assertCurrentAuthority();
             if (!user || !user.username || !user.pinHash) {
                 throw new ForbiddenException('PIN change is only available for username accounts');
             }
@@ -1852,6 +1898,10 @@ export class AuthService implements OnModuleDestroy {
                 where: { userId, revokedAt: null },
                 select: { id: true },
             });
+            assertCurrentAuthority();
+            const now = new Date();
+            const data = { ...preparedCredential, pinSetAt: now };
+            assertCurrentAuthority();
             const updated = await tx.user.updateMany({
                 where: { id: userId, tenantId, deletedAt: null, suspendedAt: null },
                 data,
@@ -2565,42 +2615,27 @@ export class AuthService implements OnModuleDestroy {
         const audit = this.securityRequestAudit(requestAudit);
         const committed = await runSerializableMutationWithRetry(
             () => this.getTenantDb().withTenant(user.tenantId, async (tx) => {
-            const access = await this.rbacService.authorizeSelfSecurityMutationInTransaction(
-                tx,
-                user.tenantId,
-                { actorUserId: user.id, actorSessionId: session.id },
-            );
-            const currentUser = await tx.user.findFirst({
-                where: { id: user.id, tenantId: user.tenantId, deletedAt: null, suspendedAt: null },
-                select: {
-                    id: true,
-                    tenantId: true,
-                    role: true,
-                    email: true,
-                    username: true,
-                    pinResetRequired: true,
-                    mfaEnabled: true,
-                },
-            });
-            if (!currentUser) throw new UnauthorizedException('User not found');
-            if (currentUser.pinResetRequired) {
-                throw new ForbiddenException('PIN rotation required before MFA access');
-            }
+            const { user: currentUser, access, session: currentSession, settings, effectiveExpiresAt } = await this.selfSecurityContextInTransaction(
+                tx, user.tenantId, user.id, session.id);
             if (currentUser.mfaEnabled) throw new BadRequestException('MFA is already enabled');
-            const currentSession = await tx.session.findFirst({
-                where: { id: session.id, userId: currentUser.id },
-            });
-            if (!currentSession) throw new UnauthorizedException('Invalid or expired session');
-            const settings = await this.tenantSecuritySettingsInTransaction(tx, currentUser.tenantId);
-            const effectiveExpiresAt = this.assertSessionActive(currentSession, settings);
 
-            await this.claimTotpTimeStep(tx, user.tenantId, user.id, matchedTotpTimeStep);
+            const backupCodeHashes = backupCodes.map(backupCode => this.hashBackupCode(backupCode));
+            this.assertSessionActive(currentSession, settings);
+            const currentTotpTimeStep = this.findMatchingTotpTimeStep(secret, normalizedCode);
+            if (currentTotpTimeStep === null) throw new ForbiddenException('Invalid MFA code');
+            await this.claimTotpTimeStep(tx, user.tenantId, user.id, currentTotpTimeStep);
+            // A delayed proof insert must roll back rather than enable an
+            // account using authority or a TOTP window that expired meanwhile.
+            this.assertSessionActive(currentSession, settings);
+            if (this.findMatchingTotpTimeStep(secret, normalizedCode) !== currentTotpTimeStep) {
+                throw new ForbiddenException('Invalid MFA code');
+            }
             await tx.user.update({
                 where: { id: user.id },
                 data: {
                     mfaEnabled: true,
                     mfaSecret: this.encryptMfaSecret(secret),
-                    mfaBackupCodes: backupCodes.map((backupCode) => this.hashBackupCode(backupCode)),
+                    mfaBackupCodes: backupCodeHashes,
                 },
             });
             await tx.auditLog.create({
@@ -2666,27 +2701,8 @@ export class AuthService implements OnModuleDestroy {
         const audit = this.securityRequestAudit(requestAudit);
         const revokedSessionIds = await runSerializableMutationWithRetry(
             () => this.getTenantDb().withTenant(user.tenantId, async (tx) => {
-            const access = await this.rbacService.authorizeSelfSecurityMutationInTransaction(
-                tx,
-                user.tenantId,
-                { actorUserId: user.id, actorSessionId: session.id },
-            );
-            const currentUser = await tx.user.findFirst({
-                where: { id: user.id, tenantId: user.tenantId, deletedAt: null, suspendedAt: null },
-                select: {
-                    id: true,
-                    mfaEnabled: true,
-                    mfaSecret: true,
-                    mfaBackupCodes: true,
-                },
-            });
-            if (!currentUser) throw new UnauthorizedException('User not found');
-            const currentSession = await tx.session.findFirst({
-                where: { id: session.id, userId: currentUser.id },
-            });
-            if (!currentSession) throw new UnauthorizedException('Invalid or expired session');
-            const settings = await this.tenantSecuritySettingsInTransaction(tx, user.tenantId);
-            this.assertSessionActive(currentSession, settings);
+            const { user: currentUser, session: currentSession, access, settings } = await this.selfSecurityContextInTransaction(
+                tx, user.tenantId, user.id, session.id);
             if (this.isPrivilegedMfaRequiredForAccess(access)) {
                 throw new ForbiddenException('MFA is required for administrative access');
             }
@@ -2694,6 +2710,13 @@ export class AuthService implements OnModuleDestroy {
                 throw new ForbiddenException('MFA is required by workspace policy');
             }
             if (currentUser.mfaEnabled) {
+                const activeSessions = await tx.session.findMany({
+                    where: { userId: user.id, revokedAt: null },
+                    select: { id: true },
+                });
+                // Enumeration can wait too. Reject expired authority before
+                // the first proof or account write; calculate TOTP afterwards.
+                this.assertSessionActive(currentSession, settings);
                 const matchedTotpTimeStep = currentUser.mfaSecret
                     ? this.findMatchingTotpTimeStep(currentUser.mfaSecret, normalizedCode)
                     : null;
@@ -2704,14 +2727,11 @@ export class AuthService implements OnModuleDestroy {
                 if (matchedTotpTimeStep === null && !matchingBackupCodeHash) {
                     throw new ForbiddenException('Invalid MFA code');
                 }
+                this.assertSessionActive(currentSession, settings);
                 if (matchedTotpTimeStep !== null) {
                     await this.claimTotpTimeStep(tx, user.tenantId, user.id, matchedTotpTimeStep);
                 }
-
-                const activeSessions = await tx.session.findMany({
-                    where: { userId: user.id, revokedAt: null },
-                    select: { id: true },
-                });
+                this.assertSessionActive(currentSession, settings);
 
                 await tx.user.update({
                     where: { id: user.id },
@@ -2783,12 +2803,20 @@ export class AuthService implements OnModuleDestroy {
                     id: true,
                     tenantId: true,
                     role: true,
+                    pinResetRequired: true,
+                    lockedUntil: true,
+                    pinLockedUntil: true,
                     mfaEnabled: true,
                     mfaSecret: true,
                     mfaBackupCodes: true,
                 },
             });
             if (!user) throw new UnauthorizedException('User not found');
+            if (user.pinResetRequired) throw new ForbiddenException('PIN rotation required before MFA access');
+            await this.checkAccountLockout(user);
+            if (user.pinLockedUntil && user.pinLockedUntil > new Date()) {
+                throw new ForbiddenException('Account locked due to too many failed PIN attempts');
+            }
             await tx.$queryRaw`
                 SELECT "id"
                 FROM "Session"
@@ -2804,8 +2832,8 @@ export class AuthService implements OnModuleDestroy {
             if (!session) throw new UnauthorizedException('Invalid or expired session');
 
             const settings = await this.tenantSecuritySettingsInTransaction(tx, sessionClaims.tenantId);
-            const effectiveExpiresAt = this.assertSessionActive(session, settings);
             const access = await this.rbacService.getEffectiveAccessInTransaction(tx, userId, sessionClaims.tenantId);
+            const effectiveExpiresAt = this.assertSessionActive(session, settings);
             if (!this.isMfaRequired(user, settings, access)) {
                 return { user, session, access, effectiveExpiresAt, verificationRequired: false };
             }
@@ -2820,6 +2848,7 @@ export class AuthService implements OnModuleDestroy {
             if (matchedTotpTimeStep === null && !matchingBackupCodeHash) {
                 throw new ForbiddenException('Invalid MFA code');
             }
+            this.assertSessionActive(session, settings);
             if (matchedTotpTimeStep !== null) {
                 await this.claimTotpTimeStep(
                     tx,
@@ -2828,6 +2857,7 @@ export class AuthService implements OnModuleDestroy {
                     matchedTotpTimeStep,
                 );
             }
+            this.assertSessionActive(session, settings);
             if (matchingBackupCodeHash) {
                 await tx.user.update({
                     where: { id: user.id },
@@ -2836,6 +2866,7 @@ export class AuthService implements OnModuleDestroy {
                     },
                 });
             }
+            this.assertSessionActive(session, settings);
             return { user, session, access, effectiveExpiresAt, verificationRequired: true };
         });
 
