@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { createRequire } from 'node:module';
 import { resolve } from 'node:path';
+import { performance } from 'node:perf_hooks';
 import test from 'node:test';
 import { createPrisma, requireServiceUrl } from './schedule-solve-harness.mjs';
 
@@ -11,6 +12,31 @@ const require = createRequire(import.meta.url);
 require('ts-node/register/transpile-only');
 const { PeopleService } = require('../../apps/api-v2/src/people/people.service.ts');
 const { TenantDatabase } = require('../../apps/api-v2/src/platform/database.ts');
+
+// Synthetic observation owner for this disposable PostgreSQL fixture only.
+// Exact fixture-selected identities receive a fixed, process-local one-hour
+// lease. This does not qualify Redis verification, TTL storage or native MFA.
+function createSyntheticNativePeopleMfaOwner() {
+  const observations = new Map();
+  const key = identity => JSON.stringify([identity.sub, identity.tenantId, identity.sessionId]);
+  return {
+    verifyFixtureSession(identity) {
+      const selected = { sub: identity.sub, tenantId: identity.tenantId, sessionId: identity.sessionId };
+      for (const value of Object.values(selected)) assert.equal(typeof value === 'string' && value.trim() === value && value.length > 0, true);
+      observations.set(key(selected), Object.freeze({ ...selected,
+        expiresAtEpochMs: Date.now() + 3_600_000,
+        expiresAtMonotonicMs: performance.now() + 3_600_000,
+      }));
+    },
+    async observeSessionMfa(identity) {
+      const observation = observations.get(key(identity));
+      if (!observation || observation.expiresAtEpochMs <= Date.now()
+        || observation.expiresAtMonotonicMs <= performance.now()) return null;
+      return { ...observation };
+    },
+  };
+}
+
 
 function identity(tenantId, userId) {
   return {
@@ -35,11 +61,12 @@ test('native API v2 people reads use public role/user UUIDs and tenant-scoped re
   const actorId = `api-v2-people-actor-${randomUUID()}`;
   const colleagueId = `api-v2-people-colleague-${randomUUID()}`;
   const otherUserId = `api-v2-people-other-user-${randomUUID()}`;
+  const syntheticMfaOwner = createSyntheticNativePeopleMfaOwner();
   const service = new PeopleService(new TenantDatabase(app), {
     staffInvitationOutboxEnabled: false,
     staffInvitationOutboxEncryptionKey: '',
     staffInvitationMaxAttempts: 8,
-  });
+  }, syntheticMfaOwner);
 
   let roleId;
   let userPublicId;
@@ -97,6 +124,8 @@ test('native API v2 people reads use public role/user UUIDs and tenant-scoped re
     });
 
     const actorIdentity = identity(tenantId, actorId);
+    // The read fixture uses a synthetic session ID and proves no mutation lease.
+    syntheticMfaOwner.verifyFixtureSession(actorIdentity);
     const directory = await service.list(actorIdentity, { limit: '10' });
     assert.equal(directory.data.length, 2);
     assert.ok(directory.data.some((entry) => entry.id === actor.publicId));

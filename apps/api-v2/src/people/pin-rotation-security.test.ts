@@ -37,13 +37,14 @@ type PinUser = {
   username: string;
   pinHash: string;
   pinResetRequired: boolean;
+  mfaEnabled: boolean;
   pinLoginAttempts: number;
   pinLockedUntil: Date | null;
   lockedUntil: Date | null;
   suspendedAt: Date | null;
   deletedAt: Date | null;
 };
-type PinSession = { id: string; userId: string; expiresAt: Date; revokedAt: Date | null };
+type PinSession = { id: string; userId: string; createdAt: Date; expiresAt: Date; revokedAt: Date | null };
 type State = { users: PinUser[]; sessions: PinSession[]; permissions: string[]; audits: Array<Record<string, unknown>> };
 
 const identity: SessionIdentity = {
@@ -55,7 +56,7 @@ const identity: SessionIdentity = {
 function user(id: string, tenantId = 'tenant-1'): PinUser {
   return {
     id, tenantId, publicId: identity.publicUserId, role: 'STAFF', name: id, email: null, username: id,
-    pinHash: fixtureHash, pinResetRequired: true, pinLoginAttempts: 0, pinLockedUntil: null,
+    pinHash: fixtureHash, pinResetRequired: true, mfaEnabled: false, pinLoginAttempts: 0, pinLockedUntil: null,
     lockedUntil: null, suspendedAt: null, deletedAt: null,
   };
 }
@@ -74,9 +75,9 @@ function rollbackDatabase() {
   let state: State = {
     users: [user('actor-1'), user('other-user'), user('foreign-user', 'tenant-2')],
     sessions: [
-      { id: 'session-1', userId: 'actor-1', expiresAt: new Date(Date.now() + 60_000), revokedAt: null },
-      { id: 'session-2', userId: 'actor-1', expiresAt: new Date(Date.now() + 60_000), revokedAt: null },
-      { id: 'other-session', userId: 'other-user', expiresAt: new Date(Date.now() + 60_000), revokedAt: null },
+      { id: 'session-1', userId: 'actor-1', createdAt: new Date(), expiresAt: new Date(Date.now() + 60_000), revokedAt: null },
+      { id: 'session-2', userId: 'actor-1', createdAt: new Date(), expiresAt: new Date(Date.now() + 60_000), revokedAt: null },
+      { id: 'other-session', userId: 'other-user', createdAt: new Date(), expiresAt: new Date(Date.now() + 60_000), revokedAt: null },
     ],
     permissions: ['auth:login_pin'], audits: [],
   };
@@ -93,6 +94,18 @@ function rollbackDatabase() {
     const number = ++transactionNumber;
     controls.activeTransactions += 1;
     const transaction = {
+      tenant: {
+        findUnique: vi.fn(async ({ where }: { where: { id: string } }) => (
+          where.id === tenantId && ['tenant-1', 'tenant-2'].includes(where.id)
+            ? { id: where.id, status: 'ACTIVE', deletedAt: null } : null
+        )),
+      },
+      tenantSetting: {
+        findUnique: vi.fn(async ({ where }: { where: { tenantId_key: { tenantId: string; key: string } } }) => (
+          where.tenantId_key.tenantId === tenantId && where.tenantId_key.key === 'workspace_settings'
+            ? { value: { security: { requireMfaForAll: false, sessionTimeoutMinutes: 480 } } } : null
+        )),
+      },
       $queryRaw: vi.fn(async (query: { strings: string[]; values: unknown[] }) => {
         const sql = query.strings.join('');
         expect(sql).toContain('FOR UPDATE');
@@ -131,6 +144,9 @@ function rollbackDatabase() {
         }),
       },
       session: {
+        findFirst: vi.fn(async ({ where }: { where: Record<string, unknown> }) => (
+          draft.sessions.find((entry) => matches(entry, where)) ?? null
+        )),
         updateMany: vi.fn(async ({ where, data }: { where: Record<string, unknown>; data: Record<string, unknown> }) => {
           const rows = draft.sessions.filter((entry) => matches(entry, where));
           rows.forEach((entry) => Object.assign(entry, data));

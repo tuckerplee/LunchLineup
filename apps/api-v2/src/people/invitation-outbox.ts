@@ -149,6 +149,7 @@ export class InvitationOutbox {
   async enqueue(
     transaction: TenantTransaction,
     input: { tenantId: string; userId: string; recipient: string },
+    assertCurrent: () => void = () => {},
   ): Promise<InvitationDelivery> {
     const key = invitationKey(this.config);
     const recipient = input.recipient.trim().toLowerCase();
@@ -165,6 +166,7 @@ export class InvitationOutbox {
     const terminal = Boolean(existing && ['DELIVERED', 'DEAD_LETTERED', 'CANCELLED'].includes(existing.status));
     const outboxId = !existing || terminal ? randomUUID() : existing.id;
     const data = this.pendingData(key, { ...input, recipient, outboxId });
+    assertCurrent();
     const row = existing
       ? await transaction.staffInvitationOutbox.update({
         where: { id: existing.id },
@@ -189,6 +191,7 @@ export class InvitationOutbox {
   async retry(
     transaction: TenantTransaction,
     input: { tenantId: string; userId: string; actorUserId: string },
+    assertCurrent: () => void = () => {},
   ): Promise<InvitationDelivery> {
     invitationKey(this.config);
     const user = await transaction.user.findFirst({
@@ -204,6 +207,7 @@ export class InvitationOutbox {
     if (current.attempts >= this.config.staffInvitationMaxAttempts || current.manualRetryCount >= MAX_MANUAL_RETRIES || !current.encryptedPayload) {
       throw conflict('Invitation delivery retry limit was reached.');
     }
+    assertCurrent();
     const updated = await transaction.staffInvitationOutbox.updateMany({
       where: {
         id: current.id,
@@ -228,6 +232,7 @@ export class InvitationOutbox {
     if (!row) throw notFound('Invitation delivery was not found.');
     if (updated.count === 0 && row.status !== 'PENDING') throw conflict('Invitation delivery changed before retry.');
     if (updated.count > 0) {
+      assertCurrent();
       await transaction.auditLog.create({
         data: {
           tenantId: input.tenantId,
@@ -246,6 +251,7 @@ export class InvitationOutbox {
   async reissue(
     transaction: TenantTransaction,
     input: { tenantId: string; userId: string; actorUserId: string; idempotencyKey?: string },
+    assertCurrent: () => void = () => {},
   ): Promise<InvitationDelivery> {
     const key = invitationKey(this.config);
     const idempotencyKey = normalizedIdempotencyKey(input.idempotencyKey);
@@ -272,6 +278,7 @@ export class InvitationOutbox {
       recipient: user.email.trim().toLowerCase(),
       outboxId,
     });
+    assertCurrent();
     const replaced = await transaction.staffInvitationOutbox.updateMany({
       where: {
         id: current.id,
@@ -289,6 +296,7 @@ export class InvitationOutbox {
       }
       throw conflict('Invitation delivery changed before reissue.');
     }
+    assertCurrent();
     await transaction.auditLog.create({
       data: {
         tenantId: input.tenantId,

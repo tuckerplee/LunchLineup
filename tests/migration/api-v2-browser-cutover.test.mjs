@@ -168,7 +168,7 @@ test('API-02 owns People natively with public role/user UUIDs and native staff d
     assert.match(catalog, new RegExp(`operationId: '${operationId}'[^\\n]*native: true`));
   }
   assert.match(catalog, /operationId: 'deleteStaffMember'[^\n]*native: true/);
-  assert.match(server, /new PeopleService\(database, config\)/);
+  assert.match(server, /new PeopleService\(database, config, identity\)/);
   assert.match(server, /new PeopleIdentifierTranslator\(people\)/);
   assert.match(routes, /registerPeopleRoutes/);
   assert.match(routes, /remove\(identity, request\.params\.userId\)/);
@@ -355,7 +355,7 @@ test('API-02 owns workspace settings natively with tenant RLS and a redacted sec
     assert.match(catalog, new RegExp(`operationId: '${operationId}'[^\\n]*native: true`));
   }
   assert.match(contract, /WorkspaceSettingsSchema/);
-  assert.match(server, /new WorkspaceSettingsService\(database, config\)/);
+  assert.match(server, /new WorkspaceSettingsService\(database, config, identity\)/);
   assert.match(server, /registerWorkspaceSettingsRoutes/);
   assert.match(routes, /registerWorkspaceSettingsRoutes/);
   assert.match(service, /tenantSetting\.upsert/);

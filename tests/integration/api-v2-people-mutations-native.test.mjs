@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { randomBytes, randomUUID, scryptSync } from 'node:crypto';
 import { createRequire } from 'node:module';
 import { resolve } from 'node:path';
+import { performance } from 'node:perf_hooks';
 import test from 'node:test';
 import { createPrisma, requireServiceUrl } from './schedule-solve-harness.mjs';
 
@@ -10,6 +11,31 @@ const require = createRequire(import.meta.url);
 require('ts-node/register/transpile-only');
 const { PeopleService } = require('../../apps/api-v2/src/people/people.service.ts');
 const { TenantDatabase } = require('../../apps/api-v2/src/platform/database.ts');
+
+// Synthetic observation owner for this disposable PostgreSQL fixture only.
+// Exact fixture-selected identities receive a fixed, process-local one-hour
+// lease. This does not qualify Redis verification, TTL storage or native MFA.
+function createSyntheticNativePeopleMfaOwner() {
+  const observations = new Map();
+  const key = identity => JSON.stringify([identity.sub, identity.tenantId, identity.sessionId]);
+  return {
+    verifyFixtureSession(identity) {
+      const selected = { sub: identity.sub, tenantId: identity.tenantId, sessionId: identity.sessionId };
+      for (const value of Object.values(selected)) assert.equal(typeof value === 'string' && value.trim() === value && value.length > 0, true);
+      observations.set(key(selected), Object.freeze({ ...selected,
+        expiresAtEpochMs: Date.now() + 3_600_000,
+        expiresAtMonotonicMs: performance.now() + 3_600_000,
+      }));
+    },
+    async observeSessionMfa(identity) {
+      const observation = observations.get(key(identity));
+      if (!observation || observation.expiresAtEpochMs <= Date.now()
+        || observation.expiresAtMonotonicMs <= performance.now()) return null;
+      return { ...observation };
+    },
+  };
+}
+
 const { installProblemHandler } = require('../../apps/api-v2/src/platform/problem.ts');
 
 // Direct service calls expose raw Prisma conflicts. Exercise the actual public
@@ -32,9 +58,10 @@ test('People mutations preserve stale writes, replay identity, suspended history
   const app = createPrisma(requireServiceUrl('DATABASE_URL').toString());
   const tenantId = `people-mutations-${randomUUID()}`;
   const otherTenantId = `people-mutations-other-${randomUUID()}`;
+  const syntheticMfaOwner = createSyntheticNativePeopleMfaOwner();
   const service = new PeopleService(new TenantDatabase(app), {
     staffInvitationOutboxEnabled: false, staffInvitationOutboxEncryptionKey: '', staffInvitationMaxAttempts: 8,
-  });
+  }, syntheticMfaOwner);
   const roles = [];
   try {
     const [dbRole] = await app.$queryRawUnsafe('SELECT rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user');
@@ -62,6 +89,7 @@ test('People mutations preserve stale writes, replay identity, suspended history
     const identity = { sub: admin.id, publicUserId: admin.publicId, tenantId, sessionId: actorSession.id,
       role: 'ADMIN', legacyRole: 'ADMIN', roles: [{ id: roles[0].publicId, name: 'Admin', legacyRole: 'ADMIN', isSystem: true }],
       permissions: ['users:read', 'users:write', 'users:admin', 'auth:login_pin'], mfaVerified: true, mfaRequired: false };
+    syntheticMfaOwner.verifyFixtureSession(identity);
     const beforeA = await service.schedulingProfile(identity, employee.publicId);
     const beforeB = await service.schedulingProfile(identity, employee.publicId);
     await service.replaceSchedulingProfile(identity, employee.publicId, { expectedVersion: beforeA.version, skills: ['cashier'], availability: [], availabilityExceptions: [] });
@@ -120,6 +148,7 @@ test('People mutations preserve stale writes, replay identity, suspended history
     const pinIdentity = { sub: pinUser.id, publicUserId: pinUser.publicId, tenantId, sessionId: pinSession.id,
       role: 'PIN Budget', legacyRole: 'STAFF', roles: [{ id: pinRole.publicId, name: pinRole.name, legacyRole: 'STAFF', isSystem: false }],
       permissions: ['auth:login_pin'], mfaVerified: true, mfaRequired: false, pinResetRequired: true };
+    syntheticMfaOwner.verifyFixtureSession(pinIdentity);
     const readPinState = () => owner.user.findUniqueOrThrow({ where: { id: pinUser.id },
       select: { pinHash: true, pinLoginAttempts: true, pinLockedUntil: true, pinResetRequired: true } });
     for (let attempt = 1; attempt <= 5; attempt++) {
@@ -161,6 +190,7 @@ test('People mutations preserve stale writes, replay identity, suspended history
     assert.deepEqual(await readPinState(), rotated);
     const freshPinSession = await session(pinUser.id);
     const freshPinIdentity = { ...pinIdentity, sessionId: freshPinSession.id, pinResetRequired: false };
+    syntheticMfaOwner.verifyFixtureSession(freshPinIdentity);
     await assert.rejects(() => service.replaceOwnPin({ ...freshPinIdentity, tenantId: otherTenantId }, '111111', '678901'), e => e.status === 403);
     assert.deepEqual(await readPinState(), rotated);
     const concurrentGuesses = await Promise.allSettled(Array.from({ length: 4 },
