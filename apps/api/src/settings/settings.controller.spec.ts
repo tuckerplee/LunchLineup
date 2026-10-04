@@ -5,7 +5,7 @@ import { TenantPrismaService } from '../database/tenant-prisma.service';
 import { SettingsController } from './settings.controller';
 
 const settingsReadReq = { user: { tenantId: 'tenant-1', role: 'MANAGER', permissions: ['settings:read'] } };
-const settingsWriteReq = { user: { sub: 'admin-1', tenantId: 'tenant-1', role: 'ADMIN', permissions: ['settings:read', 'settings:write'] } };
+const settingsWriteReq = { user: { sub: 'admin-1', tenantId: 'tenant-1', sessionId: 'session-1', role: 'ADMIN', permissions: ['settings:read', 'settings:write'] } };
 const oidcEnvKeys = [
     'OIDC_ENABLED',
     'NEXT_PUBLIC_OIDC_ENABLED',
@@ -43,6 +43,10 @@ describe('SettingsController', () => {
             delete process.env[key];
         }
         prisma = {
+            user: { findFirst: vi.fn().mockResolvedValue({ id: 'admin-1', role: 'ADMIN', lockedUntil: null, pinLockedUntil: null }) },
+            roleAssignment: { findMany: vi.fn().mockResolvedValue([{ userId: 'admin-1', roleId: 'role-1' }]) },
+            role: { findMany: vi.fn().mockResolvedValue([{ id: 'role-1', name: 'Admin', isSystem: true, legacyRole: 'ADMIN',
+                rolePermissions: [{ permission: { key: 'settings:write' } }] }]) },
             tenant: {
                 findUniqueOrThrow: vi.fn().mockResolvedValue({
                     name: 'Acme Dining',
@@ -58,7 +62,12 @@ describe('SettingsController', () => {
                 create: vi.fn().mockResolvedValue({}),
             },
             $executeRaw: vi.fn().mockResolvedValue(1),
-            $queryRaw: vi.fn().mockResolvedValue([{ set_current_tenant: null }]),
+            $queryRaw: vi.fn(async (sql: unknown) => {
+                const text = Array.from(sql as TemplateStringsArray).join('');
+                return text.includes('FROM "Session"')
+                    ? [{ id: 'session-1', userId: 'admin-1', expiresAt: new Date(Date.now() + 60_000), revokedAt: null }]
+                    : [{ id: 'tenant-1' }];
+            }),
             $transaction: vi.fn(async (cb: any) => cb(prisma)),
         };
         controller = new SettingsController(new TenantPrismaService(prisma));

@@ -4,6 +4,10 @@ import { SettingsController } from './settings.controller';
 import { WorkspaceSettingsService } from '../../../api-v2/src/settings/settings.service';
 
 type Owner = 'legacy' | 'native';
+const flattenedValues = (values: unknown[]): unknown[] => values.flatMap(value => (
+    value && typeof value === 'object' && 'values' in value
+        ? flattenedValues((value as { values: unknown[] }).values) : [value]
+));
 const deferred = () => {
     let release!: () => void;
     const promise = new Promise<void>(resolve => { release = resolve; });
@@ -32,6 +36,7 @@ function harness(initiallyMissing = false) {
     }
     async function transaction(tenantId: string, operation: (tx: any) => Promise<any>) {
         ensure(tenantId);
+        const actorId = `actor:${tenantId}`, sessionId = `session:${tenantId}`, roleId = `role:${tenantId}`;
         const number = ++sequence;
         const releases: Array<() => void> = [], held = new Set<string>();
         let draft: any, tenantDraft: { name: string; slug: string } | undefined;
@@ -46,7 +51,7 @@ function harness(initiallyMissing = false) {
         }
         async function explicitLock(sql: { strings: readonly string[]; values?: unknown[] } | readonly string[], ...args: unknown[]) {
             const text = (Array.isArray(sql) ? sql : (sql as { strings: readonly string[] }).strings).join('');
-            const parameters = Array.isArray(sql) ? args : (sql as { values: unknown[] }).values;
+            const parameters = flattenedValues(Array.isArray(sql) ? args : (sql as { values: unknown[] }).values);
             if (text.includes('FROM "Tenant"') && text.includes('FOR UPDATE')) {
                 if (number === 2) secondBoundary.release();
                 expect(parameters).toEqual([tenantId]);
@@ -54,6 +59,11 @@ function harness(initiallyMissing = false) {
             } else if (text.includes('pg_advisory_xact_lock')) {
                 if (number === 2) secondBoundary.release();
                 await lock(`advisory:${parameters[0]}`);
+            }
+            if (text.includes('FROM "User"')) return [{ id: actorId, role: 'ADMIN', deletedAt: null, suspendedAt: null }];
+            if (text.includes('FROM "Session"')) {
+                expect(parameters).toEqual([sessionId, actorId]);
+                return [{ id: sessionId, userId: actorId, expiresAt: new Date(Date.now() + 60_000), revokedAt: null }];
             }
             return [{ id: tenantId }];
         }
@@ -64,6 +74,10 @@ function harness(initiallyMissing = false) {
         const tx = {
             $queryRaw: explicitLock,
             $executeRaw: explicitLock,
+            user: { findFirst: async () => ({ id: actorId, role: 'ADMIN', lockedUntil: null, pinLockedUntil: null }) },
+            roleAssignment: { findMany: async () => [{ userId: actorId, roleId }] },
+            role: { findMany: async () => [{ id: roleId, name: 'Admin', isSystem: true, legacyRole: 'ADMIN',
+                rolePermissions: [{ permission: { key: 'settings:write' } }] }] },
             tenant: {
                 findUnique: readTenant,
                 findUniqueOrThrow: readTenant,
@@ -106,8 +120,8 @@ function harness(initiallyMissing = false) {
         } finally { for (const release of releases.reverse()) release(); }
     }
     function services(tenantId = 'tenant-1') {
-        const req = { user: { sub: 'actor-1', tenantId, permissions: ['settings:read', 'settings:write'] } };
-        const identity = { sub: 'actor-1', tenantId, sessionId: 'session-1', role: 'ADMIN', permissions: req.user.permissions };
+        const req = { user: { sub: `actor:${tenantId}`, tenantId, sessionId: `session:${tenantId}`, permissions: ['settings:read', 'settings:write'] } };
+        const identity = { ...req.user, role: 'ADMIN' };
         const legacy = new SettingsController(new TenantPrismaService({
             $transaction: (operation: (tx: any) => Promise<any>) => transaction(tenantId, operation),
         } as any));

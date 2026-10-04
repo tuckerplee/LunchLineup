@@ -1,6 +1,7 @@
 import { BadRequestException, Body, Controller, ForbiddenException, Get, Optional, Put, Req, UseGuards } from '@nestjs/common';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { RbacGuard } from '../auth/rbac.guard';
+import { RbacService } from '../auth/rbac.service';
 import { RequirePermission } from '../auth/require-permission.decorator';
 import { TenantPrismaService, type TenantPrismaTransaction } from '../database/tenant-prisma.service';
 
@@ -94,9 +95,11 @@ type SecurityPolicyAuditValue = {
 @UseGuards(JwtAuthGuard, RbacGuard)
 export class SettingsController {
     private readonly tenantDb: TenantPrismaService;
+    private readonly rbacService: RbacService;
 
-    constructor(@Optional() tenantDb?: TenantPrismaService) {
+    constructor(@Optional() tenantDb?: TenantPrismaService, @Optional() rbacService?: RbacService) {
         this.tenantDb = tenantDb ?? new TenantPrismaService();
+        this.rbacService = rbacService ?? new RbacService(this.tenantDb);
     }
 
     private assertCanReadSettings(permissions: unknown): void {
@@ -349,15 +352,14 @@ export class SettingsController {
         });
     }
 
-    private async lockWorkspaceSettings(client: TenantPrismaTransaction, tenantId: string): Promise<void> {
-        // Use the same tenant row as session issuance and API-v2 writers.
-        // Lock before reading, including when workspace_settings is absent.
-        await client.$queryRaw`
-            SELECT "id"
-            FROM "Tenant"
-            WHERE "id" = ${tenantId}
-            FOR UPDATE
-        `;
+    private async authorizeSettingsWrite(client: TenantPrismaTransaction, tenantId: string, actor: any): Promise<void> {
+        // The shared helper obtains Tenant first, preserving aggregate/policy
+        // serialization, then rechecks the exact session and live role grants.
+        await this.rbacService.authorizeSelfSecurityMutationInTransaction(client, tenantId, {
+            actorUserId: actor?.sub,
+            actorSessionId: actor?.sessionId,
+            requiredPermission: 'settings:write',
+        });
     }
 
     @Get()
@@ -379,7 +381,7 @@ export class SettingsController {
 
         const tenantId = req.user.tenantId;
         return this.tenantDb.withTenant(tenantId, async (tx) => {
-            await this.lockWorkspaceSettings(tx, tenantId);
+            await this.authorizeSettingsWrite(tx, tenantId, req.user);
             const current = await this.readNormalizedSettings(tx, tenantId);
             const tenantUpdate: Record<string, string> = {};
 
@@ -431,7 +433,7 @@ export class SettingsController {
 
         const tenantId = req.user.tenantId;
         return this.tenantDb.withTenant(tenantId, async (tx) => {
-            await this.lockWorkspaceSettings(tx, tenantId);
+            await this.authorizeSettingsWrite(tx, tenantId, req.user);
             const current = await this.readNormalizedSettings(tx, tenantId);
             const nextSettings: NormalizedSettings = {
                 general: current.general,
@@ -464,7 +466,7 @@ export class SettingsController {
         }
 
         return this.tenantDb.withTenant(tenantId, async (tx) => {
-            await this.lockWorkspaceSettings(tx, tenantId);
+            await this.authorizeSettingsWrite(tx, tenantId, req.user);
             const current = await this.readNormalizedSettings(tx, tenantId);
             const nextSettings: NormalizedSettings = {
                 general: current.general,

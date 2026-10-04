@@ -27,6 +27,20 @@ function identity(tenantId, userId) {
   };
 }
 
+async function seedMutationAuthority(owner, tenantId, user, selectedIdentity) {
+  const permission = await owner.permission.findUniqueOrThrow({ where: { key: 'settings:write' } });
+  const role = await owner.role.create({ data: {
+    tenantId, name: 'Settings editor', slug: 'settings-editor', isSystem: false,
+  } });
+  await owner.rolePermission.create({ data: { roleId: role.id, permissionId: permission.id } });
+  await owner.roleAssignment.create({ data: { tenantId, userId: user.id, roleId: role.id } });
+  await owner.session.create({ data: {
+    id: selectedIdentity.sessionId, userId: user.id, refreshToken: randomUUID(),
+    ipAddress: '127.0.0.1', userAgent: 'native-settings-fixture', expiresAt: new Date(Date.now() + 3_600_000),
+  } });
+  selectedIdentity.publicUserId = user.publicId;
+}
+
 async function boundedBarrier(promise, description, timeoutMs = 5_000) {
   let timer;
   try {
@@ -64,6 +78,8 @@ test('native API v2 workspace settings stay tenant-scoped, audit security change
     ]);
     const primaryIdentity = identity(tenant.id, user.id);
     const isolatedIdentity = identity(otherTenant.id, otherUser.id);
+    await seedMutationAuthority(owner, tenant.id, user, primaryIdentity);
+    await seedMutationAuthority(owner, otherTenant.id, otherUser, isolatedIdentity);
 
     const defaults = await settings.get(primaryIdentity);
     assert.equal(defaults.general.name, 'Settings Primary');
@@ -124,10 +140,10 @@ test('native API v2 workspace settings stay tenant-scoped, audit security change
     const observedSecond = new WorkspaceSettingsService({
       withTenant: (tenantId, operation) => database.withTenant(tenantId, tx => operation(new Proxy(tx, {
         get(target, key) {
-          if (key === '$executeRaw') return async (statement, ...args) => {
-            if (!statement.sql?.includes('pg_advisory_xact_lock')) return target.$executeRaw(statement, ...args);
+          if (key === '$queryRaw') return async (statement, ...args) => {
+            if (!statement.sql?.includes('FROM "Tenant"') || !statement.sql?.includes('FOR UPDATE')) return target.$queryRaw(statement, ...args);
             secondAtLock();
-            const result = await target.$executeRaw(statement, ...args);
+            const result = await target.$queryRaw(statement, ...args);
             secondLockCompleted = true;
             assert.equal(firstReleased, true, 'second writer acquired the lock before the first writer was released');
             return result;
@@ -158,7 +174,7 @@ test('native API v2 workspace settings stay tenant-scoped, audit security change
       await boundedBarrier(paused, 'first writer aggregate persist');
       secondSave = observedSecond.updateSecurity(primaryIdentity, { sessionTimeoutMinutes: 240 });
       void secondSave.catch(() => {});
-      await boundedBarrier(lockEntered, 'second writer advisory lock entry');
+      await boundedBarrier(lockEntered, 'second writer Tenant row lock entry');
       assert.equal(secondRead, false, 'second writer must not read before the first writer is released');
       assert.equal(secondLockCompleted, false, 'first writer must still own the settings lock');
       firstReleased = true;
@@ -204,6 +220,10 @@ test('native API v2 workspace settings stay tenant-scoped, audit security change
       const tenantIds = [fixture.tenantId, fixture.otherTenantId];
       await transaction.auditLog.deleteMany({ where: { tenantId: { in: tenantIds } } });
       await transaction.tenantSetting.deleteMany({ where: { tenantId: { in: tenantIds } } });
+      await transaction.session.deleteMany({ where: { userId: { in: [fixture.userId, fixture.otherUserId] } } });
+      await transaction.roleAssignment.deleteMany({ where: { tenantId: { in: tenantIds } } });
+      await transaction.rolePermission.deleteMany({ where: { role: { tenantId: { in: tenantIds } } } });
+      await transaction.role.deleteMany({ where: { tenantId: { in: tenantIds } } });
       await transaction.user.deleteMany({ where: { tenantId: { in: tenantIds } } });
       await transaction.tenant.deleteMany({ where: { id: { in: tenantIds } } });
     }).catch(() => {});

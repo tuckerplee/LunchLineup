@@ -23,7 +23,16 @@ function harness(initialValue: unknown = null, oidcSsoAvailable = false) {
   };
   const transaction = {
     $executeRaw: vi.fn(async () => 1),
-    $queryRaw: vi.fn(async () => [{ id: identity.tenantId }]),
+    $queryRaw: vi.fn(async (sql: { strings: readonly string[] }) => {
+      const text = sql.strings.join('');
+      if (text.includes('FROM "User"')) return [{ id: identity.sub, role: 'ADMIN', deletedAt: null, suspendedAt: null }];
+      if (text.includes('FROM "Session"')) return [{ id: identity.sessionId, userId: identity.sub,
+        expiresAt: new Date(Date.now() + 60_000), revokedAt: null }];
+      return [{ id: identity.tenantId }];
+    }),
+    roleAssignment: { findMany: vi.fn(async () => [{ userId: identity.sub, roleId: 'role-1' }]) },
+    role: { findMany: vi.fn(async () => [{ id: 'role-1', publicId: 'role-public', name: 'Admin', isSystem: true,
+      legacyRole: 'ADMIN', rolePermissions: [{ permission: { key: 'settings:write' } }] }]) },
     tenant: {
       findUnique: vi.fn(async () => ({ ...tenant })),
       update: vi.fn(async ({ data }: { data: Partial<typeof tenant> }) => {

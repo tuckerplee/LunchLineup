@@ -187,7 +187,7 @@ export type AuthorizedInvitationRole = RoleAccessRecord;
 export type SelfSecurityMutationAuthorizationRequest = {
     actorUserId: string;
     actorSessionId: string;
-    requiredPermission?: 'auth:login_pin';
+    requiredPermission?: 'auth:login_pin' | 'settings:write';
 };
 
 export type AssignedRole = {
