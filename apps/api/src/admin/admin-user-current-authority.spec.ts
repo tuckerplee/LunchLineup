@@ -1,3 +1,4 @@
+import { performance } from 'node:perf_hooks';
 import { ForbiddenException, ServiceUnavailableException } from '@nestjs/common';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { AdminController } from './admin.controller';
@@ -38,7 +39,7 @@ function isolateLifetime(h: ReturnType<typeof fixture>, mode: typeof lifetimeMod
 const prefix = (items: Array<{ table: string; method: string }>) => items.map(({ table, method }) => ({ table, method }));
 beforeEach(() => { vi.stubEnv('PLATFORM_ADMIN_DB_CONTEXT_SECRET', 'synthetic-admin-test-capability');
     vi.useFakeTimers({ toFake: ['Date'] }); vi.setSystemTime(new Date('2026-10-04T09:00:00Z')); });
-afterEach(() => { vi.useRealTimers(); vi.unstubAllEnvs(); });
+afterEach(() => { vi.useRealTimers(); vi.unstubAllEnvs(); vi.restoreAllMocks(); });
 
 describe('real platform admin user current authority owner boundaries', () => {
     for (const action of actions) {
@@ -132,4 +133,41 @@ describe('real platform admin user current authority owner boundaries', () => {
         await expect(denied.call()).rejects.toBeInstanceOf(ForbiddenException);
         expect(denied.attempts).toEqual([]); expect(denied.committed).toEqual([]);
     });
+});
+
+describe('Admin user owner integrated monotonic observation lifetime', () => {
+    for (const action of actions) {
+        it(action + ' refuses monotonic-only expiry at exact final RolePermission completion', async () => {
+            let monotonic = 100_000;
+            vi.spyOn(performance, 'now').mockImplementation(() => monotonic);
+            const h = fixture(action); h.controls.observerTtl = 1000;
+            const wall = Date.now(), snapshot = h.snapshot();
+            h.controls.afterFinalRole = () => {
+                expect(h.controls.transactions).toBe(h.controls.finalOrdinal);
+                expect(h.controls.active).toBe(1); monotonic += 1001;
+            };
+            await expect(h.call()).rejects.toBeInstanceOf(ForbiddenException);
+            expect(Date.now()).toBe(wall); expect(h.state.sessions[0].expiresAt.getTime()).toBeGreaterThan(wall);
+            expect(h.controls.finalRoleVisits).toBe(1); expect(h.attempts).toEqual([]);
+            expect(h.committed).toEqual([]); expect(h.snapshot()).toEqual(snapshot);
+            expect(h.observer.observeSessionMfa).toHaveBeenCalledOnce();
+        });
+        it(action + ' rolls back each reached effect completion on monotonic-only expiry', async () => {
+            let monotonic = 100_000;
+            vi.spyOn(performance, 'now').mockImplementation(() => monotonic);
+            const positive = fixture(action); await positive.call(); const ledger = prefix(positive.committed);
+            expect(ledger.length).toBeGreaterThan(0);
+            for (let index = 1; index <= ledger.length; index++) {
+                monotonic = 100_000;
+                const h = fixture(action); h.controls.observerTtl = 1000;
+                const wall = Date.now(), snapshot = h.snapshot();
+                h.controls.afterEffect = ordinal => { if (ordinal === index) monotonic += 1001; };
+                await expect(h.call()).rejects.toBeInstanceOf(ForbiddenException);
+                expect(Date.now()).toBe(wall);
+                expect(prefix(h.attempts)).toEqual(ledger.slice(0, index)); expect(h.committed).toEqual([]);
+                expect(h.snapshot()).toEqual(snapshot); expect(h.controls.active).toBe(0);
+                expect(h.observer.observeSessionMfa).toHaveBeenCalledOnce();
+            }
+        });
+    }
 });

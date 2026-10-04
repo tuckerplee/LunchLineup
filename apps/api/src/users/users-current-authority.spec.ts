@@ -329,3 +329,26 @@ describe('Users actual owner current authority (modeled database)', () => {
         expect(f.committed).toEqual([]); expect(f.snapshot()).toEqual(before);
     });
 });
+
+// Independent monotonic expiry: wall time and stored/effective session expiry
+// remain future. Each owner await completes before the actual guard refuses it.
+describe('Users profile integrated monotonic observation lifetime', () => {
+    for (let index = 0; index <= effects.length; index++) {
+        it(index === 0 ? 'refuses monotonic expiry at final RolePermission completion'
+            : `rolls back monotonic expiry after profile effect ${index}`, async () => {
+            let monotonic = 100_000;
+            vi.spyOn(performance, 'now').mockImplementation(() => monotonic);
+            const f = fixture(); f.controls.observerTtl = 1000;
+            const wall = Date.now(), before = f.snapshot();
+            if (index === 0) f.controls.finalRoleHook = () => { monotonic += 1001; };
+            else f.controls.effectHook = completed => { if (completed === index) monotonic += 1001; };
+            await expect(f.replace()).rejects.toBeInstanceOf(ForbiddenException);
+            expect(Date.now()).toBe(wall);
+            expect(f.state.sessions[0].expiresAt.getTime()).toBeGreaterThan(wall);
+            expect(f.controls.finalRoleVisits).toBe(1); expect(f.controls.transactions).toBe(2);
+            expect(f.attempts).toEqual(effects.slice(0, index)); expect(f.committed).toEqual([]);
+            expect(f.snapshot()).toEqual(before); expect(f.controls.active).toBe(0);
+            expect(f.observer.observeSessionMfa).toHaveBeenCalledTimes(1);
+        });
+    }
+});

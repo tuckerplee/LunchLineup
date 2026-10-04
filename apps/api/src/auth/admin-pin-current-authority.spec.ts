@@ -1,3 +1,4 @@
+import { performance } from 'node:perf_hooks';
 import { BadRequestException, ConflictException, ForbiddenException, ServiceUnavailableException } from '@nestjs/common';
 import { scryptSync } from 'node:crypto';
 import { MFA_MARKER_TTL_SCRIPT } from '@lunchlineup/rbac';
@@ -231,4 +232,28 @@ describe('real AuthService admin PIN reset current authority and postcommit clea
             .rejects.toBeInstanceOf(BadRequestException);
         expect(h.controls.transactions).toBe(0); expect(h.redis.eval).not.toHaveBeenCalled(); expect(h.redis.del).not.toHaveBeenCalled();
     });
+});
+
+describe('AuthService admin PIN integrated monotonic observation lifetime', () => {
+    const boundaries = ['final role', 'target session list', 'user effect', 'session effect', 'audit effect'] as const;
+    for (const [index, boundary] of boundaries.entries()) {
+        it('refuses independent monotonic expiry at ' + boundary + ' without postcommit cleanup', async () => {
+            let monotonic = 100_000;
+            vi.spyOn(performance, 'now').mockImplementation(() => monotonic);
+            const h = fixture(); h.providerControls.ttl = 1000;
+            const wall = Date.now(), snapshot = h.snapshot();
+            const expire = () => { monotonic += 1001; };
+            if (index === 0) h.controls.afterFinalRole = expire;
+            else if (index === 1) h.providerControls.afterSessionRead = expire;
+            else h.controls.afterEffect = ordinal => { if (ordinal === index - 1) expire(); };
+            await expect(h.call()).rejects.toBeInstanceOf(ForbiddenException);
+            expect(Date.now()).toBe(wall);
+            const ledger = [{ table: 'user', method: 'updateMany' }, { table: 'session', method: 'updateMany' },
+                { table: 'auditLog', method: 'create' }];
+            expect(prefix(h.attempts)).toEqual(ledger.slice(0, Math.max(0, index - 1)));
+            expect(h.committed).toEqual([]); expect(h.snapshot()).toEqual(snapshot);
+            expect(h.controls.transactions).toBe(2); expect(h.controls.active).toBe(0);
+            expect(h.redis.eval).toHaveBeenCalledOnce(); expect(h.redis.del).not.toHaveBeenCalled();
+        });
+    }
 });
