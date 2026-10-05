@@ -520,15 +520,19 @@ export class PayrollService {
   }
 
   async getExport(identity: SessionIdentity, publicExportId: string, query: { lineLimit?: string; lineCursor?: string }) {
+    identity = mutationIdentity(identity);
     const exportId = requiredPublicId(publicExportId, 'payroll_export');
     const lineLimit = parseBoundedLimit(query.lineLimit, 'line_limit', 500, 500);
     const lineCursor = cursorText(decodeCursor(query.lineCursor, 'line_cursor'), 'publicId', 'line_cursor');
-    return this.database.withTenant(identity.tenantId, async (transaction) => {
+    const authority = await this.prepareCurrentMutation(identity, 'payroll:read');
+    return authority.run(async (transaction, assertCurrent) => {
       const batch = await transaction.payrollExportBatch.findFirst({
         where: { tenantId: identity.tenantId, publicId: exportId },
       });
+      assertCurrent();
       if (!batch) throw payrollProblem(404, 'payroll_export_not_found', 'The requested payroll export was not found in this workspace.', 'Not found');
-      return this.serializeExport(transaction, identity.tenantId, batch, lineLimit, lineCursor);
+      await this.verifyExportCreditProvenance(transaction, batch, assertCurrent);
+      return this.serializeExport(transaction, identity.tenantId, batch, lineLimit, lineCursor, assertCurrent);
     });
   }
 
@@ -1980,6 +1984,7 @@ export class PayrollService {
     batch: PayrollExportBatch,
     lineLimit: number,
     lineCursor: string | null,
+    assertCurrent: () => void = () => {},
   ) {
     const cursor = lineCursor
       ? await transaction.payrollExportLine.findFirst({
@@ -1987,6 +1992,7 @@ export class PayrollService {
         select: { lineNumber: true },
       })
       : null;
+    assertCurrent();
     if (lineCursor && !cursor) {
       throw payrollProblem(422, 'invalid_payroll_line_cursor', 'lineCursor is invalid for this payroll export.', 'Payroll validation failed');
     }
@@ -1999,6 +2005,7 @@ export class PayrollService {
       orderBy: [{ lineNumber: 'asc' }, { publicId: 'asc' }],
       take: lineLimit + 1,
     });
+    assertCurrent();
     const page = rows.slice(0, lineLimit);
     const [states, entries, users, periods] = await Promise.all([
       page.length === 0 ? [] : transaction.payrollReconciliationLineState.findMany({
@@ -2008,12 +2015,14 @@ export class PayrollService {
       this.publicUsers(transaction, tenantId, page.map((line) => line.employeeId)),
       this.publicPeriods(transaction, tenantId, [batch.periodId]),
     ]);
+    assertCurrent();
     const stateByLineId = new Map(states.map((state) => [state.lineId, state]));
     const stateCounts = await transaction.payrollReconciliationLineState.groupBy({
       by: ['status'],
       where: { tenantId, batchId: batch.id },
       _count: { _all: true },
     });
+    assertCurrent();
     const countByStatus = new Map(stateCounts.map((state) => [state.status, state._count._all]));
     const acceptedCount = countByStatus.get('ACCEPTED') ?? 0;
     const rejectedCount = countByStatus.get('REJECTED') ?? 0;
@@ -2025,7 +2034,9 @@ export class PayrollService {
       where: { tenantId, batchId: batch.id },
       orderBy: [{ receivedAt: 'desc' }, { publicId: 'desc' }],
     });
-    const contentSha256 = (await this.loadAndVerifyExportLines(transaction, tenantId, batch)).publicContentSha256;
+    assertCurrent();
+    const contentSha256 = (await this.loadAndVerifyExportLines(transaction, tenantId, batch, assertCurrent)).publicContentSha256;
+    assertCurrent();
     return {
       id: batch.publicId,
       periodId: this.requireMapped(periods, batch.periodId, 'payroll period'),
@@ -2098,12 +2109,14 @@ export class PayrollService {
       consumedCredits: number;
       newBalance: number;
     },
+    assertCurrent: () => void = () => {},
   ): Promise<void> {
     const expectedId = `feature-usage-payroll-export:${batch.operationId}`;
     const ledger = await transaction.creditTransaction.findUnique({
       where: { id: batch.creditTransactionId },
       select: { id: true, tenantId: true, amount: true, debtAmount: true, reason: true, balanceAfter: true, debtAfter: true },
     });
+    assertCurrent();
     if (
       batch.creditTransactionId !== expectedId
       || !ledger
@@ -2123,6 +2136,7 @@ export class PayrollService {
     transaction: TenantTransaction,
     tenantId: string,
     batch: { id: string; rowCount: number; totalPayableMinutes: number; contentSha256: string },
+    assertCurrent: () => void = () => {},
   ) {
     if (batch.rowCount < 1 || batch.rowCount > MAX_PAYROLL_LOCK_ENTRIES) {
       throw payrollProblem(503, 'payroll_export_integrity_failed', 'Payroll evidence failed integrity verification.', 'Service unavailable');
@@ -2132,6 +2146,7 @@ export class PayrollService {
       orderBy: [{ lineNumber: 'asc' }, { id: 'asc' }],
       take: MAX_PAYROLL_LOCK_ENTRIES + 1,
     });
+    assertCurrent();
     if (rows.length !== batch.rowCount || rows.length > MAX_PAYROLL_LOCK_ENTRIES) {
       throw payrollProblem(503, 'payroll_export_integrity_failed', 'Payroll evidence failed integrity verification.', 'Service unavailable');
     }
@@ -2141,6 +2156,7 @@ export class PayrollService {
       this.publicTimeCards(transaction, tenantId, rows.filter((row) => row.sourceType === 'TIME_CARD').map((row) => row.sourceId)),
       this.publicAmendments(transaction, tenantId, rows.filter((row) => row.sourceType === 'AMENDMENT').map((row) => row.sourceId)),
     ]);
+    assertCurrent();
     let total = 0;
     let encoding: 'legacy' | 'public' | null = null;
     const lines = rows.map((row) => {
