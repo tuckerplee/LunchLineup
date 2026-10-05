@@ -388,6 +388,7 @@ function SchedulingContent() {
   const publishingScheduleIdRef = useRef<string | null>(null);
   const latestLoadRequestRef = useRef(0);
   const calendarVisitGenerationRef = useRef(0);
+  const shiftEditorGenerationRef = useRef(0);
   const solveGenerationRef = useRef(0);
   const selectedLocationRef = useRef(initialLocationId);
   const selectedDateRef = useRef(initialDateValue);
@@ -397,6 +398,12 @@ function SchedulingContent() {
   const [loadedShiftScope, setLoadedShiftScope] = useState<LocationShiftScope | null>(null);
   const [permissions, setPermissions] = useState<string[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const changeShiftDraft = (next: ShiftDraft | ((current: ShiftDraft) => ShiftDraft)) => {
+    // Invalidate pending editor completions before React applies the new input.
+    shiftEditorGenerationRef.current += 1;
+    setShiftDraft(next);
+    setScheduleStatus({ tone: 'ready', message: 'Shift draft changed. Review and save it.' });
+  };
   const discardShiftUpdateAttempt = (shiftId: string) => {
     const attempt = shiftUpdateAttemptsRef.current[shiftId];
     if (attempt) clearShiftUpdateAttempt(window.sessionStorage, shiftId, attempt.key);
@@ -739,6 +746,7 @@ function SchedulingContent() {
     loadSchedule,
     onDeleteCommitted: (shiftId) => {
       if (editingShiftId === shiftId) {
+        shiftEditorGenerationRef.current += 1;
         setShowShiftForm(false);
         setEditingShiftId(null);
       }
@@ -769,7 +777,7 @@ function SchedulingContent() {
 
   const handleDraftStaffChange = (value: string) => {
     const selectedStaff = schedulableStaff.find((person) => person.id === value);
-    setShiftDraft((current) => ({
+    changeShiftDraft((current) => ({
       ...current,
       userId: value,
       role: selectedStaff ? toSchedulableShiftRole(selectedStaff.role) : current.role,
@@ -814,6 +822,8 @@ function SchedulingContent() {
     const range = shiftRange(shiftDraft.shiftDate, shiftDraft.startTime, shiftDraft.endTime, draftTimeZone);
     const containingDraft = containingDraftScheduleForShift(schedules, locationId, range.startTime, range.endTime);
     const nextRole = shiftRoleDraftValue(shiftDraft.role, selectedStaff.role);
+    const editorGeneration = shiftEditorGenerationRef.current;
+    let issuedAttempt: IdempotentRequestAttempt | null = null;
     setScheduleStatus({ tone: 'saving', message: editingShiftId ? 'Saving shift changes...' : 'Creating and saving shift...' });
     try {
       if (editingShiftId) {
@@ -854,6 +864,7 @@ function SchedulingContent() {
           { scheduleId: schedule.id, operation },
           shiftUpdateAttemptsRef.current[editingShiftId],
         );
+        issuedAttempt = updateAttempt;
         shiftUpdateAttemptsRef.current[editingShiftId] = updateAttempt;
         const updated = await apiV2.applyScheduleChangeSet(
           schedule.id,
@@ -882,6 +893,7 @@ function SchedulingContent() {
           ...range,
         };
         const createAttempt = idempotentRequestAttempt(createRequest, shiftCreateAttemptRef.current);
+        issuedAttempt = createAttempt;
         shiftCreateAttemptRef.current = createAttempt;
         let schedule = containingDraft;
         if (!schedule) {
@@ -921,26 +933,34 @@ function SchedulingContent() {
           ...current.filter((shift) => shift.scheduleId !== schedule.id),
           ...created.data.shifts,
         ]);
-        shiftCreateAttemptRef.current = null;
+        if (shiftCreateAttemptRef.current?.key === createAttempt.key) {
+          shiftCreateAttemptRef.current = null;
+        }
         setScheduleStatus({ tone: 'saved', message: `Shift created and saved at ${formatStatusTime(new Date())}.` });
       }
-      setShowShiftForm(false);
-      setEditingShiftId(null);
-      setConfirmDeleteShiftId(null);
-      setShiftDraft((current) => ({
+      // Saved board data belongs to the calendar visit; destructive editor cleanup
+      // belongs only to the submitted draft, including close/reopen and ABA edits.
+      if (shiftEditorGenerationRef.current !== editorGeneration) return;
+      const completionGeneration = ++shiftEditorGenerationRef.current;
+      // A new action can also arrive before these queued setters are applied.
+      setShowShiftForm((current) => shiftEditorGenerationRef.current === completionGeneration ? false : current);
+      setEditingShiftId((current) => shiftEditorGenerationRef.current === completionGeneration ? null : current);
+      setConfirmDeleteShiftId((current) => shiftEditorGenerationRef.current === completionGeneration ? null : current);
+      setShiftDraft((current) => shiftEditorGenerationRef.current !== completionGeneration ? current : ({
         ...current,
         userId: '',
         role: 'STAFF',
       }));
     } catch (err) {
       const rotateAttempt = requiresNewScheduleChangeSetKey(err);
-      if (rotateAttempt) {
-        if (editingShiftId) {
+      if (rotateAttempt && issuedAttempt) {
+        if (editingShiftId && shiftUpdateAttemptsRef.current[editingShiftId]?.key === issuedAttempt.key) {
           discardShiftUpdateAttempt(editingShiftId);
-        } else {
+        } else if (!editingShiftId && shiftCreateAttemptRef.current?.key === issuedAttempt.key) {
           shiftCreateAttemptRef.current = null;
         }
       }
+      if (!scopeIsStillSelected(writeScope) || shiftEditorGenerationRef.current !== editorGeneration) return;
       const reloadAuthoritativeState = rotateAttempt
         || (err instanceof ApiV2ClientError && err.status === 412);
       setError((err as Error).message);
@@ -960,7 +980,9 @@ function SchedulingContent() {
 
   const prepareShiftForStaff = (person: StaffRosterItem, shiftDate: string, startTime = '09:00', endTime = '17:00') => {
     if (!capabilities.canWriteShifts) return;
+    shiftEditorGenerationRef.current += 1;
     setError(null);
+    setScheduleStatus({ tone: 'ready', message: 'Review the shift details, then save.' });
     setEditingShiftId(null);
     setConfirmDeleteShiftId(null);
     setShiftDraft((current) => ({
@@ -992,6 +1014,7 @@ function SchedulingContent() {
       return;
     }
     const firstStaff = schedulableStaff[0] ?? null;
+    shiftEditorGenerationRef.current += 1;
     setError(null);
     setEditingShiftId(null);
     setConfirmDeleteShiftId(null);
@@ -1014,10 +1037,12 @@ function SchedulingContent() {
       role: toSchedulableShiftRole(firstStaff.role),
       shiftDate: selectedDate,
     }));
+    setScheduleStatus({ tone: 'ready', message: 'Review the shift details, then save.' });
     setShowShiftForm(true);
   };
 
   const closeShiftEditor = () => {
+    shiftEditorGenerationRef.current += 1;
     setShowShiftForm(false);
     setEditingShiftId(null);
     setConfirmDeleteShiftId(null);
@@ -1028,6 +1053,7 @@ function SchedulingContent() {
     if (!capabilities.canWriteShifts) return;
     const shift = shifts.find((item) => item.id === event.id);
     if (!shift) return;
+    shiftEditorGenerationRef.current += 1;
     const person = shift.userId ? schedulableStaff.find((item) => item.id === shift.userId) : null;
     const window = localTimeWindowFromInstants(shift.startTime, shift.endTime, locationTimeZone(shift.locationId));
     const locked = isShiftLocked(shift);
@@ -1059,6 +1085,7 @@ function SchedulingContent() {
     const timeZone = locationTimeZone(editingShift.locationId);
     const window = localTimeWindowFromInstants(editingShift.startTime, editingShift.endTime, timeZone);
     const targetDate = addLocalDays(window.date, 1);
+    shiftEditorGenerationRef.current += 1;
     setError(null);
     setEditingShiftId(null);
     setConfirmDeleteShiftId(null);
@@ -1260,6 +1287,7 @@ function SchedulingContent() {
       setPublishReview((current) => current?.scheduleId === scheduleId ? null : current);
       setConfirmPublishScheduleId(null);
       setConfirmReopenScheduleId(null);
+      shiftEditorGenerationRef.current += 1;
       setShowShiftForm(false);
       setEditingShiftId(null);
       setConfirmDeleteShiftId(null);
@@ -1352,6 +1380,7 @@ function SchedulingContent() {
       setConfirmReopenScheduleId(null);
       setConfirmPublishScheduleId(null);
       if (editingShift?.scheduleId !== scheduleId) {
+        shiftEditorGenerationRef.current += 1;
         setShowShiftForm(false);
         setEditingShiftId(null);
         setConfirmDeleteShiftId(null);
@@ -1975,7 +2004,7 @@ function SchedulingContent() {
                 </label>
                 <label>
                   <span>Shift role</span>
-                  <select value={shiftDraft.role} disabled={editingShiftLocked} onChange={(event) => setShiftDraft((current) => ({ ...current, role: event.target.value }))}>
+                  <select value={shiftDraft.role} disabled={editingShiftLocked} onChange={(event) => changeShiftDraft((current) => ({ ...current, role: event.target.value }))}>
                     {shiftDraft.role && !SCHEDULABLE_SHIFT_ROLES.some((role) => role.value === shiftDraft.role) ? (
                       <option value={shiftDraft.role}>{shiftDraft.role}</option>
                     ) : null}
@@ -1990,7 +2019,7 @@ function SchedulingContent() {
                     type="date"
                     value={shiftDraft.shiftDate}
                     disabled={editingShiftLocked}
-                    onChange={(event) => setShiftDraft((current) => ({ ...current, shiftDate: event.target.value }))}
+                    onChange={(event) => changeShiftDraft((current) => ({ ...current, shiftDate: event.target.value }))}
                   />
                 </label>
                 <div className="shift-form__time-grid">
@@ -2000,7 +2029,7 @@ function SchedulingContent() {
                       type="time"
                       value={shiftDraft.startTime}
                       disabled={editingShiftLocked}
-                      onChange={(event) => setShiftDraft((current) => ({ ...current, startTime: event.target.value }))}
+                      onChange={(event) => changeShiftDraft((current) => ({ ...current, startTime: event.target.value }))}
                     />
                   </label>
                   <label>
@@ -2009,7 +2038,7 @@ function SchedulingContent() {
                       type="time"
                       value={shiftDraft.endTime}
                       disabled={editingShiftLocked}
-                      onChange={(event) => setShiftDraft((current) => ({ ...current, endTime: event.target.value }))}
+                      onChange={(event) => changeShiftDraft((current) => ({ ...current, endTime: event.target.value }))}
                     />
                   </label>
                 </div>
