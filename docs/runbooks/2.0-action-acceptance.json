@@ -11455,6 +11455,11 @@
           "id": "policy-row-draft-mutual-exclusion",
           "contract": "With populated shift rows, policy Save is unavailable while any row, including an unselected row, has unsaved edits or a pending save. Save or reset rows first. While policy PUT and its complete scoped day readback are pending, row editing, reset, manual Save, save-all and autosave cannot issue row writes. Verify ordinary 650ms autosave and saved response, delayed policy/day readback, rejection and reset restoration, and an old scope acknowledgment preserving a newer scoped draft. Real browser keyboard/loading/focus and independent persisted policy and row readback remain required; local source composition is supplemental only.",
           "evidenceKind": "browser-interaction"
+        },
+        {
+          "id": "failed-autosave-explicit-recovery",
+          "contract": "After an autosave response refusal, uncertain transport, or local timing validation failure, preserve the populated row draft and expose Autosave paused guidance without automatically repeating the same failed intent. Same-value events, neutral renders and row re-selection must not resume automatic retries. An explicit Save retries unchanged values with the retained request key/body when the send failed; a meaningful edit admits one ordinary 650ms attempt with its new key/body, and Reset restores the acknowledged baseline. Verify normal successful autosave, in-flight and stale-scope controls, real browser keyboard/loading/focus and independent persisted row/receipt/credit readback. Malformed successful responses and actual commit attribution need separate proof; local source composition is supplemental only.",
+          "evidenceKind": "browser-interaction"
         }
       ],
       "workflowIds": [

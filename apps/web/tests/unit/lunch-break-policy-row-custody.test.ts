@@ -69,9 +69,14 @@ function hookNames(hook: string) {
 }
 const refNames = hookNames('useRef'), callbackNames = hookNames('useCallback'), memoNames = hookNames('useMemo');
 const rowMaps: ts.CallExpression[] = [], policyButtons: ts.JsxElement[] = [], rowSelections: ts.ArrowFunction[] = [];
+const pauseStatuses: ts.JsxElement[] = [];
 const rowButtons = new Map<string, ts.JsxElement[]>();
 const effects: ts.ExpressionStatement[] = [];
 function visit(node: ts.Node) {
+    if (ts.isJsxElement(node) && node.openingElement.tagName.getText(ast) === 'div'
+        && node.openingElement.attributes.properties.some(prop => ts.isJsxAttribute(prop)
+            && prop.name.getText(ast) === 'role' && prop.initializer && ts.isStringLiteral(prop.initializer)
+            && prop.initializer.text === 'status') && node.getText(ast).includes('Autosave paused.')) pauseStatuses.push(node);
     if (ts.isCallExpression(node) && ts.isPropertyAccessExpression(node.expression)
         && node.expression.expression.getText(ast) === 'BREAK_KEYS' && node.expression.name.text === 'map'
         && node.getText(ast).includes('aria-label={`${info.label} duration')) rowMaps.push(node);
@@ -99,13 +104,18 @@ for (const statement of owner[0].body.statements) {
         && statement.expression.expression.getText(ast) === 'useEffect'
         && statement.getText(ast).includes('void saveRow(selectedRow.shiftId)')) effects.push(statement);
 }
-if (rowMaps.length !== 1 || policyButtons.length !== 1 || rowSelections.length !== 1 || effects.length !== 1)
+if (rowMaps.length !== 1 || policyButtons.length !== 1 || rowSelections.length !== 1 || effects.length !== 1 || pauseStatuses.length !== 1)
     throw new Error('Expected exact row JSX, row selection, policy button and autosave effect');
 for (const name of ['save', 'reset', 'all']) if (rowButtons.get(name)?.length !== 1) throw new Error('Expected exact row button ' + name);
 let policyConditional: ts.Node = policyButtons[0];
 while (!ts.isConditionalExpression(policyConditional)) {
     if (!policyConditional.parent) throw new Error('Missing Save policy permission condition');
     policyConditional = policyConditional.parent;
+}
+let pauseConditional: ts.Node = pauseStatuses[0];
+while (!ts.isConditionalExpression(pauseConditional)) {
+    if (!pauseConditional.parent) throw new Error('Missing actual paused-status condition');
+    pauseConditional = pauseConditional.parent;
 }
 function javascript(text: string) {
     return ts.transpileModule(text, { compilerOptions: {
@@ -123,6 +133,7 @@ return { handleSavePolicy, selectDayScope, loadDayRows, saveRow, saveAllDirtyRow
     canWriteLoadedDay, isAutoMode, hasSharedRows,
     inputs: selectedRow && isAutoMode && hasSharedRows ? (${rowMaps[0].getText(ast)}) : [],
     policySave: (${policyConditional.getText(ast)}),
+    pauseStatus: selectedRow && isAutoMode && hasSharedRows ? (${pauseConditional.getText(ast)}) : null,
     rowSave: selectedRow ? (${rowButtons.get('save')![0].getText(ast)}) : null,
     rowReset: selectedRow ? (${rowButtons.get('reset')![0].getText(ast)}) : null,
     saveAll: (${rowButtons.get('all')![0].getText(ast)}),
@@ -139,6 +150,12 @@ function elements(tree: unknown): Element[] {
     if (!tree || typeof tree !== 'object' || !('type' in tree)) return [];
     const node = tree as Element; return [node, ...node.children.flatMap(elements)];
 }
+function visibleText(tree: unknown): string {
+    if (Array.isArray(tree)) return tree.map(visibleText).join('');
+    if (typeof tree === 'string' || typeof tree === 'number') return String(tree);
+    if (!tree || typeof tree !== 'object' || !('children' in tree)) return '';
+    return (tree as Element).children.map(visibleText).join('');
+}
 function deferred<T>() {
     let resolve!: (value: T) => void;
     const promise = new Promise<T>(done => { resolve = done; }); return { promise, resolve };
@@ -147,7 +164,8 @@ const sameDependencies = (a: readonly unknown[], b: readonly unknown[]) =>
     a.length === b.length && a.every((value, index) => Object.is(value, b[index]));
 type Memo = { dependencies: readonly unknown[]; value: any };
 type Mode = 'ack' | 'reject';
-async function fixture(mode: Mode, options: { deferReadback?: boolean; deferRow?: boolean; rejectRow?: boolean; extraRow?: boolean } = {}) {
+type RowOutcome = 'ack45' | 'ack50' | 'reject' | 'forbidden' | 'conflict' | 'uncertain';
+async function fixture(mode: Mode, options: { deferReadback?: boolean; deferRow?: boolean; rejectRow?: boolean; extraRow?: boolean; rowOutcome?: RowOutcome; rowOutcomes?: RowOutcome[] } = {}) {
     vi.useFakeTimers(); vi.setSystemTime(new Date('2026-10-04T08:00:00.000Z'));
     const state = new Map<string, any>(), refs = new Map<string, { current: any }>();
     const callbacks = new Map<string, Memo>(), memos = new Map<string, Memo>();
@@ -227,7 +245,7 @@ async function fixture(mode: Mode, options: { deferReadback?: boolean; deferRow?
             handleSavePolicy: () => Promise<void>; saveRow: (id: string) => Promise<boolean>; saveAllDirtyRows: () => Promise<void>;
             updateBreak: (id: string, key: string, next: unknown) => void; resetRow: (id: string) => void; selectDayScope: (date: string, location: string) => void;
             loadDayRows: (scope: typeof scopeA, policy: Record<string, number>, zone: string) => Promise<unknown>;
-            select: (id: string) => void; selectedRow: any; inputs: Element[]; policySave: Element | null;
+            select: (id: string) => void; selectedRow: any; inputs: Element[]; policySave: Element | null; pauseStatus: Element | null;
             rowSave: Element | null; rowReset: Element | null; saveAll: Element;
             isAutoMode: boolean; hasSharedRows: boolean; canWriteLoadedDay: boolean;
         };
@@ -257,11 +275,27 @@ async function fixture(mode: Mode, options: { deferReadback?: boolean; deferRow?
         const body = JSON.parse(init.body); calls.push({ path, method, body });
         rowMetadata.push({ key: new Headers(init.headers).get('idempotency-key'),
             credentials: init.credentials, redirect: init.redirect, signal: init.signal });
+        // Select this handoff's outcome before an external wait; another
+        // concurrent scoped transport must not change its ordinal/response.
+        const rowOrdinal = rowMetadata.length - 1;
+        const outcome = options.rowOutcomes ? options.rowOutcomes[rowOrdinal]
+            : options.rowOutcome ?? (options.rejectRow ? 'reject' : 'ack45');
         rowEntered.resolve(); if (options.deferRow) await rowRelease.promise;
         const scope = path.endsWith('shift-a') ? scopeA : scopeB;
-        return new Response(JSON.stringify(options.rejectRow ? { message: 'Controlled row refusal' }
-            : { ...wire(scope), breaks: [{ ...wire(scope).breaks[0], endTime: scope.dateValue + 'T12:45:00.000Z', durationMinutes: 45 }] }),
-            { status: options.rejectRow ? 422 : 200, headers: { 'Content-Type': 'application/json' } });
+        if (!outcome) { unexpected.push('Unplanned shift outcome'); throw new Error('Unplanned shift outcome'); }
+        if (outcome === 'uncertain') throw new TypeError('Controlled transport uncertainty');
+        if (outcome === 'reject') return new Response(JSON.stringify({ message: 'Controlled row refusal' }),
+            { status: 422, headers: { 'Content-Type': 'application/json' } });
+        if (outcome === 'forbidden') return new Response(JSON.stringify({ message: 'Controlled entitlement refusal',
+            code: 'SHIFT_BREAKS_ENTITLEMENT_REQUIRED', remediation: 'Review the paid-plan entitlement.' }),
+            { status: 403, headers: { 'Content-Type': 'application/json' } });
+        if (outcome === 'conflict') return new Response(JSON.stringify({ message: 'Controlled conflict refusal',
+            code: 'SHIFT_BREAKS_CONFLICT', remediation: 'Retry unchanged values or edit the draft.' }),
+            { status: 409, headers: { 'Content-Type': 'application/json' } });
+        const durationMinutes = outcome === 'ack50' ? 50 : 45;
+        return new Response(JSON.stringify({ ...wire(scope), breaks: [{ ...wire(scope).breaks[0],
+            endTime: scope.dateValue + (outcome === 'ack50' ? 'T12:50:00.000Z' : 'T12:45:00.000Z'), durationMinutes }] }),
+            { headers: { 'Content-Type': 'application/json' } });
     }));
     function render() {
         stateIndex = refIndex = callbackIndex = memoIndex = 0;
@@ -295,6 +329,19 @@ async function fixture(mode: Mode, options: { deferReadback?: boolean; deferRow?
         input.props.onChange({ target: { value: '45' } }); render();
         expect(render().selectedRow.lunch.durationMinutes).toBe(45); expect(render().selectedRow.dirty).toBe(true);
     }
+    function editValue(value: string, expectedMinutes: number) {
+        const input = duration(); expect(input.props.disabled, 'Only supported enabled event is dispatched').toBe(false);
+        input.props.onChange({ target: { value } }); render();
+        expect(render().selectedRow.lunch.durationMinutes).toBe(expectedMinutes); expect(render().selectedRow.dirty).toBe(true);
+    }
+    const edit50 = () => editValue('50', 50);
+    const editInvalid = () => editValue('500', 500);
+    const repeat45 = () => editValue('45', 45);
+    async function manualSave() {
+        const button = render().rowSave; expect(button?.props.disabled).toBe(false);
+        button!.props.onClick(); render(); await finishAutosaves();
+    }
+    function rowKeys() { return rowMetadata.map(row => row.key); }
     async function beginPolicy() {
         const button = render().policySave; expect(button?.type).toBe(Button); expect(button?.props.disabled).toBe(false);
         pending = button!.props.onClick();
@@ -320,11 +367,24 @@ async function fixture(mode: Mode, options: { deferReadback?: boolean; deferRow?
             expect(row.redirect).toBe('error'); expect(row.signal).toBeInstanceOf(AbortSignal);
         }
     }
+    function assertObservedRowAttempts(expected: { path: string; method: string; body: unknown }, expectedKey: string | null) {
+        // Validate EVERY reached handoff independently of the expected count,
+        // before a primary no-repeat assertion can stop the test.
+        expect(unexpected, 'Owner catches cannot hide unexpected transport').toEqual([]);
+        const rows = calls.filter(call => call.path.startsWith('/api/v2/lunch-breaks/shift/'));
+        expect(rowMetadata).toHaveLength(rows.length);
+        for (const row of rows) expect(row).toEqual(expected);
+        for (const metadata of rowMetadata) {
+            expect(metadata.key).toMatch(/^[\x20-\x7e]+$/); expect(metadata.key).toBe(expectedKey);
+            expect(metadata.credentials).toBe('include'); expect(metadata.redirect).toBe('error');
+            expect(metadata.signal).toBeInstanceOf(AbortSignal);
+        }
+    }
     const policyCall = { path: '/lunch-breaks/policy', method: 'PUT', body: requested };
     const dayCall = (scope = scopeA) => ({ path: dayPath(scope), method: 'GET' });
-    const rowCall = (scope = scopeA) => ({ path: '/api/v2/lunch-breaks/shift/' + (scope.locationId === 'location-a' ? 'shift-a' : 'shift-b'), method: 'PUT', body: {
+    const rowCall = (scope = scopeA, durationMinutes = 45) => ({ path: '/api/v2/lunch-breaks/shift/' + (scope.locationId === 'location-a' ? 'shift-a' : 'shift-b'), method: 'PUT', body: {
         locationId: scope.locationId, breaks: [{ type: 'break1', skip: true },
-            { type: 'lunch', startTime: scope.dateValue + 'T12:00:00.000Z', durationMinutes: 45, skip: false }, { type: 'break2', skip: true }],
+            { type: 'lunch', startTime: scope.dateValue + 'T12:00:00.000Z', durationMinutes, skip: false }, { type: 'break2', skip: true }],
     } });
     function rowAvailability(disabled: boolean) {
         const row = render(); expect(row.selectedRow).not.toBeNull();
@@ -375,7 +435,7 @@ async function fixture(mode: Mode, options: { deferReadback?: boolean; deferRow?
     return { render, state, duration, edit45, beginPolicy, finishPolicy, finishAutosaves, switchScope,
         assertLedger, policyCall, dayCall, rowCall, timerLedger, cleanup, scopeA, scopeB, rowAvailability, policyAvailability,
         acknowledgeToPendingReadback, completeReadback, waitForRow, completeRow, reset, select,
-        resumeLoadedAutoReview, guardedRowOwners, guardedPolicyOwner };
+        resumeLoadedAutoReview, guardedRowOwners, guardedPolicyOwner, edit50, editInvalid, repeat45, manualSave, rowKeys, assertObservedRowAttempts, saveInvocationCount: () => saves.length };
 }
 afterEach(() => { vi.clearAllTimers(); vi.useRealTimers(); vi.unstubAllGlobals(); vi.clearAllMocks(); vi.restoreAllMocks(); });
 
@@ -498,6 +558,184 @@ describe('actual populated Lunch Break row and policy reciprocal availability', 
             f.assertLedger([f.policyCall, f.dayCall(f.scopeB), f.rowCall(f.scopeB)]);
             expect(f.render().selectedRow.lunch.durationMinutes).toBe(45); expect(f.render().selectedRow.dirty).toBe(false);
             expect(f.timerLedger().firedCount).toBe(1);
+        } finally { await f.cleanup(); }
+    });
+});
+
+// Original-source baseline: no provider/DB acceptance is modeled. A controlled
+// uncertain fetch can represent a lost acknowledgment, but does not establish
+// whether a real owner committed. Explicit retries exercise real recovery keys.
+async function noAutomaticResend(outcome: RowOutcome, expectedError: string) {
+    const f = await fixture('ack', { deferRow: true, rowOutcome: outcome });
+    try {
+        f.edit45(); await vi.advanceTimersByTimeAsync(650); await f.waitForRow();
+        expect(f.render().selectedRow.saving).toBe(true); f.rowAvailability(true);
+        f.assertLedger([f.rowCall()]);
+        expect(f.timerLedger().firedCount).toBe(1);
+        // An actual in-flight commit followed by neutral render checkpoints
+        // must not schedule another save while the first transport is held.
+        f.render(); f.render(); await vi.advanceTimersByTimeAsync(650);
+        f.assertLedger([f.rowCall()]); expect(f.saveInvocationCount()).toBe(1);
+        expect(f.render().selectedRow.saving).toBe(true);
+        await f.completeRow();
+        expect(f.render().selectedRow.saving).toBe(false);
+        expect(f.render().selectedRow.dirty).toBe(true);
+        expect(f.render().selectedRow.lunch.durationMinutes).toBe(45);
+        expect(f.state.get('error')).toBe(expectedError); f.rowAvailability(false);
+        f.assertLedger([f.rowCall()]);
+        const originalKey = f.rowKeys()[0]; expect(originalKey).toMatch(/^[\x20-\x7e]+$/);
+        await vi.advanceTimersByTimeAsync(649); await f.finishAutosaves(); f.assertLedger([f.rowCall()]);
+        await vi.advanceTimersByTimeAsync(1); await f.finishAutosaves();
+        // Full second timer/transport/catch/effect drain occurs BEFORE refusal
+        // assertion; an owner catch cannot hide the new automatic handoff.
+        f.assertObservedRowAttempts(f.rowCall(), originalKey);
+        f.assertLedger([f.rowCall()]);
+        expect(f.rowKeys()).toEqual([originalKey]);
+        expect(f.render().selectedRow.dirty).toBe(true);
+    } finally { await f.cleanup(); }
+}
+describe('actual Lunch Break autosave failure and explicit recovery baseline', () => {
+    it('does not automatically resend a permanently rejected422 row without new user action', async () => {
+        await noAutomaticResend('reject', 'Controlled row refusal');
+    });
+    it('does not automatically resend a stable403 entitlement refusal without new user action', async () => {
+        await noAutomaticResend('forbidden', 'SHIFT_BREAKS_ENTITLEMENT_REQUIRED: Controlled entitlement refusal Review the paid-plan entitlement.');
+    });
+    it('does not automatically resend a stable409 conflict refusal without new user action', async () => {
+        await noAutomaticResend('conflict', 'SHIFT_BREAKS_CONFLICT: Controlled conflict refusal Retry unchanged values or edit the draft.');
+    });
+    it('does not automatically resend an uncertain transport result without new user action', async () => {
+        await noAutomaticResend('uncertain', 'Controlled transport uncertainty');
+    });
+    it('recovers an uncertain original attempt through actual enabled Save with the same exact key and body', async () => {
+        const f = await fixture('ack', { deferRow: true, rowOutcomes: ['uncertain', 'ack45'] });
+        try {
+            f.edit45(); await vi.advanceTimersByTimeAsync(650); await f.waitForRow();
+            expect(f.render().selectedRow.saving).toBe(true); f.assertLedger([f.rowCall()]);
+            await f.completeRow(); expect(f.state.get('error')).toBe('Controlled transport uncertainty');
+            const originalKey = f.rowKeys()[0]; f.assertLedger([f.rowCall()]);
+            await f.manualSave(); f.assertLedger([f.rowCall(), f.rowCall()]);
+            expect(f.rowKeys()).toEqual([originalKey, originalKey]);
+            expect(f.render().selectedRow.lunch.durationMinutes).toBe(45);
+            expect(f.render().selectedRow.dirty).toBe(false); expect(f.state.get('error')).toBeNull();
+            await vi.advanceTimersByTimeAsync(1300); await f.finishAutosaves();
+            f.assertLedger([f.rowCall(), f.rowCall()]);
+        } finally { await f.cleanup(); }
+    });
+    it('admits an actual changed enabled edit as a new autosave intent with a different key and independently returned50 row', async () => {
+        const f = await fixture('ack', { deferRow: true, rowOutcomes: ['reject', 'ack50'] });
+        try {
+            f.edit45(); await vi.advanceTimersByTimeAsync(650); await f.waitForRow(); await f.completeRow();
+            expect(f.state.get('error')).toBe('Controlled row refusal'); f.assertLedger([f.rowCall()]);
+            const originalKey = f.rowKeys()[0]; f.edit50();
+            await vi.advanceTimersByTimeAsync(649); await f.finishAutosaves(); f.assertLedger([f.rowCall()]);
+            await vi.advanceTimersByTimeAsync(1); await f.finishAutosaves();
+            f.assertLedger([f.rowCall(), f.rowCall(f.scopeA, 50)]);
+            expect(f.rowKeys()[1]).not.toBe(originalKey);
+            expect(f.render().selectedRow.lunch.durationMinutes).toBe(50); expect(f.render().selectedRow.dirty).toBe(false);
+            await vi.advanceTimersByTimeAsync(1300); await f.finishAutosaves();
+            f.assertLedger([f.rowCall(), f.rowCall(f.scopeA, 50)]);
+        } finally { await f.cleanup(); }
+    });
+    it('cancels the rejected draft autosave through actual enabled Reset and restores the unchanged baseline without another PUT', async () => {
+        const f = await fixture('ack', { deferRow: true, rowOutcome: 'reject' });
+        try {
+            f.edit45(); await vi.advanceTimersByTimeAsync(650); await f.waitForRow(); await f.completeRow();
+            expect(f.render().selectedRow.dirty).toBe(true); f.assertLedger([f.rowCall()]);
+            f.reset(); expect(f.render().selectedRow.lunch.durationMinutes).toBe(30);
+            expect(f.render().selectedRow.dirty).toBe(false); f.policyAvailability(false);
+            await vi.advanceTimersByTimeAsync(1300); await f.finishAutosaves(); f.assertLedger([f.rowCall()]);
+            expect(f.timerLedger().firedCount).toBe(1);
+        } finally { await f.cleanup(); }
+    });
+});
+
+describe('actual Lunch Break failed draft no-intent and scope baseline', () => {
+    it('does not restart a failed draft automatically for a same-value enabled duration event', async () => {
+        const f = await fixture('ack', { deferRow: true, rowOutcome: 'reject' });
+        try {
+            f.edit45(); await vi.advanceTimersByTimeAsync(650); await f.waitForRow(); await f.completeRow();
+            f.assertLedger([f.rowCall()]); const originalKey = f.rowKeys()[0];
+            f.repeat45(); expect(f.render().selectedRow.dirty).toBe(true);
+            await vi.advanceTimersByTimeAsync(649); await f.finishAutosaves(); f.assertLedger([f.rowCall()]);
+            await vi.advanceTimersByTimeAsync(1); await f.finishAutosaves();
+            f.assertObservedRowAttempts(f.rowCall(), originalKey);
+            f.assertLedger([f.rowCall()]);
+        } finally { await f.cleanup(); }
+    });
+    it('does not automatically repeat local timing validation after its first actual no-wire autosave failure', async () => {
+        const f = await fixture('ack');
+        try {
+            f.editInvalid(); await vi.advanceTimersByTimeAsync(650); await f.finishAutosaves();
+            expect(f.saveInvocationCount()).toBe(1); f.assertLedger([]);
+            expect(f.state.get('error')).toBe('Ada: A planned break ends outside the shift.');
+            expect(f.render().selectedRow.dirty).toBe(true); expect(f.render().selectedRow.saving).toBe(false);
+            await vi.advanceTimersByTimeAsync(649); await f.finishAutosaves(); expect(f.saveInvocationCount()).toBe(1);
+            await vi.advanceTimersByTimeAsync(1); await f.finishAutosaves(); f.assertLedger([]);
+            expect(f.state.get('error')).toBe('Ada: A planned break ends outside the shift.');
+            expect(f.saveInvocationCount()).toBe(1);
+        } finally { await f.cleanup(); }
+    });
+    it('refuses a stale A failure without clearing or retrying the new B draft and allows its independent50 autosave', async () => {
+        const f = await fixture('ack', { deferRow: true, rowOutcomes: ['uncertain', 'ack50'] });
+        try {
+            f.edit45(); await vi.advanceTimersByTimeAsync(650); await f.waitForRow();
+            expect(f.render().selectedRow.saving).toBe(true); f.assertLedger([f.rowCall()]);
+            await f.switchScope(); f.resumeLoadedAutoReview(); f.edit50();
+            await vi.advanceTimersByTimeAsync(649); const before = structuredClone(f.state.get('dayRows'));
+            await f.completeRow(); expect(f.state.get('dayRows')).toEqual(before);
+            expect(f.state.get('error')).toBeNull(); expect(f.state.get('loadedDayScope')).toEqual(f.scopeB);
+            f.assertLedger([f.rowCall(), f.dayCall(f.scopeB)]);
+            await vi.advanceTimersByTimeAsync(1); await f.finishAutosaves();
+            f.assertLedger([f.rowCall(), f.dayCall(f.scopeB), f.rowCall(f.scopeB, 50)]);
+            expect(f.rowKeys()[1]).not.toBe(f.rowKeys()[0]);
+            expect(f.render().selectedRow.lunch.durationMinutes).toBe(50); expect(f.render().selectedRow.dirty).toBe(false);
+            await vi.advanceTimersByTimeAsync(1300); await f.finishAutosaves();
+            f.assertLedger([f.rowCall(), f.dayCall(f.scopeB), f.rowCall(f.scopeB, 50)]);
+        } finally { await f.cleanup(); }
+    });
+});
+
+// Candidate-only visible-status and selection controls. The immutable original
+// baseline20 remains separate; these nodes use the actual parent condition/JSX.
+describe('actual Lunch Break paused autosave visible recovery and row selection', () => {
+    it('exposes actual paused-status guidance after failure and clears it after actual enabled unchanged Save recovery', async () => {
+        const f = await fixture('ack', { deferRow: true, rowOutcomes: ['reject', 'ack45'] });
+        try {
+            expect(f.render().pauseStatus).toBeNull(); expect(f.render().selectedRow.autosavePaused).toBe(false);
+            f.edit45(); await vi.advanceTimersByTimeAsync(650); await f.waitForRow();
+            expect(f.render().selectedRow.saving).toBe(true); expect(f.render().pauseStatus).toBeNull();
+            await f.completeRow(); f.assertLedger([f.rowCall()]);
+            expect(f.render().selectedRow.autosavePaused).toBe(true);
+            const status = f.render().pauseStatus; expect(status?.props.role).toBe('status');
+            expect(visibleText(status)).toContain('Autosave paused.');
+            expect(visibleText(status)).toContain('Save shift to retry these values');
+            expect(visibleText(status)).toContain('edit to start a new attempt');
+            expect(visibleText(status)).toContain('Reset to discard the draft');
+            const originalKey = f.rowKeys()[0]; await f.manualSave();
+            f.assertLedger([f.rowCall(), f.rowCall()]); expect(f.rowKeys()).toEqual([originalKey, originalKey]);
+            expect(f.render().selectedRow.dirty).toBe(false); expect(f.render().selectedRow.autosavePaused).toBe(false);
+            expect(f.render().pauseStatus).toBeNull();
+            await vi.advanceTimersByTimeAsync(1300); await f.finishAutosaves();
+            f.assertLedger([f.rowCall(), f.rowCall()]);
+        } finally { await f.cleanup(); }
+    });
+    it('keeps a failed row paused across actual row re-selection while another clean row stays independently unpaused', async () => {
+        const f = await fixture('ack', { deferRow: true, rowOutcome: 'reject', extraRow: true });
+        try {
+            f.edit45(); await vi.advanceTimersByTimeAsync(650); await f.waitForRow(); await f.completeRow();
+            f.assertLedger([f.rowCall()]); const originalKey = f.rowKeys()[0];
+            expect(f.render().selectedRow.autosavePaused).toBe(true);
+            f.select('shift-extra'); expect(f.render().selectedRow.dirty).toBe(false);
+            expect(f.render().selectedRow.autosavePaused).toBe(false); expect(f.render().pauseStatus).toBeNull();
+            await vi.advanceTimersByTimeAsync(1300); await f.finishAutosaves(); f.assertLedger([f.rowCall()]);
+            f.select('shift-a'); expect(f.render().selectedRow.dirty).toBe(true);
+            expect(f.render().selectedRow.lunch.durationMinutes).toBe(45);
+            expect(f.render().selectedRow.autosavePaused).toBe(true);
+            expect(f.render().pauseStatus?.props.role).toBe('status');
+            await vi.advanceTimersByTimeAsync(1300); await f.finishAutosaves();
+            f.assertObservedRowAttempts(f.rowCall(), originalKey); f.assertLedger([f.rowCall()]);
+            expect(f.rowKeys()).toEqual([originalKey]); expect(f.timerLedger().firedCount).toBe(1);
         } finally { await f.cleanup(); }
     });
 });

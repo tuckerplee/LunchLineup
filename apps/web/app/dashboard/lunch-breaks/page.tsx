@@ -132,6 +132,7 @@ type DayShiftRow = {
   break2: EditableBreak;
   dirty: boolean;
   saving: boolean;
+  autosavePaused: boolean;
 };
 
 type ManualShiftRow = {
@@ -329,6 +330,7 @@ function toDayShiftRow(generated: GeneratedShiftBreaks, policy: LunchBreakPolicy
     break2: buildEditableBreak(generated, 'break2', policy.break2DurationMinutes, timeZone),
     dirty: false,
     saving: false,
+    autosavePaused: false,
   };
 }
 
@@ -839,15 +841,18 @@ export default function LunchBreaksPage() {
   const updateBreak = useCallback((shiftId: string, key: BreakEditorKey, next: Partial<EditableBreak>) => {
     if (!canWriteLoadedDay || isSavingPolicy) return;
     setDayRows((prev) =>
-      prev.map((row) =>
-        row.shiftId === shiftId
-          ? {
-              ...row,
-              [key]: { ...row[key], ...next },
-              dirty: true,
-            }
-          : row,
-      ),
+      prev.map((row) => {
+        if (row.shiftId !== shiftId) return row;
+        const changed = (Object.keys(next) as Array<keyof EditableBreak>)
+          .some((field) => !Object.is(row[key][field], next[field]));
+        if (!changed) return row;
+        return {
+          ...row,
+          [key]: { ...row[key], ...next },
+          dirty: true,
+          autosavePaused: false,
+        };
+      }),
     );
   }, [canWriteLoadedDay, isSavingPolicy]);
 
@@ -992,7 +997,7 @@ export default function LunchBreaksPage() {
           : (err as Error).message;
         commitActiveDayScope(writeScope, () => {
           setDayRows((prev) =>
-            prev.map((candidate) => (candidate.shiftId === shiftId ? { ...candidate, saving: false } : candidate)),
+            prev.map((candidate) => (candidate.shiftId === shiftId ? { ...candidate, saving: false, autosavePaused: true } : candidate)),
           );
           setError(message);
           window.requestAnimationFrame(() => shiftBreakSaveButtonRef.current?.focus());
@@ -1344,7 +1349,7 @@ export default function LunchBreaksPage() {
     if (!canWriteLunchBreaks) return;
     if (isSavingPolicy) return;
     if (!(plannerMode === 'auto' && autoGuideStep >= 5)) return;
-    if (!selectedRow || !selectedRow.dirty || selectedRow.saving) return;
+    if (!selectedRow || !selectedRow.dirty || selectedRow.saving || selectedRow.autosavePaused) return;
 
     const timeout = window.setTimeout(() => {
       void saveRow(selectedRow.shiftId);
@@ -3250,6 +3255,12 @@ export default function LunchBreaksPage() {
                       );
                     })}
                   </div>
+
+                  {selectedRow.autosavePaused && !selectedRow.saving ? (
+                    <div role="status" style={{ fontSize: '0.76rem', color: 'var(--text-secondary)' }}>
+                      <strong>Autosave paused.</strong> Your draft is still here. Save shift to retry these values, edit to start a new attempt, or Reset to discard the draft.
+                    </div>
+                  ) : null}
 
                   {canWriteLunchBreaks ? (
                     <div style={{ display: 'grid', gap: 6 }}>
