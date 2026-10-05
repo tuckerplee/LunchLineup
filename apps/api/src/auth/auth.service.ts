@@ -1955,10 +1955,12 @@ export class AuthService implements OnModuleDestroy {
             if (updated.count !== 1) {
                 throw new UnauthorizedException('User account inactive');
             }
+            assertCurrentAuthority();
             const sessions = await tx.session.updateMany({
                 where: { userId, revokedAt: null },
                 data: { revokedAt: now },
             });
+            assertCurrentAuthority();
             await tx.auditLog.create({
                 data: {
                     tenantId,
@@ -1977,6 +1979,7 @@ export class AuthService implements OnModuleDestroy {
                 },
             });
 
+            assertCurrentAuthority();
             return activeSessions.map((session) => session.id);
             }, { isolationLevel: 'Serializable' }),
             { conflictMessage: 'Authorization or PIN state changed concurrently; retry the request' },

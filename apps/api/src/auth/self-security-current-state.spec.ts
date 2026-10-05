@@ -3,6 +3,8 @@ import { ForbiddenException, ServiceUnavailableException, UnauthorizedException 
 import { AuthService } from './auth.service';
 import { RbacService } from './rbac.service';
 import { TenantPrismaService } from '../database/tenant-prisma.service';
+import { MFA_MARKER_TTL_SCRIPT } from '@lunchlineup/rbac';
+import { performance } from 'node:perf_hooks';
 
 type Action = 'enroll' | 'disable' | 'verify' | 'pin';
 const ids = { tenantId: 'self-tenant', userId: 'self-user', sessionId: 'self-session' };
@@ -17,13 +19,16 @@ const flatten = (items: unknown[]): unknown[] => items.flatMap(x => x && typeof 
 beforeEach(() => {
     vi.useFakeTimers({ toFake: ['Date'] }); vi.setSystemTime(new Date('2026-10-04T08:00:00Z'));
     vi.stubEnv('MFA_SECRET_ENCRYPTION_KEY', 'synthetic-self-security-encryption-key');
+    vi.stubEnv('PLATFORM_ADMIN_DB_CONTEXT_SECRET', 'synthetic-self-security-platform-capability');
 });
 afterEach(() => { vi.useRealTimers(); vi.unstubAllEnvs(); vi.restoreAllMocks(); });
 
 // Actual AuthService and RBAC; exact selector-filtered current rows. The model
 // stages writes until successful callback completion, without real SQL locks,
 // isolation, rollback, Redis execution or native qualification.
-function harness(action: Action) {
+type PinEffectStage = 'user' | 'sessions' | 'audit';
+type PinAttempt = { stage: PinEffectStage; args: any; active: number };
+function harness(action: Action, pinEffectStage?: PinEffectStage) {
     const entered = gate(), release = gate(), rolesEntered = gate(), rolesRelease = gate(), finalEntered = gate(), finalRelease = gate(), listEntered = gate(), listRelease = gate(), proofEntered = gate(), proofRelease = gate();
     const state: any = {
         tenant: { id: ids.tenantId, status: 'ACTIVE', deletedAt: null },
@@ -41,14 +46,32 @@ function harness(action: Action) {
     let first = true, pauseRoles = false, rolesPaused = false, active = 0, tenantVisits = 0, pauseFinal = false, pauseList = false, pauseProof = false;
     let onObserve: (() => void) | undefined, onCommit: (() => void) | undefined;
     const writes = vi.fn(), audits = vi.fn(), proofs = vi.fn(), committed = vi.fn();
-    const database: any = { $transaction: async (operation: any) => {
+    const pinEffectEntered = gate(), pinEffectRelease = gate();
+    const pinAttempts: PinAttempt[] = [], pinRaw: Array<{ text: string; values: unknown[]; execute: boolean }> = [];
+    const pinReads: Array<{ model: string; args: any }> = [], redisBoundaries: Array<{ method: string; active: number; args: unknown[] }> = [];
+    const pinTransactionOptions: unknown[] = [];
+    const recordPinRead = (model: string, args: any) => {
+        if (pinEffectStage) pinReads.push({ model, args: structuredClone(args) });
+    };
+    const afterPinEffect = async (stage: PinEffectStage, args: any) => {
+        if (!pinEffectStage) return;
+        pinAttempts.push({ stage, args: structuredClone(args), active });
+        if (stage === pinEffectStage) { pinEffectEntered.release(); await pinEffectRelease.promise; }
+    };
+    const database: any = { $transaction: async (operation: any, options?: unknown) => {
+        if (pinEffectStage) pinTransactionOptions.push(options);
         expect(active).toBe(0); active++;
         const staged: unknown[] = [];
         const tx: any = {
-            $executeRaw: vi.fn(async () => 1),
+            $executeRaw: vi.fn(async (sql: any, ...args: unknown[]) => {
+                if (pinEffectStage) pinRaw.push({ text: (Array.isArray(sql) ? sql : sql.strings).join('').replace(/\s+/g, ' ').trim(),
+                    values: flatten(Array.isArray(sql) ? args : sql.values), execute: true });
+                return 1;
+            }),
             $queryRaw: vi.fn(async (sql: any, ...args: unknown[]) => {
                 const text = (Array.isArray(sql) ? sql : sql.strings).join('');
                 const values = flatten(Array.isArray(sql) ? args : sql.values);
+                if (pinEffectStage) pinRaw.push({ text: text.replace(/\s+/g, ' ').trim(), values, execute: false });
                 if (text.includes('AS "now"')) return [{ now: new Date() }];
                 if (text.includes('UPDATE "Session"') && text.includes('"mfaEnrollmentSecret" = NULL')) {
                     expect(values).toEqual([ids.sessionId, ids.userId, state.session.mfaEnrollmentSecret, state.session.mfaEnrollmentExpiresAt.toISOString()]);
@@ -70,11 +93,13 @@ function harness(action: Action) {
                 }
                 return [];
             }),
-            tenant: { findUnique: vi.fn(async ({ where }: any) => {
+            tenant: { findUnique: vi.fn(async (args: any) => {
+                recordPinRead('tenant.findUnique', args); const { where } = args;
                 expect(where).toEqual({ id: ids.tenantId }); return structuredClone(state.tenant);
             }) },
             user: {
-                findFirst: vi.fn(async ({ where }: any) => {
+                findFirst: vi.fn(async (args: any) => {
+                    recordPinRead('user.findFirst', args); const { where } = args;
                     expect(where).toMatchObject({ id: ids.userId, tenantId: ids.tenantId, deletedAt: null, suspendedAt: null });
                     return state.user.deletedAt || state.user.suspendedAt || state.user.tenantId !== ids.tenantId ? null : structuredClone(state.user);
                 }),
@@ -82,37 +107,47 @@ function harness(action: Action) {
                     expect(where).toEqual({ id: ids.userId }); writes('user', data); staged.push(data); return {};
                 }),
                 updateMany: vi.fn(async ({ where, data }: any) => {
-                    expect(where).toMatchObject({ id: ids.userId, tenantId: ids.tenantId }); writes('user', data); staged.push(data); return { count: 1 };
+                    writes('user', data); staged.push(data);
+                    await afterPinEffect('user', { where, data });
+                    expect(where).toMatchObject({ id: ids.userId, tenantId: ids.tenantId }); return { count: 1 };
                 }),
             },
             session: {
-                findFirst: vi.fn(async ({ where }: any) => {
+                findFirst: vi.fn(async (args: any) => {
+                    recordPinRead('session.findFirst', args); const { where } = args;
                     expect(where).toEqual({ id: ids.sessionId, userId: ids.userId });
                     return state.session?.id === ids.sessionId && state.session.userId === ids.userId ? structuredClone(state.session) : null;
                 }),
-                findMany: vi.fn(async ({ where }: any) => {
+                findMany: vi.fn(async (args: any) => {
+                    recordPinRead('session.findMany', args); const { where } = args;
                     expect(where).toEqual({ userId: ids.userId, revokedAt: null });
                     if (pauseList) { listEntered.release(); await listRelease.promise; }
                     return [{ id: ids.sessionId }];
                 }),
                 updateMany: vi.fn(async ({ where, data }: any) => {
-                    expect(where).toEqual({ userId: ids.userId, revokedAt: null }); writes('sessions', data); staged.push(data); return { count: 1 };
+                    writes('sessions', data); staged.push(data);
+                    await afterPinEffect('sessions', { where, data });
+                    expect(where).toEqual({ userId: ids.userId, revokedAt: null }); return { count: 1 };
                 }),
             },
-            tenantSetting: { findUnique: vi.fn(async ({ where }: any) => {
+            tenantSetting: { findUnique: vi.fn(async (args: any) => {
+                recordPinRead('tenantSetting.findUnique', args); const { where } = args;
                 expect(where).toEqual({ tenantId_key: { tenantId: ids.tenantId, key: 'workspace_settings' } });
                 return { value: { security: structuredClone(state.security) } };
             }) },
-            roleAssignment: { findMany: vi.fn(async ({ where }: any) => {
+            roleAssignment: { findMany: vi.fn(async (args: any) => {
+                recordPinRead('roleAssignment.findMany', args); const { where } = args;
                 expect(where).toMatchObject({ tenantId: ids.tenantId });
                 if (pauseRoles && !rolesPaused) { rolesPaused = true; rolesEntered.release(); await rolesRelease.promise; }
                 return state.assigned ? [{ userId: ids.userId, roleId: state.role.id, role: structuredClone(state.role) }] : [];
             }) },
-            role: { findMany: vi.fn(async ({ where }: any) => {
+            role: { findMany: vi.fn(async (args: any) => {
+                recordPinRead('role.findMany', args); const { where } = args;
                 expect(where.tenantId).toBe(ids.tenantId); return state.assigned ? [structuredClone(state.role)] : [];
             }) },
             auditLog: { create: vi.fn(async ({ data }: any) => {
-                expect(data).toMatchObject({ tenantId: ids.tenantId, actorUserId: ids.userId }); audits(data); staged.push(data); return {};
+                audits(data); staged.push(data); await afterPinEffect('audit', { data });
+                expect(data).toMatchObject({ tenantId: ids.tenantId, actorUserId: ids.userId }); return {};
             }) },
             mfaTotpClaim: { create: vi.fn(async ({ data }: any) => {
                 expect(data).toMatchObject({ tenantId: ids.tenantId, userId: ids.userId }); proofs(data); staged.push(data);
@@ -120,7 +155,19 @@ function harness(action: Action) {
                 return {};
             }) },
         };
-        try { const result = await operation(tx); if (staged.length) onCommit?.(); for (const value of staged) committed(value); return result; }
+        try {
+            const result = await operation(tx); if (staged.length) onCommit?.();
+            if (pinEffectStage && staged.length) {
+                // Publish staged state only after callback success. Its captured
+                // actor Session snapshot remains active while this owner revokes
+                // the live row; a later guard must not reject its own revocation.
+                const credential = pinAttempts.find(attempt => attempt.stage === 'user')?.args.data;
+                const revocation = pinAttempts.find(attempt => attempt.stage === 'sessions')?.args.data;
+                if (credential) Object.assign(state.user, structuredClone(credential));
+                if (revocation) Object.assign(state.session, structuredClone(revocation));
+            }
+            for (const value of staged) committed(value); return result;
+        }
         finally { active--; }
     } };
     const tenantDb = new TenantPrismaService(database);
@@ -135,11 +182,15 @@ function harness(action: Action) {
             expect(active).toBe(0); expect(key).toBe(`mfa_enrollment:${ids.sessionId}:${ids.userId}`); return secret;
         }),
         eval: vi.fn(async (_script: string, count: number, key: string) => {
+            if (pinEffectStage) redisBoundaries.push({ method: 'eval', active, args: [_script, count, key] });
             expect(active).toBe(0); expect(count).toBe(1); expect(key).toBe(`session_mfa:${ids.sessionId}`);
             const ttl = state.markerTtl; onObserve?.(); return ttl;
         }),
         set: vi.fn(async () => { expect(active).toBe(0); return 'OK'; }),
-        del: vi.fn(async () => { expect(active).toBe(0); return 1; }),
+        del: vi.fn(async (...args: unknown[]) => {
+            if (pinEffectStage) redisBoundaries.push({ method: 'del', active, args });
+            expect(active).toBe(0); return 1;
+        }),
     };
     (service as any).redis = redis;
     const code = (service as any).generateTotpCode((service as any).secretToBuffer(secret), Math.floor(Date.now() / 30_000));
@@ -149,6 +200,9 @@ function harness(action: Action) {
         : action === 'verify' ? service.validateMfa(ids.userId, code, claims)
         : service.rotateOwnPin(ids.userId, '1111', '2222', ids.tenantId, ids.sessionId);
     return { state, entered, release, rolesEntered, rolesRelease, finalEntered, finalRelease, listEntered, listRelease, proofEntered, proofRelease, writes, audits, proofs, committed, jwt, redis, call,
+        pinEffectEntered, pinEffectRelease, pinAttempts, pinRaw, pinReads, redisBoundaries, pinTransactionOptions,
+        activeTransactions: () => active,
+        verifyPin: (pin: string, hash: string) => (service as any).verifyPin(pin, hash),
         pauseFinal: () => { pauseFinal = true; }, pauseList: () => { pauseList = true; }, pauseProof: () => { pauseProof = true; },
         expireDuringPinHash: () => {
             const hash = (service as any).buildPinCredentialData.bind(service);
@@ -361,4 +415,161 @@ describe('self-security current state at mutation boundaries', () => {
         });
     }
 
+});
+
+// These controlled gates are after the actual owner's staged writes, not actor
+// writers committing under modeled held locks. Only the selected wall or
+// monotonic clock advances; SQL/SSI, commit latency and Redis remain unproved.
+type PinDeadlineMode = 'stored session' | 'effective policy' | 'bounded MFA' | 'monotonic MFA';
+async function boundedPinWait<T>(promise: Promise<T>, label: string): Promise<T> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+        return await Promise.race([promise, new Promise<never>((_, reject) => {
+            timer = setTimeout(() => reject(new Error(`PIN fixture bounded wait: ${label}`)), 2000);
+        })]);
+    } finally { if (timer) clearTimeout(timer); }
+}
+async function throughPinEffect(h: Fixture, advanceMs: number, monotonic = false) {
+    const pending = h.call().then(value => ({ value, error: undefined }), error => ({ value: undefined, error }));
+    try {
+        expect(await boundedPinWait(Promise.race([
+            h.entered.promise.then(() => 'entered'), pending.then(() => 'settled'),
+        ]), 'initial Tenant arrival')).toBe('entered');
+        h.release.release();
+        expect(await boundedPinWait(Promise.race([
+            h.pinEffectEntered.promise.then(() => 'entered'), pending.then(() => 'settled'),
+        ]), 'post-staged-effect arrival')).toBe('entered');
+        // All reached effects are attempted, but none has committed while the
+        // callback is suspended. This assertion independently proves arrival.
+        expect(h.pinAttempts.length).toBeGreaterThan(0);
+        expect(h.committed).not.toHaveBeenCalled();
+        expect(h.redis.del).not.toHaveBeenCalled();
+        if (monotonic) vi.spyOn(performance, 'now').mockReturnValue(100_000 + advanceMs);
+        else vi.setSystemTime(Date.now() + advanceMs);
+        h.pinEffectRelease.release();
+        return await boundedPinWait(pending, 'completion');
+    } finally {
+        h.release.release(); h.rolesRelease.release(); h.finalRelease.release();
+        h.listRelease.release(); h.proofRelease.release(); h.pinEffectRelease.release();
+        await boundedPinWait(pending, 'finally release and drain');
+    }
+}
+function configurePinDeadline(h: Fixture, mode: PinDeadlineMode): number {
+    if (mode === 'stored session') { h.state.session.expiresAt = new Date(Date.now() + 1000); return 1000; }
+    if (mode === 'effective policy') {
+        h.state.security.sessionTimeoutMinutes = 5;
+        h.state.session.createdAt = new Date(Date.now() - 4 * 60_000); return 60_000;
+    }
+    if (mode === 'monotonic MFA') vi.spyOn(performance, 'now').mockReturnValue(100_000);
+    h.state.user.mfaEnabled = true; h.state.markerTtl = 1000; return 1001;
+}
+function assertPinAttemptContract(h: Fixture, stage: PinEffectStage, startedAt: number, observedMfa: boolean) {
+    // Run outside the owner's catches BEFORE the primary expiry/success oracle.
+    // A caught mock assertion cannot masquerade as the expected auth exception.
+    const ordered = ['user', 'sessions', 'audit'];
+    expect(h.pinAttempts.map(attempt => attempt.stage)).toEqual(ordered.slice(0, h.pinAttempts.length));
+    expect(h.pinAttempts.length).toBeGreaterThanOrEqual(ordered.indexOf(stage) + 1);
+    expect(h.pinAttempts.length).toBeLessThanOrEqual(3);
+    expect(h.activeTransactions()).toBe(0);
+    for (const attempt of h.pinAttempts) {
+        expect(attempt.active).toBe(1);
+        const { where, data } = attempt.args;
+        if (attempt.stage === 'user') {
+            expect(where).toEqual({ id: ids.userId, tenantId: ids.tenantId, deletedAt: null, suspendedAt: null });
+            expect(Object.keys(data).sort()).toEqual(['pinHash', 'pinLockedUntil', 'pinLoginAttempts', 'pinResetRequired', 'pinSetAt']);
+            expect(data).toMatchObject({ pinResetRequired: false, pinLoginAttempts: 0, pinLockedUntil: null });
+            expect(data.pinSetAt).toEqual(new Date(startedAt));
+            expect(data.pinHash).toMatch(/^[a-f0-9]{32}:[a-f0-9]{128}$/);
+            expect(h.verifyPin('2222', data.pinHash)).toBe(true);
+            expect(h.verifyPin('1111', data.pinHash)).toBe(false);
+        } else if (attempt.stage === 'sessions') {
+            expect(where).toEqual({ userId: ids.userId, revokedAt: null });
+            expect(data).toEqual({ revokedAt: new Date(startedAt) });
+        } else {
+            expect(attempt.args).toEqual({ data: {
+                tenantId: ids.tenantId, userId: ids.userId, actorUserId: ids.userId, actorTenantId: ids.tenantId,
+                action: 'USER_PIN_ROTATED', resource: 'User', resourceId: ids.userId,
+                newValue: { pinResetRequired: false, sessionsRevoked: 1 }, ipAddress: null, userAgent: null,
+            } });
+            expect(JSON.stringify(data)).not.toMatch(/pinHash|1111|2222|mfaSecret|mfaBackupCodes/);
+        }
+    }
+    expect(h.writes.mock.calls.map(call => call[0])).toEqual(h.pinAttempts.filter(attempt => attempt.stage !== 'audit').map(attempt => attempt.stage));
+    expect(h.audits).toHaveBeenCalledTimes(h.pinAttempts.filter(attempt => attempt.stage === 'audit').length);
+    expect(h.proofs).not.toHaveBeenCalled(); expect(h.jwt.generateAccessToken).not.toHaveBeenCalled();
+    expect(h.redis.get).not.toHaveBeenCalled(); expect(h.redis.set).not.toHaveBeenCalled();
+    expect(h.redis.eval).toHaveBeenCalledTimes(observedMfa ? 1 : 0);
+    for (const call of h.redisBoundaries) {
+        expect(call.active).toBe(0);
+        expect(call.args).toEqual(call.method === 'eval'
+            ? [MFA_MARKER_TTL_SCRIPT, 1, `session_mfa:${ids.sessionId}`]
+            : [`session_mfa:${ids.sessionId}`]);
+    }
+    expect(h.pinTransactionOptions).toEqual([undefined, { isolationLevel: 'Serializable' }]);
+    const rawCycle = [
+        { execute: true, text: 'SELECT set_current_tenant()', values: [ids.tenantId] },
+        { execute: false, text: 'SELECT "id" FROM "Tenant" WHERE "id" IN () ORDER BY "id" FOR UPDATE', values: [ids.tenantId] },
+        { execute: false, text: 'SELECT "id" FROM "User" WHERE "tenantId" = AND "id" IN () AND "deletedAt" IS NULL ORDER BY "id" FOR UPDATE', values: [ids.tenantId, ids.userId] },
+        { execute: false, text: 'SELECT "id", "userId", "expiresAt", "revokedAt" FROM "Session" WHERE "id" = AND "userId" = FOR UPDATE', values: [ids.sessionId, ids.userId] },
+        { execute: false, text: 'SELECT "userId", "roleId" FROM "RoleAssignment" WHERE "tenantId" = AND "userId" IN () ORDER BY "userId", "roleId" FOR UPDATE', values: [ids.tenantId, ids.userId] },
+        { execute: false, text: 'SELECT "id" FROM "Role" WHERE "tenantId" = AND "id" = FOR UPDATE', values: [ids.tenantId, h.state.role.id] },
+        { execute: false, text: 'SELECT "roleId", "permissionId" FROM "RolePermission" WHERE "roleId" IN () ORDER BY "roleId", "permissionId" FOR UPDATE', values: [h.state.role.id] },
+    ];
+    expect(h.pinRaw).toEqual([...rawCycle, ...rawCycle]);
+    const readCycle = [
+        { model: 'user.findFirst', args: { where: { id: ids.userId, tenantId: ids.tenantId, deletedAt: null, suspendedAt: null },
+            select: { id: true, role: true, lockedUntil: true, pinLockedUntil: true } } },
+        { model: 'roleAssignment.findMany', args: { where: { tenantId: ids.tenantId, userId: ids.userId }, select: { userId: true, roleId: true }, orderBy: [{ userId: 'asc' }, { roleId: 'asc' }] } },
+        { model: 'role.findMany', args: { where: { tenantId: ids.tenantId, id: { in: [h.state.role.id] }, deletedAt: null }, include: { rolePermissions: { include: { permission: true } } }, orderBy: { id: 'asc' } } },
+        { model: 'tenant.findUnique', args: { where: { id: ids.tenantId }, select: { id: true, status: true, deletedAt: true } } },
+        { model: 'user.findFirst', args: { where: { id: ids.userId, tenantId: ids.tenantId, deletedAt: null, suspendedAt: null },
+            select: { id: true, tenantId: true, role: true, email: true, username: true, pinHash: true, pinResetRequired: true, mfaEnabled: true, mfaSecret: true, mfaBackupCodes: true } } },
+        { model: 'session.findFirst', args: { where: { id: ids.sessionId, userId: ids.userId } } },
+        { model: 'tenantSetting.findUnique', args: { where: { tenantId_key: { tenantId: ids.tenantId, key: 'workspace_settings' } }, select: { value: true } } },
+    ];
+    expect(h.pinReads).toEqual([...readCycle, ...readCycle,
+        { model: 'session.findMany', args: { where: { userId: ids.userId, revokedAt: null }, select: { id: true } } },
+    ]);
+}
+function assertPinCommitted(h: Fixture) {
+    expect(h.pinAttempts.map(attempt => attempt.stage)).toEqual(['user', 'sessions', 'audit']);
+    expect(h.committed.mock.calls.map(call => call[0])).toEqual(h.pinAttempts.map(attempt => attempt.args.data));
+    expect(h.verifyPin('2222', h.state.user.pinHash)).toBe(true);
+    expect(h.state.user.pinResetRequired).toBe(false);
+    expect(h.state.session.revokedAt).toEqual(h.pinAttempts[1].args.data.revokedAt);
+    expect(h.redis.del).toHaveBeenCalledExactlyOnceWith(`session_mfa:${ids.sessionId}`);
+}
+describe('retained PIN late-effect bounded current authority', () => {
+    for (const stage of ['user', 'sessions', 'audit'] as const) {
+        for (const mode of ['stored session', 'effective policy', 'bounded MFA', 'monotonic MFA'] as const) {
+            it(`PIN rolls back ${mode} expiry after staged ${stage} effect`, async () => {
+                const h = harness('pin', stage), startedAt = Date.now(), originalHash = h.state.user.pinHash;
+                const expiresAfter = configurePinDeadline(h, mode);
+                const result = await throughPinEffect(h, expiresAfter, mode === 'monotonic MFA');
+                if (mode === 'monotonic MFA') expect(Date.now()).toBe(startedAt);
+                assertPinAttemptContract(h, stage, startedAt, mode.endsWith('MFA'));
+                expect(result.error).toBeInstanceOf(mode.endsWith('MFA') ? ForbiddenException : UnauthorizedException);
+                expect(result.value).toBeUndefined(); expect(h.committed).not.toHaveBeenCalled();
+                expect(h.state.user.pinHash).toBe(originalHash); expect(h.state.session.revokedAt).toBeNull();
+                expect(h.redis.del).not.toHaveBeenCalled();
+            });
+            it(`PIN commits still-valid ${mode} after staged ${stage} effect`, async () => {
+                const h = harness('pin', stage), startedAt = Date.now();
+                const expiresAfter = configurePinDeadline(h, mode);
+                const result = await throughPinEffect(h, expiresAfter - (mode.endsWith('MFA') ? 2 : 1), mode === 'monotonic MFA');
+                if (mode === 'monotonic MFA') expect(Date.now()).toBe(startedAt);
+                assertPinAttemptContract(h, stage, startedAt, mode.endsWith('MFA'));
+                expect(result.error).toBeUndefined(); assertPinCommitted(h);
+            });
+        }
+        it(`forced PIN recovery commits after staged ${stage} effect without MFA observation`, async () => {
+            const h = harness('pin', stage), startedAt = Date.now();
+            h.state.user.pinResetRequired = true; h.state.user.mfaEnabled = true;
+            h.state.security.requireMfaForAll = true; h.state.markerTtl = -2;
+            h.state.session.expiresAt = new Date(Date.now() + 1000);
+            const result = await throughPinEffect(h, 999);
+            assertPinAttemptContract(h, stage, startedAt, false);
+            expect(result.error).toBeUndefined(); assertPinCommitted(h);
+        });
+    }
 });
