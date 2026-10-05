@@ -12,7 +12,7 @@ import { claimLunchBreakDayLoadRequest } from '../../app/dashboard/lunch-breaks/
 import { lunchBreakDayWindow, lunchBreakTimeValue, resolveLunchBreakInstant } from '../../app/dashboard/lunch-breaks/lunch-break-time';
 import {
     createShiftBreakUpdateSubmissionState, submitShiftBreakUpdate,
-    readShiftBreakUpdateResponse, ShiftBreakUpdateRequestError,
+    readShiftBreakUpdateResponse, ShiftBreakUpdateRequestError, readShiftBreakUpdateRecovery,
 } from '../../app/dashboard/lunch-breaks/shift-break-update-recovery';
 
 vi.mock('@/lib/client-api', async importOriginal => ({
@@ -124,7 +124,7 @@ function javascript(text: string) {
 }
 const executable = javascript(`
 ${['DEFAULT_POLICY', 'BREAK_KEYS', 'BREAK_META', 'DATE_BOOTSTRAP_PLACEHOLDER'].map(constant).join('\n')}
-${['defaultManualShifts', 'cloneRow', 'buildEditableBreak', 'toDayShiftRow', 'breakStatusLabel', 'getCsrfTokenFromCookie', 'jsonWriteInit', 'fetchLunchBreakMutation'].map(helper).join('\n')}
+${['defaultManualShifts', 'cloneRow', 'buildEditableBreak', 'toDayShiftRow', 'toSavedDayShiftRow', 'breakStatusLabel', 'getCsrfTokenFromCookie', 'jsonWriteInit', 'fetchLunchBreakMutation'].map(helper).join('\n')}
 function render() {
 ${stateDeclarations.map(node => 'const ' + node.getText(ast) + ';').join('\n')}
 ${selectedDeclarations.map(node => 'const ' + node.getText(ast) + ';').join('\n')}
@@ -164,7 +164,9 @@ const sameDependencies = (a: readonly unknown[], b: readonly unknown[]) =>
     a.length === b.length && a.every((value, index) => Object.is(value, b[index]));
 type Memo = { dependencies: readonly unknown[]; value: any };
 type Mode = 'ack' | 'reject';
-type RowOutcome = 'ack45' | 'ack50' | 'reject' | 'forbidden' | 'conflict' | 'uncertain';
+type RowOutcome = 'ack45' | 'ack50' | 'reject' | 'forbidden' | 'conflict' | 'uncertain'
+    | 'null2xx' | 'nonjson2xx' | 'missingfields2xx' | 'foreignshift2xx' | 'reordered2xx' | 'skipped2xx'
+    | 'badmetadata2xx' | 'badbreak2xx' | 'invalidinstant2xx' | 'duplicatetype2xx' | 'overnightoffset2xx';
 async function fixture(mode: Mode, options: { deferReadback?: boolean; deferRow?: boolean; rejectRow?: boolean; extraRow?: boolean; rowOutcome?: RowOutcome; rowOutcomes?: RowOutcome[] } = {}) {
     vi.useFakeTimers(); vi.setSystemTime(new Date('2026-10-04T08:00:00.000Z'));
     const state = new Map<string, any>(), refs = new Map<string, { current: any }>();
@@ -284,6 +286,59 @@ async function fixture(mode: Mode, options: { deferReadback?: boolean; deferRow?
         const scope = path.endsWith('shift-a') ? scopeA : scopeB;
         if (!outcome) { unexpected.push('Unplanned shift outcome'); throw new Error('Unplanned shift outcome'); }
         if (outcome === 'uncertain') throw new TypeError('Controlled transport uncertainty');
+        if (outcome === 'badmetadata2xx') return new Response(JSON.stringify({
+            shiftId: 'shift-a', userId: null, employeeName: 23,
+            startTime: '2026-10-04T09:00:00.000Z', endTime: '2026-10-04T17:00:00.000Z',
+            breaks: [{ type: 'lunch', startTime: '2026-10-04T12:00:00.000Z', endTime: '2026-10-04T12:45:00.000Z', durationMinutes: 45, paid: false }],
+        }), { headers: { 'Content-Type': 'application/json' } });
+        if (outcome === 'badbreak2xx') return new Response(JSON.stringify({
+            shiftId: 'shift-a', userId: 'employee-a', employeeName: 'Ada',
+            startTime: '2026-10-04T09:00:00.000Z', endTime: '2026-10-04T17:00:00.000Z',
+            breaks: [{ type: 'lunch', startTime: '2026-10-04T12:00:00.000Z', endTime: '2026-10-04T12:45:00.000Z', durationMinutes: 45, paid: 'false' }],
+        }), { headers: { 'Content-Type': 'application/json' } });
+        if (outcome === 'invalidinstant2xx') return new Response(JSON.stringify({
+            shiftId: 'shift-a', userId: 'employee-a', employeeName: 'Ada',
+            startTime: '2026-10-04T09:00:00.000Z', endTime: '2026-10-04T17:00:00.000Z',
+            breaks: [{ type: 'lunch', startTime: '2026-10-04T12:61:00.000Z', endTime: '2026-10-04T13:45:00.000Z', durationMinutes: 45, paid: false }],
+        }), { headers: { 'Content-Type': 'application/json' } });
+        if (outcome === 'duplicatetype2xx') return new Response(JSON.stringify({
+            shiftId: 'shift-a', userId: 'employee-a', employeeName: 'Ada',
+            startTime: '2026-10-04T09:00:00.000Z', endTime: '2026-10-04T17:00:00.000Z',
+            breaks: [
+                { type: 'lunch', startTime: '2026-10-04T12:00:00.000Z', endTime: '2026-10-04T12:45:00.000Z', durationMinutes: 45, paid: false },
+                { type: 'lunch', startTime: '2026-10-04T13:00:00.000Z', endTime: '2026-10-04T13:30:00.000Z', durationMinutes: 30, paid: false },
+            ],
+        }), { headers: { 'Content-Type': 'application/json' } });
+        if (outcome === 'overnightoffset2xx') return new Response(JSON.stringify({
+            shiftId: 'shift-a', userId: 'historical-user', employeeName: 'Historical employee',
+            startTime: '2026-10-03T16:00:00-07:00', endTime: '2026-10-04T10:00:00-07:00',
+            breaks: [{ type: 'lunch', startTime: '2026-10-04T05:00:00-07:00', endTime: '2026-10-04T05:50:00-07:00', durationMinutes: 50, paid: false }],
+        }), { headers: { 'Content-Type': 'application/json' } });
+        if (outcome === 'null2xx') return new Response('null',
+            { headers: { 'Content-Type': 'application/json' } });
+        if (outcome === 'nonjson2xx') return new Response('<html>Controlled incomplete acknowledgment</html>',
+            { headers: { 'Content-Type': 'text/html' } });
+        if (outcome === 'missingfields2xx') return new Response(JSON.stringify({ shiftId: 'shift-a' }),
+            { headers: { 'Content-Type': 'application/json' } });
+        if (outcome === 'foreignshift2xx') return new Response(JSON.stringify({
+            shiftId: 'foreign-shift', userId: 'other-employee', employeeName: 'Other employee',
+            startTime: '2026-10-04T09:00:00.000Z', endTime: '2026-10-04T17:00:00.000Z',
+            breaks: [{ type: 'lunch', startTime: '2026-10-04T12:00:00.000Z',
+                endTime: '2026-10-04T12:45:00.000Z', durationMinutes: 45, paid: false }],
+        }), { headers: { 'Content-Type': 'application/json' } });
+        if (outcome === 'reordered2xx') return new Response(JSON.stringify({
+            shiftId: 'shift-a', userId: 'employee-a', employeeName: 'Ada',
+            startTime: '2026-10-04T09:00:00.000Z', endTime: '2026-10-04T17:00:00.000Z',
+            breaks: [
+                { type: 'break2', startTime: '2026-10-04T15:00:00.000Z', endTime: '2026-10-04T15:10:00.000Z', durationMinutes: 10, paid: true },
+                { type: 'lunch', startTime: '2026-10-04T12:00:00.000Z', endTime: '2026-10-04T12:45:00.000Z', durationMinutes: 45, paid: false },
+                { type: 'break1', startTime: '2026-10-04T10:00:00.000Z', endTime: '2026-10-04T10:10:00.000Z', durationMinutes: 10, paid: true },
+            ],
+        }), { headers: { 'Content-Type': 'application/json' } });
+        if (outcome === 'skipped2xx') return new Response(JSON.stringify({
+            shiftId: 'shift-a', userId: null, employeeName: null,
+            startTime: '2026-10-04T09:00:00.000Z', endTime: '2026-10-04T17:00:00.000Z', breaks: [],
+        }), { headers: { 'Content-Type': 'application/json' } });
         if (outcome === 'reject') return new Response(JSON.stringify({ message: 'Controlled row refusal' }),
             { status: 422, headers: { 'Content-Type': 'application/json' } });
         if (outcome === 'forbidden') return new Response(JSON.stringify({ message: 'Controlled entitlement refusal',
@@ -342,6 +397,28 @@ async function fixture(mode: Mode, options: { deferReadback?: boolean; deferRow?
         button!.props.onClick(); render(); await finishAutosaves();
     }
     function rowKeys() { return rowMetadata.map(row => row.key); }
+    function readRecovery(scope = scopeA) {
+        return readShiftBreakUpdateRecovery(localStorage, {
+            shiftId: scope.locationId === 'location-a' ? 'shift-a' : 'shift-b',
+            dateValue: scope.dateValue, locationId: scope.locationId,
+            tenantId: 'workspace-scope', userId: 'public-user', sessionId: 'session-scope',
+        });
+    }
+    function changeCheckbox(index: number, checked: boolean) {
+        const inputs = elements(render().inputs).filter(node => node.type === 'input' && node.props.type === 'checkbox');
+        expect(inputs).toHaveLength(3); expect(inputs[index].props.disabled).toBe(false);
+        inputs[index].props.onChange({ target: { checked } }); render();
+    }
+    function changeTime(label: string, value: string) {
+        const inputs = elements(render().inputs).filter(node => node.type === 'input' && node.props['aria-label'] === label);
+        expect(inputs).toHaveLength(1); expect(inputs[0].props.disabled).toBe(false);
+        inputs[0].props.onChange({ target: { value } }); render();
+    }
+    function editAllThree() {
+        changeCheckbox(0, false); changeTime('Break 1 time for Ada', '10:00');
+        changeCheckbox(2, false); changeTime('Break 2 time for Ada', '15:00'); edit45();
+    }
+    function skipLunch() { changeCheckbox(1, true); }
     async function beginPolicy() {
         const button = render().policySave; expect(button?.type).toBe(Button); expect(button?.props.disabled).toBe(false);
         pending = button!.props.onClick();
@@ -367,7 +444,7 @@ async function fixture(mode: Mode, options: { deferReadback?: boolean; deferRow?
             expect(row.redirect).toBe('error'); expect(row.signal).toBeInstanceOf(AbortSignal);
         }
     }
-    function assertObservedRowAttempts(expected: { path: string; method: string; body: unknown }, expectedKey: string | null) {
+    function assertObservedRowAttempts(expected: { path: string; method: string; body: unknown }, expectedKey?: string | null) {
         // Validate EVERY reached handoff independently of the expected count,
         // before a primary no-repeat assertion can stop the test.
         expect(unexpected, 'Owner catches cannot hide unexpected transport').toEqual([]);
@@ -375,10 +452,13 @@ async function fixture(mode: Mode, options: { deferReadback?: boolean; deferRow?
         expect(rowMetadata).toHaveLength(rows.length);
         for (const row of rows) expect(row).toEqual(expected);
         for (const metadata of rowMetadata) {
-            expect(metadata.key).toMatch(/^[\x20-\x7e]+$/); expect(metadata.key).toBe(expectedKey);
+            expect(metadata.key).toMatch(/^[\x20-\x7e]+$/);
             expect(metadata.credentials).toBe('include'); expect(metadata.redirect).toBe('error');
             expect(metadata.signal).toBeInstanceOf(AbortSignal);
         }
+        // Key identity is a separate optional oracle AFTER all reached wire
+        // metadata has been validated, so key rotation cannot hide it.
+        if (expectedKey !== undefined) for (const metadata of rowMetadata) expect(metadata.key).toBe(expectedKey);
     }
     const policyCall = { path: '/lunch-breaks/policy', method: 'PUT', body: requested };
     const dayCall = (scope = scopeA) => ({ path: dayPath(scope), method: 'GET' });
@@ -386,6 +466,16 @@ async function fixture(mode: Mode, options: { deferReadback?: boolean; deferRow?
         locationId: scope.locationId, breaks: [{ type: 'break1', skip: true },
             { type: 'lunch', startTime: scope.dateValue + 'T12:00:00.000Z', durationMinutes, skip: false }, { type: 'break2', skip: true }],
     } });
+    const allThreeCall = { path: '/api/v2/lunch-breaks/shift/shift-a', method: 'PUT', body: {
+        locationId: 'location-a', breaks: [
+            { type: 'break1', startTime: '2026-10-04T10:00:00.000Z', durationMinutes: 10, skip: false },
+            { type: 'lunch', startTime: '2026-10-04T12:00:00.000Z', durationMinutes: 45, skip: false },
+            { type: 'break2', startTime: '2026-10-04T15:00:00.000Z', durationMinutes: 10, skip: false },
+        ],
+    } };
+    const skippedCall = { path: '/api/v2/lunch-breaks/shift/shift-a', method: 'PUT', body: {
+        locationId: 'location-a', breaks: [{ type: 'break1', skip: true }, { type: 'lunch', skip: true }, { type: 'break2', skip: true }],
+    } };
     function rowAvailability(disabled: boolean) {
         const row = render(); expect(row.selectedRow).not.toBeNull();
         const fields = elements(row.inputs).filter(node => node.type === 'input'); expect(fields).toHaveLength(9);
@@ -435,7 +525,7 @@ async function fixture(mode: Mode, options: { deferReadback?: boolean; deferRow?
     return { render, state, duration, edit45, beginPolicy, finishPolicy, finishAutosaves, switchScope,
         assertLedger, policyCall, dayCall, rowCall, timerLedger, cleanup, scopeA, scopeB, rowAvailability, policyAvailability,
         acknowledgeToPendingReadback, completeReadback, waitForRow, completeRow, reset, select,
-        resumeLoadedAutoReview, guardedRowOwners, guardedPolicyOwner, edit50, editInvalid, repeat45, manualSave, rowKeys, assertObservedRowAttempts, saveInvocationCount: () => saves.length };
+        resumeLoadedAutoReview, guardedRowOwners, guardedPolicyOwner, edit50, editInvalid, repeat45, manualSave, rowKeys, assertObservedRowAttempts, saveInvocationCount: () => saves.length, editAllThree, skipLunch, allThreeCall, skippedCall, readRecovery };
 }
 afterEach(() => { vi.clearAllTimers(); vi.useRealTimers(); vi.unstubAllGlobals(); vi.clearAllMocks(); vi.restoreAllMocks(); });
 
@@ -736,6 +826,148 @@ describe('actual Lunch Break paused autosave visible recovery and row selection'
             await vi.advanceTimersByTimeAsync(1300); await f.finishAutosaves();
             f.assertObservedRowAttempts(f.rowCall(), originalKey); f.assertLedger([f.rowCall()]);
             expect(f.rowKeys()).toEqual([originalKey]); expect(f.timerLedger().firedCount).toBe(1);
+        } finally { await f.cleanup(); }
+    });
+});
+
+// Original response-custody baseline. Synthetic target aliases are inherited
+// from this source harness; this does not execute native UUID/schema validation.
+// A2xx can have committed server effects even when its acknowledgment is unusable.
+async function malformedAcknowledgmentRetry(outcome: RowOutcome) {
+    const f = await fixture('ack', { deferRow: true, rowOutcomes: [outcome, 'ack45'] });
+    try {
+        f.edit45(); await vi.advanceTimersByTimeAsync(650); await f.waitForRow();
+        expect(f.render().selectedRow.saving).toBe(true); f.assertLedger([f.rowCall()]);
+        const originalKey = f.rowKeys()[0]; await f.completeRow();
+        f.assertObservedRowAttempts(f.rowCall()); f.assertLedger([f.rowCall()]);
+        expect(f.render().selectedRow.shiftId).toBe('shift-a');
+        expect(f.render().selectedRow.lunch.durationMinutes).toBe(45);
+        expect(f.render().selectedRow.dirty).toBe(true); expect(f.render().selectedRow.autosavePaused).toBe(true);
+        expect(typeof f.state.get('error')).toBe('string'); expect(f.state.get('error').trim().length).toBeGreaterThan(0);
+        await vi.advanceTimersByTimeAsync(1300); await f.finishAutosaves(); f.assertLedger([f.rowCall()]);
+        await f.manualSave();
+        // Validate both full wire attempts and the completed canonical recovery
+        // BEFORE the primary retained-key assertion. No owner catch hides errors.
+        f.assertObservedRowAttempts(f.rowCall()); f.assertLedger([f.rowCall(), f.rowCall()]);
+        expect(f.state.get('error')).toBeNull(); expect(f.render().selectedRow.shiftId).toBe('shift-a');
+        expect(f.render().selectedRow.lunch.durationMinutes).toBe(45); expect(f.render().selectedRow.dirty).toBe(false);
+        expect(f.rowKeys()).toEqual([originalKey, originalKey]);
+    } finally { await f.cleanup(); }
+}
+describe('actual Lunch Break2xx acknowledgment custody original baseline', () => {
+    it('retains the original request key for actual enabled unchanged Save after a null2xx acknowledgment', async () => {
+        await malformedAcknowledgmentRetry('null2xx');
+    });
+    it('retains the original request key for actual enabled unchanged Save after a nonJSON2xx acknowledgment', async () => {
+        await malformedAcknowledgmentRetry('nonjson2xx');
+    });
+    it('retains the original request key for actual enabled unchanged Save after a2xx row missing required fields', async () => {
+        await malformedAcknowledgmentRetry('missingfields2xx');
+    });
+    it('preserves the selected target draft instead of installing and marking clean a foreign-shift2xx acknowledgment', async () => {
+        const f = await fixture('ack', { deferRow: true, rowOutcome: 'foreignshift2xx' });
+        try {
+            f.edit45(); await vi.advanceTimersByTimeAsync(650); await f.waitForRow();
+            f.assertLedger([f.rowCall()]); const originalKey = f.rowKeys()[0]; await f.completeRow();
+            f.assertObservedRowAttempts(f.rowCall(), originalKey); f.assertLedger([f.rowCall()]);
+            expect(f.state.get('selectedShiftId')).toBe('shift-a');
+            const error = f.state.get('error'); expect(error === null || typeof error === 'string').toBe(true);
+            if (typeof error === 'string') expect(error.trim().length).toBeGreaterThan(0);
+            const row = f.state.get('dayRows')[0], selected = f.render().selectedRow;
+            // Primary target assertion precedes dependent selected-row checks;
+            // original source replaces the row under the old selected ID.
+            expect(row.shiftId).toBe('shift-a');
+            expect(selected).not.toBeNull(); expect(selected.lunch.durationMinutes).toBe(45);
+            expect(selected.dirty).toBe(true); expect(selected.autosavePaused).toBe(true);
+            expect(typeof f.state.get('error')).toBe('string');
+        } finally { await f.cleanup(); }
+    });
+    it('accepts a complete nonempty DTO with reordered typed breaks through actual enabled editor fields and canonical saved response', async () => {
+        const f = await fixture('ack', { deferRow: true, rowOutcome: 'reordered2xx' });
+        try {
+            f.editAllThree(); await vi.advanceTimersByTimeAsync(650); await f.waitForRow();
+            f.assertLedger([f.allThreeCall]); await f.completeRow();
+            f.assertObservedRowAttempts(f.allThreeCall); f.assertLedger([f.allThreeCall]);
+            const row = f.render().selectedRow; expect(row.shiftId).toBe('shift-a');
+            expect(row.break1).toEqual({ time: '10:00', durationMinutes: 10, skipped: false });
+            expect(row.lunch).toEqual({ time: '12:00', durationMinutes: 45, skipped: false });
+            expect(row.break2).toEqual({ time: '15:00', durationMinutes: 10, skipped: false });
+            expect(row.dirty).toBe(false); expect(row.autosavePaused).toBe(false); expect(f.state.get('error')).toBeNull();
+            await vi.advanceTimersByTimeAsync(1300); await f.finishAutosaves(); f.assertLedger([f.allThreeCall]);
+        } finally { await f.cleanup(); }
+    });
+    it('accepts an independently returned all-skipped DTO with nullable user metadata after the actual enabled Skip meal event', async () => {
+        const f = await fixture('ack', { deferRow: true, rowOutcome: 'skipped2xx' });
+        try {
+            f.skipLunch(); await vi.advanceTimersByTimeAsync(650); await f.waitForRow();
+            f.assertLedger([f.skippedCall]); await f.completeRow();
+            f.assertObservedRowAttempts(f.skippedCall); f.assertLedger([f.skippedCall]);
+            const row = f.render().selectedRow; expect(row.shiftId).toBe('shift-a'); expect(row.userId).toBeNull();
+            expect(row.employeeName).toBe('Unassigned'); expect(row.break1.skipped).toBe(true);
+            expect(row.lunch.skipped).toBe(true); expect(row.break2.skipped).toBe(true);
+            expect(row.dirty).toBe(false); expect(row.autosavePaused).toBe(false); expect(f.state.get('error')).toBeNull();
+            await vi.advanceTimersByTimeAsync(1300); await f.finishAutosaves(); f.assertLedger([f.skippedCall]);
+        } finally { await f.cleanup(); }
+    });
+});
+
+// Candidate-only response contract controls: shape/target custody, not native
+// schema execution, strict request echo, historical receipt or commit proof.
+describe('actual saved row verification candidate contract controls', () => {
+    it('preserves same-target bad metadata uncertainty and its original key through actual unchanged Save recovery', async () => {
+        await malformedAcknowledgmentRetry('badmetadata2xx');
+    });
+    it('preserves same-target malformed break shape uncertainty and its original key through actual unchanged Save recovery', async () => {
+        await malformedAcknowledgmentRetry('badbreak2xx');
+    });
+    it('preserves same-target invalid instant uncertainty and its original key through actual unchanged Save recovery', async () => {
+        await malformedAcknowledgmentRetry('invalidinstant2xx');
+    });
+    it('preserves same-target duplicate break-type uncertainty and its original key through actual unchanged Save recovery', async () => {
+        await malformedAcknowledgmentRetry('duplicatetype2xx');
+    });
+    it('accepts offset overnight and historical metadata DTO compatibility with an independently returned duration without request echo', async () => {
+        const f = await fixture('ack', { deferRow: true, rowOutcome: 'overnightoffset2xx' });
+        try {
+            f.edit45(); await vi.advanceTimersByTimeAsync(650); await f.waitForRow();
+            f.assertLedger([f.rowCall()]); await f.completeRow();
+            f.assertObservedRowAttempts(f.rowCall()); f.assertLedger([f.rowCall()]);
+            const row = f.render().selectedRow; expect(row.shiftId).toBe('shift-a');
+            expect(row.userId).toBe('historical-user'); expect(row.employeeName).toBe('Historical employee');
+            expect(row.startTime).toBe('2026-10-03T16:00:00-07:00'); expect(row.endTime).toBe('2026-10-04T10:00:00-07:00');
+            expect(Date.parse(row.startTime)).toBe(Date.parse('2026-10-03T23:00:00.000Z'));
+            expect(Date.parse(row.endTime)).toBe(Date.parse('2026-10-04T17:00:00.000Z'));
+            expect(row.lunch).toEqual({ time: '12:00', durationMinutes: 50, skipped: false });
+            expect(row.dirty).toBe(false); expect(row.autosavePaused).toBe(false); expect(f.state.get('error')).toBeNull();
+            expect(f.readRecovery()).toBeNull();
+            // This consumes an independent compatible DTO; it does not prove a
+            // real owner transforms this fixture's45-minute request into50.
+            await vi.advanceTimersByTimeAsync(1300); await f.finishAutosaves(); f.assertLedger([f.rowCall()]);
+        } finally { await f.cleanup(); }
+    });
+    it('retains malformed A recovery custody without mutating the new B draft or its independent autosave', async () => {
+        const f = await fixture('ack', { deferRow: true, rowOutcomes: ['null2xx', 'ack50'] });
+        try {
+            f.edit45(); await vi.advanceTimersByTimeAsync(650); await f.waitForRow();
+            f.assertLedger([f.rowCall()]); const originalAKey = f.rowKeys()[0];
+            await f.switchScope(); f.resumeLoadedAutoReview(); f.edit50();
+            await vi.advanceTimersByTimeAsync(649); const before = structuredClone(f.state.get('dayRows'));
+            await f.completeRow(); f.assertObservedRowAttempts(f.rowCall(), originalAKey);
+            f.assertLedger([f.rowCall(), f.dayCall(f.scopeB)]);
+            expect(f.state.get('dayRows')).toEqual(before); expect(f.state.get('error')).toBeNull();
+            expect(f.state.get('loadedDayScope')).toEqual(f.scopeB);
+            const retainedA = f.readRecovery(); expect(retainedA?.attempt.key).toBe(originalAKey);
+            expect(retainedA?.requestBody).toEqual(f.rowCall().body);
+            expect(retainedA?.identity).toEqual({ shiftId: 'shift-a', dateValue: '2026-10-04', locationId: 'location-a',
+                tenantId: 'workspace-scope', userId: 'public-user', sessionId: 'session-scope' });
+            await vi.advanceTimersByTimeAsync(1); await f.finishAutosaves();
+            f.assertLedger([f.rowCall(), f.dayCall(f.scopeB), f.rowCall(f.scopeB, 50)]);
+            expect(f.rowKeys()[1]).not.toBe(originalAKey);
+            expect(f.render().selectedRow.lunch.durationMinutes).toBe(50); expect(f.render().selectedRow.dirty).toBe(false);
+            expect(f.readRecovery(f.scopeB)).toBeNull();
+            expect(f.readRecovery()?.attempt.key).toBe(originalAKey); expect(f.readRecovery()?.requestBody).toEqual(f.rowCall().body);
+            await vi.advanceTimersByTimeAsync(1300); await f.finishAutosaves();
+            f.assertLedger([f.rowCall(), f.dayCall(f.scopeB), f.rowCall(f.scopeB, 50)]);
         } finally { await f.cleanup(); }
     });
 });

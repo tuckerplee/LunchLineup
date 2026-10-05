@@ -11460,6 +11460,11 @@
           "id": "failed-autosave-explicit-recovery",
           "contract": "After an autosave response refusal, uncertain transport, or local timing validation failure, preserve the populated row draft and expose Autosave paused guidance without automatically repeating the same failed intent. Same-value events, neutral renders and row re-selection must not resume automatic retries. An explicit Save retries unchanged values with the retained request key/body when the send failed; a meaningful edit admits one ordinary 650ms attempt with its new key/body, and Reset restores the acknowledged baseline. Verify normal successful autosave, in-flight and stale-scope controls, real browser keyboard/loading/focus and independent persisted row/receipt/credit readback. Malformed successful responses and actual commit attribution need separate proof; local source composition is supplemental only.",
           "evidenceKind": "browser-interaction"
+        },
+        {
+          "id": "saved-row-acknowledgment-custody",
+          "contract": "Treat a successful HTTP response with null, non-JSON, missing or invalid saved-row fields, duplicate break types, or a different shift ID as an unverified acknowledgment. Preserve the selected draft, show recovery guidance, pause autosave, and let explicit unchanged Save reuse the original scoped request key and body. Accept supported empty/reordered breaks, nullable or historical user metadata and normalized absolute instants without requiring request-body echo. A stale acknowledgment must not alter the newly selected scope. Verify real browser behavior and independent persisted row, receipt and credit readback; a malformed acknowledgment does not establish rollback or duplicate debit. Local source composition is supplemental only.",
+          "evidenceKind": "browser-interaction"
         }
       ],
       "workflowIds": [

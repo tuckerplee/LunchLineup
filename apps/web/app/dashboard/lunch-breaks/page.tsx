@@ -334,6 +334,50 @@ function toDayShiftRow(generated: GeneratedShiftBreaks, policy: LunchBreakPolicy
   };
 }
 
+// Complete response verification and mapping before the submission helper
+// clears its recovery key. An unusable acknowledgment leaves the save uncertain.
+function toSavedDayShiftRow(
+  payload: unknown,
+  shiftId: string,
+  policy: LunchBreakPolicy,
+  timeZone: string,
+): DayShiftRow {
+  const invalidResponse = () => new Error(
+    'Could not verify the saved shift response. Your draft is still here; Save shift to retry the same values.',
+  );
+  const isRecord = (value: unknown): value is Record<string, unknown> => (
+    value !== null && typeof value === 'object' && !Array.isArray(value)
+  );
+  const isInstant = (value: unknown): value is string => {
+    if (typeof value !== 'string') return false;
+    const parts = /^(\d{4}-\d{2}-\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d+)?(?:Z|[+-](\d{2}):(\d{2}))$/.exec(value);
+    if (!parts || Number(parts[2]) > 23 || Number(parts[3]) > 59 || Number(parts[4]) > 59
+      || (parts[5] !== undefined && (Number(parts[5]) > 23 || Number(parts[6]) > 59))) return false;
+    const day = new Date(`${parts[1]}T00:00:00.000Z`);
+    return Number.isFinite(day.getTime()) && day.toISOString().slice(0, 10) === parts[1]
+      && Number.isFinite(Date.parse(value));
+  };
+  if (!isRecord(payload) || payload.shiftId !== shiftId
+    || !(payload.userId === null || typeof payload.userId === 'string')
+    || !(payload.employeeName === null || typeof payload.employeeName === 'string')
+    || !isInstant(payload.startTime) || !isInstant(payload.endTime)
+    || Date.parse(payload.endTime) <= Date.parse(payload.startTime)
+    || !Array.isArray(payload.breaks) || payload.breaks.length > BREAK_KEYS.length) throw invalidResponse();
+
+  const seen = new Set<string>();
+  for (const entry of payload.breaks) {
+    if (!isRecord(entry) || (entry.type !== 'break1' && entry.type !== 'lunch' && entry.type !== 'break2')
+      || seen.has(entry.type) || !isInstant(entry.startTime) || !isInstant(entry.endTime)
+      || Date.parse(entry.endTime) <= Date.parse(entry.startTime)
+      || typeof entry.durationMinutes !== 'number' || !Number.isSafeInteger(entry.durationMinutes)
+      || entry.durationMinutes <= 0 || typeof entry.paid !== 'boolean') throw invalidResponse();
+    seen.add(entry.type);
+  }
+  const mapped = toDayShiftRow(payload as GeneratedShiftBreaks, policy, timeZone);
+  if (!mapped) throw invalidResponse();
+  return mapped;
+}
+
 function timeValueToMinutes(timeValue: string): number {
   const match = /^(\d{2}):(\d{2})$/.exec(timeValue);
   if (!match) return 0;
@@ -965,7 +1009,8 @@ export default function LunchBreaksPage() {
             const response = await fetchLunchBreakMutation(`/lunch-breaks/shift/${shiftId}`, {
               ...withIdempotencyKey(jsonWriteInit('PUT', retainedBody), idempotencyKey),
             });
-            return readShiftBreakUpdateResponse<GeneratedShiftBreaks>(response);
+            const payload = await readShiftBreakUpdateResponse<unknown>(response);
+            return toSavedDayShiftRow(payload, shiftId, policyLoaded, activeTimeZone);
           },
         );
         if (!submitted.submitted) {
@@ -976,9 +1021,7 @@ export default function LunchBreaksPage() {
           });
           return false;
         }
-        const payload = submitted.value;
-        const mapped = toDayShiftRow(payload, policyLoaded, activeTimeZone);
-        if (!mapped) throw new Error('Saved row did not include a shift id.');
+        const mapped = submitted.value;
 
         return commitActiveDayScope(writeScope, () => {
           setDayRows((prev) =>
