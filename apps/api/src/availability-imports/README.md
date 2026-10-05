@@ -7,6 +7,7 @@ Tenant-scoped, credit-metered PDF availability imports.
 - `README.md`: this folder guide.
 - `availability-imports.controller.spec.ts`: upload boundary, tenant authorization, and private error response coverage.
 - `availability-imports.controller.ts`: authenticated multipart upload and import-status endpoints.
+- `availability-imports.current-authority.spec.ts`: actual controller/service/RBAC/session authority checks over controlled transaction and Redis adapters; physical native acceptance remains separate.
 - `availability-imports.module.ts`: NestJS module wiring.
 - `availability-imports.publisher.spec.ts`: fast-worker, confirmed-publish crash recovery, lease reclaim, broker-failure state-machine, bounded transport teardown, and drain-readiness coverage.
 - `availability-imports.publisher.ts`: leased database outbox publisher that confirms RabbitMQ delivery without overwriting live worker status; fenced expired or missing-owner RUNNING and stranded RETRYING recovery reuses durable publication, stops accepting sweeps before shutdown drain, bounds broker operations, and force-closes stuck transports.
@@ -18,3 +19,21 @@ Uploads accept exactly one PDF no larger than 5 MiB and require a manager-visibl
 Retention selection uses a serialized, worker-process rotating keyset over `(hard-source priority, stable job id)`, bounded by the configured batch size. It advances after committed selection even when every selected row fails, wraps on an empty suffix, and resets on a successful empty full scan. Selection failures keep the previous cursor. No job, ownership or billing timestamps are changed for scheduling fairness. Restart resets the in-memory cursor; repeatedly crashing before a second sweep can repeatedly retry the initial failing batch, so this is process-lifetime fairness, not a durable progress guarantee.
 
 Hard-age source cleanup runs before expiration settlement or ordinary retained cleanup. Failure leaves the nonterminal key and job/owner/billing state intact for retry; changed-key CAS failure also stops that sweep row before terminalization. Terminal database constraints require both raw-source fields to be NULL, so this durable pointer guarantee does not extend across successful terminalization of younger jobs. Already-terminal filesystem orphans rely on the existing API bounded filename/mtime orphan sweep; no terminal raw-pointer schema exception is introduced.
+
+Create, matched idempotency replay, unique-race receipt recovery and cancellation
+require the exact authenticated requester Session and current `users:write` grant
+in the Serializable mutation scope. Ordered Tenant/User/Session/RBAC locking
+precedes domain writes; new creation includes the target User in the ordered
+User set. One finite trusted MFA observation occurs outside database callbacks
+and is reused for the bounded retry and fresh-authorized recovery. Session and
+MFA deadlines are checked after dependent waits and before callback completion.
+Mutation receipts and durable ledger settlement are read inside that scope.
+The standalone status reader and already-accepted background jobs retain their
+existing contracts. Session IDs do not enter import request hashes.
+
+Optional local copies belong to the request only after successful exclusive
+creation. A request tracks every attempted owned copy across commit conflicts,
+retains only the committed winning copy, and settles all other cleanup attempts
+without replacing an authorization refusal or committed receipt. Failed unlink
+remains subject to the existing bounded orphan sweep. New-job admission repeats
+publisher readiness checks after authorization and domain waits.

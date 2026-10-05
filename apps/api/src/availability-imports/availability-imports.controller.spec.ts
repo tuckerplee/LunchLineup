@@ -11,7 +11,7 @@ describe('AvailabilityImportsController', () => {
         };
         const controller = new AvailabilityImportsController(imports as any);
         const request = {
-            user: { sub: 'manager-1', tenantId: 'tenant-1' },
+            user: { sub: 'manager-1', tenantId: 'tenant-1', sessionId: 'session-1' },
             headers: { 'idempotency-key': 'request-1' },
         };
         const file = {
@@ -27,6 +27,7 @@ describe('AvailabilityImportsController', () => {
         expect(imports.createImport).toHaveBeenCalledWith({
             tenantId: 'tenant-1',
             requestedByUserId: 'manager-1',
+            requestedBySessionId: 'session-1',
             userId: 'staff-1',
             idempotencyKey: 'request-1',
             staffIdentity: ' EMP-10492 ',
@@ -40,7 +41,7 @@ describe('AvailabilityImportsController', () => {
         const controller = new AvailabilityImportsController(imports as any);
 
         await expect(controller.create({
-            user: { sub: 'manager-1', tenantId: 'tenant-1' },
+            user: { sub: 'manager-1', tenantId: 'tenant-1', sessionId: 'session-1' },
             headers: {},
         }, 'staff-1', undefined, undefined)).rejects.toBeInstanceOf(BadRequestException);
         expect(imports.createImport).not.toHaveBeenCalled();
