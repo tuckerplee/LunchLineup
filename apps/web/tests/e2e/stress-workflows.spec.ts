@@ -830,7 +830,15 @@ test.describe('Lunch setup editor safety', () => {
     await expect(page.getByRole('button', { name: 'Generating plan...' })).toBeDisabled();
     releaseGenerationB?.();
     await expect(page.getByRole('button', { name: 'Generate Lunch & Break Plan' }).first()).toBeEnabled();
-    await expect(page.getByText('Scope B Manual', { exact: true }).first()).toBeVisible();
+    const actionPane = page.getByRole('complementary').filter({
+      has: page.getByRole('heading', { name: 'Action pane', exact: true }),
+    });
+    await expect(actionPane).toHaveCount(1);
+    await expect(actionPane.getByText('Standalone preview', { exact: true })).toBeVisible();
+    const resultB = actionPane.getByText('Scope B Manual', { exact: true });
+    await expect(resultB).toHaveCount(1);
+    await expect(resultB).toBeVisible();
+    await expect(resultB.locator('..')).toContainText('1 planned break(s)');
     await expect(page.getByText('Scope A Manual', { exact: true })).toHaveCount(0);
 
     const bCall = generationCalls[1];
