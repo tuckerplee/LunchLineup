@@ -390,7 +390,7 @@ export function DashboardWorkspace() {
             });
         }
 
-        if (capabilities.canReadScheduling && overview?.scheduleCount === 0) {
+        if (!needsFirstLocation && capabilities.canReadScheduling && overview?.scheduleCount === 0) {
             tasks.push({
                 href: '/dashboard/scheduling',
                 label: capabilities.canWriteSchedules ? "Build this week's schedule" : "Review this week's schedule",

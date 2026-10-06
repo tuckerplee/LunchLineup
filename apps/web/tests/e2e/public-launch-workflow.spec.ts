@@ -42,7 +42,7 @@ test.describe('Public launch workflow gaps', { tag: '@desktop-chromium' }, () =>
     await expect(locationsCard).toContainText('Unavailable');
     await page.getByRole('button', { name: 'Retry unavailable data' }).click();
 
-    await expect(page.getByRole('heading', { name: 'Manager dashboard' })).toBeVisible();
+    await expect(page.getByRole('heading', { name: 'Your dashboard' })).toBeVisible();
     await expect(page.getByRole('link', { name: /Build this week's schedule/ })).toHaveCount(0);
     const firstLocationLink = page.getByRole('link', { name: /Set up your first location/ });
     await expect(firstLocationLink).toBeVisible();
@@ -300,7 +300,7 @@ test.describe('Public launch workflow gaps', { tag: '@desktop-chromium' }, () =>
     await page.route('**/api/v2/auth/password/reset/confirm', async (route) => {
       confirmAttempts += 1;
       await route.fulfill({
-        status: confirmAttempts === 1 ? 410 : 200,
+        status: confirmAttempts === 1 ? 401 : 200,
         contentType: 'application/json',
         body: JSON.stringify(confirmAttempts === 1 ? { message: 'Expired' } : { success: true }),
       });

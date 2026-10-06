@@ -136,7 +136,9 @@ test.describe('Staff and platform admin safety controls', { tag: '@chromium' }, 
     let uploadRequests = 0;
     let statusRequests = 0;
     let profileWrites = 0;
+    let loadedProfileVersion = '';
     let appliedProfile: {
+      expectedVersion?: string;
       skills?: string[];
       availability?: unknown[];
       availabilityExceptions?: unknown[];
@@ -197,21 +199,15 @@ test.describe('Staff and platform admin safety controls', { tag: '@chromium' }, 
     });
     await page.route('**/api/v2/users/user-mock-staff/scheduling-profile', async (route) => {
       if (route.request().method() !== 'PUT') {
-        await route.continue();
+        const response = await route.fetch({ timeout: 10_000, maxRetries: 0, maxRedirects: 0 });
+        const profile = await response.json();
+        loadedProfileVersion = profile.version;
+        await route.fulfill({ response });
         return;
       }
       profileWrites += 1;
       appliedProfile = route.request().postDataJSON();
-      await route.fulfill({
-        status: 200,
-        contentType: 'application/json',
-        body: JSON.stringify({
-          skills: appliedProfile?.skills ?? [],
-          availability: appliedProfile?.availability ?? [],
-          availabilityExceptions: appliedProfile?.availabilityExceptions ?? [],
-          availabilityConfigured: true,
-        }),
-      });
+      await route.continue();
     });
 
     await page.setViewportSize({ width: 375, height: 812 });
@@ -244,7 +240,9 @@ test.describe('Staff and platform admin safety controls', { tag: '@chromium' }, 
     await editor.getByRole('button', { name: 'Apply imported availability' }).click();
     await expect(editor.getByText('Imported availability applied and scheduling profile saved.')).toBeVisible();
     expect(profileWrites).toBe(1);
+    expect(loadedProfileVersion).toMatch(/^[a-f0-9]{64}$/);
     expect(appliedProfile).toEqual({
+      expectedVersion: loadedProfileVersion,
       skills: [],
       availability: [{
         locationId: null,

@@ -231,6 +231,15 @@ async function submitConfirmedLunchSetup(page: Page) {
   await page.getByRole('button', { name: /Save \d+ setup shift records? · exactly \d+ usage credits?/ }).click();
 }
 
+async function submitConfirmedLunchGeneration(page: Page, persisted: boolean, click: () => Promise<void>) {
+  const confirmation = page.waitForEvent('dialog').then(async (dialog) => {
+    expect(dialog.type()).toBe('confirm');
+    expect(dialog.message()).toBe(`Generate a lunch and break plan for 1 shift? This uses exactly 1 usage credit.${persisted ? ' Existing break assignments for these shifts will be replaced.' : ' This creates a preview.'} Unchanged retries recover the same request.`);
+    await dialog.accept();
+  });
+  await Promise.all([confirmation, click()]);
+}
+
 test.describe('Lunch setup editor safety', () => {
   test.skip(runFullStack, 'The focused editor contract uses the local deterministic API fixture.');
 
@@ -464,7 +473,9 @@ test.describe('Lunch setup editor safety', () => {
 
     await loginAsSeedAdmin(page, '/dashboard/lunch-breaks');
     await submitVisibleSetup('Scope A Staff');
-    await expect(page.getByRole('alert').filter({ hasText: 'Setup shifts were not saved' })).toBeVisible();
+    const uncertainSetup = page.getByRole('alert').filter({ hasText: 'Setup save could not be confirmed' });
+    await expect(uncertainSetup).toBeVisible();
+    await expect(uncertainSetup).toContainText('Retry with the same entries to recover this request without creating duplicate shifts or charging again.');
     await expect.poll(() => setupCalls.filter((call) => call.locationId === 'loc-downtown').length).toBe(1);
 
     await page.getByLabel('Location').selectOption('loc-uptown');
@@ -655,7 +666,7 @@ test.describe('Lunch setup editor safety', () => {
     await page.getByRole('button', { name: /Review \d+ shifts?/ }).click();
     await submitConfirmedLunchSetup(page);
     await expect(page.getByRole('heading', { name: /Lunch & break canvas/ })).toBeVisible();
-    await page.getByRole('button', { name: 'Generate Lunch & Break Plan' }).first().click();
+    await submitConfirmedLunchGeneration(page, true, () => page.getByRole('button', { name: 'Generate Lunch & Break Plan' }).first().click());
     await expect.poll(() => generationCalls.length).toBe(1);
 
     await page.getByLabel('Location').selectOption('loc-uptown');
@@ -665,7 +676,7 @@ test.describe('Lunch setup editor safety', () => {
     await submitConfirmedLunchSetup(page);
     await expect(page.getByRole('heading', { name: /Lunch & break canvas/ })).toBeVisible();
     const generateB = page.getByRole('button', { name: 'Generate Lunch & Break Plan' }).first();
-    await generateB.click();
+    await submitConfirmedLunchGeneration(page, true, () => generateB.click());
     await expect.poll(() => generationCalls.filter((call) => call.locationId === 'loc-uptown').length).toBe(1);
 
     releaseGenerationA?.();
@@ -729,7 +740,7 @@ test.describe('Lunch setup editor safety', () => {
     await page.getByRole('button', { name: 'Manual fallback' }).first().click();
     await expect(page.getByText('Manual mode', { exact: true })).toBeVisible();
     await page.getByRole('button', { name: 'Add shift' }).click();
-    await page.getByRole('button', { name: 'Generate Lunch & Break Plan' }).first().click();
+    await submitConfirmedLunchGeneration(page, false, () => page.getByRole('button', { name: 'Generate Lunch & Break Plan' }).first().click());
     await expect.poll(() => generationCalls.length).toBe(1);
 
     await page.getByLabel('Location').selectOption('loc-uptown');
@@ -737,7 +748,7 @@ test.describe('Lunch setup editor safety', () => {
     await page.getByRole('button', { name: 'Manual fallback' }).first().click();
     await expect(page.getByText('Manual mode', { exact: true })).toBeVisible();
     const generateB = page.getByRole('button', { name: 'Generate Lunch & Break Plan' }).first();
-    await generateB.click();
+    await submitConfirmedLunchGeneration(page, false, () => generateB.click());
     await expect.poll(() => generationCalls.length).toBe(2);
 
     releaseGenerationA?.();

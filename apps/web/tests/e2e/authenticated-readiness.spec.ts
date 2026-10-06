@@ -306,6 +306,9 @@ test.describe('Authenticated scheduling SaaS readiness', { tag: '@desktop-chromi
     const createRequestPromise = page.waitForRequest((request) =>
       request.method() === 'POST'
       && /\/api\/v2\/schedules\/[0-9a-f-]{36}\/change-sets$/.test(new URL(request.url()).pathname));
+    const createResponsePromise = page.waitForResponse((response) =>
+      response.request().method() === 'POST'
+      && new URL(response.url()).pathname === `/api/v2/schedules/${weeklySchedule.id}/change-sets`);
     await shiftForm.getByRole('button', { name: 'Create shift' }).click();
     const createRequest = await createRequestPromise;
     expect(createRequest.headers()['idempotency-key']).toMatch(/^[0-9a-f-]{36}:shift$/i);
@@ -320,9 +323,25 @@ test.describe('Authenticated scheduling SaaS readiness', { tag: '@desktop-chromi
     })]);
     await expect(page.getByText(/Shift created and saved/)).toBeVisible();
 
-    const overnightShift = page.locator('.shift-block').filter({ hasText: '22:00-02:00' }).first();
-    await expect(overnightShift).toBeVisible();
-    await page.getByRole('button', { name: /Edit .* shift, 22:00 to 02:00/ }).click();
+    const createdChangeSet = await (await createResponsePromise).json() as {
+      data: { created: Array<{ shiftId: string }>; shifts: Array<{ id: string; scheduleId: string; startTime: string; endTime: string }> };
+    };
+    expect(createdChangeSet.data.created).toHaveLength(1);
+    const overnightShiftId = createdChangeSet.data.created[0].shiftId;
+    expect(overnightShiftId).toMatch(/^[0-9a-f-]{36}$/i);
+    expect(createdChangeSet.data.shifts).toEqual([expect.objectContaining({
+      id: overnightShiftId,
+      scheduleId: weeklySchedule.id,
+      startTime: '2026-07-12T05:00:00.000Z',
+      endTime: '2026-07-12T09:00:00.000Z',
+    })]);
+    const overnightStaffRow = page.getByRole('listitem', { name: 'Mock Staff, STAFF, schedule timeline', exact: true });
+    const overnightSegments = overnightStaffRow.locator(`.shift-block[data-shift-event-id="${overnightShiftId}"]`);
+    // One saved overnight shift has one card per crossed daily window.
+    await expect(overnightSegments).toHaveCount(2);
+    const overnightDetails = overnightSegments.getByRole('button', { name: /^Edit STAFF shift, 22:00 to 02:00$/ });
+    await expect(overnightDetails).toHaveCount(2);
+    await overnightDetails.nth(0).click();
     await expect(page.getByRole('dialog', { name: 'Edit shift' })).toBeVisible();
     await expect(shiftForm.getByLabel('Date')).toHaveValue('2026-07-11');
     await expect(shiftForm.getByLabel('Start')).toHaveValue('22:00');
@@ -357,9 +376,12 @@ test.describe('Authenticated scheduling SaaS readiness', { tag: '@desktop-chromi
 
     await page.reload();
     await expect(page.getByRole('heading', { name: 'Calendar' })).toBeVisible();
-    const recoveredShift = page.locator('.shift-block').filter({ hasText: '22:00-01:30' }).first();
-    await expect(recoveredShift).toBeVisible();
-    await page.getByRole('button', { name: /Edit .* shift, 22:00 to 01:30/ }).click();
+    const recoveredSegments = page.getByRole('listitem', { name: 'Mock Staff, STAFF, schedule timeline', exact: true })
+      .locator(`.shift-block[data-shift-event-id="${overnightShiftId}"]`);
+    await expect(recoveredSegments).toHaveCount(2);
+    const recoveredDetails = recoveredSegments.getByRole('button', { name: /^Edit STAFF shift, 22:00 to 01:30$/ });
+    await expect(recoveredDetails).toHaveCount(2);
+    await recoveredDetails.nth(0).click();
     await expect(page.getByRole('dialog', { name: 'Edit shift' })).toBeVisible();
     const recoveredForm = page.locator('form.shift-form');
     const editRequestPromise = page.waitForRequest((request) =>

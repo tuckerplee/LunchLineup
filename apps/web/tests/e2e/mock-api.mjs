@@ -561,6 +561,17 @@ function mfaSetupPayload(user) {
   };
 }
 
+// Content-bound opaque token for the synthetic store; native tokens use private row IDs.
+function mockSchedulingProfileVersion(userId, profile) {
+  const sorted = (rows) => rows.map((row) => JSON.stringify(row)).sort();
+  return crypto.createHash('sha256').update(JSON.stringify([
+    userId,
+    [...profile.skills].sort(),
+    sorted(profile.availability.map((row) => [row.locationId, row.dayOfWeek, row.startTimeMinutes, row.endTimeMinutes])),
+    sorted(profile.availabilityExceptions.map((row) => [row.locationId, row.date, row.kind, row.startTimeMinutes, row.endTimeMinutes])),
+  ])).digest('hex');
+}
+
 function translateLocationReferences(value, identifiers) {
   if (Array.isArray(value)) return value.map((entry) => translateLocationReferences(entry, identifiers));
   if (!value || typeof value !== 'object') return value;
@@ -1629,6 +1640,18 @@ const server = http.createServer(async (req, res) => {
       });
       return;
     }
+    if (pathname === '/v1/account-deletion/prepare' && req.method === 'POST') {
+      const body = await readBody(req);
+      if (typeof body.confirmation !== 'string' || body.confirmation.trim().toLowerCase() !== tenantSlug.toLowerCase()) {
+        sendJson(res, 400, { message: 'Confirmation must match the workspace slug.' });
+        return;
+      }
+      sendJson(res, 200, {
+        token: crypto.randomBytes(32).toString('hex'),
+        expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
+      });
+      return;
+    }
     if (pathname === '/v1/admin/account' && req.method === 'DELETE') {
       const body = await readBody(req);
       if (String(body.confirmation ?? '').trim().toLowerCase() !== tenantSlug.toLowerCase()) {
@@ -1652,7 +1675,7 @@ const server = http.createServer(async (req, res) => {
           retainedRecords: state.account.retainedRecords,
         },
       };
-      sendJson(res, 200, state.account);
+      sendJson(res, 200, { ...state.account, deletionState: 'FINALIZED', billingCleanupPending: false });
       return;
     }
 
@@ -1682,7 +1705,7 @@ const server = http.createServer(async (req, res) => {
     if (pathname === '/v1/auth/mfa/enrollment' && req.method === 'POST') {
       const setup = mfaSetupPayload(user);
       setCurrentMfaSetup(user, setup);
-      sendJson(res, 200, { setup });
+      sendJson(res, 200, { secret: setup.manualEntryKey, otpauthUrl: setup.otpauthUrl, expiresInSeconds: 600 });
       return;
     }
     if (pathname === '/v1/auth/mfa/enrollment' && req.method === 'PUT') {
@@ -1697,8 +1720,9 @@ const server = http.createServer(async (req, res) => {
       }
       markCurrentMfaEnrolled(user);
       sendJson(res, 200, {
-        ...effectiveMfaStatusPayload(user),
-        recoveryCodes: mockMfaRecoveryCodes,
+        success: true,
+        mfaVerified: true,
+        backupCodes: mockMfaRecoveryCodes,
       }, { 'set-cookie': authCookies(currentToken(req) ?? 'mock-admin-access') });
       return;
     }
@@ -1714,7 +1738,7 @@ const server = http.createServer(async (req, res) => {
         return;
       }
       markCurrentMfaDisabled(user);
-      sendJson(res, 200, effectiveMfaStatusPayload(user));
+      sendJson(res, 200, { success: true, mfaEnabled: false });
       return;
     }
 
@@ -1771,6 +1795,7 @@ const server = http.createServer(async (req, res) => {
         availabilityExceptions: storedProfile?.availabilityExceptions ?? [],
       };
       sendJson(res, 200, {
+        version: mockSchedulingProfileVersion(staffMember.id, profile),
         user: { id: staffMember.id, name: staffMember.name },
         ...profile,
         availabilityConfigured: profile.availability.length > 0
@@ -1790,6 +1815,20 @@ const server = http.createServer(async (req, res) => {
         sendJson(res, 400, { message: 'Invalid scheduling profile.' });
         return;
       }
+      const storedProfile = state.schedulingProfiles.get(staffMember.id);
+      const currentProfile = {
+        skills: storedProfile?.skills ?? [],
+        availability: storedProfile?.availability ?? [],
+        availabilityExceptions: storedProfile?.availabilityExceptions ?? [],
+      };
+      if (!body.expectedVersion) {
+        sendJson(res, 428, { code: 'profile_version_required', message: 'Reload this profile before saving.' });
+        return;
+      }
+      if (body.expectedVersion !== mockSchedulingProfileVersion(staffMember.id, currentProfile)) {
+        sendJson(res, 409, { code: 'scheduling_profile_changed', message: 'This profile changed while you were editing.' });
+        return;
+      }
       const profile = {
         skills: [...new Set(body.skills.map((skill) => String(skill).trim().replace(/\s+/g, ' ').toLowerCase()))].sort(),
         availability: body.availability,
@@ -1797,7 +1836,8 @@ const server = http.createServer(async (req, res) => {
       };
       state.schedulingProfiles.set(staffMember.id, profile);
       sendJson(res, 200, {
-        user: { id: staffMember.id },
+        version: mockSchedulingProfileVersion(staffMember.id, profile),
+        user: { id: staffMember.id, name: staffMember.name },
         ...profile,
         availabilityConfigured: profile.availability.length > 0
           || profile.availabilityExceptions.some((entry) => entry.kind === 'AVAILABLE'),

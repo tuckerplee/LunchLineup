@@ -228,7 +228,7 @@ test.describe('validated public-web P1 regressions', () => {
     page.on('pageerror', (error) => pageErrors.push(error.message));
 
     await loginAsSeedAdmin(page, '/dashboard');
-    await expect(page.getByRole('heading', { name: 'Manager dashboard' })).toBeVisible();
+    await expect(page.getByRole('heading', { name: 'Your dashboard' })).toBeVisible();
     await expect(page.getByRole('link', { name: /^Locations 1 location/ })).toContainText('1');
     expect(pageErrors).toEqual([]);
   });
