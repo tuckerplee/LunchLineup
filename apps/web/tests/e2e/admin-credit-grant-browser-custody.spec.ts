@@ -611,3 +611,355 @@ test.describe('Admin credit grant browser custody', () => {
     });
   });
 });
+
+// Read publication witnesses use actual controls and a finite, correctly sized
+// 50-row page model. They do not qualify native pagination or financial storage.
+type ReadRaceMode = 'stale-append' | 'late-grant' | 'concurrent';
+type ReadRaceHold = 'tenants' | 'history' | 'grant';
+type ReadRaceReceipt = { sequence: number; method: string; url: string; probe: boolean; key: string | null;
+  requestBody: string | null; status: number | null; bodyBase64: string | null; complete: boolean;
+  receivedAt: number | null; error: string | null };
+type ReadRaceWindow = Window & { __creditReadRace?: { receipts: ReadRaceReceipt[]; errors: string[] } };
+async function observeReadRaceBodies(page: Page) {
+  await page.addInitScript(({ root, grant }) => {
+    const observer = { receipts: [] as ReadRaceReceipt[], errors: [] as string[] };
+    (window as ReadRaceWindow).__creditReadRace = observer;
+    const original = window.fetch.bind(window);
+    window.fetch = (input, init) => {
+      const pending = original(input, init);
+      try {
+        const request = input instanceof Request ? input : null;
+        const url = new URL(request ? request.url : String(input), location.href);
+        if (url.origin === location.origin && [root, grant].includes(url.pathname)) {
+          if (observer.receipts.length >= 40) throw new Error('Read-race receipt bound exceeded');
+          const headers = new Headers(init?.headers ?? request?.headers);
+          const receipt: ReadRaceReceipt = { sequence: observer.receipts.length + 1,
+            method: (init?.method ?? request?.method ?? 'GET').toUpperCase(), url: url.href,
+            probe: headers.get('x-credit-fixture-probe') === 'readback', key: headers.get('idempotency-key'),
+            requestBody: typeof init?.body === 'string' ? init.body : null,
+            status: null, bodyBase64: null, complete: false, receivedAt: null, error: null };
+          observer.receipts.push(receipt);
+          void pending.then(async response => {
+            receipt.status = response.status;
+            const bytes = new Uint8Array(await response.clone().arrayBuffer());
+            receipt.bodyBase64 = btoa(Array.from(bytes, byte => String.fromCharCode(byte)).join(''));
+            receipt.receivedAt = performance.now();
+          }).catch(error => { receipt.error = String(error); }).finally(() => { receipt.complete = true; });
+        }
+      } catch (error) { observer.errors.push(String(error)); }
+      return pending; // Original native Promise and Response remain unchanged.
+    };
+  }, { root: ROOT, grant: GRANT });
+}
+
+async function installReadRace(page: Page, mode: ReadRaceMode) {
+  const id = (prefix: string, index: number) => `${prefix}-0000-4000-8000-${String(index).padStart(12, '0')}`;
+  const tenantRows: Tenant[] = [
+    { id: A, name: 'Aurora Diner', slug: 'aurora-fixture', planTier: 'GROWTH', usageCredits: 120 },
+    { id: B, name: 'Boreal Kitchen', slug: 'boreal-fixture', planTier: 'STARTER', usageCredits: 40 },
+    ...Array.from({ length: 48 }, (_, i) => ({ id: id('81000001', i), name: `Boreal Branch ${i}`,
+      slug: `boreal-branch-${i}`, planTier: 'STARTER', usageCredits: 1 })),
+    { id: id('81000002', 0), name: 'Cedar Diner', slug: 'cedar-fixture', planTier: 'STARTER', usageCredits: 5 },
+    { id: id('81000002', 1), name: 'Boreal Annex', slug: 'boreal-annex', planTier: 'STARTER', usageCredits: 1 },
+    ...Array.from({ length: 48 }, (_, i) => ({ id: id('81000003', i), name: `Cedar Branch ${i}`,
+      slug: `cedar-branch-${i}`, planTier: 'STARTER', usageCredits: 1 })),
+    { id: id('81000004', 0), name: 'Boreal Tail', slug: 'boreal-tail', planTier: 'STARTER', usageCredits: 1 },
+  ];
+  const stamp = (index: number) => new Date(Date.parse('2026-10-05T12:00:00.000Z') - index * 1000).toISOString();
+  const creation = new Map(tenantRows.map((row, index) => [row.id, stamp(index)]));
+  const historyRows: History[] = Array.from({ length: 101 }, (_, index) => ({ id: id('82000001', index),
+    amount: -1, reason: `Existing ledger entry ${String(index).padStart(3, '0')}`, createdAt: stamp(index),
+    tenant: { id: A, name: 'Aurora Diner', slug: 'aurora-fixture' } }));
+  const initial = copy({ tenants: tenantRows, history: historyRows });
+  const cursor = (date: string, rowId: string) => Buffer.from(JSON.stringify({ v: 1, timestamp: date, id: rowId })).toString('base64url');
+  const pageOf = <T extends { id: string }>(rows: T[], raw: string | null, date: (row: T) => string) => {
+    let candidates = rows;
+    if (raw) {
+      const c = JSON.parse(Buffer.from(raw, 'base64url').toString()) as { v: number; timestamp: string; id: string };
+      if (c.v !== 1 || typeof c.timestamp !== 'string' || typeof c.id !== 'string') throw new Error('Malformed model cursor');
+      candidates = rows.filter(row => date(row) < c.timestamp || (date(row) === c.timestamp && row.id < c.id));
+    }
+    const values = candidates.slice(0, 50), more = candidates.length > 50, last = values.at(-1);
+    return { values: copy(values), pagination: { limit: 50, maxLimit: 200, returned: values.length,
+      hasMore: more, nextCursor: more && last ? cursor(date(last), last.id) : null,
+      window: { startDate: null, endDate: null } } };
+  };
+  const snapshot = (query: URLSearchParams) => {
+    const q = query.get('q') ?? '';
+    const filtered = tenantRows.filter(row => !q || row.name.toLowerCase().includes(q) || row.slug.includes(q));
+    const tenants = pageOf(filtered, query.get('tenantCursor'), row => creation.get(row.id)!);
+    const history = pageOf(historyRows, query.get('historyCursor'), row => row.createdAt);
+    return { tenants: tenants.values, tenantPagination: tenants.pagination, history: history.values, historyPagination: history.pagination };
+  };
+  const first = snapshot(new URLSearchParams(QUERY));
+  const filtered = snapshot(new URLSearchParams(QUERY + '&q=boreal'));
+  const second = snapshot(new URLSearchParams(QUERY + '&tenantCursor=' + encodeURIComponent(first.tenantPagination.nextCursor!)));
+  const historySecond = snapshot(new URLSearchParams(QUERY + '&historyCursor=' + encodeURIComponent(first.historyPagination.nextCursor!)));
+  const allowedTenantCursors = new Set([first.tenantPagination.nextCursor, second.tenantPagination.nextCursor, filtered.tenantPagination.nextCursor]);
+  const allowedHistoryCursors = new Set([first.historyPagination.nextCursor, historySecond.historyPagination.nextCursor]);
+  const rows: Array<Row & { hold: ReadRaceHold | null; delivered: boolean }> = [];
+  const priorReceipts: ReadRaceReceipt[] = [], priorObserverErrors: string[] = [];
+  const errors: unknown[] = [], pending: Promise<void>[] = [], active = new Set<Route>();
+  const holds = Object.fromEntries(['tenants', 'history', 'grant'].map(name => [name,
+    { captured: deferred<Row>(), release: deferred<void>(), used: false }])) as Record<ReadRaceHold,
+      { captured: ReturnType<typeof deferred<Row>>; release: ReturnType<typeof deferred<void>>; used: boolean }>;
+  const accepted = new Map<string, { fingerprint: string; balance: number }>();
+  let effects = 0, closing = false;
+  async function run(route: Route) {
+    try {
+      if (closing || rows.length >= 40) throw new Error('Read-race route outside finite custody');
+      const request = route.request(), url = new URL(request.url()), method = request.method();
+      const requestBody = request.postData(), key = request.headers()['idempotency-key'] ?? null;
+      const probe = request.headers()['x-credit-fixture-probe'] === 'readback';
+      let value: unknown, status = 200, hold: ReadRaceHold | null = null, replay = false;
+      if (method === 'GET' && url.pathname === ROOT) {
+        const query = url.searchParams, keys = [...query.keys()];
+        if (new Set(keys).size !== keys.length || keys.some(item => !['tenantLimit', 'historyLimit', 'q', 'tenantCursor', 'historyCursor'].includes(item))
+          || query.get('tenantLimit') !== '50' || query.get('historyLimit') !== '50'
+          || !['', 'boreal', 'aurora'].includes(query.get('q') ?? '')
+          || (query.has('tenantCursor') && !allowedTenantCursors.has(query.get('tenantCursor')))
+          || (query.has('historyCursor') && !allowedHistoryCursors.has(query.get('historyCursor')))
+          || (query.has('tenantCursor') && query.has('historyCursor')) || requestBody !== null || key !== null) {
+          throw new Error('Unexpected read-race GET shape');
+        }
+        if (probe && url.search !== QUERY) throw new Error('Independent read must use unfiltered first-page contract');
+        value = snapshot(query); // Freeze bytes at request time, before any held delivery.
+        if (!probe && mode !== 'late-grant' && query.get('tenantCursor') === first.tenantPagination.nextCursor
+          && !query.has('q') && !holds.tenants.used) hold = 'tenants';
+        if (!probe && mode === 'concurrent' && query.get('historyCursor') === first.historyPagination.nextCursor
+          && !holds.history.used) hold = 'history';
+      } else if (method === 'POST' && url.pathname === GRANT && !url.search && !probe && mode === 'late-grant') {
+        if (!key || !/^[\x21-\x7e]{1,200}$/.test(key) || key.includes(REASON)
+          || requestBody !== JSON.stringify(payload) || !request.headers()['x-csrf-token']
+          || !request.headers()['content-type']?.startsWith('application/json')) throw new Error('Unexpected read-race grant');
+        const previous = accepted.get(key);
+        if (previous && previous.fingerprint !== requestBody) throw new Error('Conflicting grant identity');
+        if (previous) replay = true;
+        else {
+          tenantRows[1].usageCredits += 25; effects += 1;
+          historyRows.unshift({ id: id('82000002', 0), amount: 25, reason: REASON, createdAt: '2026-10-06T12:00:00.000Z',
+            tenant: { id: B, name: 'Boreal Kitchen', slug: 'boreal-fixture' } });
+          accepted.set(key, { fingerprint: requestBody, balance: tenantRows[1].usageCredits });
+        }
+        status = 201; value = { success: true, newBalance: accepted.get(key)!.balance };
+        if (!holds.grant.used) hold = 'grant';
+      } else throw new Error('Unexpected read-race method/path');
+      const body = JSON.stringify(value);
+      const row = { sequence: rows.length + 1, method, url: url.href, probe, requestBody, key, status, body,
+        responseSha256: createHash('sha256').update(body).digest('hex'), effects, replay, hold, delivered: false };
+      rows.push(row);
+      if (hold) { holds[hold].used = true; holds[hold].captured.resolve(row); await bounded(holds[hold].release.promise, `${hold} delivery hold`, 15000); }
+      await route.fulfill({ status, headers: { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store',
+        'content-length': String(Buffer.byteLength(body)) }, body });
+      row.delivered = true;
+    } catch (error) {
+      errors.push(error);
+      for (const hold of Object.values(holds)) hold.captured.reject(error);
+      try { await bounded(route.abort('failed'), 'read-race failed route abort', 2000); } catch (abortError) { errors.push(abortError); }
+    } finally { active.delete(route); }
+  }
+  const handler = (route: Route) => { active.add(route); const work = run(route); pending.push(work); return work; };
+  await page.route('**/api/v2/admin/credits**', handler);
+  return { rows, errors, initial, first, filtered, second, historySecond, priorReceipts, priorObserverErrors,
+    async retainObservationBeforeNavigation() {
+      let observer: { receipts: ReadRaceReceipt[]; errors: string[] } | undefined;
+      await expect.poll(async () => {
+        observer = await page.evaluate(() => (window as ReadRaceWindow).__creditReadRace);
+        return Boolean(observer && observer.receipts.length + priorReceipts.length === rows.length
+          && observer.receipts.every(row => row.complete));
+      }, { timeout: 6000 }).toBe(true);
+      if (!observer) throw new Error('Missing observer before navigation');
+      priorReceipts.push(...observer.receipts); priorObserverErrors.push(...observer.errors);
+      await test.info().attach('read-race-before-reload-receipts', { contentType: 'application/json', body: JSON.stringify(observer) });
+    },
+    captured: (hold: ReadRaceHold) => bounded(holds[hold].captured.promise, `${hold} request capture`, 6000),
+    release: (hold: ReadRaceHold) => holds[hold].release.resolve(),
+    async read() {
+      const response = await bounded(page.evaluate(async path => {
+        const controller = new AbortController(), timer = setTimeout(() => controller.abort(), 5000);
+        try { const response = await fetch(path, { headers: { 'x-credit-fixture-probe': 'readback' }, cache: 'no-store', signal: controller.signal });
+          return { status: response.status, body: await response.text() }; }
+        finally { clearTimeout(timer); }
+      }, ROOT + QUERY), 'independent read-race GET', 6000);
+      expect(response.status).toBe(200);
+      expect(response.body).toBe(rows.filter(row => row.probe).at(-1)?.body);
+      return JSON.parse(response.body) as typeof first;
+    },
+    async close() {
+      for (const hold of Object.values(holds)) hold.release.resolve();
+      try {
+        await bounded(Promise.all(pending), 'read-race first drain', 6000);
+        await bounded(page.evaluate(() => new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve())))), 'read-race render turn', 3000);
+        await bounded(Promise.all(pending), 'read-race continuation drain', 6000);
+      } catch (error) { errors.push(error); }
+      closing = true;
+      if (active.size) {
+        errors.push(new Error(`${active.size} read-race handlers remained active`));
+        const aborted = await Promise.allSettled([...active].map(route => bounded(route.abort('failed'), 'read-race abort', 2000)));
+        for (const result of aborted) if (result.status === 'rejected') errors.push(result.reason);
+      }
+      await bounded(page.unroute('**/api/v2/admin/credits**', handler), 'read-race exact unroute', 3000);
+      await bounded(Promise.all(pending), 'read-race final drain', 3000);
+    },
+  };
+}
+type ReadRaceAdapter = Awaited<ReturnType<typeof installReadRace>>;
+const moreTenants = (page: Page) => page.getByRole('button', { name: 'Load more tenant balances', exact: true });
+const moreHistory = (page: Page) => page.getByRole('button', { name: 'Load more ledger history', exact: true });
+const raceSearch = (page: Page) => page.getByRole('textbox', { name: 'Tenant search', exact: true });
+async function raceUi(page: Page) {
+  return { tenantIds: await tenant(page).getByRole('option').evaluateAll(nodes => nodes.map(node => (node as HTMLOptionElement).value)),
+    selected: await tenant(page).inputValue(), amount: await amount(page).inputValue(), reason: await reason(page).inputValue(),
+    search: await raceSearch(page).inputValue(),
+    balances: await page.getByRole('article', { name: 'Tenant credit balances table', exact: true }).innerText({ timeout: 5000 }),
+    history: await page.getByRole('article', { name: 'Credit transaction history table', exact: true }).innerText({ timeout: 5000 }) };
+}
+async function raceEvidence(page: Page, adapter: ReadRaceAdapter, name: string) {
+  const state = await adapter.read();
+  await bounded(page.evaluate(() => new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve())))), 'read-race render turn', 3000);
+  const ui = await raceUi(page);
+  await test.info().attach(name, { contentType: 'application/json', body: JSON.stringify({ ui, state, rows: adapter.rows }) });
+  await test.info().attach(name + '-viewport', { contentType: 'image/png',
+    body: await page.screenshot({ animations: 'disabled', fullPage: false, timeout: 5000 }) });
+  return { ui, state };
+}
+async function raceDelivered(page: Page, row: Row) {
+  await expect.poll(() => page.evaluate(({ url, method, probe, body }) =>
+    (window as ReadRaceWindow).__creditReadRace?.receipts.some(receipt => receipt.url === url && receipt.method === method
+      && receipt.probe === probe && receipt.complete && receipt.error === null && receipt.bodyBase64 === body),
+  { url: row.url, method: row.method, probe: row.probe, body: Buffer.from(row.body).toString('base64') }), { timeout: 6000 }).toBe(true);
+}
+async function applyRaceSearch(page: Page, query: 'boreal' | 'aurora') {
+  await raceSearch(page).fill(query);
+  await expect(page.getByRole('button', { name: 'Search', exact: true })).toBeEnabled();
+  await page.getByRole('button', { name: 'Search', exact: true }).click();
+  await expect(tenant(page).getByRole('option')).toHaveCount(query === 'boreal' ? 50 : 1);
+  if (query === 'aurora') await expect(tenant(page)).toHaveValue(A);
+  else await expect(tenant(page).getByRole('option', { name: 'Aurora Diner - aurora-fixture', exact: true })).toHaveCount(0);
+}
+async function readRaceScenario(page: Page, mode: ReadRaceMode, body: (adapter: ReadRaceAdapter) => Promise<void>) {
+  const failures: unknown[] = [], pageErrors: string[] = [], consoleErrors: string[] = [];
+  page.on('pageerror', error => pageErrors.push(error.message));
+  page.on('console', message => { if (message.type() === 'error') consoleErrors.push(message.text()); });
+  await observeReadRaceBodies(page);
+  const adapter = await installReadRace(page, mode);
+  try {
+    await loginAsSeedSuperAdmin(page, '/admin/credits');
+    await expect(tenant(page).getByRole('option')).toHaveCount(50);
+    await body(adapter);
+  } catch (error) { failures.push(error); }
+  try { await raceEvidence(page, adapter, 'read-race-final-ui-and-independent-state'); } catch (error) { failures.push(error); }
+  try { await adapter.close(); } catch (error) { failures.push(error); }
+  let observed: unknown;
+  try {
+    await expect.poll(async () => {
+      observed = await page.evaluate(() => (window as ReadRaceWindow).__creditReadRace);
+      const observer = observed as { receipts: ReadRaceReceipt[]; errors: string[] } | undefined;
+      return Boolean(observer && observer.receipts.length + adapter.priorReceipts.length === adapter.rows.length && observer.receipts.every(row => row.complete));
+    }, { timeout: 6000 }).toBe(true);
+    const observer = observed as { receipts: ReadRaceReceipt[]; errors: string[] };
+    const actual = [...adapter.priorReceipts, ...observer.receipts].map(row => JSON.stringify({ method: row.method, url: row.url, probe: row.probe,
+      key: row.key, requestBody: row.requestBody, status: row.status, bodyBase64: row.bodyBase64, error: row.error })).sort();
+    const expected = adapter.rows.map(row => JSON.stringify({ method: row.method, url: row.url, probe: row.probe,
+      key: row.key, requestBody: row.requestBody, status: row.status, bodyBase64: Buffer.from(row.body).toString('base64'), error: null })).sort();
+    expect(actual).toEqual(expected); expect([...adapter.priorObserverErrors, ...observer.errors]).toEqual([]);
+    expect(adapter.rows.every(row => row.delivered)).toBe(true);
+    expect(adapter.errors).toEqual([]); expect(pageErrors).toEqual([]); expect(consoleErrors).toEqual([]);
+  } catch (error) { failures.push(error); }
+  await test.info().attach('read-race-native-response-and-model-custody', { contentType: 'application/json',
+    body: JSON.stringify({ mode, initial: adapter.initial, rows: adapter.rows, observed, priorReceipts: adapter.priorReceipts, pageErrors, consoleErrors,
+      adapterErrors: adapter.errors.map(String), scope: 'Controlled local model; native authority/DB/pagination not qualified.' }) });
+  if (failures.length) throw new AggregateError(failures, 'Credit read ownership case or custody failed');
+}
+
+test.describe('Admin credit read publication browser custody', () => {
+  test.skip(!mockMode, 'Controlled local read-order model only; native credit qualification is separately owned.');
+  test.setTimeout(60_000);
+  test.beforeEach(async ({ page }) => { expect((await page.request.post('/api/v1/__e2e/reset')).status()).toBe(200); });
+
+  test('keeps newer searched tenants and their continuation after an older tenant append completes', async ({ page }) => {
+    await readRaceScenario(page, 'stale-append', async adapter => {
+      await fill(page);
+      await moreTenants(page).click(); const old = await adapter.captured('tenants');
+      await applyRaceSearch(page, 'boreal');
+      const applied = await raceEvidence(page, adapter, 'new-query-before-old-append');
+      expect(applied.ui.tenantIds).toEqual(adapter.filtered.tenants.map(row => row.id));
+      adapter.release('tenants'); await raceDelivered(page, old);
+      const after = await raceEvidence(page, adapter, 'old-append-delivered-after-new-query');
+      // Exercise the actual next cursor even on the known stale-publication path;
+      // preserve that request before evaluating the stale-row oracle below.
+      const beforeNext = adapter.rows.length;
+      await moreTenants(page).click();
+      await expect.poll(() => adapter.rows.slice(beforeNext).filter(row => row.method === 'GET' && !row.probe).length).toBe(1);
+      const next = adapter.rows.slice(beforeNext).find(row => row.method === 'GET' && !row.probe)!;
+      await raceDelivered(page, next);
+      const continued = await raceEvidence(page, adapter, 'searched-continuation-request-and-ui');
+      expect(after.state.tenants).toEqual(adapter.first.tenants);
+      expect(after.state.history).toEqual(adapter.first.history);
+      expect(adapter.rows.filter(row => row.method === 'POST')).toEqual([]);
+      expect(after.ui.tenantIds).toEqual(adapter.filtered.tenants.map(row => row.id));
+      expect(after.ui).toMatchObject({ selected: B, amount: '25', reason: REASON, search: 'boreal' });
+      expect(new URL(next.url).searchParams.get('q')).toBe('boreal');
+      expect(new URL(next.url).searchParams.get('tenantCursor')).toBe(adapter.filtered.tenantPagination.nextCursor);
+      expect(continued.ui.tenantIds).toEqual(adapter.initial.tenants.filter(row => row.name.toLowerCase().includes('boreal')).map(row => row.id));
+    });
+  });
+
+  test('preserves the newer search and draft when an earlier grant acknowledgement arrives', async ({ page }) => {
+    await readRaceScenario(page, 'late-grant', async adapter => {
+      await fill(page); await confirm(page, true);
+      const grant = await adapter.captured('grant');
+      expect(grant.effects).toBe(1); expect(JSON.parse(grant.requestBody!)).toEqual(payload);
+      await applyRaceSearch(page, 'aurora');
+      await tenant(page).selectOption(A); await amount(page).fill('7'); await reason(page).fill('New Aurora draft');
+      const beforeAck = await raceEvidence(page, adapter, 'new-query-and-draft-before-old-grant-ack');
+      expect(beforeAck.ui.tenantIds).toEqual([A]);
+      const readBoundary = adapter.rows.length;
+      adapter.release('grant'); await raceDelivered(page, grant);
+      await expect(page.getByText('Credits granted.', { exact: true })).toBeVisible();
+      const after = await raceEvidence(page, adapter, 'old-grant-ack-delivered-after-new-query');
+      expect(after.state.tenants).toEqual(adapter.first.tenants.map(row => row.id === B ? { ...row, usageCredits: 65 } : row));
+      expect(after.state.history.filter(row => row.reason === REASON)).toHaveLength(1);
+      expect(after.state.history.find(row => row.reason === REASON)).toMatchObject({ amount: 25, tenant: { id: B, name: 'Boreal Kitchen', slug: 'boreal-fixture' } });
+      const posts = adapter.rows.filter(row => row.method === 'POST');
+      expect(posts).toHaveLength(1); expect(posts[0].status).toBe(201); expect(JSON.parse(posts[0].body)).toEqual({ success: true, newBalance: 65 });
+      expect(posts[0].effects).toBe(1); expect(posts[0].replay).toBe(false);
+      expect(after.ui).toMatchObject({ tenantIds: [A], selected: A, amount: '7', reason: 'New Aurora draft', search: 'aurora' });
+      const followups = adapter.rows.slice(readBoundary).filter(row => row.method === 'GET' && !row.probe);
+      expect(followups.length).toBeLessThanOrEqual(1);
+      expect(followups.every(row => new URL(row.url).searchParams.get('q') === 'aurora')).toBe(true);
+      await adapter.retainObservationBeforeNavigation();
+      await page.reload(); await expect(tenant(page).getByRole('option')).toHaveCount(50);
+      expect(await adapter.read()).toEqual(after.state);
+      expect(adapter.rows.filter(row => row.method === 'POST')).toHaveLength(1);
+    });
+  });
+
+  for (const order of [['tenants', 'history'], ['history', 'tenants']] as const) {
+    test(`preserves both independent append lanes when the ${order[0]} response completes first`, async ({ page }) => {
+      await readRaceScenario(page, 'concurrent', async adapter => {
+        await fill(page);
+        await moreTenants(page).click(); await adapter.captured('tenants');
+        await expect(moreHistory(page)).toBeEnabled(); await moreHistory(page).click(); await adapter.captured('history');
+        adapter.release(order[0]); await raceDelivered(page, await adapter.captured(order[0]));
+        await raceEvidence(page, adapter, `${order[0]}-lane-delivered-first`);
+        adapter.release(order[1]); await raceDelivered(page, await adapter.captured(order[1]));
+        const both = await raceEvidence(page, adapter, 'both-independent-pages-delivered');
+        expect(both.ui.tenantIds).toEqual(adapter.initial.tenants.slice(0, 100).map(row => row.id));
+        expect(both.ui).toMatchObject({ selected: B, amount: '25', reason: REASON, search: '' });
+        const history = page.getByRole('article', { name: 'Credit transaction history table', exact: true });
+        await expect(history.getByRole('row')).toHaveCount(101);
+        const nextBoundary = adapter.rows.length;
+        await moreTenants(page).click(); await expect(tenant(page).getByRole('option')).toHaveCount(101);
+        await moreHistory(page).click(); await expect(history.getByRole('row')).toHaveCount(102);
+        const nextReads = adapter.rows.slice(nextBoundary).filter(row => row.method === 'GET' && !row.probe);
+        expect(nextReads).toHaveLength(2);
+        expect(new URL(nextReads[0].url).searchParams.get('tenantCursor')).toBe(adapter.second.tenantPagination.nextCursor);
+        expect(new URL(nextReads[1].url).searchParams.get('historyCursor')).toBe(adapter.historySecond.historyPagination.nextCursor);
+        await expect(moreTenants(page)).toHaveCount(0); await expect(moreHistory(page)).toHaveCount(0);
+        expect(await adapter.read()).toEqual(adapter.first);
+        expect(adapter.rows.filter(row => row.method === 'POST')).toEqual([]);
+      });
+    });
+  }
+});
