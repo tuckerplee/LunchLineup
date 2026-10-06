@@ -1018,6 +1018,7 @@ if (postgresRestrictedUrl && postgresOwnerUrl && postgresCapability) {
                     tenantId,
                     subscriptionId,
                     expect.any(String),
+                    { authoritativeCustomerCancellation: true },
                 );
 
                 await expect(service.archivePlatform(platform, tenantId)).rejects.toThrow(
@@ -2420,7 +2421,14 @@ if (postgresRestrictedUrl && postgresOwnerUrl && postgresCapability) {
                     },
                 };
                 let constructedEvent = terminalEvent;
-                const retrieveSubscription = vi.fn();
+                const retrieveSubscription = vi.fn().mockResolvedValue({
+                    object: 'subscription',
+                    id: subscriptionId,
+                    customer: customerId,
+                    status: 'paused',
+                    cancel_at_period_end: false,
+                    metadata: { tenantId },
+                });
                 const webhook = new StripeService({
                     get: (key: string) => ({
                         STRIPE_SECRET_KEY: 'sk_test_terminal_replay',
@@ -2440,6 +2448,7 @@ if (postgresRestrictedUrl && postgresOwnerUrl && postgresCapability) {
 
                 await webhook.handleWebhook(Buffer.from('{}'), 'sig_terminal_replay');
                 await webhook.handleWebhook(Buffer.from('{}'), 'sig_terminal_replay');
+                expect(retrieveSubscription).not.toHaveBeenCalled();
                 await expect(owner.$queryRaw<Array<{
                     status: string;
                     subscriptionId: string | null;
@@ -2531,7 +2540,10 @@ if (postgresRestrictedUrl && postgresOwnerUrl && postgresCapability) {
                     subscriptionId: replacementSubscriptionId,
                     disposition: 'skipped_unverified_subscription',
                 }]);
-                expect(retrieveSubscription).not.toHaveBeenCalled();
+                expect(retrieveSubscription).toHaveBeenCalledExactlyOnceWith(
+                    subscriptionId,
+                    { expand: ['items.data.price'] },
+                );
             } finally {
                 await cleanupCancellationProofTenants(owner, [tenantId], postgresCapability);
                 await restricted.$disconnect();

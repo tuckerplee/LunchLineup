@@ -707,7 +707,7 @@ if (process.env.MIGRATION_DATABASE_URL) {
                 `;
                 expect(refunds).toEqual([
                     { id: `feature-refund-availability-import:${failedId}`, amount: 3, balanceAfter: 3 },
-                    { id: `feature-refund-availability-import:${pendingId}`, amount: 2, balanceAfter: 12 },
+                    { id: `feature-refund-availability-import:${pendingId}`, amount: 2, balanceAfter: expect.any(Number) },
                 ]);
                 const solveJobs = await prisma.$queryRaw<Array<{ id: string; status: string }>>`
                     SELECT "id", "status"
@@ -720,15 +720,36 @@ if (process.env.MIGRATION_DATABASE_URL) {
                     { id: failedSolveId, status: 'FAILED' },
                     { id: succeededSolveId, status: 'SUCCEEDED' },
                 ]);
-                await expect(prisma.$queryRaw<Array<{ id: string; amount: number; balanceAfter: number }>>`
+                const solveRefunds = await prisma.$queryRaw<Array<{ id: string; amount: number; balanceAfter: number }>>`
                     SELECT "id", "amount", "balanceAfter"
                     FROM "CreditTransaction"
                     WHERE "tenantId" = ${tenantId}
                       AND "id" LIKE 'schedule-credit-refund-%'
                     ORDER BY "id"
-                `).resolves.toEqual([
-                    { id: `schedule-credit-refund-${activeSolveId}`, amount: 4, balanceAfter: 16 },
+                `;
+                expect(solveRefunds).toEqual([
+                    { id: `schedule-credit-refund-${activeSolveId}`, amount: 4, balanceAfter: expect.any(Number) },
                     { id: `schedule-credit-refund-${failedSolveId}`, amount: 7, balanceAfter: 10 },
+                ]);
+                // SQL result ordering does not prescribe the order of the two settlements.
+                // Their immutable snapshots must still form one exact 10 -> 16 credit chain.
+                const newRefunds = [refunds[1], solveRefunds[0]]
+                    .sort((left, right) => left.balanceAfter - right.balanceAfter);
+                let runningBalance = 10;
+                for (const refund of newRefunds) {
+                    runningBalance += refund.amount;
+                    expect(refund.balanceAfter).toBe(runningBalance);
+                }
+                expect(runningBalance).toBe(16);
+                await expect(prisma.$queryRaw<Array<{ id: string; debtAmount: number; debtAfter: number }>>`
+                    SELECT "id", "debtAmount", "debtAfter"
+                    FROM "CreditTransaction"
+                    WHERE "tenantId" = ${tenantId}
+                      AND "id" IN (${newRefunds[0].id}, ${newRefunds[1].id})
+                    ORDER BY "id"
+                `).resolves.toEqual([
+                    { id: `feature-refund-availability-import:${pendingId}`, debtAmount: 0, debtAfter: 0 },
+                    { id: `schedule-credit-refund-${activeSolveId}`, debtAmount: 0, debtAfter: 0 },
                 ]);
                 await expect(prisma.tenant.findUnique({
                     where: { id: tenantId },
