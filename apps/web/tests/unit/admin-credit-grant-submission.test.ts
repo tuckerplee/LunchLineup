@@ -1,3 +1,9 @@
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
+import * as ts from 'typescript';
+import { withIdempotencyKey } from '../../lib/client-api';
+import { parseCreditGrantAcknowledgement } from '../../app/admin/credits/credit-grant-acknowledgement';
+
 import { describe, expect, it, vi } from 'vitest';
 
 import {
@@ -81,6 +87,111 @@ describe('admin credit-grant submission', () => {
 
         resolveSend?.({ success: true });
         await expect(first).resolves.toEqual({ submitted: true, value: { success: true } });
+        expect(state).toEqual({ attempt: null, inFlight: false });
+    });
+});
+
+
+// Execute the actual client write boundary and its real pure parser with a
+// closed Response supplier. Only the three uniquely named writer declarations
+// are loaded; no React render, DOM/session lifecycle or network is performed.
+function actualCreditWriter(fetchWithSession: (path: string, init: RequestInit) => Promise<Response>) {
+    const path = resolve(process.cwd(), 'app/admin/credits/CreditsClient.tsx');
+    const source = readFileSync(path, 'utf8');
+    const ast = ts.createSourceFile(path, source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+    const names = ['getCsrfHeaders', 'jsonWriteInit', 'writeJson'];
+    const declarations = names.map(name => {
+        const selected = ast.statements.filter((node): node is ts.FunctionDeclaration =>
+            ts.isFunctionDeclaration(node) && node.name?.text === name);
+        expect(selected).toHaveLength(1); return selected[0].getText(ast);
+    }).join('\n');
+    const javascript = ts.transpileModule(declarations + '\nreturn writeJson;', {
+        compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.None },
+    }).outputText;
+    return new Function('fetchWithSession', 'withIdempotencyKey', 'parseCreditGrantAcknowledgement', 'document', javascript)(
+        fetchWithSession, withIdempotencyKey, parseCreditGrantAcknowledgement, undefined) as
+        (path: string, method: 'POST', payload: CreditGrantPayload, key: string) => Promise<{ success: true; newBalance: number }>;
+}
+
+const unverifiedMessage = 'The credit grant response could not be verified. Retry the unchanged grant.';
+const invalidAcknowledgements = [
+    { label: 'malformed-json', status: 201, body: '{' },
+    { label: 'partial', status: 201, body: JSON.stringify({ success: true }) },
+    { label: 'false-success', status: 201, body: JSON.stringify({ success: false, newBalance: 17 }) },
+    { label: 'unsafe-balance', status: 201, body: JSON.stringify({ success: true, newBalance: Number.MAX_SAFE_INTEGER + 1 }) },
+    { label: 'negative-balance', status: 201, body: JSON.stringify({ success: true, newBalance: -1 }) },
+    { label: 'fractional-balance', status: 201, body: JSON.stringify({ success: true, newBalance: 1.5 }) },
+    { label: 'string-balance', status: 201, body: JSON.stringify({ success: true, newBalance: '17' }) },
+    { label: 'null-body', status: 201, body: 'null' },
+    { label: 'empty204', status: 204, body: null },
+    { label: 'unexpected200', status: 200, body: JSON.stringify({ success: true, newBalance: 17 }) },
+] as const;
+
+describe('actual admin credit grant acknowledgement boundary', () => {
+    it.each(invalidAcknowledgements)('retains the original attempt after $label and reuses it for a deliberate valid retry', async item => {
+        const state = createCreditGrantSubmissionState(), keyFactory = vi.fn(() => 'grant-verification-attempt');
+        const fetchWithSession = vi.fn(async (_path: string, _init: RequestInit) => new Response(item.body, { status: item.status,
+            headers: { 'Content-Type': 'application/json' } }));
+        const write = actualCreditWriter(fetchWithSession);
+        const send = (payload: CreditGrantPayload, key: string) => write('/admin/credits/grant', 'POST', payload, key);
+        await expect(submitCreditGrant(state, PAYLOAD, send, keyFactory)).rejects.toThrow(unverifiedMessage);
+        expect(state.inFlight).toBe(false); expect(state.attempt?.key).toBe('grant-verification-attempt');
+        expect(fetchWithSession).toHaveBeenCalledOnce();
+        fetchWithSession.mockImplementationOnce(async () => new Response(JSON.stringify({ success: true, newBalance: 17 }),
+            { status: 201, headers: { 'Content-Type': 'application/json' } }));
+        await expect(submitCreditGrant(state, { ...PAYLOAD }, send, keyFactory)).resolves.toEqual({
+            submitted: true, value: { success: true, newBalance: 17 },
+        });
+        expect(state).toEqual({ attempt: null, inFlight: false }); expect(keyFactory).toHaveBeenCalledOnce();
+        expect(fetchWithSession).toHaveBeenCalledTimes(2);
+        // No amount/wallet projection can supply the returned replay balance.
+        for (const call of fetchWithSession.mock.calls) {
+            const [path, init] = call;
+            expect(path).toBe('/admin/credits/grant'); expect(init.method).toBe('POST'); expect(init.credentials).toBe('include');
+            expect(new Headers(init.headers).get('Idempotency-Key')).toBe('grant-verification-attempt');
+            expect(new Headers(init.headers).get('Content-Type')).toBe('application/json');
+            expect(JSON.parse(String(init.body))).toEqual(PAYLOAD);
+        }
+    });
+
+    it.each([0, Number.MAX_SAFE_INTEGER])('accepts a complete201 acknowledgement with nonnegative safe balance %s', balance => {
+        expect(parseCreditGrantAcknowledgement(201, { success: true, newBalance: balance })).toEqual({ success: true, newBalance: balance });
+    });
+
+    it.each([422, 503])('preserves the existing non2xx error and attempt for HTTP %s', async status => {
+        const state = createCreditGrantSubmissionState();
+        const fetchWithSession = vi.fn(async () => new Response(JSON.stringify({ message: 'Grant could not be completed.' }),
+            { status, headers: { 'Content-Type': 'application/json' } }));
+        const write = actualCreditWriter(fetchWithSession);
+        await expect(submitCreditGrant(state, PAYLOAD,
+            (payload, key) => write('/admin/credits/grant', 'POST', payload, key), () => 'retained-refusal-attempt'))
+            .rejects.toThrow('Grant could not be completed.');
+        expect(state).toMatchObject({ inFlight: false, attempt: { key: 'retained-refusal-attempt' } });
+        expect(fetchWithSession).toHaveBeenCalledOnce();
+    });
+
+    it('confirms an immutable stored replay balance after malformed committed delivery without issuing a second modeled grant', async () => {
+        const state = createCreditGrantSubmissionState(), keys: string[] = [], settlements = new Map<string, number>();
+        let effects = 0;
+        const fetchWithSession = vi.fn(async (path: string, init: RequestInit) => {
+            expect(path).toBe('/admin/credits/grant'); expect(JSON.parse(String(init.body))).toEqual(PAYLOAD);
+            const key = new Headers(init.headers).get('Idempotency-Key'); expect(key).not.toBeNull(); keys.push(key!);
+            if (!settlements.has(key!)) { effects += 1; settlements.set(key!, 17); }
+            // Closed model only: first delivery is incomplete after its modeled
+            // commit; replay returns the stored17 even if today's wallet differs.
+            return new Response(JSON.stringify(keys.length === 1 ? { success: true }
+                : { success: true, newBalance: settlements.get(key!) }), { status: 201,
+                headers: { 'Content-Type': 'application/json' } });
+        });
+        const write = actualCreditWriter(fetchWithSession), keyFactory = vi.fn(() => 'modeled-committed-attempt');
+        const send = (payload: CreditGrantPayload, key: string) => write('/admin/credits/grant', 'POST', payload, key);
+        await expect(submitCreditGrant(state, PAYLOAD, send, keyFactory)).rejects.toThrow(unverifiedMessage);
+        expect(effects).toBe(1); expect(state.attempt?.key).toBe('modeled-committed-attempt');
+        await expect(submitCreditGrant(state, PAYLOAD, send, keyFactory)).resolves.toEqual({
+            submitted: true, value: { success: true, newBalance: 17 },
+        });
+        expect(keys).toEqual(['modeled-committed-attempt', 'modeled-committed-attempt']);
+        expect(effects).toBe(1); expect(settlements.size).toBe(1); expect(keyFactory).toHaveBeenCalledOnce();
         expect(state).toEqual({ attempt: null, inFlight: false });
     });
 });

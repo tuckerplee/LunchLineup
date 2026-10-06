@@ -1,6 +1,7 @@
 'use client';
 
 import type { FormEvent } from 'react';
+import { parseCreditGrantAcknowledgement, type CreditGrantAcknowledgement } from './credit-grant-acknowledgement';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { fetchJsonWithSession, fetchWithSession, withIdempotencyKey } from '@/lib/client-api';
 import {
@@ -83,12 +84,12 @@ function jsonWriteInit(
     }, idempotencyKey);
 }
 
-async function writeJson<T>(
+async function writeJson(
     path: string,
     method: 'POST' | 'PUT' | 'DELETE',
     payload: unknown,
     idempotencyKey: string,
-): Promise<T> {
+): Promise<CreditGrantAcknowledgement> {
     const response = await fetchWithSession(path, jsonWriteInit(method, payload, idempotencyKey));
     const responsePayload = await response.json().catch(() => ({} as Record<string, unknown>));
     if (!response.ok) {
@@ -97,7 +98,7 @@ async function writeJson<T>(
             : `Request failed (${response.status})`;
         throw new Error(message);
     }
-    return responsePayload as T;
+    return parseCreditGrantAcknowledgement(response.status, responsePayload);
 }
 
 function badgeStyle(color: string, bg: string, border: string) {
@@ -315,7 +316,7 @@ export function CreditsClient() {
             const result = await submitCreditGrant(
                 grantSubmission.current,
                 payload,
-                (requestPayload, idempotencyKey) => writeJson<{ success?: boolean; newBalance?: number }>(
+                (requestPayload, idempotencyKey) => writeJson(
                     '/admin/credits/grant',
                     'POST',
                     requestPayload,
