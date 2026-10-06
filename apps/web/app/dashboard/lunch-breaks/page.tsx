@@ -2110,7 +2110,7 @@ export default function LunchBreaksPage() {
                     Switch mode
                   </Button>
                   <Button size="sm" variant="outline" onClick={() => void saveAllDirtyRows()} disabled={dirtyCount === 0 || !canWriteLoadedDay || isSavingPolicy}>
-                    {dirtyCount > 0 ? `Save ${dirtyCount} changes` : 'Save changes'}
+                    {dirtyCount > 0 ? `Save ${dirtyCount} ${dirtyCount === 1 ? 'change' : 'changes'}` : 'Save changes'}
                   </Button>
                 </>
               ) : null}
