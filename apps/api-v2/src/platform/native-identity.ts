@@ -4,6 +4,8 @@ import type { SessionIdentity } from '@lunchlineup/api-contract';
 import Redis from 'ioredis';
 import jwt, { type JwtPayload } from 'jsonwebtoken';
 import type { FastifyReply, FastifyRequest } from 'fastify';
+// Include cookie type augmentation when this adapter is imported without the server.
+import type {} from '@fastify/cookie';
 import type { ApiV2Config } from '../config';
 import type { TenantDatabase } from './database';
 import type { IdentityAdapter } from './identity';
