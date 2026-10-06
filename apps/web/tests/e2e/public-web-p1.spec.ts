@@ -6,7 +6,7 @@ async function resetMockState(page: Page) {
   expect(response.ok()).toBe(true);
 }
 
-async function mockLoginResolve(page: Page, flow: 'PIN' | 'USERNAME_PASSWORD' | 'EMAIL_OTP', identifier: string) {
+async function mockLoginResolve(page: Page, flow: 'USERNAME_PIN' | 'USERNAME_PASSWORD' | 'EMAIL_OTP', identifier: string) {
   await page.route('**/api/v2/auth/login/resolve', async (route) => {
     const payload = route.request().postDataJSON() as { identifier?: string; tenantSlug?: string };
     expect(payload.tenantSlug).toBe(e2eTenantSlug);
@@ -65,7 +65,7 @@ test.describe('validated public-web P1 regressions', () => {
   test('PIN rejection keeps the step, identifier, secret, and safe next before retry succeeds', async ({ page }) => {
     const redirectTo = '/status?source=pin';
     let attempts = 0;
-    await mockLoginResolve(page, 'PIN', e2eAdminUsername);
+    await mockLoginResolve(page, 'USERNAME_PIN', e2eAdminUsername);
     await page.route('**/api/v2/auth/pin/verify**', async (route) => {
       attempts += 1;
       const payload = route.request().postDataJSON() as Record<string, string>;

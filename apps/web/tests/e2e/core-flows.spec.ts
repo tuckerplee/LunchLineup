@@ -85,7 +85,7 @@ test.describe('Public SaaS entrypoints', () => {
     });
 
     await mockLoginResolve(page, {
-      flow: 'PIN',
+      flow: 'USERNAME_PIN',
       identifier: 'e2e.admin',
       pinResetRequired: false,
     });

@@ -1479,7 +1479,7 @@ const server = http.createServer(async (req, res) => {
         sendJson(res, 404, { success: false, message: 'No matching user.' });
         return;
       }
-      sendJson(res, 200, { success: true, flow: 'PIN', identifier, pinResetRequired: false });
+      sendJson(res, 200, { success: true, flow: 'USERNAME_PASSWORD', identifier, pinResetRequired: false });
       return;
     }
 
