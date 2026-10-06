@@ -9,7 +9,7 @@
   "scripts": {
     "build": "turbo run build",
     "dev": "turbo run dev",
-    "lint": "turbo run lint",
+    "lint": "eslint \"**/*.{ts,tsx}\"",
     "postinstall": "npm run generate --workspace @lunchlineup/db",
     "test": "turbo run test",
     "test:migration": "node scripts/run-migration-tests.mjs",
