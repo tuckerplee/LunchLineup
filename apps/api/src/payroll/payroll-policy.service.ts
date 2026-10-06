@@ -35,29 +35,39 @@ export class PayrollPolicyService {
     ) {}
 
     async list(actor: PayrollActor, limitRaw?: unknown, cursorRaw?: unknown) {
+        actor = Object.freeze({ ...actor });
         const limit = parseBoundedLimit(limitRaw, {
             field: 'limit', defaultValue: 25, maximum: MAX_PAYROLL_HISTORY_PAGE_SIZE,
         });
         const cursor = parseOpaqueCursor(cursorRaw, 'cursor');
-        const rows = await this.tenantDb.withTenant(actor.tenantId, (tx) => tx.payrollPolicyVersion.findMany({
-            where: { tenantId: actor.tenantId },
-            orderBy: [{ version: 'desc' }, { id: 'desc' }],
-            take: limit + 1,
-            ...(cursor ? { cursor: { id: cursor }, skip: 1 } : {}),
-        }));
-        const page = rows.slice(0, limit);
-        return {
-            data: page.map(serializePayrollPolicy),
-            nextCursor: rows.length > limit && page.length > 0 ? page[page.length - 1].id : null,
-        };
+        return runCurrentPayrollMutation(this.rbac, this.authService, actor, 'payroll:read',
+            async (tx, assertCurrent, selected) => {
+                const rows = await tx.payrollPolicyVersion.findMany({
+                    where: { tenantId: selected.tenantId },
+                    orderBy: [{ version: 'desc' }, { id: 'desc' }],
+                    take: limit + 1,
+                    ...(cursor ? { cursor: { id: cursor }, skip: 1 } : {}),
+                });
+                assertCurrent();
+                const page = rows.slice(0, limit);
+                return {
+                    data: page.map(serializePayrollPolicy),
+                    nextCursor: rows.length > limit && page.length > 0 ? page[page.length - 1].id : null,
+                };
+            });
     }
 
     async latest(actor: PayrollActor) {
-        const row = await this.tenantDb.withTenant(actor.tenantId, (tx) => tx.payrollPolicyVersion.findFirst({
-            where: { tenantId: actor.tenantId },
-            orderBy: [{ version: 'desc' }, { id: 'desc' }],
-        }));
-        return { data: row ? serializePayrollPolicy(row) : null };
+        actor = Object.freeze({ ...actor });
+        return runCurrentPayrollMutation(this.rbac, this.authService, actor, 'payroll:read',
+            async (tx, assertCurrent, selected) => {
+                const row = await tx.payrollPolicyVersion.findFirst({
+                    where: { tenantId: selected.tenantId },
+                    orderBy: [{ version: 'desc' }, { id: 'desc' }],
+                });
+                assertCurrent();
+                return { data: row ? serializePayrollPolicy(row) : null };
+            });
     }
 
     async create(actor: PayrollActor, body: unknown, idempotencyKeyRaw: unknown) {

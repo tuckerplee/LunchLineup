@@ -168,11 +168,13 @@ export class PayrollService {
   ) {}
 
   async listPolicies(identity: SessionIdentity, query: PayrollPolicyListQuery) {
+    identity = mutationIdentity(identity);
     const limit = parseBoundedLimit(query.limit, 'policy_limit', 25, MAX_PAYROLL_HISTORY_PAGE_SIZE);
     const cursor = decodeCursor(query.cursor, 'policy_cursor');
     const version = cursorInteger(cursor, 'version', 'policy_cursor');
     const publicId = cursorText(cursor, 'publicId', 'policy_cursor');
-    return this.database.withTenant(identity.tenantId, async (transaction) => {
+    const authority = await this.prepareCurrentMutation(identity, 'payroll:read');
+    return authority.run(async (transaction, assertCurrent) => {
       const rows = await transaction.payrollPolicyVersion.findMany({
         where: {
           tenantId: identity.tenantId,
@@ -186,8 +188,10 @@ export class PayrollService {
         orderBy: [{ version: 'desc' }, { publicId: 'desc' }],
         take: limit + 1,
       });
+      assertCurrent();
       const page = rows.slice(0, limit);
       const users = await this.publicUsers(transaction, identity.tenantId, page.map((row) => row.createdByUserId));
+      assertCurrent();
       return {
         data: page.map((row) => this.serializePolicy(row, users)),
         nextCursor: rows.length > limit && page.length > 0
@@ -198,13 +202,17 @@ export class PayrollService {
   }
 
   async latestPolicy(identity: SessionIdentity) {
-    return this.database.withTenant(identity.tenantId, async (transaction) => {
+    identity = mutationIdentity(identity);
+    const authority = await this.prepareCurrentMutation(identity, 'payroll:read');
+    return authority.run(async (transaction, assertCurrent) => {
       const row = await transaction.payrollPolicyVersion.findFirst({
         where: { tenantId: identity.tenantId },
         orderBy: [{ version: 'desc' }, { publicId: 'desc' }],
       });
+      assertCurrent();
       if (!row) return { data: null };
       const users = await this.publicUsers(transaction, identity.tenantId, [row.createdByUserId]);
+      assertCurrent();
       return { data: this.serializePolicy(row, users) };
     });
   }

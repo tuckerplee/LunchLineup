@@ -47,3 +47,14 @@ All control and recovery actions are unmetered. `GET /payroll/export-entitlement
 Clock-in, correction, and export share one lock hierarchy: the `Tenant` row, tenant payroll advisory lock, ordered period advisory locks, then period/card/break rows. Assigned card closure and correction reject a clock-out after the period cutoff; positive sub-minute closed cards remain valid zero-minute payroll evidence. Every payroll mutation retries once after Prisma `P2034` or PostgreSQL `40001` from a stale serializable snapshot; `40P01` is never a normal retry. Tenant/actor/request identities are computed once outside the retry, so exact replay retains one operation marker, domain write set, settlement where applicable, and audit.
 
 `GET /payroll/periods/:id` returns the UI-ready period, bounded card page, locked entries, source amendments with decisions and tenant-bounded `sourceEmployeeId` evidence (including adjustment-period views), and the first bounded immutable export-line page. `GET /payroll/exports/:id?lineLimit=500&lineCursor=...` reaches subsequent lines and returns current line states plus authoritative aggregate reconciliation counts and latest receipt metadata. Reconciliation mutations remain limited to 500 explicit outcomes, append receipt/events and current-state updates atomically, allow rejected lines and all-accepted wrong-total batches to be corrected through a later provider event, retain signed totals, and terminalize only when every accumulated line state is accepted and the provider total exactly matches the immutable batch total.
+
+Policy list/latest reads use the existing current `payroll:read` authority scope.
+Capture requester identity and parsed pagination before waits; retain one finite
+trusted MFA observation outside database callbacks and reuse it across bounded
+retries. Check after each policy/creator read and before the callback returns,
+including empty history. Preserve immutable versions, inactive historical creator
+references, native public versus retained private cursors and read-only behavior.
+This source contract does not qualify HTTP admission, physical PostgreSQL
+locks/RLS/SSI, Redis or browser acceptance, and does not apply a new policy to
+every GET. Period reads and the advisory export-entitlement contract remain
+separate pending work.
