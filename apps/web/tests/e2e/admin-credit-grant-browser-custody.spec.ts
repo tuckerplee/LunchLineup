@@ -252,9 +252,85 @@ async function unchanged(page: Page, adapter: Adapter) {
   await expect(page.getByText('Credits granted.', { exact: true })).toHaveCount(0);
   await expect(tenant(page)).toHaveValue(B); await expect(amount(page)).toHaveValue('25'); await expect(reason(page)).toHaveValue(REASON);
 }
+async function layoutWitness(page: Page) {
+  const originalViewport = page.viewportSize();
+  expect(originalViewport, 'canonical projects have an explicit viewport').not.toBeNull();
+  if (!originalViewport) throw new Error('Credit layout witness requires the canonical viewport');
+  const widths = test.info().project.name === 'chromium' ? [320, 375, 414, 768, 1280] : [originalViewport.width];
+  const balances = page.getByRole('article', { name: 'Tenant credit balances table', exact: true });
+  const grant = page.getByRole('article').filter({ has: page.getByRole('heading', { name: 'Grant Credits', exact: true }) });
+  const controls = [
+    { name: 'tenant', locator: tenant(page) }, { name: 'amount', locator: amount(page) },
+    { name: 'reason', locator: reason(page) }, { name: 'grant', locator: submit(page) },
+    { name: 'search-input', locator: page.getByRole('textbox', { name: 'Tenant search', exact: true }) },
+    { name: 'search-button', locator: page.getByRole('button', { name: 'Search', exact: true }) },
+    { name: 'refresh', locator: page.getByRole('button', { name: 'Refresh', exact: true }) },
+  ];
+  const failures: unknown[] = [];
+  try {
+    for (const width of widths) {
+      const label = `credit-populated-layout-${test.info().project.name.replace(/\W+/g, '-').toLowerCase()}-${width}px`;
+      try {
+        if (test.info().project.name === 'chromium') await page.setViewportSize({ width, height: originalViewport.height });
+        await expect(balances).toBeVisible(); await expect(grant).toBeVisible();
+        // Retain actual pixels before checking geometry, including a failing layout.
+        await test.info().attach(label, { contentType: 'image/png',
+          body: await page.screenshot({ fullPage: true, animations: 'disabled', timeout: 5000 }) });
+        const pageSize = await page.evaluate(() => ({ width: innerWidth,
+          scrollWidth: Math.max(document.documentElement.scrollWidth, document.body.scrollWidth) }));
+        const balanceBox = await balances.boundingBox(), grantBox = await grant.boundingBox();
+        const controlBoxes = await Promise.all(controls.map(async control => ({ name: control.name,
+          box: await control.locator.boundingBox(), count: await control.locator.count() })));
+        await test.info().attach(label + '-geometry', { contentType: 'application/json',
+          body: JSON.stringify({ pageSize, balanceBox, grantBox, controlBoxes,
+            scope: 'Populated panels and external form controls; intentional internal table scrolling is allowed.' }) });
+        expect(pageSize.width).toBe(width); expect(pageSize.scrollWidth).toBeLessThanOrEqual(width + 1);
+        expect(balanceBox).not.toBeNull(); expect(grantBox).not.toBeNull();
+        if (!balanceBox || !grantBox) throw new Error('Populated credit panels lack measured rectangles');
+        for (const box of [balanceBox, grantBox]) {
+          expect(box.x).toBeGreaterThanOrEqual(-1); expect(box.x + box.width).toBeLessThanOrEqual(width + 1);
+          expect(box.width).toBeGreaterThanOrEqual(Math.min(260, width * 0.8));
+        }
+        if (width <= 900) {
+          expect(grantBox.y).toBeGreaterThanOrEqual(balanceBox.y + balanceBox.height - 1);
+          expect(Math.abs(balanceBox.x - grantBox.x)).toBeLessThanOrEqual(2);
+          expect(Math.abs(balanceBox.width - grantBox.width)).toBeLessThanOrEqual(2);
+        } else {
+          expect(grantBox.x).toBeGreaterThanOrEqual(balanceBox.x + balanceBox.width - 1);
+          expect(Math.abs(balanceBox.y - grantBox.y)).toBeLessThanOrEqual(2);
+        }
+        for (const control of controlBoxes) {
+          expect(control.count, control.name + ' is unique').toBe(1);
+          expect(control.box, control.name + ' has a rendered rectangle').not.toBeNull();
+          if (!control.box) throw new Error(control.name + ' has no rectangle');
+          expect(control.box.width, control.name + ' is usable').toBeGreaterThan(20);
+          if (width <= 768) {
+            expect(control.box.width, control.name + ' meets mobile touch width').toBeGreaterThanOrEqual(44);
+            expect(control.box.height, control.name + ' meets mobile touch height').toBeGreaterThanOrEqual(44);
+          }
+          expect(control.box.x, control.name + ' fits left edge').toBeGreaterThanOrEqual(-1);
+          expect(control.box.x + control.box.width, control.name + ' fits right edge').toBeLessThanOrEqual(width + 1);
+        }
+      } catch (error) {
+        failures.push(error);
+        try { await test.info().attach(label + '-failure', { contentType: 'image/png',
+          body: await page.screenshot({ fullPage: true, animations: 'disabled', timeout: 3000 }) }); }
+        catch (screenshotError) { failures.push(screenshotError); }
+        break; // Preserve first failing width; do not spend the remaining case budget on repeats.
+      }
+    }
+  } finally {
+    try { await page.setViewportSize(originalViewport); }
+    catch (restoreError) { failures.push(restoreError); }
+  }
+  if (failures.length) throw new AggregateError(failures, 'Credit populated layout or viewport restoration failed');
+}
+
 async function settled(page: Page, adapter: Adapter) {
   await expect(page.getByText('Credits granted.', { exact: true })).toBeVisible();
   await expect(balanceRow(page, 'Boreal Kitchen').getByRole('cell').nth(2).getByText('65', { exact: true })).toBeVisible();
+  await balanceRow(page, 'Boreal Kitchen').getByRole('cell').nth(2).getByText('65', { exact: true }).scrollIntoViewIfNeeded({ timeout: 5000 });
+  await expect(balanceRow(page, 'Boreal Kitchen').getByRole('cell').nth(2).getByText('65', { exact: true })).toBeInViewport();
   const state = await adapter.read();
   expect(state.tenants).toEqual(adapter.initial.map(row => row.id === B ? { ...row, usageCredits: 65 } : row));
   expect(state.history).toHaveLength(1);
@@ -265,6 +341,8 @@ async function settled(page: Page, adapter: Adapter) {
   await page.reload();
   await expect(page.getByRole('heading', { name: 'Credits', exact: true })).toBeVisible();
   await expect(balanceRow(page, 'Boreal Kitchen').getByRole('cell').nth(2).getByText('65', { exact: true })).toBeVisible();
+  await balanceRow(page, 'Boreal Kitchen').getByRole('cell').nth(2).getByText('65', { exact: true }).scrollIntoViewIfNeeded({ timeout: 5000 });
+  await expect(balanceRow(page, 'Boreal Kitchen').getByRole('cell').nth(2).getByText('65', { exact: true })).toBeInViewport();
   await expect(history.getByRole('row').filter({ hasText: REASON })).toHaveCount(1);
   expect(await adapter.read()).toEqual(state);
   expect(writes(adapter).every(row => row.effects <= 1)).toBe(true);
@@ -309,6 +387,7 @@ test.describe('Admin credit grant browser custody', () => {
   test('validates and cancels before explicitly granting once to the selected tenant', async ({ page }) => {
     await scenario(page, 'positive', async adapter => {
       await fill(page);
+      await layoutWitness(page);
       await amount(page).fill('-1'); await submit(page).click();
       expect(await amount(page).evaluate(node => (node as HTMLInputElement).validity.valid)).toBe(false);
       expect(writes(adapter)).toHaveLength(0);

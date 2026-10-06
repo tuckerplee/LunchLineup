@@ -1,6 +1,7 @@
 'use client';
 
 import type { FormEvent } from 'react';
+import styles from './credits.module.css';
 import { parseCreditGrantAcknowledgement, type CreditGrantAcknowledgement } from './credit-grant-acknowledgement';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { fetchJsonWithSession, fetchWithSession, withIdempotencyKey } from '@/lib/client-api';
@@ -334,7 +335,7 @@ export function CreditsClient() {
     }
 
     return (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem', maxWidth: 1440 }}>
+        <div className={styles.workspace} style={{ display: 'flex', flexDirection: 'column', gap: '1rem', maxWidth: 1440 }}>
             <section
                 className="surface-card"
                 style={{
@@ -356,7 +357,7 @@ export function CreditsClient() {
                         </p>
                     </div>
 
-                    <form onSubmit={applySearch} style={{ minWidth: 280, flex: '1 1 360px', display: 'flex', gap: '0.45rem', alignItems: 'flex-end' }}>
+                    <form onSubmit={applySearch} className={styles.tenantSearch} style={{ flex: '1 1 360px', display: 'flex', gap: '0.45rem', alignItems: 'flex-end' }}>
                         <label className="form-group" style={{ flex: 1 }}>
                             <span className="form-label">Tenant search</span>
                             <input
@@ -432,7 +433,7 @@ export function CreditsClient() {
                 </div>
             ) : null}
 
-            <section style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1.25fr) minmax(320px, 0.75fr)', gap: '0.85rem', alignItems: 'start' }}>
+            <section className={styles.balanceGrantGrid}>
                 <article
                     className="surface-card"
                     aria-label="Tenant credit balances table"
@@ -545,8 +546,8 @@ export function CreditsClient() {
                     ) : null}
                 </article>
 
-                <article className="surface-card" style={{ padding: '1rem' }}>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', gap: '0.75rem', alignItems: 'flex-start', marginBottom: '0.8rem' }}>
+                <article className={`surface-card ${styles.grantPanel}`} style={{ padding: '1rem' }}>
+                    <div className={styles.grantHeader} style={{ display: 'flex', justifyContent: 'space-between', gap: '0.75rem', alignItems: 'flex-start', marginBottom: '0.8rem' }}>
                         <div>
                             <h2 style={{ fontSize: '0.98rem', fontWeight: 760, color: 'var(--text-primary)' }}>Grant Credits</h2>
                             <div style={{ fontSize: '0.76rem', color: 'var(--text-muted)', marginTop: 2 }}>

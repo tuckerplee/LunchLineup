@@ -1,0 +1,51 @@
+.workspace {
+  min-width: 0;
+}
+
+.tenantSearch {
+  min-width: 280px;
+}
+
+.balanceGrantGrid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.25fr) minmax(320px, 0.75fr);
+  gap: 0.85rem;
+  align-items: start;
+}
+
+.grantPanel {
+  min-width: 0;
+}
+
+/* Stack the balances and grant form before the fixed desktop column can
+   squeeze the balances into a narrow strip. Tables keep their own scroll. */
+@media (max-width: 900px) {
+  .balanceGrantGrid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+@media (max-width: 768px) {
+  .workspace {
+    overflow-wrap: anywhere;
+  }
+
+  .tenantSearch {
+    min-width: 0;
+    width: 100%;
+  }
+
+  .tenantSearch > label {
+    min-width: 0;
+  }
+
+  .grantHeader {
+    flex-wrap: wrap;
+  }
+
+  .workspace :global(.form-input),
+  .workspace :global(.btn) {
+    min-height: 44px;
+    min-width: 44px;
+  }
+}
