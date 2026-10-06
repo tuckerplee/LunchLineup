@@ -434,4 +434,67 @@ test.describe('Time Card correction browser custody', () => {
       expect(adapter.ledger.filter(row => row.method === 'PATCH' && row.probe)).toHaveLength(1);
     });
   });
+
+  // Prospective source lead only: this case has not been executed or confirmed.
+  test('preserves newer correction inputs accepted while an earlier save acknowledgement is pending', async ({ page }) => {
+    await withAdapter(page, false, async adapter => {
+      const before = original(adapter), other = original(adapter, OTHER);
+      const issuedEnd = offset(before.clockOutAt!, 30), newerEnd = offset(before.clockOutAt!, 60);
+      const issuedReason = 'Issued correction before newer local editing';
+      const newerReason = 'Newer manager draft must remain available after the earlier save';
+      await openCorrection(page);
+      const panel = region(page), clockOut = panel.getByLabel('Clock out', { exact: true });
+      const reason = panel.getByRole('textbox', { name: 'Correction reason', exact: true });
+      await clockOut.fill(localInput(issuedEnd)); await reason.fill(issuedReason);
+      const held = adapter.holdNext(), delivered = saveResponse(page);
+      let issued!: ResponseRecord;
+      try {
+        await panel.getByRole('button', { name: 'Save correction', exact: true }).click();
+        await held.observed; issued = await held.ready;
+        await exactPayload(issued, { clockInAt: before.clockInAt, clockOutAt: issuedEnd,
+          expectedUpdatedAt: before.updatedAt, reason: issuedReason });
+        expect(issued.status).toBe(200); expect(issued.effects).toBe(1);
+        await blocked(page, false);
+        await expect(panel.getByRole('button', { name: 'Saving...', exact: true })).toBeDisabled();
+        await expect(panel.getByRole('button', { name: 'Cancel', exact: true })).toBeDisabled();
+        // Real enabled inputs accept edits only after old payload capture/model
+        // commit, and while its response delivery is still held.
+        await expect(reason).toBeEnabled(); await expect(clockOut).toBeEnabled();
+        await reason.fill(newerReason); await reason.focus(); await expect(reason).toBeFocused();
+        await clockOut.fill(localInput(newerEnd)); await clockOut.focus(); await expect(clockOut).toBeFocused();
+        await expect(reason).toHaveValue(newerReason); await expect(clockOut).toHaveValue(localInput(newerEnd));
+        expect(patchRows(adapter.ledger)).toHaveLength(1);
+        await test.info().attach('pending-newer-correction-draft-before-old-ack', { contentType: 'application/json',
+          body: JSON.stringify({ clockOut: await clockOut.inputValue(), reason: await reason.inputValue(),
+            clockOutFocused: await clockOut.evaluate(node => document.activeElement === node),
+            issuedPayload: issued.body, issuedStatus: issued.status }) });
+      } finally { held.release(); }
+      await held.finished;
+      const acknowledged = await delivered;
+      expect(acknowledged.status()).toBe(200);
+      await exactBrowserDecodedBody(page, adapter, issued, acknowledged);
+      await expect(page.getByRole('status').filter({ hasText: 'Time card corrected.' })).toBeVisible();
+      // Separate actual GET through the existing model proves old issued save,
+      // not newer local values. It does not claim native/durable database proof.
+      const saved = await readback(adapter, CARD);
+      expect(saved).toMatchObject({ id: CARD, userId: STAFF, locationId: LOCATION,
+        clockInAt: before.clockInAt, clockOutAt: issuedEnd, revision: 2, status: 'CLOSED' });
+      expect(saved.updatedAt).not.toBe(before.updatedAt);
+      expect(await readback(adapter, OTHER)).toEqual(other);
+      expect(patchRows(adapter.ledger)).toHaveLength(1);
+      expect(adapter.ledger.filter(row => row.method !== 'GET' && !row.probe)).toHaveLength(1);
+      // Retain post-ack actual DOM even if the survival oracle fails below.
+      await test.info().attach('pending-newer-correction-draft-after-old-ack', { contentType: 'application/json',
+        body: JSON.stringify({ panelCount: await panel.count(),
+          reason: await reason.count() ? await reason.inputValue() : null,
+          clockOut: await clockOut.count() ? await clockOut.inputValue() : null,
+          saved, scope: 'Browser DOM and local route-model observation; source lead remains unconfirmed before execution.' }) });
+      await expect(panel).toBeVisible();
+      await expect(reason).toHaveValue(newerReason);
+      await expect(clockOut).toHaveValue(localInput(newerEnd));
+      await expect(panel.getByRole('button', { name: 'Save correction', exact: true })).toBeEnabled();
+      await expect(panel.getByRole('button', { name: 'Cancel', exact: true })).toBeEnabled();
+      await expect(teamMember(page)).toBeDisabled(); await expect(teamLocation(page)).toBeDisabled();
+    });
+  });
 });
