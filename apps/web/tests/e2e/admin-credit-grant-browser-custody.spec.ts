@@ -327,6 +327,27 @@ async function adminShellWitness(page: Page, width: number, label: string) {
     await expect(page).toHaveURL(/\/admin\/credits(?:[?#].*)?$/);
     await page.evaluate(() => window.scrollTo(0, 0));
   }
+  if (width > 1024) {
+    const sidebar = page.getByRole('complementary', { name: 'Admin sidebar', exact: true });
+    const desktopSignOut = sidebar.getByRole('link', { name: 'Sign out', exact: true });
+    const scrollRegion = sidebar.locator('.workspace-sidebar-inner');
+    const before = await desktopSignOut.boundingBox();
+    await expect(desktopSignOut).toHaveAttribute('href', '/auth/logout');
+    await desktopSignOut.scrollIntoViewIfNeeded({ timeout: 5000 });
+    const after = await desktopSignOut.boundingBox();
+    const scrollState = await scrollRegion.evaluate(node => ({
+      scrollTop: node.scrollTop, clientHeight: node.clientHeight, scrollHeight: node.scrollHeight,
+      documentScrollY: window.scrollY, viewportHeight: window.innerHeight,
+    }));
+    await test.info().attach(label + '-desktop-signout-geometry', { contentType: 'application/json',
+      body: JSON.stringify({ width, before, after, scrollState }) });
+    await test.info().attach(label + '-desktop-signout-viewport', { contentType: 'image/png',
+      body: await page.screenshot({ fullPage: false, animations: 'disabled', timeout: 5000 }) });
+    await expect(desktopSignOut).toBeInViewport({ ratio: 1, timeout: 3000 });
+    await desktopSignOut.click({ trial: true, timeout: 5000 });
+    await scrollRegion.evaluate(node => { node.scrollTop = 0; });
+    await page.evaluate(() => window.scrollTo(0, 0));
+  }
 }
 
 async function layoutWitness(page: Page) {
@@ -350,6 +371,11 @@ async function layoutWitness(page: Page) {
       try {
         if (test.info().project.name === 'chromium') await page.setViewportSize({ width, height: originalViewport.height });
         await expect(balances).toBeVisible(); await expect(grant).toBeVisible();
+        // Each width begins at the real first viewport; prior tenant actions can scroll the page.
+        await page.evaluate(() => window.scrollTo(0, 0));
+        await expect.poll(() => page.evaluate(() => ({ x: scrollX, y: scrollY })), { timeout: 3000 }).toEqual({ x: 0, y: 0 });
+        await test.info().attach(label + '-first-viewport', { contentType: 'image/png',
+          body: await page.screenshot({ fullPage: false, animations: 'disabled', timeout: 5000 }) });
         // Retain actual pixels before checking geometry, including a failing layout.
         await test.info().attach(label, { contentType: 'image/png',
           body: await page.screenshot({ fullPage: true, animations: 'disabled', timeout: 5000 }) });

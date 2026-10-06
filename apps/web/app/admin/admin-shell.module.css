@@ -98,7 +98,7 @@
     }
 
     .environment {
-        max-width: 96px;
+        max-width: 128px;
         white-space: normal;
         overflow-wrap: anywhere;
         font-size: 0.65rem;
