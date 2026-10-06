@@ -274,8 +274,8 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
                 fontWeight: 650,
               }}
             >
-              <Store size={14} />
-              {user?.workspaceName || 'Team Workspace'}
+              <Store size={14} style={{ flexShrink: 0 }} />
+              <span className="workspace-name">{user?.workspaceName || 'Team Workspace'}</span>
             </div>
           </div>
 

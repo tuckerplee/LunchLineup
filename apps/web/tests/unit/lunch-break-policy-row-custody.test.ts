@@ -55,6 +55,7 @@ const stateNames = stateDeclarations.map(node => {
 });
 const selectedNames = new Set([
     'desiredDayScopeRef', 'dayLoadRequestRef', 'shiftBreakUpdateSubmissionRef', 'shiftBreakSaveButtonRef',
+    'recoveryFocusIntentRef', 'recoveryFocusAttemptRef',
     'capabilities', 'canWriteLunchBreaks', 'activeLocation', 'activeTimeZone', 'desiredDayScope',
     'isLoadedDayScopeCurrent', 'canWriteLoadedDay', 'lunchBreakFeature', 'hasPendingDayRowChanges', 'dirtyCount',
     'commitActiveDayScope', 'clearDayRows', 'clearScopedDisplayState', 'loadDayRows', 'selectDayScope',
@@ -203,6 +204,13 @@ async function fixture(mode: Mode, options: { deferReadback?: boolean; deferRow?
         setTimeout: (fn: () => void, ms: number) => { expect(ms).toBe(650); scheduleCount++; return globalThis.setTimeout(() => { firedCount++; fn(); }, ms); },
         clearTimeout: (id: ReturnType<typeof setTimeout>) => { cleanupCount++; globalThis.clearTimeout(id); } };
     vi.stubGlobal('window', windowLike);
+    // Actual saveRow reads browser focus before its first await. This ledger
+    // supplies a stable committed button and non-button default focus; the real
+    // postcommit focus effect remains covered by the browser recovery case.
+    const documentLike = { cookie: '', body: {}, activeElement: null as unknown };
+    documentLike.activeElement = documentLike.body;
+    const saveFocusNode = { isConnected: false, focus() { documentLike.activeElement = this; } };
+    vi.stubGlobal('document', documentLike);
     const bindings = { React, Button, ...scopes, claimLunchBreakDayLoadRequest,
         lunchBreakDayWindow, lunchBreakTimeValue, resolveLunchBreakInstant, breakTimingIssue,
         getWorkspaceCapabilities, safeTimeZone, fetchAllBoundedPages, fetchWithSession,
@@ -355,6 +363,9 @@ async function fixture(mode: Mode, options: { deferReadback?: boolean; deferRow?
     function render() {
         stateIndex = refIndex = callbackIndex = memoIndex = 0;
         const result = selected.render();
+        // Model the JSX ref's commit/unmount, without replacing its handler.
+        saveFocusNode.isConnected = Boolean(result.rowSave);
+        refs.get('shiftBreakSaveButtonRef')!.current = result.rowSave ? saveFocusNode : null;
         expect([stateIndex, refIndex, callbackIndex, memoIndex]).toEqual([stateNames.length, refNames.length, callbackNames.length, memoNames.length]);
         if (queuedEffect) {
             const next = queuedEffect; queuedEffect = undefined; effectCleanup?.();
@@ -394,6 +405,7 @@ async function fixture(mode: Mode, options: { deferReadback?: boolean; deferRow?
     const repeat45 = () => editValue('45', 45);
     async function manualSave() {
         const button = render().rowSave; expect(button?.props.disabled).toBe(false);
+        saveFocusNode.focus(); // The supported manual click starts on this control.
         button!.props.onClick(); render(); await finishAutosaves();
     }
     function rowKeys() { return rowMetadata.map(row => row.key); }

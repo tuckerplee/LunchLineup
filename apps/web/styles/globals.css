@@ -2365,6 +2365,13 @@ textarea.form-input {
     text-overflow: ellipsis;
   }
 
+  .workspace-sidebar .workspace-name {
+    min-width: 0;
+    white-space: normal;
+    overflow-wrap: anywhere;
+    line-height: 1.25;
+  }
+
   .workspace-sidebar .workspace-nav-link {
     padding: 8px 10px;
   }
