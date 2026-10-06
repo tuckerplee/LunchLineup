@@ -291,29 +291,34 @@ export class PayrollService {
   }
 
   async listPeriods(identity: SessionIdentity, query: PayrollPeriodListQuery) {
+    identity = mutationIdentity(identity);
     const limit = parseBoundedLimit(query.limit, 'period_limit', 25, MAX_PAYROLL_HISTORY_PAGE_SIZE);
     const cursor = decodeCursor(query.cursor, 'period_cursor');
     const localStartDate = cursorText(cursor, 'localStartDate', 'period_cursor');
     const publicId = cursorText(cursor, 'publicId', 'period_cursor');
-    return this.database.withTenant(identity.tenantId, async (transaction) => {
+    const startDate = localStartDate === null ? null : dateOnlyForPrisma(localStartDate);
+    const authority = await this.prepareCurrentMutation(identity, 'payroll:read');
+    return authority.run(async (transaction, assertCurrent) => {
       const rows = await transaction.payrollPeriod.findMany({
         where: {
           tenantId: identity.tenantId,
-          ...(localStartDate === null ? {} : {
+          ...(startDate === null ? {} : {
             OR: [
-              { localStartDate: { lt: dateOnlyForPrisma(localStartDate) } },
-              { localStartDate: dateOnlyForPrisma(localStartDate), publicId: { lt: publicId ?? '' } },
+              { localStartDate: { lt: startDate } },
+              { localStartDate: startDate, publicId: { lt: publicId ?? '' } },
             ],
           }),
         },
         orderBy: [{ localStartDate: 'desc' }, { publicId: 'desc' }],
         take: limit + 1,
       }) as unknown as PayrollRow[];
+      assertCurrent();
       const page = rows.slice(0, limit);
       const [summaries, policies] = await Promise.all([
-        loadPayrollPeriodSummaries(transaction, identity.tenantId, page.map((row) => row.id)),
-        this.publicPolicies(transaction, identity.tenantId, page.map((row) => row.policyVersionId)),
+        loadPayrollPeriodSummaries(transaction, identity.tenantId, page.map((row) => row.id), assertCurrent),
+        this.publicPolicies(transaction, identity.tenantId, page.map((row) => row.policyVersionId), assertCurrent),
       ]);
+      assertCurrent();
       return {
         data: page.map((row) => this.serializePeriod(row, summaries.get(row.id) ?? this.emptySummary(), policies, null)),
         nextCursor: rows.length > limit && page.length > 0
@@ -410,13 +415,15 @@ export class PayrollService {
   }
 
   async getPeriod(identity: SessionIdentity, publicPeriodId: string, query: PayrollPeriodDetailQuery) {
+    identity = mutationIdentity(identity);
     const periodId = requiredPublicId(publicPeriodId, 'payroll_period');
     const cardLimit = parseBoundedLimit(query.cardLimit, 'card_limit', 100, MAX_PAYROLL_CARD_PAGE_SIZE);
     const cardCursor = cursorText(decodeCursor(query.cardCursor, 'card_cursor'), 'publicId', 'card_cursor');
     const lineLimit = parseBoundedLimit(query.lineLimit, 'line_limit', 500, 500);
     const lineCursor = cursorText(decodeCursor(query.lineCursor, 'line_cursor'), 'publicId', 'line_cursor');
-    return this.database.withTenant(identity.tenantId, async (transaction) => {
-      const period = await this.requirePeriod(transaction, identity.tenantId, periodId);
+    const authority = await this.prepareCurrentMutation(identity, 'payroll:read');
+    return authority.run(async (transaction, assertCurrent) => {
+      const period = await this.requirePeriod(transaction, identity.tenantId, periodId, assertCurrent);
       const rows = await transaction.timeCard.findMany({
         where: period.status === 'OPEN'
           ? {
@@ -458,6 +465,7 @@ export class PayrollService {
           location: { select: { publicId: true } },
         },
       });
+      assertCurrent();
       const page = rows.slice(0, cardLimit);
       const approvals = page.length === 0 ? [] : await transaction.payrollTimeCardApproval.findMany({
         where: {
@@ -466,19 +474,22 @@ export class PayrollService {
           OR: page.map((card) => ({ timeCardId: card.id, timeCardRevision: card.revision })),
         },
       });
+      assertCurrent();
       const approverIds = approvals.map((approval) => approval.decidedByUserId);
-      const approvers = await this.publicUsers(transaction, identity.tenantId, approverIds);
+      const approvers = await this.publicUsers(transaction, identity.tenantId, approverIds, assertCurrent);
       const decisionByCard = new Map(approvals.map((approval) => [`${approval.timeCardId}:${approval.timeCardRevision}`, approval]));
-      const summary = await loadPayrollPeriodSummary(transaction, identity.tenantId, period.id);
-      const policies = await this.publicPolicies(transaction, identity.tenantId, [period.policyVersionId]);
+      const summary = await loadPayrollPeriodSummary(transaction, identity.tenantId, period.id, assertCurrent);
+      const policies = await this.publicPolicies(transaction, identity.tenantId, [period.policyVersionId], assertCurrent);
       const [lockedEntries, amendments, batch] = await Promise.all([
-        this.serializedLockedEntries(transaction, identity.tenantId, period.id),
-        this.serializedAmendments(transaction, identity.tenantId, period.id, period.status),
+        this.serializedLockedEntries(transaction, identity.tenantId, period.id, assertCurrent),
+        this.serializedAmendments(transaction, identity.tenantId, period.id, period.status, assertCurrent),
         transaction.payrollExportBatch.findFirst({ where: { tenantId: identity.tenantId, periodId: period.id } }),
       ]);
+      assertCurrent();
       const exportBatch = batch
-        ? await this.serializeExport(transaction, identity.tenantId, batch, lineLimit, lineCursor)
+        ? await this.serializeExport(transaction, identity.tenantId, batch, lineLimit, lineCursor, assertCurrent)
         : null;
+      assertCurrent();
       return {
         period: this.serializePeriod(period, summary, policies, exportBatch),
         cards: page.map((card) => {
@@ -1879,25 +1890,29 @@ export class PayrollService {
     return amendment;
   }
 
-  private async serializedLockedEntries(transaction: TenantTransaction, tenantId: string, periodId: string) {
+  private async serializedLockedEntries(transaction: TenantTransaction, tenantId: string, periodId: string, assertCurrent: () => void = () => {}) {
     const rows = await transaction.payrollLockedEntry.findMany({
       where: { tenantId, periodId },
       orderBy: [{ sequence: 'asc' }, { publicId: 'asc' }],
       take: 5_001,
     });
+    assertCurrent();
     if (rows.length > 5_000) {
       throw payrollProblem(503, 'payroll_entry_limit_invalid', 'Stored payroll entry evidence exceeds the supported limit.', 'Service unavailable');
     }
     const [users, locations, timeCards, amendments] = await Promise.all([
-      this.publicUsers(transaction, tenantId, rows.flatMap((row) => [row.employeeId, row.approvedByUserId])),
-      this.publicLocations(transaction, tenantId, rows.map((row) => row.locationId)),
-      this.publicTimeCards(transaction, tenantId, rows.filter((row) => row.sourceType === 'TIME_CARD').map((row) => row.sourceId)),
-      this.publicAmendments(transaction, tenantId, rows.filter((row) => row.sourceType === 'AMENDMENT').map((row) => row.sourceId)),
+      this.publicUsers(transaction, tenantId, rows.flatMap((row) => [row.employeeId, row.approvedByUserId]), assertCurrent),
+      this.publicLocations(transaction, tenantId, rows.map((row) => row.locationId), assertCurrent),
+      this.publicTimeCards(transaction, tenantId, rows.filter((row) => row.sourceType === 'TIME_CARD').map((row) => row.sourceId), assertCurrent),
+      this.publicAmendments(transaction, tenantId, rows.filter((row) => row.sourceType === 'AMENDMENT').map((row) => row.sourceId), assertCurrent),
     ]);
-    const employeeNames = rows.length === 0 ? new Map<string, string>() : new Map((await transaction.user.findMany({
+    assertCurrent();
+    const employees = rows.length === 0 ? [] : await transaction.user.findMany({
       where: { tenantId, id: { in: [...new Set(rows.map((row) => row.employeeId))] } },
       select: { id: true, name: true },
-    })).map((user) => [user.id, user.name]));
+    });
+    assertCurrent();
+    const employeeNames = new Map(employees.map((user) => [user.id, user.name]));
     return rows.map((row) => ({
       id: row.publicId,
       sequence: row.sequence,
@@ -1925,14 +1940,17 @@ export class PayrollService {
     tenantId: string,
     periodId: string,
     status: PayrollRow['status'],
+    assertCurrent: () => void = () => {},
   ) {
-    const lockedEntryIds = status === 'LOCKED'
-      ? (await transaction.payrollLockedEntry.findMany({
+    const lockedEntries = status === 'LOCKED'
+      ? await transaction.payrollLockedEntry.findMany({
         where: { tenantId, periodId },
         select: { id: true },
         take: 5_001,
-      })).map((entry) => entry.id)
+      })
       : [];
+    assertCurrent();
+    const lockedEntryIds = lockedEntries.map((entry) => entry.id);
     const rows = await transaction.payrollAmendment.findMany({
       where: status === 'LOCKED'
         ? { tenantId, OR: [{ adjustmentPeriodId: periodId }, ...(lockedEntryIds.length > 0 ? [{ lockedEntryId: { in: lockedEntryIds } }] : [])] }
@@ -1940,24 +1958,28 @@ export class PayrollService {
       orderBy: [{ createdAt: 'asc' }, { publicId: 'asc' }],
       take: 5_001,
     });
+    assertCurrent();
     if (rows.length > 5_000) {
       throw payrollProblem(503, 'payroll_amendment_limit_invalid', 'Stored payroll amendment evidence exceeds the supported limit.', 'Service unavailable');
     }
     const decisions = rows.length === 0 ? [] : await transaction.payrollAmendmentDecision.findMany({
       where: { tenantId, amendmentId: { in: rows.map((row) => row.id) } },
     });
+    assertCurrent();
     const sources = rows.length === 0 ? [] : await transaction.payrollLockedEntry.findMany({
       where: { tenantId, id: { in: [...new Set(rows.map((row) => row.lockedEntryId))] } },
       select: { id: true, publicId: true, employeeId: true },
     });
+    assertCurrent();
     const [periods, users] = await Promise.all([
-      this.publicPeriods(transaction, tenantId, rows.map((row) => row.adjustmentPeriodId)),
+      this.publicPeriods(transaction, tenantId, rows.map((row) => row.adjustmentPeriodId), assertCurrent),
       this.publicUsers(transaction, tenantId, [
         ...rows.map((row) => row.requestedByUserId),
         ...decisions.map((decision) => decision.decidedByUserId),
         ...sources.map((source) => source.employeeId),
-      ]),
+      ], assertCurrent),
     ]);
+    assertCurrent();
     const sourceById = new Map(sources.map((source) => [source.id, source]));
     const decisionByAmendment = new Map(decisions.map((decision) => [decision.amendmentId, decision]));
     return rows.map((row) => {
@@ -2350,8 +2372,9 @@ export class PayrollService {
     });
   }
 
-  private async requirePeriod(transaction: TenantTransaction, tenantId: string, publicId: string): Promise<PayrollRow> {
+  private async requirePeriod(transaction: TenantTransaction, tenantId: string, publicId: string, assertCurrent: () => void = () => {}): Promise<PayrollRow> {
     const row = await transaction.payrollPeriod.findFirst({ where: { tenantId, publicId } }) as unknown as PayrollRow | null;
+    assertCurrent();
     if (!row) throw payrollProblem(404, 'payroll_period_not_found', 'The requested payroll period was not found in this workspace.', 'Not found');
     return row;
   }
@@ -2362,63 +2385,69 @@ export class PayrollService {
     return row;
   }
 
-  private async publicUsers(transaction: TenantTransaction, tenantId: string, ids: readonly (string | null | undefined)[]): Promise<Map<string, string>> {
+  private async publicUsers(transaction: TenantTransaction, tenantId: string, ids: readonly (string | null | undefined)[], assertCurrent: () => void = () => {}): Promise<Map<string, string>> {
     const uniqueIds = [...new Set(ids.filter((id): id is string => Boolean(id)))];
     if (uniqueIds.length === 0) return new Map();
     const rows = await transaction.user.findMany({
       where: { tenantId, id: { in: uniqueIds } },
       select: { id: true, publicId: true },
     });
+    assertCurrent();
     return new Map(rows.map((row) => [row.id, row.publicId]));
   }
 
-  private async publicPolicies(transaction: TenantTransaction, tenantId: string, ids: readonly (string | null | undefined)[]): Promise<Map<string, string>> {
+  private async publicPolicies(transaction: TenantTransaction, tenantId: string, ids: readonly (string | null | undefined)[], assertCurrent: () => void = () => {}): Promise<Map<string, string>> {
     const uniqueIds = [...new Set(ids.filter((id): id is string => Boolean(id)))];
     if (uniqueIds.length === 0) return new Map();
     const rows = await transaction.payrollPolicyVersion.findMany({
       where: { tenantId, id: { in: uniqueIds } },
       select: { id: true, publicId: true },
     });
+    assertCurrent();
     return new Map(rows.map((row) => [row.id, row.publicId]));
   }
 
-  private async publicPeriods(transaction: TenantTransaction, tenantId: string, ids: readonly (string | null | undefined)[]): Promise<Map<string, string>> {
+  private async publicPeriods(transaction: TenantTransaction, tenantId: string, ids: readonly (string | null | undefined)[], assertCurrent: () => void = () => {}): Promise<Map<string, string>> {
     const uniqueIds = [...new Set(ids.filter((id): id is string => Boolean(id)))];
     if (uniqueIds.length === 0) return new Map();
     const rows = await transaction.payrollPeriod.findMany({
       where: { tenantId, id: { in: uniqueIds } },
       select: { id: true, publicId: true },
     });
+    assertCurrent();
     return new Map(rows.map((row) => [row.id, row.publicId]));
   }
 
-  private async publicLocations(transaction: TenantTransaction, tenantId: string, ids: readonly (string | null | undefined)[]): Promise<Map<string, string>> {
+  private async publicLocations(transaction: TenantTransaction, tenantId: string, ids: readonly (string | null | undefined)[], assertCurrent: () => void = () => {}): Promise<Map<string, string>> {
     const uniqueIds = [...new Set(ids.filter((id): id is string => Boolean(id)))];
     if (uniqueIds.length === 0) return new Map();
     const rows = await transaction.location.findMany({
       where: { tenantId, id: { in: uniqueIds } },
       select: { id: true, publicId: true },
     });
+    assertCurrent();
     return new Map(rows.map((row) => [row.id, row.publicId]));
   }
 
-  private async publicTimeCards(transaction: TenantTransaction, tenantId: string, ids: readonly (string | null | undefined)[]): Promise<Map<string, string>> {
+  private async publicTimeCards(transaction: TenantTransaction, tenantId: string, ids: readonly (string | null | undefined)[], assertCurrent: () => void = () => {}): Promise<Map<string, string>> {
     const uniqueIds = [...new Set(ids.filter((id): id is string => Boolean(id)))];
     if (uniqueIds.length === 0) return new Map();
     const rows = await transaction.timeCard.findMany({
       where: { tenantId, id: { in: uniqueIds } },
       select: { id: true, publicId: true },
     });
+    assertCurrent();
     return new Map(rows.map((row) => [row.id, row.publicId]));
   }
 
-  private async publicAmendments(transaction: TenantTransaction, tenantId: string, ids: readonly (string | null | undefined)[]): Promise<Map<string, string>> {
+  private async publicAmendments(transaction: TenantTransaction, tenantId: string, ids: readonly (string | null | undefined)[], assertCurrent: () => void = () => {}): Promise<Map<string, string>> {
     const uniqueIds = [...new Set(ids.filter((id): id is string => Boolean(id)))];
     if (uniqueIds.length === 0) return new Map();
     const rows = await transaction.payrollAmendment.findMany({
       where: { tenantId, id: { in: uniqueIds } },
       select: { id: true, publicId: true },
     });
+    assertCurrent();
     return new Map(rows.map((row) => [row.id, row.publicId]));
   }
 

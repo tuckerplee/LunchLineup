@@ -39,21 +39,24 @@ export class PayrollPeriodService {
     ) {}
 
     async list(actor: PayrollActor, limitRaw?: unknown, cursorRaw?: unknown) {
+        actor = Object.freeze({ ...actor });
         const limit = parseBoundedLimit(limitRaw, {
             field: 'limit', defaultValue: 25, maximum: MAX_PAYROLL_HISTORY_PAGE_SIZE,
         });
         const cursor = parseOpaqueCursor(cursorRaw, 'cursor');
-        return this.tenantDb.withTenant(actor.tenantId, async (tx) => {
+        return runCurrentPayrollMutation(this.rbac, this.authService, actor, 'payroll:read', async (tx, assertCurrent, actor) => {
             const rows = await tx.payrollPeriod.findMany({
                 where: { tenantId: actor.tenantId },
                 orderBy: [{ localStartDate: 'desc' }, { id: 'desc' }],
                 take: limit + 1,
                 ...(cursor ? { cursor: { id: cursor }, skip: 1 } : {}),
             });
+            assertCurrent();
             const page = rows.slice(0, limit);
             const summaries = await loadPayrollPeriodSummaries(
-                tx, actor.tenantId, page.map((period) => period.id),
+                tx, actor.tenantId, page.map((period) => period.id), assertCurrent,
             );
+            assertCurrent();
             return {
                 data: page.map((period) => ({
                     ...serializePayrollPeriod(period),

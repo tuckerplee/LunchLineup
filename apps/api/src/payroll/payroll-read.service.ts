@@ -40,6 +40,7 @@ export class PayrollReadService {
         lineLimitRaw?: unknown,
         lineCursorRaw?: unknown,
     ) {
+        actor = Object.freeze({ ...actor });
         const periodId = requiredId(periodIdRaw, 'periodId');
         const cardLimit = parseBoundedLimit(cardLimitRaw, {
             field: 'cardLimit',
@@ -50,8 +51,9 @@ export class PayrollReadService {
         const lineLimit = this.lineLimit(lineLimitRaw);
         const lineCursor = parseOpaqueCursor(lineCursorRaw, 'lineCursor');
 
-        return this.tenantDb.withTenant(actor.tenantId, async (tx) => {
+        return runCurrentPayrollMutation(this.rbac, this.authService, actor, 'payroll:read', async (tx, assertCurrent, actor) => {
             const period = await tx.payrollPeriod.findFirst({ where: { id: periodId, tenantId: actor.tenantId } });
+            assertCurrent();
             if (!period) throw new NotFoundException('Payroll period not found.');
 
             const rows = await tx.timeCard.findMany({
@@ -90,6 +92,7 @@ export class PayrollReadService {
                     user: { select: { id: true, name: true, username: true } },
                 },
             });
+            assertCurrent();
             const page = rows.slice(0, cardLimit);
             const approvals = page.length === 0 ? [] : await tx.payrollTimeCardApproval.findMany({
                 where: {
@@ -103,20 +106,23 @@ export class PayrollReadService {
                 orderBy: [{ timeCardId: 'asc' }],
                 take: page.length,
             });
+            assertCurrent();
             const currentDecision = new Map(
                 approvals.map((approval) => [`${approval.timeCardId}:${approval.timeCardRevision}`, approval]),
             );
-            const lockedEntries = await this.lockedEntries(tx, actor.tenantId, period.id);
-            const amendments = await this.amendments(tx, actor.tenantId, period, lockedEntries.map((row) => row.id));
+            const lockedEntries = await this.lockedEntries(tx, actor.tenantId, period.id, assertCurrent);
+            const amendments = await this.amendments(tx, actor.tenantId, period, lockedEntries.map((row) => row.id), assertCurrent);
             const exportBatch = await this.exportForPeriod(
                 tx,
                 actor.tenantId,
                 period.id,
                 lineLimit,
                 lineCursor,
+                assertCurrent,
             );
-            const summary = await loadPayrollPeriodSummary(tx, actor.tenantId, period.id);
+            const summary = await loadPayrollPeriodSummary(tx, actor.tenantId, period.id, assertCurrent);
 
+            assertCurrent();
             return {
                 period: {
                     ...serializePayrollPeriod(period),
@@ -173,12 +179,13 @@ export class PayrollReadService {
         });
     }
 
-    private async lockedEntries(tx: TenantPrismaTransaction, tenantId: string, periodId: string) {
+    private async lockedEntries(tx: TenantPrismaTransaction, tenantId: string, periodId: string, assertCurrent: () => void) {
         const rows = await tx.payrollLockedEntry.findMany({
             where: { tenantId, periodId },
             orderBy: [{ sequence: 'asc' }, { id: 'asc' }],
             take: MAX_PAYROLL_LOCK_ENTRIES + 1,
         });
+        assertCurrent();
         if (rows.length > MAX_PAYROLL_LOCK_ENTRIES) {
             throw new ConflictException('Stored payroll locked-entry count exceeds the supported limit.');
         }
@@ -189,6 +196,7 @@ export class PayrollReadService {
             take: employeeIds.length,
             select: { id: true, name: true },
         });
+        assertCurrent();
         const names = new Map(users.map((user) => [user.id, user.name]));
         return rows.map((row) => ({
             id: row.id,
@@ -201,6 +209,7 @@ export class PayrollReadService {
         tenantId: string,
         period: { id: string; status: string },
         lockedEntryIds: string[],
+        assertCurrent: () => void,
     ) {
         const rows = await tx.payrollAmendment.findMany({
             where: period.status === 'LOCKED'
@@ -215,6 +224,7 @@ export class PayrollReadService {
             orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
             take: MAX_PAYROLL_LOCK_ENTRIES + 1,
         });
+        assertCurrent();
         if (rows.length > MAX_PAYROLL_LOCK_ENTRIES) {
             throw new ConflictException('Stored payroll amendment count exceeds the supported limit.');
         }
@@ -223,6 +233,7 @@ export class PayrollReadService {
             orderBy: { amendmentId: 'asc' },
             take: rows.length,
         });
+        assertCurrent();
         const byAmendment = new Map(decisions.map((decision) => [decision.amendmentId, decision]));
         const sourceIds = [...new Set(rows.map((row) => row.lockedEntryId))];
         const sources = sourceIds.length === 0 ? [] : await tx.payrollLockedEntry.findMany({
@@ -231,6 +242,7 @@ export class PayrollReadService {
             take: sourceIds.length,
             select: { id: true, employeeId: true },
         });
+        assertCurrent();
         const sourceEmployeeByEntry = new Map(sources.map((source) => [source.id, source.employeeId]));
         return rows.map((row) => ({
             ...serializePayrollAmendment(row),
@@ -245,9 +257,11 @@ export class PayrollReadService {
         periodId: string,
         lineLimit: number,
         lineCursor: string | null,
+        assertCurrent: () => void,
     ) {
         const batch = await tx.payrollExportBatch.findFirst({ where: { tenantId, periodId } });
-        return batch ? this.serializeExportPage(tx, tenantId, batch, lineLimit, lineCursor) : null;
+        assertCurrent();
+        return batch ? this.serializeExportPage(tx, tenantId, batch, lineLimit, lineCursor, assertCurrent) : null;
     }
 
     private async serializeExportPage(

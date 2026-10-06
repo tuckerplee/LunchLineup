@@ -5,7 +5,7 @@ import { payrollDomainAuthority } from './payroll-domain-authority.fixture';
 
 import { PayrollReadService } from './payroll-read.service';
 
-const actor = { tenantId: 'tenant-1', userId: 'manager-1' };
+const actor = { tenantId: 'tenant-1', userId: 'manager-1', sessionId: 'period-read-session' };
 const startsAt = new Date('2026-06-01T00:00:00Z');
 const endsAt = new Date('2026-06-08T00:00:00Z');
 
@@ -34,11 +34,14 @@ function db(tx: any) {
     return { withTenant: vi.fn((_tenantId: string, work: (value: any) => unknown) => work(tx)) } as any;
 }
 
-// Period reads retain their original bare-transaction fixture and projections.
-// The new export authority dependencies are unused by this adjacent reader.
+// Positive current-authority dependencies keep historical projection methods and
+// the original domain queues/assertions separate from requester authority.
 function periodReader(tx: any) {
     const tenantDb = db(tx);
-    return new PayrollReadService(tenantDb, new RbacService(tenantDb), {} as AuthService);
+    const historicalUsers = tx.user;
+    const [rbac, observer] = payrollDomainAuthority(tenantDb, tx, actor);
+    Object.assign(tx.user, historicalUsers);
+    return new PayrollReadService(tenantDb, rbac, observer as AuthService);
 }
 
 describe('PayrollReadService', () => {

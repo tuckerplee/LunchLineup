@@ -56,5 +56,15 @@ including empty history. Preserve immutable versions, inactive historical creato
 references, native public versus retained private cursors and read-only behavior.
 This source contract does not qualify HTTP admission, physical PostgreSQL
 locks/RLS/SSI, Redis or browser acceptance, and does not apply a new policy to
-every GET. Period reads and the advisory export-entitlement contract remain
-separate pending work.
+every GET. The advisory export-entitlement contract remains separate pending
+work.
+
+Period list/detail reads use the same current `payroll:read` scope and capture
+requester/session and parsed pagination before waits. Check nested summary,
+locked-entry, amendment and saved-export reads before converting counts,
+reporting integrity errors or mapping historical data. Preserve bounded card
+and line continuations, exact revision approvals, adoption previews and inactive
+historical staff. Shared summary callbacks default to no operation for existing
+write callers. These read-only fixtures do not prove PostgreSQL/Redis/HTTP or
+browser acceptance; conditional stored-data credit/preview questions remain
+separate from this requester-authority repair.
