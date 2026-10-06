@@ -3623,7 +3623,7 @@ export default function LunchBreaksPage() {
             padding: '0.8rem 0.9rem',
             borderRadius: 10,
             border: '1px solid rgba(244,63,94,0.35)',
-            color: '#fda4af',
+            color: '#9f1239',
             background: 'rgba(244,63,94,0.06)',
           }}
         >

@@ -2377,6 +2377,10 @@ textarea.form-input {
   }
 }
 
+@media (max-width: 359px) {
+  .workspace-sidebar .workspace-name { font-size: 0.75rem; }
+}
+
 @media (max-width: 768px) {
   .public-home__nav {
     width: min(100% - 24px, 1180px);

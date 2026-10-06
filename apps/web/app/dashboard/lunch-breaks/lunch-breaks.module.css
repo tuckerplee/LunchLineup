@@ -47,7 +47,7 @@
   .locationTimezone { grid-column: 2; font-size: 0.7rem; font-weight: 500; }
   .overview { padding: 14px 12px; }
   .header { grid-template-columns: minmax(0, 1fr); gap: 12px; }
-  .title { margin: 0; font-size: 1.2rem; line-height: 1.3; letter-spacing: -0.025em; }
+  .title { margin: 0; font-size: 1.2rem; line-height: 1.3; }
   .intro { min-width: 0; }
   .creditNotice {
     margin: 8px 0 0;
