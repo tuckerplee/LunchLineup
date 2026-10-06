@@ -457,9 +457,11 @@ test.describe('Lunch setup editor safety', () => {
     await mealTime.fill('12:30');
     await saveShiftButton.click();
     await thirdShiftBreakRequest;
-    await expect(saveShiftButton).toBeDisabled();
     const newerFocusedControl = page.getByLabel('Location', { exact: true });
     try {
+      const savingShiftButton = page.locator('button[aria-describedby="shift-break-save-cost-shift-1"]');
+      await expect(savingShiftButton).toHaveAccessibleName('Saving...');
+      await expect(savingShiftButton).toBeDisabled();
       await newerFocusedControl.focus();
       await expect(newerFocusedControl).toBeFocused();
     } finally {
