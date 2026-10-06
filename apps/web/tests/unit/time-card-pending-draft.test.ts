@@ -198,7 +198,7 @@ function fixture(outcome: Outcome) {
         expect(panelNode.props.card).toMatchObject({ id: cardId, updatedAt: state.get('cards')[0].updatedAt });
         reason = new Function('useState', reasonInitializer)((initial: string) => [initial, () => undefined])[0];
         expect(reason).toBe('');
-        const change = new Function('setReason', reasonChange)((value: string) => { reason = value; }) as (event: unknown) => void;
+        const change = new Function('updateReason', reasonChange)((value: string) => { reason = value; }) as (event: unknown) => void;
         change({ target: { value: 'New unsaved verified correction.' } }); expect(reason).toBe('New unsaved verified correction.');
     }
     let settledCalls: Array<{ path: string; method: string }> | undefined;
