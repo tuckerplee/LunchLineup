@@ -454,11 +454,13 @@ test.describe('Lunch setup editor safety', () => {
 
     // A later control focus owns the UI while this new save is still pending.
     const mealTime = page.getByLabel('Meal time for Mock Staff');
-    await mealTime.fill('12:30');
-    await saveShiftButton.click();
-    await thirdShiftBreakRequest;
-    const newerFocusedControl = page.getByLabel('Location', { exact: true });
+    const newerFocusedControl = page.getByRole('combobox', { name: 'Location America/Los_Angeles', exact: true });
+    await expect(newerFocusedControl).toBeVisible();
+    await expect(newerFocusedControl).toBeEnabled();
     try {
+      await mealTime.fill('12:30');
+      await saveShiftButton.click();
+      await thirdShiftBreakRequest;
       const savingShiftButton = page.locator('button[aria-describedby="shift-break-save-cost-shift-1"]');
       await expect(savingShiftButton).toHaveAccessibleName('Saving...');
       await expect(savingShiftButton).toBeDisabled();
