@@ -23,7 +23,7 @@ async function installTurnstileStub(page: Page) {
         reset: (id?: string) => void;
         remove: (id?: string) => void;
       };
-      __turnstileFixture: TurnstileFixtureControl;
+      __turnstileFixture?: TurnstileFixtureControl;
     };
     const requireWidget = (id: string | undefined) => {
       const widget = id ? widgets.get(id) : undefined;
@@ -66,14 +66,20 @@ async function installTurnstileStub(page: Page) {
       },
     };
   });
-  const snapshot = () => page.evaluate(() => (window as Window & { __turnstileFixture: TurnstileFixtureControl }).__turnstileFixture.snapshot());
+  const snapshot = () => page.evaluate(() => {
+    const fixture = (window as Window & { __turnstileFixture?: TurnstileFixtureControl }).__turnstileFixture;
+    if (!fixture) throw new Error('Turnstile fixture is not installed.');
+    return fixture.snapshot();
+  });
   return {
     snapshot,
     async solve(token: string) {
       const state = await snapshot();
       expect(state.active).toHaveLength(1);
       await page.evaluate(({ widget, token }) => {
-        (window as Window & { __turnstileFixture: TurnstileFixtureControl }).__turnstileFixture.solve(widget.id, widget.generation, token);
+        const fixture = (window as Window & { __turnstileFixture?: TurnstileFixtureControl }).__turnstileFixture;
+        if (!fixture) throw new Error('Turnstile fixture is not installed.');
+        fixture.solve(widget.id, widget.generation, token);
       }, { widget: state.active[0], token });
     },
   };
