@@ -108,3 +108,9 @@
         display: none !important;
     }
 }
+
+@media (min-width: 1025px) {
+    .shell .sidebarInner {
+        overflow-y: auto;
+    }
+}
