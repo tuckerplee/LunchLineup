@@ -41,7 +41,7 @@ function fixture() {
   write(testPath, `test('observes the saved action', async () => {});`);
   const action = (id, kind, method, path, tag, implementation) => ({
     id, kind, method, path, tag, implementation, status: 'pending',
-    sourceAnchors: [{ path: routePath, line: 1 }, ...(kind === 'catalog' ? [{
+    sourceAnchors: [{ path: routePath, line: kind === 'native-route' ? 2 : 1 }, ...(kind === 'catalog' ? [{
       path: 'packages/api-contract/src/application.ts',
       line: catalog.split('\n').findIndex(line => line.includes(`operationId: '${id}'`)) + 1,
     }] : [])], actorBoundary: 'Authenticated tenant identity',
@@ -263,4 +263,38 @@ check('rejects duplicate action and scenario identities and nonexistent source l
   assert.throws(() => verifyActionAcceptance(h.manifest, h.root), /duplicate scenario ID/);
   h.manifest.actions[0].scenarios.pop(); h.manifest.actions[0].sourceAnchors[0].line = 999;
   assert.throws(() => verifyActionAcceptance(h.manifest, h.root), /invalid source anchor/);
+});
+
+check('native route registration refuses a different route in the same source', h => {
+  h.manifest.actions[2].sourceAnchors = [{ path: h.routePath, line: 1 }];
+  assert.throws(() => verifyActionAcceptance(h.manifest, h.root), /native route registration anchor drift native.createDraft/);
+});
+check('native route registration refuses an unrelated source without its declaration', h => {
+  h.manifest.actions[2].sourceAnchors = [{ path: 'packages/api-contract/src/application.ts', line: 1 }];
+  assert.throws(() => verifyActionAcceptance(h.manifest, h.root), /native route registration anchor drift native.createDraft/);
+});
+check('native route registration refuses duplicate matching declarations', h => {
+  h.manifest.actions[2].sourceAnchors = [{ path: h.routePath, line: 2 }, { path: h.routePath, line: 2 }];
+  assert.throws(() => verifyActionAcceptance(h.manifest, h.root), /native route registration anchor drift native.createDraft/);
+});
+check('native route registration refuses an ambiguous same-file declaration', h => {
+  h.manifest.actions[2].sourceAnchors = [{ path: h.routePath, line: 2 }, { path: h.routePath, line: 1 }];
+  assert.throws(() => verifyActionAcceptance(h.manifest, h.root), /native route registration anchor drift native.createDraft/);
+});
+check('native route registration preserves retained owners and distinct helper anchors', h => {
+  h.write('apps/api-v2/src/locations/helper.ts', 'export const helper = 1;');
+  h.manifest.actions[2].sourceAnchors = [{ path: h.routePath, line: 2 }, { path: 'apps/api-v2/src/locations/helper.ts', line: 1 }];
+  assert.equal(h.manifest.actions[2].implementation, 'retained');
+  const proof = verifyActionAcceptance(h.manifest, h.root);
+  assert.equal(proof.pendingActions, 3); assert.equal(proof.acceptanceExecuted, false); assert.equal(proof.releaseQualified, false);
+});
+check('native route registration permits additional explicitly mapped actions', h => {
+  h.manifest.actions[2].sourceAnchors = [{ path: h.routePath, line: 2 }];
+  h.write(h.routePath, h.routeSource + "\napp.get('/v2/another-route', {}, handler);");
+  const additional = structuredClone(h.manifest.actions[2]);
+  Object.assign(additional, { id: 'native.anotherRoute', method: 'GET', path: '/v2/another-route', implementation: 'native',
+    sourceAnchors: [{ path: h.routePath, line: 3 }] });
+  h.manifest.actions.push(additional);
+  const proof = verifyActionAcceptance(h.manifest, h.root);
+  assert.equal(proof.pendingActions, 4); assert.equal(proof.plannedScenarios, 4); assert.equal(proof.releaseQualified, false);
 });

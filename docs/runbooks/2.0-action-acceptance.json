@@ -3,8 +3,8 @@
   "kind": "lunchlineup-action-acceptance-plan",
   "releaseQualified": false,
   "acceptanceExecuted": false,
-  "preparedFromCommit": "1d1cd2a9d82d567d1ff649de2fe975480fce1585",
-  "preparedFromTree": "a59a47344adcccdcff0088f3d85ac3b4f9da98e4",
+  "preparedFromCommit": "af60553af75502afb2dc269e359b3d27cb2d895b",
+  "preparedFromTree": "f6a2a36beba4d2d864772bd9ce412e4325128c41",
   "scope": {
     "originalWorkflowsAreMinimum": true,
     "allExposedActionsRequired": true,
@@ -33,7 +33,8 @@
         },
         {
           "path": "apps/api-v2/src/platform/native-identity.ts",
-          "line": 275
+          "line": 275,
+          "sourceLine": "  async authenticate(request: FastifyRequest, reply: FastifyReply): Promise<SessionIdentity> {"
         },
         {
           "path": "apps/api-v2/src/application/routes.ts",
@@ -87,11 +88,13 @@
         },
         {
           "path": "apps/api-v2/src/locations/routes.ts",
-          "line": 45
+          "line": 45,
+          "sourceLine": "      operationId: 'listLocations',"
         },
         {
           "path": "apps/api-v2/src/locations/locations.service.ts",
-          "line": 228
+          "line": 228,
+          "sourceLine": "  async list(identity: SessionIdentity, query: LocationListQuery): Promise<LocationListResponse> {"
         }
       ],
       "actorBoundary": "Authenticated exact live session in its own tenant; native identity re-reads user/tenant/session/settings/assigned permissions, enforces stored and policy-shortened expiry, account activity, mandatory PIN reset and required MFA, with listed recovery exceptions. Requires locations:read; all target/query rows are constrained to the session tenant, without platform cross-tenant override.",
@@ -147,11 +150,13 @@
         },
         {
           "path": "apps/api-v2/src/locations/routes.ts",
-          "line": 65
+          "line": 65,
+          "sourceLine": "      operationId: 'createLocation',"
         },
         {
           "path": "apps/api-v2/src/locations/locations.service.ts",
-          "line": 300
+          "line": 300,
+          "sourceLine": "  async create("
         }
       ],
       "actorBoundary": "Authenticated exact live session in its own tenant; native identity re-reads user/tenant/session/settings/assigned permissions, enforces stored and policy-shortened expiry, account activity, mandatory PIN reset and required MFA, with listed recovery exceptions. Requires locations:write; all target/query rows are constrained to the session tenant, without platform cross-tenant override.",
@@ -206,11 +211,13 @@
         },
         {
           "path": "apps/api-v2/src/locations/routes.ts",
-          "line": 84
+          "line": 84,
+          "sourceLine": "      operationId: 'getLocationSummary',"
         },
         {
           "path": "apps/api-v2/src/locations/locations.service.ts",
-          "line": 270
+          "line": 270,
+          "sourceLine": "  async summary(identity: SessionIdentity): Promise<LocationSummaryResponse> {"
         }
       ],
       "actorBoundary": "Authenticated exact live session in its own tenant; native identity re-reads user/tenant/session/settings/assigned permissions, enforces stored and policy-shortened expiry, account activity, mandatory PIN reset and required MFA, with listed recovery exceptions. Requires locations:read; all target/query rows are constrained to the session tenant, without platform cross-tenant override.",
@@ -257,11 +264,13 @@
         },
         {
           "path": "apps/api-v2/src/locations/routes.ts",
-          "line": 103
+          "line": 103,
+          "sourceLine": "      operationId: 'getLocation',"
         },
         {
           "path": "apps/api-v2/src/locations/locations.service.ts",
-          "line": 278
+          "line": 278,
+          "sourceLine": "  async get(identity: SessionIdentity, locationPublicId: string): Promise<LocationRecord> {"
         }
       ],
       "actorBoundary": "Authenticated exact live session in its own tenant; native identity re-reads user/tenant/session/settings/assigned permissions, enforces stored and policy-shortened expiry, account activity, mandatory PIN reset and required MFA, with listed recovery exceptions. Requires locations:read; all target/query rows are constrained to the session tenant, without platform cross-tenant override.",
@@ -315,11 +324,13 @@
         },
         {
           "path": "apps/api-v2/src/locations/routes.ts",
-          "line": 124
+          "line": 124,
+          "sourceLine": "      operationId: 'updateLocation',"
         },
         {
           "path": "apps/api-v2/src/locations/locations.service.ts",
-          "line": 381
+          "line": 381,
+          "sourceLine": "  async update("
         }
       ],
       "actorBoundary": "Authenticated exact live session in its own tenant; native identity re-reads user/tenant/session/settings/assigned permissions, enforces stored and policy-shortened expiry, account activity, mandatory PIN reset and required MFA, with listed recovery exceptions. Requires locations:write; all target/query rows are constrained to the session tenant, without platform cross-tenant override.",
@@ -375,11 +386,13 @@
         },
         {
           "path": "apps/api-v2/src/locations/routes.ts",
-          "line": 146
+          "line": 146,
+          "sourceLine": "      operationId: 'deleteLocation',"
         },
         {
           "path": "apps/api-v2/src/locations/locations.service.ts",
-          "line": 416
+          "line": 416,
+          "sourceLine": "  async remove(identity: SessionIdentity, locationPublicId: string): Promise<void> {"
         }
       ],
       "actorBoundary": "Authenticated exact live session in its own tenant; native identity re-reads user/tenant/session/settings/assigned permissions, enforces stored and policy-shortened expiry, account activity, mandatory PIN reset and required MFA, with listed recovery exceptions. Requires locations:delete; all target/query rows are constrained to the session tenant, without platform cross-tenant override.",
@@ -433,11 +446,13 @@
         },
         {
           "path": "apps/api-v2/src/people/routes.ts",
-          "line": 99
+          "line": 99,
+          "sourceLine": "      operationId: 'listStaffMembers',"
         },
         {
           "path": "apps/api-v2/src/people/people.service.ts",
-          "line": 588
+          "line": 588,
+          "sourceLine": "  async list(identity: SessionIdentity, query: StaffDirectoryQuery): Promise<StaffDirectoryResponse> {"
         }
       ],
       "actorBoundary": "Authenticated exact live session in its own tenant; native identity re-reads user/tenant/session/settings/assigned permissions, enforces stored and policy-shortened expiry, account activity, mandatory PIN reset and required MFA, with listed recovery exceptions. Requires users:read; all target/query rows are constrained to the session tenant, without platform cross-tenant override.",
@@ -493,11 +508,13 @@
         },
         {
           "path": "apps/api-v2/src/people/routes.ts",
-          "line": 117
+          "line": 117,
+          "sourceLine": "      operationId: 'getAccessCatalog',"
         },
         {
           "path": "apps/api-v2/src/people/people.service.ts",
-          "line": 639
+          "line": 639,
+          "sourceLine": "  async accessCatalog(identity: SessionIdentity): Promise<AccessCatalogResponse> {"
         }
       ],
       "actorBoundary": "Authenticated exact live session in its own tenant; native identity re-reads user/tenant/session/settings/assigned permissions, enforces stored and policy-shortened expiry, account activity, mandatory PIN reset and required MFA, with listed recovery exceptions. Requires roles:read; all target/query rows are constrained to the session tenant, without platform cross-tenant override.",
@@ -552,11 +569,13 @@
         },
         {
           "path": "apps/api-v2/src/people/routes.ts",
-          "line": 249
+          "line": 249,
+          "sourceLine": "      operationId: 'getStaffSchedulingProfile',"
         },
         {
           "path": "apps/api-v2/src/people/people.service.ts",
-          "line": 755
+          "line": 755,
+          "sourceLine": "  async schedulingProfile(identity: SessionIdentity, userPublicId: string): Promise<StaffSchedulingProfile> {"
         }
       ],
       "actorBoundary": "Authenticated exact live session in its own tenant; native identity re-reads user/tenant/session/settings/assigned permissions, enforces stored and policy-shortened expiry, account activity, mandatory PIN reset and required MFA, with listed recovery exceptions. Requires users:read; all target/query rows are constrained to the session tenant, without platform cross-tenant override. Only active MANAGER/STAFF target; no target-admin rank check is imposed by this read.",
@@ -612,19 +631,23 @@
         },
         {
           "path": "apps/api-v2/src/people/routes.ts",
-          "line": 270
+          "line": 270,
+          "sourceLine": "      operationId: 'updateStaffSchedulingProfile',"
         },
         {
           "path": "apps/api-v2/src/people/people.service.ts",
-          "line": 829
+          "line": 829,
+          "sourceLine": "  async replaceSchedulingProfile("
         },
         {
           "path": "apps/api-v2/src/people/people.service.ts",
-          "line": 558
+          "line": 558,
+          "sourceLine": "  private async withCurrentMutation<T>("
         },
         {
           "path": "apps/api-v2/src/people/mutation-authority.ts",
-          "line": 25
+          "line": 25,
+          "sourceLine": "export async function authorizeCurrentMutation("
         }
       ],
       "actorBoundary": "Authenticated exact live session in its own tenant; native identity re-reads user/tenant/session/settings/assigned permissions, enforces stored and policy-shortened expiry, account activity, mandatory PIN reset and required MFA, with listed recovery exceptions. Requires users:write; all target/query rows are constrained to the session tenant, without platform cross-tenant override. Mutation additionally reauthorizes current Tenant, sorted actor/target User, exact Session and current role/permission locks in two Serializable passes, bounded exact-session MFA observation outside DB when currently required, and lifetime assertions after domain waits/effects/final callback; forced-PIN recovery is limited to self PIN. Profile writer may target self when users:write held; no separate target-admin rank restriction is added. Target itself must be active MANAGER/STAFF.",
@@ -681,19 +704,23 @@
         },
         {
           "path": "apps/api-v2/src/people/routes.ts",
-          "line": 233
+          "line": 233,
+          "sourceLine": "      operationId: 'updateStaffIdentity', tags: ['People'],"
         },
         {
           "path": "apps/api-v2/src/people/people.service.ts",
-          "line": 708
+          "line": 708,
+          "sourceLine": "  async updateIdentity(identity: SessionIdentity, userPublicId: string, body: StaffIdentityRequest): Promise<StaffMember> {"
         },
         {
           "path": "apps/api-v2/src/people/people.service.ts",
-          "line": 558
+          "line": 558,
+          "sourceLine": "  private async withCurrentMutation<T>("
         },
         {
           "path": "apps/api-v2/src/people/mutation-authority.ts",
-          "line": 25
+          "line": 25,
+          "sourceLine": "export async function authorizeCurrentMutation("
         }
       ],
       "actorBoundary": "Authenticated exact live session in its own tenant; native identity re-reads user/tenant/session/settings/assigned permissions, enforces stored and policy-shortened expiry, account activity, mandatory PIN reset and required MFA, with listed recovery exceptions. Requires users:admin; all target/query rows are constrained to the session tenant, without platform cross-tenant override. Mutation additionally reauthorizes current Tenant, sorted actor/target User, exact Session and current role/permission locks in two Serializable passes, bounded exact-session MFA observation outside DB when currently required, and lifetime assertions after domain waits/effects/final callback; forced-PIN recovery is limited to self PIN. Self administration is denied. Non-system administrators cannot administer system-admin targets or equal/greater/unheld target access; actual system-admin access bypasses those target hierarchy checks while retaining same-tenant/current authority.",
@@ -746,11 +773,13 @@
         },
         {
           "path": "apps/api-v2/src/people/routes.ts",
-          "line": 431
+          "line": 431,
+          "sourceLine": "    schema: { operationId: 'getStaffLifecycle', tags: ['People'], params: StaffPathSchema,"
         },
         {
           "path": "apps/api-v2/src/people/people.service.ts",
-          "line": 1317
+          "line": 1317,
+          "sourceLine": "  async lifecycle(identity: SessionIdentity, userPublicId: string): Promise<StaffLifecycleResponse> {"
         }
       ],
       "actorBoundary": "Authenticated exact live session in its own tenant; native identity re-reads user/tenant/session/settings/assigned permissions, enforces stored and policy-shortened expiry, account activity, mandatory PIN reset and required MFA, with listed recovery exceptions. users:admin and transactional current actor/target access; target must be another same-tenant nondeleted user. Self-state administration is denied; nonsystem admins cannot administer system admin or equal/greater/unheld access. Read helper uses existing authorization, not the newer mutation-policy wrapper.",
@@ -796,19 +825,23 @@
         },
         {
           "path": "apps/api-v2/src/people/routes.ts",
-          "line": 442
+          "line": 442,
+          "sourceLine": "    schema: { operationId: 'setStaffSuspension', tags: ['People'], params: StaffPathSchema,"
         },
         {
           "path": "apps/api-v2/src/people/people.service.ts",
-          "line": 1326
+          "line": 1326,
+          "sourceLine": "  async setSuspended(identity: SessionIdentity, userPublicId: string, body: StaffLifecycleRequest): Promise<StaffLifecycleResponse> {"
         },
         {
           "path": "apps/api-v2/src/people/people.service.ts",
-          "line": 558
+          "line": 558,
+          "sourceLine": "  private async withCurrentMutation<T>("
         },
         {
           "path": "apps/api-v2/src/people/mutation-authority.ts",
-          "line": 25
+          "line": 25,
+          "sourceLine": "export async function authorizeCurrentMutation("
         }
       ],
       "actorBoundary": "Authenticated exact live session in its own tenant; native identity re-reads user/tenant/session/settings/assigned permissions, enforces stored and policy-shortened expiry, account activity, mandatory PIN reset and required MFA, with listed recovery exceptions. Requires users:admin; all target/query rows are constrained to the session tenant, without platform cross-tenant override. Mutation additionally reauthorizes current Tenant, sorted actor/target User, exact Session and current role/permission locks in two Serializable passes, bounded exact-session MFA observation outside DB when currently required, and lifetime assertions after domain waits/effects/final callback; forced-PIN recovery is limited to self PIN. Self administration is denied. Non-system administrators cannot administer system-admin targets or equal/greater/unheld target access; actual system-admin access bypasses those target hierarchy checks while retaining same-tenant/current authority.",
@@ -869,11 +902,13 @@
         },
         {
           "path": "apps/api-v2/src/people/routes.ts",
-          "line": 414
+          "line": 414,
+          "sourceLine": "      operationId: 'getStaffMember',"
         },
         {
           "path": "apps/api-v2/src/people/people.service.ts",
-          "line": 693
+          "line": 693,
+          "sourceLine": "  async get(identity: SessionIdentity, userPublicId: string): Promise<StaffMember> {"
         }
       ],
       "actorBoundary": "Authenticated exact live session in its own tenant; native identity re-reads user/tenant/session/settings/assigned permissions, enforces stored and policy-shortened expiry, account activity, mandatory PIN reset and required MFA, with listed recovery exceptions. Requires users:read; all target/query rows are constrained to the session tenant, without platform cross-tenant override.",
@@ -928,19 +963,23 @@
         },
         {
           "path": "apps/api-v2/src/people/routes.ts",
-          "line": 134
+          "line": 134,
+          "sourceLine": "      operationId: 'createStaffInvitation',"
         },
         {
           "path": "apps/api-v2/src/people/people.service.ts",
-          "line": 998
+          "line": 998,
+          "sourceLine": "  async invite(identity: SessionIdentity, body: StaffInvitationRequest, idempotencyKey?: string): Promise<StaffInvitationResponse> {"
         },
         {
           "path": "apps/api-v2/src/people/people.service.ts",
-          "line": 558
+          "line": 558,
+          "sourceLine": "  private async withCurrentMutation<T>("
         },
         {
           "path": "apps/api-v2/src/people/mutation-authority.ts",
-          "line": 25
+          "line": 25,
+          "sourceLine": "export async function authorizeCurrentMutation("
         }
       ],
       "actorBoundary": "Authenticated exact live session in its own tenant; native identity re-reads user/tenant/session/settings/assigned permissions, enforces stored and policy-shortened expiry, account activity, mandatory PIN reset and required MFA, with listed recovery exceptions. Requires users:write; all target/query rows are constrained to the session tenant, without platform cross-tenant override. Mutation additionally reauthorizes current Tenant, sorted actor/target User, exact Session and current role/permission locks in two Serializable passes, bounded exact-session MFA observation outside DB when currently required, and lifetime assertions after domain waits/effects/final callback; forced-PIN recovery is limited to self PIN. Self administration is denied. Non-system administrators cannot administer system-admin targets or equal/greater/unheld target access; actual system-admin access bypasses those target hierarchy checks while retaining same-tenant/current authority. Selected roles must be current same-tenant, active and delegable. Every actor, including actual system administrators, must currently hold the selected role permissions; protected selected roles require actual system-admin access.",
@@ -1004,11 +1043,13 @@
         },
         {
           "path": "apps/api-v2/src/people/routes.ts",
-          "line": 290
+          "line": 290,
+          "sourceLine": "      operationId: 'getStaffInvitation',"
         },
         {
           "path": "apps/api-v2/src/people/people.service.ts",
-          "line": 1156
+          "line": 1156,
+          "sourceLine": "  async invitation(identity: SessionIdentity, userPublicId: string): Promise<StaffInvitationDeliveryResponse> {"
         }
       ],
       "actorBoundary": "Authenticated exact live session in its own tenant; native identity re-reads user/tenant/session/settings/assigned permissions, enforces stored and policy-shortened expiry, account activity, mandatory PIN reset and required MFA, with listed recovery exceptions. Requires users:admin; all target/query rows are constrained to the session tenant, without platform cross-tenant override. This read does not use target-admin rank/self denial; it resolves own-tenant nondeleted target only.",
@@ -1055,19 +1096,23 @@
         },
         {
           "path": "apps/api-v2/src/people/routes.ts",
-          "line": 308
+          "line": 308,
+          "sourceLine": "      operationId: 'retryStaffInvitation',"
         },
         {
           "path": "apps/api-v2/src/people/people.service.ts",
-          "line": 1163
+          "line": 1163,
+          "sourceLine": "  async retryInvitation(identity: SessionIdentity, userPublicId: string): Promise<StaffInvitationDeliveryResponse> {"
         },
         {
           "path": "apps/api-v2/src/people/people.service.ts",
-          "line": 558
+          "line": 558,
+          "sourceLine": "  private async withCurrentMutation<T>("
         },
         {
           "path": "apps/api-v2/src/people/mutation-authority.ts",
-          "line": 25
+          "line": 25,
+          "sourceLine": "export async function authorizeCurrentMutation("
         }
       ],
       "actorBoundary": "Authenticated exact live session in its own tenant; native identity re-reads user/tenant/session/settings/assigned permissions, enforces stored and policy-shortened expiry, account activity, mandatory PIN reset and required MFA, with listed recovery exceptions. Requires users:admin; all target/query rows are constrained to the session tenant, without platform cross-tenant override. Mutation additionally reauthorizes current Tenant, sorted actor/target User, exact Session and current role/permission locks in two Serializable passes, bounded exact-session MFA observation outside DB when currently required, and lifetime assertions after domain waits/effects/final callback; forced-PIN recovery is limited to self PIN. Self administration is denied. Non-system administrators cannot administer system-admin targets or equal/greater/unheld target access; actual system-admin access bypasses those target hierarchy checks while retaining same-tenant/current authority.",
@@ -1120,19 +1165,23 @@
         },
         {
           "path": "apps/api-v2/src/people/routes.ts",
-          "line": 327
+          "line": 327,
+          "sourceLine": "      operationId: 'reissueStaffInvitation',"
         },
         {
           "path": "apps/api-v2/src/people/people.service.ts",
-          "line": 1175
+          "line": 1175,
+          "sourceLine": "  async reissueInvitation("
         },
         {
           "path": "apps/api-v2/src/people/people.service.ts",
-          "line": 558
+          "line": 558,
+          "sourceLine": "  private async withCurrentMutation<T>("
         },
         {
           "path": "apps/api-v2/src/people/mutation-authority.ts",
-          "line": 25
+          "line": 25,
+          "sourceLine": "export async function authorizeCurrentMutation("
         }
       ],
       "actorBoundary": "Authenticated exact live session in its own tenant; native identity re-reads user/tenant/session/settings/assigned permissions, enforces stored and policy-shortened expiry, account activity, mandatory PIN reset and required MFA, with listed recovery exceptions. Requires users:admin; all target/query rows are constrained to the session tenant, without platform cross-tenant override. Mutation additionally reauthorizes current Tenant, sorted actor/target User, exact Session and current role/permission locks in two Serializable passes, bounded exact-session MFA observation outside DB when currently required, and lifetime assertions after domain waits/effects/final callback; forced-PIN recovery is limited to self PIN. Self administration is denied. Non-system administrators cannot administer system-admin targets or equal/greater/unheld target access; actual system-admin access bypasses those target hierarchy checks while retaining same-tenant/current authority.",
@@ -1185,19 +1234,23 @@
         },
         {
           "path": "apps/api-v2/src/people/routes.ts",
-          "line": 353
+          "line": 353,
+          "sourceLine": "      operationId: 'resetStaffPin',"
         },
         {
           "path": "apps/api-v2/src/people/people.service.ts",
-          "line": 1191
+          "line": 1191,
+          "sourceLine": "  async resetPin(identity: SessionIdentity, userPublicId: string, requestedPin?: string): Promise<ResetStaffPinResponse> {"
         },
         {
           "path": "apps/api-v2/src/people/people.service.ts",
-          "line": 558
+          "line": 558,
+          "sourceLine": "  private async withCurrentMutation<T>("
         },
         {
           "path": "apps/api-v2/src/people/mutation-authority.ts",
-          "line": 25
+          "line": 25,
+          "sourceLine": "export async function authorizeCurrentMutation("
         }
       ],
       "actorBoundary": "Authenticated exact live session in its own tenant; native identity re-reads user/tenant/session/settings/assigned permissions, enforces stored and policy-shortened expiry, account activity, mandatory PIN reset and required MFA, with listed recovery exceptions. Requires users:admin; all target/query rows are constrained to the session tenant, without platform cross-tenant override. Mutation additionally reauthorizes current Tenant, sorted actor/target User, exact Session and current role/permission locks in two Serializable passes, bounded exact-session MFA observation outside DB when currently required, and lifetime assertions after domain waits/effects/final callback; forced-PIN recovery is limited to self PIN. Self administration is denied. Non-system administrators cannot administer system-admin targets or equal/greater/unheld target access; actual system-admin access bypasses those target hierarchy checks while retaining same-tenant/current authority.",
@@ -1248,15 +1301,18 @@
         },
         {
           "path": "apps/api-v2/src/people/routes.ts",
-          "line": 215
+          "line": 215,
+          "sourceLine": "      operationId: 'replaceCurrentPin',"
         },
         {
           "path": "apps/api-v2/src/people/people.service.ts",
-          "line": 1232
+          "line": 1232,
+          "sourceLine": "  async replaceOwnPin(identity: SessionIdentity, currentPin: string, newPin: string): Promise<void> {"
         },
         {
           "path": "apps/api-v2/src/people/mutation-authority.ts",
-          "line": 45
+          "line": 45,
+          "sourceLine": "  const pinRecovery = options.allowPinRecovery === true && permission === 'auth:login_pin'"
         }
       ],
       "actorBoundary": "Own username/PIN account only; actual current auth:login_pin grant required inside both authority passes, not a route users:admin grant. Forced temporary-PIN replacement intentionally exempts only current forced reset from MFA; ordinary rotation requires current enrolled/workspace/privileged-permission MFA. Account/PIN lock and current exact-session/tenant/expiry remain required; current/new PIN proof bound to unchanged credential, username and role.",
@@ -1339,19 +1395,23 @@
         },
         {
           "path": "apps/api-v2/src/people/routes.ts",
-          "line": 456
+          "line": 456,
+          "sourceLine": "      operationId: 'deleteStaffMember',"
         },
         {
           "path": "apps/api-v2/src/people/people.service.ts",
-          "line": 1383
+          "line": 1383,
+          "sourceLine": "  async remove(identity: SessionIdentity, userPublicId: string): Promise<void> {"
         },
         {
           "path": "apps/api-v2/src/people/people.service.ts",
-          "line": 558
+          "line": 558,
+          "sourceLine": "  private async withCurrentMutation<T>("
         },
         {
           "path": "apps/api-v2/src/people/mutation-authority.ts",
-          "line": 25
+          "line": 25,
+          "sourceLine": "export async function authorizeCurrentMutation("
         }
       ],
       "actorBoundary": "Authenticated exact live session in its own tenant; native identity re-reads user/tenant/session/settings/assigned permissions, enforces stored and policy-shortened expiry, account activity, mandatory PIN reset and required MFA, with listed recovery exceptions. Requires users:admin; all target/query rows are constrained to the session tenant, without platform cross-tenant override. Mutation additionally reauthorizes current Tenant, sorted actor/target User, exact Session and current role/permission locks in two Serializable passes, bounded exact-session MFA observation outside DB when currently required, and lifetime assertions after domain waits/effects/final callback; forced-PIN recovery is limited to self PIN. Self administration is denied. Non-system administrators cannot administer system-admin targets or equal/greater/unheld target access; actual system-admin access bypasses those target hierarchy checks while retaining same-tenant/current authority.",
@@ -1406,11 +1466,13 @@
         },
         {
           "path": "apps/api-v2/src/people/routes.ts",
-          "line": 373
+          "line": 373,
+          "sourceLine": "      operationId: 'getStaffAccess',"
         },
         {
           "path": "apps/api-v2/src/people/people.service.ts",
-          "line": 1412
+          "line": 1412,
+          "sourceLine": "  async access(identity: SessionIdentity, userPublicId: string): Promise<StaffAccessResponse> {"
         }
       ],
       "actorBoundary": "Authenticated exact live session in its own tenant; native identity re-reads user/tenant/session/settings/assigned permissions, enforces stored and policy-shortened expiry, account activity, mandatory PIN reset and required MFA, with listed recovery exceptions. Requires roles:read; all target/query rows are constrained to the session tenant, without platform cross-tenant override.",
@@ -1457,19 +1519,23 @@
         },
         {
           "path": "apps/api-v2/src/people/routes.ts",
-          "line": 394
+          "line": 394,
+          "sourceLine": "      operationId: 'updateStaffAccess',"
         },
         {
           "path": "apps/api-v2/src/people/people.service.ts",
-          "line": 1437
+          "line": 1437,
+          "sourceLine": "  async replaceAccess("
         },
         {
           "path": "apps/api-v2/src/people/people.service.ts",
-          "line": 558
+          "line": 558,
+          "sourceLine": "  private async withCurrentMutation<T>("
         },
         {
           "path": "apps/api-v2/src/people/mutation-authority.ts",
-          "line": 25
+          "line": 25,
+          "sourceLine": "export async function authorizeCurrentMutation("
         }
       ],
       "actorBoundary": "Authenticated exact live session in its own tenant; native identity re-reads user/tenant/session/settings/assigned permissions, enforces stored and policy-shortened expiry, account activity, mandatory PIN reset and required MFA, with listed recovery exceptions. Requires roles:assign; all target/query rows are constrained to the session tenant, without platform cross-tenant override. Mutation additionally reauthorizes current Tenant, sorted actor/target User, exact Session and current role/permission locks in two Serializable passes, bounded exact-session MFA observation outside DB when currently required, and lifetime assertions after domain waits/effects/final callback; forced-PIN recovery is limited to self PIN. Self administration is denied. Non-system administrators cannot administer system-admin targets or equal/greater/unheld target access; actual system-admin access bypasses those target hierarchy checks while retaining same-tenant/current authority. Selected roles must be current same-tenant, active and delegable. Every actor, including actual system administrators, must currently hold the selected role permissions; protected selected roles require actual system-admin access.",
@@ -1522,19 +1588,23 @@
         },
         {
           "path": "apps/api-v2/src/people/routes.ts",
-          "line": 153
+          "line": 153,
+          "sourceLine": "      operationId: 'createAccessRole',"
         },
         {
           "path": "apps/api-v2/src/people/people.service.ts",
-          "line": 1494
+          "line": 1494,
+          "sourceLine": "  async createRole(identity: SessionIdentity, body: { name: string; description?: string; permissionKeys: string[] }): Promise<AccessRoleResponse> {"
         },
         {
           "path": "apps/api-v2/src/people/people.service.ts",
-          "line": 558
+          "line": 558,
+          "sourceLine": "  private async withCurrentMutation<T>("
         },
         {
           "path": "apps/api-v2/src/people/mutation-authority.ts",
-          "line": 25
+          "line": 25,
+          "sourceLine": "export async function authorizeCurrentMutation("
         }
       ],
       "actorBoundary": "Authenticated exact live session in its own tenant; native identity re-reads user/tenant/session/settings/assigned permissions, enforces stored and policy-shortened expiry, account activity, mandatory PIN reset and required MFA, with listed recovery exceptions. Requires roles:write; all target/query rows are constrained to the session tenant, without platform cross-tenant override. Mutation additionally reauthorizes current Tenant, sorted actor/target User, exact Session and current role/permission locks in two Serializable passes, bounded exact-session MFA observation outside DB when currently required, and lifetime assertions after domain waits/effects/final callback; forced-PIN recovery is limited to self PIN. Requested permission keys must exist for every actor. Non-system actors must currently hold the keys and cannot grant protected permissions; actual system-admin access is exempt from those custom-role grant subset/protection checks.",
@@ -1584,19 +1654,23 @@
         },
         {
           "path": "apps/api-v2/src/people/routes.ts",
-          "line": 175
+          "line": 175,
+          "sourceLine": "      operationId: 'updateAccessRole',"
         },
         {
           "path": "apps/api-v2/src/people/people.service.ts",
-          "line": 1537
+          "line": 1537,
+          "sourceLine": "  async updateRole("
         },
         {
           "path": "apps/api-v2/src/people/people.service.ts",
-          "line": 558
+          "line": 558,
+          "sourceLine": "  private async withCurrentMutation<T>("
         },
         {
           "path": "apps/api-v2/src/people/mutation-authority.ts",
-          "line": 25
+          "line": 25,
+          "sourceLine": "export async function authorizeCurrentMutation("
         }
       ],
       "actorBoundary": "Authenticated exact live session in its own tenant; native identity re-reads user/tenant/session/settings/assigned permissions, enforces stored and policy-shortened expiry, account activity, mandatory PIN reset and required MFA, with listed recovery exceptions. Requires roles:write; all target/query rows are constrained to the session tenant, without platform cross-tenant override. Mutation additionally reauthorizes current Tenant, sorted actor/target User, exact Session and current role/permission locks in two Serializable passes, bounded exact-session MFA observation outside DB when currently required, and lifetime assertions after domain waits/effects/final callback; forced-PIN recovery is limited to self PIN. Requested permission keys must exist for every actor. Non-system actors must currently hold the keys and cannot grant protected permissions; actual system-admin access is exempt from those custom-role grant subset/protection checks.",
@@ -1647,19 +1721,23 @@
         },
         {
           "path": "apps/api-v2/src/people/routes.ts",
-          "line": 195
+          "line": 195,
+          "sourceLine": "      operationId: 'deleteAccessRole',"
         },
         {
           "path": "apps/api-v2/src/people/people.service.ts",
-          "line": 1589
+          "line": 1589,
+          "sourceLine": "  async deleteRole(identity: SessionIdentity, rolePublicId: string): Promise<void> {"
         },
         {
           "path": "apps/api-v2/src/people/people.service.ts",
-          "line": 558
+          "line": 558,
+          "sourceLine": "  private async withCurrentMutation<T>("
         },
         {
           "path": "apps/api-v2/src/people/mutation-authority.ts",
-          "line": 25
+          "line": 25,
+          "sourceLine": "export async function authorizeCurrentMutation("
         }
       ],
       "actorBoundary": "Authenticated exact live session in its own tenant; native identity re-reads user/tenant/session/settings/assigned permissions, enforces stored and policy-shortened expiry, account activity, mandatory PIN reset and required MFA, with listed recovery exceptions. Requires roles:write; all target/query rows are constrained to the session tenant, without platform cross-tenant override. Mutation additionally reauthorizes current Tenant, sorted actor/target User, exact Session and current role/permission locks in two Serializable passes, bounded exact-session MFA observation outside DB when currently required, and lifetime assertions after domain waits/effects/final callback; forced-PIN recovery is limited to self PIN.",
@@ -1704,11 +1782,13 @@
         },
         {
           "path": "apps/api-v2/src/operations/routes.ts",
-          "line": 85
+          "line": 85,
+          "sourceLine": "      operationId: 'listScheduleSummaries',"
         },
         {
           "path": "apps/api-v2/src/operations/operations.service.ts",
-          "line": 50
+          "line": 153,
+          "sourceLine": "  async listSchedules("
         }
       ],
       "actorBoundary": "Authenticated exact live session in its own tenant; native identity re-reads user/tenant/session/settings/assigned permissions, enforces stored and policy-shortened expiry, account activity, mandatory PIN reset and required MFA, with listed recovery exceptions. Requires schedules:read; all target/query rows are constrained to the session tenant, without platform cross-tenant override. Any STAFF role/legacy/name identity recognized by isStaffIdentity is self/publication restricted even when other role labels coexist.",
@@ -1765,11 +1845,13 @@
         },
         {
           "path": "apps/api-v2/src/operations/routes.ts",
-          "line": 121
+          "line": 121,
+          "sourceLine": "      operationId: 'listShiftSummaries',"
         },
         {
           "path": "apps/api-v2/src/operations/operations.service.ts",
-          "line": 112
+          "line": 218,
+          "sourceLine": "  async listShifts("
         }
       ],
       "actorBoundary": "Authenticated exact live session in its own tenant; native identity re-reads user/tenant/session/settings/assigned permissions, enforces stored and policy-shortened expiry, account activity, mandatory PIN reset and required MFA, with listed recovery exceptions. Requires shifts:read; all target/query rows are constrained to the session tenant, without platform cross-tenant override. Any STAFF role/legacy/name identity recognized by isStaffIdentity is self/publication restricted even when other role labels coexist.",
@@ -1826,11 +1908,13 @@
         },
         {
           "path": "apps/api-v2/src/operations/routes.ts",
-          "line": 103
+          "line": 103,
+          "sourceLine": "      operationId: 'listStaffRoster',"
         },
         {
           "path": "apps/api-v2/src/operations/operations.service.ts",
-          "line": 178
+          "line": 287,
+          "sourceLine": "  async staffRoster(identity: SessionIdentity, query: StaffRosterQuery): Promise<StaffRosterResponse> {"
         }
       ],
       "actorBoundary": "Authenticated exact live session in its own tenant; native identity re-reads user/tenant/session/settings/assigned permissions, enforces stored and policy-shortened expiry, account activity, mandatory PIN reset and required MFA, with listed recovery exceptions. Requires shifts:read; all target/query rows are constrained to the session tenant, without platform cross-tenant override. Any STAFF role/legacy/name identity recognized by isStaffIdentity is self/publication restricted even when other role labels coexist.",
@@ -1886,11 +1970,13 @@
         },
         {
           "path": "apps/api-v2/src/operations/routes.ts",
-          "line": 139
+          "line": 139,
+          "sourceLine": "      operationId: 'listLunchBreakRows',"
         },
         {
           "path": "apps/api-v2/src/operations/lunch-breaks.service.ts",
-          "line": 215
+          "line": 226,
+          "sourceLine": "  async list(identity: SessionIdentity, query: LunchBreakListQuery): Promise<LunchBreakListResponse> {"
         }
       ],
       "actorBoundary": "Authenticated exact live session in its own tenant; native identity re-reads user/tenant/session/settings/assigned permissions, enforces stored and policy-shortened expiry, account activity, mandatory PIN reset and required MFA, with listed recovery exceptions. Requires lunch_breaks:read; all target/query rows are constrained to the session tenant, without platform cross-tenant override. Any STAFF role/legacy/name identity recognized by isStaffIdentity is self/publication restricted even when other role labels coexist.",
@@ -1946,11 +2032,13 @@
         },
         {
           "path": "apps/api-v2/src/operations/routes.ts",
-          "line": 157
+          "line": 157,
+          "sourceLine": "      operationId: 'getLunchBreakPolicy',"
         },
         {
           "path": "apps/api-v2/src/operations/lunch-breaks.service.ts",
-          "line": 268
+          "line": 281,
+          "sourceLine": "  async policy(identity: SessionIdentity): Promise<LunchBreakPolicy> {"
         }
       ],
       "actorBoundary": "Authenticated exact live session in its own tenant; native identity re-reads user/tenant/session/settings/assigned permissions, enforces stored and policy-shortened expiry, account activity, mandatory PIN reset and required MFA, with listed recovery exceptions. Requires lunch_breaks:read; all target/query rows are constrained to the session tenant, without platform cross-tenant override.",
@@ -2005,11 +2093,13 @@
         },
         {
           "path": "apps/api-v2/src/operations/routes.ts",
-          "line": 174
+          "line": 174,
+          "sourceLine": "      operationId: 'updateLunchBreakPolicy',"
         },
         {
           "path": "apps/api-v2/src/operations/lunch-breaks.service.ts",
-          "line": 275
+          "line": 290,
+          "sourceLine": "  async replacePolicy("
         }
       ],
       "actorBoundary": "Authenticated exact live session in its own tenant; native identity re-reads user/tenant/session/settings/assigned permissions, enforces stored and policy-shortened expiry, account activity, mandatory PIN reset and required MFA, with listed recovery exceptions. Requires lunch_breaks:write; all target/query rows are constrained to the session tenant, without platform cross-tenant override.",
@@ -2065,11 +2155,13 @@
         },
         {
           "path": "apps/api-v2/src/operations/routes.ts",
-          "line": 193
+          "line": 193,
+          "sourceLine": "      operationId: 'generateLunchBreakPlan',"
         },
         {
           "path": "apps/api-v2/src/operations/lunch-breaks.service.ts",
-          "line": 384
+          "line": 405,
+          "sourceLine": "  async generate("
         }
       ],
       "actorBoundary": "Authenticated exact live session in its own tenant; native identity re-reads user/tenant/session/settings/assigned permissions, enforces stored and policy-shortened expiry, account activity, mandatory PIN reset and required MFA, with listed recovery exceptions. Requires lunch_breaks:write; all target/query rows are constrained to the session tenant, without platform cross-tenant override.",
@@ -2127,11 +2219,13 @@
         },
         {
           "path": "apps/api-v2/src/operations/routes.ts",
-          "line": 212
+          "line": 212,
+          "sourceLine": "      operationId: 'importLunchBreakShifts',"
         },
         {
           "path": "apps/api-v2/src/operations/lunch-breaks.service.ts",
-          "line": 837
+          "line": 872,
+          "sourceLine": "  async setupShifts("
         }
       ],
       "actorBoundary": "Authenticated exact live session in its own tenant; native identity re-reads user/tenant/session/settings/assigned permissions, enforces stored and policy-shortened expiry, account activity, mandatory PIN reset and required MFA, with listed recovery exceptions. Requires lunch_breaks:write, shifts:write; all target/query rows are constrained to the session tenant, without platform cross-tenant override.",
@@ -2190,11 +2284,13 @@
         },
         {
           "path": "apps/api-v2/src/operations/routes.ts",
-          "line": 234
+          "line": 234,
+          "sourceLine": "      operationId: 'updateShiftBreakPlan',"
         },
         {
           "path": "apps/api-v2/src/operations/lunch-breaks.service.ts",
-          "line": 295
+          "line": 312,
+          "sourceLine": "  async replaceShiftBreaks("
         }
       ],
       "actorBoundary": "Authenticated exact live session in its own tenant; native identity re-reads user/tenant/session/settings/assigned permissions, enforces stored and policy-shortened expiry, account activity, mandatory PIN reset and required MFA, with listed recovery exceptions. Requires lunch_breaks:write; all target/query rows are constrained to the session tenant, without platform cross-tenant override.",
@@ -2252,11 +2348,13 @@
         },
         {
           "path": "apps/api-v2/src/time/routes.ts",
-          "line": 75
+          "line": 75,
+          "sourceLine": "      operationId: 'listTimeCards',"
         },
         {
           "path": "apps/api-v2/src/time/time-cards.service.ts",
-          "line": 143
+          "line": 186,
+          "sourceLine": "  async list(identity: SessionIdentity, query: TimeCardListQuery): Promise<TimeCardListResponse> {"
         }
       ],
       "actorBoundary": "Authenticated exact live session in its own tenant; native identity re-reads user/tenant/session/settings/assigned permissions, enforces stored and policy-shortened expiry, account activity, mandatory PIN reset and required MFA, with listed recovery exceptions. Requires time_cards:read; all target/query rows are constrained to the session tenant, without platform cross-tenant override. Team visibility requires BOTH users:read and shifts:read; otherwise exact self only, regardless of legacy role title.",
@@ -2312,11 +2410,13 @@
         },
         {
           "path": "apps/api-v2/src/time/routes.ts",
-          "line": 93
+          "line": 93,
+          "sourceLine": "      operationId: 'getActiveTimeCard',"
         },
         {
           "path": "apps/api-v2/src/time/time-cards.service.ts",
-          "line": 207
+          "line": 254,
+          "sourceLine": "  async active(identity: SessionIdentity, query: TimeCardActiveQuery): Promise<TimeCardActiveResponse> {"
         }
       ],
       "actorBoundary": "Authenticated exact live session in its own tenant; native identity re-reads user/tenant/session/settings/assigned permissions, enforces stored and policy-shortened expiry, account activity, mandatory PIN reset and required MFA, with listed recovery exceptions. time_cards:read; self by default. Team target requires BOTH users:read and shifts:read, regardless of legacy role name. Active recovery lookup deliberately has no paid feature entitlement requirement.",
@@ -2371,11 +2471,13 @@
         },
         {
           "path": "apps/api-v2/src/time/routes.ts",
-          "line": 134
+          "line": 134,
+          "sourceLine": "      operationId: 'getTimeCard',"
         },
         {
           "path": "apps/api-v2/src/time/time-cards.service.ts",
-          "line": 229
+          "line": 279,
+          "sourceLine": "  async get(identity: SessionIdentity, timeCardPublicId: string): Promise<TimeCardRecord> {"
         }
       ],
       "actorBoundary": "Authenticated exact live session in its own tenant; native identity re-reads user/tenant/session/settings/assigned permissions, enforces stored and policy-shortened expiry, account activity, mandatory PIN reset and required MFA, with listed recovery exceptions. Requires time_cards:read; all target/query rows are constrained to the session tenant, without platform cross-tenant override. Team visibility requires BOTH users:read and shifts:read; otherwise exact self only, regardless of legacy role title.",
@@ -2430,11 +2532,13 @@
         },
         {
           "path": "apps/api-v2/src/time/routes.ts",
-          "line": 111
+          "line": 111,
+          "sourceLine": "      operationId: 'clockIn',"
         },
         {
           "path": "apps/api-v2/src/time/time-cards.service.ts",
-          "line": 237
+          "line": 291,
+          "sourceLine": "  async clockIn("
         }
       ],
       "actorBoundary": "Authenticated exact live session in its own tenant; native identity re-reads user/tenant/session/settings/assigned permissions, enforces stored and policy-shortened expiry, account activity, mandatory PIN reset and required MFA, with listed recovery exceptions. Requires time_cards:write; all target/query rows are constrained to the session tenant, without platform cross-tenant override. Team target/manual time requires BOTH users:read and shifts:read; otherwise exact self uses server time. Target must be active MANAGER/STAFF.",
@@ -2492,11 +2596,13 @@
         },
         {
           "path": "apps/api-v2/src/time/routes.ts",
-          "line": 155
+          "line": 155,
+          "sourceLine": "      operationId: 'clockOut',"
         },
         {
           "path": "apps/api-v2/src/time/time-cards.service.ts",
-          "line": 370
+          "line": 456,
+          "sourceLine": "  async clockOut("
         }
       ],
       "actorBoundary": "Authenticated exact live session in its own tenant; native identity re-reads user/tenant/session/settings/assigned permissions, enforces stored and policy-shortened expiry, account activity, mandatory PIN reset and required MFA, with listed recovery exceptions. time_cards:write; self or team target only when BOTH users:read and shifts:read held. Self actors cannot supply manual clockOutAt. Closing an existing open card deliberately remains available after subscription expiry; tenant/session authentication still applies.",
@@ -2552,11 +2658,13 @@
         },
         {
           "path": "apps/api-v2/src/time/routes.ts",
-          "line": 178
+          "line": 178,
+          "sourceLine": "      operationId: 'correctTimeCard',"
         },
         {
           "path": "apps/api-v2/src/time/time-cards.service.ts",
-          "line": 439
+          "line": 534,
+          "sourceLine": "  async correct("
         }
       ],
       "actorBoundary": "Authenticated exact live session in its own tenant; native identity re-reads user/tenant/session/settings/assigned permissions, enforces stored and policy-shortened expiry, account activity, mandatory PIN reset and required MFA, with listed recovery exceptions. time_cards:write plus BOTH users:read and shifts:read. This is team correction, never staff self correction; same-tenant card only and paid time_cards read entitlement checked.",
@@ -2612,11 +2720,12 @@
         },
         {
           "path": "apps/api-v2/src/payroll/routes.ts",
-          "line": 95
+          "line": 95,
+          "sourceLine": "      operationId: 'getPayrollExportEntitlement',"
         },
         {
           "path": "apps/api-v2/src/payroll/payroll.service.ts",
-          "line": 535,
+          "line": 558,
           "sourceLine": "  async exportEntitlement(identity: SessionIdentity) {"
         }
       ],
@@ -2672,7 +2781,8 @@
         },
         {
           "path": "apps/api-v2/src/payroll/routes.ts",
-          "line": 112
+          "line": 112,
+          "sourceLine": "      operationId: 'listPayrollPolicies',"
         },
         {
           "path": "apps/api-v2/src/payroll/payroll.service.ts",
@@ -2708,6 +2818,71 @@
             "path": "tests/integration/api-v2-payroll-native.test.mjs",
             "title": "native API v2 Payroll uses public IDs, tenant RLS, immutable evidence, exact-once export, and reconciliation"
           }
+        },
+        {
+          "id": "listPayrollPolicies.policy-history-empty-pages",
+          "contract": "Qualify the applicable policy-history-empty-pages cases for GET /v2/payroll/policies on one exact admitted candidate. Independently retain the specified ingress, actor, persisted-state and terminal evidence for every relevant subcase; a controlled source fixture does not satisfy runtime acceptance.",
+          "evidenceKind": "native-api",
+          "subcases": [
+            "Both owners: complete multi-page immutable policy inventory, latest=max version, empty list and null latest; own-tenant only; historical inactive creator remains readable.",
+            "Native version/publicUUID keyset and public creator refs; retained private ID cursor/serialization stays its existing contract, not copied into native output. No policy/audit/wallet writes or role seeding."
+          ],
+          "requiredIndependentRuntimeEvidence": [
+            "Authenticated actual /v2/payroll/policies and /v2/payroll/policy response plus independent PostgreSQL policy inventory; separate retained-controller route proof when that deployment is selected."
+          ],
+          "extendsScenarios": [
+            "listPayrollPolicies.success-readback",
+            "listPayrollPolicies.refusal-preserves-state"
+          ]
+        },
+        {
+          "id": "listPayrollPolicies.policy-writer-first-current-authority",
+          "contract": "Qualify the applicable policy-writer-first-current-authority cases for GET /v2/payroll/policies on one exact admitted candidate. Independently retain the specified ingress, actor, persisted-state and terminal evidence for every relevant subcase; a controlled source fixture does not satisfy runtime acceptance.",
+          "evidenceKind": "security",
+          "subcases": [
+            "For list/latest on native and retained: commit exact Session revoke/expiry/owner loss, assigned grant/role change, account/PIN reset, workspace block or policy shortening after valid admission, then require denial without populated disclosure.",
+            "Maintain valid payroll:read positive control; no historical creator reauthorization and no fresh billing entitlement requirement."
+          ],
+          "requiredIndependentRuntimeEvidence": [
+            "Deterministic real two-connection barrier establishes commit-before-owner-current-lock; actual ingress denial and unchanged domain records; receipt authenticates candidate/source and exact requester Session."
+          ],
+          "extendsScenarios": [
+            "listPayrollPolicies.success-readback",
+            "listPayrollPolicies.refusal-preserves-state"
+          ]
+        },
+        {
+          "id": "listPayrollPolicies.policy-finite-read-lifetime",
+          "contract": "Qualify the applicable policy-finite-read-lifetime cases for GET /v2/payroll/policies on one exact admitted candidate. Independently retain the specified ingress, actor, persisted-state and terminal evidence for every relevant subcase; a controlled source fixture does not satisfy runtime acceptance.",
+          "evidenceKind": "security",
+          "subcases": [
+            "Stored Session, effective timeout, MFA wall and monotonic proof remain finite across row reads and native creator lookup, zero-row/final callback; each refusal paired with near-deadline populated control.",
+            "One trusted outside-transaction MFA proof reused for bounded serialization retry, no request-marker trust or observer refresh; initial actor/scalars cannot change during await."
+          ],
+          "requiredIndependentRuntimeEvidence": [
+            "Real transaction/query wait and controlled admitted MFA adapter; distinguish synthetic monotonic clock control from deployment real-clock evidence. Verify bounded retry and original proof identity."
+          ],
+          "extendsScenarios": [
+            "listPayrollPolicies.success-readback",
+            "listPayrollPolicies.refusal-preserves-state"
+          ]
+        },
+        {
+          "id": "listPayrollPolicies.payroll-query-and-integrity-exceptions",
+          "contract": "Qualify the applicable payroll-query-and-integrity-exceptions cases for GET /v2/payroll/policies on one exact admitted candidate. Independently retain the specified ingress, actor, persisted-state and terminal evidence for every relevant subcase; a controlled source fixture does not satisfy runtime acceptance.",
+          "evidenceKind": "security",
+          "subcases": [
+            "Native bad limits/cursor/date reject422; retained BadRequest400 remains its contract. Missing/foreign period404; missing native creator/period refs or corrupt immutable evidence unavailable/fail closed, never storage-ID fallback.",
+            "Zero rows still require current authority. Retained raw private cursor foreign-scope behavior requires actual DB witness; modeled cursor support is not an independent RLS/keyset proof."
+          ],
+          "requiredIndependentRuntimeEvidence": [
+            "No mutation/debit/audit changes; each error from actual route with correct native/retained shape. Existing shared domain validation/integrity tests stay separate from new authority proof."
+          ],
+          "extendsScenarios": [
+            "listPayrollPolicies.success-readback",
+            "listPayrollPolicies.refusal-preserves-state"
+          ],
+          "scopeNote": "Exercise invalid query parameters only on endpoints that accept them; latest-policy has no pagination query. Native public and retained private response/error contracts remain distinct."
         }
       ],
       "workflowIds": [
@@ -2730,11 +2905,12 @@
         },
         {
           "path": "apps/api-v2/src/payroll/routes.ts",
-          "line": 130
+          "line": 130,
+          "sourceLine": "      operationId: 'getPayrollPolicy',"
         },
         {
           "path": "apps/api-v2/src/payroll/payroll.service.ts",
-          "line": 200,
+          "line": 204,
           "sourceLine": "  async latestPolicy(identity: SessionIdentity) {"
         }
       ],
@@ -2766,6 +2942,71 @@
             "path": "tests/integration/api-v2-payroll-native.test.mjs",
             "title": "native API v2 Payroll uses public IDs, tenant RLS, immutable evidence, exact-once export, and reconciliation"
           }
+        },
+        {
+          "id": "getPayrollPolicy.policy-history-empty-pages",
+          "contract": "Qualify the applicable policy-history-empty-pages cases for GET /v2/payroll/policy on one exact admitted candidate. Independently retain the specified ingress, actor, persisted-state and terminal evidence for every relevant subcase; a controlled source fixture does not satisfy runtime acceptance.",
+          "evidenceKind": "native-api",
+          "subcases": [
+            "Both owners: complete multi-page immutable policy inventory, latest=max version, empty list and null latest; own-tenant only; historical inactive creator remains readable.",
+            "Native version/publicUUID keyset and public creator refs; retained private ID cursor/serialization stays its existing contract, not copied into native output. No policy/audit/wallet writes or role seeding."
+          ],
+          "requiredIndependentRuntimeEvidence": [
+            "Authenticated actual /v2/payroll/policies and /v2/payroll/policy response plus independent PostgreSQL policy inventory; separate retained-controller route proof when that deployment is selected."
+          ],
+          "extendsScenarios": [
+            "getPayrollPolicy.success-readback",
+            "getPayrollPolicy.refusal-preserves-state"
+          ]
+        },
+        {
+          "id": "getPayrollPolicy.policy-writer-first-current-authority",
+          "contract": "Qualify the applicable policy-writer-first-current-authority cases for GET /v2/payroll/policy on one exact admitted candidate. Independently retain the specified ingress, actor, persisted-state and terminal evidence for every relevant subcase; a controlled source fixture does not satisfy runtime acceptance.",
+          "evidenceKind": "security",
+          "subcases": [
+            "For list/latest on native and retained: commit exact Session revoke/expiry/owner loss, assigned grant/role change, account/PIN reset, workspace block or policy shortening after valid admission, then require denial without populated disclosure.",
+            "Maintain valid payroll:read positive control; no historical creator reauthorization and no fresh billing entitlement requirement."
+          ],
+          "requiredIndependentRuntimeEvidence": [
+            "Deterministic real two-connection barrier establishes commit-before-owner-current-lock; actual ingress denial and unchanged domain records; receipt authenticates candidate/source and exact requester Session."
+          ],
+          "extendsScenarios": [
+            "getPayrollPolicy.success-readback",
+            "getPayrollPolicy.refusal-preserves-state"
+          ]
+        },
+        {
+          "id": "getPayrollPolicy.policy-finite-read-lifetime",
+          "contract": "Qualify the applicable policy-finite-read-lifetime cases for GET /v2/payroll/policy on one exact admitted candidate. Independently retain the specified ingress, actor, persisted-state and terminal evidence for every relevant subcase; a controlled source fixture does not satisfy runtime acceptance.",
+          "evidenceKind": "security",
+          "subcases": [
+            "Stored Session, effective timeout, MFA wall and monotonic proof remain finite across row reads and native creator lookup, zero-row/final callback; each refusal paired with near-deadline populated control.",
+            "One trusted outside-transaction MFA proof reused for bounded serialization retry, no request-marker trust or observer refresh; initial actor/scalars cannot change during await."
+          ],
+          "requiredIndependentRuntimeEvidence": [
+            "Real transaction/query wait and controlled admitted MFA adapter; distinguish synthetic monotonic clock control from deployment real-clock evidence. Verify bounded retry and original proof identity."
+          ],
+          "extendsScenarios": [
+            "getPayrollPolicy.success-readback",
+            "getPayrollPolicy.refusal-preserves-state"
+          ]
+        },
+        {
+          "id": "getPayrollPolicy.payroll-query-and-integrity-exceptions",
+          "contract": "Qualify the applicable payroll-query-and-integrity-exceptions cases for GET /v2/payroll/policy on one exact admitted candidate. Independently retain the specified ingress, actor, persisted-state and terminal evidence for every relevant subcase; a controlled source fixture does not satisfy runtime acceptance.",
+          "evidenceKind": "security",
+          "subcases": [
+            "Native bad limits/cursor/date reject422; retained BadRequest400 remains its contract. Missing/foreign period404; missing native creator/period refs or corrupt immutable evidence unavailable/fail closed, never storage-ID fallback.",
+            "Zero rows still require current authority. Retained raw private cursor foreign-scope behavior requires actual DB witness; modeled cursor support is not an independent RLS/keyset proof."
+          ],
+          "requiredIndependentRuntimeEvidence": [
+            "No mutation/debit/audit changes; each error from actual route with correct native/retained shape. Existing shared domain validation/integrity tests stay separate from new authority proof."
+          ],
+          "extendsScenarios": [
+            "getPayrollPolicy.success-readback",
+            "getPayrollPolicy.refusal-preserves-state"
+          ],
+          "scopeNote": "Exercise invalid query parameters only on endpoints that accept them; latest-policy has no pagination query. Native public and retained private response/error contracts remain distinct."
         }
       ],
       "workflowIds": [
@@ -2789,11 +3030,12 @@
         },
         {
           "path": "apps/api-v2/src/payroll/routes.ts",
-          "line": 147
+          "line": 147,
+          "sourceLine": "      operationId: 'createPayrollPolicy',"
         },
         {
           "path": "apps/api-v2/src/payroll/payroll.service.ts",
-          "line": 212,
+          "line": 220,
           "sourceLine": "  async createPolicy(identity: SessionIdentity, body: PayrollPolicyRequest, idempotencyKeyRaw: string | undefined) {"
         }
       ],
@@ -2853,11 +3095,12 @@
         },
         {
           "path": "apps/api-v2/src/payroll/routes.ts",
-          "line": 166
+          "line": 166,
+          "sourceLine": "      operationId: 'listPayrollPeriods',"
         },
         {
           "path": "apps/api-v2/src/payroll/payroll.service.ts",
-          "line": 285,
+          "line": 293,
           "sourceLine": "  async listPeriods(identity: SessionIdentity, query: PayrollPeriodListQuery) {"
         }
       ],
@@ -2880,6 +3123,71 @@
           "id": "listPayrollPeriods.refusal-preserves-state",
           "contract": "Invalid bound/cursor/date422, payroll:read/session denial and foreign exclusion. No period creation or adoption occurs from listing.",
           "evidenceKind": "security"
+        },
+        {
+          "id": "listPayrollPeriods.period-populated-history-pages-empty",
+          "contract": "Qualify the applicable period-populated-history-pages-empty cases for GET /v2/payroll/periods on one exact admitted candidate. Independently retain the specified ingress, actor, persisted-state and terminal evidence for every relevant subcase; a controlled source fixture does not satisfy runtime acceptance.",
+          "evidenceKind": "native-api",
+          "subcases": [
+            "List both pages with summaries/policy refs and empty own-tenant response. Detail OPEN assigned/unassigned CLOSED cards, current-revision approvals, second card page; locked entries, amendments and saved export, both line/card pages/reconciliation.",
+            "Historical inactive staff/approver and immutable evidence remain visible; adjustment period empty cards/lines still keeps source/decision refs. Native public refs and retained private refs differ intentionally; no adoption/lock/export/debit writes."
+          ],
+          "requiredIndependentRuntimeEvidence": [
+            "Actual authenticated period HTTP plus independent full period/card/approval/snapshot/export inventory and financial/audit before-after equality; no provider delivery inference from saved reconciliation data."
+          ],
+          "extendsScenarios": [
+            "listPayrollPeriods.success-readback",
+            "listPayrollPeriods.refusal-preserves-state"
+          ]
+        },
+        {
+          "id": "listPayrollPeriods.period-authority-after-writer",
+          "contract": "Qualify the applicable period-authority-after-writer cases for GET /v2/payroll/periods on one exact admitted candidate. Independently retain the specified ingress, actor, persisted-state and terminal evidence for every relevant subcase; a controlled source fixture does not satisfy runtime acceptance.",
+          "evidenceKind": "security",
+          "subcases": [
+            "For this list/detail endpoint on both native and retained owners, commit exact Session revocation, expiry, removal or owner loss, assigned grant/role changes, account/PIN reset, workspace blocking or policy shortening after valid admission. Require current requester refusal without stale populated disclosure; do not reauthorize historical subjects by their current employment."
+          ],
+          "requiredIndependentRuntimeEvidence": [
+            "Committed real actor policy writer before final actor locks; own tenant RLS denial/readback and no stale populated result."
+          ],
+          "extendsScenarios": [
+            "listPayrollPeriods.success-readback",
+            "listPayrollPeriods.refusal-preserves-state"
+          ]
+        },
+        {
+          "id": "listPayrollPeriods.period-nested-await-finite-proof",
+          "contract": "Qualify the applicable period-nested-await-finite-proof cases for GET /v2/payroll/periods on one exact admitted candidate. Independently retain the specified ingress, actor, persisted-state and terminal evidence for every relevant subcase; a controlled source fixture does not satisfy runtime acceptance.",
+          "evidenceKind": "security",
+          "subcases": [
+            "Expiry classes stored/policy/MFA-wall/MFA-monotonic at row and summary/receipt await, paired with viable populated controls.",
+            "Runtime refinements must reach helper-internal checks: period lookup, cards, approvals/publicUsers, summary raw SQL before count conversion, public policy/locked references, amendments/decisions, export batch/lines/content verification/reconciliation, empty/final branch. Preserve existing Promise.all scheduling; do not claim each internal gate independently witnessed by the source matrix.",
+            "Captured exact identity, query limit/cursors and normalized date remain immutable through first context wait; one finite outside proof and ordered fresh locks."
+          ],
+          "requiredIndependentRuntimeEvidence": [
+            "Named real SQL barriers and reached-check evidence without raw private data; source tests mainly row/summary/receipt gates, so complete nested runtime coverage remains pending."
+          ],
+          "extendsScenarios": [
+            "listPayrollPeriods.success-readback",
+            "listPayrollPeriods.refusal-preserves-state"
+          ]
+        },
+        {
+          "id": "listPayrollPeriods.payroll-query-and-integrity-exceptions",
+          "contract": "Qualify the applicable payroll-query-and-integrity-exceptions cases for GET /v2/payroll/periods on one exact admitted candidate. Independently retain the specified ingress, actor, persisted-state and terminal evidence for every relevant subcase; a controlled source fixture does not satisfy runtime acceptance.",
+          "evidenceKind": "security",
+          "subcases": [
+            "Native bad limits/cursor/date reject422; retained BadRequest400 remains its contract. Missing/foreign period404; missing native creator/period refs or corrupt immutable evidence unavailable/fail closed, never storage-ID fallback.",
+            "Zero rows still require current authority. Retained raw private cursor foreign-scope behavior requires actual DB witness; modeled cursor support is not an independent RLS/keyset proof."
+          ],
+          "requiredIndependentRuntimeEvidence": [
+            "No mutation/debit/audit changes; each error from actual route with correct native/retained shape. Existing shared domain validation/integrity tests stay separate from new authority proof."
+          ],
+          "extendsScenarios": [
+            "listPayrollPeriods.success-readback",
+            "listPayrollPeriods.refusal-preserves-state"
+          ],
+          "scopeNote": "Exercise invalid query parameters only on endpoints that accept them; latest-policy has no pagination query. Native public and retained private response/error contracts remain distinct."
         }
       ],
       "workflowIds": [
@@ -2905,11 +3213,12 @@
         },
         {
           "path": "apps/api-v2/src/payroll/routes.ts",
-          "line": 184
+          "line": 184,
+          "sourceLine": "      operationId: 'createPayrollPeriod',"
         },
         {
           "path": "apps/api-v2/src/payroll/payroll.service.ts",
-          "line": 321,
+          "line": 334,
           "sourceLine": "  async createPeriod(identity: SessionIdentity, body: PayrollPeriodCreateRequest, idempotencyKeyRaw: string | undefined) {"
         }
       ],
@@ -2971,11 +3280,12 @@
         },
         {
           "path": "apps/api-v2/src/payroll/routes.ts",
-          "line": 206
+          "line": 206,
+          "sourceLine": "      operationId: 'getPayrollPeriod',"
         },
         {
           "path": "apps/api-v2/src/payroll/payroll.service.ts",
-          "line": 404,
+          "line": 417,
           "sourceLine": "  async getPeriod(identity: SessionIdentity, publicPeriodId: string, query: PayrollPeriodDetailQuery) {"
         }
       ],
@@ -3007,6 +3317,71 @@
             "path": "tests/integration/api-v2-payroll-native.test.mjs",
             "title": "native API v2 Payroll uses public IDs, tenant RLS, immutable evidence, exact-once export, and reconciliation"
           }
+        },
+        {
+          "id": "getPayrollPeriod.period-populated-history-pages-empty",
+          "contract": "Qualify the applicable period-populated-history-pages-empty cases for GET /v2/payroll/periods/:periodId on one exact admitted candidate. Independently retain the specified ingress, actor, persisted-state and terminal evidence for every relevant subcase; a controlled source fixture does not satisfy runtime acceptance.",
+          "evidenceKind": "native-api",
+          "subcases": [
+            "List both pages with summaries/policy refs and empty own-tenant response. Detail OPEN assigned/unassigned CLOSED cards, current-revision approvals, second card page; locked entries, amendments and saved export, both line/card pages/reconciliation.",
+            "Historical inactive staff/approver and immutable evidence remain visible; adjustment period empty cards/lines still keeps source/decision refs. Native public refs and retained private refs differ intentionally; no adoption/lock/export/debit writes."
+          ],
+          "requiredIndependentRuntimeEvidence": [
+            "Actual authenticated period HTTP plus independent full period/card/approval/snapshot/export inventory and financial/audit before-after equality; no provider delivery inference from saved reconciliation data."
+          ],
+          "extendsScenarios": [
+            "getPayrollPeriod.success-readback",
+            "getPayrollPeriod.refusal-preserves-state"
+          ]
+        },
+        {
+          "id": "getPayrollPeriod.period-authority-after-writer",
+          "contract": "Qualify the applicable period-authority-after-writer cases for GET /v2/payroll/periods/:periodId on one exact admitted candidate. Independently retain the specified ingress, actor, persisted-state and terminal evidence for every relevant subcase; a controlled source fixture does not satisfy runtime acceptance.",
+          "evidenceKind": "security",
+          "subcases": [
+            "For this list/detail endpoint on both native and retained owners, commit exact Session revocation, expiry, removal or owner loss, assigned grant/role changes, account/PIN reset, workspace blocking or policy shortening after valid admission. Require current requester refusal without stale populated disclosure; do not reauthorize historical subjects by their current employment."
+          ],
+          "requiredIndependentRuntimeEvidence": [
+            "Committed real actor policy writer before final actor locks; own tenant RLS denial/readback and no stale populated result."
+          ],
+          "extendsScenarios": [
+            "getPayrollPeriod.success-readback",
+            "getPayrollPeriod.refusal-preserves-state"
+          ]
+        },
+        {
+          "id": "getPayrollPeriod.period-nested-await-finite-proof",
+          "contract": "Qualify the applicable period-nested-await-finite-proof cases for GET /v2/payroll/periods/:periodId on one exact admitted candidate. Independently retain the specified ingress, actor, persisted-state and terminal evidence for every relevant subcase; a controlled source fixture does not satisfy runtime acceptance.",
+          "evidenceKind": "security",
+          "subcases": [
+            "Expiry classes stored/policy/MFA-wall/MFA-monotonic at row and summary/receipt await, paired with viable populated controls.",
+            "Runtime refinements must reach helper-internal checks: period lookup, cards, approvals/publicUsers, summary raw SQL before count conversion, public policy/locked references, amendments/decisions, export batch/lines/content verification/reconciliation, empty/final branch. Preserve existing Promise.all scheduling; do not claim each internal gate independently witnessed by the source matrix.",
+            "Captured exact identity, query limit/cursors and normalized date remain immutable through first context wait; one finite outside proof and ordered fresh locks."
+          ],
+          "requiredIndependentRuntimeEvidence": [
+            "Named real SQL barriers and reached-check evidence without raw private data; source tests mainly row/summary/receipt gates, so complete nested runtime coverage remains pending."
+          ],
+          "extendsScenarios": [
+            "getPayrollPeriod.success-readback",
+            "getPayrollPeriod.refusal-preserves-state"
+          ]
+        },
+        {
+          "id": "getPayrollPeriod.payroll-query-and-integrity-exceptions",
+          "contract": "Qualify the applicable payroll-query-and-integrity-exceptions cases for GET /v2/payroll/periods/:periodId on one exact admitted candidate. Independently retain the specified ingress, actor, persisted-state and terminal evidence for every relevant subcase; a controlled source fixture does not satisfy runtime acceptance.",
+          "evidenceKind": "security",
+          "subcases": [
+            "Native bad limits/cursor/date reject422; retained BadRequest400 remains its contract. Missing/foreign period404; missing native creator/period refs or corrupt immutable evidence unavailable/fail closed, never storage-ID fallback.",
+            "Zero rows still require current authority. Retained raw private cursor foreign-scope behavior requires actual DB witness; modeled cursor support is not an independent RLS/keyset proof."
+          ],
+          "requiredIndependentRuntimeEvidence": [
+            "No mutation/debit/audit changes; each error from actual route with correct native/retained shape. Existing shared domain validation/integrity tests stay separate from new authority proof."
+          ],
+          "extendsScenarios": [
+            "getPayrollPeriod.success-readback",
+            "getPayrollPeriod.refusal-preserves-state"
+          ],
+          "scopeNote": "Exercise invalid query parameters only on endpoints that accept them; latest-policy has no pagination query. Native public and retained private response/error contracts remain distinct."
         }
       ],
       "workflowIds": [
@@ -3033,11 +3408,12 @@
         },
         {
           "path": "apps/api-v2/src/payroll/routes.ts",
-          "line": 228
+          "line": 228,
+          "sourceLine": "      operationId: 'adoptPayrollTimeCards',"
         },
         {
           "path": "apps/api-v2/src/payroll/payroll.service.ts",
-          "line": 1054,
+          "line": 1077,
           "sourceLine": "  async adoptCards("
         }
       ],
@@ -3099,11 +3475,12 @@
         },
         {
           "path": "apps/api-v2/src/payroll/routes.ts",
-          "line": 251
+          "line": 251,
+          "sourceLine": "      operationId: 'startPayrollReview',"
         },
         {
           "path": "apps/api-v2/src/payroll/payroll.service.ts",
-          "line": 993,
+          "line": 1016,
           "sourceLine": "  async startReview("
         }
       ],
@@ -3163,11 +3540,12 @@
         },
         {
           "path": "apps/api-v2/src/payroll/routes.ts",
-          "line": 274
+          "line": 274,
+          "sourceLine": "      operationId: 'decidePayrollEntries',"
         },
         {
           "path": "apps/api-v2/src/payroll/payroll.service.ts",
-          "line": 1169,
+          "line": 1192,
           "sourceLine": "  async decideCards("
         }
       ],
@@ -3228,11 +3606,12 @@
         },
         {
           "path": "apps/api-v2/src/payroll/routes.ts",
-          "line": 297
+          "line": 297,
+          "sourceLine": "      operationId: 'lockPayrollPeriod',"
         },
         {
           "path": "apps/api-v2/src/payroll/payroll.service.ts",
-          "line": 1304,
+          "line": 1327,
           "sourceLine": "  async lockPeriod("
         }
       ],
@@ -3293,11 +3672,12 @@
         },
         {
           "path": "apps/api-v2/src/payroll/routes.ts",
-          "line": 320
+          "line": 320,
+          "sourceLine": "      operationId: 'createPayrollAmendment',"
         },
         {
           "path": "apps/api-v2/src/payroll/payroll.service.ts",
-          "line": 1426,
+          "line": 1449,
           "sourceLine": "  async createAmendment("
         }
       ],
@@ -3357,11 +3737,12 @@
         },
         {
           "path": "apps/api-v2/src/payroll/routes.ts",
-          "line": 343
+          "line": 343,
+          "sourceLine": "      operationId: 'decidePayrollAmendment',"
         },
         {
           "path": "apps/api-v2/src/payroll/payroll.service.ts",
-          "line": 1532,
+          "line": 1555,
           "sourceLine": "  async decideAmendment("
         }
       ],
@@ -3422,11 +3803,12 @@
         },
         {
           "path": "apps/api-v2/src/payroll/routes.ts",
-          "line": 366
+          "line": 366,
+          "sourceLine": "      operationId: 'createPayrollExport',"
         },
         {
           "path": "apps/api-v2/src/payroll/payroll.service.ts",
-          "line": 560,
+          "line": 583,
           "sourceLine": "  async createExport("
         }
       ],
@@ -3521,11 +3903,12 @@
         },
         {
           "path": "apps/api-v2/src/payroll/routes.ts",
-          "line": 389
+          "line": 389,
+          "sourceLine": "      operationId: 'getPayrollExport',"
         },
         {
           "path": "apps/api-v2/src/payroll/payroll.service.ts",
-          "line": 522,
+          "line": 541,
           "sourceLine": "  async getExport(identity: SessionIdentity, publicExportId: string, query: { lineLimit?: string; lineCursor?: string }) {"
         }
       ],
@@ -3582,11 +3965,12 @@
         },
         {
           "path": "apps/api-v2/src/payroll/routes.ts",
-          "line": 408
+          "line": 408,
+          "sourceLine": "      operationId: 'downloadPayrollExport',"
         },
         {
           "path": "apps/api-v2/src/payroll/payroll.service.ts",
-          "line": 776,
+          "line": 799,
           "sourceLine": "  async downloadExport(identity: SessionIdentity, publicExportId: string): Promise<{ filename: string; content: Buffer }> {"
         }
       ],
@@ -3647,11 +4031,12 @@
         },
         {
           "path": "apps/api-v2/src/payroll/routes.ts",
-          "line": 434
+          "line": 434,
+          "sourceLine": "      operationId: 'reconcilePayrollExport',"
         },
         {
           "path": "apps/api-v2/src/payroll/payroll.service.ts",
-          "line": 828,
+          "line": 851,
           "sourceLine": "  async reconcileExport("
         }
       ],
@@ -3713,11 +4098,13 @@
         },
         {
           "path": "apps/api-v2/src/notifications/routes.ts",
-          "line": 32
+          "line": 32,
+          "sourceLine": "      operationId: 'listNotifications',"
         },
         {
           "path": "apps/api-v2/src/notifications/notifications.service.ts",
-          "line": 117
+          "line": 117,
+          "sourceLine": "  async list(identity: SessionIdentity, query: NotificationListQuery): Promise<NotificationListResponse> {"
         }
       ],
       "actorBoundary": "Authenticated exact live session in its own tenant; native identity re-reads user/tenant/session/settings/assigned permissions, enforces stored and policy-shortened expiry, account activity, mandatory PIN reset and required MFA, with listed recovery exceptions. Requires notifications:read; all target/query rows are constrained to the session tenant, without platform cross-tenant override.",
@@ -3781,11 +4168,13 @@
         },
         {
           "path": "apps/api-v2/src/notifications/routes.ts",
-          "line": 50
+          "line": 50,
+          "sourceLine": "      operationId: 'markNotificationRead',"
         },
         {
           "path": "apps/api-v2/src/notifications/notifications.service.ts",
-          "line": 162
+          "line": 162,
+          "sourceLine": "  async markRead(identity: SessionIdentity, ids: readonly string[]): Promise<NotificationReadResponse> {"
         }
       ],
       "actorBoundary": "Authenticated exact live session in its own tenant; native identity re-reads user/tenant/session/settings/assigned permissions, enforces stored and policy-shortened expiry, account activity, mandatory PIN reset and required MFA, with listed recovery exceptions. Requires notifications:write; all target/query rows are constrained to the session tenant, without platform cross-tenant override.",
@@ -3857,11 +4246,13 @@
         },
         {
           "path": "apps/api-v2/src/notifications/routes.ts",
-          "line": 69
+          "line": 69,
+          "sourceLine": "      operationId: 'markAllNotificationsRead',"
         },
         {
           "path": "apps/api-v2/src/notifications/notifications.service.ts",
-          "line": 181
+          "line": 181,
+          "sourceLine": "  async markAllRead(identity: SessionIdentity): Promise<NotificationReadAllResponse> {"
         }
       ],
       "actorBoundary": "Authenticated exact live session in its own tenant; native identity re-reads user/tenant/session/settings/assigned permissions, enforces stored and policy-shortened expiry, account activity, mandatory PIN reset and required MFA, with listed recovery exceptions. Requires notifications:write; all target/query rows are constrained to the session tenant, without platform cross-tenant override.",
@@ -3924,11 +4315,13 @@
         },
         {
           "path": "apps/api-v2/src/settings/routes.ts",
-          "line": 33
+          "line": 33,
+          "sourceLine": "      operationId: 'getWorkspaceSettings',"
         },
         {
           "path": "apps/api-v2/src/settings/settings.service.ts",
-          "line": 163
+          "line": 163,
+          "sourceLine": "  async get(identity: SessionIdentity): Promise<WorkspaceSettings> {"
         }
       ],
       "actorBoundary": "Authenticated exact live session in its own tenant; native identity re-reads user/tenant/session/settings/assigned permissions, enforces stored and policy-shortened expiry, account activity, mandatory PIN reset and required MFA, with listed recovery exceptions. Requires settings:read; all target/query rows are constrained to the session tenant, without platform cross-tenant override.",
@@ -3984,19 +4377,23 @@
         },
         {
           "path": "apps/api-v2/src/settings/routes.ts",
-          "line": 50
+          "line": 50,
+          "sourceLine": "      operationId: 'updateGeneralSettings',"
         },
         {
           "path": "apps/api-v2/src/settings/settings.service.ts",
-          "line": 167
+          "line": 167,
+          "sourceLine": "  async updateGeneral("
         },
         {
           "path": "apps/api-v2/src/settings/settings.service.ts",
-          "line": 258
+          "line": 258,
+          "sourceLine": "  private async authorizeWrite(transaction: TenantTransaction, identity: SessionIdentity): Promise<{"
         },
         {
           "path": "apps/api/src/settings/settings.controller.ts",
-          "line": 461
+          "line": 461,
+          "sourceLine": "    async updateGeneral(@Body() body: GeneralUpdateBody, @Req() req: any): Promise<NormalizedSettings> {"
         }
       ],
       "actorBoundary": "Authenticated exact live session in its own tenant; native identity re-reads user/tenant/session/settings/assigned permissions, enforces stored and policy-shortened expiry, account activity, mandatory PIN reset and required MFA, with listed recovery exceptions. Requires settings:write; all target/query rows are constrained to the session tenant, without platform cross-tenant override. Writer additionally rechecks current actor/exact Session/settings:write, tenant activity and effective expiry under retained locks in both passes; current forced PIN is denied and a canonical bounded MFA marker is always required after the outside-DB observation.",
@@ -4056,19 +4453,23 @@
         },
         {
           "path": "apps/api-v2/src/settings/routes.ts",
-          "line": 69
+          "line": 69,
+          "sourceLine": "      operationId: 'updateTeamSettings',"
         },
         {
           "path": "apps/api-v2/src/settings/settings.service.ts",
-          "line": 194
+          "line": 194,
+          "sourceLine": "  async updateTeam("
         },
         {
           "path": "apps/api-v2/src/settings/settings.service.ts",
-          "line": 258
+          "line": 258,
+          "sourceLine": "  private async authorizeWrite(transaction: TenantTransaction, identity: SessionIdentity): Promise<{"
         },
         {
           "path": "apps/api/src/settings/settings.controller.ts",
-          "line": 510
+          "line": 510,
+          "sourceLine": "    async updateTeam(@Body() body: TeamUpdateBody, @Req() req: any): Promise<NormalizedSettings> {"
         }
       ],
       "actorBoundary": "Authenticated exact live session in its own tenant; native identity re-reads user/tenant/session/settings/assigned permissions, enforces stored and policy-shortened expiry, account activity, mandatory PIN reset and required MFA, with listed recovery exceptions. Requires settings:write; all target/query rows are constrained to the session tenant, without platform cross-tenant override. Writer additionally rechecks current actor/exact Session/settings:write, tenant activity and effective expiry under retained locks in both passes; current forced PIN is denied and a canonical bounded MFA marker is always required after the outside-DB observation.",
@@ -4128,19 +4529,23 @@
         },
         {
           "path": "apps/api-v2/src/settings/routes.ts",
-          "line": 88
+          "line": 88,
+          "sourceLine": "      operationId: 'updateSecuritySettings',"
         },
         {
           "path": "apps/api-v2/src/settings/settings.service.ts",
-          "line": 212
+          "line": 212,
+          "sourceLine": "  async updateSecurity("
         },
         {
           "path": "apps/api-v2/src/settings/settings.service.ts",
-          "line": 258
+          "line": 258,
+          "sourceLine": "  private async authorizeWrite(transaction: TenantTransaction, identity: SessionIdentity): Promise<{"
         },
         {
           "path": "apps/api/src/settings/settings.controller.ts",
-          "line": 538
+          "line": 538,
+          "sourceLine": "    async updateSecurity(@Body() body: SecurityUpdateBody, @Req() req: any): Promise<NormalizedSettings> {"
         }
       ],
       "actorBoundary": "Authenticated exact live session in its own tenant; native identity re-reads user/tenant/session/settings/assigned permissions, enforces stored and policy-shortened expiry, account activity, mandatory PIN reset and required MFA, with listed recovery exceptions. Requires settings:write; all target/query rows are constrained to the session tenant, without platform cross-tenant override. Writer additionally rechecks current actor/exact Session/settings:write, tenant activity and effective expiry under retained locks in both passes; current forced PIN is denied and a canonical bounded MFA marker is always required after the outside-DB observation.",
@@ -4202,7 +4607,8 @@
         },
         {
           "path": "apps/api/src/admin/account-deletion-receipt.controller.ts",
-          "line": 21
+          "line": 21,
+          "sourceLine": "  async prepare(@Req() request: any, @Body() body: { confirmation?: unknown }) {"
         }
       ],
       "actorBoundary": "Authenticated own-tenant tenant_account:lifecycle; unsafe-request origin/CSRF and session identity also enforced by API-v2.",
@@ -4266,7 +4672,8 @@
         },
         {
           "path": "apps/api/src/admin/account-deletion-receipt.controller.ts",
-          "line": 42
+          "line": 42,
+          "sourceLine": "  async receipt(@Body() body: { token?: unknown }) {"
         }
       ],
       "actorBoundary": "Public capability exception usable after all sessions revoked; valid unexpired token, no session required.",
@@ -5329,7 +5736,7 @@
         },
         {
           "path": "apps/api/src/auth/auth.service.ts",
-          "line": 2133,
+          "line": 2136,
           "sourceLine": "    async refreshAccessToken(refreshTokenRaw: unknown) {"
         }
       ],
@@ -5426,7 +5833,7 @@
         },
         {
           "path": "apps/api/src/auth/auth.service.ts",
-          "line": 2548,
+          "line": 2551,
           "sourceLine": "    async getMfaEnrollmentState("
         }
       ],
@@ -5517,20 +5924,23 @@
         },
         {
           "path": "apps/api/src/auth/auth.service.ts",
-          "line": 2666,
+          "line": 2669,
           "sourceLine": "    async beginMfaEnrollment("
         },
         {
           "path": "packages/db/prisma/schema.prisma",
-          "line": 1
+          "line": 1,
+          "sourceLine": "// This is your Prisma schema file,"
         },
         {
           "path": "packages/db/prisma/migrations/20261004_durable_mfa_enrollment.sql",
-          "line": 1
+          "line": 1,
+          "sourceLine": "-- Pending enrollment belongs to the exact Session, not a Redis key. This is"
         },
         {
           "path": "docs/runbooks/mfa-durable-enrollment-rollout.md",
-          "line": 1
+          "line": 1,
+          "sourceLine": "# Durable MFA enrollment rollout and qualification"
         }
       ],
       "actorBoundary": "Authenticated self enrollment alias+auth throttle; live exact session/no forced PIN reset; existing verified MFA not required.",
@@ -5668,20 +6078,23 @@
         },
         {
           "path": "apps/api/src/auth/auth.service.ts",
-          "line": 2705,
+          "line": 2708,
           "sourceLine": "    async confirmMfaEnrollment("
         },
         {
           "path": "packages/db/prisma/schema.prisma",
-          "line": 1
+          "line": 1,
+          "sourceLine": "// This is your Prisma schema file,"
         },
         {
           "path": "packages/db/prisma/migrations/20261004_durable_mfa_enrollment.sql",
-          "line": 1
+          "line": 1,
+          "sourceLine": "-- Pending enrollment belongs to the exact Session, not a Redis key. This is"
         },
         {
           "path": "docs/runbooks/mfa-durable-enrollment-rollout.md",
-          "line": 1
+          "line": 1,
+          "sourceLine": "# Durable MFA enrollment rollout and qualification"
         }
       ],
       "actorBoundary": "Authenticated self confirmation alias, pending secret/current TOTP and exact live session; unverified recovery session allowed.",
@@ -5861,7 +6274,7 @@
         },
         {
           "path": "apps/api/src/auth/auth.service.ts",
-          "line": 2815,
+          "line": 2818,
           "sourceLine": "    async disableMfa("
         }
       ],
@@ -5965,7 +6378,7 @@
         },
         {
           "path": "apps/api/src/auth/auth.service.ts",
-          "line": 2904,
+          "line": 2907,
           "sourceLine": "    async validateMfa("
         }
       ],
@@ -6052,7 +6465,7 @@
         },
         {
           "path": "apps/api/src/auth/auth.service.ts",
-          "line": 3061,
+          "line": 3064,
           "sourceLine": "    async revokeSessionByRefreshToken("
         }
       ],
@@ -6141,11 +6554,13 @@
         },
         {
           "path": "apps/api/src/billing/billing.controller.ts",
-          "line": 24
+          "line": 24,
+          "sourceLine": "    async features(@Req() req: any) {"
         },
         {
           "path": "apps/api/src/billing/feature-access.service.ts",
-          "line": 65
+          "line": 65,
+          "sourceLine": "    async getFeatureMatrix(tenantId: string): Promise<FeatureMatrix> {"
         }
       ],
       "actorBoundary": "Authenticated own-tenant billing:read; API-v2 identity plus retained JWT/RBAC.",
@@ -6210,11 +6625,13 @@
         },
         {
           "path": "apps/api/src/billing/billing.controller.ts",
-          "line": 31
+          "line": 31,
+          "sourceLine": "    async subscriptionRecoveryAction(@Req() req: any) {"
         },
         {
           "path": "apps/api/src/billing/stripe.service.ts",
-          "line": 690
+          "line": 690,
+          "sourceLine": "    async getTenantSubscriptionRecoveryAction(tenantId: string): Promise<TenantSubscriptionRecoveryAction> {"
         }
       ],
       "actorBoundary": "Authenticated own-tenant billing:read, no caller-supplied tenant.",
@@ -6278,11 +6695,13 @@
         },
         {
           "path": "apps/api/src/billing/billing.controller.ts",
-          "line": 40
+          "line": 40,
+          "sourceLine": "    async priceOptions() {"
         },
         {
           "path": "apps/api/src/billing/stripe.service.ts",
-          "line": 208
+          "line": 208,
+          "sourceLine": "    getPriceOptions() {"
         }
       ],
       "actorBoundary": "Authenticated billing:read; global configured catalog read.",
@@ -6339,11 +6758,13 @@
         },
         {
           "path": "apps/api/src/billing/billing.controller.ts",
-          "line": 46
+          "line": 46,
+          "sourceLine": "    async creditPackOptions() {"
         },
         {
           "path": "apps/api/src/billing/stripe-credit-purchase.service.ts",
-          "line": 123
+          "line": 123,
+          "sourceLine": "    async getOptions() {"
         }
       ],
       "actorBoundary": "Authenticated billing:read; pack catalog distinct from platform grants.",
@@ -6408,11 +6829,13 @@
         },
         {
           "path": "apps/api/src/billing/billing.controller.ts",
-          "line": 52
+          "line": 52,
+          "sourceLine": "    async purchaseCreditPack("
         },
         {
           "path": "apps/api/src/billing/stripe-credit-purchase.service.ts",
-          "line": 147
+          "line": 147,
+          "sourceLine": "    async createCheckoutSession("
         }
       ],
       "actorBoundary": "Authenticated own-tenant billing:write; eligible active billing tenant/customer and supported configured pack.",
@@ -6483,11 +6906,13 @@
         },
         {
           "path": "apps/api/src/billing/billing.controller.ts",
-          "line": 61
+          "line": 61,
+          "sourceLine": "    async subscribe("
         },
         {
           "path": "apps/api/src/billing/stripe.service.ts",
-          "line": 235
+          "line": 235,
+          "sourceLine": "    async createSubscriptionCheckoutSession("
         }
       ],
       "actorBoundary": "Authenticated own-tenant billing:write; identity email/name, allowed configured price, plan/capacity eligibility.",
@@ -6557,11 +6982,13 @@
         },
         {
           "path": "apps/api/src/billing/billing.controller.ts",
-          "line": 75
+          "line": 75,
+          "sourceLine": "    async portal(@Req() req: any) {"
         },
         {
           "path": "apps/api/src/billing/stripe.service.ts",
-          "line": 657
+          "line": 657,
+          "sourceLine": "    async createBillingPortalSession(tenantId: string): Promise<BillingPortalSessionResponse> {"
         }
       ],
       "actorBoundary": "Authenticated own-tenant billing:write; undeleted tenant bound customer/subscription.",
@@ -6625,11 +7052,13 @@
         },
         {
           "path": "apps/api/src/billing/billing.controller.ts",
-          "line": 81
+          "line": 81,
+          "sourceLine": "    async changePlan("
         },
         {
           "path": "apps/api/src/billing/stripe.service.ts",
-          "line": 719
+          "line": 719,
+          "sourceLine": "    async changeTenantSubscriptionPlan("
         }
       ],
       "actorBoundary": "Authenticated own-tenant billing:write; managed active/trialing subscription, active supported plan and capacity.",
@@ -6699,11 +7128,13 @@
         },
         {
           "path": "apps/api/src/billing/billing.controller.ts",
-          "line": 90
+          "line": 90,
+          "sourceLine": "    async resume(@Req() req: any) {"
         },
         {
           "path": "apps/api/src/billing/stripe.service.ts",
-          "line": 771
+          "line": 771,
+          "sourceLine": "    async resumeTenantSubscription(tenantId: string): Promise<TenantSubscriptionResumeResult> {"
         }
       ],
       "actorBoundary": "Authenticated own-tenant billing:write; exact managed paused subscription/current mapped plan and capacity.",
@@ -6773,11 +7204,13 @@
         },
         {
           "path": "apps/api/src/availability-imports/availability-imports.controller.ts",
-          "line": 47
+          "line": 47,
+          "sourceLine": "    async create("
         },
         {
           "path": "apps/api/src/availability-imports/availability-imports.service.ts",
-          "line": 267
+          "line": 272,
+          "sourceLine": "    async createImport(args: CreateImportArgs) {"
         }
       ],
       "actorBoundary": "Authenticated own-tenant users:write; active MANAGER/STAFF target, scheduling entitlement and required document employee/staff identity.",
@@ -6824,6 +7257,62 @@
             "path": "apps/api/src/availability-imports/availability-imports.controller.spec.ts",
             "title": "rejects uploads without an idempotency key before service execution"
           }
+        },
+        {
+          "id": "createAvailabilityImport.import-exact-current-actor-all-paths",
+          "contract": "Qualify the applicable import-exact-current-actor-all-paths cases for POST /v2/availability-imports/users/:userId on one exact admitted candidate. Independently retain the specified ingress, actor, persisted-state and terminal evidence for every relevant subcase; a controlled source fixture does not satisfy runtime acceptance.",
+          "evidenceKind": "native-api",
+          "subcases": [
+            "Retained create-new, matching replay, cancel and terminal-cancel status response: exact Session revoked/expired/removed/wrong owner, grant removed, role/assignment removed or PIN reset after admission refuses before effects/result disclosure.",
+            "Controller supplies actual session; Auth/Rbac imports and native /v2 retained bridge must be active. No new getImport after-wait revocation policy or background worker revocation policy is inferred."
+          ],
+          "requiredIndependentRuntimeEvidence": [
+            "Actual multipart/cancel /v2 route→retained owner, independent job/credit/audit state; direct Nest owner tests cannot satisfy native bridge ingress alone."
+          ],
+          "extendsScenarios": [
+            "createAvailabilityImport-native-success",
+            "createAvailabilityImport-denial",
+            "createAvailabilityImport-durable-readback"
+          ],
+          "scopeNote": "Create-new, matching replay and winner recovery apply to creation; cancel/refund and terminal-status recovery apply to cancellation. Evaluate applicable boundaries on each actual endpoint, preserving the separate GET-import and background-worker contracts."
+        },
+        {
+          "id": "createAvailabilityImport.import-finite-lifetime-recovery",
+          "contract": "Qualify the applicable import-finite-lifetime-recovery cases for POST /v2/availability-imports/users/:userId on one exact admitted candidate. Independently retain the specified ingress, actor, persisted-state and terminal evidence for every relevant subcase; a controlled source fixture does not satisfy runtime acceptance.",
+          "evidenceKind": "security",
+          "subcases": [
+            "Stored/policy/MFA-wall/monotonic expiry at optional file write/debit/refund/audit/result-ledger must deny and rollback modeled-equivalent durable effects; near-current positive controls.",
+            "Invalid/nonfinite proof and trusted MFA outage fail closed; unique winner recovery reauthorizes in fresh callback without new proof, serialization retry re-reads grants and abandons failed-attempt files; matching winner returns existing receipt/no duplicate charge."
+          ],
+          "requiredIndependentRuntimeEvidence": [
+            "Real SQL unique/serialization conflict with committed winner, exact original proof custody, independent wallet/debit/refund/audit and filesystem readback; local staged transactions do not prove MVCC/rollback."
+          ],
+          "extendsScenarios": [
+            "createAvailabilityImport-native-success",
+            "createAvailabilityImport-denial",
+            "createAvailabilityImport-durable-readback"
+          ],
+          "scopeNote": "Create-new, matching replay and winner recovery apply to creation; cancel/refund and terminal-status recovery apply to cancellation. Evaluate applicable boundaries on each actual endpoint, preserving the separate GET-import and background-worker contracts."
+        },
+        {
+          "id": "createAvailabilityImport.import-input-file-publisher-cancel-controls",
+          "contract": "Qualify the applicable import-input-file-publisher-cancel-controls cases for POST /v2/availability-imports/users/:userId on one exact admitted candidate. Independently retain the specified ingress, actor, persisted-state and terminal evidence for every relevant subcase; a controlled source fixture does not satisfy runtime acceptance.",
+          "evidenceKind": "native-api",
+          "subcases": [
+            "Capture actor/target/PDF bytes and size/staff identity before awaits; exact matching key returns same job, changed target/file/document key conflicts.",
+            "Publisher drain at admission/file/entitlement/post-job-update refuses new commit/debit; request-owned exclusive-file success registered after open wx, failed-attempt cleanup settles all owned paths, foreign collision preserved, durable encrypted source fallback remains valid.",
+            "Cancel validates original debit/refund, settles debt first, CAS terminal state and attributable audit once; repeated terminal cancel read-only; best-effort unlink cannot undo committed response and background orphan cleanup is a separate lifecycle. No automatic profile apply from preview."
+          ],
+          "requiredIndependentRuntimeEvidence": [
+            "Real isolated encrypted filesystem/DB readback and publisher readiness barrier; after commit cleanup failure preserve receipt but retain pending cleanup evidence, never equate best-effort attempt with proven erasure. Controlled provider results do not qualify live provider custody."
+          ],
+          "extendsScenarios": [
+            "createAvailabilityImport-native-success",
+            "createAvailabilityImport-denial",
+            "createAvailabilityImport-browser",
+            "createAvailabilityImport-durable-readback"
+          ],
+          "scopeNote": "Create-new, matching replay and winner recovery apply to creation; cancel/refund and terminal-status recovery apply to cancellation. Evaluate applicable boundaries on each actual endpoint, preserving the separate GET-import and background-worker contracts."
         }
       ],
       "workflowIds": [
@@ -6848,11 +7337,13 @@
         },
         {
           "path": "apps/api/src/availability-imports/availability-imports.controller.ts",
-          "line": 70
+          "line": 71,
+          "sourceLine": "    cancel(@Req() req: AuthenticatedRequest, @Param('id') id: string) {"
         },
         {
           "path": "apps/api/src/availability-imports/availability-imports.service.ts",
-          "line": 396
+          "line": 415,
+          "sourceLine": "    async cancelImport(tenantId: string, requestedByUserId: string, id: string, requestedBySessionId: string) {"
         }
       ],
       "actorBoundary": "Authenticated own-tenant users:write; exact import ID+tenant and requesting actor audit.",
@@ -6884,6 +7375,62 @@
           "id": "cancelAvailabilityImport-durable-readback",
           "contract": "Read persisted effects independently after response, response loss and applicable restart/reload for cancelAvailabilityImport: Verify charge, settle one deterministic refund, CAS CANCELLED, erase source/result/execution ownership, audit then best-effort unlink. Independent job/refund/wallet confirms; already CANCELLED/FAILED/DEAD_LETTERED returns current status without duplicate refund. Unknown/foreign denies; SUCCEEDED conflicts (cancel cannot undo completed preview). Bad debit/inconsistent refund/CAS change conflicts and rolls back. Source cleanup loss cannot reverse committed cancellation.",
           "evidenceKind": "durable"
+        },
+        {
+          "id": "cancelAvailabilityImport.import-exact-current-actor-all-paths",
+          "contract": "Qualify the applicable import-exact-current-actor-all-paths cases for POST /v2/availability-imports/:importId/cancel on one exact admitted candidate. Independently retain the specified ingress, actor, persisted-state and terminal evidence for every relevant subcase; a controlled source fixture does not satisfy runtime acceptance.",
+          "evidenceKind": "native-api",
+          "subcases": [
+            "Retained create-new, matching replay, cancel and terminal-cancel status response: exact Session revoked/expired/removed/wrong owner, grant removed, role/assignment removed or PIN reset after admission refuses before effects/result disclosure.",
+            "Controller supplies actual session; Auth/Rbac imports and native /v2 retained bridge must be active. No new getImport after-wait revocation policy or background worker revocation policy is inferred."
+          ],
+          "requiredIndependentRuntimeEvidence": [
+            "Actual multipart/cancel /v2 route→retained owner, independent job/credit/audit state; direct Nest owner tests cannot satisfy native bridge ingress alone."
+          ],
+          "extendsScenarios": [
+            "cancelAvailabilityImport-native-success",
+            "cancelAvailabilityImport-denial",
+            "cancelAvailabilityImport-durable-readback"
+          ],
+          "scopeNote": "Create-new, matching replay and winner recovery apply to creation; cancel/refund and terminal-status recovery apply to cancellation. Evaluate applicable boundaries on each actual endpoint, preserving the separate GET-import and background-worker contracts."
+        },
+        {
+          "id": "cancelAvailabilityImport.import-finite-lifetime-recovery",
+          "contract": "Qualify the applicable import-finite-lifetime-recovery cases for POST /v2/availability-imports/:importId/cancel on one exact admitted candidate. Independently retain the specified ingress, actor, persisted-state and terminal evidence for every relevant subcase; a controlled source fixture does not satisfy runtime acceptance.",
+          "evidenceKind": "security",
+          "subcases": [
+            "Stored/policy/MFA-wall/monotonic expiry at optional file write/debit/refund/audit/result-ledger must deny and rollback modeled-equivalent durable effects; near-current positive controls.",
+            "Invalid/nonfinite proof and trusted MFA outage fail closed; unique winner recovery reauthorizes in fresh callback without new proof, serialization retry re-reads grants and abandons failed-attempt files; matching winner returns existing receipt/no duplicate charge."
+          ],
+          "requiredIndependentRuntimeEvidence": [
+            "Real SQL unique/serialization conflict with committed winner, exact original proof custody, independent wallet/debit/refund/audit and filesystem readback; local staged transactions do not prove MVCC/rollback."
+          ],
+          "extendsScenarios": [
+            "cancelAvailabilityImport-native-success",
+            "cancelAvailabilityImport-denial",
+            "cancelAvailabilityImport-durable-readback"
+          ],
+          "scopeNote": "Create-new, matching replay and winner recovery apply to creation; cancel/refund and terminal-status recovery apply to cancellation. Evaluate applicable boundaries on each actual endpoint, preserving the separate GET-import and background-worker contracts."
+        },
+        {
+          "id": "cancelAvailabilityImport.import-input-file-publisher-cancel-controls",
+          "contract": "Qualify the applicable import-input-file-publisher-cancel-controls cases for POST /v2/availability-imports/:importId/cancel on one exact admitted candidate. Independently retain the specified ingress, actor, persisted-state and terminal evidence for every relevant subcase; a controlled source fixture does not satisfy runtime acceptance.",
+          "evidenceKind": "native-api",
+          "subcases": [
+            "Capture actor/target/PDF bytes and size/staff identity before awaits; exact matching key returns same job, changed target/file/document key conflicts.",
+            "Publisher drain at admission/file/entitlement/post-job-update refuses new commit/debit; request-owned exclusive-file success registered after open wx, failed-attempt cleanup settles all owned paths, foreign collision preserved, durable encrypted source fallback remains valid.",
+            "Cancel validates original debit/refund, settles debt first, CAS terminal state and attributable audit once; repeated terminal cancel read-only; best-effort unlink cannot undo committed response and background orphan cleanup is a separate lifecycle. No automatic profile apply from preview."
+          ],
+          "requiredIndependentRuntimeEvidence": [
+            "Real isolated encrypted filesystem/DB readback and publisher readiness barrier; after commit cleanup failure preserve receipt but retain pending cleanup evidence, never equate best-effort attempt with proven erasure. Controlled provider results do not qualify live provider custody."
+          ],
+          "extendsScenarios": [
+            "cancelAvailabilityImport-native-success",
+            "cancelAvailabilityImport-denial",
+            "cancelAvailabilityImport-browser",
+            "cancelAvailabilityImport-durable-readback"
+          ],
+          "scopeNote": "Create-new, matching replay and winner recovery apply to creation; cancel/refund and terminal-status recovery apply to cancellation. Evaluate applicable boundaries on each actual endpoint, preserving the separate GET-import and background-worker contracts."
         }
       ],
       "workflowIds": [
@@ -6908,11 +7455,13 @@
         },
         {
           "path": "apps/api/src/availability-imports/availability-imports.controller.ts",
-          "line": 76
+          "line": 77,
+          "sourceLine": "    get(@Req() req: AuthenticatedRequest, @Param('id') id: string) {"
         },
         {
           "path": "apps/api/src/availability-imports/availability-imports.service.ts",
-          "line": 427
+          "line": 461,
+          "sourceLine": "    async getImport(tenantId: string, id: string) {"
         }
       ],
       "actorBoundary": "Authenticated own-tenant users:write; exact import ID/tenant.",
@@ -6976,7 +7525,8 @@
         },
         {
           "path": "apps/api/src/admin/admin.controller.ts",
-          "line": 495
+          "line": 495,
+          "sourceLine": "    async stats(@Req() req: any) {"
         }
       ],
       "actorBoundary": "Authenticated platform admin_portal:access; class JWT/RBAC and explicit permission assertion.",
@@ -7032,7 +7582,8 @@
         },
         {
           "path": "apps/api/src/admin/admin.controller.ts",
-          "line": 525
+          "line": 525,
+          "sourceLine": "    async tenants("
         }
       ],
       "actorBoundary": "Authenticated platform admin_portal:access; intentionally global directory.",
@@ -7082,7 +7633,8 @@
         },
         {
           "path": "apps/api/src/admin/admin.controller.ts",
-          "line": 592
+          "line": 592,
+          "sourceLine": "    async createTenant("
         }
       ],
       "actorBoundary": "Authenticated platform admin_portal:access; platform provisioning, not arbitrary financial entitlement.",
@@ -7142,7 +7694,8 @@
         },
         {
           "path": "apps/api/src/admin/admin.controller.ts",
-          "line": 665
+          "line": 665,
+          "sourceLine": "    async updateTenant("
         }
       ],
       "actorBoundary": "Authenticated platform admin_portal:access; live exact actor session and target-tenant authorization in bounded serial transaction.",
@@ -7197,7 +7750,8 @@
         },
         {
           "path": "apps/api/src/admin/admin.controller.ts",
-          "line": 745
+          "line": 745,
+          "sourceLine": "    async suspendTenant(@Req() req: any, @Param('id') id: string) {"
         }
       ],
       "actorBoundary": "Authenticated platform admin_portal:access; exact actor session/current tenant-target authorization.",
@@ -7252,7 +7806,8 @@
         },
         {
           "path": "apps/api/src/admin/admin.controller.ts",
-          "line": 768
+          "line": 768,
+          "sourceLine": "    async activateTenant(@Req() req: any, @Param('id') id: string) {"
         }
       ],
       "actorBoundary": "Authenticated platform admin_portal:access; locked lifecycle eligibility and paid Stripe proof when applicable.",
@@ -7314,11 +7869,13 @@
         },
         {
           "path": "apps/api/src/admin/admin.controller.ts",
-          "line": 787
+          "line": 787,
+          "sourceLine": "    async archiveTenant(@Req() req: any, @Param('id') id: string) {"
         },
         {
           "path": "apps/api/src/admin/tenant-cancellation-lifecycle.service.ts",
-          "line": 1475
+          "line": 1475,
+          "sourceLine": "    async archivePlatform("
         }
       ],
       "actorBoundary": "Authenticated platform admin_portal:access; exact actor passed to platform cancellation lifecycle.",
@@ -7380,7 +7937,8 @@
         },
         {
           "path": "apps/api/src/admin/admin.controller.ts",
-          "line": 796
+          "line": 796,
+          "sourceLine": "    async restoreTenant(@Req() req: any, @Param('id') id: string) {"
         }
       ],
       "actorBoundary": "Authenticated platform admin_portal:access; lifecycle lock and subscription eligibility.",
@@ -7442,7 +8000,8 @@
         },
         {
           "path": "apps/api/src/admin/admin.controller.ts",
-          "line": 925
+          "line": 925,
+          "sourceLine": "    async deleteTenant(@Req() req: any, @Param('id') id: string) {"
         }
       ],
       "actorBoundary": "Authenticated platform admin_portal:access; own tenant forbidden; retained-record purge of archived expired candidate with no legal hold.",
@@ -7498,11 +8057,13 @@
         },
         {
           "path": "apps/api/src/admin/admin.controller.ts",
-          "line": 1128
+          "line": 1128,
+          "sourceLine": "    async exportOwnTenant(@Req() req: any) {"
         },
         {
           "path": "apps/api/src/admin/tenant-export.service.ts",
-          "line": 1054
+          "line": 1054,
+          "sourceLine": "  async start(actor: TenantLifecycleActor) {"
         }
       ],
       "actorBoundary": "Authenticated own-tenant account:data_export overrides admin class permission; requester user required.",
@@ -7558,11 +8119,13 @@
         },
         {
           "path": "apps/api/src/admin/admin.controller.ts",
-          "line": 1135
+          "line": 1135,
+          "sourceLine": "    async listOwnTenantExports(@Req() req: any) {"
         },
         {
           "path": "apps/api/src/admin/tenant-export.service.ts",
-          "line": 1123
+          "line": 1123,
+          "sourceLine": "  async listRecent("
         }
       ],
       "actorBoundary": "Authenticated account:data_export; own tenant AND requesting user.",
@@ -7618,11 +8181,13 @@
         },
         {
           "path": "apps/api/src/admin/admin.controller.ts",
-          "line": 1142
+          "line": 1142,
+          "sourceLine": "    async getOwnTenantExport(@Req() req: any, @Param('jobId') jobId: string) {"
         },
         {
           "path": "apps/api/src/admin/tenant-export.service.ts",
-          "line": 1141
+          "line": 1141,
+          "sourceLine": "  async status("
         }
       ],
       "actorBoundary": "Authenticated account:data_export; exact job/tenant/requester.",
@@ -7678,11 +8243,13 @@
         },
         {
           "path": "apps/api/src/admin/admin.controller.ts",
-          "line": 1149
+          "line": 1149,
+          "sourceLine": "    async downloadOwnTenantExport(@Req() req: any, @Param('jobId') jobId: string, @Res() res: any) {"
         },
         {
           "path": "apps/api/src/admin/tenant-export.service.ts",
-          "line": 1148
+          "line": 1148,
+          "sourceLine": "  async openDownload(actor: TenantLifecycleActor, jobId: string) {"
         }
       ],
       "actorBoundary": "Authenticated account:data_export; own requester/tenant exact job, READY/unexpired.",
@@ -7738,11 +8305,13 @@
         },
         {
           "path": "apps/api/src/admin/admin.controller.ts",
-          "line": 1164
+          "line": 1164,
+          "sourceLine": "    async getOwnTenantAccountStatus(@Req() req: any) {"
         },
         {
           "path": "apps/api/src/admin/tenant-account-lifecycle.service.ts",
-          "line": 96
+          "line": 96,
+          "sourceLine": "    async getStatus(actor: TenantLifecycleActor) {"
         }
       ],
       "actorBoundary": "Authenticated own-tenant settings:write overrides admin class; tenant actor required.",
@@ -7798,11 +8367,13 @@
         },
         {
           "path": "apps/api/src/admin/admin.controller.ts",
-          "line": 1171
+          "line": 1171,
+          "sourceLine": "    async cancelOwnTenant("
         },
         {
           "path": "apps/api/src/admin/tenant-cancellation-lifecycle.service.ts",
-          "line": 1449
+          "line": 1449,
+          "sourceLine": "    async cancelCustomer("
         }
       ],
       "actorBoundary": "Authenticated own-tenant tenant_account:lifecycle overrides admin class; exact workspace-slug confirmation.",
@@ -7864,11 +8435,13 @@
         },
         {
           "path": "apps/api/src/admin/admin.controller.ts",
-          "line": 1184
+          "line": 1184,
+          "sourceLine": "    async requestOwnTenantDeletion("
         },
         {
           "path": "apps/api/src/admin/tenant-deletion-billing.service.ts",
-          "line": 328
+          "line": 328,
+          "sourceLine": "    async requestDeletion(actor: TenantLifecycleActor, body: RequestTenantDeletionBody) {"
         }
       ],
       "actorBoundary": "Authenticated own-tenant tenant_account:lifecycle overrides admin class; exact slug confirmation; later acceptance uses explicitly admitted disposable tenant.",
@@ -7930,7 +8503,8 @@
         },
         {
           "path": "apps/api/src/admin/admin.controller.ts",
-          "line": 1195
+          "line": 1195,
+          "sourceLine": "    async users("
         }
       ],
       "actorBoundary": "Authenticated platform admin_portal:access; intentional global directory public IDs.",
@@ -7979,7 +8553,8 @@
         },
         {
           "path": "apps/api/src/admin/admin.controller.ts",
-          "line": 1270
+          "line": 1270,
+          "sourceLine": "    async updateUser("
         }
       ],
       "actorBoundary": "Authenticated platform admin_portal:access; actual current wrapper exact actor tenant/user/session, current PIN/MFA/lifetime and target authorization/system-admin restriction/role delegation.",
@@ -8041,11 +8616,13 @@
         },
         {
           "path": "apps/api/src/admin/admin.controller.ts",
-          "line": 1462
+          "line": 1462,
+          "sourceLine": "    async resetUserPin(@Req() req: any, @Param('id') id: string) {"
         },
         {
           "path": "apps/api/src/admin/admin-user-pin-recovery.service.ts",
-          "line": 12
+          "line": 12,
+          "sourceLine": "    async reset(targetUserId: string, actor: AdminUserLifecycleActor) {"
         }
       ],
       "actorBoundary": "Authenticated platform admin_portal:access; current exact session/PIN/MFA/lifetime+target auth; self reset forbidden, active username target.",
@@ -8106,11 +8683,13 @@
         },
         {
           "path": "apps/api/src/admin/admin.controller.ts",
-          "line": 1470
+          "line": 1470,
+          "sourceLine": "    async resetUserMfa("
         },
         {
           "path": "apps/api/src/admin/admin-user-mfa-recovery.service.ts",
-          "line": 38
+          "line": 38,
+          "sourceLine": "        return this.rbac.runCurrentMutation({"
         }
       ],
       "actorBoundary": "Authenticated platform admin_portal:access; exact reset-mfa:publicID confirmation translated to storage ID/reason validation; current actor exact session/PIN/MFA/lifetime and target authorization.",
@@ -8171,7 +8750,8 @@
         },
         {
           "path": "apps/api/src/admin/admin.controller.ts",
-          "line": 1496
+          "line": 1496,
+          "sourceLine": "    async lockUser(@Req() req: any, @Param('id') id: string, @Body() body: { minutes?: number }) {"
         }
       ],
       "actorBoundary": "Authenticated platform admin_portal:access; current exact actor wrapper and target restrictions, self administration denied.",
@@ -8231,7 +8811,8 @@
         },
         {
           "path": "apps/api/src/admin/admin.controller.ts",
-          "line": 1535
+          "line": 1535,
+          "sourceLine": "    async unlockUser(@Req() req: any, @Param('id') id: string) {"
         }
       ],
       "actorBoundary": "Authenticated platform admin_portal:access; current exact actor wrapper/target restriction, self denied.",
@@ -8291,11 +8872,13 @@
         },
         {
           "path": "apps/api/src/admin/admin.controller.ts",
-          "line": 1567
+          "line": 1567,
+          "sourceLine": "    async suspendUser(@Req() req: any, @Param('id') id: string) {"
         },
         {
           "path": "apps/api/src/admin/admin-user-lifecycle.service.ts",
-          "line": 25
+          "line": 25,
+          "sourceLine": "    async suspend(targetUserId: string, actor: AdminUserLifecycleActor) {"
         }
       ],
       "actorBoundary": "Authenticated platform admin_portal:access; current exact actor wrapper/target lifecycle+scheduling authorization, no self suspension.",
@@ -8356,11 +8939,13 @@
         },
         {
           "path": "apps/api/src/admin/admin.controller.ts",
-          "line": 1575
+          "line": 1575,
+          "sourceLine": "    async activateUser(@Req() req: any, @Param('id') id: string) {"
         },
         {
           "path": "apps/api/src/admin/admin-user-lifecycle.service.ts",
-          "line": 110
+          "line": 110,
+          "sourceLine": "    async activate(targetUserId: string, actor: AdminUserLifecycleActor) {"
         }
       ],
       "actorBoundary": "Authenticated platform admin_portal:access; current exact actor wrapper/target restriction, no self; target tenant capacity.",
@@ -8421,7 +9006,8 @@
         },
         {
           "path": "apps/api/src/admin/admin.controller.ts",
-          "line": 1583
+          "line": 1583,
+          "sourceLine": "    async audit(@Req() req: any, @Query('limit') limitRaw?: string) {"
         }
       ],
       "actorBoundary": "Authenticated platform admin_portal:access; global operator audit view.",
@@ -8472,7 +9058,8 @@
         },
         {
           "path": "apps/api/src/admin/admin.controller.ts",
-          "line": 1627
+          "line": 1627,
+          "sourceLine": "    async credits("
         }
       ],
       "actorBoundary": "Authenticated platform admin_portal:access; separate global wallet/history pagination.",
@@ -8526,7 +9113,8 @@
         },
         {
           "path": "apps/api/src/admin/admin.controller.ts",
-          "line": 1726
+          "line": 1726,
+          "sourceLine": "    async grantCredits("
         }
       ],
       "actorBoundary": "Authenticated platform admin_portal:access; required printable Idempotency-Key, exact actor session/target tenant serial auth.",
@@ -8580,7 +9168,8 @@
         },
         {
           "path": "apps/api/src/admin/admin.controller.ts",
-          "line": 1808
+          "line": 1808,
+          "sourceLine": "    async plans(@Req() req: any) {"
         }
       ],
       "actorBoundary": "Authenticated platform admin_portal:access; global stored+fallback plans.",
@@ -8629,7 +9218,8 @@
         },
         {
           "path": "apps/api/src/admin/admin.controller.ts",
-          "line": 1820
+          "line": 1820,
+          "sourceLine": "    async createPlan("
         }
       ],
       "actorBoundary": "Authenticated platform admin_portal:access; global definition administration.",
@@ -8684,7 +9274,8 @@
         },
         {
           "path": "apps/api/src/admin/admin.controller.ts",
-          "line": 1896
+          "line": 1896,
+          "sourceLine": "    async updatePlan("
         }
       ],
       "actorBoundary": "Authenticated platform admin_portal:access; immutable path code/capacity-safe global definition.",
@@ -8739,7 +9330,8 @@
         },
         {
           "path": "apps/api/src/admin/admin.controller.ts",
-          "line": 2008
+          "line": 2008,
+          "sourceLine": "    async deletePlan(@Req() req: any, @Param('codeOrId') codeOrId: string) {"
         }
       ],
       "actorBoundary": "Authenticated platform admin_portal:access; custom definition only.",
@@ -8794,7 +9386,8 @@
         },
         {
           "path": "apps/api/src/admin/admin.controller.ts",
-          "line": 2035
+          "line": 2035,
+          "sourceLine": "    async health(@Req() req: any) {"
         }
       ],
       "actorBoundary": "Authenticated platform admin_portal:access; operator telemetry, not public launch/readiness authority.",
@@ -10382,7 +10975,7 @@
         }
       ],
       "actorBoundary": "RabbitMQ pdf.parse intent, exact tenant/import claim/token, active entitlement, encrypted source AAD/hash and server-side employee binding.",
-      "successContract": "Bounded isolated parser result applies exact employee availability and records SUCCEEDED with source erasure; independent profile/job/debit/queue readback agrees.",
+      "successContract": "Bounded isolated parser result records identity-checked parsed availability as a review-only AvailabilityImportJob preview and marks SUCCEEDED with source erasure; independent job, debit, queue and cleanup readback agrees, and the employee scheduling profile remains unchanged until the user explicitly applies the preview through updateStaffSchedulingProfile.",
       "failureContract": "Wrong PDF/person, tampered envelope, cancellation/TTL/null lease/stranded retry/response loss yields safe terminal or recoverable job, no duplicate debit/refund or orphan source.",
       "requiredEvidence": [
         "Real isolated runtime/broker/database with exact service candidate pins",
@@ -10393,7 +10986,7 @@
       "scenarios": [
         {
           "id": "positive-readback",
-          "contract": "Bounded isolated parser result applies exact employee availability and records SUCCEEDED with source erasure; independent profile/job/debit/queue readback agrees.",
+          "contract": "Bounded isolated parser result records identity-checked parsed availability as a review-only AvailabilityImportJob preview and marks SUCCEEDED with source erasure; independent job, debit, queue and cleanup readback agrees, and the employee scheduling profile remains unchanged until the user explicitly applies the preview through updateStaffSchedulingProfile.",
           "evidenceKind": "runtime-integration"
         },
         {
@@ -11422,7 +12015,7 @@
       "sourceAnchors": [
         {
           "path": "apps/web/app/dashboard/lunch-breaks/page.tsx",
-          "line": 428,
+          "line": 474,
           "sourceLine": "export default function LunchBreaksPage() {"
         }
       ],
@@ -11581,7 +12174,7 @@
       "sourceAnchors": [
         {
           "path": "apps/web/app/dashboard/scheduling/page.tsx",
-          "line": 2765,
+          "line": 2794,
           "sourceLine": "export default function SchedulingPage() {"
         }
       ],
@@ -11604,6 +12197,68 @@
           "id": "refusal-recovery",
           "contract": "Stale tab/lost response/escape/outside-drop/invalid DST/permission loss preserves draft/unknown state and offers explicit recovery.",
           "evidenceKind": "browser-interaction"
+        },
+        {
+          "id": "frontend.page.dashboard.scheduling.calendar-same-visit-new-editor-intent",
+          "contract": "Qualify the applicable calendar-same-visit-new-editor-intent cases for GET /dashboard/scheduling on one exact admitted candidate. Independently retain the specified ingress, actor, persisted-state and terminal evidence for every relevant subcase; a controlled source fixture does not satisfy runtime acceptance.",
+          "evidenceKind": "browser-interaction",
+          "subcases": [
+            "Unchanged create/update success applies saved board and closes/reset submitted editor; newer staff/role/date/start/end, combined fields, close/reopen, ABA fields, selected saved shift, board slot or duplicate editor survives older acknowledgement.",
+            "Board belongs to current calendar visit; destructive cleanup belongs to captured editor generation. Late failure does not overwrite newer editor status."
+          ],
+          "requiredIndependentRuntimeEvidence": [
+            "Real React/DOM browser interactions with controlled HTTP completion ordering, independent backend board/revision readback and reload. Hook ledger tests actual JSX handlers but do not model React scheduling."
+          ],
+          "extendsScenarios": [
+            "positive-readback",
+            "refusal-recovery"
+          ]
+        },
+        {
+          "id": "frontend.page.dashboard.scheduling.calendar-visit-switch-stale-responses",
+          "contract": "Qualify the applicable calendar-visit-switch-stale-responses cases for GET /dashboard/scheduling on one exact admitted candidate. Independently retain the specified ingress, actor, persisted-state and terminal evidence for every relevant subcase; a controlled source fixture does not satisfy runtime acceptance.",
+          "evidenceKind": "browser-interaction",
+          "subcases": [
+            "Location/date/view switches and location ABA block old result from overwriting newer board/editor; stale failure must not reload old visit. Same-visit successful save still updates board even when later draft intent survives."
+          ],
+          "requiredIndependentRuntimeEvidence": [
+            "Actual location/date/view browser interactions, full saved data from old scope independently read; verify current board against selected visit rather than raw response presence."
+          ],
+          "extendsScenarios": [
+            "positive-readback",
+            "refusal-recovery"
+          ]
+        },
+        {
+          "id": "frontend.page.dashboard.scheduling.calendar-retry-linked-payload-custody",
+          "contract": "Qualify the applicable calendar-retry-linked-payload-custody cases for GET /dashboard/scheduling on one exact admitted candidate. Independently retain the specified ingress, actor, persisted-state and terminal evidence for every relevant subcase; a controlled source fixture does not satisfy runtime acceptance.",
+          "evidenceKind": "browser-interaction",
+          "subcases": [
+            "Transport response loss preserves same payload/key for unchanged retry; older success cannot clear newer pending attempt and older unreplayable failure cannot rotate/reload it. Retry uses current ETag when saved board has advanced while keeping issued body/key.",
+            "Fallback schedule creation retains originally issued shift payload despite later edits and linked :schedule/:shift keys; unchanged fallback resets only original editor."
+          ],
+          "requiredIndependentRuntimeEvidence": [
+            "Real backend durable idempotency and response-loss replay; exact one shift/revision/effect readback. Source tests mock backend and do not prove actual CAS/replay."
+          ],
+          "extendsScenarios": [
+            "positive-readback",
+            "refusal-recovery"
+          ]
+        },
+        {
+          "id": "frontend.page.dashboard.scheduling.calendar-queued-cleanup-boundary",
+          "contract": "Qualify the applicable calendar-queued-cleanup-boundary cases for GET /dashboard/scheduling on one exact admitted candidate. Independently retain the specified ingress, actor, persisted-state and terminal evidence for every relevant subcase; a controlled source fixture does not satisfy runtime acceptance.",
+          "evidenceKind": "browser-interaction",
+          "subcases": [
+            "Create and update completion enqueues four destructive setters, then later time edit happens before commit: each functional setter must retain current form/edit/delete/draft state; saved board may still commit."
+          ],
+          "requiredIndependentRuntimeEvidence": [
+            "Actual React/browser delayed state scheduling or instrumented UI transaction boundary; unit queue delegates real page setters without ordinal targeting but is still controlled scheduling."
+          ],
+          "extendsScenarios": [
+            "positive-readback",
+            "refusal-recovery"
+          ]
         }
       ],
       "workflowIds": [
@@ -13217,15 +13872,18 @@
         },
         {
           "path": "apps/api/src/admin/tenant-account-lifecycle.ts",
-          "line": 1
+          "line": 1,
+          "sourceLine": "import { BadRequestException } from '@nestjs/common';"
         },
         {
           "path": "packages/db/prisma/migrations/20261004_durable_mfa_enrollment.sql",
-          "line": 1
+          "line": 1,
+          "sourceLine": "-- Pending enrollment belongs to the exact Session, not a Redis key. This is"
         },
         {
           "path": "docs/runbooks/mfa-durable-enrollment-rollout.md",
-          "line": 1
+          "line": 1,
+          "sourceLine": "# Durable MFA enrollment rollout and qualification"
         }
       ],
       "actorBoundary": "Scoped application/CI retention owners; preserved unfinished source/data/backup/evidence.",
@@ -15385,6 +16043,17 @@
     "Phase75 durable MFA local controls exercise actual retained owners over synthetic SQL clock and transaction-private effects. Native PostgreSQL locks/isolation/RLS/statement-clock/rollback, migration/trigger/encryption constraints, all connected lifecycle owners and bounded SKIP LOCKED retention remain unexecuted. Both retained MFA route families and retention owner must upgrade coherently with additive schema and configured encrypted write key; old Redis-only challenges must restart and security rollback must not restore old pending authority. No deploy/build/native admission/QA lease/provider/browser or production launch follows from source fixes. All acceptance actions remain pending.",
     "Phase76 adds the previously unlisted legacy-import operator action: all266 action statuses remain pending. Exact-export retry source uses immutable private receipts and create-only atomic initialization; real export lineage/adapter approval, native SQL/RLS/locks/concurrency/commit recovery, target-generation/receipt retention, all provider/browser/build/recovery/security/load gates and months of private qualification remain unverified. Local planner/transaction-ledger tests do not authorize production, VM106/VM107 contact, launch or protected QA.",
     "Phase77 prepared UI source preserves original per-schedule publication body/key, fences payroll export preparation/custody and scoped readback, and reconciles header read state through authoritative responses and fresh feed. Controlled actual-handler fixtures use a deterministic hook ledger and mocked transport; they are not React scheduling, DOM/browser, native SQL/Redis, provider or committed billing proof. Current payroll transaction authority after waits/replay, outbox lease/lifecycle effect ordering, and terminal diagnostic documentation remain separate pending repairs/qualification. All266 actions,47 selected browser cases,84 minimum workflows, full operational gates and months of private testing remain required. preparedFromCommit/tree identify this edit increment base, not a qualified release or executed candidate.",
-    "Phase78 prepared source adds current actor/session/grant/PIN/account/policy/MFA authority to all eleven native and retained stateful payroll commands, explicit guarded readonly receipt recovery and nested wallet/ledger guards. Controlled owner matrices and existing domain regressions do not execute PostgreSQL/RLS/locks/Redis/provider/commit recovery. Read-only payroll endpoints still require current native acceptance. The prepared outbox protocol fences current exact lease/generation and lifecycle before effects, preserves durable feed during email failure, separates monotonic attempts from durable failureCount and retains terminal payload/error erasure. Matching generated-client/private migration rollout, real NOWAIT overlap/deadlines/provider idempotency, global cross-tenant email suppression and lifecycle-current Redis fanout remain unqualified. All266 actions,47 selected browser cases,84 minimum workflows and months of private testing remain required; no protected QA, VM107 action, production contact, public activation or launch is authorized. preparedFromCommit/tree identify this edit increment base only. The two Settings persistence owners additionally require a same-transaction actual Tenant tuple update with exact affected-row validation and original session/MFA lifetime guards. Their closed snapshot model does not prove PostgreSQL tuple/SSI/trigger behavior; mixed-owner native overlap remains pending. Four exact current raw migrations (durable MFA enrollment, private legacy-import retry receipts and notification failure-budget pre/forward) now have prepared rollback-policy designs. Policy fields describe the required protocol and retain mandatory fresh isolated exact old-release/candidate-schema proof; source policy checks do not attest compatibility. No policy/signing/QA enablement is authorized by these edits."
+    "Phase78 prepared source adds current actor/session/grant/PIN/account/policy/MFA authority to all eleven native and retained stateful payroll commands, explicit guarded readonly receipt recovery and nested wallet/ledger guards. Controlled owner matrices and existing domain regressions do not execute PostgreSQL/RLS/locks/Redis/provider/commit recovery. Read-only payroll endpoints still require current native acceptance. The prepared outbox protocol fences current exact lease/generation and lifecycle before effects, preserves durable feed during email failure, separates monotonic attempts from durable failureCount and retains terminal payload/error erasure. Matching generated-client/private migration rollout, real NOWAIT overlap/deadlines/provider idempotency, global cross-tenant email suppression and lifecycle-current Redis fanout remain unqualified. All266 actions,47 selected browser cases,84 minimum workflows and months of private testing remain required; no protected QA, VM107 action, production contact, public activation or launch is authorized. preparedFromCommit/tree identify this edit increment base only. The two Settings persistence owners additionally require a same-transaction actual Tenant tuple update with exact affected-row validation and original session/MFA lifetime guards. Their closed snapshot model does not prove PostgreSQL tuple/SSI/trigger behavior; mixed-owner native overlap remains pending. Four exact current raw migrations (durable MFA enrollment, private legacy-import retry receipts and notification failure-budget pre/forward) now have prepared rollback-policy designs. Policy fields describe the required protocol and retain mandatory fresh isolated exact old-release/candidate-schema proof; source policy checks do not attest compatibility. No policy/signing/QA enablement is authorized by these edits.",
+    "October 5 current-source preparation retains all266 action identities and all907 original action/scenario identities, adds26 endpoint-specific runtime scenario rows and corrects the worker preview-only contract without excluding explicit profile application. All933 scenarios and266 actions remain pending;176 existing literal test references are preparation only. Earlier limitation entries preserve historical increment counts and scope. VM218 infrastructure is cleared for installed controller8875c56/admitted sourced18a1ad, but this newer preparation requires coordinated matching source selection and full admission. Disposable development does not require production signing; release trust and months of private qualification remain separate. No native/application acceptance, ownership transfer, CI enablement, VM107 action or production contact is authorized by these additions. preparedFromCommit/tree identify the increment base, not a passing release."
+  ],
+  "preparationHistory": [
+    {
+      "preparedFromCommit": "1d1cd2a9d82d567d1ff649de2fe975480fce1585",
+      "preparedFromTree": "a59a47344adcccdcff0088f3d85ac3b4f9da98e4",
+      "manifestSha256": "416f4eb5d6e3bede048225778823a97b665d8214286f26050dbaf9895efbdd39",
+      "actions": 266,
+      "scenarios": 907,
+      "status": "historical pending preparation; no execution credit"
+    }
   ]
 }

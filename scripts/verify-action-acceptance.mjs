@@ -274,8 +274,12 @@ export function verifyActionAcceptance(manifest, root) {
     } else if (action.kind === 'native-route') {
       need(methods.has(action.method) && nonempty(action.path), `missing native route ${action.id}`);
       const routeKey = key(action);
-      need(routes.some(value => key(value) === routeKey) && !declaredRoutes.has(routeKey) &&
+      const actual = routes.find(value => key(value) === routeKey);
+      need(actual && !declaredRoutes.has(routeKey) &&
         !catalog.some(value => key({ method: value.method, path: `/v2${value.path}` }) === routeKey), `unknown or duplicate native route ${action.id}`);
+      const registrationAnchors = action.sourceAnchors.filter(anchor => anchor.path === actual.source);
+      need(registrationAnchors.length === 1 && registrationAnchors[0].line === actual.line,
+        `native route registration anchor drift ${action.id}`);
       declaredRoutes.add(routeKey);
     }
     need(Array.isArray(action.scenarios) && action.scenarios.length > 0, `missing scenarios ${action.id}`);
