@@ -2,6 +2,7 @@
 
 import type { FormEvent } from 'react';
 import styles from './credits.module.css';
+import { createCreditReadOwner, type CreditReadLane, type CreditReadPending } from './credit-read-owner';
 import { parseCreditGrantAcknowledgement, type CreditGrantAcknowledgement } from './credit-grant-acknowledgement';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { fetchJsonWithSession, fetchWithSession, withIdempotencyKey } from '@/lib/client-api';
@@ -157,16 +158,19 @@ function parseAmount(value: string): number {
 export function CreditsClient() {
     const [tenants, setTenants] = useState<CreditTenant[]>([]);
     const [history, setHistory] = useState<CreditHistoryRow[]>([]);
-    const [loading, setLoading] = useState(true);
-    const [saving, setSaving] = useState<string | null>(null);
+    const [readPending, setReadPending] = useState<CreditReadPending>({ replacement: true, tenants: false, history: false, ready: false });
+    const [readErrors, setReadErrors] = useState<Record<CreditReadLane, string | null>>({ replacement: null, tenants: null, history: null });
+    const [grantSaving, setGrantSaving] = useState(false);
     const [error, setError] = useState<string | null>(null);
     const [notice, setNotice] = useState<string | null>(null);
     const [query, setQuery] = useState('');
-    const [appliedQuery, setAppliedQuery] = useState('');
     const [tenantPagination, setTenantPagination] = useState(EMPTY_ADMIN_LIST_PAGINATION);
     const [historyPagination, setHistoryPagination] = useState(EMPTY_ADMIN_LIST_PAGINATION);
     const [form, setForm] = useState<CreditGrantForm>({ tenantId: '', amount: '', reason: '' });
     const grantSubmission = useRef(createCreditGrantSubmissionState());
+    const readOwner = useRef(createCreditReadOwner());
+    const loading = readPending.replacement;
+    const visibleError = error ?? readErrors.replacement ?? readErrors.tenants ?? readErrors.history;
 
     const loadCredits = useCallback(async (options: {
         tenantCursor?: string | null;
@@ -175,60 +179,67 @@ export function CreditsClient() {
         appendHistory?: boolean;
         search?: string;
     } = {}) => {
-        const operation = options.appendTenants
-            ? 'load-more-tenants'
+        const owner = readOwner.current;
+        const ticket = options.appendTenants
+            ? owner.beginAppend('tenants', options.tenantCursor)
             : options.appendHistory
-                ? 'load-more-history'
-                : 'load';
-        setError(null);
-        setSaving(operation);
-        if (!options.appendTenants && !options.appendHistory) setLoading(true);
+                ? owner.beginAppend('history', options.historyCursor)
+                : owner.beginReplacement(options.search);
+        if (!ticket) return;
+        const publishPending = () => setReadPending((current) => owner.isActiveVisit(ticket.visit) ? owner.snapshot() : current);
+        publishPending();
+        setReadErrors((current) => {
+            if (!owner.owns(ticket)) return current;
+            return ticket.lane === 'replacement'
+                ? { replacement: null, tenants: null, history: null }
+                : { ...current, [ticket.lane]: null };
+        });
         try {
             const path = buildAdminListPath('/admin/credits', {
                 tenantLimit: 50,
-                tenantCursor: options.tenantCursor,
-                q: options.search,
+                tenantCursor: ticket.lane === 'tenants' ? ticket.cursor : undefined,
+                q: ticket.query,
                 historyLimit: 50,
-                historyCursor: options.historyCursor,
+                historyCursor: ticket.lane === 'history' ? ticket.cursor : undefined,
             });
             const next = parseCreditsPayload(await fetchJsonWithSession<unknown>(path));
-            if (options.appendTenants) {
-                setTenants((current) => mergeAdminListPage(current, next.tenants, true));
-                setTenantPagination(next.tenantPagination);
-            } else if (options.appendHistory) {
-                setHistory((current) => mergeAdminListPage(current, next.history, true));
-                setHistoryPagination(next.historyPagination);
+            if (!owner.accept(ticket, {
+                tenants: next.tenantPagination.hasMore ? next.tenantPagination.nextCursor : null,
+                history: next.historyPagination.hasMore ? next.historyPagination.nextCursor : null,
+            })) return;
+            if (ticket.lane === 'tenants') {
+                setTenants((current) => owner.canPublish(ticket) ? mergeAdminListPage(current, next.tenants, true) : current);
+                setTenantPagination((current) => owner.canPublish(ticket) ? next.tenantPagination : current);
+            } else if (ticket.lane === 'history') {
+                setHistory((current) => owner.canPublish(ticket) ? mergeAdminListPage(current, next.history, true) : current);
+                setHistoryPagination((current) => owner.canPublish(ticket) ? next.historyPagination : current);
             } else {
-                setTenants(next.tenants);
-                setHistory(next.history);
-                setTenantPagination(next.tenantPagination);
-                setHistoryPagination(next.historyPagination);
-                setForm((current) => ({
+                setTenants((current) => owner.canPublish(ticket) ? next.tenants : current);
+                setHistory((current) => owner.canPublish(ticket) ? next.history : current);
+                setTenantPagination((current) => owner.canPublish(ticket) ? next.tenantPagination : current);
+                setHistoryPagination((current) => owner.canPublish(ticket) ? next.historyPagination : current);
+                setForm((current) => owner.canPublish(ticket) ? ({
                     ...current,
                     tenantId: next.tenants.some((tenant) => tenant.id === current.tenantId)
                         ? current.tenantId
                         : next.tenants[0]?.id ?? '',
-                }));
+                }) : current);
             }
         } catch (err) {
-            setError(err instanceof Error ? err.message : 'Failed to load credit balances');
+            if (owner.owns(ticket)) setReadErrors((current) => owner.owns(ticket)
+                ? { ...current, [ticket.lane]: err instanceof Error ? err.message : 'Failed to load credit balances' }
+                : current);
         } finally {
-            if (!options.appendTenants && !options.appendHistory) setLoading(false);
-            setSaving((current) => (current === operation ? null : current));
+            if (owner.finish(ticket)) publishPending();
         }
     }, []);
 
     useEffect(() => {
-        void loadCredits({ search: appliedQuery });
-    }, [appliedQuery, loadCredits]);
-
-    useEffect(() => {
-        if (form.tenantId) return;
-        setForm((current) => ({
-            ...current,
-            tenantId: tenants[0]?.id ?? '',
-        }));
-    }, [form.tenantId, tenants]);
+        const owner = readOwner.current;
+        owner.activate();
+        void loadCredits();
+        return () => owner.deactivate();
+    }, [loadCredits]);
 
     const visibleTenants = useMemo(
         () => [...tenants].sort((a, b) => b.usageCredits - a.usageCredits),
@@ -265,12 +276,7 @@ export function CreditsClient() {
 
     function applySearch(event: FormEvent<HTMLFormElement>) {
         event.preventDefault();
-        const nextQuery = query.trim();
-        if (nextQuery === appliedQuery) {
-            void loadCredits({ search: nextQuery });
-        } else {
-            setAppliedQuery(nextQuery);
-        }
+        void loadCredits({ search: query.trim() });
     }
 
     async function grantCredits(event: FormEvent<HTMLFormElement>) {
@@ -312,7 +318,9 @@ export function CreditsClient() {
             amount,
             reason,
         };
-        setSaving('grant');
+        const owner = readOwner.current;
+        const visit = owner.visit();
+        setGrantSaving(true);
         try {
             const result = await submitCreditGrant(
                 grantSubmission.current,
@@ -324,13 +332,17 @@ export function CreditsClient() {
                     idempotencyKey,
                 ),
             );
-            if (!result.submitted) return;
-            setNotice('Credits granted.');
-            await loadCredits({ search: appliedQuery });
+            if (!result.submitted || !owner.isActiveVisit(visit)) return;
+            setNotice((current) => owner.isActiveVisit(visit) ? 'Credits granted.' : current);
+            // Read the synchronously applied current query, not this submit's
+            // captured render scope. A newer search may have completed meanwhile.
+            await loadCredits();
         } catch (err) {
-            setError(err instanceof Error ? err.message : 'Failed to grant credits');
+            if (owner.isActiveVisit(visit)) setError((current) => owner.isActiveVisit(visit)
+                ? err instanceof Error ? err.message : 'Failed to grant credits'
+                : current);
         } finally {
-            setSaving((current) => (current === 'grant' ? null : current));
+            if (owner.isActiveVisit(visit)) setGrantSaving((current) => owner.isActiveVisit(visit) ? false : current);
         }
     }
 
@@ -368,7 +380,7 @@ export function CreditsClient() {
                                 maxLength={100}
                             />
                         </label>
-                        <button className="btn btn-sm btn-secondary" type="submit" disabled={saving === 'load'}>
+                        <button className="btn btn-sm btn-secondary" type="submit">
                             Search
                         </button>
                     </form>
@@ -402,7 +414,7 @@ export function CreditsClient() {
                 ))}
             </section>
 
-            {error ? (
+            {visibleError ? (
                 <div
                     style={{
                         padding: '0.8rem 0.95rem',
@@ -414,7 +426,7 @@ export function CreditsClient() {
                         fontSize: '0.86rem',
                     }}
                 >
-                    {error}
+                    {visibleError}
                 </div>
             ) : null}
 
@@ -451,11 +463,11 @@ export function CreditsClient() {
 
                         <button
                             className="btn btn-sm btn-secondary"
-                            onClick={() => void loadCredits({ search: appliedQuery })}
-                            disabled={saving === 'load'}
+                            onClick={() => void loadCredits()}
+                            disabled={readPending.replacement}
                             type="button"
                         >
-                            {saving === 'load' ? 'Refreshing...' : 'Refresh'}
+                            {readPending.replacement ? 'Refreshing...' : 'Refresh'}
                         </button>
                     </div>
 
@@ -536,14 +548,13 @@ export function CreditsClient() {
                             <button
                                 className="btn btn-sm btn-secondary"
                                 type="button"
-                                disabled={saving === 'load-more-tenants' || !tenantPagination.nextCursor}
+                                disabled={!readPending.ready || readPending.replacement || readPending.tenants || !tenantPagination.nextCursor}
                                 onClick={() => void loadCredits({
                                     tenantCursor: tenantPagination.nextCursor,
                                     appendTenants: true,
-                                    search: appliedQuery,
                                 })}
                             >
-                                {saving === 'load-more-tenants' ? 'Loading...' : 'Load more tenant balances'}
+                                {readPending.tenants ? 'Loading...' : 'Load more tenant balances'}
                             </button>
                         </div>
                     ) : null}
@@ -624,8 +635,8 @@ export function CreditsClient() {
                             </div>
                         </div>
 
-                        <button className="btn" type="submit" disabled={saving === 'grant' || tenants.length === 0}>
-                            {saving === 'grant' ? 'Granting...' : 'Grant Credits'}
+                        <button className="btn" type="submit" disabled={grantSaving || tenants.length === 0}>
+                            {grantSaving ? 'Granting...' : 'Grant Credits'}
                         </button>
                     </form>
 
@@ -728,14 +739,13 @@ export function CreditsClient() {
                         <button
                             className="btn btn-sm btn-secondary"
                             type="button"
-                            disabled={saving === 'load-more-history' || !historyPagination.nextCursor}
+                            disabled={!readPending.ready || readPending.replacement || readPending.history || !historyPagination.nextCursor}
                             onClick={() => void loadCredits({
                                 historyCursor: historyPagination.nextCursor,
                                 appendHistory: true,
-                                search: appliedQuery,
                             })}
                         >
-                            {saving === 'load-more-history' ? 'Loading...' : 'Load more ledger history'}
+                            {readPending.history ? 'Loading...' : 'Load more ledger history'}
                         </button>
                     </div>
                 ) : null}
