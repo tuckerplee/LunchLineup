@@ -168,17 +168,17 @@ async function prepare(page: Page, withSchedule: boolean, withShifts = false) {
 
 function editor(page: Page) { return page.getByRole('dialog').locator('form.shift-form'); }
 async function fillDraft(form: Locator, userId: string, role: string, start: string, end: string) {
-  await form.getByLabel('Staff', { exact: true }).selectOption(userId);
-  await form.getByLabel('Shift role', { exact: true }).selectOption(role);
+  await form.getByRole('combobox', { name: 'Staff', exact: true }).selectOption(userId);
+  await form.getByRole('combobox', { name: 'Shift role', exact: true }).selectOption(role);
   await form.getByLabel('Date', { exact: true }).fill(DATE);
   await form.getByLabel('Start', { exact: true }).fill(start);
   await form.getByLabel('End', { exact: true }).fill(end);
 }
 async function expectDraft(form: Locator, userId: string, role: string, start: string, end: string) {
   await expect(form).toBeVisible();
-  await expect(form.getByLabel('Staff', { exact: true })).toHaveValue(userId);
-  await expect(form.getByLabel('Shift role', { exact: true })).toHaveValue(role);
-  await expect(form.getByLabel('Location', { exact: true })).toHaveValue(LOCATION);
+  await expect(form.getByRole('combobox', { name: 'Staff', exact: true })).toHaveValue(userId);
+  await expect(form.getByRole('combobox', { name: 'Shift role', exact: true })).toHaveValue(role);
+  await expect(form.getByRole('combobox', { name: 'Location', exact: true })).toHaveValue(LOCATION);
   await expect(form.getByLabel('Date', { exact: true })).toHaveValue(DATE);
   await expect(form.getByLabel('Start', { exact: true })).toHaveValue(start);
   await expect(form.getByLabel('End', { exact: true })).toHaveValue(end);
@@ -186,6 +186,9 @@ async function expectDraft(form: Locator, userId: string, role: string, start: s
 async function openCreate(page: Page) {
   await page.getByRole('button', { name: 'Add shift', exact: true }).click();
   await expect(page.getByRole('dialog', { name: 'Create shift', exact: true })).toBeVisible();
+  await expect(editor(page).getByRole('combobox', { name: 'Staff', exact: true }).locator('option'))
+    .toHaveText(['Select staff', 'Mock Manager', 'Mock Staff']);
+  await expectDraft(editor(page), MANAGER, 'MANAGER', '09:00', '17:00');
 }
 async function closeEditor(page: Page) {
   await page.getByRole('button', { name: 'Close shift editor', exact: true }).click();
@@ -316,7 +319,7 @@ test.describe('Calendar pending-save editor custody', () => {
     expect(second.data.shifts).toEqual(expect.arrayContaining([expect.objectContaining(A), expect.objectContaining(B)]));
     // The unchanged second submission must clean its own editor normally.
     await openCreate(page);
-    await expectDraft(editor(page), STAFF, 'STAFF', '09:00', '17:00');
+    await expectDraft(editor(page), MANAGER, 'MANAGER', '09:00', '17:00');
     await closeEditor(page);
     await page.reload();
     await expectBoardShift(page, held.payload.data.created[0].shiftId, '09:00', '17:00');
