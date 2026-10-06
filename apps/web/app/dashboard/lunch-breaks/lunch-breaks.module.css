@@ -40,6 +40,12 @@
 
 @media (max-width: 768px) {
   .workspace { gap: 12px; }
+  .workspace button { min-height: 44px; min-width: 44px; }
+  .workspace input:not([type="checkbox"]):not([type="radio"]),
+  .workspace select { min-width: 0; min-height: 44px; font-size: 16px !important; }
+  .workspace label:has(input[type="checkbox"]),
+  .workspace label:has(input[type="radio"]) { min-height: 44px; }
+  .workspace summary { min-height: 44px; padding-block: 12px; }
   .locationCard { padding: 10px 12px; }
   .locationLabel { max-width: none; grid-template-columns: auto minmax(0, 1fr); align-items: center; gap: 4px 10px; font-size: 0.75rem; }
   .locationLabel select { grid-column: 2; grid-row: 1; min-height: 44px; font-size: 16px !important; }
