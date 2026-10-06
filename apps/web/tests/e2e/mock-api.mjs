@@ -1451,6 +1451,10 @@ const server = http.createServer(async (req, res) => {
       sendJson(res, 200, { ok: true });
       return;
     }
+    if (pathname === '/v2/ready' && req.method === 'GET') {
+      sendJson(res, 200, { status: 'ok', service: 'api-v2' }, { date: new Date().toUTCString() });
+      return;
+    }
     if ((pathname === '/health' || pathname === '/v1/health') && req.method === 'GET') {
       sendJson(res, 200, healthPayload(), { date: new Date().toUTCString() });
       return;

@@ -108,6 +108,10 @@ const nextConfig = {
             ...(localE2eLegacyApiUrl ? [{
                 source: '/api/v1/:path*',
                 destination: `${localE2eLegacyApiUrl}/:path*`,
+            }, {
+                // The local server runs without Caddy’s production health mapping.
+                source: '/api/health',
+                destination: `${internalApiV2Url}/ready`,
             }] : []),
         ];
     },

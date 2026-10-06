@@ -110,6 +110,11 @@ describe('Next.js production security configuration', () => {
       source: '/api/v1/:path*',
       destination: 'http://mock-api:3100/v1/:path*',
     });
+    expect(development.rewrites).toContainEqual({
+      source: '/api/health',
+      destination: 'http://api-v2:3002/v2/ready',
+    });
+    expect(production.rewrites).not.toContainEqual(expect.objectContaining({ source: '/api/health' }));
     expect(production.rewrites).not.toContainEqual(expect.objectContaining({ source: '/api/v1/:path*' }));
   });
 

@@ -2062,7 +2062,6 @@ export default function LunchBreaksPage() {
 
           <div className={styles.controls}>
             <div className={styles.dateNavigation}>
-              <Button variant="outline" size="sm" aria-label="Prev Day" onClick={() => selectDayScope(shiftDate(selectedDate, -1), selectedLocationId)}><span className={styles.dayArrow} aria-hidden="true">‹</span><span className={styles.dayLabel}>Prev Day</span></Button>
               <input
                 type="date"
                 aria-label="Lunch and break plan date"
@@ -2077,6 +2076,7 @@ export default function LunchBreaksPage() {
                   fontSize: '0.8rem',
                 }}
               />
+              <Button variant="outline" size="sm" aria-label="Prev Day" onClick={() => selectDayScope(shiftDate(selectedDate, -1), selectedLocationId)}><span className={styles.dayArrow} aria-hidden="true">‹</span><span className={styles.dayLabel}>Prev Day</span></Button>
               <Button variant="outline" size="sm" onClick={() => selectDayScope(serverToday, selectedLocationId)}>Today</Button>
               <Button variant="outline" size="sm" aria-label="Next Day" onClick={() => selectDayScope(shiftDate(selectedDate, 1), selectedLocationId)}><span className={styles.dayArrow} aria-hidden="true">›</span><span className={styles.dayLabel}>Next Day</span></Button>
             </div>
@@ -2954,16 +2954,16 @@ export default function LunchBreaksPage() {
           <div style={{ minWidth: 0, minHeight: 0, display: 'grid', gap: '0.85rem' }}>
             <div className="planner-header" style={{ padding: '0 0.1rem' }}>
               <div style={{ minWidth: 0, display: 'grid', gap: 6 }}>
-                <div className="workspace-kicker">Planner flow</div>
+                <div className={`workspace-kicker ${styles.mobileRedundant}`}>Planner flow</div>
                 <h1
                   ref={isAutoMode ? focusGuideStepHeading : undefined}
                   tabIndex={isAutoMode ? -1 : undefined}
-                  className="workspace-title"
-                  style={{ fontSize: '1.55rem', margin: 0, borderRadius: 6 }}
+                  className={`workspace-title ${styles.canvasTitle}`}
+                  style={{ margin: 0, borderRadius: 6 }}
                 >
                   Lunch & break canvas for {selectedDateLabel}
                 </h1>
-                <p className="workspace-subtitle" style={{ margin: 0 }}>
+                <p className={`workspace-subtitle ${styles.mobileRedundant}`} style={{ margin: 0 }}>
                   {isAutoMode ? 'Auto mode uses schedule data as the source of truth.' : 'Manual mode turns the canvas into a draft scheduler.'}
                 </p>
               </div>
