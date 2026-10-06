@@ -991,10 +991,27 @@ test.describe('Authenticated scheduling SaaS readiness', { tag: '@desktop-chromi
       postDeleteStatusReads += 1;
       await route.continue();
     });
+    // Retain the real DELETE bytes before the application clears this document.
+    let deletionResponseBody: Buffer | undefined;
+    let deletionRequests = 0;
+    await page.route('**/api/v2/admin/account', async (route) => {
+      if (route.request().method() !== 'DELETE') {
+        await route.continue();
+        return;
+      }
+      deletionRequests += 1;
+      const response = await route.fetch({ maxRedirects: 0, maxRetries: 0 });
+      deletionResponseBody = await response.body();
+      await route.fulfill({ response, body: deletionResponseBody });
+    });
     const deletionReceiptPromise = page.waitForResponse((response) => (
       response.request().method() === 'DELETE'
       && new URL(response.url()).pathname === '/api/v2/admin/account'
-    )).then(async (response) => response.json() as Promise<{
+    )).then((response) => {
+      expect(response.status()).toBe(200);
+      expect(deletionRequests).toBe(1);
+      expect(deletionResponseBody).toBeDefined();
+      return JSON.parse(deletionResponseBody!.toString('utf8')) as {
       id: string;
       slug: string;
       deletionRequestedAt: string;
@@ -1004,7 +1021,8 @@ test.describe('Authenticated scheduling SaaS readiness', { tag: '@desktop-chromi
         securityLogEligibleAt: string;
         fullDatabasePurgeEligibleAt: string;
       };
-    }>);
+      };
+    });
     const localLogoutResponsePromise = page.waitForResponse((response) => (
       response.request().method() === 'POST'
       && new URL(response.url()).pathname === '/auth/logout'
@@ -1107,7 +1125,8 @@ test.describe('Authenticated scheduling SaaS readiness', { tag: '@desktop-chromi
     await page.getByRole('button', { name: 'Continue to LunchLineup' }).click();
 
     await expect(page).toHaveURL(/\/dashboard$/);
-    await expect(page.getByText('E2E Operations Diner', { exact: true })).toBeVisible();
+    await expect(page.getByRole('main').getByRole('heading', { name: 'Your dashboard', exact: true })).toBeVisible();
+    await expect(page.getByRole('main').getByText('E2E Operations Diner', { exact: true })).toBeVisible();
   });
 });
 
