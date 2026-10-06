@@ -38,6 +38,45 @@ type RetainedMutation<T> = {
   originalHeaders: Record<string, string>; deliveryHeaders: Record<string, string>;
 };
 
+type BrowserBodyReceipt = {
+  url: string; key: string; method: string; status: number | null;
+  bytes: number | null; bodyBase64: string | null; complete: boolean; error: string | null;
+};
+type BrowserBodyObserver = { receipts: BrowserBodyReceipt[]; errors: string[] };
+type ObservedCalendarWindow = Window & { __calendarBodyObserver?: BrowserBodyObserver };
+
+async function installBrowserBodyObserver(page: Page) {
+  await page.addInitScript(() => {
+    const observer: BrowserBodyObserver = { receipts: [], errors: [] };
+    (window as ObservedCalendarWindow).__calendarBodyObserver = observer;
+    const originalFetch = window.fetch.bind(window);
+    window.fetch = (input, init) => {
+      // Preserve the application's original fetch Promise and Response. The
+      // observer reads only a clone, without delaying the application's reader.
+      const pending = originalFetch(input, init);
+      try {
+        const request = input instanceof Request ? input : null;
+        const url = new URL(request ? request.url : String(input), window.location.href);
+        const method = (init?.method ?? request?.method ?? 'GET').toUpperCase();
+        if (method === 'POST' && url.origin === window.location.origin
+          && /^\/api\/v2\/(schedules\/[^/]+\/change-sets|locations\/[^/]+\/schedules)$/.test(url.pathname)) {
+          const receipt: BrowserBodyReceipt = { url: url.href, key: new Headers(init?.headers ?? request?.headers).get('idempotency-key') ?? '',
+            method, status: null, bytes: null, bodyBase64: null, complete: false, error: null };
+          observer.receipts.push(receipt);
+          void pending.then(async response => {
+            receipt.status = response.status;
+            const bytes = new Uint8Array(await response.clone().arrayBuffer());
+            receipt.bytes = bytes.length;
+            receipt.bodyBase64 = btoa(Array.from(bytes, value => String.fromCharCode(value)).join(''));
+          }).catch(error => { receipt.error = String(error); })
+            .finally(() => { receipt.complete = true; });
+        }
+      } catch (error) { observer.errors.push(String(error)); }
+      return pending;
+    };
+  });
+}
+
 async function holdMutation<T>(page: Page, endpoint: string, pauseBeforeFetch = false) {
   const observed = deferred<IssuedRequest>();
   const retained = deferred<RetainedMutation<T>>();
@@ -220,18 +259,40 @@ async function expectBoardShift(page: Page, shiftId: string, start: string, end:
   await expect(control).toHaveAttribute('aria-label', new RegExp(`shift, ${start} to ${end}$`));
 }
 async function deliver<T>(page: Page, gate: Awaited<ReturnType<typeof holdMutation<T>>>, status: number) {
+  const held = await gate.retained;
+  const url = new URL(held.request.path, page.url()).href;
   const response = page.waitForResponse(response => response.request().method() === 'POST'
-    && response.status() === status && /\/api\/v2\/(schedules\/[^/]+\/change-sets|locations\/[^/]+\/schedules)$/.test(new URL(response.url()).pathname));
+    && response.url() === url && response.request().headers()['idempotency-key'] === held.request.key);
   gate.release();
   const delivered = await response;
+  expect(delivered.status()).toBe(status);
   if (status === 412) {
     const expected = diagnostics.get(page)?.expectedStaleRefusal;
     if (!expected || delivered.url() !== expected.url) throw new Error('Unbound stale-refusal browser response.');
     expect(delivered.status()).toBe(expected.status);
     expected.actualResponse = { url: delivered.url(), status: delivered.status() };
   }
-  expect(await delivered.finished(), 'held browser response completed without transport error').toBeNull();
   await gate.finished;
+  // The intercepted request's Playwright completion signal can stay pending
+  // after the app consumes its JSON. Prove decoded browser body completion via
+  // the native fetch clone instead; do not claim CDP completion from this proof.
+  let observed: BrowserBodyObserver = { receipts: [], errors: [] };
+  const expected: BrowserBodyObserver = { receipts: [{ url, key: held.request.key, method: 'POST', status,
+    bytes: held.bytes.length, bodyBase64: held.bytes.toString('base64'), complete: true, error: null }], errors: [] };
+  try {
+    await expect.poll(async () => {
+      observed = await page.evaluate(({ url, key }) => {
+        const observer = (window as ObservedCalendarWindow).__calendarBodyObserver;
+        if (!observer) throw new Error('Browser calendar body observer was not installed.');
+        return { receipts: observer.receipts.filter(receipt => receipt.url === url && receipt.key === key).map(receipt => ({ ...receipt })),
+          errors: [...observer.errors] };
+      }, { url, key: held.request.key });
+      return observed;
+    }, { message: 'exactly one complete decoded browser body for the issued mutation' }).toEqual(expected);
+  } finally {
+    await test.info().attach('calendar-browser-consumed-response', { body: JSON.stringify({ expected, observed,
+      observation: 'Native browser fetch clone arrayBuffer completion; CDP loadingFinished is not claimed.' }), contentType: 'application/json' });
+  }
 }
 async function attachBoard(page: Page, label: string) {
   const result = await board(page);
@@ -258,6 +319,7 @@ test.describe('Calendar pending-save editor custody', () => {
   test.skip(!mockMode, 'These cases qualify local mock ordering only; native counterparts need separate reviewed target fixtures.');
   test.setTimeout(60_000);
   test.beforeEach(async ({ page }) => {
+    await installBrowserBodyObserver(page);
     const values: BrowserDiagnostics = { pageErrors: [], consoleErrors: [] };
     diagnostics.set(page, values);
     page.on('pageerror', error => values.pageErrors.push(error.message));
