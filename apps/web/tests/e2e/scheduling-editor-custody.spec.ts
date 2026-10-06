@@ -33,7 +33,10 @@ function deferred<T>() {
 }
 
 type IssuedRequest = { path: string; key: string; ifMatch: string | null; body: unknown };
-type RetainedMutation<T> = { request: IssuedRequest; status: number; bytes: Buffer; payload: T };
+type RetainedMutation<T> = {
+  request: IssuedRequest; status: number; bytes: Buffer; payload: T;
+  originalHeaders: Record<string, string>; deliveryHeaders: Record<string, string>;
+};
 
 async function holdMutation<T>(page: Page, endpoint: string, pauseBeforeFetch = false) {
   const observed = deferred<IssuedRequest>();
@@ -63,12 +66,21 @@ async function holdMutation<T>(page: Page, endpoint: string, pauseBeforeFetch = 
       await forward.promise;
       response = await route.fetch({ maxRetries: 0, timeout: 10_000 });
       const bytes = await response.body();
-      record = { request: issued, status: response.status(), bytes, payload: JSON.parse(bytes.toString('utf8')) as T };
+      const originalHeaders = response.headers();
+      // APIResponse.body() supplies decoded bytes. Reusing compression/chunking
+      // headers with those bytes can leave the intercepted browser request open.
+      // Preserve application headers; explicitly frame the retained decoded body.
+      const transportHeaders = new Set(['content-encoding', 'transfer-encoding', 'content-length', 'connection', 'keep-alive']);
+      const deliveryHeaders = Object.fromEntries(Object.entries(originalHeaders)
+        .filter(([name]) => !transportHeaders.has(name.toLowerCase())));
+      deliveryHeaders['content-length'] = String(bytes.length);
+      record = { request: issued, status: response.status(), bytes, payload: JSON.parse(bytes.toString('utf8')) as T,
+        originalHeaders, deliveryHeaders };
       retained.resolve(record);
       await delivery.promise;
-      // Deliver the actual retained status, headers and complete body. Do not
-      // fabricate a success or re-read a browser protocol resource after navigation.
-      await route.fulfill({ response, body: bytes });
+      // Deliver the actual status and complete retained body with matching
+      // framing. Application headers and the original headers remain evidence.
+      await route.fulfill({ status: record.status, headers: record.deliveryHeaders, body: bytes });
       await response.dispose();
       response = undefined;
       finished.resolve();
@@ -114,7 +126,8 @@ async function holdMutation<T>(page: Page, endpoint: string, pauseBeforeFetch = 
       await settleHandlers();
       if (record) await test.info().attach('held-calendar-mutation', {
         body: JSON.stringify({ request: record.request, status: record.status, bytes: record.bytes.length,
-          bodyBase64: record.bytes.toString('base64') }), contentType: 'application/json',
+          bodyBase64: record.bytes.toString('base64'), originalHeaders: record.originalHeaders,
+          deliveryHeaders: record.deliveryHeaders }), contentType: 'application/json',
       });
       if (cleanupFailures.length) {
         await test.info().attach('calendar-gate-cleanup-failures', {
@@ -217,7 +230,7 @@ async function deliver<T>(page: Page, gate: Awaited<ReturnType<typeof holdMutati
     expect(delivered.status()).toBe(expected.status);
     expected.actualResponse = { url: delivered.url(), status: delivered.status() };
   }
-  await delivered.finished();
+  expect(await delivered.finished(), 'held browser response completed without transport error').toBeNull();
   await gate.finished;
 }
 async function attachBoard(page: Page, label: string) {
