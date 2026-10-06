@@ -78,7 +78,9 @@ export function TimeCardCorrectionPanel({ card, onCancel, onSaved }: TimeCardCor
         try {
             const candidates = timeCardLocalInputCandidates(value, timeZone);
             setAmbiguities((current) => ({ ...current, [fieldKey]: candidates }));
-            setError(null);
+            // Keep the alert in place while focus moves to Save. Removing it
+            // on blur can move the button between pointer down and pointer up.
+            // The next submission clears the error before validating again.
         } catch (candidateError) {
             setError(candidateError instanceof Error ? candidateError.message : 'Invalid local date/time.');
         }

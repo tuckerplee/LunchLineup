@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import type { TimeCardCorrectionRequest, TimeCardRecord } from '@lunchlineup/api-contract';
 import type { Locator, Response } from '@playwright/test';
 import { expect, test, type Page } from './qa-isolation-fixture';
@@ -18,7 +19,90 @@ type Adapter = Awaited<ReturnType<typeof installTimeCardCorrectionAdapter>>;
 type Diagnostics = { errors: string[]; console: Array<{ type: string; text: string; url: string; line: number; column: number }>; responses: Array<{ url: string; status: number; code: string; sha256: string }> };
 const diagnostics = new WeakMap<Page, Diagnostics>();
 
+type BrowserBodyReceipt = {
+  url: string; method: string; sequence: number; probe: boolean; requestBodySha256: string | null;
+  status: number | null; bytes: number | null; bodyBase64: string | null; complete: boolean; error: string | null;
+};
+type BrowserBodyObserver = { receipts: BrowserBodyReceipt[]; errors: string[] };
+type ObservedTimeCardWindow = Window & { __timeCardBodyObserver?: BrowserBodyObserver };
+
+async function installBrowserBodyObserver(page: Page) {
+  await page.addInitScript(() => {
+    const observer: BrowserBodyObserver = { receipts: [], errors: [] };
+    (window as ObservedTimeCardWindow).__timeCardBodyObserver = observer;
+    const originalFetch = window.fetch.bind(window);
+    let sequence = 0;
+    window.fetch = (input, init) => {
+      // Return the identical original Promise and Response to the application.
+      // Read only a clone, with no await before returning its original Promise.
+      const pending = originalFetch(input, init);
+      try {
+        const request = input instanceof Request ? input : null;
+        const url = new URL(request ? request.url : String(input), window.location.href);
+        const method = (init?.method ?? request?.method ?? 'GET').toUpperCase();
+        if (method === 'PATCH' && url.origin === window.location.origin
+          && /^\/api\/v2\/time-cards\/[^/]+\/correction$/.test(url.pathname)) {
+          const receipt: BrowserBodyReceipt = { url: url.href, method, sequence: ++sequence,
+            probe: new Headers(init?.headers ?? request?.headers).has('x-timecard-fixture-probe'),
+            requestBodySha256: null, status: null, bytes: null, bodyBase64: null, complete: false, error: null };
+          observer.receipts.push(receipt);
+          // Actual jsonWriteInit and adapter probe both send a serialized string
+          // in init.body. Unsupported inputs fail this observer, never the fetch.
+          const requestBody = init?.body;
+          void pending.then(async response => {
+            receipt.status = response.status;
+            const clone = response.clone();
+            if (typeof requestBody !== 'string') throw new Error('TimeCard observer requires the actual serialized request body');
+            const requestBytes = new TextEncoder().encode(requestBody);
+            const [digest, buffer] = await Promise.all([
+              crypto.subtle.digest('SHA-256', requestBytes), clone.arrayBuffer(),
+            ]);
+            receipt.requestBodySha256 = Array.from(new Uint8Array(digest), value => value.toString(16).padStart(2, '0')).join('');
+            const bytes = new Uint8Array(buffer);
+            receipt.bytes = bytes.length;
+            receipt.bodyBase64 = btoa(Array.from(bytes, value => String.fromCharCode(value)).join(''));
+          }).catch(error => { receipt.error = String(error); })
+            .finally(() => { receipt.complete = true; });
+        }
+      } catch (error) { observer.errors.push(String(error)); }
+      return pending;
+    };
+  });
+}
+async function exactBrowserDecodedBody(page: Page, adapter: Adapter, row: ResponseRecord, received: Response) {
+  const url = new URL(CORRECTION_URL, page.url()).href;
+  const request = received.request();
+  expect(received.url()).toBe(url); expect(received.status()).toBe(row.status);
+  expect(request.method()).toBe('PATCH');
+  expect(Boolean(request.headers()['x-timecard-fixture-probe'])).toBe(row.probe);
+  const payload = request.postData();
+  if (payload === null) throw new Error('Issued correction request body is unavailable');
+  expect(JSON.parse(payload)).toEqual(row.body);
+  const sequence = adapter.ledger.filter(record => record.method === 'PATCH').indexOf(row) + 1;
+  expect(sequence, 'actual issued PATCH order including independent probes').toBeGreaterThan(0);
+  const requestBodySha256 = createHash('sha256').update(Buffer.from(payload, 'utf8')).digest('hex');
+  const expected: BrowserBodyObserver = { receipts: [{ url, method: 'PATCH', sequence, probe: row.probe,
+    requestBodySha256, status: row.status, bytes: row.bytes.length, bodyBase64: row.bytes.toString('base64'),
+    complete: true, error: null }], errors: [] };
+  let observed: BrowserBodyObserver = { receipts: [], errors: [] };
+  try {
+    await expect.poll(async () => {
+      observed = await page.evaluate(sequence => {
+        const observer = (window as ObservedTimeCardWindow).__timeCardBodyObserver;
+        if (!observer) throw new Error('Browser TimeCard body observer was not installed');
+        return { receipts: observer.receipts.filter(receipt => receipt.sequence === sequence).map(receipt => ({ ...receipt })),
+          errors: [...observer.errors] };
+      }, sequence);
+      return observed;
+    }, { message: 'one complete native-fetch-clone response bound to issued correction payload and sequence' }).toEqual(expected);
+  } finally {
+    await test.info().attach(`timecard-browser-decoded-response-${sequence}`, { contentType: 'application/json',
+      body: JSON.stringify({ expected, observed, observation: 'Native browser fetch clone complete decoded bytes; CDP loadingFinished/body retention is not claimed.' }) });
+  }
+}
+
 async function prepare(page: Page, open: boolean) {
+  await installBrowserBodyObserver(page);
   const adapter = await installTimeCardCorrectionAdapter(page, open);
   try {
     await loginAsSeedAdmin(page, '/dashboard/time-cards');
@@ -105,12 +189,12 @@ async function readback(adapter: Adapter, id: string) {
   expect(reply.originalHeaders['content-type']).toContain('application/json');
   return reply.payload as TimeCardRecord;
 }
-async function noteRefusal(page: Page, row: ResponseRecord, received: Response) {
+async function noteRefusal(page: Page, row: ResponseRecord, received: Response, adapter: Adapter) {
   expect([422, 409]).toContain(row.status);
   expect(received.url()).toBe(new URL(CORRECTION_URL, page.url()).href);
   expect(received.status()).toBe(row.status);
   // The browser must receive the exact decoded bytes retained for fulfillment.
-  expect(await received.body()).toEqual(row.bytes);
+  await exactBrowserDecodedBody(page, adapter, row, received);
   const payload = JSON.parse(row.bytes.toString('utf8')) as { code: string };
   expect(payload.code).toBe(row.status === 422 ? 'invalid_time_card_input' : 'concurrent_time_card_change');
   diagnostics.get(page)!.responses.push({ url: received.url(), status: row.status, code: payload.code, sha256: row.sha256 });
@@ -268,7 +352,7 @@ test.describe('Time Card correction browser custody', () => {
         expect(adapter.ledger.filter(record => record.method !== 'GET' && !record.probe)).toHaveLength(1);
       } finally { held.release(); }
       await held.finished; const acknowledged = await delivered; expect(acknowledged.status()).toBe(200);
-      expect(await acknowledged.body()).toEqual(patchRows(adapter.ledger)[0].bytes);
+      await exactBrowserDecodedBody(page, adapter, patchRows(adapter.ledger)[0], acknowledged);
       await expect(page.getByRole('status').filter({ hasText: 'Time card corrected.' })).toBeVisible();
       await enabled(page, false);
       const saved = await readback(adapter, CARD);
@@ -303,7 +387,7 @@ test.describe('Time Card correction browser custody', () => {
         expect(refused.status).toBe(422); expect(refused.effects).toBe(0);
         await blocked(page, false);
       } finally { held.release(); }
-      await held.finished; await noteRefusal(page, refused, await delivered422);
+      await held.finished; await noteRefusal(page, refused, await delivered422, adapter);
       await expect(panel.getByRole('alert')).toHaveText('Clock out must be after clock in.');
       await expect(panel.getByRole('textbox', { name: 'Correction reason', exact: true })).toHaveValue(reason);
       await expect(panel.getByLabel('Clock out', { exact: true })).toHaveValue(localInput(invalid));
@@ -322,7 +406,7 @@ test.describe('Time Card correction browser custody', () => {
       const response409 = await delivered409;
       const stale = patchRows(adapter.ledger).at(-1)!;
       await exactPayload(stale, { clockInAt: before.clockInAt, clockOutAt: editedEnd, expectedUpdatedAt: before.updatedAt, reason });
-      await noteRefusal(page, stale, response409);
+      await noteRefusal(page, stale, response409, adapter);
       await expect(panel.getByRole('alert')).toHaveText('This time card changed while you were editing it. Refresh and try again.');
       await expect(panel.getByRole('textbox', { name: 'Correction reason', exact: true })).toHaveValue(reason);
       await expect(panel.getByLabel('Clock out', { exact: true })).toHaveValue(localInput(editedEnd));
