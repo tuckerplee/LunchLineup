@@ -33,6 +33,17 @@
 - `self-security-current-state.spec.ts`: 76 controlled-state cases using actual AuthService and RBAC for current Tenant/PIN/session-policy decisions, final role/list/proof waits, ordinary-PIN MFA observations, forced-PIN recovery, and staged retry/rollback. These transaction doubles do not qualify PostgreSQL or Redis execution.
 - `serializable-mutation.spec.ts`: focused tests for one recognized whole-transaction retry, controlled conflict after the second recognized collision, and immediate propagation of unrelated errors.
 - `serializable-mutation.ts`: shared two-attempt Serializable mutation runner used by auth, user, and admin security writes so retries restart authorization and audit work without duplicating committed audit rows.
+- `admin-pin-current-authority.spec.ts`: admin PIN reset current-authority, bounded retry and postcommit cleanup regressions.
+- `current-mutation.ts`: canonical retained mutation actors, current session policy and bounded trusted MFA observations.
+- `legacy-current-mutation.spec.ts`: retained current-mutation wrapper, lock-order, finite-proof and bounded recovery regressions.
+- `mfa-enrollment-durable-authority.spec.ts`: durable session-bound MFA enrollment generation, consumption and expiry regressions.
+- `mfa-policy-serialization.spec.ts`: committed MFA policy and single-use proof-consumption regressions.
+- `onboarding-signup.service.spec.ts`: onboarding email-identity binding regressions against the current claimed account.
+- `password-reset-current-authority.spec.ts`: password reset issuance, recipient binding, expiry and bounded conflict-retry regressions.
+- `refresh-policy-serialization.spec.ts`: refresh credential selector, committed policy and family-replay isolation regressions.
+- `role-owner-authority.fixture.ts`: staged local authority and effect fixtures for actual RBAC role owners.
+- `role-owner-current-authority.spec.ts`: role mutation current-authority, delegation, configured bounds and read-only directory regressions.
+
 
 ## Notes
 

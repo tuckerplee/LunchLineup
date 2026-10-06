@@ -35,15 +35,15 @@ SOURCE_BYTES = 8388608
 DRIVER_PATH = "apps/worker/tests/native/_billing_B7_owned_driver.py"
 RUNTIME_PINS = {
     "apps/worker/src/billing_usage.py": "778283496621bf4694c7062f3ad6954b9aa5ac3243403c67ee084f6bcddc9729",
-    "apps/worker/tests/native/_billing_native_target.py": "99a9560e88ff2c9fb3be20fbd05c75ab19f0647bfb46950b482e1632dedf8ee0",
-    "apps/worker/tests/native/_billing_B7_worker_session.py": "707511f2b27b99361aebfa49da7f297d65ae248ae2a89e50f6dfc22c8b9a4383",
+    "apps/worker/tests/native/_billing_native_target.py": "ea2d53d1564991d048694d4b49b2b8fb61cb587af8d1c436b2d6acdd421a4f23",
+    "apps/worker/tests/native/_billing_B7_worker_session.py": "0205576e10494366959f85cdfbb018d3f1096c76d02926224dd397acfbba62da",
     "apps/worker/tests/native/_billing_B7_phase_journal.py": "82ec29aed709a789bb0d5245060a87e8e59cf2ae91aa536c6173a4d9d6bd520d",
     "apps/api/test/native/billing-api-rotation.native.ts": "aa7246ce4b29197a38544e8304e23aed59dbd67db1c553d707b597f38f9a1934",
     "apps/api/vitest.billing-native.config.ts": "e8b334e28c009e272321ee691661a9384dbde52a6570855ab0afe95365e63877",
     "apps/api/tsconfig.billing-native.json": "71b750bde8ef666a59cc4d2a80525aa82e9d975e57b78b5d83018ebab4f86a6f",
 }
 BASE_PINS = {
-    "packages/db/prisma/schema.prisma": "3e339582af46c4a5b9b878d06de37cd150d7e32b2721c5b1eddec0f580a1b348",
+    "packages/db/prisma/schema.prisma": "08a4febaeffb80bd04b36b78bfd96881f14df0bd7d0c84b70c672a3ccb1ad20d",
     "apps/api/src/billing/stripe-meter-error.service.ts": "848a138658063007b237c7c48514523deb9190fcb26d63e7d38f1e397ab907fe",
     "apps/api/src/database/tenant-prisma.service.ts": "0a4a9040cf2b32de30552d2725c949c00b44816b51d83e230670e6f409ec37d1",
     "apps/api/src/common/secure-http-client.ts": "894e9a851767860b504539488d2e0914b24bcf4a4cd3c73548bf18010f54d961",

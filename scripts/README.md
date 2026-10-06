@@ -3,6 +3,11 @@
 ## Files
 
 - `README.md`: this scripts folder guide.
+- `read-internal-ci-migrations.mjs`: read-only migration-ledger and restricted-role proof bound to the internal CI source and exact disposable database target.
+- `verify-action-acceptance.mjs`: source-only action/catalog/owner/test/browser inventory verifier; never grants acceptance or release qualification.
+- `verify-action-acceptance.test.mjs`: controlled inventory parser and malformed source/owner/test selection regression fixtures.
+- `verify-development-browser-report.mjs`: exact disposable browser selection and first-attempt complete-report validator with lifecycle, count and controller identity checks.
+- `write-internal-beta-browser-lane-details.mjs`: canonical cohort evidence writer that validates exact case contracts, lane timing, source/run identity and owned media hashes.
 - `activate-retained-rollback.sh`: remote-only rollback activator that hash-verifies staged inputs plus the protected launch-proof URI channel and signed digest-bound old-release compatibility proof, binds pre-promotion failure checks to the exact retained candidate SHA, materializes immutable service-group-readable SHA-addressed releases, atomically recovers `/opt/lunchlineup/current`, preserves an exact target commit when the retained entrypoint fails after promotion, validates its canonical release marker, preserves the previous release pointer, and prunes only inactive releases within the bounded retention count.
 - `apply-db-migrations.mjs`: applies the Prisma schema and raw SQL migrations in deployment order through the repository-local Prisma CLI.
 - `artillery-smoke.yml`: Artillery smoke-load scenario with 200-only response assertions, zero failed-expectation tolerance, request/response completeness checks, and a p99 latency gate, executed through the exact digest-pinned official runner image.

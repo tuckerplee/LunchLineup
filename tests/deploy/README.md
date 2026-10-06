@@ -3,6 +3,12 @@
 ## Files
 
 - `README.md`: this deploy test folder guide.
+- `action-acceptance-catalog-owner.test.mjs`: source inventory regressions requiring each catalog operation to match its own literal declaration and owner.
+- `canonical-browser-lane-details.test.mjs`: synthetic canonical cohort receipt, run identity, lifecycle and owned-media evidence validation regressions.
+- `development-browser-report.test.mjs`: exact selection, sequential worker lifecycle, no-skip/no-retry report and CLI identity/hash regressions.
+- `internal-ci-migration-readback.test.mjs`: exact disposable database/source ledger and restricted-role readback validation regressions.
+- `native-api-observability.test.mjs`: source-structural observability verifier and host/container rule-fixture ownership regressions; not live promtool qualification.
+- `otp-secret-wiring.test.mjs`: Compose and launch-validation regressions requiring an explicit bounded OTP HMAC secret.
 - `development-browser-cleanup.test.mjs`: executes the actual cleanup Bash function with isolated Docker/Compose and port-probe fixtures, covering exact owned-resource absence, closed ports, preserved primary failures, and fail-closed runtime retention/removal receipts without containers or external access.
 - `development-browser-attachments.test.mjs`: executes the actual post-start admission against private adapter fixtures, binding service/container/image/network identities, rejecting unexpected attachments and usable default routes, and retaining hashed raw routes without external probes.
 - `development-browser-network.test.mjs`: fixtures the actual runtime Compose transformation and private-network preparation, denying external egress, shared/implicit networks, unsafe capabilities and listeners; verifies Netavark/store identity and exact internal network inspection before application startup without containers or external access.

@@ -37,6 +37,12 @@
 - `payroll.controller.spec.ts`: route permission metadata, delegation, and CSV attachment header tests.
 - `payroll.controller.ts`: thin versioned HTTP routing and explicit payroll permission metadata.
 - `payroll.module.ts`: NestJS payroll controller/service registration and billing dependency wiring.
+- `payroll-current-authority.spec.ts`: retained payroll owner current-authority, staged rollback and fresh receipt-recovery regressions.
+- `payroll-domain-authority.fixture.ts`: positive scoped RBAC/current-policy fixtures for existing payroll domain regressions.
+- `payroll-export-read-authority.spec.ts`: populated retained export read-authority, pagination and reconciliation regressions.
+- `payroll-period-read-authority.spec.ts`: retained period list/detail read-authority regressions preserving historical entries, cards and exports.
+- `payroll-policy-read-authority.spec.ts`: retained policy list/latest read-authority and private-cursor regressions with historical creator controls.
+
 
 ## Contract
 

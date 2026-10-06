@@ -12,3 +12,4 @@
 - `validation.test.ts`: cursor, correction-window, and public serialization regression coverage.
 
 This module owns the API-02 Time Card surface directly. It accepts and returns only public UUIDs, retains durable v1-compatible clock-in operation identities during cutover, and never calls the retained application bridge. Reads and corrections require paid entitlement; an existing open time card may always be recovered and clocked out.
+- `time-current-authority.test.ts`: native Time current-authority, finite lifetime and exact financial receipt regressions.

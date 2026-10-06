@@ -5,6 +5,7 @@ This folder contains repo-level tests for the LunchLineup rebuild. These tests r
 ## Files
 
 - `README.md`: this test folder guide.
+- `fixtures/`: closed current-authority adapters for availability imports and payroll export, policy and period read source regressions.
 - `hygiene/production-launch-env.test.mjs`: verifies public launch runtime env validation rejects smoke-only domains, test payment keys, insecure public URLs, unsafe public API/OIDC launch config, and local secret paths.
 - `hygiene/repository-hygiene.test.mjs`: checks secret-file hygiene, public backup exposure, generated artifact ignore rules, CI wiring, and documentation coverage.
 - `migration/legacy-parity-inventory.test.mjs`: verifies the legacy PHP source and TypeScript platform expose the required migration workflows and SaaS controls.

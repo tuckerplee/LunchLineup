@@ -1,17 +1,36 @@
 # Native billing payload fixtures — source and runtime contracts
 
-Current disposition: source prepared for explicit syntax/type checks; native execution held. Nothing in this directory or its
-target receipt authorizes runtime admission, source integration, installation,
-a VM start, CI promotion, provider access, or application launch. VM4014 is
-entirely excluded. VM107's stopped/onboot/launch-hook hold and VM218's disabled
-CI policy remain subject to their current owners and the unresolved QA34
-storage measurement incident.
+Current disposition (2026-10-05): VM218 native infrastructure is cleared by the
+installed owner runtime. The authoritative workspace handoff is
+`notes/2026-10-05-native-runtime-owner-handoff.md`; it records 111 controller
+tests, physical isolation, the real 180-second watchdog and automatic cleanup.
+The installed controller is `8875c56e18b4b54b48ee3a745ab801399ba030dc` and its
+admitted application source is `d18a1ad56dc7ad183d6ca535c00becf9376904de`.
+These infrastructure results do not establish native B1–B8 application results.
+The sole application QA owner remains task
+`01a086de-26ad-7bd1-b933-60714401577d`, “Fix settings and verify release.”
 
-The infrastructure owner must clear that incident and admit an isolated,
-bounded, job-private target before these fixtures can execute. Physical backing
-storage, fresh capacity, enforced job limits, overall deadlines and cleanup
-ownership require independent infrastructure evidence. A loopback address or
-a self-authored JSON receipt cannot establish isolation or permission.
+This checkout composes the reviewed schema/helper pin correction with later
+application repairs. It is a local candidate, not the installed source profile.
+A newer candidate requires deliberate owner-selected authenticated source refs,
+receive evidence, matching preparation inputs and fresh full preparation before
+execution. Do not silently substitute this checkout into the existing starter.
+Generic CI remains disabled; VM4014 is entirely excluded, and VM107 remains
+stopped with its onboot/start-hook/launch hold intact. Source or target receipts
+do not authorize source installation, provider access or application launch.
+Fresh physical backing, parent capacity, enforced job limits and exclusive QA
+ownership must still be verified at each admitted execution.
+
+## Files
+
+- `README.md`: source contracts, current clearance and qualification limits.
+- `BILLING-B7-CONTROLLER.md`: lease, child-process and terminal owner protocol.
+- `_billing_native_target.py`: validates explicit target identity, source pins, context routines and migration receipts before loading worker bytes.
+- `billing_usage_stateful.py`: ten explicit native unittest methods covering 21 serial billing scenarios.
+- `_billing_native_transactions.py`: actual connection ownership, commit gates, native lock observation and rollback probes.
+- `_billing_B7_worker_session.py`: owns the initial and resend worker phases plus exact fixture-row cleanup.
+- `_billing_B7_phase_journal.py`: publishes immutable phase artifacts in an exclusively owned private directory.
+- `_billing_B7_owned_driver.py`: coordinates worker/API phases through required trusted owner leases and child receipts.
 
 ## Source selection and execution scope
 
@@ -27,7 +46,7 @@ loads the exact selected worker bytes, not the frozen checkout's still-unfixed
 body. The selected private worker body hash is
 778283496621bf4694c7062f3ad6954b9aa5ac3243403c67ee084f6bcddc9729.
 The current schema source hash is
-3e339582af46c4a5b9b878d06de37cd150d7e32b2721c5b1eddec0f580a1b348.
+08a4febaeffb80bd04b36b78bfd96881f14df0bd7d0c84b70c672a3ccb1ad20d.
 A later overlapping edit or composed-source change requires a fresh reviewed
 selection and corresponding fixture pins; do not silently accept another hash.
 
@@ -200,8 +219,9 @@ using delegated actual connections. B7 now has a separate actual API-phase
 draft plus two actual worker phases in one non-resumable owned session. A
 durable phase-journal component and controller contract now have drafts; the
 callable coordinator now has a draft; the trusted owner admission/process
-adapter and outer supervisor/post-controller path remain unimplemented;
-B7 remains incomplete and unexecuted. Do not substitute fake stores, simplified
+adapter and outer supervisor/post-controller path are installed externally as
+recorded in the October 5 infrastructure handoff. B7 application qualification
+remains incomplete and unexecuted in the evidence for this source candidate. Do not substitute fake stores, simplified
 SQL or seeded rotations for these owners.
 
 B7 remains a separately authorized cross-owner extension: actual
@@ -216,7 +236,7 @@ public API owner. Mocked SDK/retrieval still does not qualify Stripe authenticit
 The separate "_billing_B7_worker_session.py" has no CLI and does not add to the
 ten-method/21-scenario suite. It returns bounded initial/resend phase bytes;
 cleanupVerifiedfalse remains explicit until its owned context exits and
-exact rows are verified empty. A future controller must own protected phase
+exact rows are verified empty. The admitted controller must own protected phase
 paths, observe successful actual API child exit, verify exact source/result
 hashes, enforce whole-job deadlines, retain failures and obtain terminal
 resource evidence. See "BILLING-B7-PHASES.md" under apps/api/test/native.
@@ -233,8 +253,9 @@ journal/API/cleanup bindings only through required trusted owner lease/child
 contracts. It rechecks immutable input/source hashes, validates private
 full-log/child receipts, prevents cleanup after uncertain API startup or
 settlement, and queries actual job-role backend state after known cleanup.
-The owner admission/process adapter and final qualification path remain
-unfinished; no protocol or JSON field is physical enforcement/native proof. See "BILLING-B7-CONTROLLER.md" here.
+The external installed owner supplies the admission/process adapter; the final
+application qualification remains pending. No protocol or JSON field alone is
+physical enforcement/native proof. See "BILLING-B7-CONTROLLER.md" here.
 This new component does not change suite method/scenario or passing counts.
 
 Before any passing claim: complete all remaining source fixtures, independent
@@ -251,7 +272,7 @@ database "lunchlineup_test" and restricted mutation role "lunchlineup_ci_app".
 It does not request a new database, role, daemon, VM or alternate CI environment.
 The infrastructure owner is Proxmox1 Manager; the accepted sole QA owner is
 Fix settings and verify release. Acceptance of ownership is separate from
-QA34 clearance and policy permission for this development fixture; release
+the recorded October 5 infrastructure clearance and permission for this development fixture; release
 candidate/signing promotion is a separate release gate.
 
 The target receipt is version2 and cleanupOwnership is
@@ -291,10 +312,10 @@ The coordinator checks those lease values before application imports and
 binds controller metadata in child requests and local results. The artifact
 parent must be canonical/private and within RUNNER_TEMP. Frozen existing
 integration, target-check and storage-check scripts are source-pinned;
-their current pipeline has no invocation of the B7 coordinator. Wiring,
-actual owner/process implementations and post-controller qualification are
-still absent. No runtime, qualification or new authority
-results from this compatibility correction. Standalone version1 target
+their generic pipeline has no invocation of the B7 coordinator. The October 5
+fixed owner runtime provides a separate admitted starter and process enforcement;
+application execution and terminal qualification are still pending. No runtime,
+qualification or new authority results from this compatibility correction. Standalone version1 target
 receipts and invented "ll_billing_fixture_" database/role names are rejected.
 
 ## Development admission and release promotion are separate
@@ -308,18 +329,17 @@ deployment; its focused historical result is source snapshot
 Its77 database tests,9 browser scenarios and12 helper tests do not verify
 this candidate, this fixture or all84 workflows.
 
-Development admission requires the applicable QA34 incident outcome, one
+Development admission requires the recorded infrastructure incident outcome, one
 actual QA owner, fresh physical backing/capacity and approved bounded private
 job/target/source/install provenance. It does not require production release
-signing solely because it executes development tests. CI repository policy
-must still authorize the specific admitted pipeline; the later QA34 closure
-and disabled current policy supersede historical September10 enabled status.
+signing solely because it executes development tests. The fixed native owner admission applies to its exact reviewed source/profile;
+generic CI policy remains disabled and supersedes historical September10 enabled status.
 There is no automatic admission or permission to enable that policy here.
 
 Matching candidate/signing-policy promotion remains required for the release
 pipeline and production-ready release; this separation removes no release
 gate. VM107 launch/start hold and VM4014 production boundary remain unchanged.
 An owner health snapshot, old development authorization or old focused green
-run does not clear the subsequent QA34 measurement failure or prove fresh
-capacity. Actual owner authority/process adapter, outer hard supervisor,
-exclusive integration window and post-controller resources remain absent.
+run does not prove fresh capacity or qualify this newer source candidate.
+The installed owner supplies physical/process enforcement; exclusive application
+execution, full native results and terminal resource receipts remain required.

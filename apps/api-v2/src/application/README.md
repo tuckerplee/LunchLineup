@@ -7,3 +7,5 @@
 - `retention.routes.ts`: the v2-only, bearer-token retention operator ingress; it accepts no browser session and is intentionally separate from the browser operation catalog.
 
 The route catalog is shared from `@lunchlineup/api-contract`. There is no wildcard or caller-supplied upstream path. Scheduling calendar mutations are deliberately absent because the native scheduling module owns them as revision-fenced aggregate change sets.
+- `auth-retained-http.test.ts`: retained authentication transport, refusal, redirect and cookie-cleanup regressions.
+- `retained-auth-owner-http.test.ts`: controlled retained authentication owner and native HTTP transport contract regressions.

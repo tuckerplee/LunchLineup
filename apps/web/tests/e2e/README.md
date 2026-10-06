@@ -3,6 +3,12 @@
 ## Files
 
 - `README.md`: this E2E test folder guide.
+- `access-home-acceptance.spec.ts`: prepared real-backend access, Home and notification scenarios with role/session denials and independent readbacks.
+- `location-lifecycle-acceptance.spec.ts`: prepared real-backend location create/edit/deactivation, timezone validation and staff-denial scenarios.
+- `logout-surfaces-acceptance.spec.ts`: prepared native desktop/mobile logout and mandatory-PIN-reset session revocation scenarios.
+- `qa-context-cleanup.ts`: settles owned documents before guarded browser-context closure and retains primary and cleanup failures.
+- `staff-lifecycle-acceptance.spec.ts`: prepared native staff identity, role, availability, PIN, suspension and removal scenarios with saved-state readbacks.
+- `staff-native-response-capture.ts`: bounded original native-response capture for exact mutation contracts, with body ownership and privacy cleanup.
 - `authenticated-mobile-layout.spec.ts`: 375px/768px authenticated regression covering document width, all dashboard routes, permission-aware Home/Schedule/Breaks/Team/More navigation, keyboard access, and manager task links.
 - `authenticated-readiness.spec.ts`: default authenticated readiness gate with bounded/exact location fixtures, scoped scheduling, editor and modifier-drag shift duplication, resumable solve polling, shift-update response-loss replay, lunch/break idempotency, time cards, paid-subscription plus separate-credit billing, settings recovery, deletion receipts, and MFA coverage.
 - `core-flows.spec.ts`: public entrypoint, onboarding, login, and unauthenticated redirect smoke tests.

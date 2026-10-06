@@ -81,6 +81,7 @@ lunchlineup/
 - `.trivyignore.yaml`: narrow, expiring vulnerability suppressions bound to exact package identities and documented fixed-source provenance.
 - `.zap-rules.tsv`: OWASP ZAP baseline scan rule severity configuration.
 - `README.md`: this project overview and repository map.
+- `node_modules`: existing local dependency link for this checkout; generated dependency contents are not source or release evidence.
 - `apps/`: application workspaces for web, API, engine, worker, and control-plane services.
 - `docker-compose.yml`: local and deployment service topology, including project-scoped persistent Postgres, Redis, and RabbitMQ volumes, loopback-only Alertmanager access, and the one-shot `ops` backup job.
 - `docs/`: architecture, testing, and runbook documentation.

@@ -3,6 +3,7 @@
 ## Files
 
 - `README.md`: this login folder guide.
+- `login-intent.ts`: single-attempt login intent ownership with cancellation and stale-completion checks.
 - `page.tsx`: client login UI that resolves identifiers into email OTP, migrated username/password, or username/PIN flows, announces dynamic errors to assistive technology, prefills the most recently remembered workspace slug, and hides self-service onboarding while production is closed beta.
 
 ## Notes

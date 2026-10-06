@@ -3,6 +3,9 @@
 This directory defines source-neutral validation for LunchLineup on the internal CI appliance.
 
 - `README.md` - documents this directory and its safety boundary.
+- `development-browser-cases.json`: exact case, title-path and project selections for disposable development browser lanes; does not grant release qualification.
+- `development-logout-cases.json`: exact native logout-surface case selections for disposable browser qualification.
+- `development-staff-cases.json`: exact native staff lifecycle case selections for disposable browser qualification.
 - `pipeline.json` - declares triggers, worker requirements, validation steps, timeouts, and artifacts.
 
 Only `internal-beta-candidate` enters this 32-stage release-qualification pipeline. Stage zero proves the exact remote candidate, then creates independent job-private `scan` and `build` clones. Every later command executes from one of those clones; scanner mounts are read-only and all generated evidence stays outside source.

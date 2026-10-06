@@ -18,3 +18,5 @@
 - `scheduling/`: board query and atomic change-set domain module.
 - `settings/`: native tenant workspace-settings aggregate and security-policy audit boundary.
 - `time/`: native public time-card lifecycle, payroll lock, idempotency, and correction module.
+- `server.lifecycle.test.ts`: server startup and resource-cleanup regressions with actual Fastify and controlled dependency owners.
+- `server.metrics-lifecycle.test.ts`: metrics-owner startup, cleanup and instance-isolation regressions with controlled dependencies and loopback HTTP.

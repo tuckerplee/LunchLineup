@@ -27,6 +27,8 @@
 - `stripe.service.ts`: Stripe customer, subscription, deletion cleanup, and verified webhook dispatch/handling.
 - `user-capacity.spec.ts`: tenant active-user capacity tests.
 - `user-capacity.ts`: active-user capacity enforcement helper.
+- `feature-usage-authority.spec.ts`: nested feature debit current-authority and exact ledger replay regressions.
+
 
 ## Credit Purchase Policy
 

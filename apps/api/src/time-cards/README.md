@@ -13,6 +13,8 @@
 - `time-cards.entitlement.spec.ts`: active-paid zero-credit read, correction-time `PAST_DUE` transition rollback, and post-entitlement-loss active-card recovery boundary tests.
 - `time-cards.controller.ts`: tenant-scoped timecard reads with location timezones, atomic billable clock-in, compare-and-set clock-out, and tenant-lock-entitled audited manager correction endpoints.
 - `time-cards.controller.spec.ts`: focused tests for permissions, billing, retries, concurrency, assigned-period clock-out/correction cutoffs, location timezone responses, correction-time entitlement rollback, authorization, overlap rejection, optimistic locking, break persistence, and immutable audits.
+- `time-cards-current-authority.spec.ts`: retained Time owner current-authority, finite-proof and financial receipt-recovery regressions.
+
 
 ## Notes
 

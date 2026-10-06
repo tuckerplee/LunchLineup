@@ -32,6 +32,9 @@ The exact 128-operation API catalog includes native session, Location, People, O
 - `package.json`: service dependencies and build/test commands.
 - `src/`: service entry point, HTTP assembly, platform adapters, and scheduling module.
 - `tsconfig.json`: strict TypeScript build settings.
+- `test-support/`: bounded loopback HTTP fixture helpers; callers own closing their Fastify instances.
+- `tsconfig.tests.json`: inclusive no-emit TypeScript configuration for source and test-support files.
+
 
 ## Public trust boundary
 

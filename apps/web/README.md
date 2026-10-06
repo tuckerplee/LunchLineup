@@ -5,6 +5,7 @@ Next.js frontend for the LunchLineup platform. The web app is deployed as the `w
 ## Folder map
 
 - `README.md` - This web app folder guide.
+- `node_modules`: existing local dependency link for this checkout; generated dependency contents are not source or release evidence.
 - `.storybook/` - Storybook configuration for web UI review.
 - `app/` - App Router pages, route layouts, and workspace surfaces; see `app/README.md`.
 - `components/` - Shared React UI and branding components used across app routes.

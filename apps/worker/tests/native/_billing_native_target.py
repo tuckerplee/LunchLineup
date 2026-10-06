@@ -26,7 +26,7 @@ from urllib.parse import parse_qs
 import uuid
 
 WORKER_SHA256 = "778283496621bf4694c7062f3ad6954b9aa5ac3243403c67ee084f6bcddc9729"
-SCHEMA_SHA256 = "3e339582af46c4a5b9b878d06de37cd150d7e32b2721c5b1eddec0f580a1b348"
+SCHEMA_SHA256 = "08a4febaeffb80bd04b36b78bfd96881f14df0bd7d0c84b70c672a3ccb1ad20d"
 FUNCTIONS = {
     "public.set_current_tenant(text)",
     "public.get_current_tenant()",

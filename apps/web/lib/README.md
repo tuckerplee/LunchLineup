@@ -5,6 +5,7 @@ Shared helpers for the Next.js web app.
 ## Files
 
 - `README.md`: this web lib folder guide.
+- `logout-navigation.ts`: prepares same-tab document logout by cancelling old session work while preserving modified-link navigation.
 - `api-v2.ts`: generated API v2 client bound to the authenticated same-origin session transport.
 - `bounded-pagination.ts`: guarded multi-page continuation helper for bounded schedule, shift, roster, and lunch-break reads.
 - `user-directory-pagination.ts`: fixed-size user-directory request and cursor-validation helpers.

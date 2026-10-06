@@ -27,6 +27,9 @@
 - `tenant-export.service.ts`: process-safe database-leased NDJSON export jobs with persisted authorization/progress, a database-derived repeatable-read watermark, requester-scoped recovery, shared artifacts, cursor-only chunk streaming including dated staff availability exceptions, atomically reserved global/per-tenant quotas, job-fenced writers, close/file-fsync/atomic-rename/directory-fsync publication before `READY`, durable cleanup claims, retryable failure/expiry cleanup, internal-intent and deletion-lease diagnostic exclusion, attributed downloads, and privacy-safe projections.
 - `tenant-provisioning.service.spec.ts`: focused proof that platform tenant, owner, default RBAC assignment, and attributed audit creation share one transaction.
 - `tenant-provisioning.service.ts`: platform-admin transaction coordinator for tenant, owner, default RBAC role, assignment, and attributed audit provisioning.
+- `admin-user-authority.fixture.ts`: staged local authority fixtures for actual platform admin and RBAC owners.
+- `admin-user-current-authority.spec.ts`: platform admin user mutation, delegation and finite-authority regressions.
+
 
 ## Notes
 

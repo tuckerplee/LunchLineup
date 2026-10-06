@@ -7,6 +7,10 @@
 ## Files
 
 - `README.md`: this migrations folder guide.
+- `20261001_webhook_terminal_payload_contract.sql`: additive webhook text-presence constraint repair that permits terminal erasure while retaining nonterminal encrypted payload requirements.
+- `20261004_notification_outbox_failure_budget.sql`: post-schema bounded notification failure-count constraint without resetting existing retry budgets.
+- `pre_20261001_webhook_terminal_payload_contract.sql`: pre-schema webhook text-presence constraint repair for existing tables, with a fresh-database no-op.
+- `pre_20261004_notification_outbox_failure_budget.sql`: pre-schema staging of historical notification failure counts, preserving known counters before schema reconciliation.
 - `20260310_username_pin_auth.sql`: legacy username/PIN migration retained for history; canonical Prisma schema and forward reconciliation supersede direct replay.
 - `20260321_plan_definitions.sql`: adds plan definitions and seeds legacy tenant plan tiers.
 - `20260325_rbac_roles_permissions.sql`: legacy RBAC seed retained for history; current-schema forward reconciliation supersedes direct replay.
