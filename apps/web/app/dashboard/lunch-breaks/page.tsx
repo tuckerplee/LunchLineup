@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
+import styles from './lunch-breaks.module.css';
 import { breakTimingIssue } from './break-timing-validation';
 import { AnimatePresence, motion } from 'framer-motion';
 import { Button } from '@/components/ui/button';
@@ -1966,9 +1967,9 @@ export default function LunchBreaksPage() {
     canWriteLunchBreaks && !isLoading && Boolean(lunchBreakFeature?.enabled) && (plannerMode === null || (isAutoMode && autoGuideStep < 5));
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem', minHeight: '100%' }}>
-      <section className="surface-card" style={{ padding: '0.75rem 1rem' }}>
-        <label style={{ display: 'grid', gap: 4, maxWidth: 360, fontSize: '0.78rem', fontWeight: 750 }}>
+    <div className={styles.workspace}>
+      <section className={`surface-card ${styles.locationCard}`}>
+        <label className={styles.locationLabel}>
           Location
           <select
             value={selectedLocationId}
@@ -1999,7 +2000,7 @@ export default function LunchBreaksPage() {
             </button>
           ) : null}
           {activeLocation ? (
-            <span style={{ color: 'var(--text-muted)', fontWeight: 600 }}>{activeTimeZone}</span>
+            <span className={styles.locationTimezone}>{activeTimeZone}</span>
           ) : null}
         </label>
       </section>
@@ -2033,31 +2034,23 @@ export default function LunchBreaksPage() {
       ) : null}
       {!showGuidedWindow ? (
         <section
-          className="surface-card"
-          style={{ padding: '1rem' }}
+          className={`surface-card ${styles.overview}`}
         >
-        <div
-          style={{
-            display: 'grid',
-            gridTemplateColumns: '1fr auto',
-            gap: '0.8rem',
-            alignItems: 'start',
-          }}
-        >
-          <div>
-            <div className="workspace-kicker">Lunch & breaks workspace</div>
+        <div className={styles.header}>
+          <div className={styles.intro}>
+            <div className={`workspace-kicker ${styles.mobileRedundant}`}>Lunch & breaks workspace</div>
             {lunchBreakFeature?.enabled ? (
-              <h2 className="workspace-title" style={{ fontSize: '1.58rem', marginBottom: 2 }}>
+              <h2 className={`workspace-title ${styles.title}`}>
                 Lunch & Break Planner
               </h2>
             ) : (
-              <h1 className="workspace-title" style={{ fontSize: '1.58rem', marginBottom: 2 }}>
+              <h1 className={`workspace-title ${styles.title}`}>
                 Lunch & Break Planner
               </h1>
             )}
-            <p className="workspace-subtitle">Generate compliant lunches and staggered breaks for the selected day.</p>
-            {canWriteLunchBreaks ? <p style={{ fontSize: '0.8rem' }}>{generationCreditCost === null ? 'Exact generation cost unavailable; generation is blocked.' : `Generation uses exactly ${generationCreditCost} usage credit${generationCreditCost === 1 ? '' : 's'} per request. Review and confirm before generating.`}</p> : null}
-            <div style={{ marginTop: 4, fontSize: '0.78rem', color: 'var(--text-muted)', fontWeight: 700 }}>
+            <p className={`workspace-subtitle ${styles.mobileRedundant}`}>Generate compliant lunches and staggered breaks for the selected day.</p>
+            {canWriteLunchBreaks ? <p className={styles.creditNotice}>{generationCreditCost === null ? 'Exact generation cost unavailable; generation is blocked.' : `Generation uses exactly ${generationCreditCost} usage credit${generationCreditCost === 1 ? '' : 's'} per request. Review and confirm before generating.`}</p> : null}
+            <div className={styles.mobileRedundant} style={{ marginTop: 4, fontSize: '0.78rem', color: 'var(--text-muted)', fontWeight: 700 }}>
               {selectedDateLabel} break plan
             </div>
             {!canWriteLunchBreaks ? (
@@ -2067,9 +2060,9 @@ export default function LunchBreaksPage() {
             ) : null}
           </div>
 
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 8, alignItems: 'flex-end' }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
-              <Button variant="outline" size="sm" onClick={() => selectDayScope(shiftDate(selectedDate, -1), selectedLocationId)}>Prev Day</Button>
+          <div className={styles.controls}>
+            <div className={styles.dateNavigation}>
+              <Button variant="outline" size="sm" aria-label="Prev Day" onClick={() => selectDayScope(shiftDate(selectedDate, -1), selectedLocationId)}><span className={styles.dayArrow} aria-hidden="true">‹</span><span className={styles.dayLabel}>Prev Day</span></Button>
               <input
                 type="date"
                 aria-label="Lunch and break plan date"
@@ -2085,22 +2078,11 @@ export default function LunchBreaksPage() {
                 }}
               />
               <Button variant="outline" size="sm" onClick={() => selectDayScope(serverToday, selectedLocationId)}>Today</Button>
-              <Button variant="outline" size="sm" onClick={() => selectDayScope(shiftDate(selectedDate, 1), selectedLocationId)}>Next Day</Button>
+              <Button variant="outline" size="sm" aria-label="Next Day" onClick={() => selectDayScope(shiftDate(selectedDate, 1), selectedLocationId)}><span className={styles.dayArrow} aria-hidden="true">›</span><span className={styles.dayLabel}>Next Day</span></Button>
             </div>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+            <div className={styles.actions}>
               {canWriteLunchBreaks ? (
                 <>
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    onClick={() => {
-                      setPlannerMode(null);
-                      setAutoGuideStep(1);
-                    }}
-                    disabled={!lunchBreakFeature?.enabled}
-                  >
-                    Switch mode
-                  </Button>
                   <Button
                     size="sm"
                     variant="default"
@@ -2112,9 +2094,20 @@ export default function LunchBreaksPage() {
                       plannerMode === null ||
                       !canWriteLoadedDay
                     }
-                    style={{ minWidth: 250 }}
+                    className={styles.generateButton}
                   >
                     {isGeneratingPrimary ? 'Generating plan...' : 'Generate Lunch & Break Plan'}
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() => {
+                      setPlannerMode(null);
+                      setAutoGuideStep(1);
+                    }}
+                    disabled={!lunchBreakFeature?.enabled}
+                  >
+                    Switch mode
                   </Button>
                   <Button size="sm" variant="outline" onClick={() => void saveAllDirtyRows()} disabled={dirtyCount === 0 || !canWriteLoadedDay || isSavingPolicy}>
                     {dirtyCount > 0 ? `Save ${dirtyCount} changes` : 'Save changes'}
@@ -2122,13 +2115,13 @@ export default function LunchBreaksPage() {
                 </>
               ) : null}
             </div>
-            <div style={{ fontSize: '0.74rem', color: 'var(--text-muted)' }}>
+            <div className={styles.mobileRedundant} style={{ fontSize: '0.74rem', color: 'var(--text-muted)' }}>
               Uses current shifts and policy to generate staggered lunches and breaks.
             </div>
           </div>
         </div>
 
-        <div style={{ marginTop: '0.85rem', display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+        <div className={styles.statusGrid}>
           <div className="surface-muted" style={{ padding: '0.38rem 0.58rem', fontSize: '0.78rem', color: 'var(--text-secondary)' }}>
             Shifts loaded: <strong style={{ color: 'var(--text-primary)' }}>{statusShiftsCount}</strong>
           </div>
@@ -2141,13 +2134,13 @@ export default function LunchBreaksPage() {
           <div className="surface-muted" style={{ padding: '0.38rem 0.58rem', fontSize: '0.78rem', color: statusComplianceRisk > 0 ? '#b45309' : '#166534' }}>
             Compliance risks: <strong>{statusComplianceRisk}</strong>
           </div>
-          <div className="surface-muted" style={{ padding: '0.38rem 0.58rem', fontSize: '0.78rem', color: 'var(--text-secondary)' }}>
+          <div className={`surface-muted ${isDayLoading ? '' : styles.mobileRedundant}`} style={{ padding: '0.38rem 0.58rem', fontSize: '0.78rem', color: 'var(--text-secondary)' }}>
             {isDayLoading ? 'Refreshing shifts...' : `${dayRows.length} shifts in view`}
           </div>
-          <div className="surface-muted" style={{ padding: '0.38rem 0.58rem', fontSize: '0.78rem', color: mealRiskCount > 0 ? '#b45309' : '#166534' }}>
+          <div className={`surface-muted ${mealRiskCount > 0 ? '' : styles.mobileRedundant}`} style={{ padding: '0.38rem 0.58rem', fontSize: '0.78rem', color: mealRiskCount > 0 ? '#b45309' : '#166534' }}>
             {mealRiskCount > 0 ? `${mealRiskCount} meal windows missing` : 'Meals covered'}
           </div>
-          <div className="surface-muted" style={{ padding: '0.38rem 0.58rem', fontSize: '0.78rem', color: breakRiskCount > 0 ? '#b45309' : '#166534' }}>
+          <div className={`surface-muted ${!canWriteLoadedDay || dayRows.length === 0 || breakRiskCount > 0 ? '' : styles.mobileRedundant}`} style={{ padding: '0.38rem 0.58rem', fontSize: '0.78rem', color: breakRiskCount > 0 ? '#b45309' : '#166534' }}>
             {!canWriteLoadedDay || dayRows.length === 0 ? 'Break timings not verified' : breakRiskCount > 0 ? `${breakRiskCount} break timings unresolved` : 'Break timings checked'}
           </div>
         </div>
@@ -2173,7 +2166,7 @@ export default function LunchBreaksPage() {
         ) : null}
 
         {previewRows.length > 0 ? (
-          <div className="surface-muted" style={{ marginTop: '0.75rem', padding: '0.65rem', display: 'grid', gap: 6 }}>
+          <div className={`surface-muted ${styles.mobileRedundant}`} style={{ marginTop: '0.75rem', padding: '0.65rem', display: 'grid', gap: 6 }}>
             <div style={{ fontWeight: 800, color: 'var(--text-primary)', fontSize: '0.8rem' }}>Plan preview</div>
             {previewRows.slice(0, 4).map((row) => (
               <div key={row.id} style={{ display: 'grid', gridTemplateColumns: '140px minmax(0, 1fr) auto', gap: 8, alignItems: 'center' }}>
