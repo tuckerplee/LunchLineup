@@ -250,6 +250,14 @@ test.describe('Lunch setup editor safety', () => {
     let setupRequests = 0;
     let shiftBreakRequests = 0;
     let dayReadRequests = 0;
+    let releaseThirdShiftBreakResponse!: () => void;
+    const thirdShiftBreakResponseGate = new Promise<void>((resolve) => {
+      releaseThirdShiftBreakResponse = resolve;
+    });
+    let observeThirdShiftBreakRequest!: () => void;
+    const thirdShiftBreakRequest = new Promise<void>((resolve) => {
+      observeThirdShiftBreakRequest = resolve;
+    });
     await page.route(/\/api\/v2\/lunch-breaks\?.+/, async (route) => {
       dayReadRequests += 1;
       await route.fulfill({
@@ -294,6 +302,21 @@ test.describe('Lunch setup editor safety', () => {
       shiftBreakRequests += 1;
       shiftBreakKeys.push(route.request().headers()['idempotency-key'] ?? '');
       shiftBreakBodies.push(route.request().postDataJSON());
+      if (shiftBreakRequests === 3) {
+        observeThirdShiftBreakRequest();
+        await thirdShiftBreakResponseGate;
+        await route.fulfill({
+          status: 403,
+          contentType: 'application/json',
+          body: JSON.stringify({
+            statusCode: 403,
+            code: 'SHIFT_BREAKS_ENTITLEMENT_REQUIRED',
+            message: 'Manual lunch/break replacement requires an active paid subscription and enough usage credits.',
+            remediation: 'Add the configured credits, then retry the unchanged save.',
+          }),
+        });
+        return;
+      }
       if (shiftBreakRequests === 1) {
         await route.fulfill({
           status: 403,
@@ -428,6 +451,53 @@ test.describe('Lunch setup editor safety', () => {
       Object.keys(window.localStorage).some((key) => key.startsWith(prefix))
     ), SHIFT_BREAK_UPDATE_RECOVERY_KEY_PREFIX)).toBe(false);
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+
+    // A later control focus owns the UI while this new save is still pending.
+    const mealTime = page.getByLabel('Meal time for Mock Staff');
+    await mealTime.fill('12:30');
+    await saveShiftButton.click();
+    await thirdShiftBreakRequest;
+    await expect(saveShiftButton).toBeDisabled();
+    const newerFocusedControl = page.getByLabel('Location', { exact: true });
+    try {
+      await newerFocusedControl.focus();
+      await expect(newerFocusedControl).toBeFocused();
+    } finally {
+      releaseThirdShiftBreakResponse();
+    }
+    await expect(page.getByRole('alert').filter({ hasText: 'SHIFT_BREAKS_ENTITLEMENT_REQUIRED' })).toBeVisible();
+    await expect(saveShiftButton).toBeEnabled();
+    // Let any obsolete rAF handoff run before checking that newer focus survives.
+    await page.evaluate(() => new Promise<void>((resolve) => {
+      window.requestAnimationFrame(() => window.requestAnimationFrame(() => resolve()));
+    }));
+    await expect(newerFocusedControl).toBeFocused();
+    await expect(mealTime).toHaveValue('12:30');
+    expect(shiftBreakKeys).toHaveLength(3);
+    expect(shiftBreakKeys[2]).toBeTruthy();
+    expect(shiftBreakKeys[2]).not.toBe(shiftBreakKeys[1]);
+    expect(shiftBreakBodies[2]).toMatchObject({
+      locationId: DOWNTOWN_LOCATION_ID,
+      breaks: expect.arrayContaining([{
+        type: 'lunch',
+        startTime: '2026-07-16T19:30:00.000Z',
+        durationMinutes: 30,
+        skip: false,
+      }]),
+    });
+    const retainedNewShiftBreak = await page.evaluate((prefix) => {
+      const key = Object.keys(window.localStorage).find((candidate) => candidate.startsWith(prefix));
+      return key ? JSON.parse(window.localStorage.getItem(key) ?? 'null') as Record<string, unknown> : null;
+    }, SHIFT_BREAK_UPDATE_RECOVERY_KEY_PREFIX);
+    expect(retainedNewShiftBreak).toMatchObject({
+      attempt: { key: shiftBreakKeys[2] },
+      identity: {
+        shiftId: 'shift-1',
+        locationId: DOWNTOWN_LOCATION_ID,
+        userId: ADMIN_USER_ID,
+      },
+    });
+    expect(JSON.stringify(retainedNewShiftBreak)).not.toMatch(/tenant-e2e|user-admin|session-admin|loc-downtown/);
   });
 
   test('retains A through B after A commits and loses its response, then replays A exactly once', async ({ page }) => {

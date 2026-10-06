@@ -78,6 +78,16 @@ type SessionIdentity = {
   sessionId: string;
 };
 
+type RecoveryFocusRequest = {
+  kind: 'setup' | 'shift';
+  scope: LunchBreakDayScope;
+  identity: SessionIdentity;
+  node: HTMLButtonElement;
+  shiftId?: string;
+  intentEpoch: number;
+  attemptId: number;
+};
+
 type GeneratedBreak = {
   type: 'break1' | 'lunch' | 'break2';
   startTime: string;
@@ -525,6 +535,9 @@ export default function LunchBreaksPage() {
   const shiftBreakUpdateSubmissionRef = useRef(createShiftBreakUpdateSubmissionState());
   const setupSubmitButtonRef = useRef<HTMLButtonElement>(null);
   const shiftBreakSaveButtonRef = useRef<HTMLButtonElement>(null);
+  const [recoveryFocusRequest, setRecoveryFocusRequest] = useState<RecoveryFocusRequest | null>(null);
+  const recoveryFocusIntentRef = useRef(0);
+  const recoveryFocusAttemptRef = useRef(0);
   const capabilities = useMemo(() => getWorkspaceCapabilities(permissions), [permissions]);
   const canWriteLunchBreaks = capabilities.canWriteLunchBreaks;
   const activeLocation = useMemo(
@@ -544,6 +557,18 @@ export default function LunchBreaksPage() {
   const commitActiveDayScope = useCallback((requestScope: LunchBreakDayScope, commit: () => void) => (
     commitLunchBreakDayScope(requestScope, desiredDayScopeRef.current, commit)
   ), []);
+
+  useEffect(() => {
+    const advanceFocusIntent = () => { recoveryFocusIntentRef.current += 1; };
+    document.addEventListener('pointerdown', advanceFocusIntent, true);
+    document.addEventListener('keydown', advanceFocusIntent, true);
+    document.addEventListener('focusin', advanceFocusIntent, true);
+    return () => {
+      document.removeEventListener('pointerdown', advanceFocusIntent, true);
+      document.removeEventListener('keydown', advanceFocusIntent, true);
+      document.removeEventListener('focusin', advanceFocusIntent, true);
+    };
+  }, []);
 
   const updateDaySession = useCallback((changes: Partial<LunchBreakDaySession>) => {
     const currentMap = readLunchBreakSession();
@@ -965,6 +990,10 @@ export default function LunchBreaksPage() {
         return false;
       }
 
+      const recoveryFocusTarget = document.activeElement === shiftBreakSaveButtonRef.current
+        ? shiftBreakSaveButtonRef.current : null;
+      const recoveryFocusIntent = recoveryFocusIntentRef.current;
+      const recoveryFocusAttempt = ++recoveryFocusAttemptRef.current;
       setError(null);
       setDayRows((prev) =>
         prev.map((candidate) => (candidate.shiftId === shiftId ? { ...candidate, saving: true } : candidate)),
@@ -1043,7 +1072,15 @@ export default function LunchBreaksPage() {
             prev.map((candidate) => (candidate.shiftId === shiftId ? { ...candidate, saving: false, autosavePaused: true } : candidate)),
           );
           setError(message);
-          window.requestAnimationFrame(() => shiftBreakSaveButtonRef.current?.focus());
+          if (recoveryFocusTarget
+            && recoveryFocusAttempt === recoveryFocusAttemptRef.current
+            && recoveryFocusIntent === recoveryFocusIntentRef.current) {
+            setRecoveryFocusRequest({
+              kind: 'shift', scope: { ...writeScope }, identity: { ...sessionIdentity },
+              node: recoveryFocusTarget, shiftId,
+              intentEpoch: recoveryFocusIntent, attemptId: recoveryFocusAttempt,
+            });
+          }
         });
         return false;
       }
@@ -1389,6 +1426,37 @@ export default function LunchBreaksPage() {
   }, [dayRows, selectedShiftId]);
 
   useEffect(() => {
+    if (!recoveryFocusRequest) return;
+    const request = recoveryFocusRequest;
+    const clearRequest = () => {
+      if (recoveryFocusAttemptRef.current === request.attemptId) recoveryFocusAttemptRef.current += 1;
+      setRecoveryFocusRequest((current) => current === request ? null : current);
+    };
+    const node = request.kind === 'setup' ? setupSubmitButtonRef.current : shiftBreakSaveButtonRef.current;
+    const identityMatches = sessionIdentity?.tenantId === request.identity.tenantId
+      && sessionIdentity?.userId === request.identity.userId
+      && sessionIdentity?.sessionId === request.identity.sessionId;
+    const targetMatches = request.kind === 'setup'
+      ? plannerMode === 'auto' && autoGuideStep === 4
+      : plannerMode === 'auto' && autoGuideStep >= 5 && selectedRow?.shiftId === request.shiftId;
+    if (request.intentEpoch !== recoveryFocusIntentRef.current
+      || request.attemptId !== recoveryFocusAttemptRef.current
+      || !identityMatches || !targetMatches || !canWriteLoadedDay
+      || !lunchBreakDayScopeMatches(request.scope, desiredDayScopeRef.current)
+      || !lunchBreakDayScopeMatches(request.scope, loadedDayScope)
+      || node !== request.node || !node?.isConnected
+      || (document.activeElement !== document.body && document.activeElement !== node)) {
+      clearRequest();
+      return;
+    }
+    // Wait only for this rendered mutation's busy state to be released.
+    if (request.kind === 'setup' ? isApplyingSetupShifts : selectedRow?.saving) return;
+    clearRequest();
+    if (!node.disabled) node.focus();
+  }, [autoGuideStep, canWriteLoadedDay, isApplyingSetupShifts, loadedDayScope, plannerMode,
+    recoveryFocusRequest, selectedRow, sessionIdentity]);
+
+  useEffect(() => {
     if (!canWriteLunchBreaks) return;
     if (isSavingPolicy) return;
     if (!(plannerMode === 'auto' && autoGuideStep >= 5)) return;
@@ -1697,6 +1765,10 @@ export default function LunchBreaksPage() {
     const busyOwner = claimLunchBreakMutationBusyOwner(mutationScope, mutationBusyRequestRef.current);
     mutationBusyRequestRef.current = busyOwner.requestId;
 
+    const recoveryFocusTarget = document.activeElement === setupSubmitButtonRef.current
+      ? setupSubmitButtonRef.current : null;
+    const recoveryFocusIntent = recoveryFocusIntentRef.current;
+    const recoveryFocusAttempt = ++recoveryFocusAttemptRef.current;
     let setupWasPersisted = false;
     setSetupShiftsBusyOwner(busyOwner);
     try {
@@ -1771,7 +1843,15 @@ export default function LunchBreaksPage() {
           const remediation = err instanceof SetupShiftsRequestError ? err.remediation : null;
           setSetupShiftError({ message, status, code, remediation });
           setError(message);
-          window.requestAnimationFrame(() => setupSubmitButtonRef.current?.focus());
+          if (recoveryFocusTarget
+            && recoveryFocusAttempt === recoveryFocusAttemptRef.current
+            && recoveryFocusIntent === recoveryFocusIntentRef.current) {
+            setRecoveryFocusRequest({
+              kind: 'setup', scope: { ...mutationScope }, identity: { ...sessionIdentity },
+              node: recoveryFocusTarget,
+              intentEpoch: recoveryFocusIntent, attemptId: recoveryFocusAttempt,
+            });
+          }
         }
       });
     } finally {
