@@ -375,12 +375,14 @@ export function CreditsClient() {
                 </div>
             </section>
 
-            <section style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: '0.75rem' }}>
+            <section className={styles.summaryGrid} aria-label="Loaded credit summary">
                 {summary.map((item) => (
-                    <article key={item.subtitle} className="surface-card" style={{ padding: '0.95rem', background: item.bg }}>
+                    <article key={item.subtitle} className={`surface-card ${styles.summaryCard}`} style={{ background: item.bg }}>
                         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.55rem' }}>
                             <span style={{ fontSize: '0.78rem', color: 'var(--text-secondary)', fontWeight: 650 }}>{item.subtitle}</span>
                             <span
+                                className={styles.summaryIcon}
+                                aria-hidden="true"
                                 style={{
                                     width: 33,
                                     height: 33,
@@ -396,7 +398,6 @@ export function CreditsClient() {
                             </span>
                         </div>
                         <div style={{ fontSize: '1.9rem', fontWeight: 800, letterSpacing: 0, color: 'var(--text-primary)' }}>{item.value}</div>
-                        <div style={{ fontSize: '0.72rem', fontWeight: 700, color: item.color }}>Real-time credit control</div>
                     </article>
                 ))}
             </section>
@@ -458,11 +459,12 @@ export function CreditsClient() {
                         </button>
                     </div>
 
-                    <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 900 }}>
-                        <thead>
-                            <tr style={{ borderTop: '1px solid var(--border)', borderBottom: '1px solid var(--border)', background: '#f8faff' }}>
+                    <table className={styles.balanceTable} role="table">
+                        <thead role="rowgroup">
+                            <tr role="row" style={{ borderTop: '1px solid var(--border)', borderBottom: '1px solid var(--border)', background: '#f8faff' }}>
                                 {['Tenant', 'Plan', 'Balance', 'Actions'].map((header) => (
                                     <th
+                                        role="columnheader"
                                         key={header}
                                         style={{
                                             textAlign: 'left',
@@ -479,26 +481,27 @@ export function CreditsClient() {
                                 ))}
                             </tr>
                         </thead>
-                        <tbody>
+                        <tbody role="rowgroup">
                             {visibleTenants.map((tenant, index) => {
                                 const planStyle = PLAN_COLORS[tenant.planTier] ?? PLAN_COLORS.FREE;
                                 return (
                                     <tr
+                                        role="row"
                                         key={tenant.id}
                                         style={{
                                             borderBottom: index < visibleTenants.length - 1 ? '1px solid var(--border)' : 'none',
                                         }}
                                     >
-                                        <td style={{ padding: '0.9rem 1rem' }}>
+                                        <td role="cell" style={{ padding: '0.9rem 1rem' }}>
                                             <div style={{ fontWeight: 700, fontSize: '0.88rem', color: 'var(--text-primary)', marginBottom: 2 }}>{tenant.name}</div>
                                             <div style={{ fontSize: '0.72rem', fontFamily: 'var(--font-mono)', color: 'var(--text-muted)' }}>{tenant.slug}</div>
                                         </td>
-                                        <td style={{ padding: '0.9rem 1rem' }}>
+                                        <td role="cell" style={{ padding: '0.9rem 1rem' }}>
                                             <span className="badge" style={badgeStyle(planStyle.color, planStyle.bg, planStyle.border)}>
                                                 {tenant.planTier}
                                             </span>
                                         </td>
-                                        <td style={{ padding: '0.9rem 1rem' }}>
+                                        <td role="cell" style={{ padding: '0.9rem 1rem' }}>
                                             <div style={{ display: 'flex', alignItems: 'baseline', gap: '0.35rem' }}>
                                                 <span style={{ fontSize: '1.2rem', fontWeight: 800, color: '#7c4a03', letterSpacing: 0 }}>
                                                     {formatCredits(tenant.usageCredits)}
@@ -506,7 +509,7 @@ export function CreditsClient() {
                                                 <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>credits</span>
                                             </div>
                                         </td>
-                                        <td style={{ padding: '0.9rem 1rem' }}>
+                                        <td role="cell" style={{ padding: '0.9rem 1rem' }}>
                                             <button
                                                 className="btn btn-sm btn-secondary"
                                                 type="button"
@@ -520,8 +523,8 @@ export function CreditsClient() {
                             })}
 
                             {!loading && visibleTenants.length === 0 ? (
-                                <tr>
-                                    <td colSpan={4} style={{ padding: '1rem', fontSize: '0.84rem', color: 'var(--text-muted)' }}>
+                                <tr role="row">
+                                    <td role="cell" colSpan={4} style={{ padding: '1rem', fontSize: '0.84rem', color: 'var(--text-muted)' }}>
                                         No tenant balances match the current filter.
                                     </td>
                                 </tr>

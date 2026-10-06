@@ -49,3 +49,84 @@
     min-width: 44px;
   }
 }
+
+.summaryGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 0.75rem;
+}
+
+.summaryCard {
+  min-width: 0;
+  padding: 0.95rem;
+}
+
+.balanceTable {
+  width: 100%;
+  border-collapse: collapse;
+  min-width: 900px;
+}
+
+@media (max-width: 768px) {
+  .summaryGrid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 0.5rem;
+  }
+
+  .summaryCard {
+    padding: 0.75rem;
+  }
+
+  .summaryIcon {
+    display: none !important;
+  }
+
+  /* Preserve every tenant field and action within the phone's width. Explicit
+     table roles in the markup keep the table's semantics across CSS layouts. */
+  .balanceTable {
+    display: block;
+    min-width: 0;
+  }
+
+  .balanceTable thead {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+
+  .balanceTable tbody {
+    display: block;
+  }
+
+  .balanceTable tbody tr {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    padding: 0.5rem;
+    gap: 0.25rem;
+  }
+
+  .balanceTable tbody td {
+    min-width: 0;
+    padding: 0.4rem !important;
+    overflow-wrap: anywhere;
+  }
+
+  .balanceTable tbody td:first-child,
+  .balanceTable tbody td:last-child {
+    grid-column: 1 / -1;
+  }
+
+  .balanceTable tbody td:nth-child(3) > div {
+    flex-wrap: wrap;
+  }
+
+  .balanceTable button {
+    width: 100%;
+    white-space: normal;
+  }
+}

@@ -252,6 +252,83 @@ async function unchanged(page: Page, adapter: Adapter) {
   await expect(page.getByText('Credits granted.', { exact: true })).toHaveCount(0);
   await expect(tenant(page)).toHaveValue(B); await expect(amount(page)).toHaveValue('25'); await expect(reason(page)).toHaveValue(REASON);
 }
+async function adminShellWitness(page: Page, width: number, label: string) {
+  const toggle = page.getByRole('button', { name: 'Admin navigation', exact: true });
+  const navigation = page.getByRole('navigation', { name: 'Admin navigation', exact: true });
+  const expectedLinks = [
+    { text: 'Calendar', href: '/dashboard/scheduling' },
+    { text: 'Team Dashboard', href: '/dashboard' },
+    { text: 'Lunch & Breaks', href: '/dashboard/lunch-breaks' },
+    { text: 'Staff', href: '/dashboard/staff' },
+    { text: 'Locations', href: '/dashboard/locations' },
+    { text: 'Admin Overview', href: '/admin' },
+    { text: 'Tenants', href: '/admin/tenants' },
+    { text: 'Users', href: '/admin/users' },
+    { text: 'Credits', href: '/admin/credits' },
+    { text: 'Plans', href: '/admin/plans' },
+  ];
+  if (width <= 1024) {
+    await expect(toggle).toBeVisible();
+    await expect(toggle).toHaveAttribute('aria-expanded', 'false');
+    await expect(navigation).toBeHidden();
+    await toggle.focus();
+    await toggle.press('Enter');
+    await expect(toggle).toHaveAttribute('aria-expanded', 'true');
+    await expect(navigation).toBeVisible();
+    await expect(toggle).toHaveAttribute('aria-controls', (await navigation.getAttribute('id'))!);
+  } else {
+    await expect(toggle).toBeHidden();
+    await expect(navigation).toBeVisible();
+  }
+  await test.info().attach(label + '-admin-navigation', { contentType: 'image/png',
+    body: await page.screenshot({ fullPage: true, animations: 'disabled', timeout: 5000 }) });
+  const links = await navigation.getByRole('link').evaluateAll(nodes => nodes.map(node => {
+    const rect = node.getBoundingClientRect();
+    return { text: node.textContent?.trim(), href: node.getAttribute('href'),
+      current: node.getAttribute('aria-current'), x: rect.x, width: rect.width, height: rect.height };
+  }));
+  const documentWidth = await page.evaluate(() => Math.max(document.documentElement.scrollWidth, document.body.scrollWidth));
+  const toggleBox = width <= 1024 ? await toggle.boundingBox() : null;
+  const signOut = page.locator('.workspace-topbar').getByRole('link', { name: 'Sign out', exact: true });
+  const signOutBox = width <= 1024 ? await signOut.boundingBox() : null;
+  await test.info().attach(label + '-admin-navigation-geometry', { contentType: 'application/json',
+    body: JSON.stringify({ width, documentWidth, links, toggleBox, signOutBox }) });
+  expect(links.map(({ text, href }) => ({ text, href }))).toEqual(expectedLinks);
+  expect(links.filter(link => link.current === 'page').map(link => link.href)).toEqual(['/admin/credits']);
+  expect(documentWidth).toBeLessThanOrEqual(width + 1);
+  for (const link of links) {
+    expect(link.x, link.text).toBeGreaterThanOrEqual(-1);
+    expect(link.x + link.width, link.text).toBeLessThanOrEqual(width + 1);
+    if (width <= 1024) expect(link.height, link.text + ' touch target').toBeGreaterThanOrEqual(44);
+  }
+  if (width <= 1024) {
+    await expect(signOut).toBeVisible();
+    await expect(signOut).toHaveAttribute('href', '/auth/logout');
+    for (const box of [toggleBox, signOutBox]) {
+      expect(box).not.toBeNull();
+      if (!box) throw new Error('Admin mobile control has no geometry');
+      expect(box.width).toBeGreaterThanOrEqual(44);
+      expect(box.height).toBeGreaterThanOrEqual(44);
+      expect(box.x).toBeGreaterThanOrEqual(-1);
+      expect(box.x + box.width).toBeLessThanOrEqual(width + 1);
+    }
+    const firstLink = navigation.getByRole('link', { name: 'Calendar', exact: true });
+    await firstLink.focus();
+    await firstLink.press('Escape');
+    await expect(navigation).toBeHidden();
+    await expect(toggle).toHaveAttribute('aria-expanded', 'false');
+    await expect(toggle).toBeFocused();
+    await toggle.press('Space');
+    await expect(navigation).toBeVisible();
+    await navigation.getByRole('link', { name: 'Credits', exact: true }).click();
+    await expect(navigation).toBeHidden();
+    await expect(toggle).toHaveAttribute('aria-expanded', 'false');
+    await expect(toggle).toBeFocused();
+    await expect(page).toHaveURL(/\/admin\/credits(?:[?#].*)?$/);
+    await page.evaluate(() => window.scrollTo(0, 0));
+  }
+}
+
 async function layoutWitness(page: Page) {
   const originalViewport = page.viewportSize();
   expect(originalViewport, 'canonical projects have an explicit viewport').not.toBeNull();
@@ -284,6 +361,7 @@ async function layoutWitness(page: Page) {
         await test.info().attach(label + '-geometry', { contentType: 'application/json',
           body: JSON.stringify({ pageSize, balanceBox, grantBox, controlBoxes,
             scope: 'Populated panels and external form controls; intentional internal table scrolling is allowed.' }) });
+        await adminShellWitness(page, width, label);
         expect(pageSize.width).toBe(width); expect(pageSize.scrollWidth).toBeLessThanOrEqual(width + 1);
         expect(balanceBox).not.toBeNull(); expect(grantBox).not.toBeNull();
         if (!balanceBox || !grantBox) throw new Error('Populated credit panels lack measured rectangles');
@@ -298,6 +376,29 @@ async function layoutWitness(page: Page) {
         } else {
           expect(grantBox.x).toBeGreaterThanOrEqual(balanceBox.x + balanceBox.width - 1);
           expect(Math.abs(balanceBox.y - grantBox.y)).toBeLessThanOrEqual(2);
+        }
+        if (width <= 768) {
+          for (const name of ['Aurora Diner', 'Boreal Kitchen']) {
+            const row = balanceRow(page, name);
+            const wallet = row.getByRole('cell').nth(2);
+            const action = row.getByRole('button', { name: 'Grant to this tenant', exact: true });
+            for (const element of [wallet, action]) {
+              const box = await element.boundingBox();
+              expect(box, name + ' mobile wallet/action rectangle').not.toBeNull();
+              if (!box) throw new Error(name + ' missing mobile wallet/action');
+              expect(box.x).toBeGreaterThanOrEqual(-1);
+              expect(box.x + box.width).toBeLessThanOrEqual(width + 1);
+            }
+            const actionBox = await action.boundingBox();
+            expect(actionBox!.height).toBeGreaterThanOrEqual(44);
+            expect(actionBox!.width).toBeGreaterThanOrEqual(44);
+          }
+          await balanceRow(page, 'Aurora Diner').getByRole('button', { name: 'Grant to this tenant', exact: true }).click();
+          await expect(tenant(page)).toHaveValue(A);
+          await balanceRow(page, 'Boreal Kitchen').getByRole('button', { name: 'Grant to this tenant', exact: true }).click();
+          await expect(tenant(page)).toHaveValue(B);
+          await expect(amount(page)).toHaveValue('25');
+          await expect(reason(page)).toHaveValue(REASON);
         }
         for (const control of controlBoxes) {
           expect(control.count, control.name + ' is unique').toBe(1);
