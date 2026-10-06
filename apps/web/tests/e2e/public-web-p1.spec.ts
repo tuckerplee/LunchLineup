@@ -1,4 +1,4 @@
-import { expect, test, type Page, type Route } from '@playwright/test';
+import { expect, test, type ConsoleMessage, type Frame, type Page, type Request, type Response, type Route } from '@playwright/test';
 import { e2eAdminPin, e2eAdminUsername, e2eTenantSlug, loginAsSeedAdmin } from './support';
 
 async function resetMockState(page: Page) {
@@ -207,12 +207,145 @@ test.describe('validated public-web P1 regressions', () => {
     expect(page.url()).not.toContain(token);
   });
 
-  test('unknown paths reach the Next.js 404 instead of the login proxy', async ({ page }) => {
-    const response = await page.goto('/definitely-not-a-lunchlineup-route');
+  test('unknown paths reach the Next.js 404 instead of the login proxy', async ({ page }, testInfo) => {
+    // Observe before navigation: timeout evidence must not need another browser command.
+    const startedAt = Date.now();
+    const events: Record<string, unknown>[] = [];
+    const requests: Record<string, unknown>[] = [];
+    const requestRows = new WeakMap<Request, Record<string, unknown>>();
+    const dropped = { events: 0, requests: 0 };
+    const lifecyclePrefix = '__lunchlineup404Lifecycle:';
+    let nextRequestId = 0;
+    let lastDocumentState: unknown = null;
+    let primaryFailure: unknown;
+    let failed = false;
+    const safeUrl = (raw: string) => {
+      try {
+        const url = new URL(raw);
+        return `${url.origin}${url.pathname}`.slice(0, 2048);
+      } catch {
+        return raw.slice(0, 2048);
+      }
+    };
+    const record = (kind: string, detail: Record<string, unknown> = {}) => {
+      const row = { elapsedMs: Date.now() - startedAt, kind, ...detail };
+      if (events.length < 256) events.push(row);
+      else dropped.events += 1;
+    };
+    const onRequest = (request: Request) => {
+      const row = {
+        id: ++nextRequestId, url: safeUrl(request.url()), method: request.method(),
+        resourceType: request.resourceType(), navigation: request.isNavigationRequest(),
+        startedMs: Date.now() - startedAt,
+      };
+      if (requests.length < 128) {
+        requests.push(row);
+        requestRows.set(request, row);
+      } else dropped.requests += 1;
+      record('request', { requestId: row.id, url: row.url });
+    };
+    const onResponse = (response: Response) => {
+      const row = requestRows.get(response.request());
+      if (row) Object.assign(row, { status: response.status(), responseMs: Date.now() - startedAt });
+      record('response', { requestId: row?.id, url: safeUrl(response.url()), status: response.status() });
+    };
+    const onFinished = (request: Request) => {
+      const row = requestRows.get(request);
+      if (row) row.finishedMs = Date.now() - startedAt;
+      record('requestfinished', { requestId: row?.id, url: safeUrl(request.url()) });
+    };
+    const onFailed = (request: Request) => {
+      const row = requestRows.get(request);
+      const error = request.failure()?.errorText.slice(0, 2000) ?? null;
+      if (row) Object.assign(row, { failedMs: Date.now() - startedAt, error });
+      record('requestfailed', { requestId: row?.id, url: safeUrl(request.url()), error });
+    };
+    const onFrame = (frame: Frame) => {
+      if (frame === page.mainFrame()) record('mainframenavigated', { url: safeUrl(frame.url()) });
+    };
+    const onDomContentLoaded = () => record('playwright-domcontentloaded');
+    const onLoad = () => record('playwright-load');
+    const onPageError = (error: Error) => record('pageerror', { message: error.message.slice(0, 2000) });
+    const onConsole = (message: ConsoleMessage) => {
+      const text = message.text();
+      if (text.startsWith(lifecyclePrefix)) {
+        try {
+          lastDocumentState = JSON.parse(text.slice(lifecyclePrefix.length, lifecyclePrefix.length + 8192));
+          record('document-lifecycle', { state: lastDocumentState });
+        } catch {
+          record('document-lifecycle-decode-error', { text: text.slice(0, 8192) });
+        }
+      } else if (message.type() === 'error') {
+        record('console-error', { text: text.slice(0, 2000), url: safeUrl(message.location().url) });
+      }
+    };
+    page.on('request', onRequest);
+    page.on('response', onResponse);
+    page.on('requestfinished', onFinished);
+    page.on('requestfailed', onFailed);
+    page.on('framenavigated', onFrame);
+    page.on('domcontentloaded', onDomContentLoaded);
+    page.on('load', onLoad);
+    page.on('pageerror', onPageError);
+    page.on('console', onConsole);
+    try {
+      await page.addInitScript(({ prefix }) => {
+        if (window !== window.top) return;
+        const emit = console.debug.bind(console);
+        let count = 0;
+        const report = (event: string) => {
+          if (++count > 16) return;
+          emit(prefix + JSON.stringify({
+            event, readyState: document.readyState, pathname: location.pathname.slice(0, 2048),
+            timeOrigin: performance.timeOrigin, performanceMs: performance.now(),
+          }));
+        };
+        document.addEventListener('readystatechange', () => report('readystatechange'));
+        document.addEventListener('DOMContentLoaded', () => report('DOMContentLoaded'), { once: true });
+        window.addEventListener('load', () => report('load'), { once: true });
+        window.addEventListener('pagehide', () => report('pagehide'), { once: true });
+        report('init');
+      }, { prefix: lifecyclePrefix });
+      record('goto-start');
+      const response = await page.goto('/definitely-not-a-lunchlineup-route');
+      record('goto-returned', { status: response?.status() ?? null, url: safeUrl(page.url()) });
 
-    expect(response?.status()).toBe(404);
-    await expect(page).toHaveURL(/\/definitely-not-a-lunchlineup-route$/);
-    await expect(page).not.toHaveURL(/\/auth\/login/);
+      expect(response?.status()).toBe(404);
+      await expect(page).toHaveURL(/\/definitely-not-a-lunchlineup-route$/);
+      await expect(page).not.toHaveURL(/\/auth\/login/);
+      await expect(page.getByRole('heading', { name: '404', exact: true })).toBeVisible();
+      await expect(page.getByRole('heading', { name: 'This page could not be found.', exact: true })).toBeVisible();
+    } catch (error) {
+      failed = true;
+      primaryFailure = error;
+      record('exception', { message: String(error).slice(0, 4000) });
+      throw error;
+    } finally {
+      page.off('request', onRequest);
+      page.off('response', onResponse);
+      page.off('requestfinished', onFinished);
+      page.off('requestfailed', onFailed);
+      page.off('framenavigated', onFrame);
+      page.off('domcontentloaded', onDomContentLoaded);
+      page.off('load', onLoad);
+      page.off('pageerror', onPageError);
+      page.off('console', onConsole);
+      // Local evidence only; no evaluate/screenshot/body call after a navigation timeout.
+      try {
+        await testInfo.attach('unknown-route-navigation-lifecycle', {
+          contentType: 'application/json',
+          body: Buffer.from(JSON.stringify({
+            scope: 'local mock browser; diagnostic observations, not a navigation workaround',
+            startedAt, elapsedMs: Date.now() - startedAt, failed, finalUrl: safeUrl(page.url()),
+            pageClosed: page.isClosed(), lastDocumentState, events, requests, dropped,
+            limits: { events: 256, requests: 128, documentEventsPerDocument: 16, urlQueriesOmitted: true },
+          }, null, 2)),
+        });
+      } catch (attachmentError) {
+        if (failed) throw new AggregateError([primaryFailure, attachmentError], 'Navigation/assertion and diagnostic attachment both failed');
+        throw attachmentError;
+      }
+    }
   });
 
   test('login and MFA expose branded status content before delayed hydration', async ({ page }) => {

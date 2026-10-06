@@ -435,7 +435,7 @@ test.describe('Time Card correction browser custody', () => {
     });
   });
 
-  // Prospective source lead only: this case has not been executed or confirmed.
+  // Regression: a delayed acknowledgement must retain accepted newer edits.
   test('preserves newer correction inputs accepted while an earlier save acknowledgement is pending', async ({ page }) => {
     await withAdapter(page, false, async adapter => {
       const before = original(adapter), other = original(adapter, OTHER);
@@ -488,13 +488,38 @@ test.describe('Time Card correction browser custody', () => {
         body: JSON.stringify({ panelCount: await panel.count(),
           reason: await reason.count() ? await reason.inputValue() : null,
           clockOut: await clockOut.count() ? await clockOut.inputValue() : null,
-          saved, scope: 'Browser DOM and local route-model observation; source lead remains unconfirmed before execution.' }) });
+          saved, scope: 'Browser DOM and local route-model observation; no native persistence claim.' }) });
       await expect(panel).toBeVisible();
       await expect(reason).toHaveValue(newerReason);
       await expect(clockOut).toHaveValue(localInput(newerEnd));
       await expect(panel.getByRole('button', { name: 'Save correction', exact: true })).toBeEnabled();
       await expect(panel.getByRole('button', { name: 'Cancel', exact: true })).toBeEnabled();
       await expect(teamMember(page)).toBeDisabled(); await expect(teamLocation(page)).toBeDisabled();
+      // Only this explicit second Save may issue the retained newer draft.
+      const secondDelivered = saveResponse(page);
+      await panel.getByRole('button', { name: 'Save correction', exact: true }).click();
+      const secondResponse = await secondDelivered;
+      expect(secondResponse.status()).toBe(200);
+      const second = patchRows(adapter.ledger).at(-1)!;
+      await exactPayload(second, { clockInAt: before.clockInAt, clockOutAt: newerEnd,
+        expectedUpdatedAt: saved.updatedAt, reason: newerReason });
+      await exactBrowserDecodedBody(page, adapter, second, secondResponse);
+      await expect(panel).toHaveCount(0);
+      await enabled(page, false);
+      const final = await readback(adapter, CARD);
+      expect(final).toMatchObject({ id: CARD, userId: STAFF, locationId: LOCATION,
+        clockInAt: before.clockInAt, clockOutAt: newerEnd, revision: 3, status: 'CLOSED',
+        grossMinutes: 540, workedMinutes: 540, breakMinutes: 0, breaks: [] });
+      expect(final.updatedAt).not.toBe(saved.updatedAt);
+      expect(await readback(adapter, OTHER)).toEqual(other);
+      expect(patchRows(adapter.ledger).map(row => row.status)).toEqual([200, 200]);
+      expect(adapter.ledger.filter(row => row.method !== 'GET' && !row.probe)).toHaveLength(2);
+      await expect(selectedRow(page).getByRole('cell', { name: '9h 00m', exact: true })).toHaveCount(1);
+      await page.reload();
+      await page.getByRole('button', { name: 'Team Time', exact: true }).click();
+      await teamMember(page).selectOption(STAFF); await teamLocation(page).selectOption(LOCATION);
+      await expect(selectedRow(page).getByRole('cell', { name: '9h 00m', exact: true })).toHaveCount(1);
+      expect(await readback(adapter, CARD)).toEqual(final);
     });
   });
 });

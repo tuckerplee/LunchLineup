@@ -100,13 +100,17 @@ const selected: TimeCard = { id: cardId, userId, locationId: '79000000-0000-4000
     grossMinutes: 120, workedMinutes: 120, notes: null, updatedAt: '2026-10-04T09:00:00.000Z',
     displayTimeZone: 'UTC', breaks: [], location: { id: '79000000-0000-4000-8000-000000000103', name: 'Kitchen', timezone: 'UTC' } };
 type Outcome = 'acknowledged' | 'matching-recovery' | 'rejected';
-function fixture(outcome: Outcome, options: { view?: 'mine' | 'team'; active?: boolean } = {}) {
+function fixture(outcome: Outcome, options: { view?: 'mine' | 'team'; active?: boolean;
+    history?: { first: TimeCard[]; refreshed: TimeCard[]; earlier: TimeCard[] }; refreshFailure?: boolean;
+    readbackHold?: Promise<void>; readbackEntered?: () => void } = {}) {
     const active = options.active !== false;
     const original: TimeCard = active ? selected : { ...selected, status: 'CLOSED', clockOutAt: '2026-10-04T10:00:00.000Z' };
     const locationId = selected.location!.id;
     const state = new Map<string, any>(), refs = new Map<string, { current: any }>();
     const effects: Array<{ name: string; value: unknown }> = [];
-    let stateOrdinal = 0, refOrdinal = 0, replied = false;
+    const callbackSettlements: Array<Promise<unknown>> = [];
+    let stateOrdinal = 0, refOrdinal = 0, effectOrdinal = 0, replied = false, historyReads = 0;
+    let ownerCleanup: (() => void) | undefined;
     const entered = deferred<void>(), release = deferred<void>();
     const calls: Array<{ path: string; method: string }> = [], writes: unknown[] = [], unexpected: string[] = [];
     const saved: TimeCard = { ...structuredClone(original), status: 'CLOSED', clockOutAt: '2026-10-04T11:00:00.000Z',
@@ -123,7 +127,18 @@ function fixture(outcome: Outcome, options: { view?: 'mine' | 'team'; active?: b
             return new Response(JSON.stringify({ data: replied || !active ? null : original }), { headers: { 'Content-Type': 'application/json' } });
         }
         if (method === 'GET' && path === `/time-cards?limit=100&userId=${userId}`) {
-            return new Response(JSON.stringify({ data: [replied ? saved : original], pagination: { nextCursor: replied ? null : 'history-next' } }),
+            historyReads += 1;
+            if (historyReads > 1) { options.readbackEntered?.(); await options.readbackHold; }
+            if (options.refreshFailure && historyReads > 1) return new Response('{}', { status: 503 });
+            const data = options.history ? historyReads === 1 ? options.history.first : options.history.refreshed
+                : [replied ? saved : original];
+            const nextCursor = options.history ? historyReads === 1 ? 'cursor-B9' : 'cursor-C8'
+                : replied ? null : 'history-next';
+            return new Response(JSON.stringify({ data, pagination: { nextCursor } }),
+                { headers: { 'Content-Type': 'application/json' } });
+        }
+        if (options.history && method === 'GET' && path === `/time-cards?limit=100&cursor=cursor-C8&userId=${userId}`) {
+            return new Response(JSON.stringify({ data: options.history.earlier, pagination: { nextCursor: null } }),
                 { headers: { 'Content-Type': 'application/json' } });
         }
         if (method === 'GET' && path === `/time-cards?limit=100&cursor=history-next&userId=${userId}`) {
@@ -137,9 +152,19 @@ function fixture(outcome: Outcome, options: { view?: 'mine' | 'team'; active?: b
     });
     const bindings = { React, ...timeApi, ...timeRequest, ...timeFormat, createLatestRequestGate,
         isTimeCardValidationRejection, TimeCardCorrectionPanel: Panel, TimeCardHistory: History,
-        useEffect: () => undefined,
+        // Only the first, actual pure unmount-generation effect is installed.
+        // Reference/loading effects remain outside this finite composition.
+        useEffect: (effect: () => void | (() => void)) => {
+            if (effectOrdinal++ === 0) { const cleanup = effect(); if (typeof cleanup === 'function') ownerCleanup = cleanup; }
+        },
         useMemo: (compute: () => unknown) => compute(),
-        useCallback: (callback: unknown) => callback,
+        // Preserve the actual callback and arguments; record only its returned
+        // promise so a rendered void event can be drained without polling.
+        useCallback: (callback: (...args: unknown[]) => unknown) => (...args: unknown[]) => {
+            const result = callback(...args);
+            if (result instanceof Promise) callbackSettlements.push(result);
+            return result;
+        },
         useRef: (initial: unknown) => {
             const name = refNames[refOrdinal++]; if (!name) throw new Error('Unmodeled ref');
             if (!refs.has(name)) refs.set(name, { current: initial }); return refs.get(name);
@@ -158,7 +183,7 @@ function fixture(outcome: Outcome, options: { view?: 'mine' | 'team'; active?: b
     const renderHistory = new Function('React', 'formatTimeCardDuration', 'formatTimeCardTimestamp', historyExecutable)(
         React, timeFormat.formatTimeCardDuration, timeFormat.formatTimeCardTimestamp) as (props: unknown) => Element;
     function render() {
-        stateOrdinal = 0; refOrdinal = 0;
+        stateOrdinal = 0; refOrdinal = 0; effectOrdinal = 0;
         const result = renderOwner({ currentUserId: userId, canManageTeam: true, canReadLocations: true, canWriteTimeCards: true });
         expect(stateOrdinal).toBe(stateNames.length); expect(refOrdinal).toBe(refNames.length); return result;
     }
@@ -202,11 +227,11 @@ function fixture(outcome: Outcome, options: { view?: 'mine' | 'team'; active?: b
         expect(reason).toBe('New unsaved verified correction.');
         expect(elements(tree).filter(node => node.type === Panel)).toHaveLength(1);
     }
-    async function parentSaved() {
+    async function parentSaved(ack: TimeCard = structuredClone(original), canClose: () => boolean = () => true) {
         const node = only(render().tree, item => item.type === Panel);
         // Only the actual parent callback is exercised. No child PATCH/commit
         // outcome is fabricated or qualified by this composition.
-        await node.props.onSaved();
+        await node.props.onSaved(ack, canClose);
     }
     async function startMain() {
         const main = mainButton();
@@ -223,7 +248,8 @@ function fixture(outcome: Outcome, options: { view?: 'mine' | 'team'; active?: b
         const historyNode = only(render().tree, node => node.type === History);
         expect(historyNode.props.isSaving).toBe(state.get('isSaving'));
         expect(historyNode.props.isCorrectionOpen).toBe(Boolean(state.get('correctingCard')));
-        return only(renderHistory(historyNode.props), node => node.type === 'button' && node.children.includes('Correct'));
+        const row = only(renderHistory(historyNode.props), node => node.type === 'tr' && node.props.key === cardId);
+        return only(row, node => node.type === 'button' && node.children.includes('Correct'));
     }
     function cancelCorrection() {
         const node = only(render().tree, item => item.type === Panel);
@@ -239,7 +265,7 @@ function fixture(outcome: Outcome, options: { view?: 'mine' | 'team'; active?: b
         expect(panelNode.props.card).toMatchObject({ id: cardId, updatedAt: state.get('cards')[0].updatedAt });
         reason = new Function('useState', reasonInitializer)((initial: string) => [initial, () => undefined])[0];
         expect(reason).toBe('');
-        const change = new Function('setReason', reasonChange)((value: string) => { reason = value; }) as (event: unknown) => void;
+        const change = new Function('updateReason', reasonChange)((value: string) => { reason = value; }) as (event: unknown) => void;
         change({ target: { value: 'New unsaved verified correction.' } }); expect(reason).toBe('New unsaved verified correction.');
     }
     let settledCalls: Array<{ path: string; method: string }> | undefined;
@@ -260,7 +286,7 @@ function fixture(outcome: Outcome, options: { view?: 'mine' | 'team'; active?: b
     async function cleanup() {
         release.resolve(); await pending?.catch(() => undefined);
     }
-    return { state, effects, calls, writes, unexpected, prepare, startMain, mainButton, assertOpenAvailability, parentSaved, cancelCorrection, openCorrection, drain, assertNoAdditionalTransport, cleanup, render, reason: () => reason };
+    return { state, effects, calls, writes, unexpected, settleCallbacks: () => Promise.all(callbackSettlements), unmount: () => ownerCleanup?.(), prepare, startMain, mainButton, assertOpenAvailability, parentSaved, cancelCorrection, openCorrection, drain, assertNoAdditionalTransport, cleanup, render, reason: () => reason };
 }
 // The immutable original3-case baseline is retained privately. Final cases
 // prove a different, explicit availability contract: resolve the correction
@@ -348,5 +374,72 @@ describe('actual open correction Save or Cancel availability contract', () => {
             expect(f.state.get('error')).toBe('Break input rejected.'); expect(f.state.get('breakMinutes')).toBe('15');
             expect(elements(f.render().tree).filter(node => node.type === Panel)).toHaveLength(0);
         } finally { await f.cleanup(); }
+    });
+});
+
+
+// Real complete workspace loadCards and loadEarlierCards are exercised through
+// the closed transport ledger. The response roster stands in for an authoritative
+// backend page; this does not qualify database ordering, React, or browser I/O.
+describe('correction readback retains draft and refreshes moving history cursors', () => {
+    it('refreshes A10 B9 cursor after B moves to7 so load earlier still includes previously unloaded C8', async () => {
+        const row = (id: string, hour: number): TimeCard => ({ ...selected, id, status: 'CLOSED',
+            clockInAt: `2026-10-04T${String(hour).padStart(2, '0')}:00:00.000Z`,
+            clockOutAt: `2026-10-04T${String(hour + 1).padStart(2, '0')}:00:00.000Z` });
+        const a = row('card-A10', 10), b = row(cardId, 9), c = row('card-C8', 8);
+        const acknowledged = { ...b, clockInAt: '2026-10-04T07:00:00.000Z', clockOutAt: '2026-10-04T08:00:00.000Z',
+            updatedAt: '2026-10-04T12:00:00.000Z' };
+        const f = fixture('acknowledged', { active: false, history: { first: [a, b], refreshed: [a, c], earlier: [acknowledged] } });
+        try {
+            await f.prepare(); f.openCorrection();
+            const before = only(f.render().tree, node => node.type === Panel);
+            expect(f.state.get('nextCardsCursor')).toBe('cursor-B9');
+            await f.parentSaved(acknowledged, () => false);
+            const after = only(f.render().tree, node => node.type === Panel);
+            expect(after.props.key).toBe(before.props.key); expect(after.props.card).toEqual(before.props.card);
+            expect(f.reason()).toBe('New unsaved verified correction.');
+            expect(f.state.get('cards')).toEqual([a, c]); expect(f.state.get('nextCardsCursor')).toBe('cursor-C8');
+            const ownerHistory = only(f.render().tree, node => node.type === History);
+            const renderedHistory = new Function('React', 'formatTimeCardDuration', 'formatTimeCardTimestamp', historyExecutable)(
+                React, timeFormat.formatTimeCardDuration, timeFormat.formatTimeCardTimestamp)(ownerHistory.props);
+            const earlier = only(renderedHistory, node => node.type === 'button' && node.children.includes('Load earlier records'));
+            expect(earlier.props.disabled).toBe(false); earlier.props.onClick(); await f.settleCallbacks();
+            expect(f.state.get('cards')).toEqual([a, c, acknowledged]); expect(f.state.get('nextCardsCursor')).toBeNull();
+            expect(f.calls.filter(call => call.path.includes('cursor='))).toEqual([
+                { path: `/time-cards?limit=100&cursor=cursor-C8&userId=${userId}`, method: 'GET' }]);
+            expect(f.unexpected).toEqual([]); expect(f.writes).toEqual([]);
+        } finally { await f.cleanup(); }
+    });
+
+    it('retains editor identity after an acknowledged save whose history readback fails without turning it into a write refusal', async () => {
+        const f = fixture('acknowledged', { refreshFailure: true });
+        try {
+            await f.prepare(); f.openCorrection(); const before = only(f.render().tree, node => node.type === Panel);
+            await f.parentSaved({ ...selected, updatedAt: '2026-10-04T12:00:00.000Z' });
+            const after = only(f.render().tree, node => node.type === Panel);
+            expect(after.props.key).toBe(before.props.key); expect(after.props.card).toEqual(before.props.card);
+            expect(f.reason()).toBe('New unsaved verified correction.'); expect(f.state.get('notice')).toBe('Time card corrected.');
+            expect(f.state.get('error')).toContain('history and new clock-ins are unavailable');
+            expect(f.state.get('canStartNewTimeCard')).toBe(false); expect(f.state.get('cards')).toEqual([]);
+            expect(f.state.get('nextCardsCursor')).toBeNull(); expect(f.state.get('isCardsLoading')).toBe(false);
+            expect(f.unexpected).toEqual([]); expect(f.writes).toEqual([]);
+        } finally { await f.cleanup(); }
+    });
+});
+
+
+describe('actual correction history readback ownership', () => {
+    it('does not publish late history rows or close the editor after the actual owner cleanup invalidates its generation', async () => {
+        const gate = deferred<void>(), entered = deferred<void>();
+        const f = fixture('acknowledged', { readbackHold: gate.promise, readbackEntered: () => entered.resolve() });
+        let pending: Promise<void> | undefined;
+        try {
+            await f.prepare(); f.openCorrection(); pending = f.parentSaved({ ...selected, updatedAt: '2026-10-04T12:00:00.000Z' });
+            await entered.promise;
+            const before = structuredClone([...f.state]), effectCount = f.effects.length;
+            f.unmount(); gate.resolve(); await pending;
+            expect([...f.state]).toEqual(before); expect(f.effects).toHaveLength(effectCount);
+            expect(f.state.get('correctingCard')).not.toBeNull(); expect(f.unexpected).toEqual([]); expect(f.writes).toEqual([]);
+        } finally { gate.resolve(); await pending; await f.cleanup(); }
     });
 });

@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type Dispatch, type SetStateAction } from 'react';
 import { createLatestRequestGate } from '@/lib/latest-request';
 import {
     clockInTimeCard,
@@ -119,46 +119,58 @@ export function TimeCardsWorkspace({ canManageTeam, canReadLocations, canWriteTi
             setIsLoadingMoreLocations(false);
         }
     }, [nextLocationCursor]);
-    const loadCards = useCallback(async (userId: string, targetView: TimeCardView) => {
-        correctionGeneration.current += 1;
+    const loadCards = useCallback(async (userId: string, targetView: TimeCardView,
+        preserveCorrectionGeneration?: number) => {
+        const ownsCorrection = () => preserveCorrectionGeneration === undefined
+            || correctionGeneration.current === preserveCorrectionGeneration;
+        if (!ownsCorrection()) return;
+        if (preserveCorrectionGeneration === undefined) correctionGeneration.current += 1;
         const targetKey = `${targetView}:${userId}`;
         const ticket = cardsRequestGate.current.begin(targetKey);
-        setIsCardsLoading(true);
-        setLoadedTargetKey(null);
-        setCanStartNewTimeCard(false);
-        setActiveCard(null);
-        setCards([]);
-        setNextCardsCursor(null);
-        setIsMoreCardsLoading(false);
-        setCorrectingCard(null);
-        setError(null);
+        const isCurrent = () => cardsRequestGate.current.isLatest(ticket) && ownsCorrection();
+        function publish<T>(setter: Dispatch<SetStateAction<T>>, value: SetStateAction<T>) {
+            if (preserveCorrectionGeneration === undefined) { setter(value); return; }
+            // Recheck ownership when React evaluates a queued update, too.
+            setter((current) => isCurrent()
+                ? typeof value === 'function' ? (value as (current: T) => T)(current) : value
+                : current);
+        }
+        publish(setIsCardsLoading, true);
+        publish(setLoadedTargetKey, null);
+        publish(setCanStartNewTimeCard, false);
+        publish(setActiveCard, null);
+        publish(setCards, []);
+        publish(setNextCardsCursor, null);
+        publish(setIsMoreCardsLoading, false);
+        if (preserveCorrectionGeneration === undefined) setCorrectingCard(null);
+        publish(setError, null);
 
         try {
             const snapshot = await fetchTimeCardSnapshot(userId, canManageTeam);
-            if (!cardsRequestGate.current.isLatest(ticket)) return;
+            if (!isCurrent()) return;
 
-            setActiveCard(targetView === 'mine' || isTimeCardForEmployee(snapshot.activeCard, userId) ? snapshot.activeCard : null);
-            setLoadedTargetKey(targetKey);
+            publish(setActiveCard, targetView === 'mine' || isTimeCardForEmployee(snapshot.activeCard, userId) ? snapshot.activeCard : null);
+            publish(setLoadedTargetKey, targetKey);
 
             if (snapshot.historyResponse.ok) {
                 const page = (await snapshot.historyResponse.json()) as TimeCardPage;
-                if (!cardsRequestGate.current.isLatest(ticket)) return;
+                if (!isCurrent()) return;
                 if (!Array.isArray(page.data)) throw new Error('Time card history could not be verified.');
                 const rows = page.data;
-                setCanStartNewTimeCard(true);
-                setCards(targetView === 'team' ? rows.filter((card) => card.userId === userId) : rows);
-                setNextCardsCursor(page.pagination?.nextCursor ?? null);
+                publish(setCanStartNewTimeCard, true);
+                publish(setCards, targetView === 'team' ? rows.filter((card) => card.userId === userId) : rows);
+                publish(setNextCardsCursor, page.pagination?.nextCursor ?? null);
                 return rows;
             } else {
-                setCards([]);
-                setError('Time card history and new clock-ins are unavailable. You can still clock out an open card.');
+                publish(setCards, []);
+                publish(setError, 'Time card history and new clock-ins are unavailable. You can still clock out an open card.');
             }
         } catch (loadError) {
-            if (cardsRequestGate.current.isLatest(ticket)) {
-                setError(loadError instanceof Error ? loadError.message : 'Unable to load time cards.');
+            if (isCurrent()) {
+                publish(setError, loadError instanceof Error ? loadError.message : 'Unable to load time cards.');
             }
         } finally {
-            if (cardsRequestGate.current.isLatest(ticket)) setIsCardsLoading(false);
+            if (isCurrent()) publish(setIsCardsLoading, false);
         }
     }, [canManageTeam]);
 
@@ -591,11 +603,19 @@ export function TimeCardsWorkspace({ canManageTeam, canReadLocations, canWriteTi
                         correctionGeneration.current += 1;
                         setCorrectingCard(null);
                     }}
-                    onSaved={async () => {
-                        if (correctionGeneration.current !== renderedCorrectionGeneration) return;
-                        setNotice('Time card corrected.');
-                        setCorrectingCard(null);
-                        await loadCards(selectedUserId, view);
+                    onSaved={async (acknowledged, canClose) => {
+                        const ownsCompletion = () => correctionGeneration.current === renderedCorrectionGeneration
+                            && acknowledged.id === correctingCard.id && acknowledged.userId === selectedUserId;
+                        if (!ownsCompletion()) return;
+                        setNotice((current) => ownsCompletion() ? 'Time card corrected.' : current);
+                        // A correction can move a row across a history cursor.
+                        // Refresh the authoritative first page without changing
+                        // the editor identity, original key, or local draft.
+                        const rows = await loadCards(selectedUserId, view, renderedCorrectionGeneration);
+                        if (!Array.isArray(rows)) return; // Keep the draft/CAS if the readback is unavailable.
+                        setCorrectingCard((current) => ownsCompletion() && canClose()
+                            && current?.id === correctingCard.id && current.updatedAt === correctingCard.updatedAt
+                            ? null : current);
                     }}
                 />
             ) : null}
