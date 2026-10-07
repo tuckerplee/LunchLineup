@@ -158,9 +158,10 @@ export class MeteringService {
         // Check remaining wallet capacity under the existing tenant lock, before
         // mutation. The total grant may exceed INTEGER when it also repays debt.
         if (spendableAmount > MAX_STORED_CREDIT_BALANCE - currentBalance) {
-            throw new BadRequestException(
-                'Credit amount exceeds the available wallet capacity. Refresh balances and enter a smaller amount.',
-            );
+            throw new BadRequestException({
+                code: 'CREDIT_WALLET_CAPACITY_EXCEEDED',
+                message: 'Credit amount exceeds the available wallet capacity. Refresh balances and enter a smaller amount.',
+            });
         }
         const debtAmount = repaidDebt === 0 ? 0 : -repaidDebt;
         const tenant = await tx.tenant.update({

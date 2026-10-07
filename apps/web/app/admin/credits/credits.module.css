@@ -13,6 +13,14 @@
   align-items: start;
 }
 
+.balanceHeader {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.75rem;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
 .grantPanel {
   min-width: 0;
 }
@@ -36,6 +44,17 @@
   }
 
   .tenantSearch > label {
+    min-width: 0;
+  }
+
+  /* Keep the title and its naturally wrapping description beside Refresh.
+     A flexible text column avoids a second button row at narrow widths. */
+  .balanceHeader {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+
+  .balanceHeader > div {
     min-width: 0;
   }
 

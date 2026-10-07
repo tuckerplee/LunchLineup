@@ -1727,21 +1727,31 @@ export class AdminController implements OnModuleDestroy {
     @HttpCode(HttpStatus.CREATED)
     async grantCredits(
         @Req() req: any,
-        @Body() body: { tenantId: string; amount: number; reason: string },
+        @Body() body: unknown,
         @Headers('idempotency-key') idempotencyKeyHeader?: string,
     ) {
         this.assertSuperAdmin(req);
 
-        const tenantId = (body.tenantId ?? '').trim();
-        const reason = (body.reason ?? '').trim();
-        const amount = Number(body.amount);
-        const idempotencyKey = this.normalizeCreditGrantIdempotencyKey(idempotencyKeyHeader);
-
-        if (!tenantId) throw new BadRequestException('tenantId is required');
-        if (!reason) throw new BadRequestException('reason is required');
-        if (!Number.isInteger(amount) || amount <= 0) {
-            throw new BadRequestException('amount must be a positive integer');
+        if (!body || typeof body !== 'object' || Array.isArray(body)) {
+            throw new BadRequestException('Credit grant body must be a JSON object');
         }
+        const input = body as Record<string, unknown>;
+        if (typeof input.tenantId !== 'string' || !input.tenantId.trim()) {
+            throw new BadRequestException('tenantId is required');
+        }
+        if (typeof input.reason !== 'string' || !input.reason.trim()) {
+            throw new BadRequestException('reason is required');
+        }
+        const tenantId = input.tenantId.trim();
+        const reason = input.reason.trim();
+        const amount = input.amount;
+        if (typeof amount !== 'number' || !Number.isSafeInteger(amount) || amount <= 0) {
+            throw new BadRequestException('amount must be a positive safe integer');
+        }
+        if (reason.length > 500) {
+            throw new BadRequestException('Reason must be between 1 and 500 characters');
+        }
+        const idempotencyKey = this.normalizeCreditGrantIdempotencyKey(idempotencyKeyHeader);
 
         const actor = this.adminUserLifecycleActor(req);
         const newBalance = await this.withPlatformAdminUserMutation(async (tx) => {

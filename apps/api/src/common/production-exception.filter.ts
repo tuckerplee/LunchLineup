@@ -33,6 +33,11 @@ const STATUS_LABELS: Record<number, string> = {
 };
 
 const PUBLIC_ERROR_DETAILS = {
+    CREDIT_WALLET_CAPACITY_EXCEEDED: {
+        status: HttpStatus.BAD_REQUEST,
+        message: 'Credit amount exceeds the available wallet capacity. Refresh balances and enter a smaller amount.',
+        remediation: 'Refresh balances and enter a smaller amount. Outstanding debt is repaid before adding spendable credits.',
+    },
     SETUP_SHIFTS_ENTITLEMENT_REQUIRED: {
         status: HttpStatus.FORBIDDEN,
         message: 'Setup shifts require an active paid subscription and enough usage credits.',

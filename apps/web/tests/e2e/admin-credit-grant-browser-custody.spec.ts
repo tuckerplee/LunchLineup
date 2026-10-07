@@ -80,7 +80,7 @@ async function observeBodies(page: Page) {
   }, { path: GRANT });
 }
 
-async function install(page: Page, mode: Mode) {
+async function install(page: Page, mode: Mode, expectedPayload = payload) {
   // Zero-debt fixture only. Real debt-first settlement can make wallet + amount
   // an invalid projection; this fixture does not qualify that separate case.
   const tenants: Tenant[] = [
@@ -120,7 +120,7 @@ async function install(page: Page, mode: Mode) {
         const body = JSON.parse(requestBody) as unknown;
         if (!body || typeof body !== 'object' || Array.isArray(body)
           || JSON.stringify(Object.keys(body).sort()) !== JSON.stringify(['amount', 'reason', 'tenantId'])
-          || JSON.stringify(body) !== JSON.stringify(payload)) throw new Error('Unexpected exact grant payload');
+          || JSON.stringify(body) !== JSON.stringify(expectedPayload)) throw new Error('Unexpected exact grant payload');
         const fingerprint = JSON.stringify(body), previous = accepted.get(key);
         if (mode === 'refusal' && posts === 1) {
           status = 422; value = { message: REFUSED };
@@ -129,9 +129,9 @@ async function install(page: Page, mode: Mode) {
           if (previous) { replay = true; }
           else {
             const tenant = tenants.find(item => item.id === B)!;
-            tenant.usageCredits += payload.amount; effects += 1;
-            history.push({ id: '82000000-0000-4000-8000-000000000001', amount: payload.amount,
-              reason: payload.reason, createdAt: '2026-10-06T12:00:00.000Z', tenant: { id: tenant.id, name: tenant.name, slug: tenant.slug } });
+            tenant.usageCredits += expectedPayload.amount; effects += 1;
+            history.push({ id: '82000000-0000-4000-8000-000000000001', amount: expectedPayload.amount,
+              reason: expectedPayload.reason, createdAt: '2026-10-06T12:00:00.000Z', tenant: { id: tenant.id, name: tenant.name, slug: tenant.slug } });
             accepted.set(key, { fingerprint, newBalance: tenant.usageCredits });
           }
           status = mode === 'ambiguous' && posts === 1 ? 502 : 201;
@@ -216,12 +216,12 @@ async function confirm(page: Page, accept: boolean) {
   finally { page.off('dialog', handler); }
   expect(failures).toEqual([]);
 }
-async function exactDelivery(page: Page, adapter: Adapter, response: Response) {
+async function exactDelivery(page: Page, adapter: Adapter, response: Response, expectedPayload = payload) {
   const row = writes(adapter).at(-1)!;
   expect(response.url()).toBe(row.url); expect(response.status()).toBe(row.status);
   expect(response.request().postData()).toBe(row.requestBody);
   expect(response.request().headers()['idempotency-key']).toBe(row.key);
-  expect(JSON.parse(row.requestBody!)).toEqual(payload);
+  expect(JSON.parse(row.requestBody!)).toEqual(expectedPayload);
   const sequence = writes(adapter).indexOf(row) + 1;
   const expected = { sequence, url: row.url, key: row.key,
     requestSha256: createHash('sha256').update(row.requestBody!).digest('hex'), status: row.status,
@@ -528,7 +528,7 @@ async function layoutWitness(page: Page) {
   if (failures.length) throw new AggregateError(failures, 'Credit populated layout or viewport restoration failed');
 }
 
-async function settled(page: Page, adapter: Adapter) {
+async function settled(page: Page, adapter: Adapter, grantReason = REASON) {
   await expect(page.getByText('Credits granted.', { exact: true })).toBeVisible();
   await expect(balanceRow(page, 'Boreal Kitchen').getByRole('cell').nth(2).getByText('65', { exact: true })).toBeVisible();
   await balanceRow(page, 'Boreal Kitchen').getByRole('cell').nth(2).getByText('65', { exact: true }).scrollIntoViewIfNeeded({ timeout: 5000 });
@@ -536,26 +536,26 @@ async function settled(page: Page, adapter: Adapter) {
   const state = await adapter.read();
   expect(state.tenants).toEqual(adapter.initial.map(row => row.id === B ? { ...row, usageCredits: 65 } : row));
   expect(state.history).toHaveLength(1);
-  expect(state.history[0]).toMatchObject({ amount: 25, reason: REASON, tenant: { id: B, name: 'Boreal Kitchen', slug: 'boreal-fixture' } });
+  expect(state.history[0]).toMatchObject({ amount: 25, reason: grantReason, tenant: { id: B, name: 'Boreal Kitchen', slug: 'boreal-fixture' } });
   const history = page.getByRole('article', { name: 'Credit transaction history table', exact: true });
-  await expect(history.getByRole('row').filter({ hasText: REASON })).toHaveCount(1);
-  await expect(history.getByRole('row').filter({ hasText: REASON })).toContainText('Boreal Kitchen');
+  await expect(history.getByRole('row').filter({ hasText: grantReason })).toHaveCount(1);
+  await expect(history.getByRole('row').filter({ hasText: grantReason })).toContainText('Boreal Kitchen');
   await page.reload();
   await expect(page.getByRole('heading', { name: 'Credits', exact: true })).toBeVisible();
   await expect(balanceRow(page, 'Boreal Kitchen').getByRole('cell').nth(2).getByText('65', { exact: true })).toBeVisible();
   await balanceRow(page, 'Boreal Kitchen').getByRole('cell').nth(2).getByText('65', { exact: true }).scrollIntoViewIfNeeded({ timeout: 5000 });
   await expect(balanceRow(page, 'Boreal Kitchen').getByRole('cell').nth(2).getByText('65', { exact: true })).toBeInViewport();
-  await expect(history.getByRole('row').filter({ hasText: REASON })).toHaveCount(1);
+  await expect(history.getByRole('row').filter({ hasText: grantReason })).toHaveCount(1);
   expect(await adapter.read()).toEqual(state);
   expect(writes(adapter).every(row => row.effects <= 1)).toBe(true);
 }
 
-async function scenario(page: Page, mode: Mode, body: (adapter: Adapter) => Promise<void>) {
+async function scenario(page: Page, mode: Mode, body: (adapter: Adapter) => Promise<void>, expectedPayload = payload) {
   const pageErrors: string[] = [], consoleErrors: Array<{ text: string; url: string }> = [];
   page.on('pageerror', error => pageErrors.push(error.message));
   page.on('console', message => { if (message.type() === 'error') consoleErrors.push({ text: message.text(), url: message.location().url }); });
   await observeBodies(page);
-  const adapter = await install(page, mode);
+  const adapter = await install(page, mode, expectedPayload);
   const failures: unknown[] = [];
   try {
     await loginAsSeedSuperAdmin(page, '/admin/credits');
@@ -1098,7 +1098,7 @@ async function installDebtModel(page: Page, mode: DebtMode) {
   const errors: unknown[] = [], active = new Set<Route>(), pending: Promise<void>[] = [];
   const priorReceipts: DebtReceipt[] = [], priorObserverErrors: string[] = [];
   const accepted = new Map<string, { fingerprint: string; balance: number }>();
-  let effects = 0, ordinaryReads = 0, closing = false;
+  let effects = 0, closing = false;
   const snapshot = (): Snapshot => copy({ tenants, history, tenantPagination: pagination(tenants.length), historyPagination: pagination(history.length) });
   async function run(route: Route) {
     try {
@@ -1110,10 +1110,9 @@ async function installDebtModel(page: Page, mode: DebtMode) {
       if (method === 'GET' && url.pathname === ROOT && url.search === QUERY) {
         if (requestBody !== null || key !== null) throw new Error('Unexpected debt GET mutation fields');
         const response = snapshot();
-        if (!probe) ordinaryReads += 1;
-        if (mode === 'missing-initial' && !probe && ordinaryReads === 1) {
-          // One historical/degraded response only. Independent later GETs expose
-          // the same authoritative model state; no fake probe-only state exists.
+        if (mode === 'missing-initial' && !probe && effects === 0) {
+          // Keep the degraded UI phase stable across legitimate mount/refresh reads.
+          // Probes always expose the true model; an accepted grant ends this phase.
           delete (response.tenants.find(row => row.id === B)! as Partial<Tenant>).creditDebt;
           missingDebt = true;
         }
@@ -1400,7 +1399,7 @@ async function debtScenario(page: Page, mode: DebtMode, body: (adapter: DebtAdap
         && observed.receipts.every(row => row.complete));
     }, { timeout: 6000 }).toBe(true);
     if (!observed) throw new Error('Debt native observer missing');
-    const actual = [...adapter.priorReceipts, ...observed.receipts].map(({ complete, ...receipt }) => JSON.stringify(receipt)).sort();
+    const actual = [...adapter.priorReceipts, ...observed.receipts].map(({ complete: _complete, ...receipt }) => JSON.stringify(receipt)).sort();
     const expected = adapter.ledger.map(row => JSON.stringify({ method: row.method, url: row.url, key: row.key, probe: row.probe,
       requestBody: row.requestBody, status: row.status, bodyBase64: Buffer.from(row.body).toString('base64'), error: null })).sort();
     expect(actual).toEqual(expected); expect([...adapter.priorObserverErrors, ...observed.errors]).toEqual([]);
@@ -1469,11 +1468,32 @@ test.describe('Admin credit debt settlement browser custody', () => {
   test('keeps missing-debt estimates unavailable while allowing an explicit debt-first grant and truthful reload', async ({ page }) => {
     await debtScenario(page, 'missing-initial', async adapter => {
       await amount(page).fill('20'); await reason(page).fill(DEBT_MISSING_REASON);
+      // Exercise a real repeat read rather than depending on a particular mount count.
+      const initialReadCount = adapter.ledger.filter(row => row.method === 'GET' && !row.probe).length;
+      const refresh = page.getByRole('button', { name: 'Refresh', exact: true });
+      await expect(refresh).toBeEnabled(); await refresh.click();
+      await expect.poll(async () => {
+        const reads = adapter.ledger.filter(row => row.method === 'GET' && !row.probe);
+        const receipts = await page.evaluate(() => (window as DebtWindow).__creditDebtReceipts?.receipts
+          .filter(row => row.method === 'GET' && !row.probe));
+        return reads.length > initialReadCount && reads.every(row => row.delivered)
+          && receipts?.length === reads.length && receipts.every(row => row.complete && row.error === null);
+      }, { timeout: 6000 }).toBe(true);
       const initial = await debtEvidence(page, adapter, 'missing-initial-debt-rendering-and-authority');
       expect(initial.state.tenants).toEqual(adapter.initial);
-      const omitted = adapter.ledger.filter(row => row.missingDebt);
-      expect(omitted).toHaveLength(1);
-      expect(JSON.parse(omitted[0].body).tenants.find((row: Tenant) => row.id === B)).not.toHaveProperty('creditDebt');
+      const initialUiReads = adapter.ledger.filter(row => row.method === 'GET' && !row.probe);
+      expect(initialUiReads.length).toBeGreaterThan(initialReadCount);
+      for (const row of initialUiReads) {
+        expect(row.effects).toBe(0); expect(row.missingDebt).toBe(true); expect(row.delivered).toBe(true);
+        expect(JSON.parse(row.body).tenants.find((tenant: Tenant) => tenant.id === B)).not.toHaveProperty('creditDebt');
+      }
+      expect(adapter.ledger.filter(row => row.method === 'POST')).toHaveLength(0);
+      expect(adapter.settlements).toHaveLength(0); expect(adapter.dialogs).toHaveLength(0);
+      expect(initial.state.tenants.find(row => row.id === B)).toMatchObject({ usageCredits: 10, creditDebt: 30 });
+      await test.info().attach('missing-debt-initial-read-phase-custody', { contentType: 'application/json', body: JSON.stringify({
+        initialReadCount, initialUiReads, probes: adapter.ledger.filter(row => row.probe), ui: initial.ui, state: initial.state,
+        observed: await page.evaluate(() => (window as DebtWindow).__creditDebtReceipts),
+      }) });
       await expectDebtPreview(page, { loadedWallet: '10', loadedDebt: 'Unavailable', repayment: '-', walletAfter: '-', debtAfter: '-' });
       await debtPreviewLayoutWitness(page, 'missing-debt', { loadedWallet: '10', loadedDebt: 'Unavailable', repayment: '-', walletAfter: '-', debtAfter: '-' });
       await expect(page.getByText(DEBT_UNAVAILABLE, { exact: true })).toBeVisible(); await expect(submit(page)).toBeEnabled();
@@ -1498,7 +1518,72 @@ test.describe('Admin credit debt settlement browser custody', () => {
       await expect(page.getByText(DEBT_UNAVAILABLE, { exact: true })).toHaveCount(0);
       await debtHistoryWitness(page, [{ reason: DEBT_MISSING_REASON, amount: 0 }], 0);
       expect(adapter.ledger.filter(row => row.method === 'POST')).toHaveLength(1); expect(adapter.settlements).toHaveLength(1);
-      expect(adapter.ledger.filter(row => row.missingDebt)).toHaveLength(1);
+      const allReads = adapter.ledger.filter(row => row.method === 'GET');
+      expect(allReads.filter(row => !row.probe && row.effects === 0).length).toBeGreaterThan(initialReadCount);
+      expect(allReads.some(row => !row.probe && row.effects === 1)).toBe(true);
+      for (const row of allReads) {
+        const shouldOmit = !row.probe && row.effects === 0;
+        expect(row.missingDebt).toBe(shouldOmit);
+        const target = JSON.parse(row.body).tenants.find((tenant: Tenant) => tenant.id === B);
+        if (shouldOmit) expect(target).not.toHaveProperty('creditDebt');
+        else expect(target).toMatchObject({ usageCredits: 10, creditDebt: row.effects === 0 ? 30 : 10 });
+      }
+      await test.info().attach('missing-debt-complete-read-phase-custody', { contentType: 'application/json',
+        body: JSON.stringify({ reads: allReads, dialogs: adapter.dialogs, settlements: adapter.settlements }) });
+    });
+  });
+});
+
+test.describe('Admin credit grant input browser custody', () => {
+  test.skip(!mockMode, 'Controlled local model only; native input HTTP and database qualification are separately owned.');
+  test.setTimeout(60_000);
+  test.beforeEach(async ({ page }) => { expect((await page.request.post('/api/v1/__e2e/reset')).status()).toBe(200); });
+
+  test('refuses501 reason units then explicitly grants a padded500 reason once after cancel and reload', async ({ page }) => {
+    const exactReason = 'r'.repeat(500), rawReason = `  ${exactReason}  `;
+    const expectedPayload = { ...payload, reason: exactReason };
+    await scenario(page, 'positive', async adapter => {
+      await fill(page); await reason(page).fill('r'.repeat(501));
+      const unexpectedDialogs: string[] = [];
+      const rejectDialog = async (dialog: Dialog) => { unexpectedDialogs.push(dialog.message()); await dialog.dismiss(); };
+      page.on('dialog', rejectDialog);
+      try {
+        await submit(page).click(); await expect(page.getByText('Reason must be 500 characters or fewer.', { exact: true })).toBeVisible();
+        await expect(reason(page)).toHaveValue('r'.repeat(501)); await expect(amount(page)).toHaveValue('25'); await expect(tenant(page)).toHaveValue(B);
+        expect(unexpectedDialogs).toEqual([]); expect(writes(adapter)).toHaveLength(0);
+        await expect(page.getByText('Use 1–500 characters. Leading and trailing spaces are ignored.', { exact: true })).toBeVisible();
+        expect(await reason(page).getAttribute('maxlength')).toBeNull();
+      } finally { page.off('dialog', rejectDialog); }
+      await reason(page).fill(rawReason); await confirm(page, false);
+      expect(writes(adapter)).toHaveLength(0); expect((await adapter.read()).tenants).toEqual(adapter.initial);
+      await expect(reason(page)).toHaveValue(rawReason); await expect(amount(page)).toHaveValue('25'); await expect(tenant(page)).toHaveValue(B);
+      const delivered = responseForGrant(page);
+      try {
+        await confirm(page, true); const held = await bounded(adapter.observed, '500-reason POST observation', 6000);
+        expect(JSON.parse(held.requestBody!)).toEqual(expectedPayload); expect(held.effects).toBe(1);
+        adapter.release(); await exactDelivery(page, adapter, await delivered, expectedPayload);
+      } finally { adapter.release(); }
+      await settled(page, adapter, exactReason);
+      expect(writes(adapter)).toHaveLength(1); expect(writes(adapter)[0].effects).toBe(1);
+      await test.info().attach('credit-reason-boundary-input-custody', { contentType: 'application/json',
+        body: JSON.stringify({ rejectedLength: 501, displayedLength: rawReason.length, sentLength: exactReason.length,
+          unexpectedDialogs, exactPayload: expectedPayload, writes: writes(adapter) }) });
+    }, expectedPayload);
+  });
+
+  test('refuses an unsafe amount before confirmation or POST and preserves the selected grant fields', async ({ page }) => {
+    await scenario(page, 'positive', async adapter => {
+      await fill(page); await amount(page).fill('9007199254740992');
+      const dialogs: string[] = [], handler = async (dialog: Dialog) => { dialogs.push(dialog.message()); await dialog.dismiss(); };
+      page.on('dialog', handler);
+      try {
+        await submit(page).click(); await expect(page.getByText('Amount must be a positive integer.', { exact: true })).toBeVisible();
+        expect(dialogs).toEqual([]); expect(writes(adapter)).toHaveLength(0);
+        await expect(amount(page)).toHaveValue('9007199254740992'); await expect(reason(page)).toHaveValue(REASON); await expect(tenant(page)).toHaveValue(B);
+        const state = await adapter.read(); expect(state.tenants).toEqual(adapter.initial); expect(state.history).toEqual([]);
+        await expect(page.getByText('Credits granted.', { exact: true })).toHaveCount(0);
+        await test.info().attach('credit-unsafe-amount-input-custody', { contentType: 'application/json', body: JSON.stringify({ dialogs, state, writes: writes(adapter) }) });
+      } finally { page.off('dialog', handler); }
     });
   });
 });

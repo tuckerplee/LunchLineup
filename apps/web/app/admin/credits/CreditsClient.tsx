@@ -303,6 +303,10 @@ export function CreditsClient() {
             setError('Reason is required.');
             return;
         }
+        if (reason.length > 500) {
+            setError('Reason must be 500 characters or fewer.');
+            return;
+        }
 
         const selected = tenants.find((tenant) => tenant.id === form.tenantId) ?? null;
         if (!selected) {
@@ -456,7 +460,7 @@ export function CreditsClient() {
                     tabIndex={0}
                     style={{ overflowX: 'auto' }}
                 >
-                    <div style={{ padding: '0.95rem 1rem 0.55rem', display: 'flex', justifyContent: 'space-between', gap: '0.75rem', alignItems: 'center', flexWrap: 'wrap' }}>
+                    <div className={styles.balanceHeader} style={{ padding: '0.95rem 1rem 0.55rem' }}>
                         <div>
                             <h2 style={{ fontSize: '0.98rem', fontWeight: 760, color: 'var(--text-primary)' }}>Tenant Balances</h2>
                             <div style={{ fontSize: '0.76rem', color: 'var(--text-muted)', marginTop: 2 }}>
@@ -604,13 +608,18 @@ export function CreditsClient() {
                         </label>
 
                         <label className="form-group">
-                            <span className="form-label">Reason</span>
+                            <span id="credit-grant-reason-label" className="form-label">Reason</span>
                             <input
                                 className="form-input"
                                 value={form.reason}
                                 onChange={(event) => setForm((current) => ({ ...current, reason: event.target.value }))}
                                 placeholder="Customer success grant"
+                                aria-labelledby="credit-grant-reason-label"
+                                aria-describedby="credit-grant-reason-help"
                             />
+                            <span id="credit-grant-reason-help" style={{ fontSize: '0.8125rem', color: 'var(--text-secondary)' }}>
+                                Use 1–500 characters. Leading and trailing spaces are ignored.
+                            </span>
                         </label>
 
                         <div

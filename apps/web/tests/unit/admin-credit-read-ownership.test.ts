@@ -155,7 +155,7 @@ function fixture() {
     }
     async function flush() { for (let index = 0; index < 10; index += 1) await Promise.resolve(); render(); }
     render(); expect(effects).toHaveLength(1); cleanup = effects[0]() || undefined;
-    return { state, refs, reads, writes, setterCalls, render, button, flush,
+    return { state, refs, reads, writes, setterCalls, render, button, flush, confirm: bindings.window.confirm,
         click(label: string) { const node = button(label); expect(node.props.disabled).not.toBe(true); node.props.onClick(); },
         search(query: string) {
             one(render(), node => node.type === 'input' && node.props.placeholder === 'Search by tenant name or slug').props.onChange({ target: { value: query } });
@@ -279,5 +279,49 @@ describe('actual CreditsClient read ownership wiring', () => {
         f.unmount(); const count = f.setterCalls.length;
         await f.complete(1, pageData([C], null)); await f.fail(2, 'Late unmounted failure');
         expect(f.setterCalls).toHaveLength(count); expect(f.state.get('tenants')).toEqual([A, B]); expect(f.state.get('history')).toEqual([H1]);
+    });
+});
+
+describe('actual CreditsClient grant input boundary', () => {
+    it.each([
+        { label: '501 code units', reason: 'r'.repeat(501) },
+        { label: 'padded501 code units', reason: `  ${'r'.repeat(501)}  ` },
+        { label: '502 Unicode code units', reason: '😀'.repeat(251) },
+    ])('refuses $label before confirmation or POST while preserving the draft', async ({ reason }) => {
+        const f = fixture(); await f.complete(0, pageData()); f.draft('B', '25', reason); f.grant(); await f.flush();
+        expect(f.state.get('error')).toBe('Reason must be 500 characters or fewer.');
+        expect(f.confirm).not.toHaveBeenCalled(); expect(f.writes).toHaveLength(0);
+        expect(f.state.get('form')).toEqual({ tenantId: 'B', amount: '25', reason });
+        expect(f.refs.get('grantSubmission')!.current).toEqual({ attempt: null, inFlight: false });
+    });
+    it.each(['9007199254740992', '1.5'])('refuses invalid amount %s without confirmation, request or field loss', async amount => {
+        const f = fixture(); await f.complete(0, pageData()); f.draft('B', amount, 'Retained reason'); f.grant(); await f.flush();
+        expect(f.state.get('error')).toBe('Amount must be a positive integer.');
+        expect(f.confirm).not.toHaveBeenCalled(); expect(f.writes).toHaveLength(0);
+        expect(f.state.get('form')).toEqual({ tenantId: 'B', amount, reason: 'Retained reason' });
+    });
+    it.each([
+        { label: '500 ASCII', reason: 'r'.repeat(500) },
+        { label: 'padded500 ASCII', reason: `  ${'r'.repeat(500)}  ` },
+        { label: '500 Unicode code units', reason: '😀'.repeat(250) },
+    ])('confirms and submits exact trimmed $label without truncating the displayed draft', async ({ reason }) => {
+        vi.stubGlobal('crypto', { randomUUID: () => 'valid-reason-input-key' });
+        const f = fixture(); await f.complete(0, pageData()); f.draft('B', '25', reason); f.grant();
+        expect(f.confirm).toHaveBeenCalledOnce(); expect(f.writes).toHaveLength(1);
+        expect(JSON.parse(String(f.writes[0].init.body))).toEqual({ tenantId: 'B', amount: 25, reason: reason.trim() });
+        expect(f.state.get('form').reason).toBe(reason);
+        f.writes[0].response.resolve(new Response(JSON.stringify({ success: true, newBalance: 65 }), { status: 201 }));
+        await vi.waitFor(() => expect(f.reads).toHaveLength(2)); await f.complete(1, pageData([A, { ...B, usageCredits: 65 }]));
+        await vi.waitFor(() => expect(f.state.get('grantSaving')).toBe(false)); expect(f.writes).toHaveLength(1);
+    });
+    it('keeps an above-Int32 debt repayment amount eligible for deliberate submission', async () => {
+        vi.stubGlobal('crypto', { randomUUID: () => 'combined-debt-input-key' });
+        const f = fixture(); await f.complete(0, pageData([A, { ...B, usageCredits: 0, creditDebt: 2_147_483_647 }]));
+        f.draft('B', '4294967294', 'Combined capacity'); f.grant();
+        expect(f.confirm).toHaveBeenCalledOnce(); expect(f.writes).toHaveLength(1);
+        expect(JSON.parse(String(f.writes[0].init.body))).toEqual({ tenantId: 'B', amount: 4_294_967_294, reason: 'Combined capacity' });
+        f.writes[0].response.resolve(new Response(JSON.stringify({ success: true, newBalance: 2_147_483_647 }), { status: 201 }));
+        await vi.waitFor(() => expect(f.reads).toHaveLength(2)); await f.complete(1, pageData([A, { ...B, usageCredits: 2_147_483_647, creditDebt: 0 }]));
+        await vi.waitFor(() => expect(f.state.get('grantSaving')).toBe(false));
     });
 });
