@@ -98,7 +98,7 @@ async function observe(page: Page) {
             const clone = response.clone();
             if (body !== undefined && body !== null && typeof body !== 'string') throw new Error('Unmodeled browser request body');
             if (request && body === undefined && !['GET', 'HEAD'].includes(method)) throw new Error('Unmodeled Request-body observer input');
-            const [digest, buffer] = await Promise.all([crypto.subtle.digest('SHA-256', new TextEncoder().encode(body ?? '')), clone.arrayBuffer()]);
+            const [digest, buffer] = await Promise.all([crypto.subtle.digest('SHA-256', new TextEncoder().encode(typeof body === 'string' ? body : '')), clone.arrayBuffer()]);
             row.requestBodySha256 = Array.from(new Uint8Array(digest), value => value.toString(16).padStart(2, '0')).join('');
             row.bodyBase64 = btoa(Array.from(new Uint8Array(buffer), value => String.fromCharCode(value)).join(''));
           }).catch(error => { row.error = String(error); }).finally(() => { row.complete = true; });
