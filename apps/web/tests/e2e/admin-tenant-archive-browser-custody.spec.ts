@@ -226,6 +226,49 @@ async function settled(page: Page, adapter: Adapter) {
   expect(state.data).toEqual([adapter.initial[0], { ...adapter.initial[1], status: 'CANCELLED', deletedAt: ARCHIVED_AT }]);
   expect(state.data[0]).toEqual(adapter.initial[0]);
 }
+// The native focus target must keep its visible unique tenant context nearby.
+// ARIA alone does not protect a sighted keyboard user from the next row's name.
+async function visibleActionContext(page: Page, action: Locator, context: Locator, slug: string, label: string) {
+  await expect(action).toBeFocused();
+  await expect(context).toHaveText(`for ${slug}`);
+  await expect(context).toHaveCount(1);
+  const chrome = page.locator('.workspace-topbar'); await expect(chrome).toHaveCount(1);
+  const header = await chrome.evaluate(node => ({ position: getComputedStyle(node).position, box: node.getBoundingClientRect().toJSON() }));
+  const result = await context.evaluate(node => {
+    const range = document.createRange(); range.selectNodeContents(node);
+    const text = [...range.getClientRects()].filter(rect => rect.width > 0 && rect.height > 0).map(rect => rect.toJSON());
+    const ancestors = [];
+    for (let parent: Element | null = node; parent; parent = parent.parentElement) {
+      const style = getComputedStyle(parent), rect = parent.getBoundingClientRect();
+      ancestors.push({ visibility: style.visibility, opacity: Number(style.opacity),
+        x: ['hidden', 'clip', 'auto', 'scroll'].includes(style.overflowX), y: ['hidden', 'clip', 'auto', 'scroll'].includes(style.overflowY),
+        left: rect.left + parent.clientLeft, right: rect.left + parent.clientLeft + parent.clientWidth,
+        top: rect.top + parent.clientTop, bottom: rect.top + parent.clientTop + parent.clientHeight });
+    }
+    return { content: node.textContent, box: node.getBoundingClientRect().toJSON(), text, ancestors, viewport: { width: innerWidth, height: innerHeight } };
+  });
+  const actionBox = await action.boundingBox();
+  await test.info().attach(`${label}-visible-tenant-context`, { contentType: 'application/json',
+    body: JSON.stringify({ slug, header, actionBox, context: result }) });
+  await expect(context).toBeVisible(); await expect(context).toBeInViewport({ ratio: 1 });
+  expect(actionBox).not.toBeNull(); if (!actionBox) throw new Error('Missing focused action rectangle');
+  expect(result.text.length).toBeGreaterThan(0);
+  const chromeBottom = ['sticky', 'fixed'].includes(header.position) ? Math.max(0, header.box.bottom) : 0;
+  expect(actionBox.y, 'focused action must remain below sticky chrome').toBeGreaterThanOrEqual(chromeBottom);
+  expect(result.box.bottom).toBeLessThanOrEqual(actionBox.y + 1);
+  expect(actionBox.y - result.box.bottom, 'visible tenant context must sit immediately above its action').toBeLessThanOrEqual(12);
+  for (const ancestor of result.ancestors) { expect(ancestor.visibility).toBe('visible'); expect(ancestor.opacity).toBeGreaterThan(0); }
+  for (const rect of [result.box, ...result.text]) {
+    expect(rect.left).toBeGreaterThanOrEqual(0); expect(rect.right).toBeLessThanOrEqual(result.viewport.width);
+    expect(rect.top, 'tenant context must not be covered by sticky chrome').toBeGreaterThanOrEqual(chromeBottom);
+    expect(rect.bottom).toBeLessThanOrEqual(result.viewport.height);
+    for (const ancestor of result.ancestors) {
+      if (ancestor.x) { expect(rect.left).toBeGreaterThanOrEqual(ancestor.left); expect(rect.right).toBeLessThanOrEqual(ancestor.right); }
+      if (ancestor.y) { expect(rect.top).toBeGreaterThanOrEqual(ancestor.top); expect(rect.bottom).toBeLessThanOrEqual(ancestor.bottom); }
+    }
+  }
+}
+
 async function actionLayout(page: Page) {
   const original = page.viewportSize(); if (!original) throw new Error('Explicit canonical viewport required');
   const widths = test.info().project.name === 'chromium' ? [...new Set([320, 393, 768, original.width])] : [original.width];
@@ -234,7 +277,8 @@ async function actionLayout(page: Page) {
       await page.setViewportSize({ width, height: original.height }); await page.evaluate(() => window.scrollTo(0, 0));
       await test.info().attach(`tenant-archive-${width}-first-viewport`, { contentType: 'image/png', body: await page.screenshot({ timeout: 5000 }) });
       // Before any focus/scroll interaction, record where the first tenant lands.
-      // This is viewport-only geometry evidence, not a new above-the-fold gate.
+      // Retain the measured identity and require useful short-record content
+      // before focus or scrolling, not just a sliver of the first card.
       const firstIdentity = target(page, A).getByRole('cell').nth(0).locator(':scope > div').first();
       const firstGeometry = await firstIdentity.evaluate(node => {
         const box = node.getBoundingClientRect();
@@ -245,6 +289,18 @@ async function actionLayout(page: Page) {
       });
       await test.info().attach(`tenant-first-identity-${width}-before-scroll`, {
         contentType: 'application/json', body: JSON.stringify(firstGeometry) });
+      if (width <= 768) {
+        expect(firstGeometry.viewportOnlyIntersectionRatio, 'first tenant identity before scrolling').toBe(1);
+        for (const field of ['plan', 'status']) {
+          const cell = target(page, A).locator(`td[headers="tenant-directory-${field}"]`);
+          await expect(cell, `first tenant ${field} before scrolling`).toBeInViewport({ ratio: 1 });
+          const box = await cell.boundingBox(); expect(box).not.toBeNull();
+          if (!box) throw new Error('Missing first-record metadata bounds');
+          // Reserve space below the metadata instead of accepting a clipped
+          // card that barely touches the bottom edge of a phone viewport.
+          expect(box.y + box.height).toBeLessThanOrEqual(original.height - 44);
+        }
+      }
       const summary = page.getByRole('region', { name: 'Loaded tenant summary', exact: true });
       const context = page.locator('#loaded-tenant-summary-context');
       await expect(summary).toHaveAttribute('aria-describedby', 'loaded-tenant-summary-context');
@@ -267,6 +323,15 @@ async function actionLayout(page: Page) {
       for (const caption of captions) expect(aria).toContain(caption);
       if (width <= 768) {
         await expect(context).toBeVisible();
+        const captionStyles = await summary.locator('article > div:last-child').evaluateAll(nodes => nodes.map(node => {
+          const style = getComputedStyle(node);
+          return { color: style.color, weight: Number(style.fontWeight), size: Number.parseFloat(style.fontSize) };
+        }));
+        const contextColor = await context.evaluate(node => getComputedStyle(node).color);
+        for (const style of captionStyles) {
+          expect(style.color).toBe(contextColor); expect(style.weight).toBeLessThanOrEqual(500);
+          expect(style.size).toBeGreaterThanOrEqual(12);
+        }
         const measurements = [];
         for (const item of [context, ...visibleMetrics]) {
           const measured = await item.evaluate(node => {
@@ -371,6 +436,18 @@ async function actionLayout(page: Page) {
         await expect(cells.nth(4).locator('div')).toHaveText(new RegExp(`^${item.credits}\\s*credits$`));
         await expect(cells.nth(5).locator('div')).toHaveText([item.created, item.record]);
         await expect(cells.nth(6).getByRole('button')).toHaveText(item.actions);
+        for (const action of await cells.nth(6).getByRole('button').all()) {
+          await expect(action).toHaveAttribute('aria-describedby', `tenant-directory-name-${item.id} tenant-directory-slug-${item.id}`);
+          await expect(action).toHaveAccessibleDescription(`${item.name} ${item.slug}`);
+        }
+        if (width === 320 || width === 393) {
+          const boxes = await cells.nth(6).getByRole('button').evaluateAll(nodes => nodes.map(node => node.getBoundingClientRect().toJSON()));
+          expect(boxes).toHaveLength(3);
+          for (const box of boxes) {
+            expect(box.width).toBeGreaterThanOrEqual(44); expect(box.height).toBeGreaterThanOrEqual(44);
+            expect(Math.abs(box.top - boxes[0].top), 'short lifecycle labels should share one action row').toBeLessThanOrEqual(1);
+          }
+        }
         if (width <= 768) {
           const labels = row.locator('td > span[aria-hidden="true"]');
           await expect(labels).toHaveText(headings);
@@ -405,6 +482,15 @@ async function actionLayout(page: Page) {
         await test.info().attach(`tenant-archive-${width}-${await action.innerText()}-keyboard-trail`, {
           contentType: 'application/json', body: JSON.stringify(trail) });
         await expect(action).toBeFocused();
+        const actionName = await action.innerText();
+        await expect(action).toHaveAccessibleDescription(actionName === 'Archive' ? 'Aurora Diner aurora-fixture' : 'Boreal Kitchen boreal-fixture');
+        await test.info().attach(`tenant-archive-${width}-${actionName}-tenant-context`, {
+          contentType: 'application/json', body: JSON.stringify(await action.evaluate(node => {
+            const ids = (node.getAttribute('aria-describedby') ?? '').split(/\s+/);
+            return { action: node.textContent, ids, contexts: ids.map(id => ({ id,
+              matches: document.querySelectorAll(`[id="${id}"]`).length,
+              text: document.getElementById(id)?.textContent })) };
+          })) });
         const toolbarAfter = await horizontalToolbar();
         for (let index = 0; index < toolbarBefore.length; index += 1) {
           expect(Math.abs(toolbarAfter[index].x - toolbarBefore[index].x), 'table focus must not horizontally move the directory toolbar').toBeLessThanOrEqual(1);
@@ -415,6 +501,11 @@ async function actionLayout(page: Page) {
             scrollBefore, scrollAfter: await scroller.evaluate(node => ({ left: node.scrollLeft, client: node.clientWidth, scroll: node.scrollWidth })) }) });
         await test.info().attach(`tenant-archive-${width}-${await action.innerText()}-reachability`, {
           contentType: 'image/png', body: await page.screenshot({ timeout: 5000 }) });
+        if (width <= 768) {
+          const tenantId = actionName === 'Archive' ? A : B, slug = actionName === 'Archive' ? 'aurora-fixture' : 'boreal-fixture';
+          await visibleActionContext(page, action, target(page, tenantId).locator(`[id="tenant-directory-action-context-${tenantId}"]`), slug,
+            `tenant-archive-${width}-${actionName}`);
+        }
         const box = await action.boundingBox(); expect(box).not.toBeNull();
         if (!box) throw new Error('Missing archive action rectangle');
         await test.info().attach(`tenant-archive-${width}-${await action.innerText()}-rectangle`, {

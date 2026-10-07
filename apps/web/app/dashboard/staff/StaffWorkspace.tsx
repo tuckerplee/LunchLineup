@@ -681,15 +681,15 @@ export function StaffWorkspace({ currentUserPublicId, creationRecoveryScope, can
                 onFocus={(event) => {
                     const target = event.target;
                     if (target === event.currentTarget || !target.closest('td')) return;
-                    // Native focus can leave a partly visible table control
-                    // clipped. Reveal the whole control inside this scroller.
+                    // Keep the control and its 4px focus ring inside the scroller.
+                    // Round outward: fractional scroll deltas can leave a clipped edge.
                     const scroller = event.currentTarget;
                     const viewport = scroller.getBoundingClientRect();
-                    const left = viewport.left + scroller.clientLeft;
-                    const right = left + scroller.clientWidth;
+                    const left = viewport.left + scroller.clientLeft + 4;
+                    const right = viewport.left + scroller.clientLeft + scroller.clientWidth - 4;
                     const control = target.getBoundingClientRect();
-                    if (control.right > right) scroller.scrollLeft += control.right - right;
-                    else if (control.left < left) scroller.scrollLeft -= left - control.left;
+                    if (control.right > right) scroller.scrollLeft += Math.ceil(control.right - right);
+                    else if (control.left < left) scroller.scrollLeft -= Math.ceil(left - control.left);
                 }}
                 style={{ overflowX: 'auto' }}
             >
@@ -913,6 +913,20 @@ export function StaffWorkspace({ currentUserPublicId, creationRecoveryScope, can
                         role="dialog"
                         aria-modal="true"
                         aria-label={`Manage ${schedulingProfileUser.name}`}
+                        onFocus={(event) => {
+                            const target = event.target;
+                            const scroller = event.currentTarget;
+                            if (target === scroller || target.closest('.staff-profile-drawer__header')) return;
+                            const viewport = scroller.getBoundingClientRect();
+                            const header = scroller.querySelector('.staff-profile-drawer__header');
+                            const top = Math.max(viewport.top + scroller.clientTop, header?.getBoundingClientRect().bottom ?? viewport.top) + 4;
+                            const bottom = viewport.top + scroller.clientTop + scroller.clientHeight - 4;
+                            const control = target.getBoundingClientRect();
+                            // Native focus can round a fractional edge against the viewport.
+                            // Reveal it and its focus ring, including below the sticky header.
+                            if (control.bottom > bottom) scroller.scrollTop += Math.ceil(control.bottom - bottom);
+                            else if (control.top < top) scroller.scrollTop -= Math.ceil(top - control.top);
+                        }}
                         onMouseDown={(event) => event.stopPropagation()}
                         onKeyDown={(event) => {
                             if (event.key === 'Escape') setSchedulingProfileUser(null);

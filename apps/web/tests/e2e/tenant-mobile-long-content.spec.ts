@@ -122,6 +122,49 @@ async function tabTo(page: Page, target: Locator) {
   await expect(target, 'Native Tab must reach the intended target').toBeFocused();
 }
 
+// The native focus target must keep its visible unique tenant context nearby.
+// ARIA alone does not protect a sighted keyboard user from the next row's name.
+async function visibleActionContext(page: Page, action: Locator, context: Locator, slug: string, label: string) {
+  await expect(action).toBeFocused();
+  await expect(context).toHaveText(`for ${slug}`);
+  await expect(context).toHaveCount(1);
+  const chrome = page.locator('.workspace-topbar'); await expect(chrome).toHaveCount(1);
+  const header = await chrome.evaluate(node => ({ position: getComputedStyle(node).position, box: node.getBoundingClientRect().toJSON() }));
+  const result = await context.evaluate(node => {
+    const range = document.createRange(); range.selectNodeContents(node);
+    const text = [...range.getClientRects()].filter(rect => rect.width > 0 && rect.height > 0).map(rect => rect.toJSON());
+    const ancestors = [];
+    for (let parent: Element | null = node; parent; parent = parent.parentElement) {
+      const style = getComputedStyle(parent), rect = parent.getBoundingClientRect();
+      ancestors.push({ visibility: style.visibility, opacity: Number(style.opacity),
+        x: ['hidden', 'clip', 'auto', 'scroll'].includes(style.overflowX), y: ['hidden', 'clip', 'auto', 'scroll'].includes(style.overflowY),
+        left: rect.left + parent.clientLeft, right: rect.left + parent.clientLeft + parent.clientWidth,
+        top: rect.top + parent.clientTop, bottom: rect.top + parent.clientTop + parent.clientHeight });
+    }
+    return { content: node.textContent, box: node.getBoundingClientRect().toJSON(), text, ancestors, viewport: { width: innerWidth, height: innerHeight } };
+  });
+  const actionBox = await action.boundingBox();
+  await test.info().attach(`${label}-visible-tenant-context`, { contentType: 'application/json',
+    body: JSON.stringify({ slug, header, actionBox, context: result }) });
+  await expect(context).toBeVisible(); await expect(context).toBeInViewport({ ratio: 1 });
+  expect(actionBox).not.toBeNull(); if (!actionBox) throw new Error('Missing focused action rectangle');
+  expect(result.text.length).toBeGreaterThan(0);
+  const chromeBottom = ['sticky', 'fixed'].includes(header.position) ? Math.max(0, header.box.bottom) : 0;
+  expect(actionBox.y, 'focused action must remain below sticky chrome').toBeGreaterThanOrEqual(chromeBottom);
+  expect(result.box.bottom).toBeLessThanOrEqual(actionBox.y + 1);
+  expect(actionBox.y - result.box.bottom, 'visible tenant context must sit immediately above its action').toBeLessThanOrEqual(12);
+  for (const ancestor of result.ancestors) { expect(ancestor.visibility).toBe('visible'); expect(ancestor.opacity).toBeGreaterThan(0); }
+  for (const rect of [result.box, ...result.text]) {
+    expect(rect.left).toBeGreaterThanOrEqual(0); expect(rect.right).toBeLessThanOrEqual(result.viewport.width);
+    expect(rect.top, 'tenant context must not be covered by sticky chrome').toBeGreaterThanOrEqual(chromeBottom);
+    expect(rect.bottom).toBeLessThanOrEqual(result.viewport.height);
+    for (const ancestor of result.ancestors) {
+      if (ancestor.x) { expect(rect.left).toBeGreaterThanOrEqual(ancestor.left); expect(rect.right).toBeLessThanOrEqual(ancestor.right); }
+      if (ancestor.y) { expect(rect.top).toBeGreaterThanOrEqual(ancestor.top); expect(rect.bottom).toBeLessThanOrEqual(ancestor.bottom); }
+    }
+  }
+}
+
 async function textGeometry(target: Locator, horizontalViewport: boolean) {
   await expect(target).toBeVisible();
   const result = await target.evaluate(node => {
@@ -206,7 +249,7 @@ test.describe('Tenant long-content mobile layout', () => {
         await expect(row).toHaveCount(1); await expect(second).toHaveCount(1);
         await expect(table).toHaveCount(1); await expect(table.getByRole('columnheader')).toHaveText(fields);
         await expect(table.locator('tbody > tr')).toHaveCount(50);
-        await expect(page.getByText('Manage organizations - 50 organizations loaded - more available', { exact: true })).toBeVisible();
+        await expect(page.getByText('50 organizations loaded - more available', { exact: true })).toBeVisible();
         await expect(directory.getByRole('button', { name: 'Load more tenants', exact: true })).toBeEnabled();
         await test.info().attach(`tenant-long-${width}-first-viewport`, { contentType: 'image/png', body: await page.screenshot({ timeout: 5000 }) });
         const summary = page.getByRole('region', { name: 'Loaded tenant summary', exact: true });
@@ -228,6 +271,15 @@ test.describe('Tenant long-content mobile layout', () => {
         await expect(cells.nth(3)).toContainText('2'); await expect(cells.nth(3)).toContainText('users');
         await expect(cells.nth(4)).toContainText('2,000,000,000'); await expect(cells.nth(5)).toContainText('Sep 30, 2026');
         await expect(cells.nth(6).getByRole('button')).toHaveText(['Edit', 'Suspend', 'Archive']);
+        for (const [record, tenantId, description] of [
+          [row, id(1), `${LONG_NAME} ${LONG_SLUG}`],
+          [second, id(2), 'Boreal Kitchen boreal-fixture'],
+        ] as const) {
+          for (const action of await record.getByRole('button').all()) {
+            await expect(action).toHaveAttribute('aria-describedby', `tenant-directory-name-${tenantId} tenant-directory-slug-${tenantId}`);
+            await expect(action).toHaveAccessibleDescription(description);
+          }
+        }
         await expect(second.getByRole('cell').nth(0)).toContainText('Boreal Kitchen');
         await expect(second.getByRole('cell').nth(4)).toContainText('40');
         evidence.push({ width, label: 'identity before record scrolling', name: await name.boundingBox(), slug: await slug.boundingBox() });
@@ -252,11 +304,24 @@ test.describe('Tenant long-content mobile layout', () => {
         }
         for (const action of [row.getByRole('button', { name: 'Archive', exact: true }), second.getByRole('button', { name: 'Restore', exact: true })]) {
           await tabTo(page, action); await expect(action).toBeInViewport({ ratio: 1 });
+          await expect(action).toHaveAccessibleDescription(await action.innerText() === 'Archive' ? `${LONG_NAME} ${LONG_SLUG}` : 'Boreal Kitchen boreal-fixture');
           const box = await action.boundingBox(); expect(box).not.toBeNull(); if (!box) throw new Error('Missing focused action bounds');
           expect(box.x).toBeGreaterThanOrEqual(0); expect(box.x + box.width).toBeLessThanOrEqual(width);
           if (width <= 768) { expect(box.width).toBeGreaterThanOrEqual(44); expect(box.height).toBeGreaterThanOrEqual(44); }
-          evidence.push({ width, label: await action.innerText(), box, geometry: await textGeometry(action, true) });
+          const geometry = await textGeometry(action, true);
+          for (const ancestor of geometry.ancestors) {
+            if (ancestor.x) { expect(geometry.box.left).toBeGreaterThanOrEqual(ancestor.left); expect(geometry.box.right).toBeLessThanOrEqual(ancestor.right); }
+            if (ancestor.y) { expect(geometry.box.top).toBeGreaterThanOrEqual(ancestor.top); expect(geometry.box.bottom).toBeLessThanOrEqual(ancestor.bottom); }
+          }
+          evidence.push({ width, label: await action.innerText(), box, geometry,
+            tenantContext: await action.getAttribute('aria-describedby') });
           await test.info().attach(`tenant-long-${width}-focused-${await action.innerText()}`, { contentType: 'image/png', body: await page.screenshot({ timeout: 5000 }) });
+          if (width <= 768) {
+            const isArchive = await action.innerText() === 'Archive', tenantId = id(isArchive ? 1 : 2), slug = isArchive ? LONG_SLUG : 'boreal-fixture';
+            const record = isArchive ? row : second;
+            await visibleActionContext(page, action, record.locator(`[id="tenant-directory-action-context-${tenantId}"]`), slug,
+              `tenant-long-${width}-${await action.innerText()}`);
+          }
         }
         expect(await adapter.read()).toEqual(original); expect(writes).toEqual([]);
       }

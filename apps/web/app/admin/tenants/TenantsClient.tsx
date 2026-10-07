@@ -512,7 +512,7 @@ export function TenantsClient() {
                             Tenants
                         </h1>
                         <p className={`workspace-subtitle ${styles.heroSubtitle}`}>
-                            Manage organizations - {loading ? 'Loading...' : tenants.length + ' organizations loaded' + (pagination.hasMore ? ' - more available' : '')}
+                            {loading ? 'Loading...' : tenants.length + ' organizations loaded' + (pagination.hasMore ? ' - more available' : '')}
                         </p>
                     </div>
 
@@ -614,7 +614,7 @@ export function TenantsClient() {
                     <div className={styles.directoryHeading} style={{ padding: '0.95rem 1rem 0.55rem', display: 'flex', justifyContent: 'space-between', gap: '0.75rem', alignItems: 'center', flexWrap: 'wrap' }}>
                         <div>
                             <h2 style={{ fontSize: '0.98rem', fontWeight: 760, color: 'var(--text-primary)' }}>Tenant Directory</h2>
-                            <div style={{ fontSize: '0.76rem', color: 'var(--text-muted)', marginTop: 2 }}>Click Edit to load a tenant into the management panel.</div>
+                            <div style={{ fontSize: '0.76rem', color: 'var(--text-muted)', marginTop: 2 }}>Edit to manage an organization.</div>
                         </div>
 
                         <div style={{ display: 'flex', gap: '0.4rem', flexWrap: 'wrap' }}>
@@ -683,8 +683,8 @@ export function TenantsClient() {
                                     >
                                         <td role="cell" headers="tenant-directory-organization" className={styles.organizationCell} style={{ padding: '0.9rem 1rem' }}>
                                             <span className={styles.cellLabel} aria-hidden="true">Organization</span>
-                                            <div style={{ fontWeight: 700, fontSize: '0.88rem', color: 'var(--text-primary)', marginBottom: 2 }}>{tenant.name}</div>
-                                            <div style={{ fontSize: '0.72rem', fontFamily: 'var(--font-mono)', color: 'var(--text-muted)' }}>{tenant.slug}</div>
+                                            <div id={`tenant-directory-name-${tenant.id}`} style={{ fontWeight: 700, fontSize: '0.88rem', color: 'var(--text-primary)', marginBottom: 2 }}>{tenant.name}</div>
+                                            <div id={`tenant-directory-slug-${tenant.id}`} style={{ fontSize: '0.72rem', fontFamily: 'var(--font-mono)', color: 'var(--text-muted)' }}>{tenant.slug}</div>
                                         </td>
                                         <td role="cell" headers="tenant-directory-plan" style={{ padding: '0.9rem 1rem' }}>
                                             <span className={styles.cellLabel} aria-hidden="true">Plan</span>
@@ -725,8 +725,9 @@ export function TenantsClient() {
                                         </td>
                                         <td role="cell" headers="tenant-directory-actions" className={styles.actionsCell} style={{ padding: '0.9rem 1rem' }}>
                                             <span className={styles.cellLabel} aria-hidden="true">Actions</span>
+                                            <span id={`tenant-directory-action-context-${tenant.id}`} className={styles.actionContext}>for {tenant.slug}</span>
                                             <div className={styles.rowActions} style={{ display: 'flex', gap: '0.35rem', flexWrap: 'wrap' }}>
-                                                <button className="btn btn-sm btn-secondary" type="button" onClick={() => setSelectedTenantId(tenant.id)}>
+                                                <button className="btn btn-sm btn-secondary" type="button" aria-describedby={`tenant-directory-name-${tenant.id} tenant-directory-slug-${tenant.id}`} onClick={() => setSelectedTenantId(tenant.id)}>
                                                     Edit
                                                 </button>
                                                 {isArchived ? (
@@ -735,6 +736,7 @@ export function TenantsClient() {
                                                             className="btn btn-sm"
                                                             style={actionButtonStyle('neutral')}
                                                             type="button"
+                                                            aria-describedby={`tenant-directory-name-${tenant.id} tenant-directory-slug-${tenant.id}`}
                                                             disabled={saving === `restore:${tenant.id}`}
                                                             onClick={() => void runStatusAction(tenant, 'restore')}
                                                         >
@@ -744,6 +746,7 @@ export function TenantsClient() {
                                                             className="btn btn-sm"
                                                             style={actionButtonStyle('danger')}
                                                             type="button"
+                                                            aria-describedby={`tenant-directory-name-${tenant.id} tenant-directory-slug-${tenant.id}`}
                                                             disabled={saving === `delete:${tenant.id}`}
                                                             onClick={() => void deleteTenant(tenant)}
                                                         >
@@ -755,6 +758,7 @@ export function TenantsClient() {
                                                         className="btn btn-sm"
                                                         style={actionButtonStyle('positive')}
                                                         type="button"
+                                                        aria-describedby={`tenant-directory-name-${tenant.id} tenant-directory-slug-${tenant.id}`}
                                                         disabled={saving === `activate:${tenant.id}`}
                                                         onClick={() => void runStatusAction(tenant, 'activate')}
                                                     >
@@ -765,6 +769,7 @@ export function TenantsClient() {
                                                         className="btn btn-sm"
                                                         style={actionButtonStyle('danger')}
                                                         type="button"
+                                                        aria-describedby={`tenant-directory-name-${tenant.id} tenant-directory-slug-${tenant.id}`}
                                                         disabled={saving === `suspend:${tenant.id}`}
                                                         onClick={() => void runStatusAction(tenant, 'suspend')}
                                                     >
@@ -777,6 +782,7 @@ export function TenantsClient() {
                                                         className="btn btn-sm"
                                                         style={actionButtonStyle('warn')}
                                                         type="button"
+                                                        aria-describedby={`tenant-directory-name-${tenant.id} tenant-directory-slug-${tenant.id}`}
                                                         disabled={saving === `archive:${tenant.id}`}
                                                         onClick={() => void runStatusAction(tenant, 'archive')}
                                                     >
