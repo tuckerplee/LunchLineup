@@ -1674,6 +1674,7 @@ export class AdminController implements OnModuleDestroy {
                     slug: true,
                     planTier: true,
                     usageCredits: true,
+                    creditDebt: true,
                     createdAt: true,
                 },
             }),
@@ -1702,6 +1703,7 @@ export class AdminController implements OnModuleDestroy {
                 slug: tenant.slug,
                 planTier: tenant.planTier,
                 usageCredits: tenant.usageCredits,
+                creditDebt: tenant.creditDebt,
             })),
             tenantPagination: tenantPage.pagination,
             history: historyPage.data.map((tx: any) => ({

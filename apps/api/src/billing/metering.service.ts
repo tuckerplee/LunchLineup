@@ -10,6 +10,7 @@ import { stripeErrorLog } from './stripe-error-diagnostic';
 const ACTIVE_STAFF_METRIC = 'ACTIVE_STAFF';
 const STRIPE_METER_EVENT_NAME_RE = /^[A-Za-z0-9_.:-]{1,100}$/;
 const MAX_STRIPE_USAGE_ATTEMPTS = 5;
+const MAX_STORED_CREDIT_BALANCE = 2_147_483_647;
 const STRIPE_USAGE_SEND_LEASE_MS = 2 * 60_000;
 
 export type BillableFeatureSource = 'plan' | 'stripe' | 'credits' | 'manual' | 'disabled';
@@ -148,8 +149,19 @@ export class MeteringService {
             current.creditDebt,
             'Positive credit settlement found an invalid debt balance.',
         );
+        if (currentBalance > MAX_STORED_CREDIT_BALANCE || currentDebt > MAX_STORED_CREDIT_BALANCE) {
+            throw new ConflictException('Positive credit settlement found balances outside the storage range.');
+        }
         const repaidDebt = Math.min(currentDebt, amount);
         const spendableAmount = amount - repaidDebt;
+        // Both wallet snapshots and ledger deltas are PostgreSQL INTEGER fields.
+        // Check remaining wallet capacity under the existing tenant lock, before
+        // mutation. The total grant may exceed INTEGER when it also repays debt.
+        if (spendableAmount > MAX_STORED_CREDIT_BALANCE - currentBalance) {
+            throw new BadRequestException(
+                'Credit amount exceeds the available wallet capacity. Refresh balances and enter a smaller amount.',
+            );
+        }
         const debtAmount = repaidDebt === 0 ? 0 : -repaidDebt;
         const tenant = await tx.tenant.update({
             where: { id: tenantId },

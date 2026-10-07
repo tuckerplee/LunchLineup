@@ -1,3 +1,5 @@
+import { idempotentRequestAttempt } from '../../lib/client-api';
+import { creditGrantConfirmation, estimateCreditGrant } from '../../app/admin/credits/credit-grant-estimate';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import * as ts from 'typescript';
@@ -193,5 +195,68 @@ describe('actual admin credit grant acknowledgement boundary', () => {
         expect(keys).toEqual(['modeled-committed-attempt', 'modeled-committed-attempt']);
         expect(effects).toBe(1); expect(settlements.size).toBe(1); expect(keyFactory).toHaveBeenCalledOnce();
         expect(state).toEqual({ attempt: null, inFlight: false });
+    });
+});
+
+
+describe('admin credit debt-aware loaded-snapshot estimate', () => {
+    it.each([
+        {"label": "partial repayment", "wallet": 10, "debt": 30, "amount": 20, "expected": {"repaidDebt": 20, "spendableAmount": 0, "newBalance": 10, "debtAfter": 10}},
+        {"label": "exact repayment", "wallet": 10, "debt": 30, "amount": 30, "expected": {"repaidDebt": 30, "spendableAmount": 0, "newBalance": 10, "debtAfter": 0}},
+        {"label": "repayment with excess", "wallet": 10, "debt": 30, "amount": 50, "expected": {"repaidDebt": 30, "spendableAmount": 20, "newBalance": 30, "debtAfter": 0}},
+        {"label": "zero debt", "wallet": 10, "debt": 0, "amount": 20, "expected": {"repaidDebt": 0, "spendableAmount": 20, "newBalance": 30, "debtAfter": 0}},
+        {"label": "safe upper wallet", "wallet": 9007199254740990, "debt": 0, "amount": 1, "expected": {"repaidDebt": 0, "spendableAmount": 1, "newBalance": 9007199254740991, "debtAfter": 0}},
+        {"label": "safe upper wallet with debt-only grant", "wallet": 9007199254740991, "debt": 1, "amount": 1, "expected": {"repaidDebt": 1, "spendableAmount": 0, "newBalance": 9007199254740991, "debtAfter": 0}},
+    ])('estimates $label without treating grant value as wallet increase', ({ wallet, debt, amount, expected }) => {
+        expect(estimateCreditGrant(wallet, debt, amount)).toEqual(expected);
+    });
+
+    it.each([
+        { label: "missing debt", wallet: 10, debt: undefined, amount: 20 },
+        { label: "null debt", wallet: 10, debt: null, amount: 20 },
+        { label: "string debt", wallet: 10, debt: '30', amount: 20 },
+        { label: "negative debt", wallet: 10, debt: -1, amount: 20 },
+        { label: "fractional debt", wallet: 10, debt: 1.5, amount: 20 },
+        { label: "unsafe debt", wallet: 10, debt: Number.MAX_SAFE_INTEGER + 1, amount: 20 },
+        { label: "NaN debt", wallet: 10, debt: NaN, amount: 20 },
+        { label: "infinite debt", wallet: 10, debt: Infinity, amount: 20 },
+        { label: "negative wallet", wallet: -1, debt: 30, amount: 20 },
+        { label: "zero grant", wallet: 10, debt: 30, amount: 0 },
+        { label: "unsafe grant", wallet: 10, debt: 0, amount: Number.MAX_SAFE_INTEGER + 1 },
+        { label: "wallet sum overflow", wallet: Number.MAX_SAFE_INTEGER, debt: 0, amount: 1 },
+    ])('does not invent an estimate for $label', ({ wallet, debt, amount }) => {
+        expect(estimateCreditGrant(wallet, debt, amount)).toBeNull();
+    });
+
+    it('confirms debt repayment and clearly separates loaded estimates from current settlement', () => {
+        const estimate = estimateCreditGrant(10, 30, 20);
+        expect(creditGrantConfirmation('Boreal Kitchen', 20, estimate)).toBe(
+            'Grant 20 credits to Boreal Kitchen? Estimated debt repayment: 20 credits. '
+            + 'Estimated spendable balance: 10 credits. Estimated remaining debt: 10 credits. '
+            + 'Estimates use loaded balances; the server settles against current balances.',
+        );
+    });
+
+    it('keeps a grant confirmation available with actionable missing-debt guidance', () => {
+        expect(creditGrantConfirmation('Boreal Kitchen', 20, estimateCreditGrant(10, undefined, 20))).toBe(
+            'Grant 20 credits to Boreal Kitchen? A balance estimate is unavailable; refresh balances for debt details. '
+            + 'Outstanding debt is repaid first, and the server determines the final balances.',
+        );
+    });
+
+    it('accepts an immutable settlement acknowledgement that differs from the loaded projection', async () => {
+        // Another legitimate grant moved the wallet after this attempt committed.
+        // An unchanged same-key retry returns its original settlement balance10,
+        // while a new-request preview against today's wallet50 would show70.
+        expect(estimateCreditGrant(50, 0, 20)?.newBalance).toBe(70);
+        const state = createCreditGrantSubmissionState();
+        const payload = { tenantId: 'tenant-1', amount: 20, reason: 'Debt recovery' };
+        state.attempt = idempotentRequestAttempt(payload, null, () => 'stored-grant-key');
+        const result = await submitCreditGrant(state, payload, async (_payload, key) => {
+            expect(key).toBe('stored-grant-key');
+            return parseCreditGrantAcknowledgement(201, { success: true, newBalance: 10 });
+        });
+        expect(result).toEqual({ submitted: true, value: { success: true, newBalance: 10 } });
+        expect(state.attempt).toBeNull();
     });
 });

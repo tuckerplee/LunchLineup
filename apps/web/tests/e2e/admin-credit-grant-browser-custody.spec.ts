@@ -17,7 +17,7 @@ const UNAVAILABLE_UI = 'The service is temporarily unavailable. Please try again
 const INVALID_ACK_UI = 'The credit grant response could not be verified. Retry the unchanged grant.';
 const payload = { tenantId: B, amount: 25, reason: REASON };
 const copy = <T,>(value: T): T => JSON.parse(JSON.stringify(value)) as T;
-type Tenant = { id: string; name: string; slug: string; planTier: string; usageCredits: number };
+type Tenant = { id: string; name: string; slug: string; planTier: string; usageCredits: number; creditDebt: number };
 type History = { id: string; amount: number; reason: string; createdAt: string; tenant: Pick<Tenant, 'id' | 'name' | 'slug'> | null };
 type Pagination = { limit: 50; maxLimit: 200; returned: number; hasMore: false; nextCursor: null;
   window: { startDate: null; endDate: null } };
@@ -84,8 +84,8 @@ async function install(page: Page, mode: Mode) {
   // Zero-debt fixture only. Real debt-first settlement can make wallet + amount
   // an invalid projection; this fixture does not qualify that separate case.
   const tenants: Tenant[] = [
-    { id: A, name: 'Aurora Diner', slug: 'aurora-fixture', planTier: 'GROWTH', usageCredits: 120 },
-    { id: B, name: 'Boreal Kitchen', slug: 'boreal-fixture', planTier: 'STARTER', usageCredits: 40 },
+    { id: A, name: 'Aurora Diner', slug: 'aurora-fixture', planTier: 'GROWTH', usageCredits: 120, creditDebt: 0 },
+    { id: B, name: 'Boreal Kitchen', slug: 'boreal-fixture', planTier: 'STARTER', usageCredits: 40, creditDebt: 0 },
   ];
   const initial = copy(tenants), history: History[] = [], ledger: Row[] = [];
   const errors: unknown[] = [], settlements: Promise<void>[] = [];
@@ -206,7 +206,7 @@ async function confirm(page: Page, accept: boolean) {
   const handler = async (dialog: Dialog) => {
     try {
       expect(dialog.type()).toBe('confirm');
-      expect(dialog.message()).toBe('Grant 25 credits to Boreal Kitchen? New balance: 65 credits.');
+      expect(dialog.message()).toBe('Grant 25 credits to Boreal Kitchen? Estimated debt repayment: 0 credits. Estimated spendable balance: 65 credits. Estimated remaining debt: 0 credits. Estimates use loaded balances; the server settles against current balances.');
       if (accept) await dialog.accept(); else await dialog.dismiss();
     } catch (error) { failures.push(error); await dialog.dismiss().catch(() => undefined); }
     finally { completed.resolve(); }
@@ -245,7 +245,7 @@ async function exactDelivery(page: Page, adapter: Adapter, response: Response) {
 async function fill(page: Page) {
   await tenant(page).selectOption(B); await amount(page).fill('25'); await reason(page).fill(REASON);
   await expect(tenant(page)).toHaveValue(B); await expect(amount(page)).toHaveValue('25'); await expect(reason(page)).toHaveValue(REASON);
-  await expect(page.getByText('Projected balance:', { exact: false })).toContainText('65');
+  await expect(page.getByText('Estimated spendable balance:', { exact: false })).toContainText('65');
 }
 async function unchanged(page: Page, adapter: Adapter) {
   const state = await adapter.read(); expect(state.tenants).toEqual(adapter.initial); expect(state.history).toEqual([]);
@@ -350,6 +350,80 @@ async function adminShellWitness(page: Page, width: number, label: string) {
   }
 }
 
+// This witness runs before navigation/row actions can scroll the first viewport.
+async function summaryFirstViewportWitness(page: Page, width: number, artifactLabel: string) {
+  if (width > 414) return;
+  const summary = page.getByRole('region', { name: 'Loaded credit summary', exact: true });
+  await expect(summary.getByRole('article')).toHaveCount(5);
+  const expected = [
+    ['Loaded balances', '2'], ['Loaded credits', '160'], ['Loaded ledger rows', '0'],
+    ['Largest loaded balance', '120'], ['positive wallet rows loaded', '0'],
+  ] as const;
+  const witnesses = expected.flatMap(([label, value]) => {
+    const card = summary.getByRole('article').filter({ has: page.getByText(label, { exact: true }) });
+    return [{ name: label + ' label', locator: card.getByText(label, { exact: true }) },
+      { name: label + ' value', locator: card.getByText(value, { exact: true }) }];
+  });
+  const viewport = await page.evaluate(() => ({ width: innerWidth, height: innerHeight, x: scrollX, y: scrollY,
+    scrollWidth: Math.max(document.documentElement.scrollWidth, document.body.scrollWidth) }));
+  const summaryBox = await summary.boundingBox();
+  const geometry = [];
+  for (const witness of witnesses) {
+    await expect(witness.locator).toHaveCount(1);
+    geometry.push({ name: witness.name, ...await witness.locator.evaluate(node => {
+      const box = (r: DOMRect) => ({ x: r.x, y: r.y, width: r.width, height: r.height });
+      const range = document.createRange(); range.selectNodeContents(node);
+      const textRects = Array.from(range.getClientRects()).filter(r => r.width > 0 && r.height > 0).map(box);
+      const ancestors = [];
+      for (let parent: Element | null = node; parent; parent = parent.parentElement) {
+        const style = getComputedStyle(parent), bounds = parent.getBoundingClientRect();
+        ancestors.push({ opacity: Number(style.opacity), visibility: style.visibility,
+          clipX: /^(auto|scroll|hidden|clip)$/.test(style.overflowX), clipY: /^(auto|scroll|hidden|clip)$/.test(style.overflowY),
+          // Use the actual scrollport inside borders, not the larger border box.
+          scrollport: { x: bounds.x + parent.clientLeft, y: bounds.y + parent.clientTop,
+            width: parent.clientWidth, height: parent.clientHeight } });
+      }
+      return { nodeBox: box(node.getBoundingClientRect()), text: node.textContent, textRects, ancestors };
+    }) });
+  }
+  await test.info().attach(artifactLabel + '-summary-first-viewport-geometry', { contentType: 'application/json',
+    body: JSON.stringify({ viewport, summaryBox, budget: viewport.height * 0.25, expected, geometry }) });
+  expect(viewport.width).toBe(width); expect(viewport.x).toBe(0); expect(viewport.y).toBe(0);
+  expect(viewport.scrollWidth).toBeLessThanOrEqual(width + 1);
+  expect(summaryBox).not.toBeNull();
+  // A budget for this known two-tenant fixture; no CSS height, clipping or value hiding.
+  expect(summaryBox!.height).toBeLessThanOrEqual(viewport.height * 0.25);
+  for (const [label] of expected) {
+    const card = summary.getByRole('article').filter({ has: page.getByText(label, { exact: true }) });
+    await expect(card).toHaveCount(1); await expect(card).toBeInViewport({ ratio: 1 });
+  }
+  for (let index = 0; index < witnesses.length; index += 1) {
+    const witness = witnesses[index], measured = geometry[index];
+    await expect(witness.locator).toBeVisible(); await expect(witness.locator).toBeInViewport({ ratio: 1 });
+    expect(measured.textRects.length, witness.name + ' has rendered text').toBeGreaterThan(0);
+    for (const ancestor of measured.ancestors) {
+      expect(ancestor.opacity, witness.name + ' is not transparent').toBeGreaterThan(0);
+      expect(ancestor.visibility, witness.name + ' is not hidden').toBe('visible');
+    }
+    for (const rect of measured.textRects) {
+      expect(rect.x).toBeGreaterThanOrEqual(measured.nodeBox.x - 1);
+      expect(rect.x + rect.width).toBeLessThanOrEqual(measured.nodeBox.x + measured.nodeBox.width + 1);
+      expect(rect.y).toBeGreaterThanOrEqual(measured.nodeBox.y - 1);
+      expect(rect.y + rect.height).toBeLessThanOrEqual(measured.nodeBox.y + measured.nodeBox.height + 1);
+      expect(rect.x).toBeGreaterThanOrEqual(-1); expect(rect.x + rect.width).toBeLessThanOrEqual(viewport.width + 1);
+      expect(rect.y).toBeGreaterThanOrEqual(-1); expect(rect.y + rect.height).toBeLessThanOrEqual(viewport.height + 1);
+      for (const ancestor of measured.ancestors) {
+        const clip = ancestor.scrollport;
+        if (ancestor.clipX) { expect(rect.x).toBeGreaterThanOrEqual(clip.x - 1); expect(rect.x + rect.width).toBeLessThanOrEqual(clip.x + clip.width + 1); }
+        if (ancestor.clipY) { expect(rect.y).toBeGreaterThanOrEqual(clip.y - 1); expect(rect.y + rect.height).toBeLessThanOrEqual(clip.y + clip.height + 1); }
+      }
+    }
+  }
+  await expect(page.getByRole('heading', { name: 'Tenant Balances', exact: true })).toBeInViewport({ ratio: 1 });
+  await expect(balanceRow(page, 'Aurora Diner').getByText('Aurora Diner', { exact: true })).toBeInViewport({ ratio: 1 });
+  expect(await page.evaluate(() => ({ x: scrollX, y: scrollY }))).toEqual({ x: 0, y: 0 });
+}
+
 async function layoutWitness(page: Page) {
   const originalViewport = page.viewportSize();
   expect(originalViewport, 'canonical projects have an explicit viewport').not.toBeNull();
@@ -387,6 +461,7 @@ async function layoutWitness(page: Page) {
         await test.info().attach(label + '-geometry', { contentType: 'application/json',
           body: JSON.stringify({ pageSize, balanceBox, grantBox, controlBoxes,
             scope: 'Populated panels and external form controls; intentional internal table scrolling is allowed.' }) });
+        await summaryFirstViewportWitness(page, width, label);
         await adminShellWitness(page, width, label);
         expect(pageSize.width).toBe(width); expect(pageSize.scrollWidth).toBeLessThanOrEqual(width + 1);
         expect(balanceBox).not.toBeNull(); expect(grantBox).not.toBeNull();
@@ -655,15 +730,15 @@ async function observeReadRaceBodies(page: Page) {
 async function installReadRace(page: Page, mode: ReadRaceMode) {
   const id = (prefix: string, index: number) => `${prefix}-0000-4000-8000-${String(index).padStart(12, '0')}`;
   const tenantRows: Tenant[] = [
-    { id: A, name: 'Aurora Diner', slug: 'aurora-fixture', planTier: 'GROWTH', usageCredits: 120 },
-    { id: B, name: 'Boreal Kitchen', slug: 'boreal-fixture', planTier: 'STARTER', usageCredits: 40 },
+    { id: A, name: 'Aurora Diner', slug: 'aurora-fixture', planTier: 'GROWTH', usageCredits: 120, creditDebt: 0 },
+    { id: B, name: 'Boreal Kitchen', slug: 'boreal-fixture', planTier: 'STARTER', usageCredits: 40, creditDebt: 0 },
     ...Array.from({ length: 48 }, (_, i) => ({ id: id('81000001', i), name: `Boreal Branch ${i}`,
-      slug: `boreal-branch-${i}`, planTier: 'STARTER', usageCredits: 1 })),
-    { id: id('81000002', 0), name: 'Cedar Diner', slug: 'cedar-fixture', planTier: 'STARTER', usageCredits: 5 },
-    { id: id('81000002', 1), name: 'Boreal Annex', slug: 'boreal-annex', planTier: 'STARTER', usageCredits: 1 },
+      slug: `boreal-branch-${i}`, planTier: 'STARTER', usageCredits: 1, creditDebt: 0 })),
+    { id: id('81000002', 0), name: 'Cedar Diner', slug: 'cedar-fixture', planTier: 'STARTER', usageCredits: 5, creditDebt: 0 },
+    { id: id('81000002', 1), name: 'Boreal Annex', slug: 'boreal-annex', planTier: 'STARTER', usageCredits: 1, creditDebt: 0 },
     ...Array.from({ length: 48 }, (_, i) => ({ id: id('81000003', i), name: `Cedar Branch ${i}`,
-      slug: `cedar-branch-${i}`, planTier: 'STARTER', usageCredits: 1 })),
-    { id: id('81000004', 0), name: 'Boreal Tail', slug: 'boreal-tail', planTier: 'STARTER', usageCredits: 1 },
+      slug: `cedar-branch-${i}`, planTier: 'STARTER', usageCredits: 1, creditDebt: 0 })),
+    { id: id('81000004', 0), name: 'Boreal Tail', slug: 'boreal-tail', planTier: 'STARTER', usageCredits: 1, creditDebt: 0 },
   ];
   const stamp = (index: number) => new Date(Date.parse('2026-10-05T12:00:00.000Z') - index * 1000).toISOString();
   const creation = new Map(tenantRows.map((row, index) => [row.id, stamp(index)]));
@@ -962,4 +1037,468 @@ test.describe('Admin credit read publication browser custody', () => {
       });
     });
   }
+});
+
+// Independent finite debt settlement witnesses. Expected settlements below are
+// explicit examples, not calls to the production estimate/settlement helpers.
+type DebtMode = 'loaded' | 'missing-initial';
+type DebtReceipt = { method: string; url: string; key: string | null; probe: boolean; requestBody: string | null;
+  status: number | null; bodyBase64: string | null; complete: boolean; error: string | null };
+type DebtWindow = Window & { __creditDebtReceipts?: { receipts: DebtReceipt[]; errors: string[] } };
+async function observeDebtBodies(page: Page) {
+  await page.addInitScript(({ root, grant }) => {
+    const observer = { receipts: [] as DebtReceipt[], errors: [] as string[] };
+    (window as DebtWindow).__creditDebtReceipts = observer;
+    const original = window.fetch.bind(window);
+    window.fetch = (input, init) => {
+      const pending = original(input, init);
+      try {
+        const request = input instanceof Request ? input : null;
+        const url = new URL(request ? request.url : String(input), location.href);
+        if (url.origin === location.origin && [root, grant].includes(url.pathname)) {
+          if (observer.receipts.length >= 30) throw new Error('Debt receipt bound exceeded');
+          const headers = new Headers(init?.headers ?? request?.headers);
+          const receipt: DebtReceipt = { method: (init?.method ?? request?.method ?? 'GET').toUpperCase(), url: url.href,
+            key: headers.get('idempotency-key'), probe: headers.get('x-credit-fixture-probe') === 'readback',
+            requestBody: typeof init?.body === 'string' ? init.body : null, status: null, bodyBase64: null, complete: false, error: null };
+          observer.receipts.push(receipt);
+          void pending.then(async response => {
+            receipt.status = response.status;
+            const bytes = new Uint8Array(await response.clone().arrayBuffer());
+            receipt.bodyBase64 = btoa(Array.from(bytes, byte => String.fromCharCode(byte)).join(''));
+          }).catch(error => { receipt.error = String(error); }).finally(() => { receipt.complete = true; });
+        }
+      } catch (error) { observer.errors.push(String(error)); }
+      return pending; // Native Promise/Response are returned unchanged; only clones are read.
+    };
+  }, { root: ROOT, grant: GRANT });
+}
+const DEBT_FIRST_REASON = 'Debt repayment';
+const DEBT_REMAINDER_REASON = 'Debt repayment with remainder';
+const DEBT_MISSING_REASON = 'Missing debt compatibility';
+const DEBT_UNAVAILABLE = 'Balance details are unavailable. Refresh balances to show an estimate. You can still grant credits; the server settles debt first.';
+async function installDebtModel(page: Page, mode: DebtMode) {
+  const tenants: Tenant[] = [
+    { id: A, name: 'Aurora Diner', slug: 'aurora-fixture', planTier: 'GROWTH', usageCredits: 120, creditDebt: 0 },
+    { id: B, name: 'Boreal Kitchen', slug: 'boreal-fixture', planTier: 'STARTER', usageCredits: 10, creditDebt: 30 },
+  ];
+  const steps = mode === 'loaded' ? [
+    { payload: { tenantId: B, amount: 20, reason: DEBT_FIRST_REASON }, before: { wallet: 10, debt: 30 },
+      after: { wallet: 10, debt: 10 }, spendable: 0, debtDelta: -20 },
+    { payload: { tenantId: B, amount: 30, reason: DEBT_REMAINDER_REASON }, before: { wallet: 10, debt: 10 },
+      after: { wallet: 30, debt: 0 }, spendable: 20, debtDelta: -10 },
+  ] : [
+    { payload: { tenantId: B, amount: 20, reason: DEBT_MISSING_REASON }, before: { wallet: 10, debt: 30 },
+      after: { wallet: 10, debt: 10 }, spendable: 0, debtDelta: -20 },
+  ];
+  const initial = copy(tenants), history: History[] = [], ledger: Array<Row & { delivered: boolean; missingDebt: boolean }> = [];
+  const settlements: Array<{ key: string; payload: typeof steps[number]['payload']; spendable: number; debtDelta: number;
+    walletAfter: number; debtAfter: number }> = [];
+  const dialogs: Array<{ type: string; actual: string; expected: string; accepted: boolean }> = [];
+  const errors: unknown[] = [], active = new Set<Route>(), pending: Promise<void>[] = [];
+  const priorReceipts: DebtReceipt[] = [], priorObserverErrors: string[] = [];
+  const accepted = new Map<string, { fingerprint: string; balance: number }>();
+  let effects = 0, ordinaryReads = 0, closing = false;
+  const snapshot = (): Snapshot => copy({ tenants, history, tenantPagination: pagination(tenants.length), historyPagination: pagination(history.length) });
+  async function run(route: Route) {
+    try {
+      if (closing || ledger.length >= 30) throw new Error('Debt request outside finite custody');
+      const request = route.request(), url = new URL(request.url()), method = request.method();
+      const requestBody = request.postData(), key = request.headers()['idempotency-key'] ?? null;
+      const probe = request.headers()['x-credit-fixture-probe'] === 'readback';
+      let status: number, value: unknown, replay = false, missingDebt = false;
+      if (method === 'GET' && url.pathname === ROOT && url.search === QUERY) {
+        if (requestBody !== null || key !== null) throw new Error('Unexpected debt GET mutation fields');
+        const response = snapshot();
+        if (!probe) ordinaryReads += 1;
+        if (mode === 'missing-initial' && !probe && ordinaryReads === 1) {
+          // One historical/degraded response only. Independent later GETs expose
+          // the same authoritative model state; no fake probe-only state exists.
+          delete (response.tenants.find(row => row.id === B)! as Partial<Tenant>).creditDebt;
+          missingDebt = true;
+        }
+        status = 200; value = response;
+      } else if (method === 'POST' && url.pathname === GRANT && !url.search && !probe) {
+        if (!key || !/^[\x21-\x7e]{1,200}$/.test(key) || requestBody === null || requestBody.length > 4096
+          || !request.headers()['content-type']?.startsWith('application/json') || !request.headers()['x-csrf-token']) {
+          throw new Error('Unexpected debt grant transport');
+        }
+        const previous = accepted.get(key);
+        if (previous) {
+          if (previous.fingerprint !== requestBody) throw new Error('Debt key reused with a different payload');
+          replay = true;
+        } else {
+          const step = steps[effects];
+          if (!step || requestBody !== JSON.stringify(step.payload) || key.includes(step.payload.reason)) throw new Error('Unexpected debt grant payload/order');
+          const target = tenants[1];
+          if (target.usageCredits !== step.before.wallet || target.creditDebt !== step.before.debt) throw new Error('Unexpected model pre-settlement state');
+          target.usageCredits = step.after.wallet; target.creditDebt = step.after.debt;
+          effects += 1;
+          history.unshift({ id: `83000000-0000-4000-8000-${String(effects).padStart(12, '0')}`, amount: step.spendable,
+            reason: step.payload.reason, createdAt: `2026-10-06T12:00:0${effects}.000Z`,
+            tenant: { id: B, name: 'Boreal Kitchen', slug: 'boreal-fixture' } });
+          settlements.push({ key, payload: copy(step.payload), spendable: step.spendable, debtDelta: step.debtDelta,
+            walletAfter: step.after.wallet, debtAfter: step.after.debt });
+          accepted.set(key, { fingerprint: requestBody, balance: step.after.wallet });
+        }
+        status = 201; value = { success: true, newBalance: accepted.get(key)!.balance };
+      } else throw new Error('Unexpected debt method/path/query');
+      const body = JSON.stringify(value);
+      const row = { sequence: ledger.length + 1, method, url: url.href, probe, requestBody, key, status, body,
+        responseSha256: createHash('sha256').update(body).digest('hex'), effects, replay, delivered: false, missingDebt };
+      ledger.push(row);
+      await route.fulfill({ status, headers: { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store',
+        'content-length': String(Buffer.byteLength(body)) }, body });
+      row.delivered = true;
+    } catch (error) {
+      errors.push(error);
+      try { await bounded(route.abort('failed'), 'debt failed-route abort', 2000); } catch (abortError) { errors.push(abortError); }
+    } finally { active.delete(route); }
+  }
+  const handler = (route: Route) => { active.add(route); const work = run(route); pending.push(work); return work; };
+  await page.route('**/api/v2/admin/credits**', handler);
+  return { initial, ledger, settlements, dialogs, errors, priorReceipts, priorObserverErrors,
+    async read() {
+      const received = await bounded(page.evaluate(async path => {
+        const controller = new AbortController(), timer = setTimeout(() => controller.abort(), 5000);
+        try { const response = await fetch(path, { headers: { 'x-credit-fixture-probe': 'readback' }, cache: 'no-store', signal: controller.signal });
+          return { status: response.status, body: await response.text() }; }
+        finally { clearTimeout(timer); }
+      }, ROOT + QUERY), 'independent debt GET', 6000);
+      expect(received.status).toBe(200); expect(received.body).toBe(ledger.filter(row => row.probe).at(-1)?.body);
+      return JSON.parse(received.body) as Snapshot;
+    },
+    async retainBeforeReload() {
+      let observer: { receipts: DebtReceipt[]; errors: string[] } | undefined;
+      await expect.poll(async () => {
+        observer = await page.evaluate(() => (window as DebtWindow).__creditDebtReceipts);
+        return Boolean(observer && priorReceipts.length + observer.receipts.length === ledger.length && observer.receipts.every(row => row.complete));
+      }, { timeout: 6000 }).toBe(true);
+      if (!observer) throw new Error('Missing debt observer before reload');
+      priorReceipts.push(...observer.receipts); priorObserverErrors.push(...observer.errors);
+      await test.info().attach('debt-before-reload-native-receipts', { contentType: 'application/json', body: JSON.stringify(observer) });
+    },
+    async close() {
+      try { await bounded(Promise.all(pending), 'debt handler drain', 5000); } catch (error) { errors.push(error); }
+      closing = true;
+      if (active.size) {
+        errors.push(new Error(`${active.size} debt routes remained active`));
+        const aborted = await Promise.allSettled([...active].map(route => bounded(route.abort('failed'), 'debt cleanup abort', 2000)));
+        for (const result of aborted) if (result.status === 'rejected') errors.push(result.reason);
+      }
+      await bounded(page.unroute('**/api/v2/admin/credits**', handler), 'debt exact unroute', 3000);
+      await bounded(Promise.all(pending), 'debt final handler drain', 3000);
+    },
+  };
+}
+type DebtAdapter = Awaited<ReturnType<typeof installDebtModel>>;
+const debtFields = {
+  loadedWallet: 'Loaded spendable balance:', loadedDebt: 'Loaded outstanding debt:',
+  repayment: 'Estimated debt repayment:', walletAfter: 'Estimated spendable balance:', debtAfter: 'Estimated remaining debt:',
+} as const;
+const debtField = (page: Page, field: keyof typeof debtFields) => page.getByText(debtFields[field], { exact: false }).locator('strong');
+async function expectDebtPreview(page: Page, expected: Record<keyof typeof debtFields, string>) {
+  for (const field of Object.keys(debtFields) as Array<keyof typeof debtFields>) await expect(debtField(page, field)).toHaveText(expected[field]);
+}
+// Exercise the actual taller debt preview; no requests, confirmation or grant are issued here.
+async function debtPreviewLayoutWitness(page: Page, state: 'nonzero-debt' | 'missing-debt',
+  expected: Record<keyof typeof debtFields, string>) {
+  const original = page.viewportSize();
+  expect(original, 'canonical debt projects have an explicit viewport').not.toBeNull();
+  if (!original) throw new Error('Debt preview requires the canonical viewport');
+  // Chromium supplies explicit 320/393 phone widths and its unchanged desktop width.
+  // Firefox and Mobile Chrome retain their actual canonical viewport (including mobile393).
+  const widths = test.info().project.name === 'chromium' ? [...new Set([320, 393, original.width])] : [original.width];
+  const grant = page.getByRole('article').filter({ has: page.getByRole('heading', { name: 'Grant Credits', exact: true }) });
+  const balances = page.getByRole('article', { name: 'Tenant credit balances table', exact: true });
+  const controls = [
+    { name: 'tenant', locator: tenant(page) }, { name: 'amount', locator: amount(page) },
+    { name: 'reason', locator: reason(page) }, { name: 'grant', locator: submit(page) },
+  ];
+  const before = { tenantId: await tenant(page).inputValue(), amount: await amount(page).inputValue(), reason: await reason(page).inputValue() };
+  const failures: unknown[] = [];
+  try {
+    for (const width of widths) {
+      const label = `credit-${state}-preview-${test.info().project.name.replace(/\W+/g, '-').toLowerCase()}-${width}px`;
+      const textGeometry: unknown[] = [];
+      try {
+        if (test.info().project.name === 'chromium') await page.setViewportSize({ width, height: original.height });
+        await expect(grant).toBeVisible();
+        await page.evaluate(() => window.scrollTo(0, 0));
+        await expect.poll(() => page.evaluate(() => ({ x: scrollX, y: scrollY })), { timeout: 3000 }).toEqual({ x: 0, y: 0 });
+        // Keep the first viewport separately from the full-page image and preserve failure pixels.
+        await test.info().attach(label + '-first-viewport', { contentType: 'image/png',
+          body: await page.screenshot({ fullPage: false, animations: 'disabled', timeout: 5000 }) });
+        await test.info().attach(label + '-full-page', { contentType: 'image/png',
+          body: await page.screenshot({ fullPage: true, animations: 'disabled', timeout: 5000 }) });
+        const size = await page.evaluate(() => ({ width: innerWidth,
+          scrollWidth: Math.max(document.documentElement.scrollWidth, document.body.scrollWidth) }));
+        const grantBox = await grant.boundingBox(), balanceBox = await balances.boundingBox();
+        const boxes = await Promise.all(controls.map(async item => ({ name: item.name,
+          count: await item.locator.count(), box: await item.locator.boundingBox() })));
+        await test.info().attach(label + '-form-geometry', { contentType: 'application/json',
+          body: JSON.stringify({ state, expected, size, grantBox, balanceBox, controls: boxes, before }) });
+        expect(size.width).toBe(width); expect(size.scrollWidth).toBeLessThanOrEqual(width + 1);
+        expect(grantBox).not.toBeNull(); expect(balanceBox).not.toBeNull();
+        if (!grantBox || !balanceBox) throw new Error('Debt panels have no rendered geometry');
+        expect(grantBox.x).toBeGreaterThanOrEqual(-1); expect(grantBox.x + grantBox.width).toBeLessThanOrEqual(width + 1);
+        expect(grantBox.width).toBeGreaterThanOrEqual(Math.min(260, width * 0.8));
+        if (width <= 900) {
+          expect(grantBox.y).toBeGreaterThanOrEqual(balanceBox.y + balanceBox.height - 1);
+          expect(Math.abs(grantBox.x - balanceBox.x)).toBeLessThanOrEqual(2);
+          expect(Math.abs(grantBox.width - balanceBox.width)).toBeLessThanOrEqual(2);
+        } else {
+          expect(grantBox.x).toBeGreaterThanOrEqual(balanceBox.x + balanceBox.width - 1);
+          expect(Math.abs(grantBox.y - balanceBox.y)).toBeLessThanOrEqual(2);
+        }
+        for (const item of boxes) {
+          expect(item.count, item.name + ' is unique').toBe(1); expect(item.box).not.toBeNull();
+          if (!item.box) throw new Error(item.name + ' has no debt form rectangle');
+          expect(item.box.x).toBeGreaterThanOrEqual(grantBox.x - 1);
+          expect(item.box.x + item.box.width).toBeLessThanOrEqual(grantBox.x + grantBox.width + 1);
+          expect(item.box.x).toBeGreaterThanOrEqual(-1); expect(item.box.x + item.box.width).toBeLessThanOrEqual(width + 1);
+          if (width <= 768) {
+            expect(item.box.width, item.name + ' touch width').toBeGreaterThanOrEqual(44);
+            expect(item.box.height, item.name + ' touch height').toBeGreaterThanOrEqual(44);
+          }
+        }
+        await expectDebtPreview(page, expected);
+        const rows = (Object.keys(debtFields) as Array<keyof typeof debtFields>).map(field => ({
+          name: field, locator: page.getByText(debtFields[field], { exact: false }), value: debtField(page, field),
+        }));
+        const textRows = [...rows.map(({ name, locator }) => ({ name, locator })),
+          { name: 'estimate-guidance', locator: page.getByText('Estimates use loaded balances. Actual grants repay current outstanding debt first.', { exact: true }) },
+          ...(state === 'missing-debt' ? [{ name: 'missing-debt-guidance', locator: page.getByText(DEBT_UNAVAILABLE, { exact: true }) }] : [])];
+        for (const row of textRows) {
+          await expect(row.locator).toHaveCount(1); await expect(row.locator).toBeVisible();
+          // Normal vertical scrolling must reveal every wrapped label/value/guidance in full.
+          await row.locator.evaluate(node => node.scrollIntoView({ block: 'center', inline: 'nearest' }));
+          await expect(row.locator).toBeInViewport({ ratio: 1 });
+          const geometry = await row.locator.evaluate(node => {
+            const rect = (box: DOMRect) => ({ x: box.x, y: box.y, width: box.width, height: box.height });
+            const range = document.createRange(); range.selectNodeContents(node);
+            const textRects = Array.from(range.getClientRects()).filter(box => box.width > 0 && box.height > 0).map(rect);
+            const clips: Array<{ box: ReturnType<typeof rect>; x: boolean; y: boolean }> = [];
+            for (let parent: Element | null = node; parent; parent = parent.parentElement) {
+              const style = getComputedStyle(parent), x = /^(auto|scroll|hidden|clip)$/.test(style.overflowX), y = /^(auto|scroll|hidden|clip)$/.test(style.overflowY);
+              if (x || y) clips.push({ box: rect(parent.getBoundingClientRect()), x, y });
+            }
+            return { row: rect(node.getBoundingClientRect()), viewport: { width: innerWidth, height: innerHeight },
+              textRects, clips, scrollX, text: node.textContent };
+          });
+          textGeometry.push({ name: row.name, ...geometry });
+          expect(geometry.scrollX).toBe(0); expect(geometry.textRects.length).toBeGreaterThan(0);
+          for (const text of geometry.textRects) {
+            expect(text.x).toBeGreaterThanOrEqual(geometry.row.x - 1);
+            expect(text.x + text.width).toBeLessThanOrEqual(geometry.row.x + geometry.row.width + 1);
+            expect(text.y).toBeGreaterThanOrEqual(geometry.row.y - 1);
+            expect(text.y + text.height).toBeLessThanOrEqual(geometry.row.y + geometry.row.height + 1);
+            expect(text.x).toBeGreaterThanOrEqual(-1); expect(text.x + text.width).toBeLessThanOrEqual(geometry.viewport.width + 1);
+            expect(text.y).toBeGreaterThanOrEqual(-1); expect(text.y + text.height).toBeLessThanOrEqual(geometry.viewport.height + 1);
+            for (const clip of geometry.clips) {
+              if (clip.x) { expect(text.x).toBeGreaterThanOrEqual(clip.box.x - 1); expect(text.x + text.width).toBeLessThanOrEqual(clip.box.x + clip.box.width + 1); }
+              if (clip.y) { expect(text.y).toBeGreaterThanOrEqual(clip.box.y - 1); expect(text.y + text.height).toBeLessThanOrEqual(clip.box.y + clip.box.height + 1); }
+            }
+          }
+        }
+        for (const row of rows) {
+          await row.value.scrollIntoViewIfNeeded({ timeout: 3000 }); await expect(row.value).toBeInViewport({ ratio: 1 });
+        }
+        await rows[0].locator.evaluate(node => node.scrollIntoView({ block: 'center', inline: 'nearest' }));
+        await test.info().attach(label + '-preview-viewport', { contentType: 'image/png',
+          body: await page.screenshot({ fullPage: false, animations: 'disabled', timeout: 5000 }) });
+        expect({ tenantId: await tenant(page).inputValue(), amount: await amount(page).inputValue(), reason: await reason(page).inputValue() }).toEqual(before);
+      } catch (error) {
+        failures.push(error);
+        try { await test.info().attach(label + '-failure', { contentType: 'image/png',
+          body: await page.screenshot({ fullPage: true, animations: 'disabled', timeout: 3000 }) }); }
+        catch (screenshotError) { failures.push(screenshotError); }
+        break;
+      } finally {
+        try { await test.info().attach(label + '-text-geometry', { contentType: 'application/json', body: JSON.stringify(textGeometry) }); }
+        catch (attachmentError) { failures.push(attachmentError); }
+      }
+    }
+  } finally {
+    try {
+      await page.setViewportSize(original);
+      await page.evaluate(() => window.scrollTo(0, 0));
+      await expect.poll(() => page.evaluate(() => ({ x: scrollX, y: scrollY })), { timeout: 3000 }).toEqual({ x: 0, y: 0 });
+    } catch (restoreError) { failures.push(restoreError); }
+  }
+  if (failures.length) throw new AggregateError(failures, 'Debt preview responsive witness failed');
+}
+
+async function debtEvidence(page: Page, adapter: DebtAdapter, label: string) {
+  const state = await adapter.read();
+  const values = Object.fromEntries(await Promise.all((Object.keys(debtFields) as Array<keyof typeof debtFields>).map(async field =>
+    [field, await debtField(page, field).allTextContents()])));
+  const ui = { values, tenantId: await tenant(page).inputValue(), amount: await amount(page).inputValue(), reason: await reason(page).inputValue(),
+    unavailable: await page.getByText(DEBT_UNAVAILABLE, { exact: true }).allTextContents(),
+    notice: await page.getByText('Credits granted.', { exact: true }).allTextContents() };
+  await test.info().attach(label, { contentType: 'application/json', body: JSON.stringify({ ui, state, ledger: adapter.ledger,
+    settlements: adapter.settlements, dialogs: adapter.dialogs }) });
+  await test.info().attach(label + '-viewport', { contentType: 'image/png',
+    body: await page.screenshot({ animations: 'disabled', fullPage: false, timeout: 5000 }) });
+  return { ui, state };
+}
+async function confirmDebt(page: Page, adapter: DebtAdapter, expected: string, accept: boolean) {
+  const completed = deferred<void>(), failures: unknown[] = [];
+  const handler = async (dialog: Dialog) => {
+    try {
+      adapter.dialogs.push({ type: dialog.type(), actual: dialog.message(), expected, accepted: accept });
+      expect(dialog.type()).toBe('confirm'); expect(dialog.message()).toBe(expected);
+      if (accept) await dialog.accept(); else await dialog.dismiss();
+    } catch (error) { failures.push(error); await dialog.dismiss().catch(() => undefined); }
+    finally { completed.resolve(); }
+  };
+  page.once('dialog', handler);
+  try { await bounded(Promise.all([submit(page).click({ timeout: 5000 }), completed.promise]), 'debt confirmation click/dialog', 6000); }
+  finally { page.off('dialog', handler); }
+  expect(failures).toEqual([]);
+}
+async function waitDebtGrant(page: Page, adapter: DebtAdapter, count: number) {
+  await expect.poll(() => adapter.ledger.filter(row => row.method === 'POST').length).toBe(count);
+  const row = adapter.ledger.filter(item => item.method === 'POST').at(-1)!;
+  await expect.poll(() => page.evaluate(({ key, body }) => (window as DebtWindow).__creditDebtReceipts?.receipts.some(receipt =>
+    receipt.method === 'POST' && receipt.key === key && receipt.status === 201 && receipt.complete && receipt.error === null
+    && receipt.bodyBase64 === body), { key: row.key, body: Buffer.from(row.body).toString('base64') }), { timeout: 6000 }).toBe(true);
+  await expect(page.getByText('Credits granted.', { exact: true })).toBeVisible();
+  await expect(submit(page)).toBeEnabled();
+  return row;
+}
+async function debtHistoryWitness(page: Page, expected: Array<{ reason: string; amount: number }>, walletRows: number) {
+  const history = page.getByRole('article', { name: 'Credit transaction history table', exact: true });
+  await expect(history.getByRole('columnheader', { name: 'Spendable change', exact: true })).toHaveCount(1);
+  await expect(history.getByRole('row')).toHaveCount(expected.length + 1);
+  for (const entry of expected) {
+    const row = history.getByRole('row').filter({ has: page.getByText(entry.reason, { exact: true }) });
+    await expect(row).toHaveCount(1); await expect(row).toContainText('Boreal Kitchen');
+    const cell = row.getByRole('cell').nth(2);
+    await cell.scrollIntoViewIfNeeded({ timeout: 5000 });
+    await expect(cell).toBeInViewport(); await expect(cell).toHaveText(`+${entry.amount}`);
+  }
+  const summary = page.getByRole('article').filter({ has: page.getByText('positive wallet rows loaded', { exact: true }) });
+  await expect(summary).toHaveCount(1); await expect(summary.getByText(String(walletRows), { exact: true })).toHaveCount(1);
+}
+async function debtScenario(page: Page, mode: DebtMode, body: (adapter: DebtAdapter) => Promise<void>) {
+  const failures: unknown[] = [], pageErrors: string[] = [], consoleErrors: string[] = [];
+  page.on('pageerror', error => pageErrors.push(error.message));
+  page.on('console', message => { if (message.type() === 'error') consoleErrors.push(message.text()); });
+  await observeDebtBodies(page); const adapter = await installDebtModel(page, mode);
+  try {
+    await loginAsSeedSuperAdmin(page, '/admin/credits'); await expect(tenant(page).getByRole('option')).toHaveCount(2);
+    await tenant(page).selectOption(B); await body(adapter);
+  } catch (error) { failures.push(error); }
+  try { await debtEvidence(page, adapter, 'debt-final-rendered-and-independent-state'); } catch (error) { failures.push(error); }
+  try { await adapter.close(); } catch (error) { failures.push(error); }
+  let observed: { receipts: DebtReceipt[]; errors: string[] } | undefined;
+  try {
+    await expect.poll(async () => {
+      observed = await page.evaluate(() => (window as DebtWindow).__creditDebtReceipts);
+      return Boolean(observed && adapter.priorReceipts.length + observed.receipts.length === adapter.ledger.length
+        && observed.receipts.every(row => row.complete));
+    }, { timeout: 6000 }).toBe(true);
+    if (!observed) throw new Error('Debt native observer missing');
+    const actual = [...adapter.priorReceipts, ...observed.receipts].map(({ complete, ...receipt }) => JSON.stringify(receipt)).sort();
+    const expected = adapter.ledger.map(row => JSON.stringify({ method: row.method, url: row.url, key: row.key, probe: row.probe,
+      requestBody: row.requestBody, status: row.status, bodyBase64: Buffer.from(row.body).toString('base64'), error: null })).sort();
+    expect(actual).toEqual(expected); expect([...adapter.priorObserverErrors, ...observed.errors]).toEqual([]);
+    expect(adapter.errors).toEqual([]); expect(adapter.ledger.every(row => row.delivered)).toBe(true);
+    expect(pageErrors).toEqual([]); expect(consoleErrors).toEqual([]);
+  } catch (error) { failures.push(error); }
+  await test.info().attach('debt-native-response-model-and-dialog-custody', { contentType: 'application/json', body: JSON.stringify({
+    mode, initial: adapter.initial, ledger: adapter.ledger, settlements: adapter.settlements, dialogs: adapter.dialogs,
+    observed, priorReceipts: adapter.priorReceipts, pageErrors, consoleErrors, adapterErrors: adapter.errors.map(String),
+    scope: 'Finite local debt model only; independent GET is modeled state, not native DB/audit/provider qualification.' }) });
+  if (failures.length) throw new AggregateError(failures, 'Rendered credit debt case or custody failed');
+}
+
+test.describe('Admin credit debt settlement browser custody', () => {
+  test.skip(!mockMode, 'Controlled local debt model only; native settlement qualification is separately owned.');
+  test.setTimeout(60_000);
+  test.beforeEach(async ({ page }) => { expect((await page.request.post('/api/v1/__e2e/reset')).status()).toBe(200); });
+
+  test('renders debt repayment before spendable growth and preserves both explicit grants after reload', async ({ page }) => {
+    await debtScenario(page, 'loaded', async adapter => {
+      await amount(page).fill('20'); await reason(page).fill(DEBT_FIRST_REASON);
+      await debtEvidence(page, adapter, 'loaded-debt-before-first-confirmation');
+      await expectDebtPreview(page, { loadedWallet: '10', loadedDebt: '30', repayment: '20', walletAfter: '10', debtAfter: '10' });
+      await debtPreviewLayoutWitness(page, 'nonzero-debt', { loadedWallet: '10', loadedDebt: '30', repayment: '20', walletAfter: '10', debtAfter: '10' });
+      const firstConfirmation = 'Grant 20 credits to Boreal Kitchen? Estimated debt repayment: 20 credits. Estimated spendable balance: 10 credits. Estimated remaining debt: 10 credits. Estimates use loaded balances; the server settles against current balances.';
+      await confirmDebt(page, adapter, firstConfirmation, false);
+      expect(adapter.ledger.filter(row => row.method === 'POST')).toEqual([]); expect(adapter.settlements).toEqual([]);
+      expect((await adapter.read()).tenants).toEqual(adapter.initial);
+      await expect(amount(page)).toHaveValue('20'); await expect(reason(page)).toHaveValue(DEBT_FIRST_REASON);
+      await confirmDebt(page, adapter, firstConfirmation, true); const first = await waitDebtGrant(page, adapter, 1);
+      await expect(debtField(page, 'loadedDebt')).toHaveText('10');
+      const firstState = (await debtEvidence(page, adapter, 'first-debt-only-grant-delivered')).state;
+      expect(firstState.tenants).toEqual(adapter.initial.map(row => row.id === B ? { ...row, creditDebt: 10 } : row));
+      expect(firstState.history).toHaveLength(1);
+      expect(firstState.history[0]).toMatchObject({ amount: 0, reason: DEBT_FIRST_REASON, tenant: { id: B, name: 'Boreal Kitchen', slug: 'boreal-fixture' } });
+      expect(JSON.parse(first.requestBody!)).toEqual({ tenantId: B, amount: 20, reason: DEBT_FIRST_REASON });
+      expect(JSON.parse(first.body)).toEqual({ success: true, newBalance: 10 }); expect(first.effects).toBe(1); expect(first.replay).toBe(false);
+      await debtHistoryWitness(page, [{ reason: DEBT_FIRST_REASON, amount: 0 }], 0);
+      await amount(page).fill('30'); await reason(page).fill(DEBT_REMAINDER_REASON);
+      await debtEvidence(page, adapter, 'remaining-debt-before-second-confirmation');
+      await expectDebtPreview(page, { loadedWallet: '10', loadedDebt: '10', repayment: '10', walletAfter: '30', debtAfter: '0' });
+      const secondConfirmation = 'Grant 30 credits to Boreal Kitchen? Estimated debt repayment: 10 credits. Estimated spendable balance: 30 credits. Estimated remaining debt: 0 credits. Estimates use loaded balances; the server settles against current balances.';
+      await confirmDebt(page, adapter, secondConfirmation, true); const second = await waitDebtGrant(page, adapter, 2);
+      await expect(debtField(page, 'loadedDebt')).toHaveText('0'); await expect(debtField(page, 'loadedWallet')).toHaveText('30');
+      const final = (await debtEvidence(page, adapter, 'second-debt-and-wallet-grant-delivered')).state;
+      expect(final.tenants).toEqual(adapter.initial.map(row => row.id === B ? { ...row, usageCredits: 30, creditDebt: 0 } : row));
+      expect(final.history.map(row => ({ amount: row.amount, reason: row.reason }))).toEqual([
+        { amount: 20, reason: DEBT_REMAINDER_REASON }, { amount: 0, reason: DEBT_FIRST_REASON },
+      ]);
+      expect(new Set(final.history.map(row => row.id)).size).toBe(2);
+      expect(JSON.parse(second.requestBody!)).toEqual({ tenantId: B, amount: 30, reason: DEBT_REMAINDER_REASON });
+      expect(JSON.parse(second.body)).toEqual({ success: true, newBalance: 30 }); expect(second.key).not.toBe(first.key);
+      expect(second.effects).toBe(2); expect(second.replay).toBe(false);
+      expect(adapter.settlements.map(row => ({ spendable: row.spendable, debtDelta: row.debtDelta }))).toEqual([
+        { spendable: 0, debtDelta: -20 }, { spendable: 20, debtDelta: -10 },
+      ]);
+      await debtHistoryWitness(page, [{ reason: DEBT_FIRST_REASON, amount: 0 }, { reason: DEBT_REMAINDER_REASON, amount: 20 }], 1);
+      await adapter.retainBeforeReload(); await page.reload(); await expect(tenant(page).getByRole('option')).toHaveCount(2);
+      expect(await adapter.read()).toEqual(final); await tenant(page).selectOption(B);
+      await expect(debtField(page, 'loadedWallet')).toHaveText('30'); await expect(debtField(page, 'loadedDebt')).toHaveText('0');
+      await debtHistoryWitness(page, [{ reason: DEBT_FIRST_REASON, amount: 0 }, { reason: DEBT_REMAINDER_REASON, amount: 20 }], 1);
+      expect(adapter.ledger.filter(row => row.method === 'POST')).toHaveLength(2); expect(adapter.settlements).toHaveLength(2);
+    });
+  });
+
+  test('keeps missing-debt estimates unavailable while allowing an explicit debt-first grant and truthful reload', async ({ page }) => {
+    await debtScenario(page, 'missing-initial', async adapter => {
+      await amount(page).fill('20'); await reason(page).fill(DEBT_MISSING_REASON);
+      const initial = await debtEvidence(page, adapter, 'missing-initial-debt-rendering-and-authority');
+      expect(initial.state.tenants).toEqual(adapter.initial);
+      const omitted = adapter.ledger.filter(row => row.missingDebt);
+      expect(omitted).toHaveLength(1);
+      expect(JSON.parse(omitted[0].body).tenants.find((row: Tenant) => row.id === B)).not.toHaveProperty('creditDebt');
+      await expectDebtPreview(page, { loadedWallet: '10', loadedDebt: 'Unavailable', repayment: '-', walletAfter: '-', debtAfter: '-' });
+      await debtPreviewLayoutWitness(page, 'missing-debt', { loadedWallet: '10', loadedDebt: 'Unavailable', repayment: '-', walletAfter: '-', debtAfter: '-' });
+      await expect(page.getByText(DEBT_UNAVAILABLE, { exact: true })).toBeVisible(); await expect(submit(page)).toBeEnabled();
+      const confirmation = 'Grant 20 credits to Boreal Kitchen? A balance estimate is unavailable; refresh balances for debt details. Outstanding debt is repaid first, and the server determines the final balances.';
+      await confirmDebt(page, adapter, confirmation, false);
+      expect(adapter.ledger.filter(row => row.method === 'POST')).toEqual([]); expect(adapter.settlements).toEqual([]);
+      await expect(tenant(page)).toHaveValue(B); await expect(amount(page)).toHaveValue('20'); await expect(reason(page)).toHaveValue(DEBT_MISSING_REASON);
+      await confirmDebt(page, adapter, confirmation, true); const delivered = await waitDebtGrant(page, adapter, 1);
+      await expect(debtField(page, 'loadedDebt')).toHaveText('10');
+      const committed = (await debtEvidence(page, adapter, 'missing-debt-explicit-grant-delivered')).state;
+      expect(committed.tenants).toEqual(adapter.initial.map(row => row.id === B ? { ...row, creditDebt: 10 } : row));
+      expect(committed.history).toHaveLength(1);
+      expect(committed.history[0]).toMatchObject({ amount: 0, reason: DEBT_MISSING_REASON, tenant: { id: B, name: 'Boreal Kitchen', slug: 'boreal-fixture' } });
+      expect(JSON.parse(delivered.requestBody!)).toEqual({ tenantId: B, amount: 20, reason: DEBT_MISSING_REASON });
+      expect(JSON.parse(delivered.body)).toEqual({ success: true, newBalance: 10 }); expect(delivered.effects).toBe(1); expect(delivered.replay).toBe(false);
+      await expect(page.getByText(DEBT_UNAVAILABLE, { exact: true })).toHaveCount(0);
+      await expectDebtPreview(page, { loadedWallet: '10', loadedDebt: '10', repayment: '10', walletAfter: '20', debtAfter: '0' });
+      await debtHistoryWitness(page, [{ reason: DEBT_MISSING_REASON, amount: 0 }], 0);
+      await adapter.retainBeforeReload(); await page.reload(); await expect(tenant(page).getByRole('option')).toHaveCount(2);
+      expect(await adapter.read()).toEqual(committed); await tenant(page).selectOption(B);
+      await expectDebtPreview(page, { loadedWallet: '10', loadedDebt: '10', repayment: '-', walletAfter: '-', debtAfter: '-' });
+      await expect(page.getByText(DEBT_UNAVAILABLE, { exact: true })).toHaveCount(0);
+      await debtHistoryWitness(page, [{ reason: DEBT_MISSING_REASON, amount: 0 }], 0);
+      expect(adapter.ledger.filter(row => row.method === 'POST')).toHaveLength(1); expect(adapter.settlements).toHaveLength(1);
+      expect(adapter.ledger.filter(row => row.missingDebt)).toHaveLength(1);
+    });
+  });
 });

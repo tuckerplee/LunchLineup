@@ -2,6 +2,7 @@ import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import * as ts from 'typescript';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { creditGrantConfirmation, estimateCreditGrant, isCreditBalanceValue } from '../../app/admin/credits/credit-grant-estimate';
 import { createCreditReadOwner } from '../../app/admin/credits/credit-read-owner';
 import { createCreditGrantSubmissionState, submitCreditGrant } from '../../app/admin/credits/credit-grant-submission';
 import { parseCreditGrantAcknowledgement } from '../../app/admin/credits/credit-grant-acknowledgement';
@@ -107,9 +108,9 @@ function deferred<T>() {
     let resolve!: (value: T) => void, reject!: (error: unknown) => void;
     const promise = new Promise<T>((done, fail) => { resolve = done; reject = fail; }); return { promise, resolve, reject };
 }
-const A = { id: 'A', name: 'Aurora', slug: 'aurora', planTier: 'STARTER', usageCredits: 120 };
-const B = { id: 'B', name: 'Boreal', slug: 'boreal', planTier: 'STARTER', usageCredits: 40 };
-const C = { id: 'C', name: 'Cedar', slug: 'cedar', planTier: 'STARTER', usageCredits: 5 };
+const A = { id: 'A', name: 'Aurora', slug: 'aurora', planTier: 'STARTER', usageCredits: 120, creditDebt: 0 };
+const B = { id: 'B', name: 'Boreal', slug: 'boreal', planTier: 'STARTER', usageCredits: 40, creditDebt: 0 };
+const C = { id: 'C', name: 'Cedar', slug: 'cedar', planTier: 'STARTER', usageCredits: 5, creditDebt: 0 };
 const H1 = { id: 'H1', amount: 1, reason: 'First history', createdAt: '2026-10-05T12:00:00Z', tenant: A };
 const H2 = { ...H1, id: 'H2', reason: 'Second history', createdAt: '2026-10-04T12:00:00Z' };
 const pageData = (tenants = [A, B], tenantCursor: string | null = 'T1', history = [H1], historyCursor: string | null = 'H1') => ({
@@ -125,7 +126,7 @@ function fixture() {
     let effects: Array<() => void | (() => void)> = [], current: { tree: Element };
     const apply = (name: string, value: any) => state.set(name, typeof value === 'function' ? value(state.get(name)) : value);
     const bindings = {
-        React, styles: {}, ...lists, createCreditReadOwner, createCreditGrantSubmissionState, submitCreditGrant,
+        React, styles: {}, ...lists, creditGrantConfirmation, estimateCreditGrant, isCreditBalanceValue, createCreditReadOwner, createCreditGrantSubmissionState, submitCreditGrant,
         parseCreditGrantAcknowledgement, withIdempotencyKey, document: undefined, window: { confirm: vi.fn(() => true) },
         useState(initial: any) {
             const name = stateNames[stateIndex++]; if (!name) throw new Error('Unexpected state slot');

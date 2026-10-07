@@ -223,6 +223,162 @@ describe('MeteringService - credit grants', () => {
         expect(h.tx.tenant.update).not.toHaveBeenCalled();
     });
 
+    it('repays an exact debt grant without increasing the spendable wallet', async () => {
+        const h = buildGrantHarness(null, { usageCredits: 10, creditDebt: 30 }, { usageCredits: 10, creditDebt: 0 });
+        await expect(h.service.grantCreditsInTransaction(h.tx as any, {
+            tenantId: 'tenant-1', amount: 30, reason: 'Exact debt repayment', idempotencyKey: 'exact-debt-key',
+        })).resolves.toMatchObject({ newBalance: 10, replayed: false });
+        expect(h.tx.tenant.update).toHaveBeenCalledWith({
+            where: { id: 'tenant-1' },
+            data: { usageCredits: { increment: 0 }, creditDebt: { decrement: 30 } },
+            select: { usageCredits: true, creditDebt: true },
+        });
+        expect(h.tx.creditTransaction.create).toHaveBeenCalledWith({
+            data: { id: expect.stringMatching(/^admin-credit-grant-[a-f0-9]{64}$/), tenantId: 'tenant-1',
+                amount: 0, debtAmount: -30, reason: 'Exact debt repayment', balanceAfter: 10, debtAfter: 0 },
+            select: { id: true },
+        });
+    });
+
+    it('replays a debt grant snapshot after a later grant changed the wallet', async () => {
+        const first = buildGrantHarness(null, { usageCredits: 10, creditDebt: 30 }, { usageCredits: 10, creditDebt: 10 });
+        const args = { tenantId: 'tenant-1', amount: 20, reason: 'First debt grant', idempotencyKey: 'first-debt-key' };
+        const committed = await first.service.grantCreditsInTransaction(first.tx as any, args);
+        expect(committed).toMatchObject({ newBalance: 10, replayed: false });
+        const original = { id: committed.transactionId, tenantId: 'tenant-1', amount: 0, debtAmount: -20,
+            reason: args.reason, balanceAfter: 10, debtAfter: 10 };
+        expect(first.tx.creditTransaction.create).toHaveBeenCalledWith({ data: original, select: { id: true } });
+
+        const later = buildGrantHarness(null, { usageCredits: 10, creditDebt: 10 }, { usageCredits: 50, creditDebt: 0 });
+        await expect(later.service.grantCreditsInTransaction(later.tx as any, {
+            tenantId: 'tenant-1', amount: 50, reason: 'Later independent grant', idempotencyKey: 'later-debt-key',
+        })).resolves.toMatchObject({ newBalance: 50, replayed: false });
+        expect(later.tx.tenant.update).toHaveBeenCalledWith({ where: { id: 'tenant-1' },
+            data: { usageCredits: { increment: 40 }, creditDebt: { decrement: 10 } },
+            select: { usageCredits: true, creditDebt: true } });
+
+        const replay = buildGrantHarness(original, { usageCredits: 50, creditDebt: 0 }, { usageCredits: 50, creditDebt: 0 });
+        await expect(replay.service.grantCreditsInTransaction(replay.tx as any, args))
+            .resolves.toEqual({ transactionId: committed.transactionId, newBalance: 10, replayed: true });
+        expect(replay.tx.tenant.findUniqueOrThrow).not.toHaveBeenCalled();
+        expect(replay.tx.tenant.update).not.toHaveBeenCalled();
+        expect(replay.tx.creditTransaction.create).not.toHaveBeenCalled();
+    });
+
+    it.each([
+        { label: 'debt-clearing excess', debt: 30, amount: 50, spendable: 20, repaid: 30, balance: 30 },
+        { label: 'no debt', debt: 0, amount: 20, spendable: 20, repaid: 0, balance: 30 },
+    ])('stores $label as spendable and debt deltas rather than total grant value', async ({
+        debt, amount, spendable, repaid, balance,
+    }) => {
+        const h = buildGrantHarness(null, { usageCredits: 10, creditDebt: debt }, { usageCredits: balance, creditDebt: 0 });
+        await expect(h.service.grantCreditsInTransaction(h.tx as any, {
+            tenantId: 'tenant-1', amount, reason: 'Debt-first grant', idempotencyKey: `debt-first-${debt}`,
+        })).resolves.toMatchObject({ newBalance: balance, replayed: false });
+        expect(h.tx.tenant.update).toHaveBeenCalledWith({ where: { id: 'tenant-1' },
+            data: { usageCredits: { increment: spendable }, creditDebt: { decrement: repaid } },
+            select: { usageCredits: true, creditDebt: true } });
+        expect(h.tx.creditTransaction.create).toHaveBeenCalledWith({ data: {
+            id: expect.stringMatching(/^admin-credit-grant-[a-f0-9]{64}$/), tenantId: 'tenant-1',
+            amount: spendable, debtAmount: repaid === 0 ? 0 : -repaid, reason: 'Debt-first grant',
+            balanceAfter: balance, debtAfter: 0,
+        }, select: { id: true } });
+    });
+
+    it('refuses an unsafe post-grant wallet result before creating its settlement ledger', async () => {
+        const h = buildGrantHarness(null, { usageCredits: 2_147_483_646, creditDebt: 0 },
+            { usageCredits: Number.MAX_SAFE_INTEGER + 1, creditDebt: 0 });
+        await expect(h.service.grantCreditsInTransaction(h.tx as any, {
+            tenantId: 'tenant-1', amount: 1, reason: 'Overflow refusal', idempotencyKey: 'overflow-key',
+        })).rejects.toThrow('Credit grant settlement produced an invalid wallet balance.');
+        expect(h.tx.tenant.update).toHaveBeenCalledOnce();
+        expect(h.tx.creditTransaction.create).not.toHaveBeenCalled();
+        // The mocked client does not prove transaction rollback; real PostgreSQL
+        // integer bounds and rollback remain a separately owned database gate.
+    });
+
+    it.each([
+        { label: 'last available wallet credit', wallet: 2_147_483_646, debt: 0, amount: 1,
+            spendable: 1, repaid: 0, balance: 2_147_483_647, debtAfter: 0 },
+        { label: 'partial debt repayment at a full wallet', wallet: 2_147_483_647, debt: 30, amount: 20,
+            spendable: 0, repaid: 20, balance: 2_147_483_647, debtAfter: 10 },
+        { label: 'exact debt repayment at a full wallet', wallet: 2_147_483_647, debt: 30, amount: 30,
+            spendable: 0, repaid: 30, balance: 2_147_483_647, debtAfter: 0 },
+        { label: 'maximum combined debt and wallet value', wallet: 0, debt: 2_147_483_647, amount: 4_294_967_294,
+            spendable: 2_147_483_647, repaid: 2_147_483_647, balance: 2_147_483_647, debtAfter: 0 },
+        { label: 'above-Int32 total with an existing wallet', wallet: 10, debt: 30, amount: 2_147_483_667,
+            spendable: 2_147_483_637, repaid: 30, balance: 2_147_483_647, debtAfter: 0 },
+    ])('accepts $label when every stored settlement component fits Int32', async ({
+        label, wallet, debt, amount, spendable, repaid, balance, debtAfter,
+    }) => {
+        const h = buildGrantHarness(null, { usageCredits: wallet, creditDebt: debt },
+            { usageCredits: balance, creditDebt: debtAfter });
+        await expect(h.service.grantCreditsInTransaction(h.tx as any, {
+            tenantId: 'tenant-1', amount, reason: label, idempotencyKey: `int32-accepted-${label}`,
+        })).resolves.toMatchObject({ newBalance: balance, replayed: false });
+        expect(h.tx.tenant.update).toHaveBeenCalledExactlyOnceWith({ where: { id: 'tenant-1' },
+            data: { usageCredits: { increment: spendable }, creditDebt: { decrement: repaid } },
+            select: { usageCredits: true, creditDebt: true } });
+        expect(h.tx.creditTransaction.create).toHaveBeenCalledExactlyOnceWith({ data: {
+            id: expect.stringMatching(/^admin-credit-grant-[a-f0-9]{64}$/), tenantId: 'tenant-1',
+            amount: spendable, debtAmount: repaid === 0 ? 0 : -repaid, reason: label,
+            balanceAfter: balance, debtAfter,
+        }, select: { id: true } });
+    });
+
+    it.each([
+        { label: 'full wallet without debt', wallet: 2_147_483_647, debt: 0, amount: 1 },
+        { label: 'one credit beyond debt at a full wallet', wallet: 2_147_483_647, debt: 30, amount: 31 },
+        { label: 'two spendable credits with one available', wallet: 2_147_483_646, debt: 30, amount: 32 },
+        { label: 'one above maximum combined capacity', wallet: 0, debt: 2_147_483_647, amount: 4_294_967_295 },
+        { label: 'JS-safe but storage-unsafe grant', wallet: 0, debt: 0, amount: Number.MAX_SAFE_INTEGER },
+    ])('refuses $label after locked current read and before any settlement write', async ({
+        label, wallet, debt, amount,
+    }) => {
+        const h = buildGrantHarness(null, { usageCredits: wallet, creditDebt: debt });
+        const failure = await h.service.grantCreditsInTransaction(h.tx as any, {
+            tenantId: 'tenant-1', amount, reason: label, idempotencyKey: `int32-refused-${label}`,
+        }).catch((error: unknown) => error);
+        expect(failure).toBeInstanceOf(BadRequestException);
+        expect((failure as BadRequestException).getStatus()).toBe(400);
+        expect((failure as Error).message).toBe(
+            'Credit amount exceeds the available wallet capacity. Refresh balances and enter a smaller amount.',
+        );
+        expect(h.tx.$executeRaw).toHaveBeenCalledOnce();
+        expect(h.tx.$queryRaw).toHaveBeenCalledOnce();
+        expect(h.tx.creditTransaction.findUnique).toHaveBeenCalledOnce();
+        expect(h.tx.tenant.findUniqueOrThrow).toHaveBeenCalledOnce();
+        expect(h.tx.$executeRaw.mock.invocationCallOrder[0]).toBeLessThan(h.tx.$queryRaw.mock.invocationCallOrder[0]);
+        expect(h.tx.$queryRaw.mock.invocationCallOrder[0]).toBeLessThan(h.tx.creditTransaction.findUnique.mock.invocationCallOrder[0]);
+        expect(h.tx.creditTransaction.findUnique.mock.invocationCallOrder[0]).toBeLessThan(h.tx.tenant.findUniqueOrThrow.mock.invocationCallOrder[0]);
+        expect(h.tx.tenant.update).not.toHaveBeenCalled();
+        expect(h.tx.creditTransaction.create).not.toHaveBeenCalled();
+    });
+
+    it.each([
+        { label: 'wallet', usageCredits: 2_147_483_648, creditDebt: 0 },
+        { label: 'debt', usageCredits: 0, creditDebt: 2_147_483_648 },
+    ])('refuses an out-of-storage-range current $label without mutation', async ({ usageCredits, creditDebt }) => {
+        const h = buildGrantHarness(null, { usageCredits, creditDebt });
+        await expect(h.service.grantCreditsInTransaction(h.tx as any, {
+            tenantId: 'tenant-1', amount: 1, reason: 'Malformed current state', idempotencyKey: 'invalid-stored-range',
+        })).rejects.toThrow('Positive credit settlement found balances outside the storage range.');
+        expect(h.tx.tenant.update).not.toHaveBeenCalled();
+        expect(h.tx.creditTransaction.create).not.toHaveBeenCalled();
+    });
+
+    it('replays an above-Int32 total before considering current wallet capacity', async () => {
+        const h = buildGrantHarness({ tenantId: 'tenant-1', amount: 2_147_483_647, debtAmount: -2_147_483_647,
+            reason: 'Maximum combined settlement', balanceAfter: 2_147_483_647, debtAfter: 0 },
+            { usageCredits: 2_147_483_647, creditDebt: 0 });
+        await expect(h.service.grantCreditsInTransaction(h.tx as any, {
+            tenantId: 'tenant-1', amount: 4_294_967_294, reason: 'Maximum combined settlement', idempotencyKey: 'combined-replay',
+        })).resolves.toMatchObject({ newBalance: 2_147_483_647, replayed: true });
+        expect(h.tx.tenant.findUniqueOrThrow).not.toHaveBeenCalled();
+        expect(h.tx.tenant.update).not.toHaveBeenCalled();
+        expect(h.tx.creditTransaction.create).not.toHaveBeenCalled();
+    });
+
     it('derives different ledger identities for the same key in different tenants', async () => {
         const h = buildGrantHarness();
 

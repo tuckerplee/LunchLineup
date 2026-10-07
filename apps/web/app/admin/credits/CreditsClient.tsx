@@ -2,6 +2,7 @@
 
 import type { FormEvent } from 'react';
 import styles from './credits.module.css';
+import { creditGrantConfirmation, estimateCreditGrant, isCreditBalanceValue } from './credit-grant-estimate';
 import { createCreditReadOwner, type CreditReadLane, type CreditReadPending } from './credit-read-owner';
 import { parseCreditGrantAcknowledgement, type CreditGrantAcknowledgement } from './credit-grant-acknowledgement';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -24,6 +25,7 @@ type CreditTenant = {
     slug: string;
     planTier: string;
     usageCredits: number;
+    creditDebt: number;
 };
 
 type CreditHistoryRow = {
@@ -31,7 +33,7 @@ type CreditHistoryRow = {
     amount: number;
     reason: string;
     createdAt: string;
-    tenant: CreditTenant | null;
+    tenant: Pick<CreditTenant, 'id' | 'name' | 'slug'> | null;
 };
 
 type CreditsPayload = {
@@ -257,11 +259,11 @@ export function CreditsClient() {
         const maxBalance = tenants.length > 0 ? Math.max(...tenants.map((tenant) => tenant.usageCredits)) : 0;
 
         return [
-            { value: tenants.length, subtitle: 'balances loaded', icon: 'T', color: '#1d4ed8', bg: '#edf3ff' },
-            { value: formatCredits(totalCredits), subtitle: 'credits in loaded rows', icon: 'C', color: '#166534', bg: '#e9fbf1' },
-            { value: historyCount, subtitle: 'ledger rows loaded', icon: 'L', color: '#b4233f', bg: '#ffeef2' },
-            { value: formatCredits(maxBalance), subtitle: 'largest loaded balance', icon: 'M', color: '#7c4a03', bg: '#fff4e2' },
-            { value: positiveCount, subtitle: 'grants in loaded rows', icon: '+', color: '#166534', bg: '#e9fbf1' },
+            { value: tenants.length, subtitle: 'Loaded balances', icon: 'T', color: '#1d4ed8', bg: '#edf3ff' },
+            { value: formatCredits(totalCredits), subtitle: 'Loaded credits', icon: 'C', color: '#166534', bg: '#e9fbf1' },
+            { value: historyCount, subtitle: 'Loaded ledger rows', icon: 'L', color: '#b4233f', bg: '#ffeef2' },
+            { value: formatCredits(maxBalance), subtitle: 'Largest loaded balance', icon: 'M', color: '#7c4a03', bg: '#fff4e2' },
+            { value: positiveCount, subtitle: 'positive wallet rows loaded', icon: '+', color: '#166534', bg: '#e9fbf1' },
         ];
     }, [history, tenants]);
 
@@ -270,8 +272,8 @@ export function CreditsClient() {
         [form.tenantId, tenants],
     );
     const parsedAmount = parseAmount(form.amount);
-    const projectedBalance = selectedTenant && Number.isInteger(parsedAmount) && parsedAmount > 0
-        ? selectedTenant.usageCredits + parsedAmount
+    const grantEstimate = selectedTenant
+        ? estimateCreditGrant(selectedTenant.usageCredits, selectedTenant.creditDebt, parsedAmount)
         : null;
 
     function applySearch(event: FormEvent<HTMLFormElement>) {
@@ -291,7 +293,7 @@ export function CreditsClient() {
         }
 
         const amount = parseAmount(form.amount);
-        if (!Number.isInteger(amount) || amount <= 0) {
+        if (!Number.isSafeInteger(amount) || amount <= 0) {
             setError('Amount must be a positive integer.');
             return;
         }
@@ -309,7 +311,8 @@ export function CreditsClient() {
         }
 
         const confirmed = window.confirm(
-            `Grant ${formatCredits(amount)} credits to ${selected.name}? New balance: ${formatCredits(selected.usageCredits + amount)} credits.`,
+            creditGrantConfirmation(selected.name, amount,
+                estimateCreditGrant(selected.usageCredits, selected.creditDebt, amount)),
         );
         if (!confirmed) return;
 
@@ -390,8 +393,8 @@ export function CreditsClient() {
             <section className={styles.summaryGrid} aria-label="Loaded credit summary">
                 {summary.map((item) => (
                     <article key={item.subtitle} className={`surface-card ${styles.summaryCard}`} style={{ background: item.bg }}>
-                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.55rem' }}>
-                            <span style={{ fontSize: '0.78rem', color: 'var(--text-secondary)', fontWeight: 650 }}>{item.subtitle}</span>
+                        <div className={styles.summaryHeading}>
+                            <span className={styles.summaryLabel}>{item.subtitle}</span>
                             <span
                                 className={styles.summaryIcon}
                                 aria-hidden="true"
@@ -409,7 +412,7 @@ export function CreditsClient() {
                                 {item.icon}
                             </span>
                         </div>
-                        <div style={{ fontSize: '1.9rem', fontWeight: 800, letterSpacing: 0, color: 'var(--text-primary)' }}>{item.value}</div>
+                        <div className={styles.summaryValue}>{item.value}</div>
                     </article>
                 ))}
             </section>
@@ -457,7 +460,7 @@ export function CreditsClient() {
                         <div>
                             <h2 style={{ fontSize: '0.98rem', fontWeight: 760, color: 'var(--text-primary)' }}>Tenant Balances</h2>
                             <div style={{ fontSize: '0.76rem', color: 'var(--text-muted)', marginTop: 2 }}>
-                                Balances are loaded from the admin credits API.
+                                Spendable balances shown below.
                             </div>
                         </div>
 
@@ -565,12 +568,9 @@ export function CreditsClient() {
                         <div>
                             <h2 style={{ fontSize: '0.98rem', fontWeight: 760, color: 'var(--text-primary)' }}>Grant Credits</h2>
                             <div style={{ fontSize: '0.76rem', color: 'var(--text-muted)', marginTop: 2 }}>
-                                Writes a ledger entry and updates the tenant balance immediately.
+                                Repays outstanding debt first, then adds remaining credits to the spendable balance.
                             </div>
                         </div>
-                        <span className="badge" style={badgeStyle('#1d4ed8', '#edf3ff', '#c9d9ff')}>
-                            POST /admin/credits/grant
-                        </span>
                     </div>
 
                     <form onSubmit={(event) => void grantCredits(event)} style={{ display: 'grid', gap: '0.78rem' }}>
@@ -628,11 +628,24 @@ export function CreditsClient() {
                                 Selected tenant: <strong style={{ color: 'var(--text-primary)' }}>{selectedTenant?.name ?? 'None'}</strong>
                             </div>
                             <div>
-                                Current balance: <strong style={{ color: 'var(--text-primary)' }}>{selectedTenant ? formatCredits(selectedTenant.usageCredits) : '-'}</strong>
+                                Loaded spendable balance: <strong style={{ color: 'var(--text-primary)' }}>{selectedTenant && isCreditBalanceValue(selectedTenant.usageCredits) ? formatCredits(selectedTenant.usageCredits) : '-'}</strong>
                             </div>
                             <div>
-                                Projected balance: <strong style={{ color: 'var(--text-primary)' }}>{projectedBalance === null ? '-' : formatCredits(projectedBalance)}</strong>
+                                Loaded outstanding debt: <strong style={{ color: 'var(--text-primary)' }}>{selectedTenant && isCreditBalanceValue(selectedTenant.creditDebt) ? formatCredits(selectedTenant.creditDebt) : 'Unavailable'}</strong>
                             </div>
+                            <div>
+                                Estimated debt repayment: <strong style={{ color: 'var(--text-primary)' }}>{grantEstimate ? formatCredits(grantEstimate.repaidDebt) : '-'}</strong>
+                            </div>
+                            <div>
+                                Estimated spendable balance: <strong style={{ color: 'var(--text-primary)' }}>{grantEstimate ? formatCredits(grantEstimate.newBalance) : '-'}</strong>
+                            </div>
+                            <div>
+                                Estimated remaining debt: <strong style={{ color: 'var(--text-primary)' }}>{grantEstimate ? formatCredits(grantEstimate.debtAfter) : '-'}</strong>
+                            </div>
+                            <div>Estimates use loaded balances. Actual grants repay current outstanding debt first.</div>
+                            {selectedTenant && (!isCreditBalanceValue(selectedTenant.creditDebt) || !isCreditBalanceValue(selectedTenant.usageCredits)) ? (
+                                <div>Balance details are unavailable. Refresh balances to show an estimate. You can still grant credits; the server settles debt first.</div>
+                            ) : null}
                         </div>
 
                         <button className="btn" type="submit" disabled={grantSaving || tenants.length === 0}>
@@ -668,13 +681,13 @@ export function CreditsClient() {
                 <div style={{ padding: '0.95rem 1rem 0.55rem' }}>
                     <h2 style={{ fontSize: '0.98rem', fontWeight: 760, color: 'var(--text-primary)' }}>Transaction History</h2>
                     <div style={{ fontSize: '0.76rem', color: 'var(--text-muted)', marginTop: 2 }}>
-                        Recent credit ledger entries from the admin API.
+                        Spendable balance changes and reasons.
                     </div>
                 </div>
                 <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 860 }}>
                     <thead>
                         <tr style={{ borderTop: '1px solid var(--border)', borderBottom: '1px solid var(--border)', background: '#f8faff' }}>
-                            {['Time', 'Tenant', 'Amount', 'Reason'].map((header) => (
+                            {['Time', 'Tenant', 'Spendable change', 'Reason'].map((header) => (
                                 <th
                                     key={header}
                                     style={{

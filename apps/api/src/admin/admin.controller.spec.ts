@@ -2359,6 +2359,7 @@ describe('AdminController credits', () => {
                 slug: 'acme-dining',
                 planTier: 'STARTER',
                 usageCredits: 125,
+                creditDebt: 30,
                 createdAt: new Date('2026-03-21T09:00:00.000Z'),
             },
         ]);
@@ -2388,6 +2389,7 @@ describe('AdminController credits', () => {
                 slug: true,
                 planTier: true,
                 usageCredits: true,
+                creditDebt: true,
                 createdAt: true,
             },
         });
@@ -2412,6 +2414,7 @@ describe('AdminController credits', () => {
                 slug: 'acme-dining',
                 planTier: 'STARTER',
                 usageCredits: 125,
+                creditDebt: 30,
             },
         ]);
         expect(result.history).toEqual([
