@@ -1,0 +1,52 @@
+.workspace {
+  min-width: 0;
+}
+
+.tenantSearch {
+  min-width: 280px;
+}
+
+.directoryGrid {
+  grid-template-columns: minmax(0, 1.3fr) minmax(320px, 0.7fr);
+}
+
+.directory,
+.managementPanels {
+  min-width: 0;
+}
+
+/* Preserve the complete scrollable table while giving it a usable viewport
+   before the fixed desktop management column can squeeze it into a strip. */
+@media (max-width: 900px) {
+  .directoryGrid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+@media (max-width: 768px) {
+  .workspace {
+    overflow-wrap: anywhere;
+  }
+
+  .tenantSearch {
+    min-width: 0;
+    width: 100%;
+  }
+
+  .searchField {
+    min-width: 0;
+  }
+
+  .workspace :global(.btn),
+  .workspace :global(.form-input) {
+    min-height: 44px;
+    min-width: 44px;
+  }
+
+  /* The global phone header rule forces descendant buttons to min-width: 0
+     with !important. Override only this page's Search action, not the shell. */
+  :global(.workspace-content) .workspace .tenantSearch :global(.btn) {
+    min-width: 44px !important;
+    flex-shrink: 0;
+  }
+}

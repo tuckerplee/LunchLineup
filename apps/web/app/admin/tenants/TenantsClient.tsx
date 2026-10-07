@@ -1,6 +1,7 @@
 'use client';
 
 import Link from 'next/link';
+import styles from './tenants.module.css';
 import type { FormEvent } from 'react';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { fetchJsonWithSession, fetchWithSession } from '@/lib/client-api';
@@ -25,6 +26,7 @@ import {
     TENANT_STATUS_EDIT_GUIDANCE,
 } from './tenant-edit-contract';
 import { startingStatusForPlan, tenantProvisioningDescription } from './tenant-provisioning-contract';
+import { tenantLifecycleOutcome, type TenantStatusAction } from './tenant-lifecycle-outcome';
 
 type PlanTier = 'FREE' | 'STARTER' | 'GROWTH' | 'ENTERPRISE';
 type TenantStatus = 'TRIAL' | 'ACTIVE' | 'PAST_DUE' | 'SUSPENDED' | 'CANCELLED' | 'PURGED';
@@ -201,6 +203,8 @@ export function TenantsClient() {
     const [saving, setSaving] = useState<string | null>(null);
     const [error, setError] = useState<string | null>(null);
     const [notice, setNotice] = useState<string | null>(null);
+    // Kept separately so list refreshes cannot erase unresolved mutation guidance.
+    const [lifecycleFeedback, setLifecycleFeedback] = useState<{ message: string; detail?: string } | null>(null);
     const [query, setQuery] = useState('');
     const [appliedQuery, setAppliedQuery] = useState('');
     const [pagination, setPagination] = useState(EMPTY_ADMIN_LIST_PAGINATION);
@@ -382,7 +386,7 @@ export function TenantsClient() {
         }
     }
 
-    async function runStatusAction(tenant: TenantRecord, action: 'suspend' | 'activate' | 'archive' | 'restore') {
+    async function runStatusAction(tenant: TenantRecord, action: TenantStatusAction) {
         const labelMap = {
             suspend: 'Suspend',
             activate: 'Activate',
@@ -404,13 +408,30 @@ export function TenantsClient() {
 
         setError(null);
         setNotice(null);
+        setLifecycleFeedback(null);
         setSaving(`${action}:${tenant.id}`);
         try {
-            await writeJson(`/admin/tenants/${tenant.id}/${action}`, 'POST');
-            setNotice(`${tenant.name} ${pastTenseMap[action]}.`);
+            const response = await fetchWithSession(`/admin/tenants/${tenant.id}/${action}`, jsonWriteInit('POST'));
+            const payload: unknown = await response.json().catch(() => null);
+            if (!response.ok) {
+                const message = payload !== null && typeof payload === 'object' && 'message' in payload
+                    && typeof payload.message === 'string' ? payload.message : `Request failed (${response.status})`;
+                throw new Error(message);
+            }
+            const outcome = tenantLifecycleOutcome(action, tenant.id, response.status, payload);
+            if (outcome === 'completed') {
+                setNotice(`${tenant.name} ${pastTenseMap[action]}.`);
+            } else {
+                setLifecycleFeedback({ message: outcome === 'incomplete'
+                    ? `Archive of ${tenant.name} was not completed. Refresh to check its current status before taking another action.`
+                    : `${labelMap[action]} for ${tenant.name} is unconfirmed. Refresh to check its current status before taking another action.` });
+            }
+            // A read updates the directory; it does not establish which request
+            // caused that state or replace the unresolved acknowledgement above.
             await refresh(tenant.id);
         } catch (err) {
-            setError(err instanceof Error ? err.message : `Failed to ${action} tenant`);
+            const detail = err instanceof Error ? err.message : `Failed to ${action} tenant`;
+            setLifecycleFeedback({ detail, message: `${labelMap[action]} for ${tenant.name} is unconfirmed. Refresh to check its current status before taking another action.` });
         } finally {
             setSaving((current) => (current === `${action}:${tenant.id}` ? null : current));
         }
@@ -480,7 +501,7 @@ export function TenantsClient() {
     const tenantToEdit = selectedTenant;
 
     return (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem', maxWidth: 1440 }}>
+        <div className={styles.workspace} style={{ display: 'flex', flexDirection: 'column', gap: '1rem', maxWidth: 1440 }}>
             <section className="surface-card" style={{ padding: '1rem' }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', gap: '0.85rem', alignItems: 'flex-start', flexWrap: 'wrap' }}>
                     <div>
@@ -495,8 +516,8 @@ export function TenantsClient() {
                         </p>
                     </div>
 
-                    <form onSubmit={applySearch} style={{ minWidth: 280, flex: '1 1 360px', display: 'flex', gap: '0.45rem', alignItems: 'flex-end' }}>
-                        <label className="form-group" style={{ flex: 1 }}>
+                    <form className={styles.tenantSearch} onSubmit={applySearch} style={{ flex: '1 1 360px', display: 'flex', gap: '0.45rem', alignItems: 'flex-end' }}>
+                        <label className={`form-group ${styles.searchField}`} style={{ flex: 1 }}>
                             <span className="form-label">Search</span>
                             <input
                                 className="form-input"
@@ -542,6 +563,15 @@ export function TenantsClient() {
                 })}
             </section>
 
+            {lifecycleFeedback ? (
+                <div role="alert" style={{ padding: '0.8rem 0.95rem', borderRadius: 12,
+                    border: '1px solid #f2d39b', background: '#fff8eb', color: '#7c4a03',
+                    fontWeight: 600, fontSize: '0.86rem' }}>
+                    {lifecycleFeedback.detail ? <p style={{ margin: '0 0 0.35rem' }}>{lifecycleFeedback.detail}</p> : null}
+                    <p style={{ margin: 0 }}>{lifecycleFeedback.message}</p>
+                </div>
+            ) : null}
+
             {error ? (
                 <div
                     style={{
@@ -574,9 +604,9 @@ export function TenantsClient() {
                 </div>
             ) : null}
 
-            <section style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1.3fr) minmax(320px, 0.7fr)', gap: '0.85rem', alignItems: 'start' }}>
+            <section className={styles.directoryGrid} style={{ display: 'grid', gap: '0.85rem', alignItems: 'start' }}>
                 <article
-                    className="surface-card"
+                    className={`surface-card ${styles.directory}`}
                     aria-label="Tenant directory table"
                     tabIndex={0}
                     style={{ overflowX: 'auto' }}
@@ -773,7 +803,7 @@ export function TenantsClient() {
                     ) : null}
                 </article>
 
-                <div style={{ display: 'grid', gap: '0.85rem' }}>
+                <div className={styles.managementPanels} style={{ display: 'grid', gap: '0.85rem' }}>
                     <article className="surface-card" style={{ padding: '1rem' }}>
                         <div style={{ display: 'flex', justifyContent: 'space-between', gap: '0.75rem', alignItems: 'flex-start', marginBottom: '0.8rem' }}>
                             <div>

@@ -7,6 +7,8 @@ Platform-admin tenant lifecycle management.
 - `README.md`: this tenant admin route guide.
 - `page.tsx`: server route that requires `admin_portal:access`.
 - `TenantsClient.tsx`: client tenant directory with server search and explicit bounded continuation, credit-free create/edit forms, read-only wallet output, Admin Credits routing, and lifecycle actions.
+- `tenants.module.css`: responsive directory/form layout and mobile control sizes.
+- `tenant-lifecycle-outcome.ts`: exact target and action acknowledgement checks, including incomplete archive outcomes.
 - `tenant-edit-contract.ts`: tenant create/edit payload allowlists and read-only plan, status, and wallet workflow guidance.
 - `tenant-lifecycle-confirmation.ts`: typed confirmation helpers for destructive tenant lifecycle actions.
 - `tenant-provisioning-contract.ts`: pure UI policy for FREE active versus paid bounded-trial starting states.
@@ -20,3 +22,5 @@ Generic tenant create and edit requests never send wallet-balance or plan-credit
 Paid access requires an active paid subscription and separately purchased or granted credits. Plans never include recurring credits or unlimited credits. These client allowlists do not replace API-side rejection of direct balance or quota fields.
 
 The tenant directory requests at most 50 rows at a time, searches tenant names/slugs on the server, and follows the stable cursor only after an operator selects Load more. Counts and wallet summaries are explicitly labeled as loaded-row values rather than global totals.
+
+Lifecycle success notices require the response to confirm the selected tenant and requested action. Incomplete or unconfirmed responses retain guidance through directory refreshes; a read does not establish which request caused the current state. Refresh and inspect the tenant before attempting another lifecycle action.
