@@ -377,7 +377,7 @@ test.describe('Payroll export response custody', () => {
       await expect(page.getByRole('heading', { name: 'Export ready', exact: true })).toHaveCount(0);
       await expectAttempt(page, row);
       adapter.releaseReadback(); await expect(page.getByRole('button', { name: 'Refresh', exact: true })).toBeEnabled();
-      await expect(page.getByRole('alert')).toBeVisible(); await verifiedA(page); await reloadVerified(page, adapter, row);
+      await expect(page.getByRole('main').getByRole('alert')).toBeVisible(); await verifiedA(page); await reloadVerified(page, adapter, row);
     });
   });
   test('retains an unconfirmed exact attempt after a malformed committed acknowledgement without another charge', async ({ page }) => {
@@ -389,7 +389,7 @@ test.describe('Payroll export response custody', () => {
       await expect(page.getByRole('heading', { name: 'Export ready', exact: true })).toHaveCount(0);
       await expectAttempt(page, row);
       adapter.releaseReadback(); await expect(page.getByRole('button', { name: 'Refresh', exact: true })).toBeEnabled();
-      await expect(page.getByRole('alert')).toBeVisible(); await verifiedA(page); await reloadVerified(page, adapter, row);
+      await expect(page.getByRole('main').getByRole('alert')).toBeVisible(); await verifiedA(page); await reloadVerified(page, adapter, row);
     });
   });
   test('keeps the acknowledged A export terminal when its detail request returns foreign period B', async ({ page }) => {
@@ -402,7 +402,7 @@ test.describe('Payroll export response custody', () => {
       adapter.releaseReadback(); await adapter.decoded(followup);
       await expect(page.getByRole('button', { name: 'Refresh', exact: true })).toBeEnabled();
       await snapshot(page, adapter, 'foreign-detail-after-valid-ack'); await oneSettlement(page, adapter, row);
-      await verifiedA(page); await expect(page.getByRole('alert')).toBeVisible();
+      await verifiedA(page); await expect(page.getByRole('main').getByRole('alert')).toBeVisible();
       await expect(page.getByRole('status').filter({ hasText: 'Payroll export created for 1 credit; balance 9.' })).toBeVisible();
       await page.getByRole('button', { name: 'Refresh', exact: true }).click(); await verifiedA(page); await reloadVerified(page, adapter, row);
     });

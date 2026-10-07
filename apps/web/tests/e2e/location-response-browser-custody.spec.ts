@@ -121,8 +121,8 @@ async function install(page: Page, wrongTargetAck = false) {
       expect(response.request().method()).toBe(row.method);
       expect(new URL(response.url()).pathname + new URL(response.url()).search).toBe(row.path);
       expect(response.status()).toBe(row.status);
-      expect(await response.finished()).toBeNull();
-      expect(await response.text()).toBe(row.deliveredBytes);
+      expect(await bounded(response.finished(), 'location response completion')).toBeNull();
+      expect(await bounded(response.text(), 'location response body')).toBe(row.deliveredBytes);
       return row;
     },
     async close() {
@@ -260,7 +260,7 @@ test.describe('Location response browser custody', () => {
       await adapter.deliver(ack);
       await expect(form(page).getByRole('button', { name: 'Save changes', exact: true })).toBeEnabled();
       await assertDraft(form(page), draft);
-      await expect(page.getByRole('alert')).toBeVisible();
+      await expect(page.getByRole('main').getByRole('alert')).toBeVisible();
       await expect(page.getByRole('status')).toHaveCount(0);
       await assertUntouchedB(page);
       expect(await adapter.read()).toEqual(saved);
@@ -283,7 +283,7 @@ test.describe('Location response browser custody', () => {
       await expect(form(page).getByRole('button', { name: 'Saving...', exact: true })).toBeDisabled();
       await adapter.deliver(refused);
       await expect(form(page).getByRole('button', { name: 'Save changes', exact: true })).toBeEnabled();
-      await expect(page.getByRole('alert')).toHaveText(STALE);
+      await expect(page.getByRole('main').getByRole('alert')).toHaveText(STALE);
       await assertDraft(form(page), draft);
       await expect(page.getByRole('status')).toHaveCount(0);
       expect(await adapter.read()).toEqual(competing);

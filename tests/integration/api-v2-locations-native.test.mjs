@@ -154,3 +154,182 @@ test('native API v2 locations use the restricted RLS role, public UUIDs, durable
     await Promise.all([app.$disconnect(), owner.$disconnect()]);
   }
 });
+
+// Owner setup/readback, restricted native service mutation. These are direct DB
+// contracts; synthetic identity() does not establish HTTP/session authorization.
+async function withLocationHistory(statuses, proof) {
+  assert.equal(process.env.DATA_TARGET_ENV, 'disposable');
+  const owner = createPrisma(requireServiceUrl('MIGRATION_DATABASE_URL').toString());
+  const app = createPrisma(requireServiceUrl('DATABASE_URL').toString());
+  const tenantIds = [0, 1].map(() => `native-location-history-${randomUUID()}`);
+  const database = new TenantDatabase(app);
+  const service = new LocationService(database);
+  const actor = identity(tenantIds[0]);
+  const transactionOptions = { maxWait: 5000, timeout: 20000 };
+  const failures = [];
+  const snapshot = () => owner.$transaction(async tx => ({
+    tenants: await tx.tenant.findMany({ where: { id: { in: tenantIds } }, orderBy: { id: 'asc' } }),
+    locations: await tx.location.findMany({ where: { tenantId: { in: tenantIds } }, orderBy: { id: 'asc' } }),
+    schedules: await tx.schedule.findMany({ where: { tenantId: { in: tenantIds } }, orderBy: { id: 'asc' } }),
+    shifts: await tx.shift.findMany({ where: { tenantId: { in: tenantIds } }, orderBy: { id: 'asc' } }),
+    breaks: await tx.break.findMany({ where: { shift: { tenantId: { in: tenantIds } } }, orderBy: { id: 'asc' } }),
+  }), { ...transactionOptions, isolationLevel: 'RepeatableRead' });
+  try {
+    const [role] = await app.$queryRaw`SELECT rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user`;
+    assert.equal(role.rolsuper, false);
+    assert.equal(role.rolbypassrls, false);
+    const tables = await app.$queryRaw`SELECT relname, relrowsecurity, relforcerowsecurity FROM pg_class
+      WHERE oid IN ('"Location"'::regclass, '"Schedule"'::regclass, '"Shift"'::regclass, '"Break"'::regclass)`;
+    assert.equal(tables.length, 4);
+    for (const table of tables) {
+      assert.equal(table.relrowsecurity, true, table.relname);
+      assert.equal(table.relforcerowsecurity, true, table.relname);
+    }
+    const locations = await owner.$transaction(async tx => {
+      for (const id of tenantIds) await tx.tenant.create({ data: { id, slug: id, name: id, planTier: 'FREE', status: 'ACTIVE' } });
+      const rows = [];
+      for (const [index, tenantId] of [tenantIds[0], tenantIds[0], tenantIds[1]].entries()) {
+        const location = await tx.location.create({ data: {
+          tenantId, name: `History location ${index}`, address: `${index} Native Street`, timezone: 'America/Los_Angeles',
+          updatedAt: new Date('2026-07-01T00:00:00.000Z'),
+        } });
+        rows.push(location);
+        const scheduleStates = index === 0 ? statuses : ['DRAFT', 'PUBLISHED', 'ARCHIVED'];
+        for (const [offset, state] of scheduleStates.entries()) {
+          const startDate = new Date(Date.UTC(2026, 6, 20 + offset * 2));
+          const schedule = await tx.schedule.create({ data: {
+            tenantId, locationId: location.id, startDate, endDate: new Date(startDate.getTime() + 86400000),
+            status: state === 'DELETED_DRAFT' ? 'DRAFT' : state, revision: 7 + offset,
+            publishedAt: ['PUBLISHED', 'ARCHIVED'].includes(state) ? new Date('2026-07-19T00:00:00.000Z') : null,
+            deletedAt: state === 'DELETED_DRAFT' ? new Date('2026-07-19T01:00:00.000Z') : null,
+          } });
+          const shift = await tx.shift.create({ data: {
+            tenantId, locationId: location.id, scheduleId: schedule.id,
+            startTime: new Date(startDate.getTime() + 3600000), endTime: new Date(startDate.getTime() + 7200000),
+            notes: `Retained ${state} shift`,
+          } });
+          await tx.break.create({ data: {
+            shiftId: shift.id, type: 'BREAK1', paid: true,
+            startTime: new Date(startDate.getTime() + 4500000), endTime: new Date(startDate.getTime() + 4800000),
+          } });
+        }
+      }
+      return rows;
+    }, transactionOptions);
+    const [target, unrelated, foreign] = locations;
+    // An unfiltered restricted-role read must see both own locations and no
+    // foreign location, independently of LocationService's explicit filters.
+    await database.withTenant(actor.tenantId, async tx => {
+      const visible = await tx.location.findMany({ select: { id: true }, orderBy: { id: 'asc' } });
+      assert.deepEqual(visible.map(row => row.id), [target.id, unrelated.id].sort());
+      assert.deepEqual(await tx.schedule.findMany({ where: { tenantId: tenantIds[1] } }), []);
+      assert.deepEqual(await tx.shift.findMany({ where: { tenantId: tenantIds[1] } }), []);
+      assert.deepEqual(await tx.break.findMany({ where: { shift: { tenantId: tenantIds[1] } } }), []);
+    });
+    await proof({ owner, service, actor, target, unrelated, foreign, snapshot });
+  } catch (error) {
+    failures.push(error);
+  } finally {
+    try {
+      await owner.$transaction(async tx => {
+        await tx.break.deleteMany({ where: { shift: { tenantId: { in: tenantIds } } } });
+        await tx.shift.deleteMany({ where: { tenantId: { in: tenantIds } } });
+        await tx.schedule.deleteMany({ where: { tenantId: { in: tenantIds } } });
+        await tx.location.deleteMany({ where: { tenantId: { in: tenantIds } } });
+        await tx.tenant.deleteMany({ where: { id: { in: tenantIds } } });
+      }, transactionOptions);
+    } catch (error) {
+      failures.push(error);
+    }
+    for (const client of [app, owner]) {
+      try { await client.$disconnect(); } catch (error) { failures.push(error); }
+    }
+  }
+  if (failures.length === 1) throw failures[0];
+  if (failures.length > 1) throw new AggregateError(failures, 'Native location history proof and/or cleanup failed');
+}
+
+async function proveHistoricalTimezoneRefusal(status) {
+  await withLocationHistory([status, 'DRAFT', 'DELETED_DRAFT'], async ({ service, actor, target, snapshot }) => {
+    const before = await snapshot();
+    assert.equal(before.schedules.filter(row => row.locationId === target.id && row.status === status).length, 1);
+    const current = await service.get(actor, target.publicId);
+    await assert.rejects(() => service.update(actor, target.publicId, {
+      expectedUpdatedAt: current.updatedAt, name: 'Forbidden partial name', address: 'Forbidden partial address', timezone: 'America/Denver',
+    }), error => {
+      assert.equal(error.status, 409);
+      assert.equal(error.code, 'location_timezone_locked');
+      assert.equal(error.message, 'Location timezone cannot change after a schedule has been published. Name and address can still be updated.');
+      return true;
+    });
+    assert.deepEqual(await snapshot(), before, `${status} refusal must preserve every fixture row and timestamp`);
+    assert.deepEqual(await service.get(actor, target.publicId), current);
+
+    const saved = await service.update(actor, target.publicId, {
+      expectedUpdatedAt: current.updatedAt, name: `Allowed ${status} rename`, address: '200 Retained History Road', timezone: current.timezone,
+    });
+    assert.equal(saved.id, target.publicId);
+    assert.equal(saved.name, `Allowed ${status} rename`);
+    assert.equal(saved.address, '200 Retained History Road');
+    assert.equal(saved.timezone, current.timezone);
+    assert.notEqual(saved.updatedAt, current.updatedAt);
+    assert.deepEqual(await service.get(actor, target.publicId), saved);
+    const after = await snapshot();
+    const row = after.locations.find(item => item.id === target.id);
+    assert.deepEqual(row, { ...target, name: saved.name, address: saved.address, updatedAt: new Date(saved.updatedAt) });
+    assert.deepEqual({ ...after, locations: after.locations.filter(item => item.id !== target.id) },
+      { ...before, locations: before.locations.filter(item => item.id !== target.id) });
+  });
+}
+
+test('native API v2 locations atomically refuse timezone changes with PUBLISHED history while permitting same-zone edits', async () => {
+  await proveHistoricalTimezoneRefusal('PUBLISHED');
+});
+
+test('native API v2 locations atomically refuse timezone changes with ARCHIVED history while permitting same-zone edits', async () => {
+  await proveHistoricalTimezoneRefusal('ARCHIVED');
+});
+
+test('native API v2 location deactivation retains history, fences only active drafts, and isolates unrelated locations and tenants', async () => {
+  await withLocationHistory(['PUBLISHED', 'ARCHIVED', 'DRAFT', 'DELETED_DRAFT'], async ({ service, actor, target, unrelated, foreign, snapshot }) => {
+    const before = await snapshot();
+    assert.deepEqual(await service.summary(actor), { count: 2 });
+    await assert.rejects(() => service.update(actor, foreign.publicId, {
+      expectedUpdatedAt: foreign.updatedAt.toISOString(), name: 'Foreign attempted edit', address: null, timezone: 'America/Denver',
+    }), error => error?.status === 404 && error?.code === 'location_not_found');
+    await service.remove(actor, foreign.publicId);
+    assert.deepEqual(await snapshot(), before, 'Foreign update/remove must preserve every fixture row');
+
+    await service.remove(actor, target.publicId);
+    const after = await snapshot();
+    const deleted = after.locations.find(row => row.id === target.id);
+    assert.ok(deleted.deletedAt instanceof Date);
+    assert.notEqual(deleted.updatedAt.toISOString(), target.updatedAt.toISOString());
+    assert.deepEqual(deleted, { ...target, deletedAt: deleted.deletedAt, updatedAt: deleted.updatedAt });
+    assert.deepEqual(after.tenants, before.tenants);
+    assert.deepEqual(after.locations.filter(row => row.id !== target.id), before.locations.filter(row => row.id !== target.id));
+    assert.deepEqual(after.shifts, before.shifts);
+    assert.deepEqual(after.breaks, before.breaks);
+    const changedDrafts = before.schedules.filter(row => row.locationId === target.id && row.status === 'DRAFT' && row.deletedAt === null);
+    assert.equal(changedDrafts.length, 1);
+    assert.equal(after.schedules.length, before.schedules.length);
+    for (const original of before.schedules) {
+      const saved = after.schedules.find(row => row.id === original.id);
+      assert.ok(saved);
+      if (saved.id === changedDrafts[0].id) {
+        assert.deepEqual(saved, { ...original, revision: original.revision + 1, updatedAt: saved.updatedAt });
+      } else {
+        assert.deepEqual(saved, original, 'Published, archived, deleted-draft, unrelated and foreign schedules remain byte-for-byte stable');
+      }
+    }
+    assert.deepEqual(await service.summary(actor), { count: 1 });
+    const listed = await service.list(actor, { limit: '100' });
+    assert.deepEqual(listed.data.map(row => row.id), [unrelated.publicId]);
+    await assert.rejects(() => service.get(actor, target.publicId), error => error?.status === 404 && error?.code === 'location_not_found');
+    assert.deepEqual(await service.resolvePublicIds(actor.tenantId, [target.publicId, unrelated.publicId, foreign.publicId]),
+      new Map([[unrelated.publicId, unrelated.id]]));
+    assert.deepEqual(await service.resolveInternalIds(actor.tenantId, [target.id, foreign.id]), new Map([[target.id, target.publicId]]));
+    await service.remove(actor, target.publicId);
+    assert.deepEqual(await snapshot(), after, 'Repeated deactivation must not increment draft revisions again');
+  });
+});

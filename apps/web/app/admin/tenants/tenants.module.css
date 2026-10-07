@@ -23,33 +23,7 @@
   }
 }
 
-@media (max-width: 768px) {
-  .workspace {
-    overflow-wrap: anywhere;
-  }
 
-  .tenantSearch {
-    min-width: 0;
-    width: 100%;
-  }
-
-  .searchField {
-    min-width: 0;
-  }
-
-  .workspace :global(.btn),
-  .workspace :global(.form-input) {
-    min-height: 44px;
-    min-width: 44px;
-  }
-
-  /* The global phone header rule forces descendant buttons to min-width: 0
-     with !important. Override only this page's Search action, not the shell. */
-  :global(.workspace-content) .workspace .tenantSearch :global(.btn) {
-    min-width: 44px !important;
-    flex-shrink: 0;
-  }
-}
 
 /* One table DOM preserves record identity, native keyboard order and handlers. */
 .summaryGrid {
@@ -67,44 +41,179 @@
   display: none;
 }
 
+
+
+
+/* Desktop cards carry their own explanations; mobile also shows shared context. */
+.summaryContext {
+  display: none;
+}
+
+/* One mobile layout: preserve the shell, records, actions and all explanations.
+   Flatten outer framing so tenant cards carry the strongest visual grouping. */
 @media (max-width: 768px) {
-  .summaryGrid {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
+  .workspace {
+    gap: 0.75rem !important;
+    overflow-wrap: anywhere;
+  }
+
+  .heroCard,
+  .directory {
+    padding: 0 !important;
+    border: 0 !important;
+    border-radius: 0;
+    background: transparent !important;
+    box-shadow: none !important;
+  }
+
+  .directory:focus-visible {
+    outline: 2px solid var(--brand-600);
+    outline-offset: 4px;
+  }
+
+  .heroLayout {
+    display: grid !important;
+    grid-template-columns: minmax(0, 1fr);
     gap: 0.5rem !important;
   }
-  .summaryCard {
+
+  .heroIntro {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr);
+    grid-template-areas: "title context" "subtitle subtitle";
+    align-items: baseline;
+    gap: 0.25rem 0.75rem;
+  }
+
+  .heroKicker {
+    grid-area: context;
     min-width: 0;
-    padding: 0.6rem !important;
+    text-align: right;
+    font-size: 0.75rem;
+    line-height: 1.3;
+    letter-spacing: 0;
+    text-transform: none;
+    color: var(--text-secondary) !important;
   }
+
+  .heroTitle {
+    grid-area: title;
+    margin: 0 !important;
+    font-size: 1.375rem !important;
+  }
+
+  .heroSubtitle {
+    grid-area: subtitle;
+    margin: 0;
+    font-size: 0.8125rem;
+    line-height: 1.35;
+  }
+
+  .tenantSearch {
+    min-width: 0;
+    width: 100%;
+  }
+
+  .searchField {
+    min-width: 0;
+    gap: 0.25rem;
+  }
+
+  .tenantSearch :global(.form-input) {
+    padding: 0.5rem 0.625rem;
+  }
+
+  .workspace :global(.btn),
+  .workspace :global(.form-input) {
+    min-height: 44px;
+    min-width: 44px;
+  }
+
+  /* Preserve Search's target against the shared phone header override. */
+  :global(.workspace-content) .workspace .tenantSearch :global(.btn) {
+    min-width: 44px !important;
+    flex-shrink: 0;
+  }
+
+  .summaryGrid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 0.5rem 0.75rem !important;
+    padding: 0.5rem;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    background: var(--surface);
+  }
+
+  .summaryContext {
+    display: block;
+    grid-column: 1 / -1;
+    margin: 0;
+    font-size: 0.8125rem;
+    line-height: 1.25;
+    color: var(--text-secondary);
+  }
+
+  .summaryCard {
+    display: flex;
+    flex-wrap: wrap;
+    align-content: flex-start;
+    align-items: baseline;
+    gap: 0.125rem 0.5rem;
+    min-width: 0;
+    padding: 0 !important;
+    border: 0 !important;
+    border-radius: 0;
+    background: transparent !important;
+    box-shadow: none !important;
+  }
+
   .summaryHeading {
-    margin-bottom: 0.2rem !important;
+    flex: 1 1 5rem;
+    min-width: 0;
+    margin-bottom: 0 !important;
   }
+
   .summaryLabel {
+    min-width: 0;
     font-size: 0.8125rem !important;
     line-height: 1.25;
   }
+
   .summaryIcon {
     display: none !important;
   }
+
   .summaryValue {
+    flex: 0 1 auto;
+    min-width: 0;
+    max-width: 100%;
     font-size: 1.25rem !important;
-    line-height: 1.35;
+    line-height: 1.25;
+    overflow-wrap: anywhere;
   }
+
   .summaryDetail {
+    flex: 0 0 100%;
+    min-width: 0;
     font-size: 0.75rem !important;
     line-height: 1.3;
   }
+
   .directoryHeading {
-    padding: 0.75rem !important;
+    padding: 0 0 0.5rem !important;
+    gap: 0.5rem !important;
   }
+
   .tableViewport {
     overflow-x: visible;
   }
+
   .tenantTable {
     display: block;
     min-width: 0;
   }
-  /* Keep real column headers accessible; mobile labels are decorative only. */
+
+  /* Real column headers remain accessible; card labels are decorative. */
   .tenantTable thead {
     position: absolute;
     width: 1px;
@@ -115,11 +224,13 @@
     clip-path: inset(50%);
     white-space: nowrap;
   }
+
   .tenantTable tbody {
     display: grid;
     gap: 0.75rem;
-    padding: 0 0.75rem 0.75rem;
+    padding: 0;
   }
+
   .tenantRow {
     display: grid;
     grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -128,17 +239,20 @@
     border: 1px solid var(--border) !important;
     border-radius: 10px;
   }
+
   .tenantRow td {
     display: block;
     min-width: 0;
     padding: 0 !important;
     overflow-wrap: anywhere;
   }
+
   .organizationCell,
   .actionsCell,
   .tenantRow td[headers="tenant-directory-created"] {
     grid-column: 1 / -1;
   }
+
   .cellLabel {
     display: block;
     margin-bottom: 0.25rem;
@@ -147,114 +261,48 @@
     line-height: 1.25;
     color: var(--text-secondary);
   }
+
+  .tenantRow .organizationCell {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 0.125rem 0.5rem;
+  }
+
+  .organizationCell > .cellLabel {
+    flex: 0 0 auto;
+    margin-bottom: 0;
+  }
+
+  .organizationCell > div:first-of-type {
+    flex: 1 1 9rem;
+    min-width: 0;
+  }
+
+  .organizationCell > div:last-child {
+    flex: 0 0 100%;
+    min-width: 0;
+  }
+
   .rowActions {
     display: grid !important;
     grid-template-columns: repeat(2, minmax(0, 1fr));
     gap: 0.5rem !important;
   }
+
   .rowActions :global(.btn) {
     width: 100%;
-    min-width: 0;
+    min-width: 44px;
     white-space: normal;
-    /* Clearance for row actions revealed by native keyboard focus. */
     scroll-margin-block: 0.5rem;
   }
+
   .emptyRow,
   .emptyRow td {
     display: block;
   }
+
   .tenantRow td[headers="tenant-directory-credits"] > div {
     flex-wrap: wrap;
-  }
-}
-
-
-/* Optional phone hierarchy: original per-metric explanations remain available
-   to assistive technology; the visible shared context qualifies every value. */
-.summaryContext {
-  display: none;
-}
-
-@media (max-width: 768px) {
-  .workspace {
-    gap: 0.75rem !important;
-  }
-  .heroCard {
-    padding: 0.75rem !important;
-  }
-  .heroLayout {
-    gap: 0.65rem !important;
-  }
-  .heroTitle {
-    font-size: 1.375rem !important;
-  }
-  .heroSubtitle {
-    font-size: 0.8125rem;
-    line-height: 1.35;
-  }
-  .summaryContext {
-    display: block;
-    grid-column: 1 / -1;
-    margin: 0;
-    font-size: 0.8125rem;
-    line-height: 1.25;
-    color: var(--text-secondary);
-  }
-  .summaryCard {
-    position: relative;
-    padding: 0.5rem !important;
-  }
-  .summaryDetail {
-    position: absolute;
-    width: 1px;
-    height: 1px;
-    padding: 0;
-    margin: -1px;
-    overflow: hidden;
-    clip-path: inset(50%);
-    white-space: nowrap;
-  }
-}
-
-/* Compact the phone overview into one readable panel. Keep every metric,
-   loaded-row qualification and existing accessible caption in the same DOM. */
-@media (max-width: 768px) {
-  .workspace {
-    gap: 0.625rem !important;
-  }
-  .heroCard {
-    padding: 0.625rem !important;
-  }
-  .heroLayout {
-    gap: 0.375rem !important;
-  }
-  .heroSubtitle {
-    margin: 0.25rem 0 0;
-  }
-  .searchField {
-    gap: 0.25rem;
-  }
-  .tenantSearch :global(.form-input) {
-    padding: 0.5rem 0.625rem;
-  }
-  .summaryGrid {
-    gap: 0.375rem 0.75rem !important;
-    padding: 0.5rem 0.625rem;
-    border: 1px solid var(--border);
-    border-radius: 10px;
-    background: var(--surface);
-  }
-  .summaryCard {
-    padding: 0 !important;
-    border: 0 !important;
-    border-radius: 0;
-    background: transparent !important;
-    box-shadow: none !important;
-  }
-  .summaryHeading {
-    margin-bottom: 0 !important;
-  }
-  .summaryValue {
-    line-height: 1.25;
   }
 }

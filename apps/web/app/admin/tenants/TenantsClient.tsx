@@ -504,8 +504,8 @@ export function TenantsClient() {
         <div className={styles.workspace} style={{ display: 'flex', flexDirection: 'column', gap: '1rem', maxWidth: 1440 }}>
             <section className={`surface-card ${styles.heroCard}`} style={{ padding: '1rem' }}>
                 <div className={styles.heroLayout} style={{ display: 'flex', justifyContent: 'space-between', gap: '0.85rem', alignItems: 'flex-start', flexWrap: 'wrap' }}>
-                    <div>
-                        <div className="workspace-kicker" style={{ color: '#b4233f' }}>
+                    <div className={styles.heroIntro}>
+                        <div className={`workspace-kicker ${styles.heroKicker}`} style={{ color: '#b4233f' }}>
                             Organization control
                         </div>
                         <h1 className={`workspace-title ${styles.heroTitle}`} style={{ fontSize: '1.6rem', marginBottom: 2 }}>

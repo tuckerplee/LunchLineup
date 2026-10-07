@@ -259,8 +259,8 @@ async function actionLayout(page: Page) {
         const value = metric.locator(':scope > div').nth(1), caption = metric.locator(':scope > div').nth(2);
         await expect(label).toHaveText(expectedMetrics[index][0]); await expect(value).toHaveText(expectedMetrics[index][1]);
         await expect(label).toBeVisible(); await expect(value).toBeVisible(); await expect(caption).toHaveText(captions[index]);
-        if (width > 768) await expect(caption).toBeVisible();
-        visibleMetrics.push(label, value);
+        await expect(caption).toBeVisible();
+        visibleMetrics.push(label, value, caption);
       }
       const aria = await summary.ariaSnapshot({ timeout: 5000 });
       await test.info().attach(`tenant-summary-${width}-aria`, { contentType: 'text/plain', body: aria });

@@ -4,7 +4,7 @@ import { Pencil, Trash2 } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
 import { fetchWithSession } from '@/lib/client-api';
 import { LocationTimeZoneInput } from './LocationTimeZoneInput';
-import { buildLocationUpdatePayload, persistedLocationFormValues } from './location-form';
+import { buildLocationUpdatePayload, normalizeValidIanaTimeZone, persistedLocationFormValues } from './location-form';
 
 export type LocationSummary = {
     id: string;
@@ -18,6 +18,7 @@ type LocationLifecycleActionsProps = {
     location: LocationSummary;
     canWrite: boolean;
     canDelete: boolean;
+    onMutationStart: () => () => void;
     onUpdated: (location: LocationSummary) => void;
     onDeactivated: (locationId: string) => void;
     onError: (message: string) => void;
@@ -42,6 +43,7 @@ export function LocationLifecycleActions({
     location,
     canWrite,
     canDelete,
+    onMutationStart,
     onUpdated,
     onDeactivated,
     onError,
@@ -138,6 +140,7 @@ export function LocationLifecycleActions({
             return;
         }
 
+        const finishMutation = onMutationStart();
         setIsSaving(true);
         onError('');
         try {
@@ -146,14 +149,28 @@ export function LocationLifecycleActions({
                 jsonWrite('PUT', { ...payload, expectedUpdatedAt }),
             );
             if (!response.ok) throw new Error(await readMessage(response, 'Unable to update location.'));
-            const updated = (await response.json()) as LocationSummary;
-            resetEditDrafts(updated);
-            onUpdated(updated);
+            const updated: unknown = await response.json();
+            if (!updated || typeof updated !== 'object' || Array.isArray(updated)
+                || !('id' in updated) || updated.id !== location.id
+                || !('name' in updated) || typeof updated.name !== 'string'
+                || !updated.name.trim() || updated.name.trim().length > 200
+                || ('address' in updated && updated.address !== null && typeof updated.address !== 'string')
+                || ('timezone' in updated && updated.timezone !== null && (typeof updated.timezone !== 'string'
+                    || updated.timezone.trim().length > 100 || normalizeValidIanaTimeZone(updated.timezone) === null))
+                || ('updatedAt' in updated && (typeof updated.updatedAt !== 'string'
+                    || !Number.isFinite(Date.parse(updated.updatedAt))
+                    || new Date(updated.updatedAt).toISOString() !== updated.updatedAt))) {
+                throw new Error('The service returned an invalid location update. Your draft has been kept. Cancel and refresh Locations to check the saved result.');
+            }
+            const saved = updated as LocationSummary;
+            resetEditDrafts(saved);
+            onUpdated(saved);
             onNotice('Location updated.');
             setMode('idle');
         } catch (error) {
             onError(error instanceof Error ? error.message : 'Unable to update location.');
         } finally {
+            finishMutation();
             setIsSaving(false);
         }
     };
@@ -164,6 +181,7 @@ export function LocationLifecycleActions({
             return;
         }
 
+        const finishMutation = onMutationStart();
         setIsSaving(true);
         onError('');
         try {
@@ -180,6 +198,7 @@ export function LocationLifecycleActions({
         } catch (error) {
             onError(error instanceof Error ? error.message : 'Unable to deactivate location.');
         } finally {
+            finishMutation();
             setIsSaving(false);
         }
     };
