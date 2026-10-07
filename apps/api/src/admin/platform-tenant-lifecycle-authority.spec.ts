@@ -131,7 +131,7 @@ function harness(status: 'ACTIVE' | 'SUSPENDED' | 'CANCELLED' = 'ACTIVE', paid =
     const authority = installPlatformTenantAuthorityModel(prisma, actor);
     const tenantDb = new TenantPrismaService(prisma), rbac = new RbacService(tenantDb);
     const authorize = vi.spyOn(rbac, 'authorizePlatformAdminTenantMutationInTransaction');
-    const billing = { assertTenantSubscriptionActive: vi.fn(async () => undefined),
+    const billing = { assertTenantSubscriptionActive: vi.fn(async (): Promise<void> => undefined),
         cancelTenantSubscriptionAtPeriodEnd: vi.fn(async (..._args: any[]): Promise<any> => ({ action: 'scheduled' as const, stripeSubscriptionId: 'sub-controlled',
             stripeStatus: 'active', cancelAtPeriodEnd: true, currentPeriodEnd: '2027-01-01T00:00:00.000Z', cancelAt: null,
             canceledAt: null, cancellationBehavior: 'cancel_at_period_end' as const })) };
@@ -192,7 +192,7 @@ describe('Platform tenant live authority and durable admission', () => {
                 await bounded(g.started); Object.assign(h.request.user, { sub: 'replacement', tenantId: 'replacement', sessionId: 'replacement' });
                 h.request.ip = '198.51.100.99'; h.request.headers['user-agent'] = 'changed';
             } finally { g.release(); }
-            await expect(bounded(pending)).resolves.toEqual(action === 'activate' ? { id: T, status: 'ACTIVE' } : { id: T, restored: true });
+            await expect(bounded<Awaited<typeof pending>>(pending)).resolves.toEqual(action === 'activate' ? { id: T, status: 'ACTIVE' } : { id: T, restored: true });
             expect(h.authorize).toHaveBeenCalledWith(h.prisma, T, { userId: actor.userId, tenantId: P, sessionId: actor.sessionId });
             expect(h.snapshot().audits).toEqual([expect.objectContaining({ userId: null, actorUserId: actor.userId,
                 actorTenantId: P, ipAddress: actor.ipAddress, userAgent: actor.userAgent,

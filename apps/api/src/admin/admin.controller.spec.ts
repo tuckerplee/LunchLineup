@@ -1172,8 +1172,7 @@ describe('AdminController platform billing lifecycle', () => {
             userId: superAdminReq.user.sub, tenantId: superAdminReq.user.tenantId,
             sessionId: superAdminReq.user.sessionId,
         });
-        prisma.__platformTargetRead = authority.domainTenantRead;
-        return prisma;
+        return Object.assign(prisma, { __platformTargetRead: authority.domainTenantRead });
     }
 
     it('delegates platform archive to the durable attributed lifecycle owner', async () => {
