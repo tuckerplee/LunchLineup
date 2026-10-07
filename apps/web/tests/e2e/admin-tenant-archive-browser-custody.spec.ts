@@ -233,6 +233,74 @@ async function actionLayout(page: Page) {
     for (const width of widths) {
       await page.setViewportSize({ width, height: original.height }); await page.evaluate(() => window.scrollTo(0, 0));
       await test.info().attach(`tenant-archive-${width}-first-viewport`, { contentType: 'image/png', body: await page.screenshot({ timeout: 5000 }) });
+      // Before any focus/scroll interaction, record where the first tenant lands.
+      // This is viewport-only geometry evidence, not a new above-the-fold gate.
+      const firstIdentity = target(page, A).getByRole('cell').nth(0).locator(':scope > div').first();
+      const firstGeometry = await firstIdentity.evaluate(node => {
+        const box = node.getBoundingClientRect();
+        const intersectionWidth = Math.max(0, Math.min(box.right, innerWidth) - Math.max(box.left, 0));
+        const intersectionHeight = Math.max(0, Math.min(box.bottom, innerHeight) - Math.max(box.top, 0));
+        return { text: node.textContent, box: box.toJSON(), viewport: { width: innerWidth, height: innerHeight },
+          viewportOnlyIntersectionRatio: box.width * box.height ? intersectionWidth * intersectionHeight / (box.width * box.height) : 0 };
+      });
+      await test.info().attach(`tenant-first-identity-${width}-before-scroll`, {
+        contentType: 'application/json', body: JSON.stringify(firstGeometry) });
+      const summary = page.getByRole('region', { name: 'Loaded tenant summary', exact: true });
+      const context = page.locator('#loaded-tenant-summary-context');
+      await expect(summary).toHaveAttribute('aria-describedby', 'loaded-tenant-summary-context');
+      await expect(context).toHaveText('Loaded organizations only');
+      const captions = ['organizations loaded', 'active in loaded rows', 'attention in loaded rows', 'credits in loaded rows'];
+      const expectedMetrics = [ ['Total tenants', '2'], ['Active tenants', '1'], ['Suspended or archived', '1'], ['Usage credits', '160'] ];
+      await expect(summary.locator('article')).toHaveCount(4);
+      const visibleMetrics: Locator[] = [];
+      for (let index = 0; index < expectedMetrics.length; index += 1) {
+        const metric = summary.locator('article').nth(index);
+        const label = metric.locator(':scope > div').nth(0).locator('span').first();
+        const value = metric.locator(':scope > div').nth(1), caption = metric.locator(':scope > div').nth(2);
+        await expect(label).toHaveText(expectedMetrics[index][0]); await expect(value).toHaveText(expectedMetrics[index][1]);
+        await expect(label).toBeVisible(); await expect(value).toBeVisible(); await expect(caption).toHaveText(captions[index]);
+        if (width > 768) await expect(caption).toBeVisible();
+        visibleMetrics.push(label, value);
+      }
+      const aria = await summary.ariaSnapshot({ timeout: 5000 });
+      await test.info().attach(`tenant-summary-${width}-aria`, { contentType: 'text/plain', body: aria });
+      for (const caption of captions) expect(aria).toContain(caption);
+      if (width <= 768) {
+        await expect(context).toBeVisible();
+        const measurements = [];
+        for (const item of [context, ...visibleMetrics]) {
+          const measured = await item.evaluate(node => {
+            const box = node.getBoundingClientRect(), range = document.createRange(); range.selectNodeContents(node);
+            const text = Array.from(range.getClientRects()).filter(rect => rect.width > 0 && rect.height > 0).map(rect => rect.toJSON());
+            const clips = [], visibility = [];
+            for (let ancestor: Element | null = node; ancestor; ancestor = ancestor.parentElement) {
+              const style = getComputedStyle(ancestor), rect = ancestor.getBoundingClientRect();
+              visibility.push({ visibility: style.visibility, opacity: Number(style.opacity) });
+              if (ancestor !== document.body && ancestor !== document.documentElement) clips.push({
+                x: ['hidden', 'clip', 'auto', 'scroll'].includes(style.overflowX),
+                y: ['hidden', 'clip', 'auto', 'scroll'].includes(style.overflowY),
+                left: rect.left + ancestor.clientLeft, top: rect.top + ancestor.clientTop,
+                right: rect.left + ancestor.clientLeft + ancestor.clientWidth, bottom: rect.top + ancestor.clientTop + ancestor.clientHeight });
+            }
+            return { content: node.textContent, box: box.toJSON(), text, clips, visibility, viewport: { width: innerWidth, height: innerHeight } };
+          });
+          measurements.push(measured);
+        }
+        await test.info().attach(`tenant-summary-${width}-text-geometry`, {
+          contentType: 'application/json', body: JSON.stringify(measurements) });
+        for (const measured of measurements) {
+          expect(measured.box.width).toBeGreaterThan(0); expect(measured.box.height).toBeGreaterThan(0); expect(measured.text.length).toBeGreaterThan(0);
+          for (const visibility of measured.visibility) { expect(visibility.visibility).toBe('visible'); expect(visibility.opacity).toBeGreaterThan(0); }
+          for (const rect of [measured.box, ...measured.text]) {
+            expect(rect.left).toBeGreaterThanOrEqual(0); expect(rect.top).toBeGreaterThanOrEqual(0);
+            expect(rect.right).toBeLessThanOrEqual(measured.viewport.width); expect(rect.bottom).toBeLessThanOrEqual(measured.viewport.height);
+          }
+          for (const rect of measured.text) for (const clip of measured.clips) {
+            if (clip.x) { expect(rect.left).toBeGreaterThanOrEqual(clip.left); expect(rect.right).toBeLessThanOrEqual(clip.right); }
+            if (clip.y) { expect(rect.top).toBeGreaterThanOrEqual(clip.top); expect(rect.bottom).toBeLessThanOrEqual(clip.bottom); }
+          }
+        }
+      }
       const headings = ['Organization', 'Plan', 'Status', 'Usage', 'Credits', 'Created', 'Actions'];
       const table = directory(page).getByRole('table');
       await expect(table).toHaveCount(1);
@@ -347,11 +415,11 @@ async function actionLayout(page: Page) {
             scrollBefore, scrollAfter: await scroller.evaluate(node => ({ left: node.scrollLeft, client: node.clientWidth, scroll: node.scrollWidth })) }) });
         await test.info().attach(`tenant-archive-${width}-${await action.innerText()}-reachability`, {
           contentType: 'image/png', body: await page.screenshot({ timeout: 5000 }) });
-        await expect(action).toBeInViewport({ ratio: 1 });
         const box = await action.boundingBox(); expect(box).not.toBeNull();
         if (!box) throw new Error('Missing archive action rectangle');
         await test.info().attach(`tenant-archive-${width}-${await action.innerText()}-rectangle`, {
-          contentType: 'application/json', body: JSON.stringify({ width, box }) });
+          contentType: 'application/json', body: JSON.stringify({ width, box, viewport: page.viewportSize() }) });
+        await expect(action).toBeInViewport({ ratio: 1 });
         expect(box.x).toBeGreaterThanOrEqual(-1); expect(box.x + box.width).toBeLessThanOrEqual(width + 1);
         if (width <= 768) {
           expect(box.width, 'phone lifecycle action touch width').toBeGreaterThanOrEqual(44);

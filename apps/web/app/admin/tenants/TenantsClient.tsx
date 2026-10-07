@@ -502,16 +502,16 @@ export function TenantsClient() {
 
     return (
         <div className={styles.workspace} style={{ display: 'flex', flexDirection: 'column', gap: '1rem', maxWidth: 1440 }}>
-            <section className="surface-card" style={{ padding: '1rem' }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', gap: '0.85rem', alignItems: 'flex-start', flexWrap: 'wrap' }}>
+            <section className={`surface-card ${styles.heroCard}`} style={{ padding: '1rem' }}>
+                <div className={styles.heroLayout} style={{ display: 'flex', justifyContent: 'space-between', gap: '0.85rem', alignItems: 'flex-start', flexWrap: 'wrap' }}>
                     <div>
                         <div className="workspace-kicker" style={{ color: '#b4233f' }}>
                             Organization control
                         </div>
-                        <h1 className="workspace-title" style={{ fontSize: '1.6rem', marginBottom: 2 }}>
+                        <h1 className={`workspace-title ${styles.heroTitle}`} style={{ fontSize: '1.6rem', marginBottom: 2 }}>
                             Tenants
                         </h1>
-                        <p className="workspace-subtitle">
+                        <p className={`workspace-subtitle ${styles.heroSubtitle}`}>
                             Manage organizations - {loading ? 'Loading...' : tenants.length + ' organizations loaded' + (pagination.hasMore ? ' - more available' : '')}
                         </p>
                     </div>
@@ -534,7 +534,8 @@ export function TenantsClient() {
                 </div>
             </section>
 
-            <section className={styles.summaryGrid} aria-label="Loaded tenant summary" style={{ display: 'grid', gap: '0.75rem' }}>
+            <section className={styles.summaryGrid} aria-label="Loaded tenant summary" aria-describedby="loaded-tenant-summary-context" style={{ display: 'grid', gap: '0.75rem' }}>
+                <p id="loaded-tenant-summary-context" className={styles.summaryContext}>Loaded organizations only</p>
                 {summary.map((item, index) => {
                     const palette = SUMMARY_COLORS[index];
                     return (
