@@ -25,6 +25,37 @@
   min-width: 0;
 }
 
+/* Make the primary grant action distinct without changing its behavior or layout. */
+.grantPanel .grantSubmit {
+  min-height: 44px;
+  min-width: 44px;
+  background: var(--brand-600);
+  border-color: var(--brand-600);
+  color: #fff;
+}
+
+.grantPanel .grantSubmit:hover:not(:disabled) {
+  background: var(--brand-700);
+  border-color: var(--brand-700);
+}
+
+.grantPanel .grantSubmit:active:not(:disabled) {
+  background: var(--brand-800);
+  border-color: var(--brand-800);
+}
+
+.grantPanel .grantSubmit:focus-visible {
+  outline: 3px solid #0f172a;
+  outline-offset: 3px;
+}
+
+.grantPanel .grantSubmit:disabled {
+  background: #e2e8f0;
+  border-color: #cbd5e1;
+  color: #475569;
+  cursor: not-allowed;
+}
+
 /* Stack the balances and grant form before the fixed desktop column can
    squeeze the balances into a narrow strip. Tables keep their own scroll. */
 @media (max-width: 900px) {

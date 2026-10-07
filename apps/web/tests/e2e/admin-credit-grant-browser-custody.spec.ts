@@ -357,7 +357,7 @@ async function summaryFirstViewportWitness(page: Page, width: number, artifactLa
   await expect(summary.getByRole('article')).toHaveCount(5);
   const expected = [
     ['Loaded balances', '2'], ['Loaded credits', '160'], ['Loaded ledger rows', '0'],
-    ['Largest loaded balance', '120'], ['positive wallet rows loaded', '0'],
+    ['Largest loaded balance', '120'], ['Positive history rows loaded', '0'],
   ] as const;
   const witnesses = expected.flatMap(([label, value]) => {
     const card = summary.getByRole('article').filter({ has: page.getByText(label, { exact: true }) });
@@ -1377,7 +1377,7 @@ async function debtHistoryWitness(page: Page, expected: Array<{ reason: string; 
     await cell.scrollIntoViewIfNeeded({ timeout: 5000 });
     await expect(cell).toBeInViewport(); await expect(cell).toHaveText(`+${entry.amount}`);
   }
-  const summary = page.getByRole('article').filter({ has: page.getByText('positive wallet rows loaded', { exact: true }) });
+  const summary = page.getByRole('article').filter({ has: page.getByText('Positive history rows loaded', { exact: true }) });
   await expect(summary).toHaveCount(1); await expect(summary.getByText(String(walletRows), { exact: true })).toHaveCount(1);
 }
 async function debtScenario(page: Page, mode: DebtMode, body: (adapter: DebtAdapter) => Promise<void>) {

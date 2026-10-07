@@ -263,7 +263,7 @@ export function CreditsClient() {
             { value: formatCredits(totalCredits), subtitle: 'Loaded credits', icon: 'C', color: '#166534', bg: '#e9fbf1' },
             { value: historyCount, subtitle: 'Loaded ledger rows', icon: 'L', color: '#b4233f', bg: '#ffeef2' },
             { value: formatCredits(maxBalance), subtitle: 'Largest loaded balance', icon: 'M', color: '#7c4a03', bg: '#fff4e2' },
-            { value: positiveCount, subtitle: 'positive wallet rows loaded', icon: '+', color: '#166534', bg: '#e9fbf1' },
+            { value: positiveCount, subtitle: 'Positive history rows loaded', icon: '+', color: '#166534', bg: '#e9fbf1' },
         ];
     }, [history, tenants]);
 
@@ -657,7 +657,7 @@ export function CreditsClient() {
                             ) : null}
                         </div>
 
-                        <button className="btn" type="submit" disabled={grantSaving || tenants.length === 0}>
+                        <button className={`btn ${styles.grantSubmit}`} type="submit" disabled={grantSaving || tenants.length === 0}>
                             {grantSaving ? 'Granting...' : 'Grant Credits'}
                         </button>
                     </form>
