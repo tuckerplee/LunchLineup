@@ -27,6 +27,7 @@ import { RequirePermission } from '../auth/require-permission.decorator';
 import { applyOnboardingSignupAttemptRetention } from '../auth/onboarding-signup-retention';
 import { TenantAccountLifecycleService, type TenantLifecycleActor, type TenantRetentionStage } from './tenant-account-lifecycle.service';
 import { RbacService } from '../auth/rbac.service';
+import { capturePlatformTenantActor, capturePlatformTenantObserver, platformTenantLifecycleAuditActor, withPlatformTenantLifecycleAdmission } from './platform-tenant-lifecycle-authority';
 import { AuthService } from '../auth/auth.service';
 import { TenantProvisioningService } from './tenant-provisioning.service';
 import { InternalBetaEntitlementService } from './internal-beta-entitlement.service';
@@ -91,7 +92,7 @@ export class AdminController implements OnModuleDestroy {
         this.rbac = rbacService ?? new RbacService(this.tenantDb);
         this.userMfaRecovery = new AdminUserMfaRecoveryService(this.tenantDb, this.rbac, this.identityService);
         this.userLifecycle = new AdminUserLifecycleService(this.tenantDb, this.rbac, this.identityService);
-        this.tenantAccountLifecycle = new TenantAccountLifecycleService(this.tenantDb, this.stripeBilling);
+        this.tenantAccountLifecycle = new TenantAccountLifecycleService(this.tenantDb, this.stripeBilling, undefined, this.rbac, this.identityService);
         this.tenantProvisioning = new TenantProvisioningService(
             this.tenantDb,
             this.rbac,
@@ -744,21 +745,24 @@ export class AdminController implements OnModuleDestroy {
     @Post('tenants/:id/suspend')
     async suspendTenant(@Req() req: any, @Param('id') id: string) {
         this.assertSuperAdmin(req);
-        const mutationActor = this.adminUserLifecycleActor(req);
-        await this.withPlatformAdminUserMutation(async (tx) => {
-            await this.rbac.authorizePlatformAdminTenantMutationInTransaction(tx, id, mutationActor);
+        const mutationActor = capturePlatformTenantActor(this.adminUserLifecycleActor(req));
+        const mutationObserver = capturePlatformTenantObserver(this.identityService);
+        await withPlatformTenantLifecycleAdmission(this.rbac, id, mutationActor, mutationObserver, async (tx, actor, assertCurrent) => {
             const tenant = await tx.tenant.findUnique({ where: { id }, select: { id: true } });
             if (!tenant) throw new BadRequestException('Tenant not found');
+            assertCurrent();
             await tx.tenant.update({
                 where: { id },
                 data: { status: TenantStatus.SUSPENDED },
             });
+            assertCurrent();
             await tx.session.updateMany({
                 where: { user: { tenantId: id }, revokedAt: null },
                 data: { revokedAt: new Date() },
             });
+            assertCurrent();
             await tx.auditLog.create({
-                data: { tenantId: id, ...this.platformAuditData(req, id), action: 'TENANT_SUSPENDED', resource: 'Tenant', resourceId: id },
+                data: { tenantId: id, ...platformTenantLifecycleAuditActor(actor, id), action: 'TENANT_SUSPENDED', resource: 'Tenant', resourceId: id },
             });
         });
         return { id, status: TenantStatus.SUSPENDED };
@@ -767,17 +771,20 @@ export class AdminController implements OnModuleDestroy {
     @Post('tenants/:id/activate')
     async activateTenant(@Req() req: any, @Param('id') id: string) {
         this.assertSuperAdmin(req);
+        const mutationActor = capturePlatformTenantActor(this.adminUserLifecycleActor(req));
+        const mutationObserver = capturePlatformTenantObserver(this.identityService);
         const eligibility = await this.assertTenantCanBeActivated(id, 'activated');
-        await this.withPlatformAdmin(async (tx) => {
-            await this.lockTenantLifecycleForActivation(tx, id);
+        await withPlatformTenantLifecycleAdmission(this.rbac, id, mutationActor, mutationObserver, async (tx, actor, assertCurrent) => {
             const tenant = await this.assertTenantHasNoDeletionBarrier(tx, id, 'activated');
             this.assertTenantActivationEligibilityUnchanged(tenant, eligibility, 'activated');
+            assertCurrent();
             await tx.tenant.update({
                 where: { id },
                 data: { status: TenantStatus.ACTIVE, deletedAt: null },
             });
+            assertCurrent();
             await tx.auditLog.create({
-                data: { tenantId: id, ...this.platformAuditData(req, id), action: 'TENANT_ACTIVATED', resource: 'Tenant', resourceId: id },
+                data: { tenantId: id, ...platformTenantLifecycleAuditActor(actor, id), action: 'TENANT_ACTIVATED', resource: 'Tenant', resourceId: id },
             });
         });
         return { id, status: TenantStatus.ACTIVE };
@@ -795,17 +802,20 @@ export class AdminController implements OnModuleDestroy {
     @Post('tenants/:id/restore')
     async restoreTenant(@Req() req: any, @Param('id') id: string) {
         this.assertSuperAdmin(req);
+        const mutationActor = capturePlatformTenantActor(this.adminUserLifecycleActor(req));
+        const mutationObserver = capturePlatformTenantObserver(this.identityService);
         const eligibility = await this.assertTenantCanBeActivated(id, 'restored');
-        await this.withPlatformAdmin(async (tx) => {
-            await this.lockTenantLifecycleForActivation(tx, id);
+        await withPlatformTenantLifecycleAdmission(this.rbac, id, mutationActor, mutationObserver, async (tx, actor, assertCurrent) => {
             const tenant = await this.assertTenantHasNoDeletionBarrier(tx, id, 'restored');
             this.assertTenantActivationEligibilityUnchanged(tenant, eligibility, 'restored');
+            assertCurrent();
             await tx.tenant.update({
                 where: { id },
                 data: { deletedAt: null, status: TenantStatus.ACTIVE },
             });
+            assertCurrent();
             await tx.auditLog.create({
-                data: { tenantId: id, ...this.platformAuditData(req, id), action: 'TENANT_RESTORED', resource: 'Tenant', resourceId: id },
+                data: { tenantId: id, ...platformTenantLifecycleAuditActor(actor, id), action: 'TENANT_RESTORED', resource: 'Tenant', resourceId: id },
             });
         });
         return { id, restored: true };
@@ -854,19 +864,6 @@ export class AdminController implements OnModuleDestroy {
             planTier: tenant.planTier,
             stripeSubscriptionId: tenant.stripeSubscriptionId,
         };
-    }
-
-    private async lockTenantLifecycleForActivation(
-        tx: Prisma.TransactionClient,
-        id: string,
-    ): Promise<void> {
-        await tx.$executeRaw`SELECT public.lock_tenant_lifecycle(${id})`;
-        await tx.$queryRaw`
-            SELECT "id"
-            FROM "Tenant"
-            WHERE "id" = ${id}
-            FOR UPDATE
-        `;
     }
 
     private assertTenantActivationEligibilityUnchanged(

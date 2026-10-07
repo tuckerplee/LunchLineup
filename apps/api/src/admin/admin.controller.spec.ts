@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { AdminController } from './admin.controller';
 import { RbacService } from '../auth/rbac.service';
 import { installAdminCompositionPolicy } from './admin-user-authority.fixture';
+import { installPlatformTenantAuthorityModel } from './platform-tenant-lifecycle-authority.fixture';
 import { BadRequestException, ConflictException, ForbiddenException } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { TenantPrismaService } from '../database/tenant-prisma.service';
@@ -94,7 +95,7 @@ function buildController(
     // Retained target callback stubs assert domain composition only. The real
     // actor wrapper reads complete policy context; full target checks/rollback
     // are separately exercised in admin-user-current-authority.spec.ts.
-    let observer: any;
+    let observer: any = prisma.__platformTenantMfaObserver;
     if (rbacService && typeof rbacService.runCurrentMutation !== 'function') {
         observer = installAdminCompositionPolicy(prisma);
         const oldCombinedRoleWriter = rbacService.replaceLegacySystemRoleForPlatformAdminActorInTransaction;
@@ -1159,7 +1160,7 @@ describe('AdminController tenant account lifecycle', () => {
 
 describe('AdminController platform billing lifecycle', () => {
     function buildPlatformPrisma(tenant: any): any {
-        return addTransactionMock({
+        const prisma = addTransactionMock({
             tenant: {
                 findUnique: vi.fn().mockResolvedValue(tenant),
                 update: vi.fn().mockResolvedValue({}),
@@ -1167,6 +1168,12 @@ describe('AdminController platform billing lifecycle', () => {
             session: { updateMany: vi.fn().mockResolvedValue({ count: 0 }) },
             auditLog: { create: vi.fn().mockResolvedValue({}) },
         });
+        const authority = installPlatformTenantAuthorityModel(prisma, {
+            userId: superAdminReq.user.sub, tenantId: superAdminReq.user.tenantId,
+            sessionId: superAdminReq.user.sessionId,
+        });
+        prisma.__platformTargetRead = authority.domainTenantRead;
+        return prisma;
     }
 
     it('delegates platform archive to the durable attributed lifecycle owner', async () => {
@@ -1357,7 +1364,7 @@ describe('AdminController platform billing lifecycle', () => {
             auditLogs: [{ id: 'barrier-race', action: 'TENANT_DELETION_BARRIER_COMMITTED' }],
         };
         const prisma = buildPlatformPrisma(ordinarySuspension);
-        prisma.tenant.findUnique
+        prisma.__platformTargetRead
             .mockResolvedValueOnce(ordinarySuspension)
             .mockResolvedValueOnce(pendingDeletion);
         const controller = buildController(prisma, { grantCredits: vi.fn() });
@@ -1365,7 +1372,7 @@ describe('AdminController platform billing lifecycle', () => {
         await expect(controller.restoreTenant(superAdminReq, ordinarySuspension.id))
             .rejects.toThrow(/deletion is irreversible/i);
 
-        expect(prisma.tenant.findUnique).toHaveBeenCalledTimes(2);
+        expect(prisma.__platformTargetRead).toHaveBeenCalledTimes(2);
         expect(prisma.tenant.update).not.toHaveBeenCalled();
         expect(prisma.session.updateMany).not.toHaveBeenCalled();
         expect(prisma.auditLog.create).not.toHaveBeenCalled();
@@ -3174,7 +3181,7 @@ describe('AdminController tenant updates', () => {
     });
 
     it('denies tenant suspension when exact live platform authorization is revoked', async () => {
-        prisma.session = { updateMany: vi.fn() };
+        prisma.session = { ...prisma.session, updateMany: vi.fn() };
         authorizePlatformAdminTenantMutationInTransaction.mockRejectedValueOnce(
             new ForbiddenException('Platform administrator session is no longer active'),
         );

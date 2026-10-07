@@ -50,3 +50,118 @@
     flex-shrink: 0;
   }
 }
+
+/* One table DOM preserves record identity, native keyboard order and handlers. */
+.summaryGrid {
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+}
+.tableViewport {
+  min-width: 0;
+  max-width: 100%;
+  overflow-x: auto;
+}
+.tenantTable {
+  min-width: 1060px;
+}
+.cellLabel {
+  display: none;
+}
+
+@media (max-width: 768px) {
+  .summaryGrid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 0.5rem !important;
+  }
+  .summaryCard {
+    min-width: 0;
+    padding: 0.6rem !important;
+  }
+  .summaryHeading {
+    margin-bottom: 0.2rem !important;
+  }
+  .summaryLabel {
+    font-size: 0.8125rem !important;
+    line-height: 1.25;
+  }
+  .summaryIcon {
+    display: none !important;
+  }
+  .summaryValue {
+    font-size: 1.25rem !important;
+    line-height: 1.35;
+  }
+  .summaryDetail {
+    font-size: 0.75rem !important;
+    line-height: 1.3;
+  }
+  .directoryHeading {
+    padding: 0.75rem !important;
+  }
+  .tableViewport {
+    overflow-x: visible;
+  }
+  .tenantTable {
+    display: block;
+    min-width: 0;
+  }
+  /* Keep real column headers accessible; mobile labels are decorative only. */
+  .tenantTable thead {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+  .tenantTable tbody {
+    display: grid;
+    gap: 0.75rem;
+    padding: 0 0.75rem 0.75rem;
+  }
+  .tenantRow {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 0.65rem 0.75rem;
+    padding: 0.75rem;
+    border: 1px solid var(--border) !important;
+    border-radius: 10px;
+  }
+  .tenantRow td {
+    display: block;
+    min-width: 0;
+    padding: 0 !important;
+    overflow-wrap: anywhere;
+  }
+  .organizationCell,
+  .actionsCell,
+  .tenantRow td[headers="tenant-directory-created"] {
+    grid-column: 1 / -1;
+  }
+  .cellLabel {
+    display: block;
+    margin-bottom: 0.25rem;
+    font-size: 0.75rem;
+    font-weight: 650;
+    line-height: 1.25;
+    color: var(--text-secondary);
+  }
+  .rowActions {
+    display: grid !important;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 0.5rem !important;
+  }
+  .rowActions :global(.btn) {
+    width: 100%;
+    min-width: 0;
+    white-space: normal;
+  }
+  .emptyRow,
+  .emptyRow td {
+    display: block;
+  }
+  .tenantRow td[headers="tenant-directory-credits"] > div {
+    flex-wrap: wrap;
+  }
+}

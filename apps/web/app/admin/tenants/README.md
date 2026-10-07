@@ -7,7 +7,7 @@ Platform-admin tenant lifecycle management.
 - `README.md`: this tenant admin route guide.
 - `page.tsx`: server route that requires `admin_portal:access`.
 - `TenantsClient.tsx`: client tenant directory with server search and explicit bounded continuation, credit-free create/edit forms, read-only wallet output, Admin Credits routing, and lifecycle actions.
-- `tenants.module.css`: responsive directory/form layout and mobile control sizes.
+- `tenants.module.css`: compact loaded-row summaries, responsive seven-field tenant cards, desktop table scrolling, and mobile control sizes.
 - `tenant-lifecycle-outcome.ts`: exact target and action acknowledgement checks, including incomplete archive outcomes.
 - `tenant-edit-contract.ts`: tenant create/edit payload allowlists and read-only plan, status, and wallet workflow guidance.
 - `tenant-lifecycle-confirmation.ts`: typed confirmation helpers for destructive tenant lifecycle actions.
@@ -24,3 +24,5 @@ Paid access requires an active paid subscription and separately purchased or gra
 The tenant directory requests at most 50 rows at a time, searches tenant names/slugs on the server, and follows the stable cursor only after an operator selects Load more. Counts and wallet summaries are explicitly labeled as loaded-row values rather than global totals.
 
 Lifecycle success notices require the response to confirm the selected tenant and requested action. Incomplete or unconfirmed responses retain guidance through directory refreshes; a read does not establish which request caused the current state. Refresh and inspect the tenant before attempting another lifecycle action.
+
+At widths up to 768px, each directory row displays all seven labeled fields as a card with the original lifecycle controls. The directory keeps one table and one set of handlers, real column-header associations, and its keyboard entry point; controls follow DOM order. Summary tiles retain all four loaded-row values and explanations. On wider screens the full table scrolls independently of the directory heading and bulk controls. Keyboard users can focus the labeled table scroll area and use arrow keys to reach columns. Search, pagination, create/edit fields and management guidance remain available. This source layout does not itself establish rendered or screen-reader acceptance; browser qualification must retain full keyboard action visibility, phone touch targets and overflow checks.

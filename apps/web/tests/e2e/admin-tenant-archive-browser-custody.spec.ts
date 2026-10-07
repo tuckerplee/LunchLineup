@@ -233,6 +233,93 @@ async function actionLayout(page: Page) {
     for (const width of widths) {
       await page.setViewportSize({ width, height: original.height }); await page.evaluate(() => window.scrollTo(0, 0));
       await test.info().attach(`tenant-archive-${width}-first-viewport`, { contentType: 'image/png', body: await page.screenshot({ timeout: 5000 }) });
+      const headings = ['Organization', 'Plan', 'Status', 'Usage', 'Credits', 'Created', 'Actions'];
+      const table = directory(page).getByRole('table');
+      await expect(table).toHaveCount(1);
+      await expect(table.getByRole('columnheader')).toHaveText(headings);
+      for (let index = 0; index < headings.length; index += 1) {
+        const header = table.getByRole('columnheader').nth(index);
+        await expect(header).toHaveAttribute('id', `tenant-directory-${headings[index].toLowerCase()}`);
+        await expect(header).toHaveAttribute('scope', 'col');
+      }
+      const scroller = table.locator('..');
+      const heading = directory(page).getByRole('heading', { name: 'Tenant Directory', exact: true });
+      const refreshControl = directory(page).getByRole('button', { name: 'Refresh', exact: true });
+      const bulkControl = directory(page).getByRole('button', { name: /^Remove Archived \(\d+\)$/ });
+      for (const control of [heading, refreshControl, bulkControl]) {
+        await expect(control).toHaveCount(1); await expect(control).toBeVisible();
+      }
+      await expect(scroller.getByRole('heading', { name: 'Tenant Directory', exact: true })).toHaveCount(0);
+      await expect(scroller.getByRole('button', { name: 'Refresh', exact: true })).toHaveCount(0);
+      await expect(scroller.getByRole('button', { name: /^Remove Archived \(\d+\)$/ })).toHaveCount(0);
+      const horizontalToolbar = async () => {
+        const boxes = await Promise.all([heading, refreshControl, bulkControl].map(control => control.boundingBox()));
+        return boxes.map(box => {
+          expect(box).not.toBeNull(); if (!box) throw new Error('Missing tenant directory toolbar rectangle');
+          expect(box.width).toBeGreaterThan(0); expect(box.x).toBeGreaterThanOrEqual(-1);
+          expect(box.x + box.width).toBeLessThanOrEqual(width + 1);
+          return { x: box.x, width: box.width };
+        });
+      };
+      const toolbarBefore = await horizontalToolbar();
+      const scrollBefore = await scroller.evaluate(node => ({ left: node.scrollLeft, client: node.clientWidth, scroll: node.scrollWidth }));
+      await expect(scroller).toHaveAttribute('role', 'region');
+      await expect(scroller).toHaveAttribute('aria-label', 'Tenant table scroll area');
+      await expect(scroller).toHaveAttribute('tabindex', '0');
+      if (width > 768 && scrollBefore.scroll > scrollBefore.client + 1) {
+        await scroller.focus(); await expect(scroller).toBeFocused();
+        const key = scrollBefore.left + scrollBefore.client < scrollBefore.scroll - 1 ? 'ArrowRight' : 'ArrowLeft';
+        await page.keyboard.press(key);
+        await expect.poll(() => scroller.evaluate(node => node.scrollLeft)).not.toBe(scrollBefore.left);
+        const afterArrow = await scroller.evaluate(node => node.scrollLeft);
+        if (key === 'ArrowRight') expect(afterArrow).toBeGreaterThan(scrollBefore.left);
+        else expect(afterArrow).toBeLessThan(scrollBefore.left);
+        const toolbarAfterArrow = await horizontalToolbar();
+        for (let index = 0; index < toolbarBefore.length; index += 1) {
+          expect(Math.abs(toolbarAfterArrow[index].x - toolbarBefore[index].x)).toBeLessThanOrEqual(1);
+          expect(Math.abs(toolbarAfterArrow[index].width - toolbarBefore[index].width)).toBeLessThanOrEqual(1);
+        }
+        await test.info().attach(`tenant-table-${width}-native-arrow-scroll`, {
+          contentType: 'application/json', body: JSON.stringify({ key, before: scrollBefore, after: afterArrow,
+            toolbarBefore, toolbarAfter: toolbarAfterArrow }) });
+        await directory(page).focus(); await expect(directory(page)).toBeFocused();
+      }
+      // A remains active; B was independently read back archived before this helper.
+      for (const item of [
+        { id: A, name: 'Aurora Diner', slug: 'aurora-fixture', status: 'ACTIVE', credits: 120,
+          created: 'Sep 2, 2026', record: 'Active record', actions: ['Edit', 'Suspend', 'Archive'] },
+        { id: B, name: 'Boreal Kitchen', slug: 'boreal-fixture', status: 'ARCHIVED', credits: 40,
+          created: 'Sep 1, 2026', record: 'Archived', actions: ['Edit', 'Restore', 'Remove'] },
+      ]) {
+        const row = target(page, item.id), cells = row.getByRole('cell');
+        await expect(row).toHaveCount(1); await expect(cells).toHaveCount(7);
+        for (let index = 0; index < headings.length; index += 1) {
+          await expect(cells.nth(index)).toHaveAttribute('headers', `tenant-directory-${headings[index].toLowerCase()}`);
+        }
+        await expect(cells.nth(0).locator('div')).toHaveText([item.name, item.slug]);
+        await expect(cells.nth(1).locator('.badge')).toHaveText('FREE');
+        await expect(cells.nth(2).locator('.badge')).toHaveText(item.status);
+        await expect(cells.nth(3).locator(':scope > div > div')).toHaveText(['2users', '1locations']);
+        await expect(cells.nth(4).locator('div')).toHaveText(new RegExp(`^${item.credits}\\s*credits$`));
+        await expect(cells.nth(5).locator('div')).toHaveText([item.created, item.record]);
+        await expect(cells.nth(6).getByRole('button')).toHaveText(item.actions);
+        if (width <= 768) {
+          const labels = row.locator('td > span[aria-hidden="true"]');
+          await expect(labels).toHaveText(headings);
+          for (const label of await labels.all()) await expect(label).toBeVisible();
+          const measured = await table.evaluate(node => ({ client: node.clientWidth, scroll: node.scrollWidth,
+            cells: Array.from(node.querySelectorAll('tbody td')).map(cell => {
+              const box = cell.getBoundingClientRect(); return { left: box.left, right: box.right, width: box.width };
+            }), viewport: innerWidth }));
+          expect(measured.scroll, 'phone records must not require horizontal scrolling').toBeLessThanOrEqual(measured.client + 1);
+          for (const box of measured.cells) {
+            expect(box.width).toBeGreaterThan(0); expect(box.left).toBeGreaterThanOrEqual(-1);
+            expect(box.right).toBeLessThanOrEqual(measured.viewport + 1);
+          }
+          await test.info().attach(`tenant-cards-${width}-${item.slug}-geometry`, {
+            contentType: 'application/json', body: JSON.stringify(measured) });
+        }
+      }
       const actions = [target(page, A).getByRole('button', { name: 'Archive', exact: true }),
         target(page, B).getByRole('button', { name: 'Restore', exact: true })];
       for (const action of actions) {
@@ -250,6 +337,14 @@ async function actionLayout(page: Page) {
         await test.info().attach(`tenant-archive-${width}-${await action.innerText()}-keyboard-trail`, {
           contentType: 'application/json', body: JSON.stringify(trail) });
         await expect(action).toBeFocused();
+        const toolbarAfter = await horizontalToolbar();
+        for (let index = 0; index < toolbarBefore.length; index += 1) {
+          expect(Math.abs(toolbarAfter[index].x - toolbarBefore[index].x), 'table focus must not horizontally move the directory toolbar').toBeLessThanOrEqual(1);
+          expect(Math.abs(toolbarAfter[index].width - toolbarBefore[index].width), 'table focus must not resize the directory toolbar').toBeLessThanOrEqual(1);
+        }
+        await test.info().attach(`tenant-toolbar-${width}-${await action.innerText()}-horizontal-stability`, {
+          contentType: 'application/json', body: JSON.stringify({ before: toolbarBefore, after: toolbarAfter,
+            scrollBefore, scrollAfter: await scroller.evaluate(node => ({ left: node.scrollLeft, client: node.clientWidth, scroll: node.scrollWidth })) }) });
         await test.info().attach(`tenant-archive-${width}-${await action.innerText()}-reachability`, {
           contentType: 'image/png', body: await page.screenshot({ timeout: 5000 }) });
         await expect(action).toBeInViewport({ ratio: 1 });
