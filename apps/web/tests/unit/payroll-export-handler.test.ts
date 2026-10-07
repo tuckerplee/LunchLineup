@@ -3,13 +3,16 @@ import { createElement } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { button, clientComponentHarness, deferred, nodes } from './client-component-harness';
 
-const mocks = vi.hoisted(() => ({ hooks: null as any, entitlement: vi.fn(), period: vi.fn(), periods: vi.fn(), create: vi.fn() }));
+const mocks = vi.hoisted(() => ({ hooks: null as any, entitlement: vi.fn(), period: vi.fn(), periods: vi.fn(), create: vi.fn(), json: vi.fn() }));
 vi.mock('react', async original => ({ ...await original<typeof import('react')>(),
   useState: (...args: any[]) => mocks.hooks.useState(...args),
   useRef: (...args: any[]) => mocks.hooks.useRef(...args),
   useEffect: (...args: any[]) => mocks.hooks.useEffect(...args),
   useCallback: (...args: any[]) => mocks.hooks.useCallback(...args),
   useMemo: (...args: any[]) => mocks.hooks.useMemo(...args),
+}));
+vi.mock('@/lib/client-api', async original => ({
+  ...await original<typeof import('@/lib/client-api')>(), fetchJsonWithSession: mocks.json,
 }));
 vi.mock('../../app/dashboard/payroll/payroll-api', () => ({
   fetchPayrollPolicy: async () => null, fetchPayrollPolicies: async () => ({ data: [] }),
@@ -53,6 +56,7 @@ async function switchOwner() {
 }
 function attemptWrites() { return writes.filter(write => write.key.startsWith('lunchlineup.payroll-attempt.v3:')); }
 beforeEach(async () => {
+  mocks.json.mockReset();
   owner = 'owner-A'; writes = []; digestGate = null; digestEntered = deferred<void>(); exported = false;
   mocks.entitlement.mockReset().mockResolvedValue(eligible);
   mocks.periods.mockReset().mockResolvedValue({ data: [summary('A'), summary('B')], nextCursor: null });
@@ -76,6 +80,66 @@ beforeEach(async () => {
 afterEach(() => { digestGate?.resolve(); h?.unmount(); vi.unstubAllGlobals(); });
 
 describe('actual payroll export intent and response custody', () => {
+  it.each(['foreign', 'malformed'] as const)('retains the exact attempt for a %s acknowledgement through the real API boundary', async mode => {
+    const api = await vi.importActual<typeof import('../../app/dashboard/payroll/payroll-api')>('../../app/dashboard/payroll/payroll-api');
+    const rawBatch = { ...batch, formatVersion: 1, contentSha256: 'a'.repeat(64), rowCount: 1,
+      totalPayableMinutes: 450, createdAt: '2026-10-01T12:00:00.000Z', lines: [] };
+    const readback = deferred<unknown>(); const entered = deferred<void>();
+    mocks.create.mockImplementation(api.createPayrollExport); mocks.period.mockImplementation(api.fetchPayrollPeriod);
+    mocks.json.mockImplementation((path: string, init?: RequestInit) => {
+      if (path === '/payroll/periods/A/exports' && init?.method === 'POST') {
+        return Promise.resolve(mode === 'foreign' ? { ...rawBatch, periodId: 'B', id: 'batch-B' } : {});
+      }
+      if (path === '/payroll/periods/A?cardLimit=250&lineLimit=500') { entered.resolve(); return readback.promise; }
+      throw new Error('Unexpected controlled payroll path: ' + path);
+    });
+    const operation = render().exportPeriod(2);
+    let staged: ReturnType<typeof attemptWrites>[number] | undefined;
+    try {
+      await entered.promise;
+      expect(render().notice).toBeNull(); expect(state.detail?.period.exportBatch).toBeUndefined();
+      expect(attemptWrites()).toHaveLength(1); staged = attemptWrites()[0];
+      expect(JSON.parse(staged.value).key).toBe(mocks.create.mock.calls[0][2]);
+      expect(window.sessionStorage.getItem(staged.key)).toBe(staged.value);
+    } finally {
+      readback.resolve({ ...detail('A'), period: { ...summary('A'), exportBatch: rawBatch } }); await operation;
+    }
+    expect(mocks.create).toHaveBeenCalledExactlyOnceWith('A', 2, expect.any(String));
+    expect(mocks.json).toHaveBeenCalledTimes(2);
+    expect(render().detail?.period.id).toBe('A'); expect(state.detail?.period.exportBatch?.id).toBe('batch-A');
+    expect(state.notice).toBeNull(); expect(state.error).toContain('unclear');
+    expect(staged).toBeDefined(); expect(window.sessionStorage.getItem(staged!.key)).toBe(staged!.value);
+  });
+  it('retains a verified A acknowledgement when real period validation rejects a foreign readback', async () => {
+    const api = await vi.importActual<typeof import('../../app/dashboard/payroll/payroll-api')>('../../app/dashboard/payroll/payroll-api');
+    const rawBatch = { ...batch, formatVersion: 1, contentSha256: 'a'.repeat(64), rowCount: 1,
+      totalPayableMinutes: 450, createdAt: '2026-10-01T12:00:00.000Z', lines: [] };
+    mocks.create.mockImplementation(api.createPayrollExport); mocks.period.mockImplementation(api.fetchPayrollPeriod);
+    mocks.json.mockResolvedValueOnce(rawBatch).mockResolvedValueOnce(detail('B'));
+    await render().exportPeriod(2);
+    expect(mocks.create).toHaveBeenCalledExactlyOnceWith('A', 2, expect.any(String));
+    expect(mocks.json).toHaveBeenCalledTimes(2);
+    expect(render().selectedPeriodId).toBe('A'); expect(state.detail?.period.id).toBe('A');
+    expect(state.detail?.period.exportBatch?.id).toBe('batch-A');
+    expect(state.notice).toContain('Payroll export created for 2 credits; balance 8');
+    expect(state.error).toContain('succeeded'); expect(state.error).toContain('do not repeat');
+    expect(attemptWrites()).toHaveLength(1);
+    expect(window.sessionStorage.getItem(attemptWrites()[0].key)).toBeNull();
+    expect(state.periods.find(period => period.id === 'B')?.exportBatch).toBeUndefined();
+  });
+  it('keeps a verified differing charge terminal through the real API without clearing the warning', async () => {
+    const api = await vi.importActual<typeof import('../../app/dashboard/payroll/payroll-api')>('../../app/dashboard/payroll/payroll-api');
+    const rawBatch = { ...batch, formatVersion: 1, contentSha256: 'a'.repeat(64), rowCount: 1,
+      totalPayableMinutes: 450, createdAt: '2026-10-01T12:00:00.000Z', lines: [],
+      settlement: { consumedCredits: 3, newBalance: 7 } };
+    mocks.create.mockImplementation(api.createPayrollExport); mocks.period.mockImplementation(api.fetchPayrollPeriod);
+    mocks.json.mockResolvedValueOnce(rawBatch).mockResolvedValueOnce({ ...detail('A'), period: { ...summary('A'), exportBatch: rawBatch } });
+    await render().exportPeriod(2);
+    expect(mocks.create).toHaveBeenCalledTimes(1); expect(mocks.json).toHaveBeenCalledTimes(2);
+    expect(render().notice).toBe('The payroll export was created but its credit charge differs from the confirmation. Do not create it again.');
+    expect(state.error).toBeNull(); expect(state.detail?.period.exportBatch?.settlement).toEqual({ consumedCredits: 3, newBalance: 7 });
+    expect(attemptWrites()).toHaveLength(1); expect(window.sessionStorage.getItem(attemptWrites()[0].key)).toBeNull();
+  });
   it('exports current A with one exact-cost request and acknowledged readback', async () => {
     await render().exportPeriod(2);
     expect(mocks.create).toHaveBeenCalledExactlyOnceWith('A', 2, expect.any(String));

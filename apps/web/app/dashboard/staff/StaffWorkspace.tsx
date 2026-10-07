@@ -191,6 +191,12 @@ export function StaffWorkspace({ currentUserPublicId, creationRecoveryScope, can
     const [pendingRoleDeletion, setPendingRoleDeletion] = useState<RoleCatalogItem | null>(null);
     const [roleDeletionName, setRoleDeletionName] = useState('');
     const [schedulingProfileUser, setSchedulingProfileUser] = useState<StaffUser | null>(null);
+    const staffDrawerOpener = useRef<HTMLElement | null>(null);
+    const isStaffDrawerOpen = schedulingProfileUser !== null;
+    const openStaffDrawer = (user: StaffUser, opener: HTMLElement) => {
+        staffDrawerOpener.current = opener;
+        setSchedulingProfileUser(user);
+    };
     const [roleDrafts, setRoleDrafts] = useState<Record<string, string[]>>({});
     const [roleAssignmentMessages, setRoleAssignmentMessages] = useState<Record<string, { kind: 'error' | 'notice'; text: string }>>({});
     const canOpenStaffDrawer = canManageSchedulingProfiles || canAdminister || (canAssignRoles && canReadRoles);
@@ -222,6 +228,15 @@ export function StaffWorkspace({ currentUserPublicId, creationRecoveryScope, can
             document.body.style.overflow = previousOverflow;
         };
     }, [schedulingProfileUser]);
+
+    useEffect(() => {
+        if (isStaffDrawerOpen) return;
+        const opener = staffDrawerOpener.current;
+        staffDrawerOpener.current = null;
+        // The drawer has unmounted, so its focus trap and autofocus cannot
+        // steal focus back from the exact row or button that opened it.
+        if (opener?.isConnected) opener.focus();
+    }, [isStaffDrawerOpen]);
 
     const loadWorkspace = useCallback(async () => {
         setIsLoading(true);
@@ -663,6 +678,19 @@ export function StaffWorkspace({ currentUserPublicId, creationRecoveryScope, can
                 className="surface-card staff-table-scroll"
                 aria-label="Staff directory table"
                 tabIndex={0}
+                onFocus={(event) => {
+                    const target = event.target;
+                    if (target === event.currentTarget || !target.closest('td')) return;
+                    // Native focus can leave a partly visible table control
+                    // clipped. Reveal the whole control inside this scroller.
+                    const scroller = event.currentTarget;
+                    const viewport = scroller.getBoundingClientRect();
+                    const left = viewport.left + scroller.clientLeft;
+                    const right = left + scroller.clientWidth;
+                    const control = target.getBoundingClientRect();
+                    if (control.right > right) scroller.scrollLeft += control.right - right;
+                    else if (control.left < left) scroller.scrollLeft -= left - control.left;
+                }}
                 style={{ overflowX: 'auto' }}
             >
                 <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 980 }}>
@@ -709,13 +737,13 @@ export function StaffWorkspace({ currentUserPublicId, creationRecoveryScope, can
                                     if (!canOpenStaffDrawer) return;
                                     const target = event.target as HTMLElement;
                                     if (target.closest('button, a, input, select, textarea, label')) return;
-                                    setSchedulingProfileUser(user);
+                                    openStaffDrawer(user, event.currentTarget);
                                 }}
                                 onKeyDown={(event) => {
                                     if (!canOpenStaffDrawer || event.target !== event.currentTarget) return;
                                     if (event.key === 'Enter' || event.key === ' ') {
                                         event.preventDefault();
-                                        setSchedulingProfileUser(user);
+                                        openStaffDrawer(user, event.currentTarget);
                                     }
                                 }}
                                 style={{ borderBottom: index < users.length - 1 ? '1px solid var(--border)' : 'none' }}
@@ -822,7 +850,7 @@ export function StaffWorkspace({ currentUserPublicId, creationRecoveryScope, can
                                         <div style={{ display: 'flex', gap: '0.4rem', flexWrap: 'wrap' }}>
                                             {canAdminister && user.id !== currentUserPublicId ? <Button size="sm" variant="outline" onClick={() => setIdentityUserId(user.id)}>Edit identity</Button> : null}
                                             {canManageSchedulingProfiles ? (
-                                                <Button size="sm" variant="outline" onClick={() => setSchedulingProfileUser(user)}>
+                                                <Button size="sm" variant="outline" onClick={(event) => openStaffDrawer(user, event.currentTarget)}>
                                                     <CalendarClock aria-hidden="true" size={14} />
                                                     Edit schedule profile
                                                 </Button>
