@@ -83,6 +83,52 @@
 }
 
 @media (max-width: 768px) {
+    /* A compact brand/role stack preserves the existing menu and logout order.
+       Only non-semantic layout wrappers flatten; navigation landmarks stay intact. */
+    .shell .sidebarInner > .brand {
+        display: grid;
+        grid-template-columns: 34px minmax(0, 1fr);
+        gap: 2px 8px;
+        align-items: center;
+        padding: 6px 12px !important;
+    }
+
+    .brandRow,
+    .brandText {
+        display: contents !important;
+    }
+
+    .brandMark {
+        grid-column: 1;
+        grid-row: 1 / 3;
+    }
+
+    .brandName {
+        grid-column: 2;
+        grid-row: 1;
+        font-size: 1rem;
+        line-height: 1.25;
+    }
+
+    .shell .roleBadge {
+        grid-column: 2;
+        grid-row: 2;
+        justify-self: start;
+        min-width: 0;
+        max-width: 100%;
+        height: auto;
+        min-height: 20px;
+        padding: 2px 8px;
+        line-height: 1.3;
+        white-space: normal;
+        overflow-wrap: anywhere;
+    }
+
+    .shell .topbar {
+        min-height: 48px;
+        padding-block: 2px;
+    }
+
     .heading {
         font-size: 0.875rem;
         line-height: 1.25;

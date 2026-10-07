@@ -24,9 +24,10 @@ export default async function AdminLayout({ children }: { children: React.ReactN
             >
                 <div className={`workspace-sidebar-inner ${styles.sidebarInner}`} style={{ borderColor: '#f0d5de' }}>
                     <div className={styles.brand} style={{ padding: '1.05rem 1rem', borderBottom: '1px solid #f0d5de' }}>
-                        <div style={{ display: 'flex', alignItems: 'center', gap: '0.62rem', marginBottom: '0.55rem' }}>
+                        <div className={styles.brandRow} style={{ display: 'flex', alignItems: 'center', gap: '0.62rem', marginBottom: '0.55rem' }}>
                             <div
                                 aria-hidden="true"
+                                className={styles.brandMark}
                                 style={{
                                     width: 34,
                                     height: 34,
@@ -37,14 +38,14 @@ export default async function AdminLayout({ children }: { children: React.ReactN
                             >
                                 <LunchLineupMark size={34} />
                             </div>
-                            <div>
-                                <div style={{ fontWeight: 800, letterSpacing: 0, color: 'var(--text-primary)' }}>LunchLineup</div>
+                            <div className={styles.brandText}>
+                                <div className={styles.brandName} style={{ fontWeight: 800, letterSpacing: 0, color: 'var(--text-primary)' }}>LunchLineup</div>
                                 <div className="workspace-kicker">Platform Admin</div>
                             </div>
                         </div>
 
                         <span
-                            className="badge"
+                            className={`badge ${styles.roleBadge}`}
                             style={{
                                 fontSize: '0.62rem',
                                 textTransform: 'uppercase',

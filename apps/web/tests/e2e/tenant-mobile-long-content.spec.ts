@@ -262,6 +262,39 @@ test.describe('Tenant long-content mobile layout', () => {
           const label = parts.nth(0).locator('span').first(), value = parts.nth(1), caption = parts.nth(2);
           await expect(label).toHaveText(metrics[index][0]); await expect(value).toHaveText(metrics[index][1]); await expect(caption).toHaveText(captions[index]);
           for (const target of [label, value, caption]) evidence.push({ width, label: 'summary', geometry: await textGeometry(target, true) });
+          const numericGeometry = await textGeometry(value, true), cardBox = await cell.boundingBox();
+          expect(cardBox).not.toBeNull(); if (!cardBox) throw new Error('Missing summary card bounds');
+          expect(numericGeometry.text, 'complete summary numbers must stay on one readable line').toHaveLength(1);
+          expect(numericGeometry.text[0].left).toBeGreaterThanOrEqual(cardBox.x);
+          expect(numericGeometry.text[0].right).toBeLessThanOrEqual(cardBox.x + cardBox.width);
+          expect(await value.evaluate(node => Number.parseFloat(getComputedStyle(node).fontSize)), 'summary numbers must remain at least 16px').toBeGreaterThanOrEqual(16);
+          evidence.push({ width, label: 'single-line exact summary number', geometry: numericGeometry, cardBox });
+        }
+        // A long selected identity must not expand the management grid's
+        // shared implicit track or push either card outside the document.
+        for (const title of ['Create tenant', 'Selected tenant']) {
+          const panel = page.getByRole('article').filter({ has: page.getByRole('heading', { name: title, exact: true }) });
+          await expect(panel).toHaveCount(1);
+          const box = await panel.boundingBox(); expect(box).not.toBeNull();
+          if (!box) throw new Error(`Missing ${title} panel bounds`);
+          expect(box.x).toBeGreaterThanOrEqual(0); expect(box.x + box.width).toBeLessThanOrEqual(width);
+          evidence.push({ width, label: 'management panel horizontal containment', title, box });
+          if (title === 'Selected tenant') {
+            const identity = panel.getByText(`${LONG_NAME} · ${LONG_SLUG}`, { exact: true });
+            await expect(identity).toHaveText(`${LONG_NAME} · ${LONG_SLUG}`);
+            const geometry = await identity.evaluate(node => {
+              const range = document.createRange(); range.selectNodeContents(node);
+              const style = getComputedStyle(node);
+              return { text: [...range.getClientRects()].filter(rect => rect.width > 0 && rect.height > 0).map(rect => rect.toJSON()),
+                visibility: style.visibility, opacity: Number(style.opacity) };
+            });
+            expect(geometry.visibility).toBe('visible'); expect(geometry.opacity).toBeGreaterThan(0);
+            expect(geometry.text.length).toBeGreaterThan(0);
+            for (const rect of geometry.text) {
+              expect(rect.left).toBeGreaterThanOrEqual(box.x); expect(rect.right).toBeLessThanOrEqual(box.x + box.width);
+            }
+            evidence.push({ width, label: 'complete selected identity wraps within panel', geometry });
+          }
         }
         const cells = row.getByRole('cell'); await expect(cells).toHaveCount(7);
         for (let index = 0; index < 7; index += 1) await expect(cells.nth(index)).toHaveAttribute('headers', `tenant-directory-${fields[index].toLowerCase()}`);

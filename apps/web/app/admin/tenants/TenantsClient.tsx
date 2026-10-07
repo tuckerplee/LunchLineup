@@ -539,7 +539,7 @@ export function TenantsClient() {
                 {summary.map((item, index) => {
                     const palette = SUMMARY_COLORS[index];
                     return (
-                        <article key={palette.title} className={`surface-card ${styles.summaryCard}`} style={{ padding: '0.95rem', background: palette.bg }}>
+                        <article key={palette.title} className={`surface-card ${styles.summaryCard} ${index === 3 ? styles.summaryCredits : ''}`} style={{ padding: '0.95rem', background: palette.bg }}>
                             <div className={styles.summaryHeading} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.55rem' }}>
                                 <span className={styles.summaryLabel} style={{ fontSize: '0.78rem', color: 'var(--text-secondary)', fontWeight: 650 }}>{palette.title}</span>
                                 <span className={styles.summaryIcon} aria-hidden="true"

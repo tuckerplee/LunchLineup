@@ -269,6 +269,88 @@ async function visibleActionContext(page: Page, action: Locator, context: Locato
   }
 }
 
+// Exercise the existing shell through native keyboard input, without logging out
+// or navigating away from the owned read-only/lifecycle fixture.
+async function compactAdminShell(page: Page, width: number) {
+  const toggle = page.getByRole('button', { name: 'Admin navigation', exact: true });
+  const topbar = page.locator('header.workspace-topbar');
+  const mobileLogout = topbar.getByRole('link', { name: 'Sign out', exact: true });
+  if (width > 768) {
+    if (width > 1024) { await expect(toggle).toBeHidden(); await expect(mobileLogout).toBeHidden(); }
+    return;
+  }
+  await page.evaluate(() => window.scrollTo(0, 0));
+  const sidebar = page.getByRole('complementary', { name: 'Admin sidebar', exact: true });
+  const nav = page.getByRole('navigation', { name: 'Admin navigation', exact: true, includeHidden: true });
+  await expect(toggle).toHaveAttribute('aria-expanded', 'false'); await expect(nav).toBeHidden();
+  await expect(page.locator('a.workspace-mobile-signout')).toHaveCount(1);
+  await expect(page.getByRole('link', { name: 'Sign out', exact: true })).toHaveCount(1);
+  await expect(mobileLogout).toHaveAttribute('href', '/auth/logout');
+  const text = [sidebar.getByText('LunchLineup', { exact: true }), sidebar.getByText('SUPER ADMIN', { exact: true }),
+    topbar.getByText('System Administration', { exact: true }), topbar.locator(':scope > div:last-child > .badge')];
+  await expect(text[3]).toHaveText('development'); // This suite requires the isolated mock/dev server.
+  const evidence: unknown[] = [];
+  for (const target of [...text, toggle, mobileLogout]) {
+    await expect(target).toBeVisible(); await expect(target).toBeInViewport({ ratio: 1 });
+    const geometry = await target.evaluate(node => {
+      const range = document.createRange(); range.selectNodeContents(node);
+      const clips = [];
+      for (let parent: Element | null = node; parent; parent = parent.parentElement) {
+        const style = getComputedStyle(parent), box = parent.getBoundingClientRect();
+        clips.push({ x: ['hidden', 'clip', 'auto', 'scroll'].includes(style.overflowX), y: ['hidden', 'clip', 'auto', 'scroll'].includes(style.overflowY),
+          left: box.left + parent.clientLeft, right: box.left + parent.clientLeft + parent.clientWidth,
+          top: box.top + parent.clientTop, bottom: box.top + parent.clientTop + parent.clientHeight });
+      }
+      return { content: node.textContent, box: node.getBoundingClientRect().toJSON(), text: [...range.getClientRects()].filter(r => r.width > 0 && r.height > 0).map(r => r.toJSON()), clips, viewport: { width: innerWidth, height: innerHeight } };
+    });
+    evidence.push(geometry);
+    for (const rect of [geometry.box, ...geometry.text]) {
+      expect(rect.left).toBeGreaterThanOrEqual(0); expect(rect.right).toBeLessThanOrEqual(width);
+      expect(rect.top).toBeGreaterThanOrEqual(0); expect(rect.bottom).toBeLessThanOrEqual(geometry.viewport.height);
+      for (const clip of geometry.clips) {
+        if (clip.x) { expect(rect.left).toBeGreaterThanOrEqual(clip.left); expect(rect.right).toBeLessThanOrEqual(clip.right); }
+        if (clip.y) { expect(rect.top).toBeGreaterThanOrEqual(clip.top); expect(rect.bottom).toBeLessThanOrEqual(clip.bottom); }
+      }
+    }
+  }
+  for (const control of [toggle, mobileLogout]) {
+    const box = await control.boundingBox(); expect(box).not.toBeNull(); if (!box) throw new Error('Missing mobile shell control bounds');
+    expect(box.width).toBeGreaterThanOrEqual(44); expect(box.height).toBeGreaterThanOrEqual(44);
+  }
+  const shell = await topbar.evaluate(node => ({ box: node.getBoundingClientRect().toJSON(), position: getComputedStyle(node).position }));
+  expect(shell.position).toBe('sticky');
+  expect(shell.box.bottom, 'seeded mobile shell must leave useful space for records').toBeLessThanOrEqual(112);
+  await test.info().attach(`tenant-admin-shell-${width}-closed`, { contentType: 'application/json', body: JSON.stringify({ width, shell, evidence }) });
+  await test.info().attach(`tenant-admin-shell-${width}-closed-viewport`, { contentType: 'image/png', body: await page.screenshot({ timeout: 5000 }) });
+  const trail: string[] = [];
+  // Reach the menu from the existing focused row action; never focus a target synthetically.
+  for (let step = 0; step < 32 && !(await toggle.evaluate(node => node === document.activeElement)); step += 1) {
+    await page.keyboard.press('Shift+Tab');
+    trail.push(await page.evaluate(() => `${document.activeElement?.tagName}:${document.activeElement?.getAttribute('aria-label') ?? document.activeElement?.textContent?.trim() ?? ''}`));
+  }
+  await expect(toggle).toBeFocused(); await page.keyboard.press('Tab'); await expect(mobileLogout).toBeFocused();
+  await page.keyboard.press('Shift+Tab'); await expect(toggle).toBeFocused();
+  await page.keyboard.press('Enter'); await expect(toggle).toHaveAttribute('aria-expanded', 'true'); await expect(nav).toBeVisible();
+  const expectedLinks = [
+    ['Calendar', '/dashboard/scheduling'], ['Team Dashboard', '/dashboard'], ['Lunch & Breaks', '/dashboard/lunch-breaks'],
+    ['Staff', '/dashboard/staff'], ['Locations', '/dashboard/locations'], ['Admin Overview', '/admin'],
+    ['Tenants', '/admin/tenants'], ['Users', '/admin/users'], ['Credits', '/admin/credits'], ['Plans', '/admin/plans'],
+  ];
+  await expect(nav.getByRole('link')).toHaveCount(expectedLinks.length);
+  for (const [name, href] of expectedLinks) {
+    const link = nav.getByRole('link', { name, exact: true }); await expect(link).toHaveAttribute('href', href);
+    await page.keyboard.press('Tab'); await expect(link).toBeFocused(); await expect(link).toBeInViewport({ ratio: 1 });
+    const box = await link.boundingBox(); expect(box).not.toBeNull(); if (!box) throw new Error('Missing admin navigation link bounds');
+    expect(box.width).toBeGreaterThanOrEqual(44); expect(box.height).toBeGreaterThanOrEqual(44);
+    expect(box.x).toBeGreaterThanOrEqual(0); expect(box.x + box.width).toBeLessThanOrEqual(width);
+  }
+  await expect(nav.getByRole('link', { name: 'Tenants', exact: true })).toHaveAttribute('aria-current', 'page');
+  await test.info().attach(`tenant-admin-shell-${width}-open-viewport`, { contentType: 'image/png', body: await page.screenshot({ timeout: 5000 }) });
+  await page.keyboard.press('Escape'); await expect(nav).toBeHidden(); await expect(toggle).toHaveAttribute('aria-expanded', 'false'); await expect(toggle).toBeFocused();
+  await page.keyboard.press('Tab'); await expect(mobileLogout).toBeFocused();
+  await test.info().attach(`tenant-admin-shell-${width}-keyboard`, { contentType: 'application/json', body: JSON.stringify({ trail, expectedLinks, escapedToMenu: true, closedNextTabIsLogout: true }) });
+}
+
 async function actionLayout(page: Page) {
   const original = page.viewportSize(); if (!original) throw new Error('Explicit canonical viewport required');
   const widths = test.info().project.name === 'chromium' ? [...new Set([320, 393, 768, original.width])] : [original.width];
@@ -291,6 +373,9 @@ async function actionLayout(page: Page) {
         contentType: 'application/json', body: JSON.stringify(firstGeometry) });
       if (width <= 768) {
         expect(firstGeometry.viewportOnlyIntersectionRatio, 'first tenant identity before scrolling').toBe(1);
+        const organizationBox = await target(page, A).getByRole('cell').nth(0).boundingBox();
+        expect(organizationBox).not.toBeNull(); if (!organizationBox) throw new Error('Missing first organization cell bounds');
+        expect(firstGeometry.box.width, 'tenant name must use the complete mobile identity column').toBeGreaterThanOrEqual(organizationBox.width - 1);
         for (const field of ['plan', 'status']) {
           const cell = target(page, A).locator(`td[headers="tenant-directory-${field}"]`);
           await expect(cell, `first tenant ${field} before scrolling`).toBeInViewport({ ratio: 1 });
@@ -520,6 +605,7 @@ async function actionLayout(page: Page) {
       const size = await page.evaluate(() => ({ viewport: innerWidth, document: document.documentElement.scrollWidth }));
       await test.info().attach(`tenant-archive-${width}-geometry`, { contentType: 'application/json', body: JSON.stringify(size) });
       expect(size.document, 'internal table scrolling must not overflow the document').toBeLessThanOrEqual(size.viewport + 1);
+      await compactAdminShell(page, width);
     }
   } finally { await page.setViewportSize(original); }
 }
