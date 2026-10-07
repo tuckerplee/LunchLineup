@@ -20,6 +20,9 @@ const backing = Array.from({ length: 100 }, (_, index) => ({
 const last = backing[49];
 const cursor = Buffer.from(JSON.stringify({ v: 1, timestamp: last.createdAt, id: last.id })).toString('base64url');
 const paths = [`${ROOT}?limit=50`, `${ROOT}?${new URLSearchParams({ limit: '50', cursor })}`];
+// This closed mock profile uses the default Next development server with StrictMode.
+// Its mount effect performs two initial reads; the explicit Load more action performs one.
+const applicationPaths = [paths[0], paths[0], paths[1]];
 const pages = [0, 1].map(index => ({ data: backing.slice(index * 50, index * 50 + 50), pagination: {
   limit: 50, maxLimit: 200, returned: 50, hasMore: index === 0, nextCursor: index === 0 ? cursor : null,
   window: { startDate: null, endDate: null },
@@ -45,7 +48,9 @@ async function fixture(page: Page) {
       requests.push(row);
       try {
         const index = paths.indexOf(row.path);
-        if (requests.length > 16 || row.method !== 'GET' || index < 0 || row.body !== null) {
+        const applicationIndex = requests.filter(entry => !entry.probe).length - 1;
+        if (requests.length > 16 || row.method !== 'GET' || index < 0 || row.body !== null
+          || (!row.probe && row.path !== applicationPaths[applicationIndex])) {
           throw new Error(`Unadmitted read-only aggregate request: ${row.method} ${row.path}`);
         }
         await route.fulfill({ status: 200, headers: { 'content-type': 'application/json', 'cache-control': 'private, no-store',
@@ -61,17 +66,30 @@ async function fixture(page: Page) {
   return {
     requests,
     async load(index: number, action: () => Promise<unknown>) {
-      const expectedSequence = requests.length + 1;
-      const response = page.waitForResponse(value => value.headers()[WIRE] === String(expectedSequence) && value.request().headers()[PROBE] !== 'readback', { timeout: 5000 });
-      pending.push(response); void response.catch(() => undefined);
-      await action(); const native = await response;
-      expect(native.request().method()).toBe('GET');
-      expect(new URL(native.url()).pathname + new URL(native.url()).search).toBe(paths[index]);
-      expect(native.status()).toBe(200); expect(await bounded(native.finished(), 'native aggregate completion')).toBeNull();
-      expect(await bounded(native.text(), 'native aggregate body')).toBe(bodies[index]);
-      const sequence = Number(native.headers()[WIRE]);
-      await expect.poll(() => requests.find(row => row.sequence === sequence)?.delivered).toBe(true);
-      expect(requests.find(row => row.sequence === sequence)).toMatchObject({ method: 'GET', probe: false, delivered: true });
+      const firstSequence = requests.length + 1;
+      // Register every response before navigation/click; never race a second listener
+      // against the development effect replay or discard its transport evidence.
+      const responses = Array.from({ length: index === 0 ? 2 : 1 }, (_, offset) => page.waitForResponse(
+        value => value.headers()[WIRE] === String(firstSequence + offset) && value.request().headers()[PROBE] !== 'readback',
+        { timeout: 5000 },
+      ));
+      for (const response of responses) { pending.push(response); void response.catch(() => undefined); }
+      await action(); const natives = await Promise.all(responses);
+      for (const native of natives) {
+        expect(native.request().method()).toBe('GET');
+        expect(native.request().postData()).toBeNull();
+        expect(new URL(native.url()).pathname + new URL(native.url()).search).toBe(paths[index]);
+        expect(native.status()).toBe(200);
+      }
+      const completions = await bounded(Promise.all(natives.map(native => native.finished())), 'native aggregate completion');
+      for (const completion of completions) expect(completion).toBeNull();
+      const receivedBodies = await bounded(Promise.all(natives.map(native => native.text())), 'native aggregate body');
+      for (const body of receivedBodies) expect(body).toBe(bodies[index]);
+      const sequences = natives.map(native => Number(native.headers()[WIRE]));
+      await expect.poll(() => sequences.every(sequence => requests.find(row => row.sequence === sequence)?.delivered)).toBe(true);
+      for (const sequence of sequences) {
+        expect(requests.find(row => row.sequence === sequence)).toMatchObject({ method: 'GET', probe: false, delivered: true });
+      }
     },
     async read() {
       const values = [];
@@ -151,6 +169,7 @@ test.describe('Tenant aggregate credit summary layout', () => {
   test.use({ locale: 'en-US' });
   for (const width of [320, 393, 768, 1280]) {
     test(`keeps max-wallet totals exact and readable after native load more at ${width}px`, async ({ page }) => {
+      expect(process.env.E2E_WEB_COMMAND, 'This fixture requires the default mock Next dev server with StrictMode').toBeUndefined();
       const reset = await page.request.post('/api/v1/__e2e/reset'); expect(reset.ok()).toBeTruthy();
       await page.setViewportSize({ width, height: 720 });
       await loginAsSeedSuperAdmin(page);
@@ -193,7 +212,7 @@ test.describe('Tenant aggregate credit summary layout', () => {
         }
         await expect(directory.getByRole('button', { name: 'Load more tenants', exact: true })).toHaveCount(0);
         expect(await adapter.read()).toEqual(original);
-        expect(adapter.requests.filter(row => !row.probe).map(row => row.path)).toEqual(paths);
+        expect(adapter.requests.filter(row => !row.probe).map(row => row.path)).toEqual(applicationPaths);
         expect(adapter.requests.every(row => row.method === 'GET' && row.body === null)).toBe(true);
         expect(writes).toEqual([]);
       } catch (error) { primary = error; throw error; }

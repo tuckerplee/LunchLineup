@@ -46,4 +46,52 @@ describe('bounded HTTP safety primitives', () => {
   it('parses JSON only after the complete body fits within the limit', async () => {
     await expect(readBoundedJson(new Response('{"ok":true}'), 32)).resolves.toEqual({ ok: true });
   });
+
+  it('releases the body lock after exact-limit multichunk EOF without cancellation', async () => {
+    let canceled = 0;
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new Uint8Array([0, 255]));
+        controller.enqueue(new Uint8Array([128, 1]));
+        controller.close();
+      },
+      cancel() { canceled += 1; },
+    });
+    await expect(readBoundedResponseBytes(new Response(body), 4)).resolves.toEqual(new Uint8Array([0, 255, 128, 1]));
+    expect(body.locked).toBe(false);
+    expect(canceled).toBe(0);
+  });
+
+  it.each([false, true])('cancels overflow and releases the lock when cancellation rejects: %s', async (cancelRejects) => {
+    const cancellationFailure = new Error('cancellation failed');
+    let canceled = 0;
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new Uint8Array([1, 2, 3]));
+        controller.enqueue(new Uint8Array([4, 5]));
+      },
+      cancel() {
+        canceled += 1;
+        if (cancelRejects) return Promise.reject(cancellationFailure);
+      },
+    });
+    await expect(readBoundedResponseBytes(new Response(body), 4)).rejects.toBeInstanceOf(ResponseBodyLimitError);
+    expect(canceled).toBe(1);
+    expect(body.locked).toBe(false);
+  });
+
+  it.each([
+    new Error('body read failed'),
+    new DOMException('body aborted', 'AbortError'),
+  ])('preserves the exact read rejection and releases the body lock: %s', async (failure) => {
+    let pulls = 0;
+    const body = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        if (pulls++ === 0) controller.enqueue(new Uint8Array([1, 2]));
+        else controller.error(failure);
+      },
+    });
+    await expect(readBoundedResponseBytes(new Response(body), 4)).rejects.toBe(failure);
+    expect(body.locked).toBe(false);
+  });
 });
