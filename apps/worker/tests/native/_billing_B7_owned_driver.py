@@ -34,9 +34,9 @@ JSON_BYTES = 65536
 SOURCE_BYTES = 8388608
 DRIVER_PATH = "apps/worker/tests/native/_billing_B7_owned_driver.py"
 RUNTIME_PINS = {
-    "apps/worker/src/billing_usage.py": "778283496621bf4694c7062f3ad6954b9aa5ac3243403c67ee084f6bcddc9729",
-    "apps/worker/tests/native/_billing_native_target.py": "ea2d53d1564991d048694d4b49b2b8fb61cb587af8d1c436b2d6acdd421a4f23",
-    "apps/worker/tests/native/_billing_B7_worker_session.py": "0205576e10494366959f85cdfbb018d3f1096c76d02926224dd397acfbba62da",
+    "apps/worker/src/billing_usage.py": "a0e80169c98368eb7c34b1904790cb819a603d5d0f89022fa9edf996e702cc63",
+    "apps/worker/tests/native/_billing_native_target.py": "098bb987b17713332963e7344a6f22a5fc9e0cc02e0037ee21f3a9aeb9cadd7e",
+    "apps/worker/tests/native/_billing_B7_worker_session.py": "5a04c5154d8aff59c51707b0a398ee2377164f1b90b52ef4be9803b839cf0673",
     "apps/worker/tests/native/_billing_B7_phase_journal.py": "82ec29aed709a789bb0d5245060a87e8e59cf2ae91aa536c6173a4d9d6bd520d",
     "apps/api/test/native/billing-api-rotation.native.ts": "aa7246ce4b29197a38544e8304e23aed59dbd67db1c553d707b597f38f9a1934",
     "apps/api/vitest.billing-native.config.ts": "e8b334e28c009e272321ee691661a9384dbde52a6570855ab0afe95365e63877",

@@ -25,7 +25,7 @@ from urllib.error import HTTPError
 from urllib.parse import parse_qs
 import uuid
 
-WORKER_SHA256 = "778283496621bf4694c7062f3ad6954b9aa5ac3243403c67ee084f6bcddc9729"
+WORKER_SHA256 = "a0e80169c98368eb7c34b1904790cb819a603d5d0f89022fa9edf996e702cc63"
 SCHEMA_SHA256 = "08a4febaeffb80bd04b36b78bfd96881f14df0bd7d0c84b70c672a3ccb1ad20d"
 FUNCTIONS = {
     "public.set_current_tenant(text)",
