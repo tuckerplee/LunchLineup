@@ -356,14 +356,153 @@ test.describe('validated public-web P1 regressions', () => {
     await expect(page.getByRole('heading', { name: 'MFA setup needs help' })).toBeVisible();
   });
 
-  test('mock login boots the dashboard without runtime loader errors', async ({ page }) => {
+  test('mock login boots the dashboard without runtime loader errors', async ({ page }, testInfo) => {
     const pageErrors: string[] = [];
-    page.on('pageerror', (error) => pageErrors.push(error.message));
-
-    await loginAsSeedAdmin(page, '/dashboard');
-    await expect(page.getByRole('heading', { name: 'Your dashboard' })).toBeVisible();
-    await expect(page.getByRole('link', { name: /^Locations 1 location/ })).toContainText('1');
-    expect(pageErrors).toEqual([]);
+    const startedAt = Date.now();
+    const events: Record<string, unknown>[] = [];
+    const requests: Record<string, unknown>[] = [];
+    const requestRows = new WeakMap<Request, Record<string, unknown>>();
+    const dropped = { events: 0, requests: 0 };
+    const lifecyclePrefix = '__lunchlineupMockLoginLifecycle:';
+    let nextRequestId = 0;
+    let lastDocumentState: Record<string, unknown> | null = null;
+    let failed = false;
+    let primaryFailure: unknown;
+    const safeUrl = (raw: string) => {
+      try {
+        const url = new URL(raw);
+        return ['http:', 'https:'].includes(url.protocol)
+          ? `${url.origin}${url.pathname}`.slice(0, 2048) : '[non-http URL omitted]';
+      } catch { return '[unparseable URL omitted]'; }
+    };
+    const safeText = (raw: string) => raw
+      .replace(/https?:\/\/[^\s"'<>]+/g, safeUrl)
+      .replace(/[^\s"'<>]*[?#][^\s"'<>]*/g, '[URL suffix omitted]')
+      .split(e2eAdminPin).join('[seed PIN omitted]')
+      .slice(0, 2000);
+    const record = (kind: string, detail: Record<string, unknown> = {}) => {
+      if (events.length < 256) events.push({ elapsedMs: Date.now() - startedAt, kind, ...detail });
+      else dropped.events += 1;
+    };
+    const onRequest = (request: Request) => {
+      const row = { id: ++nextRequestId, url: safeUrl(request.url()), method: request.method(),
+        resourceType: request.resourceType(), navigation: request.isNavigationRequest(), startedMs: Date.now() - startedAt };
+      if (requests.length < 128) { requests.push(row); requestRows.set(request, row); }
+      else dropped.requests += 1;
+      record('request', { requestId: row.id, url: row.url });
+    };
+    const onResponse = (response: Response) => {
+      const row = requestRows.get(response.request());
+      if (row) Object.assign(row, { status: response.status(), responseMs: Date.now() - startedAt });
+      record('response', { requestId: row?.id, url: safeUrl(response.url()), status: response.status() });
+    };
+    const onFinished = (request: Request) => {
+      const row = requestRows.get(request);
+      if (row) row.finishedMs = Date.now() - startedAt;
+      record('requestfinished', { requestId: row?.id, url: safeUrl(request.url()) });
+    };
+    const onFailed = (request: Request) => {
+      const row = requestRows.get(request);
+      const error = safeText(request.failure()?.errorText ?? 'Unknown request failure');
+      if (row) Object.assign(row, { failedMs: Date.now() - startedAt, error });
+      record('requestfailed', { requestId: row?.id, url: safeUrl(request.url()), error });
+    };
+    const onFrame = (frame: Frame) => {
+      if (frame === page.mainFrame()) record('mainframenavigated', { url: safeUrl(frame.url()) });
+    };
+    const onDomContentLoaded = () => record('playwright-domcontentloaded');
+    const onLoad = () => record('playwright-load');
+    const onClose = () => record('page-close');
+    const onCrash = () => record('page-crash');
+    const onPageError = (error: Error) => {
+      pageErrors.push(error.message); // Preserve the existing zero-runtime-errors assertion.
+      record('pageerror', { message: safeText(error.message) });
+    };
+    const onConsole = (message: ConsoleMessage) => {
+      const text = message.text();
+      if (text.startsWith(lifecyclePrefix)) {
+        try {
+          const state = JSON.parse(text.slice(lifecyclePrefix.length, lifecyclePrefix.length + 8192)) as Record<string, unknown>;
+          if (!['init', 'readystatechange', 'DOMContentLoaded', 'load', 'pagehide'].includes(String(state.event))
+            || !['loading', 'interactive', 'complete'].includes(String(state.readyState))
+            || typeof state.timeOrigin !== 'number' || !Number.isFinite(state.timeOrigin)
+            || typeof state.performanceMs !== 'number' || !Number.isFinite(state.performanceMs)) throw new Error('Unexpected lifecycle shape');
+          lastDocumentState = { event: state.event, readyState: state.readyState, timeOrigin: state.timeOrigin, performanceMs: state.performanceMs };
+          record('document-lifecycle', { state: lastDocumentState });
+        } catch { record('document-lifecycle-decode-error'); }
+      } else if (message.type() === 'error') {
+        record('console-error', { message: safeText(text), url: safeUrl(message.location().url) });
+      }
+    };
+    page.on('request', onRequest);
+    page.on('response', onResponse);
+    page.on('requestfinished', onFinished);
+    page.on('requestfailed', onFailed);
+    page.on('framenavigated', onFrame);
+    page.on('domcontentloaded', onDomContentLoaded);
+    page.on('load', onLoad);
+    page.on('close', onClose);
+    page.on('crash', onCrash);
+    page.on('pageerror', onPageError);
+    page.on('console', onConsole);
+    try {
+      // Passive lifecycle observation only: no request routing or navigation wait changes.
+      await page.addInitScript(({ prefix }) => {
+        if (window !== window.top) return;
+        const emit = console.debug.bind(console);
+        let count = 0;
+        const report = (event: string) => {
+          if (++count > 16) return;
+          emit(prefix + JSON.stringify({ event, readyState: document.readyState,
+            timeOrigin: performance.timeOrigin, performanceMs: performance.now() }));
+        };
+        document.addEventListener('readystatechange', () => report('readystatechange'));
+        document.addEventListener('DOMContentLoaded', () => report('DOMContentLoaded'), { once: true });
+        window.addEventListener('load', () => report('load'), { once: true });
+        window.addEventListener('pagehide', () => report('pagehide'), { once: true });
+        report('init');
+      }, { prefix: lifecyclePrefix });
+      record('login-start');
+      await loginAsSeedAdmin(page, '/dashboard');
+      record('login-returned');
+      await expect(page.getByRole('heading', { name: 'Your dashboard' })).toBeVisible();
+      await expect(page.getByRole('link', { name: /^Locations 1 location/ })).toContainText('1');
+      expect(pageErrors).toEqual([]);
+    } catch (error) {
+      failed = true;
+      primaryFailure = error;
+      record('exception', { message: safeText(String(error)) });
+      throw error;
+    } finally {
+      page.off('request', onRequest);
+      page.off('response', onResponse);
+      page.off('requestfinished', onFinished);
+      page.off('requestfailed', onFailed);
+      page.off('framenavigated', onFrame);
+      page.off('domcontentloaded', onDomContentLoaded);
+      page.off('load', onLoad);
+      page.off('close', onClose);
+      page.off('crash', onCrash);
+      page.off('pageerror', onPageError);
+      page.off('console', onConsole);
+      // Cached local observations only; no post-timeout browser evaluation or snapshot.
+      try {
+        await testInfo.attach('mock-login-navigation-lifecycle', {
+          contentType: 'application/json',
+          body: Buffer.from(JSON.stringify({
+            scope: 'passive local mock-login diagnostics; original navigation and assertions unchanged',
+            startedAt, elapsedMs: Date.now() - startedAt, failed, finalUrl: safeUrl(page.url()),
+            pageClosed: page.isClosed(), lastDocumentState, events, requests,
+            pendingRequestIds: requests.filter((row) => !('finishedMs' in row) && !('failedMs' in row)).map((row) => row.id),
+            dropped, limits: { events: 256, requests: 128, documentEventsPerDocument: 16,
+              urlQueriesFragmentsAndUserInfoOmitted: true, requestHeadersAndBodiesOmitted: true },
+          }, null, 2)),
+        });
+      } catch (attachmentError) {
+        if (failed) throw new AggregateError([primaryFailure, attachmentError], 'Login/assertion and diagnostic attachment both failed');
+        throw attachmentError;
+      }
+    }
   });
 
   test('dashboard endpoint failure marks only affected widgets unavailable with retry', async ({ page }) => {

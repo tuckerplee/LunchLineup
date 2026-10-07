@@ -15,6 +15,167 @@ test.describe('Staff and platform admin safety controls', { tag: '@chromium' }, 
     expect(response.ok()).toBeTruthy();
   });
 
+  test('keeps the populated staff directory and exact-person drawer reachable at narrow widths', async ({ page }, testInfo) => {
+    test.setTimeout(120_000);
+    await loginAsSeedManager(page, '/dashboard/staff');
+    const writes: { method: string; path: string }[] = [];
+    const evidence: unknown[] = [];
+    const observeWrite = (request: import('@playwright/test').Request) => {
+      const path = new URL(request.url()).pathname;
+      if (path.startsWith('/api/v2/') && !['GET', 'HEAD', 'OPTIONS'].includes(request.method())) {
+        writes.push({ method: request.method(), path });
+      }
+    };
+    page.on('request', observeWrite);
+    const tabTo = async (target: import('@playwright/test').Locator, limit = 64) => {
+      for (let step = 0; step < limit; step += 1) {
+        if (await target.evaluate((element) => element === document.activeElement)) return;
+        await page.keyboard.press('Tab');
+      }
+      await expect(target, 'Native Tab must reach the intended control within the bounded traversal').toBeFocused();
+    };
+    const geometry = async (target: import('@playwright/test').Locator, label: string, control = false) => {
+      const result = await target.evaluate((element) => {
+        const bounds = element.getBoundingClientRect();
+        const text = document.createRange();
+        text.selectNodeContents(element);
+        let left = 0, top = 0, right = innerWidth, bottom = innerHeight;
+        const ancestors = [];
+        for (let parent = element.parentElement; parent; parent = parent.parentElement) {
+          const style = getComputedStyle(parent);
+          const rect = parent.getBoundingClientRect();
+          if (['hidden', 'clip', 'auto', 'scroll'].includes(style.overflowX)) {
+            left = Math.max(left, rect.left + parent.clientLeft);
+            right = Math.min(right, rect.left + parent.clientLeft + parent.clientWidth);
+          }
+          if (['hidden', 'clip', 'auto', 'scroll'].includes(style.overflowY)) {
+            top = Math.max(top, rect.top + parent.clientTop);
+            bottom = Math.min(bottom, rect.top + parent.clientTop + parent.clientHeight);
+          }
+          ancestors.push({ tag: parent.tagName, className: parent.className, overflowX: style.overflowX, overflowY: style.overflowY, rect: rect.toJSON() });
+        }
+        return {
+          rect: bounds.toJSON(), clip: { left, top, right, bottom }, ancestors,
+          textRects: Array.from(text.getClientRects()).map((rect) => rect.toJSON()),
+          documentWidth: document.documentElement.scrollWidth, bodyWidth: document.body.scrollWidth, viewport: innerWidth,
+        };
+      });
+      evidence.push({ label, ...result });
+      expect.soft(result.documentWidth, `${label}: document overflow`).toBeLessThanOrEqual(result.viewport);
+      expect.soft(result.bodyWidth, `${label}: body overflow`).toBeLessThanOrEqual(result.viewport);
+      for (const rect of result.textRects.filter((rect) => rect.width > 0 && rect.height > 0)) {
+        expect.soft(rect.left, `${label}: text left clipping`).toBeGreaterThanOrEqual(result.clip.left - 0.5);
+        expect.soft(rect.right, `${label}: text right clipping`).toBeLessThanOrEqual(result.clip.right + 0.5);
+        expect.soft(rect.top, `${label}: text top clipping`).toBeGreaterThanOrEqual(result.clip.top - 0.5);
+        expect.soft(rect.bottom, `${label}: text bottom clipping`).toBeLessThanOrEqual(result.clip.bottom + 0.5);
+      }
+      if (control) {
+        await expect.soft(target, `${label}: focused control fully visible`).toBeInViewport({ ratio: 1 });
+        expect.soft(result.rect.width, `${label}: target width`).toBeGreaterThanOrEqual(44);
+        expect.soft(result.rect.height, `${label}: target height`).toBeGreaterThanOrEqual(44);
+      }
+    };
+    try {
+      for (const width of [320, 393, 768]) {
+        await page.setViewportSize({ width, height: width === 320 ? 720 : width === 393 ? 851 : 900 });
+        await page.goto('/dashboard/staff');
+        const directory = page.getByRole('region', { name: 'Staff directory table', exact: true });
+        const staffRow = directory.getByRole('row', { name: 'Manage Mock Staff', exact: true });
+        const profileAction = staffRow.getByRole('button', { name: 'Edit schedule profile', exact: true });
+        await expect(staffRow).toBeVisible();
+        await expect(staffRow.getByText('Mock Staff', { exact: true })).toHaveCount(1);
+        await expect(directory.getByRole('columnheader')).toHaveText(['Member', 'Login', 'Assigned roles', 'Actions']);
+        const directoryCells = await staffRow.getByRole('cell').allTextContents();
+        expect(directoryCells).toHaveLength(4);
+        evidence.push({ width, directoryCells });
+        const savedResponse = await page.request.get('/api/v2/users/user-mock-staff/scheduling-profile');
+        expect(savedResponse.ok()).toBe(true);
+        const savedProfile: unknown = await savedResponse.json();
+        await tabTo(directory);
+        // A table may legitimately scroll internally. Prove that real Arrow keys
+        // reveal its fields and headings, without moving the document horizontally.
+        for (const target of [staffRow.getByText('Mock Staff', { exact: true }), staffRow.getByText('mock.staff', { exact: true }), directory.getByRole('columnheader', { name: 'Assigned roles', exact: true }), directory.getByRole('columnheader', { name: 'Actions', exact: true })]) {
+          for (let key = 0; key < 40; key += 1) {
+            const position = await target.evaluate((element) => {
+              const range = document.createRange(); range.selectNodeContents(element);
+              const rect = range.getBoundingClientRect();
+              const region = element.closest('.staff-table-scroll')!;
+              const outer = region.getBoundingClientRect();
+              return { left: rect.left, right: rect.right, clipLeft: Math.max(0, outer.left + region.clientLeft), clipRight: Math.min(innerWidth, outer.left + region.clientLeft + region.clientWidth) };
+            });
+            if (position.left >= position.clipLeft && position.right <= position.clipRight) break;
+            await expect(directory).toBeFocused();
+            const before = await directory.evaluate((element) => ({ left: element.scrollLeft, max: element.scrollWidth - element.clientWidth }));
+            const direction = position.left < position.clipLeft ? -1 : 1;
+            if ((direction < 0 && before.left <= 0) || (direction > 0 && before.left >= before.max)) break;
+            await page.keyboard.press(direction < 0 ? 'ArrowLeft' : 'ArrowRight');
+            await expect.poll(async () => direction * ((await directory.evaluate((element) => element.scrollLeft)) - before.left), { timeout: 2_000 }).toBeGreaterThan(0);
+            // Read-only settling avoids attributing native smooth-scroll latency
+            // to a clipping failure. It never writes a scroll position.
+            let last = Number.NaN, stable = 0;
+            await expect.poll(async () => {
+              const current = await directory.evaluate((element) => element.scrollLeft);
+              stable = Math.abs(current - last) < 0.1 ? stable + 1 : 0;
+              last = current;
+              return stable;
+            }, { timeout: 2_000, intervals: [50, 50, 50] }).toBeGreaterThanOrEqual(2);
+          }
+          await geometry(target, `${width}: table ${await target.innerText()}`);
+        }
+        await tabTo(profileAction);
+        await geometry(profileAction, `${width}: profile action`, true);
+        await testInfo.attach(`staff-${width}-directory-action`, { body: await page.screenshot(), contentType: 'image/png' });
+        await page.keyboard.press('Enter');
+        const drawer = page.getByRole('dialog', { name: 'Manage Mock Staff', exact: true });
+        const editor = drawer.getByRole('region', { name: 'Scheduling profile for Mock Staff', exact: true });
+        const close = drawer.getByRole('button', { name: 'Close staff management', exact: true });
+        await expect(drawer).toBeVisible();
+        await expect(drawer.getByRole('heading', { name: 'Mock Staff', exact: true })).toBeVisible();
+        await expect(close).toBeFocused();
+        await geometry(close, `${width}: drawer Close`, true);
+        await geometry(drawer.getByRole('heading', { name: 'Mock Staff', exact: true }), `${width}: drawer identity`);
+        await expect(editor.getByLabel('Skills', { exact: true })).toBeEnabled();
+        await tabTo(editor.getByLabel('Skills', { exact: true }));
+        await page.keyboard.type('unsaved mobile draft');
+        await expect(editor.getByLabel('Skills', { exact: true })).toHaveValue('unsaved mobile draft');
+        await geometry(editor.getByLabel('Skills', { exact: true }), `${width}: skill draft`, true);
+        await tabTo(editor.getByRole('button', { name: 'Save profile', exact: true }));
+        await geometry(editor.getByRole('button', { name: 'Save profile', exact: true }), `${width}: profile Save`, true);
+        await testInfo.attach(`staff-${width}-drawer-save`, { body: await page.screenshot(), contentType: 'image/png' });
+        // Escape cancels this drawer visit. Saving is deliberately not invoked.
+        await expect(editor.getByLabel('Skills', { exact: true })).toHaveValue('unsaved mobile draft');
+        await page.keyboard.press('Escape');
+        await expect(drawer).toHaveCount(0);
+        await expect.soft(profileAction, `${width}: Escape returns focus to the actual opener`).toBeFocused();
+        await geometry(profileAction, `${width}: returned profile action`, true);
+        await tabTo(profileAction);
+        await page.keyboard.press('Enter');
+        await expect(drawer).toBeVisible();
+        await expect(editor.getByLabel('Skills', { exact: true })).toHaveValue('');
+        await expect(close).toBeFocused();
+        await page.keyboard.press('Enter');
+        await expect(drawer).toHaveCount(0);
+        await expect.soft(profileAction, `${width}: Close returns focus to the actual opener`).toBeFocused();
+        // Also exercise the labelled row's native Enter path, not only its button.
+        await tabTo(staffRow);
+        await page.keyboard.press('Enter');
+        await expect(drawer).toBeVisible();
+        await expect(close).toBeFocused();
+        await page.keyboard.press('Escape');
+        await expect(drawer).toHaveCount(0);
+        await expect.soft(staffRow, `${width}: row-origin Escape focus return`).toBeFocused();
+        expect(await staffRow.getByRole('cell').allTextContents()).toEqual(directoryCells);
+        const afterResponse = await page.request.get('/api/v2/users/user-mock-staff/scheduling-profile');
+        expect(afterResponse.ok()).toBe(true);
+        expect(await afterResponse.json()).toEqual(savedProfile);
+        expect(writes, `${width}: drawer cancellation must send no API mutation`).toEqual([]);
+      }
+    } finally {
+      page.off('request', observeWrite);
+      await testInfo.attach('staff-mobile-geometry-and-write-observations', { body: Buffer.from(JSON.stringify({ evidence, writes }, null, 2)), contentType: 'application/json' });
+    }
+  });
+
   test('requires explicit confirmation before resetting a PIN or removing staff', async ({ page }) => {
     let resetRequests = 0;
     let removeRequests = 0;

@@ -215,3 +215,46 @@
     white-space: nowrap;
   }
 }
+
+/* Compact the phone overview into one readable panel. Keep every metric,
+   loaded-row qualification and existing accessible caption in the same DOM. */
+@media (max-width: 768px) {
+  .workspace {
+    gap: 0.625rem !important;
+  }
+  .heroCard {
+    padding: 0.625rem !important;
+  }
+  .heroLayout {
+    gap: 0.375rem !important;
+  }
+  .heroSubtitle {
+    margin: 0.25rem 0 0;
+  }
+  .searchField {
+    gap: 0.25rem;
+  }
+  .tenantSearch :global(.form-input) {
+    padding: 0.5rem 0.625rem;
+  }
+  .summaryGrid {
+    gap: 0.375rem 0.75rem !important;
+    padding: 0.5rem 0.625rem;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    background: var(--surface);
+  }
+  .summaryCard {
+    padding: 0 !important;
+    border: 0 !important;
+    border-radius: 0;
+    background: transparent !important;
+    box-shadow: none !important;
+  }
+  .summaryHeading {
+    margin-bottom: 0 !important;
+  }
+  .summaryValue {
+    line-height: 1.25;
+  }
+}
