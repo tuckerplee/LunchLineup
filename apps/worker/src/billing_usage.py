@@ -320,7 +320,7 @@ class PostgresUsageStore:
                         "nextAttemptAt" = %s,
                         "lastError" = 'Final delivery lease expired with an unknown Stripe outcome',
                         "metadata" = COALESCE(usage."metadata", '{}'::jsonb) || jsonb_build_object(
-                            'finalAttemptLeaseExpiredAt', %s,
+                            'finalAttemptLeaseExpiredAt', %s::text,
                             'finalAttemptOutcome', 'unknown'
                         ),
                         "updatedAt" = %s
@@ -388,7 +388,7 @@ class PostgresUsageStore:
                               THEN (usage."metadata"->>'deadLetterReplayCount')::int + 1
                               ELSE 1
                             END,
-                            'deadLetterLastReplayedAt', %s,
+                            'deadLetterLastReplayedAt', %s::text,
                             'deadLetterPreviousError', LEFT(COALESCE(usage."lastError", ''), 1000),
                             'deadLetterPreviousIdentifier', usage."identifier",
                             'deadLetterPreviousIdempotencyKey', usage."idempotencyKey",
