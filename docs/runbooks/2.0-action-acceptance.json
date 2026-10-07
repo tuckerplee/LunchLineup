@@ -33,7 +33,7 @@
         },
         {
           "path": "apps/api-v2/src/platform/native-identity.ts",
-          "line": 275,
+          "line": 277,
           "sourceLine": "  async authenticate(request: FastifyRequest, reply: FastifyReply): Promise<SessionIdentity> {"
         },
         {
@@ -7525,7 +7525,7 @@
         },
         {
           "path": "apps/api/src/admin/admin.controller.ts",
-          "line": 495,
+          "line": 496,
           "sourceLine": "    async stats(@Req() req: any) {"
         }
       ],
@@ -7582,7 +7582,7 @@
         },
         {
           "path": "apps/api/src/admin/admin.controller.ts",
-          "line": 525,
+          "line": 526,
           "sourceLine": "    async tenants("
         }
       ],
@@ -7633,7 +7633,7 @@
         },
         {
           "path": "apps/api/src/admin/admin.controller.ts",
-          "line": 592,
+          "line": 593,
           "sourceLine": "    async createTenant("
         }
       ],
@@ -7694,7 +7694,7 @@
         },
         {
           "path": "apps/api/src/admin/admin.controller.ts",
-          "line": 665,
+          "line": 666,
           "sourceLine": "    async updateTenant("
         }
       ],
@@ -7750,7 +7750,7 @@
         },
         {
           "path": "apps/api/src/admin/admin.controller.ts",
-          "line": 745,
+          "line": 746,
           "sourceLine": "    async suspendTenant(@Req() req: any, @Param('id') id: string) {"
         }
       ],
@@ -7806,7 +7806,7 @@
         },
         {
           "path": "apps/api/src/admin/admin.controller.ts",
-          "line": 768,
+          "line": 772,
           "sourceLine": "    async activateTenant(@Req() req: any, @Param('id') id: string) {"
         }
       ],
@@ -7869,12 +7869,12 @@
         },
         {
           "path": "apps/api/src/admin/admin.controller.ts",
-          "line": 787,
+          "line": 794,
           "sourceLine": "    async archiveTenant(@Req() req: any, @Param('id') id: string) {"
         },
         {
           "path": "apps/api/src/admin/tenant-cancellation-lifecycle.service.ts",
-          "line": 1475,
+          "line": 1501,
           "sourceLine": "    async archivePlatform("
         }
       ],
@@ -7937,7 +7937,7 @@
         },
         {
           "path": "apps/api/src/admin/admin.controller.ts",
-          "line": 796,
+          "line": 803,
           "sourceLine": "    async restoreTenant(@Req() req: any, @Param('id') id: string) {"
         }
       ],
@@ -8000,7 +8000,7 @@
         },
         {
           "path": "apps/api/src/admin/admin.controller.ts",
-          "line": 925,
+          "line": 922,
           "sourceLine": "    async deleteTenant(@Req() req: any, @Param('id') id: string) {"
         }
       ],
@@ -8057,7 +8057,7 @@
         },
         {
           "path": "apps/api/src/admin/admin.controller.ts",
-          "line": 1128,
+          "line": 1125,
           "sourceLine": "    async exportOwnTenant(@Req() req: any) {"
         },
         {
@@ -8119,7 +8119,7 @@
         },
         {
           "path": "apps/api/src/admin/admin.controller.ts",
-          "line": 1135,
+          "line": 1132,
           "sourceLine": "    async listOwnTenantExports(@Req() req: any) {"
         },
         {
@@ -8181,7 +8181,7 @@
         },
         {
           "path": "apps/api/src/admin/admin.controller.ts",
-          "line": 1142,
+          "line": 1139,
           "sourceLine": "    async getOwnTenantExport(@Req() req: any, @Param('jobId') jobId: string) {"
         },
         {
@@ -8243,7 +8243,7 @@
         },
         {
           "path": "apps/api/src/admin/admin.controller.ts",
-          "line": 1149,
+          "line": 1146,
           "sourceLine": "    async downloadOwnTenantExport(@Req() req: any, @Param('jobId') jobId: string, @Res() res: any) {"
         },
         {
@@ -8305,12 +8305,12 @@
         },
         {
           "path": "apps/api/src/admin/admin.controller.ts",
-          "line": 1164,
+          "line": 1161,
           "sourceLine": "    async getOwnTenantAccountStatus(@Req() req: any) {"
         },
         {
           "path": "apps/api/src/admin/tenant-account-lifecycle.service.ts",
-          "line": 96,
+          "line": 106,
           "sourceLine": "    async getStatus(actor: TenantLifecycleActor) {"
         }
       ],
@@ -8367,12 +8367,12 @@
         },
         {
           "path": "apps/api/src/admin/admin.controller.ts",
-          "line": 1171,
+          "line": 1168,
           "sourceLine": "    async cancelOwnTenant("
         },
         {
           "path": "apps/api/src/admin/tenant-cancellation-lifecycle.service.ts",
-          "line": 1449,
+          "line": 1475,
           "sourceLine": "    async cancelCustomer("
         }
       ],
@@ -8435,7 +8435,7 @@
         },
         {
           "path": "apps/api/src/admin/admin.controller.ts",
-          "line": 1184,
+          "line": 1181,
           "sourceLine": "    async requestOwnTenantDeletion("
         },
         {
@@ -8503,7 +8503,7 @@
         },
         {
           "path": "apps/api/src/admin/admin.controller.ts",
-          "line": 1195,
+          "line": 1192,
           "sourceLine": "    async users("
         }
       ],
@@ -8553,7 +8553,7 @@
         },
         {
           "path": "apps/api/src/admin/admin.controller.ts",
-          "line": 1270,
+          "line": 1267,
           "sourceLine": "    async updateUser("
         }
       ],
@@ -8616,7 +8616,7 @@
         },
         {
           "path": "apps/api/src/admin/admin.controller.ts",
-          "line": 1462,
+          "line": 1459,
           "sourceLine": "    async resetUserPin(@Req() req: any, @Param('id') id: string) {"
         },
         {
@@ -8683,7 +8683,7 @@
         },
         {
           "path": "apps/api/src/admin/admin.controller.ts",
-          "line": 1470,
+          "line": 1467,
           "sourceLine": "    async resetUserMfa("
         },
         {
@@ -8750,7 +8750,7 @@
         },
         {
           "path": "apps/api/src/admin/admin.controller.ts",
-          "line": 1496,
+          "line": 1493,
           "sourceLine": "    async lockUser(@Req() req: any, @Param('id') id: string, @Body() body: { minutes?: number }) {"
         }
       ],
@@ -8811,7 +8811,7 @@
         },
         {
           "path": "apps/api/src/admin/admin.controller.ts",
-          "line": 1535,
+          "line": 1532,
           "sourceLine": "    async unlockUser(@Req() req: any, @Param('id') id: string) {"
         }
       ],
@@ -8872,7 +8872,7 @@
         },
         {
           "path": "apps/api/src/admin/admin.controller.ts",
-          "line": 1567,
+          "line": 1564,
           "sourceLine": "    async suspendUser(@Req() req: any, @Param('id') id: string) {"
         },
         {
@@ -8939,7 +8939,7 @@
         },
         {
           "path": "apps/api/src/admin/admin.controller.ts",
-          "line": 1575,
+          "line": 1572,
           "sourceLine": "    async activateUser(@Req() req: any, @Param('id') id: string) {"
         },
         {
@@ -9006,7 +9006,7 @@
         },
         {
           "path": "apps/api/src/admin/admin.controller.ts",
-          "line": 1583,
+          "line": 1580,
           "sourceLine": "    async audit(@Req() req: any, @Query('limit') limitRaw?: string) {"
         }
       ],
@@ -9058,7 +9058,7 @@
         },
         {
           "path": "apps/api/src/admin/admin.controller.ts",
-          "line": 1627,
+          "line": 1624,
           "sourceLine": "    async credits("
         }
       ],
@@ -9113,7 +9113,7 @@
         },
         {
           "path": "apps/api/src/admin/admin.controller.ts",
-          "line": 1726,
+          "line": 1725,
           "sourceLine": "    async grantCredits("
         }
       ],
@@ -9168,7 +9168,7 @@
         },
         {
           "path": "apps/api/src/admin/admin.controller.ts",
-          "line": 1808,
+          "line": 1817,
           "sourceLine": "    async plans(@Req() req: any) {"
         }
       ],
@@ -9218,7 +9218,7 @@
         },
         {
           "path": "apps/api/src/admin/admin.controller.ts",
-          "line": 1820,
+          "line": 1829,
           "sourceLine": "    async createPlan("
         }
       ],
@@ -9274,7 +9274,7 @@
         },
         {
           "path": "apps/api/src/admin/admin.controller.ts",
-          "line": 1896,
+          "line": 1905,
           "sourceLine": "    async updatePlan("
         }
       ],
@@ -9330,7 +9330,7 @@
         },
         {
           "path": "apps/api/src/admin/admin.controller.ts",
-          "line": 2008,
+          "line": 2017,
           "sourceLine": "    async deletePlan(@Req() req: any, @Param('codeOrId') codeOrId: string) {"
         }
       ],
@@ -9386,7 +9386,7 @@
         },
         {
           "path": "apps/api/src/admin/admin.controller.ts",
-          "line": 2035,
+          "line": 2044,
           "sourceLine": "    async health(@Req() req: any) {"
         }
       ],
@@ -12015,7 +12015,7 @@
       "sourceAnchors": [
         {
           "path": "apps/web/app/dashboard/lunch-breaks/page.tsx",
-          "line": 474,
+          "line": 485,
           "sourceLine": "export default function LunchBreaksPage() {"
         }
       ],
