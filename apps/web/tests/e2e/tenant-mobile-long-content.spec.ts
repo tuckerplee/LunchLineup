@@ -214,12 +214,37 @@ async function revealEdge(page: Page, scroller: Locator, text: Locator, edge: 'l
     const before = await scroller.evaluate(node => node.scrollLeft), direction = position.point < position.left ? -1 : 1;
     await page.keyboard.press(direction < 0 ? 'ArrowLeft' : 'ArrowRight');
     await expect.poll(async () => direction * ((await scroller.evaluate(node => node.scrollLeft)) - before), { timeout: 2000 }).toBeGreaterThan(0);
-    let last = Number.NaN, stable = 0;
-    await expect.poll(async () => {
-      const current = await scroller.evaluate(node => node.scrollLeft);
-      stable = Math.abs(current - last) < 0.1 ? stable + 1 : 0; last = current;
-      return stable;
-    }, { timeout: 2000, intervals: [50, 50, 50] }).toBeGreaterThanOrEqual(2);
+    // Sample in the page once: repeated locator resolution consumed the C3
+    // deadline even after native movement settled. Both clocks still allow 2s.
+    const hostStarted = globalThis.performance.now();
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const deadline = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => reject(new Error('Native scroll stability exceeded 2s')), 2000);
+    });
+    try {
+      const stable = await Promise.race([scroller.evaluate(async node => {
+        const started = globalThis.performance.now();
+        let last = Number.NaN, consecutive = 0;
+        while (globalThis.performance.now() - started < 2000) {
+          const current = node.ownerDocument.querySelectorAll(
+            '[aria-label="Tenant directory table"] [role="region"][aria-label="Tenant table scroll area"]',
+          );
+          if (!node.isConnected || current.length !== 1 || current[0] !== node) {
+            throw new Error('Native scroll stability lost the intended connected scroller');
+          }
+          const value = node.scrollLeft;
+          if (!Number.isFinite(value)) throw new Error('Native scroll position is not finite');
+          consecutive = Math.abs(value - last) < 0.1 ? consecutive + 1 : 0;
+          last = value;
+          if (consecutive >= 2) return consecutive;
+          await new Promise<void>(resolve => setTimeout(resolve, 50));
+        }
+        throw new Error('Native scroll stability exceeded 2s in the page');
+      }), deadline]);
+      // Also reject a late reply if the host event loop delayed its timeout.
+      expect(globalThis.performance.now() - hostStarted).toBeLessThan(2000);
+      expect(stable).toBeGreaterThanOrEqual(2);
+    } finally { if (timer) clearTimeout(timer); }
   }
   throw new Error(`Native arrows did not reveal desktop text ${edge} edge`);
 }
