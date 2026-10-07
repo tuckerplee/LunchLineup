@@ -3,6 +3,10 @@ import type { Locator } from '@playwright/test';
 import { expect, test, type Page, type Route } from './qa-isolation-fixture';
 import { loginAsSeedSuperAdmin, runFullStack } from './support';
 
+// Firefox Range endpoints can differ from card bounds by1/65536 CSS pixel.
+// Limit numerical tolerance to numeric/card edges;1/64 CSS-pixel overflow still fails.
+const NUMERIC_CARD_EPSILON = 1 / 1024;
+
 const mockMode = process.env.E2E_MOCK_API !== '0' && !runFullStack && !process.env.BASE_URL;
 const ROOT = '/api/v2/admin/tenants', PROBE = 'x-tenant-aggregate-probe', WIRE = 'x-tenant-aggregate-wire';
 // A wallet's signed32-bit cap is not a cap on the sum of loaded wallets.
@@ -129,7 +133,9 @@ async function exactNumberGeometry(value: Locator, card: Locator, expected: stri
   expect(result.documentWidth).toBeLessThanOrEqual(result.viewport.width); expect(result.bodyWidth).toBeLessThanOrEqual(result.viewport.width);
   expect(result.text, 'the full max-wallet aggregate must remain one readable number').toHaveLength(1);
   for (const rect of result.text) {
-    expect(rect.left).toBeGreaterThanOrEqual(Math.max(0, box.x)); expect(rect.right).toBeLessThanOrEqual(Math.min(result.viewport.width, box.x + box.width));
+    expect([rect.left, rect.right, box.x, box.x + box.width].every(Number.isFinite), 'numeric card bounds must be finite').toBe(true);
+    expect(rect.left).toBeGreaterThanOrEqual(0); expect(rect.right).toBeLessThanOrEqual(result.viewport.width);
+    expect(rect.left).toBeGreaterThanOrEqual(box.x - NUMERIC_CARD_EPSILON); expect(rect.right).toBeLessThanOrEqual(box.x + box.width + NUMERIC_CARD_EPSILON);
     expect(rect.top).toBeGreaterThanOrEqual(0); expect(rect.bottom).toBeLessThanOrEqual(result.viewport.height);
     for (const ancestor of result.ancestors) {
       expect(ancestor.visibility).toBe('visible'); expect(ancestor.opacity).toBeGreaterThan(0);

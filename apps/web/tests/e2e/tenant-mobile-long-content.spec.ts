@@ -3,6 +3,10 @@ import type { Locator } from '@playwright/test';
 import { expect, test, type Page, type Route } from './qa-isolation-fixture';
 import { loginAsSeedSuperAdmin, runFullStack } from './support';
 
+// Firefox Range endpoints can differ from card bounds by1/65536 CSS pixel.
+// Limit numerical tolerance to numeric/card edges;1/64 CSS-pixel overflow still fails.
+const NUMERIC_CARD_EPSILON = 1 / 1024;
+
 const mockMode = process.env.E2E_MOCK_API !== '0' && !runFullStack && !process.env.BASE_URL;
 const ROOT = '/api/v2/admin/tenants';
 const PROBE = 'x-tenant-layout-probe', WIRE = 'x-tenant-layout-wire';
@@ -265,8 +269,9 @@ test.describe('Tenant long-content mobile layout', () => {
           const numericGeometry = await textGeometry(value, true), cardBox = await cell.boundingBox();
           expect(cardBox).not.toBeNull(); if (!cardBox) throw new Error('Missing summary card bounds');
           expect(numericGeometry.text, 'complete summary numbers must stay on one readable line').toHaveLength(1);
-          expect(numericGeometry.text[0].left).toBeGreaterThanOrEqual(cardBox.x);
-          expect(numericGeometry.text[0].right).toBeLessThanOrEqual(cardBox.x + cardBox.width);
+          expect([numericGeometry.text[0].left, numericGeometry.text[0].right, cardBox.x, cardBox.x + cardBox.width].every(Number.isFinite), 'numeric card bounds must be finite').toBe(true);
+          expect(numericGeometry.text[0].left).toBeGreaterThanOrEqual(cardBox.x - NUMERIC_CARD_EPSILON);
+          expect(numericGeometry.text[0].right).toBeLessThanOrEqual(cardBox.x + cardBox.width + NUMERIC_CARD_EPSILON);
           expect(await value.evaluate(node => Number.parseFloat(getComputedStyle(node).fontSize)), 'summary numbers must remain at least 16px').toBeGreaterThanOrEqual(16);
           evidence.push({ width, label: 'single-line exact summary number', geometry: numericGeometry, cardBox });
         }
