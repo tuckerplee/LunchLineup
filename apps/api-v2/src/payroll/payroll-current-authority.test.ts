@@ -4,6 +4,7 @@ import type { MfaSessionIdentity } from '@lunchlineup/rbac';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { authorizeCurrentMutation, assertCurrentMutation } from '../people/mutation-authority';
 import { PayrollService } from './payroll.service';
+import { ProblemError } from '../platform/problem';
 
 const ids = { tenant: 'payroll-authority-tenant', actor: 'payroll-authority-actor',
   session: 'payroll-authority-session', role: 'payroll-authority-role',
@@ -691,5 +692,142 @@ describe('native payroll authority preserves existing financial and independent-
       const exported = payrollFixture('createExport'); exported.state().tenant[0].status = status;
       await expect(exported.invoke()).rejects.toMatchObject({ status: 403, code: 'time_cards_not_entitled' }); expect(exported.attempted).toEqual([]);
     }
+  });
+});
+
+
+describe('C04 original request policy cap regression', () => {
+  beforeEach(() => { vi.useFakeTimers({ toFake: ['Date'] }); restoreClock(); vi.spyOn(performance, 'now').mockImplementation(() => mono.now); });
+  afterEach(() => { vi.useRealTimers(); vi.restoreAllMocks(); });
+  it('payroll retains original cap through period resolution, but a fresh request may use the longer policy', async () => {
+    const f = payrollFixture('startReview');
+    const observe = f.observer.observeSessionMfa.getMockImplementation()!;
+    f.observer.observeSessionMfa.mockImplementation(async selected => {
+      const proof = await observe(selected);
+      f.state().tenantSetting[0].value.security.sessionTimeoutMinutes = 480;
+      return proof;
+    });
+    f.controls.gate = 'finalRole';
+    await crossGate(f, 'effective');
+    expect(f.attempted).toEqual([]); expect(f.state().auditLog).toEqual([]);
+    expect(f.state().payrollPeriod[0]).toMatchObject({ status: 'OPEN', revision: 1 });
+    expect(f.observer.observeSessionMfa).toHaveBeenCalledTimes(1);
+    await expect(f.invoke()).resolves.toBeDefined();
+    expect(f.state().payrollPeriod[0].status).toBe('REVIEW');
+    expect(f.state().auditLog).toHaveLength(1);
+    expect(f.observer.observeSessionMfa).toHaveBeenCalledTimes(2);
+  });
+  it('payroll still enforces a stricter current cap within the original lifetime', async () => {
+    const f = payrollFixture('startReview');
+    const outcome = await outsideObserverChange(f, () => {
+      f.state().tenantSetting[0].value.security.sessionTimeoutMinutes = 5;
+    });
+    expect(outcome).toMatchObject({ error: { status: 403, code: 'permission_denied' } });
+    expect(f.attempted).toEqual([]); expect(f.committed).toEqual([]);
+    expect(f.state().payrollPeriod[0]).toMatchObject({ status: 'OPEN', revision: 1 });
+    expect(f.state().auditLog).toEqual([]);
+  });
+  it('payroll serialization retry and committed replay cannot renew the original policy cap', async () => {
+    const retry = payrollFixture('startReview'); retry.controls.conflict = true;
+    retry.controls.conflictMutation = () => {
+      retry.state().tenantSetting[0].value.security.sessionTimeoutMinutes = 480;
+      vi.setSystemTime(new Date(Date.now() + 60_001));
+    };
+    await expect(retry.invoke()).rejects.toMatchObject({ status: 403, code: 'permission_denied' });
+    expect(retry.attempted).toHaveLength(1); expect(retry.committed).toEqual([]);
+    expect(retry.state().auditLog).toEqual([]);
+    expect(retry.observer.observeSessionMfa).toHaveBeenCalledTimes(1);
+    restoreClock();
+    const replay = payrollFixture('createPolicy'); await replay.invoke();
+    const before = replay.snapshot(), count = replay.committed.length;
+    const observe = replay.observer.observeSessionMfa.getMockImplementation()!;
+    replay.observer.observeSessionMfa.mockImplementation(async selected => {
+      const proof = await observe(selected);
+      replay.state().tenantSetting[0].value.security.sessionTimeoutMinutes = 480;
+      return proof;
+    });
+    replay.controls.gate = 'authority'; replay.controls.index = 4;
+    await crossGate(replay, 'effective');
+    expect(replay.committed).toHaveLength(count);
+    expect(replay.state().payrollPolicyVersion).toEqual(before.payrollPolicyVersion);
+    expect(replay.state().auditLog).toEqual(before.auditLog);
+    expect(replay.observer.observeSessionMfa).toHaveBeenCalledTimes(2);
+  });
+});
+
+// These existing-model tests call the actual owner after the route's quota await.
+// They do not simulate authenticated HTTP or claim native PostgreSQL authority.
+describe('C04 export entitlement current authority regression', () => {
+  beforeEach(() => { vi.useFakeTimers({ toFake: ['Date'] }); restoreClock(); vi.spyOn(performance, 'now').mockImplementation(() => mono.now); });
+  afterEach(() => { vi.useRealTimers(); vi.restoreAllMocks(); });
+  it('refuses revoked, expired or ungranted callers before feature read without export effects', async () => {
+    for (const change of ['revoked', 'expired', 'permission'] as const) {
+      restoreClock(); const f = payrollFixture('createExport');
+      if (change === 'revoked') f.state().session[0].revokedAt = new Date();
+      if (change === 'expired') vi.setSystemTime(new Date(Date.now() + 60_001));
+      if (change === 'permission') f.state().role[0].rolePermissions = [];
+      const before = f.snapshot();
+      await expect(f.owner.exportEntitlement(f.identity)).rejects.toMatchObject({ status: 403, code: 'permission_denied' });
+      expect(f.state()).toEqual(before); expect(f.attempted).toEqual([]); expect(f.committed).toEqual([]);
+      expect(f.observer.observeSessionMfa).not.toHaveBeenCalled();
+    }
+  });
+  it('fences session expiry after the actual feature plan read', async () => {
+    const f = payrollFixture('createExport'), before = f.snapshot();
+    const withTenant = f.withTenant.getMockImplementation()!;
+    let reached = false;
+    f.withTenant.mockImplementation((tenantId, operation, options) => withTenant(tenantId, async tx => {
+      const read = tx.planDefinition.findUnique;
+      tx.planDefinition.findUnique = async (args: Row) => {
+        const result = await read(args); reached = true;
+        vi.setSystemTime(new Date(Date.now() + 60_001)); return result;
+      };
+      return operation(tx);
+    }, options));
+    await expect(f.owner.exportEntitlement(f.identity)).rejects.toMatchObject({ status: 403, code: 'permission_denied' });
+    expect(reached).toBe(true); expect(f.state()).toEqual(before);
+    expect(f.attempted).toEqual([]); expect(f.committed).toEqual([]);
+  });
+  it('does not normalize expired MFA into feature-ineligible success, including a feature403', async () => {
+    for (const featureRefusal of [false, true]) {
+      restoreClock(); const f = payrollFixture('createExport'); f.configureAxis('mfaMonotonic');
+      const before = f.snapshot(), withTenant = f.withTenant.getMockImplementation()!; let reached = false;
+      f.withTenant.mockImplementation((tenantId, operation, options) => withTenant(tenantId, async tx => {
+        const read = tx.planDefinition.findUnique;
+        tx.planDefinition.findUnique = async (args: Row) => {
+          const result = await read(args); reached = true; mono.now += 1001;
+          if (featureRefusal) throw new ProblemError(403, 'time_cards_not_entitled', 'Controlled feature refusal.', 'Feature unavailable');
+          return result;
+        };
+        return operation(tx);
+      }, options));
+      await expect(f.owner.exportEntitlement(f.identity)).rejects.toMatchObject({ status: 403, code: 'mfa_verification_required' });
+      expect(reached).toBe(true); expect(f.state()).toEqual(before);
+      expect(f.attempted).toEqual([]); expect(f.committed).toEqual([]);
+    }
+  });
+  it('returns paid eligible and free feature-ineligible controls without debit, export or audit', async () => {
+    for (const paid of [true, false]) {
+      const f = payrollFixture('createExport');
+      if (!paid) { f.state().tenant[0].planTier = 'FREE'; f.state().tenant[0].stripeSubscriptionId = null; }
+      const before = f.snapshot();
+      const result = await f.owner.exportEntitlement(f.identity);
+      expect(result).toMatchObject({ eligible: paid, creditCost: paid ? 1 : null });
+      expect(result.reason.length).toBeGreaterThan(0);
+      expect(f.state()).toEqual(before); expect(f.attempted).toEqual([]); expect(f.committed).toEqual([]);
+      expect(f.observer.observeSessionMfa).toHaveBeenCalledTimes(1);
+    }
+  });
+  it('preserves feature infrastructure503 without normalization or financial effects', async () => {
+    const f = payrollFixture('createExport'), before = f.snapshot();
+    const failure = new ProblemError(503, 'controlled_feature_unavailable', 'Controlled infrastructure failure.', 'Service unavailable');
+    const withTenant = f.withTenant.getMockImplementation()!; let reached = false;
+    f.withTenant.mockImplementation((tenantId, operation, options) => withTenant(tenantId, async tx => {
+      tx.planDefinition.findUnique = async () => { reached = true; throw failure; };
+      return operation(tx);
+    }, options));
+    await expect(f.owner.exportEntitlement(f.identity)).rejects.toBe(failure);
+    expect(reached).toBe(true); expect(f.state()).toEqual(before);
+    expect(f.attempted).toEqual([]); expect(f.committed).toEqual([]);
   });
 });
