@@ -1,11 +1,12 @@
 import asyncio
 import base64
 import json
+import io
 import os
 from pathlib import Path
 import sys
 import unittest
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
@@ -310,6 +311,82 @@ class PasswordResetEmailTests(unittest.IsolatedAsyncioTestCase):
             with self.assertRaisesRegex(reset_email.ProviderRejectedEmailError, "provider rejected") as raised:
                 reset_email.send_with_resend(item, payload)
         self.assertNotIn("recipient secret", str(raised.exception))
+
+    async def test_resend_documented_conflicts_preserve_payload_and_retry_same_request(self):
+        for name in ("concurrent_idempotent_requests", "resource_locked"):
+            with self.subTest(name=name):
+                item = encrypted_item()
+                store = FakeStore(item)
+                stream = io.BytesIO(json.dumps({"name": name, "message": "recipient secret"}).encode())
+                provider_error = reset_email.error.HTTPError(
+                    "https://api.resend.com/emails", 409, "Conflict", None, stream,
+                )
+                response = MagicMock()
+                response.__enter__.return_value.status = 200
+                with patch.object(reset_email.request, "urlopen", side_effect=[provider_error, response]) as send:
+                    with self.assertRaises(reset_email.RetryableProviderEmailError) as raised:
+                        await reset_email.dispatch_password_reset_email(store=store)
+                    self.assertNotIn("recipient secret", str(raised.exception))
+                    self.assertEqual(store.failed, [(item, "PASSWORD_RESET_EMAIL_PROVIDER_RETRYABLE", False)])
+                    self.assertFalse(store.payload_erased)
+                    self.assertTrue(stream.closed)
+                    store.item = item
+                    self.assertTrue((await reset_email.dispatch_password_reset_email(store=store))["delivered"])
+                requests = [call.args[0] for call in send.call_args_list]
+                self.assertEqual(requests[0].data, requests[1].data)
+                self.assertEqual(requests[0].get_header("Idempotency-key"), "password-reset/outbox-1")
+                self.assertEqual(requests[0].headers, requests[1].headers)
+                self.assertTrue(store.payload_erased)
+
+    async def test_resend_documented_conflict_still_erases_at_attempt_limit(self):
+        for name in ("concurrent_idempotent_requests", "resource_locked"):
+            with self.subTest(name=name):
+                item = encrypted_item(attempts=3)
+                store = FakeStore(item)
+                stream = io.BytesIO(json.dumps({"name": name}).encode())
+                provider_error = reset_email.error.HTTPError(
+                    "https://api.resend.com/emails", 409, "Conflict", None, stream,
+                )
+                with patch.object(reset_email.request, "urlopen", side_effect=provider_error):
+                    with self.assertRaises(reset_email.ProviderRejectedEmailError):
+                        await reset_email.dispatch_password_reset_email(store=store)
+                self.assertTrue(store.failed[0][2])
+                self.assertTrue(store.payload_erased)
+                self.assertTrue(stream.closed)
+
+    def test_resend_unknown_conflicts_remain_permanent_and_reads_are_bounded(self):
+        bodies = [
+            b'{"name":"invalid_idempotent_request"}', b'{"name":"unknown"}',
+            b'{}', b'[]', b'null', b'{"name":[]}', b'{"name":409}',
+            b'not json', b'\xff',
+            b'{"name":"concurrent_idempotent_requests"}' + b' ' * 4096,
+        ]
+        item = encrypted_item()
+        for body in bodies:
+            with self.subTest(body=body[:60]):
+                stream = io.BytesIO(body)
+                provider_error = reset_email.error.HTTPError(
+                    "https://api.resend.com/emails", 409, "Conflict", None, stream,
+                )
+                with patch.object(provider_error, "read", wraps=provider_error.read) as read:
+                    with patch.object(reset_email.request, "urlopen", side_effect=provider_error):
+                        with self.assertRaises(reset_email.ProviderRejectedEmailError):
+                            reset_email.send_with_resend(item, reset_email.decrypt_envelope(item))
+                    read.assert_called_once_with(4097)
+                self.assertTrue(stream.closed)
+
+    def test_resend_conflict_read_failure_remains_sanitized_and_closes_response(self):
+        item = encrypted_item()
+        stream = io.BytesIO()
+        provider_error = reset_email.error.HTTPError(
+            "https://api.resend.com/emails", 409, "Conflict", None, stream,
+        )
+        with patch.object(provider_error, "read", side_effect=OSError("recipient secret")):
+            with patch.object(reset_email.request, "urlopen", side_effect=provider_error):
+                with self.assertRaises(reset_email.ProviderRejectedEmailError) as raised:
+                    reset_email.send_with_resend(item, reset_email.decrypt_envelope(item))
+        self.assertNotIn("recipient secret", str(raised.exception))
+        self.assertTrue(stream.closed)
 
     async def test_single_provider_rejection_alerts_but_does_not_claim_systemic_outage(self):
         store = FakeStore(encrypted_item())

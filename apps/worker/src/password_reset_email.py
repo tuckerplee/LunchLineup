@@ -480,9 +480,22 @@ def send_with_resend(item: ResetEmail, payload: dict[str, str]) -> None:
             if response.status >= 300:
                 raise RetryableProviderEmailError("email provider returned an unsuccessful response")
     except error.HTTPError as exc:
-        if exc.code == 429 or exc.code >= 500:
-            raise RetryableProviderEmailError("email provider is temporarily unavailable") from exc
-        raise ProviderRejectedEmailError("email provider rejected the password reset delivery") from exc
+        with exc:
+            retryable_conflict = False
+            if exc.code == 409:
+                # Resend distinguishes concurrent requests from permanent payload mismatches.
+                try:
+                    body = exc.read(4097)
+                    detail = json.loads(body) if len(body) <= 4096 else None
+                    retryable_conflict = isinstance(detail, dict) and detail.get("name") in (
+                        "concurrent_idempotent_requests", "resource_locked",
+                    )
+                except Exception:
+                    # Unreadable or unknown conflicts retain the existing rejection policy.
+                    pass
+            if retryable_conflict or exc.code == 429 or exc.code >= 500:
+                raise RetryableProviderEmailError("email provider is temporarily unavailable") from exc
+            raise ProviderRejectedEmailError("email provider rejected the password reset delivery") from exc
     except (error.URLError, TimeoutError) as exc:
         raise RetryableProviderEmailError("email provider request failed") from exc
 
