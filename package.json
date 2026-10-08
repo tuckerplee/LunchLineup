@@ -56,6 +56,12 @@
     },
     "casbin": {
       "csv-parse": "7.0.2"
+    },
+    "tailwindcss@3.4.19": {
+      "postcss-selector-parser": "7.1.6"
+    },
+    "postcss-nested@6.2.0": {
+      "postcss-selector-parser": "7.1.6"
     }
   }
 }
