@@ -2,6 +2,8 @@
 
 ## Files
 
+- `development-browser-database.test.mjs`: Pure database-observation contract tests for freshness, restricted login and malformed or unexpected fields.
+
 - `README.md`: this deploy test folder guide.
 - `action-acceptance-catalog-owner.test.mjs`: source inventory regressions requiring each catalog operation to match its own literal declaration and owner.
 - `canonical-browser-lane-details.test.mjs`: synthetic canonical cohort receipt, run identity, lifecycle and owned-media evidence validation regressions.

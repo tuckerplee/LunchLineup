@@ -2,6 +2,8 @@
 
 ## Files
 
+- `lunch-breaks.module.css`: Lunch and breaks workspace, location context, overview and responsive controls styling.
+
 - `README.md`: this route guide.
 - `lunch-break-generation-recovery.ts`: durable opaque generation identities keyed by complete mode/location/day/tenant/user/session intent, with per-session fail-closed capacity and payload-free reload recovery.
 - `lunch-break-load-ownership.ts`: pure scope claims for rejecting stale refreshes plus exact request-token busy ownership and cleanup for setup, scheduled generation, and manual generation.

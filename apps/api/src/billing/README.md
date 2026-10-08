@@ -2,6 +2,8 @@
 
 ## Files
 
+- `int32-credit-settlement-callers.spec.ts`: Shared Int32 credit settlement callers: capacity refusal, rollback, immutable replay and paid/beta acknowledgement regressions.
+
 - `README.md`: this billing folder guide.
 - `billing.controller.spec.ts`: controller authorization and billing route tests.
 - `billing.controller.ts`: provider-independent tenant feature reads plus billing-settings-only Stripe recovery, Checkout, portal, and webhook routes; administrative grants are owned only by the admin controller.

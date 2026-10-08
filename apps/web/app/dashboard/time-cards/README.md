@@ -2,6 +2,8 @@
 
 ## Files
 
+- `time-card-correction-ack.ts`: Exact target and response validation for time-card correction acknowledgements.
+
 - `README.md`: this time-cards route guide.
 - `page.tsx`: server route that requires `time_cards:read` and passes independent time-card, staff-roster, and location-catalog capabilities to the client workspace.
 - `TimeCardCorrectionPanel.tsx`: manager correction form for location-local punches, explicit break intervals, DST ambiguity selection, required reasons, and optimistic updates.

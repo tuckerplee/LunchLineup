@@ -2,6 +2,16 @@
 
 ## Files
 
+- `admin-credit-grant-browser-custody.spec.ts`: Browser grant confirmation, refusal, ambiguous acknowledgement recovery and exact tenant/wallet effect checks.
+- `admin-tenant-archive-browser-custody.spec.ts`: Exact tenant archive confirmation, refusal, committed-response reconciliation and mobile action reachability checks.
+- `location-response-browser-custody.spec.ts`: Location refresh ordering, exact update-target acknowledgement, stale-version draft and successful reopen checks.
+- `payroll-export-response-browser-custody.spec.ts`: Payroll export command/period binding, acknowledgement validation and committed-result recovery checks.
+- `scheduling-editor-custody.spec.ts`: Pending scheduling mutation responses preserve newer editor drafts, payload ownership and current scope.
+- `tenant-mobile-long-content.spec.ts`: Long tenant identity, complete summaries, pagination context and native keyboard/action visibility across viewport sizes.
+- `tenant-summary-aggregate-layout.spec.ts`: Exact max-wallet aggregate totals and readable summary layout through native load-more pagination.
+- `time-card-correction-browser-custody.spec.ts`: Time-card correction draft, pending-action, refusal, competing edit and exact readback checks.
+- `time-card-correction-stateful-adapter.ts`: Stateful time-card browser fixture with fixed identities, response gates and correction/readback evidence.
+
 - `README.md`: this E2E test folder guide.
 - `access-home-acceptance.spec.ts`: prepared real-backend access, Home and notification scenarios with role/session denials and independent readbacks.
 - `location-lifecycle-acceptance.spec.ts`: prepared real-backend location create/edit/deactivation, timezone validation and staff-denial scenarios.
