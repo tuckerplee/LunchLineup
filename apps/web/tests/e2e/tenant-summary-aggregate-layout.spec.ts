@@ -183,6 +183,22 @@ test.describe('Tenant aggregate credit summary layout', () => {
       try {
         await adapter.load(0, () => page.goto('/admin/tenants'));
         const original = await adapter.read(); expect(original).toEqual(pages);
+        const summaryToggle = page.getByRole('button', { name: 'Loaded organization summary', exact: true });
+        if (width <= 768) {
+          await expect(summaryToggle).toHaveAttribute('aria-expanded', 'false');
+          await expect(summaryToggle).toHaveAttribute('aria-controls', 'loaded-tenant-summary');
+          await expect(page.locator('#loaded-tenant-summary')).toBeHidden();
+          const toggleBox = await summaryToggle.boundingBox(); expect(toggleBox).not.toBeNull();
+          if (!toggleBox) throw new Error('Missing mobile summary toggle bounds');
+          expect(toggleBox.width).toBeGreaterThanOrEqual(44); expect(toggleBox.height).toBeGreaterThanOrEqual(44);
+          await summaryToggle.focus(); await expect(summaryToggle).toBeFocused();
+          await page.keyboard.press('Enter');
+          await expect(summaryToggle).toHaveAttribute('aria-expanded', 'true');
+          await expect(page.locator('#loaded-tenant-summary')).toBeVisible();
+        } else {
+          await expect(summaryToggle).toBeHidden();
+          await expect(page.locator('#loaded-tenant-summary')).toBeVisible();
+        }
         const summary = page.getByRole('region', { name: 'Loaded tenant summary', exact: true });
         const directory = page.getByRole('article', { name: 'Tenant directory table', exact: true });
         const table = directory.getByRole('table', { name: 'Tenant records', exact: true });

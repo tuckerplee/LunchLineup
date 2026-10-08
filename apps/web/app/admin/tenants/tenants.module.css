@@ -36,6 +36,11 @@
 
 
 
+/* CSS controls viewport visibility; server and client start with the same state. */
+.summaryToggle {
+  display: none !important;
+}
+
 /* One table DOM preserves record identity, native keyboard order and handlers. */
 .summaryGrid {
   grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -170,6 +175,22 @@
   :global(.workspace-content) .workspace .tenantSearch :global(.btn) {
     min-width: 44px !important;
     flex-shrink: 0;
+  }
+
+  .summaryToggle {
+    display: flex !important;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.5rem;
+    width: 100%;
+    min-width: 44px;
+    min-height: 44px;
+    text-align: left;
+    white-space: normal;
+  }
+
+  .summaryGrid[data-mobile-expanded="false"] {
+    display: none !important;
   }
 
   .summaryGrid {

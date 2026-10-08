@@ -281,6 +281,22 @@ test.describe('Tenant long-content mobile layout', () => {
         await expect(page.getByText('50 organizations loaded - more available', { exact: true })).toBeVisible();
         await expect(directory.getByRole('button', { name: 'Load more tenants', exact: true })).toBeEnabled();
         await test.info().attach(`tenant-long-${width}-first-viewport`, { contentType: 'image/png', body: await page.screenshot({ timeout: 5000 }) });
+        const summaryToggle = page.getByRole('button', { name: 'Loaded organization summary', exact: true });
+        if (width <= 768) {
+          await expect(summaryToggle).toHaveAttribute('aria-expanded', 'false');
+          await expect(summaryToggle).toHaveAttribute('aria-controls', 'loaded-tenant-summary');
+          await expect(page.locator('#loaded-tenant-summary')).toBeHidden();
+          const toggleBox = await summaryToggle.boundingBox(); expect(toggleBox).not.toBeNull();
+          if (!toggleBox) throw new Error('Missing mobile summary toggle bounds');
+          expect(toggleBox.width).toBeGreaterThanOrEqual(44); expect(toggleBox.height).toBeGreaterThanOrEqual(44);
+          await summaryToggle.focus(); await expect(summaryToggle).toBeFocused();
+          await page.keyboard.press('Enter');
+          await expect(summaryToggle).toHaveAttribute('aria-expanded', 'true');
+          await expect(page.locator('#loaded-tenant-summary')).toBeVisible();
+        } else {
+          await expect(summaryToggle).toBeHidden();
+          await expect(page.locator('#loaded-tenant-summary')).toBeVisible();
+        }
         const summary = page.getByRole('region', { name: 'Loaded tenant summary', exact: true });
         await expect(summary).toHaveAttribute('aria-describedby', 'loaded-tenant-summary-context');
         await expect(summary.locator('article')).toHaveCount(4);
