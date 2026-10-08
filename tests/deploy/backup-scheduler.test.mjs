@@ -168,7 +168,12 @@ test('backup is a required CI release and deploy artifact', () => {
   assert.match(deploy, /backup_release_env_ok/);
   assert.match(deploy, /verify-backup-readiness\.sh/);
   assert.match(deploy, /validate-production-launch\.mjs "\$COMPOSE_SERVICE_ENV_FILE" --verify-local-secret-files/);
-  assert.match(dockerfile, /postgresql-client/);
+  const serverMajor = /^FROM postgres:(\d+)-alpine@/m.exec(read('infrastructure/docker/Dockerfile.postgres'))?.[1];
+  assert.ok(serverMajor, 'PostgreSQL server must declare its major version');
+  assert.match(dockerfile, new RegExp(`\\bpostgresql${serverMajor}-client\\b`));
+  assert.doesNotMatch(dockerfile, /\bpostgresql-client\b/);
+  assert.ok(dockerfile.includes(`\\(PostgreSQL\\) ${serverMajor}\\.`), 'image build must reject another client major');
+  assert.match(dockerfile, /for tool in psql pg_dump pg_basebackup pg_verifybackup/);
   assert.match(dockerfile, /\baws-cli\b/);
   assert.match(dockerfile, /\brclone\b/);
   assert.match(dockerfile, /CMD \["\.\/backup\.sh"\]/);
