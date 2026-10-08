@@ -165,7 +165,7 @@ describe('native payroll period protected read authority', () => {
   for (const [corruption, change] of Object.entries(creditCorruptions)) it(`period detail refuses ${corruption} saved credit provenance like direct export read`, async () => {
     const f = payrollPeriodReadFixture('native'); await f.admit(); change(f); const before = f.rowsBefore();
     for (const operation of [() => detail(f, 2), () => owner(f).getExport(f.identity, periodUuid(70), { lineLimit: '1' })]) {
-      const result = await capture(operation());
+      const result = await capture<unknown>(operation());
       expect(result.value).toBeNull(); expect(result.error).toBeInstanceOf(ProblemError);
       expect(result.error).toMatchObject({ status: 503, code: 'payroll_export_integrity_failed' });
       f.assertClosed(before);

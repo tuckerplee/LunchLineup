@@ -1,3 +1,4 @@
+import { resolveCookieSecure } from '@lunchlineup/config';
 import { Controller, Delete, Get, Post, Put, Body, Req, UseGuards, SetMetadata, HttpCode, HttpStatus, UnauthorizedException, Logger, ServiceUnavailableException, BadRequestException, HttpException, ForbiddenException } from '@nestjs/common';
 import { AuthService, type SessionRequestAudit } from './auth.service';
 import { OtpService } from './otp.service';
@@ -192,11 +193,7 @@ export class AuthController {
     }
 
     private useSecureCookies(): boolean {
-        const configured = process.env.COOKIE_SECURE;
-        if (configured !== undefined) {
-            return ['1', 'true', 'yes', 'on'].includes(configured.toLowerCase());
-        }
-        return process.env.NODE_ENV === 'production';
+        return resolveCookieSecure(process.env.COOKIE_SECURE, process.env.NODE_ENV);
     }
 
     private safeInternalPath(value: string): string | null {

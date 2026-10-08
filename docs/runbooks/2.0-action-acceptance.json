@@ -4755,7 +4755,7 @@
         },
         {
           "path": "apps/api/src/auth/auth.controller.ts",
-          "line": 418,
+          "line": 415,
           "sourceLine": "    async resolveLoginFlow(@Body() body: { identifier: string; tenantSlug?: string }, @Req() req: Request) {"
         },
         {
@@ -4846,7 +4846,7 @@
         },
         {
           "path": "apps/api/src/auth/auth.controller.ts",
-          "line": 437,
+          "line": 434,
           "sourceLine": "    async verifyPassword("
         },
         {
@@ -4946,7 +4946,7 @@
         },
         {
           "path": "apps/api/src/auth/auth.controller.ts",
-          "line": 497,
+          "line": 494,
           "sourceLine": "    async requestPasswordReset(@Body() body: PasswordResetRequestBody, @Req() req: Request) {"
         },
         {
@@ -5082,7 +5082,7 @@
         },
         {
           "path": "apps/api/src/auth/auth.controller.ts",
-          "line": 511,
+          "line": 508,
           "sourceLine": "    async confirmPasswordReset(@Body() body: PasswordResetConfirmBody, @Req() req: Request) {"
         },
         {
@@ -5257,7 +5257,7 @@
         },
         {
           "path": "apps/api/src/auth/auth.controller.ts",
-          "line": 520,
+          "line": 517,
           "sourceLine": "    async login(@Req() req: Request, @Res() res: Response) {"
         },
         {
@@ -5339,7 +5339,7 @@
         },
         {
           "path": "apps/api/src/auth/auth.controller.ts",
-          "line": 562,
+          "line": 559,
           "sourceLine": "    async callback(@Req() req: Request, @Res() res: Response) {"
         },
         {
@@ -5436,7 +5436,7 @@
         },
         {
           "path": "apps/api/src/auth/auth.controller.ts",
-          "line": 593,
+          "line": 590,
           "sourceLine": "    async sendOtp(@Body() body: EmailOtpBody, @Req() req: Request) {"
         },
         {
@@ -5527,12 +5527,12 @@
         },
         {
           "path": "apps/api/src/auth/auth.controller.ts",
-          "line": 668,
+          "line": 665,
           "sourceLine": "    async verifyOtp("
         },
         {
           "path": "apps/api/src/auth/auth.controller.ts",
-          "line": 694,
+          "line": 691,
           "sourceLine": "        try {"
         }
       ],
@@ -5642,7 +5642,7 @@
         },
         {
           "path": "apps/api/src/auth/auth.controller.ts",
-          "line": 760,
+          "line": 757,
           "sourceLine": "    async verifyPin("
         },
         {
@@ -5731,7 +5731,7 @@
         },
         {
           "path": "apps/api/src/auth/auth.controller.ts",
-          "line": 809,
+          "line": 806,
           "sourceLine": "    async refresh(@Req() req: Request, @Res() res: Response) {"
         },
         {
@@ -5828,7 +5828,7 @@
         },
         {
           "path": "apps/api/src/auth/auth.controller.ts",
-          "line": 847,
+          "line": 844,
           "sourceLine": "    async getMfaEnrollment(@Req() req: any) {"
         },
         {
@@ -5919,7 +5919,7 @@
         },
         {
           "path": "apps/api/src/auth/auth.controller.ts",
-          "line": 856,
+          "line": 853,
           "sourceLine": "    async beginMfaEnrollmentAlias(@Req() req: any) {"
         },
         {
@@ -6073,7 +6073,7 @@
         },
         {
           "path": "apps/api/src/auth/auth.controller.ts",
-          "line": 893,
+          "line": 890,
           "sourceLine": "    async confirmMfaEnrollmentAlias(@Req() req: any, @Body() body: { code: string }, @Res() res: Response) {"
         },
         {
@@ -6269,7 +6269,7 @@
         },
         {
           "path": "apps/api/src/auth/auth.controller.ts",
-          "line": 941,
+          "line": 938,
           "sourceLine": "    async disableMfaAlias(@Req() req: any, @Body() body: { code: string }) {"
         },
         {
@@ -6373,7 +6373,7 @@
         },
         {
           "path": "apps/api/src/auth/auth.controller.ts",
-          "line": 905,
+          "line": 902,
           "sourceLine": "    async verifyMfa(@Req() req: any, @Body() body: { code: string }, @Res() res: Response) {"
         },
         {
@@ -6460,7 +6460,7 @@
         },
         {
           "path": "apps/api/src/auth/auth.controller.ts",
-          "line": 952,
+          "line": 949,
           "sourceLine": "    async logout(@Req() req: Request, @Res() res: Response) {"
         },
         {
@@ -10472,7 +10472,7 @@
       "sourceAnchors": [
         {
           "path": "apps/api/src/auth/auth.controller.ts",
-          "line": 593,
+          "line": 590,
           "sourceLine": "    async sendOtp(@Body() body: EmailOtpBody, @Req() req: Request) {"
         },
         {

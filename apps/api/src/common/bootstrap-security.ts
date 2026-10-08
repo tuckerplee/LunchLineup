@@ -1,3 +1,4 @@
+import { resolveCookieSecure } from '@lunchlineup/config';
 import crypto from 'node:crypto';
 import type { Request, Response } from 'express';
 
@@ -254,8 +255,10 @@ export function validateProductionEnvironment(env: NodeJS.ProcessEnv = process.e
         errors.push('TRUST_PROXY cannot be a blanket true value in production; use an explicit proxy range.');
     }
 
-    if (isFalse(env.COOKIE_SECURE)) {
-        errors.push('COOKIE_SECURE cannot be false in production.');
+    try {
+        resolveCookieSecure(env.COOKIE_SECURE, env.NODE_ENV);
+    } catch (error) {
+        errors.push((error as Error).message);
     }
 
     if (['1', 'true', 'yes', 'on'].includes((env.AUTH_DEBUG ?? '').trim().toLowerCase())) {
@@ -322,10 +325,6 @@ export function validateProductionEnvironment(env: NodeJS.ProcessEnv = process.e
     if (errors.length > 0) {
         throw new Error(`Refusing to start with unsafe production configuration: ${errors.join(' ')}`);
     }
-}
-
-function isFalse(value: string | undefined): boolean {
-    return value !== undefined && ['false', '0', 'off', 'no'].includes(value.toLowerCase());
 }
 
 function isLoopbackOrigin(origin: string): boolean {
