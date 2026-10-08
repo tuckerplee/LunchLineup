@@ -173,6 +173,14 @@ test('fixed browser CLI supplies only a protected owner profile to the real sour
   }
   const valid = reader(), selected = valid.read(options, env);
   assert.equal(valid.closed(), 1);
+  assert.equal(reader().read(options, { ...env, LUNCHLINEUP_BROWSER_COHORT: 'full' }).pipelinePath, profile.pipelinePath);
+  const staffRecord = { ...record, sourceProfile: { ...profile, pipelinePath: '.ci/development-staff.pipeline.json' } };
+  const staffEnv = { ...env, LUNCHLINEUP_BROWSER_COHORT: 'staff' };
+  assert.equal(reader({ record: staffRecord }).read(options, staffEnv).pipelinePath, staffRecord.sourceProfile.pipelinePath);
+  assert.throws(() => reader({ record: staffRecord }).read(options, env));
+  assert.throws(() => reader().read(options, staffEnv));
+  for (const cohort of ['', 'unknown', 'staff,full']) assert.throws(() => reader({ record: staffRecord }).read(options, { ...staffEnv, LUNCHLINEUP_BROWSER_COHORT: cohort }));
+  assert.throws(() => reader({ record: { ...record, sourceProfile: { ...profile, pipelinePath: '.ci/arbitrary.pipeline.json' } } }).read(options, staffEnv));
   const contextOptions = { contextPath: `${temporary}/lunchlineup-source-${run}/source-context.json` };
   assert.equal(reader().read(contextOptions, env).sourceSha, profile.sourceSha);
   assert.throws(() => reader().read({ contextPath: '/wrong' }, env));

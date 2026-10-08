@@ -4,6 +4,9 @@ set -euo pipefail
 umask 077
 [[ "${1:-}" == --source-context && $# == 2 && "${LUNCHLINEUP_DEVELOPMENT_QA:-}" == 1 ]] || exit 64
 context=$2
+# The source-authenticated fixed pipeline selects only these two cohorts.
+cohort=${LUNCHLINEUP_BROWSER_COHORT-full}
+[[ "$cohort" == full || "$cohort" == staff ]] || exit 64
 # Only a protected per-run owner record selects a split phase. No env/argv bypass.
 owner_phase_output=$(python3 "${BASH_SOURCE[0]%/*}/read-fixed-browser-phase.py")
 mapfile -t owner_phase_fields <<<"$owner_phase_output"
@@ -386,15 +389,21 @@ for attempt in {1..120}; do
   sleep 2
 done
 verify_runtime_attachments pre-fixtures engine,api,api-v2,pdf-parser,worker,web,proxy,postgres,redis,rabbitmq
-output="$artifact_root/fullstack-playwright"; mkdir -- "$output"
 cd "$build_root/apps/web"
+report_verifier="$build_root/scripts/verify-development-browser-report.mjs"
+node - "$artifact_root/development-browser-scope.json" "$cohort" "$CI_COMMIT_SHA" "$CI_RUN_ID" <<'NODE'
+const fs=require('node:fs');const [path,cohort,sourceSha,runId]=process.argv.slice(2);
+if(!['full','staff'].includes(cohort))throw new Error('Unknown fixed browser cohort.');
+fs.writeFileSync(path,JSON.stringify({kind:'disposable-development-browser-scope',cohort,sourceSha,runId,expectedCases:cohort==='staff'?8:47,releaseQualified:false},null,2)+'\n',{flag:'wx'});
+NODE
+if [[ "$cohort" == full ]]; then
+output="$artifact_root/fullstack-playwright"; mkdir -- "$output"
 browser_env=(BASE_URL=http://127.0.0.1:8080 E2E_FULL_STACK=1 E2E_RESOLUTION_IDENTIFIER_LIMIT=30 E2E_MOCK_API=0 E2E_SIGNUP_MODE=closed_beta E2E_COMPOSE_PROJECT_NAME="$project" E2E_COMPOSE_ENV_FILE="$env_file" E2E_CANDIDATE_SHA="$CI_COMMIT_SHA" E2E_ARTIFACT_ROOT="$output")
 browser_args=(test --forbid-only --reporter=json --grep='@full-stack' --project=chromium --workers=1 --retries=0 --trace=retain-on-failure
   tests/e2e/operations-workflows.spec.ts tests/e2e/month-volume-workflows.spec.ts tests/e2e/stress-workflows.spec.ts
   tests/e2e/tenant-admin-workflows.spec.ts tests/e2e/staff-repair-acceptance.spec.ts tests/e2e/settings-recovery-acceptance.spec.ts
   tests/e2e/access-home-acceptance.spec.ts tests/e2e/location-lifecycle-acceptance.spec.ts)
 case_manifest="$build_root/.ci/development-browser-cases.json"
-report_verifier="$build_root/scripts/verify-development-browser-report.mjs"
 # Discovery and execution share the same candidate, environment and selection.
 # The reviewed manifest rejects narrowed/focused/missing discovery before fixtures.
 env "${browser_env[@]}" PLAYWRIGHT_JSON_OUTPUT_NAME="$output/selection.json" "$build_root/node_modules/.bin/playwright" "${browser_args[@]}" --list >"$output/selection.log" 2>&1
@@ -428,7 +437,9 @@ node "$report_verifier" --selection "$logout_manifest" fullstack "$logout/select
 env "${logout_env[@]}" PLAYWRIGHT_JSON_OUTPUT_NAME="$logout/results.json" "$build_root/node_modules/.bin/playwright" "${logout_args[@]}" >"$logout/test.log" 2>&1
 node "$report_verifier" --complete "$logout_manifest" fullstack "$logout/selection.json" "$logout/results.json" "$CI_COMMIT_SHA" "$CI_RUN_ID" >"$logout/acceptance-proof.json"
 
-# Additional Staff lifecycle proof starts only after the logout lane passes.
+fi
+
+# Full mode reaches Staff after logout; Staff-only uses the same common startup.
 # Seed once before all eight serial cases, then retain its published assignment
 # and all lifecycle history until exact-owned disposable database teardown.
 # A later Payroll fixture reseed is incompatible with this history lifetime.
