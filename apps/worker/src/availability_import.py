@@ -309,6 +309,10 @@ def _run_parser_subprocess(path: Path) -> dict[str, Any]:
         "PATH": os.getenv("PATH", ""),
         "PYTHONHASHSEED": "random",
         "PYTHONPATH": str(Path(__file__).resolve().parents[1]),
+        "PARSER_SOCKET_PATH": os.getenv(
+            "PARSER_SOCKET_PATH", "/run/lunchlineup-parser/parser.sock"
+        ),
+        "WORKER_PDF_PARSE_TIMEOUT_SECONDS": str(timeout),
         "WORKER_MAX_AVAILABILITY_PDF_BYTES": os.getenv(
             "WORKER_MAX_AVAILABILITY_PDF_BYTES",
             str(5 * 1024 * 1024),

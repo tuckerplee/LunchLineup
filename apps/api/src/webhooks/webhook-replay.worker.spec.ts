@@ -122,6 +122,54 @@ describe('webhook retry queue helpers', () => {
 });
 
 describe('startWebhookReplayWorker', () => {
+    it('closes its owned connection when confirm-channel creation fails', async () => {
+        const { channel, connection } = supervisedTransport();
+        const failure = new Error('confirm channel refused');
+        connection.createConfirmChannel.mockRejectedValue(failure);
+        const service = { claimRecoverableRetries: vi.fn().mockResolvedValue([]) };
+        await expect(startWebhookReplayWorker({
+            configService: workerConfig(),
+            webhooksService: service as any,
+            connect: vi.fn().mockResolvedValue(connection) as any,
+            startRuntimeServer: false,
+        })).rejects.toBe(failure);
+        expect(connection.close).toHaveBeenCalledOnce();
+        expect(channel.close).not.toHaveBeenCalled();
+        expect(channel.consume).not.toHaveBeenCalled();
+        expect(service.claimRecoverableRetries).not.toHaveBeenCalled();
+    });
+
+    it.each(['reject', 'hang'])('force-destroys startup connection when cleanup will %s', async (mode) => {
+        vi.useFakeTimers();
+        try {
+            const { channel, connection } = supervisedTransport();
+            const failure = new Error('confirm channel refused');
+            const destroy = vi.fn();
+            (connection as any).connection = { stream: { destroy } };
+            connection.createConfirmChannel.mockRejectedValue(failure);
+            connection.close.mockImplementation(() => mode === 'reject'
+                ? Promise.reject(new Error('close failed'))
+                : new Promise(() => undefined));
+            const startup = startWebhookReplayWorker({
+                configService: { get: vi.fn((key: string) => ({
+                    RABBITMQ_URL: 'amqp://rabbit',
+                    WEBHOOK_REPLAY_SHUTDOWN_TIMEOUT_MS: '1000',
+                }[key])) } as any,
+                webhooksService: { claimRecoverableRetries: vi.fn() } as any,
+                connect: vi.fn().mockResolvedValue(connection) as any,
+                startRuntimeServer: false,
+            });
+            const rejected = expect(startup).rejects.toBe(failure);
+            await vi.advanceTimersByTimeAsync(1000);
+            await rejected;
+            expect(connection.close).toHaveBeenCalledOnce();
+            expect(destroy).toHaveBeenCalledOnce();
+            expect(channel.consume).not.toHaveBeenCalled();
+        } finally {
+            vi.useRealTimers();
+        }
+    });
+
     it('consumes and publishes on a confirm channel', async () => {
         const consoleLog = vi.spyOn(console, 'log').mockImplementation(() => undefined);
         const { channel, connection } = supervisedTransport();

@@ -886,6 +886,83 @@ class WorkerMessageTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(published_message["message_id"], "msg-1")
         self.assertEqual(published_message["headers"], {"x-retry-count": 2})
 
+    async def test_retry_confirm_timeout_requeues_source_without_ack_or_state_update(self):
+        started = asyncio.Event()
+        cancelled = asyncio.Event()
+
+        async def never_confirm(*args, **kwargs):
+            started.set()
+            try:
+                await asyncio.Event().wait()
+            finally:
+                cancelled.set()
+
+        exchange = SimpleNamespace(publish=AsyncMock(side_effect=never_confirm))
+        message = SimpleNamespace(body=json.dumps({"type": "schedule.solve", "job_id": "job-timeout",
+            "retry_count": 0, "payload": {}}).encode(), message_id="confirm-timeout",
+            ack=AsyncMock(), nack=AsyncMock(), reject=AsyncMock())
+        pika = SimpleNamespace(Message=lambda body, **kwargs: SimpleNamespace(body=body, **kwargs),
+            DeliveryMode=SimpleNamespace(PERSISTENT="persistent"))
+        with patch.dict(sys.modules, {"aio_pika": pika}), \
+                patch.object(main, "RETRY_PUBLISH_TIMEOUT_SECONDS", 0.02), \
+                patch.object(main, "process_message", AsyncMock(side_effect=main.RetryableJobError("temporary"))), \
+                patch.object(main, "try_mark_schedule_status_from_message", AsyncMock()) as mark_status, \
+                patch.object(main.asyncio, "sleep", AsyncMock()) as sleep:
+            delivery = asyncio.create_task(main.handle_queue_message(SimpleNamespace(default_exchange=exchange), message))
+            try:
+                await asyncio.wait_for(started.wait(), 1)
+                message.ack.assert_not_awaited()
+                message.nack.assert_not_awaited()
+                await asyncio.wait_for(delivery, 1)
+            finally:
+                if not delivery.done():
+                    delivery.cancel()
+                    await asyncio.gather(delivery, return_exceptions=True)
+        self.assertTrue(cancelled.is_set())
+        self.assertEqual(exchange.publish.await_args.kwargs["timeout"], 0.02)
+        sleep.assert_awaited_once_with(main.RETRY_PUBLISH_FAILURE_REQUEUE_DELAY_SECONDS)
+        mark_status.assert_not_awaited()
+        message.ack.assert_not_awaited()
+        message.reject.assert_not_awaited()
+        message.nack.assert_awaited_once_with(requeue=True)
+
+    async def test_cancellation_during_retry_confirmation_leaves_source_unacknowledged(self):
+        started = asyncio.Event()
+        cancelled = asyncio.Event()
+
+        async def never_confirm(*args, **kwargs):
+            started.set()
+            try:
+                await asyncio.Event().wait()
+            finally:
+                cancelled.set()
+
+        exchange = SimpleNamespace(publish=AsyncMock(side_effect=never_confirm))
+        message = SimpleNamespace(body=json.dumps({"type": "schedule.solve", "job_id": "job-cancel",
+            "retry_count": 0, "payload": {}}).encode(), message_id="confirm-cancel",
+            ack=AsyncMock(), nack=AsyncMock(), reject=AsyncMock())
+        pika = SimpleNamespace(Message=lambda body, **kwargs: SimpleNamespace(body=body, **kwargs),
+            DeliveryMode=SimpleNamespace(PERSISTENT="persistent"))
+        with patch.dict(sys.modules, {"aio_pika": pika}), \
+                patch.object(main, "RETRY_PUBLISH_TIMEOUT_SECONDS", 10.0), \
+                patch.object(main, "process_message", AsyncMock(side_effect=main.RetryableJobError("temporary"))), \
+                patch.object(main, "try_mark_schedule_status_from_message", AsyncMock()) as mark_status:
+            delivery = asyncio.create_task(main.handle_queue_message(SimpleNamespace(default_exchange=exchange), message))
+            try:
+                await asyncio.wait_for(started.wait(), 1)
+                delivery.cancel()
+                with self.assertRaises(asyncio.CancelledError):
+                    await delivery
+            finally:
+                if not delivery.done():
+                    delivery.cancel()
+                    await asyncio.gather(delivery, return_exceptions=True)
+        self.assertTrue(cancelled.is_set())
+        mark_status.assert_not_awaited()
+        message.ack.assert_not_awaited()
+        message.nack.assert_not_awaited()
+        message.reject.assert_not_awaited()
+
     async def test_consumer_confirms_retry_and_records_recoverable_state_before_ack(self):
         events = []
         body = json.dumps({

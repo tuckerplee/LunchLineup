@@ -99,7 +99,7 @@ async function beforeShutdownDeadline<T>(
 
 function forceCloseReplayResources(
     connection: AmqpConnection,
-    channel: ConfirmChannel,
+    channel: ConfirmChannel | undefined,
     runtimeServer?: WebhookReplayRuntimeServer,
 ): void {
     const streams = new Set<unknown>([
@@ -295,9 +295,11 @@ export async function startWebhookReplayWorker(
     const rabbitUrl = String(configService.get('RABBITMQ_URL') || 'amqp://localhost');
     let runtimeServer: WebhookReplayRuntimeServer | undefined;
     let startupCleanup: (() => Promise<void>) | undefined;
+    let startupConnection: AmqpConnection | undefined;
 
     try {
         const connection = await (options.connect ?? amqp.connect)(rabbitUrl);
+        startupConnection = connection;
         const channel = await connection.createConfirmChannel();
         const prefetch = resolvePrefetch(configService);
         const shutdownTimeoutMs = resolveShutdownTimeoutMs(configService);
@@ -447,6 +449,17 @@ export async function startWebhookReplayWorker(
         if (startupCleanup) {
             await startupCleanup().catch(() => undefined);
         } else {
+            if (startupConnection) {
+                try {
+                    await beforeShutdownDeadline(
+                        startupConnection.close(),
+                        Date.now() + resolveShutdownTimeoutMs(configService),
+                        'startup connection close',
+                    );
+                } catch {
+                    forceCloseReplayResources(startupConnection, undefined, runtimeServer);
+                }
+            }
             await runtimeServer?.close();
         }
         throw error;

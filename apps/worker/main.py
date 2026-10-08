@@ -116,6 +116,9 @@ RETRY_BACKOFF_SECONDS = [int_env("WORKER_RETRY_BACKOFF_1_SECONDS", 5, 1, 300),
 RETRY_PUBLISH_FAILURE_REQUEUE_DELAY_SECONDS = int_env(
     "WORKER_RETRY_PUBLISH_FAILURE_REQUEUE_DELAY_SECONDS", 5, 1, 30
 )
+RETRY_PUBLISH_TIMEOUT_SECONDS = float_env(
+    "WORKER_RETRY_PUBLISH_TIMEOUT_SECONDS", 10.0, 0.1, 60.0
+)
 SCHEDULE_SOLVE_EXECUTION_LEASE_SECONDS = int_env(
     "WORKER_SCHEDULE_SOLVE_EXECUTION_LEASE_SECONDS", 300, 60, 1800
 )
@@ -2834,16 +2837,20 @@ async def publish_retry(exchange: Any, body: bytes, retry_count: int, message_id
     raw = json.loads(body.decode("utf-8"))
     raw["retry_count"] = retry_count
     encoded = json.dumps(raw, separators=(",", ":")).encode("utf-8")
-    await exchange.publish(
-        aio_pika.Message(
-            encoded,
-            content_type="application/json",
-            delivery_mode=aio_pika.DeliveryMode.PERSISTENT,
-            message_id=message_id,
-            headers={"x-retry-count": retry_count},
-        ),
-        routing_key=retry_queue_name(retry_count),
-    )
+    # Bound both channel recovery and broker confirmation. An uncertain publish
+    # must leave the source available for redelivery, never acknowledge it.
+    async with asyncio.timeout(RETRY_PUBLISH_TIMEOUT_SECONDS):
+        await exchange.publish(
+            aio_pika.Message(
+                encoded,
+                content_type="application/json",
+                delivery_mode=aio_pika.DeliveryMode.PERSISTENT,
+                message_id=message_id,
+                headers={"x-retry-count": retry_count},
+            ),
+            routing_key=retry_queue_name(retry_count),
+            timeout=RETRY_PUBLISH_TIMEOUT_SECONDS,
+        )
 
 
 def start_metrics_server() -> tuple[Any, threading.Thread] | None:
