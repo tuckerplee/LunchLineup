@@ -1580,6 +1580,62 @@ test('DR drill refuses a caller-provided local file as off-host evidence', { ski
   }
 });
 
+test('same-second backups retain distinct archives and matching checksums', { skip: bashSkip, timeout: 15_000 }, async () => {
+  const scratch = mkdtempSync(join(tmpdir(), 'lunchlineup-backup-collision-'));
+  const fakeBin = join(scratch, 'bin');
+  const backupDir = join(scratch, 'backups');
+  mkdirSync(fakeBin);
+  writeExecutable(join(fakeBin, 'date'), `#!/bin/sh
+if [ "$2" = '+%Y%m%d%H%M%S' ]; then printf '20261008000000\\n'; else exec /bin/date "$@"; fi
+`);
+  writeExecutable(join(fakeBin, 'pg_dump'), '#!/bin/sh\nprintf "%s\\n" "$FIXTURE_DUMP"\n');
+  writeExecutable(join(fakeBin, 'zstd'), '#!/bin/sh\ncat\n');
+  writeExecutable(join(fakeBin, 'gpg'), `#!/bin/sh
+while [ "$#" -gt 0 ]; do
+  if [ "$1" = '-o' ]; then shift; output="$1"; fi
+  shift
+done
+cat > "$output"
+`);
+  const run = async (payload) => {
+    const result = await execFileAsync(bash, [
+      '-c', 'PATH="$1:$PATH"; export PATH; exec bash "$2"',
+      'backup-collision', bashPath(fakeBin), bashPath(join(root, 'scripts/backup.sh')),
+    ], {
+      cwd: root, timeout: 10_000,
+      env: {
+        ...process.env,
+        BACKUP_DIR: bashPath(backupDir), BACKUP_PREFIX: 'lunchlineup',
+        BACKUP_ENCRYPTION_KEY: 'synthetic-test-key', BACKUP_ENCRYPTION_KEY_FILE: '',
+        BACKUP_OFFSITE_URI: '', BACKUP_OFFSITE_ENABLED: 'false', BACKUP_METRICS_FILE: '',
+        FIXTURE_DUMP: payload,
+      },
+    });
+    const match = /backup_ok backup_file=(.+) checksum_file=.+ backup_sha256=([a-f0-9]{64})/.exec(result.stdout);
+    assert.ok(match, result.stdout);
+    return { path: join(backupDir, match[1].split('/').at(-1)), hash: match[2], payload: `${payload}\n` };
+  };
+  try {
+    const first = await run('first snapshot');
+    const second = await run('second snapshot');
+    const concurrentRuns = await Promise.allSettled([run('third snapshot'), run('fourth snapshot')]);
+    const concurrent = concurrentRuns.map((result) => {
+      if (result.status === 'rejected') throw result.reason;
+      return result.value;
+    });
+    const results = [first, second, ...concurrent];
+    assert.equal(new Set(results.map(({ path }) => path)).size, 4, 'same-second backups must never reuse an archive path');
+    for (const result of results) {
+      assert.equal(readFileSync(result.path, 'utf8'), result.payload, 'later backups must preserve earlier archive bytes');
+      const hash = createHash('sha256').update(result.payload).digest('hex');
+      assert.equal(result.hash, hash);
+      assert.equal(readFileSync(`${result.path}.sha256`, 'utf8'), `${hash}  ${result.path.replaceAll('\\', '/').split('/').at(-1)}\n`);
+    }
+  } finally {
+    rmSync(scratch, { recursive: true, force: true });
+  }
+});
+
 test('backup rejects unsafe backup directories before pg_dump is required', { skip: bashSkip }, () => {
   const result = runBashScript(bash, 'scripts/backup.sh', {
     BACKUP_DIR: '/',
