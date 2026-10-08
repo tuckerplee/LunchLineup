@@ -28,10 +28,21 @@ trap cleanup EXIT HUP INT TERM
 case "${PITR_BASE_BACKUP_ID}" in
   '' | latest | latest.* | *[!A-Za-z0-9._-]*) pitr_fail "PITR_BASE_BACKUP_ID must name one explicit backup." ;;
 esac
-case "${PITR_RECOVERY_TARGET_TIME}" in
-  ????-??-??T??:??:??Z | ????-??-??T??:??:??.*Z) ;;
-  *) pitr_fail "PITR_RECOVERY_TARGET_TIME must be an explicit UTC RFC3339 timestamp." ;;
-esac
+command -v node >/dev/null 2>&1 || pitr_fail "node is required to validate PITR_RECOVERY_TARGET_TIME."
+if ! node - "${PITR_RECOVERY_TARGET_TIME}" <<'JS'
+const value = process.argv[2];
+const match = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z$/.exec(value);
+const wholeSeconds = `${value.slice(0, 19)}Z`;
+const parsed = new Date(wholeSeconds);
+// Preserve fractional precision verbatim; Date is only the calendar validator.
+if (!match || match[0] !== value || value.startsWith('0000-')
+    || !Number.isFinite(parsed.getTime()) || parsed.toISOString().slice(0, 19) !== value.slice(0, 19)) {
+  process.exitCode = 1;
+}
+JS
+then
+  pitr_fail "PITR_RECOVERY_TARGET_TIME must be a valid explicit UTC RFC3339 timestamp."
+fi
 case "${PITR_ARCHIVED_WAL_SEGMENT}" in
   ????????????????????????) case "${PITR_ARCHIVED_WAL_SEGMENT}" in *[!A-Fa-f0-9]*) pitr_fail "PITR_ARCHIVED_WAL_SEGMENT must be a 24-hex WAL segment name." ;; esac ;;
   *) pitr_fail "PITR_ARCHIVED_WAL_SEGMENT must be a 24-hex WAL segment name." ;;
