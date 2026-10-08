@@ -478,3 +478,216 @@ test('native API v2 Payroll uses public IDs, tenant RLS, immutable evidence, exa
     await Promise.allSettled([app.$disconnect(), owner.$disconnect()]);
   }
 });
+
+for (const minuteDelta of [60, -60]) {
+  test(`native API v2 Payroll amendment export preserves ${minuteDelta > 0 ? 'positive' : 'negative'} signed minutes and independent decisions`, { timeout: 75_000 }, async () => {
+    const owner = createPrisma(requireServiceUrl('MIGRATION_DATABASE_URL').toString());
+    const app = createPrisma(requireServiceUrl('DATABASE_URL').toString());
+    const runId = randomUUID();
+    const tenantId = `native-amendment-${runId}`;
+    const key = (operation) => `amendment-${runId}-${operation}`;
+    const payroll = new PayrollService(new TenantDatabase(app), mutationObserver);
+    try {
+      await owner.tenant.create({ data: {
+        id: tenantId, name: 'Native amendment export fixture', slug: tenantId,
+        planTier: 'GROWTH', status: 'ACTIVE', usageCredits: 5,
+        stripeSubscriptionId: `sub_amendment_${runId}`,
+        stripeSubscriptionCurrentPeriodEnd: new Date('2099-01-01T00:00:00.000Z'),
+      } });
+      const users = await Promise.all(['Requester', 'Reviewer', 'Employee'].map(name => owner.user.create({
+        data: { tenantId, name, role: 'ADMIN', mfaBackupCodes: [] },
+      })));
+      const [requester, reviewer, employee] = users;
+      const location = await owner.location.create({ data: { tenantId, name: 'Amendment fixture', timezone: 'UTC' } });
+      const requesterIdentity = await seedMutationAuthority(owner, tenantId, requester, 'ADMIN', [
+        'payroll:read', 'payroll:policy_write', 'payroll:lock', 'payroll:export', 'payroll:reconcile', 'time_cards:approve',
+      ]);
+      const reviewerIdentity = await seedMutationAuthority(owner, tenantId, reviewer, 'ADMIN', ['time_cards:approve']);
+      const employeeIdentity = await seedMutationAuthority(owner, tenantId, employee, 'ADMIN', ['time_cards:approve', 'payroll:reconcile']);
+      await payroll.createPolicy(requesterIdentity, {
+        timeZone: 'UTC', cadence: 'WEEKLY', anchorDate: '2020-01-06', effectiveFrom: '2020-01-06',
+      }, key('policy'));
+      const source = await payroll.createPeriod(requesterIdentity, { localStartDate: '2020-01-06' }, key('source'));
+      const adjustment = await payroll.createPeriod(requesterIdentity, { localStartDate: '2020-01-13' }, key('adjustment'));
+      const card = await owner.timeCard.create({ data: {
+        tenantId, userId: employee.id, locationId: location.id,
+        clockInAt: new Date('2020-01-07T09:00:00.000Z'), clockOutAt: new Date('2020-01-07T17:00:00.000Z'),
+        workTimeZone: 'UTC', breakMinutes: 30, status: 'CLOSED',
+      } });
+      const adopted = await payroll.adoptCards(requesterIdentity, source.id, {
+        cards: [{ id: card.publicId, expectedRevision: card.revision }],
+      }, key('adopt'));
+      const sourceReview = await payroll.startReview(requesterIdentity, source.id, { expectedRevision: source.revision }, key('source-review'));
+      await payroll.decideCards(reviewerIdentity, source.id, { decisions: [{
+        timeCardId: card.publicId, expectedRevision: adopted.cards[0].revision, decision: 'APPROVED', reason: 'Verify original worked time.',
+      }] }, key('card-approval'));
+      await payroll.lockPeriod(requesterIdentity, source.id, { expectedRevision: sourceReview.revision }, key('source-lock'));
+      const sourceDetail = await payroll.getPeriod(requesterIdentity, source.id, {});
+      assert.equal(sourceDetail.lockedEntries.length, 1);
+      const original = sourceDetail.lockedEntries[0];
+      assert.equal(original.payableMinutes, 450);
+      const sourceSnapshot = await owner.payrollLockedEntry.findUniqueOrThrow({ where: { publicId: original.id } });
+      const amendmentBody = {
+        adjustmentPeriodId: adjustment.id, reason: 'Correct the original worked time.',
+        replacementClockInAt: '2020-01-07T09:00:00.000Z',
+        replacementClockOutAt: minuteDelta > 0 ? '2020-01-07T18:00:00.000Z' : '2020-01-07T16:00:00.000Z',
+        replacementBreakMinutes: 30,
+      };
+      await assert.rejects(() => payroll.createAmendment(employeeIdentity, original.id, amendmentBody,
+        key('employee-request-denied')), error => error?.code === 'payroll_self_amendment_denied');
+      const amendment = await payroll.createAmendment(requesterIdentity, original.id, amendmentBody, key('amendment'));
+      assert.equal(amendment.minuteDelta, minuteDelta);
+      const rejected = await payroll.createAmendment(requesterIdentity, original.id, {
+        ...amendmentBody, reason: 'Alternative correction requiring rejection.',
+        replacementClockOutAt: '2020-01-07T19:00:00.000Z',
+      }, key('rejected-amendment'));
+      assert.equal(rejected.minuteDelta, 120);
+      const adjustmentReview = await payroll.startReview(requesterIdentity, adjustment.id, { expectedRevision: adjustment.revision }, key('adjustment-review'));
+      const adjustmentRow = await owner.payrollPeriod.findUniqueOrThrow({ where: { publicId: adjustment.id } });
+      const pendingState = async () => ({
+        period: await owner.payrollPeriod.findUniqueOrThrow({ where: { id: adjustmentRow.id } }),
+        entries: await owner.payrollLockedEntry.count({ where: { tenantId, periodId: adjustmentRow.id } }),
+        decisions: await owner.payrollAmendmentDecision.count({ where: { tenantId } }),
+        batches: await owner.payrollExportBatch.count({ where: { tenantId } }),
+        credits: await owner.creditTransaction.count({ where: { tenantId } }),
+        wallet: await owner.tenant.findUniqueOrThrow({ where: { id: tenantId }, select: { usageCredits: true } }),
+      });
+      const beforeDenials = await pendingState();
+      await assert.rejects(() => payroll.lockPeriod(requesterIdentity, adjustment.id, {
+        expectedRevision: adjustmentReview.revision,
+      }, key('pending-lock')), error => error?.code === 'payroll_amendment_pending');
+      await assert.rejects(() => payroll.createExport(requesterIdentity, adjustment.id, {
+        expectedCreditCost: 1,
+      }, key('pending-export')), error => error?.code === 'payroll_export_state_invalid');
+      for (const [label, actor] of [['requester', requesterIdentity], ['source-employee', employeeIdentity]]) {
+        await assert.rejects(() => payroll.decideAmendment(actor, amendment.id, {
+          decision: 'APPROVED', reason: 'Attempt a self-interested approval.',
+        }, key(`${label}-denied`)), error => error?.code === 'payroll_self_amendment_decision_denied');
+      }
+      assert.deepEqual(await pendingState(), beforeDenials, 'denied operations must not change decisions, lock, export, or credit state');
+      const approved = await payroll.decideAmendment(reviewerIdentity, amendment.id, {
+        decision: 'APPROVED', reason: 'Independently verified correction.',
+      }, key('approve'));
+      assert.equal(approved.decidedByUserId, reviewer.publicId);
+      await assert.rejects(() => payroll.lockPeriod(requesterIdentity, adjustment.id, {
+        expectedRevision: adjustmentReview.revision,
+      }, key('remaining-pending-lock')), error => error?.code === 'payroll_amendment_pending');
+      const rejection = await payroll.decideAmendment(reviewerIdentity, rejected.id, {
+        decision: 'REJECTED', reason: 'Alternative hours were not worked.',
+      }, key('reject'));
+      assert.equal(rejection.decision, 'REJECTED');
+      const locked = await payroll.lockPeriod(requesterIdentity, adjustment.id, {
+        expectedRevision: adjustmentReview.revision,
+      }, key('adjustment-lock'));
+      assert.equal(locked.lockedEntryCount, 1);
+      assert.equal(locked.totalPayableMinutes, minuteDelta);
+      const detail = await payroll.getPeriod(requesterIdentity, adjustment.id, {});
+      assert.equal(detail.lockedEntries.length, 1);
+      assert.equal(detail.lockedEntries[0].sourceType, 'AMENDMENT');
+      assert.equal(detail.lockedEntries[0].sourceId, amendment.id);
+      assert.equal(detail.lockedEntries[0].payableMinutes, minuteDelta);
+      assert.equal(detail.lockedEntries[0].clockInAt, amendmentBody.replacementClockInAt);
+      assert.equal(detail.lockedEntries[0].clockOutAt, amendmentBody.replacementClockOutAt);
+      assert.equal(detail.lockedEntries[0].breakMinutes, amendmentBody.replacementBreakMinutes);
+      assert.equal(detail.lockedEntries[0].locationId, original.locationId);
+      assert.equal(detail.lockedEntries[0].workTimeZone, original.workTimeZone);
+      const entitlement = await payroll.exportEntitlement(requesterIdentity);
+      assert.equal(entitlement.eligible, true);
+      assert.equal(entitlement.creditCost, 1);
+      const exportBody = { expectedCreditCost: entitlement.creditCost };
+      const exported = await payroll.createExport(requesterIdentity, adjustment.id, exportBody, key('export'));
+      const replay = await payroll.createExport(requesterIdentity, adjustment.id, exportBody, key('export'));
+      assert.deepEqual(replay, exported, 'exact replay must preserve the batch, line identities, and hashes');
+      assert.equal(exported.periodId, adjustment.id);
+      assert.equal(exported.totalPayableMinutes, minuteDelta);
+      assert.deepEqual(exported.settlement, { consumedCredits: 1, newBalance: 4 });
+      assert.equal(exported.lines.length, 1);
+      const line = exported.lines[0];
+      assert.equal(line.employeeId, employee.publicId);
+      assert.equal(line.lockedEntryId, detail.lockedEntries[0].id);
+      assert.equal(line.payableMinutes, minuteDelta);
+      const download = await payroll.downloadExport(requesterIdentity, exported.id);
+      const csvRows = download.content.toString('utf8').trimEnd().split('\n').map(row => row.split(','));
+      assert.equal(csvRows.length, 2);
+      assert.equal(csvRows[1][csvRows[0].indexOf('source_type')], '"AMENDMENT"');
+      assert.equal(csvRows[1][csvRows[0].indexOf('source_id')], `"${amendment.id}"`);
+      assert.equal(csvRows[1][csvRows[0].indexOf('payable_minutes')], `"${minuteDelta}"`);
+      for (const [column, expected] of Object.entries({
+        payroll_line_id: line.id, employee_id: employee.publicId, location_id: original.locationId,
+        work_time_zone: original.workTimeZone, clock_in_utc: amendmentBody.replacementClockInAt,
+        clock_out_utc: amendmentBody.replacementClockOutAt, break_minutes: amendmentBody.replacementBreakMinutes,
+      })) {
+        assert.equal(csvRows[1][csvRows[0].indexOf(column)], `"${expected}"`, `CSV ${column}`);
+      }
+      assert.equal(payrollContentSha256(download.content), exported.contentSha256);
+      // A separate period containing only a rejected correction locks empty and
+      // cannot create a paid export. No fixture inserts payroll-domain records.
+      const rejectedPeriod = await payroll.createPeriod(requesterIdentity, { localStartDate: '2020-01-20' }, key('rejected-period'));
+      const rejectedOnly = await payroll.createAmendment(requesterIdentity, original.id, {
+        ...amendmentBody, adjustmentPeriodId: rejectedPeriod.id, reason: 'Unsubstantiated later correction.',
+      }, key('rejected-only'));
+      const rejectedReview = await payroll.startReview(requesterIdentity, rejectedPeriod.id, {
+        expectedRevision: rejectedPeriod.revision,
+      }, key('rejected-review'));
+      await payroll.decideAmendment(reviewerIdentity, rejectedOnly.id, {
+        decision: 'REJECTED', reason: 'No additional correction is supported.',
+      }, key('reject-only'));
+      const emptyLock = await payroll.lockPeriod(requesterIdentity, rejectedPeriod.id, {
+        expectedRevision: rejectedReview.revision,
+      }, key('rejected-lock'));
+      assert.equal(emptyLock.status, 'LOCKED');
+      assert.equal(emptyLock.lockedEntryCount, 0);
+      assert.equal(emptyLock.totalPayableMinutes, 0);
+      await assert.rejects(() => payroll.createExport(requesterIdentity, rejectedPeriod.id, exportBody,
+        key('rejected-export')), error => error?.code === 'payroll_export_entry_count_invalid');
+      const [batches, lines, credits, wallet, unchangedSource, persistedDecisions, persistedAmendment, persistedAdjustmentEntry] = await Promise.all([
+        owner.payrollExportBatch.findMany({ where: { tenantId } }),
+        owner.payrollExportLine.findMany({ where: { tenantId } }),
+        owner.creditTransaction.findMany({ where: { tenantId } }),
+        owner.tenant.findUniqueOrThrow({ where: { id: tenantId }, select: { usageCredits: true, creditDebt: true } }),
+        owner.payrollLockedEntry.findUniqueOrThrow({ where: { id: sourceSnapshot.id } }),
+        owner.payrollAmendmentDecision.findMany({ where: { tenantId } }),
+        owner.payrollAmendment.findUniqueOrThrow({ where: { publicId: amendment.id } }),
+        owner.payrollLockedEntry.findUniqueOrThrow({ where: { publicId: detail.lockedEntries[0].id } }),
+      ]);
+      assert.equal(batches.length, 1);
+      assert.equal(batches[0].publicId, exported.id);
+      assert.equal(batches[0].periodId, adjustmentRow.id);
+      assert.equal(batches[0].totalPayableMinutes, minuteDelta);
+      assert.equal(batches[0].consumedCredits, 1);
+      assert.equal(batches[0].newBalance, 4);
+      assert.equal(lines.length, 1);
+      assert.equal(lines[0].payableMinutes, minuteDelta);
+      assert.equal(lines[0].publicId, line.id);
+      assert.equal(lines[0].batchId, batches[0].id);
+      assert.equal(lines[0].lockedEntryId, persistedAdjustmentEntry.id);
+      for (const row of [lines[0], persistedAdjustmentEntry]) {
+        assert.equal(row.sourceType, 'AMENDMENT');
+        assert.equal(row.sourceId, persistedAmendment.id);
+        assert.equal(row.employeeId, employee.id);
+        assert.equal(row.locationId, sourceSnapshot.locationId);
+        assert.equal(row.workTimeZone, sourceSnapshot.workTimeZone);
+        assert.equal(row.clockInAt.toISOString(), amendmentBody.replacementClockInAt);
+        assert.equal(row.clockOutAt.toISOString(), amendmentBody.replacementClockOutAt);
+        assert.equal(row.breakMinutes, amendmentBody.replacementBreakMinutes);
+        assert.equal(row.payableMinutes, minuteDelta);
+      }
+      assert.equal(persistedAmendment.lockedEntryId, sourceSnapshot.id);
+      assert.equal(persistedAmendment.adjustmentPeriodId, adjustmentRow.id);
+      assert.equal(credits.length, 1);
+      assert.equal(credits[0].id, batches[0].creditTransactionId);
+      assert.equal(credits[0].amount, -1);
+      assert.equal(credits[0].debtAmount, 0);
+      assert.equal(credits[0].balanceAfter, batches[0].newBalance);
+      assert.equal(credits[0].debtAfter, 0);
+      assert.equal(wallet.usageCredits, 4);
+      assert.equal(wallet.creditDebt, 0);
+      assert.deepEqual(persistedDecisions.map(row => row.decision).sort(), ['APPROVED', 'REJECTED', 'REJECTED']);
+      assert.ok(persistedDecisions.every(row => row.decidedByUserId === reviewer.id));
+      assert.deepEqual(unchangedSource, sourceSnapshot, 'future corrections must preserve the original locked snapshot');
+    } finally {
+      await cleanup(owner, [tenantId]);
+      await Promise.allSettled([app.$disconnect(), owner.$disconnect()]);
+    }
+  });
+}
