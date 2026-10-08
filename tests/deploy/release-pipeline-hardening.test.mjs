@@ -650,3 +650,80 @@ test('internal beta local pipeline keeps isolated source, active scanners, exact
   assert.match(lifecycle, /loaded image ID mismatch/);
   assert.match(lifecycle, /VM107 must only load qualified CI image archives/);
 });
+
+function semgrepReportFixture() {
+  const scratch = mkdtempSync(join(tmpdir(), 'll-semgrep-report-'));
+  const artifact = join(scratch, 'artifact'), runner = join(scratch, 'runner');
+  const runRoot = join(runner, 'lunchlineup-source-run-1'), scan = join(runRoot, 'scan'), build = join(runRoot, 'build');
+  for (const path of [join(artifact, 'source'), join(artifact, 'details'), scan, build]) mkdirSync(path, { recursive: true });
+  const sourceSha = '1'.repeat(40), treeSha = '2'.repeat(40), baselineSha = '3'.repeat(40), pipelineSha256 = '4'.repeat(64);
+  const identity = { version: 1, repository: 'tuckerplee/LunchLineup', sourceRef: 'refs/heads/internal-beta-candidate', sourceSha, remoteCandidateSha: sourceSha, treeSha, baselineRef: 'refs/heads/main', baselineSha, pipelineSha256, runId: 'run-1' };
+  const proofPath = join(artifact, 'source/source-proof.json');
+  writeFileSync(proofPath, JSON.stringify({ ...identity, kind: 'lunchlineup-internal-ci-source-proof', status: 'passed', baselineTreeSha: baselineSha, originalCheckoutClean: true, scanCloneVerified: true, buildCloneVerified: true, gitAlternatesRejected: true, verifiedAt: new Date().toISOString() }));
+  const contextPath = join(runRoot, 'source-context.json');
+  writeFileSync(contextPath, JSON.stringify({ ...identity, kind: 'lunchlineup-internal-ci-source-context', runRoot, sourceProofPath: proofPath, scanSourcePath: scan, buildSourcePath: build, artifactRoot: artifact, evidenceRoot: artifact }));
+  return { scratch, artifact, runner, sourceSha, contextPath };
+}
+
+// Shape follows the pinned v1.169.0 Sarif_output.ml producer, not a scanner mock.
+const semgrepReport = () => ({ version: '2.1.0', runs: [{ tool: { driver: { name: 'Semgrep OSS', semanticVersion: '1.169.0', rules: [{ id: 'test.rule' }] } }, invocations: [{ executionSuccessful: true, toolExecutionNotifications: [] }], results: [] }] });
+function verifySemgrepReport(report, mode) {
+  const f = semgrepReportFixture();
+  try {
+    const reportPath = join(f.artifact, 'result.sarif'), detailsPath = join(f.artifact, 'details/semgrep.json');
+    writeFileSync(reportPath, JSON.stringify(report));
+    const result = spawnSync(process.execPath, [resolve(root, 'scripts/verify-internal-ci-semgrep.mjs'), '--source-context', f.contextPath, '--mode', mode, '--scanner-image', `semgrep/semgrep:1.169.0@sha256:${'5'.repeat(64)}`, '--report', reportPath, '--details', detailsPath], { encoding: 'utf8', timeout: 10000, env: { ...process.env, CI_COMMIT_SHA: f.sourceSha, CI_RUN_ID: 'run-1', RUNNER_TEMP: f.runner } });
+    const details = readdirSync(join(f.artifact, 'details')).length ? JSON.parse(readFileSync(detailsPath, 'utf8')) : null;
+    return { ...result, details };
+  } finally { rmSync(f.scratch, { recursive: true, force: true }); }
+}
+
+test('Semgrep report verifier accepts explicit zero results and preserves inventory versus delta policy', () => {
+  for (const mode of ['full', 'delta']) {
+    const report = semgrepReport();
+    report.runs[0].invocations[0].toolExecutionNotifications.push({ level: 'warning', message: { text: 'Retained warning.' } });
+    const zero = verifySemgrepReport(report, mode);
+    assert.equal(zero.status, 0, zero.stderr); assert.equal(zero.details.findings, 0);
+    assert.match(zero.details.report.sha256, /^[a-f0-9]{64}$/);
+    assert.equal(zero.details.baselineSha, mode === 'delta' ? '3'.repeat(40) : undefined);
+    // No applicable rules is distinct from absent/malformed rule metadata.
+    report.runs[0].tool.driver.rules = [];
+    assert.equal(verifySemgrepReport(report, mode).status, 0);
+  }
+  const report = semgrepReport(); report.runs[0].results.push({ ruleId: 'test.rule', message: { text: 'Retained finding.' } });
+  const full = verifySemgrepReport(report, 'full'); assert.equal(full.status, 0, full.stderr); assert.equal(full.details.findings, 1);
+  const delta = verifySemgrepReport(report, 'delta'); assert.notEqual(delta.status, 0); assert.equal(delta.details, null);
+});
+
+test('Semgrep report verifier rejects incomplete evidence instead of recording zero findings', () => {
+  const mutations = [
+    ['empty run', r => { r.runs = [{}]; }],
+    ['missing version', r => { delete r.version; }],
+    ['wrong version', r => { r.version = '2.0.0'; }],
+    ['no runs', r => { r.runs = []; }],
+    ['null run', r => { r.runs = [null]; }],
+    ['missing tool', r => { delete r.runs[0].tool; }],
+    ['wrong tool', r => { r.runs[0].tool.driver.name = 'Other'; }],
+    ['wrong scanner version', r => { r.runs[0].tool.driver.semanticVersion = '1.168.0'; }],
+    ['missing rules', r => { delete r.runs[0].tool.driver.rules; }],
+    ['malformed rules', r => { r.runs[0].tool.driver.rules = {}; }],
+    ['missing rule ID', r => { r.runs[0].tool.driver.rules = [{}]; }],
+    ['missing results', r => { delete r.runs[0].results; }],
+    ['malformed results', r => { r.runs[0].results = {}; }],
+    ['malformed result', r => { r.runs[0].results = [null]; }],
+    ['unknown result rule', r => { r.runs[0].results = [{ ruleId: 'unknown', message: { text: 'x' } }]; }],
+    ['missing invocation', r => { delete r.runs[0].invocations; }],
+    ['empty invocation', r => { r.runs[0].invocations = []; }],
+    ['missing success', r => { delete r.runs[0].invocations[0].executionSuccessful; }],
+    ['failed execution', r => { r.runs[0].invocations[0].executionSuccessful = false; }],
+    ['nonboolean success', r => { r.runs[0].invocations[0].executionSuccessful = 'true'; }],
+    ['missing notifications', r => { delete r.runs[0].invocations[0].toolExecutionNotifications; }],
+    ['scanner error despite success', r => { r.runs[0].invocations[0].toolExecutionNotifications = [{ level: 'error', message: { text: 'Scan failed.' } }]; }],
+    ['malformed notification', r => { r.runs[0].invocations[0].toolExecutionNotifications = [null]; }],
+  ];
+  for (const mode of ['full', 'delta']) for (const [label, mutate] of mutations) {
+    const report = semgrepReport(); mutate(report); const result = verifySemgrepReport(report, mode);
+    assert.notEqual(result.status, 0, `${mode}: ${label}`);
+    assert.equal(result.details, null, `${mode}: ${label} must not write successful details`);
+  }
+});
