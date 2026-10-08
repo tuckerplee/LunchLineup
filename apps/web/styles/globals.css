@@ -127,7 +127,8 @@ textarea {
 }
 
 :focus-visible {
-  outline: none;
+  outline: 2px solid var(--brand-700);
+  outline-offset: 2px;
   box-shadow: var(--focus-ring);
 }
 
@@ -644,7 +645,8 @@ textarea {
 
 .btn:focus-visible {
   box-shadow: var(--focus-ring);
-  outline: none;
+  outline: 2px solid var(--brand-700);
+  outline-offset: 2px;
 }
 
 .btn-primary {
@@ -1192,6 +1194,12 @@ textarea.form-input {
 }
 
 .staff-confirmation-dialog {
+  min-width: 0;
+  max-height: calc(100vh - 40px);
+  max-height: calc(100dvh - 40px);
+  overflow-y: auto;
+  overflow-wrap: anywhere;
+  overscroll-behavior: contain;
   width: min(100%, 460px);
   border: 1px solid var(--border);
   border-radius: var(--r-lg);
@@ -1262,6 +1270,15 @@ textarea.form-input {
 .staff-profile-drawer__section-heading h3 {
   margin: 0;
   color: var(--text);
+}
+
+.staff-profile-drawer__header > div {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.staff-profile-drawer__header > button {
+  flex-shrink: 0;
 }
 
 .staff-profile-drawer__header h2 {
@@ -1926,7 +1943,7 @@ textarea.form-input {
 .public-doc__intro h1 {
   margin: 0;
   color: var(--text);
-  font-size: 42px;
+  font-size: clamp(1.75rem, 7vw, 2.625rem);
   line-height: 1.08;
   font-weight: 850;
 }
@@ -2584,5 +2601,103 @@ textarea.form-input {
   .schedule-header {
     align-items: flex-start;
     flex-direction: column;
+  }
+}
+
+/* Keep keyboard position visible independently of shadows, including high contrast. */
+.workspace-mobile-nav-link:focus-visible,
+.workspace-mobile-more-item:focus-visible,
+.workspace-nav-link:focus-visible,
+.form-input:focus-visible {
+  outline: 2px solid var(--brand-700);
+  outline-offset: 2px;
+}
+
+.workspace-skip-link {
+  position: fixed;
+  top: 8px;
+  left: 8px;
+  z-index: 150;
+  padding: 10px 16px;
+  border-radius: var(--r-sm);
+  background: var(--surface);
+  color: var(--brand-800);
+  font-weight: 700;
+  transform: translateY(calc(-100% - 16px));
+}
+
+.workspace-skip-link:focus {
+  transform: translateY(0);
+}
+
+.workspace-content {
+  scroll-margin-top: 80px;
+}
+
+.workspace-account-control { flex-shrink: 0; }
+
+.workspace-mobile-more-menu {
+  max-height: calc(100vh - 160px);
+  max-height: calc(100dvh - 160px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.public-doc__main,
+.public-doc__main > *,
+.public-doc__intro,
+.public-doc__sections,
+.public-doc__section {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.public-doc__section a {
+  color: var(--brand-700);
+  text-decoration: underline;
+  text-underline-offset: 0.15em;
+}
+
+@media (max-width: 768px) {
+  .public-doc .public-home__actions {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px;
+  }
+
+  .public-doc .public-home__actions .btn {
+    min-width: 0;
+    min-height: 44px;
+    height: auto;
+    padding: 8px;
+  }
+
+  .public-doc__main { padding-top: 24px; }
+  .public-doc__section { padding: 16px; }
+
+  .staff-confirmation-actions > button {
+    min-height: 44px;
+    height: auto;
+    padding-top: 10px;
+    padding-bottom: 10px;
+    white-space: normal;
+  }
+
+  .staff-profile-drawer__roles > [role="group"] {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .staff-profile-drawer__roles label {
+    min-height: 44px;
+    overflow-wrap: anywhere;
+  }
+
+  .staff-profile-drawer__roles input[type="checkbox"] { flex-shrink: 0; }
+}
+
+@media (forced-colors: active) {
+  :focus-visible {
+    outline: 2px solid Highlight !important;
+    outline-offset: 2px;
   }
 }

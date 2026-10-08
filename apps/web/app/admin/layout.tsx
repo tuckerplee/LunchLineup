@@ -14,6 +14,7 @@ export default async function AdminLayout({ children }: { children: React.ReactN
 
     return (
         <div className={`workspace-shell ${styles.shell}`} style={{ background: '#f7f9ff' }}>
+            <a className="workspace-skip-link" href="#workspace-main-content">Skip to main content</a>
             <aside
                 className="workspace-sidebar"
                 aria-label="Admin sidebar"
@@ -123,7 +124,7 @@ export default async function AdminLayout({ children }: { children: React.ReactN
                     </div>
                 </header>
 
-                <main className="workspace-content">{children}</main>
+                <main id="workspace-main-content" tabIndex={-1} className="workspace-content">{children}</main>
             </section>
         </div>
     );

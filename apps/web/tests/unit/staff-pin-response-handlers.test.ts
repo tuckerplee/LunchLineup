@@ -28,8 +28,10 @@ const row = (id: string) => nodes(render()).find(n => n.type === 'tr' && n.key =
 const close = () => nodes(drawer()).find(n => n.props['aria-label'] === 'Close staff management')!.props.onClick();
 const open = (id: string) => button(row(id), 'Edit schedule profile').props.onClick({ currentTarget: { isConnected: false } });
 async function beginReset() {
-  button(row(staff[0].id), 'Reset PIN').props.onClick();
+  button(row(staff[0].id), 'Reset PIN').props.onClick({ currentTarget: { closest: () => null } });
   const confirmation = nodes(render()).find(n => n.props.role === 'alertdialog')!;
+  expect(confirmation.props['aria-modal']).toBe('true');
+  expect(confirmation.props.tabIndex).toBe(-1);
   const pending = deferred<Response>(); m.fetch.mockReturnValueOnce(pending.promise);
   button(confirmation, 'Reset PIN').props.onClick();
   expect(drawer()?.props['aria-label']).toBe('Manage Alpha');

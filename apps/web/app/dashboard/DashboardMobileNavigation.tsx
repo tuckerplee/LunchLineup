@@ -64,6 +64,11 @@ export function DashboardMobileNavigation({ pathname, primary, more }: Dashboard
       triggerRef.current?.focus();
       return;
     }
+    if (event.key === 'Tab') {
+      // Let the browser move focus before removing the focused menu item.
+      window.requestAnimationFrame(() => setMoreOpen(false));
+      return;
+    }
     if (!['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key) || items.length === 0) return;
     event.preventDefault();
     const nextIndex = event.key === 'Home'
@@ -94,7 +99,13 @@ export function DashboardMobileNavigation({ pathname, primary, more }: Dashboard
         );
       })}
 
-      <div className="workspace-mobile-more" ref={wrapperRef}>
+      <div
+        className="workspace-mobile-more"
+        ref={wrapperRef}
+        onBlur={(event) => {
+          if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setMoreOpen(false);
+        }}
+      >
         <button
           ref={triggerRef}
           type="button"
@@ -102,7 +113,10 @@ export function DashboardMobileNavigation({ pathname, primary, more }: Dashboard
           aria-haspopup="menu"
           aria-expanded={moreOpen}
           aria-controls="dashboard-mobile-more-menu"
-          onClick={() => setMoreOpen((open) => !open)}
+          onClick={() => {
+            setMoreOpen((open) => !open);
+            if (!moreOpen) focusMenuItem('first');
+          }}
           onKeyDown={handleTriggerKeyDown}
         >
           <Ellipsis size={20} aria-hidden="true" />
@@ -126,6 +140,7 @@ export function DashboardMobileNavigation({ pathname, primary, more }: Dashboard
                   key={item.href}
                   href={item.href}
                   role="menuitem"
+                  tabIndex={-1}
                   className={`workspace-mobile-more-item ${active ? 'active' : ''}`}
                   aria-current={active ? 'page' : undefined}
                   onClick={() => setMoreOpen(false)}
@@ -138,6 +153,7 @@ export function DashboardMobileNavigation({ pathname, primary, more }: Dashboard
             <a
               href="/auth/logout"
               role="menuitem"
+              tabIndex={-1}
               className="workspace-mobile-more-item"
               onClick={(event) => {
                 handleLogoutNavigation(event);

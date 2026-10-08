@@ -2,6 +2,28 @@
   display: grid;
   gap: 1rem;
   min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.policyGrid > *,
+.formGrid > *,
+.periodControls > *,
+.createPeriodForm > *,
+.evidenceRow > *,
+.formHeading > div {
+  min-width: 0;
+}
+
+.workspace input:not([type='checkbox']),
+.workspace select,
+.workspace textarea {
+  min-width: 0;
+  max-width: 100%;
+}
+
+.workspace button {
+  min-height: 44px;
+  white-space: normal;
 }
 
 .pageHeader,
@@ -228,6 +250,7 @@
 .iconButton {
   width: 44px;
   height: 44px;
+  flex-shrink: 0;
   display: inline-grid;
   place-items: center;
   border: 1px solid var(--border);
@@ -274,6 +297,11 @@
   max-width: 100%;
   overflow-x: auto;
   overscroll-behavior-inline: contain;
+}
+
+.tableRegion:focus-visible {
+  outline: 3px solid var(--brand);
+  outline-offset: -3px;
 }
 
 .auditDetails {
@@ -455,13 +483,17 @@
 
 @media (max-width: 900px) {
   .policyGrid,
-  .periodControls,
   .formGrid,
   .stats {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
   .policyTimeline li { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+
+  .periodControls,
+  .evidenceRow {
+    grid-template-columns: minmax(0, 1fr);
+  }
 }
 
 @media (max-width: 640px) {

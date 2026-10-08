@@ -254,7 +254,7 @@ export function TimeCardCorrectionPanel({ card, onCancel, onSaved }: TimeCardCor
     const hasLegacyAggregateBreak = card.breakMinutes > 0 && (card.breaks?.length ?? 0) === 0;
 
     return (
-        <section className="surface-card" aria-labelledby="time-card-correction-title" style={{ padding: '1rem' }}>
+        <section className="surface-card" aria-labelledby="time-card-correction-title" style={{ padding: '1rem', minWidth: 0, overflowWrap: 'anywhere' }}>
             <form onSubmit={(event) => void submit(event)} style={{ display: 'grid', gap: '0.9rem' }}>
                 <div>
                     <div className="workspace-kicker">Manager correction</div>
@@ -268,7 +268,7 @@ export function TimeCardCorrectionPanel({ card, onCancel, onSaved }: TimeCardCor
 
                 {error ? <div role="alert" style={{ fontSize: '0.83rem', color: '#cb3653' }}>{error}</div> : null}
 
-                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '0.75rem' }}>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(220px, 100%), 1fr))', gap: '0.75rem' }}>
                     <div style={{ display: 'grid', gap: '0.45rem' }}>
                         <label style={fieldLabelStyle}>
                             Clock in
@@ -315,7 +315,7 @@ export function TimeCardCorrectionPanel({ card, onCancel, onSaved }: TimeCardCor
                         </div>
                     ) : null}
                     {breaks.map((interval, index) => (
-                        <div key={interval.key} style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(190px, 1fr))', gap: '0.6rem', alignItems: 'start' }}>
+                        <div key={interval.key} style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(190px, 100%), 1fr))', gap: '0.6rem', alignItems: 'start' }}>
                             <div style={{ display: 'grid', gap: '0.4rem' }}>
                                 <label style={fieldLabelStyle}>
                                     Break {index + 1} start
@@ -364,7 +364,7 @@ export function TimeCardCorrectionPanel({ card, onCancel, onSaved }: TimeCardCor
                     />
                 </label>
 
-                <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '0.6rem' }}>
+                <div style={{ display: 'flex', justifyContent: 'flex-end', flexWrap: 'wrap', gap: '0.6rem' }}>
                     <button type="button" className="btn btn-secondary" onClick={onCancel} disabled={isSaving}>Cancel</button>
                     <button type="submit" className="btn btn-primary" disabled={isSaving || requiresRefresh}>
                         {isSaving ? 'Saving...' : 'Save correction'}
@@ -376,6 +376,7 @@ export function TimeCardCorrectionPanel({ card, onCancel, onSaved }: TimeCardCor
 }
 
 const fieldLabelStyle = {
+    minWidth: 0,
     display: 'grid',
     gap: 5,
     fontSize: '0.78rem',

@@ -234,7 +234,7 @@ export function MfaEnrollmentPanel({ tenantMfaRequired }: MfaEnrollmentPanelProp
     return (
         <div className="surface-muted" style={PANEL_STYLE}>
             <div style={HEADER_STYLE}>
-                <div style={{ display: 'grid', gap: '0.2rem', minWidth: 220 }}>
+                <div style={{ display: 'grid', gap: '0.2rem', minWidth: 0, overflowWrap: 'anywhere' }}>
                     <div style={{ display: 'flex', alignItems: 'center', gap: '0.45rem', color: 'var(--text-primary)' }}>
                         <ShieldCheck size={18} aria-hidden="true" />
                         <h3 style={{ margin: 0, fontSize: '0.95rem', fontWeight: 750 }}>Multi-factor authentication</h3>
@@ -327,7 +327,7 @@ export function MfaEnrollmentPanel({ tenantMfaRequired }: MfaEnrollmentPanelProp
                                 <input className="form-input" value={setup.manualEntryKey} readOnly aria-label="Manual setup key" />
                             </label>
                             {setup.accountLabel || setup.issuer || setup.expiresAt ? (
-                                <dl style={{ margin: 0, display: 'grid', gridTemplateColumns: 'auto 1fr', gap: '0.25rem 0.55rem', color: 'var(--text-secondary)', fontSize: '0.78rem' }}>
+                                <dl style={{ margin: 0, display: 'grid', gridTemplateColumns: 'auto minmax(0, 1fr)', overflowWrap: 'anywhere', gap: '0.25rem 0.55rem', color: 'var(--text-secondary)', fontSize: '0.78rem' }}>
                                     {setup.issuer ? (
                                         <>
                                             <dt>Issuer</dt>

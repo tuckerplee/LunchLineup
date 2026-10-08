@@ -422,7 +422,7 @@ export function CreditsClient() {
             </section>
 
             {visibleError ? (
-                <div
+                <div role="alert"
                     style={{
                         padding: '0.8rem 0.95rem',
                         borderRadius: 12,
@@ -438,7 +438,7 @@ export function CreditsClient() {
             ) : null}
 
             {notice ? (
-                <div
+                <div role="status"
                     style={{
                         padding: '0.8rem 0.95rem',
                         borderRadius: 12,

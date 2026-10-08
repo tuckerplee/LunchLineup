@@ -54,6 +54,38 @@ beforeEach(async () => {
 afterEach(() => { h?.unmount(); vi.unstubAllGlobals(); });
 
 describe('actual scheduling page publication replay', () => {
+  it('announces loading politely and exposes exactly one pressed calendar view', async () => {
+    const savedBoard = await mocks.board.mock.results.at(-1)!.value;
+    const pending = deferred<typeof savedBoard>();
+    const callsBefore = mocks.board.mock.calls.length;
+    mocks.board.mockReturnValue(pending.promise);
+    const views = () => nodes(h.render()).find(node => node.props['aria-label'] === 'Scheduler view')!;
+    expect(nodes(views()).filter(node => node.type === 'button' && node.props['aria-pressed']).map(node => text(node.props.children).trim())).toEqual(['3-Day']);
+    button(views(), 'Day').props.onClick();
+    expect(nodes(views()).filter(node => node.type === 'button' && node.props['aria-pressed']).map(node => text(node.props.children).trim())).toEqual(['Day']);
+    // The existing hook ledger runs effects explicitly. Hold the actual board
+    // request open rather than asserting loading against the previous ready state.
+    h.render(); h.flushEffects();
+    try {
+      expect(mocks.board.mock.calls.length).toBeGreaterThan(callsBefore);
+      const status = nodes(h.render()).find(node => String(node.props.className).startsWith('scheduler-status-pill '))!;
+      expect(status.props.role).toBe('status'); expect(status.props['aria-live']).toBe('polite');
+      expect(text(status)).toContain('Loading saved schedule data');
+    } finally {
+      pending.resolve(savedBoard);
+      await h.until(tree => text(tree).includes('loaded from saved schedules'));
+    }
+    const settled = nodes(h.render()).find(node => String(node.props.className).startsWith('scheduler-status-pill '))!;
+    expect(settled.props.role).toBe('status'); expect(settled.props['aria-live']).toBe('polite');
+    expect(text(settled)).not.toContain('Loading saved schedule data');
+  });
+  it('announces a failed board reload with the actual error alert', async () => {
+    mocks.board.mockRejectedValueOnce(new Error('Controlled board unavailable'));
+    button(h.render(), 'Reload').props.onClick();
+    await h.until(tree => nodes(tree).some(node => node.props.role === 'alert' && text(node).includes('Controlled board unavailable')));
+    expect(nodes(h.render()).find(node => node.props.role === 'alert')?.props.className).toBe('scheduler-error');
+  });
+
   it.each([
     ['wrong version', { ...contractA, version: contractA.version + 1 }],
     ['changed configured cost', { ...contractA, totalConfiguredCost: 7, scheduleCost: 7 }],

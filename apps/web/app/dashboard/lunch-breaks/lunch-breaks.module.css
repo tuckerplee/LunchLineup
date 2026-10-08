@@ -86,3 +86,37 @@
   .dateNavigation { grid-template-columns: repeat(3, minmax(0, 1fr)); }
   .dateNavigation input { grid-column: 1 / -1; }
 }
+
+/* Keep identities readable without changing the shared time-axis geometry. */
+.workspace { min-width: 0; }
+.workspace > * { min-width: 0; }
+.locationTimezone, .canvasTitle, .creditNotice { overflow-wrap: anywhere; }
+.workspace :global(.row-name) {
+  white-space: normal;
+  overflow: visible;
+  overflow-wrap: anywhere;
+}
+.workspace :global(.row-status) { max-width: 100%; overflow-wrap: anywhere; }
+.workspace :global(.schedule-row) { text-align: left; }
+.workspace :global(.schedule-row:focus-visible) {
+  outline: 3px solid var(--brand-700, #234ed9);
+  outline-offset: -3px;
+}
+
+@media (max-width: 768px) {
+  .statusGrid > div { min-width: 0; flex-wrap: wrap; overflow-wrap: anywhere; }
+  .workspace :global(.planner-shell) > aside {
+    /* One page scroll on touch devices; do not trap the action controls. */
+    overflow-y: visible !important;
+    overflow-wrap: anywhere;
+  }
+  .workspace :global(.manual-fallback-link) {
+    /* The 44px touch target must participate in empty-state layout. */
+    position: static !important;
+    display: block;
+    width: 100%;
+    margin-top: 12px;
+    text-align: left;
+    font-size: 0.875rem;
+  }
+}
