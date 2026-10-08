@@ -1,6 +1,7 @@
 'use client';
 
-import { useCallback, useEffect, useRef } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useRef } from 'react';
+import { createPortal } from 'react-dom';
 import { Bell, X } from 'lucide-react';
 
 export type DashboardNotification = {
@@ -59,6 +60,43 @@ export function NotificationsMenu({
     onOpenChange(false);
     window.requestAnimationFrame(() => triggerRef.current?.focus());
   }, [onOpenChange]);
+
+  // Portal past the topbar's backdrop-filter containing block; align to the bell
+  // while keeping the complete dialog inside the visible viewport.
+  useLayoutEffect(() => {
+    if (!notificationsOpen) return;
+    const positionDialog = () => {
+      const dialog = dialogRef.current;
+      const trigger = triggerRef.current;
+      if (!dialog || !trigger) return;
+      const viewport = window.visualViewport;
+      const left = viewport?.offsetLeft ?? 0;
+      const top = viewport?.offsetTop ?? 0;
+      const width = viewport?.width ?? window.innerWidth;
+      const height = viewport?.height ?? window.innerHeight;
+      const gutter = 12;
+      const dialogWidth = Math.min(320, width - gutter * 2);
+      const anchor = trigger.getBoundingClientRect();
+      const dialogTop = Math.max(top + gutter, Math.min(anchor.bottom + 8, top + height - 160));
+      Object.assign(dialog.style, {
+        left: `${Math.max(left + gutter, Math.min(anchor.right - dialogWidth, left + width - dialogWidth - gutter))}px`,
+        top: `${dialogTop}px`,
+        width: `${dialogWidth}px`,
+        maxHeight: `${Math.max(0, top + height - dialogTop - gutter)}px`,
+      });
+    };
+    positionDialog();
+    window.addEventListener('resize', positionDialog);
+    window.addEventListener('scroll', positionDialog, true);
+    window.visualViewport?.addEventListener('resize', positionDialog);
+    window.visualViewport?.addEventListener('scroll', positionDialog);
+    return () => {
+      window.removeEventListener('resize', positionDialog);
+      window.removeEventListener('scroll', positionDialog, true);
+      window.visualViewport?.removeEventListener('resize', positionDialog);
+      window.visualViewport?.removeEventListener('scroll', positionDialog);
+    };
+  }, [notificationsOpen]);
 
   useEffect(() => {
     if (!notificationsOpen) return;
@@ -147,7 +185,7 @@ export function NotificationsMenu({
           </span>
         ) : null}
       </button>
-      {notificationsOpen ? (
+      {notificationsOpen ? createPortal(
         <div
           id="notifications-dialog"
           ref={dialogRef}
@@ -157,17 +195,17 @@ export function NotificationsMenu({
           aria-labelledby="notifications-dialog-title"
           tabIndex={-1}
           style={{
-            position: 'absolute',
-            top: '2.8rem',
-            right: 0,
-            width: 320,
-            zIndex: 30,
+            position: 'fixed',
+            zIndex: 120,
+            boxSizing: 'border-box',
+            overflow: 'hidden',
             padding: '0.75rem',
-            display: 'grid',
+            display: 'flex',
+            flexDirection: 'column',
             gap: '0.55rem',
           }}
         >
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '0.6rem' }}>
+          <div style={{ display: 'flex', flexShrink: 0, alignItems: 'center', justifyContent: 'space-between', gap: '0.6rem' }}>
             <div id="notifications-dialog-title" style={{ fontSize: '0.86rem', fontWeight: 750, color: 'var(--text-primary)' }}>
               Notifications
             </div>
@@ -199,6 +237,7 @@ export function NotificationsMenu({
               </button>
             </div>
           </div>
+          <div style={{ minHeight: 0, overflowY: 'auto', overscrollBehavior: 'contain', display: 'grid', gap: '0.55rem', overflowWrap: 'anywhere' }}>
           {error ? <div role="alert" style={{ color: '#b42318', fontSize: '0.8rem' }}>
             {error} <button type="button" disabled={busy} onClick={() => void onRetry()}>Retry notifications</button>
           </div> : null}
@@ -225,7 +264,7 @@ export function NotificationsMenu({
                 style={{ marginTop: 6, background: toneByType[item.type] ?? 'var(--text-muted)' }}
                 aria-hidden="true"
               />
-              <span style={{ display: 'grid', gap: 3 }}>
+              <span style={{ display: 'grid', gap: 3, minWidth: 0 }}>
                 <span style={{ fontSize: '0.76rem', color: 'var(--text-primary)', fontWeight: 750 }}>{item.title}</span>
                 <span style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', fontWeight: 600 }}>{item.body}</span>
                 <span style={{ fontSize: '0.68rem', color: 'var(--text-muted)', fontWeight: 700 }}>{formatRelative(item.createdAt)}</span>
@@ -237,7 +276,9 @@ export function NotificationsMenu({
               No notifications yet.
             </div>
           ) : null}
-        </div>
+          </div>
+        </div>,
+        document.body,
       ) : null}
     </div>
   );
