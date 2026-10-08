@@ -22,7 +22,28 @@ if (!allowedLanguages.has(language) || !/^[a-f0-9]{64}$/.test(bundleSha256)) thr
 const sarifSnapshot = readRegularEvidenceSnapshot(sarifPath, context.evidenceRoot);
 const sarif = JSON.parse(sarifSnapshot.bytes.toString('utf8'));
 const baseline = JSON.parse(readFileSync(baselinePath, 'utf8'));
-if (!Array.isArray(sarif.runs) || !sarif.runs.length || sarif.runs.some((run) => run?.invocations?.some((invocation) => invocation.executionSuccessful === false))) throw new Error('Invalid CodeQL evidence.');
+const record = (value) => value !== null && typeof value === 'object' && !Array.isArray(value);
+// CodeQL sarifv2.1.0 emits results even for a clean scan. Missing results must
+// never become a successful empty report. Invocation metadata is optional.
+if (!record(sarif) || sarif.version !== '2.1.0' || !Array.isArray(sarif.runs) || !sarif.runs.length) throw new Error('Invalid CodeQL evidence.');
+for (const run of sarif.runs) {
+  if (!record(run) || !record(run.tool) || !record(run.tool.driver)
+    || typeof run.tool.driver.name !== 'string' || !run.tool.driver.name.trim()
+    || !Array.isArray(run.results)) throw new Error('Invalid CodeQL evidence.');
+  if (Object.hasOwn(run, 'invocations')) {
+    if (!Array.isArray(run.invocations)) throw new Error('Invalid CodeQL evidence.');
+    for (const invocation of run.invocations) {
+      if (!record(invocation) || invocation.executionSuccessful !== true) throw new Error('Invalid CodeQL evidence.');
+      for (const key of ['toolExecutionNotifications', 'toolConfigurationNotifications']) {
+        if (!Object.hasOwn(invocation, key)) continue;
+        const notifications = invocation[key];
+        if (!Array.isArray(notifications) || notifications.some((notification) => !record(notification)
+          || (Object.hasOwn(notification, 'level') && !['none', 'note', 'warning', 'error'].includes(notification.level))
+          || notification.level === 'error')) throw new Error('Invalid CodeQL evidence.');
+      }
+    }
+  }
+}
 if (baseline.version !== 2 || baseline.kind !== 'lunchlineup-codeql-baseline' || baseline.fingerprintSchema !== 'primary-location-v1' || baseline.codeqlBundleSha256 !== bundleSha256 || baseline.querySuites?.['javascript-typescript'] !== querySuites['javascript-typescript'] || baseline.querySuites?.python !== querySuites.python || !Array.isArray(baseline.findings)) throw new Error('Invalid CodeQL baseline.');
 
 const findingKey = (finding) => [finding.language, finding.ruleId, finding.primaryLocationLineHash, finding.primaryLocationStartColumnFingerprint].join('\0');
@@ -38,7 +59,7 @@ for (const item of baseline.findings) {
 
 const findings = [];
 const findingKeys = new Set();
-for (const result of sarif.runs.flatMap((run) => run.results ?? [])) {
+for (const result of sarif.runs.flatMap((run) => run.results)) {
   const lineHash = result?.partialFingerprints?.primaryLocationLineHash;
   const startColumn = result?.partialFingerprints?.primaryLocationStartColumnFingerprint;
   const fingerprintKeys = Object.keys(result?.partialFingerprints ?? {}).sort();

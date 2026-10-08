@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -23,8 +23,15 @@ function fixture() {
   return { scratch, artifact, runner, contextPath, sarifPath, baselinePath, detailsPath, result, baseline };
 }
 
-function run(f, { result = f.result, baseline = f.baseline, invocation = { executionSuccessful: true } } = {}) {
-  writeFileSync(f.sarifPath, JSON.stringify({ version: '2.1.0', runs: [{ invocations: [invocation], results: [result] }] }));
+// Reduced structural fixture, not a captured scanner result. Keep optional
+// invocation metadata independent from the required CodeQL results array.
+function report(results, invocation = { executionSuccessful: true }) {
+  return { version: '2.1.0', runs: [{ tool: { driver: { name: 'CodeQL', version: '2.26.2' } },
+    invocations: [invocation], results }] };
+}
+
+function run(f, { result = f.result, baseline = f.baseline, invocation = { executionSuccessful: true }, sarif = report([result], invocation) } = {}) {
+  writeFileSync(f.sarifPath, JSON.stringify(sarif));
   writeFileSync(f.baselinePath, JSON.stringify(baseline));
   return spawnSync(process.execPath, [script, '--source-context', f.contextPath, '--language', 'javascript-typescript', '--sarif', f.sarifPath, '--bundle-sha256', bundle, '--baseline', f.baselinePath, '--details', f.detailsPath], { env: { ...process.env, CI_COMMIT_SHA: sha, CI_RUN_ID: 'run-1', RUNNER_TEMP: f.runner }, encoding: 'utf8' });
 }
@@ -48,4 +55,61 @@ test('CodeQL verifier rejects expired, stale, tool-drifted, and failed evidence'
   ];
   for (const mutate of cases) { const f = fixture(); try { mutate(f); assert.notEqual(run(f).status, 0); } finally { rmSync(f.scratch, { recursive: true, force: true }); } }
   const f = fixture(); try { assert.notEqual(run(f, { invocation: { executionSuccessful: false } }).status, 0); } finally { rmSync(f.scratch, { recursive: true, force: true }); }
+});
+
+
+test('CodeQL verifier accepts explicit zero findings with optional metadata and benign notifications', () => {
+  const reports = [report([]), { version: '2.1.0', runs: [{ tool: { driver: { name: 'CodeQL command-line toolchain' } }, results: [] }] },
+    report([], { executionSuccessful: true, toolExecutionNotifications: [
+      { level: 'warning', message: { text: 'Nonfatal diagnostic' } }, { message: { text: 'Default warning level' } }],
+      toolConfigurationNotifications: [{ level: 'note', message: { text: 'Configuration note' } }] })];
+  for (const sarif of reports) {
+    const f = fixture();
+    try {
+      const result = run(f, { sarif, baseline: { ...f.baseline, findings: [] } });
+      assert.equal(result.status, 0, result.stderr);
+      const details = JSON.parse(readFileSync(f.detailsPath));
+      assert.equal(details.findings, 0); assert.equal(details.unapprovedFindings, 0);
+    } finally { rmSync(f.scratch, { recursive: true, force: true }); }
+  }
+});
+
+test('CodeQL verifier rejects incomplete report envelopes even with an empty baseline', () => {
+  const changedRun = (changes) => ({ ...report([]), runs: [{ ...report([]).runs[0], ...changes }] });
+  const reports = [null, [], {}, { runs: [{}] }, { version: '2.1.0', runs: [{}] },
+    { ...report([]), version: '2.0.0' }, { ...report([]), runs: [] }, { ...report([]), runs: {} },
+    { ...report([]), runs: [null] }, { ...report([]), runs: [[]] },
+    changedRun({ results: undefined }), changedRun({ results: null }), changedRun({ results: {} }), changedRun({ results: '' }),
+    changedRun({ tool: undefined }), changedRun({ tool: null }), changedRun({ tool: [] }),
+    changedRun({ tool: { driver: null } }), changedRun({ tool: { driver: {} } }),
+    changedRun({ tool: { driver: { name: ' ' } } }), changedRun({ tool: { driver: { name: 1 } } }),
+    changedRun({ invocations: null }), changedRun({ invocations: {} }), changedRun({ invocations: [null] }),
+    changedRun({ invocations: [{}] }), changedRun({ invocations: [{ executionSuccessful: 'true' }] }),
+    { ...report([]), runs: [report([]).runs[0], {}] }];
+  for (const sarif of reports) {
+    const f = fixture();
+    try {
+      const result = run(f, { sarif, baseline: { ...f.baseline, findings: [] } });
+      assert.notEqual(result.status, 0, JSON.stringify(sarif));
+      assert.match(result.stderr, /Invalid CodeQL evidence/);
+      assert.equal(existsSync(f.detailsPath), false, 'Rejected report must not produce passing details');
+    } finally { rmSync(f.scratch, { recursive: true, force: true }); }
+  }
+});
+
+test('CodeQL verifier rejects failed invocations and error or malformed notification arrays', () => {
+  const invocations = [{ executionSuccessful: false }];
+  for (const key of ['toolExecutionNotifications', 'toolConfigurationNotifications']) {
+    for (const notifications of [null, {}, [null], [{ level: 'error', message: { text: 'Analysis incomplete' } }], [{ level: 'invalid' }]]) {
+      invocations.push({ executionSuccessful: true, [key]: notifications });
+    }
+  }
+  for (const invocation of invocations) {
+    const f = fixture();
+    try {
+      const result = run(f, { sarif: report([], invocation), baseline: { ...f.baseline, findings: [] } });
+      assert.notEqual(result.status, 0, JSON.stringify(invocation)); assert.match(result.stderr, /Invalid CodeQL evidence/);
+      assert.equal(existsSync(f.detailsPath), false);
+    } finally { rmSync(f.scratch, { recursive: true, force: true }); }
+  }
 });
