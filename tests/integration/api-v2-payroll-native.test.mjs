@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { performance } from 'node:perf_hooks';
 import { createRequire } from 'node:module';
 import { resolve } from 'node:path';
@@ -56,7 +56,9 @@ async function seedMutationAuthority(owner, tenantId, user, role, permissions) {
     rolePermissions: { create: catalog.map(permission => ({ permissionId: permission.id })) },
   } });
   await owner.roleAssignment.create({ data: { tenantId, userId: user.id, roleId: scopedRole.id } });
-  await owner.session.create({ data: { id: actor.sessionId, userId: user.id, refreshTokenHash: randomUUID(),
+  await owner.session.create({ data: { id: actor.sessionId, userId: user.id,
+    refreshToken: createHash('sha256').update(randomUUID()).digest('hex'),
+    ipAddress: '127.0.0.1', userAgent: 'LunchLineup native payroll integration fixture',
     createdAt: new Date(), expiresAt: new Date(Date.now() + 60 * 60_000) } });
   actor.roles = [{ id: scopedRole.publicId, name: scopedRole.name, isSystem: false, legacyRole: null }];
   actor.pinResetRequired = false;
@@ -165,7 +167,7 @@ test('native API v2 Payroll uses public IDs, tenant RLS, immutable evidence, exa
       'payroll:reconcile',
       'time_cards:approve',
     ]);
-    const otherIdentity = identity(otherTenant.id, otherUser, 'ADMIN', ['payroll:read']);
+    const otherIdentity = await seedMutationAuthority(owner, otherTenant.id, otherUser, 'ADMIN', ['payroll:read']);
     const approverIdentity = await seedMutationAuthority(owner, tenant.id, approver, 'ADMIN', ['time_cards:approve']);
     const policyKey = `api-v2-payroll-policy-${runId}`;
     const policy = await payroll.createPolicy(adminIdentity, {
