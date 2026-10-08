@@ -85,7 +85,7 @@ function ResetPasswordContent() {
         setWorkspaceSlug(normalizedWorkspace);
         setIsLoading(true);
         try {
-            await fetchPublicApi('/auth/password/reset/request', {
+            const response = await fetchPublicApi('/auth/password/reset/request', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 credentials: 'include',
@@ -94,9 +94,14 @@ function ResetPasswordContent() {
                     identifier: normalizedIdentifier,
                 }),
             });
+            const payload = await response.json().catch(() => null);
+            if (!response.ok || !payload || payload.success !== true) {
+                setError('Unable to request a password reset right now. Please try again.');
+                return;
+            }
             setMessage(GENERIC_REQUEST_MESSAGE);
         } catch {
-            setMessage(GENERIC_REQUEST_MESSAGE);
+            setError('Unable to request a password reset right now. Please try again.');
         } finally {
             setIsLoading(false);
         }

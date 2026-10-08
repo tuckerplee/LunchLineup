@@ -15,7 +15,8 @@ type Family = 'selected' | 'legacy';
 
 // Actual refresh authorization/crypto/RBAC methods with controlled statement
 // reads and transaction-private writes. No native PostgreSQL lock proof.
-function harness(family: Family) {
+type RefreshWaitStage = 'rbac' | 'replay' | 'session';
+function harness(family: Family, waitStage?: RefreshWaitStage) {
     vi.useFakeTimers({ toFake: ['Date'] }); vi.setSystemTime(now);
     vi.stubEnv('PLATFORM_ADMIN_DB_CONTEXT_SECRET', 'unit-test-capability');
     const tenantId = 'tenant-refresh-policy', userId = 'user-refresh-policy', sessionId = 'session-refresh-policy';
@@ -30,7 +31,13 @@ function harness(family: Family) {
             legacyRole: null, deletedAt: null, rolePermissions: [{ permission: { key: 'dashboard:access' } }] },
         assigned: true, ledger: new Map<string, string>(),
     };
-    const entered = deferred(), gate = deferred(); let waited = false;
+    const entered = deferred(), gate = deferred(), stageEntered = deferred(), stageRelease = deferred(); let waited = false;
+    const stages: RefreshWaitStage[] = [];
+    const afterStage = async (stage: RefreshWaitStage) => {
+        if (!waitStage) return;
+        stages.push(stage);
+        if (stage === waitStage) { stageEntered.release(); await stageRelease.promise; }
+    };
     let protectedTransactions = 0, activeTransactions = 0, maximumTransactions = 0;
     let failAccess = false, failCas = false, failCommit = false;
     const locks: string[] = [], replayWrites = vi.fn(), rotationWrites = vi.fn(), revocations = vi.fn();
@@ -77,7 +84,9 @@ function harness(family: Family) {
                         || typeof where.refreshToken === 'string' && where.refreshToken !== s.refreshToken
                         || where.refreshToken?.in && !where.refreshToken.in.includes(s.refreshToken)
                         || data.refreshToken && failCas) return { count: 0 };
-                    draftSession = { ...structuredClone(s), ...data }; return { count: 1 };
+                    draftSession = { ...structuredClone(s), ...data };
+                    if (!data.revokedAt) await afterStage('session');
+                    return { count: 1 };
                 }),
             },
             refreshTokenReplay: {
@@ -88,12 +97,13 @@ function harness(family: Family) {
                 create: vi.fn(async ({ data }: any) => {
                     replayWrites(); expect(data.sessionId).toBe(sessionId);
                     if (draftLedger.has(data.validatorHash) || live.ledger.has(data.validatorHash)) throw { code: 'P2002' };
-                    draftLedger.set(data.validatorHash, data.sessionId); return { id: 'replay-policy' };
+                    draftLedger.set(data.validatorHash, data.sessionId); await afterStage('replay'); return { id: 'replay-policy' };
                 }),
             },
             roleAssignment: { findMany: vi.fn(async ({ where }: any) => {
                 accessReads(); expect(where).toMatchObject({ tenantId, userId, role: { tenantId, deletedAt: null } });
                 if (failAccess) throw new Error('controlled access failure');
+                await afterStage('rbac');
                 return live.assigned && !live.role.deletedAt ? [{ role: structuredClone(live.role) }] : [];
             }) },
         };
@@ -125,7 +135,7 @@ function harness(family: Family) {
     live.session.selectorHash = family === 'selected' ? credential.selectorHash : null;
     live.session.refreshToken = family === 'selected' ? credential.validatorHash : (service as any).hashRefreshToken(raw);
     const initialHash = live.session.refreshToken;
-    return { live, entered, gate, locks, replayWrites, rotationWrites, revocations, accessReads, redis, jwt,
+    return { live, entered, gate, stageEntered, stageRelease, stages, locks, replayWrites, rotationWrites, revocations, accessReads, redis, jwt,
         raw, credential, initialHash, call: (token = raw) => service.refreshAccessToken(token),
         failAccess: () => { failAccess = true; }, failCas: () => { failCas = true; }, failCommit: () => { failCommit = true; },
         maximumTransactions: () => maximumTransactions,
@@ -294,4 +304,43 @@ describe('refresh committed policy and retryable credentials', () => {
         await expect(h.call(`v2.${h.credential.selector}.${randomValidator}`)).rejects.toBeInstanceOf(UnauthorizedException);
         expect(h.live.session.revokedAt).toBeNull(); expect(h.revocations).not.toHaveBeenCalled();
     });
+});
+
+
+describe('refresh effective expiry after dependent waits inside rotation', () => {
+  for (const family of ['selected', 'legacy'] as const) {
+    for (const stage of ['rbac', 'replay', 'session'] as const) {
+      for (const lifetime of ['stored', 'policy'] as const) {
+        it.each([true, false])(`${family} ${stage} ${lifetime}: equality refusal=%s preserves atomic credential custody`, async expires => {
+          const h = harness(family, stage);
+          const deadline = now.getTime() + 1000;
+          if (lifetime === 'stored') h.live.session.expiresAt = new Date(deadline);
+          else { h.live.security.sessionTimeoutMinutes = 5; h.live.session.createdAt = new Date(deadline - 5 * 60_000); }
+          const pending = h.call().then(value => ({ value, error: undefined }), error => ({ value: undefined, error }));
+          let result: Awaited<typeof pending>;
+          try {
+            expect(await Promise.race([h.entered.promise.then(() => 'entered'), pending.then(() => 'settled')])).toBe('entered');
+            h.gate.release();
+            expect(await Promise.race([h.stageEntered.promise.then(() => 'entered'), pending.then(() => 'settled')])).toBe('entered');
+            expect(h.stages).toEqual(['rbac', 'replay', 'session'].slice(0, ['rbac', 'replay', 'session'].indexOf(stage) + 1));
+            expect(h.live.session.refreshToken).toBe(h.initialHash); expect(h.live.ledger.size).toBe(0);
+            vi.setSystemTime(deadline - (expires ? 0 : 1)); h.stageRelease.release(); result = await pending;
+          } finally { h.gate.release(); h.stageRelease.release(); await pending; }
+          if (expires) {
+            expect(result!.error).toBeInstanceOf(UnauthorizedException);
+            expect(h.live.session.refreshToken).toBe(h.initialHash); expect(h.live.ledger.size).toBe(0);
+            expect(h.replayWrites).toHaveBeenCalledTimes(stage === 'rbac' ? 0 : 1);
+            expect(h.rotationWrites).toHaveBeenCalledTimes(stage === 'session' ? 1 : 0);
+            expect(h.jwt.generateAccessToken).not.toHaveBeenCalled();
+          } else {
+            expect(result!.error).toBeUndefined(); expect(result!.value).toBeDefined();
+            expect(h.live.session.refreshToken).not.toBe(h.initialHash); expect(h.live.ledger.get(h.initialHash)).toBe(h.live.session.id);
+            expect(h.replayWrites).toHaveBeenCalledTimes(1); expect(h.rotationWrites).toHaveBeenCalledTimes(1);
+            expect(h.jwt.generateAccessToken).toHaveBeenCalledTimes(1);
+          }
+          expect(h.revocations).not.toHaveBeenCalled(); expect(h.live.session.revokedAt).toBeNull();
+        });
+      }
+    }
+  }
 });

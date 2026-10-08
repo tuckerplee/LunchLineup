@@ -78,3 +78,36 @@ describe('actual password reset confirmation handler', () => {
         expect(resetConfirmationErrorMessage(403)).not.toContain('invalid or expired');
     });
 });
+
+
+// Request transport is controlled; this does not prove delivery or account lookup.
+describe('actual password-reset request truthful acceptance', () => {
+    function mountRequest(identifier = 'known@example.invalid') {
+        mocks.query = new URLSearchParams();
+        h = clientComponentHarness(ResetPasswordPage); mocks.hooks = h.hooks; h.render(); h.flushEffects();
+        input(h.render(), 'Workspace slug').props.onChange(changeEvent('workspace'));
+        input(h.render(), 'Username or email').props.onChange(changeEvent(identifier));
+    }
+    it.each(['503', '429', 'network', 'empty200', 'false200', 'string200'] as const)('keeps retry inputs and makes no email promise on %s', async mode => {
+        mountRequest();
+        if (mode === 'network') mocks.fetch.mockRejectedValueOnce(new Error('controlled network failure'));
+        else mocks.fetch.mockResolvedValueOnce(json(mode === 'false200' ? { success: false } : mode === 'string200' ? { success: 'true' } : mode === 'empty200' ? {} : { success: true }, mode === '503' ? 503 : mode === '429' ? 429 : 200));
+        await form(h.render()).props.onSubmit(submitEvent());
+        expect(text(h.render())).toContain('Unable to request a password reset right now');
+        expect(text(h.render())).not.toContain('email will be sent shortly');
+        expect(input(h.render(), 'Workspace slug').props.value).toBe('workspace');
+        expect(input(h.render(), 'Username or email').props.value).toBe('known@example.invalid');
+        expect(button(h.render(), 'Send reset link').props.disabled).toBe(false);
+        mocks.fetch.mockResolvedValueOnce(json({ success: true }));
+        await form(h.render()).props.onSubmit(submitEvent());
+        expect(text(h.render())).toContain('If a matching account exists, a password reset email will be sent shortly.');
+        expect(mocks.fetch.mock.calls[1]).toEqual(mocks.fetch.mock.calls[0]);
+        expect(mocks.fetch.mock.calls[0]).toEqual(['/auth/password/reset/request', expect.objectContaining({ method: 'POST', credentials: 'include', body: JSON.stringify({ tenantSlug: 'workspace', identifier: 'known@example.invalid' }) })]);
+    });
+    it.each(['known@example.invalid', 'unknown@example.invalid'])('uses identical non-enumerating acknowledgment for accepted %s', async identifier => {
+        mountRequest(identifier); mocks.fetch.mockResolvedValueOnce(json({ success: true }));
+        await form(h.render()).props.onSubmit(submitEvent());
+        expect(text(h.render())).toContain('If a matching account exists, a password reset email will be sent shortly.');
+        expect(text(h.render())).not.toContain('Unable to request'); expect(mocks.fetch).toHaveBeenCalledTimes(1);
+    });
+});
