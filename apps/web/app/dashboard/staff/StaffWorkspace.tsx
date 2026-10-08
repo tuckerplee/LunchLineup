@@ -198,6 +198,7 @@ export function StaffWorkspace({ currentUserPublicId, creationRecoveryScope, can
         setPendingAction({ action, user });
     };
     const [pendingRoleDeletion, setPendingRoleDeletion] = useState<RoleCatalogItem | null>(null);
+    const { dialogRef: roleDeletionDialogRef, captureTrigger: captureRoleDeletionTrigger } = useDialogFocus(pendingRoleDeletion !== null);
     const [roleDeletionName, setRoleDeletionName] = useState('');
     const [schedulingProfileUser, setSchedulingProfileUser] = useState<StaffUser | null>(null);
     const staffDrawerOpener = useRef<HTMLElement | null>(null);
@@ -1143,7 +1144,8 @@ export function StaffWorkspace({ currentUserPublicId, creationRecoveryScope, can
                                                 <Button
                                                     size="sm"
                                                     variant="outline"
-                                                    onClick={() => {
+                                                    onClick={(event) => {
+                                                        captureRoleDeletionTrigger(event.currentTarget, event.currentTarget.closest<HTMLElement>('main'));
                                                         setPendingRoleDeletion(role);
                                                         setRoleDeletionName('');
                                                     }}
@@ -1284,15 +1286,10 @@ export function StaffWorkspace({ currentUserPublicId, creationRecoveryScope, can
                             aria-modal="true"
                             aria-labelledby="role-deletion-title"
                             aria-describedby="role-deletion-description"
+                            ref={roleDeletionDialogRef}
+                            tabIndex={-1}
                             onKeyDown={(event) => {
                                 if (event.key === 'Escape') setPendingRoleDeletion(null);
-                                if (event.key === 'Tab') {
-                                    const controls = Array.from(event.currentTarget.querySelectorAll<HTMLElement>('button:not([disabled]), input:not([disabled])'));
-                                    const first = controls[0];
-                                    const last = controls[controls.length - 1];
-                                    if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last?.focus(); }
-                                    else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first?.focus(); }
-                                }
                             }}
                         >
                             <div>
