@@ -22,7 +22,7 @@ function identity(tenantId, userId, publicUserId, sessionId, role, currentRole) 
     sessionId,
     role,
     legacyRole: role,
-    roles: [{ id: currentRole.publicId, name: currentRole.name, isSystem: false, legacyRole: role }],
+    roles: [{ id: currentRole.publicId, name: currentRole.name, isSystem: currentRole.isSystem, legacyRole: currentRole.legacyRole }],
     permissions: [
       'schedules:read',
       'shifts:read',
@@ -41,7 +41,7 @@ async function seedAuthority(owner, tenantId, user, roleName, runId) {
   const catalog = await owner.permission.findMany({ where: { key: { in: operationPermissions } }, select: { id: true, key: true } });
   assert.deepEqual(new Set(catalog.map(row => row.key)), new Set(operationPermissions), 'Existing complete permission catalog required; fixture never seeds global permissions');
   const role = await owner.role.create({ data: { tenantId, name: `Operations ${roleName} ${runId}`, slug: `operations-${roleName.toLowerCase()}-${runId}`,
-    isSystem: false, legacyRole: roleName } });
+    isSystem: true, legacyRole: roleName } });
   await owner.rolePermission.createMany({ data: catalog.map(permission => ({ roleId: role.id, permissionId: permission.id })) });
   await owner.roleAssignment.create({ data: { tenantId, userId: user.id, roleId: role.id } });
   const session = await owner.session.create({ data: { id: `operations-session-${randomUUID()}`, userId: user.id,
