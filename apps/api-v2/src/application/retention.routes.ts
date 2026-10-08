@@ -1,4 +1,4 @@
-import { Type } from '@sinclair/typebox';
+import { Type, type Static } from '@sinclair/typebox';
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { requireRetentionOperatorBearer, type RetainedOperatorBridge } from '../platform/retained-operator.bridge';
 
@@ -6,6 +6,10 @@ const RetentionPurgeRequestSchema = Type.Object({
   dryRun: Type.Boolean(),
   stage: Type.Union([Type.Literal('application_data'), Type.Literal('retained_records')]),
   executeConfirmation: Type.Optional(Type.String({ minLength: 1, maxLength: 128 })),
+  continuation: Type.Optional(Type.Object({
+    deletedAt: Type.String({ format: 'date-time' }),
+    id: Type.String({ minLength: 1, maxLength: 256, pattern: '\\S' }),
+  }, { additionalProperties: false })),
 }, { additionalProperties: false });
 
 const RetentionPurgeResponseSchema = Type.Object({}, { additionalProperties: true });
@@ -19,7 +23,7 @@ export async function registerRetentionOperatorRoutes(
   app: FastifyInstance,
   dependencies: RetentionOperatorRouteDependencies,
 ): Promise<void> {
-  app.post<{ Body: { dryRun: boolean; stage: 'application_data' | 'retained_records'; executeConfirmation?: string } }>(
+  app.post<{ Body: Static<typeof RetentionPurgeRequestSchema> }>(
     '/v2/admin/retention/purge-expired',
     {
       bodyLimit: 16 * 1024,

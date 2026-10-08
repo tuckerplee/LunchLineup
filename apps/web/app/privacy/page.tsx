@@ -23,7 +23,7 @@ export default function PrivacyPage() {
             <ul>
               <li>Workspace details such as tenant name, locations, plan, status, settings, and usage credits.</li>
               <li>User details such as name, email or username, role, assigned permissions, MFA/PIN state, and session metadata.</li>
-              <li>Scheduling details such as schedules, shifts, lunch breaks, break rules, and time-card records when enabled.</li>
+              <li>Scheduling details such as schedules, shifts, lunch breaks, break rules, and time cards, payroll approvals, immutable payroll snapshots, amendments, exports, and reconciliation records when enabled.</li>
               <li>Operational records such as billing events, notifications, webhook metadata, audit logs, and security telemetry.</li>
             </ul>
           ),
@@ -41,8 +41,8 @@ export default function PrivacyPage() {
           title: 'Account Lifecycle',
           body: (
             <p>
-              Tenant admins can deactivate users, export workspace data, cancel account access, and request workspace deletion
-              from account settings when their role includes the required permissions. Deletion requests start a retained-record
+              Tenant admins can deactivate users, export workspace data, cancel subscription renewal, and request workspace deletion
+              from account settings when their role includes the required permissions. Cancelling renewal preserves access through the paid period. Deletion requests revoke workspace access and start a retained-record
               schedule so billing, audit, security log, legal hold, and backup-retention duties can be completed before physical purge.
             </p>
           ),
@@ -54,8 +54,8 @@ export default function PrivacyPage() {
               <p>
                 Active workspace data is retained while the workspace is active. After a workspace deletion request, application data
                 becomes eligible for purge after 30 days. Database backups are retained for up to 35 days, application and security
-                logs for 90 days, and billing, credit, and audit records for up to seven years when required for financial, compliance,
-                or security evidence. A documented legal hold can delay deletion.
+                logs for 90 days, and billing, credit, audit, and immutable payroll evidence for seven years when required for financial, compliance,
+                or security evidence. Application-data purge waits for closed time cards, locked payroll periods, and current immutable payroll snapshots. A documented legal hold can delay deletion.
               </p>
               <p>
                 Contact your workspace administrator or LunchLineup support for access, export, correction, or deletion requests.

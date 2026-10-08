@@ -628,6 +628,56 @@ describe('API v2 HTTP contract', () => {
     expect(authenticate).not.toHaveBeenCalled();
   });
 
+  it('forwards the retention continuation unchanged across more than one 25-row page', async () => {
+    const { app, retainedOperators, authenticate } = await harness();
+    // Actual Fastify ingress and schema; synthetic downstream pages deliberately
+    // do not claim actual retained DB purge/eligibility/transaction qualification.
+    const candidates = Array.from({ length: 51 }, (_, index) => ({
+      id: `tenant-${String(index).padStart(3, '0')}`, deletedAt: '2026-01-01T12:00:00.000+00:00',
+    }));
+    const forwarded: unknown[] = []; const seen: string[] = [];
+    retainedOperators.executeRetentionPurge.mockImplementation(async (...args: unknown[]) => {
+      const request = args[0] as { body: { continuation?: { id: string; deletedAt: string } } };
+      forwarded.push(structuredClone(request.body));
+      const cursor = request.body.continuation;
+      const offset = cursor ? candidates.findIndex(item => item.id === cursor.id) + 1 : 0;
+      const page = candidates.slice(offset, offset + 25);
+      seen.push(...page.map(item => item.id));
+      return { dryRun: true, stage: 'application_data', processedTenantCount: page.length,
+        continuation: offset + page.length < candidates.length ? page.at(-1) : null };
+    });
+    let continuation: { id: string; deletedAt: string } | null = null;
+    for (let page = 0; page < 3; page += 1) {
+      const payload = { dryRun: true, stage: 'application_data', ...(continuation ? { continuation } : {}) };
+      const response = await app.inject({ method: 'POST', url: '/v2/admin/retention/purge-expired', payload,
+        headers: { authorization: 'Bearer retention-service-token' } });
+      expect(response.statusCode).toBe(200);
+      expect(forwarded[page]).toEqual(payload);
+      expect(response.json().processedTenantCount).toBe(page < 2 ? 25 : 1);
+      continuation = response.json().continuation;
+    }
+    expect(continuation).toBeNull(); expect(seen).toEqual(candidates.map(item => item.id));
+    expect(new Set(seen).size).toBe(51); expect(retainedOperators.executeRetentionPurge).toHaveBeenCalledTimes(3);
+    expect(authenticate).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    null, {}, { id: 'tenant-a' }, { deletedAt: '2026-01-01T00:00:00.000Z' },
+    { id: '', deletedAt: '2026-01-01T00:00:00.000Z' },
+    { id: '   ', deletedAt: '2026-01-01T00:00:00.000Z' },
+    { id: 'x'.repeat(257), deletedAt: '2026-01-01T00:00:00.000Z' },
+    { id: 'tenant-a', deletedAt: 'not-a-date' },
+  ])('refuses malformed retention continuation %# before the retained owner', async continuation => {
+    const { app, retainedOperators, authenticate } = await harness();
+    const response = await app.inject({ method: 'POST', url: '/v2/admin/retention/purge-expired',
+      payload: { dryRun: true, stage: 'application_data', continuation },
+      headers: { authorization: 'Bearer retention-service-token' } });
+    expect(response.statusCode).toBe(422);
+    expect(response.json()).toMatchObject({ code: 'contract_validation_failed' });
+    expect(retainedOperators.executeRetentionPurge).not.toHaveBeenCalled();
+    expect(authenticate).not.toHaveBeenCalled();
+  });
+
   it('serves tenant locations through the native API-02 owner and public UUID contract', async () => {
     const { app, retainedApplication, locations } = await harness();
     const response = await app.inject({

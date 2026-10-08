@@ -29,8 +29,8 @@ const terms = Object.freeze({
 
 const privacy = Object.freeze({
     route: '/privacy' as const,
-    version: '2026-07-09',
-    lastUpdated: 'July 9, 2026',
+    version: '2026-10-08',
+    lastUpdated: 'October 8, 2026',
 });
 
 const approvedVersions = Object.freeze({

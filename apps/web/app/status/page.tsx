@@ -5,7 +5,6 @@ import { LunchLineupMark } from '@/components/branding/LunchLineupMark';
 import { legalContacts } from '../legal-config';
 import { LegalContactLink, LegalContactReadinessNotice } from '../legal-page';
 import {
-  INCIDENT_REVIEW_DATE,
   badgeClass,
   dependencyTone,
   formatDateTime,
@@ -18,7 +17,7 @@ import {
 import type { HealthProbe } from './health';
 
 type IncidentState = {
-  activeCount: 0 | 1;
+  activeCount: number | null;
   heading: string;
   detail: string;
   detectedAt: Date | null;
@@ -28,9 +27,9 @@ export function deriveIncidentState(
   _probe: Pick<HealthProbe, 'status' | 'label' | 'detail' | 'checkedAt'>,
 ): IncidentState {
   return {
-    activeCount: 0,
-    heading: 'No active incidents',
-    detail: 'Automated health signals are shown separately; incident history is published only from the reviewed incident log.',
+    activeCount: null,
+    heading: 'Incident history unavailable',
+    detail: 'A current reviewed incident log has not been connected to this page. Automated health signals do not establish whether incidents are active.',
     detectedAt: null,
   };
 }
@@ -52,8 +51,8 @@ export default async function StatusPage() {
   const checks = [
     {
       label: 'Active incidents',
-      value: String(incident.activeCount),
-      helper: incident.activeCount === 0 ? 'Manual incident log' : 'Automated health signal',
+      value: incident.activeCount === null ? 'Unknown' : String(incident.activeCount),
+      helper: 'Reviewed incident log pending',
     },
     { label: 'Automated signal', value: probe.label, helper: `Latency ${formatLatency(probe.latencyMs)}` },
     { label: 'Last check', value: formatDateTime(probe.checkedAt), helper: 'No-store server probe' },
@@ -83,11 +82,11 @@ export default async function StatusPage() {
           </span>
           <h1>LunchLineup Status</h1>
           <p>
-            Current availability for the public LunchLineup beta. This page runs a server-side health probe where
-            production endpoints expose one, and keeps the incident log visible before sign-in.
+            Available health signals for LunchLineup. This page runs a server-side health probe where
+            an approved endpoint is configured. Incident history requires a separate reviewed source.
           </p>
           <span className="public-doc__updated">
-            Automated check {formatDateTime(probe.checkedAt)}; incident log reviewed {INCIDENT_REVIEW_DATE}
+            Automated check {formatDateTime(probe.checkedAt)}; incident review pending
           </span>
         </div>
 
@@ -200,7 +199,7 @@ export default async function StatusPage() {
               {incident.detectedAt ? (
                 <time dateTime={incident.detectedAt.toISOString()}>{formatDateTime(incident.detectedAt)}</time>
               ) : (
-                <time dateTime="2026-07-09">July 9, 2026</time>
+                <span>No verified review date</span>
               )}
               <strong>{incident.heading}</strong>
               <span>{incident.detail}</span>
